@@ -1,8 +1,8 @@
 # disrobe
 
-> A deobfuscator and decompiler for the modern stack.
+A deobfuscator and decompiler for the modern stack.
+
 > Python 1.0 through 3.15, JavaScript / TypeScript, WebAssembly, JVM + Android, .NET + native AOT, native PE / ELF / Mach-O, React Native Hermes, Flutter Dart AOT, Lua / LuaJIT / Luau, PHP, Ruby, Erlang / Elixir, Swift / Objective-C, AS3 / Flash, and the 22 native packers commonly stacked on top of them.
-> One binary. No agents. No LLM. No heuristics that drift. Same input, same output, every machine.
 
 ```sh
 $ disrobe auto suspect.exe --out recovered/
@@ -11,6 +11,100 @@ $ disrobe auto suspect.exe --out recovered/
 # stage 02-demangle   ok    (4172 Rust symbols, 312 C++ symbols, 0 unresolved)
 # final               ok    -> recovered/final/
 ```
+
+
+## Usage
+
+```sh
+disrobe <pass> <action> <input> [--out <path>] [flags]
+```
+
+Global flags on every subcommand:
+
+| Flag | Effect |
+|---|---|
+| `--json` | Structured JSON output |
+| `--ndjson` | Newline-delimited JSON (streaming) |
+| `--sarif` | SARIF 2.1.0 (GitHub code scanning, etc.) |
+| `--verbose`, `--quiet` | Tracing level |
+| `--seed <N>` | RNG seed for any non-deterministic backend |
+| `--config <path>` | TOML config file |
+| `--no-format` | Disable per-language auto-format |
+| `--threads <N>` | Worker pool size |
+| `--no-cache` | Bypass the `.dr` envelope cache |
+| `--dry-run` | Report what would happen, write nothing |
+| `--progress` | Render a TTY progress bar |
+| `--llm` | Also emit the structured metadata sidecar (18 categories, 4 packs, 4 serialisation formats) for downstream LLM consumers |
+| `--i-have-authorization` | Gate flag for grey-zone commercial protectors. |
+
+Every pass writes a structured manifest alongside the recovered artefact and persists the chain as a `.dr` envelope so subsequent passes resume offline. Output schemas are versioned and published under [`schemas/`](schemas/); Python and TypeScript type stubs ship in [`bindings/python`](bindings/python) and [`bindings/typescript`](bindings/typescript).
+
+## Library use
+
+Beyond the CLI and the HTTP / gRPC servers, `disrobe` ships as a programmatic library for both Rust and Python.
+
+### Rust
+
+Every pass crate is a normal `[lib]`. Add it to your `Cargo.toml` as a git dependency:
+
+```toml
+[dependencies]
+disrobe-core              = { git = "https://github.com/1-3-7/disrobe" }
+disrobe-pass-py-decompile = { git = "https://github.com/1-3-7/disrobe" }
+disrobe-binfmt            = { git = "https://github.com/1-3-7/disrobe" }
+```
+
+```rust
+use disrobe_pass_py_decompile::engine::decompile_pyc;
+
+let pyc_bytes: Vec<u8> = std::fs::read("module.pyc")?;
+let recovered = decompile_pyc(&pyc_bytes)?;
+println!("{}", recovered.source);
+println!("{:?}", recovered.roundtrip_status);
+```
+
+### Python
+
+The `disrobe` Python package is a pyo3 cdylib wrapping the same library code the CLI uses. Build it locally with [maturin](https://www.maturin.rs/):
+
+```sh
+git clone https://github.com/1-3-7/disrobe
+cd disrobe/bindings/python
+pip install maturin
+maturin develop --release
+```
+
+```python
+import disrobe
+
+# Recover Python source from .pyc bytes
+with open("module.pyc", "rb") as f:
+    result = disrobe.py_decompile(f.read(), pack="pack-3")
+
+print(result["source"])
+print(result["roundtrip_status"])  # "Perfect" | "Semantic" | "CodeDiff" | "NoInterpreter" | "RecompileFailed"
+print(result["llm"]["selection"]["pack"])  # "pack-3" — full LLM metadata bundle
+```
+
+> [!TIP]
+> Every result dict carries an `llm` key holding the same structured metadata bundle the CLI emits with `--llm` (18 categories, 4 packs). Pass `pack="pack-1"` through `"pack-4"` to control verbosity; omit for the lean default. Where a pass has no LLM emitter wired yet, `llm` is `None` and the docstring notes the v0.10 timeline.
+
+Language-agnostic helpers on the module root:
+
+```python
+disrobe.disasm("python", 'print("hello")')   # dis-style listing
+disrobe.compile("python", "x = 1\ny = x + 2") # marshalled bytecode bytes
+disrobe.parse("python", "def f(): pass")     # AST dict
+disrobe.disasm("jvm-class", class_bytes)     # JVM classfile disasm
+disrobe.disasm("beam", beam_bytes)           # BEAM disasm
+disrobe.disasm("hermes", hbc_bundle)         # Hermes bytecode disasm
+disrobe.disasm("wasm", wasm_bytes)           # WASM module pretty-JSON
+```
+
+Unsupported raise `disrobe.UnsupportedLanguage` (a typed subclass of `disrobe.DisrobeError`) with a hint pointing at the equivalent CLI subcommand.
+
+Full Python type stubs ship in [`bindings/python/disrobe/__init__.pyi`](bindings/python/disrobe/__init__.pyi); the 35-function surface and result-dict shapes are statically typed for IDE consumption.
+
 
 ## What works
 
@@ -51,10 +145,8 @@ disrobe is the only single binary that ships passes for every ecosystem listed b
 | Python 3.0 - 3.8 | partial | y | partial | y | partial | y |
 | Python 3.9 - 3.11 | n | n | partial | y | partial | y |
 | Python 3.12 - 3.13 | n | n | n | y (ML model) | partial | y |
-| Python 3.14 + t-strings (PEP 750) | n | n | n | n | n | partial* |
-| Python 3.15 | n | n | n | n | n | partial* |
-
-*const-load + AST construction landing; round-trip-verified status surfaced in every output.
+| Python 3.14 + t-strings (PEP 750) | n | n | n | n | n | partial\* |
+| Python 3.15 | n | n | n | n | n | partial\* |
 | PyPy 2.7 / 3.7 / 3.9 / 3.10 | n | n | n | n | n | y |
 | MicroPython `.mpy` v0 - v6 | n | n | n | n | n | y |
 | Jython / IronPython / Brython | n | n | n | n | n | y |
@@ -65,6 +157,8 @@ disrobe is the only single binary that ships passes for every ecosystem listed b
 | Recompile rate on edge-case corpus | low | partial | low | medium | 14 % | 97.7 % |
 | Auto-formatted output (ruff) | n | n | n | n | n | y |
 | License | GPL-3.0 | GPL-3.0 | GPL-3.0 | GPL-3.0 | --- | Apache-2.0 |
+
+\* const-load + AST construction landing; round-trip-verified status surfaced in every output.
 
 ### Python freezers (PyInstaller, Nuitka, cx_Freeze, py2exe, PyOxidizer, shiv, pex)
 
@@ -368,7 +462,9 @@ The field has excellent one-off extractors (7-Zip, libarchive, tar) but nothing 
 
 ## Quick start
 
-`disrobe` lives on GitHub and is built from source.  
+> [!NOTE]
+> `disrobe` lives on GitHub and is built from source.
+
 Requires Rust 1.88+ stable. That is the only dependency to build.
 
 ```sh
@@ -419,102 +515,12 @@ Discover the full surface with `disrobe --help`, drill into any subcommand with 
 
 `disrobe auto` chains the full pipeline in one call: `PE -> UPX -> rust-demangle -> recover`, or `APK -> dex -> jadx + smali`, or `pyinstaller -> pyarmor -> .pyc decompile`. Stage outputs land in `out/01-*/`, `out/02-*/`, ..., `out/final/`. For a worked example end-to-end against a live shipped binary, see [docs/usage/discord-e2e.md](docs/usage/discord-e2e.md).
 
-## Usage
-
-```sh
-disrobe <pass> <action> <input> [--out <path>] [flags]
-```
-
-Global flags on every subcommand:
-
-| Flag | Effect |
-|---|---|
-| `--json` | Structured JSON output |
-| `--ndjson` | Newline-delimited JSON (streaming) |
-| `--sarif` | SARIF 2.1.0 (GitHub code scanning, etc.) |
-| `--verbose`, `--quiet` | Tracing level |
-| `--seed <N>` | RNG seed for any non-deterministic backend |
-| `--config <path>` | TOML config file |
-| `--no-format` | Disable per-language auto-format |
-| `--threads <N>` | Worker pool size |
-| `--no-cache` | Bypass the `.dr` envelope cache |
-| `--dry-run` | Report what would happen, write nothing |
-| `--progress` | Render a TTY progress bar |
-| `--llm` | Also emit the structured metadata sidecar (18 categories, 4 packs, 4 serialisation formats) for downstream LLM consumers |
-| `--i-have-authorization` | Gate flag for grey-zone commercial protectors. |
-
-Every pass writes a structured manifest alongside the recovered artefact and persists the chain as a `.dr` envelope so subsequent passes resume offline. Output schemas are versioned and published under [`schemas/`](schemas/); Python and TypeScript type stubs ship in [`bindings/python`](bindings/python) and [`bindings/typescript`](bindings/typescript).
-
-## Library use
-
-Beyond the CLI and the HTTP / gRPC servers, `disrobe` ships as a programmatic library for both Rust and Python.
-
-### Rust
-
-Every pass crate is a normal `[lib]`. Add it to your `Cargo.toml` as a git dependency:
-
-```toml
-[dependencies]
-disrobe-core              = { git = "https://github.com/1-3-7/disrobe" }
-disrobe-pass-py-decompile = { git = "https://github.com/1-3-7/disrobe" }
-disrobe-binfmt            = { git = "https://github.com/1-3-7/disrobe" }
-```
-
-```rust
-use disrobe_pass_py_decompile::engine::decompile_pyc;
-
-let pyc_bytes: Vec<u8> = std::fs::read("module.pyc")?;
-let recovered = decompile_pyc(&pyc_bytes)?;
-println!("{}", recovered.source);
-println!("{:?}", recovered.roundtrip_status);
-```
-
-### Python
-
-The `disrobe` Python package is a pyo3 cdylib wrapping the same library code the CLI uses. Build it locally with [maturin](https://www.maturin.rs/):
-
-```sh
-git clone https://github.com/1-3-7/disrobe
-cd disrobe/bindings/python
-pip install maturin
-maturin develop --release
-```
-
-```python
-import disrobe
-
-# Recover Python source from .pyc bytes
-with open("module.pyc", "rb") as f:
-    result = disrobe.py_decompile(f.read(), pack="pack-3")
-
-print(result["source"])
-print(result["roundtrip_status"])  # "Perfect" | "Semantic" | "CodeDiff" | "NoInterpreter" | "RecompileFailed"
-print(result["llm"]["selection"]["pack"])  # "pack-3" — full LLM metadata bundle
-```
-
-Every result dict carries an `llm` key holding the same structured metadata bundle the CLI emits with `--llm` (18 categories, 4 packs). Pass `pack="pack-1"` through `"pack-4"` to control verbosity; omit for the lean default. Where a pass has no LLM emitter wired yet, `llm` is `None` and the docstring notes the v0.10 timeline.
-
-Language-agnostic helpers on the module root:
-
-```python
-disrobe.disasm("python", 'print("hello")')   # dis-style listing
-disrobe.compile("python", "x = 1\ny = x + 2") # marshalled bytecode bytes
-disrobe.parse("python", "def f(): pass")     # AST dict
-disrobe.disasm("jvm-class", class_bytes)     # JVM classfile disasm
-disrobe.disasm("beam", beam_bytes)           # BEAM disasm
-disrobe.disasm("hermes", hbc_bundle)         # Hermes bytecode disasm
-disrobe.disasm("wasm", wasm_bytes)           # WASM module pretty-JSON
-```
-
-Unsupported (lua / ruby / php / js / ts / go / swift / kotlin) raise `disrobe.UnsupportedLanguage` (a typed subclass of `disrobe.DisrobeError`) with a hint pointing at the equivalent CLI subcommand.
-
-Full Python type stubs ship in [`bindings/python/disrobe/__init__.pyi`](bindings/python/disrobe/__init__.pyi); the 35-function surface and result-dict shapes are statically typed for IDE consumption.
-
 ## Legal
 
 Decompilation for security research, interoperability, and recovery of your own source is permitted in most jurisdictions: US DMCA §1201(f), EU Software Directive 2009/24/EC article 6, UK CDPA §50B / 50BA, Canada Copyright Act s.30.61, Australia Copyright Act ss.47D - 47F, Japan Copyright Act art. 47-3 / 47-6. The full posture, with statutory citations and a takedown channel, is in [LEGAL.md](LEGAL.md).
 
-Grey-zone commercial protectors are gated behind the explicit `--i-have-authorization` flag.
+> [!IMPORTANT]
+> Grey-zone commercial protectors (PACE / commercial obfuscators / DRM-adjacent unpackers) are gated behind the explicit `--i-have-authorization` flag and never run otherwise. Use is your responsibility per the statutory framing above.
 
 ## Contribute
 

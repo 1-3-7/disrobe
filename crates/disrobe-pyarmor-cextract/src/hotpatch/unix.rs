@@ -27,7 +27,7 @@ fn page_size() -> usize {
     if sz <= 0 { 4096usize } else { sz as usize }
 }
 
-fn page_align_down(addr: usize, page: usize) -> usize {
+const fn page_align_down(addr: usize, page: usize) -> usize {
     addr & !(page - 1)
 }
 
@@ -36,7 +36,7 @@ fn mprotect_range(addr: usize, len: usize, prot: c_int) -> Result<()> {
     let base: usize = page_align_down(addr, page);
     let end: usize = addr.saturating_add(len);
     let span: usize = end - base;
-    let aligned_span: usize = ((span + page - 1) / page) * page;
+    let aligned_span: usize = span.div_ceil(page) * page;
     let rc: c_int = unsafe { libc::mprotect(base as *mut c_void, aligned_span, prot) };
     if rc != 0 {
         let err: i32 = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);

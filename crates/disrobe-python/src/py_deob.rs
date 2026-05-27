@@ -77,8 +77,13 @@ fn py_deob<'py>(
         || report_with_null_bundle(py, &report),
         |peel: PeelResult| {
             let llm_input: PyDeobLlmInput = PyDeobLlmInput { peel, duration_ms };
-            let step: disrobe_llm_metadata::PipelineStep =
-                make_step(PASS_DEOB, PASS_DEOB_VERSION, "surface", "surface", duration_ms);
+            let step: disrobe_llm_metadata::PipelineStep = make_step(
+                PASS_DEOB,
+                PASS_DEOB_VERSION,
+                "surface",
+                "surface",
+                duration_ms,
+            );
             let input: disrobe_llm_metadata::InputDescriptor =
                 make_input_descriptor("<source>", source.as_bytes());
             report_with_bundle(py, &report, &llm_input, pack_kind, step, input)

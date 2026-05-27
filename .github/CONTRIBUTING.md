@@ -71,7 +71,7 @@ Results are tracked via `divan`. If a PR regresses a benchmark by more than 5%, 
 
 ## Filing issues
 
-Use the GitHub issue templates. If something doesn't decompose correctly and you can share the input, attach it. If you can't share the file publicly, hash it with `sha256sum` and note the hash — sometimes the maintainers already have the sample.
+Use the GitHub issue templates. If something doesn't decompose correctly and you can share the input, attach it. If you can't share the file publicly, hash it with `sha256sum` and note the hash.
 
 ## What won't merge
 

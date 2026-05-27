@@ -48,7 +48,8 @@ fn disasm(py: Python<'_>, language: &str, source: PyObject) -> PyResult<String> 
         }
         "jvm-class" | "class" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
-            let cf: ClassFile = parse_classfile(&bytes).map_err(crate::err::map("jvm classfile"))?;
+            let cf: ClassFile =
+                parse_classfile(&bytes).map_err(crate::err::map("jvm classfile"))?;
             Ok(jvm_classfile_text(&cf))
         }
         "dex" => {
@@ -59,13 +60,12 @@ fn disasm(py: Python<'_>, language: &str, source: PyObject) -> PyResult<String> 
         "beam" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
             let beam: BeamFile = BeamFile::parse(&bytes).map_err(crate::err::map("beam"))?;
-            let code: &CodeChunk = beam
-                .chunks
-                .code
-                .as_ref()
-                .ok_or_else(|| DisrobeError::new_err("beam file has no Code chunk".to_owned()))?;
-            let dis: BeamDisassembly =
-                disrobe_pass_beam::disassemble(code).map_err(crate::err::map("beam disassemble"))?;
+            let code: &CodeChunk =
+                beam.chunks.code.as_ref().ok_or_else(|| {
+                    DisrobeError::new_err("beam file has no Code chunk".to_owned())
+                })?;
+            let dis: BeamDisassembly = disrobe_pass_beam::disassemble(code)
+                .map_err(crate::err::map("beam disassemble"))?;
             Ok(beam_text(&dis))
         }
         "hermes" | "hermes-bundle" | "hbc" => {
@@ -77,8 +77,7 @@ fn disasm(py: Python<'_>, language: &str, source: PyObject) -> PyResult<String> 
         }
         "wasm" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
-            let summary: ModuleSummary =
-                analyze_module(&bytes).map_err(crate::err::map("wasm"))?;
+            let summary: ModuleSummary = analyze_module(&bytes).map_err(crate::err::map("wasm"))?;
             Ok(wasm_text(&summary))
         }
         "lua" => Err(unsupported_language(
@@ -95,7 +94,10 @@ fn disasm(py: Python<'_>, language: &str, source: PyObject) -> PyResult<String> 
             language,
             "use the `disrobe-pass-php` CLI subcommand or the upcoming Python binding in v0.10",
         )),
-        other => Err(unsupported_language(other, "no backing disasm implementation")),
+        other => Err(unsupported_language(
+            other,
+            "no backing disasm implementation",
+        )),
     }
 }
 
@@ -114,11 +116,7 @@ fn disasm(py: Python<'_>, language: &str, source: PyObject) -> PyResult<String> 
 #[pyfunction]
 #[pyo3(signature = (language, source))]
 #[pyo3(text_signature = "(language, source)")]
-fn parse<'py>(
-    py: Python<'py>,
-    language: &str,
-    source: PyObject,
-) -> PyResult<Bound<'py, PyAny>> {
+fn parse<'py>(py: Python<'py>, language: &str, source: PyObject) -> PyResult<Bound<'py, PyAny>> {
     let lang: String = language.to_ascii_lowercase();
     if PYTHON_LANGS.contains(&lang.as_str()) {
         let src: String = extract_str(py, &source, language)?;
@@ -148,7 +146,8 @@ fn parse<'py>(
         }
         "jvm-class" | "class" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
-            let cf: ClassFile = parse_classfile(&bytes).map_err(crate::err::map("jvm classfile"))?;
+            let cf: ClassFile =
+                parse_classfile(&bytes).map_err(crate::err::map("jvm classfile"))?;
             to_py(py, &cf)
         }
         "dex" => {
@@ -158,8 +157,7 @@ fn parse<'py>(
         }
         "wasm" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
-            let summary: ModuleSummary =
-                analyze_module(&bytes).map_err(crate::err::map("wasm"))?;
+            let summary: ModuleSummary = analyze_module(&bytes).map_err(crate::err::map("wasm"))?;
             to_py(py, &summary)
         }
         "hermes" | "hermes-bundle" | "hbc" => {
@@ -172,13 +170,12 @@ fn parse<'py>(
         "beam" => {
             let bytes: Vec<u8> = extract_bytes(py, &source, language)?;
             let beam: BeamFile = BeamFile::parse(&bytes).map_err(crate::err::map("beam"))?;
-            let code: &CodeChunk = beam
-                .chunks
-                .code
-                .as_ref()
-                .ok_or_else(|| DisrobeError::new_err("beam file has no Code chunk".to_owned()))?;
-            let dis: BeamDisassembly =
-                disrobe_pass_beam::disassemble(code).map_err(crate::err::map("beam disassemble"))?;
+            let code: &CodeChunk =
+                beam.chunks.code.as_ref().ok_or_else(|| {
+                    DisrobeError::new_err("beam file has no Code chunk".to_owned())
+                })?;
+            let dis: BeamDisassembly = disrobe_pass_beam::disassemble(code)
+                .map_err(crate::err::map("beam disassemble"))?;
             to_py(py, &dis)
         }
         "javascript" | "js" | "typescript" | "ts" => Err(unsupported_language(
@@ -190,7 +187,10 @@ fn parse<'py>(
             "source-level parser for this language lands in v0.10; \
              use the equivalent CLI subcommand for now",
         )),
-        other => Err(unsupported_language(other, "no backing parse implementation")),
+        other => Err(unsupported_language(
+            other,
+            "no backing parse implementation",
+        )),
     }
 }
 
@@ -251,10 +251,7 @@ fn python_pyc_disasm_text(bytes: &[u8]) -> PyResult<String> {
     Ok(disrobe_pass_py_disasm::render_dis(&ins))
 }
 
-fn python_parse_via_host<'py>(
-    py: Python<'py>,
-    source: &str,
-) -> PyResult<Bound<'py, PyAny>> {
+fn python_parse_via_host<'py>(py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyAny>> {
     let ast: Bound<'py, PyModule> = PyModule::import(py, "ast")?;
     let tree: Bound<'py, PyAny> = ast.getattr("parse")?.call1((source,))?;
     let dump: Bound<'py, PyAny> = ast.getattr("dump")?.call1((tree.clone(),))?;
@@ -265,19 +262,15 @@ fn python_parse_via_host<'py>(
     Ok(kwargs.into_any())
 }
 
-fn python_compile_via_host<'py>(
-    py: Python<'py>,
-    source: &str,
-) -> PyResult<Bound<'py, PyBytes>> {
+fn python_compile_via_host<'py>(py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyBytes>> {
     let builtins: Bound<'py, PyModule> = PyModule::import(py, "builtins")?;
     let compile_fn: Bound<'py, PyAny> = builtins.getattr("compile")?;
-    let code: Bound<'py, PyAny> =
-        compile_fn.call1((source, "<disrobe>", "exec"))?;
+    let code: Bound<'py, PyAny> = compile_fn.call1((source, "<disrobe>", "exec"))?;
     let marshal: Bound<'py, PyModule> = PyModule::import(py, "marshal")?;
     let dumped: Bound<'py, PyAny> = marshal.getattr("dumps")?.call1((code,))?;
-    let bytes: Bound<'py, PyBytes> = dumped.downcast_into::<PyBytes>().map_err(|e| {
-        DisrobeError::new_err(format!("marshal.dumps returned non-bytes: {e}"))
-    })?;
+    let bytes: Bound<'py, PyBytes> = dumped
+        .downcast_into::<PyBytes>()
+        .map_err(|e| DisrobeError::new_err(format!("marshal.dumps returned non-bytes: {e}")))?;
     Ok(bytes)
 }
 
@@ -286,7 +279,10 @@ fn extract_str(py: Python<'_>, source: &PyObject, language: &str) -> PyResult<St
     bound.extract::<String>().map_err(|_| {
         DisrobeError::new_err(format!(
             "language `{language}` expects str source, got {}",
-            bound.get_type().name().map_or_else(|_| "?".to_owned(), |n| n.to_string())
+            bound
+                .get_type()
+                .name()
+                .map_or_else(|_| "?".to_owned(), |n| n.to_string())
         ))
     })
 }
@@ -301,7 +297,10 @@ fn extract_bytes(py: Python<'_>, source: &PyObject, language: &str) -> PyResult<
     }
     Err(DisrobeError::new_err(format!(
         "language `{language}` expects bytes source, got {}",
-        bound.get_type().name().map_or_else(|_| "?".to_owned(), |n| n.to_string())
+        bound
+            .get_type()
+            .name()
+            .map_or_else(|_| "?".to_owned(), |n| n.to_string())
     )))
 }
 
@@ -329,10 +328,7 @@ fn jvm_classfile_text(cf: &ClassFile) -> String {
 
 fn dex_text(dex: &DexFile) -> String {
     let mut s: String = String::with_capacity(256);
-    s.push_str(&format!(
-        "// dex header version {:?}\n",
-        dex.header.version
-    ));
+    s.push_str(&format!("// dex header version {:?}\n", dex.header.version));
     s.push_str(&format!("strings:   {}\n", dex.strings.len()));
     s.push_str(&format!("types:     {}\n", dex.type_names.len()));
     s.push_str(&format!("classes:   {}\n", dex.class_descriptors.len()));

@@ -162,6 +162,17 @@ corpus/mobile/capacitor/
 corpus/mobile/xamarin/
 corpus/mobile/macho/
 
+!corpus/jvm/dex/Hello.dex
+!corpus/jvm/dex/EdgeCases.dex
+!corpus/jvm/dex/EdgeCasesKt.dex
+!corpus/jvm/proguard/Hello-baseline.jar
+!corpus/jvm/proguard/Hello-obf.jar
+!corpus/jvm/proguard/EdgeCases-pg.jar
+!corpus/jvm/proguard/EdgeCasesKt-pg.jar
+!corpus/jvm/r8/Hello-r8.jar
+!corpus/jvm/r8/EdgeCases-r8.jar
+!corpus/jvm/r8/EdgeCasesKt-r8.jar
+
 corpus/mobile/macho-mac/
 corpus/mobile/macho-*/
 corpus/**/*.fat
