@@ -19,7 +19,7 @@ jobs:
       - name: run benchmarks
         run: cargo bench --workspace 2>&1 | tee bench-output.txt
       - name: upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-${{ github.sha }}
           path: bench-output.txt
