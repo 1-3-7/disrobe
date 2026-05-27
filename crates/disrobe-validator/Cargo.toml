@@ -1,0 +1,40 @@
+[package]
+name = "disrobe-validator"
+description = "Production validator + benchmark harness for the disrobe suite. Walks the sample corpus, runs each pass end-to-end, asserts byte-level deterministic output, captures size + entropy + symbol-recovery metrics, and exports a HTML/JSON report. Baselines via `divan` against the Lil-House reference (when available)."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["validator", "benchmark", "deobfuscation", "disrobe"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-validate"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-pass-pyarmor = { workspace = true }
+disrobe-pass-pyinstaller = { workspace = true }
+disrobe-pass-pyfreeze = { workspace = true }
+disrobe-pass-nuitka = { workspace = true }
+disrobe-pass-py-deob = { workspace = true }
+disrobe-pass-py-disasm = { workspace = true }
+disrobe-pass-js-deob = { workspace = true }
+disrobe-pass-wasm-deob = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+divan = { workspace = true }

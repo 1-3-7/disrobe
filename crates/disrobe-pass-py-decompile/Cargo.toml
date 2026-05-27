@@ -1,0 +1,35 @@
+[package]
+name = "disrobe-pass-py-decompile"
+description = "Python bytecode decompiler covering CPython 2.7 through 3.14+ and PyPy. Reconstructs typed source from CodeObject via an exception-table-driven frame-tree pre-pass, per-version opcode dispatch, and a round-trip metric that distinguishes real reconstruction bugs from inert compiler-version codegen choices."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["python", "decompiler", "pyc", "cpython", "pypy"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+disrobe-pass-py-disasm = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+
+[dev-dependencies]
+insta = { workspace = true }

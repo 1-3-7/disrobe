@@ -1,0 +1,39 @@
+[package]
+name = "disrobe-pass-pyfreeze"
+description = "Python freezer/wheel-pack container unwrapper for cx_Freeze, py2exe, shiv, and pex artifacts. Detects format, extracts the embedded pyc/zip/wheel archive, and emits a normalized manifest for downstream marshal/decompile passes."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["cxfreeze", "py2exe", "shiv", "pex", "python"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-binfmt = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+object = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }

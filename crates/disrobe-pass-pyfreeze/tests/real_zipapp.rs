@@ -1,0 +1,112 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use disrobe_pass_pyfreeze::{Detection, FreezerKind, detect_bytes};
+
+const BANDS: &[&str] = &[
+    "edge_cases_3_6",
+    "edge_cases_3_8",
+    "edge_cases_3_9",
+    "edge_cases_3_10",
+    "edge_cases_3_11",
+    "edge_cases_3_12",
+];
+
+fn corpus_root() -> PathBuf {
+    let manifest_dir: String =
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned());
+    let mut p: PathBuf = PathBuf::from(manifest_dir);
+    p.pop();
+    p.pop();
+    p.push("corpus");
+    p.push("python");
+    p.push("freezers");
+    p
+}
+
+fn fixture_path() -> PathBuf {
+    corpus_root().join("zipapp").join("hello.pyz")
+}
+
+#[test]
+fn zipapp_real_fixture_present() {
+    let path: PathBuf = fixture_path();
+    assert!(
+        path.is_file(),
+        "real zipapp fixture missing at {} — regenerate via DISROBE_ZIPAPP_REGEN per corpus/python/freezers/MANIFEST.toml",
+        path.display()
+    );
+}
+
+#[test]
+fn zipapp_real_fixture_detects_as_zipapp_or_shiv() {
+    let path: PathBuf = fixture_path();
+    if !path.is_file() {
+        eprintln!("[real_zipapp] skipped: fixture missing");
+        return;
+    }
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let det: Detection = detect_bytes(&bytes, Some(&path));
+    let kind: FreezerKind = det.kind;
+    let acceptable: bool = matches!(
+        kind,
+        FreezerKind::Shiv | FreezerKind::Pex | FreezerKind::Unknown
+    );
+    assert!(
+        acceptable,
+        "zipapp fixture must classify as shiv-ish/pex-ish/unknown (stdlib zipapp has no PEX-INFO or _bootstrap marker); got {kind:?}"
+    );
+}
+
+#[test]
+fn zipapp_real_fixture_contains_all_edge_case_bands() {
+    let path: PathBuf = fixture_path();
+    if !path.is_file() {
+        eprintln!("[real_zipapp] skipped: fixture missing");
+        return;
+    }
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let mut archive: zip::ZipArchive<std::io::Cursor<&[u8]>> =
+        zip::ZipArchive::new(std::io::Cursor::new(skip_shebang(&bytes))).expect("zip parse");
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for i in 0..archive.len() {
+        let f: zip::read::ZipFile<'_> = archive.by_index(i).expect("zip entry");
+        names.insert(f.name().to_owned());
+    }
+    for band in BANDS {
+        let needle: String = format!("{band}.py");
+        let pyc_needle: String = format!("{band}.pyc");
+        let present: bool = names
+            .iter()
+            .any(|n: &String| n == &needle || n == &pyc_needle);
+        assert!(
+            present,
+            "edge_cases band `{band}` missing from real zipapp fixture; names={names:?}"
+        );
+    }
+    assert!(
+        names
+            .iter()
+            .any(|n| n == "__main__.py" || n == "__main__.pyc"),
+        "zipapp entry point __main__ missing"
+    );
+}
+
+fn skip_shebang(bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(b"#!") {
+        let nl: usize = bytes
+            .iter()
+            .position(|b: &u8| *b == b'\n')
+            .map_or(0, |n: usize| n + 1);
+        &bytes[nl..]
+    } else {
+        bytes
+    }
+}

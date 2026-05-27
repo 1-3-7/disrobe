@@ -1,0 +1,48 @@
+[package]
+name = "disrobe-pass-py-deob"
+description = "Source-level Python deobfuscator for the Hyperion / Kramer / Specter / Berserker / BlankOBF / Pyfuscator / PyObfuscator / Opy family. Detects, iteratively peels encoder layers (base64/base85/zlib/lzma/marshal), and emits readable source via AST cleanup + constant folding."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["python", "deobfuscation", "hyperion", "kramer", "obfuscator"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+llm-metadata = ["dep:disrobe-llm-metadata"]
+chain = ["disrobe-core/chain"]
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+disrobe-pass-py-disasm = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+aes = { workspace = true }
+base64 = "0.22"
+cbc = { workspace = true }
+cipher = { version = "0.4", features = ["block-padding"] }
+flate2 = { workspace = true }
+liblzma = { workspace = true }
+bzip2-rs = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = "1"
+ruff_python_parser = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
+ruff_python_ast = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
+ruff_python_codegen = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
+ruff_text_size = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
+
+[dev-dependencies]
+insta = { workspace = true }
+base64 = "0.22"

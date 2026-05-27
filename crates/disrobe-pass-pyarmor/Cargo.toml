@@ -1,0 +1,54 @@
+[package]
+name = "disrobe-pass-pyarmor"
+description = "PyArmor static unpacker (v6, v7 in v0.1; v8 in v0.3; v9 BCC/RFT in v0.4+) for the disrobe decompiler/deobfuscator suite. Emits unwrapped .pyc, marshal-recovered objects, disasm, manifest, and signatures."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["pyarmor", "decompiler", "deobfuscator", "python", "reverse-engineering"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+aes = { workspace = true }
+ctr = { workspace = true }
+cbc = { workspace = true, features = ["alloc"] }
+des = { workspace = true }
+rc4 = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+md-5 = "0.10"
+object = { workspace = true }
+iced-x86 = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+divan = { workspace = true }
+
+[features]
+default = []
+ghidra-integration = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+
+[[bench]]
+name = "v9_unpack"
+harness = false

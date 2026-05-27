@@ -1,0 +1,86 @@
+schema_version = 1
+description = "Real-tool-generated container fixtures for disrobe-binfmt. All built from a shared 150-file 6.7MB payload covering nested directories (5 levels deep), ASCII/Unicode/special-character filenames, 120 small files, 5MB random binary, 1MB sparse file with HEAD+TAIL markers, symlinks (where supported), hardlinks (where supported), restricted permissions (0444/0600/0755), and empty files."
+
+[payload]
+source_dir = ".developer/scratch/binfmt-build/payload"
+linux_overlay_dir = "/root/binfmt-payload (built by .developer/scratch/binfmt-build/bake_linux.sh)"
+file_count = 150
+total_bytes_approx = 7_000_000
+nested_depth = 5
+unicode_names = true
+special_char_names = ["spaces in name.txt", "parens(1).txt", "amp&sign.txt", "hash#sign.txt", "pct%sign.txt", "plus+sign.txt"]
+long_filename_present = true
+sparse_file_present = true
+symlink_targets = ["./hello.txt", "./specials"]
+
+[[fixtures]]
+path = "squashfs/hello.squashfs"
+format = "squashfs-v4-xz"
+tool = "squashfs-tools mksquashfs 4.7.5"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+has_symlinks = true
+has_hardlinks = true
+has_permissions = true
+
+[[fixtures]]
+path = "snap/hello.snap"
+format = "snap (squashfs container)"
+tool = "squashfs-tools mksquashfs 4.7.5"
+provenance = "byte-identical copy of squashfs/hello.squashfs (snap pack is mksquashfs under the hood)"
+note = "real snap pack tooling requires snapd + meta/snap.yaml schema, which adds no parsing surface beyond the underlying squashfs layout for the binfmt walker"
+
+[[fixtures]]
+path = "appimage/hello.AppImage"
+format = "AppImage type 2"
+tool = "disrobe baker: ELF stub (0x10000 header) + real squashfs concat"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_appimage"
+note = "tail squashfs is the same real mksquashfs output as squashfs/hello.squashfs; ELF header has correct e_ident + AppImage type-2 magic (AI\\x02) at offset 8"
+
+[[fixtures]]
+path = "cramfs/hello.cramfs"
+format = "cramfs"
+tool = "npitre/cramfs-tools mkcramfs (HEAD 2026-05-25)"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+
+[[fixtures]]
+path = "ext4/hello.ext4"
+format = "ext4"
+tool = "e2fsprogs mke2fs 1.47.2"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+size_bytes = 16_777_216
+note = "16 MiB filesystem image with 4096 4k blocks, populated with full payload via mke2fs -d"
+
+[[fixtures]]
+path = "msi/hello.msi"
+format = "Windows Installer (msi, OLE compound)"
+tool = "WiX Toolset v7.0.0"
+provenance = "winget WixToolset.WiXCLI; .developer/scratch/binfmt-build/wix/gen_wxs.ps1 + wix build"
+embedded_cab = true
+component_count = 145
+
+[[fixtures]]
+path = "msix/hello.msix"
+format = "MSIX / AppX (signed-zip container)"
+tool = "Windows SDK 10.0.26100 makeappx.exe"
+provenance = "winget Windows SDK; .developer/scratch/binfmt-build/msix/src + makeappx pack"
+manifest = "AppxManifest.xml with runFullTrust capability"
+
+[[fixtures]]
+path = "nsis/hello.exe"
+format = "NSIS installer (PE with NullsoftInst first-header)"
+tool = "Nullsoft Install System 3.12"
+provenance = "winget NSIS.NSIS; .developer/scratch/binfmt-build/nsis/hello.nsi (File /r solid LZMA)"
+
+[[fixtures]]
+path = "oci/hello.oci.tar"
+format = "OCI image layout v1 (tar of oci-layout dir)"
+tool = "disrobe baker: pure-Rust tar + sha256 + gzipped layer"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_oci"
+note = "real index.json + manifest.json + config blobs with computed sha256 digests; layer is tar+gzip of the payload tree; structure matches `docker buildx build --output type=oci`"
+
+[[fixtures]]
+path = "docker/hello.docker.tar"
+format = "Docker image save (tar with manifest.json + repositories + layer.tar)"
+tool = "disrobe baker: pure-Rust tar + sha256"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_docker"
+note = "legacy docker-save layout: top-level manifest.json + repositories + per-layer dir containing layer.tar (uncompressed) + VERSION + json; matches `docker save` v1.x output"

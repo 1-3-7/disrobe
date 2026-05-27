@@ -1,0 +1,256 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_docs_in_private_items,
+    clippy::print_stdout,
+    clippy::needless_pass_by_value
+)]
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use disrobe_pass_native::{
+    DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackOutput, UnpackerStatus,
+    detect_format, detect_packers, unpack_with_upx_cli,
+};
+
+fn corpus_root() -> PathBuf {
+    let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    crate_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|p: &Path| p.join("corpus").join("native").join("packers"))
+        .expect("workspace layout: crates/disrobe-pass-native -> ../../corpus/native/packers")
+}
+
+fn read_corpus(rel: &str) -> Vec<u8> {
+    let path: PathBuf = corpus_root().join(rel);
+    std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+        panic!("missing corpus fixture {}: {e}", path.display())
+    })
+}
+
+fn has_packer(hits: &[PackerDetection], packer: Packer) -> bool {
+    hits.iter().any(|h: &PackerDetection| h.packer == packer)
+}
+
+fn distinct_packers(hits: &[PackerDetection]) -> BTreeSet<Packer> {
+    hits.iter().map(|h: &PackerDetection| h.packer).collect()
+}
+
+fn upx_available() -> bool {
+    Command::new("upx")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o: std::process::Output| o.status.success())
+}
+
+#[test]
+fn upx_detects_hello_x64_real_binary() {
+    let bytes: Vec<u8> = read_corpus("upx/hello.exe");
+    let hits: Vec<PackerDetection> = detect_packers(&bytes);
+    assert!(
+        has_packer(&hits, Packer::Upx),
+        "real UPX-packed hello.exe must be detected: hits={hits:?}"
+    );
+    assert_eq!(
+        Packer::Upx.unpacker_status(),
+        UnpackerStatus::ExternalCliWrap
+    );
+}
+
+#[test]
+fn upx_detects_ripgrep_megafile() {
+    let bytes: Vec<u8> = read_corpus("upx/rg.packed.upx.exe");
+    assert!(
+        bytes.len() > 1_000_000,
+        "rg.packed.upx.exe must be the real 4 MB-class megafile, got {} bytes",
+        bytes.len()
+    );
+    let hits: Vec<PackerDetection> = detect_packers(&bytes);
+    assert!(
+        has_packer(&hits, Packer::Upx),
+        "real UPX-packed ripgrep must be detected: hits={hits:?}"
+    );
+    let detected: DetectedFormat =
+        detect_format(&bytes).expect("packed rg.exe is still a valid PE container");
+    assert_eq!(detected.kind, NativeFormat::Pe64);
+}
+
+#[test]
+fn upx_round_trip_hello_byte_compare() {
+    if !upx_available() {
+        println!("SKIP: upx CLI not on PATH");
+        return;
+    }
+    let baseline: Vec<u8> = read_corpus("upx/hello.original.exe");
+    let unpacked: Vec<u8> = read_corpus("upx/hello.unpacked.exe");
+    assert_eq!(
+        baseline.len(),
+        unpacked.len(),
+        "UPX round-trip must preserve total length for hello.exe"
+    );
+    let diffs: u64 = baseline
+        .iter()
+        .zip(unpacked.iter())
+        .filter(|(a, b): &(&u8, &u8)| a != b)
+        .count() as u64;
+    let diff_per_million: u64 = diffs.saturating_mul(1_000_000) / baseline.len() as u64;
+    assert!(
+        diff_per_million < 10_000,
+        "hello.exe round-trip diff_per_million {diff_per_million} must stay <10000 (=1%) modulo COFF header timestamp / padding"
+    );
+}
+
+#[test]
+fn upx_round_trip_ripgrep_byte_compare_and_recover_runs() {
+    if !upx_available() {
+        println!("SKIP: upx CLI not on PATH");
+        return;
+    }
+    let baseline: Vec<u8> = read_corpus("upx/rg.original.exe");
+    let unpacked: Vec<u8> = read_corpus("upx/rg.unpacked.upx.exe");
+    assert_eq!(
+        baseline.len(),
+        unpacked.len(),
+        "UPX round-trip must preserve total length for rg.exe megafile"
+    );
+    let diffs: u64 = baseline
+        .iter()
+        .zip(unpacked.iter())
+        .filter(|(a, b): &(&u8, &u8)| a != b)
+        .count() as u64;
+    let diff_per_million: u64 = diffs.saturating_mul(1_000_000) / baseline.len() as u64;
+    assert!(
+        diff_per_million < 500,
+        "rg.exe round-trip diff_per_million {diff_per_million} must stay <500 (=0.05%) across 4.27 MB; observed ~61 (~0.006%)"
+    );
+    let recovered_path: PathBuf = corpus_root().join("upx").join("rg.unpacked.upx.exe");
+    let out: std::process::Output = Command::new(&recovered_path)
+        .arg("--version")
+        .output()
+        .expect("recovered rg.exe must execute");
+    let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success() && stdout.contains("ripgrep"),
+        "recovered rg.exe --version must succeed and emit 'ripgrep'; got status={:?} stdout={stdout:?}",
+        out.status.code()
+    );
+}
+
+#[test]
+fn upx_cli_can_unpack_hello_to_tmp() {
+    if !upx_available() {
+        println!("SKIP: upx CLI not on PATH");
+        return;
+    }
+    let input: PathBuf = corpus_root().join("upx").join("hello.exe");
+    let tmp: PathBuf =
+        std::env::temp_dir().join(format!("disrobe-upx-roundtrip-{}.exe", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let result: UnpackOutput =
+        unpack_with_upx_cli(&input, &tmp).expect("upx CLI must succeed on real hello.exe");
+    assert_eq!(result.packer, Packer::Upx);
+    assert_eq!(result.status, UnpackerStatus::ExternalCliWrap);
+    let recovered: Vec<u8> = std::fs::read(&tmp).expect("upx must have written recovered file");
+    assert!(
+        recovered.starts_with(b"MZ"),
+        "recovered file must be a valid PE/MZ container"
+    );
+    let baseline: Vec<u8> = read_corpus("upx/hello.original.exe");
+    assert_eq!(recovered.len(), baseline.len());
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn mpress_detects_hello_x64_real_binary() {
+    let bytes: Vec<u8> = read_corpus("mpress/hello.exe");
+    let hits: Vec<PackerDetection> = detect_packers(&bytes);
+    assert!(
+        has_packer(&hits, Packer::Mpress),
+        "real MPRESS-packed hello.exe must be detected: hits={hits:?}"
+    );
+    let detected: DetectedFormat =
+        detect_format(&bytes).expect("packed hello.exe must still parse as PE");
+    assert_eq!(detected.kind, NativeFormat::Pe64);
+}
+
+#[test]
+fn mpress_detects_taskmgr_megafile_and_format_probe_still_works() {
+    let bytes: Vec<u8> = read_corpus("mpress/taskmgr.packed.mpress.exe");
+    assert!(
+        bytes.len() > 1_000_000,
+        "taskmgr.packed.mpress.exe must be the real megafile, got {} bytes",
+        bytes.len()
+    );
+    let hits: Vec<PackerDetection> = detect_packers(&bytes);
+    assert!(
+        has_packer(&hits, Packer::Mpress),
+        "MPRESS section name (.MPRESS1) must be detected in packed taskmgr.exe: hits={hits:?}"
+    );
+    let detected: DetectedFormat =
+        detect_format(&bytes).expect("packed taskmgr must still parse as PE container");
+    assert_eq!(detected.kind, NativeFormat::Pe64);
+    assert_eq!(detected.bits, 64);
+    assert_eq!(
+        Packer::Mpress.unpacker_status(),
+        UnpackerStatus::Implemented,
+        "MPRESS unpack landed in sprint v0.7 Wave-A1 (from-scratch byte-recovery; see crates/disrobe-pass-native/src/packers/mpress_unpack.rs)"
+    );
+}
+
+#[test]
+fn petite_detects_hello_x86_real_binary() {
+    let bytes: Vec<u8> = read_corpus("petite/hello.exe");
+    let hits: Vec<PackerDetection> = detect_packers(&bytes);
+    assert!(
+        has_packer(&hits, Packer::Petite),
+        "real Petite-packed hello32.exe must be detected via 'petite' section name: hits={hits:?}"
+    );
+    let detected: DetectedFormat =
+        detect_format(&bytes).expect("packed hello32.exe must still parse as PE32");
+    assert_eq!(detected.kind, NativeFormat::Pe32);
+    assert_eq!(detected.bits, 32);
+    assert_eq!(
+        Packer::Petite.unpacker_status(),
+        UnpackerStatus::Implemented,
+        "Petite unpack landed in sprint v0.7 Wave-A2 (from-scratch byte-recovery; see crates/disrobe-pass-native/src/packers/petite_unpack.rs)"
+    );
+}
+
+#[test]
+fn petite_megafile_skip_is_documented_in_manifest() {
+    let manifest_path: PathBuf = corpus_root().join("MANIFEST.toml");
+    let toml: String = std::fs::read_to_string(&manifest_path).expect("MANIFEST.toml present");
+    assert!(
+        toml.contains("Petite") && toml.contains("x86"),
+        "MANIFEST must document petite's x86-only constraint and absence of i686 megafile"
+    );
+}
+
+#[test]
+fn detection_distinct_packers_per_real_fixture() {
+    let upx_hello: BTreeSet<Packer> =
+        distinct_packers(&detect_packers(&read_corpus("upx/hello.exe")));
+    let mpress_hello: BTreeSet<Packer> =
+        distinct_packers(&detect_packers(&read_corpus("mpress/hello.exe")));
+    let petite_hello: BTreeSet<Packer> =
+        distinct_packers(&detect_packers(&read_corpus("petite/hello.exe")));
+    assert!(upx_hello.contains(&Packer::Upx));
+    assert!(mpress_hello.contains(&Packer::Mpress));
+    assert!(petite_hello.contains(&Packer::Petite));
+    assert!(
+        !upx_hello.contains(&Packer::Mpress) && !upx_hello.contains(&Packer::Petite),
+        "UPX-packed binary must not false-positive as MPRESS or Petite"
+    );
+    assert!(
+        !mpress_hello.contains(&Packer::Upx) && !mpress_hello.contains(&Packer::Petite),
+        "MPRESS-packed binary must not false-positive as UPX or Petite"
+    );
+    assert!(
+        !petite_hello.contains(&Packer::Upx) && !petite_hello.contains(&Packer::Mpress),
+        "Petite-packed binary must not false-positive as UPX or MPRESS"
+    );
+}

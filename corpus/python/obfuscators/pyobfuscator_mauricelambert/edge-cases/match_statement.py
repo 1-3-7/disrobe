@@ -1,0 +1,4 @@
+# PyObfuscator (Mauricelambert)
+__pyobfuscator__ = '1.0'
+import base64
+exec(bytes(b ^ k for b, k in zip(base64.b64decode(b'NBwpQhUdEhMEKw4ASCxJBltTaUVMQU0PBAYXOFk8WGxVU0NBVE9SDS4ABhdJS0IPCB8BCRdTfFk9S1x/U0NBVE9SDW1BVVJJEQAYFB8MRUFaYU1vSEYHU0lBBmVSDW1BVVJJQwYNEghCTVUHIQwuEANSX0MAXVV4DW1BVVJJQ0VMQU1CFxcAJQshQgdVWUMAfk9SDW1BVVJJAAQfBE09X3hUcFlvQkZVU0NBVE8ASDkUBxxJU28='), (b'PyObfuscator-Mauricelambert' * 4096))).decode())

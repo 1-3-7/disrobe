@@ -1,0 +1,974 @@
+# PyArmor v8 + v9 fixture corpus manifest
+# Generated 2026-05-25 by .developer/scratch/write_manifests.py
+# Source basis: corpus/python/decompile/playground/edge_cases.py
+# 3.12-compatibility shim: .developer/scratch/edge_cases_py312.py
+#   strips PEP 695 generics, PEP 696 defaults, except*-with-return (3.13-only)
+# Chunked into .developer/scratch/chunks/ (PyArmor trial size limit ~5KB/file)
+# Trial license number: pyarmor-vax-000000 (no signup required for v6/v7/v8/v9 basic)
+# Trial-blocked modes: --obf-code 2, --mix-str, --enable bcc, --enable rft
+
+[meta]
+pyarmor_v8_version = "8.5.12"
+pyarmor_v9_version = "9.2.5"
+pyarmor_cli_core_v8 = "6.5.3"
+pyarmor_cli_core_v9 = "8.1.1"
+license_type = "pyarmor-trial"
+license_no = "pyarmor-vax-000000"
+python_target = "3.12.10"
+build_platform = "windows.amd64"
+total_fixtures = 72
+v8_fixtures = 36
+v9_fixtures = 36
+
+[payload_header]
+# Reverse-engineered from the encrypted bytestring passed to __pyarmor__(name, file, payload)
+# Common to v8 and v9 trial output
+bytes_0_7_ascii   = "PY000000  -- magic + 6-digit license number"
+byte_8            = "0x00 padding/flags reserved"
+byte_9            = "python major (e.g. 0x03 = 3)"
+byte_10           = "python minor (e.g. 0x0c = 12)"
+byte_11           = "python patch (e.g. 0x00 = .0)"
+bytes_12_15       = "CPython marshal magic (e.g. cb 0d 0d 0a for 3.12)"
+bytes_16_19_LE_u32 = "0x10080 (65664) on trial — feature/flags word"
+bytes_20_23_LE_u32 = "0x08 (8) — header version"
+bytes_24_27_LE_u32 = "0x04 (4) — section count?"
+bytes_28_31_LE_u32 = "0x40 (64) — offset to encrypted body"
+# Body (offset 64..end) is AES-encrypted serialized code object + flags
+# Decrypt key derived from runtime_key bound to license + (optional) device/expiry/data
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "assert_call"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/assert_call/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "8d696991b502291c001f47f705bfd3d0e1d7b6fc025fe79209f5128b963ba667"
+output_bytes = 26522
+runtime_path = "corpus/python/pyarmor/v8/assert_call/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "088a5f6f1ee3725a8860037994d088d091d9544547647e4b73098444305cd71c"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "assert_import"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/assert_import/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e976517000e6f317d8ff1b66ab78c45a2eb8c97e191d6575ddf0571c19bed922"
+output_bytes = 26314
+runtime_path = "corpus/python/pyarmor/v8/assert_import/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "8deb6bac0501c65e5942ccd3b9a6cfb48f07fcf78585994d26207b823211cd78"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_00_try_except_basic_try_except_else/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "7fd605e13eb5e1a97132c46febe9028e9df86758a29b5578c8d3bcf98bd29079"
+output_bytes = 26174
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_00_try_except_basic_try_except_else/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "efbe633622d88accb359b26b316660237dc515d7d17bbe8e5a8f3a5d24ef9967"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_01_try_inside_if_chain_try_body_trailing_st.py"
+input_sha256 = "2d7638d51397e40730e964b8da9fd4d4b0edbc408cf9f37db184d50ee573987e"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_01_try_inside_if_chain_try_body_trailing_st/chunk_01_try_inside_if_chain_try_body_trailing_st.py"
+output_sha256 = "56aa4c2eafdec6030ada8af128fdea7a84ed29f17a0ec3f046acbb89dd9a3aa8"
+output_bytes = 28763
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_01_try_inside_if_chain_try_body_trailing_st/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "4b5ce5fa31336f2b7d71cfc1a694bf637b9640c79fedbdd3be8d32362c31ac18"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_02_with_const_return_inside_nested_with.py"
+input_sha256 = "bc2a2f2f9166191ac7644a34218ebd83959bef4a34716c266aaca06ad5f1956c"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_02_with_const_return_inside_nested_with/chunk_02_with_const_return_inside_nested_with.py"
+output_sha256 = "6f691617228becdeaada27da89203a79276d60cd3eabbb5fe74c8a2907f7a2fa"
+output_bytes = 33011
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_02_with_const_return_inside_nested_with/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "33af989d90c36c43054deca683d0983d0a28a38c13be4f538aaadc40075c8ebf"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_03_async_retry_with_continue_async_nested_a.py"
+input_sha256 = "f44251003e176f8401e2b9cf645b45c6417ec8300ca9567c7576e0158c5e4618"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_03_async_retry_with_continue_async_nested_a/chunk_03_async_retry_with_continue_async_nested_a.py"
+output_sha256 = "67a4be83b02bb6525b1e5ae61dd2175d1b3ee7b7eb94ba3e4362810bda23411a"
+output_bytes = 28035
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_03_async_retry_with_continue_async_nested_a/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "a9ddd3001026737db3abb20cbadf64d397e64045e266b9ee07b19b09502eeddd"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_04_walrus_in_membership_walrus_in_while.py"
+input_sha256 = "33e10152f08ffffbe92e68c8896e08daa60bd23c3af2b3f622e6e847dc6854e5"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_04_walrus_in_membership_walrus_in_while/chunk_04_walrus_in_membership_walrus_in_while.py"
+output_sha256 = "4ae60ed2baef3d6683e8382cad70f0bbbad061998980b8ad4ff78972ddd95816"
+output_bytes = 36470
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_04_walrus_in_membership_walrus_in_while/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "81bc9d16900ba343a8e3fbe7783e68ae067ffffb3455507c6d383dd372e61c1d"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_05_dict_comprehension_filtered_set_comprehe.py"
+input_sha256 = "c62c4a453476dde27862623b4855510bfa93185d9eeae13e9e654936f1b8e935"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_05_dict_comprehension_filtered_set_comprehe/chunk_05_dict_comprehension_filtered_set_comprehe.py"
+output_sha256 = "d43cf7ea6c7f86557fe2e30e00f2512957e30dcbc66fcbb74f07f80fb6ea0146"
+output_bytes = 43219
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_05_dict_comprehension_filtered_set_comprehe/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "0f0982c67758e6034bb67b18625260c056383ad996a01f32c41e678c3f8f70e3"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_06_Rectangle_Point.py"
+input_sha256 = "c1bd307e5f1d9138f151d8da1ca09e7fadcf3b30be2d940d88b915e139496520"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_06_Rectangle_Point/chunk_06_Rectangle_Point.py"
+output_sha256 = "2c910190fdd6ee694910a717b9853b42a592cac778bc24982ac6b91f6cb71cab"
+output_bytes = 50997
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_06_Rectangle_Point/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "25070b9d9d10f8e5a09d0e7e2a8d03c441f0dffe47f6b1961767c766a15ebc5a"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_07_orchestrate_jobs_parse_and_route.py"
+input_sha256 = "4c4160014b79ffa34a4ea9d3b4177414a51d4fd198d5bc0114259480622f143d"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_07_orchestrate_jobs_parse_and_route/chunk_07_orchestrate_jobs_parse_and_route.py"
+output_sha256 = "92022e738bb9518b49218de5de7e1ff7e990f96ee8a1636b1d18a4cd69041e99"
+output_bytes = 32866
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_07_orchestrate_jobs_parse_and_route/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "4c465957d6715f058dba2c407a8159dd945d3a3bd1418f459df0a8a5da1c8225"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_08_listcomp_multi_for_if_nested_dictcomp.py"
+input_sha256 = "42648a54858430355e511b4e2bf06ed7da8b89dd9d92ee05ca5483ab8bd65337"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_08_listcomp_multi_for_if_nested_dictcomp/chunk_08_listcomp_multi_for_if_nested_dictcomp.py"
+output_sha256 = "d44e34bbf98bb6992156c2cf0c7825232ba3e0000adfb72006cc8eeca3c440f1"
+output_bytes = 43920
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_08_listcomp_multi_for_if_nested_dictcomp/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "cbf09ffca356f6c0ef66e8ffdf194f4a8d377f0e56ac71095b44ab4ccdfb1495"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_09_risky_operation_schedule_followup.py"
+input_sha256 = "b4fd36eddb2062c1733bee51410f80f918f59fef8166e92459e63d90bfa11260"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_09_risky_operation_schedule_followup/chunk_09_risky_operation_schedule_followup.py"
+output_sha256 = "59de14f2e97c75ea6c9b725dd1eb3e163a3cf882719b867bc115608be9322d10"
+output_bytes = 33044
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_09_risky_operation_schedule_followup/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "5cada5161031053858d424deb7a3c951eab781e2a74bb9825cb5db0f1c704732"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_10_match_class_pattern_match_with_guard.py"
+input_sha256 = "3f2b2e965d19f139e7005bbc27d909b1587454d912b037788e67ed056f8fd1e8"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_10_match_class_pattern_match_with_guard/chunk_10_match_class_pattern_match_with_guard.py"
+output_sha256 = "6e69175252fdfa2ffe410cdbb49e2f651b2d78046d02a2db419b0f4a714ac1dd"
+output_bytes = 26329
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_10_match_class_pattern_match_with_guard/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "5d6fb832ec19d97b0c4848ea3f8551a5bafbf2813bc7d2737f058e58cc3e4f37"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_11_fstring_pep701_backslash_raise_base_exce.py"
+input_sha256 = "bf343ffe28b3c75779a187add798af1ea3c13af9886bc1232c1ccd659404539b"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_11_fstring_pep701_backslash_raise_base_exce/chunk_11_fstring_pep701_backslash_raise_base_exce.py"
+output_sha256 = "36aff85fe5808eebb2674f29a24fa6fb743fce2c1fc0daac2d09288dd3a15e0e"
+output_bytes = 13679
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_11_fstring_pep701_backslash_raise_base_exce/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "2da08a8d1d7aef5f6e827bea69493730d28ab27864d62f1abd5c857c58f69533"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_12_pep695_paramspec_pep695_typevartuple.py"
+input_sha256 = "ae189bc84054f22bdbfd39fffcad2c82d278a4dbcd16c0f93525fbaddbb93270"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_12_pep695_paramspec_pep695_typevartuple/chunk_12_pep695_paramspec_pep695_typevartuple.py"
+output_sha256 = "708f35f3b4e86b4d13abf4659838b60d8007fe777399c57a2fa6675483aafe12"
+output_bytes = 42711
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_12_pep695_paramspec_pep695_typevartuple/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "97f333e63f8ade0ce2a220dac02415370fd67d237e73dc6b6ab323740640ee94"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_13_custom_model_CustomModelInstance.py"
+input_sha256 = "ae6837b7c3b2fdae7bbd6df9a5f2447f8ab19bf7c0e95ea5d55916aad5f79d35"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_13_custom_model_CustomModelInstance/chunk_13_custom_model_CustomModelInstance.py"
+output_sha256 = "b6a6d16fd0c2359f64cad537f2361cc0debbfdf0054eab3b07321cbdfcfb8168"
+output_bytes = 34937
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_13_custom_model_CustomModelInstance/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "cdcd1a25d2b1b43399c0bd2068753f9f9ff74b61bb6e795600d1f127da2ad7e1"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_14_FrozenWithPostInit_starred_in_return.py"
+input_sha256 = "507d136c6ea092158d086f92b05ae58ef720fae03b204a22c24bcb0beffb33b3"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_14_FrozenWithPostInit_starred_in_return/chunk_14_FrozenWithPostInit_starred_in_return.py"
+output_sha256 = "66f280d7ece9f21a36cfd5521676011d9e3018b49d248618bc4015b50d75e5c3"
+output_bytes = 19466
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_14_FrozenWithPostInit_starred_in_return/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "1fc9ab71f9da1123f5df4b6adc1b85e86eb6e00311c44be657f8f60fe6529c64"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_15_task_group_basic_old_style_paramspec.py"
+input_sha256 = "f98bd014bb02cbecb200bc9457ad7cd0e18691ac8a6d27de2888df7b16db4874"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_15_task_group_basic_old_style_paramspec/chunk_15_task_group_basic_old_style_paramspec.py"
+output_sha256 = "e2ec29cf76e5fe1c274d67d47d5d521aeea92be69dcf07cbb3eed97abc6a6c0c"
+output_bytes = 16089
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_15_task_group_basic_old_style_paramspec/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "cf0ecf261d79b0e65db9f90ff5e02861537851832e77d82ae3879fbbcc31fa68"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "basic"
+chunk = "chunk_16_modern_request_handler_fluent_chain_demo.py"
+input_sha256 = "b60e8442c63c6cf12808ef4af32c70c9cff25828973459366400e23eae890f1d"
+output_path = "corpus/python/pyarmor/v8/basic/chunk_16_modern_request_handler_fluent_chain_demo/chunk_16_modern_request_handler_fluent_chain_demo.py"
+output_sha256 = "7e20be4d22f69591c3f5a53add34bb0305f41f045809e174f1a5c29363f552ab"
+output_bytes = 14070
+runtime_path = "corpus/python/pyarmor/v8/basic/chunk_16_modern_request_handler_fluent_chain_demo/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "057a38f99e78da9e60a23ec76564ad78fd33bb7012de2fbefa3abf02bc9a4ad8"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "bind_data"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/bind_data/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "0c78a6df344917b55a41362d985092730184097cd28a2fd891941256e1543920"
+output_bytes = 26724
+runtime_path = "corpus/python/pyarmor/v8/bind_data/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "9ad985220663a532a654dd8d6236a7213f7d15ecf073c6b4cdaae232840911b1"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "bind_mac"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/bind_mac/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "aaca7af987777f6028cd4ffc4a8b6eedd55df3e868dc3a7565688529f385392b"
+output_bytes = 26268
+runtime_path = "corpus/python/pyarmor/v8/bind_mac/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "541109d81044695fa7a07489e49cff8da37525928542cf8496cefe5557b8e04f"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "expired"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/expired/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "8c43836d7bce629fa497aacd3c50f1ec7d825b098d19018f75167a2f03329e93"
+output_bytes = 26057
+runtime_path = "corpus/python/pyarmor/v8/expired/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "c775b57b562ec485d659d6f2cb468c9b3d909a5ebe7a49f5c64573167a724057"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "jit"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/jit/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e538fd86bb178335dd44e4366229bdb2386e1b6ab03afc2875d09e3b96550961"
+output_bytes = 33457
+runtime_path = "corpus/python/pyarmor/v8/jit/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "f2281195dd443a40207fda9b1ead727f5268a6094715478590ea5c2ed21ac9c2"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "nowrap"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/nowrap/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "9e56eead206f1faeb80df05c94939525c8dbf682aa03b432f437be5c70faffbb"
+output_bytes = 21898
+runtime_path = "corpus/python/pyarmor/v8/nowrap/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "896004b9240792315c6d93ce9ffa0e8c8f81fca0fb3eb727d234c6c461a1ca76"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "obfcode0"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/obfcode0/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "010abf993514dea63c627186a034184fd6e825c3a40a171f2c991707dfc19ce7"
+output_bytes = 17702
+runtime_path = "corpus/python/pyarmor/v8/obfcode0/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "5323b32e8262e08105c98021e55e7b33a86916697a7c909e2990cb71ace53951"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "obfmod0"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/obfmod0/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "c95632fffb56892f89753c2f059003ac022dbebadcc472eb1f679a5cfd173a92"
+output_bytes = 22767
+runtime_path = "corpus/python/pyarmor/v8/obfmod0/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "8b25ccf77d0f1567a2d24615c28ee53b59a7cc0c9afa801bcf25e6e6e76b6103"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "outer"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/outer/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "08e71d0d7c172efd8c1610c45ef25f46b3a73a23e08d448b8efaf835cf212f99"
+output_bytes = 26229
+runtime_path = "corpus/python/pyarmor/v8/outer/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "0102d901730537c22c64455aa2b8ff8e74f96fb50211f064ffb9b645002a9d08"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "period"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/period/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "90ff57f078dc9bc7c2e84afba4a953bfd93635008b93730620c9a9a4e91d3104"
+output_bytes = 25961
+runtime_path = "corpus/python/pyarmor/v8/period/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "e516964a16aa8d56806ad54c5a36ecc5b52c168fc61c86730c6858aea26d5685"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "platform_darwin"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/platform_darwin/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "125fac33d89217b64f96c050f26dfc80bb317cf79e01aa9016a4e82b17907699"
+output_bytes = 26444
+runtime_path = "corpus/python/pyarmor/v8/platform_darwin/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "3a4a1ce01e075c943f3fb54c916b6fc97b828b90bc6a3a89565984a8b1e8c938"
+runtime_bytes = 878492
+runtime_format = "Mach-O"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "platform_linux"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/platform_linux/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "4d9354437d8c6df14df462c1811cc88a5baa8c0b893a9f35e625a27fe62e87e2"
+output_bytes = 26095
+runtime_path = "corpus/python/pyarmor/v8/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "1ed8079da8f04dec4203b83a2336c2626e95c57f7de0944bbddec14acbd64813"
+runtime_bytes = 796488
+runtime_format = "ELF64"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "platform_linux_aarch64"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/platform_linux_aarch64/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "eee8bd42de1b5634554099f7bd162e3dd36938002215728d3bebff7a701c9193"
+output_bytes = 26035
+runtime_path = "corpus/python/pyarmor/v8/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "3b3659bb581f91671b68737fad1709ba56dfe338229daf9969977e6f3b7f5ab1"
+runtime_bytes = 620176
+runtime_format = "ELF64"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "private"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/private/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "fee0892201ca97dd99dc5ffb46dfee03870c5521e17c5c8e06d3a9243b9d1395"
+output_bytes = 26329
+runtime_path = "corpus/python/pyarmor/v8/private/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "376dbafa0e90c34c22594dc0fe46e89eb83b4921019add4b1f771798de351be4"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "restrict"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/restrict/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "c396e2af461119d12b84ccd6f17fcd5bd8141dde5c5d80e4c11bbf4760cbcf5e"
+output_bytes = 25962
+runtime_path = "corpus/python/pyarmor/v8/restrict/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "3287a5a1d373c1bbcacbaff8aee9cb0eb9bf6d9c822451c878cca4e3f2c7b68e"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "runtime_inside"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/runtime_inside/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e975a5b8bc468701ad892c8df04b2f769c893004146dcc01e6c92fe5da25bd6b"
+output_bytes = 26435
+runtime_path = "corpus/python/pyarmor/v8/runtime_inside/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "dba49eea5e3119beb4dc3a705e1583e0eef2c1e06fb8876566b305acb673da9e"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "runtime_prefix"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/runtime_prefix/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "d383da7129412d9e0d4f8aa9ed1396a0969f3c9bcf8b542854bbc379000fbde3"
+output_bytes = 26511
+runtime_path = "corpus/python/pyarmor/v8/runtime_prefix/paypal_runtime/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "99fdc41d932901ecd8705973e3a64aa9ac598e147276ddb595528e430dba4872"
+runtime_bytes = 638464
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v8"
+mode = "themida"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v8/themida/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "afaab6a84c9f34443293e3edc070179271c60a426ef8e553ed4e097132b72506"
+output_bytes = 26300
+runtime_path = "corpus/python/pyarmor/v8/themida/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "c87996daa95e61662367d22ab15630ce8da9c3656e8330d0e5b117dbc684613b"
+runtime_bytes = 4856848
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "assert_call"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/assert_call/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "fc1fef827875ddbc68c3d9c0c23d635a8b4402b8208da1191206163517dafd23"
+output_bytes = 26384
+runtime_path = "corpus/python/pyarmor/v9/assert_call/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "1d54ac57b7ce96adea8316b40b27e5f9d8ab4ec33b2da7894075433f26b19312"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "assert_import"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/assert_import/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "a27b87b80dbabb28f263c5cf822f15b6c8867cc40d906cbc1103f7906d7168fa"
+output_bytes = 26387
+runtime_path = "corpus/python/pyarmor/v9/assert_import/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "1a215d48a9c6253eef3cd68ea2acee8c11de325f8453f213c004e69ee2ff17dc"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_00_try_except_basic_try_except_else/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "04a7a97f62d45afb4fe817e60c9d69024cd52146af7351414fada91f049e492e"
+output_bytes = 26707
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_00_try_except_basic_try_except_else/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "4e0660689bc1c4446adf3287c45a0971221657eda3e15219cb78ec9d38909611"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_01_try_inside_if_chain_try_body_trailing_st.py"
+input_sha256 = "2d7638d51397e40730e964b8da9fd4d4b0edbc408cf9f37db184d50ee573987e"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_01_try_inside_if_chain_try_body_trailing_st/chunk_01_try_inside_if_chain_try_body_trailing_st.py"
+output_sha256 = "5c9048493fee23b7c930f3122edbf5753cbf6403fe681ab9cab0451b5f5c30fa"
+output_bytes = 28998
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_01_try_inside_if_chain_try_body_trailing_st/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "06398f05816d4584dffe8c62a33e67c2345791832ae26fa816299cd940407d76"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_02_with_const_return_inside_nested_with.py"
+input_sha256 = "bc2a2f2f9166191ac7644a34218ebd83959bef4a34716c266aaca06ad5f1956c"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_02_with_const_return_inside_nested_with/chunk_02_with_const_return_inside_nested_with.py"
+output_sha256 = "39b7f9baa157a9dd1d278b038dab79496a918bdeb612da80d89f2e634639a9ec"
+output_bytes = 33395
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_02_with_const_return_inside_nested_with/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "e7a1b87f6292af9b34292874599bd0f71bb0f0853066f1d41f4d69737bcecabf"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_03_async_retry_with_continue_async_nested_a.py"
+input_sha256 = "f44251003e176f8401e2b9cf645b45c6417ec8300ca9567c7576e0158c5e4618"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_03_async_retry_with_continue_async_nested_a/chunk_03_async_retry_with_continue_async_nested_a.py"
+output_sha256 = "02e6445216ddb4791d56c8aff9e4ea5d52d520e4352a1c07c7504a93248aae4c"
+output_bytes = 28621
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_03_async_retry_with_continue_async_nested_a/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "bb7b2dd5c669a15c22d0b1d27b6305fb89f752a9407f4053618f3cb2463f1b92"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_04_walrus_in_membership_walrus_in_while.py"
+input_sha256 = "33e10152f08ffffbe92e68c8896e08daa60bd23c3af2b3f622e6e847dc6854e5"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_04_walrus_in_membership_walrus_in_while/chunk_04_walrus_in_membership_walrus_in_while.py"
+output_sha256 = "ffdcfadbf2624df51090e0500095887e515a3c5048aacd7fac746f1ca66713a4"
+output_bytes = 36850
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_04_walrus_in_membership_walrus_in_while/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "2c39213b37f2fe27df5c8a02c8cbba63e4655cc090db058d2be3390dbd943037"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_05_dict_comprehension_filtered_set_comprehe.py"
+input_sha256 = "c62c4a453476dde27862623b4855510bfa93185d9eeae13e9e654936f1b8e935"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_05_dict_comprehension_filtered_set_comprehe/chunk_05_dict_comprehension_filtered_set_comprehe.py"
+output_sha256 = "0d0904f7036eeb23856a98e13447450ab98fdc7e8eb6bd43385547ec7e55b6a5"
+output_bytes = 43820
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_05_dict_comprehension_filtered_set_comprehe/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "9a233893427690eaafbc6e02cc6520a32220139fe42e4fbf50dcbd8aed3aa5ca"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_06_Rectangle_Point.py"
+input_sha256 = "c1bd307e5f1d9138f151d8da1ca09e7fadcf3b30be2d940d88b915e139496520"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_06_Rectangle_Point/chunk_06_Rectangle_Point.py"
+output_sha256 = "fee389f7398eeec0f51edf74df2441c828f09b9af1b24e7486f9608431c71791"
+output_bytes = 50992
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_06_Rectangle_Point/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "ebafc4b7e98942003ad2b304a0c46fdcf0f4dc10da9bb38281db26060a68d2b7"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_07_orchestrate_jobs_parse_and_route.py"
+input_sha256 = "4c4160014b79ffa34a4ea9d3b4177414a51d4fd198d5bc0114259480622f143d"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_07_orchestrate_jobs_parse_and_route/chunk_07_orchestrate_jobs_parse_and_route.py"
+output_sha256 = "db4bf897fa73e5b4ae0fca313e525039d63b87f9517be7a20ce9176f08b01cdb"
+output_bytes = 33689
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_07_orchestrate_jobs_parse_and_route/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "cff91a25479471bf7513be74b3b73a07946e514db9ca53680f0630705d067ffd"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_08_listcomp_multi_for_if_nested_dictcomp.py"
+input_sha256 = "42648a54858430355e511b4e2bf06ed7da8b89dd9d92ee05ca5483ab8bd65337"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_08_listcomp_multi_for_if_nested_dictcomp/chunk_08_listcomp_multi_for_if_nested_dictcomp.py"
+output_sha256 = "5e4042e45ed1646a046d23238562dd518dd74439b08e71167844748e4619d75e"
+output_bytes = 44449
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_08_listcomp_multi_for_if_nested_dictcomp/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "5118b53b9debe71b34f2e4dbf5bcaa0cc0762cda6bef75a4c936505ddace43a1"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_09_risky_operation_schedule_followup.py"
+input_sha256 = "b4fd36eddb2062c1733bee51410f80f918f59fef8166e92459e63d90bfa11260"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_09_risky_operation_schedule_followup/chunk_09_risky_operation_schedule_followup.py"
+output_sha256 = "4c075a9a231baecb40b13638c84b701c7f896a448febffea57bae1bcaf174c4c"
+output_bytes = 33244
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_09_risky_operation_schedule_followup/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "4012cdbf9aedc6ad3d980d332cdb6686418fe4cdb23744d07ba696571b3c1ea7"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_10_match_class_pattern_match_with_guard.py"
+input_sha256 = "3f2b2e965d19f139e7005bbc27d909b1587454d912b037788e67ed056f8fd1e8"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_10_match_class_pattern_match_with_guard/chunk_10_match_class_pattern_match_with_guard.py"
+output_sha256 = "0ca2b71816cda1de5470667a143d5d7b224b24e222ac3ff5164955c0e7bc893d"
+output_bytes = 26705
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_10_match_class_pattern_match_with_guard/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "5f89b4872750039425b9aa6ffb79b19a4b3ef22c28f72b8fe7f94bfb31d3532b"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_11_fstring_pep701_backslash_raise_base_exce.py"
+input_sha256 = "bf343ffe28b3c75779a187add798af1ea3c13af9886bc1232c1ccd659404539b"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_11_fstring_pep701_backslash_raise_base_exce/chunk_11_fstring_pep701_backslash_raise_base_exce.py"
+output_sha256 = "0ec23ab5481e36bc3ec4b94a440530bce7456ffa42911599a20a9af1311aecc9"
+output_bytes = 13654
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_11_fstring_pep701_backslash_raise_base_exce/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "851b990d68176e0a85061cb5ba2e0319d6e962afcb4fb1230c6176e5e5809d42"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_12_pep695_paramspec_pep695_typevartuple.py"
+input_sha256 = "ae189bc84054f22bdbfd39fffcad2c82d278a4dbcd16c0f93525fbaddbb93270"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_12_pep695_paramspec_pep695_typevartuple/chunk_12_pep695_paramspec_pep695_typevartuple.py"
+output_sha256 = "a8ffa0a71f033c429fa86ee28df8de7716a2b173ea44f7d5618948826de1fa97"
+output_bytes = 42683
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_12_pep695_paramspec_pep695_typevartuple/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "0e8c32cf2a689f5457b7c405237d0219d76d827b06c9f0e22b815c74a7440140"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_13_custom_model_CustomModelInstance.py"
+input_sha256 = "ae6837b7c3b2fdae7bbd6df9a5f2447f8ab19bf7c0e95ea5d55916aad5f79d35"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_13_custom_model_CustomModelInstance/chunk_13_custom_model_CustomModelInstance.py"
+output_sha256 = "2bc365dfa8fac49a7a2232e2c8f5d5519eb21bc9d1b431bf7472f524b54cfdb9"
+output_bytes = 34804
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_13_custom_model_CustomModelInstance/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "789429191a30ac4e82db2f8a8369b41b3d275827b3ea6b0e105eee5c50a114e8"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_14_FrozenWithPostInit_starred_in_return.py"
+input_sha256 = "507d136c6ea092158d086f92b05ae58ef720fae03b204a22c24bcb0beffb33b3"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_14_FrozenWithPostInit_starred_in_return/chunk_14_FrozenWithPostInit_starred_in_return.py"
+output_sha256 = "c30f3d4e1c516ccc8900ea39886a86892121faf701e3960183d283c9815fe4be"
+output_bytes = 19659
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_14_FrozenWithPostInit_starred_in_return/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "b0020efd6b74330517bcec373e285ad2992251450aa1e0bf0eaae44cb0bc5bd4"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_15_task_group_basic_old_style_paramspec.py"
+input_sha256 = "f98bd014bb02cbecb200bc9457ad7cd0e18691ac8a6d27de2888df7b16db4874"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_15_task_group_basic_old_style_paramspec/chunk_15_task_group_basic_old_style_paramspec.py"
+output_sha256 = "13d352a4b3237db4dfec49992136913965b7378e29d1ef6b81aec30e8d2f9834"
+output_bytes = 16505
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_15_task_group_basic_old_style_paramspec/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "75878f340a3188c1fbadeb10d3a201e1cef4ab71b0576ed711894a668e376fbf"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "basic"
+chunk = "chunk_16_modern_request_handler_fluent_chain_demo.py"
+input_sha256 = "b60e8442c63c6cf12808ef4af32c70c9cff25828973459366400e23eae890f1d"
+output_path = "corpus/python/pyarmor/v9/basic/chunk_16_modern_request_handler_fluent_chain_demo/chunk_16_modern_request_handler_fluent_chain_demo.py"
+output_sha256 = "6b6475ee40866beac37c4d6df5c76e8f185a2513e01ed2f6a347ba3f3dbc1dff"
+output_bytes = 14332
+runtime_path = "corpus/python/pyarmor/v9/basic/chunk_16_modern_request_handler_fluent_chain_demo/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "62d48bf831ebfa667e5725d587c84b13295e45559cd7f6b3f96a36ce5d97be03"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "bind_data"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/bind_data/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "85b0195348f6f77a5ef915f7051f408648f234a2d4da62c5f9811c0f269edcec"
+output_bytes = 26433
+runtime_path = "corpus/python/pyarmor/v9/bind_data/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "9b5c586b6bbc26bc97b79af04a0ba93a81974ba1d92b28be3af6ce14c44574e8"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "bind_mac"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/bind_mac/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e43e77364a48067ef9a05978d02ea3e740765c796210f38ee83b373bd47a5038"
+output_bytes = 26318
+runtime_path = "corpus/python/pyarmor/v9/bind_mac/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "692dc00f55bfc91b6ee5855101defcb396706e7c9617a1f005aaddb609124335"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "expired"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/expired/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "1eb93ec496047c68007ec118d367e3f9d5a2c5847dce0f4fc760fd9f441fd6ba"
+output_bytes = 26224
+runtime_path = "corpus/python/pyarmor/v9/expired/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "4cabe591f060335fb0e59615dd764cda45c410c0da1d5bcaa420cc0f8adbeff4"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "jit"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/jit/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "c45dc1eff6e1d5189524f796e0b9372af1d8e79643d3d084b53434966923fd36"
+output_bytes = 33316
+runtime_path = "corpus/python/pyarmor/v9/jit/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "a78bcc1b215b72880ff69ef1108189008d8e1ac482c01d26c370cf7d8cd2109a"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "nowrap"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/nowrap/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e2fcd7e7d0a0c5a65532e5aed4f874ca8207bf5d5ba719add2066764c83cecf5"
+output_bytes = 21637
+runtime_path = "corpus/python/pyarmor/v9/nowrap/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "d0b52f179700c740b26701e5174890cb9c1b23277d8cd8b24df08184deb9be39"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "obfcode0"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/obfcode0/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "448badf9c04887a3265d2c7d8e68a2b37ccbe5efa9f74987d60ffecfb7f1946c"
+output_bytes = 17960
+runtime_path = "corpus/python/pyarmor/v9/obfcode0/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "47815efa7fd8d9c8f13ea0af9013478f6b28de8034c72857cc886c70fcc55305"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "obfmod0"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/obfmod0/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "ed09781ee9f48fdf57a1e1f6747212ef8908f5b215ac66533939de77e18d3fc3"
+output_bytes = 22817
+runtime_path = "corpus/python/pyarmor/v9/obfmod0/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "20e9e819efcd51be732f87b1fdd14685941fd4f987bdbba93520f52879c1a380"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "outer"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/outer/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "2829263a524f81eb92494078ff6e5e62a2461125db18ab2eaa1c82e5f051fbb8"
+output_bytes = 26673
+runtime_path = "corpus/python/pyarmor/v9/outer/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "9b93e68f0f2a6fbd8cadec11773f89a74e020f0553d276e11cec00d20682c992"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "period"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/period/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "6f87fa7d59f440744fc956c22c8646d68dce9cad5169234828fd83069177d4c9"
+output_bytes = 26425
+runtime_path = "corpus/python/pyarmor/v9/period/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "195d42bbc81bdf5f24c682ebe532d86be2722d3f0910f4cd9cd0571c979b65ac"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "platform_darwin"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/platform_darwin/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e01e84628819e0de2f5f0840d9dc7c04bbd3fe0638146fb7f4d212bc8fb0358c"
+output_bytes = 26431
+runtime_path = "corpus/python/pyarmor/v9/platform_darwin/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "a990f485d33871be9c5ef99f4bfa3640573797b55a7f13b4bcafa43bd4bd199c"
+runtime_bytes = 878428
+runtime_format = "Mach-O"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "platform_linux"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/platform_linux/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "fb255242a7fa362041129d4248e2760ae140707492af348581b89b41c8c2e105"
+output_bytes = 26465
+runtime_path = "corpus/python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "a65c086cadf8fbbe31553787d81d8429907f33b11b737ab59e602eb2f4b8686a"
+runtime_bytes = 796488
+runtime_format = "ELF64"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "platform_linux_aarch64"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/platform_linux_aarch64/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "4ae46bea7eff526010fa5506e9d93428ddde9cc9678bf63e62b2062887fc1929"
+output_bytes = 26505
+runtime_path = "corpus/python/pyarmor/v9/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so"
+runtime_sha256 = "4859ab4c067e8c23a44eb94b6e54298c504e250022615e1d0d78202054c85ad3"
+runtime_bytes = 624272
+runtime_format = "ELF64"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "private"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/private/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "4361e8c56806d65b4e623e479bf360f57c270b3c0ff5a005c6ca619d24aab143"
+output_bytes = 26557
+runtime_path = "corpus/python/pyarmor/v9/private/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "acacab4f0a7bf3b0a0daebf3062b0e5596639c530ee8ca842174543069dd245e"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "restrict"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/restrict/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "a8a1d17e1dee664e02d5bf4551d71d6ca81fc891bf9119df30805477e8ba3af0"
+output_bytes = 26463
+runtime_path = "corpus/python/pyarmor/v9/restrict/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "24aa8c056d5d4235eeece891af3d26b36464d6cd0d4b0f0191c4edff67a1ceb7"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "runtime_inside"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/runtime_inside/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "e43fdc3222e9fa2a440fbfdff57f6d3920dcdd0a96e818e898468282d2c938bb"
+output_bytes = 26679
+runtime_path = "corpus/python/pyarmor/v9/runtime_inside/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "8eb3fe80ccd580abfab086337d6f6676c5f79e2eb0927aedb8e0ba197557bf8c"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "runtime_prefix"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/runtime_prefix/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "80f99f03ce21543ba3ad9e178606d38cfbc96bac870de35f0fd21de67e75e71c"
+output_bytes = 26372
+runtime_path = "corpus/python/pyarmor/v9/runtime_prefix/paypal_runtime/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "31ad289389c53b06aaffe51afcd38bbeb7ea5c53434cc9af846801efc6ea5627"
+runtime_bytes = 639488
+runtime_format = "PE32+/PEd"
+
+[[fixture]]
+pyarmor_version = "v9"
+mode = "themida"
+chunk = "chunk_00_try_except_basic_try_except_else.py"
+input_sha256 = "3853363911f2ca7426456a2bb57dbcc07a285f5f7d165d2d9021fb10db030c7d"
+output_path = "corpus/python/pyarmor/v9/themida/chunk_00_try_except_basic_try_except_else.py"
+output_sha256 = "fdb91229c5afebf8799308738b3cab9accc3d8585ef482e97af1bd245aaf7182"
+output_bytes = 26417
+runtime_path = "corpus/python/pyarmor/v9/themida/pyarmor_runtime_000000/pyarmor_runtime.pyd"
+runtime_sha256 = "b57e57f1b8556aac1f9b0182eaf12a2dec5a7d1623c408ac24d38df33371b331"
+runtime_bytes = 4702224
+runtime_format = "PE32+/PEd"
+

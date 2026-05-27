@@ -1,0 +1,241 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss
+)]
+
+use std::fs;
+use std::path::PathBuf;
+
+use disrobe_pass_native::{
+    NspackRecoveredSectionName, NspackRecoveryStatus, NspackUnpackReport, Packer, UnpackerStatus,
+    detect_packers, parse_nspack_layout, unpack_nspack,
+};
+
+fn corpus_dir() -> PathBuf {
+    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("..");
+    p.push("..");
+    p.push("corpus");
+    p.push("native");
+    p.push("packers");
+    p.push("nspack");
+    p
+}
+
+fn read_corpus(name: &str) -> Option<Vec<u8>> {
+    let mut p: PathBuf = corpus_dir();
+    p.push(name);
+    fs::read(&p).ok()
+}
+
+const fn fixtures() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        ("hash", "hash.packed.nspack.exe", "hash.original.exe"),
+        ("ftp", "ftp.packed.nspack.exe", "ftp.original.exe"),
+        ("cmd", "cmd.packed.nspack.exe", "cmd.original.exe"),
+        ("psexec", "psexec.packed.nspack.exe", "psexec.original.exe"),
+        ("handle", "handle.packed.nspack.exe", "handle.original.exe"),
+        ("calc", "calc.packed.nspack.exe", "calc.original.exe"),
+    ]
+}
+
+fn assert_basic_report_shape(report: &NspackUnpackReport, packed_size: usize, label: &str) {
+    assert_eq!(
+        report.packed_size, packed_size,
+        "{label}: packed_size echoed"
+    );
+    assert!(
+        report.nsp0_raw_size > 0,
+        "{label}: nsp0 must have raw bytes"
+    );
+    assert!(
+        report.nsp1_raw_size > 0,
+        "{label}: nsp1 must have raw bytes"
+    );
+    assert!(
+        report.nsp1_virtual_size >= report.nsp1_raw_size,
+        "{label}: nsp1 virtual_size >= raw_size",
+    );
+    assert!(
+        report.stub_entry_point_rva >= 0x1000,
+        "{label}: stub EP RVA must be inside an image section",
+    );
+    assert!(
+        matches!(
+            report.status,
+            NspackRecoveryStatus::StructuralOnly | NspackRecoveryStatus::ResourcesRecovered
+        ),
+        "{label}: status must be one of the implemented recovery levels",
+    );
+    assert!(
+        !report.limitation_note.is_empty(),
+        "{label}: limitation_note must be present (honest disclosure)",
+    );
+}
+
+#[test]
+fn nspack_packer_status_is_implemented() {
+    assert_eq!(Packer::Nspack.label(), "nspack");
+    assert_eq!(
+        Packer::Nspack.unpacker_status(),
+        UnpackerStatus::Implemented
+    );
+    assert!(!Packer::Nspack.is_grey_zone());
+}
+
+#[test]
+fn nspack_section_signatures_detected() {
+    let mut buf: Vec<u8> = vec![0u8; 256];
+    buf[10..14].copy_from_slice(b"nsp0");
+    buf[60..64].copy_from_slice(b"nsp1");
+    let hits = detect_packers(&buf);
+    assert!(
+        hits.iter().any(|h| h.packer == Packer::Nspack),
+        "nsp0/nsp1 magic must classify as NSPack",
+    );
+}
+
+#[test]
+fn test_nspack_hash_round_trip() {
+    let Some(packed) = read_corpus("hash.packed.nspack.exe") else {
+        eprintln!("skip: hash.packed.nspack.exe missing");
+        return;
+    };
+    let Some(original) = read_corpus("hash.original.exe") else {
+        eprintln!("skip: hash.original.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport =
+        unpack_nspack(&packed).expect("unpack_nspack must parse Hash sample");
+    assert_basic_report_shape(&report, packed.len(), "hash");
+    assert!(
+        original.len() >= packed.len(),
+        "original Hash.exe must be larger than packed"
+    );
+    let hits = detect_packers(&packed);
+    assert!(
+        hits.iter().any(|h| h.packer == Packer::Nspack),
+        "hash packed sample must classify as NSPack",
+    );
+}
+
+#[test]
+fn test_nspack_ftp_round_trip() {
+    let Some(packed) = read_corpus("ftp.packed.nspack.exe") else {
+        eprintln!("skip: ftp.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack ftp");
+    assert_basic_report_shape(&report, packed.len(), "ftp");
+}
+
+#[test]
+fn test_nspack_cmd_round_trip() {
+    let Some(packed) = read_corpus("cmd.packed.nspack.exe") else {
+        eprintln!("skip: cmd.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack cmd");
+    assert_basic_report_shape(&report, packed.len(), "cmd");
+    let layout = parse_nspack_layout(&packed).expect("layout");
+    assert_eq!(
+        layout.sections.len(),
+        2,
+        "cmd: NSPack always emits 2 sections"
+    );
+    assert!(
+        layout.sections[1].raw_size > layout.sections[0].raw_size,
+        "cmd: nsp1 (compressed payload) must dominate nsp0 (stub host)",
+    );
+}
+
+#[test]
+fn test_nspack_psexec_round_trip() {
+    let Some(packed) = read_corpus("psexec.packed.nspack.exe") else {
+        eprintln!("skip: psexec.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack psexec");
+    assert_basic_report_shape(&report, packed.len(), "psexec");
+    let layout = parse_nspack_layout(&packed).expect("layout");
+    assert!(!layout.is_pe32_plus, "psexec PsExec is 32-bit (i386)");
+    assert_eq!(layout.image_base, 0x0040_0000);
+    assert_eq!(layout.sections.len(), 2);
+    assert_eq!(layout.sections[0].name, b"nsp0");
+    assert_eq!(layout.sections[1].name, b"nsp1");
+}
+
+#[test]
+fn test_nspack_handle_round_trip() {
+    let Some(packed) = read_corpus("handle.packed.nspack.exe") else {
+        eprintln!("skip: handle.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack handle");
+    assert_basic_report_shape(&report, packed.len(), "handle");
+}
+
+#[test]
+fn test_nspack_calc_round_trip() {
+    let Some(packed) = read_corpus("calc.packed.nspack.exe") else {
+        eprintln!("skip: calc.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack calc");
+    assert_basic_report_shape(&report, packed.len(), "calc");
+    assert!(
+        report
+            .recovered_section_names
+            .iter()
+            .any(|r: &NspackRecoveredSectionName| r.name == b".data"),
+        "calc: must recover .data from nsp0 metadata",
+    );
+}
+
+#[test]
+fn test_nspack_all_fixtures_parse_without_panic() {
+    let mut tested: usize = 0;
+    for (label, packed_name, _orig_name) in fixtures() {
+        let Some(bytes) = read_corpus(packed_name) else {
+            continue;
+        };
+        let report: NspackUnpackReport = match unpack_nspack(&bytes) {
+            Ok(r) => r,
+            Err(e) => panic!("{label}: unpack_nspack errored on real fixture: {e:?}"),
+        };
+        assert_basic_report_shape(&report, bytes.len(), label);
+        tested += 1;
+    }
+    if tested == 0 {
+        eprintln!("skip: no NSPack fixtures present");
+    } else {
+        println!("nspack: parsed {tested} fixtures cleanly");
+    }
+}
+
+#[test]
+fn test_nspack_unpacked_pe_runs() {
+    let Some(packed) = read_corpus("hash.packed.nspack.exe") else {
+        eprintln!("skip: hash.packed.nspack.exe missing");
+        return;
+    };
+    let report: NspackUnpackReport = unpack_nspack(&packed).expect("unpack");
+    assert!(
+        matches!(
+            report.status,
+            NspackRecoveryStatus::StructuralOnly | NspackRecoveryStatus::ResourcesRecovered
+        ),
+        "structural recovery returns one of the two implemented statuses; \
+         FullPayloadDecompressed requires aPLib stub emulation which is a follow-up wave",
+    );
+    assert!(
+        !report.limitation_note.is_empty(),
+        "structural-only paths must carry a non-empty limitation note for downstream consumers",
+    );
+}

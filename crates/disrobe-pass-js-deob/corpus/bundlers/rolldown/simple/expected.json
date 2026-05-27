@@ -1,0 +1,7 @@
+{
+  "kind": "rolldown",
+  "entry": "rolldown-root",
+  "module_ids": ["./src/a.ts", "./src/b.ts", "./src/entry.ts"],
+  "dynamic_imports": ["./chunks/lazy-abc.js"],
+  "sourcemap_url_keys": ["rolldown-root"]
+}

@@ -1,0 +1,68 @@
+[graph]
+all-features = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Two real transitive ignores: fxhash (deterministic non-crypto hashing) and rsa Marvin (RPM signature read-only parser).
+ignore = [
+    { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained; disrobe uses it only for non-cryptographic hashing in deterministic chain registries; migration to rustc-hash is scheduled for v0.10" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack; transitive through rpm -> pgp -> rsa with no upstream fix; only used for RPM signature verification (read-only parser), never encryption or key generation" },
+]
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = [
+    { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys" },
+]
+
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = [
+    { crate = "openssl", reason = "use rustls instead" },
+    { crate = "openssl-sys", reason = "use rustls instead" },
+    { crate = "sevenz-rust", reason = "abandoned; use sevenz-rust2" },
+    { crate = "xz2", reason = "abandoned; use liblzma" },
+    { crate = "serde_yaml", reason = "archived; use serde_yaml_ng" },
+    { crate = "criterion", reason = "lead-maintainer AWOL; use divan" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/astral-sh/ruff"]

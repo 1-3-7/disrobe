@@ -1,0 +1,62 @@
+#![forbid(unsafe_code)]
+
+pub mod aot;
+pub mod backends;
+#[cfg(feature = "chain")]
+pub mod chain_detector;
+pub mod cil;
+pub mod decompile;
+pub mod error;
+pub mod format_wire;
+#[cfg(feature = "llm-metadata")]
+pub mod llm;
+pub mod metadata;
+pub mod pass;
+pub mod pe;
+pub mod peel;
+pub mod protectors;
+pub mod provenance_header;
+pub mod r2r;
+
+pub use aot::{AotReport, AotRuntime};
+pub use backends::{Backend, BackendInvocation};
+pub use cil::{
+    FlowControl, Instruction, MethodBody, ONE_BYTE_OPCODES, OpcodeDef, OperandKind, OperandValue,
+    TWO_BYTE_OPCODES, coverage_percent, disassemble, ecma_335_spec_total, lookup,
+    parse_method_body, total_opcode_count,
+};
+pub use decompile::{CSharpPseudo, FlowSummary, emit_csharp};
+pub use error::{Error, Result};
+pub use format_wire::format_csharp;
+#[cfg(feature = "llm-metadata")]
+pub use llm::{DotnetInstr, DotnetLlmInput, METADATA_CAPABILITY as DOTNET_METADATA_CAPABILITY};
+pub use metadata::{
+    MetadataRoot, RuntimeLabel, StreamHeader, TableStream, decompress_uint, parse_metadata_root,
+    parse_table_stream, read_strings_heap, read_us_heap_strings,
+};
+pub use pass::{DotnetPass, PASS_INPUT_PE_CAP, PassSummary, analyze};
+pub use pe::{
+    ClrHeader, DataDirectory, PeBitness, PeImage, SectionHeader, parse, parse_clr_header,
+};
+pub use peel::{
+    NameClassification, PeelReport, PeelStrategy, classify_names, peel_agile_net, peel_armdot,
+    peel_babel_net, peel_by, peel_crypto_obfuscator, peel_deepsea, peel_dotfuscator,
+    peel_dotnet_reactor, peel_eazfuscator, peel_goliath, peel_ilprotector, peel_maxtocode,
+    peel_skater, peel_smartassembly, peel_spices_net, peel_themida_dotnet,
+};
+pub use protectors::{
+    DetectionReport, ExecuteOptions, ExecutionOutcome, GreyZone, Handling, Protector, detect_all,
+    plan_execution,
+};
+pub use provenance_header::{
+    cil_disasm_header, csharp_decompiled_header, fsharp_decompiled_header, render_cil_with_header,
+    render_csharp_with_header, vbnet_decompiled_header,
+};
+pub use r2r::{R2rHeader, R2rReport};
+
+#[must_use]
+pub const fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,0 +1,48 @@
+[package]
+name = "disrobe-binfmt"
+description = "Container and archive format detector / extractor for the disrobe suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["binary-format", "extract", "archive", "container", "disrobe"]
+categories = ["parser-implementations", "filesystem", "compression"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dependencies]
+disrobe-core = { workspace = true }
+ar = { workspace = true }
+bzip2-rs = { workspace = true }
+cab = { workspace = true }
+flate2 = { workspace = true }
+liblzma = { workspace = true }
+miette = { workspace = true }
+msi = { workspace = true }
+object = { workspace = true, features = ["write"] }
+rpm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sevenz-rust2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+wait-timeout = { workspace = true }
+zip = { workspace = true }
+zstd = { workspace = true }
+
+[[bin]]
+name = "disrobe-binfmt-mock-tool"
+path = "src/bin/mock_tool.rs"
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = "3"

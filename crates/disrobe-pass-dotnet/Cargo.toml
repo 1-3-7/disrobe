@@ -1,0 +1,36 @@
+[package]
+name = "disrobe-pass-dotnet"
+description = ".NET/CIL deobfuscation pass: CIL disasm, Dotfuscator/SmartAssembly/de4dot/ConfuserEx2 reversers, R2R + Native AOT walkers, ILSpy/dnSpy wraps."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["dotnet", "cil", "deobfuscation", "il", "confuserex"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-binfmt = { workspace = true }
+object = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wait-timeout = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+
+[dev-dependencies]
+insta = { workspace = true }

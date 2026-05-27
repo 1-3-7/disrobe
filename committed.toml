@@ -1,0 +1,31 @@
+[committed]
+# Enforce conventional commit style.
+# All subjects must be lowercase imperative mood.
+style = "conventional"
+
+# Allow these types; anything else is rejected.
+allowed_types = [
+    "feat",
+    "fix",
+    "refactor",
+    "perf",
+    "test",
+    "docs",
+    "chore",
+    "build",
+    "ci",
+    "revert",
+]
+
+# Subject must start lowercase.
+subject_capitalization = "lower"
+
+# No period at end of subject.
+subject_punctuation = false
+
+# Enforce line length limits.
+line_length = 72
+
+# Merge commits and fixup! / squash! commits are excluded from checks.
+ignore_merge_commits = true
+ignore_fixup_commits = true

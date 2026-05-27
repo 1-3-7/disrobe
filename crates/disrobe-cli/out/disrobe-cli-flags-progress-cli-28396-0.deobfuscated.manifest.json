@@ -1,0 +1,14 @@
+{
+  "cleanup": null,
+  "peel": {
+    "converged": true,
+    "final_source": "k = 9\n",
+    "hyperion_inner": null,
+    "initial": {
+      "confidence": 0.0,
+      "family": "Unknown",
+      "markers": []
+    },
+    "steps": []
+  }
+}

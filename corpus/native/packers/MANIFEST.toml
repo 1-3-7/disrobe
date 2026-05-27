@@ -1,0 +1,435 @@
+schema_version = 2
+generated_utc = "2026-05-25T16:48:00Z"
+description = "Category C 'EASY' packer corpus - real-binary round-trip testing (megafile + hello-baseline)"
+
+[source.hello_x64]
+arch = "x86_64"
+toolchain = "rust 1.95 release (opt-z lto strip panic=abort)"
+size_bytes = 104448
+sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
+runtime_output = "disrobe-packer-test:hello"
+role = "baseline-trivial - exercises only basic packer paths; insufficient for production confidence"
+
+[source.hello_x86]
+arch = "i686"
+toolchain = "rust 1.95 release i686-pc-windows-msvc"
+size_bytes = 94720
+sha256 = "3B263798B36403015C20CC778B4E8831F911EA2514995C17D8BDB8A30F9B8554"
+runtime_output = "disrobe-packer-test:hello"
+role = "baseline-trivial-x86 - for legacy x86-only packers"
+
+[source.rg]
+arch = "x86_64"
+toolchain = "rustc 1.x MSVC release (ripgrep 15.1.0 upstream build via winget)"
+size_bytes = 4266496
+sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
+runtime_output = "ripgrep 15.1.0 (rev af60c2de9d)"
+role = "megafile - real production-grade PE with TLS callbacks, exception data, many sections; primary fidelity target"
+
+[source.taskmgr]
+arch = "x86_64"
+toolchain = "Microsoft Visual C++ (Windows 11 system file)"
+size_bytes = 5621104
+sha256 = "67012F45B7AD6EA6243AB3A9C8BF3ADAD32CEC432994840A2968BCA54944E379"
+runtime_output = "n/a (requires SYSTEM)"
+role = "megafile-mpress-substitute - Microsoft-compiled PE without TLS callbacks; only practical 5+ MB fixture MPRESS accepts. Authenticode-signed so UPX requires --force (not used for UPX)."
+provenance = "C:\\Windows\\System32\\Taskmgr.exe staged at .developer/big-binaries/taskmgr.exe"
+
+[source.git]
+arch = "x86_64"
+toolchain = "Git for Windows MSVC release (4.22 MB)"
+size_bytes = 4422544
+sha256 = "CAB4C4EEA1D869CF9F7BE73868DC9A90AD2DF1B1B673E5F8C8714A576C25EA96"
+runtime_output = "n/a (DLL_NOT_FOUND when run in isolation - needs msys2 sibling DLLs)"
+role = "megafile-additional - second real-world MSVC PE for UPX coverage. Runtime cannot be verified standalone; packed/unpacked SHA + byte-diff still provides round-trip evidence."
+provenance = ".developer/big-binaries/git.exe (staged without dependent DLLs - file-only smoke)"
+
+[[packers]]
+name = "UPX"
+version = "5.1.1"
+install_method = "winget UPX.UPX"
+install_path = "C:\\Users\\-\\AppData\\Local\\Microsoft\\WinGet\\Packages\\UPX.UPX_Microsoft.Winget.Source_8wekyb3d8bbwe\\upx-5.1.1-win64\\upx.exe"
+status = "ok-megafile-verified"
+
+[[packers.runs]]
+input = "hello.exe (x64)"
+input_sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
+packed_path = "corpus/native/packers/upx/hello.exe"
+packed_sha256 = "DDD7E1CA914A971B5D976E1F238C3320383AE4367845CE5E274CAA6C82060A91"
+packed_size_bytes = 53248
+compression_ratio_pct = 50.98
+runtime_ok = true
+unpacked_path = "corpus/native/packers/upx/hello.unpacked.exe"
+unpacked_sha256 = "96762AB47F23223A51A8BB4C46B003ADFD6F4F80CFA42168DE4C2F6789902F66"
+pack_command = "upx --best hello.exe"
+unpack_command = "upx -d -o hello.unpacked.exe hello.packed.exe"
+
+[[packers.runs]]
+input = "rg.exe (megafile, 4.07 MB)"
+input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
+packed_path = "corpus/native/packers/upx/rg.packed.upx.exe"
+packed_sha256 = "1BB8D1452B7A442D95DBC5A460B2907C4076F47C59ED86D072B07CF1626F2F00"
+packed_size_bytes = 1462784
+compression_ratio_pct = 34.29
+runtime_ok = true
+unpacked_path = "corpus/native/packers/upx/rg.unpacked.upx.exe"
+unpacked_sha256 = "852B4AC43B4D5C72192A20F53D64A5CC26E83594BCC5215DD29CF7F27C678EA8"
+unpacked_size_bytes = 4266496
+unpacked_byte_diff_count = 261
+unpacked_byte_diff_pct = 0.01
+unpacked_runtime_ok = true
+notes = "round-trip byte-identical modulo 261 bytes (0.01%) across 4.27 MB - confirms 'modulo section-padding/timestamps/Rich-header' tolerance. Exercises real segment-rewrite logic."
+
+[[packers.runs]]
+input = "git.exe (megafile, 4.22 MB)"
+input_sha256 = "CAB4C4EEA1D869CF9F7BE73868DC9A90AD2DF1B1B673E5F8C8714A576C25EA96"
+packed_path = "corpus/native/packers/upx/git.packed.upx.exe"
+packed_sha256 = "A9B4892FFE9A26CEE4E23AC9BA571FEFC7C515AEDAB05F458620ADA6573808DE"
+packed_size_bytes = 1812368
+compression_ratio_pct = 40.98
+runtime_ok = "unverifiable-missing-dlls"
+unpacked_path = "corpus/native/packers/upx/git.unpacked.upx.exe"
+unpacked_sha256 = "8E571F09286B5F64955DB0E6D52ACE80D27F464B8A4E849C9A60FD1695492A16"
+unpacked_size_bytes = 4422544
+unpacked_byte_diff_count = 1301
+unpacked_byte_diff_pct = 0.029
+notes = "Second megafile round-trip witness. Pack 4422544 -> 1812368 B (40.98%), unpack identical size with 1301 byte diff (0.029%). Runtime unverifiable because git.exe was staged without sibling msys DLLs (original also fails DLL_NOT_FOUND in isolation). File-level round-trip is still strong evidence."
+
+[[packers]]
+name = "MPRESS"
+version = "2.19"
+install_method = "wayback https://web.archive.org/web/2020if_/https://www.matcode.com/mpress.219.zip"
+install_path = ".developer/packers/mpress/mpress.exe"
+status = "ok-trivial-only"
+limitation = "rejects PE binaries with TLS callbacks - applies to nearly all modern Rust/MSVC release builds"
+
+[[packers.runs]]
+input = "hello.exe (x64, trivial)"
+input_sha256 = "37D55B50D63CC0005E0EC2B3070E4D16019F8358AC48C54B4F8E71FC114EE70A"
+packed_path = "corpus/native/packers/mpress/hello.exe"
+packed_sha256 = "AA0C292EE175DA3D554B3B25859AC501BA9E6E816A789F0897178010CD129EE8"
+packed_size_bytes = 50176
+compression_ratio_pct = 48.0
+runtime_ok = true
+pack_command = "mpress -q hello.exe"
+unpacker_status = "lzmat-decoded"
+unpacker_byte_recovery_pct = 91.58
+unpacker_byte_recovery_basis = ".text+.rdata+.data primary-content sections; excludes runtime-rebuilt .pdata + .reloc and IAT-thunked .rdata slots"
+unpacker_notes = "Wave v0.8-W4A unpacker: pure-Rust port of the 7zip LZMA1 SDK arithmetic coder with the MPRESS-specific property byte encoding (stream[0] high nibble = pb, low nibble = lp; stream[1] = lc; standard LZMA1 range coder init thereafter). 91.58% byte recovery (91032 / 99404) on hello.exe primary sections. Remaining ~8% concentrated in IAT thunk slots the MPRESS2 loader patches at runtime from the rebuilt import table. Verified by `cargo test -p disrobe-pass-native --test mpress_unpack test_mpress_hello_byte_recovery`."
+
+[[packers.runs]]
+input = "rg.exe (megafile, Rust MSVC release)"
+input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
+packed_path = ""
+packed_sha256 = ""
+runtime_ok = false
+error = "MPRESS: TLS callbacks are not supported in this version."
+notes = "default mode silently no-op (exit code 10); -m LZMAT mode raises explicit TLS-callback rejection. Modern Rust/MSVC release binaries embed TLS callbacks and fail MPRESS."
+
+[[packers.runs]]
+input = "taskmgr.exe (megafile, Windows System32 PE)"
+input_sha256 = "67012F45B7AD6EA6243AB3A9C8BF3ADAD32CEC432994840A2968BCA54944E379"
+input_size_bytes = 5621104
+packed_path = "corpus/native/packers/mpress/taskmgr.packed.mpress.exe"
+packed_sha256 = "886605FA11BC754FFDEB48DFB64A3499F65D427EE7CB8FD667F177D525DD5441"
+packed_size_bytes = 1061376
+compression_ratio_pct = 18.88
+runtime_ok = "unverified-do-not-execute"
+unpacker_status = "lzmat-decoded"
+unpacker_byte_recovery_pct = 92.39
+unpacker_byte_recovery_basis = ".text+.rdata+.data+.didat primary-content sections; excludes runtime-rebuilt .pdata + .reloc + .rsrc and import-thunked slots"
+notes = "Real Windows System32 5.36MB binary, packed to 1.01MB, decompressed to 5.6MB. Wave v0.8-W4A unpacker: 92.39% byte recovery (4945011 / 5352255) across primary sections via the pure-Rust LZMA1 port (no external deps, no unsafe, no x86 emulator). Decoder ports the 7zip LZMA SDK arithmetic coder + the MPRESS-specific property byte unpacker (stream[0] high nibble = pb, low nibble = lp; stream[1] = lc). Packed binary NOT executed - Authenticode signature broken by packing. Verified by `cargo test -p disrobe-pass-native --test mpress_unpack test_mpress_taskmgr_byte_recovery`."
+
+[[packers]]
+name = "Petite"
+version = "2.4"
+install_method = "https://www.un4seen.com/files/petite24.zip"
+install_path = ".developer/packers/petite/petite.exe"
+status = "ok-x86-only"
+limitation = "x86 only - rejects PE32+ with 'Not an x86 executable'"
+
+[[packers.runs]]
+input = "hello32.exe (x86)"
+input_sha256 = "3B263798B36403015C20CC778B4E8831F911EA2514995C17D8BDB8A30F9B8554"
+packed_path = "corpus/native/packers/petite/hello.exe"
+packed_sha256 = "4022E6A82AD782A94DA07DA46EC4AF3E721AF111B456E5F0E3B05331D510AC8D"
+packed_size_bytes = 52144
+compression_ratio_pct = 55.1
+runtime_ok = true
+pack_command = "petite -y hello.exe"
+v0_8_w4b_byte_match_pct = 16.91
+v0_8_w4b_size_delta_bytes = 0
+v0_8_w4b_phase_one_decoded_ok = true
+v0_8_w4b_byte_match_note = "Wave-4B improves byte-recovery to 16.91% match (vs v0.7 baseline 1.87%) by porting the verified Petite 2.x LZ77 dialect for the 928-byte phase-1 stub and sizing the recovered PE to match the original (94720 B). The remainder of the 90% target requires emulating phase-1's decoded output (a multi-stage decoder) which is deferred to v0.9 Cat-C HARD per coordinator guidance (unicorn-engine blocked by deny.toml GPL incompatibility)."
+
+[[packers.runs]]
+input = "rg.exe (megafile, x64)"
+input_sha256 = "DECDD4992F3F1B9A5EF9898F1B40AB16886D579D6516B4EFD3D5EAA19364E408"
+packed_path = ""
+runtime_ok = false
+error = "Not an x86 executable"
+notes = "clean rejection. No megafile x86 test attempted - would require i686 ripgrep build (multi-minute cargo build + many transitive deps)."
+
+[[packers.runs]]
+input = "DirCmp.exe (megafile, x86, ~4.05 MB)"
+input_sha256 = "n/a-third-party-prepacked"
+packed_path = "corpus/native/packers/petite/megafile_DirCmp.exe"
+packed_sha256 = "E94CF2825D0C10B9CCAE76DBCD26D4C4D4B780A9CD742CB240483D2A836E784F"
+packed_size_bytes = 4242387
+unpacker_status = "structural-recovery"
+unpacker_imports_recovered = 22
+unpacker_functions_recovered = 1262
+v0_8_w4b_phase_one_decoded_ok = false
+v0_8_w4b_preserved_header_bytes = 934
+v0_8_w4b_recovered_zero_pct = 61.3
+notes = "Real-world Petite 2.x megafile sample from github.com/chesvectain/PackingData. Source binary not in repo (only the packed form is shipped upstream). disrobe-pass-native unpack_petite_with_report recovers structural PE (MZ+PE32 headers + 1 reconstituted section) and 22 DLLs / 1262 import-function names via the plaintext name-table scan. Wave-4B's phase-one stub parser does not detect a Petite EP shape match here (DirCmp uses a non-standard wrapper prologue), so the stream falls back to structural-only padding; LZ77 stream decode is best-effort. This row asserts structural+import recovery, not byte-identical decompression."
+
+[[packers]]
+name = "kkrunchy"
+version = "0.23 alpha 2 (k7) + 0.23 alpha (classic)"
+install_method = "https://www.farbrausch.de/~fg/kkrunchy/kkrunchy_023a2.zip + kkrunchy_023a.zip"
+install_path = ".developer/packers/kkrunchy/kkrunchy_k7.exe"
+status = "unpacker-implemented-partial"
+fixture_source = "Hand-rolled NASM PE32 hello.exe (1024 bytes), packed with both kkrunchy_k7 and the classic kkrunchy 0.23a binary."
+limitation = "kkrunchy's compression backend (closed-source LZMA-class arithmetic-coded context-mixing stream prefixed by the depacker stub) is not implemented. Disrobe ships: (1) full MZfarbrausch header parser, (2) variant fingerprinting (K7 vs Classic), (3) DisFilter forward + inverse port (dis_filter / dis_unfilter) from fg's public source, with round-trip property tests on synthetic x86. Structural unpack returns the packed section + stub bytes for downstream analysis."
+
+[[packers.runs]]
+input = "rust hello.exe (rustc-built, 94720 B with exports + TLS + CRT)"
+input_sha256 = "3B263798B36403015C20CC778B4E8831F911EA2514995C17D8BDB8A30F9B8554"
+packed_path = ""
+runtime_ok = false
+error = "files with exports or tls data are not supported"
+notes = "kkrunchy aborts on any modern compiler output - by design. Documented as a known kkrunchy fitness-envelope limit."
+
+[[packers.runs]]
+input = "hello.exe (hand-rolled NASM PE32, 1024 B, single section, no CRT/exports/TLS)"
+input_sha256 = "B2EA8973316F"
+packed_path = "corpus/native/packers/kkrunchy/hello.packed.kkrunchy.exe"
+packed_sha256 = "BA4421F51C56"
+packed_size_bytes = 5632
+unpacker_status = "structural-recovery"
+byte_recovery_pct_v0_8_w4c = 6.44
+byte_recovery_target_pct = 90.00
+byte_recovery_method = "compute_byte_recovery(original_1024B, unpack_kkrunchy().packed_payload). Provider-backed unpack_kkrunchy_emulated() returns Error::EmulatorNotConfigured until a KkrunchyEmulator impl (unicorn-engine/libmwemu/icicle) is wired behind the `stub-emulation` Cargo feature. See .developer/v0.8-w4c-kkrunchy-bytes.md for the gap analysis."
+notes = "k7 variant. parse_kkrunchy_header succeeds; variant fingerprint = K7Variant023A2; section 'kkrunchy' isolated and exposed. Compression-backend extraction beyond stub-boundary not implemented (see limitation field). v0.8-w4c added KkrunchyEmulator trait + KkrunchyEmulationSnapshot + unpack_kkrunchy_emulated + compute_byte_recovery; honest structural baseline is 6.44% byte-identical against the 1024 B original."
+
+[[packers.runs]]
+input = "hello.exe (hand-rolled NASM PE32, 1024 B, single section, no CRT/exports/TLS)"
+input_sha256 = "B2EA8973316F"
+packed_path = "corpus/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe"
+packed_sha256 = "A2FB9DCBB3B6"
+packed_size_bytes = 4608
+unpacker_status = "structural-recovery"
+notes = "Classic 0.23a variant. parse_kkrunchy_header succeeds; section 'kkrunchy' isolated. Same compression-backend gap as k7."
+
+[[packers]]
+name = "FSG"
+version = "2.0 (bart/xt 2004)"
+install_method = "wayback https://web.archive.org/web/20030324043555if_/https://www.exetools.com/files/compressors/win/fsg.zip + 7z extract fsg.rar (packer GUI-only, not used: fixtures sourced from PackingData corpus instead)"
+install_path = ".developer/packers/fsg/fsg.exe"
+status = "unpacker-implemented"
+fixture_source = "github.com/chesvectain/PackingData (FSG/ subset of MIT-licensed pre-packed corpus, originals from Notpacked/)"
+limitation = "FSG 2.0 EP-stub layout only (BB <import_meta_va> BF <unpack_dst_va> BE <packed_stream_va> 53 E8 0A...). FSG 1.x variants not exercised by current fixtures. Original section table is destroyed by FSG (packed PE has 3 sections - bss target + payload + entry stub) so disrobe reports the decompressed image as a flat blob at unpack_dest_va, not a reconstructed multi-section PE."
+
+[[packers.runs]]
+input = "aatools_setup.exe (3153537 B, NSIS installer)"
+packed_path = "corpus/native/packers/fsg/aatools_setup.packed.fsg.exe"
+packed_size_bytes = 8896
+original_path = "corpus/native/packers/fsg/aatools_setup.original.exe"
+unpacker_status = "byte-exact"
+unpacked_witnessed_bytes = 8259
+unpacked_byte_diff_count = 0
+unpacked_byte_diff_pct = 0.0
+notes = "Smallest fixture, ImageBase 0x00400000, unpack_dest_va 0x00401000. aPLib-clone decoder recovers 8259-byte first section (.text) bit-exact against the original PE's loaded image. Verified by `cargo test --test fsg_unpack test_fsg_aatools_setup_byte_diff_witness`."
+
+[[packers.runs]]
+input = "Hash.exe (29184 B)"
+packed_path = "corpus/native/packers/fsg/Hash.packed.fsg.exe"
+packed_size_bytes = 16624
+compression_ratio_pct = 56.96
+original_path = "corpus/native/packers/fsg/Hash.original.exe"
+unpacker_status = "byte-exact"
+unpacked_witnessed_bytes = 18188
+unpacked_byte_diff_count = 0
+unpacked_byte_diff_pct = 0.0
+notes = "ImageBase 0x00400000, unpack_dest_va 0x00401000, decompressed-image length 18188 B. Bit-exact recovery against original .text/.rdata loaded image. Verified by `cargo test --test fsg_unpack test_fsg_hash_byte_diff_witness`."
+
+[[packers.runs]]
+input = "ftp.exe (42496 B, Microsoft ftp client)"
+packed_path = "corpus/native/packers/fsg/ftp.packed.fsg.exe"
+packed_size_bytes = 19744
+compression_ratio_pct = 46.46
+original_path = "corpus/native/packers/fsg/ftp.original.exe"
+unpacker_status = "near-byte-exact"
+unpacked_witnessed_bytes = 31220
+unpacked_byte_diff_count = 622
+unpacked_byte_diff_pct = 1.992
+notes = "Microsoft ftp.exe, non-default ImageBase 0x01000000. Decoder recovers 31220-byte first section with 622 bytes diff (1.992%), all concentrated in IAT thunk slots that the FSG loader patches at runtime from the import-meta table (not present in the compressed stream). Verified by `cargo test --test fsg_unpack test_fsg_ftp_byte_diff_witness`."
+
+[[packers]]
+name = "NSPack"
+version = "3.7 (North Star)"
+install_method = "wayback https://web.archive.org/web/2008if_/http://www.nsdsn.com/english/nspack.zip"
+install_path = ".developer/packers/nspack/nspack/nSpack.exe"
+status = "byte-recovery-implemented"
+fixture_source = "github.com/chesvectain/PackingData (cloned 2026-05-25, MIT-licensed test corpus of pre-packed real binaries; original counterparts in PackingData/Notpacked/)"
+limitation = "NSPack 3.x payload uses an LZMA-class binary range coder embedded in the x86 stub. v0.8 W4E shipped a clean-room pure-Rust port of the decoder (lc=tre, lp=allocsz, pb=firstbyte parameterization) plus a 24-bit BE E8/E9 call-jmp fixup. v0.9 A5 tightened the selective-fixup rule to a dual in-image-target check: apply iff the recovered displacement lands in [0, image_size) AND the stored displacement (pre-transform) does NOT, mirroring NSPack's at-compress-time encoder predicate. Achieves >=90% byte recovery (<=10% byte diff) on 3 of 6 chesvectain fixtures: hash (5.85%, was 7.26), ftp (7.68%, was 7.93), cmd (7.42%, was 7.88). Calc near-passes at 10.16% (was 11.23%). Larger fixtures (handle 49.90%, psexec 25.92%) retain residual diffs that the diagnostic harness traces to non-E8 decoder drift in .rdata/.rsrc zones — not the call-fixup transform. Reference algorithm ClamAV unsp.c + GIAC GREM Gold paper (Wright 2010-2015)."
+
+[[packers.runs]]
+input = "hello32.exe (x86) - GUI-driver attempt"
+packed_path = ""
+runtime_ok = false
+error = "no CLI mode - all probed switches open GUI"
+notes = "NSPack 3.7 binary obtained (303941 B). Probed /?, /q, -h, --help, -help, /help - all open main window with no headless exit. Strings inside nSpack.exe are encrypted (NSPack self-packed), blocking static option discovery. Pivoted to pre-packed corpus from PackingData repo (next 6 rows)."
+
+[[packers.runs]]
+input = "Hash.exe (29184 B)"
+input_sha256 = "43C5182F83086524"
+packed_path = "corpus/native/packers/nspack/hash.packed.nspack.exe"
+packed_sha256 = "527903A5E0957C45"
+packed_size_bytes = 19068
+compression_ratio_pct = 65.34
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 7.26
+byte_diff_pct_v0_9_a5 = 5.85
+byte_diff_target_pct = 10.00
+notes = "Smallest fixture - 2-section nsp0/nsp1 layout (nsp0 raw 0x74, nsp1 raw 0x487c). v0.8 W4E pure-Rust LZMA-variant decoder reached 92.74% byte-identical. v0.9 A5 dual in-image-target fixup rule: 94.15% (5.85% diff). PASSES <=10% byte-diff target."
+
+[[packers.runs]]
+input = "ftp.exe (42496 B)"
+input_sha256 = "74E674254BDA1A06"
+packed_path = "corpus/native/packers/nspack/ftp.packed.nspack.exe"
+packed_sha256 = "317EA9EAADA60E31"
+packed_size_bytes = 21225
+compression_ratio_pct = 49.94
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 7.93
+byte_diff_pct_v0_9_a5 = 7.68
+byte_diff_target_pct = 10.00
+notes = "Microsoft ftp.exe - 4-section original (.text/.data/.rsrc/.reloc) collapsed to 2-section NSPack layout. v0.9 A5 improved 7.93 -> 7.68. PASSES <=10% byte-diff target."
+
+[[packers.runs]]
+input = "cmd.exe (302592 B)"
+input_sha256 = "17F746D82695FA9B"
+packed_path = "corpus/native/packers/nspack/cmd.packed.nspack.exe"
+packed_sha256 = "963FA62622FD132F"
+packed_size_bytes = 108193
+compression_ratio_pct = 35.76
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 7.88
+byte_diff_pct_v0_9_a5 = 7.42
+byte_diff_target_pct = 10.00
+notes = "Microsoft cmd.exe - exercises larger nsp0 metadata cache (0x156 bytes). v0.9 A5 improved 7.88 -> 7.42. PASSES <=10% byte-diff target."
+
+[[packers.runs]]
+input = "PsExec.exe (339096 B)"
+input_sha256 = "3337E3875B05E0BF"
+packed_path = "corpus/native/packers/nspack/psexec.packed.nspack.exe"
+packed_sha256 = "BA3355D78F5A6A15"
+packed_size_bytes = 100885
+compression_ratio_pct = 29.75
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 26.30
+byte_diff_pct_v0_9_a5 = 25.92
+byte_diff_target_pct = 10.00
+notes = "Sysinternals PsExec - 5-section original (.text/.rdata/.data/.rsrc/.reloc). nsp0 raw 0x96 preserves original `.text` literal. EXCEEDS target. v0.9 A5 diagnostic harness (nspack_e8_diag) attributes residual diff overwhelmingly (~94%) to non-E8 decoder drift in .rdata/.rsrc zones rather than to call-fixup gaps. The remaining ~6% (~10k bytes) is E8-explained and matches the dual in-image-target rule on 2307/2353 fix-need sites (98%). Decoder-side fix is a follow-up."
+
+[[packers.runs]]
+input = "handle.exe (425608 B)"
+input_sha256 = "E2D9A1D6103D45BB"
+packed_path = "corpus/native/packers/nspack/handle.packed.nspack.exe"
+packed_sha256 = "C88F58CBC69CB373"
+packed_size_bytes = 155143
+compression_ratio_pct = 36.45
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 50.30
+byte_diff_pct_v0_9_a5 = 49.90
+byte_diff_target_pct = 10.00
+notes = "Sysinternals handle - tiny nsp0 raw (0x32) edge case, x64 PE. EXCEEDS target. v0.9 A5 diagnostic harness reclassifies the residual: ~96% of the 237319-byte diff (228k bytes) is in non-E8 zones (.rdata at offset 0x16000, .rsrc at 0x35000 — both containing embedded code/data the decoder produces incorrectly), only ~4% (~8.5k bytes) is E8-explained. The selective-fixup rule itself matches 2016/2053 fix-need sites (98%). Root cause is a decoder-state drift, not the call-jmp fixup."
+
+[[packers.runs]]
+input = "calc.exe (776192 B)"
+input_sha256 = "80C10EE5F21F92F8"
+packed_path = "corpus/native/packers/nspack/calc.packed.nspack.exe"
+packed_sha256 = "C84BE010FCB0CB92"
+packed_size_bytes = 312233
+compression_ratio_pct = 40.23
+unpacker_status = "byte-recovery-via-pure-rust-lzma-port"
+byte_diff_pct_v0_8_w4e = 11.23
+byte_diff_pct_v0_9_a5 = 10.16
+byte_diff_target_pct = 10.00
+notes = "Microsoft calc.exe - largest fixture. nsp0 raw 0x169 preserves original `.data` literal. NEAR-PASS at 10.16% (was 11.23%): 89.84% byte-identical recovery, just 0.16pp over the target. v0.9 A5 dual-check rule recovered 11065/11167 fix-need sites (99%). Residual is split between E8-explained sites (~44k bytes) and non-E8 decoder drift (~35k bytes in resources)."
+
+[[packers]]
+name = "MEW"
+version = "11 SE 1.2 (Northfox 2004)"
+install_method = "not-obtained-but-not-required - pre-packed fixtures sourced from PackingData corpus"
+install_path = ""
+status = "structural-recovery-implemented"
+fixture_source = "github.com/chesvectain/PackingData (MIT-licensed pre-packed real binaries; originals from PackingData/Notpacked/)"
+limitation = """
+MEW 11 SE compresses the original image with an aPLib-family stream decoded by the gamma2 routine
+embedded at section[1] offset 0. v0.8 W4D ships a faithful clean-room Rust port of the textbook Joergen
+Ibsen aPLib byte-tagged depacker (crates/disrobe-pass-native/src/packers/mew_unpack.rs::aplib_decode_bytetagged),
+which round-trips correctly on synthetic streams (validated by 8 lib-unit tests including bit-reader
+MSB-first ordering, first-byte literal, terminator short-match, and short-match round-trip). On the three
+real MEW fixtures the byte-tagged decoder produces only ~0.01% recovery because the on-disk stream layout
+diverges from the Ibsen reference: the decoder enters a long-match arm at step 10 with an offset that
+requires R0 reuse, but the textbook init has R0=0. Exhaustive search over 12 initial-state variants
+(`emit_first_byte_literal` x `lwm` x `r0`) confirms no plain-Ibsen configuration recovers the original
+bytes — meaning MEW's runtime get_bit subroutine (the pointer at *EBX referenced by the gamma2 decoder)
+applies a stream transformation (bit-mux, byte-permutation, or two-stream split) that requires either
+unicorn-engine stub emulation or full RE of the runtime-patched fetcher. Coordinator marked
+unicorn-engine BLOCKED for GPL-2.0 + libclang reasons during W4D, so byte recovery defers to a follow-up
+wave. The unpacker ships as **structural recovery** plus an algorithmically-verified aPLib decoder ready
+to plug into a future stream-fetcher implementation: it parses every fixed landmark (DOS+NT headers,
+two-section table, gamma2 decoder prologue, IAT-rebuild plaintext, 25-byte EP-stub trailer) exactly,
+recovers the original AddressOfEntryPoint RVA and the kernel32.dll!LoadLibraryA + GetProcAddress
+bootstrap pair plus the per-DLL import-name plaintext zone, and reports stream_decoded=false when the
+aPLib pass cannot consume the byte-tagged stream.
+"""
+
+[[packers.runs]]
+input = "AccessEnum.exe (174968 B, Sysinternals)"
+input_sha256 = "a4cc61f6c7ed716e4622e12b75f05ea17e79a45f0d8bd6855c340a30ec882b47"
+packed_path = "corpus/native/packers/mew/AccessEnum.packed.mew.exe"
+packed_sha256 = "576f741a4f1e99b8a4b82273b59e505807de3f13eeb680dd5397b2dc74e79bbe"
+packed_size_bytes = 41810
+compression_ratio_pct = 23.9
+original_path = "corpus/native/packers/mew/AccessEnum.original.exe"
+unpacker_status = "structural-recovery"
+recovered_oep_rva = "0x35110"
+recovered_imports = 347
+stream_decoded = false
+byte_recovery_pct = 0.01
+notes = "MEW 11 SE 1.2 layout validated. 2-section: section[0] 'MEW\\0F\\x12\\xd2\\xc3' virtual-only, section[1] holds gamma2 decoder + compressed payload + IAT-rebuild + EP stub trailer. Structural recovery verified by `cargo test --test mew_unpack test_mew_accessenum_round_trip`. Byte-recovery measured by `test_mew_accessenum_byte_recovery`."
+
+[[packers.runs]]
+input = "Autologon.exe (138920 B, Sysinternals)"
+input_sha256 = "324c64d24818a0be63a43a8df678b88dca4f8959841f91f4875cc6ed0e93f549"
+packed_path = "corpus/native/packers/mew/Autologon.packed.mew.exe"
+packed_sha256 = "6906d7f3794d3aff60d1c339d21dab18de0109b2b33a9ca11fcb01e71f0cc953"
+packed_size_bytes = 47510
+compression_ratio_pct = 34.2
+original_path = "corpus/native/packers/mew/Autologon.original.exe"
+unpacker_status = "structural-recovery"
+recovered_oep_rva = "0x2e754"
+recovered_imports = 371
+stream_decoded = false
+byte_recovery_pct = 0.0
+notes = "Same MEW 11 SE layout. Imports include the bootstrap pair plus 369 additional per-DLL/per-API ASCII entries recovered from the plaintext IAT-rebuild zone. Byte-recovery measured by `test_mew_autologon_byte_recovery`."
+
+[[packers.runs]]
+input = "Clockres.exe (139944 B, Sysinternals)"
+input_sha256 = "aa358fb6d7458e0ab2c7212bc2ad5cc5ab67c2a5275a61c2408d998951ef77d1"
+packed_path = "corpus/native/packers/mew/Clockres.packed.mew.exe"
+packed_sha256 = "c717a038be8d4035d5aeb1e8d16ce851ad203b677f77e87bfbb9baab97f32fa0"
+packed_size_bytes = 47784
+compression_ratio_pct = 34.1
+original_path = "corpus/native/packers/mew/Clockres.original.exe"
+unpacker_status = "structural-recovery"
+recovered_oep_rva = "0x2f866"
+recovered_imports = 363
+stream_decoded = false
+byte_recovery_pct = 0.0
+notes = "Third real-binary witness. Identical MEW 11 SE skeleton. All three fixtures pass the gamma2-decoder-prologue signature check (`33 C9 41 FF 13 13 C9 FF 13 72 F8 C3` at section[1] offset 0). Byte-recovery measured by `test_mew_clockres_byte_recovery`."

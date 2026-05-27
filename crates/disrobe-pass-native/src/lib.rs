@@ -1,0 +1,105 @@
+#![forbid(unsafe_code)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::single_match_else,
+    clippy::format_push_string,
+    clippy::manual_strip,
+    clippy::missing_const_for_fn,
+    clippy::unnecessary_wraps,
+    clippy::unnecessary_map_or,
+    clippy::single_char_pattern,
+    clippy::match_same_arms,
+    clippy::manual_is_multiple_of,
+    clippy::iter_on_single_items,
+    clippy::redundant_else
+)]
+
+pub mod arch;
+#[cfg(feature = "chain")]
+pub mod chain_detector;
+pub mod cxx_recovery;
+pub mod debug_info;
+pub mod decompile;
+pub mod error;
+pub mod fixtures;
+pub mod format;
+pub mod format_wire;
+#[cfg(feature = "llm-metadata")]
+pub mod llm;
+pub mod obfuscators;
+pub mod packers;
+pub mod pass;
+pub mod provenance_header;
+pub mod rust_recovery;
+pub mod stub_emu;
+
+pub use arch::{Arch, DisasmInsn, disassemble};
+pub use cxx_recovery::{
+    CxxAbi, CxxDemangled, EhEntry, RttiEntry, SehScopeEntry, demangle_auto, demangle_itanium,
+    demangle_msvc, parse_itanium_lsda, parse_windows_seh_scope_table, recover_itanium_rtti,
+};
+pub use debug_info::{
+    DwarfSummary, DwarfVersion, PdbSummary, StabsEntry, classify_dwarf_versions, parse_stabs,
+    summarize_dwarf, summarize_pdb,
+};
+pub use decompile::{
+    DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
+};
+pub use error::{Error, Result};
+pub use fixtures::{
+    minimal_elf64, minimal_macho64, minimal_pe32, packed_upx_elf64_marker, tiny_coff_x64,
+};
+pub use format::{DetectedFormat, NativeFormat, detect as detect_format};
+pub use format_wire::{
+    format_c as format_c_lifted, format_cpp as format_cpp_lifted,
+    format_objc as format_objc_lifted, format_rust as format_rust_lifted,
+    format_swift as format_swift_lifted,
+};
+#[cfg(feature = "llm-metadata")]
+pub use llm::{
+    METADATA_CAPABILITY as NATIVE_METADATA_CAPABILITY, NativeImport, NativeInstr, NativeLlmInput,
+    NativeSymbol,
+};
+pub use obfuscators::{
+    CffUnflattenReport, ObfuscatorFamily, ObfuscatorHit, StringDecryptHit,
+    decrypt_strings_for_family, detect as detect_obfuscators, strip_ollvm_bcf_stub,
+    undo_emotet_cff_stub, undo_ollvm_substitution_stub, unflatten_ollvm_stub,
+    unflatten_tigress_stub,
+};
+pub use packers::{
+    Confidence, Detection as PackerDetection, DisFilterStreamSizes, KkrunchyByteRecoveryReport,
+    KkrunchyEmulatedUnpackOutput, KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
+    KkrunchyHeaderReconstructionEmulator, KkrunchyReconstructionConfidence,
+    KkrunchyReconstructionPlan, KkrunchyUnpackOutput, KkrunchyVariant, NspackEmulatedReport,
+    NspackLayout, NspackRecoveryStatus, NspackSection, NspackUnpackReport, Packer,
+    PetitePhase2EmulatedOutput, PetiteUnpackReport, PetiteUnpackResult, RecoveredImport,
+    RecoveredImportFn, RecoveredResource as NspackRecoveredResource,
+    RecoveredSectionName as NspackRecoveredSectionName, UnpackOutput, UnpackerStatus,
+    compute_byte_recovery, detect as detect_packers, dis_filter, dis_unfilter, fingerprint_chain,
+    parse_kkrunchy_header, parse_nspack_layout, unpack_kkrunchy, unpack_kkrunchy_emulated,
+    unpack_nspack, unpack_nspack_emulated, unpack_nspack_emulated_with_baseline,
+    unpack_nspack_emulated_with_baseline_raw, unpack_petite, unpack_petite_phase2_emulated,
+    unpack_petite_with_report, unpack_with_upx_cli,
+};
+pub use pass::{
+    DecompilerProbeSummary, NativePass, NativePassReport, PASS_INPUT_PATH_CAP, PassInput,
+    decode_pass_input, distinct_packer_labels,
+};
+pub use provenance_header::{
+    c_lifted_header, cpp_lifted_header, render_c_with_header, render_cpp_with_header,
+    render_rust_with_header, rust_lifted_header,
+};
+pub use rust_recovery::{
+    AuditableCrate, AuditableSbom, DemangleScheme, DemangledSymbol, EnumDiscriminant,
+    MonomorphizationGroup, PanicKind, PanicSignature, VtableEntry, demangle as demangle_rust,
+    detect_panic_signatures, group_monomorphizations, parse_auditable_section,
+    recover_enum_discriminants, recover_trait_vtables,
+};
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[must_use]
+pub const fn version() -> &'static str {
+    VERSION
+}

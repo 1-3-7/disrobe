@@ -1,0 +1,1 @@
+{ "name": "pkg-fixture", "version": "1.0.0", "bin": "index.js", "private": true }

@@ -1,0 +1,49 @@
+[package]
+name = "disrobe-pass-wasm-deob"
+description = "WebAssembly deobfuscator + decompiler for the disrobe suite. Targets the WASM Component Model + wasm-gc, recovers name sections, restructures control flow, and lifts to idiomatic Rust / TypeScript pseudo-source."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["wasm", "webassembly", "decompiler", "deobfuscator", "rust"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+sandbox = ["wasmtime"]
+dwarf = ["dep:gimli"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+chain = ["disrobe-core/chain"]
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+indexmap = { workspace = true }
+wasmparser = { workspace = true }
+wasm-tools = { workspace = true }
+walrus = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { version = "1", features = ["serde", "union"] }
+wasmtime = { workspace = true, optional = true }
+gimli = { version = "0.32.3", default-features = false, features = ["read-all"], optional = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+divan = { workspace = true }
+wat = "1"
+gimli = { version = "0.32.3", default-features = false, features = ["read-all", "write"] }
+object = { workspace = true }
+
+[[bench]]
+name = "ssa_build"
+harness = false

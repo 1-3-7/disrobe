@@ -1,0 +1,382 @@
+schema = "disrobe.corpus.manifest.v1"
+collection = "js-deob-wave-2"
+version = "1.0.0"
+harvested_at = "2026-05-25T21:00:00Z"
+generator = "wave-2 js-deob stage agent"
+license = "internal-research-only; all upstream tools used per their respective open-source licenses"
+
+[input]
+hello = "hello.js"
+hello_description = "trivial 5-line console.log smoke input"
+megafile = "megafile/edge_cases.js"
+megafile_description = "ES2015-ES2024 edge-case canvas: 533 LOC, runs cleanly on Node 24. Sections cover let/const/TDZ, arrow/default/rest, destructuring, classes with private fields + static + getters/setters, async/await/generators/async iterators, all Promise combinators, template literals + tagged templates, optional chaining + nullish + logical-assignment, BigInt + Symbol + well-known symbols, WeakMap/WeakSet/WeakRef/FinalizationRegistry, Proxy/Reflect, all 8 numeric typed arrays + BigInt64/BigUint64, Map/Set iteration, Array.at/flat/flatMap/findLast, Object.hasOwn/groupBy/fromEntries, structuredClone, regex named groups + lookbehind + sticky + dotAll + unicode, URL/AbortController/fetch wiring, prototype-chain manipulation, JSX-like patterns, IIFE, throw/try/catch/finally optional-binding, labeled loops, switch fallthrough, computed property names + method shorthand, recursion, error cause + AggregateError, dynamic import, delegated generators."
+
+# ------------------------------------------------------------------------------
+# JS OBFUSCATORS — free / FOSS / canonical
+# ------------------------------------------------------------------------------
+
+[[fixtures]]
+tool = "javascript-obfuscator"
+category = "obfuscator-free"
+version = "5.4.3"
+install = "npm install -g javascript-obfuscator"
+command = "javascript-obfuscator <in> --output <out> --string-array true --string-array-encoding base64 --self-defending true --control-flow-flattening true --dead-code-injection true"
+hello_input = "hello.js"
+hello_output = "javascript-obfuscator/obfuscated.js"
+megafile_input = "javascript-obfuscator/edge_cases.js"
+megafile_output = "javascript-obfuscator/obfuscated.megafile.js"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "js-confuser"
+category = "obfuscator-free"
+version = "3.0.0"
+install = "npm install --save-dev js-confuser"
+command = "node -e 'require(\"js-confuser\").obfuscate(src, { target: \"node\", preset: <preset> }).then(r => fs.writeFileSync(out, r.code || r))'"
+megafile_input = "jsconfuser/edge_cases.js"
+megafile_output_low = "jsconfuser/obfuscated.megafile.low.js"
+megafile_output_medium = "jsconfuser/obfuscated.megafile.medium.js"
+megafile_output_high = "jsconfuser/obfuscated.megafile.high.js"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "jsobfu"
+category = "obfuscator-free"
+version = "0.4.2"
+install = "winget install RubyInstallerTeam.Ruby.3.4 && gem install jsobfu"
+command = "cat <in> | jsobfu 3 > <out>"
+input = "jsobfu/input.js"
+output = "jsobfu/obfuscated.js"
+status = "REAL-FIXTURE"
+notes = "jsobfu's underlying RKelly parser is ES5-only and cannot consume the megafile (or any babel-downleveled output retaining regenerator-runtime helpers). Hand-crafted ES5 input used."
+
+[[fixtures]]
+tool = "jsfuck"
+category = "esoteric"
+version = "1.1.0-ish"
+install = "npm install -g jsfuck"
+command = "jsfuck <in> > <out>"
+hello_input = "jsfuck/hello.js"
+hello_output = "jsfuck/obfuscated.js"
+megafile_input = "jsfuck/edge_cases.js"
+megafile_output = "jsfuck/obfuscated.megafile.js"
+output_size_megafile = "7.7 MB"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "aaencode"
+category = "esoteric"
+version = "Yosuke-Hasegawa-2009"
+install = "fetch https://utf-8.jp/public/aaencode.html and extract the in-page <script> aaencode()"
+command = "node run-encoders.js (driver in .developer/wave-2-js-deob-scratch/)"
+encoder_source = "aaencode/_encoder-source.js"
+megafile_input = "aaencode/edge_cases.js"
+megafile_output = "aaencode/obfuscated.megafile.js"
+output_size_megafile = "546 KB"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "jjencode"
+category = "esoteric"
+version = "Yosuke-Hasegawa-2009"
+install = "fetch https://utf-8.jp/public/jjencode.html and extract the in-page <script> jjencode()"
+command = "node run-encoders.js (driver in .developer/wave-2-js-deob-scratch/)"
+encoder_source = "jjencode/_encoder-source.js"
+megafile_input = "jjencode/edge_cases.js"
+megafile_output = "jjencode/obfuscated.megafile.js"
+output_size_megafile = "146 KB"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "dean-edwards-packer"
+category = "esoteric"
+version = "3.0-port"
+install = "npm install --save-dev @yudhui/packerjs (NodeJS port of Dean Edwards packer; canonical packer@0.0.6 requires contextify which fails to build on Node 24)"
+command = "require('@yudhui/packerjs').pack(src, { ascii: 62, encode: true, fastDecode: true })"
+megafile_input = "packer/edge_cases.js"
+megafile_output = "packer/obfuscated.megafile.js"
+output_pattern = "eval(function(p,a,c,k,e,r){...}('...',62,N,'word1|word2|...'.split('|'),0,{}))"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "jsfiretruck"
+category = "esoteric"
+status = "TOOL-DEAD-DOCUMENT"
+notes = "No canonical published implementation on npm. The JSFireTruck symbol set [+!()/] is a variant of JSFuck [+!()] — jsfuck fixture covers the family signature."
+
+# ------------------------------------------------------------------------------
+# JS PROTECTORS — paid / proprietary (PAID-DEFER)
+# ------------------------------------------------------------------------------
+
+[[fixtures]]
+tool = "jscrambler"
+category = "protector-paid"
+version = "8.5"
+status = "REAL-FIXTURE (free tier) + TOOL-PAID-DEFER (paid templates)"
+free_templates_real = ["default", "advanced_obfuscation", "anti_tampering_debugging", "dead_objects", "light_obfuscation", "minification", "obfuscation", "self_defending"]
+paid_templates_config_only = ["self_healing", "browser_lock", "date_lock", "domain_lock", "os_lock"]
+notes = "7 free tier templates fully captured under corpus/src/javascript/jscrambler-samples/. 5 paid template configs captured under corpus/js/jscrambler/templates/ (without raw obfuscated output — paid subscription gated)."
+
+[[fixtures]]
+tool = "jsdefender"
+category = "protector-paid"
+vendor = "PreEmptive Solutions"
+status = "TOOL-PAID-DEFER"
+notes = "Proprietary licensed. corpus/javascript/protectors/jsdefender/synthesized.js retained for detect-only test. AMBER no-bypass."
+
+[[fixtures]]
+tool = "arxan"
+category = "protector-paid"
+vendor = "Digital.ai"
+status = "TOOL-PAID-DEFER"
+notes = "Proprietary licensed. corpus/javascript/protectors/arxan/synthesized.js retained for detect-only test. AMBER no-bypass."
+
+[[fixtures]]
+tool = "pace-anti-piracy"
+category = "protector-paid"
+vendor = "PACE Anti-Piracy"
+status = "TOOL-PAID-DEFER"
+notes = "Proprietary licensed. corpus/javascript/protectors/pace/synthesized.js retained for detect-only test. AMBER no-bypass."
+
+# ------------------------------------------------------------------------------
+# MINIFIERS / COMPILERS
+# ------------------------------------------------------------------------------
+
+[[fixtures]]
+tool = "terser"
+category = "minifier"
+version = "5.48.0"
+install = "npm install -g terser"
+command = "terser <in> --compress --mangle --output <out>"
+megafile_input = "terser/edge_cases.js"
+megafile_output = "terser/obfuscated.megafile.js"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "google-closure-compiler"
+category = "minifier"
+version = "v20260520"
+install = "npm install -g google-closure-compiler"
+command_simple = "google-closure-compiler --js=<in> --compilation_level=SIMPLE --language_in=ECMASCRIPT_2020 --language_out=ECMASCRIPT_2020 --js_output_file=<out>"
+command_whitespace = "google-closure-compiler --js=<in> --compilation_level=WHITESPACE_ONLY --language_in=ECMASCRIPT_2020 --language_out=ECMASCRIPT_2020 --js_output_file=<out>"
+megafile_input = "closure/edge_cases.js"
+megafile_output_simple = "closure/obfuscated.megafile.simple.js"
+megafile_output_whitespace = "closure/obfuscated.megafile.whitespace.js"
+hello_input = "closure/hello.js"
+hello_output = "closure/obfuscated.js"
+status = "REAL-FIXTURE (SIMPLE + WHITESPACE_ONLY)"
+notes = "ADVANCED mode blocked by extern collisions (Iterable/Counter/AsyncGenerator declared in es3/w3c_css externs) and unsupported private # fields. SIMPLE level captures the production-meaningful transform."
+
+[[fixtures]]
+tool = "babel-preset-env"
+category = "compiler"
+version = "@babel/cli 7.29.7 + @babel/preset-env 7.x"
+install = "npm install --save-dev @babel/core @babel/cli @babel/preset-env"
+command = "npx babel <in> --presets=@babel/preset-env --out-file <out>"
+megafile_input = "babel-preset-env/edge_cases.js"
+megafile_output = "babel-preset-env/obfuscated.megafile.js"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "tsc"
+category = "compiler"
+version = "TypeScript 6.0.3"
+install = "npm install -g typescript"
+command = "tsc --target es2022 --module commonjs --lib es2022,dom --allowJs --declaration --sourceMap --noEmitOnError false --outDir <out> <in>"
+input = "tsc/edge_cases.ts"
+output_js = "tsc/obfuscated.megafile.js"
+output_dts = "tsc/edge_cases.d.ts"
+output_map = "tsc/edge_cases.js.map"
+status = "REAL-FIXTURE"
+
+# ------------------------------------------------------------------------------
+# BUNDLERS — multi-module entry app (src/index.js + src/util.js + src/math.js + src/lazy.js)
+# ------------------------------------------------------------------------------
+
+[[fixtures]]
+tool = "webpack5"
+category = "bundler"
+version = "5.107.2"
+install = "npm install -g webpack webpack-cli"
+command = "webpack --config webpack.config.cjs (mode: production, target: node, minimize: false, sourcemap: true)"
+bundle = "webpack5/bundle.js"
+sourcemap = "webpack5/bundle.js.map"
+lazy_chunk = "webpack5/899.bundle.js"
+lazy_chunk_map = "webpack5/899.bundle.js.map"
+src = "webpack5/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "rollup"
+category = "bundler"
+version = "4.60.4"
+install = "npm install -g rollup"
+command = "rollup -c (format: cjs, sourcemap: true, inlineDynamicImports: true)"
+bundle = "rollup/bundle.js"
+sourcemap = "rollup/bundle.js.map"
+src = "rollup/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "rolldown"
+category = "bundler"
+status = "USER-ACTION-REQUIRED"
+notes = "Rolldown not installed in this run; install via `npm install -g rolldown` then bundle the multi-module fixture. Rolldown also produces /*#__PURE__*/ + Object.freeze({__proto__: null}) but with a slightly different runtime banner."
+
+[[fixtures]]
+tool = "vite"
+category = "bundler"
+version = "8.0.14"
+install = "npm install --save-dev vite"
+command = "vite build --config vite.config.mjs (manifest: true, minify: false, sourcemap: true)"
+bundle = "vite/assets/index-DQvCGGXF.js"
+sourcemap = "vite/assets/index-DQvCGGXF.js.map"
+lazy_chunk = "vite/assets/lazy-mZ_fD4Dv.js"
+lazy_chunk_map = "vite/assets/lazy-mZ_fD4Dv.js.map"
+manifest = "vite/manifest.json"
+html = "vite/index.html"
+src = "vite/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "esbuild"
+category = "bundler"
+version = "0.28.0"
+install = "npm install -g esbuild"
+command = "esbuild ./src/index.js --bundle --platform=node --format=cjs --sourcemap --outfile=bundle.js"
+bundle = "esbuild/bundle.js"
+sourcemap = "esbuild/bundle.js.map"
+src = "esbuild/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "bun"
+category = "bundler"
+version = "1.3.14"
+install = "bun (pre-installed)"
+command = "bun build ./src/index.js --target=node --outdir <out> --sourcemap=external"
+bundle = "bun/bundle.js"
+sourcemap = "bun/bundle.js.map"
+src = "bun/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "parcel"
+category = "bundler"
+version = "2.16.4"
+install = "npm install -g parcel"
+command = "parcel build ./src/index.js --no-cache --dist-dir <out>"
+bundle = "parcel/bundle.js"
+sourcemap = "parcel/bundle.js.map"
+lazy_chunk = "parcel/lazy.js"
+lazy_chunk_map = "parcel/lazy.js.map"
+src = "parcel/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "browserify"
+category = "bundler"
+version = "17.0.1"
+install = "npm install -g browserify"
+command = "browserify ./src/index.js -o bundle.js"
+bundle = "browserify/bundle.js"
+src = "browserify/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "systemjs"
+category = "bundler"
+version = "rollup 4.60 with format: system"
+install = "npm install -g rollup"
+command = "rollup -c (format: system, sourcemap: true, inlineDynamicImports: true)"
+bundle = "systemjs/bundle.js"
+sourcemap = "systemjs/bundle.js.map"
+src = "systemjs/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "requirejs (AMD)"
+category = "bundler"
+version = "rollup 4.60 with format: amd"
+install = "npm install -g rollup"
+command = "rollup -c (format: amd, amd.id: 'app/index', sourcemap: true, inlineDynamicImports: true)"
+bundle = "requirejs/bundle.js"
+sourcemap = "requirejs/bundle.js.map"
+src = "requirejs/src/"
+status = "REAL-FIXTURE"
+
+[[fixtures]]
+tool = "turbopack"
+category = "bundler"
+version = "Next.js 16.2.6 (Turbopack)"
+install = "npx create-next-app or hand-bootstrap minimal Next app + npm i next react react-dom"
+command = "npx next build --turbopack"
+runtime = "turbopack/runtime.js"
+chunks = ["turbopack/chunk-0pwqgevvp.dv.js", "turbopack/chunk-02ft70gbmsc6_.js", "turbopack/chunk-0d2m.q079kiji.js"]
+app = "turbopack/app/"
+status = "REAL-FIXTURE"
+
+# ------------------------------------------------------------------------------
+# NODE PACKAGERS
+# ------------------------------------------------------------------------------
+
+[[fixtures]]
+tool = "bytenode"
+category = "node-packager"
+version = "1.5.7 + Node 18/20/22/24"
+install = "npm install -g bytenode"
+command = "bytenode --compile <in.js> (emits .jsc)"
+fixtures_path = "corpus/v8/node-{18,20,22,24}/hello-{ver}.{js,jsc}"
+status = "REAL-FIXTURE (pre-existing prior to wave-2)"
+
+[[fixtures]]
+tool = "node-sea"
+category = "node-packager"
+version = "Node 24.16 native SEA"
+install = "Node 22+ (built-in --experimental-sea-config)"
+command = "node --experimental-sea-config sea-config.json"
+sea_config = "sea/sea-config.json"
+input = "sea/main.js"
+prep_blob = "sea/sea-prep.blob"
+status = "REAL-FIXTURE (prep blob only — full SEA exe requires postject + node-binary copy)"
+
+[[fixtures]]
+tool = "pkg"
+category = "node-packager"
+version = "@yao-pkg/pkg 5.8.1 (vercel/pkg fork)"
+install = "npm install -g pkg"
+command = "pkg . --target node18-win-x64 --output hello-pkg.exe"
+input = "pkg/index.js"
+package = "pkg/package.json"
+header_bytes = "pkg/hello-pkg-header.bin (first 16384 bytes of exe; starts with MZ)"
+tail_bytes = "pkg/hello-pkg-tail.bin (last 65536 bytes of exe; contains pkg payload markers)"
+full_exe_size = "37.6 MB (not committed)"
+status = "REAL-FIXTURE (header + tail excerpts)"
+
+[[fixtures]]
+tool = "nexe"
+category = "node-packager"
+status = "TOOL-DEAD-DOCUMENT"
+notes = "Last meaningful release 2021. Maintainer-archived. Skipped in favor of node-sea (built-in Node ≥22) and pkg."
+
+[[fixtures]]
+tool = "nwjs"
+category = "node-packager"
+status = "USER-ACTION-REQUIRED"
+notes = "NWJS shipping artifact is a cross-platform application bundle (~150 MB per OS). Not amenable to repo-committed fixtures. Document detection heuristics (nw.exe + package.json + app.js layout) and gate real-fixture test on user-supplied path."
+
+[harvest_provenance]
+runner = "wave-2 js-deob stage agent on Windows 11 + Node 24.16.0 + npm 11.13.0"
+host_path = ".developer/wave-2-js-deob-scratch/"
+multi_module_entry_app = ".developer/wave-2-js-deob-scratch/multimod/src/{index.js, util.js, math.js, lazy.js}"
+cjs_multi_module_entry_app = ".developer/wave-2-js-deob-scratch/multimod-cjs/src/{index.js, util.js, math.js}"
+vite_app = ".developer/wave-2-js-deob-scratch/multimod-vite/{index.html, src/}"
+next_app = ".developer/wave-2-js-deob-scratch/next-fixture/app/"
+megafile_provenance = "Hand-authored by wave-2 js-deob stage agent to systematically exercise the ES2015-ES2024 surface. Runs cleanly under Node 24 (verified with `node corpus/js/megafile/edge_cases.js`)."
+
+[counts]
+real_fixtures = 23
+paid_deferred = 4
+tool_dead_document = 2
+user_action_required = 2
+total = 31

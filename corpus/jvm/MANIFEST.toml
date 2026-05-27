@@ -1,0 +1,156 @@
+schema_version = 1
+crate = "disrobe-pass-jvm"
+generated = "2026-05-25"
+toolchain = "Eclipse Temurin JDK 25.0.3+9-LTS, Kotlin 2.1.20, ProGuard 7.9.1, R8 9.1.31 (Google Maven), Android cmdline-tools 13114758"
+
+[[megafile]]
+path = "megafile/EdgeCases.java"
+language = "java"
+target = "Java 25"
+lines = 1431
+covers = [
+    "records", "sealed-interfaces", "pattern-matching-switch", "deconstruction-patterns",
+    "text-blocks", "virtual-threads", "ffm-arena", "var-keyword", "lambdas", "method-refs",
+    "generics-bounded-wildcards", "multi-catch", "try-with-resources", "varargs", "SafeVarargs",
+    "enums-with-abstract-methods", "annotations-repeatable", "nested-classes", "anonymous-classes",
+    "static-initializers", "instance-initializers", "interface-default-methods", "interface-static-methods",
+    "interface-private-methods", "recursive-bounded-types", "concurrent-utils", "completable-future",
+    "executors-virtual", "stream-collectors", "intstream"
+]
+
+[[megafile]]
+path = "megafile/EdgeCases.kt"
+language = "kotlin"
+target = "Kotlin 2.1, JVM 17 target"
+lines = 838
+covers = [
+    "coroutines-runBlocking", "coroutines-async-await", "coroutines-launch", "withContext",
+    "flow-emit-collect", "flow-fold", "data-classes", "sealed-interfaces", "sealed-classes",
+    "data-objects", "value-classes-JvmInline", "smart-casts", "when-expressions",
+    "destructuring-declarations", "extension-functions", "extension-properties",
+    "top-level-functions", "companion-objects", "operator-overloading", "infix-functions",
+    "varargs-spread", "labels", "non-local-return", "inline-fun", "reified-type-params",
+    "elvis-operator", "safe-call", "let-apply-also-with-run", "lazy-properties",
+    "custom-property-accessors", "comparable-impl", "object-singleton", "annotation-classes",
+    "generics-variance", "iterators", "function-types", "high-order-functions", "closures",
+    "kotlin-metadata-annotation"
+]
+
+[[megafile]]
+path = "megafile/EdgeCases-baseline.jar"
+language = "java"
+sha = "computed-by-test-runner"
+bytes = 41187
+notes = "real javac --release 25 output; runs cleanly via `java -jar` (~120 lines of stdout, terminates with `DONE`)."
+
+[[megafile]]
+path = "megafile/EdgeCasesKt.jar"
+language = "kotlin"
+sha = "computed-by-test-runner"
+bytes = 102539
+notes = "real kotlinc 2.1.20 output bundled w/ kotlinx-coroutines-core-jvm 1.10.2 at runtime; smoke-runs to `KT-DONE`."
+
+[[protector]]
+name = "proguard"
+status = "REAL-FIXTURE"
+version = "7.9.1"
+fixtures = [
+    "proguard/Hello-baseline.jar",
+    "proguard/Hello-baseline.class",
+    "proguard/Hello-obf.jar",
+    "proguard/mapping.txt",
+    "proguard/EdgeCases-pg.jar",
+    "proguard/EdgeCases-mapping.txt",
+    "proguard/EdgeCasesKt-pg.jar",
+    "proguard/EdgeCasesKt-mapping.txt",
+]
+notes = "Hello-obf runs cleanly; EdgeCases-pg has runtime NPE due to aggressive optimization pruning enum constants array (Direction.getEnumConstants()) — fixture intentionally retained as worst-case obfuscator output for the deobfuscator to handle. EdgeCasesKt-pg keeps kotlin.Metadata and functional-interface implementers."
+
+[[protector]]
+name = "r8"
+status = "REAL-FIXTURE"
+version = "9.1.31"
+fixtures = [
+    "r8/Hello-baseline.jar",
+    "r8/Hello-r8.jar",
+    "r8/mapping.txt",
+    "r8/EdgeCases-r8.jar",
+    "r8/EdgeCases-mapping.txt",
+    "r8/EdgeCasesKt-r8.jar",
+    "r8/EdgeCasesKt-mapping.txt",
+]
+notes = "R8 9.1.31 from Google Maven (cmdline-tools shipped 8.9.27 which can't read Java 25 class file v69). Library resolved via android-34.jar stub. EdgeCases-r8 runs cleanly via `java -cp Hello-r8.jar Hello` (no manifest entry); mapping contains R8-specific residualsignature comments."
+
+[[protector]]
+name = "dex"
+status = "REAL-FIXTURE"
+version = "d8 9.1.31"
+fixtures = [
+    "dex/Hello.dex",
+    "dex/EdgeCases.dex",
+    "dex/EdgeCasesKt.dex",
+]
+notes = "Hello.dex = dex 035 (1660B), EdgeCases.dex = dex 035 (62KB), EdgeCasesKt.dex = dex 039 (87KB, --min-api 33 required to allow space in `function with spaces in name`)."
+
+[[protector]]
+name = "zelix-klassmaster"
+status = "CLEAN-ROOM-PORT"
+license = "proprietary (Zelix Pty Ltd)"
+fixtures = ["megafile/EdgeCases-baseline.jar (used for real-fixture string round-trip)"]
+notes = "Wave 3B: clean-room port at `crates/disrobe-pass-jvm/src/protectors/zelix.rs` implementing per-class-seed XOR keystream + CFF unflattening (goto/tableswitch/lookupswitch byte scanning). Real-fixture test `tests/real_zelix.rs` parses EdgeCases-baseline.jar classfile and round-trips synthetic protected strings through encrypt -> decrypt with key derived from class hash."
+
+[[protector]]
+name = "allatori"
+status = "CLEAN-ROOM-PORT"
+license = "proprietary (Allatori, allatori.com)"
+fixtures = ["megafile/EdgeCases-baseline.jar (used for real-fixture string round-trip)"]
+notes = "Wave 3B: clean-room port at `crates/disrobe-pass-jvm/src/protectors/allatori.rs` implementing String.hashCode-derived key, XOR keystream over UTF-16 code units, watermark field/string strip. Real-fixture test `tests/real_allatori.rs` reads real string constants from baseline jar, round-trips through encrypt/decrypt."
+
+[[protector]]
+name = "stringer"
+status = "CLEAN-ROOM-PORT"
+license = "proprietary (Licel)"
+fixtures = ["megafile/EdgeCases-baseline.jar (used for real-fixture string round-trip)"]
+notes = "Wave 3B: clean-room port at `crates/disrobe-pass-jvm/src/protectors/stringer.rs` implementing FNV-1a class/method key + LCG keystream XOR. Real-fixture test `tests/real_stringer.rs` round-trips real jar strings through encrypt/decrypt."
+
+[[protector]]
+name = "dasho"
+status = "CLEAN-ROOM-PORT-PARTIAL"
+license = "proprietary (PreEmptive)"
+fixtures = []
+notes = "Wave 3B: clean-room port at `crates/disrobe-pass-jvm/src/protectors/dasho.rs` covers publicly-documented marker-string strip + XOR-based string decrypt. Less coverage than Allatori/Stringer due to scarcer public reverse-engineering material. Real-fixture test `tests/real_dasho.rs` validates round-trip + marker detection."
+
+[[protector]]
+name = "dexguard"
+status = "USER-ACTION-REQUIRED"
+license = "proprietary (Guardsquare)"
+fixtures = ["dex/EdgeCases.dex (clean baseline; used to verify residual-encrypted-string ratio is low for non-DexGuard input)"]
+notes = "Wave 3B: stub at `crates/disrobe-pass-jvm/src/protectors/dexguard.rs` parses dex string-id table, counts residual high-entropy strings, gates behind explicit authorization. Full string-decrypt requires DexGuard trial copy (Guardsquare gates eval behind enterprise contact form) — `peel` returns USER-ACTION-REQUIRED note. Real-fixture test `tests/real_dexguard.rs` validates auth gate, residual count on baseline dex, dex-format check."
+
+[[protector]]
+name = "yguard"
+status = "DEFER-FOSS-BUILD-INFRASTRUCTURE"
+license = "MIT"
+fixtures = []
+notes = "yWorks/yGuard is FOSS gradle plugin; building requires gradle wrapper bootstrap (~250MB toolchain). Deferred to follow-up sprint; detect-only path covered by string-marker tests."
+
+[[protector]]
+name = "jbco"
+status = "DEAD-DOCUMENT"
+upstream = "https://www.sable.mcgill.ca/JBCO/"
+last_release = "2010"
+fixtures = []
+notes = "Confirmed via web check: project page exists but last research paper from 2010. McGill Sable group repo (https://github.com/Sable) has no JBCO repository. Project is archived/dead; detection retains heuristic-only path. Replace `unreachable!()` with `panic!('DEAD-DOCUMENT: JBCO upstream archived since 2010, see corpus/jvm/MANIFEST.toml')` in test stub."
+
+[[protector]]
+name = "skidsuite2"
+status = "DEAD-DOCUMENT"
+upstream = "https://github.com/Col-E/SkidSuite2"
+fixtures = []
+notes = "Col-E/SkidSuite2 last commit 2017; readme self-marks as deprecated, superseded by Recaf (https://github.com/Col-E/Recaf). Detection retains string-marker heuristic; no obfuscator-output fixture obtainable."
+
+[[protector]]
+name = "groovy-decompile"
+status = "DEFER-PENDING-BACKEND"
+fixtures = []
+notes = "needs cfr / vineflower backend; deferred to a follow-up sprint that integrates backend detection."
