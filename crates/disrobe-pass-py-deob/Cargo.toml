@@ -41,7 +41,7 @@ regex = "1"
 ruff_python_parser = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
 ruff_python_ast = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
 ruff_python_codegen = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
-ruff_text_size = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.13.0" }
+ruff_text_size = { version = "0.0.0", git = "https://github.com/astral-sh/ruff", tag = "0.15.14" }
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -2189,7 +2189,7 @@ dependencies = [
  "ruff_python_ast",
  "ruff_python_codegen",
  "ruff_python_parser",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.15.14)",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5394,7 +5394,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -5414,7 +5414,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6180,7 +6180,7 @@ dependencies = [
  "memchr",
  "ruff_python_trivia",
  "ruff_source_file",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.13.0)",
  "rustc-hash",
  "thiserror 2.0.18",
 ]
@@ -6194,7 +6194,7 @@ dependencies = [
  "ruff_python_literal",
  "ruff_python_parser",
  "ruff_source_file",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.13.0)",
 ]
 
 [[package]]
@@ -6220,7 +6220,7 @@ dependencies = [
  "memchr",
  "ruff_python_ast",
  "ruff_python_trivia",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.13.0)",
  "rustc-hash",
  "static_assertions",
  "unicode-ident",
@@ -6235,7 +6235,7 @@ source = "git+https://github.com/astral-sh/ruff?tag=0.13.0#a1fdd66f10a045a574efb
 dependencies = [
  "itertools 0.14.0",
  "ruff_source_file",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.13.0)",
  "unicode-ident",
 ]
 
@@ -6245,7 +6245,7 @@ version = "0.0.0"
 source = "git+https://github.com/astral-sh/ruff?tag=0.13.0#a1fdd66f10a045a574efb20e422868b21decda40"
 dependencies = [
  "memchr",
- "ruff_text_size",
+ "ruff_text_size 0.0.0 (git+https://github.com/astral-sh/ruff?tag=0.13.0)",
 ]
 
 [[package]]
@@ -6255,6 +6255,11 @@ source = "git+https://github.com/astral-sh/ruff?tag=0.13.0#a1fdd66f10a045a574efb
 dependencies = [
  "get-size2",
 ]
+
+[[package]]
+name = "ruff_text_size"
+version = "0.0.0"
+source = "git+https://github.com/astral-sh/ruff?tag=0.15.14#9ad2da3015e5faf73bdc5f1d09df3e47238e3edf"
 
 [[package]]
 name = "rustc-demangle"
