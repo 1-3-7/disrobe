@@ -21,7 +21,7 @@ jobs:
           - chain_driver
           - chain_spec_parser
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-fuzz
