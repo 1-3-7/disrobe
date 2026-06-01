@@ -37,7 +37,10 @@ const TAG_GENERIC: &str = "js-obfuscated";
 const TAG_JSDEFENDER: &str = "js-jsdefender";
 const TAG_ARXAN: &str = "js-arxan";
 const TAG_PACE: &str = "js-pace";
+const TAG_NODE_SEA: &str = "js-node-sea";
+const TAG_BYTENODE: &str = "js-bytenode-jsc";
 const PROTECTOR_SPECIFICITY: u16 = 20;
+const SEA_SPECIFICITY: u16 = 40;
 
 #[derive(Debug)]
 pub struct JsObfDetector;
@@ -50,6 +53,32 @@ impl Detector for JsObfDetector {
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let bytes: &[u8] = ctx.bytes;
+        if let Some(loc) = crate::v8::sea::detect_node_sea_blob(bytes) {
+            return Some(DetectVerdict::new(
+                PASS_ID,
+                TAG_NODE_SEA,
+                FAMILY_OBFUSCATOR_WRAPPER,
+                0.95,
+                SEA_SPECIFICITY,
+                vec!["node-sea-blob"],
+                format!(
+                    "node SEA blob at offset {off} flags 0x{flags:08x}",
+                    off = loc.blob_offset,
+                    flags = loc.flags
+                ),
+            ));
+        }
+        if crate::v8::bytenode::looks_like_bytenode(bytes) {
+            return Some(DetectVerdict::new(
+                PASS_ID,
+                TAG_BYTENODE,
+                FAMILY_OBFUSCATOR_WRAPPER,
+                0.90,
+                SEA_SPECIFICITY,
+                vec!["v8-cached-data-magic"],
+                "bytenode .jsc V8 cached-data blob".to_string(),
+            ));
+        }
         if let Ok(text) = std::str::from_utf8(bytes) {
             if let Some(v) = verdict_from_protector(text) {
                 return Some(v);
@@ -88,6 +117,18 @@ impl Pass for JsObfPass {
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
+        if let Some(loc) = crate::v8::sea::detect_node_sea_blob(bytes) {
+            let body: Vec<u8> = serde_json::to_vec_pretty(&loc).map_err(|e| {
+                CoreError::PassFailure(format!("DR-JS-0913: sea report serialize: {e}"))
+            })?;
+            return Ok(Artifact::new(Rung::Surface, body, artifact.root_hash));
+        }
+        if let Ok(header) = crate::v8::bytenode::parse_bytenode_header(bytes) {
+            let body: Vec<u8> = serde_json::to_vec_pretty(&header).map_err(|e| {
+                CoreError::PassFailure(format!("DR-JS-0914: bytenode report serialize: {e}"))
+            })?;
+            return Ok(Artifact::new(Rung::Surface, body, artifact.root_hash));
+        }
         if let Ok(text) = std::str::from_utf8(bytes) {
             if let Some(out) = run_protector(text, artifact)? {
                 return Ok(out);
@@ -348,6 +389,24 @@ mod tests {
             }
             _ => panic!("expected Source"),
         }
+    }
+
+    #[test]
+    fn detect_node_sea_blob_yields_sea_tag() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&crate::v8::sea::SEA_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.push(0u8);
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        let ctx: DetectContext<'_> = DetectContext {
+            bytes: &bytes,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        };
+        let v: DetectVerdict = JsObfDetector.detect(&ctx).expect("sea detect");
+        assert_eq!(v.format_tag, TAG_NODE_SEA);
     }
 
     #[test]

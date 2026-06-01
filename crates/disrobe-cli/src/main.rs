@@ -21,6 +21,8 @@ use cli::auto;
 use cli::beam::{self, BeamCmd};
 use cli::bug_report;
 #[cfg(feature = "chain")]
+use cli::chain_compare;
+#[cfg(feature = "chain")]
 use cli::chain_v1;
 use cli::completions as completions_cmd;
 use cli::doctor;
@@ -357,6 +359,11 @@ enum Cmd {
         emit: Vec<String>,
         #[arg(long, help = "report what would happen without writing any output")]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "mirror each stage's byte-exact output under <out>/stages/NN-<pass>/ and terminal outputs under <out>/final/"
+        )]
+        capture_stages: bool,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -375,6 +382,34 @@ enum Cmd {
         chain: String,
         #[arg(long = "chain-pin", help = "pin every pass to a specific version")]
         chain_pin: Option<String>,
+        #[arg(
+            long,
+            help = "mirror each stage's byte-exact output under <out>/stages/NN-<pass>/ and terminal outputs under <out>/final/"
+        )]
+        capture_stages: bool,
+    },
+    #[cfg(feature = "chain")]
+    #[command(
+        about = "structurally diff two chain.json documents (passes, stage blake3 hashes, sizes, verdicts)"
+    )]
+    Diff {
+        #[arg(help = "left chain.json")]
+        left: PathBuf,
+        #[arg(help = "right chain.json")]
+        right: PathBuf,
+    },
+    #[cfg(feature = "chain")]
+    #[command(
+        about = "verify a chain.json's per-stage output hashes match a committed reference chain.json"
+    )]
+    Guard {
+        #[arg(help = "subject chain.json to verify")]
+        subject: PathBuf,
+        #[arg(
+            long,
+            help = "reference chain.json holding the ground-truth per-stage output hashes"
+        )]
+        reference: PathBuf,
     },
     #[command(about = "run disrobe as an HTTP daemon, gRPC server, or LSP-over-stdio")]
     Serve {
@@ -620,6 +655,7 @@ fn main() -> miette::Result<()> {
             max_depth,
             emit,
             dry_run,
+            capture_stages,
         } => auto::run(
             input,
             out,
@@ -627,6 +663,7 @@ fn main() -> miette::Result<()> {
             emit,
             dry_run || global_dry_run,
             fmt,
+            capture_stages,
         ),
         #[cfg(feature = "chain")]
         Cmd::Chain {
@@ -634,7 +671,12 @@ fn main() -> miette::Result<()> {
             out,
             chain,
             chain_pin,
-        } => chain_v1::run(input, out, chain, chain_pin, fmt),
+            capture_stages,
+        } => chain_v1::run(input, out, chain, chain_pin, fmt, capture_stages),
+        #[cfg(feature = "chain")]
+        Cmd::Diff { left, right } => chain_compare::run_diff(left, right, fmt),
+        #[cfg(feature = "chain")]
+        Cmd::Guard { subject, reference } => chain_compare::run_guard(subject, reference, fmt),
         Cmd::Serve {
             bind,
             stdio,

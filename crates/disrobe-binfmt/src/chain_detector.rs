@@ -11,6 +11,7 @@ use disrobe_core::pass::PassId;
 
 pub const PASS_ID: PassId = "binfmt.container";
 
+const TAG_ASAR: &str = "asar";
 const TAG_ZIP: &str = "zip";
 const TAG_TAR: &str = "tar";
 const TAG_AR: &str = "ar";
@@ -190,7 +191,26 @@ fn tar_inventory(bytes: &[u8]) -> Inventory {
     Inventory::Listed(entries)
 }
 
+fn looks_like_asar(bytes: &[u8]) -> bool {
+    const JSON_START: usize = 16usize;
+    if bytes.len() < 32 {
+        return false;
+    }
+    let pickle_len: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if pickle_len != 4 {
+        return false;
+    }
+    let header_size: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if header_size < 8 {
+        return false;
+    }
+    bytes.len() > JSON_START && bytes[JSON_START..].starts_with(b"{\"files\":")
+}
+
 fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
+    if looks_like_asar(bytes) {
+        return Some(TAG_ASAR);
+    }
     if bytes.starts_with(b"PK\x03\x04")
         || bytes.starts_with(b"PK\x05\x06")
         || bytes.starts_with(b"PK\x07\x08")
@@ -255,6 +275,30 @@ mod tests {
             .detect(&ctx(b"PK\x03\x04rest"))
             .expect("zip magic");
         assert_eq!(v.format_tag, TAG_ZIP);
+    }
+
+    fn synth_asar_header(json: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(16 + json.len());
+        out.extend_from_slice(&4u32.to_le_bytes());
+        let header_size: u32 = u32::try_from(json.len()).unwrap() + 8u32;
+        out.extend_from_slice(&header_size.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&u32::try_from(json.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(json);
+        out
+    }
+
+    #[test]
+    fn detects_asar_before_zip() {
+        let bytes: Vec<u8> = synth_asar_header(b"{\"files\":{\"index.js\":{}}}");
+        assert_eq!(sniff_container_tag(&bytes), Some(TAG_ASAR));
+        let v: DetectVerdict = ContainerDetector.detect(&ctx(&bytes)).expect("asar detect");
+        assert_eq!(v.format_tag, TAG_ASAR);
+    }
+
+    #[test]
+    fn plain_zip_still_detects_zip_not_asar() {
+        assert_eq!(sniff_container_tag(b"PK\x03\x04rest-of-zip"), Some(TAG_ZIP));
     }
 
     #[test]

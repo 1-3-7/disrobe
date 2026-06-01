@@ -6,6 +6,8 @@ pub(crate) mod auto;
 pub(crate) mod beam;
 pub(crate) mod bug_report;
 #[cfg(feature = "chain")]
+pub(crate) mod chain_compare;
+#[cfg(feature = "chain")]
 pub(crate) mod chain_v1;
 pub(crate) mod completions;
 pub(crate) mod doctor;

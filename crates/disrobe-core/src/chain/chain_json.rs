@@ -166,6 +166,7 @@ impl ChainDocument {
     ///         pass_id: None, format_tag_in: None,
     ///         input_blake3: [0u8; 32], input_size: 0,
     ///         output_kind: None, output_blake3: None, output_size: None,
+    ///         output_bytes: None,
     ///         duration: None, picks: vec![], artifacts: vec![],
     ///         metadata: Default::default(), verdict: Verdict::Complete{ format: "Python".into() }
     ///     }],
@@ -346,6 +347,7 @@ mod tests {
             output_kind: None,
             output_blake3: None,
             output_size: None,
+            output_bytes: None,
             duration: None,
             picks: vec![],
             artifacts: vec![],
@@ -376,6 +378,7 @@ mod tests {
                 output_kind: None,
                 output_blake3: None,
                 output_size: None,
+                output_bytes: None,
                 duration: None,
                 picks: vec![],
                 artifacts: vec![],

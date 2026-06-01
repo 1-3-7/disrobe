@@ -59,6 +59,7 @@ pub struct Node {
     pub output_kind: Option<OutputKind>,
     pub output_blake3: Option<[u8; 32]>,
     pub output_size: Option<u64>,
+    pub output_bytes: Option<Vec<u8>>,
     pub duration: Option<Duration>,
     pub picks: Vec<DetectorPick>,
     pub artifacts: Vec<String>,
@@ -72,6 +73,7 @@ pub struct ChainConfig {
     pub per_detector_budget: Duration,
     pub per_pass_budget: Duration,
     pub max_parallel_branches: u32,
+    pub capture_stage_bytes: bool,
 }
 
 impl Default for ChainConfig {
@@ -84,6 +86,7 @@ impl Default for ChainConfig {
             per_detector_budget: Duration::from_millis(100),
             per_pass_budget: Duration::from_secs(60),
             max_parallel_branches: 8,
+            capture_stage_bytes: false,
         }
     }
 }
@@ -192,6 +195,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             output_kind: None,
             output_blake3: None,
             output_size: None,
+            output_bytes: None,
             duration: None,
             picks: Vec::new(),
             artifacts: Vec::new(),
@@ -298,6 +302,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                         output_kind: None,
                         output_blake3: None,
                         output_size: None,
+                        output_bytes: None,
                         duration: None,
                         picks: vec![pick],
                         artifacts: Vec::new(),
@@ -312,6 +317,11 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     } => {
                         let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
                         let out_size: u64 = outcome.output_bytes.len() as u64;
+                        let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
+                            Some(outcome.output_bytes.clone())
+                        } else {
+                            None
+                        };
                         nodes.push(Node {
                             id: layer_id,
                             parent_id: Some(item.parent),
@@ -324,6 +334,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             output_kind: Some(outcome.kind),
                             output_blake3: Some(out_hash),
                             output_size: Some(out_size),
+                            output_bytes: captured,
                             duration: Some(outcome.duration),
                             picks: vec![pick],
                             artifacts: Vec::new(),
@@ -350,6 +361,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 output_kind: Some(outcome.kind),
                                 output_blake3: None,
                                 output_size: Some(0),
+                                output_bytes: None,
                                 duration: Some(outcome.duration),
                                 picks: vec![pick],
                                 artifacts: Vec::new(),
@@ -372,6 +384,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 output_kind: Some(outcome.kind),
                                 output_blake3: Some(out_hash),
                                 output_size: Some(outcome.output_bytes.len() as u64),
+                                output_bytes: None,
                                 duration: Some(outcome.duration),
                                 picks: vec![pick],
                                 artifacts: Vec::new(),
@@ -382,6 +395,11 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                         }
                         let out_size: u64 = outcome.output_bytes.len() as u64;
                         let kind_clone: OutputKind = outcome.kind.clone();
+                        let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
+                            Some(outcome.output_bytes.clone())
+                        } else {
+                            None
+                        };
                         nodes.push(Node {
                             id: layer_id,
                             parent_id: Some(item.parent),
@@ -394,6 +412,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             output_kind: Some(kind_clone),
                             output_blake3: Some(out_hash),
                             output_size: Some(out_size),
+                            output_bytes: captured,
                             duration: Some(outcome.duration),
                             picks: vec![pick],
                             artifacts: Vec::new(),
@@ -427,6 +446,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             output_kind: Some(outcome.kind),
                             output_blake3: None,
                             output_size: None,
+                            output_bytes: None,
                             duration: Some(outcome.duration),
                             picks: vec![pick],
                             artifacts: Vec::new(),
@@ -560,6 +580,7 @@ fn push_terminal_layer(
         output_kind: None,
         output_blake3: None,
         output_size: None,
+        output_bytes: None,
         duration: None,
         picks: Vec::new(),
         artifacts: Vec::new(),

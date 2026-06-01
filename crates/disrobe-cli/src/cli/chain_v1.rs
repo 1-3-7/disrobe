@@ -2,7 +2,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disrobe_core::Artifact;
@@ -10,7 +10,7 @@ use disrobe_core::Rung;
 use disrobe_core::chain::spec::PassToken;
 use disrobe_core::chain::state_machine::PassRunner;
 use disrobe_core::chain::{
-    ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainSpec, DetectorPick, OutputKind,
+    ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainSpec, DetectorPick, Node, OutputKind,
     PassRegistry, PassRunOutcome,
 };
 
@@ -93,8 +93,9 @@ pub(crate) fn run(
     chain_arg: String,
     pin_arg: Option<String>,
     fmt: OutputFormat,
+    capture_stages: bool,
 ) -> miette::Result<()> {
-    run_with_disk(input, out, chain_arg, pin_arg, fmt, true)
+    run_with_disk(input, out, chain_arg, pin_arg, fmt, true, capture_stages)
 }
 
 pub(crate) fn run_with_disk(
@@ -104,6 +105,7 @@ pub(crate) fn run_with_disk(
     pin_arg: Option<String>,
     fmt: OutputFormat,
     write_to_disk: bool,
+    capture_stages: bool,
 ) -> miette::Result<()> {
     let spec_raw: String = match pin_arg {
         None => chain_arg,
@@ -120,8 +122,11 @@ pub(crate) fn run_with_disk(
     let registry: PassRegistry = build_registry();
     validate_explicit_passes(&spec, &registry)?;
     let runner: ChainPassRunner = ChainPassRunner;
-    let driver: ChainDriver<'_, ChainPassRunner> =
-        ChainDriver::new(&registry, &runner, ChainConfig::default());
+    let config: ChainConfig = ChainConfig {
+        capture_stage_bytes: capture_stages && write_to_disk,
+        ..ChainConfig::default()
+    };
+    let driver: ChainDriver<'_, ChainPassRunner> = ChainDriver::new(&registry, &runner, config);
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input.display().to_string()));
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
@@ -150,11 +155,72 @@ pub(crate) fn run_with_disk(
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(&chain_path, &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
+    let stage_summary: Option<String> = if capture_stages {
+        let written: Vec<String> = write_stage_mirror(&out_dir, &plan)?;
+        Some(format!(
+            "{} stage output(s) mirrored under {}",
+            written.len(),
+            out_dir.join("stages").display()
+        ))
+    } else {
+        None
+    };
     let chain_path_str: String = chain_path.display().to_string();
     emit(fmt, &doc, || {
         println!("chain.json written: {chain_path_str}");
+        if let Some(summary) = stage_summary.as_ref() {
+            println!("{summary}");
+        }
     })?;
     Ok(())
+}
+
+fn stage_slug(pass_id: Option<&str>) -> String {
+    let raw: &str = pass_id.unwrap_or("input");
+    raw.chars()
+        .map(|c: char| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+fn write_stage_mirror(out_dir: &Path, plan: &ChainPlan) -> miette::Result<Vec<String>> {
+    let stages_dir: PathBuf = out_dir.join("stages");
+    let final_dir: PathBuf = out_dir.join("final");
+    let mut written: Vec<String> = Vec::new();
+    for node in &plan.nodes {
+        let Some(stage_bytes): Option<&Vec<u8>> = node.output_bytes.as_ref() else {
+            continue;
+        };
+        let slug: String = stage_slug(node.pass_id.as_deref());
+        let stage_dir: PathBuf = stages_dir.join(format!("{:02}-{slug}", node.id));
+        std::fs::create_dir_all(&stage_dir).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0301: cannot create stage dir {}: {e}",
+                stage_dir.display()
+            )
+        })?;
+        let stage_path: PathBuf = stage_dir.join("output.bin");
+        std::fs::write(&stage_path, stage_bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0302: cannot write stage output {}: {e}",
+                stage_path.display()
+            )
+        })?;
+        written.push(stage_path.display().to_string());
+
+        let is_terminal: bool = !plan
+            .nodes
+            .iter()
+            .any(|other: &Node| other.parent_id == Some(node.id));
+        if is_terminal {
+            std::fs::create_dir_all(&final_dir)
+                .map_err(|e| miette::miette!("DR-CLI-0303: cannot create final dir: {e}"))?;
+            let final_path: PathBuf = final_dir.join(format!("{:02}-{slug}.bin", node.id));
+            std::fs::write(&final_path, stage_bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0304: cannot write final output: {e}"))?;
+            written.push(final_path.display().to_string());
+        }
+    }
+    Ok(written)
 }
 
 fn validate_explicit_passes(spec: &ChainSpec, registry: &PassRegistry) -> miette::Result<()> {

@@ -14,6 +14,7 @@ pub(crate) fn run(
     emit_kinds: Vec<String>,
     dry_run: bool,
     fmt: OutputFormat,
+    capture_stages: bool,
 ) -> miette::Result<()> {
     let emit_spec: EmitSpec = EmitSpec::parse(&emit_kinds)?;
     if !emit_spec.is_empty() {
@@ -27,5 +28,5 @@ pub(crate) fn run(
     } else {
         format!("auto:{cap}")
     };
-    chain_v1::run_with_disk(input, out, chain_arg, None, fmt, !dry_run)
+    chain_v1::run_with_disk(input, out, chain_arg, None, fmt, !dry_run, capture_stages)
 }

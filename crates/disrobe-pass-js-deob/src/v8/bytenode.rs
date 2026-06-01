@@ -214,6 +214,15 @@ pub struct ScrapedConstantPool {
     pub min_run: usize,
 }
 
+/// Cheap predicate for a V8 `SerializedCodeData` (`.jsc` / bytenode) header.
+///
+/// Wraps [`parse_bytenode_header`] so the chain detector can sniff a blob
+/// without owning the parsed structure.
+#[must_use]
+pub fn looks_like_bytenode(bytes: &[u8]) -> bool {
+    parse_bytenode_header(bytes).is_ok()
+}
+
 /// Parse a V8 `SerializedCodeData` header from the start of `bytes`.
 ///
 /// Layout discovery is two-stage:
@@ -480,6 +489,14 @@ mod tests {
         assert_eq!(out.len(), V8_HEADER_SIZE_V12);
         out.extend(std::iter::repeat_n(0u8, payload_len as usize));
         out
+    }
+
+    #[test]
+    fn looks_like_bytenode_accepts_valid_and_rejects_garbage() {
+        let valid: Vec<u8> = synth_v11_jsc(V8_MAGIC_NODE_18, 0x3569_A082, 32);
+        assert!(looks_like_bytenode(&valid));
+        assert!(!looks_like_bytenode(&[0u8; 64]));
+        assert!(!looks_like_bytenode(b"const x = 1;"));
     }
 
     #[test]
