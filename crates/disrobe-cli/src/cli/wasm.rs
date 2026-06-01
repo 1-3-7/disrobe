@@ -305,7 +305,11 @@ fn apply_emit_stubs(spec: &EmitSpec, input: &Path, out_dir: &Path) -> miette::Re
                         .map_err(|e| miette::miette!("{e}"))?;
                 let _: PathBuf = write_applicable_payload(out_dir, &stem, kind, &summary)?;
             }
-            EmitKind::Ast | EmitKind::Manifest | EmitKind::Sourcemap | EmitKind::Signatures => {
+            EmitKind::Ast
+            | EmitKind::Manifest
+            | EmitKind::Sourcemap
+            | EmitKind::Signatures
+            | EmitKind::Recovery => {
                 let _: PathBuf = write_not_applicable_stub(
                     out_dir,
                     &stem,

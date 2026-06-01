@@ -10,6 +10,7 @@ pub mod format;
 pub mod pass;
 pub mod progress;
 pub mod provenance;
+pub mod recovery;
 pub mod resolver;
 pub mod rng;
 pub mod rung;
@@ -37,6 +38,10 @@ pub use progress::{CapturingProgress, NoopProgress, Progress, ProgressEvent};
 pub use provenance::{
     CommentStyle, Language, PROVENANCE_JSON_KEY, PROVENANCE_SCHEMA, Protocol, ProvenanceHeader,
     REPO_URL, comment_prefix, header_for, pretty_duration,
+};
+pub use recovery::{
+    ConfidenceTier, PassRecovery, RECOVERY_SCHEMA, RecoveryReport, RecoverySignal, TierHistogram,
+    assign_tier,
 };
 pub use resolver::{
     CapabilityResolver, MigrationShim, MigrationShimRegistry, ShimStep, ShimTransform,

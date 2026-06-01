@@ -12,6 +12,17 @@ pub enum Verdict {
     CodeDiff(DiffDetail),
 }
 
+impl From<&Verdict> for disrobe_core::RecoverySignal {
+    #[inline]
+    fn from(verdict: &Verdict) -> Self {
+        match verdict {
+            Verdict::Perfect => Self::ByteRoundtripVerified,
+            Verdict::Semantic => Self::RecompilesEquivalent,
+            Verdict::CodeDiff(_) => Self::NoRecovery,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffDetail {
     pub qualname: String,

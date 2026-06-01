@@ -17,6 +17,16 @@ pub enum SurfaceFidelity {
     NamesOnly,
 }
 
+impl From<SurfaceFidelity> for disrobe_core::RecoverySignal {
+    #[inline]
+    fn from(fidelity: SurfaceFidelity) -> Self {
+        match fidelity {
+            SurfaceFidelity::StructuredFromCSource => Self::StructuredNoVerify,
+            SurfaceFidelity::NamesOnly => Self::SignaturesOnly,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceParam {
     pub name: String,

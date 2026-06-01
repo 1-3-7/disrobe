@@ -370,7 +370,7 @@ enum Cmd {
         #[arg(
             long,
             value_delimiter = ',',
-            help = "comma-separated emit kinds: source,disasm,ast,cfg,ir,manifest,sourcemap,symbols,strings,imports,signatures,report"
+            help = "comma-separated emit kinds; for `auto` only `recovery` (echo recovery.json to stdout) is accepted"
         )]
         emit: Vec<String>,
         #[arg(long, help = "report what would happen without writing any output")]

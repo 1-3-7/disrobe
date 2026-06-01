@@ -10,8 +10,8 @@ use disrobe_core::Rung;
 use disrobe_core::chain::spec::PassToken;
 use disrobe_core::chain::state_machine::PassRunner;
 use disrobe_core::chain::{
-    ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainSpec, DetectorPick, Node, OutputKind,
-    PassRegistry, PassRunOutcome,
+    ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainRecoveryReport, ChainSpec,
+    DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome,
 };
 
 use super::output::{OutputFormat, emit};
@@ -95,7 +95,16 @@ pub(crate) fn run(
     fmt: OutputFormat,
     capture_stages: bool,
 ) -> miette::Result<()> {
-    run_with_disk(input, out, chain_arg, pin_arg, fmt, true, capture_stages)
+    run_with_disk(
+        input,
+        out,
+        chain_arg,
+        pin_arg,
+        fmt,
+        true,
+        capture_stages,
+        false,
+    )
 }
 
 pub(crate) fn run_with_disk(
@@ -106,6 +115,7 @@ pub(crate) fn run_with_disk(
     fmt: OutputFormat,
     write_to_disk: bool,
     capture_stages: bool,
+    emit_recovery: bool,
 ) -> miette::Result<()> {
     let spec_raw: String = match pin_arg {
         None => chain_arg,
@@ -135,10 +145,18 @@ pub(crate) fn run_with_disk(
         env!("CARGO_PKG_VERSION"),
         Some(input.display().to_string()),
     );
+    let report: ChainRecoveryReport = ChainRecoveryReport::from_plan(
+        &plan,
+        env!("CARGO_PKG_VERSION"),
+        Some(input.display().to_string()),
+    );
     if !write_to_disk {
         emit(fmt, &doc, || {
             println!("chain.json (dry-run; nothing written to disk)");
         })?;
+        if emit_recovery && fmt.is_machine() {
+            emit(fmt, &report, || {})?;
+        }
         return Ok(());
     }
     let out_dir: PathBuf = out.unwrap_or_else(|| {
@@ -155,6 +173,12 @@ pub(crate) fn run_with_disk(
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(&chain_path, &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
+    let recovery_path: PathBuf = out_dir.join("recovery.json");
+    let recovery_bytes: Vec<u8> = serde_json::to_vec_pretty(&report)
+        .map_err(|e| miette::miette!("DR-CLI-0305: recovery.json serialize: {e}"))?;
+    std::fs::write(&recovery_path, &recovery_bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
+    let recovery_path_str: String = recovery_path.display().to_string();
     let stage_summary: Option<String> = if capture_stages {
         let written: Vec<String> = write_stage_mirror(&out_dir, &plan)?;
         Some(format!(
@@ -168,10 +192,14 @@ pub(crate) fn run_with_disk(
     let chain_path_str: String = chain_path.display().to_string();
     emit(fmt, &doc, || {
         println!("chain.json written: {chain_path_str}");
+        println!("recovery.json written: {recovery_path_str}");
         if let Some(summary) = stage_summary.as_ref() {
             println!("{summary}");
         }
     })?;
+    if emit_recovery && fmt.is_machine() {
+        emit(fmt, &report, || {})?;
+    }
     Ok(())
 }
 

@@ -12,6 +12,17 @@ pub enum LiftFidelity {
     Skeleton,
 }
 
+impl From<LiftFidelity> for disrobe_core::RecoverySignal {
+    #[inline]
+    fn from(fidelity: LiftFidelity) -> Self {
+        match fidelity {
+            LiftFidelity::FullBody => Self::FullBodyLifted,
+            LiftFidelity::PartialBody => Self::SomeBodiesLifted,
+            LiftFidelity::Skeleton => Self::NoRecovery,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOpKind {
     Add,

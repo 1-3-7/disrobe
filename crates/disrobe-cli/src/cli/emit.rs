@@ -17,6 +17,7 @@ pub(crate) enum EmitKind {
     Imports,
     Signatures,
     Report,
+    Recovery,
 }
 
 impl EmitKind {
@@ -34,6 +35,7 @@ impl EmitKind {
             Self::Imports => "imports",
             Self::Signatures => "signatures",
             Self::Report => "report",
+            Self::Recovery => "recovery",
         }
     }
 
@@ -51,6 +53,7 @@ impl EmitKind {
             Self::Imports,
             Self::Signatures,
             Self::Report,
+            Self::Recovery,
         ]
     }
 
