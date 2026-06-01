@@ -253,6 +253,58 @@ const fn packer_rank(p: disrobe_pass_native::Packer) -> u8 {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct SignatureDump {
+    schema: &'static str,
+    input: String,
+    byte_count: u64,
+    crypto_constants: Vec<disrobe_pass_native::CryptoConstHit>,
+}
+
+pub(crate) fn signatures(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    use disrobe_pass_native::{CryptoConstHit, detect_crypto_constants};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0050: cannot read input: {e}"))?;
+    let hits: Vec<CryptoConstHit> = detect_crypto_constants(&bytes);
+    let dump: SignatureDump = SignatureDump {
+        schema: "disrobe.native.signatures/v0",
+        input: input.display().to_string(),
+        byte_count: bytes.len() as u64,
+        crypto_constants: hits,
+    };
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native-signatures")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.signatures.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-NATIVE-0051: cannot create out dir: {e}"))?;
+    }
+    let buf: Vec<u8> = serde_json::to_vec_pretty(&dump)
+        .map_err(|e| miette::miette!("DR-NATIVE-0052: serialize: {e}"))?;
+    std::fs::write(&out_path, buf)
+        .map_err(|e| miette::miette!("DR-NATIVE-0053: cannot write signatures: {e}"))?;
+    println!("native signatures: OK");
+    println!("  input:        {}", input.display());
+    println!("  byte_count:   {}", dump.byte_count);
+    println!("  crypto hits:  {}", dump.crypto_constants.len());
+    for hit in &dump.crypto_constants {
+        println!(
+            "    {} @ {} ({:?}, {} bytes)",
+            hit.primitive.label(),
+            hit.offset,
+            hit.confidence,
+            hit.matched_len
+        );
+    }
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
 pub(crate) fn symbols(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-NATIVE-0010: cannot read input: {e}"))?;
@@ -283,6 +335,83 @@ pub(crate) fn symbols(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()
     println!("  debug_info:   {}", dump.debug_info.present);
     println!("  wrote:        {}", out_path.display());
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct EntropyDump {
+    schema: &'static str,
+    input: String,
+    window: usize,
+    threshold: f64,
+    block_count: usize,
+    high_count: usize,
+    max_entropy: f64,
+    mean_entropy: f64,
+    blocks: Vec<disrobe_pass_native::EntropyBlock>,
+}
+
+pub(crate) fn entropy(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    use disrobe_pass_native::{
+        ENTROPY_WINDOW_4K, EntropyBlock, HIGH_ENTROPY_THRESHOLD, windowed_entropy,
+    };
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0050: cannot read input: {e}"))?;
+    let blocks: Vec<EntropyBlock> = windowed_entropy(&bytes, ENTROPY_WINDOW_4K);
+    let block_count: usize = blocks.len();
+    let high_count: usize = blocks.iter().filter(|b: &&EntropyBlock| b.high).count();
+    let max_entropy: f64 = blocks
+        .iter()
+        .map(|b: &EntropyBlock| b.entropy)
+        .fold(0.0_f64, f64::max);
+    let mean_entropy: f64 = if block_count == 0 {
+        0.0
+    } else {
+        blocks.iter().map(|b: &EntropyBlock| b.entropy).sum::<f64>() / usize_to_f64(block_count)
+    };
+
+    let dump: EntropyDump = EntropyDump {
+        schema: "disrobe.native.entropy/v0",
+        input: input.display().to_string(),
+        window: ENTROPY_WINDOW_4K,
+        threshold: HIGH_ENTROPY_THRESHOLD,
+        block_count,
+        high_count,
+        max_entropy,
+        mean_entropy,
+        blocks,
+    };
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native-entropy")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.entropy.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-NATIVE-0051: cannot create out dir: {e}"))?;
+    }
+    let buf: Vec<u8> = serde_json::to_vec_pretty(&dump)
+        .map_err(|e| miette::miette!("DR-NATIVE-0052: serialize: {e}"))?;
+    std::fs::write(&out_path, buf)
+        .map_err(|e| miette::miette!("DR-NATIVE-0053: cannot write entropy dump: {e}"))?;
+
+    println!("native entropy: OK");
+    println!("  input:        {}", input.display());
+    println!("  window:       {ENTROPY_WINDOW_4K}");
+    println!("  blocks:       {block_count}");
+    println!("  high (>=7.0): {high_count}");
+    println!("  max entropy:  {max_entropy:.4} bits/byte");
+    println!("  mean entropy: {mean_entropy:.4} bits/byte");
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+#[allow(clippy::cast_precision_loss)]
+const fn usize_to_f64(n: usize) -> f64 {
+    n as f64
 }
 
 #[derive(Debug, Serialize)]

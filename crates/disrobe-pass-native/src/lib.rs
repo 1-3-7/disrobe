@@ -18,6 +18,7 @@
 pub mod arch;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
+pub mod crypto_consts;
 pub mod cxx_recovery;
 pub mod debug_info;
 pub mod decompile;
@@ -34,7 +35,12 @@ pub mod provenance_header;
 pub mod rust_recovery;
 pub mod stub_emu;
 
+pub mod entropy;
+
 pub use arch::{Arch, DisasmInsn, disassemble};
+pub use crypto_consts::{
+    CryptoConstConfidence, CryptoConstHit, CryptoPrimitive, detect_crypto_constants,
+};
 pub use cxx_recovery::{
     CxxAbi, CxxDemangled, EhEntry, RttiEntry, SehScopeEntry, demangle_auto, demangle_itanium,
     demangle_msvc, parse_itanium_lsda, parse_windows_seh_scope_table, recover_itanium_rtti,
@@ -99,6 +105,11 @@ pub use rust_recovery::{
     MonomorphizationGroup, PanicKind, PanicSignature, VtableEntry, demangle as demangle_rust,
     detect_panic_signatures, group_monomorphizations, parse_auditable_section,
     recover_enum_discriminants, recover_trait_vtables,
+};
+
+pub use entropy::{
+    ENTROPY_WINDOW_4K, EntropyBlock, HIGH_ENTROPY_THRESHOLD, locate_high_entropy,
+    shannon_entropy_bits, windowed_entropy,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

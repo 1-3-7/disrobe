@@ -583,6 +583,24 @@ enum NativeCmd {
         )]
         out: Option<PathBuf>,
     },
+    #[command(
+        about = "slide a 4KB window computing Shannon entropy (bits/byte) to locate packed/encrypted high-entropy regions"
+    )]
+    Entropy {
+        #[arg(help = "input native binary")]
+        input: PathBuf,
+        #[arg(short, long, help = "output path for the entropy JSON")]
+        out: Option<PathBuf>,
+    },
+    #[command(
+        about = "fingerprint embedded crypto primitives (AES T-tables, SHA/MD5 IV+K, ChaCha20 sigma)"
+    )]
+    Signatures {
+        #[arg(help = "input native binary")]
+        input: PathBuf,
+        #[arg(short, long, help = "output path for the signatures JSON")]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> miette::Result<()> {
@@ -618,6 +636,8 @@ fn main() -> miette::Result<()> {
             NativeCmd::Decompile { input, out } => native::decompile(input, out),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Unpack { input, out } => native::unpack(input, out),
+            NativeCmd::Entropy { input, out } => native::entropy(input, out),
+            NativeCmd::Signatures { input, out } => native::signatures(input, out),
         },
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),

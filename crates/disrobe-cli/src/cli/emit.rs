@@ -134,7 +134,7 @@ pub(crate) fn write_not_applicable_stub(
     Ok(path)
 }
 
-#[cfg(feature = "wasm")]
+#[cfg_attr(not(any(feature = "wasm", test)), allow(dead_code))]
 pub(crate) fn write_applicable_payload<T: Serialize>(
     out_dir: &Path,
     stem: &str,

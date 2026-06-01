@@ -6,6 +6,7 @@ use disrobe_core::{
 use disrobe_ir::{Envelope, decode_raw};
 use serde::{Deserialize, Serialize};
 
+use crate::crypto_consts::{CryptoConstHit, detect_crypto_constants};
 use crate::decompile::{DecompilerBackend, Probe, probe_all};
 use crate::format::{DetectedFormat, detect as detect_format};
 use crate::obfuscators::{ObfuscatorHit, detect as detect_obfuscators};
@@ -25,6 +26,7 @@ impl LegacyPass for NativePass {
         || Capability::produces("native.format-detected", 1),
         || Capability::produces("native.packer-fingerprinted", 1),
         || Capability::produces("native.obfuscator-fingerprinted", 1),
+        || Capability::produces("native.crypto-constant-fingerprinted", 1),
         || Capability::produces("disasm.native", 1),
     ];
 
@@ -38,11 +40,13 @@ impl LegacyPass for NativePass {
             .map_err(|e| CoreError::PassFailure(format!("DR-NATIVE-PASS: {e}")))?;
         let packers: Vec<PackerDetection> = detect_packers(&input.bytes);
         let obfuscators: Vec<ObfuscatorHit> = detect_obfuscators(&input.bytes);
+        let crypto_constants: Vec<CryptoConstHit> = detect_crypto_constants(&input.bytes);
         let backend_probe: NativePassReport = NativePassReport {
             source_path: input.source_path.clone(),
             format,
             packers,
             obfuscators,
+            crypto_constants,
             decompiler_probe: probe_all_serializable(),
             byte_count: input.bytes.len() as u64,
         };
@@ -90,6 +94,7 @@ pub struct NativePassReport {
     pub format: DetectedFormat,
     pub packers: Vec<PackerDetection>,
     pub obfuscators: Vec<ObfuscatorHit>,
+    pub crypto_constants: Vec<CryptoConstHit>,
     pub decompiler_probe: Vec<DecompilerProbeSummary>,
     pub byte_count: u64,
 }
@@ -149,7 +154,7 @@ mod tests {
         assert_eq!(p.consumes(), &[Rung::Raw]);
         assert_eq!(p.emits(), &[Rung::Disasm]);
         assert_eq!(p.required_capabilities().len(), 1);
-        assert_eq!(p.produced_capabilities().len(), 4);
+        assert_eq!(p.produced_capabilities().len(), 5);
     }
 
     #[test]

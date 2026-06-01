@@ -46,3 +46,4 @@ stub-emulation = []
 [dev-dependencies]
 insta = { workspace = true }
 blake3 = { workspace = true }
+rand = { workspace = true }
