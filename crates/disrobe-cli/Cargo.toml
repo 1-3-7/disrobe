@@ -18,6 +18,10 @@ workspace = true
 name = "disrobe"
 path = "src/main.rs"
 
+[[test]]
+name = "self_refresh_check_only"
+path = "tests/self_update_check_only.rs"
+
 [features]
 default = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle"]
 

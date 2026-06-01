@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use super::output::{OutputFormat, emit};
 
-const RELEASES_URL: &str = "https://github.com/1-3-7/disrobe";
+const RELEASES_URL: &str = "https://api.github.com/repos/1-3-7/disrobe/releases/latest";
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SelfUpdateReport {
@@ -79,6 +79,13 @@ fn emit_report(
 mod tests {
     use super::*;
 
+    const EXPECTED_URL: &str = "https://api.github.com/repos/1-3-7/disrobe/releases/latest";
+
+    #[test]
+    fn releases_url_is_pinned_to_github_api_latest() {
+        assert_eq!(RELEASES_URL, EXPECTED_URL);
+    }
+
     #[test]
     fn dry_run_emits_source_only_status() {
         let report: SelfUpdateReport = SelfUpdateReport {
@@ -93,6 +100,16 @@ mod tests {
         };
         assert_eq!(report.status, "source-only-distribution");
         assert!(report.dry_run);
-        assert!(report.url.starts_with("https://github.com/"));
+        assert_eq!(report.url, EXPECTED_URL);
+        assert!(report.latest_version.is_none());
+    }
+
+    #[test]
+    fn check_only_dry_run_returns_ok_without_network() {
+        let r: miette::Result<()> = run(true, false, true, OutputFormat::Json);
+        assert!(
+            r.is_ok(),
+            "--check-only --dry-run must return Ok(()) offline; got {r:?}"
+        );
     }
 }

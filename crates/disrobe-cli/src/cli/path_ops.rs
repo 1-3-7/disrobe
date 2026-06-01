@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -23,6 +21,12 @@ impl LinkKind {
 
 #[cfg(windows)]
 pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<LinkKind> {
+    let stage_abs: std::path::PathBuf = std::fs::canonicalize(stage_dir).map_err(|e| {
+        miette::miette!(
+            "DR-CLI-0231: cannot resolve stage dir {}: {e}",
+            stage_dir.display()
+        )
+    })?;
     if final_dir.exists() {
         remove_dir_any(final_dir)?;
     }
@@ -36,18 +40,24 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
             )
         })?;
     }
-    if std::os::windows::fs::symlink_dir(stage_dir, final_dir).is_ok() {
+    if std::os::windows::fs::symlink_dir(&stage_abs, final_dir).is_ok() {
         return Ok(LinkKind::Symlink);
     }
-    if mklink_junction(stage_dir, final_dir).is_ok() {
+    if mklink_junction(&stage_abs, final_dir).is_ok() {
         return Ok(LinkKind::Junction);
     }
-    recursive_copy(stage_dir, final_dir)?;
+    recursive_copy(&stage_abs, final_dir)?;
     Ok(LinkKind::Copy)
 }
 
 #[cfg(unix)]
 pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<LinkKind> {
+    let stage_abs: std::path::PathBuf = std::fs::canonicalize(stage_dir).map_err(|e| {
+        miette::miette!(
+            "DR-CLI-0231: cannot resolve stage dir {}: {e}",
+            stage_dir.display()
+        )
+    })?;
     if final_dir.exists() || final_dir.is_symlink() {
         remove_dir_any(final_dir)?;
     }
@@ -61,10 +71,10 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
             )
         })?;
     }
-    if std::os::unix::fs::symlink(stage_dir, final_dir).is_ok() {
+    if std::os::unix::fs::symlink(&stage_abs, final_dir).is_ok() {
         Ok(LinkKind::Symlink)
     } else {
-        recursive_copy(stage_dir, final_dir)?;
+        recursive_copy(&stage_abs, final_dir)?;
         Ok(LinkKind::Copy)
     }
 }
