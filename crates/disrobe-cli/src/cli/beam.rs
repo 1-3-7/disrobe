@@ -37,6 +37,12 @@ pub(crate) enum BeamCmd {
             help = "output directory (default: ./out/<stem>-beam-lift)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(about = "disassemble the Code chunk of a .beam file into per-instruction trace")]
     Disasm {
@@ -48,14 +54,20 @@ pub(crate) enum BeamCmd {
             help = "output path for the disasm JSON (default: ./out/<stem>-beam.disasm.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
 }
 
 pub(crate) fn run(action: BeamCmd) -> miette::Result<()> {
     match action {
         BeamCmd::Parse { input, out } => parse(input, out),
-        BeamCmd::Lift { input, out } => lift(input, out),
-        BeamCmd::Disasm { input, out } => disasm(input, out),
+        BeamCmd::Lift { input, out, emit } => lift(input, out, emit),
+        BeamCmd::Disasm { input, out, emit } => disasm(input, out, emit),
     }
 }
 
@@ -112,7 +124,7 @@ fn parse(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     Ok(())
 }
 
-fn lift(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn lift(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0630: cannot read input: {e}"))?;
     let beam: BeamFile =
@@ -161,6 +173,13 @@ fn lift(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|e| miette::miette!("DR-CLI-0637: cannot write manifest: {e}"))?;
+    super::emit::apply_not_applicable_stubs(
+        &emit,
+        &out_dir,
+        &stem,
+        "beam-lift",
+        "not implemented for the beam pass in this build",
+    )?;
     println!("beam lift: OK");
     println!("  input:        {}", input.display());
     println!(
@@ -174,7 +193,7 @@ fn lift(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     Ok(())
 }
 
-fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0640: cannot read input: {e}"))?;
     let beam: BeamFile =
@@ -201,6 +220,16 @@ fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0645: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0646: cannot write output: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    super::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem,
+        "beam-disasm",
+        "not implemented for the beam pass in this build",
+    )?;
     println!("beam disasm: OK");
     println!("  input:        {}", input.display());
     println!("  instructions: {}", dis.instructions.len());

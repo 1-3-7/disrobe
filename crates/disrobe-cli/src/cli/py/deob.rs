@@ -5,7 +5,6 @@ use disrobe_llm_metadata::{LlmMetadataEmitter, MetadataSelection};
 
 use super::super::globals;
 use super::super::llm::{self as llm_cli, LlmFlags};
-use super::apply_emit_stubs;
 
 pub(super) fn deob(
     input: PathBuf,
@@ -98,7 +97,13 @@ pub(super) fn deob(
         .to_owned();
     let stub_dir: &Path = out_path.parent().unwrap_or_else(|| Path::new("."));
     if !g.in_place {
-        apply_emit_stubs(&emit_kinds, stub_dir, &stem, "py-deob")?;
+        super::super::emit::apply_not_applicable_stubs(
+            &emit_kinds,
+            stub_dir,
+            &stem,
+            "py-deob",
+            "not implemented for the py pass in this build",
+        )?;
     }
 
     let llm_out: Option<llm_cli::LlmOutputs> =

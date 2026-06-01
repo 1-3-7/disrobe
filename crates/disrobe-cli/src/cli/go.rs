@@ -21,6 +21,12 @@ pub(crate) enum GoCmd {
             help = "output path for the analysis JSON (default: ./out/<stem>-go.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(about = "report Go build version, pclntab version, & stripped/garble fingerprint")]
     Info {
@@ -31,12 +37,12 @@ pub(crate) enum GoCmd {
 
 pub(crate) fn run(action: GoCmd) -> miette::Result<()> {
     match action {
-        GoCmd::Recover { input, out } => recover(input, out),
+        GoCmd::Recover { input, out, emit } => recover(input, out, emit),
         GoCmd::Info { input } => info(input),
     }
 }
 
-fn recover(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn recover(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0650: cannot read input: {e}"))?;
     let analysis: GoAnalysis =
@@ -55,6 +61,16 @@ fn recover(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0653: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0654: cannot write output: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem,
+        "go-recover",
+        "not implemented for the go pass in this build",
+    )?;
     println!("go recover: OK");
     println!("  input:        {}", input.display());
     println!("  image kind:   {}", analysis.image_kind);

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use disrobe_llm_metadata::{LlmMetadataEmitter, MetadataSelection};
 
 use super::super::llm::{self as llm_cli, LlmFlags};
-use super::{apply_emit_stubs, py_obj_label};
+use super::py_obj_label;
 
 pub(super) fn disasm(
     input: PathBuf,
@@ -55,7 +55,13 @@ pub(super) fn disasm(
         .unwrap_or("py-disasm")
         .to_owned();
     let stub_dir: &Path = out_path.parent().unwrap_or_else(|| Path::new("."));
-    apply_emit_stubs(&emit_kinds, stub_dir, &stem, "py-disasm")?;
+    super::super::emit::apply_not_applicable_stubs(
+        &emit_kinds,
+        stub_dir,
+        &stem,
+        "py-disasm",
+        "not implemented for the py pass in this build",
+    )?;
 
     let llm_out: Option<llm_cli::LlmOutputs> = maybe_emit_llm_disasm(
         llm_flags,

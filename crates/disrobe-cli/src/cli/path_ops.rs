@@ -4,6 +4,7 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LinkKind {
     Symlink,
+    #[cfg_attr(not(windows), allow(dead_code))]
     Junction,
     Copy,
 }

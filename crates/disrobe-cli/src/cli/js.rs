@@ -64,6 +64,12 @@ pub(crate) enum JsCmd {
             help = "run the full obfuscator.io reversal pipeline (string-array decode, control-flow unflattening, opaque-predicate folding, packing expansion, dead-code & debug-protection strip) iterated to a fixpoint"
         )]
         full: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(
         about = "split a bundled JavaScript file back into per-module sources (Webpack 4 / 5, Vite, Rollup, esbuild, Turbopack, Bun, Parcel 2, Browserify, SystemJS / RequireJS / AMD, Rolldown)"
@@ -118,6 +124,7 @@ pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
             rename_scope_aware,
             legacy,
             full,
+            emit,
         } => deob(
             input,
             out,
@@ -126,6 +133,7 @@ pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
             rename_scope_aware,
             legacy,
             full,
+            emit,
         ),
         JsCmd::Unbundle { input, out, target } => unbundle(input, out, target),
     }
@@ -377,6 +385,7 @@ fn deob(
     rename_scope_aware: bool,
     legacy: Option<LegacyFamily>,
     full: bool,
+    emit: Vec<String>,
 ) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0037: cannot read input: {e}"))?;
@@ -392,6 +401,7 @@ fn deob(
             &detection,
             rename,
             rename_scope_aware,
+            emit,
         );
     }
 
@@ -399,13 +409,13 @@ fn deob(
         disrobe_pass_js_deob::recover_string_array(source_text)
             .map_err(|e| miette::miette!("{e}"))?;
 
-    let out_path: PathBuf = out.unwrap_or_else(|| {
-        let stem: &str = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("js-deob");
-        PathBuf::from(format!("./out/{stem}.deobfuscated.js"))
-    });
+    let stem_owned: String = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("js-deob")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem_owned}.deobfuscated.js")));
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-CLI-0038: cannot create dir: {e}"))?;
@@ -455,6 +465,16 @@ fn deob(
         };
     std::fs::write(&out_path, rewritten.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0043: cannot write deobfuscated source: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem_owned,
+        "js-deob",
+        "not implemented for the js pass in this build",
+    )?;
 
     if let Some(ref r) = recovery {
         let recovery_path: PathBuf = out_path.with_extension("recovery.json");
@@ -568,6 +588,7 @@ fn deob_full(
     detection: &disrobe_pass_js_deob::Detection,
     rename: bool,
     rename_scope_aware: bool,
+    emit: Vec<String>,
 ) -> miette::Result<()> {
     let opts: disrobe_pass_js_deob::ObfuscatorIoOptions =
         disrobe_pass_js_deob::ObfuscatorIoOptions::all();
@@ -594,19 +615,29 @@ fn deob_full(
         None
     };
 
-    let out_path: PathBuf = out.unwrap_or_else(|| {
-        let stem: &str = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("js-deob");
-        PathBuf::from(format!("./out/{stem}.deobfuscated.js"))
-    });
+    let stem_owned: String = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("js-deob")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem_owned}.deobfuscated.js")));
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-CLI-0045: cannot create dir: {e}"))?;
     }
     std::fs::write(&out_path, current.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0046: cannot write deobfuscated source: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem_owned,
+        "js-deob",
+        "not implemented for the js pass in this build",
+    )?;
 
     let pipeline_path: PathBuf = out_path.with_extension("pipeline.json");
     let pipeline_bytes: Vec<u8> = serde_json::to_vec_pretty(&output)

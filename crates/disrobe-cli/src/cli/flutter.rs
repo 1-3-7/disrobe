@@ -37,6 +37,12 @@ pub(crate) enum FlutterCmd {
             help = "output path for the decompile JSON (default: ./out/<stem>-dart-aot.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(
         about = "parse a Flutter obfuscation_map.json into a typed lookup (original ↔ obfuscated)"
@@ -56,7 +62,7 @@ pub(crate) enum FlutterCmd {
 pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
     match action {
         FlutterCmd::Dump { input, out } => dump(input, out),
-        FlutterCmd::Decompile { input, out } => decompile(input, out),
+        FlutterCmd::Decompile { input, out, emit } => decompile(input, out, emit),
         FlutterCmd::Map { input, out } => map(input, out),
     }
 }
@@ -118,7 +124,7 @@ fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     Ok(())
 }
 
-fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0760: cannot read input: {e}"))?;
     let header: DartSnapshotHeader = parse_dart_snapshot(&bytes)
@@ -140,6 +146,16 @@ fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0764: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0765: cannot write output: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem,
+        "flutter-decompile",
+        "not implemented for the flutter pass in this build",
+    )?;
     println!("flutter decompile: OK");
     println!("  input:        {}", input.display());
     println!("  magic:        0x{:08x}", header.magic);

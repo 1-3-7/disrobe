@@ -5,11 +5,10 @@ mod deob;
 mod disasm;
 mod extract;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Subcommand, ValueEnum};
 
-use super::emit::EmitSpec;
 use super::llm::LlmFlags;
 
 #[derive(Subcommand, Debug)]
@@ -173,26 +172,4 @@ pub(super) fn which_on_path(exe: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-pub(super) fn apply_emit_stubs(
-    emit_kinds: &[String],
-    out_dir: &Path,
-    stem: &str,
-    pass: &'static str,
-) -> miette::Result<()> {
-    let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
-    if spec.is_empty() {
-        return Ok(());
-    }
-    for kind in spec.iter() {
-        let _: PathBuf = super::emit::write_not_applicable_stub(
-            out_dir,
-            stem,
-            pass,
-            kind,
-            "not implemented for the py pass in this build",
-        )?;
-    }
-    Ok(())
 }

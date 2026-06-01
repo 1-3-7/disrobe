@@ -11,7 +11,11 @@ use serde::Serialize;
 use super::globals;
 use disrobe_binfmt::{import_graph_dot, parse_native};
 
-pub(crate) fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+pub(crate) fn decompile(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    emit: Vec<String>,
+) -> miette::Result<()> {
     let resolved: Option<PathBuf> = locate_ghidra_headless();
     let Some(ghidra): Option<PathBuf> = resolved else {
         return Err(miette::miette!(
@@ -88,6 +92,13 @@ pub(crate) fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<
             manifest_path.display()
         ));
     }
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        &out_dir,
+        &stem,
+        "native-decompile",
+        "not implemented for the native decompile pass in this build",
+    )?;
     println!("native decompile: OK");
     println!("  input:        {}", input.display());
     println!("  ghidra:       {}", ghidra.display());

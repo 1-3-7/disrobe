@@ -609,6 +609,12 @@ enum NativeCmd {
             help = "output directory (default: ./out/<stem>-native-decompiled)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(
         about = "dump symbols, sections, segments, imports, & debug info from a native binary"
@@ -733,7 +739,7 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "wasm")]
         Cmd::Wasm { action } => wasm::run(action),
         Cmd::Native { action } => match action {
-            NativeCmd::Decompile { input, out } => native::decompile(input, out),
+            NativeCmd::Decompile { input, out, emit } => native::decompile(input, out, emit),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Unpack { input, out } => native::unpack(input, out),
             NativeCmd::Entropy { input, out } => native::entropy(input, out),

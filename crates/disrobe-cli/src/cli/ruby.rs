@@ -23,6 +23,12 @@ pub(crate) enum RubyCmd {
             help = "output path for the analysis JSON (default: ./out/<stem>-ruby.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(about = "detect the Ruby flavor & exit (no output written)")]
     Detect {
@@ -33,12 +39,12 @@ pub(crate) enum RubyCmd {
 
 pub(crate) fn run(action: RubyCmd) -> miette::Result<()> {
     match action {
-        RubyCmd::Decompile { input, out } => decompile(input, out),
+        RubyCmd::Decompile { input, out, emit } => decompile(input, out, emit),
         RubyCmd::Detect { input } => detect(input),
     }
 }
 
-fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0600: cannot read input: {e}"))?;
     let g: globals::Globals = globals::current();
@@ -65,6 +71,16 @@ fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0603: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0604: cannot write output: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    super::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem,
+        "ruby-decompile",
+        "not implemented for the ruby pass in this build",
+    )?;
     println!("ruby decompile: OK");
     println!("  input:        {}", input.display());
     println!("  flavor:       {:?}", analysis.flavor);

@@ -8,6 +8,7 @@ mod error;
 mod extract;
 mod manifest;
 mod onedir;
+pub mod pass;
 mod provenance_header;
 mod pyz;
 mod toc;

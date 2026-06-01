@@ -20,6 +20,7 @@ chain = ["disrobe-core/chain"]
 
 [dependencies]
 disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-pass-jvm = { workspace = true }
 disrobe-pass-dotnet = { workspace = true }

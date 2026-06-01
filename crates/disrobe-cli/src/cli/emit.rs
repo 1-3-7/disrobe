@@ -160,6 +160,23 @@ pub(crate) fn write_applicable_payload<T: Serialize>(
     Ok(path)
 }
 
+pub(crate) fn apply_not_applicable_stubs(
+    emit_kinds: &[String],
+    out_dir: &Path,
+    stem: &str,
+    pass: &'static str,
+    reason: &str,
+) -> miette::Result<()> {
+    let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
+    if spec.is_empty() {
+        return Ok(());
+    }
+    for kind in spec.iter() {
+        let _: PathBuf = write_not_applicable_stub(out_dir, stem, pass, kind, reason)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

@@ -9,6 +9,7 @@ mod envelope;
 mod error;
 mod inlined;
 mod kdf;
+pub mod pass;
 mod provenance_header;
 mod source_recover;
 

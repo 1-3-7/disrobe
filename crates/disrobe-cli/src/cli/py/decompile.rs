@@ -8,7 +8,7 @@ use disrobe_pass_py_decompile::{
 };
 
 use super::super::llm::{self as llm_cli, LlmFlags};
-use super::{DecompileBackend, apply_emit_stubs, py_obj_label, render_disasm, which_on_path};
+use super::{DecompileBackend, py_obj_label, render_disasm, which_on_path};
 
 pub(super) fn decompile(
     input: PathBuf,
@@ -70,7 +70,13 @@ pub(super) fn decompile(
     std::fs::write(&manifest_path, manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0064: cannot write manifest: {e}"))?;
 
-    apply_emit_stubs(&emit_kinds, &out_dir, &stem, "py-decompile")?;
+    super::super::emit::apply_not_applicable_stubs(
+        &emit_kinds,
+        &out_dir,
+        &stem,
+        "py-decompile",
+        "not implemented for the py pass in this build",
+    )?;
 
     let roundtrip_label: Option<String> = outcome
         .roundtrip

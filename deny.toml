@@ -101,6 +101,10 @@ skip = [
     # clap / anstyle rendering stack mid-migration to 1.0
     { crate = "anstream", reason = "0.6 vs 1.0 via clap vs other terminal renderers" },
     { crate = "anstyle-parse", reason = "matched majors of the anstream straddle" },
+    # rmcp 0.16 (disrobe-mcp) macro stack pulls a second darling major
+    { crate = "darling", reason = "0.20 vs 0.21 via rmcp macros vs schemars/serde derives" },
+    { crate = "darling_core", reason = "matched majors of the darling straddle" },
+    { crate = "darling_macro", reason = "matched majors of the darling straddle" },
     { crate = "compact_str", reason = "0.8 vs 0.9 via ruff vs other consumers" },
     # async / networking stack
     { crate = "socket2", reason = "0.5 vs 0.6 via tokio vs hyper transitive pins" },

@@ -35,6 +35,7 @@ pub mod chain_detector;
 pub mod detect;
 pub mod error;
 pub mod format_wire;
+pub mod pass;
 pub mod powershell;
 pub mod provenance_header;
 pub mod vba;

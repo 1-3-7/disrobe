@@ -13,7 +13,6 @@ use disrobe_pass_lua::{
     wearedevs,
 };
 
-use super::emit::EmitSpec;
 use super::globals;
 
 #[derive(Subcommand, Debug)]
@@ -141,7 +140,13 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     let stub_dir: &std::path::Path = out_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    apply_emit_stubs(&emit_kinds, stub_dir, &stem, "lua-decompile")?;
+    super::emit::apply_not_applicable_stubs(
+        &emit_kinds,
+        stub_dir,
+        &stem,
+        "lua-decompile",
+        "not implemented for the lua pass in this build",
+    )?;
     println!("lua decompile: OK");
     println!("  input:        {}", input.display());
     println!("  format:       {format:?}");
@@ -287,26 +292,4 @@ fn auto_peel(bytes: &[u8], opts: &DeobfOptions) -> disrobe_pass_lua::Result<Peel
     Err(disrobe_pass_lua::Error::NoObfuscatorSignature(
         "no known Lua obfuscator family matched",
     ))
-}
-
-fn apply_emit_stubs(
-    emit_kinds: &[String],
-    out_dir: &std::path::Path,
-    stem: &str,
-    pass: &'static str,
-) -> miette::Result<()> {
-    let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
-    if spec.is_empty() {
-        return Ok(());
-    }
-    for kind in spec.iter() {
-        let _: PathBuf = super::emit::write_not_applicable_stub(
-            out_dir,
-            stem,
-            pass,
-            kind,
-            "not implemented for the lua pass in this build",
-        )?;
-    }
-    Ok(())
 }

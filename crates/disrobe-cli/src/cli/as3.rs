@@ -23,6 +23,12 @@ pub(crate) enum As3Cmd {
             help = "output directory (default: ./out/<stem>-as3-disasm)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
     },
     #[command(about = "list every tag in a .swf (TagCode, offset, payload size)")]
     Tags {
@@ -33,12 +39,12 @@ pub(crate) enum As3Cmd {
 
 pub(crate) fn run(action: As3Cmd) -> miette::Result<()> {
     match action {
-        As3Cmd::Disasm { input, out } => disasm(input, out),
+        As3Cmd::Disasm { input, out, emit } => disasm(input, out, emit),
         As3Cmd::Tags { input } => tags(input),
     }
 }
 
-fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0730: cannot read input: {e}"))?;
     let swf: Swf = parse_swf(&bytes).map_err(|e| miette::miette!("DR-CLI-0731: swf parse: {e}"))?;
@@ -116,6 +122,13 @@ fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|e| miette::miette!("DR-CLI-0739: cannot write manifest: {e}"))?;
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        &out_dir,
+        &stem,
+        "as3-disasm",
+        "not implemented for the as3 pass in this build",
+    )?;
     println!("as3 disasm: OK");
     println!("  input:        {}", input.display());
     println!("  swf version:  {}", swf.header.version);
