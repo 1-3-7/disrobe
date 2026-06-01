@@ -66,6 +66,7 @@ use cli::pyfreeze::{self, PyfreezeCmd};
 use cli::pyinstaller::{self, PyinstallerCmd};
 #[cfg(feature = "ruby")]
 use cli::ruby::{self, RubyCmd};
+use cli::scan;
 use cli::self_update as self_update_cmd;
 use cli::serve;
 use cli::status as status_cmd;
@@ -205,6 +206,13 @@ enum Cmd {
     Py {
         #[command(subcommand)]
         action: PyCmd,
+    },
+    #[command(
+        about = "scan a target's raw bytes for leaked credentials (cloud keys, VCS tokens, JWTs, PEM/SSH keys)"
+    )]
+    Scan {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
     },
     #[cfg(feature = "js")]
     #[command(about = "JavaScript / TypeScript deobfuscate & bundle splitter")]
@@ -628,6 +636,7 @@ fn main() -> miette::Result<()> {
         Cmd::Pyfreeze { action } => pyfreeze::run(action),
         Cmd::Nuitka { action } => nuitka::run(action),
         Cmd::Py { action } => py::run(action, &llm_flags),
+        Cmd::Scan { path } => scan::run(path, fmt),
         #[cfg(feature = "js")]
         Cmd::Js { action } => js::run(action),
         #[cfg(feature = "wasm")]
@@ -656,7 +665,7 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "beam")]
         Cmd::Beam { action } => beam::run(action),
         #[cfg(feature = "pickle")]
-        Cmd::Pickle { action } => pickle::run(action),
+        Cmd::Pickle { action } => pickle::run(action, fmt),
         #[cfg(feature = "go")]
         Cmd::Go { action } => go::run(action),
         #[cfg(feature = "swift")]

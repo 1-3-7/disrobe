@@ -54,6 +54,8 @@ pub(crate) mod pyfreeze;
 pub(crate) mod pyinstaller;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;
+pub(crate) mod sarif;
+pub(crate) mod scan;
 pub(crate) mod self_update;
 pub(crate) mod serve;
 pub(crate) mod status;

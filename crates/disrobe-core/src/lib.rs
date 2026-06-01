@@ -12,6 +12,7 @@ pub mod provenance;
 pub mod resolver;
 pub mod rng;
 pub mod rung;
+pub mod secret_scan;
 pub mod time;
 
 pub use artifact::Artifact;
@@ -39,6 +40,10 @@ pub use resolver::{
 };
 pub use rng::{SeededRng, os as rng_os, seeded as rng_seeded};
 pub use rung::Rung;
+pub use secret_scan::{
+    Finding, SCAN_SCHEMA, SecretKind, SecretScanReport, Severity, scan_bytes, scan_report,
+    scan_strings,
+};
 pub use time::{now as time_now, now_secs as time_now_secs};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

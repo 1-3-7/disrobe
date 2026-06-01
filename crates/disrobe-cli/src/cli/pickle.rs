@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 
+use crate::cli::output::OutputFormat;
+use crate::cli::sarif::IntoSarif;
 use disrobe_pass_pickle::{
     Disassembly, MlReport, PolyglotReport, SafetyReport, VmTrace, analyze_polyglot, analyze_safety,
     disassemble, execute, extract_ml, render_disasm, to_python_assignment,
@@ -61,11 +63,11 @@ pub(crate) enum PickleCmd {
     },
 }
 
-pub(crate) fn run(action: PickleCmd) -> miette::Result<()> {
+pub(crate) fn run(action: PickleCmd, fmt: OutputFormat) -> miette::Result<()> {
     match action {
         PickleCmd::Disasm { input, json } => disasm(input, json),
         PickleCmd::Decompile { input, json } => decompile(input, json),
-        PickleCmd::Safety { input, json } => safety(input, json),
+        PickleCmd::Safety { input, json } => safety(input, json, fmt),
         PickleCmd::Trace { input, json } => trace(input, json),
         PickleCmd::Polyglot { input, json } => polyglot(input, json),
         PickleCmd::MlDetect { input, json } => ml_detect(input, json),
@@ -123,14 +125,17 @@ fn decompile(input: PathBuf, json: bool) -> miette::Result<()> {
     }
 }
 
-fn safety(input: PathBuf, json: bool) -> miette::Result<()> {
+fn safety(input: PathBuf, json: bool, fmt: OutputFormat) -> miette::Result<()> {
     let bytes: Vec<u8> = read_input(&input)?;
     let dis: Disassembly =
         disassemble(&bytes).map_err(|e| miette::miette!("DR-CLI-0666: pickle disasm: {e}"))?;
     let trace: VmTrace =
         execute(&dis).map_err(|e| miette::miette!("DR-CLI-0667: pickle vm: {e}"))?;
     let report: SafetyReport = analyze_safety(&trace);
-    if json {
+    if matches!(fmt, OutputFormat::Sarif) {
+        let uri: String = input.to_string_lossy().into_owned();
+        crate::cli::output::emit_sarif_log(&report.to_sarif(&uri))
+    } else if json {
         emit_json(&report)
     } else {
         println!("pickle safety: {:?}", report.severity);
