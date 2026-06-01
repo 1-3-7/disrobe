@@ -24,6 +24,7 @@ pub mod debug_info;
 pub mod decompile;
 pub mod error;
 pub mod fixtures;
+pub mod flirt;
 pub mod format;
 pub mod format_wire;
 #[cfg(feature = "llm-metadata")]
@@ -55,6 +56,10 @@ pub use decompile::{
 pub use error::{Error, Result};
 pub use fixtures::{
     minimal_elf64, minimal_macho64, minimal_pe32, packed_upx_elf64_marker, tiny_coff_x64,
+};
+pub use flirt::{
+    FlirtArch, FlirtHeader, FlirtMatch, FlirtModule, FlirtPattern, FlirtPublicName, FlirtSig,
+    crc16_flirt, match_flirt, parse_flirt,
 };
 pub use format::{DetectedFormat, NativeFormat, detect as detect_format};
 pub use format_wire::{

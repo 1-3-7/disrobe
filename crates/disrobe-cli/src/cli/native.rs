@@ -315,24 +315,68 @@ const fn packer_rank(p: disrobe_pass_native::Packer) -> u8 {
 }
 
 #[derive(Debug, Serialize)]
+struct FlirtDbSummary {
+    version: u8,
+    arch: String,
+    library_name: String,
+    module_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct SignatureDump {
     schema: &'static str,
     input: String,
     byte_count: u64,
     crypto_constants: Vec<disrobe_pass_native::CryptoConstHit>,
+    flirt_matches: Vec<disrobe_pass_native::FlirtMatch>,
+    string_signatures: Vec<disrobe_pass_native::ObfuscatorHit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flirt: Option<FlirtDbSummary>,
 }
 
-pub(crate) fn signatures(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
-    use disrobe_pass_native::{CryptoConstHit, detect_crypto_constants};
+pub(crate) fn signatures(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    flirt: Option<PathBuf>,
+) -> miette::Result<()> {
+    use disrobe_pass_native::{
+        CryptoConstHit, FlirtMatch, FlirtSig, ObfuscatorHit, detect_crypto_constants,
+        detect_obfuscators, match_flirt, parse_flirt,
+    };
 
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-NATIVE-0050: cannot read input: {e}"))?;
     let hits: Vec<CryptoConstHit> = detect_crypto_constants(&bytes);
+    let string_signatures: Vec<ObfuscatorHit> = detect_obfuscators(&bytes);
+
+    let (flirt_summary, flirt_matches): (Option<FlirtDbSummary>, Vec<FlirtMatch>) = match flirt {
+        Some(sig_path) => {
+            let sig_bytes: Vec<u8> = std::fs::read(&sig_path)
+                .map_err(|e| miette::miette!("DR-NATIVE-0054: cannot read .sig: {e}"))?;
+            let sig: FlirtSig = parse_flirt(&sig_bytes)
+                .map_err(|e| miette::miette!("DR-NATIVE-0055: FLIRT parse: {e}"))?;
+            let matches: Vec<FlirtMatch> = match_flirt(&sig, &bytes);
+            (
+                Some(FlirtDbSummary {
+                    version: sig.header.version,
+                    arch: sig.header.arch.label().to_owned(),
+                    library_name: sig.header.library_name.clone(),
+                    module_count: sig.modules.len(),
+                }),
+                matches,
+            )
+        }
+        None => (None, Vec::new()),
+    };
+
     let dump: SignatureDump = SignatureDump {
-        schema: "disrobe.native.signatures/v0",
+        schema: "disrobe.native.signatures/v1",
         input: input.display().to_string(),
         byte_count: bytes.len() as u64,
         crypto_constants: hits,
+        flirt_matches,
+        string_signatures,
+        flirt: flirt_summary,
     };
     let stem: String = input
         .file_stem()
@@ -361,6 +405,28 @@ pub(crate) fn signatures(input: PathBuf, out: Option<PathBuf>) -> miette::Result
             hit.confidence,
             hit.matched_len
         );
+    }
+    println!("  string sigs:  {}", dump.string_signatures.len());
+    for hit in &dump.string_signatures {
+        println!(
+            "    {} @ {} ({})",
+            hit.family.label(),
+            hit.matched_offset,
+            hit.indicator
+        );
+    }
+    if let Some(s) = &dump.flirt {
+        println!(
+            "  flirt db:     {} v{} ({}, {} modules)",
+            s.library_name, s.version, s.arch, s.module_count
+        );
+        println!("  flirt matches:{}", dump.flirt_matches.len());
+        for m in &dump.flirt_matches {
+            println!(
+                "    {} @ {} (module {})",
+                m.name, m.image_offset, m.module_index
+            );
+        }
     }
     println!("  wrote:        {}", out_path.display());
     Ok(())

@@ -616,6 +616,11 @@ enum NativeCmd {
         input: PathBuf,
         #[arg(short, long, help = "output path for the signatures JSON")]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "optional IDA FLIRT .sig database to match against the input"
+        )]
+        flirt: Option<PathBuf>,
     },
     #[command(
         about = "emit a CycloneDX 1.5 SBOM from an extracted artifact's embedded cargo-auditable dependency metadata"
@@ -681,7 +686,7 @@ fn main() -> miette::Result<()> {
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Unpack { input, out } => native::unpack(input, out),
             NativeCmd::Entropy { input, out } => native::entropy(input, out),
-            NativeCmd::Signatures { input, out } => native::signatures(input, out),
+            NativeCmd::Signatures { input, out, flirt } => native::signatures(input, out, flirt),
             NativeCmd::Sbom { input, out } => native::sbom(input, out),
             NativeCmd::Graph { input, out } => native::graph(input, out),
         },
