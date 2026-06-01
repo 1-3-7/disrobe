@@ -4524,7 +4524,7 @@ fn skip_with_cleanup_block(
     let mut loads: usize = 0;
     while i < region_end && loads < 3 {
         match &stream.ops[i] {
-            CanonicalOp::LoadConst(_) => loads += 1,
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) => loads += 1,
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             _ => return None,
         }
@@ -4556,12 +4556,22 @@ fn skip_with_cleanup_block(
 /// statements (the `with lock: print(...)` body collapsing to `pass`).
 fn with_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     for i in lo..hi {
-        if matches!(stream.ops[i], CanonicalOp::LoadConst(_)) && is_exit_none_triple(stream, i, hi)
-        {
+        if is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, hi) {
             return i;
         }
     }
     hi
+}
+
+/// A `None` push that feeds the implicit `__exit__(None, None, None)` cleanup. Pre-3.15 emits
+/// `LOAD_CONST None`; 3.15+ emits `LOAD_COMMON_CONSTANT 7` (the `None` common-constant slot), so
+/// both forms mark the cleanup triple.
+#[inline]
+fn is_none_const_push(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7)
+    )
 }
 
 /// Three consecutive `LOAD_CONST None` (modulo CACHE/NOP) immediately feeding the implicit
@@ -4574,7 +4584,9 @@ fn is_exit_none_triple(stream: &DecodedStream, start: usize, hi: usize) -> bool 
     let mut i: usize = start;
     while i < hi && seen < 3 {
         match &stream.ops[i] {
-            CanonicalOp::LoadConst(_) | CanonicalOp::Dup => seen += 1,
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                seen += 1;
+            }
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             _ => return false,
         }

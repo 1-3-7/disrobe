@@ -85,6 +85,24 @@ struct Post311Ops {
 impl Post311Ops {
     const fn for_version(version: PyVersion) -> Self {
         match (version.major, version.minor) {
+            (3, 15) => Self {
+                push_exc_info: 30,
+                before_with: None,
+                before_async_with: None,
+                with_except_start: 41,
+                get_iter: 70,
+                get_aiter: 14,
+                get_anext: 15,
+                for_iter: 68,
+                jump_backward: 74,
+                end_async_for: 66,
+                match_class: 98,
+                match_mapping: 23,
+                match_sequence: 24,
+                match_keys: 22,
+                copy: 57,
+                swap: 116,
+            },
             (3, 14) => Self {
                 push_exc_info: 32,
                 before_with: None,
