@@ -46,6 +46,24 @@ pub fn render_csharp_with_header(
     csharp_decompiled_header(duration, version).prepend_to(body)
 }
 
+#[must_use]
+pub fn render_fsharp_with_header(
+    body: &str,
+    duration: Duration,
+    version: impl Into<String>,
+) -> String {
+    fsharp_decompiled_header(duration, version).prepend_to(body)
+}
+
+#[must_use]
+pub fn render_vbnet_with_header(
+    body: &str,
+    duration: Duration,
+    version: impl Into<String>,
+) -> String {
+    vbnet_decompiled_header(duration, version).prepend_to(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +80,19 @@ mod tests {
         let s: String = render_csharp_with_header("class C{}\n", Duration::from_millis(45), "12");
         assert!(s.starts_with("// Decompiled in 45ms"));
         assert!(s.contains("\n// C# 12\n"));
+    }
+
+    #[test]
+    fn fsharp_header_labels_fsharp() {
+        let s: String = render_fsharp_with_header("let x = 1\n", Duration::from_millis(30), "8");
+        assert!(s.starts_with("// Decompiled in 30ms"), "got:\n{s}");
+        assert!(s.contains("\n// F# 8\n"), "got:\n{s}");
+    }
+
+    #[test]
+    fn vbnet_header_labels_vbnet() {
+        let s: String = render_vbnet_with_header("Module M\n", Duration::from_millis(30), "16");
+        assert!(s.starts_with("// Decompiled in 30ms"), "got:\n{s}");
+        assert!(s.contains("\n// VB.NET 16\n"), "got:\n{s}");
     }
 }

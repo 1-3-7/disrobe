@@ -14,6 +14,19 @@ use serde::{Deserialize, Serialize};
 use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody, OperandValue};
 use crate::model::Resolver;
 
+/// Target pseudo-source language for structural decompilation.
+///
+/// `CSharp` is the default; `FSharp` and `VbNet` render the same recovered control-flow graph with
+/// language-faithful syntax (F# preserves unstructured CIL jumps as comments since it has no
+/// `goto`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TargetLang {
+    #[default]
+    CSharp,
+    FSharp,
+    VbNet,
+}
+
 /// Output of structural decompilation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredMethod {
@@ -132,25 +145,57 @@ enum Expr {
 }
 
 impl Expr {
-    fn render(&self) -> String {
+    fn render(&self, lang: TargetLang) -> String {
         match self {
             Self::Const(c) | Self::Field(c) | Self::Raw(c) => c.clone(),
             Self::Local(n) => format!("local{n}"),
             Self::Arg(n) => format!("arg{n}"),
-            Self::Unary(op, e) => format!("{op}{}", paren(e)),
-            Self::Binary(op, a, b) => format!("{} {op} {}", paren(a), paren(b)),
-            Self::Call { target, args } => format!("{target}({})", render_args(args)),
-            Self::NewObj { ctor, args } => format!("new {ctor}({})", render_args(args)),
-            Self::Cast(ty, e) => format!("({ty}){}", paren(e)),
-            Self::IsInst(ty, e) => format!("{} as {ty}", paren(e)),
-            Self::LoadElem(arr, idx) => format!("{}[{}]", paren(arr), idx.render()),
-            Self::LoadLen(arr) => format!("{}.Length", paren(arr)),
-            Self::NewArr(ty, len) => format!("new {ty}[{}]", len.render()),
-            Self::AddressOf(e) => format!("&{}", paren(e)),
-            Self::Deref(e) => format!("*{}", paren(e)),
+            Self::Unary(op, e) => format!("{}{}", map_unary_op(op, lang), paren(e, lang)),
+            Self::Binary(op, a, b) => {
+                format!(
+                    "{} {} {}",
+                    paren(a, lang),
+                    map_binary_op(op, lang),
+                    paren(b, lang)
+                )
+            }
+            Self::Call { target, args } => format!("{target}({})", render_args(args, lang)),
+            Self::NewObj { ctor, args } => match lang {
+                TargetLang::CSharp => format!("new {ctor}({})", render_args(args, lang)),
+                TargetLang::FSharp => format!("{ctor}({})", render_args(args, lang)),
+                TargetLang::VbNet => format!("New {ctor}({})", render_args(args, lang)),
+            },
+            Self::Cast(ty, e) => match lang {
+                TargetLang::CSharp => format!("({ty}){}", paren(e, lang)),
+                TargetLang::FSharp => format!("({} :?> {ty})", e.render(lang)),
+                TargetLang::VbNet => format!("CType({}, {ty})", e.render(lang)),
+            },
+            Self::IsInst(ty, e) => match lang {
+                TargetLang::CSharp => format!("{} as {ty}", paren(e, lang)),
+                TargetLang::FSharp => format!("({} :?> {ty})", e.render(lang)),
+                TargetLang::VbNet => format!("TryCast({}, {ty})", e.render(lang)),
+            },
+            Self::LoadElem(arr, idx) => format!("{}[{}]", paren(arr, lang), idx.render(lang)),
+            Self::LoadLen(arr) => format!("{}.Length", paren(arr, lang)),
+            Self::NewArr(ty, len) => format!("new {ty}[{}]", len.render(lang)),
+            Self::AddressOf(e) => match lang {
+                TargetLang::CSharp | TargetLang::FSharp => format!("&{}", paren(e, lang)),
+                TargetLang::VbNet => e.render(lang),
+            },
+            Self::Deref(e) => match lang {
+                TargetLang::CSharp => format!("*{}", paren(e, lang)),
+                TargetLang::FSharp => format!("{}.Value", paren(e, lang)),
+                TargetLang::VbNet => e.render(lang),
+            },
             Self::StringLit(s) => format!("\"{}\"", escape(s)),
-            Self::Null => "null".to_owned(),
-            Self::This => "this".to_owned(),
+            Self::Null => match lang {
+                TargetLang::CSharp | TargetLang::FSharp => "null".to_owned(),
+                TargetLang::VbNet => "Nothing".to_owned(),
+            },
+            Self::This => match lang {
+                TargetLang::CSharp | TargetLang::FSharp => "this".to_owned(),
+                TargetLang::VbNet => "Me".to_owned(),
+            },
         }
     }
 
@@ -173,19 +218,59 @@ impl Expr {
     }
 }
 
-fn paren(e: &Expr) -> String {
+fn paren(e: &Expr, lang: TargetLang) -> String {
     if e.is_atom() {
-        e.render()
+        e.render(lang)
     } else {
-        format!("({})", e.render())
+        format!("({})", e.render(lang))
     }
 }
 
-fn render_args(args: &[Expr]) -> String {
+fn render_args(args: &[Expr], lang: TargetLang) -> String {
     args.iter()
-        .map(Expr::render)
+        .map(|e: &Expr| e.render(lang))
         .collect::<Vec<String>>()
         .join(", ")
+}
+
+/// Map a binary operator spelling per target language. C# spellings pass through unchanged.
+fn map_binary_op(op: &str, lang: TargetLang) -> &'static str {
+    match (op, lang) {
+        ("&&", TargetLang::VbNet) => "AndAlso",
+        ("||", TargetLang::VbNet) => "OrElse",
+        ("==", TargetLang::VbNet) => "=",
+        ("!=", TargetLang::VbNet) => "<>",
+        ("+", _) => "+",
+        ("-", _) => "-",
+        ("*", _) => "*",
+        ("/", _) => "/",
+        ("%", _) => "%",
+        ("&", _) => "&",
+        ("|", _) => "|",
+        ("^", _) => "^",
+        ("<<", _) => "<<",
+        (">>", _) => ">>",
+        ("==", _) => "==",
+        ("!=", _) => "!=",
+        (">", _) => ">",
+        ("<", _) => "<",
+        (">=", _) => ">=",
+        ("<=", _) => "<=",
+        ("&&", _) => "&&",
+        ("||", _) => "||",
+        _ => "?",
+    }
+}
+
+/// Map a unary operator spelling per target language (`!` becomes `not `/`Not `; `-`/`~` pass).
+fn map_unary_op(op: &str, lang: TargetLang) -> &'static str {
+    match (op, lang) {
+        ("!", TargetLang::FSharp) => "not ",
+        ("!", TargetLang::VbNet) => "Not ",
+        ("-", _) => "-",
+        ("~", _) => "~",
+        _ => "!",
+    }
 }
 
 fn escape(s: &str) -> String {
@@ -230,6 +315,7 @@ enum Stmt {
 
 struct Lifter<'a, N: TokenNamer> {
     namer: &'a N,
+    lang: TargetLang,
     stack: Vec<Expr>,
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
@@ -237,9 +323,10 @@ struct Lifter<'a, N: TokenNamer> {
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
-    const fn new(namer: &'a N) -> Self {
+    const fn new(namer: &'a N, lang: TargetLang) -> Self {
         Self {
             namer,
+            lang,
             stack: Vec::new(),
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
@@ -318,7 +405,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let val: Expr = self.pop();
         self.stmts.push(Stmt::Assign {
             target: format!("local{n}"),
-            value: val.render(),
+            value: val.render(self.lang),
         });
     }
 
@@ -339,7 +426,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let call: Expr = if has_this && !args.is_empty() {
             let recv: Expr = args.remove(0);
             Expr::Call {
-                target: format!("{}.{}", paren(&recv), short(&raw)),
+                target: format!("{}.{}", paren(&recv, self.lang), short(&raw)),
                 args,
             }
         } else {
@@ -349,7 +436,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
         };
         if is_ctor || !returns_value {
-            self.stmts.push(Stmt::Expr(call.render()));
+            self.stmts.push(Stmt::Expr(call.render(self.lang)));
         } else {
             self.push(call);
         }
@@ -358,7 +445,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     fn cond_branch(&mut self, ins: &Instruction, negate: bool) {
         let cond: Expr = self.pop();
         self.stmts.push(Stmt::Branch {
-            cond: Some(cond.render()),
+            cond: Some(cond.render(self.lang)),
             target: abs_target(ins),
             negate,
         });
@@ -370,7 +457,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let a: Expr = self.pop();
         let cond: Expr = Expr::Binary(op, Box::new(a), Box::new(b));
         self.stmts.push(Stmt::Branch {
-            cond: Some(cond.render()),
+            cond: Some(cond.render(self.lang)),
             target: abs_target(ins),
             negate: false,
         });
@@ -392,21 +479,21 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "ldc.i4.m1" => self.push(Expr::Const("-1".to_owned())),
             "dup" => {
                 let e: Expr = self.pop();
-                let r: String = e.render();
+                let r: String = e.render(self.lang);
                 self.push(e);
                 self.push(Expr::Raw(r));
             }
             "pop" => {
                 let e: Expr = self.pop();
                 if matches!(e, Expr::Call { .. } | Expr::NewObj { .. }) {
-                    self.stmts.push(Stmt::Expr(e.render()));
+                    self.stmts.push(Stmt::Expr(e.render(self.lang)));
                 }
             }
             "ret" => {
                 let val: Option<String> = if self.stack.is_empty() {
                     None
                 } else {
-                    Some(self.pop().render())
+                    Some(self.pop().render(self.lang))
                 };
                 self.stmts.push(Stmt::Return(val));
             }
@@ -431,7 +518,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             "throw" => {
                 let e: Expr = self.pop();
-                self.stmts.push(Stmt::Throw(Some(e.render())));
+                self.stmts.push(Stmt::Throw(Some(e.render(self.lang))));
             }
             "rethrow" => self.stmts.push(Stmt::Throw(None)),
             "newarr" => {
@@ -467,14 +554,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "ldfld" => {
                 let obj: Expr = self.pop();
                 let fld: String = short(&self.token_name(ins));
-                self.push(Expr::Field(format!("{}.{}", paren(&obj), fld)));
+                self.push(Expr::Field(format!("{}.{}", paren(&obj, self.lang), fld)));
             }
             "ldflda" => {
                 let obj: Expr = self.pop();
                 let fld: String = short(&self.token_name(ins));
                 self.push(Expr::AddressOf(Box::new(Expr::Field(format!(
                     "{}.{}",
-                    paren(&obj),
+                    paren(&obj, self.lang),
                     fld
                 )))));
             }
@@ -491,8 +578,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let obj: Expr = self.pop();
                 let fld: String = short(&self.token_name(ins));
                 self.stmts.push(Stmt::Assign {
-                    target: format!("{}.{}", paren(&obj), fld),
-                    value: val.render(),
+                    target: format!("{}.{}", paren(&obj, self.lang), fld),
+                    value: val.render(self.lang),
                 });
             }
             "stsfld" => {
@@ -500,7 +587,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let fld: String = short(&self.token_name(ins));
                 self.stmts.push(Stmt::Assign {
                     target: fld,
-                    value: val.render(),
+                    value: val.render(self.lang),
                 });
             }
             n if n.starts_with("ldelem") => {
@@ -513,8 +600,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let idx: Expr = self.pop();
                 let arr: Expr = self.pop();
                 self.stmts.push(Stmt::Assign {
-                    target: format!("{}[{}]", paren(&arr), idx.render()),
-                    value: val.render(),
+                    target: format!("{}[{}]", paren(&arr, self.lang), idx.render(self.lang)),
+                    value: val.render(self.lang),
                 });
             }
             n if n.starts_with("ldc.i4") => {
@@ -558,7 +645,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = self.pop();
                 self.stmts.push(Stmt::Assign {
                     target: format!("arg{idx}"),
-                    value: val.render(),
+                    value: val.render(self.lang),
                 });
             }
             n if n.starts_with("stloc") => self.store_loc(ins, n),
@@ -571,8 +658,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Expr = self.pop();
                 let addr: Expr = self.pop();
                 self.stmts.push(Stmt::Assign {
-                    target: format!("*{}", paren(&addr)),
-                    value: val.render(),
+                    target: format!("*{}", paren(&addr, self.lang)),
+                    value: val.render(self.lang),
                 });
             }
             "br" | "br.s" => {
@@ -599,7 +686,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                         .map(|r: &i32| (i64::from(ins.offset) + i64::from(*r)) as u32)
                         .collect();
                     self.stmts.push(Stmt::Switch {
-                        selector: selector.render(),
+                        selector: selector.render(self.lang),
                         targets,
                     });
                     self.branches += 1;
@@ -693,10 +780,22 @@ pub fn decompile_method<N: TokenNamer>(
     body: &MethodBody,
     namer: &N,
 ) -> StructuredMethod {
+    decompile_method_in(signature, body, namer, TargetLang::CSharp)
+}
+
+/// Decompile a method body to structured pseudo-source in the requested [`TargetLang`]. F# renders
+/// unstructured CIL jumps as comments (it has no `goto`); C# and VB.NET render real labeled jumps.
+#[must_use]
+pub fn decompile_method_in<N: TokenNamer>(
+    signature: &str,
+    body: &MethodBody,
+    namer: &N,
+    lang: TargetLang,
+) -> StructuredMethod {
     let normalized: MethodBody = normalize_branches(body);
     let branch_targets: BTreeSet<u32> = collect_branch_targets(&normalized);
 
-    let mut lifter: Lifter<'_, N> = Lifter::new(namer);
+    let mut lifter: Lifter<'_, N> = Lifter::new(namer, lang);
     for ins in &normalized.instructions {
         if branch_targets.contains(&ins.offset) {
             lifter.stmts.push(Stmt::Label(ins.offset));
@@ -705,16 +804,9 @@ pub fn decompile_method<N: TokenNamer>(
     }
 
     let mut text: String = String::with_capacity(256);
-    let _ = writeln!(text, "{signature}");
-    let _ = writeln!(text, "{{");
-    for n in &lifter.locals_used {
-        let _ = writeln!(text, "    var local{n};");
-    }
-    if !lifter.locals_used.is_empty() {
-        let _ = writeln!(text);
-    }
-    render_eh_aware(&mut text, &lifter.stmts, &normalized);
-    let _ = writeln!(text, "}}");
+    write_prologue(&mut text, signature, &lifter.locals_used, lang);
+    render_eh_aware(&mut text, &lifter.stmts, &normalized, lang);
+    write_epilogue(&mut text, signature, lang);
 
     StructuredMethod {
         signature: signature.to_owned(),
@@ -725,9 +817,66 @@ pub fn decompile_method<N: TokenNamer>(
     }
 }
 
+const FSHARP_GOTO_BANNER: &str =
+    "    // note: unstructured CIL jumps preserved as comments; F# has no goto";
+
+/// Emit the method header, opening token, and local declarations per language.
+fn write_prologue(text: &mut String, signature: &str, locals: &BTreeSet<u32>, lang: TargetLang) {
+    match lang {
+        TargetLang::CSharp => {
+            let _ = writeln!(text, "{signature}");
+            let _ = writeln!(text, "{{");
+            for n in locals {
+                let _ = writeln!(text, "    var local{n};");
+            }
+        }
+        TargetLang::FSharp => {
+            let _ = writeln!(text, "{signature} =");
+            let _ = writeln!(text, "{FSHARP_GOTO_BANNER}");
+            for n in locals {
+                let _ = writeln!(text, "    let mutable local{n} = Unchecked.defaultof<_>");
+            }
+        }
+        TargetLang::VbNet => {
+            let _ = writeln!(text, "{signature}");
+            for n in locals {
+                let _ = writeln!(text, "    Dim local{n}");
+            }
+        }
+    }
+    if !locals.is_empty() {
+        let _ = writeln!(text);
+    }
+}
+
+/// Emit the closing token per language. C# closes its brace; VB closes `End Sub`/`End Function`
+/// inferred from the signature; F#'s indentation block needs no terminator.
+fn write_epilogue(text: &mut String, signature: &str, lang: TargetLang) {
+    match lang {
+        TargetLang::CSharp => {
+            let _ = writeln!(text, "}}");
+        }
+        TargetLang::FSharp => {}
+        TargetLang::VbNet => {
+            let _ = writeln!(text, "{}", vb_body_terminator(signature));
+        }
+    }
+}
+
+/// Choose `End Function` when the VB signature declares a return type (`... As T`), else `End Sub`.
+fn vb_body_terminator(signature: &str) -> &'static str {
+    if signature.contains(") As ") {
+        "End Function"
+    } else {
+        "End Sub"
+    }
+}
+
 /// Render statements, opening `try`/handler headers at the IL offsets where EH clauses begin. Full
-/// nesting reconstruction is approximate; the markers + labeled gotos preserve correctness.
-fn render_eh_aware(text: &mut String, stmts: &[Stmt], body: &MethodBody) {
+/// nesting reconstruction is approximate; the markers + labeled gotos preserve correctness. Only the
+/// comment prefix varies by language (`'` for VB, `//` otherwise).
+fn render_eh_aware(text: &mut String, stmts: &[Stmt], body: &MethodBody, lang: TargetLang) {
+    let cm: &str = comment_prefix(lang);
     let try_starts: BTreeMap<u32, &ExceptionClause> = body
         .exception_clauses
         .iter()
@@ -744,26 +893,41 @@ fn render_eh_aware(text: &mut String, stmts: &[Stmt], body: &MethodBody) {
             if let Some(c) = try_starts.get(off) {
                 let _ = writeln!(
                     text,
-                    "    // try IL_{:04X}..IL_{:04X}",
+                    "    {cm} try IL_{:04X}..IL_{:04X}",
                     c.try_offset,
                     c.try_offset.saturating_add(c.try_length)
                 );
             }
             if let Some(kind) = handler_kind.get(off) {
                 let head: &str = match kind {
-                    ExceptionClauseKind::Catch => "// catch",
-                    ExceptionClauseKind::Filter => "// catch when",
-                    ExceptionClauseKind::Finally => "// finally",
-                    ExceptionClauseKind::Fault => "// fault",
+                    ExceptionClauseKind::Catch => "catch",
+                    ExceptionClauseKind::Filter => "catch when",
+                    ExceptionClauseKind::Finally => "finally",
+                    ExceptionClauseKind::Fault => "fault",
                 };
-                let _ = writeln!(text, "    {head}");
+                let _ = writeln!(text, "    {cm} {head}");
             }
         }
-        render_stmt(text, stmt);
+        render_stmt(text, stmt, lang);
     }
 }
 
-fn render_stmt(text: &mut String, stmt: &Stmt) {
+const fn comment_prefix(lang: TargetLang) -> &'static str {
+    match lang {
+        TargetLang::CSharp | TargetLang::FSharp => "//",
+        TargetLang::VbNet => "'",
+    }
+}
+
+fn render_stmt(text: &mut String, stmt: &Stmt, lang: TargetLang) {
+    match lang {
+        TargetLang::CSharp => render_stmt_csharp(text, stmt),
+        TargetLang::FSharp => render_stmt_fsharp(text, stmt),
+        TargetLang::VbNet => render_stmt_vbnet(text, stmt),
+    }
+}
+
+fn render_stmt_csharp(text: &mut String, stmt: &Stmt) {
     match stmt {
         Stmt::Assign { target, value } => {
             let _ = writeln!(text, "    {target} = {value};");
@@ -813,6 +977,111 @@ fn render_stmt(text: &mut String, stmt: &Stmt) {
         }
         Stmt::Comment(c) => {
             let _ = writeln!(text, "    /* {c} */");
+        }
+    }
+}
+
+fn render_stmt_fsharp(text: &mut String, stmt: &Stmt) {
+    match stmt {
+        Stmt::Assign { target, value } => {
+            let _ = writeln!(text, "    {target} <- {value}");
+        }
+        Stmt::Expr(e) => {
+            let _ = writeln!(text, "    {e} |> ignore");
+        }
+        Stmt::Return(Some(v)) => {
+            let _ = writeln!(text, "    {v}");
+        }
+        Stmt::Return(None) => {
+            let _ = writeln!(text, "    ()");
+        }
+        Stmt::Branch {
+            cond: Some(c),
+            target,
+            negate,
+        } => {
+            let cond: String = if *negate {
+                format!("not ({c})")
+            } else {
+                c.clone()
+            };
+            let _ = writeln!(text, "    // if {cond} then goto IL_{target:04X}");
+        }
+        Stmt::Branch {
+            cond: None, target, ..
+        } => {
+            let _ = writeln!(text, "    // goto IL_{target:04X}");
+        }
+        Stmt::Switch { selector, targets } => {
+            let _ = writeln!(text, "    // match {selector} with (jump table)");
+            for (i, t) in targets.iter().enumerate() {
+                let _ = writeln!(text, "    // | {i} -> goto IL_{t:04X}");
+            }
+        }
+        Stmt::Throw(Some(e)) => {
+            let _ = writeln!(text, "    raise {e}");
+        }
+        Stmt::Throw(None) => {
+            let _ = writeln!(text, "    reraise()");
+        }
+        Stmt::Label(off) => {
+            let _ = writeln!(text, "    // IL_{off:04X}:");
+        }
+        Stmt::Comment(c) => {
+            let _ = writeln!(text, "    // {c}");
+        }
+    }
+}
+
+fn render_stmt_vbnet(text: &mut String, stmt: &Stmt) {
+    match stmt {
+        Stmt::Assign { target, value } => {
+            let _ = writeln!(text, "    {target} = {value}");
+        }
+        Stmt::Expr(e) => {
+            let _ = writeln!(text, "    {e}");
+        }
+        Stmt::Return(Some(v)) => {
+            let _ = writeln!(text, "    Return {v}");
+        }
+        Stmt::Return(None) => {
+            let _ = writeln!(text, "    Return");
+        }
+        Stmt::Branch {
+            cond: Some(c),
+            target,
+            negate,
+        } => {
+            let cond: String = if *negate {
+                format!("Not ({c})")
+            } else {
+                c.clone()
+            };
+            let _ = writeln!(text, "    If {cond} Then GoTo IL_{target:04X}");
+        }
+        Stmt::Branch {
+            cond: None, target, ..
+        } => {
+            let _ = writeln!(text, "    GoTo IL_{target:04X}");
+        }
+        Stmt::Switch { selector, targets } => {
+            let _ = writeln!(text, "    Select Case {selector}");
+            for (i, t) in targets.iter().enumerate() {
+                let _ = writeln!(text, "        Case {i} : GoTo IL_{t:04X}");
+            }
+            let _ = writeln!(text, "    End Select");
+        }
+        Stmt::Throw(Some(e)) => {
+            let _ = writeln!(text, "    Throw {e}");
+        }
+        Stmt::Throw(None) => {
+            let _ = writeln!(text, "    Throw");
+        }
+        Stmt::Label(off) => {
+            let _ = writeln!(text, "IL_{off:04X}:");
+        }
+        Stmt::Comment(c) => {
+            let _ = writeln!(text, "    ' {c}");
         }
     }
 }
@@ -949,5 +1218,107 @@ mod tests {
         let body: MethodBody = body_from(&code);
         let out: StructuredMethod = decompile_method("void M()", &body, &HexNamer);
         assert!(out.body.contains("throw new"), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn vbnet_lifts_addition_to_return() {
+        let body: MethodBody = body_from(&[0x03, 0x04, 0x58, 0x2A]);
+        let out: StructuredMethod = decompile_method_in(
+            "Public Function Add(arg1 As Integer, arg2 As Integer) As Integer",
+            &body,
+            &HexNamer,
+            TargetLang::VbNet,
+        );
+        assert!(
+            out.body.contains("Return arg1 + arg2"),
+            "got:\n{}",
+            out.body
+        );
+        assert!(out.body.contains("End Function"), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn fsharp_lifts_addition_to_return() {
+        let body: MethodBody = body_from(&[0x03, 0x04, 0x58, 0x2A]);
+        let out: StructuredMethod = decompile_method_in(
+            "member Add(arg1: int, arg2: int) : int",
+            &body,
+            &HexNamer,
+            TargetLang::FSharp,
+        );
+        assert!(out.body.contains("arg1 + arg2"), "got:\n{}", out.body);
+        assert!(out.body.contains(FSHARP_GOTO_BANNER), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn vbnet_local_store_uses_dim_and_assign() {
+        let body: MethodBody = body_from(&[0x1B, 0x0A, 0x06, 0x2A]);
+        let out: StructuredMethod =
+            decompile_method_in("Public Sub M()", &body, &HexNamer, TargetLang::VbNet);
+        assert!(out.body.contains("Dim local0"), "got:\n{}", out.body);
+        assert!(out.body.contains("local0 = 5"), "got:\n{}", out.body);
+        assert!(out.body.contains("Return local0"), "got:\n{}", out.body);
+        assert!(out.body.contains("End Sub"), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn fsharp_local_store_uses_let_mutable_and_rebind() {
+        let body: MethodBody = body_from(&[0x1B, 0x0A, 0x06, 0x2A]);
+        let out: StructuredMethod =
+            decompile_method_in("member M() : int", &body, &HexNamer, TargetLang::FSharp);
+        assert!(
+            out.body.contains("let mutable local0"),
+            "got:\n{}",
+            out.body
+        );
+        assert!(out.body.contains("local0 <- 5"), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn fsharp_conditional_branch_is_commented_not_goto() {
+        let body: MethodBody = body_from(&[0x02, 0x2C, 0x01, 0x2A, 0x2A]);
+        let out: StructuredMethod = decompile_method_in(
+            "member M(arg0: bool) : unit",
+            &body,
+            &HexNamer,
+            TargetLang::FSharp,
+        );
+        assert!(out.body.contains("// if "), "got:\n{}", out.body);
+        assert!(
+            !out.body
+                .lines()
+                .any(|l: &str| l.trim_start().starts_with("goto ")),
+            "F# must never emit a bare goto; got:\n{}",
+            out.body
+        );
+    }
+
+    #[test]
+    fn vbnet_conditional_branch_emits_real_goto() {
+        let body: MethodBody = body_from(&[0x02, 0x2C, 0x01, 0x2A, 0x2A]);
+        let out: StructuredMethod = decompile_method_in(
+            "Public Sub M(arg0 As Boolean)",
+            &body,
+            &HexNamer,
+            TargetLang::VbNet,
+        );
+        assert!(out.body.contains("Then GoTo IL_"), "got:\n{}", out.body);
+    }
+
+    #[test]
+    fn vbnet_switch_renders_select_case() {
+        let code: [u8; 14] = [
+            0x03, 0x45, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        ];
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method_in(
+            "Public Sub M(arg1 As Integer)",
+            &body,
+            &HexNamer,
+            TargetLang::VbNet,
+        );
+        assert!(out.body.contains("Select Case arg1"), "got:\n{}", out.body);
+        assert!(out.body.contains("Case 0 :"), "got:\n{}", out.body);
+        assert!(out.body.contains("End Select"), "got:\n{}", out.body);
     }
 }

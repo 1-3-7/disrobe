@@ -62,7 +62,7 @@ pub use kkrunchy_reconstruct::{
 
 pub mod kkrunchy_cca;
 
-pub use kkrunchy_cca::decompress_kkrunchy_classic;
+pub use kkrunchy_cca::{KkrunchyClassicStream, decompress_kkrunchy_classic, locate_classic_stream};
 
 pub mod mew_unpack;
 

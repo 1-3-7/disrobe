@@ -13,12 +13,15 @@ use std::fs;
 use std::path::PathBuf;
 
 use disrobe_pass_native::{
-    DisFilterStreamSizes, Error, KkrunchyByteRecoveryReport, KkrunchyEmulatedUnpackOutput,
-    KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
+    DisFilterStreamSizes, Error, KkrunchyByteRecoveryReport, KkrunchyClassicStream,
+    KkrunchyEmulatedUnpackOutput, KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
     KkrunchyHeaderReconstructionEmulator, KkrunchyUnpackOutput, KkrunchyVariant, Packer,
     PackerDetection, UnpackerStatus, compute_byte_recovery, detect_packers, dis_filter,
-    dis_unfilter, parse_kkrunchy_header, unpack_kkrunchy, unpack_kkrunchy_emulated,
+    dis_unfilter, locate_classic_stream, parse_kkrunchy_header, unpack_kkrunchy,
+    unpack_kkrunchy_emulated,
 };
+
+const CLASSIC_MEASURED_FLOOR_BP: u32 = 1_700;
 
 fn corpus_dir() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -164,7 +167,10 @@ fn detect_and_parse_real_kkrunchy_k7_fixture() {
 #[test]
 fn detect_and_parse_real_kkrunchy_classic_fixture() {
     let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
-        eprintln!("skipping: kkrunchy classic corpus fixture missing");
+        eprintln!(
+            "BARRIER: classic 0.23a fixture absent (packer binary not obtained); CCA decoder is \
+             reference-verified vs depacker_simple.cpp but unwitnessed. See MANIFEST kkrunchy.classic row."
+        );
         return;
     };
     assert_eq!(packed.len(), 4608, "classic fixture must be 4608 bytes");
@@ -177,17 +183,99 @@ fn detect_and_parse_real_kkrunchy_classic_fixture() {
     );
 
     let header: KkrunchyHeaderInfo = parse_kkrunchy_header(&packed).expect("classic header parse");
-    assert!(
-        matches!(
-            header.variant,
-            KkrunchyVariant::Classic023A | KkrunchyVariant::UnknownVersion
-        ),
-        "classic stub must classify as Classic or Unknown (k7 explicitly excluded)",
+    assert_eq!(
+        header.variant,
+        KkrunchyVariant::Classic023A,
+        "classic stub (mov ebp prologue) must fingerprint as Classic023A",
     );
     assert_eq!(header.number_of_sections, 1, "single packed section");
 
     let out: KkrunchyUnpackOutput = unpack_kkrunchy(&packed).expect("structural unpack");
     assert!(!out.packed_payload.is_empty());
+}
+
+#[test]
+fn locate_classic_stream_finds_real_range_coder_seed() {
+    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
+        eprintln!(
+            "BARRIER: classic 0.23a fixture absent; locate_classic_stream unwitnessed against a real stream."
+        );
+        return;
+    };
+    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(&packed).expect("classic header parse");
+    let loc: KkrunchyClassicStream =
+        locate_classic_stream(&packed, &header).expect("locate CCA stream in classic image");
+    assert_eq!(
+        loc.stream_offset, 0xD4,
+        "the classic stub seeds src = image_base + 0xD4 via `mov [ebp], imm32`; \
+         the located stream offset must match that structurally-derived seed exactly",
+    );
+    assert!(
+        loc.recovered_size > 256,
+        "the located stream must decode a non-trivial payload (import bootstrap + DisFilter body), got {}",
+        loc.recovered_size,
+    );
+}
+
+#[test]
+fn classic_cca_recovers_real_fixture_payload() {
+    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
+        eprintln!(
+            "BARRIER: classic 0.23a fixture absent (packer binary not obtained); CCA decoder is \
+             reference-verified vs depacker_simple.cpp but unwitnessed against a real stream. \
+             See MANIFEST kkrunchy.classic row."
+        );
+        return;
+    };
+    let original: Vec<u8> = read_corpus("hello.exe").expect("1024 B NASM hello");
+    assert_eq!(original.len(), 1024, "hand-rolled hello.exe is 1024 bytes");
+
+    let out: KkrunchyUnpackOutput =
+        unpack_kkrunchy(&packed).expect("classic structural+CCA unpack");
+    assert_eq!(out.header.variant, KkrunchyVariant::Classic023A);
+    assert!(
+        out.note.contains("CCA range-coder stream"),
+        "note must document the located CCA stream path (got: {})",
+        out.note,
+    );
+
+    let report: KkrunchyByteRecoveryReport = compute_byte_recovery(&original, &out.packed_payload);
+    eprintln!(
+        "kkrunchy classic CCA byte recovery vs 1024 B original: {} / {} matching ({:.2}%) \
+         [recovered_len={}] -- the recovered payload is the real decompressed import-bootstrap \
+         region; full .text byte-identity is bounded by residual decoder drift in the DisFilter tail.",
+        report.matching_bytes,
+        report.original_len,
+        report.pct(),
+        report.recovered_len,
+    );
+
+    assert!(
+        report.recovery_pct_basis_points >= CLASSIC_MEASURED_FLOOR_BP,
+        "classic CCA byte recovery regressed below the measured floor: {:.2}% < {:.2}% \
+         (the decoder genuinely decompresses the real stream; a regression here means the \
+         stream locator or decoder broke)",
+        report.pct(),
+        f64::from(CLASSIC_MEASURED_FLOOR_BP) / 100.0,
+    );
+
+    let real_import_markers: [&[u8]; 4] = [
+        b"kernel32.dll",
+        b"GetStdHandle",
+        b"WriteFile",
+        b"ExitProcess",
+    ];
+    for marker in real_import_markers {
+        assert!(
+            out.packed_payload
+                .windows(marker.len())
+                .any(|w: &[u8]| w == marker),
+            "decoded payload must contain the verbatim import name {:?} recovered from the REAL \
+             classic stream -- this is the anti-circular witness that the decoder decoded real bytes, \
+             not its own encoder output",
+            std::str::from_utf8(marker).unwrap_or("<bin>"),
+        );
+    }
 }
 
 #[test]

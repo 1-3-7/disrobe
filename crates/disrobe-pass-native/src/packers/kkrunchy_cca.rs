@@ -10,12 +10,17 @@
 //! Reference: `kkrunchy/depacker_simple.cpp` by Fabian "ryg" Giesen, released
 //! into the public domain. See <https://github.com/farbrausch/fr_public/blob/master/kkrunchy/depacker_simple.cpp>.
 //!
-//! This port produces byte-identical output to the reference depacker for every
-//! valid input stream; the round-trip property is exercised by the unit tests
-//! which encode bytes via the matching arithmetic-coder encoder embedded in
-//! this module and verify the decoder restores them exactly.
+//! The decoder is witnessed two ways. The load-bearing correctness proof is the
+//! real-fixture integration test `classic_cca_recovers_real_fixture_payload`,
+//! which drives this decoder over the genuine on-disk classic stream located by
+//! [`locate_classic_stream`] and asserts the verbatim import bootstrap is
+//! recovered (anti-circular: it decodes real packer output, not our own
+//! encoder). The in-module `round_trip_*` unit tests are encoder-paired
+//! regression guards only — they exercise the decoder against the matching
+//! arithmetic-coder encoder embedded here and prove nothing about real streams.
 
 use crate::error::{Error, Result};
+use crate::packers::kkrunchy_unpack::KkrunchyHeaderInfo;
 
 const CODE_MODEL: usize = 0;
 const PREV_MATCH_MODEL: usize = 2;
@@ -169,7 +174,7 @@ pub fn decompress_kkrunchy_classic(packed: &[u8], expected_size: usize) -> Resul
                     offs = r0;
                 } else {
                     let raw_offs: u32 = ari.decode_gamma(GAMMA0_MODEL)?;
-                    if raw_offs == 0 {
+                    if raw_offs <= 1 {
                         return Ok(dst);
                     }
                     let raw_offs_minus_two: u32 = raw_offs.wrapping_sub(2);
@@ -216,6 +221,114 @@ pub fn decompress_kkrunchy_classic(packed: &[u8], expected_size: usize) -> Resul
         code = u32::from(ari.decode_bit(CODE_MODEL + lwm as usize, 5)?);
     }
     Ok(dst)
+}
+
+const STUB_SCAN_WINDOW: usize = 256;
+const MOV_EBP_OPCODE: u8 = 0xBD;
+const MOV_PTR_EBP_DISP0: [u8; 3] = [0xC7, 0x45, 0x00];
+
+/// Located CCA range-coder stream inside a classic-variant packed image.
+///
+/// The classic 0.23a depacker stub seeds its source pointer with a literal
+/// `mov dword [ebp], <image_base + stream_rva>` immediate (`C7 45 00 <imm32>`),
+/// so the compressed stream begins at file offset `imm32 - image_base` — which,
+/// for the canonical small-CUI layout, lands in the PE header tail rather than
+/// inside the named `kkrunchy` section's raw data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KkrunchyClassicStream {
+    pub stream_offset: usize,
+    pub recovered_size: usize,
+}
+
+/// Locate the CCA range-coder stream in a classic-variant packed image.
+///
+/// `image` is the full packed PE; `header` is its parsed `kkrunchy` header. The
+/// stub lives at the start of the `kkrunchy` section's raw data; its first ≤256
+/// bytes are scanned for the `mov dword [ebp], <imm32>` that seeds the depacker
+/// source pointer. The stream offset is `imm32 - image_base`; the recovered size
+/// is the length the decoder emits before the gamma terminator, used purely as
+/// the structural oracle that confirms the located offset decodes cleanly.
+///
+/// # Errors
+///
+/// - [`Error::SignatureDb`] when the stub carries no recoverable source-pointer
+///   immediate, when the derived offset falls outside the image, or when no
+///   trial decode from the candidate offset reaches the gamma stop token (a
+///   wrong offset must fail loudly, never silently mis-locate).
+pub fn locate_classic_stream(
+    image: &[u8],
+    header: &KkrunchyHeaderInfo,
+) -> Result<KkrunchyClassicStream> {
+    let stub_off: usize = header.section_raw_offset as usize;
+    let stub_end: usize = stub_off
+        .checked_add(header.section_raw_size as usize)
+        .ok_or_else(|| Error::SignatureDb("kkrunchy classic: stub bounds overflow".to_owned()))?
+        .min(image.len());
+    if stub_end <= stub_off {
+        return Err(Error::SignatureDb(
+            "kkrunchy classic: empty stub region".to_owned(),
+        ));
+    }
+    let stub: &[u8] = &image[stub_off..stub_end];
+    let scan_len: usize = STUB_SCAN_WINDOW.min(stub.len());
+    let image_base: u32 = header.image_base;
+
+    let mut candidates: Vec<usize> = Vec::new();
+    for i in 0..scan_len.saturating_sub(MOV_PTR_EBP_DISP0.len() + 4) {
+        if stub[i] == MOV_PTR_EBP_DISP0[0]
+            && stub[i + 1] == MOV_PTR_EBP_DISP0[1]
+            && stub[i + 2] == MOV_PTR_EBP_DISP0[2]
+        {
+            let imm: u32 = u32::from_le_bytes([stub[i + 3], stub[i + 4], stub[i + 5], stub[i + 6]]);
+            if imm >= image_base {
+                let off: usize = (imm - image_base) as usize;
+                if off + 4 <= image.len() {
+                    candidates.push(off);
+                }
+            }
+        }
+    }
+    if candidates.is_empty() && scan_len > 5 && stub[0] == MOV_EBP_OPCODE {
+        return Err(Error::SignatureDb(
+            "kkrunchy classic: stub begins with mov ebp but carries no source-pointer immediate"
+                .to_owned(),
+        ));
+    }
+    if candidates.is_empty() {
+        return Err(Error::SignatureDb(
+            "kkrunchy classic: no mov [ebp], <imm32> source-pointer seed found in stub".to_owned(),
+        ));
+    }
+
+    let probe_cap: usize = MAX_DECOMPRESSED_BYTES.min(16 * 1024);
+    let mut located: Option<KkrunchyClassicStream> = None;
+    for &off in &candidates {
+        let stream: &[u8] = &image[off..];
+        match probe_stream(stream, probe_cap) {
+            Some(size) if size > 0 => {
+                located = Some(KkrunchyClassicStream {
+                    stream_offset: off,
+                    recovered_size: size,
+                });
+                break;
+            }
+            _ => {}
+        }
+    }
+    located.ok_or_else(|| {
+        Error::SignatureDb(format!(
+            "kkrunchy classic: {} candidate stream offset(s) found but none decoded to the gamma stop token",
+            candidates.len()
+        ))
+    })
+}
+
+fn probe_stream(stream: &[u8], cap: usize) -> Option<usize> {
+    let decoded: Vec<u8> = decompress_kkrunchy_classic(stream, cap).ok()?;
+    if decoded.len() >= cap || decoded.is_empty() {
+        return None;
+    }
+    Some(decoded.len())
 }
 
 /// Carry-style range encoder mirroring the reference implementation in

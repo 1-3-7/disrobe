@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::metadata::decompress_uint;
+use crate::structurize::TargetLang;
 
 /// `ELEMENT_TYPE_*` constants (§II.23.1.16).
 pub mod element_type {
@@ -102,47 +103,133 @@ pub enum TypeSig {
 }
 
 impl TypeSig {
-    /// Render as a C#-style type name. Token references render as `type(0x…)` placeholders unless a
-    /// resolver substitutes them post-hoc. Arms stay one-per-element-type for §II.23.1.16 clarity.
+    /// Render as a C#-style type name. Back-compat shim over [`Self::render_in`].
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.render_in(TargetLang::CSharp)
+    }
+
+    /// Render the type keyword for the requested target language. Token references render as
+    /// `type(0x…)` placeholders unless a resolver substitutes them post-hoc. Arms stay
+    /// one-per-element-type for §II.23.1.16 clarity. Composite/vendor arms (`NamedType`, `Var`,
+    /// `MVar`, `Ptr`, `Array`, `FnPtr`, `Pinned`, `TypedByRef`) keep C# rendering for all langs.
     #[must_use]
     #[allow(clippy::match_same_arms)]
-    pub fn render(&self) -> String {
+    pub fn render_in(&self, lang: TargetLang) -> String {
         match self {
-            Self::Void => "void".to_owned(),
-            Self::Boolean => "bool".to_owned(),
-            Self::Char => "char".to_owned(),
-            Self::I1 => "sbyte".to_owned(),
-            Self::U1 => "byte".to_owned(),
-            Self::I2 => "short".to_owned(),
-            Self::U2 => "ushort".to_owned(),
-            Self::I4 => "int".to_owned(),
-            Self::U4 => "uint".to_owned(),
-            Self::I8 => "long".to_owned(),
-            Self::U8 => "ulong".to_owned(),
-            Self::R4 => "float".to_owned(),
-            Self::R8 => "double".to_owned(),
-            Self::String => "string".to_owned(),
-            Self::IntPtr => "nint".to_owned(),
-            Self::UIntPtr => "nuint".to_owned(),
-            Self::Object => "object".to_owned(),
+            Self::Void => match lang {
+                TargetLang::CSharp => "void".to_owned(),
+                TargetLang::FSharp => "unit".to_owned(),
+                TargetLang::VbNet => "void".to_owned(),
+            },
+            Self::Boolean => match lang {
+                TargetLang::VbNet => "Boolean".to_owned(),
+                _ => "bool".to_owned(),
+            },
+            Self::Char => match lang {
+                TargetLang::VbNet => "Char".to_owned(),
+                _ => "char".to_owned(),
+            },
+            Self::I1 => match lang {
+                TargetLang::VbNet => "SByte".to_owned(),
+                _ => "sbyte".to_owned(),
+            },
+            Self::U1 => match lang {
+                TargetLang::VbNet => "Byte".to_owned(),
+                _ => "byte".to_owned(),
+            },
+            Self::I2 => match lang {
+                TargetLang::CSharp => "short".to_owned(),
+                TargetLang::FSharp => "int16".to_owned(),
+                TargetLang::VbNet => "Short".to_owned(),
+            },
+            Self::U2 => match lang {
+                TargetLang::CSharp => "ushort".to_owned(),
+                TargetLang::FSharp => "uint16".to_owned(),
+                TargetLang::VbNet => "UShort".to_owned(),
+            },
+            Self::I4 => match lang {
+                TargetLang::VbNet => "Integer".to_owned(),
+                _ => "int".to_owned(),
+            },
+            Self::U4 => match lang {
+                TargetLang::CSharp => "uint".to_owned(),
+                TargetLang::FSharp => "uint32".to_owned(),
+                TargetLang::VbNet => "UInteger".to_owned(),
+            },
+            Self::I8 => match lang {
+                TargetLang::CSharp => "long".to_owned(),
+                TargetLang::FSharp => "int64".to_owned(),
+                TargetLang::VbNet => "Long".to_owned(),
+            },
+            Self::U8 => match lang {
+                TargetLang::CSharp => "ulong".to_owned(),
+                TargetLang::FSharp => "uint64".to_owned(),
+                TargetLang::VbNet => "ULong".to_owned(),
+            },
+            Self::R4 => match lang {
+                TargetLang::CSharp => "float".to_owned(),
+                TargetLang::FSharp => "float32".to_owned(),
+                TargetLang::VbNet => "Single".to_owned(),
+            },
+            Self::R8 => match lang {
+                TargetLang::CSharp => "double".to_owned(),
+                TargetLang::FSharp => "float".to_owned(),
+                TargetLang::VbNet => "Double".to_owned(),
+            },
+            Self::String => match lang {
+                TargetLang::VbNet => "String".to_owned(),
+                _ => "string".to_owned(),
+            },
+            Self::IntPtr => match lang {
+                TargetLang::CSharp => "nint".to_owned(),
+                TargetLang::FSharp => "nativeint".to_owned(),
+                TargetLang::VbNet => "IntPtr".to_owned(),
+            },
+            Self::UIntPtr => match lang {
+                TargetLang::CSharp => "nuint".to_owned(),
+                TargetLang::FSharp => "unativeint".to_owned(),
+                TargetLang::VbNet => "UIntPtr".to_owned(),
+            },
+            Self::Object => match lang {
+                TargetLang::CSharp => "object".to_owned(),
+                TargetLang::FSharp => "obj".to_owned(),
+                TargetLang::VbNet => "Object".to_owned(),
+            },
             Self::TypedByRef => "System.TypedReference".to_owned(),
             Self::NamedType { token, .. } => format!("type(0x{token:08X})"),
-            Self::SzArray(inner) => format!("{}[]", inner.render()),
+            Self::SzArray(inner) => match lang {
+                TargetLang::VbNet => format!("{}()", inner.render_in(lang)),
+                _ => format!("{}[]", inner.render_in(lang)),
+            },
             Self::Array { element, rank } => {
                 let commas: String = ",".repeat((*rank).saturating_sub(1) as usize);
-                format!("{}[{commas}]", element.render())
+                format!("{}[{commas}]", element.render_in(lang))
             }
-            Self::Ptr(inner) => format!("{}*", inner.render()),
-            Self::ByRef(inner) => format!("ref {}", inner.render()),
-            Self::Pinned(inner) => inner.render(),
+            Self::Ptr(inner) => format!("{}*", inner.render_in(lang)),
+            Self::ByRef(inner) => match lang {
+                TargetLang::CSharp => format!("ref {}", inner.render_in(lang)),
+                TargetLang::FSharp => format!("byref<{}>", inner.render_in(lang)),
+                TargetLang::VbNet => format!("ByRef {}", inner.render_in(lang)),
+            },
+            Self::Pinned(inner) => inner.render_in(lang),
             Self::GenericInst { base, args } => {
-                let rendered: Vec<String> = args.iter().map(Self::render).collect();
-                format!("{}<{}>", base.render(), rendered.join(", "))
+                let rendered: Vec<String> = args.iter().map(|a: &Self| a.render_in(lang)).collect();
+                match lang {
+                    TargetLang::VbNet => {
+                        format!("{}(Of {})", base.render_in(lang), rendered.join(", "))
+                    }
+                    _ => format!("{}<{}>", base.render_in(lang), rendered.join(", ")),
+                }
             }
             Self::Var(n) => format!("!{n}"),
             Self::MVar(n) => format!("!!{n}"),
             Self::FnPtr => "method*".to_owned(),
-            Self::Unknown => "object".to_owned(),
+            Self::Unknown => match lang {
+                TargetLang::CSharp => "object".to_owned(),
+                TargetLang::FSharp => "obj".to_owned(),
+                TargetLang::VbNet => "Object".to_owned(),
+            },
         }
     }
 
@@ -186,9 +273,17 @@ pub enum TypeSigOrVoid {
 impl TypeSigOrVoid {
     #[must_use]
     pub fn render(&self) -> String {
+        self.render_in(TargetLang::CSharp)
+    }
+
+    #[must_use]
+    pub fn render_in(&self, lang: TargetLang) -> String {
         match self {
-            Self::Void => "void".to_owned(),
-            Self::Type(t) => t.render(),
+            Self::Void => match lang {
+                TargetLang::CSharp | TargetLang::VbNet => "void".to_owned(),
+                TargetLang::FSharp => "unit".to_owned(),
+            },
+            Self::Type(t) => t.render_in(lang),
         }
     }
 }

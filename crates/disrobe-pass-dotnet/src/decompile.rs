@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::metadata::{MetadataRoot, parse_metadata_root};
 use crate::model::{MethodModel, Resolver, TypeModel};
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
-use crate::structurize::{MethodNamer, StructuredMethod, decompile_method};
+use crate::structurize::{MethodNamer, StructuredMethod, TargetLang, decompile_method_in};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CSharpPseudo {
@@ -33,6 +33,12 @@ pub struct DecompiledAssembly {
 /// Uses the native stack-lifting decompiler with metadata-resolved names. Method bodies that fail
 /// to parse (e.g. obfuscated or encrypted) are counted but do not abort the whole assembly.
 pub fn decompile_assembly(image: &[u8]) -> Result<DecompiledAssembly> {
+    decompile_assembly_in(image, TargetLang::CSharp)
+}
+
+/// Decompile every method body in a managed PE image to structured pseudo-source in the requested
+/// [`TargetLang`]. Behaves identically to [`decompile_assembly`] for `TargetLang::CSharp`.
+pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<DecompiledAssembly> {
     let pe: PeImage = parse(image)?;
     let clr: ClrHeader = parse_clr_header(image, &pe)?;
     let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
@@ -50,6 +56,7 @@ pub fn decompile_assembly(image: &[u8]) -> Result<DecompiledAssembly> {
                 &resolver,
                 ty,
                 m,
+                lang,
                 &mut methods,
                 &mut bodyless,
                 &mut failed,
@@ -73,6 +80,7 @@ fn decompile_one(
     resolver: &Resolver,
     ty: &TypeModel,
     m: &MethodModel,
+    lang: TargetLang,
     methods: &mut Vec<StructuredMethod>,
     bodyless: &mut u32,
     failed: &mut u32,
@@ -91,12 +99,22 @@ fn decompile_one(
     }
     match parse_method_body(&image[off..]) {
         Ok(body) => {
-            let signature: String = format!("// {}\n{}", ty.full_name, m.csharp_signature());
+            let header_sig: String = match lang {
+                TargetLang::CSharp => {
+                    format!("// {}\n{}", ty.full_name, m.csharp_signature())
+                }
+                TargetLang::FSharp => {
+                    format!("// {}\n{}", ty.full_name, m.fsharp_signature())
+                }
+                TargetLang::VbNet => {
+                    format!("' {}\n{}", ty.full_name, m.vbnet_signature())
+                }
+            };
             let namer: MethodNamer<'_> = MethodNamer {
                 resolver,
                 has_this: !m.is_static(),
             };
-            methods.push(decompile_method(&signature, &body, &namer));
+            methods.push(decompile_method_in(&header_sig, &body, &namer, lang));
         }
         Err(_) => *failed = failed.saturating_add(1),
     }

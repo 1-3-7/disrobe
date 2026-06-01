@@ -31,7 +31,8 @@ pub use cil::{
     ecma_335_spec_total, lookup, parse_method_body, total_opcode_count,
 };
 pub use decompile::{
-    CSharpPseudo, DecompiledAssembly, FlowSummary, decompile_assembly, emit_csharp,
+    CSharpPseudo, DecompiledAssembly, FlowSummary, decompile_assembly, decompile_assembly_in,
+    emit_csharp,
 };
 pub use error::{Error, Result};
 pub use format_wire::format_csharp;
@@ -62,12 +63,14 @@ pub use protectors::{
 };
 pub use provenance_header::{
     cil_disasm_header, csharp_decompiled_header, fsharp_decompiled_header, render_cil_with_header,
-    render_csharp_with_header, vbnet_decompiled_header,
+    render_csharp_with_header, render_fsharp_with_header, render_vbnet_with_header,
+    vbnet_decompiled_header,
 };
 pub use r2r::{R2rHeader, R2rReport};
 pub use signature::{MethodSig, TypeSig, TypeSigOrVoid, parse_field_sig, parse_method_sig};
 pub use structurize::{
-    CallInfo, HexNamer, MethodNamer, StructuredMethod, TokenNamer, decompile_method,
+    CallInfo, HexNamer, MethodNamer, StructuredMethod, TargetLang, TokenNamer, decompile_method,
+    decompile_method_in,
 };
 pub use tables::{Tables, parse_tables};
 

@@ -193,7 +193,23 @@ install_method = "https://www.farbrausch.de/~fg/kkrunchy/kkrunchy_023a2.zip + kk
 install_path = ".developer/packers/kkrunchy/kkrunchy_k7.exe"
 status = "unpacker-implemented-partial"
 fixture_source = "Hand-rolled NASM PE32 hello.exe (1024 bytes), packed with both kkrunchy_k7 and the classic kkrunchy 0.23a binary."
-limitation = "kkrunchy's compression backend (closed-source LZMA-class arithmetic-coded context-mixing stream prefixed by the depacker stub) is not implemented. Disrobe ships: (1) full MZfarbrausch header parser, (2) variant fingerprinting (K7 vs Classic), (3) DisFilter forward + inverse port (dis_filter / dis_unfilter) from fg's public source, with round-trip property tests on synthetic x86. Structural unpack returns the packed section + stub bytes for downstream analysis."
+limitation = """
+Two distinct kkrunchy backends, handled differently per their tractability:
+
+  - classic 0.23a (CCA: range coder + LZ + Elias-gamma): clean-room decoder shipped in kkrunchy_cca.rs,
+    reference-verified against fg's public-domain depacker_simple.cpp AND witnessed against the REAL
+    on-disk classic fixture. locate_classic_stream() derives the stream offset structurally from the
+    stub source-pointer seed; decompress_kkrunchy_classic() recovers the genuine import bootstrap
+    (verbatim kernel32 import table). Whole-file byte recovery 17.77% (real measured); full .text
+    byte-identity is bounded by a residual decoder-state drift in the DisFilter region (see the
+    classic [[packers.runs]] row). This is a real partial decode, not a structural template.
+
+  - k7 / 0.23a2 (PAQ-class context-mixing): genuinely closed-source context mixer. Byte recovery stays
+    6.44% structural; closing it requires the KkrunchyEmulator x86-stub emulation seam (unicorn GPL-2.0 +
+    libclang blocked on this box - documented). UNCHANGED. NOT faked.
+
+Disrobe also ships: full MZfarbrausch header parser, variant fingerprinting (K7 vs Classic), and the
+DisFilter forward + inverse port (dis_filter / dis_unfilter) from fg's public source."""
 
 [[packers.runs]]
 input = "rust hello.exe (rustc-built, 94720 B with exports + TLS + CRT)"
@@ -217,12 +233,58 @@ notes = "k7 variant. parse_kkrunchy_header succeeds; variant fingerprint = K7Var
 
 [[packers.runs]]
 input = "hello.exe (hand-rolled NASM PE32, 1024 B, single section, no CRT/exports/TLS)"
-input_sha256 = "B2EA8973316F"
+input_sha256 = "B2EA8973A937BD1F67125CBE69D8204ECEDBB6F4FC29DE38BB626BBD37C7316F"
 packed_path = "corpus/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe"
-packed_sha256 = "A2FB9DCBB3B6"
+packed_sha256 = "A2FB9DCB82F646347A6F1A56580FB6ECBE6B67AA9570057126DD351D1770B3B6"
 packed_size_bytes = 4608
-unpacker_status = "structural-recovery"
-notes = "Classic 0.23a variant. parse_kkrunchy_header succeeds; section 'kkrunchy' isolated. Same compression-backend gap as k7."
+fixture_absent = false
+unpacker_status = "cca-stream-decoded-partial"
+byte_recovery_pct = 17.77
+byte_recovery_floor_bp = 1700
+content_alignment_pct = 60.4
+unpacker_status_detail = """
+Classic 0.23a variant, packed from the same 1024 B NASM hello.exe with the real kkrunchy 0.23a
+binary (.developer/wave-a3-kkrunchy/research/kk_a/kkrunchy.exe, sha256 70b8af13...). This fixture
+is REAL and on-disk (the prior packed_sha256=A2FB9DCBB3B6 / unverified placeholder for a then-absent
+file is now replaced by the true hash A2FB9DCB82F6...; input_sha256 likewise corrected to the full
+64-hex digest).
+
+CCA decoder status: clean-room and verbatim-verified against fg's public-domain depacker_simple.cpp
+AND now witnessed against this REAL classic stream (no longer self-tested circularly). The genuine
+engineering result this wave:
+
+  1. locate_classic_stream() structurally derives the CCA range-coder stream offset from the depacker
+     stub's `mov dword [ebp], image_base+stream_rva` source-pointer seed (C7 45 00 <imm32>). For this
+     fixture imm32 = 0x3f00d4, image_base = 0x3f0000, so stream_offset = 0xD4 (in the PE header tail,
+     NOT inside the named 'kkrunchy' section raw data - the prior assumption that `packed` was the bare
+     stream was wrong). The locator is asserted to return exactly 0xD4 and to decode a non-trivial
+     payload (locate_classic_stream_finds_real_range_coder_seed test).
+
+  2. decompress_kkrunchy_classic() decodes 1312 bytes of GENUINE decompressed payload from the located
+     stream. Anti-circular witness: the decoded payload contains the verbatim import bootstrap
+     (kernel32.dll / GetStdHandle / WriteFile / ExitProcess plaintext + the import-resolver x86
+     prologue `mov edi,0x401000; ...`). The integration test classic_cca_recovers_real_fixture_payload
+     asserts all four import markers are present in the decoded bytes - this proves the decoder
+     decoded REAL packer output, not its own encoder.
+
+  3. unpack_kkrunchy() now routes Classic023A through locate -> decompress and returns the recovered
+     payload in packed_payload. Measured byte recovery vs the 1024 B original: 17.77% (1777 bp),
+     up from the 6.44% k7 structural baseline. Test floor set to the measured value floored to the
+     nearest 100 bp (1700 bp) per the anti-gaming rule; never asserted above the real stream's yield.
+
+HONEST BARRIER (full .text byte-identity not reached): the decoder is reference-correct in every
+constant verified against the live 0.23a stub disassembly (model bases LIT=35/CODE=0/PREV=2/LOW=3/
+GAMMA0=291/GAMMA1=547, range>>11, shifts 4/5, offset (raw-2)<<4 + tree16 + 1, len++ at offs>=96/>=2048,
+gamma terminator at raw<=1 - the stub's `dec ecx; dec ecx; js` confirms the stop is raw<=1, corrected
+from the prior raw==0). It decompresses the import-bootstrap region (RVA 0xae0..0xff0) cleanly, then a
+residual decoder-state divergence in the match-dense DisFilter region (located at decoded offset ~915,
+19-stream container) prevents the embedded DisFilter-encoded .text from unfiltering byte-identically.
+Best contiguous .text content alignment measured at 60.4% (309/512 bytes). The recovered payload is the
+real decompressed kkrunchy runtime scaffold + import table, NOT the page-aligned original .text, hence
+the 17.77% whole-file figure. Closing the residual drift requires either tracing the exact LWM/length
+context arithmetic of the live stub byte-for-byte or x86-emulating the stub (the KkrunchyEmulator seam).
+This is recorded transparently rather than faked, mirroring the MEW stream_decoded=false / FSG
+near-byte-exact transparency pattern."""
 
 [[packers]]
 name = "FSG"

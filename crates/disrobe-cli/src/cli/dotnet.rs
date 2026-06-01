@@ -9,7 +9,7 @@ use clap::{Subcommand, ValueEnum};
 use disrobe_pass_dotnet::{
     Backend, BackendInvocation, DecompiledAssembly, PassSummary, analyze as analyze_dotnet,
     backends::{invoke_decompile, probe},
-    decompile_assembly,
+    decompile_assembly_in,
 };
 
 use super::emit::EmitSpec;
@@ -38,6 +38,13 @@ pub(crate) enum DotnetCmd {
             help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
         emit: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = DotnetLang::Csharp,
+            help = "native pseudo-source language: csharp, fsharp, vbnet"
+        )]
+        language: DotnetLang,
     },
     #[command(
         about = "static analysis of a .NET PE: PE header, CLR metadata, protector detection, ReadyToRun + NativeAOT probe"
@@ -65,6 +72,40 @@ pub(crate) enum DotnetBackendKind {
     De4dot,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum DotnetLang {
+    #[default]
+    Csharp,
+    Fsharp,
+    Vbnet,
+}
+
+impl DotnetLang {
+    const fn to_target(self) -> disrobe_pass_dotnet::TargetLang {
+        match self {
+            Self::Csharp => disrobe_pass_dotnet::TargetLang::CSharp,
+            Self::Fsharp => disrobe_pass_dotnet::TargetLang::FSharp,
+            Self::Vbnet => disrobe_pass_dotnet::TargetLang::VbNet,
+        }
+    }
+
+    const fn ext(self) -> &'static str {
+        match self {
+            Self::Csharp => "cs",
+            Self::Fsharp => "fs",
+            Self::Vbnet => "vb",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Csharp => "C#",
+            Self::Fsharp => "F#",
+            Self::Vbnet => "VB.NET",
+        }
+    }
+}
+
 pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
     match action {
         DotnetCmd::Decompile {
@@ -73,7 +114,8 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
             backend,
             timeout_secs,
             emit,
-        } => decompile(input, out, backend, timeout_secs, emit),
+            language,
+        } => decompile(input, out, backend, timeout_secs, emit, language),
         DotnetCmd::Analyze { input, out } => analyze(input, out),
         DotnetCmd::Backends => backends(),
     }
@@ -85,6 +127,7 @@ fn decompile(
     backend_choice: DotnetBackendKind,
     timeout_secs: u64,
     emit_kinds: Vec<String>,
+    language: DotnetLang,
 ) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0430: cannot read input: {e}"))?;
@@ -137,7 +180,8 @@ fn decompile(
     )
     .map_err(|e| miette::miette!("DR-CLI-0434: cannot write manifest: {e}"))?;
 
-    let native: Option<DecompiledAssembly> = emit_native_decompilation(&bytes, &out_dir, &stem)?;
+    let native: Option<DecompiledAssembly> =
+        emit_native_decompilation(&bytes, &out_dir, &stem, language)?;
 
     apply_emit_stubs(&emit_kinds, &out_dir, &stem, "dotnet-decompile")?;
 
@@ -166,8 +210,13 @@ fn decompile(
     }
     if let Some(asm) = native.as_ref() {
         println!(
-            "  native c#:    {} methods (bodyless={}, failed={}) -> {}.native.cs",
-            asm.methods_decompiled, asm.methods_bodyless, asm.methods_failed, stem
+            "  native {}:    {} methods (bodyless={}, failed={}) -> {}.native.{}",
+            language.label(),
+            asm.methods_decompiled,
+            asm.methods_bodyless,
+            asm.methods_failed,
+            stem,
+            language.ext()
         );
     }
     println!("  out dir:      {}", out_dir.display());
@@ -175,27 +224,38 @@ fn decompile(
     Ok(())
 }
 
-/// Emit the native (runtime-free) structural CIL->C# decompilation as `<stem>.native.cs`. Returns
-/// `None` when the image is not a parseable managed PE, leaving external-backend output as the only
-/// artifact rather than failing the command.
+/// Emit the native (runtime-free) structural CIL->pseudo-source decompilation as
+/// `<stem>.native.<ext>` in the requested language. Returns `None` when the image is not a parseable
+/// managed PE, leaving external-backend output as the only artifact rather than failing the command.
 fn emit_native_decompilation(
     bytes: &[u8],
     out_dir: &std::path::Path,
     stem: &str,
+    language: DotnetLang,
 ) -> miette::Result<Option<DecompiledAssembly>> {
     use std::fmt::Write as _;
 
-    let Ok(asm): Result<DecompiledAssembly, _> = decompile_assembly(bytes) else {
+    let Ok(asm): Result<DecompiledAssembly, _> = decompile_assembly_in(bytes, language.to_target())
+    else {
         return Ok(None);
     };
+    let cm: &str = if language == DotnetLang::Vbnet {
+        "'"
+    } else {
+        "//"
+    };
     let mut text: String = String::with_capacity(asm.methods.len() * 128);
-    text.push_str("// native disrobe CIL->C# decompilation (no runtime, no external tool)\n");
-    let _ = writeln!(text, "// module: {}\n", asm.module_name);
+    let _ = writeln!(
+        text,
+        "{cm} native disrobe CIL->{} decompilation (no runtime, no external tool)",
+        language.label()
+    );
+    let _ = writeln!(text, "{cm} module: {}\n", asm.module_name);
     for m in &asm.methods {
         text.push_str(&m.body);
         text.push('\n');
     }
-    let path: PathBuf = out_dir.join(format!("{stem}.native.cs"));
+    let path: PathBuf = out_dir.join(format!("{stem}.native.{}", language.ext()));
     std::fs::write(&path, text)
         .map_err(|e| miette::miette!("DR-CLI-0435: cannot write native decompilation: {e}"))?;
     Ok(Some(asm))

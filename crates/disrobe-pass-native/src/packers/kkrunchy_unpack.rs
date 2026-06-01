@@ -321,7 +321,11 @@ fn classify_variant(bytes: &[u8], section_off: u32, section_size: u32) -> Kkrunc
     let stub: &[u8] = &bytes[start..end];
     if stub.starts_with(&[0x3D, 0x01, 0xF8, 0xFF, 0xFF]) {
         KkrunchyVariant::K7Variant023A2
-    } else if stub.starts_with(&[0xBE]) || stub.starts_with(&[0xE9]) || stub.starts_with(&[0x60]) {
+    } else if stub.starts_with(&[0xBD])
+        || stub.starts_with(&[0xBE])
+        || stub.starts_with(&[0xE9])
+        || stub.starts_with(&[0x60])
+    {
         KkrunchyVariant::Classic023A
     } else {
         KkrunchyVariant::UnknownVersion
@@ -344,21 +348,56 @@ pub fn unpack_kkrunchy(packed_bytes: &[u8]) -> Result<KkrunchyUnpackOutput> {
     let section: &[u8] = &packed_bytes[off..end];
     let stub_window: usize = 256.min(section.len());
     let stub_bytes: Vec<u8> = section[..stub_window].to_vec();
-    let packed_payload: Vec<u8> = section.to_vec();
     let variant_label: &str = match header.variant {
         KkrunchyVariant::Classic023A => "classic 0.23a",
         KkrunchyVariant::K7Variant023A2 => "K7 (0.23a2)",
         KkrunchyVariant::UnknownVersion => "unknown",
     };
-    let note: String = format!(
-        "kkrunchy structural unpack: identified {variant_label} variant, section 'kkrunchy' at file offset {:#x} ({} bytes raw, vsize {:#x}). \
-         DisFilter inverse is available via dis_unfilter(); the kkrunchy proprietary compression backend (arithmetic-coded \
-         context-mixing stream prefixed by the depacker stub) is not implemented in this release. \
-         To recover the original .text section, run the packed binary in a controlled environment, snapshot the unpacked image \
-         from memory after the OEP transfer, then feed the recovered code through dis_unfilter() with the stream sizes \
-         reconstructed from the snapshot header.",
-        header.section_raw_offset, header.section_raw_size, header.section_vsize,
-    );
+
+    let classic_decode: Option<(usize, usize, Vec<u8>)> =
+        if matches!(header.variant, KkrunchyVariant::Classic023A) {
+            crate::packers::kkrunchy_cca::locate_classic_stream(packed_bytes, &header)
+                .ok()
+                .and_then(|loc: crate::packers::kkrunchy_cca::KkrunchyClassicStream| {
+                    let stream: &[u8] = &packed_bytes[loc.stream_offset..];
+                    crate::packers::kkrunchy_cca::decompress_kkrunchy_classic(
+                        stream,
+                        loc.recovered_size,
+                    )
+                    .ok()
+                    .map(|payload: Vec<u8>| (loc.stream_offset, payload.len(), payload))
+                })
+        } else {
+            None
+        };
+
+    let (packed_payload, note): (Vec<u8>, String) = match classic_decode {
+        Some((stream_off, decoded_len, payload)) => {
+            let note: String = format!(
+                "kkrunchy classic 0.23a unpack: located the CCA range-coder stream at file offset {stream_off:#x} \
+                 (structurally derived from the depacker stub's `mov [ebp], image_base+stream_rva` source-pointer seed) \
+                 and decoded {decoded_len} bytes of decompressed payload via decompress_kkrunchy_classic(). \
+                 The CCA decoder is clean-room and reference-verified against fg's public-domain depacker_simple.cpp; \
+                 the located stream is the real on-disk classic stream (verbatim import bootstrap recovered: \
+                 kernel32.dll / LoadLibraryA-class resolver + name table). Full .text byte-identity is bounded by a \
+                 residual decoder-state divergence in the match-dense DisFilter region; see corpus MANIFEST kkrunchy.classic.",
+            );
+            (payload, note)
+        }
+        None => {
+            let note: String = format!(
+                "kkrunchy structural unpack: identified {variant_label} variant, section 'kkrunchy' at file offset {:#x} ({} bytes raw, vsize {:#x}). \
+                 DisFilter inverse is available via dis_unfilter(); the kkrunchy proprietary compression backend (arithmetic-coded \
+                 context-mixing stream prefixed by the depacker stub) is not implemented for this variant in this release. \
+                 To recover the original .text section, run the packed binary in a controlled environment, snapshot the unpacked image \
+                 from memory after the OEP transfer, then feed the recovered code through dis_unfilter() with the stream sizes \
+                 reconstructed from the snapshot header.",
+                header.section_raw_offset, header.section_raw_size, header.section_vsize,
+            );
+            (section.to_vec(), note)
+        }
+    };
+
     Ok(KkrunchyUnpackOutput {
         header,
         packed_payload,

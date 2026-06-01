@@ -13,6 +13,7 @@ use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint, read_strings_heap};
 use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{MethodSig, TypeSig, parse_field_sig, parse_method_sig};
+use crate::structurize::TargetLang;
 use crate::tables::{MethodDefRow, RowRef, TableId, Tables, parse_tables};
 
 /// A fully-resolved managed type.
@@ -68,6 +69,49 @@ impl MethodModel {
     /// signature + parameter names. Generic + custom-modifier detail is approximate.
     #[must_use]
     pub fn csharp_signature(&self) -> String {
+        self.signature_in(TargetLang::CSharp)
+    }
+
+    /// Render an F#-style member header (`static member Foo(a: int, b: string) : int`).
+    #[must_use]
+    pub fn fsharp_signature(&self) -> String {
+        self.signature_in(TargetLang::FSharp)
+    }
+
+    /// Render a VB.NET method header (`Public Shared Function Foo(a As Integer, b As String) As
+    /// Integer`; `Sub` when the return type is `void`).
+    #[must_use]
+    pub fn vbnet_signature(&self) -> String {
+        self.signature_in(TargetLang::VbNet)
+    }
+
+    fn display_name(&self) -> String {
+        self.name
+            .rsplit("::")
+            .next()
+            .unwrap_or(&self.name)
+            .to_owned()
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.parameters
+            .iter()
+            .find(|pm: &&ParamModel| usize::from(pm.sequence) == index + 1)
+            .map_or_else(
+                || format!("arg{}", index + 1),
+                |pm: &ParamModel| pm.name.clone(),
+            )
+    }
+
+    fn signature_in(&self, lang: TargetLang) -> String {
+        match lang {
+            TargetLang::CSharp => self.csharp_header(),
+            TargetLang::FSharp => self.fsharp_header(),
+            TargetLang::VbNet => self.vbnet_header(),
+        }
+    }
+
+    fn csharp_header(&self) -> String {
         let vis: &str = match self.flags & METHOD_ACCESS_MASK {
             0x0001 => "private ",
             0x0002 | 0x0003 => "private protected ",
@@ -77,31 +121,76 @@ impl MethodModel {
             0x0007 => "public ",
             _ => "",
         };
-        let stat: &str = if self.flags & METHOD_STATIC != 0 {
-            "static "
-        } else {
-            ""
-        };
-        let ret: String = self.signature.return_type.render();
-        let display_name: String = self
-            .name
-            .rsplit("::")
-            .next()
-            .unwrap_or(&self.name)
-            .to_owned();
+        let stat: &str = if self.is_static() { "static " } else { "" };
+        let ret: String = self.signature.return_type.render_in(TargetLang::CSharp);
+        let display_name: String = self.display_name();
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
         for (i, p) in self.signature.params.iter().enumerate() {
-            let pname: String = self
-                .parameters
-                .iter()
-                .find(|pm: &&ParamModel| usize::from(pm.sequence) == i + 1)
-                .map_or_else(
-                    || format!("arg{}", i + 1),
-                    |pm: &ParamModel| pm.name.clone(),
-                );
-            rendered.push(format!("{} {pname}", p.render()));
+            rendered.push(format!(
+                "{} {}",
+                p.render_in(TargetLang::CSharp),
+                self.param_name(i)
+            ));
         }
         format!("{vis}{stat}{ret} {display_name}({})", rendered.join(", "))
+    }
+
+    fn fsharp_header(&self) -> String {
+        let member: &str = if self.is_static() {
+            "static member"
+        } else {
+            "member"
+        };
+        let ret: String = self.signature.return_type.render_in(TargetLang::FSharp);
+        let display_name: String = self.display_name();
+        let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
+        for (i, p) in self.signature.params.iter().enumerate() {
+            rendered.push(format!(
+                "{}: {}",
+                self.param_name(i),
+                p.render_in(TargetLang::FSharp)
+            ));
+        }
+        format!("{member} {display_name}({}) : {ret}", rendered.join(", "))
+    }
+
+    fn vbnet_header(&self) -> String {
+        let vis: &str = match self.flags & METHOD_ACCESS_MASK {
+            0x0001 => "Private ",
+            0x0002 | 0x0003 => "Private Protected ",
+            0x0004 => "Friend ",
+            0x0005 => "Protected ",
+            0x0006 => "Protected Friend ",
+            0x0007 => "Public ",
+            _ => "",
+        };
+        let shared: &str = if self.is_static() { "Shared " } else { "" };
+        let returns_value: bool = !matches!(
+            self.signature.return_type,
+            crate::signature::TypeSigOrVoid::Void
+        );
+        let keyword: &str = if returns_value { "Function" } else { "Sub" };
+        let display_name: String = self.display_name();
+        let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
+        for (i, p) in self.signature.params.iter().enumerate() {
+            rendered.push(format!(
+                "{} As {}",
+                self.param_name(i),
+                p.render_in(TargetLang::VbNet)
+            ));
+        }
+        let head: String = format!(
+            "{vis}{shared}{keyword} {display_name}({})",
+            rendered.join(", ")
+        );
+        if returns_value {
+            format!(
+                "{head} As {}",
+                self.signature.return_type.render_in(TargetLang::VbNet)
+            )
+        } else {
+            head
+        }
     }
 }
 
