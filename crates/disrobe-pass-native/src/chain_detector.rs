@@ -211,6 +211,11 @@ fn verdict_for(d: &PackerDetection) -> DetectVerdict {
         Packer::PolyCryptor => "polycryptor",
         Packer::Themida => "themida",
         Packer::VmProtect => "vmprotect",
+        Packer::EnigmaProtector => "enigma",
+        Packer::Obsidium => "obsidium",
+        Packer::WinLicense => "winlicense",
+        Packer::YodasCrypter => "yodas-crypter",
+        Packer::YodasProtector => "yodas-protector",
         _ => "native-packer",
     };
     let confidence: f32 = match d.confidence {

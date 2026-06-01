@@ -252,6 +252,14 @@ const SIGNATURES: &[Signature] = &[
         confidence: Confidence::Medium,
     },
     Signature {
+        packer: Packer::AsPack,
+        pattern: &[
+            0x60, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xE9, 0xEB, 0x04, 0x5D, 0x45, 0x55, 0xC3,
+        ],
+        note: "ASPack 2.x EP stub (pushad; call $+8; jmp; pop ebp; inc ebp; push ebp; ret)",
+        confidence: Confidence::High,
+    },
+    Signature {
         packer: Packer::AsProtect,
         pattern: b".asprotect",
         note: "ASProtect section name",
@@ -315,10 +323,28 @@ const SIGNATURES: &[Signature] = &[
         confidence: Confidence::High,
     },
     Signature {
+        packer: Packer::PeCompact,
+        pattern: &[
+            0xB8, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0x64,
+            0x89, 0x25, 0x00, 0x00, 0x00, 0x00,
+        ],
+        note: "PECompact2 SEH-install prologue (mov eax,imm; push eax; push fs:[0]; mov fs:[0],esp)",
+        confidence: Confidence::Medium,
+    },
+    Signature {
         packer: Packer::YodasCrypter,
         pattern: b"yC2.0",
         note: "Yoda's Crypter 2.0 marker",
         confidence: Confidence::High,
+    },
+    Signature {
+        packer: Packer::YodasCrypter,
+        pattern: &[
+            0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED, 0x00, 0x00, 0x00, 0x00, 0x8D,
+            0xB5,
+        ],
+        note: "Yoda's Crypter 1.2 EP delta prologue + LEA ESI decrypt-loop setup (corroboration only)",
+        confidence: Confidence::Low,
     },
     Signature {
         packer: Packer::YodasProtector,
@@ -411,6 +437,12 @@ const SIGNATURES: &[Signature] = &[
         confidence: Confidence::High,
     },
     Signature {
+        packer: Packer::EnigmaProtector,
+        pattern: b"Enigma protector",
+        note: "Enigma Protector overlay version-blob literal",
+        confidence: Confidence::Medium,
+    },
+    Signature {
         packer: Packer::Armadillo,
         pattern: b"ARMADILLO",
         note: "Armadillo marker",
@@ -423,9 +455,21 @@ const SIGNATURES: &[Signature] = &[
         confidence: Confidence::Medium,
     },
     Signature {
+        packer: Packer::Obsidium,
+        pattern: &[0xEB, 0x02, 0x00, 0x00, 0xE8, 0x24, 0x00, 0x00, 0x00],
+        note: "Obsidium 1.3/1.4 EP stub (jmp $+4 over junk; call $+0x29)",
+        confidence: Confidence::Low,
+    },
+    Signature {
         packer: Packer::WinLicense,
         pattern: b".winlice",
         note: "WinLicense section",
+        confidence: Confidence::Medium,
+    },
+    Signature {
+        packer: Packer::WinLicense,
+        pattern: b"WinLicense",
+        note: "WinLicense embedded product literal",
         confidence: Confidence::Medium,
     },
     Signature {
@@ -665,5 +709,94 @@ mod tests {
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("must not succeed on missing input"),
         }
+    }
+
+    #[test]
+    fn aspack_ep_stub_detected() {
+        let stub: [u8; 13] = [
+            0x60, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xE9, 0xEB, 0x04, 0x5D, 0x45, 0x55, 0xC3,
+        ];
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(hits.iter().any(|h: &Detection| h.packer == Packer::AsPack));
+    }
+
+    #[test]
+    fn pecompact_seh_prologue_detected() {
+        let stub: [u8; 20] = [
+            0xB8, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0x64,
+            0x89, 0x25, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            hits.iter()
+                .any(|h: &Detection| h.packer == Packer::PeCompact)
+        );
+    }
+
+    #[test]
+    fn obsidium_ep_stub_detected() {
+        let stub: [u8; 9] = [0xEB, 0x02, 0x00, 0x00, 0xE8, 0x24, 0x00, 0x00, 0x00];
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            hits.iter()
+                .any(|h: &Detection| h.packer == Packer::Obsidium)
+        );
+    }
+
+    #[test]
+    fn enigma_overlay_literal_detected() {
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + b"Enigma protector".len()].copy_from_slice(b"Enigma protector");
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            hits.iter()
+                .any(|h: &Detection| h.packer == Packer::EnigmaProtector)
+        );
+    }
+
+    #[test]
+    fn winlicense_literal_detected() {
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + b"WinLicense".len()].copy_from_slice(b"WinLicense");
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            hits.iter()
+                .any(|h: &Detection| h.packer == Packer::WinLicense)
+        );
+    }
+
+    #[test]
+    fn yodas_crypter_ep_stub_detected() {
+        let stub: [u8; 15] = [
+            0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED, 0x00, 0x00, 0x00, 0x00, 0x8D,
+            0xB5,
+        ];
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[64..64 + stub.len()].copy_from_slice(&stub);
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            hits.iter()
+                .any(|h: &Detection| h.packer == Packer::YodasCrypter)
+        );
+    }
+
+    #[test]
+    fn shared_delta_prologue_does_not_false_positive_high() {
+        let bare: [u8; 9] = [0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED];
+        let mut buf: Vec<u8> = vec![0u8; 512];
+        buf[32..32 + bare.len()].copy_from_slice(&bare);
+        let hits: Vec<Detection> = detect(&buf);
+        assert!(
+            !hits
+                .iter()
+                .any(|h: &Detection| h.confidence == Confidence::High),
+            "bare shared delta prologue must never yield a High-confidence family detection",
+        );
     }
 }

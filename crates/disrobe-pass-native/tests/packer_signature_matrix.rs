@@ -33,6 +33,14 @@ fn signature_matrix_covers_known_packers() {
         (b"WarzoneRAT", Packer::WarzoneCrypter),
         (b"DNPatcher", Packer::DotNetPatcher),
         (b"NETCryptor", Packer::NetCryptor),
+        (
+            &[
+                0x60, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xE9, 0xEB, 0x04, 0x5D, 0x45, 0x55, 0xC3,
+            ],
+            Packer::AsPack,
+        ),
+        (b"Enigma protector", Packer::EnigmaProtector),
+        (b"WinLicense", Packer::WinLicense),
     ];
     for (pattern, expected) in probes {
         let mut buf: Vec<u8> = vec![0u8; 1024];

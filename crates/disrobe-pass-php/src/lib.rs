@@ -11,6 +11,7 @@ pub mod detect;
 pub mod encoder;
 pub mod error;
 pub mod format_wire;
+pub mod pass;
 pub mod peel;
 pub mod phar;
 pub mod protectors;
@@ -27,6 +28,7 @@ pub use encoder::{
 };
 pub use error::{Error, Result};
 pub use format_wire::format_php;
+pub use pass::{PASS_INPUT_PATH_CAP, PassInput, PhpPass, PhpPassReport, decode_pass_input};
 pub use peel::{
     DEFAULT_MAX_DEPTH, PeelLayer, PeelOptions, PeelReport, PeelTrace, peel as peel_eval_chain,
 };

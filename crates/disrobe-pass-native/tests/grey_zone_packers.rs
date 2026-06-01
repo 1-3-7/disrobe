@@ -141,6 +141,48 @@ fn warzone_dotnetpatcher_netcryptor_signatures_detected() {
 }
 
 #[test]
+fn aspack_ep_stub_detected() {
+    let stub: &[u8] = &[
+        0x60, 0xE8, 0x03, 0x00, 0x00, 0x00, 0xE9, 0xEB, 0x04, 0x5D, 0x45, 0x55, 0xC3,
+    ];
+    assert!(detect_with_pattern(stub, Packer::AsPack));
+}
+
+#[test]
+fn winlicense_literal_disambiguates_from_shared_section() {
+    assert!(detect_with_pattern(b"WinLicense", Packer::WinLicense));
+    assert_eq!(
+        Packer::WinLicense.unpacker_status(),
+        UnpackerStatus::GreyZoneDetectOnly
+    );
+}
+
+#[test]
+fn enigma_overlay_literal_detected_detect_only() {
+    assert!(detect_with_pattern(
+        b"Enigma protector",
+        Packer::EnigmaProtector
+    ));
+    assert_eq!(
+        Packer::EnigmaProtector.unpacker_status(),
+        UnpackerStatus::GreyZoneDetectOnly
+    );
+}
+
+#[test]
+fn bare_delta_prologue_yields_no_winlicense_or_enigma() {
+    let bare: &[u8] = &[0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED];
+    let mut buf: Vec<u8> = vec![0u8; 256];
+    buf[16..16 + bare.len()].copy_from_slice(bare);
+    let hits = detect_packers(&buf);
+    assert!(
+        !hits
+            .iter()
+            .any(|h| matches!(h.packer, Packer::EnigmaProtector | Packer::WinLicense))
+    );
+}
+
+#[test]
 fn protect_chain_combined_signatures() {
     let mut buf: Vec<u8> = vec![0u8; 4096];
     buf[10..14].copy_from_slice(b"UPX!");

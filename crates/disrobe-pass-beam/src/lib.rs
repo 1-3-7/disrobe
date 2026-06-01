@@ -35,6 +35,7 @@ pub mod etf;
 pub mod ez;
 pub mod file;
 pub mod opcodes;
+pub mod pass;
 pub mod provenance_header;
 pub mod reader;
 pub mod surface;
@@ -48,6 +49,7 @@ pub use error::{Error, Result};
 pub use etf::{Term, decode_etf};
 pub use ez::{EzArchive, EzEntry, EzQuota};
 pub use file::{BeamFile, RawBeam, RawChunk};
+pub use pass::{BeamPass, BeamPassReport, PASS_INPUT_PATH_CAP, PassInput, decode_pass_input};
 pub use provenance_header::{
     core_erlang_lifted_header, elixir_decompiled_header, erlang_decompiled_header,
     render_core_erlang_with_header, render_elixir_with_header, render_erlang_with_header,

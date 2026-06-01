@@ -12,6 +12,7 @@ pub mod garble;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 pub mod moduledata;
+pub mod pass;
 pub mod pclntab;
 pub mod provenance_header;
 pub mod redress;
@@ -28,6 +29,7 @@ pub use garble::{GarbleQuality, GarbleReport, analyze as analyze_garble};
 #[cfg(feature = "llm-metadata")]
 pub use llm::{GoLlmFn, GoLlmInput, METADATA_CAPABILITY as GO_METADATA_CAPABILITY};
 pub use moduledata::{Moduledata, ModuledataSource, extract_buildversion, locate_moduledata};
+pub use pass::{GoPass, GoPassReport, PASS_INPUT_PATH_CAP, PassInput, decode_pass_input};
 pub use pclntab::{LocatedPclntab, PclntabHeader, PclntabVersion, locate_pclntab};
 pub use provenance_header::{
     go_decompiled_header, go_extracted_header, render_go_decompiled_with_header,
