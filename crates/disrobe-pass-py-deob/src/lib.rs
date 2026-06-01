@@ -16,6 +16,7 @@ mod junk_fn;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 pub mod obfuscators;
+pub mod pass;
 mod peel;
 mod provenance_header;
 mod source_cleanup;
@@ -40,6 +41,7 @@ pub use obfuscators::{
     DetectReport as ObfuscatorDetectReport, Obfuscator, ObfuscatorPass,
     PeelOutcome as ObfuscatorPeelOutcome, Quality as ObfuscatorQuality, iter_passes,
 };
+pub use pass::PyDeobLegacyPass;
 pub use peel::{PeelResult, PeelStep, peel};
 pub use provenance_header::{python_deobfuscated_header, render_deobfuscated_with_header};
 pub use source_cleanup::{CleanupStats, cleanup_source};

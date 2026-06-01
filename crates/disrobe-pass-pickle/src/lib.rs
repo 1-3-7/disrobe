@@ -21,6 +21,7 @@ pub mod disasm;
 pub mod error;
 pub mod ml;
 pub mod opcode;
+pub mod pass;
 pub mod polyglot;
 pub mod safety;
 pub mod vm;
@@ -32,6 +33,7 @@ pub use ml::{
     EmbeddedPickle, MlReport, ModelFormat, detect as detect_model, extract as extract_ml,
 };
 pub use opcode::{ArgKind, Effect, OPCODES, OpInfo, lookup as lookup_opcode, max_proto};
+pub use pass::{PickleLegacyPass, PicklePassReport};
 pub use polyglot::{ContainerKind, PolyglotReport, analyze as analyze_polyglot, looks_like_pickle};
 pub use safety::{
     Finding, Policy, SafetyReport, Severity, analyze as analyze_safety, analyze_with_policy,

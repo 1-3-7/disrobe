@@ -1,6 +1,15 @@
-use disrobe_core::{Artifact, Capability, LegacyPass, PassId, Result as CoreResult, Rung};
+use disrobe_core::{
+    Artifact, Capability, CoreError, LegacyPass, PassId, Result as CoreResult, Rung,
+};
+use miette::Diagnostic;
 
+use crate::engine::{NativeDecompile, decompile_pyc};
 use crate::error::DecompileError;
+
+fn tagged(err: &DecompileError) -> String {
+    err.code()
+        .map_or_else(|| format!("{err}"), |code| format!("{code}: {err}"))
+}
 
 #[derive(Debug, Default)]
 pub struct DecompilePass;
@@ -93,11 +102,62 @@ impl LegacyPass for DecompilePass {
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let mut next: Artifact = artifact.clone();
-        next.rung = Rung::Surface;
+        let bytes: &[u8] = artifact.envelope.as_slice();
+        if bytes.len() < 4 {
+            return Err(CoreError::PassFailure(
+                "DR-PYDEC-0011: pyc header too short".to_string(),
+            ));
+        }
+        let magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        Self::dispatch_runtime(detect_runtime(magic))
+            .map_err(|e: DecompileError| CoreError::PassFailure(tagged(&e)))?;
+        let decompiled: NativeDecompile =
+            decompile_pyc(bytes).map_err(|e: DecompileError| CoreError::PassFailure(tagged(&e)))?;
+        let mut next: Artifact = Artifact::new(
+            Rung::Surface,
+            decompiled.source.into_bytes(),
+            artifact.root_hash,
+        );
         for emitter in <Self as LegacyPass>::PRODUCES {
             next.add_capability(emitter());
         }
         Ok(next)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use disrobe_core::PassMetadata;
+
+    #[test]
+    fn py_decompile_pass_metadata_advertises_capabilities() {
+        let p: DecompilePass = DecompilePass::new();
+        assert_eq!(PassMetadata::id(&p), "py.decompile");
+        assert_eq!(p.emits(), &[Rung::Surface]);
+        assert_eq!(p.produced_capabilities().len(), 1);
+    }
+
+    #[test]
+    fn py_decompile_run_on_alt_runtime_returns_pass_failure() {
+        let mut envelope: Vec<u8> = 0xCAFE_BABEu32.to_le_bytes().to_vec();
+        envelope.extend_from_slice(&[0u8; 12]);
+        let input: Artifact = Artifact::new(Rung::Disasm, envelope, [0u8; 32]);
+        let err: CoreError = DecompilePass::new()
+            .run(&input)
+            .expect_err("jython magic is an unsupported alt runtime");
+        let text: String = format!("{err}");
+        assert!(text.contains("DR-PYDEC"), "got: {text}");
+    }
+
+    #[test]
+    fn py_decompile_run_on_garbage_magic_returns_pass_failure() {
+        let input: Artifact = Artifact::new(Rung::Disasm, vec![0u8; 8], [0u8; 32]);
+        let err: CoreError = DecompilePass::new()
+            .run(&input)
+            .expect_err("unknown pyc magic must fail");
+        let text: String = format!("{err}");
+        assert!(text.contains("DR-PYDEC"), "got: {text}");
     }
 }

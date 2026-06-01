@@ -31,6 +31,7 @@ mod lift_wat;
 pub mod llm;
 mod memory64;
 mod obfuscators;
+pub mod pass;
 mod provenance_header;
 mod signature;
 mod simd;
@@ -78,6 +79,7 @@ pub use obfuscators::{
     detect_dispatcher, extract_optable, kill_opaque_predicates, lift_op_to_rust_fn,
     peel_cryptic_bytes, strip_integrity_imports, unflatten, unwrap_decryption,
 };
+pub use pass::{WasmDeobLegacyPass, WasmPassReport};
 pub use provenance_header::{
     c_lifted_header, render_c_lifted_with_header, render_rust_lifted_with_header,
     render_ts_lifted_with_header, render_wat_decompiled_with_header, rust_lifted_header,

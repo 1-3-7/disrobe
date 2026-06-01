@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

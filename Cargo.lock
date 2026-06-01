@@ -2228,6 +2228,7 @@ name = "disrobe-pass-pickle"
 version = "0.9.0"
 dependencies = [
  "disrobe-core",
+ "disrobe-ir",
  "insta",
  "miette",
  "serde",
