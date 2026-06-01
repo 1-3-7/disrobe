@@ -1,0 +1,2 @@
+assets/graphs/*.svg text eol=lf
+*.jsc binary

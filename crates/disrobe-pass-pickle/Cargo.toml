@@ -1,0 +1,31 @@
+[package]
+name = "disrobe-pass-pickle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Clean-room Python pickle deserialization analysis: opcode disassembly, AST/source decompile, static safety analysis, symbolic VM trace, polyglot detection, & PyTorch/TorchScript model-file extraction."
+keywords = ["pickle", "deserialization", "security", "python", "decompile"]
+categories = ["development-tools", "parser-implementations"]
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+serde_json = { workspace = true }

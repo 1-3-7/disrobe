@@ -1,0 +1,28 @@
+[package]
+name = "disrobe-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+disrobe-core = { path = "../crates/disrobe-core", features = ["chain"] }
+
+[[bin]]
+name = "chain_driver"
+path = "fuzz_targets/chain_driver.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chain_spec_parser"
+path = "fuzz_targets/chain_spec_parser.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

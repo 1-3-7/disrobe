@@ -1,0 +1,25 @@
+{
+  "schema": "disrobe.jscrambler.template.v1",
+  "name": "Self Healing",
+  "version": "8.5",
+  "harvested_at": "2026-05-25T20:18:00Z",
+  "description": "Self Healing preserves the application integrity by restoring the program behavior in the event of a tampering attack.",
+  "transforms_camel_case": [
+    "selfHealing",
+    "objectPropertiesSparsing",
+    "variableMasking",
+    "whitespaceRemoval",
+    "identifiersRenaming",
+    "globalVariableIndirection",
+    "dotToBracketNotation",
+    "duplicateLiteralsRemoval",
+    "stringConcealing",
+    "functionReordering",
+    "propertyKeysObfuscation",
+    "regexObfuscation",
+    "booleanToAnything"
+  ],
+  "transform_count": 13,
+  "category": "anti-tamper",
+  "tier": "paid"
+}

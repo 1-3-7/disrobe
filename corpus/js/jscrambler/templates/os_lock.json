@@ -1,0 +1,27 @@
+{
+  "schema": "disrobe.jscrambler.template.v1",
+  "name": "OS Lock",
+  "version": "8.5",
+  "harvested_at": "2026-05-25T20:18:00Z",
+  "description": "Locks a JavaScript application to run only on a list of Operating Systems of your choosing. Good for demos and to enforce license agreements.",
+  "transforms_camel_case": [
+    "osLock",
+    "objectPropertiesSparsing",
+    "variableMasking",
+    "whitespaceRemoval",
+    "identifiersRenaming",
+    "dotToBracketNotation",
+    "duplicateLiteralsRemoval",
+    "stringConcealing",
+    "functionReordering",
+    "functionOutlining",
+    "propertyKeysObfuscation",
+    "regexObfuscation",
+    "booleanToAnything"
+  ],
+  "transform_count": 13,
+  "category": "lock-config",
+  "tier": "paid",
+  "requires_options": ["operatingSystems"],
+  "differs_from_other_locks": "missing globalVariableIndirection"
+}

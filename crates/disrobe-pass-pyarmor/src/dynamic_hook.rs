@@ -1,0 +1,411 @@
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+
+const HELPER_SCRIPT: &str = include_str!("v6v7_dynamic_hook.py");
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const MIN_PYTHON: (u8, u8, u8) = (3, 9, 7);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureSource {
+    Monkeypatch,
+    AuditHook,
+    Exec,
+    Compile,
+    Trace,
+    GcWalk,
+    Pytrace,
+    Cextract,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaptureManifestEntry {
+    pub index: usize,
+    pub size: usize,
+    pub sha256: String,
+    pub pyc_path: String,
+    #[serde(default)]
+    pub co_filename: String,
+    #[serde(default)]
+    pub co_name: String,
+    #[serde(default)]
+    pub co_names_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CaptureLimitation {
+    pub id: String,
+    pub channel: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaptureManifest {
+    pub schema: String,
+    pub wrapper: String,
+    pub subprocess_python: Vec<u32>,
+    pub magic_number_hex: String,
+    pub captures: CaptureGroups,
+    #[serde(default)]
+    pub exceptions: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub limitations: Vec<CaptureLimitation>,
+    pub primary: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaptureGroups {
+    #[serde(default)]
+    pub monkeypatch: Vec<CaptureManifestEntry>,
+    #[serde(default)]
+    pub audithook: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "exec")]
+    pub exec_calls: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "compile")]
+    pub compile_calls: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "trace")]
+    pub trace_calls: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "gcwalk")]
+    pub gcwalk: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "pytrace")]
+    pub pytrace: Vec<CaptureManifestEntry>,
+    #[serde(default, rename = "cextract")]
+    pub cextract: Vec<CaptureManifestEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterpreterSpec {
+    pub exe: PathBuf,
+    pub version_args: Vec<String>,
+}
+
+impl InterpreterSpec {
+    fn display_label(&self) -> String {
+        if self.version_args.is_empty() {
+            self.exe.display().to_string()
+        } else {
+            format!("{} {}", self.exe.display(), self.version_args.join(" "))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DynamicHookResult {
+    pub interpreter: PathBuf,
+    pub interpreter_label: String,
+    pub interpreter_version: (u8, u8, u8),
+    pub manifest_path: PathBuf,
+    pub manifest: CaptureManifest,
+    pub stderr_excerpt: String,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicHookOptions {
+    pub allow_dynamic: bool,
+    pub timeout: Duration,
+    pub disable_pytrace: bool,
+    pub disable_cextract: bool,
+}
+
+impl Default for DynamicHookOptions {
+    fn default() -> Self {
+        Self {
+            allow_dynamic: false,
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            disable_pytrace: false,
+            disable_cextract: false,
+        }
+    }
+}
+
+pub fn run_dynamic_hook(
+    wrapper: &Path,
+    out_dir: &Path,
+    options: DynamicHookOptions,
+) -> Result<DynamicHookResult> {
+    run_dynamic_hook_with_target(wrapper, out_dir, options, None)
+}
+
+pub fn run_dynamic_hook_with_target(
+    wrapper: &Path,
+    out_dir: &Path,
+    options: DynamicHookOptions,
+    target: Option<(u8, u8)>,
+) -> Result<DynamicHookResult> {
+    if !options.allow_dynamic {
+        return Err(Error::DynamicHookRequiresAllow);
+    }
+
+    std::fs::create_dir_all(out_dir).map_err(Error::Io)?;
+
+    let spec: InterpreterSpec = locate_python(target)?;
+    let version: (u8, u8, u8) = python_version(&spec)?;
+    if !version_meets(version, MIN_PYTHON) {
+        return Err(Error::DynamicHookPythonTooOld {
+            found: format!("{}.{}.{}", version.0, version.1, version.2),
+            required: format!("{}.{}.{}", MIN_PYTHON.0, MIN_PYTHON.1, MIN_PYTHON.2),
+        });
+    }
+
+    let helper_path: PathBuf = out_dir.join(".disrobe_v6v7_helper.py");
+    std::fs::write(&helper_path, HELPER_SCRIPT).map_err(Error::Io)?;
+    let helper_abs: PathBuf = helper_path
+        .canonicalize()
+        .unwrap_or_else(|_| helper_path.clone());
+
+    tracing::warn!(
+        "--allow-dynamic executes the obfuscated PyArmor wrapper in a subprocess to capture marshal streams; only enable on trusted samples or sandbox externally"
+    );
+
+    let wrapper_abs: PathBuf = wrapper.canonicalize().map_err(Error::Io)?;
+    let out_abs: PathBuf = out_dir.canonicalize().map_err(Error::Io)?;
+
+    let mut cmd: Command = Command::new(&spec.exe);
+    for arg in &spec.version_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&helper_abs)
+        .arg(&wrapper_abs)
+        .arg(&out_abs)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env(
+            "DISROBE_DISABLE_PYTRACE",
+            if options.disable_pytrace { "1" } else { "0" },
+        )
+        .env(
+            "DISROBE_DISABLE_CEXTRACT",
+            if options.disable_cextract { "1" } else { "0" },
+        )
+        .current_dir(&out_abs);
+
+    let start: Instant = Instant::now();
+    let mut child: std::process::Child = cmd.spawn().map_err(|e| {
+        Error::KeyExtraction(format!("failed to spawn dynamic hook interpreter: {e}"))
+    })?;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() >= options.timeout {
+                    let _ = child.kill();
+                    return Err(Error::DynamicHookTimedOut {
+                        secs: options.timeout.as_secs(),
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(Error::KeyExtraction(format!("wait-child failed: {e}")));
+            }
+        }
+    }
+
+    let output: std::process::Output = child.wait_with_output().map_err(Error::Io)?;
+    let stderr_excerpt: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code: Option<i32> = output.status.code();
+
+    let manifest_path: PathBuf = out_abs.join("manifest.json");
+    let manifest_bytes: Vec<u8> =
+        std::fs::read(&manifest_path).map_err(|_e| Error::DynamicHookSubprocess {
+            exit_code,
+            stderr: stderr_excerpt.clone(),
+        })?;
+    let manifest: CaptureManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| Error::KeyExtraction(format!("failed to parse dynamic hook manifest: {e}")))?;
+
+    if manifest.captures.monkeypatch.is_empty()
+        && manifest.captures.audithook.is_empty()
+        && manifest.captures.exec_calls.is_empty()
+        && manifest.captures.compile_calls.is_empty()
+        && manifest.captures.trace_calls.is_empty()
+        && manifest.captures.gcwalk.is_empty()
+        && manifest.captures.pytrace.is_empty()
+        && manifest.captures.cextract.is_empty()
+    {
+        return Err(Error::DynamicHookZeroCaptures {
+            stderr: stderr_excerpt,
+        });
+    }
+
+    let interpreter_label: String = spec.display_label();
+    Ok(DynamicHookResult {
+        interpreter: spec.exe,
+        interpreter_label,
+        interpreter_version: version,
+        manifest_path,
+        manifest,
+        stderr_excerpt,
+        exit_code,
+    })
+}
+
+fn locate_python(target: Option<(u8, u8)>) -> Result<InterpreterSpec> {
+    let mut version_order: Vec<(u8, u8)> = target.map_or_else(
+        || vec![(3, 9), (3, 10), (3, 11), (3, 12), (3, 13), (3, 14)],
+        |t| {
+            let mut chain: Vec<(u8, u8)> = vec![t];
+            for minor in (9..=14u8).rev() {
+                let v: (u8, u8) = (3, minor);
+                if v != t {
+                    chain.push(v);
+                }
+            }
+            chain
+        },
+    );
+    version_order.dedup();
+
+    let mut searched: Vec<String> = Vec::new();
+    for (maj, min) in &version_order {
+        let py_flag: String = format!("-{maj}.{min}");
+        let candidate: InterpreterSpec = InterpreterSpec {
+            exe: PathBuf::from("py"),
+            version_args: vec![py_flag.clone()],
+        };
+        if probe(&candidate, &mut searched) {
+            return Ok(candidate);
+        }
+        let candidate2: InterpreterSpec = InterpreterSpec {
+            exe: PathBuf::from(format!("python{maj}.{min}")),
+            version_args: Vec::new(),
+        };
+        if probe(&candidate2, &mut searched) {
+            return Ok(candidate2);
+        }
+    }
+    let fallback_chain: [InterpreterSpec; 2] = [
+        InterpreterSpec {
+            exe: PathBuf::from("python3"),
+            version_args: Vec::new(),
+        },
+        InterpreterSpec {
+            exe: PathBuf::from("python"),
+            version_args: Vec::new(),
+        },
+    ];
+    for spec in fallback_chain {
+        if probe(&spec, &mut searched) {
+            return Ok(spec);
+        }
+    }
+    Err(Error::DynamicHookNoPython { searched })
+}
+
+fn probe(spec: &InterpreterSpec, searched: &mut Vec<String>) -> bool {
+    let label: String = spec.display_label();
+    searched.push(label);
+    let mut cmd: Command = Command::new(&spec.exe);
+    for arg in &spec.version_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("-c").arg("print(0)");
+    matches!(cmd.output(), Ok(out) if out.status.success())
+}
+
+fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
+    let mut cmd: Command = Command::new(&spec.exe);
+    for arg in &spec.version_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("-c").arg(
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
+    );
+    let output: std::process::Output = cmd.output().map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::KeyExtraction(
+            "could not query python version".to_owned(),
+        ));
+    }
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
+    parse_version(text.trim())
+        .ok_or_else(|| Error::KeyExtraction(format!("could not parse python version: {text:?}")))
+}
+
+fn parse_version(s: &str) -> Option<(u8, u8, u8)> {
+    let mut parts: std::str::Split<'_, char> = s.split('.');
+    let major: u8 = parts.next()?.parse().ok()?;
+    let minor: u8 = parts.next()?.parse().ok()?;
+    let patch: u8 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+const fn version_meets(found: (u8, u8, u8), required: (u8, u8, u8)) -> bool {
+    if found.0 != required.0 {
+        return found.0 > required.0;
+    }
+    if found.1 != required.1 {
+        return found.1 > required.1;
+    }
+    found.2 >= required.2
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_version_handles_three_parts() {
+        assert_eq!(parse_version("3.12.5"), Some((3, 12, 5)));
+        assert_eq!(parse_version("3.9.0"), Some((3, 9, 0)));
+        assert_eq!(parse_version("3.13"), Some((3, 13, 0)));
+    }
+
+    #[test]
+    fn version_meets_basic() {
+        assert!(version_meets((3, 9, 7), (3, 9, 7)));
+        assert!(version_meets((3, 10, 0), (3, 9, 7)));
+        assert!(!version_meets((3, 9, 6), (3, 9, 7)));
+        assert!(!version_meets((2, 7, 18), (3, 9, 7)));
+    }
+
+    #[test]
+    fn capture_source_round_trip_serde_cextract_variant() {
+        let s: String = serde_json::to_string(&CaptureSource::Cextract).expect("serialize");
+        assert_eq!(s, "\"Cextract\"");
+        let back: CaptureSource = serde_json::from_str(&s).expect("deserialize");
+        assert!(matches!(back, CaptureSource::Cextract));
+    }
+
+    #[test]
+    fn capture_source_round_trip_serde_pytrace_variant() {
+        let s: String = serde_json::to_string(&CaptureSource::Pytrace).expect("serialize");
+        assert_eq!(s, "\"Pytrace\"");
+        let back: CaptureSource = serde_json::from_str(&s).expect("deserialize");
+        assert!(matches!(back, CaptureSource::Pytrace));
+    }
+
+    #[test]
+    fn capture_groups_deserializes_cextract_and_pytrace_fields() {
+        let json: &str = "{\"cextract\":[{\"index\":0,\"size\":42,\"sha256\":\"abc\",\"pyc_path\":\"x.pyc\"}],\"pytrace\":[]}";
+        let groups: CaptureGroups = serde_json::from_str(json).expect("parses");
+        assert_eq!(groups.cextract.len(), 1);
+        assert_eq!(groups.cextract[0].size, 42);
+        assert!(groups.pytrace.is_empty());
+        assert!(groups.monkeypatch.is_empty());
+    }
+
+    #[test]
+    fn dynamic_hook_options_disable_flags_default_false() {
+        let opts: DynamicHookOptions = DynamicHookOptions::default();
+        assert!(!opts.disable_pytrace);
+        assert!(!opts.disable_cextract);
+    }
+
+    #[test]
+    fn dynamic_hook_default_is_disabled() {
+        let opts: DynamicHookOptions = DynamicHookOptions::default();
+        assert!(!opts.allow_dynamic);
+    }
+}

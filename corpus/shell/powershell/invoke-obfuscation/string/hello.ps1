@@ -1,0 +1,1 @@
+& ('{0}{1}' -f 'Write-','Host') ('{0}{1}' -f 'hello ','world')

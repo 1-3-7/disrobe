@@ -1,0 +1,352 @@
+
+
+from __future__ import absolute_import, print_function
+
+import hashlib
+import os
+from contextlib import contextmanager
+
+from pex.common import open_zip
+from pex.compatibility import to_unicode
+from pex.typing import TYPE_CHECKING, Generic
+
+if TYPE_CHECKING:
+    from typing import IO, Callable, Iterable, Iterator, Optional, Protocol, Text, Type, TypeVar
+
+    class HintedDigest(Protocol):
+        @property
+        def block_size(self):
+            # type: () -> int
+            pass
+
+        def update(self, data):
+            # type: (bytes) -> None
+            pass
+
+    class Hasher(HintedDigest, Protocol):
+        @property
+        def name(self):
+            # type: () -> str
+            pass
+
+        def digest(self):
+            # type: () -> bytes
+            pass
+
+        def hexdigest(self):
+            # type: () -> str
+            pass
+
+
+class Fingerprint(str):
+    class Algorithm(object):
+        def __get__(
+            self,
+            _instance,
+            owner,
+        ):
+            # type: (...) -> str
+
+            alg = getattr(owner, "_alg", None)
+            if alg is None:
+                alg = owner.__name__[: -len(Fingerprint.__name__)].lower()
+                setattr(owner, "_alg", alg)
+            return alg
+
+    algorithm = Algorithm()
+
+    @classmethod
+    def new_hasher(cls, data=b""):
+        # type: (bytes) -> HashlibHasher
+        return HashlibHasher(cls, data=data)
+
+    def __eq__(self, other):
+        if isinstance(other, Fingerprint) and type(self) != type(other):
+            return False
+        return super(Fingerprint, self).__eq__(other)
+
+    def __ne__(self, other):
+        return not self == other
+
+    def __hash__(self):
+        # type: () -> int
+        return hash((self.algorithm, str(self)))
+
+
+def new_fingerprint(
+    algorithm,
+    hexdigest,
+):
+    # type: (...) -> Fingerprint
+
+    for subclass in Fingerprint.__subclasses__():
+        if subclass.algorithm == algorithm:
+            return subclass(hexdigest)
+
+    raise ValueError(
+        "There is no fingerprint type registered for hash algorithm {algorithm}. The supported "
+        "algorithms are: {algorithms}".format(
+            algorithm=algorithm,
+            algorithms=", ".join(fp.algorithm for fp in Fingerprint.__subclasses__()),
+        )
+    )
+
+
+class Sha1Fingerprint(Fingerprint):
+    pass
+
+
+class Sha256Fingerprint(Fingerprint):
+    pass
+
+
+if TYPE_CHECKING:
+    _F = TypeVar("_F", bound=Fingerprint)
+
+
+class HashlibHasher(Generic["_F"]):
+    def __init__(
+        self,
+        hexdigest_type,
+        data=b"",
+    ):
+        # type: (...) -> None
+        self._hexdigest_type = hexdigest_type
+        self._hasher = hashlib.new(hexdigest_type.algorithm, data)
+
+    @property
+    def name(self):
+        # type: () -> str
+        return self._hasher.name
+
+    @property
+    def block_size(self):
+        # type: () -> int
+        return self._hasher.block_size
+
+    def update(self, data):
+        # type: (bytes) -> None
+        self._hasher.update(data)
+
+    def digest(self):
+        # type: () -> bytes
+        return self._hasher.digest()
+
+    def hexdigest(self):
+        # type: () -> _F
+        return self._hexdigest_type(self._hasher.hexdigest())
+
+
+class Sha1(HashlibHasher[Sha1Fingerprint]):
+    def __init__(self, data=b""):
+        # type: (bytes) -> None
+        super(Sha1, self).__init__(hexdigest_type=Sha1Fingerprint, data=data)
+
+
+class Sha256(HashlibHasher[Sha256Fingerprint]):
+    def __init__(self, data=b""):
+        # type: (bytes) -> None
+        super(Sha256, self).__init__(hexdigest_type=Sha256Fingerprint, data=data)
+
+
+class MultiDigest(object):
+    def __init__(self, digests):
+        # type: (Iterable[HintedDigest]) -> None
+        self._digests = digests
+        self._block_size = max(digest.block_size for digest in digests)
+
+    @property
+    def block_size(self):
+        # type: () -> int
+        return self._block_size
+
+    def update(self, data):
+        # type: (bytes) -> None
+        for digest in self._digests:
+            digest.update(data)
+
+
+def update_hash(
+    filelike,
+    digest,
+):
+    # type: (...) -> None
+    block_size = digest.block_size * 1024
+    for chunk in iter(lambda: filelike.read(block_size), b""):
+        digest.update(chunk)
+
+
+def file_hash(
+    path,
+    digest,
+):
+    # type: (...) -> None
+    with open(path, "rb") as fp:
+        update_hash(filelike=fp, digest=digest)
+
+
+@contextmanager
+def lock_pex_project_dir():
+    # type: () -> Iterator[None]
+
+    if "_PEX_LOCKED_PROJECT_DIR" in os.environ:
+
+
+        yield
+        return
+
+    from pex.fs import lock
+    from pex.fs.lock import FileLockStyle
+
+    lck = lock.acquire(__file__ + ".lck", exclusive=True, style=FileLockStyle.BSD)
+    os.environ["_PEX_LOCKED_PROJECT_DIR"] = str(os.getpid())
+    try:
+        yield
+    finally:
+        lck.release()
+        del os.environ["_PEX_LOCKED_PROJECT_DIR"]
+
+
+@contextmanager
+def locked_directory(directory):
+    # type: (Text) -> Iterator[Text]
+
+    top = os.path.realpath(directory)
+    if __file__:
+        maybe_pex_project_directory = os.path.dirname(os.path.dirname(__file__))
+        if directory == maybe_pex_project_directory and os.path.isfile(
+            os.path.join(maybe_pex_project_directory, "pyproject.toml")
+        ):
+            with lock_pex_project_dir():
+                yield top
+            return
+
+    yield top
+
+
+def dir_hash(
+    directory,
+    digest,
+    dir_filter=lambda d: True,
+    file_filter=lambda f: True,
+    followlinks=True,
+):
+    # type: (...) -> None
+
+    with locked_directory(directory) as top:
+
+        def iter_files():
+            # type: () -> Iterator[Text]
+            for root, dirs, files in os.walk(top, followlinks=followlinks):
+                dirs[:] = [
+                    d for d in dirs if dir_filter(os.path.relpath(os.path.join(root, d), top))
+                ]
+                for f in files:
+                    path = os.path.join(root, f)
+                    if file_filter(os.path.relpath(path, top)):
+                        yield path
+
+        file_paths = sorted(iter_files())
+
+
+        hashed_names = [os.path.relpath(n, top).replace(os.sep, "/") for n in file_paths]
+        digest.update(to_unicode("").join(map(to_unicode, hashed_names)).encode("utf-8"))
+
+        for file_path in file_paths:
+            file_hash(file_path, digest)
+
+
+def zip_hash(
+    zip_path,
+    digest,
+    relpath=None,
+    dir_filter=lambda d: True,
+    file_filter=lambda f: True,
+):
+    # type: (...) -> None
+    with open_zip(zip_path) as zf:
+        namelist = (
+            [name for name in zf.namelist() if name.startswith(relpath)]
+            if relpath
+            else zf.namelist()
+        )
+
+        dirs = set()
+        for name in namelist:
+            if name.endswith("/"):
+                dirname = name.rstrip("/")
+            else:
+                dirname = os.path.dirname(name)
+            while dirname:
+                dirs.add(dirname)
+                dirname = os.path.dirname(dirname)
+
+        accept_dirs = frozenset(
+            d for d in dirs if dir_filter(os.path.relpath(d, relpath) if relpath else d)
+        )
+        reject_dirs = tuple("{dir}/".format(dir=path) for path in (dirs - accept_dirs))
+        accept_files = sorted(
+            name
+            for name in namelist
+            if not name.endswith("/")
+            and not name.startswith(reject_dirs)
+            and file_filter(os.path.relpath(name, relpath) if relpath else name)
+        )
+
+        hashed_names = (
+            [os.path.relpath(name, relpath) for name in accept_files] if relpath else accept_files
+        )
+        digest.update(to_unicode("").join(map(to_unicode, hashed_names)).encode("utf-8"))
+
+        for filename in accept_files:
+            update_hash(zf.open(filename, "r"), digest)
+
+
+if __name__ == "__main__":
+    import sys
+    import zipfile
+    from argparse import ArgumentParser
+
+    from pex.common import is_pyc_dir, is_pyc_file
+
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--exclude-dir",
+        dest="exclude_dirs",
+        action="append",
+        default=[],
+    )
+    parser.add_argument("--zip-relpath")
+    parser.add_argument("paths", nargs="+")
+
+    options = parser.parse_args()
+    exclude_dirs = frozenset(options.exclude_dirs)
+
+    for path in options.paths:
+        digest = Sha256()
+        if zipfile.is_zipfile(path):
+            zip_hash(
+                path,
+                digest=digest,
+                relpath=options.zip_relpath,
+                dir_filter=(
+                    lambda dir_path: (
+                        not is_pyc_dir(dir_path) and os.path.basename(dir_path) not in exclude_dirs
+                    )
+                ),
+                file_filter=lambda f: not is_pyc_file(f),
+            )
+        elif os.path.isdir(path):
+            dir_hash(
+                path,
+                digest=digest,
+                dir_filter=(
+                    lambda dir_path: (
+                        not is_pyc_dir(dir_path) and os.path.basename(dir_path) not in exclude_dirs
+                    )
+                ),
+                file_filter=lambda f: not is_pyc_file(f),
+            )
+        else:
+            print("Can only hash zip files or directories. Skipping file", path, file=sys.stderr)
+        print(path, digest.hexdigest(), file=sys.stdout)

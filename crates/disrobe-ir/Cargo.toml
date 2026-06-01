@@ -1,0 +1,42 @@
+[package]
+name = "disrobe-ir"
+description = "Five-rung ladder IR (Raw / Disasm / MIR / HIR / Surface), `.dr` envelope codec, capability negotiation, and migration shim registry for the disrobe decompiler/deobfuscator suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+rkyv = { workspace = true }
+bytecheck = { workspace = true }
+postcard = { workspace = true }
+postcard-schema = { workspace = true }
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+fxhash = { workspace = true }
+bytes = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+memmap2 = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "envelope_codec"
+harness = false

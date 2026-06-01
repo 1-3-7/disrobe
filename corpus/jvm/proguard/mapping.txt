@@ -1,0 +1,16 @@
+Hello -> Hello:
+# {"fileName":"Hello.java","id":"sourceFile"}
+    int counter -> a
+    java.lang.String name -> a
+    6:9:void <init>(java.lang.String) -> <init>
+    12:27:void main(java.lang.String[]) -> main
+    1012:1013:int bumpCounter():12:13 -> main
+    1012:1013:void main(java.lang.String[]):12 -> main
+    1013:1014:int bumpCounter():12:13 -> main
+    1013:1014:void main(java.lang.String[]):13 -> main
+    2017:2020:java.lang.String describe():17:20 -> main
+    2017:2020:void main(java.lang.String[]):17 -> main
+    2018:2021:java.lang.String describe():17:20 -> main
+    2018:2021:void main(java.lang.String[]):18 -> main
+    2020:2023:java.lang.String describe():17:20 -> main
+    2020:2023:void main(java.lang.String[]):20 -> main

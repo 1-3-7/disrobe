@@ -1,0 +1,816 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://disrobe.dev/schemas/disrobe-metadata-llm-v1.json",
+  "title": "Disrobe LLM Metadata Bundle",
+  "description": "Versioned JSON envelope emitted by `disrobe --llm` (and individual --<category> / --metadata-pack-N flags). Carries every metadata category any pass crate can produce, so a downstream LLM has maximum reconstructive context for the original source.",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "generated_at",
+    "tool",
+    "selection",
+    "input",
+    "pipeline",
+    "categories"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "disrobe.metadata.llm.v1",
+      "description": "Stable schema URI; do not change without bumping schema_version."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.\\d+\\.\\d+$",
+      "description": "SemVer of this JSON shape. Major bumps break compatibility."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "disrobe" },
+        "version": { "type": "string" },
+        "git_commit": { "type": ["string", "null"] },
+        "build_profile": { "type": ["string", "null"] }
+      }
+    },
+    "selection": {
+      "$ref": "#/$defs/MetadataSelection"
+    },
+    "input": {
+      "$ref": "#/$defs/InputDescriptor"
+    },
+    "pipeline": {
+      "type": "array",
+      "description": "Ordered chain of passes that touched the artifact.",
+      "items": { "$ref": "#/$defs/PipelineStep" }
+    },
+    "categories": {
+      "type": "object",
+      "description": "All emitted category payloads. Keys that were not requested or are unsupported by every pass are omitted entirely.",
+      "additionalProperties": false,
+      "properties": {
+        "ast":                  { "$ref": "#/$defs/AstCategory" },
+        "disasm":               { "$ref": "#/$defs/DisasmCategory" },
+        "cfg":                  { "$ref": "#/$defs/CfgCategory" },
+        "dfg":                  { "$ref": "#/$defs/DfgCategory" },
+        "symbols":              { "$ref": "#/$defs/SymbolsCategory" },
+        "strings":              { "$ref": "#/$defs/StringsCategory" },
+        "types":                { "$ref": "#/$defs/TypesCategory" },
+        "imports":              { "$ref": "#/$defs/ImportsCategory" },
+        "constants":            { "$ref": "#/$defs/ConstantsCategory" },
+        "signatures":           { "$ref": "#/$defs/SignaturesCategory" },
+        "provenance":           { "$ref": "#/$defs/ProvenanceCategory" },
+        "roundtrip_verdict":    { "$ref": "#/$defs/RoundtripVerdictCategory" },
+        "source_map":           { "$ref": "#/$defs/SourceMapCategory" },
+        "manifest":             { "$ref": "#/$defs/ManifestCategory" },
+        "decryption_keys":      { "$ref": "#/$defs/DecryptionKeysCategory" },
+        "confidence":           { "$ref": "#/$defs/ConfidenceCategory" },
+        "opcode_coverage":      { "$ref": "#/$defs/OpcodeCoverageCategory" },
+        "pii_map":              { "$ref": "#/$defs/PiiMapCategory" }
+      }
+    }
+  },
+  "$defs": {
+    "MetadataSelection": {
+      "type": "object",
+      "required": ["pack", "categories", "excluded", "format"],
+      "additionalProperties": false,
+      "properties": {
+        "pack": {
+          "type": ["string", "null"],
+          "enum": [null, "pack-1", "pack-2", "pack-3", "pack-4"]
+        },
+        "categories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CategoryName" },
+          "uniqueItems": true
+        },
+        "excluded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CategoryName" },
+          "uniqueItems": true
+        },
+        "format": {
+          "type": "string",
+          "enum": ["json", "jsonl", "cbor", "msgpack"]
+        },
+        "authorized_decryption_keys": { "type": "boolean" }
+      }
+    },
+    "CategoryName": {
+      "type": "string",
+      "enum": [
+        "ast", "disasm", "cfg", "dfg", "symbols", "strings", "types",
+        "imports", "constants", "signatures", "provenance",
+        "roundtrip_verdict", "source_map", "manifest",
+        "decryption_keys", "confidence", "opcode_coverage", "pii_map"
+      ]
+    },
+    "InputDescriptor": {
+      "type": "object",
+      "required": ["path", "size_bytes", "hash_blake3"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "hash_blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "magic_bytes_hex": { "type": ["string", "null"] },
+        "detected_formats": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "PipelineStep": {
+      "type": "object",
+      "required": ["pass", "version", "rung_in", "rung_out", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "pass": { "type": "string" },
+        "version": { "type": "string" },
+        "rung_in": { "$ref": "#/$defs/Rung" },
+        "rung_out": { "$ref": "#/$defs/Rung" },
+        "duration_ms": { "type": "number", "minimum": 0 },
+        "input_hash_blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "output_hash_blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "capabilities_required": { "type": "array", "items": { "type": "string" } },
+        "capabilities_produced": { "type": "array", "items": { "type": "string" } },
+        "config": { "type": "object" }
+      }
+    },
+    "Rung": {
+      "type": "string",
+      "enum": ["raw", "disasm", "mir", "hir", "surface"]
+    },
+
+    "PerPassEnvelope": {
+      "type": "object",
+      "description": "Wrapper that every per-category payload uses so a downstream LLM can attribute facts to a producing pass.",
+      "required": ["pass", "pass_version", "applicable", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "pass": { "type": "string" },
+        "pass_version": { "type": "string" },
+        "applicable": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "value": {}
+      }
+    },
+
+    "AstCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/AstEntry" } }
+      }
+    },
+    "AstEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["dialect", "root"],
+          "properties": {
+            "dialect": { "type": "string", "description": "e.g. python.3.12, javascript.es2022, ruby.3.3, java.21, ..." },
+            "root": { "$ref": "#/$defs/AstNode" }
+          }
+        }
+      }
+    },
+    "AstNode": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string" },
+        "name": { "type": ["string", "null"] },
+        "value": {},
+        "span": { "$ref": "#/$defs/SourceSpan" },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AstNode" }
+        },
+        "attrs": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "SourceSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_line":   { "type": "integer", "minimum": 1 },
+        "start_col":    { "type": "integer", "minimum": 1 },
+        "end_line":     { "type": "integer", "minimum": 1 },
+        "end_col":      { "type": "integer", "minimum": 1 },
+        "byte_start":   { "type": "integer", "minimum": 0 },
+        "byte_end":     { "type": "integer", "minimum": 0 },
+        "file":         { "type": ["string", "null"] }
+      }
+    },
+
+    "DisasmCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/DisasmEntry" } }
+      }
+    },
+    "DisasmEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["bytecode_version", "instructions"],
+          "properties": {
+            "bytecode_version": { "type": "string" },
+            "instructions": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/DisasmInstruction" }
+            },
+            "symbol_table": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/DisasmSymbol" }
+            }
+          }
+        }
+      }
+    },
+    "DisasmInstruction": {
+      "type": "object",
+      "required": ["pc", "mnemonic"],
+      "properties": {
+        "pc":         { "type": "integer", "minimum": 0 },
+        "bytes_hex":  { "type": "string" },
+        "mnemonic":   { "type": "string" },
+        "operands":   { "type": "array", "items": { "type": "string" } },
+        "comment":    { "type": ["string", "null"] }
+      }
+    },
+    "DisasmSymbol": {
+      "type": "object",
+      "required": ["address", "name", "kind"],
+      "properties": {
+        "address": { "type": "integer", "minimum": 0 },
+        "name":    { "type": "string" },
+        "kind":    { "type": "string", "enum": ["function", "data", "label", "export", "import"] }
+      }
+    },
+
+    "CfgCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/CfgEntry" } }
+      }
+    },
+    "CfgEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["function", "blocks", "edges"],
+          "properties": {
+            "function": { "type": "string" },
+            "entry_block": { "type": "integer", "minimum": 0 },
+            "blocks": { "type": "array", "items": { "$ref": "#/$defs/CfgBlock" } },
+            "edges":  { "type": "array", "items": { "$ref": "#/$defs/CfgEdge" } },
+            "dominators":      { "type": "object", "additionalProperties": { "type": "integer" } },
+            "post_dominators": { "type": "object", "additionalProperties": { "type": "integer" } },
+            "loops": { "type": "array", "items": { "$ref": "#/$defs/CfgLoop" } }
+          }
+        }
+      }
+    },
+    "CfgBlock": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "label": { "type": ["string", "null"] },
+        "pc_range": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "CfgEdge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "integer", "minimum": 0 },
+        "to":   { "type": "integer", "minimum": 0 },
+        "kind": { "type": "string", "enum": ["fallthrough", "branch_true", "branch_false", "jump", "call", "return", "throw", "switch"] },
+        "condition": { "type": ["string", "null"] }
+      }
+    },
+    "CfgLoop": {
+      "type": "object",
+      "required": ["header", "body"],
+      "properties": {
+        "header": { "type": "integer" },
+        "body":   { "type": "array", "items": { "type": "integer" } },
+        "kind":   { "type": "string", "enum": ["natural", "irreducible"] }
+      }
+    },
+
+    "DfgCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/DfgEntry" } } }
+    },
+    "DfgEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["function", "defs", "uses"],
+          "properties": {
+            "function": { "type": "string" },
+            "ssa": { "type": "boolean" },
+            "defs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["var", "pc"],
+                "properties": {
+                  "var": { "type": "string" },
+                  "pc":  { "type": "integer", "minimum": 0 },
+                  "type": { "type": ["string", "null"] }
+                }
+              }
+            },
+            "uses": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["var", "pc", "def_pc"],
+                "properties": {
+                  "var":    { "type": "string" },
+                  "pc":     { "type": "integer", "minimum": 0 },
+                  "def_pc": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "SymbolsCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/SymbolsEntry" } } }
+    },
+    "SymbolsEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["mangled"],
+            "properties": {
+              "mangled":   { "type": "string" },
+              "demangled": { "type": ["string", "null"] },
+              "kind":      { "type": "string", "enum": ["function", "method", "class", "module", "variable", "constant", "type", "label", "import", "export"] },
+              "address":   { "type": ["integer", "null"], "minimum": 0 },
+              "module":    { "type": ["string", "null"] },
+              "visibility": { "type": "string", "enum": ["public", "private", "internal", "unknown"] },
+              "language_specific": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+
+    "StringsCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/StringsEntry" } } }
+    },
+    "StringsEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text":       { "type": "string" },
+              "encoding":   { "type": "string", "enum": ["utf-8", "utf-16-le", "utf-16-be", "latin-1", "ascii", "wtf-8", "unknown"] },
+              "offset":     { "type": ["integer", "null"], "minimum": 0 },
+              "refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["pc"],
+                  "properties": {
+                    "pc":       { "type": "integer", "minimum": 0 },
+                    "function": { "type": ["string", "null"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "TypesCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/TypesEntry" } } }
+    },
+    "TypesEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "properties": {
+            "named_types": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "shape"],
+                "properties": {
+                  "name":  { "type": "string" },
+                  "shape": { "type": "string", "description": "Free-form textual type, language-native syntax." },
+                  "fields": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "type"],
+                      "properties": {
+                        "name":   { "type": "string" },
+                        "type":   { "type": "string" },
+                        "offset": { "type": ["integer", "null"] }
+                      }
+                    }
+                  },
+                  "generics":  { "type": "array", "items": { "type": "string" } },
+                  "vtable":    {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["slot", "method"],
+                      "properties": {
+                        "slot":   { "type": "integer" },
+                        "method": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "instantiations": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+
+    "ImportsCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/ImportsEntry" } } }
+    },
+    "ImportsEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["module"],
+            "properties": {
+              "module":   { "type": "string" },
+              "symbols":  { "type": "array", "items": { "type": "string" } },
+              "alias":    { "type": ["string", "null"] },
+              "kind":     { "type": "string", "enum": ["library", "module", "function", "wildcard", "type"] },
+              "version":  { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "ConstantsCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/ConstantsEntry" } } }
+    },
+    "ConstantsEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["index", "kind", "literal"],
+            "properties": {
+              "index":   { "type": "integer", "minimum": 0 },
+              "kind":    { "type": "string" },
+              "literal": {},
+              "refs":    { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+            }
+          }
+        }
+      }
+    },
+
+    "SignaturesCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/SignaturesEntry" } } }
+    },
+    "SignaturesEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["function", "parameters"],
+            "properties": {
+              "function":   { "type": "string" },
+              "return_type": { "type": ["string", "null"] },
+              "parameters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name"],
+                  "properties": {
+                    "name":     { "type": "string" },
+                    "type":     { "type": ["string", "null"] },
+                    "default":  {},
+                    "kind":     { "type": "string", "enum": ["positional", "keyword", "varargs", "kwargs", "self", "this", "unknown"] }
+                  }
+                }
+              },
+              "calling_convention": { "type": ["string", "null"] },
+              "throws": { "type": "array", "items": { "type": "string" } },
+              "attributes": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+
+    "ProvenanceCategory": {
+      "type": "object",
+      "required": ["chain"],
+      "additionalProperties": false,
+      "properties": {
+        "chain": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PipelineStep" }
+        },
+        "kv": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+
+    "RoundtripVerdictCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/RoundtripVerdictEntry" } } }
+    },
+    "RoundtripVerdictEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["status", "stages"],
+          "properties": {
+            "status": { "type": "string", "enum": ["pass", "fail", "skipped", "partial"] },
+            "stages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "ok"],
+                "properties": {
+                  "name":     { "type": "string" },
+                  "ok":       { "type": "boolean" },
+                  "details":  { "type": ["string", "null"] }
+                }
+              }
+            },
+            "diff": {
+              "type": "object",
+              "properties": {
+                "byte_identical":      { "type": "boolean" },
+                "semantic_identical":  { "type": "boolean" },
+                "diff_unified":        { "type": ["string", "null"] },
+                "diff_bytes_changed":  { "type": ["integer", "null"], "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "SourceMapCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/SourceMapEntry" } } }
+    },
+    "SourceMapEntry": {
+      "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+      "properties": {
+        "value": {
+          "type": "object",
+          "required": ["mappings"],
+          "properties": {
+            "format":  { "type": "string", "enum": ["sourcemap-v3", "disrobe-linemap-v1"] },
+            "mappings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["output", "input"],
+                "properties": {
+                  "output": { "$ref": "#/$defs/SourceSpan" },
+                  "input":  { "$ref": "#/$defs/SourceSpan" },
+                  "via_pass": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "ManifestCategory": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "object",
+          "required": ["path", "size_bytes", "hash_blake3"],
+          "properties": {
+            "path":            { "type": "string" },
+            "size_bytes":      { "type": "integer", "minimum": 0 },
+            "hash_blake3":     { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "magic_bytes_hex": { "type": ["string", "null"] },
+            "mime":            { "type": ["string", "null"] }
+          }
+        },
+        "detected_formats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["format", "confidence"],
+            "properties": {
+              "format":      { "type": "string" },
+              "confidence":  { "type": "number", "minimum": 0, "maximum": 1 },
+              "detector":    { "type": ["string", "null"] }
+            }
+          }
+        },
+        "container_chain": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "DecryptionKeysCategory": {
+      "type": "object",
+      "required": ["authorized", "entries"],
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "type": "boolean",
+          "description": "MUST be true. If false, no `entries` are present and the category as a whole was redacted."
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+            "properties": {
+              "value": {
+                "type": "object",
+                "required": ["label", "key_hex"],
+                "properties": {
+                  "label":     { "type": "string" },
+                  "algorithm": { "type": ["string", "null"] },
+                  "key_hex":   { "type": "string", "pattern": "^[0-9a-fA-F]+$" },
+                  "iv_hex":    { "type": ["string", "null"] },
+                  "salt_hex":  { "type": ["string", "null"] },
+                  "derivation": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "ConfidenceCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+            "properties": {
+              "value": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["detection", "score"],
+                  "properties": {
+                    "detection": { "type": "string" },
+                    "score":     { "type": "number", "minimum": 0, "maximum": 1 },
+                    "evidence":  { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "OpcodeCoverageCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+            "properties": {
+              "value": {
+                "type": "object",
+                "required": ["bytecode_version", "seen", "unknown"],
+                "properties": {
+                  "bytecode_version": { "type": "string" },
+                  "seen":    { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+                  "unknown": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+                  "totals": {
+                    "type": "object",
+                    "properties": {
+                      "instructions":   { "type": "integer", "minimum": 0 },
+                      "distinct_known": { "type": "integer", "minimum": 0 },
+                      "distinct_unknown": { "type": "integer", "minimum": 0 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "PiiMapCategory": {
+      "type": "object",
+      "required": ["entries"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/PerPassEnvelope" }],
+            "properties": {
+              "value": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["category", "placeholder", "span"],
+                  "properties": {
+                    "category":    { "type": "string", "enum": ["email", "phone", "ssn", "ip", "url", "name", "address", "credential", "secret", "other"] },
+                    "placeholder": { "type": "string" },
+                    "span":        { "$ref": "#/$defs/SourceSpan" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

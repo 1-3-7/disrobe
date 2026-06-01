@@ -1,0 +1,1 @@
+{"version":3,"file":"899.bundle.js","mappings":";;;;;;;;;;;;AAAO;AACA","sources":["webpack://disrobe-multimod-fixture/./src/lazy.js"],"sourcesContent":["export const heavyTag = \"lazy-loaded:\" + String(Math.random()).slice(2, 8);\nexport const lazyCompute = (x) => x ** 2 + x + 1;\n"],"names":[],"sourceRoot":""}

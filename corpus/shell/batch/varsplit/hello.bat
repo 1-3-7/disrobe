@@ -1,0 +1,14 @@
+@echo off
+setlocal EnableDelayedExpansion
+set S38980=h
+set S38981=e
+set S38982=l
+set S38983=l
+set S38984=o
+set S38985= 
+set S38986=w
+set S38987=o
+set S38988=r
+set S38989=l
+set S389810=d
+echo !S38980!!S38981!!S38982!!S38983!!S38984!!S38985!!S38986!!S38987!!S38988!!S38989!!S389810!

@@ -1,0 +1,6 @@
+{
+  "kind": "bun",
+  "entry": "bun-bundle",
+  "module_ids": ["./src/a.ts", "./src/b.ts", "./src/c.ts"],
+  "imports_contains": ["./src/a.ts", "./src/b.ts", "./src/c.ts"]
+}

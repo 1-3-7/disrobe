@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo check --workspace --all-targets --all-features
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.8-3.14 for the py-decompile construct matrix
+        run: uv python install 3.8 3.9 3.10 3.11 3.12 3.13 3.14
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo test --workspace --all-features
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@master
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo +1.95.0 check --workspace --all-features

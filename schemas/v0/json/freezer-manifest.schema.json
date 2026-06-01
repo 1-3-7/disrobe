@@ -1,0 +1,138 @@
+{
+  "$id": "https://disrobe.dev/schemas/v0/freezer-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Normalized manifest emitted by pyfreeze passes (cx_freeze, py2exe, shiv, pex, pyoxidizer, briefcase).",
+  "properties": {
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "compressed_size": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "python-module",
+              "python-byte-code",
+              "native-extension",
+              "resource",
+              "wheel",
+              "metadata",
+              "other"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "enum": [
+              "library-zip",
+              "sibling-file",
+              "pe-resource",
+              "trailing-zip",
+              "deps",
+              "other"
+            ],
+            "type": "string"
+          },
+          "python_major": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "python_minor": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "size": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "size",
+          "origin"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "entry_count": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "interpreter_hint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "cx-freeze",
+        "py2exe",
+        "shiv",
+        "pex",
+        "py-oxidizer",
+        "briefcase",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "primary_module": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "python_major": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "python_minor": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "schema": {
+      "const": "disrobe.pyfreeze.manifest/v0",
+      "type": "string"
+    },
+    "source_path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "kind",
+    "source_path",
+    "entry_count",
+    "entries"
+  ],
+  "title": "FreezerManifest",
+  "type": "object"
+}

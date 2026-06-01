@@ -1,0 +1,594 @@
+//! High-level, name-resolved assembly model built on top of [`crate::tables`].
+//!
+//! Resolves `#Strings`/`#Blob` heap indices into owned strings + decoded signatures, walks the
+//! `TypeDef`→`Field`/`Method` ranges per ECMA-335 §II.22.37, and exposes metadata-token resolution
+//! (§II.22 / §III.1.9). This is the data the structural decompiler consumes to print real type and
+//! member names instead of raw tokens.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+use crate::metadata::{MetadataRoot, decompress_uint, read_strings_heap};
+use crate::pe::{ClrHeader, PeImage};
+use crate::signature::{MethodSig, TypeSig, parse_field_sig, parse_method_sig};
+use crate::tables::{MethodDefRow, RowRef, TableId, Tables, parse_tables};
+
+/// A fully-resolved managed type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeModel {
+    pub token: u32,
+    pub namespace: String,
+    pub name: String,
+    pub full_name: String,
+    pub flags: u32,
+    pub base_type: Option<String>,
+    pub fields: Vec<FieldModel>,
+    pub methods: Vec<MethodModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldModel {
+    pub token: u32,
+    pub name: String,
+    pub flags: u16,
+    pub field_type: TypeSig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodModel {
+    pub token: u32,
+    pub name: String,
+    pub flags: u16,
+    pub impl_flags: u16,
+    pub rva: u32,
+    pub signature: MethodSig,
+    pub parameters: Vec<ParamModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParamModel {
+    pub sequence: u16,
+    pub name: String,
+}
+
+/// `TypeAttributes`/`MethodAttributes` visibility bits (§II.23.1.10 / §II.23.1.15).
+const METHOD_STATIC: u16 = 0x0010;
+const METHOD_ACCESS_MASK: u16 = 0x0007;
+
+impl MethodModel {
+    /// Whether this method is `static` (no implicit `this`).
+    #[must_use]
+    pub const fn is_static(&self) -> bool {
+        self.flags & METHOD_STATIC != 0
+    }
+
+    /// Render a C#-style method header (`public static int Foo(int a, string b)`) from the decoded
+    /// signature + parameter names. Generic + custom-modifier detail is approximate.
+    #[must_use]
+    pub fn csharp_signature(&self) -> String {
+        let vis: &str = match self.flags & METHOD_ACCESS_MASK {
+            0x0001 => "private ",
+            0x0002 | 0x0003 => "private protected ",
+            0x0004 => "internal ",
+            0x0005 => "protected ",
+            0x0006 => "protected internal ",
+            0x0007 => "public ",
+            _ => "",
+        };
+        let stat: &str = if self.flags & METHOD_STATIC != 0 {
+            "static "
+        } else {
+            ""
+        };
+        let ret: String = self.signature.return_type.render();
+        let display_name: String = self
+            .name
+            .rsplit("::")
+            .next()
+            .unwrap_or(&self.name)
+            .to_owned();
+        let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
+        for (i, p) in self.signature.params.iter().enumerate() {
+            let pname: String = self
+                .parameters
+                .iter()
+                .find(|pm: &&ParamModel| usize::from(pm.sequence) == i + 1)
+                .map_or_else(
+                    || format!("arg{}", i + 1),
+                    |pm: &ParamModel| pm.name.clone(),
+                );
+            rendered.push(format!("{} {pname}", p.render()));
+        }
+        format!("{vis}{stat}{ret} {display_name}({})", rendered.join(", "))
+    }
+}
+
+/// Resolved view of the entire assembly metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssemblyModel {
+    pub module_name: String,
+    pub assembly_name: Option<String>,
+    pub types: Vec<TypeModel>,
+    pub method_count: u32,
+    pub field_count: u32,
+    pub type_count: u32,
+}
+
+/// Borrowed resolver retaining the raw tables + heaps for on-demand token lookups.
+#[derive(Debug)]
+pub struct Resolver {
+    tables: Tables,
+    strings: BTreeMap<u32, String>,
+    blob: Vec<u8>,
+    us: Vec<u8>,
+}
+
+impl Resolver {
+    /// Build a resolver from a parsed PE + CLR + metadata root.
+    pub fn build(image: &[u8], pe: &PeImage, clr: &ClrHeader, root: &MetadataRoot) -> Result<Self> {
+        let metadata_slice: &[u8] =
+            pe.slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)?;
+        let table_header: crate::metadata::StreamHeader = root
+            .streams
+            .get("#~")
+            .or_else(|| root.streams.get("#-"))
+            .copied()
+            .ok_or_else(|| Error::UnknownStream("#~".to_owned()))?;
+        let tables: Tables = parse_tables(metadata_slice, table_header)?;
+        let strings: BTreeMap<u32, String> = root
+            .streams
+            .get("#Strings")
+            .map(|h| read_strings_heap(metadata_slice, *h))
+            .unwrap_or_default();
+        let blob: Vec<u8> = root
+            .streams
+            .get("#Blob")
+            .map(|h| {
+                let o: usize = h.offset as usize;
+                let e: usize = o.saturating_add(h.size as usize).min(metadata_slice.len());
+                if o < e {
+                    metadata_slice[o..e].to_vec()
+                } else {
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+        let us: Vec<u8> = root
+            .streams
+            .get("#US")
+            .map(|h| {
+                let o: usize = h.offset as usize;
+                let e: usize = o.saturating_add(h.size as usize).min(metadata_slice.len());
+                if o < e {
+                    metadata_slice[o..e].to_vec()
+                } else {
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            tables,
+            strings,
+            blob,
+            us,
+        })
+    }
+
+    #[must_use]
+    pub const fn tables(&self) -> &Tables {
+        &self.tables
+    }
+
+    #[must_use]
+    fn string(&self, index: u32) -> String {
+        if index == 0 {
+            return String::new();
+        }
+        self.strings.get(&index).cloned().unwrap_or_default()
+    }
+
+    /// Read a length-prefixed blob (the on-disk form: a compressed length followed by raw bytes).
+    #[must_use]
+    fn blob(&self, index: u32) -> Option<&[u8]> {
+        let i: usize = index as usize;
+        if i >= self.blob.len() {
+            return None;
+        }
+        let (len, consumed): (u32, usize) = decompress_uint(&self.blob[i..])?;
+        let start: usize = i + consumed;
+        let end: usize = start.checked_add(len as usize)?;
+        if end > self.blob.len() {
+            return None;
+        }
+        Some(&self.blob[start..end])
+    }
+
+    /// Decode the `#US` user-string at a heap byte offset (the low 24 bits of a `0x70` `ldstr`
+    /// token), per ECMA-335 §II.24.2.4: a compressed length then UTF-16LE units + a trailing flag.
+    #[must_use]
+    pub fn user_string(&self, offset: u32) -> Option<String> {
+        let i: usize = offset as usize;
+        if i >= self.us.len() {
+            return None;
+        }
+        let (len, consumed): (u32, usize) = decompress_uint(&self.us[i..])?;
+        let start: usize = i + consumed;
+        let blob_len: usize = len as usize;
+        let end: usize = start.checked_add(blob_len)?;
+        if end > self.us.len() || blob_len == 0 {
+            return None;
+        }
+        let char_bytes: usize = blob_len - 1;
+        let units: usize = char_bytes / 2;
+        let mut buf: Vec<u16> = Vec::with_capacity(units);
+        for u in 0..units {
+            buf.push(u16::from_le_bytes([
+                self.us[start + u * 2],
+                self.us[start + u * 2 + 1],
+            ]));
+        }
+        Some(String::from_utf16_lossy(&buf))
+    }
+
+    /// Resolve a metadata token (`table << 24 | rid`) to a printable member/type name. Returns the
+    /// fully-qualified name where determinable, else a `Table[rid]` placeholder. A `0x70` token
+    /// resolves to the decoded `#US` user string.
+    #[must_use]
+    pub fn resolve_token(&self, token: u32) -> String {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        let rid: u32 = token & 0x00FF_FFFF;
+        if table_idx == 0x70 {
+            return self
+                .user_string(rid)
+                .unwrap_or_else(|| format!("us(0x{rid:06X})"));
+        }
+        let Some(table): Option<TableId> = TableId::from_index(table_idx) else {
+            return format!("token(0x{token:08X})");
+        };
+        match table {
+            TableId::TypeDef => self
+                .type_def_name(rid)
+                .unwrap_or_else(|| format!("TypeDef[{rid}]")),
+            TableId::TypeRef => self
+                .type_ref_name(rid)
+                .unwrap_or_else(|| format!("TypeRef[{rid}]")),
+            TableId::MethodDef => self
+                .method_name(rid)
+                .unwrap_or_else(|| format!("MethodDef[{rid}]")),
+            TableId::Field => self
+                .field_name(rid)
+                .unwrap_or_else(|| format!("Field[{rid}]")),
+            TableId::MemberRef => self
+                .member_ref_name(rid)
+                .unwrap_or_else(|| format!("MemberRef[{rid}]")),
+            TableId::TypeSpec => format!("TypeSpec[{rid}]"),
+            TableId::MethodSpec => format!("MethodSpec[{rid}]"),
+            _ => format!("{table:?}[{rid}]"),
+        }
+    }
+
+    #[must_use]
+    fn type_def_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.type_defs.get(rid.checked_sub(1)? as usize)?;
+        Some(Self::qualify(
+            self.string(row.namespace),
+            self.string(row.name),
+        ))
+    }
+
+    #[must_use]
+    fn type_ref_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.type_refs.get(rid.checked_sub(1)? as usize)?;
+        Some(Self::qualify(
+            self.string(row.namespace),
+            self.string(row.name),
+        ))
+    }
+
+    #[must_use]
+    fn method_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.methods.get(rid.checked_sub(1)? as usize)?;
+        let owner: Option<String> = self.method_owner_name(rid);
+        let m: String = self.string(row.name);
+        Some(match owner {
+            Some(o) => format!("{o}::{m}"),
+            None => m,
+        })
+    }
+
+    #[must_use]
+    fn field_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.fields.get(rid.checked_sub(1)? as usize)?;
+        Some(self.string(row.name))
+    }
+
+    #[must_use]
+    fn member_ref_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.member_refs.get(rid.checked_sub(1)? as usize)?;
+        let parent: Option<String> = row.parent.map(|p: RowRef| self.row_ref_name(p));
+        let m: String = self.string(row.name);
+        Some(match parent {
+            Some(o) => format!("{o}::{m}"),
+            None => m,
+        })
+    }
+
+    #[must_use]
+    fn row_ref_name(&self, r: RowRef) -> String {
+        let token: u32 = (u32::from(r.table.index()) << 24) | r.row;
+        self.resolve_token(token)
+    }
+
+    /// Find the declaring type of a 1-based `MethodDef` rid by locating the `TypeDef` whose
+    /// `method_list` range contains it (§II.22.37: a type owns methods from its `method_list` up to
+    /// the next type's `method_list`).
+    #[must_use]
+    fn method_owner_name(&self, method_rid: u32) -> Option<String> {
+        let types: &[crate::tables::TypeDefRow] = &self.tables.type_defs;
+        for (idx, t) in types.iter().enumerate() {
+            let start: u32 = t.method_list;
+            let next: u32 = types
+                .get(idx + 1)
+                .map_or(self.tables.methods.len() as u32 + 1, |n| n.method_list);
+            if method_rid >= start && method_rid < next {
+                return Some(Self::qualify(self.string(t.namespace), self.string(t.name)));
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    fn qualify(ns: String, name: String) -> String {
+        if ns.is_empty() {
+            name
+        } else {
+            format!("{ns}.{name}")
+        }
+    }
+
+    /// Materialize the full name-resolved assembly model.
+    #[must_use]
+    pub fn model(&self) -> AssemblyModel {
+        let module_name: String = self
+            .tables
+            .modules
+            .first()
+            .map(|m| self.string(m.name))
+            .unwrap_or_default();
+        let assembly_name: Option<String> = self
+            .tables
+            .assembly
+            .map(|a| self.string(a.name))
+            .filter(|s: &String| !s.is_empty());
+
+        let type_count: u32 = self.tables.type_defs.len() as u32;
+        let field_total: u32 = self.tables.fields.len() as u32;
+        let method_total: u32 = self.tables.methods.len() as u32;
+
+        let mut types: Vec<TypeModel> = Vec::with_capacity(self.tables.type_defs.len());
+        let n_types: usize = self.tables.type_defs.len();
+        for (idx, t) in self.tables.type_defs.iter().enumerate() {
+            let type_rid: u32 = idx as u32 + 1;
+            let field_start: u32 = t.field_list;
+            let field_end: u32 = self
+                .tables
+                .type_defs
+                .get(idx + 1)
+                .map_or(field_total + 1, |n| n.field_list);
+            let method_start: u32 = t.method_list;
+            let method_end: u32 = self
+                .tables
+                .type_defs
+                .get(idx + 1)
+                .map_or(method_total + 1, |n| n.method_list);
+
+            let fields: Vec<FieldModel> =
+                self.materialize_fields(field_start, field_end, field_total);
+            let methods: Vec<MethodModel> =
+                self.materialize_methods(method_start, method_end, method_total);
+
+            let namespace: String = self.string(t.namespace);
+            let name: String = self.string(t.name);
+            let full_name: String = Self::qualify(namespace.clone(), name.clone());
+            let base_type: Option<String> = t.extends.map(|e: RowRef| self.row_ref_name(e));
+            types.push(TypeModel {
+                token: (u32::from(TableId::TypeDef.index()) << 24) | type_rid,
+                namespace,
+                name,
+                full_name,
+                flags: t.flags,
+                base_type,
+                fields,
+                methods,
+            });
+            let _ = n_types;
+        }
+
+        AssemblyModel {
+            module_name,
+            assembly_name,
+            types,
+            method_count: method_total,
+            field_count: field_total,
+            type_count,
+        }
+    }
+
+    fn materialize_fields(&self, start: u32, end: u32, total: u32) -> Vec<FieldModel> {
+        let lo: u32 = start.clamp(1, total.saturating_add(1));
+        let hi: u32 = end.clamp(lo, total.saturating_add(1));
+        let mut out: Vec<FieldModel> = Vec::with_capacity((hi - lo) as usize);
+        for rid in lo..hi {
+            let Some(row) = self.tables.fields.get((rid - 1) as usize) else {
+                break;
+            };
+            let field_type: TypeSig = self
+                .blob(row.signature)
+                .and_then(|b: &[u8]| parse_field_sig(b).ok())
+                .unwrap_or(TypeSig::Unknown);
+            out.push(FieldModel {
+                token: (u32::from(TableId::Field.index()) << 24) | rid,
+                name: self.string(row.name),
+                flags: row.flags,
+                field_type,
+            });
+        }
+        out
+    }
+
+    fn materialize_methods(&self, start: u32, end: u32, total: u32) -> Vec<MethodModel> {
+        let lo: u32 = start.clamp(1, total.saturating_add(1));
+        let hi: u32 = end.clamp(lo, total.saturating_add(1));
+        let mut out: Vec<MethodModel> = Vec::with_capacity((hi - lo) as usize);
+        for rid in lo..hi {
+            let Some(row): Option<&MethodDefRow> = self.tables.methods.get((rid - 1) as usize)
+            else {
+                break;
+            };
+            let signature: MethodSig = self
+                .blob(row.signature)
+                .and_then(|b: &[u8]| parse_method_sig(b).ok())
+                .unwrap_or_default();
+            let parameters: Vec<ParamModel> = self.materialize_params(rid);
+            out.push(MethodModel {
+                token: (u32::from(TableId::MethodDef.index()) << 24) | rid,
+                name: self.string(row.name),
+                flags: row.flags,
+                impl_flags: row.impl_flags,
+                rva: row.rva,
+                signature,
+                parameters,
+            });
+        }
+        out
+    }
+
+    fn materialize_params(&self, method_rid: u32) -> Vec<ParamModel> {
+        let methods: &[MethodDefRow] = &self.tables.methods;
+        let Some(row): Option<&MethodDefRow> = methods.get((method_rid - 1) as usize) else {
+            return Vec::new();
+        };
+        let start: u32 = row.param_list;
+        let total: u32 = self.tables.params.len() as u32;
+        let end: u32 = methods
+            .get(method_rid as usize)
+            .map_or(total + 1, |n: &MethodDefRow| n.param_list);
+        let lo: u32 = start.clamp(1, total.saturating_add(1));
+        let hi: u32 = end.clamp(lo, total.saturating_add(1));
+        let mut out: Vec<ParamModel> = Vec::new();
+        for rid in lo..hi {
+            let Some(p) = self.tables.params.get((rid - 1) as usize) else {
+                break;
+            };
+            out.push(ParamModel {
+                sequence: p.sequence,
+                name: self.string(p.name),
+            });
+        }
+        out
+    }
+
+    /// Resolve a `MethodDef`/`MemberRef` token to its decoded [`MethodSig`], for callee stack-effect
+    /// analysis during decompilation. Returns `None` for tokens without a decodable method blob.
+    #[must_use]
+    pub fn callee_signature(&self, token: u32) -> Option<MethodSig> {
+        let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
+        let rid: usize = (token & 0x00FF_FFFF).checked_sub(1)? as usize;
+        let blob_index: u32 = match TableId::from_index(table_idx)? {
+            TableId::MethodDef => self.tables.methods.get(rid)?.signature,
+            TableId::MemberRef => self.tables.member_refs.get(rid)?.signature,
+            _ => return None,
+        };
+        let blob: &[u8] = self.blob(blob_index)?;
+        parse_method_sig(blob).ok()
+    }
+
+    /// All `MethodDef` rows that carry a non-zero RVA (i.e. have a CIL body), with resolved names.
+    #[must_use]
+    pub fn methods_with_bodies(&self) -> Vec<(u32, String, u32)> {
+        let mut out: Vec<(u32, String, u32)> = Vec::new();
+        for (idx, m) in self.tables.methods.iter().enumerate() {
+            if m.rva != 0 {
+                let rid: u32 = idx as u32 + 1;
+                let name: String = self.method_name(rid).unwrap_or_else(|| self.string(m.name));
+                out.push((rid, name, m.rva));
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::pe::{parse, parse_clr_header};
+
+    fn load(rel: &str) -> Vec<u8> {
+        let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push(rel);
+        std::fs::read(&path).expect("fixture")
+    }
+
+    fn resolver_for(rel: &str) -> Resolver {
+        let bytes: Vec<u8> = load(rel);
+        let pe: PeImage = parse(&bytes).expect("pe");
+        let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr");
+        let root: MetadataRoot =
+            crate::metadata::parse_metadata_root(&bytes, &pe, &clr).expect("root");
+        Resolver::build(&bytes, &pe, &clr, &root).expect("resolver")
+    }
+
+    #[test]
+    fn builds_model_from_real_helloapp() {
+        let r: Resolver = resolver_for("../../corpus/dotnet/HelloApp.dll");
+        let model: AssemblyModel = r.model();
+        assert!(model.type_count >= 1, "must have at least <Module>");
+        assert!(
+            model.method_count >= 1,
+            "HelloApp must declare at least one method"
+        );
+        assert!(!model.module_name.is_empty(), "module row carries a name");
+    }
+
+    #[test]
+    fn helloapp_has_program_type_with_main() {
+        let r: Resolver = resolver_for("../../corpus/dotnet/HelloApp.dll");
+        let model: AssemblyModel = r.model();
+        let has_method: bool = model
+            .types
+            .iter()
+            .flat_map(|t: &TypeModel| t.methods.iter())
+            .any(|m: &MethodModel| !m.name.is_empty());
+        assert!(has_method, "at least one named method resolved");
+    }
+
+    #[test]
+    fn methods_with_bodies_have_rvas() {
+        let r: Resolver = resolver_for("../../corpus/dotnet/HelloApp.dll");
+        let bodies: Vec<(u32, String, u32)> = r.methods_with_bodies();
+        assert!(!bodies.is_empty(), "HelloApp has methods with CIL bodies");
+        for (_, _, rva) in &bodies {
+            assert_ne!(*rva, 0);
+        }
+    }
+
+    #[test]
+    fn token_resolution_yields_names_on_megafile() {
+        let r: Resolver = resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let model: AssemblyModel = r.model();
+        assert!(
+            model.type_count > 10,
+            "EdgeCases megafile declares many types; got {}",
+            model.type_count
+        );
+        let named_types: usize = model
+            .types
+            .iter()
+            .filter(|t: &&TypeModel| !t.name.is_empty())
+            .count();
+        assert!(named_types > 5, "most types resolve a name");
+    }
+}

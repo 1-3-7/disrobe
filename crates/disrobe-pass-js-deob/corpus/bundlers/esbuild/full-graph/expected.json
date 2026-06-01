@@ -1,0 +1,5 @@
+{
+  "kind": "esbuild",
+  "entry": "esbuild",
+  "module_ids": ["./src/util.js", "./src/lib.js", "./src/index.js"]
+}

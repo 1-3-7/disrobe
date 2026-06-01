@@ -1,0 +1,1 @@
+exec("R = 'UkrWmJFJYmWXbpXbnDrNvNrKovkCrATACKbacuhryMWcGYcVXEVQKFlkxueMTnSsgXJIZFooaluteFi'\nFF = R\nAAa = R\nv4 = 458\naAaaa = 20\nprint(bytes.fromhex('68656c6c6f20776f726c64').decode('utf-8'))\naaAaAa = aAaaa\nN25532037979167 = 323\nL8 = 772\nu9 = 230\naAaaAaAAAa = 'XPYjSVsNHtxfkigvGFOCEfoHdjBhhuSccQnEjXkufIknzIFwutDoyWvBWllqHFwraYiemZFjukVbXjE'")

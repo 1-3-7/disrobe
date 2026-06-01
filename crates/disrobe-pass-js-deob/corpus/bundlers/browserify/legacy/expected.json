@@ -1,0 +1,6 @@
+{
+  "kind": "browserify",
+  "entry": "browserify-bundle",
+  "module_ids": ["1", "2"],
+  "sourcemap_url_keys": ["browserify-bundle"]
+}

@@ -1,0 +1,87 @@
+{
+  "final_format": "Python",
+  "input": {
+    "blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+    "detected": [
+      "pyc-3.12"
+    ],
+    "path": "corpus://python/decompile/playground/__pycache__/edge_cases_3_12.cpython-312.pyc",
+    "size": 13806
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+      "input_size": 13806,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [
+        {
+          "band": "high",
+          "chosen": true,
+          "confidence": 0.9399999976158142,
+          "explain": "cpython pyc 3.12",
+          "family": "interpreter-bytecode",
+          "format_tag": "pyc-3.12",
+          "markers": [
+            "pyc-magic-known"
+          ],
+          "pass_id": "py.decompile",
+          "specificity": 50
+        }
+      ],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": "pyc-3.12",
+      "id": 1,
+      "input_blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
+      "input_size": 13806,
+      "metadata": {},
+      "output_blake3": "ae1fdd9e4257521778eb13edb5d83122473e45675285584f5fb1135aa533b185",
+      "output_kind": {
+        "formatted": true,
+        "kind": "source",
+        "language": "Python"
+      },
+      "output_size": 6716,
+      "parent_id": 0,
+      "pass": "py.decompile",
+      "verdict": "complete"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 2,
+    "layers": 1,
+    "max_branch_depth": 1,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "complete"
+}
