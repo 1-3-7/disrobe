@@ -116,12 +116,16 @@ fn gcp_slack_twilio() {
     let slack: Vec<Finding> = scan_bytes(b"xoxb-1234567890-abcdefABCDEF", None);
     assert!(has_kind(&slack, SecretKind::SlackToken));
 
-    let twilio_sk: Vec<Finding> =
-        scan_bytes(&joined(b"SK", b"0123456789abcdef0123456789abcdef body"), None);
+    let twilio_sk: Vec<Finding> = scan_bytes(
+        &joined(b"SK", b"0123456789abcdef0123456789abcdef body"),
+        None,
+    );
     assert!(has_kind(&twilio_sk, SecretKind::TwilioApiKey));
 
-    let twilio_sid: Vec<Finding> =
-        scan_bytes(&joined(b"AC", b"0123456789abcdef0123456789abcdef body"), None);
+    let twilio_sid: Vec<Finding> = scan_bytes(
+        &joined(b"AC", b"0123456789abcdef0123456789abcdef body"),
+        None,
+    );
     assert!(has_kind(&twilio_sid, SecretKind::TwilioAccountSid));
 }
 
