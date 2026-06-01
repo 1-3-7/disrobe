@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use cli::annot::{self, AnnotCmd};
 #[cfg(feature = "as3")]
 use cli::as3::{self, As3Cmd};
 #[cfg(feature = "chain")]
@@ -25,6 +26,7 @@ use cli::chain_compare;
 #[cfg(feature = "chain")]
 use cli::chain_v1;
 use cli::completions as completions_cmd;
+use cli::context;
 use cli::doctor;
 #[cfg(feature = "dotnet")]
 use cli::dotnet::{self, DotnetCmd};
@@ -64,6 +66,7 @@ use cli::py::{self, PyCmd};
 use cli::pyarmor::{self, PyarmorCmd};
 use cli::pyfreeze::{self, PyfreezeCmd};
 use cli::pyinstaller::{self, PyinstallerCmd};
+use cli::rename;
 #[cfg(feature = "ruby")]
 use cli::ruby::{self, RubyCmd};
 use cli::scan;
@@ -562,6 +565,31 @@ enum Cmd {
         )]
         out: Option<PathBuf>,
     },
+    #[command(
+        about = "summarize a chain recovery report: per-pass status, confidence tiers, verdict, provenance"
+    )]
+    Context {
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "directory containing recovery.json (the chain/auto out dir, e.g. ./out/<stem>-chain)"
+        )]
+        out: Option<PathBuf>,
+    },
+    #[command(about = "rebuild a `.disrobe/annotations/<stem>.annot.json` symbol annotation file")]
+    Annot {
+        #[command(subcommand)]
+        action: AnnotCmd,
+    },
+    #[command(about = "record a symbol/file rename in `.disrobe/notes/renames.json` (append-only)")]
+    Rename {
+        #[arg(help = "current symbol or file name")]
+        old: String,
+        #[arg(help = "proposed new name")]
+        new: String,
+        #[arg(long, help = "optional rationale captured alongside the rename")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -815,6 +843,9 @@ fn main() -> miette::Result<()> {
             }
         }
         Cmd::Init { ide, force } => init_cmd::run(ide, force, fmt),
+        Cmd::Context { out } => context::run(out, fmt),
+        Cmd::Annot { action } => annot::run(action, fmt),
+        Cmd::Rename { old, new, note } => rename::run(old, new, note, fmt),
         Cmd::BugReport { out } => bug_report::run(out),
         Cmd::SelfUpdate {
             check_only,

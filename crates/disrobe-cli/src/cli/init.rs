@@ -226,6 +226,109 @@ fn render_slash_command(cmd: &SlashCommand) -> String {
     )
 }
 
+struct SkillPack {
+    dir_name: &'static str,
+    name: &'static str,
+    description: &'static str,
+    subcommand: &'static str,
+    body: &'static str,
+}
+
+const SKILL_PACKS: [SkillPack; 7] = [
+    SkillPack {
+        dir_name: "verify-decompilation",
+        name: "verify-decompilation",
+        description: "Verify reconstructed source against the immutable out/02-* artifact.",
+        subcommand: "disrobe envelope verify",
+        body: "Run `disrobe envelope verify $1`. Then cross-check by recompiling the reconstructed source and asserting bytecode/roundtrip equivalence against the immutable out/02-* artifact. Report any DR-CODE verbatim. Never edit out/01-** or out/02-**.",
+    },
+    SkillPack {
+        dir_name: "recover-symbol-names",
+        name: "recover-symbol-names",
+        description: "Propose human-readable renames for stripped or mangled symbols.",
+        subcommand: "disrobe status",
+        body: "Use `disrobe status` to inventory evidence, then propose renames into .disrobe/notes/renames.json against the disrobe.project.manifest/v0 manifest. Anchor every rename to a ground-truth artifact under out/. Never rename inside out/01-** or out/02-**.",
+    },
+    SkillPack {
+        dir_name: "reconstruct-imports",
+        name: "reconstruct-imports",
+        description: "Resolve the module import graph from provenance metadata.",
+        subcommand: "disrobe status",
+        body: "Run `disrobe status`, read provenance metadata, and resolve the module import graph: map each import target to its originating evidence artifact. Record the reconstructed import graph under .disrobe/notes/ only.",
+    },
+    SkillPack {
+        dir_name: "confidence-audit",
+        name: "confidence-audit",
+        description: "Surface low-confidence reconstruction regions for manual review.",
+        subcommand: "disrobe status",
+        body: "Run `disrobe status`, read pack-4 confidence and opcode-coverage, and surface low-confidence regions for manual review. Rank by coverage gap and record the audit under .disrobe/notes/.",
+    },
+    SkillPack {
+        dir_name: "escalate-to-dynamic",
+        name: "escalate-to-dynamic",
+        description: "Plan a dynamic-analysis escalation when static reconstruction stalls.",
+        subcommand: "disrobe status",
+        body: "When static reconstruction stalls per `disrobe status`, enumerate a dynamic trace strategy (instrumented run, syscall/bytecode trace) targeting the unresolved regions and record findings in .disrobe/notes/.",
+    },
+    SkillPack {
+        dir_name: "diff-against-pypi",
+        name: "diff-against-pypi",
+        description: "Diff reconstructed source against the matching upstream PyPI release.",
+        subcommand: "disrobe status",
+        body: "Run `disrobe status` to locate the reconstructed source, fetch the matching PyPI sdist, and diff against it; report adds/removes/modifications and record the diff under .disrobe/notes/.",
+    },
+    SkillPack {
+        dir_name: "patch-and-roundtrip",
+        name: "patch-and-roundtrip",
+        description: "Apply a minimal patch and re-verify via recompile roundtrip.",
+        subcommand: "disrobe envelope verify",
+        body: "Apply a minimal patch to the reconstructed source, then re-verify via `disrobe envelope verify` and a recompile roundtrip against out/02-*. Never patch out/01-** or out/02-**.",
+    },
+];
+
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (ab, bb): (&[u8], &[u8]) = (a.as_bytes(), b.as_bytes());
+    if ab.len() != bb.len() {
+        return false;
+    }
+    let mut i: usize = 0;
+    while i < ab.len() {
+        if ab[i] != bb[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const _: () = {
+    let mut i: usize = 0;
+    while i < SKILL_PACKS.len() {
+        assert!(
+            body_references_subcommand(SKILL_PACKS[i].body, SKILL_PACKS[i].subcommand),
+            "skill pack body must reference its real disrobe subcommand"
+        );
+        let mut j: usize = 0;
+        while j < i {
+            assert!(
+                !str_eq(SKILL_PACKS[i].dir_name, SKILL_PACKS[j].dir_name),
+                "skill pack dir_names must be pairwise-distinct"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
+
+fn render_skill_pack(pack: &SkillPack) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {description}\n---\n\n{body}\n",
+        name = pack.name,
+        description = pack.description,
+        body = pack.body,
+    )
+}
+
 const AIDER_CONF: &str = r"read:
   - AGENTS.md
   - .disrobe/manifest.json
@@ -310,6 +413,19 @@ pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> mie
                     .join(format!("{}.md", cmd.file_stem));
                 write_file(&p, &rendered)?;
                 created.push(p);
+            }
+            let skills_root: PathBuf = disrobe_dir.join("skills");
+            for pack in &SKILL_PACKS {
+                let pack_dir: PathBuf = skills_root.join(pack.dir_name);
+                std::fs::create_dir_all(&pack_dir).map_err(|e| {
+                    miette::miette!(
+                        "DR-CLI-0111: cannot create .disrobe/skills/{}: {e}",
+                        pack.dir_name
+                    )
+                })?;
+                let skill_path: PathBuf = pack_dir.join("SKILL.md");
+                write_file(&skill_path, &render_skill_pack(pack))?;
+                created.push(skill_path);
             }
             for alias in CLAUDE_ALIASES {
                 let alias_path: PathBuf = root.join(alias);

@@ -1,3 +1,4 @@
+pub(crate) mod annot;
 #[cfg(feature = "as3")]
 pub(crate) mod as3;
 #[cfg(feature = "chain")]
@@ -10,6 +11,7 @@ pub(crate) mod chain_compare;
 #[cfg(feature = "chain")]
 pub(crate) mod chain_v1;
 pub(crate) mod completions;
+pub(crate) mod context;
 pub(crate) mod cyclonedx;
 pub(crate) mod doctor;
 #[cfg(feature = "dotnet")]
@@ -53,6 +55,7 @@ pub(crate) mod py;
 pub(crate) mod pyarmor;
 pub(crate) mod pyfreeze;
 pub(crate) mod pyinstaller;
+pub(crate) mod rename;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;
 pub(crate) mod sarif;

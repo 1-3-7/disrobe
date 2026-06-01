@@ -18,7 +18,7 @@ pub mod state_machine;
 
 pub use chain_json::{
     ChainDocument, ChainInputDoc, ChainSpecDoc, ChainStats, DetectorPickDoc, NodeDoc,
-    OutputKindDoc, SCHEMA_VERSION, Topology,
+    OutputKindDoc, SCHEMA_VERSION, Topology, VerdictDoc,
 };
 pub use detection::{
     ArtifactRef, ChildHandle, ConfidenceBand, DetectContext, DetectVerdict, Detection, OutputKind,
