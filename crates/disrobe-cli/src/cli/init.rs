@@ -21,23 +21,28 @@ pub(crate) struct InitReport {
     pub ide: Option<&'static str>,
 }
 
-const AGENTS_MD: &str = r"# AGENTS.md
+const AGENTS_MD: &str = r"# AGENTS.md - forensic analysis protocol
 
-This project is being analyzed with `disrobe` - a multi-language decompilation & deobfuscation suite.
+You are operating inside a `disrobe` workspace. Treat every artifact under `out/`
+as forensic evidence subject to chain of custody. Do not tamper with it.
 
-## Hard rules
+## Chain of custody (hard rules)
 
-- Files under `out/01-*/` & `out/02-*/` are GROUND TRUTH artifacts. Do not edit; regenerate via `disrobe auto <input>`.
-- All other files (analyst notes, hypotheses, renames) live under `.disrobe/notes/`.
-- Use `disrobe explain <DR-CODE>` to look up any error code.
-- Use `disrobe status` to inspect the current run's artifacts.
+- `out/01-*/` and `out/02-*/` are GROUND TRUTH evidence stages. They are immutable.
+  Never edit them. Regenerate only via `disrobe auto <input>`.
+- Analyst notes, hypotheses, and renames are derived work - they live ONLY under
+  `.disrobe/notes/`. Keep evidence and analysis separated.
+- Every claim about the target must trace back to a ground-truth artifact under `out/`.
+- Use `disrobe explain <DR-CODE>` to resolve any error code verbatim.
+- Use `disrobe status` to enumerate the current run's evidence and stages.
 
-## Recommended workflow
+## Workflow
 
-1. `disrobe auto <input>` - sniffer-chain to produce baseline artifacts under `out/`.
-2. `disrobe status` - see what was produced.
-3. Read `out/chain.json` to understand the pass topology.
-4. Iterate per-pass (`disrobe pyarmor unpack ...`, etc.) when you need finer control.
+1. `disrobe auto <input>` - produce baseline evidence under `out/`.
+2. `disrobe status` - inventory what was produced.
+3. Read `out/chain.json` for the pass topology.
+4. Iterate per-pass (`disrobe pyarmor unpack ...`) when finer control is needed;
+   write only to `.disrobe/notes/`.
 ";
 
 const MANIFEST_JSON: &str = r#"{
@@ -48,17 +53,97 @@ const MANIFEST_JSON: &str = r#"{
 }
 "#;
 
-const CLAUDE_SETTINGS_JSON: &str = r#"{
-  "permissions": {
-    "deny": [
-      "Edit(out/01-**)",
-      "Edit(out/02-**)",
-      "Write(out/01-**)",
-      "Write(out/02-**)"
-    ]
-  }
+#[derive(Debug, Serialize)]
+struct ClaudeSettings {
+    permissions: ClaudePermissions,
+    hooks: ClaudeHooks,
 }
-"#;
+
+#[derive(Debug, Serialize)]
+struct ClaudePermissions {
+    deny: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClaudeHooks {
+    #[serde(rename = "SessionStart")]
+    session_start: Vec<HookMatcher>,
+    #[serde(rename = "UserPromptSubmit")]
+    user_prompt_submit: Vec<HookMatcher>,
+    #[serde(rename = "PreToolUse")]
+    pre_tool_use: Vec<HookMatcher>,
+    #[serde(rename = "PostToolUse")]
+    post_tool_use: Vec<HookMatcher>,
+}
+
+#[derive(Debug, Serialize)]
+struct HookMatcher {
+    #[serde(skip_serializing_if = "str::is_empty")]
+    matcher: &'static str,
+    hooks: Vec<HookCommand>,
+}
+
+#[derive(Debug, Serialize)]
+struct HookCommand {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    command: &'static str,
+}
+
+const CLAUDE_DENY_GLOBS: [&str; 4] = [
+    "Edit(out/01-**)",
+    "Edit(out/02-**)",
+    "Write(out/01-**)",
+    "Write(out/02-**)",
+];
+
+const PRETOOL_DENY_GUARD: &str = r#"f="$CLAUDE_TOOL_INPUT_FILE_PATH"; case "$f" in out/01-*|out/02-*) echo "DR-CLI-0113: out/01-* and out/02-* are ground-truth evidence stages; refusing write to $f" >&2; exit 2;; esac"#;
+
+const SESSION_START_CMD: &str = r#"echo "disrobe workspace: out/01-* and out/02-* are immutable ground-truth evidence stages.""#;
+const USER_PROMPT_CMD: &str = r#"echo "reminder: treat out/ artifacts as chain-of-custody evidence; analyst notes -> .disrobe/notes/.""#;
+const POST_TOOL_CMD: &str = r"disrobe status >/dev/null 2>&1 || true";
+
+fn claude_settings() -> ClaudeSettings {
+    let pre: HookMatcher = HookMatcher {
+        matcher: "Edit|Write",
+        hooks: vec![HookCommand {
+            kind: "command",
+            command: PRETOOL_DENY_GUARD,
+        }],
+    };
+    let post: HookMatcher = HookMatcher {
+        matcher: "Edit|Write",
+        hooks: vec![HookCommand {
+            kind: "command",
+            command: POST_TOOL_CMD,
+        }],
+    };
+    let session: HookMatcher = HookMatcher {
+        matcher: "",
+        hooks: vec![HookCommand {
+            kind: "command",
+            command: SESSION_START_CMD,
+        }],
+    };
+    let prompt: HookMatcher = HookMatcher {
+        matcher: "",
+        hooks: vec![HookCommand {
+            kind: "command",
+            command: USER_PROMPT_CMD,
+        }],
+    };
+    ClaudeSettings {
+        permissions: ClaudePermissions {
+            deny: CLAUDE_DENY_GLOBS.to_vec(),
+        },
+        hooks: ClaudeHooks {
+            session_start: vec![session],
+            user_prompt_submit: vec![prompt],
+            pre_tool_use: vec![pre],
+            post_tool_use: vec![post],
+        },
+    }
+}
 
 struct SlashCommand {
     file_stem: &'static str,
@@ -147,6 +232,39 @@ const AIDER_CONF: &str = r"read:
 auto-lint: false
 ";
 
+const CLAUDE_ALIASES: [&str; 3] = [".cursorrules", ".windsurfrules", "CLAUDE.md"];
+
+#[cfg(unix)]
+fn try_symlink(canonical: &Path, alias: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(canonical, alias)
+}
+
+#[cfg(windows)]
+fn try_symlink(canonical: &Path, alias: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(canonical, alias)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn try_symlink(_canonical: &Path, _alias: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+fn link_or_copy(canonical: &Path, alias: &Path) -> miette::Result<()> {
+    let _: std::io::Result<()> = std::fs::remove_file(alias);
+    if try_symlink(canonical, alias).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(canonical, alias)
+        .map(|_n: u64| ())
+        .map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0115: cannot alias {} -> {}: {e}",
+                alias.display(),
+                canonical.display()
+            )
+        })
+}
+
 pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> miette::Result<()> {
     let root: PathBuf = std::env::current_dir()
         .map_err(|e| miette::miette!("DR-CLI-0111: cannot read cwd: {e}"))?;
@@ -166,7 +284,7 @@ pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> mie
 
     let agents_path: PathBuf = disrobe_dir.join("AGENTS.md");
     write_file(&agents_path, AGENTS_MD)?;
-    created.push(agents_path);
+    created.push(agents_path.clone());
 
     let manifest_path: PathBuf = disrobe_dir.join("manifest.json");
     write_file(&manifest_path, MANIFEST_JSON)?;
@@ -178,7 +296,12 @@ pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> mie
             std::fs::create_dir_all(claude_dir.join("commands"))
                 .map_err(|e| miette::miette!("DR-CLI-0111: cannot create .claude/commands: {e}"))?;
             let settings: PathBuf = claude_dir.join("settings.json");
-            write_file(&settings, CLAUDE_SETTINGS_JSON)?;
+            let settings_model: ClaudeSettings = claude_settings();
+            let settings_json: String =
+                serde_json::to_string_pretty(&settings_model).map_err(|e| {
+                    miette::miette!("DR-CLI-0114: cannot serialize .claude/settings.json: {e}")
+                })?;
+            write_file(&settings, &settings_json)?;
             created.push(settings);
             for cmd in SLASH_COMMANDS {
                 let rendered: String = render_slash_command(cmd);
@@ -187,6 +310,11 @@ pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> mie
                     .join(format!("{}.md", cmd.file_stem));
                 write_file(&p, &rendered)?;
                 created.push(p);
+            }
+            for alias in CLAUDE_ALIASES {
+                let alias_path: PathBuf = root.join(alias);
+                link_or_copy(&agents_path, &alias_path)?;
+                created.push(alias_path);
             }
             Some("claude")
         }
