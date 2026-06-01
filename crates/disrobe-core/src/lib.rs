@@ -4,6 +4,7 @@ pub mod artifact;
 pub mod capability;
 #[cfg(feature = "chain")]
 pub mod chain;
+pub mod complexity;
 pub mod error;
 pub mod format;
 pub mod pass;
@@ -17,6 +18,7 @@ pub mod time;
 
 pub use artifact::Artifact;
 pub use capability::{Capability, CapabilityKind};
+pub use complexity::{Cfg, FunctionComplexity, cyclomatic_complexity, from_decision_points};
 pub use error::{CoreError, Result};
 pub use format::{
     CClangFormatFormatter, CSharpDotnetFormatFormatter, CppClangFormatFormatter, DartFormatter,

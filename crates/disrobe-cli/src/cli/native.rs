@@ -240,6 +240,64 @@ pub(crate) fn unpack(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()>
     Ok(())
 }
 
+pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    use disrobe_pass_native::{AuditableSbom, parse_auditable_section};
+
+    use crate::cli::cyclonedx::{Component, CycloneDxBom, application_component};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0060: cannot read input: {e}"))?;
+    let sbom: AuditableSbom = parse_auditable_section(&bytes)
+        .map_err(|e| miette::miette!("DR-NATIVE-0061: parse auditable section: {e}"))?;
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native")
+        .to_owned();
+
+    let root: Component =
+        application_component(stem.clone(), sha256_hex(&bytes), blake3_hex(&bytes));
+    let bom: CycloneDxBom = CycloneDxBom::from_crates(None, Some(root), &sbom.crates);
+
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.cyclonedx.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-NATIVE-0062: cannot create out dir: {e}"))?;
+    }
+    let buf: Vec<u8> = serde_json::to_vec_pretty(&bom)
+        .map_err(|e| miette::miette!("DR-NATIVE-0063: serialize: {e}"))?;
+    std::fs::write(&out_path, buf)
+        .map_err(|e| miette::miette!("DR-NATIVE-0064: cannot write sbom: {e}"))?;
+
+    println!("native sbom: OK");
+    println!("  input:        {}", input.display());
+    println!("  format:       CycloneDX 1.5");
+    println!("  components:   {}", bom.components.len());
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    use sha2::Digest as _;
+
+    let mut hasher: sha2::Sha256 = sha2::Sha256::new();
+    hasher.update(bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut out: String = String::with_capacity(64);
+    for b in digest {
+        let _: core::fmt::Result = write!(out, "{b:02x}");
+    }
+    out
+}
+
+#[inline]
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
 const fn packer_rank(p: disrobe_pass_native::Packer) -> u8 {
     use disrobe_pass_native::Packer as P;
     match p {

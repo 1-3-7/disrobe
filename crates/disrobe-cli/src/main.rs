@@ -609,6 +609,19 @@ enum NativeCmd {
         #[arg(short, long, help = "output path for the signatures JSON")]
         out: Option<PathBuf>,
     },
+    #[command(
+        about = "emit a CycloneDX 1.5 SBOM from an extracted artifact's embedded cargo-auditable dependency metadata"
+    )]
+    Sbom {
+        #[arg(help = "input native binary with an embedded cargo-auditable section")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the SBOM JSON (default: ./out/<stem>.cyclonedx.json)"
+        )]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> miette::Result<()> {
@@ -647,6 +660,7 @@ fn main() -> miette::Result<()> {
             NativeCmd::Unpack { input, out } => native::unpack(input, out),
             NativeCmd::Entropy { input, out } => native::entropy(input, out),
             NativeCmd::Signatures { input, out } => native::signatures(input, out),
+            NativeCmd::Sbom { input, out } => native::sbom(input, out),
         },
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),

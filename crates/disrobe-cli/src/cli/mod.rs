@@ -10,6 +10,7 @@ pub(crate) mod chain_compare;
 #[cfg(feature = "chain")]
 pub(crate) mod chain_v1;
 pub(crate) mod completions;
+pub(crate) mod cyclonedx;
 pub(crate) mod doctor;
 #[cfg(feature = "dotnet")]
 pub(crate) mod dotnet;
