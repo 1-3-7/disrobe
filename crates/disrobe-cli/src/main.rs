@@ -75,6 +75,7 @@ use cli::swift::{self, SwiftCmd};
 use cli::util::init_tracing;
 #[cfg(feature = "wasm")]
 use cli::wasm::{self, WasmCmd};
+use cli::yara;
 
 const ABOUT: &str = "strip the obfuscation, read the source";
 const LONG_ABOUT: &str = "disrobe is a deterministic deobfuscator & decompiler suite. it covers Python bytecode, JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, native PE / ELF / Mach-O, native packers (UPX, MPRESS, NSPack, FSG, kkrunchy, mew, ...), Go, Lua, PHP, Ruby, BEAM, Swift / Objective-C, AS3, Hermes, Flutter, & the freezer / protector chains stacked on top.\n\nrun `disrobe doctor` to probe external tools, `disrobe install <tool>` to install one, or `disrobe install --list` to list every known tool.";
@@ -211,6 +212,13 @@ enum Cmd {
         about = "scan a target's raw bytes for leaked credentials (cloud keys, VCS tokens, JWTs, PEM/SSH keys)"
     )]
     Scan {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+    #[command(
+        about = "parse a YARA ruleset (.yar/.yara) into a typed AST; read-only, no rule execution or matching"
+    )]
+    Yara {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
@@ -622,6 +630,19 @@ enum NativeCmd {
         )]
         out: Option<PathBuf>,
     },
+    #[command(
+        about = "render the import/export table as a Graphviz DOT digraph (modules -> imported symbols, plus exports)"
+    )]
+    Graph {
+        #[arg(help = "input native binary")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the DOT file (default: ./out/<stem>.imports.dot)"
+        )]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> miette::Result<()> {
@@ -650,6 +671,7 @@ fn main() -> miette::Result<()> {
         Cmd::Nuitka { action } => nuitka::run(action),
         Cmd::Py { action } => py::run(action, &llm_flags),
         Cmd::Scan { path } => scan::run(path, fmt),
+        Cmd::Yara { path } => yara::run(path, fmt),
         #[cfg(feature = "js")]
         Cmd::Js { action } => js::run(action),
         #[cfg(feature = "wasm")]
@@ -661,6 +683,7 @@ fn main() -> miette::Result<()> {
             NativeCmd::Entropy { input, out } => native::entropy(input, out),
             NativeCmd::Signatures { input, out } => native::signatures(input, out),
             NativeCmd::Sbom { input, out } => native::sbom(input, out),
+            NativeCmd::Graph { input, out } => native::graph(input, out),
         },
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),

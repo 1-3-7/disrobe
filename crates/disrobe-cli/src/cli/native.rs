@@ -8,6 +8,9 @@ use std::process::{Command, Output};
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionFlags, SectionKind};
 use serde::Serialize;
 
+use super::globals;
+use disrobe_binfmt::{import_graph_dot, parse_native};
+
 pub(crate) fn decompile(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     let resolved: Option<PathBuf> = locate_ghidra_headless();
     let Some(ghidra): Option<PathBuf> = resolved else {
@@ -391,6 +394,42 @@ pub(crate) fn symbols(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()
     println!("  sections:     {}", dump.sections.len());
     println!("  segments:     {}", dump.segments.len());
     println!("  debug_info:   {}", dump.debug_info.present);
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+pub(crate) fn graph(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0070: cannot read input: {e}"))?;
+    let nf: disrobe_binfmt::NativeFile = parse_native(&bytes)
+        .map_err(|e| miette::miette!("DR-NATIVE-0071: native parse failed: {e}"))?;
+    let dot: String = import_graph_dot(&nf);
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native-graph")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.imports.dot")));
+    let g: globals::Globals = globals::current();
+    if g.dry_run {
+        println!("native graph: DRY-RUN");
+        println!("  input:        {}", input.display());
+        println!("  imports:      {}", nf.imports.len());
+        println!("  exports:      {}", nf.exports.len());
+        println!("  would write:  {}", out_path.display());
+        return Ok(());
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-NATIVE-0072: cannot create out dir: {e}"))?;
+    }
+    std::fs::write(&out_path, dot.as_bytes())
+        .map_err(|e| miette::miette!("DR-NATIVE-0073: cannot write DOT: {e}"))?;
+    println!("native graph: OK");
+    println!("  input:        {}", input.display());
+    println!("  imports:      {}", nf.imports.len());
+    println!("  exports:      {}", nf.exports.len());
     println!("  wrote:        {}", out_path.display());
     Ok(())
 }

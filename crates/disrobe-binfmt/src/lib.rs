@@ -12,6 +12,7 @@ pub mod error;
 pub mod external_wrap;
 pub mod extract;
 pub mod native;
+pub mod native_graph;
 pub mod quota;
 
 pub use classify::{
@@ -31,4 +32,5 @@ pub use native::{
     Arch, Endian, ExportInfo, ImportInfo, NativeFile, NativeFormat as ParsedNativeFormat,
     SectionInfo, SegmentInfo, SymbolInfo, SymbolRole, parse_native,
 };
+pub use native_graph::{ImportGraph, import_graph_dot};
 pub use quota::{ExtractionQuota, QuotaGuard, QuotaReport, sanitize_entry_path};

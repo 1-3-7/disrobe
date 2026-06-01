@@ -65,3 +65,4 @@ pub(crate) mod swift;
 pub(crate) mod util;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm;
+pub(crate) mod yara;

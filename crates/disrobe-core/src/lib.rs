@@ -15,6 +15,7 @@ pub mod rng;
 pub mod rung;
 pub mod secret_scan;
 pub mod time;
+pub mod yara;
 
 pub use artifact::Artifact;
 pub use capability::{Capability, CapabilityKind};
@@ -47,5 +48,10 @@ pub use secret_scan::{
     scan_strings,
 };
 pub use time::{now as time_now, now_secs as time_now_secs};
+pub use yara::{
+    Rule as YaraRule, YARA_SCHEMA, YaraLoaderReport, YaraParseError, YaraRuleset, YaraString,
+    YaraStringKind, parse_report as parse_yara_report, parse_rule as parse_yara_rule,
+    parse_ruleset as parse_yara_ruleset,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
