@@ -18,6 +18,7 @@ pub(crate) enum EmitKind {
     Signatures,
     Report,
     Recovery,
+    Provenancemap,
 }
 
 impl EmitKind {
@@ -36,6 +37,7 @@ impl EmitKind {
             Self::Signatures => "signatures",
             Self::Report => "report",
             Self::Recovery => "recovery",
+            Self::Provenancemap => "provenancemap",
         }
     }
 
@@ -54,6 +56,7 @@ impl EmitKind {
             Self::Signatures,
             Self::Report,
             Self::Recovery,
+            Self::Provenancemap,
         ]
     }
 

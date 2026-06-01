@@ -10,6 +10,7 @@ pub mod format;
 pub mod pass;
 pub mod progress;
 pub mod provenance;
+pub mod provenance_map;
 pub mod recovery;
 pub mod resolver;
 pub mod rng;
@@ -38,6 +39,10 @@ pub use progress::{CapturingProgress, NoopProgress, Progress, ProgressEvent};
 pub use provenance::{
     CommentStyle, Language, PROVENANCE_JSON_KEY, PROVENANCE_SCHEMA, Protocol, ProvenanceHeader,
     REPO_URL, comment_prefix, header_for, pretty_duration,
+};
+pub use provenance_map::{
+    LineProvenance, MAX_NOTE_LINES, PROVENANCE_MAP_SCHEMA, ProvenanceMap, ProvenanceMapBuilder,
+    ProvenanceMapError,
 };
 pub use recovery::{
     ConfidenceTier, PassRecovery, RECOVERY_SCHEMA, RecoveryReport, RecoverySignal, TierHistogram,

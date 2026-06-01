@@ -22,6 +22,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod annotation;
 pub mod bundle;
 pub mod capability;
 pub mod category;
@@ -33,6 +34,7 @@ pub mod selection;
 pub mod shape;
 pub mod trait_def;
 
+pub use annotation::{ANNOTATION_SCHEMA, AnnotationError, AnnotationFile, SymbolAnnotation};
 pub use bundle::{
     BundleBuilder, InputDescriptor, PipelineStep, ToolDescriptor, envelope_map, serialize,
     write_briefs_to_dir, write_bundle_to_path,
