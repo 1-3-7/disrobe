@@ -513,7 +513,7 @@ enum Cmd {
         #[arg(
             long,
             value_enum,
-            help = "also generate IDE-specific settings (vscode, jetbrains, zed)"
+            help = "also generate IDE-specific settings (claude, cursor, windsurf, aider)"
         )]
         ide: Option<IdeFlavor>,
         #[arg(long, help = "overwrite an existing scaffold")]
@@ -623,6 +623,24 @@ enum NativeCmd {
         flirt: Option<PathBuf>,
     },
     #[command(
+        about = "aggregate crypto-constant + FLIRT + ASCII string-xref fingerprints into a typed sidecar at .disrobe/fingerprints/<stem>.json"
+    )]
+    Fingerprint {
+        #[arg(help = "input native binary")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output directory (default: .disrobe/fingerprints); file is <stem>.json"
+        )]
+        out: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "optional IDA FLIRT .sig database to match against the input"
+        )]
+        flirt: Option<PathBuf>,
+    },
+    #[command(
         about = "emit a CycloneDX 1.5 SBOM from an extracted artifact's embedded cargo-auditable dependency metadata"
     )]
     Sbom {
@@ -687,6 +705,7 @@ fn main() -> miette::Result<()> {
             NativeCmd::Unpack { input, out } => native::unpack(input, out),
             NativeCmd::Entropy { input, out } => native::entropy(input, out),
             NativeCmd::Signatures { input, out, flirt } => native::signatures(input, out, flirt),
+            NativeCmd::Fingerprint { input, out, flirt } => native::fingerprint(input, out, flirt),
             NativeCmd::Sbom { input, out } => native::sbom(input, out),
             NativeCmd::Graph { input, out } => native::graph(input, out),
         },

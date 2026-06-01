@@ -23,6 +23,7 @@ pub mod cxx_recovery;
 pub mod debug_info;
 pub mod decompile;
 pub mod error;
+pub mod fingerprint;
 pub mod fixtures;
 pub mod flirt;
 pub mod format;
@@ -54,6 +55,9 @@ pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
 };
 pub use error::{Error, Result};
+pub use fingerprint::{
+    ASCII_XREF_MIN_LEN, FINGERPRINT_SCHEMA, FingerprintSidecar, StringXref, extract_ascii_xrefs,
+};
 pub use fixtures::{
     minimal_elf64, minimal_macho64, minimal_pe32, packed_upx_elf64_marker, tiny_coff_x64,
 };

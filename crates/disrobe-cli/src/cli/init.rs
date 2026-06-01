@@ -60,37 +60,86 @@ const CLAUDE_SETTINGS_JSON: &str = r#"{
 }
 "#;
 
-const SLASH_VERIFY: &str = r"---
-name: disrobe-verify
-description: Verify the disrobe envelope at the given path.
----
+struct SlashCommand {
+    file_stem: &'static str,
+    name: &'static str,
+    description: &'static str,
+    subcommand: &'static str,
+    body: &'static str,
+}
 
-Use `disrobe envelope verify $1` & report the result. Surface DR-CODES verbatim.
-";
+const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        file_stem: "disrobe-verify",
+        name: "disrobe-verify",
+        description: "Verify the disrobe envelope at the given path.",
+        subcommand: "disrobe envelope verify",
+        body: "Run `disrobe envelope verify $1` & report the result. Surface DR-CODES (e.g. DR-CLI-0080, DR-CLI-0087) verbatim.",
+    },
+    SlashCommand {
+        file_stem: "disrobe-status",
+        name: "disrobe-status",
+        description: "Show the current disrobe run status.",
+        subcommand: "disrobe status",
+        body: "Run `disrobe status` & summarize stages, artifacts, bytes, & terminal reason.",
+    },
+    SlashCommand {
+        file_stem: "disrobe-rename",
+        name: "disrobe-rename",
+        description: "Propose a rename for a symbol/file under out/.",
+        subcommand: "disrobe status",
+        body: "Capture the proposed rename in `.disrobe/notes/renames.json` against the `disrobe.project.manifest/v0` manifest. Confirm context first with `disrobe status`. Never edit ground-truth artifacts under out/01-** or out/02-**.",
+    },
+    SlashCommand {
+        file_stem: "disrobe-diff",
+        name: "disrobe-diff",
+        description: "Diff the current out/ tree against a baseline directory.",
+        subcommand: "disrobe status",
+        body: "Run `disrobe status` to enumerate the current out/ tree, then use git or `diff -ru` to compare against the baseline $1. Highlight new / removed artifacts & bytes-changed.",
+    },
+];
 
-const SLASH_STATUS: &str = r"---
-name: disrobe-status
-description: Show the current disrobe run status.
----
+const fn body_references_subcommand(body: &str, subcommand: &str) -> bool {
+    let (body_bytes, sub_bytes): (&[u8], &[u8]) = (body.as_bytes(), subcommand.as_bytes());
+    if sub_bytes.is_empty() {
+        return true;
+    }
+    if sub_bytes.len() > body_bytes.len() {
+        return false;
+    }
+    let mut start: usize = 0;
+    while start + sub_bytes.len() <= body_bytes.len() {
+        let mut i: usize = 0;
+        while i < sub_bytes.len() && body_bytes[start + i] == sub_bytes[i] {
+            i += 1;
+        }
+        if i == sub_bytes.len() {
+            return true;
+        }
+        start += 1;
+    }
+    false
+}
 
-Run `disrobe status` & summarize stages, artifacts, bytes, terminal reason.
-";
+const _: () = {
+    let mut i: usize = 0;
+    while i < SLASH_COMMANDS.len() {
+        assert!(
+            body_references_subcommand(SLASH_COMMANDS[i].body, SLASH_COMMANDS[i].subcommand),
+            "slash command body must reference its real disrobe subcommand"
+        );
+        i += 1;
+    }
+};
 
-const SLASH_RENAME: &str = r"---
-name: disrobe-rename
-description: Propose a rename for a symbol/file under out/.
----
-
-Capture the proposed rename in `.disrobe/notes/renames.json`. Never edit ground-truth artifacts.
-";
-
-const SLASH_DIFF: &str = r"---
-name: disrobe-diff
-description: Diff the current out/ tree against a baseline directory.
----
-
-Use git or `diff -ru` to compare. Highlight new / removed artifacts & bytes-changed.
-";
+fn render_slash_command(cmd: &SlashCommand) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {description}\n---\n\n{body}\n",
+        name = cmd.name,
+        description = cmd.description,
+        body = cmd.body,
+    )
+}
 
 const AIDER_CONF: &str = r"read:
   - AGENTS.md
@@ -131,14 +180,12 @@ pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> mie
             let settings: PathBuf = claude_dir.join("settings.json");
             write_file(&settings, CLAUDE_SETTINGS_JSON)?;
             created.push(settings);
-            for (name, body) in [
-                ("disrobe-verify.md", SLASH_VERIFY),
-                ("disrobe-status.md", SLASH_STATUS),
-                ("disrobe-rename.md", SLASH_RENAME),
-                ("disrobe-diff.md", SLASH_DIFF),
-            ] {
-                let p: PathBuf = claude_dir.join("commands").join(name);
-                write_file(&p, body)?;
+            for cmd in SLASH_COMMANDS {
+                let rendered: String = render_slash_command(cmd);
+                let p: PathBuf = claude_dir
+                    .join("commands")
+                    .join(format!("{}.md", cmd.file_stem));
+                write_file(&p, &rendered)?;
                 created.push(p);
             }
             Some("claude")

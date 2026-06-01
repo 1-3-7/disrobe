@@ -309,6 +309,7 @@ fn apply_emit_stubs(spec: &EmitSpec, input: &Path, out_dir: &Path) -> miette::Re
             | EmitKind::Manifest
             | EmitKind::Sourcemap
             | EmitKind::Signatures
+            | EmitKind::Fingerprints
             | EmitKind::Recovery
             | EmitKind::Provenancemap => {
                 let _: PathBuf = write_not_applicable_stub(

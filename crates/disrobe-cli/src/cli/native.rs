@@ -432,6 +432,53 @@ pub(crate) fn signatures(
     Ok(())
 }
 
+pub(crate) fn fingerprint(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    flirt: Option<PathBuf>,
+) -> miette::Result<()> {
+    use disrobe_pass_native::{FingerprintSidecar, FlirtSig, parse_flirt};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0060: cannot read input: {e}"))?;
+    let sig: Option<FlirtSig> = match &flirt {
+        Some(p) => {
+            let sb: Vec<u8> = std::fs::read(p)
+                .map_err(|e| miette::miette!("DR-NATIVE-0061: cannot read .sig: {e}"))?;
+            Some(
+                parse_flirt(&sb)
+                    .map_err(|e| miette::miette!("DR-NATIVE-0062: FLIRT parse: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    let sidecar: FingerprintSidecar =
+        FingerprintSidecar::build(&input.display().to_string(), &bytes, sig.as_ref());
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native-fingerprints")
+        .to_owned();
+    let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from(".disrobe/fingerprints"));
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| miette::miette!("DR-NATIVE-0063: cannot create fingerprint dir: {e}"))?;
+    let out_path: PathBuf = out_dir.join(format!("{stem}.json"));
+    let buf: Vec<u8> = serde_json::to_vec_pretty(&sidecar)
+        .map_err(|e| miette::miette!("DR-NATIVE-0064: serialize: {e}"))?;
+    std::fs::write(&out_path, buf)
+        .map_err(|e| miette::miette!("DR-NATIVE-0065: cannot write fingerprints: {e}"))?;
+
+    println!("native fingerprints: OK");
+    println!("  input:        {}", input.display());
+    println!("  byte_count:   {}", sidecar.byte_count);
+    println!("  crypto hits:  {}", sidecar.crypto.len());
+    println!("  flirt hits:   {}", sidecar.flirt.len());
+    println!("  string xrefs: {}", sidecar.strings.len());
+    println!("  out:          {}", out_path.display());
+    Ok(())
+}
+
 pub(crate) fn symbols(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-NATIVE-0010: cannot read input: {e}"))?;
@@ -848,5 +895,55 @@ mod tests {
         let s: String = "x".repeat(10_000);
         let cut: String = tail_bytes(&s, 100);
         assert_eq!(cut.len(), 100);
+    }
+
+    #[test]
+    fn fingerprint_emits_real_aggregated_sidecar() {
+        use disrobe_pass_native::{
+            CryptoPrimitive, FingerprintSidecar, StringXref as PnStringXref,
+        };
+
+        let base: PathBuf = std::env::current_dir()
+            .expect("cwd")
+            .join("tmp")
+            .join("fp-cli-test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mk base");
+
+        let mut buf: Vec<u8> = vec![0u8; 8];
+        buf.extend_from_slice(b"expand 32-byte k");
+        buf.extend_from_slice(&[0x00]);
+        buf.extend_from_slice(b"PlantedXrefMarker");
+        buf.extend_from_slice(&[0x00]);
+
+        let in_path: PathBuf = base.join("sample.bin");
+        std::fs::write(&in_path, &buf).expect("write input");
+        let out_dir: PathBuf = base.join("out");
+
+        fingerprint(in_path, Some(out_dir.clone()), None).expect("fingerprint ok");
+
+        let out_path: PathBuf = out_dir.join("sample.json");
+        let written: &'static [u8] = Box::leak(
+            std::fs::read(&out_path)
+                .expect("read sidecar")
+                .into_boxed_slice(),
+        );
+        let sidecar: FingerprintSidecar = serde_json::from_slice(written).expect("parse sidecar");
+
+        assert_eq!(sidecar.byte_count, buf.len() as u64);
+        let chacha_hits: usize = sidecar
+            .crypto
+            .iter()
+            .filter(|h| h.primitive == CryptoPrimitive::Chacha20Sigma)
+            .count();
+        assert_eq!(chacha_hits, 1);
+        let planted: Option<&PnStringXref> = sidecar
+            .strings
+            .iter()
+            .find(|s| s.value == "PlantedXrefMarker");
+        assert!(planted.is_some());
+        assert_eq!(planted.expect("planted").offset, 25);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
