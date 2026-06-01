@@ -104,6 +104,7 @@ disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
+disrobe-mcp = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }

@@ -35,10 +35,14 @@ const SERVE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn run(
     bind: String,
     stdio: bool,
+    mcp: bool,
     grpc: bool,
     cors_origins: Vec<String>,
     max_body_size: usize,
 ) -> miette::Result<()> {
+    if mcp {
+        return disrobe_mcp::run_stdio();
+    }
     if stdio {
         return lsp::run_stdio_lsp();
     }

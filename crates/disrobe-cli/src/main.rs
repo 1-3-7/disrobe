@@ -434,8 +434,13 @@ enum Cmd {
     Serve {
         #[arg(long, default_value = "127.0.0.1:7373", help = "HTTP bind address")]
         bind: String,
-        #[arg(long, help = "serve over stdio for LSP / MCP clients instead of HTTP")]
+        #[arg(long, help = "serve LSP over stdio instead of HTTP")]
         stdio: bool,
+        #[arg(
+            long,
+            help = "serve the MCP companion over stdio (rmcp) instead of HTTP/LSP"
+        )]
+        mcp: bool,
         #[arg(long, help = "expose the gRPC surface alongside HTTP")]
         grpc: bool,
         #[arg(
@@ -798,10 +803,11 @@ fn main() -> miette::Result<()> {
         Cmd::Serve {
             bind,
             stdio,
+            mcp,
             grpc,
             cors_origin,
             max_body_size,
-        } => serve::run(bind, stdio, grpc, cors_origin, max_body_size),
+        } => serve::run(bind, stdio, mcp, grpc, cors_origin, max_body_size),
         Cmd::InstallDeps {
             action,
             all,
