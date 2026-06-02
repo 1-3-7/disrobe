@@ -180,6 +180,21 @@ corpus/mobile/macho/
 !corpus/jvm/r8/Hello-r8.jar
 !corpus/jvm/r8/EdgeCases-r8.jar
 !corpus/jvm/r8/EdgeCasesKt-r8.jar
+!corpus/jvm/megafile/EdgeCases-baseline.jar
+
+!corpus/lua/luac/hello.5_1.luac
+!corpus/lua/luac/hello.5_2.luac
+!corpus/lua/luac/hello.5_3.luac
+!corpus/lua/luac/hello.5_4.luac
+!corpus/lua/luac/edge_cases.5_1.luac
+!corpus/lua/luac/edge_cases.5_2.luac
+!corpus/lua/luac/edge_cases.5_3.luac
+!corpus/lua/luac/edge_cases.5_4.luac
+
+!corpus/pickle/**/*.pkl
+
+!corpus/python/freezers/briefcase/extracted/hello.exe
+!corpus/python/freezers/briefcase/extracted/briefcase.toml
 
 !corpus/dotnet/**
 
@@ -188,6 +203,13 @@ corpus/mobile/macho/
 
 corpus/mobile/macho-mac/
 corpus/mobile/macho-*/
+!corpus/mobile/macho-mac/SwiftHello.original
+!corpus/mobile/macho-mac/SwiftHello.obfuscated
+!corpus/mobile/macho-mac/SwiftHello.swiftshield-mapping.txt
+!corpus/mobile/macho-mac/swiftshield-edgecases/
+!corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.original
+!corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.obfuscated
+!corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.swiftshield-mapping.txt
 corpus/**/*.fat
 corpus/**/*.macho
 corpus/**/*.macho-*

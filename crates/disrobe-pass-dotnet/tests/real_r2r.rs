@@ -57,20 +57,27 @@ fn r2r_edgecases_dll_report_inspectable() {
     let pe: PeImage = parse(&bytes).expect("parse pe");
     let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr header");
     let report: R2rReport = r2r_detect(&bytes, &pe, &clr);
-    let _ = report.present;
-    let _ = report.composite_image;
-    let _ = report.crossgen2_native_aot;
+    let header: R2rHeader = report
+        .header
+        .expect("R2R header present in EdgeCases.r2r.dll");
+    assert_eq!(header.magic, disrobe_pass_dotnet::r2r::R2R_MAGIC);
+    assert_eq!(header.major_version, 10);
+    assert_eq!(header.minor_version, 1);
+    assert_eq!(header.number_of_sections, 15);
+    assert!(report.present);
+    assert!(!report.composite_image);
 }
 
 #[test]
-fn r2r_helloapp_dll_header_when_present_passes_invariants() {
+fn r2r_helloapp_dll_header_passes_invariants() {
     let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
     let pe: PeImage = parse(&bytes).expect("parse pe");
     let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr header");
     let report: R2rReport = r2r_detect(&bytes, &pe, &clr);
-    if let Some(header) = report.header {
-        let h: R2rHeader = header;
-        assert!(h.major_version >= 1);
-        assert_eq!(h.magic, disrobe_pass_dotnet::r2r::R2R_MAGIC);
-    }
+    let header: R2rHeader = report
+        .header
+        .expect("R2R header present in HelloApp.r2r.dll");
+    assert_eq!(header.magic, disrobe_pass_dotnet::r2r::R2R_MAGIC);
+    assert_eq!(header.major_version, 10);
+    assert_eq!(header.number_of_sections, 11);
 }

@@ -87,16 +87,25 @@ fn synth_zelix_protected_class(seed: ZelixKey, candidates: &[&str]) -> (ClassFil
 #[test]
 fn real_baseline_jar_classfile_parses_for_protector_input() {
     let jar: PathBuf = baseline_jar_path();
-    let Some(bytes): Option<Vec<u8>> = read_first_classfile_from_jar(&jar) else {
-        eprintln!(
-            "skip: EdgeCases-baseline.jar fixture absent at {}",
-            jar.display()
-        );
-        return;
-    };
+    let bytes: Vec<u8> = read_first_classfile_from_jar(&jar)
+        .expect("EdgeCases-baseline.jar fixture must be committed and contain a .class");
     let cf: ClassFile = parse_classfile(&bytes).expect("parse classfile");
     assert_eq!(cf.major_version, 69);
     assert!(!cf.constant_pool.is_empty());
+    let utf8_symbols: Vec<&str> = cf
+        .constant_pool
+        .iter()
+        .filter_map(|e: &ConstantPoolEntry| match e {
+            ConstantPoolEntry::Utf8(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    for expected in ["<init>", "java/util/function/Supplier", "java/lang/Object"] {
+        assert!(
+            utf8_symbols.contains(&expected),
+            "expected javac-emitted constant-pool symbol {expected:?}, got {utf8_symbols:?}"
+        );
+    }
 }
 
 /// Self-consistency (involution) of the synthetic stand-in cipher only.

@@ -40,13 +40,11 @@ fn binary_path() -> PathBuf {
 #[test]
 fn briefcase_real_fixture_detects_via_sibling_layout() {
     let path: PathBuf = binary_path();
-    if !path.is_file() {
-        eprintln!(
-            "[real_briefcase] skipped: fixture missing at {}",
-            path.display()
-        );
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "real briefcase fixture missing at {}",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
     let det: Detection = detect_bytes(&bytes, Some(&path));
     assert_eq!(
@@ -64,10 +62,7 @@ fn briefcase_real_fixture_detects_via_sibling_layout() {
 #[test]
 fn briefcase_real_fixture_indexes_all_edge_case_bands() {
     let path: PathBuf = binary_path();
-    if !path.is_file() {
-        eprintln!("[real_briefcase] skipped: fixture missing");
-        return;
-    }
+    assert!(path.is_file(), "real briefcase fixture missing");
     let extraction: BriefcaseExtraction = detect_and_extract(&path).expect("briefcase extraction");
     let names: BTreeSet<String> = extraction
         .indexed_modules
@@ -85,7 +80,8 @@ fn briefcase_real_fixture_indexes_all_edge_case_bands() {
     }
     assert!(
         extraction.layout.app_packages_dir.is_some()
-            || extraction.layout.python_stdlib_dir.is_some(),
-        "briefcase layout must surface either app_packages/ or python-stdlib/"
+            || extraction.layout.python_stdlib_dir.is_some()
+            || extraction.layout.briefcase_toml.is_some(),
+        "briefcase layout must surface app_packages/, python-stdlib/, or briefcase.toml"
     );
 }

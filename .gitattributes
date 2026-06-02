@@ -1,2 +1,10 @@
 assets/graphs/*.svg text eol=lf
 *.jsc binary
+*.pkl binary
+*.luac binary
+*.beam binary
+*.ez binary
+corpus/mobile/macho-mac/SwiftHello.original binary
+corpus/mobile/macho-mac/SwiftHello.obfuscated binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.original binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.obfuscated binary

@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 use disrobe_pass_beam::body_lift::render::render_body;
 use disrobe_pass_beam::body_lift::{LiftedBody, build_label_index, lift_body};
-use disrobe_pass_beam::{BeamFile, CoreFunction, CoreModule, ErlangSurface, lift, recover_erlang};
+use disrobe_pass_beam::{
+    BeamFile, CoreFunction, CoreModule, ErlangSurface, EzArchive, EzEntry, lift, recover_erlang,
+};
 
 use crate::common::{
     build_atu8, build_beam, build_chunk, build_code_chunk, build_expt, encode_compact_small,
@@ -32,21 +34,22 @@ fn corpus_root() -> PathBuf {
         .join("beam")
 }
 
-fn try_megafile() -> Option<BeamFile> {
-    let path: PathBuf = corpus_root().join("megafile").join("edge_cases.beam");
-    let bytes: Vec<u8> = std::fs::read(&path).ok()?;
-    Some(BeamFile::parse(&bytes).expect("parse megafile"))
+fn megafile() -> BeamFile {
+    let ez_path: PathBuf = corpus_root().join("megafile").join("edge_cases.ez");
+    let bytes: Vec<u8> = std::fs::read(&ez_path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read tracked {}: {e}", ez_path.display()));
+    let archive: EzArchive = EzArchive::parse(&bytes).expect("parse edge_cases.ez");
+    let inner: &EzEntry = archive
+        .beam_files()
+        .into_iter()
+        .find(|e: &&EzEntry| e.path.ends_with("ebin/edge_cases.beam"))
+        .expect("edge_cases.beam inside tracked edge_cases.ez");
+    BeamFile::parse(&inner.data).expect("parse inner edge_cases.beam")
 }
 
 macro_rules! megafile {
     () => {
-        match try_megafile() {
-            Some(beam) => beam,
-            None => {
-                eprintln!("skip: megafile/edge_cases.beam corpus fixture absent");
-                return;
-            }
-        }
+        megafile()
     };
 }
 

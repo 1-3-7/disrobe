@@ -43,6 +43,7 @@ fn load_fixture() -> Option<Vec<u8>> {
 }
 
 #[test]
+#[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn discord_hermes_bundle_has_correct_magic() {
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,
@@ -57,6 +58,7 @@ fn discord_hermes_bundle_has_correct_magic() {
 }
 
 #[test]
+#[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn discord_hermes_bundle_dispatch_detects_hermes() {
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,
@@ -70,6 +72,7 @@ fn discord_hermes_bundle_dispatch_detects_hermes() {
 }
 
 #[test]
+#[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn discord_hermes_header_parses_with_supported_version() {
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,
@@ -90,6 +93,7 @@ fn discord_hermes_header_parses_with_supported_version() {
 }
 
 #[test]
+#[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn real_hermes_discord_full_module_parse() {
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,
@@ -142,6 +146,7 @@ fn real_hermes_discord_full_module_parse() {
 }
 
 #[test]
+#[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn discord_hermes_full_module_parse_dispatch() {
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,

@@ -43,10 +43,8 @@ fn collect_constants(p: &disrobe_pass_lua::reader::common::LuaProto, out: &mut V
 
 #[test]
 fn megafile_5_1_proto_tree_is_deep() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_1.luac") else {
-        eprintln!("skip: luac/edge_cases.5_1.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_1.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_1.luac"));
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 megafile");
     let total: usize = count_protos(&chunk.main);
     assert!(total > 50, "expected >50 proto nodes, got {total}");
@@ -54,10 +52,8 @@ fn megafile_5_1_proto_tree_is_deep() {
 
 #[test]
 fn megafile_5_2_proto_tree_is_deep() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_2.luac") else {
-        eprintln!("skip: luac/edge_cases.5_2.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_2.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_2.luac"));
     let chunk: LuaChunk = lua52::read(&bytes).expect("parse 5.2 megafile");
     let total: usize = count_protos(&chunk.main);
     assert!(total > 50, "expected >50 proto nodes, got {total}");
@@ -65,10 +61,8 @@ fn megafile_5_2_proto_tree_is_deep() {
 
 #[test]
 fn megafile_5_3_proto_tree_is_deep() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_3.luac") else {
-        eprintln!("skip: luac/edge_cases.5_3.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_3.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_3.luac"));
     let chunk: LuaChunk = lua53::read(&bytes).expect("parse 5.3 megafile");
     let total: usize = count_protos(&chunk.main);
     assert!(total > 50, "expected >50 proto nodes, got {total}");
@@ -76,10 +70,8 @@ fn megafile_5_3_proto_tree_is_deep() {
 
 #[test]
 fn megafile_5_4_proto_tree_is_deep() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_4.luac") else {
-        eprintln!("skip: luac/edge_cases.5_4.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_4.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_4.luac"));
     let chunk: LuaChunk = lua54::read(&bytes).expect("parse 5.4 megafile");
     let total: usize = count_protos(&chunk.main);
     assert!(total > 50, "expected >50 proto nodes, got {total}");
@@ -87,10 +79,8 @@ fn megafile_5_4_proto_tree_is_deep() {
 
 #[test]
 fn megafile_5_4_contains_expected_string_literals() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_4.luac") else {
-        eprintln!("skip: luac/edge_cases.5_4.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_4.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_4.luac"));
     let chunk: LuaChunk = lua54::read(&bytes).expect("parse 5.4 megafile");
     let mut consts: Vec<LuaConstant> = Vec::new();
     collect_constants(&chunk.main, &mut consts);
@@ -106,10 +96,8 @@ fn megafile_5_4_contains_expected_string_literals() {
 
 #[test]
 fn megafile_5_1_contains_expected_string_literals() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/edge_cases.5_1.luac") else {
-        eprintln!("skip: luac/edge_cases.5_1.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/edge_cases.5_1.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/edge_cases.5_1.luac"));
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 megafile");
     let mut consts: Vec<LuaConstant> = Vec::new();
     collect_constants(&chunk.main, &mut consts);

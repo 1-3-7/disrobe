@@ -45,20 +45,20 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 | Ecosystem | What `disrobe` does |
 |---|---|
 | **Python bytecode** | Per-version disassembler + in-house decompiler for CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython. `match`, walrus, f/t-strings (PEP 750), exception groups, PEP 695/696/709 round-trip-verified. |
-| **Python freezers** | PyInstaller 2.x-6.20+, Nuitka (onefile/standalone/module/wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye`. |
+| **Python freezers** | PyInstaller 2.x-6.20+, Nuitka (onefile/standalone/module/wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` (detect-only). |
 | **Python protectors** | PyArmor v6-v9-pro (default + super + no-wrap) and 14 source obfuscators (Hyperion, Kramer, Berserker, BlankOBF, oxyry, pyminifier, ...) with an AST-evaluator backend. |
 | **JavaScript / TypeScript** | obfuscator.io (full 9-stage), JS-Confuser, Jscrambler (36 transforms), esoteric encoders, V8/Bytenode, and 10 bundlers (webpack, Vite, Rollup, esbuild, Parcel, Rolldown, ...) with scope-aware renaming. |
 | **WebAssembly** | Parse + lift to Rust, TypeScript, WAT, or C. GC, component model, threads, SIMD, tail-call, memory64, DWARF. 5 obfuscator reversers. |
-| **JVM / Kotlin / Scala / Android** | Classfile 1.0.2-25, DEX 1.0-16, ProGuard/R8 mapping replay, Zelix/Allatori/Stringer/DashO/DexGuard reversers. Headless CFR, Vineflower, Procyon, jadx. |
-| **.NET / CIL** | Full PE + CLR + table-stream parser, R2R lift, native AOT symbol recovery, CIL to C#/F#/VB, 20+ obfuscator reversers (ConfuserEx2, .NET Reactor, Eazfuscator, ...). Headless ILSpy, dnSpy, de4dot. |
+| **JVM / Kotlin / Scala / Android** | Classfile 1.0.2-25, DEX 1.0-16, ProGuard/R8 mapping replay, Zelix/Allatori/Stringer/DashO/DexGuard detect + structural peel (string recovery only when the class ships its own embedded decrypt stub). Headless CFR, Vineflower, Procyon, jadx. |
+| **.NET / CIL** | Full PE + CLR + table-stream parser, R2R header detect + flag classify, native-AOT runtime/format classify, CIL to C#/F#/VB, 20+ obfuscator reversers (ConfuserEx2, .NET Reactor, Eazfuscator, ...). Headless ILSpy, dnSpy, de4dot. |
 | **Native (PE/ELF/Mach-O/COFF)** | DWARF/PDB/STABS across x86/ARM/RISC-V/MIPS/PowerPC/SPARC/eBPF; Rust + C++ demangle + restoration. The unpack + symbol-recovery + chain-detect layer that feeds Ghidra/IDA cleaner input. |
 | **Native packers** | UPX (byte-identical), MPRESS, NSPack, FSG, Petite, kkrunchy, MEW via clean-room decoders; honest detect-only on the commercial tier (VMProtect, Themida, Enigma, ...). |
-| **Go** | GoReSym + redress symbol recovery, garble undo, embedded-FS walker, pclntab 1.2-1.26 (557/557 type-name resolution on 1.26.3). |
+| **Go** | GoReSym + redress symbol recovery, garble undo, embedded-FS walker, pclntab 1.2-1.26 (557/557 type-name resolution on 1.26.3, locally reproducible; binary exceeds the committed-fixture budget). |
 | **Lua** | 5.1-5.4, LuaJIT 2.0/2.1, Luau, GLua, and 11 obfuscators including MoonSec v1-v3 and Ironbrew2. |
 | **Shell** | PowerShell Invoke-Obfuscation levels 1-6, Bashfuscator, batch, VBA p-code. |
 | **PHP / Ruby / BEAM** | ionCube/SourceGuardian/Zend Guard structural decode + Phar; MRI/YARV 1.9-3.4 + mruby decompile; BEAM chunk parse + Core Erlang lift + Elixir `Dbgi`. |
-| **React Native Hermes** | Bytecode v60-v96, validated against the live 66 MiB Discord bundle: 122,633 functions, 0 errors. |
-| **Flutter / Swift / AS3** | Dart AOT snapshot parser; Mach-O class-dump + SwiftConfidential/SwiftShield rename-undo; SWF + ABC bytecode disasm. |
+| **React Native Hermes** | Bytecode v60-v96, validated locally on a non-redistributable 66 MiB Discord bundle: 122,633 functions, 0 errors. |
+| **Flutter / Swift / AS3** | Dart AOT snapshot parser; Mach-O class-dump + SwiftConfidential/SwiftShield rename-undo; SWF + ABC bytecode disasm (local corpus only; not CI-validated). |
 | **Python pickle** | Static disasm + symbolic-VM trace + safety grading + polyglot + ML-model detection. Never unpickles. |
 | **Containers** | 26 formats (ZIP/tar/7z/`.deb`/`.rpm`/`.iso`/MSI/NSIS/Docker/OCI/SquashFS/...) with auto-detect, chaining, and universal zip-slip + bomb guards. |
 
@@ -70,9 +70,10 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 
 | Capability | pyinstxtractor(-ng) | nuitka-extractor | `disrobe` |
 |---|---|---|---|
-| PyInstaller 2.x-6.x | y | n | y (6.20+) |
+| PyInstaller 2.x-6.x | y | n | y (6.20+; live E2E, fixture too large to commit) |
 | Nuitka onefile/standalone, `as_archive`, signed-PE, wheel | n | partial | y |
-| cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` | n | n | y |
+| cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase | n | n | y (briefcase/shiv/zipapp real-tested; cx_Freeze/py2exe/pex regen-gated) |
+| SourceDefender `.pye` | n | n | detect-only |
 | Auto-chain into PyArmor + `.pyc` decompile | n | n | y |
 | License | GPL-3.0 | varies | Apache-2.0 |
 
@@ -111,7 +112,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 |---|---|---|---|---|
 | Classfile 1.0.2-25 | y | y | y | y (wraps + own validator) |
 | Records, sealed, pattern matching | partial | y | partial | y |
-| Obfuscator reversers (Zelix, Allatori, Stringer, DashO) | n | n | n | y |
+| Obfuscator reversers (Zelix, Allatori, Stringer, DashO) | n | n | n | detect + structural peel (stub-emulation string recovery) |
 | ProGuard/R8 mapping replay / headless wrap | n | n | n | y |
 | License | MIT | Apache-2.0 | Apache-2.0 | Apache-2.0 |
 
@@ -121,7 +122,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 |---|---|---|---|---|
 | DEX 1.0-16 to Java | y | n | JAR only | y (wraps jadx) |
 | APK resource decode | partial | y | n | y (wraps Apktool) |
-| Smali round-trip / DexGuard reverser | y / n | y / n | n | y / y |
+| Smali round-trip / DexGuard reverser | y / n | y / n | n | y / detect + structural |
 | Chain APK -> dex -> jadx + smali + manifest | partial | n | n | y |
 | License | Apache-2.0 | Apache-2.0 | Apache-2.0 | Apache-2.0 |
 
@@ -131,7 +132,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 |---|---|---|---|---|
 | CIL -> C# decompile | y | y | n | y (wraps ILSpy) |
 | 20+ obfuscator reversers | n | n | y (frozen 2020) | y (modern fork + own) |
-| R2R lift / native AOT symbol recovery | partial / n | partial / n | n | y / y |
+| R2R lift / native AOT symbol recovery | partial / n | partial / n | n | y / partial |
 | Deterministic `.dr` envelope | n | n | n | y |
 | License | MIT | GPL-3.0 | GPL-3.0 | Apache-2.0 |
 
@@ -166,7 +167,7 @@ No FOSS toolkit covers this range; UPX only unpacks UPX, de4dot only .NET, the r
 
 | Capability | GoReSym | redress | garble-undo | `disrobe` |
 |---|---|---|---|---|
-| Stripped symbol recovery | y (<=1.24) | y | n | y (1.2-1.26, 557/557 on 1.26.3) |
+| Stripped symbol recovery | y (<=1.24) | y | n | y (1.2-1.26, 557/557 on 1.26.3, locally reproducible) |
 | pclntab 1.2-1.25 / embedded-FS walker | y / n | y / n | n | y / y |
 | Garble undo / UPX-on-Go auto-chain | n | n | partial | partial / y |
 | License | MIT | AGPL-3.0 | - | Apache-2.0 |
@@ -206,8 +207,8 @@ The FOSS landscape is essentially nothing; the dominant tools are paid server-si
 | **Ruby** | yarvdis (disasm only), rb-decompile (abandoned) | MRI/YARV 1.9-3.4 + mruby **source-level decompile** |
 | **BEAM** | beam_lib, BeamFile | Core Erlang lift + Elixir `Dbgi` + `.ez` extract |
 | **Swift / Obj-C** | class-dump (2013), Hopper (paid) | Swift + Obj-C class-dump, SwiftConfidential/SwiftShield rename-undo, FairPlay detect-only |
-| **AS3 / Flash** | JPEXS | parser + disasm, feeds JPEXS (full source wrap planned) |
-| **Hermes** | hbctool (<=v84), hermes-dec | v60-v96, decompile, validated on live 66 MiB Discord bundle in CI |
+| **AS3 / Flash** | JPEXS | parser + disasm, feeds JPEXS (full source wrap planned; local corpus only, not CI-validated) |
+| **Hermes** | hbctool (<=v84), hermes-dec | v60-v96, decompile, validated locally on a non-redistributable 66 MiB Discord bundle |
 | **Flutter** | blutter (Android-only), reFlutter | Dart snapshot parser, single-binary CLI, validated on real `rustdesk` `libapp.so` |
 | **Containers** | 7-Zip, libarchive | 26 kinds, auto-detect + chain through nested layers, bomb guards |
 

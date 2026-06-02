@@ -27,10 +27,8 @@ fn load(rel: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn real_lua_5_1_hello_detects_and_parses() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/hello.5_1.luac") else {
-        eprintln!("skip: luac/hello.5_1.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/hello.5_1.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/hello.5_1.luac"));
     let kind: DetectedFormat = detect(&bytes);
     assert_eq!(kind, DetectedFormat::Lua51);
     let chunk: LuaChunk = lua51::read(&bytes).expect("parse 5.1 luac");
@@ -49,20 +47,16 @@ fn real_lua_5_1_hello_detects_and_parses() {
 
 #[test]
 fn real_lua_5_2_hello_detects() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/hello.5_2.luac") else {
-        eprintln!("skip: luac/hello.5_2.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/hello.5_2.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/hello.5_2.luac"));
     let kind: DetectedFormat = detect(&bytes);
     assert_eq!(kind, DetectedFormat::Lua52);
 }
 
 #[test]
 fn real_lua_5_2_hello_parses() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/hello.5_2.luac") else {
-        eprintln!("skip: luac/hello.5_2.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/hello.5_2.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/hello.5_2.luac"));
     let chunk: LuaChunk = lua52::read(&bytes).expect("parse 5.2 luac");
     assert_eq!(chunk.dialect, LuaDialect::Lua52);
     assert_eq!(chunk.version_byte, 0x52);
@@ -70,10 +64,8 @@ fn real_lua_5_2_hello_parses() {
 
 #[test]
 fn real_lua_5_3_hello_detects_and_parses() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/hello.5_3.luac") else {
-        eprintln!("skip: luac/hello.5_3.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/hello.5_3.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/hello.5_3.luac"));
     let kind: DetectedFormat = detect(&bytes);
     assert_eq!(kind, DetectedFormat::Lua53);
     let chunk: LuaChunk = lua53::read(&bytes).expect("parse 5.3 luac");
@@ -83,10 +75,8 @@ fn real_lua_5_3_hello_detects_and_parses() {
 
 #[test]
 fn real_lua_5_4_hello_detects_and_parses() {
-    let Some(bytes): Option<Vec<u8>> = load("luac/hello.5_4.luac") else {
-        eprintln!("skip: luac/hello.5_4.luac fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = load("luac/hello.5_4.luac")
+        .unwrap_or_else(|| panic!("fixture must be tracked: luac/hello.5_4.luac"));
     let kind: DetectedFormat = detect(&bytes);
     assert_eq!(kind, DetectedFormat::Lua54);
     let chunk: LuaChunk = lua54::read(&bytes).expect("parse 5.4 luac");
@@ -101,10 +91,7 @@ fn real_lua_hello_round_trip_via_read_auto() {
         "luac/hello.5_3.luac",
         "luac/hello.5_4.luac",
     ] {
-        let Some(bytes): Option<Vec<u8>> = load(rel) else {
-            eprintln!("skip: {rel} fixture absent");
-            continue;
-        };
+        let bytes: Vec<u8> = load(rel).unwrap_or_else(|| panic!("fixture must be tracked: {rel}"));
         let chunk: LuaChunk = read_auto(&bytes)
             .unwrap_or_else(|e: disrobe_pass_lua::Error| panic!("read_auto({rel}) failed: {e}"));
         assert!(matches!(

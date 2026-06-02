@@ -33,6 +33,17 @@ fn read_committed_fixture(rel: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()))
 }
 
+fn megafile_beam_from_ez(inner_suffix: &str) -> BeamFile {
+    let bytes: Vec<u8> = read_committed_fixture("megafile/edge_cases.ez");
+    let archive: EzArchive = EzArchive::parse(&bytes).expect("ez parse");
+    let inner: &disrobe_pass_beam::EzEntry = archive
+        .beam_files()
+        .into_iter()
+        .find(|e: &&disrobe_pass_beam::EzEntry| e.path.ends_with(inner_suffix))
+        .unwrap_or_else(|| panic!("{inner_suffix} inside tracked edge_cases.ez"));
+    BeamFile::parse(&inner.data).expect("parse inner beam")
+}
+
 #[test]
 fn smoke_real_erlang_hello_beam_parses() {
     let Some(bytes): Option<Vec<u8>> = load_fixture("erlang/hello.beam") else {
@@ -103,11 +114,7 @@ fn smoke_real_ez_archive_lists_beam() {
 
 #[test]
 fn megafile_real_erlang_beam_typed_module() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("megafile/edge_cases.beam") else {
-        eprintln!("skip: megafile/edge_cases.beam corpus fixture absent");
-        return;
-    };
-    let beam: BeamFile = BeamFile::parse(&bytes).expect("typed parse");
+    let beam: BeamFile = megafile_beam_from_ez("ebin/edge_cases.beam");
     assert_eq!(beam.module_name(), Some("edge_cases"));
     let code: &disrobe_pass_beam::CodeChunk = beam.chunks.code.as_ref().expect("Code chunk");
     assert!(
@@ -131,11 +138,7 @@ fn megafile_real_erlang_beam_typed_module() {
 
 #[test]
 fn megafile_real_erlang_beam_known_atoms_present() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("megafile/edge_cases.beam") else {
-        eprintln!("skip: megafile/edge_cases.beam corpus fixture absent");
-        return;
-    };
-    let beam: BeamFile = BeamFile::parse(&bytes).expect("typed parse");
+    let beam: BeamFile = megafile_beam_from_ez("ebin/edge_cases.beam");
     let atoms: Vec<&str> = (1..=beam.chunks.atoms.len())
         .filter_map(|i: usize| beam.chunks.atoms.get(u32::try_from(i).expect("idx fits")))
         .collect();
@@ -156,11 +159,7 @@ fn megafile_real_erlang_beam_known_atoms_present() {
 
 #[test]
 fn megafile_real_elixir_beam_typed_module() {
-    let Some(bytes): Option<Vec<u8>> = load_fixture("megafile/Elixir.EdgeCases.beam") else {
-        eprintln!("skip: megafile/Elixir.EdgeCases.beam corpus fixture absent");
-        return;
-    };
-    let beam: BeamFile = BeamFile::parse(&bytes).expect("typed parse");
+    let beam: BeamFile = megafile_beam_from_ez("ebin/Elixir.EdgeCases.beam");
     assert_eq!(beam.module_name(), Some("Elixir.EdgeCases"));
     let code: &disrobe_pass_beam::CodeChunk = beam.chunks.code.as_ref().expect("Code chunk");
     assert!(code.num_functions >= 30);

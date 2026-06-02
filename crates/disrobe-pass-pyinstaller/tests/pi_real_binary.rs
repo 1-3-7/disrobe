@@ -192,6 +192,7 @@ fn pick_built_binary(dist_dir: &Path) -> PathBuf {
 }
 
 #[test]
+#[ignore = "live-regen E2E: requires pyinstaller>=6.20 on PATH; onefile binary is ~6.7MB so cannot be committed as a tracked <=256KB fixture (CI evidence pending real small binary)"]
 fn pi_620_real_binary_extract_round_trip() {
     let Some(artifact) = ensure_artifact() else {
         return;
@@ -215,6 +216,7 @@ fn pi_620_real_binary_extract_round_trip() {
 }
 
 #[test]
+#[ignore = "live-regen E2E: requires pyinstaller>=6.20 on PATH; onefile binary is ~6.7MB so cannot be committed as a tracked <=256KB fixture (CI evidence pending real small binary)"]
 fn pi_620_real_binary_toc_entries_match_expected() {
     let Some(artifact) = ensure_artifact() else {
         return;
@@ -253,6 +255,7 @@ fn pi_620_real_binary_toc_entries_match_expected() {
 }
 
 #[test]
+#[ignore = "live-regen E2E: requires pyinstaller>=6.20 on PATH; onefile binary is ~6.7MB so cannot be committed as a tracked <=256KB fixture (CI evidence pending real small binary)"]
 fn pi_620_real_binary_aes_ctr_decryption_when_keyed() {
     let Some(artifact) = ensure_artifact() else {
         return;
