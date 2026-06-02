@@ -308,3 +308,4 @@ corpus/**/*.actual.json
 !corpus/native/packers/mew/*.exe
 
 !corpus/python/pyarmor/**/*.pyd
+!corpus/python/pyarmor/**/*.so
