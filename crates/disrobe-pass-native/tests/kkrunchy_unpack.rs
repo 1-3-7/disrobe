@@ -19,6 +19,8 @@ use disrobe_pass_native::{
 
 const CLASSIC_MEASURED_FLOOR_BP: u32 = 10_000;
 
+const K7_MEASURED_FLOOR_BP: u32 = 644;
+
 const HELLO_ORIGINAL: &[u8] = include_bytes!("../../../corpus/native/packers/kkrunchy/hello.exe");
 const HELLO_PACKED_K7: &[u8] =
     include_bytes!("../../../corpus/native/packers/kkrunchy/hello.packed.kkrunchy.exe");
@@ -385,13 +387,31 @@ fn test_kkrunchy_hello_byte_recovery() {
         matches!(emulator_attempt, Err(Error::EmulatorNotConfigured { .. })),
         "without an emulator provider, the emulated path must surface a PR-WELCOME error",
     );
-    let target_pct_bp: u32 = 9_000;
-    eprintln!(
-        "kkrunchy v0.8-w4c gap: {target_bp} bp ({target_pct:.2}%) target vs {actual_bp} bp ({actual_pct:.2}%) structural; \
-         provider-backed unpack required to close the gap",
-        target_bp = target_pct_bp,
-        target_pct = f64::from(target_pct_bp) / 100.0,
-        actual_bp = structural_report.recovery_pct_basis_points,
-        actual_pct = structural_report.pct(),
+
+    assert!(
+        structural_report.recovery_pct_basis_points >= K7_MEASURED_FLOOR_BP,
+        "k7 byte recovery regressed below the measured honest floor: {:.2}% < {:.2}% \
+         (the K7 stub's MMX context-mixing arithmetic-decode core is replayed bit-exact by stub_emu, \
+         but the stage-2 LZ pass does not reconstruct the OEP .text within the safety step budget, so \
+         the honest recovery is the structural floor; a regression here means structural parsing broke)",
+        structural_report.pct(),
+        f64::from(K7_MEASURED_FLOOR_BP) / 100.0,
+    );
+
+    assert!(
+        out.note.contains("not implemented")
+            || out.note.contains("backend")
+            || out.note.contains("compression"),
+        "k7 must honestly disclose the unresolved backend rather than surface a fabricated image",
+    );
+
+    let recovered_is_real_section: bool = !out.packed_payload.is_empty()
+        && packed
+            .windows(out.packed_payload.len().min(64))
+            .any(|w: &[u8]| w == &out.packed_payload[..out.packed_payload.len().min(64)]);
+    assert!(
+        recovered_is_real_section,
+        "the honest structural payload must be the verbatim packed kkrunchy section recovered from \
+         the input, never an encoder-echoed or zero-coincidence buffer masquerading as a decode",
     );
 }

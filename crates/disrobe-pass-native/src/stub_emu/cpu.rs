@@ -6,7 +6,7 @@ use iced_x86::{
 
 use crate::error::{Error, Result};
 use crate::stub_emu::mem::{Memory, Perm};
-use crate::stub_emu::regs::{CpuMode, Reg, Regs, classify};
+use crate::stub_emu::regs::{CpuMode, Reg, Regs, classify, classify_mm};
 
 /// Reason the emulator returned control to the host.
 #[derive(Debug, Clone)]
@@ -268,6 +268,9 @@ impl Cpu {
             }
         }
         if self.try_data_op(insn, code)? {
+            return Ok(None);
+        }
+        if self.try_mmx_op(insn)? {
             return Ok(None);
         }
         Ok(Some(ExitReason::UnsupportedInstr {
@@ -1551,6 +1554,245 @@ impl Cpu {
         }
     }
 
+    fn read_mm_reg(&self, reg: Register) -> Result<u64> {
+        let index: u8 = classify_mm(reg)
+            .ok_or_else(|| Error::GoblinParse(format!("emu: not an MMX register {reg:?}")))?;
+        Ok(self.regs.get_mm(index))
+    }
+
+    fn write_mm_reg(&mut self, reg: Register, value: u64) -> Result<()> {
+        let index: u8 = classify_mm(reg)
+            .ok_or_else(|| Error::GoblinParse(format!("emu: not an MMX register {reg:?}")))?;
+        self.regs.set_mm(index, value);
+        Ok(())
+    }
+
+    fn read_mm_packed_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
+        match insn.op_kind(operand) {
+            OpKind::Register => self.read_mm_reg(insn.op_register(operand)),
+            OpKind::Memory => self.mem.read_u64(self.effective_addr(insn, operand)?),
+            other => Err(Error::GoblinParse(format!(
+                "emu: unsupported MMX source operand {other:?}"
+            ))),
+        }
+    }
+
+    fn read_mm_dword_operand(&self, insn: &Instruction, operand: u32) -> Result<u64> {
+        match insn.op_kind(operand) {
+            OpKind::Register => self.read_mm_reg(insn.op_register(operand)),
+            OpKind::Memory => Ok(u64::from(
+                self.mem.read_u32(self.effective_addr(insn, operand)?)?,
+            )),
+            other => Err(Error::GoblinParse(format!(
+                "emu: unsupported MMX source operand {other:?}"
+            ))),
+        }
+    }
+
+    fn lanes_u16(value: u64) -> [u16; 4] {
+        let bytes: [u8; 8] = value.to_le_bytes();
+        [
+            u16::from_le_bytes([bytes[0], bytes[1]]),
+            u16::from_le_bytes([bytes[2], bytes[3]]),
+            u16::from_le_bytes([bytes[4], bytes[5]]),
+            u16::from_le_bytes([bytes[6], bytes[7]]),
+        ]
+    }
+
+    fn lanes_u32(value: u64) -> [u32; 2] {
+        let bytes: [u8; 8] = value.to_le_bytes();
+        [
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        ]
+    }
+
+    fn pack_u16(lanes: [u16; 4]) -> u64 {
+        let mut bytes: [u8; 8] = [0u8; 8];
+        for (i, lane) in lanes.iter().enumerate() {
+            let lb: [u8; 2] = lane.to_le_bytes();
+            bytes[i * 2] = lb[0];
+            bytes[i * 2 + 1] = lb[1];
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    fn pack_u32(lanes: [u32; 2]) -> u64 {
+        let mut bytes: [u8; 8] = [0u8; 8];
+        for (i, lane) in lanes.iter().enumerate() {
+            let lb: [u8; 4] = lane.to_le_bytes();
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&lb);
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn try_mmx_op(&mut self, insn: &Instruction) -> Result<bool> {
+        let code: Code = insn.code();
+        match code {
+            Code::Movd_mm_rm32 => {
+                let src: u64 = self.read_operand(insn, 1)? & 0xFFFF_FFFF;
+                self.write_mm_reg(insn.op_register(0), src)?;
+                Ok(true)
+            }
+            Code::Movd_rm32_mm => {
+                let src: u64 = self.read_mm_reg(insn.op_register(1))?;
+                self.write_operand(insn, 0, src & 0xFFFF_FFFF)?;
+                Ok(true)
+            }
+            Code::Movq_mm_mmm64 | Code::Movq_mm_rm64 => {
+                let src: u64 = self.read_mm_packed_operand(insn, 1)?;
+                self.write_mm_reg(insn.op_register(0), src)?;
+                Ok(true)
+            }
+            Code::Movq_mmm64_mm => {
+                let src: u64 = self.read_mm_reg(insn.op_register(1))?;
+                match insn.op_kind(0) {
+                    OpKind::Register => self.write_mm_reg(insn.op_register(0), src)?,
+                    OpKind::Memory => self.mem.write_u64(self.effective_addr(insn, 0)?, src)?,
+                    other => {
+                        return Err(Error::GoblinParse(format!(
+                            "emu: unsupported movq destination {other:?}"
+                        )));
+                    }
+                }
+                Ok(true)
+            }
+            Code::Pxor_mm_mmm64 => {
+                let dst: u64 = self.read_mm_reg(insn.op_register(0))?;
+                let src: u64 = self.read_mm_packed_operand(insn, 1)?;
+                self.write_mm_reg(insn.op_register(0), dst ^ src)?;
+                Ok(true)
+            }
+            Code::Pcmpeqb_mm_mmm64 => {
+                let dst: [u8; 8] = self.read_mm_reg(insn.op_register(0))?.to_le_bytes();
+                let src: [u8; 8] = self.read_mm_packed_operand(insn, 1)?.to_le_bytes();
+                let mut out: [u8; 8] = [0u8; 8];
+                for i in 0..8 {
+                    out[i] = if dst[i] == src[i] { 0xFF } else { 0x00 };
+                }
+                self.write_mm_reg(insn.op_register(0), u64::from_le_bytes(out))?;
+                Ok(true)
+            }
+            Code::Paddb_mm_mmm64 => {
+                let dst: [u8; 8] = self.read_mm_reg(insn.op_register(0))?.to_le_bytes();
+                let src: [u8; 8] = self.read_mm_packed_operand(insn, 1)?.to_le_bytes();
+                let mut out: [u8; 8] = [0u8; 8];
+                for i in 0..8 {
+                    out[i] = dst[i].wrapping_add(src[i]);
+                }
+                self.write_mm_reg(insn.op_register(0), u64::from_le_bytes(out))?;
+                Ok(true)
+            }
+            Code::Paddd_mm_mmm64 => {
+                let dst: [u32; 2] = Self::lanes_u32(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u32; 2] = Self::lanes_u32(self.read_mm_packed_operand(insn, 1)?);
+                let out: [u32; 2] = [dst[0].wrapping_add(src[0]), dst[1].wrapping_add(src[1])];
+                self.write_mm_reg(insn.op_register(0), Self::pack_u32(out))?;
+                Ok(true)
+            }
+            Code::Psubd_mm_mmm64 => {
+                let dst: [u32; 2] = Self::lanes_u32(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u32; 2] = Self::lanes_u32(self.read_mm_packed_operand(insn, 1)?);
+                let out: [u32; 2] = [dst[0].wrapping_sub(src[0]), dst[1].wrapping_sub(src[1])];
+                self.write_mm_reg(insn.op_register(0), Self::pack_u32(out))?;
+                Ok(true)
+            }
+            Code::Paddsw_mm_mmm64 => {
+                let dst: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u16; 4] = Self::lanes_u16(self.read_mm_packed_operand(insn, 1)?);
+                let mut out: [u16; 4] = [0u16; 4];
+                for i in 0..4 {
+                    let sum: i32 = i32::from(dst[i] as i16) + i32::from(src[i] as i16);
+                    out[i] = sum.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16 as u16;
+                }
+                self.write_mm_reg(insn.op_register(0), Self::pack_u16(out))?;
+                Ok(true)
+            }
+            Code::Pmulhw_mm_mmm64 => {
+                let dst: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u16; 4] = Self::lanes_u16(self.read_mm_packed_operand(insn, 1)?);
+                let mut out: [u16; 4] = [0u16; 4];
+                for i in 0..4 {
+                    let prod: i32 = i32::from(dst[i] as i16) * i32::from(src[i] as i16);
+                    out[i] = (prod >> 16) as u16;
+                }
+                self.write_mm_reg(insn.op_register(0), Self::pack_u16(out))?;
+                Ok(true)
+            }
+            Code::Pmaddwd_mm_mmm64 => {
+                let dst: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u16; 4] = Self::lanes_u16(self.read_mm_packed_operand(insn, 1)?);
+                let lo: i32 = i32::from(dst[0] as i16) * i32::from(src[0] as i16)
+                    + i32::from(dst[1] as i16) * i32::from(src[1] as i16);
+                let hi: i32 = i32::from(dst[2] as i16) * i32::from(src[2] as i16)
+                    + i32::from(dst[3] as i16) * i32::from(src[3] as i16);
+                self.write_mm_reg(insn.op_register(0), Self::pack_u32([lo as u32, hi as u32]))?;
+                Ok(true)
+            }
+            Code::Psadbw_mm_mmm64 => {
+                let dst: [u8; 8] = self.read_mm_reg(insn.op_register(0))?.to_le_bytes();
+                let src: [u8; 8] = self.read_mm_packed_operand(insn, 1)?.to_le_bytes();
+                let mut acc: u16 = 0;
+                for i in 0..8 {
+                    acc += u16::from(dst[i].abs_diff(src[i]));
+                }
+                self.write_mm_reg(insn.op_register(0), u64::from(acc))?;
+                Ok(true)
+            }
+            Code::Punpcklwd_mm_mmm32 => {
+                let dst: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let src: [u16; 4] = Self::lanes_u16(self.read_mm_dword_operand(insn, 1)?);
+                let out: [u16; 4] = [dst[0], src[0], dst[1], src[1]];
+                self.write_mm_reg(insn.op_register(0), Self::pack_u16(out))?;
+                Ok(true)
+            }
+            Code::Psrlw_mm_imm8 => {
+                let count: u32 = u32::from(insn.immediate8());
+                let lanes: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let out: [u16; 4] = lanes.map(|l: u16| if count >= 16 { 0 } else { l >> count });
+                self.write_mm_reg(insn.op_register(0), Self::pack_u16(out))?;
+                Ok(true)
+            }
+            Code::Psraw_mm_imm8 => {
+                let count: u32 = u32::from(insn.immediate8());
+                let lanes: [u16; 4] = Self::lanes_u16(self.read_mm_reg(insn.op_register(0))?);
+                let out: [u16; 4] = lanes.map(|l: u16| {
+                    let shift: u32 = count.min(15);
+                    ((l as i16) >> shift) as u16
+                });
+                self.write_mm_reg(insn.op_register(0), Self::pack_u16(out))?;
+                Ok(true)
+            }
+            Code::Psrad_mm_imm8 => {
+                let count: u32 = u32::from(insn.immediate8());
+                let lanes: [u32; 2] = Self::lanes_u32(self.read_mm_reg(insn.op_register(0))?);
+                let out: [u32; 2] = lanes.map(|l: u32| {
+                    let shift: u32 = count.min(31);
+                    ((l as i32) >> shift) as u32
+                });
+                self.write_mm_reg(insn.op_register(0), Self::pack_u32(out))?;
+                Ok(true)
+            }
+            Code::Psrlq_mm_imm8 => {
+                let count: u32 = u32::from(insn.immediate8());
+                let value: u64 = self.read_mm_reg(insn.op_register(0))?;
+                let out: u64 = if count >= 64 { 0 } else { value >> count };
+                self.write_mm_reg(insn.op_register(0), out)?;
+                Ok(true)
+            }
+            Code::Psrlq_mm_mmm64 => {
+                let count: u64 = self.read_mm_packed_operand(insn, 1)?;
+                let value: u64 = self.read_mm_reg(insn.op_register(0))?;
+                let out: u64 = if count >= 64 { 0 } else { value >> count };
+                self.write_mm_reg(insn.op_register(0), out)?;
+                Ok(true)
+            }
+            Code::Emms => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
     fn try_string_op(&mut self, insn: &Instruction) -> Result<Option<bool>> {
         use iced_x86::Mnemonic as M;
         let mnem = insn.mnemonic();
@@ -1927,6 +2169,157 @@ mod tests {
             cpu.mem.read_u32(0x9_0000).unwrap(),
             1,
             "lazy-commit must map the page on first unmapped write and persist the store"
+        );
+    }
+
+    const MMX_DATA_A: u64 = 0x2_0100;
+    const MMX_DATA_B: u64 = 0x2_0108;
+
+    fn run_mmx(prog: &[u8], a: u64, b: u64, steps: u64) -> Cpu {
+        let mut cpu: Cpu = build_cpu_with(prog, 0x100);
+        cpu.mem.write_u64(MMX_DATA_A, a).unwrap();
+        cpu.mem.write_u64(MMX_DATA_B, b).unwrap();
+        let mut host: NoopHost = NoopHost;
+        let _r: ExitReason = cpu.run(&mut host, steps).unwrap();
+        cpu
+    }
+
+    const LOAD_MM0_A: [u8; 8] = [0xBE, 0x00, 0x01, 0x02, 0x00, 0x0F, 0x6F, 0x06];
+    const LOAD_MM1_B: [u8; 8] = [0xBF, 0x08, 0x01, 0x02, 0x00, 0x0F, 0x6F, 0x0F];
+
+    fn mmx_prog(tail: &[u8]) -> Vec<u8> {
+        let mut prog: Vec<u8> = Vec::new();
+        prog.extend_from_slice(&LOAD_MM0_A);
+        prog.extend_from_slice(&LOAD_MM1_B);
+        prog.extend_from_slice(tail);
+        prog
+    }
+
+    #[test]
+    fn mmx_movd_punpcklwd_known_answer() {
+        let prog: [u8; 14] = [
+            0xB8, 0x34, 0x12, 0x00, 0x00, 0x0F, 0x6E, 0xC0, 0x0F, 0x61, 0xC0, 0x0F, 0x61, 0xC0,
+        ];
+        let cpu: Cpu = run_mmx(&prog, 0, 0, 4);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0x1234_1234_1234_1234,
+            "movd then two punpcklwd must broadcast low word 0x1234 across all four lanes"
+        );
+    }
+
+    #[test]
+    fn mmx_pcmpeqb_psrlw_all_ones_path() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0x74, 0xC1, 0x0F, 0x71, 0xD0, 0x0F]);
+        let cpu: Cpu = run_mmx(&prog, 0x1122_3344_5566_7788, 0x1100_3300_5500_7700, 6);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0x0001_0001_0001_0001,
+            "pcmpeqb yields 0xFF00 per word where the high byte matches; psrlw 15 leaves 0x0001 per lane"
+        );
+    }
+
+    #[test]
+    fn mmx_paddsw_saturates_signed_words() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0xED, 0xC1]);
+        let cpu: Cpu = run_mmx(&prog, 0x7FFF_7FFF_8000_8000, 0x7FFF_7FFF_8000_8000, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0x7FFF_7FFF_8000_8000,
+            "0x7FFF+0x7FFF saturates to 0x7FFF; 0x8000+0x8000 saturates to i16::MIN 0x8000"
+        );
+    }
+
+    #[test]
+    fn mmx_pmulhw_high_signed_product() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0xE5, 0xC1]);
+        let cpu: Cpu = run_mmx(&prog, 0x4000_4000_4000_4000, 0x4000_4000_4000_4000, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0x1000_1000_1000_1000,
+            "0x4000 * 0x4000 = 0x1000_0000; high 16 bits = 0x1000 per lane"
+        );
+    }
+
+    #[test]
+    fn mmx_pmaddwd_sums_adjacent_products() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0xF5, 0xC1]);
+        let cpu: Cpu = run_mmx(&prog, 0x0002_0002_0002_0002, 0x0002_0002_0002_0002, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0x0000_0008_0000_0008,
+            "each dword lane = 2*2 + 2*2 = 8"
+        );
+    }
+
+    #[test]
+    fn mmx_psadbw_sum_of_absolute_differences() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0xF6, 0xC1]);
+        let cpu: Cpu = run_mmx(&prog, 0x0102_0304_0506_0708, 0x0000_0000_0000_0000, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            36u64,
+            "sum of |byte - 0| over the eight bytes 1..8 = 36, placed in low word of lane 0"
+        );
+    }
+
+    #[test]
+    fn mmx_psrad_sign_extends_per_dword() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0x72, 0xE0, 0x04]);
+        let cpu: Cpu = run_mmx(&prog, 0x8000_0000_8000_0000, 0, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0xF800_0000_F800_0000,
+            "psrad by 4 on 0x80000000 sign-extends to 0xF8000000 per dword lane"
+        );
+    }
+
+    #[test]
+    fn mmx_paddd_paddb_psubd_lanes() {
+        let prog_d: Vec<u8> = mmx_prog(&[0x0F, 0xFE, 0xC1]);
+        let cpu_d: Cpu = run_mmx(&prog_d, 0xFFFF_FFFF_0000_0001, 0x0000_0002_0000_0002, 5);
+        assert_eq!(
+            cpu_d.regs.get_mm(0),
+            0x0000_0001_0000_0003,
+            "paddd: 0x00000001+0x00000002=3; 0xFFFFFFFF+0x00000002 wraps to 0x00000001"
+        );
+
+        let prog_b: Vec<u8> = mmx_prog(&[0x0F, 0xFC, 0xC1]);
+        let cpu_b: Cpu = run_mmx(&prog_b, 0x0102_0304_05FF_FF01, 0x0101_0101_0101_01FF, 5);
+        assert_eq!(
+            cpu_b.regs.get_mm(0),
+            0x0203_0405_0600_0000,
+            "paddb wraps each byte lane independently"
+        );
+
+        let prog_s: Vec<u8> = mmx_prog(&[0x0F, 0xFA, 0xC1]);
+        let cpu_s: Cpu = run_mmx(&prog_s, 0x0000_0005_0000_0001, 0x0000_0002_0000_0002, 5);
+        assert_eq!(
+            cpu_s.regs.get_mm(0),
+            0x0000_0003_FFFF_FFFF,
+            "psubd: 1-2 wraps to 0xFFFFFFFF; 5-2=3"
+        );
+    }
+
+    #[test]
+    fn mmx_pxor_and_emms_zero_register() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0xEF, 0xC0, 0x0F, 0x77]);
+        let cpu: Cpu = run_mmx(&prog, 0xDEAD_BEEF_CAFE_BABE, 0, 5);
+        assert_eq!(
+            cpu.regs.get_mm(0),
+            0,
+            "pxor mm0,mm0 zeroes the register; emms is a clean no-op for the model"
+        );
+    }
+
+    #[test]
+    fn mmx_movq_mem_roundtrip() {
+        let prog: Vec<u8> = mmx_prog(&[0x0F, 0x7F, 0x4E, 0x10]);
+        let cpu: Cpu = run_mmx(&prog, 0x1122_3344_5566_7788, 0x99AA_BBCC_DDEE_FF00, 5);
+        assert_eq!(
+            cpu.mem.read_u64(MMX_DATA_A + 0x10).unwrap(),
+            0x99AA_BBCC_DDEE_FF00,
+            "movq [esi+0x10], mm1 must store the 64-bit MMX value little-endian"
         );
     }
 }

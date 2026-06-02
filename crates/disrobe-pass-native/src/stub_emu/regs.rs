@@ -53,6 +53,8 @@ pub enum Reg {
 
 const NUM_GPR: usize = 16;
 
+const NUM_MMX: usize = 8;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Flags {
     pub cf: bool,
@@ -67,6 +69,7 @@ pub struct Flags {
 #[derive(Debug, Clone)]
 pub struct Regs {
     gpr: [u64; NUM_GPR],
+    mmx: [u64; NUM_MMX],
     pub rip: u64,
     pub flags: Flags,
     pub mode: CpuMode,
@@ -77,10 +80,22 @@ impl Regs {
     pub fn new(mode: CpuMode) -> Self {
         Self {
             gpr: [0u64; NUM_GPR],
+            mmx: [0u64; NUM_MMX],
             rip: 0,
             flags: Flags::default(),
             mode,
         }
+    }
+
+    /// Read a 64-bit MMX register file slot (`MM0..MM7`, indexed `0..8`).
+    #[must_use]
+    pub fn get_mm(&self, index: u8) -> u64 {
+        self.mmx[index as usize]
+    }
+
+    /// Write a 64-bit MMX register file slot (`MM0..MM7`, indexed `0..8`).
+    pub fn set_mm(&mut self, index: u8, value: u64) {
+        self.mmx[index as usize] = value;
     }
 
     #[must_use]
@@ -215,6 +230,25 @@ pub fn classify(reg: Register) -> Option<(Reg, u8, bool)> {
         _ => return None,
     };
     Some(m)
+}
+
+/// Translate an iced-x86 `Register` into the MMX register file index `0..8`
+/// for `MM0..MM7`, returning `None` for any non-MMX register.
+#[must_use]
+pub fn classify_mm(reg: Register) -> Option<u8> {
+    use Register as R;
+    let index: u8 = match reg {
+        R::MM0 => 0,
+        R::MM1 => 1,
+        R::MM2 => 2,
+        R::MM3 => 3,
+        R::MM4 => 4,
+        R::MM5 => 5,
+        R::MM6 => 6,
+        R::MM7 => 7,
+        _ => return None,
+    };
+    Some(index)
 }
 
 #[cfg(test)]
