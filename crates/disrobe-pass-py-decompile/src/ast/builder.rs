@@ -8050,6 +8050,31 @@ fn capture_store_end(
     end
 }
 
+/// End of the pattern-capture bind region for an arm: the contiguous run of binding machinery
+/// (capture stores, structural extraction, refutable gates, cleanup pops) that follows the arm's
+/// first refutable test, stopping at the first real value-flow op. A trailing `if` guard begins with
+/// such value flow (its walrus `(name := expr)` loads operands before storing), so any `STORE_FAST`
+/// emitted by a guard walrus lies past this boundary and is excluded from the pattern-`as` count.
+fn pattern_capture_region_end(
+    stream: &DecodedStream,
+    inner_start: usize,
+    fail_target: usize,
+    region_end: usize,
+) -> usize {
+    let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
+    let first_gate: Option<usize> =
+        (inner_start..scan_end).find(|&k: &usize| is_arm_gate(stream, k, fail_target));
+    let from: usize = first_gate.map_or(inner_start, |gate: usize| gate + 1);
+    let mut k: usize = from;
+    while k < scan_end
+        && (is_match_binding_op(stream, k, fail_target, region_end)
+            || matches!(stream.ops[k], CanonicalOp::StoreFastLoadFast(_, _)))
+    {
+        k += 1;
+    }
+    k.min(scan_end)
+}
+
 /// Index just past the final refutable gate of an arm whose sub-tests all share `fail_target`. The
 /// arm body (or guard) begins at the binding machinery that follows.
 fn last_gate_after(
@@ -8202,8 +8227,11 @@ fn classify_pattern(
     let inner: Pattern =
         classify_simple_pattern(code, stream, inner_start, fail_target, region_end);
 
+    let capture_end: usize =
+        pattern_capture_region_end(stream, inner_start, fail_target, region_end);
+
     if let Some(structural) = structural_capture_count(stream, inner_start, scan_end, &inner) {
-        let names: Vec<String> = collect_capture_names(code, stream, inner_start, scan_end);
+        let names: Vec<String> = collect_capture_names(code, stream, inner_start, capture_end);
         if names.len() == structural + 1
             && let Some(outer) = names.last()
         {
@@ -8224,7 +8252,7 @@ fn classify_pattern(
             Pattern::MatchMapping { .. } | Pattern::MatchAs { .. }
         )
     {
-        let names: Vec<String> = collect_capture_names(code, stream, inner_start, scan_end);
+        let names: Vec<String> = collect_capture_names(code, stream, inner_start, capture_end);
         if let Some(name) = names.last() {
             return Pattern::MatchAs {
                 pattern: Some(Box::new(inner)),
