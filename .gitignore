@@ -82,6 +82,7 @@ pnpm-lock.yaml
 
 /out
 /out/**
+/docs/book
 .disrobe/
 **/*.dr
 **/*.dr.zst
