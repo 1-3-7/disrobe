@@ -48,7 +48,7 @@
         }
       ],
       "duration_ms": 0,
-      "error": "DR-CORE-0003: pass returned an unwrapped error: DR-NAT-0904: upx -d failed",
+      "error": "DR-CORE-0003: pass returned an unwrapped error: DR-NAT-0917: native.packer-unpack: upx unpack failed",
       "format_tag_in": "upx",
       "id": 1,
       "input_blake3": "3eadc04bb5ace0881d0c26132b19efdad0de852db74f8e69e37552f9bfaed552",

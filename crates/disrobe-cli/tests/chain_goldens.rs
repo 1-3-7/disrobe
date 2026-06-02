@@ -170,7 +170,7 @@ fn scrub_errors(value: &mut Value) {
 
 fn scrub_error_text(s: &str) -> String {
     let normalized: String = s.replace("\r\n", "\n").replace('\r', "");
-    for marker in ["upx -d failed", "exited with status"] {
+    for marker in ["upx -d failed", "upx unpack failed", "exited with status"] {
         if let Some(idx) = normalized.find(marker) {
             return format!("{}{marker}", &normalized[..idx]);
         }
