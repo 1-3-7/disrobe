@@ -261,17 +261,20 @@ pub fn wrap_external_extract(
         tool: tool.binary_name(),
     })?;
     std::fs::create_dir_all(out_dir)?;
+    let staging: PathBuf = create_staging_dir(out_dir, bytes)?;
     let tmp_input: PathBuf = stage_input_tempfile(bytes, tool)?;
     let timeout: Duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
     let result: Result<()> = match tool {
-        ExternalTool::Unrar => invoke_unrar(&resolved, &tmp_input, out_dir, timeout),
-        ExternalTool::SevenZip => invoke_sevenz(&resolved, &tmp_input, out_dir, timeout),
-        ExternalTool::Pkgutil => invoke_pkgutil(&resolved, &tmp_input, out_dir, timeout),
-        ExternalTool::Hdiutil => invoke_hdiutil(&resolved, &tmp_input, out_dir, timeout),
-        ExternalTool::Bsdtar => invoke_bsdtar(&resolved, &tmp_input, out_dir, timeout),
+        ExternalTool::Unrar => invoke_unrar(&resolved, &tmp_input, &staging, timeout),
+        ExternalTool::SevenZip => invoke_sevenz(&resolved, &tmp_input, &staging, timeout),
+        ExternalTool::Pkgutil => invoke_pkgutil(&resolved, &tmp_input, &staging, timeout),
+        ExternalTool::Hdiutil => invoke_hdiutil(&resolved, &tmp_input, &staging, timeout),
+        ExternalTool::Bsdtar => invoke_bsdtar(&resolved, &tmp_input, &staging, timeout),
     };
     let _ = std::fs::remove_file(&tmp_input);
-    result?;
+    let contained: Result<()> = result.and_then(|()| contain_staging_into(&staging, out_dir));
+    let _ = std::fs::remove_dir_all(&staging);
+    contained?;
     let kind: ContainerKind = match tool {
         ExternalTool::Unrar => ContainerKind::Rar,
         ExternalTool::SevenZip => ContainerKind::Iso,
@@ -340,6 +343,73 @@ const fn nonce_from_bytes(bytes: &[u8]) -> u128 {
         i += 1;
     }
     acc ^ (bytes.len() as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15_u128)
+}
+
+fn create_staging_dir(out_dir: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let parent: &Path = out_dir.parent().unwrap_or(out_dir);
+    let pid: u32 = std::process::id();
+    let nonce: u128 = nonce_from_bytes(bytes);
+    let counter: u64 = STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name: String = format!(".disrobe-stage-{pid}-{nonce:032x}-{counter}");
+    let staging: PathBuf = parent.join(name);
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    std::fs::create_dir_all(&staging)?;
+    Ok(staging)
+}
+
+static STAGING_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn contain_staging_into(staging: &Path, out_dir: &Path) -> Result<()> {
+    let staging_root: PathBuf = std::fs::canonicalize(staging).map_err(Error::Io)?;
+    move_contained(&staging_root, &staging_root, out_dir)
+}
+
+fn move_contained(root: &Path, cur: &Path, out_dir: &Path) -> Result<()> {
+    let read: std::fs::ReadDir = std::fs::read_dir(cur)?;
+    for entry in read {
+        let entry: std::fs::DirEntry = entry?;
+        let entry_path: PathBuf = entry.path();
+        let meta: std::fs::Metadata = std::fs::symlink_metadata(&entry_path)?;
+        let file_type: std::fs::FileType = meta.file_type();
+        if file_type.is_symlink() {
+            return Err(reject_escape(root, &entry_path));
+        }
+        let real: PathBuf = std::fs::canonicalize(&entry_path).map_err(Error::Io)?;
+        if !real.starts_with(root) {
+            return Err(reject_escape(root, &entry_path));
+        }
+        let rel: &Path = real.strip_prefix(root).unwrap_or(&real);
+        let dest: PathBuf = out_dir.join(rel);
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&dest)?;
+            move_contained(root, &real, out_dir)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            move_file(&real, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn move_file(src: &Path, dst: &Path) -> Result<()> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(src, dst).map_err(Error::Io)?;
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
+fn reject_escape(root: &Path, offending: &Path) -> Error {
+    let rel: String = offending.strip_prefix(root).map_or_else(
+        |_| offending.to_string_lossy().into_owned(),
+        |p: &Path| p.to_string_lossy().replace('\\', "/"),
+    );
+    Error::UnsafeEntryPath(rel)
 }
 
 fn invoke_unrar(program: &Path, archive: &Path, out_dir: &Path, timeout: Duration) -> Result<()> {
@@ -708,6 +778,59 @@ mod tests {
             Err(other) => panic!("expected timeout, got {other:?}"),
             Ok(_) => panic!("mock did not actually block"),
         }
+    }
+
+    #[test]
+    fn containment_accepts_normal_entries() {
+        let staging: PathBuf = temp_dir("contain-ok-stage");
+        let out: PathBuf = temp_dir("contain-ok-out");
+        std::fs::create_dir_all(staging.join("sub")).expect("mkdir sub");
+        std::fs::write(staging.join("top.txt"), b"top").expect("write top");
+        std::fs::write(staging.join("sub").join("nested.txt"), b"nested").expect("write nested");
+        contain_staging_into(&staging, &out).expect("containment must accept normal entries");
+        assert!(out.join("top.txt").is_file());
+        assert!(out.join("sub").join("nested.txt").is_file());
+    }
+
+    #[test]
+    fn containment_rejects_symlink_escape() {
+        let staging: PathBuf = temp_dir("contain-escape-stage");
+        let out: PathBuf = temp_dir("contain-escape-out");
+        let outside: PathBuf = temp_dir("contain-escape-outside");
+        let secret: PathBuf = outside.join("secret.txt");
+        std::fs::write(&secret, b"top-secret").expect("write secret");
+        std::fs::write(staging.join("benign.txt"), b"benign").expect("write benign");
+        let link: PathBuf = staging.join("escape");
+        let made: bool = make_symlink(&secret, &link);
+        if !made {
+            return;
+        }
+        let r: Result<()> = contain_staging_into(&staging, &out);
+        match r {
+            Err(Error::UnsafeEntryPath(_)) => {}
+            Err(other) => panic!("expected UnsafeEntryPath, got {other:?}"),
+            Ok(()) => panic!("symlink escape was not rejected"),
+        }
+        assert!(
+            !out.join("escape").exists(),
+            "escaping symlink must not surface into out_dir"
+        );
+        assert!(secret.is_file(), "containment must not follow link out");
+    }
+
+    #[cfg(unix)]
+    fn make_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn make_symlink(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn make_symlink(_target: &Path, _link: &Path) -> bool {
+        false
     }
 
     #[test]
