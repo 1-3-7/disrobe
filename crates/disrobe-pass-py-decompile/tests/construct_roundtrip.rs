@@ -525,6 +525,82 @@ fn try_else_finally_tail_return_preserved_3_12_plus() {
     );
 }
 
+/// Regression for the 3.15 nested-`for` mid-loop return collapse (#79). A `return (i, j)` executed two
+/// loops deep carries one `SWAP 3; POP_TOP; POP_TOP` iterator-unwind triple per open loop (the 3.15
+/// `LOAD_FAST_BORROW`/`FOR_ITER` codegen leaves two slots per iterator). Before the fix the recognizer
+/// matched only the pre-3.15 `Swap(2)+Pop` pair, so the triples' `POP_TOP`s discarded the assembled
+/// `BUILD_TUPLE` and `return (i, j)` collapsed to a bare `(i, j)` expression returning `None`. Asserts
+/// the recovered source carries `return (i, j)` and that `f([[1,2],[3,4]], 4)` still evaluates to (1, 1).
+#[test]
+fn for_nested_mid_loop_return_preserved_3_15() {
+    let Some(interpreter): Option<PathBuf> = find_interpreter("3.15") else {
+        return;
+    };
+    let scratch: PathBuf = PathBuf::from(REPORT_DIR).join("for-nested-scratch");
+    let _ = fs::create_dir_all(&scratch);
+    let source_path: PathBuf = PathBuf::from(CASES_DIR).join("for_nested.py");
+    assert!(
+        source_path.is_file(),
+        "missing fixture {}",
+        source_path.display()
+    );
+
+    let orig_pyc: PathBuf = scratch.join("orig.3.15.pyc");
+    compile_source(&interpreter, &source_path, &orig_pyc)
+        .unwrap_or_else(|e| panic!("orig compile 3.15: {e}"));
+    let (original_code, marshal_version): (CodeObject, MarshalVersion) =
+        read_code(&orig_pyc).unwrap_or_else(|e| panic!("read orig 3.15: {e}"));
+    let decompile_version: disrobe_pass_py_decompile::bytecode::version::PyVersion =
+        marshal_to_decompile(marshal_version).unwrap_or_else(|e| panic!("version map: {e:?}"));
+    let source: String = build_real_source(&original_code, &decompile_version, marshal_version)
+        .unwrap_or_else(|e| panic!("decompile 3.15: {e}"));
+    assert!(
+        source.contains("return (i, j)"),
+        "py3.15: nested-for mid-loop return must recover `return (i, j)`, not a bare expr; got:\n{source}"
+    );
+    let recovered_path: PathBuf = scratch.join("recovered.3.15.py");
+    fs::write(&recovered_path, &source).expect("write recovered");
+    let value: (i64, i64) = eval_f_matrix(&interpreter, &recovered_path);
+    assert_eq!(
+        value,
+        (1, 1),
+        "py3.15: recovered f([[1,2],[3,4]], 4) must equal (1, 1)"
+    );
+}
+
+/// Run `f([[1,2],[3,4]], 4)` from `script` and return the recovered `(row, col)` tuple. Panics with the
+/// interpreter stderr on any failure so the regression surfaces the real cause.
+fn eval_f_matrix(interpreter: &Path, script: &Path) -> (i64, i64) {
+    let driver: String = format!(
+        "import importlib.util,sys;\
+         spec=importlib.util.spec_from_file_location('m',r'{}');\
+         m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);\
+         r=m.f([[1,2],[3,4]],4);sys.stdout.write('RESULT=%d,%d'%(r[0],r[1]))",
+        script.display()
+    );
+    let output: std::process::Output = Command::new(interpreter)
+        .args(["-c", &driver])
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn interpreter");
+    assert!(
+        output.status.success(),
+        "running recovered module failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let marker: &str = stdout.rsplit("RESULT=").next().unwrap_or("").trim();
+    let (a, b): (&str, &str) = marker
+        .split_once(',')
+        .unwrap_or_else(|| panic!("f did not print a pair, got {stdout:?}"));
+    (
+        a.parse::<i64>()
+            .unwrap_or_else(|_| panic!("bad row in {stdout:?}")),
+        b.parse::<i64>()
+            .unwrap_or_else(|_| panic!("bad col in {stdout:?}")),
+    )
+}
+
 /// Run `f([1,2,3])` from `script` under `interpreter` and return its integer result. Panics with the
 /// interpreter stderr on any failure so the regression surfaces the real cause.
 fn eval_f_106(interpreter: &Path, script: &Path) -> i64 {

@@ -10797,40 +10797,58 @@ fn compare_chain_cleanup_skip(ops: &[CanonicalOp], idx: usize) -> Option<usize> 
 }
 
 /// A `return <value>` executed inside `N` open `for`-loops carries the per-iterator stack
-/// unwind: each enclosing iterator (sitting below the return value on the value stack) is discarded
-/// by a `ROT_TWO; POP_TOP` pair (pre-3.11) or `SWAP 2; POP_TOP` pair (3.11+) emitted just before
-/// `RETURN_VALUE`. These pairs are pure stack plumbing - the SIM never models the iterators - so left
-/// unhandled the trailing `POP_TOP` discards the assembled return value as a bare `Expr` statement
-/// and the `RETURN_VALUE` returns nothing. Detect one such cleanup pair at `idx` when (a) we are
-/// inside at least one open loop frame and (b) skipping further cleanup pairs/padding lands on a
-/// `RETURN_VALUE`/`RETURN_CONST`; the SIM then skips both ops so the value survives to the return.
-fn iterator_return_cleanup_pair(ops: &[CanonicalOp], idx: usize) -> bool {
+/// unwind: each enclosing iterator sitting below the return value is discarded just before
+/// `RETURN_VALUE`. Pre-3.15 each iterator is one slot, discarded by a `ROT_TWO; POP_TOP`
+/// (pre-3.11) or `SWAP 2; POP_TOP` (3.11-3.14) pair. On 3.15 the `LOAD_FAST_BORROW`/`FOR_ITER`
+/// codegen leaves TWO slots per iterator, so the return value is buried two deep and the unwind
+/// is a `SWAP 3; POP_TOP; POP_TOP` triple per loop. These groups are pure stack plumbing the SIM
+/// never models; left unhandled the trailing `POP_TOP`(s) discard the assembled return value as a
+/// bare `Expr` and `RETURN_VALUE` returns nothing. Returns `Some(group_len)` for the cleanup group
+/// at `idx` when (a) inside at least one open loop frame and (b) skipping further cleanup
+/// groups/padding lands on a `RETURN_VALUE`/`RETURN_CONST`; the SIM skips that group so the value
+/// survives to the return. The `SWAP 3` triple is gated to 3.15+ so the 100% stable matrix
+/// (<= 3.14) is untouched.
+fn iterator_return_cleanup_pair(ops: &[CanonicalOp], idx: usize) -> Option<usize> {
     if loop_frame_depth() == 0 {
-        return false;
+        return None;
     }
-    if !matches!(
-        ops.get(idx),
-        Some(CanonicalOp::Swap(2) | CanonicalOp::RotN(2))
-    ) {
-        return false;
-    }
-    if !matches!(ops.get(idx + 1), Some(CanonicalOp::Pop)) {
-        return false;
-    }
-    let mut k: usize = idx + 2;
+    let allow_borrow_triple: bool =
+        active_version().is_some_and(|v: PyVersion| (v.major(), v.minor()) >= (3, 15));
+    let head_len: usize = cleanup_group_len(ops, idx, allow_borrow_triple)?;
+    let mut k: usize = idx + head_len;
     while let Some(op) = ops.get(k) {
         match op {
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => k += 1,
-            CanonicalOp::Swap(2) | CanonicalOp::RotN(2)
-                if matches!(ops.get(k + 1), Some(CanonicalOp::Pop)) =>
-            {
-                k += 2;
-            }
-            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => return true,
-            _ => return false,
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => return Some(head_len),
+            _ => match cleanup_group_len(ops, k, allow_borrow_triple) {
+                Some(len) => k += len,
+                None => return None,
+            },
         }
     }
-    false
+    None
+}
+
+/// Length of the per-loop iterator-unwind group at `idx`, or `None` if no group starts there.
+/// `Swap(2)|RotN(2) + Pop` is the 1-slot iterator shape (all versions); `Swap(3) + Pop + Pop` is
+/// the 3.15+ 2-slot borrow-iterator shape, matched only when `allow_borrow_triple`.
+#[inline]
+fn cleanup_group_len(ops: &[CanonicalOp], idx: usize, allow_borrow_triple: bool) -> Option<usize> {
+    match ops.get(idx) {
+        Some(CanonicalOp::Swap(2) | CanonicalOp::RotN(2))
+            if matches!(ops.get(idx + 1), Some(CanonicalOp::Pop)) =>
+        {
+            Some(2)
+        }
+        Some(CanonicalOp::Swap(3))
+            if allow_borrow_triple
+                && matches!(ops.get(idx + 1), Some(CanonicalOp::Pop))
+                && matches!(ops.get(idx + 2), Some(CanonicalOp::Pop)) =>
+        {
+            Some(3)
+        }
+        _ => None,
+    }
 }
 
 /// Recover a 3.11+ `SWAP(n)`-based simultaneous tuple assignment such as
@@ -10960,8 +10978,8 @@ fn build_linear_stmts_sim_seed(
             skip_next = after_skip;
             continue;
         }
-        if iterator_return_cleanup_pair(ops, idx) {
-            skip_next = 1;
+        if let Some(group_len) = iterator_return_cleanup_pair(ops, idx) {
+            skip_next = group_len - 1;
             continue;
         }
         if boolop.is_some()
