@@ -8598,7 +8598,7 @@ fn mapping_rest_and_outer(
 ) -> (Option<usize>, Option<usize>) {
     let total: usize = stores.len();
     if !has_rest_marker {
-        let outer_idx: Option<usize> = (total > capture_key_count).then_some(total - 1);
+        let outer_idx: Option<usize> = (total > capture_key_count).then(|| total - 1);
         return (None, outer_idx);
     }
     let extra: usize = total.saturating_sub(capture_key_count);
@@ -8614,7 +8614,7 @@ fn mapping_rest_and_outer(
     }
     if minor <= 10 {
         let rest_idx: usize = capture_key_count.min(total - 1);
-        let outer_idx: Option<usize> = has_outer.then_some(total - 1);
+        let outer_idx: Option<usize> = has_outer.then(|| total - 1);
         (Some(rest_idx), outer_idx)
     } else {
         let outer_idx: Option<usize> = has_outer.then_some(1);
@@ -15502,7 +15502,13 @@ fn slice_clamped(ops: &[CanonicalOp], lo: usize, hi: usize) -> &[CanonicalOp] {
 }
 
 /// Filter conditions (`if`) guarding a comprehension clause body, recovered from the conditional
-/// jumps between the loop target and the next clause.
+/// jumps between the loop target and the next clause. A pre-3.8 `async for` lays its
+/// `StopAsyncIteration` exhaustion poll-guard
+/// (`DUP_TOP / LOAD_GLOBAL StopAsyncIteration / COMPARE_OP(exception match) / POP_JUMP_IF_*`) inline
+/// in this same range; that `exception match` jump is loop-termination machinery with no surface
+/// comprehension syntax, so it is detected via `is_exc_match_compare` and skipped rather than leaked
+/// as a bogus `if … exception matches …` filter - mirroring the statement-level async-for guard skip
+/// and the `extract_comprehension_parts` path.
 fn comp_clause_filters(
     nested: &CodeObject,
     stream: &DecodedStream,
@@ -15524,6 +15530,10 @@ fn comp_clause_filters(
                 build_linear_stmts_sim(nested, slice_clamped(&stream.ops, expr_lo, i))
                     .unwrap_or_default();
             if let Some(cond) = residual.into_iter().next_back() {
+                if is_exc_match_compare(&cond) {
+                    i += 1;
+                    continue;
+                }
                 ifs.push(comp_filter_expr(stream, i, cond));
             }
         }
