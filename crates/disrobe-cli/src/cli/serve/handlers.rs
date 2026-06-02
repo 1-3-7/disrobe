@@ -116,7 +116,7 @@ pub(super) const PASS_DESCRIPTORS: &[PassDescriptorRef] = &[
     },
     PassDescriptorRef {
         name: "py-decompile",
-        description: "pycdc subprocess or disasm-fallback",
+        description: "native CPython 1.0..3.15 decompiler + round-trip verify",
     },
     PassDescriptorRef {
         name: "py-sourcedefender",

@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_llm_metadata::{LlmMetadataEmitter, MetadataSelection};
 use disrobe_pass_py_decompile::{
@@ -8,7 +7,7 @@ use disrobe_pass_py_decompile::{
 };
 
 use super::super::llm::{self as llm_cli, LlmFlags};
-use super::{DecompileBackend, py_obj_label, render_disasm, which_on_path};
+use super::{DecompileBackend, py_obj_label};
 
 pub(super) fn decompile(
     input: PathBuf,
@@ -43,12 +42,7 @@ pub(super) fn decompile(
         }
     };
 
-    let outcome: DecompileOutcome = match backend {
-        DecompileBackend::Native => run_native_backend(&bytes)?,
-        DecompileBackend::Pycdc | DecompileBackend::Decompyle3 | DecompileBackend::Uncompyle6 => {
-            run_external_backend(backend, &input, &code, pyc.header.version)?
-        }
-    };
+    let outcome: DecompileOutcome = run_native_backend(&bytes)?;
 
     std::fs::write(&source_path, outcome.source.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0062: cannot write decompiled source: {e}"))?;
@@ -172,72 +166,6 @@ fn run_native_backend(bytes: &[u8]) -> miette::Result<DecompileOutcome> {
         native_fallback_reason: native.fallback_reason,
         roundtrip: Some(rt),
     })
-}
-
-fn run_external_backend(
-    backend: DecompileBackend,
-    input: &Path,
-    code: &disrobe_py_marshal::CodeObject,
-    version: disrobe_py_marshal::PyVersion,
-) -> miette::Result<DecompileOutcome> {
-    let tool_name: &'static str = backend.external_tool_name().ok_or_else(|| {
-        miette::miette!("DR-CLI-0066: internal: external backend without tool name")
-    })?;
-    let Some(tool): Option<PathBuf> = which_on_path(tool_name) else {
-        return Err(miette::miette!(
-            "DR-CLI-0067: backend `{tool_name}` requested but not found on PATH; install it or use --backend native"
-        ));
-    };
-    match Command::new(&tool).arg(input).output() {
-        Ok(o) if o.status.success() => Ok(DecompileOutcome {
-            source: String::from_utf8_lossy(&o.stdout).into_owned(),
-            backend_label: backend.label(),
-            external_tool: Some(tool),
-            native_engine_ok: false,
-            native_fallback_reason: None,
-            roundtrip: None,
-        }),
-        Ok(o) => {
-            let header: String = format!(
-                "# decompile-error: {} exited with status {:?}\n# stderr_tail:\n# {}\n",
-                tool.display(),
-                o.status.code(),
-                String::from_utf8_lossy(&o.stderr)
-                    .lines()
-                    .take(20)
-                    .collect::<Vec<_>>()
-                    .join("\n# ")
-            );
-            let dis_text: String = render_disasm(code, version);
-            Ok(DecompileOutcome {
-                source: format!("{header}\n{dis_text}"),
-                backend_label: "disasm-fallback",
-                external_tool: Some(tool),
-                native_engine_ok: false,
-                native_fallback_reason: Some(format!(
-                    "external {} exit {:?}",
-                    backend.label(),
-                    o.status.code()
-                )),
-                roundtrip: None,
-            })
-        }
-        Err(e) => {
-            let header: String = format!(
-                "# decompile-error: failed to spawn {}: {e}\n",
-                tool.display()
-            );
-            let dis_text: String = render_disasm(code, version);
-            Ok(DecompileOutcome {
-                source: format!("{header}\n{dis_text}"),
-                backend_label: "disasm-fallback",
-                external_tool: Some(tool),
-                native_engine_ok: false,
-                native_fallback_reason: Some(format!("spawn-error: {e}")),
-                roundtrip: None,
-            })
-        }
-    }
 }
 
 fn roundtrip_to_json(rt: &RoundtripOutcome) -> serde_json::Value {
