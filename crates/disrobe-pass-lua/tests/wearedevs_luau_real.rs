@@ -69,6 +69,27 @@ fn peel_real_wearedevs_obfuscator_net() {
     );
 }
 
+const VM_ENCODED_INTRINSICS: &[&str] = &[
+    "string",
+    "table",
+    "math",
+    "setmetatable",
+    "error",
+    "pcall",
+    "unpack",
+    "tonumber",
+    "tostring",
+    "floor",
+    "concat",
+    "gmatch",
+    "gsub",
+    "byte",
+    "char",
+    "remove",
+    "random",
+    "len",
+];
+
 #[test]
 fn peel_real_wearedevs_recovers_lua_identifiers() {
     let Some(data): Option<Vec<u8>> = load_fixture() else {
@@ -77,12 +98,24 @@ fn peel_real_wearedevs_recovers_lua_identifiers() {
     };
     let opts: DeobfOptions = DeobfOptions::default();
     let out = wearedevs::peel(&data, &opts).expect("peel");
-    let pool: String = out.recovered_strings.join("\n");
-    let has_lua_tokens: bool = ["game", "script", "return", "function", "local", "string"]
+    let pool: Vec<String> = out.recovered_strings;
+    let recovered_intrinsics: usize = VM_ENCODED_INTRINSICS
         .iter()
-        .any(|kw: &&str| pool.contains(kw));
+        .filter(|kw: &&&str| pool.iter().any(|s: &String| s == *kw))
+        .count();
     assert!(
-        has_lua_tokens || !out.recovered_strings.is_empty(),
-        "expected recognizable Lua/Roblox tokens in decoded pool"
+        recovered_intrinsics >= 12,
+        "expected the WeAreDevs VM intrinsic symbol table; recovered {recovered_intrinsics}/18 of {VM_ENCODED_INTRINSICS:?}, pool={pool:?}"
+    );
+    let has_metamethods: bool = ["__index", "__metatable", "__len", "__gc"]
+        .iter()
+        .any(|mm: &&str| pool.iter().any(|s: &String| s == *mm));
+    assert!(
+        has_metamethods,
+        "expected recovered metamethod names, pool={pool:?}"
+    );
+    assert!(
+        pool.iter().any(|s: &String| s == "Tamper Detected!"),
+        "expected the anti-tamper string literal the VM dispatch guards on, pool={pool:?}"
     );
 }

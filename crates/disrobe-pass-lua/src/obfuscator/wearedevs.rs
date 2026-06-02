@@ -1,8 +1,28 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
-use crate::obfuscator::string_decode::{decode_base64_variant, parse_alphabet_table};
+use crate::obfuscator::string_decode::{
+    apply_permutation, decode_base64_variant, eval_arith_expr, parse_alphabet_table,
+    parse_permutation_table,
+};
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DispatchOp {
+    ConstLoad,
+    Store,
+    DirectJump,
+    IndirectJump,
+    Arith,
+}
+
+#[derive(Debug, Clone)]
+struct DispatchLift {
+    pc_thresholds: Vec<i64>,
+    op_counts: BTreeMap<&'static str, usize>,
+    indirect_jumps: usize,
+    const_loads: usize,
+}
 
 const MARKERS: &[&[u8]] = &[
     b"-- WeAreDevs",
@@ -115,29 +135,180 @@ fn decode_wearedevs(text: &str) -> Option<PeelResult> {
     if !decoded_any {
         return None;
     }
+
+    let mut passes_run: Vec<String> = vec![
+        "wearedevs-alphabet-recover".to_owned(),
+        "base64-variant-string-decode".to_owned(),
+    ];
+
+    let permutation: Option<Vec<(usize, usize)>> = parse_permutation_table(text);
+    let mut ordered: Vec<String> = recovered.clone();
+    if let Some(pairs) = permutation.as_ref() {
+        apply_permutation(&mut ordered, pairs);
+        passes_run.push("wearedevs-permutation-replay".to_owned());
+    }
+
+    let lift: Option<DispatchLift> = lift_dispatch(text);
+    if lift.is_some() {
+        passes_run.push("wearedevs-dispatch-lift".to_owned());
+    }
+
     let mut out: String = String::new();
-    out.push_str(
-        "-- disrobe wearedevs: recovered string pool (clean-room base64-variant decode)\n",
-    );
     out.push_str("local STRINGS = {\n");
-    for s in &recovered {
+    for s in &ordered {
         out.push_str("  ");
         out.push_str(&quote(s));
         out.push_str(",\n");
     }
     out.push_str("}\n");
+
+    let mut residual_markers: Vec<String> = Vec::new();
+    if let Some(lift) = lift.as_ref() {
+        out.push_str(&render_dispatch(lift));
+        residual_markers.push(format!(
+            "wearedevs vm: {} indirect jumps (W=v[p(k)]) are data-dependent -- partial CFG",
+            lift.indirect_jumps
+        ));
+        residual_markers.push(
+            "wearedevs vm: opcode/dispatch stream lifted; full source reconstruction partial"
+                .to_owned(),
+        );
+    } else {
+        residual_markers.push(
+            "wearedevs vm: dispatch tree not statically lifted (string pool only)".to_owned(),
+        );
+    }
+    if permutation.is_none() {
+        residual_markers.push(
+            "wearedevs vm: permutation table absent -- constant order is decode order".to_owned(),
+        );
+    }
+
     Some(PeelResult {
         deobfuscated: out.into_bytes(),
-        passes_run: vec![
-            "wearedevs-alphabet-recover".to_owned(),
-            "base64-variant-string-decode".to_owned(),
-        ],
-        residual_markers: vec![
-            "wearedevs vm dispatch loop not lifted (string pool only)".to_owned(),
-        ],
+        passes_run,
+        residual_markers,
         recovered_strings: recovered,
         fully_recovered: false,
     })
+}
+
+fn lift_dispatch(text: &str) -> Option<DispatchLift> {
+    let marker: &str = "while W do";
+    let start: usize = text.find(marker)? + marker.len();
+    let body: &str = &text[start..];
+
+    let mut pc_thresholds: Vec<i64> = Vec::new();
+    for cut in body.match_indices("if W<").map(|(i, _): (usize, &str)| i) {
+        let after: &str = &body[cut + "if W<".len()..];
+        let expr_end: usize = after.find("then").unwrap_or(after.len());
+        if let Some(value) = eval_arith_expr(&after[..expr_end]) {
+            pc_thresholds.push(value);
+        }
+    }
+    if pc_thresholds.is_empty() {
+        return None;
+    }
+
+    let indirect_jumps: usize = count_occurrences(body, "W=v[p(");
+    let const_loads: usize = count_const_loads(body);
+    let stores: usize = count_store_ops(body);
+    let direct_jumps: usize = count_direct_jumps(body);
+    let arith_ops: usize = count_arith_ops(body);
+
+    let mut op_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    op_counts.insert(classify(&DispatchOp::ConstLoad), const_loads);
+    op_counts.insert(classify(&DispatchOp::Store), stores);
+    op_counts.insert(classify(&DispatchOp::DirectJump), direct_jumps);
+    op_counts.insert(classify(&DispatchOp::IndirectJump), indirect_jumps);
+    op_counts.insert(classify(&DispatchOp::Arith), arith_ops);
+
+    Some(DispatchLift {
+        pc_thresholds,
+        op_counts,
+        indirect_jumps,
+        const_loads,
+    })
+}
+
+#[inline]
+const fn classify(op: &DispatchOp) -> &'static str {
+    match op {
+        DispatchOp::ConstLoad => "const-load",
+        DispatchOp::Store => "register-store",
+        DispatchOp::DirectJump => "direct-jump",
+        DispatchOp::IndirectJump => "indirect-jump",
+        DispatchOp::Arith => "arith",
+    }
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
+}
+
+fn count_const_loads(body: &str) -> usize {
+    let bytes: &[u8] = body.as_bytes();
+    let mut count: usize = 0;
+    let mut i: usize = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'p' && bytes[i + 1] == b'(' && is_operand_start(bytes[i + 2]) {
+            if i == 0 || !bytes[i - 1].is_ascii_alphanumeric() {
+                count += 1;
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+#[inline]
+const fn is_operand_start(b: u8) -> bool {
+    b.is_ascii_digit() || b == b'-'
+}
+
+fn count_store_ops(body: &str) -> usize {
+    let bytes: &[u8] = body.as_bytes();
+    let mut count: usize = 0;
+    let mut i: usize = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'S' && bytes[i + 1] == b'[' {
+            count += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    count
+}
+
+fn count_direct_jumps(body: &str) -> usize {
+    let total: usize = count_occurrences(body, "W=");
+    let indirect: usize = count_occurrences(body, "W=v[p(");
+    total.saturating_sub(indirect)
+}
+
+fn count_arith_ops(body: &str) -> usize {
+    count_occurrences(body, "%")
+}
+
+fn render_dispatch(lift: &DispatchLift) -> String {
+    let mut out: String = String::new();
+    out.push_str("local DISPATCH = {\n");
+    out.push_str(&format!(
+        "  pc_split_points = {},\n",
+        lift.pc_thresholds.len()
+    ));
+    out.push_str(&format!("  const_loads = {},\n", lift.const_loads));
+    out.push_str(&format!("  indirect_jumps = {},\n", lift.indirect_jumps));
+    out.push_str("  opcodes = {\n");
+    for (name, count) in &lift.op_counts {
+        out.push_str(&format!("    {name} = {count},\n"));
+    }
+    out.push_str("  },\n");
+    out.push_str("}\n");
+    out
 }
 
 fn find_alphabet(text: &str) -> Option<BTreeMap<char, u8>> {

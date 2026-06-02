@@ -196,6 +196,71 @@ fn split_top_level(body: &str) -> Vec<&str> {
 }
 
 #[must_use]
+pub fn parse_permutation_table(text: &str) -> Option<Vec<(usize, usize)>> {
+    let marker: &str = "for p,W in ipairs({";
+    let start: usize = text.find(marker)? + marker.len();
+    let rest: &str = &text[start..];
+    let end: usize = match_outer_brace(rest)?;
+    let body: &str = &rest[..end];
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for group in split_top_level(body) {
+        let group: &str = group.trim();
+        let inner: &str = group
+            .strip_prefix('{')
+            .and_then(|s: &str| s.strip_suffix('}'))?;
+        let operands: Vec<&str> = split_top_level(inner);
+        if operands.len() != 2 {
+            return None;
+        }
+        let a: i64 = eval_arith_expr(operands[0])?;
+        let b: i64 = eval_arith_expr(operands[1])?;
+        if a < 1 || b < 1 {
+            return None;
+        }
+        pairs.push((a as usize, b as usize));
+    }
+    if pairs.is_empty() { None } else { Some(pairs) }
+}
+
+#[must_use]
+fn match_outer_brace(s: &str) -> Option<usize> {
+    let bytes: &[u8] = s.as_bytes();
+    let mut depth: i32 = 1;
+    let mut in_string: bool = false;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+pub fn apply_permutation<T>(pool: &mut [T], pairs: &[(usize, usize)]) {
+    for &(a1, b1) in pairs {
+        if a1 == 0 || b1 == 0 || a1 > pool.len() || b1 > pool.len() {
+            continue;
+        }
+        let mut a: usize = a1 - 1;
+        let mut b: usize = b1 - 1;
+        while a < b {
+            pool.swap(a, b);
+            a += 1;
+            b -= 1;
+        }
+    }
+}
+
+#[must_use]
 pub fn decode_base64_variant(input: &str, alphabet: &BTreeMap<char, u8>) -> Option<Vec<u8>> {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3 / 4 + 3);
     let mut acc: u32 = 0;
@@ -288,5 +353,22 @@ mod tests {
     fn split_handles_nested_braces_and_strings() {
         let parts: Vec<&str> = split_top_level("a=1;[\"x;y\"]=2,b={1,2}");
         assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn parse_real_permutation_pairs() {
+        let block: &str = "for p,W in ipairs({{-770075+770076,397966+-397911};{-961273+961274;-341840+341852},{-1025667-(-1025680);-317609+317664}})do";
+        let pairs: Vec<(usize, usize)> = parse_permutation_table(block).expect("parse");
+        assert_eq!(pairs, vec![(1, 55), (1, 12), (13, 55)]);
+    }
+
+    #[test]
+    fn permutation_reverses_segments() {
+        let mut pool: Vec<u32> = (1u32..=6).collect();
+        apply_permutation(&mut pool, &[(1, 6)]);
+        assert_eq!(pool, vec![6, 5, 4, 3, 2, 1]);
+        let mut pool2: Vec<u32> = (1u32..=6).collect();
+        apply_permutation(&mut pool2, &[(2, 5)]);
+        assert_eq!(pool2, vec![1, 5, 4, 3, 2, 6]);
     }
 }
