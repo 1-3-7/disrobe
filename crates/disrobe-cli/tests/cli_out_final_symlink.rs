@@ -93,7 +93,7 @@ fn out_final_resolves_to_terminal_output_regardless_of_mechanism() {
     let final_bytes: Vec<u8> = read_output_bin(terminal_subdir);
 
     let slug: &std::ffi::OsStr = terminal_subdir.file_name().expect("named terminal subdir");
-    let mirror_stage: PathBuf = out_dir.join("stages").join(slug);
+    let mirror_stage: PathBuf = out_dir.join(slug);
     let stage_bytes: Vec<u8> = read_output_bin(&mirror_stage);
 
     assert_eq!(

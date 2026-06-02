@@ -181,11 +181,12 @@ pub(crate) fn run_with_disk(
         .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
     let recovery_path_str: String = recovery_path.display().to_string();
     let stage_summary: Option<String> = if capture_stages {
-        let written: Vec<String> = write_stage_mirror(&out_dir, &plan)?;
+        let mirror: StageMirror = write_stage_mirror(&out_dir, &plan)?;
         Some(format!(
-            "{} stage artifact(s) mirrored under {}; terminal stage(s) linked under {}",
-            written.len(),
-            out_dir.join("stages").display(),
+            "{} stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under {}; {} terminal stage(s) linked under {}",
+            mirror.steps.len(),
+            out_dir.display(),
+            mirror.finals.len(),
             out_dir.join("final").display()
         ))
     } else {
@@ -212,16 +213,27 @@ fn stage_slug(pass_id: Option<&str>) -> String {
         .collect()
 }
 
-fn write_stage_mirror(out_dir: &Path, plan: &ChainPlan) -> miette::Result<Vec<String>> {
-    let stages_dir: PathBuf = out_dir.join("stages");
+#[derive(Debug)]
+struct StageMirror {
+    steps: Vec<String>,
+    finals: Vec<String>,
+}
+
+fn write_stage_mirror(out_dir: &Path, plan: &ChainPlan) -> miette::Result<StageMirror> {
     let final_dir: PathBuf = out_dir.join("final");
-    let mut written: Vec<String> = Vec::new();
+    let mut steps: Vec<String> = Vec::new();
+    let mut finals: Vec<String> = Vec::new();
+    let mut ordinal: u32 = 0;
     for node in &plan.nodes {
         let Some(stage_bytes): Option<&Vec<u8>> = node.output_bytes.as_ref() else {
             continue;
         };
-        let slug: String = stage_slug(node.pass_id.as_deref());
-        let stage_dir: PathBuf = stages_dir.join(format!("{:02}-{slug}", node.id));
+        let Some(pass_id): Option<&str> = node.pass_id.as_deref() else {
+            continue;
+        };
+        ordinal += 1;
+        let slug: String = stage_slug(Some(pass_id));
+        let stage_dir: PathBuf = out_dir.join(format!("{ordinal:02}-{slug}"));
         std::fs::create_dir_all(&stage_dir).map_err(|e| {
             miette::miette!(
                 "DR-CLI-0301: cannot create stage dir {}: {e}",
@@ -235,19 +247,19 @@ fn write_stage_mirror(out_dir: &Path, plan: &ChainPlan) -> miette::Result<Vec<St
                 stage_path.display()
             )
         })?;
-        written.push(stage_path.display().to_string());
+        steps.push(stage_path.display().to_string());
 
         let is_terminal: bool = !plan
             .nodes
             .iter()
             .any(|other: &Node| other.parent_id == Some(node.id));
         if is_terminal {
-            let final_target: PathBuf = final_dir.join(format!("{:02}-{slug}", node.id));
+            let final_target: PathBuf = final_dir.join(format!("{ordinal:02}-{slug}"));
             let kind: LinkKind = path_ops::link_final(&stage_dir, &final_target)?;
-            written.push(format!("{} ({})", final_target.display(), kind.label()));
+            finals.push(format!("{} ({})", final_target.display(), kind.label()));
         }
     }
-    Ok(written)
+    Ok(StageMirror { steps, finals })
 }
 
 fn validate_explicit_passes(spec: &ChainSpec, registry: &PassRegistry) -> miette::Result<()> {
@@ -408,10 +420,11 @@ mod tests {
             leaf_node(1, Some(0), "py.decompile", terminal_bytes),
         ]);
 
-        let written: Vec<String> = write_stage_mirror(&root, &plan).expect("mirror");
+        let mirror: StageMirror = write_stage_mirror(&root, &plan).expect("mirror");
         assert!(
-            written.iter().any(|w: &String| w.contains("final")),
-            "expected a final/ link label in {written:?}"
+            mirror.finals.iter().any(|w: &String| w.contains("final")),
+            "expected a final/ link label in {:?}",
+            mirror.finals
         );
 
         let terminal: &Node = plan
@@ -419,10 +432,9 @@ mod tests {
             .iter()
             .find(|n: &&Node| !plan.nodes.iter().any(|o: &Node| o.parent_id == Some(n.id)))
             .expect("a terminal");
-        let slug: String = stage_slug(terminal.pass_id.as_deref());
         let final_bin: PathBuf = root
             .join("final")
-            .join(format!("{:02}-{slug}", terminal.id))
+            .join("02-py-decompile")
             .join("output.bin");
         let got: Vec<u8> = std::fs::read(&final_bin).expect("final output.bin readable");
         assert_eq!(
@@ -431,12 +443,13 @@ mod tests {
             "final must resolve to terminal stage bytes"
         );
 
-        let stage_bin: PathBuf = root
-            .join("stages")
-            .join(format!("{:02}-{slug}", terminal.id))
-            .join("output.bin");
+        let stage_bin: PathBuf = root.join("02-py-decompile").join("output.bin");
         let stage_got: Vec<u8> = std::fs::read(&stage_bin).expect("stage output.bin");
         assert_eq!(got, stage_got, "final and stage bytes must match");
+        assert!(
+            !root.join("stages").exists(),
+            "flat layout must not create a stages/ wrapper"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -452,19 +465,19 @@ mod tests {
             leaf_node(2, Some(0), "js.deob", b"branch-b-bytes"),
         ]);
 
-        let _: Vec<String> = write_stage_mirror(&root, &plan).expect("mirror");
+        let _: StageMirror = write_stage_mirror(&root, &plan).expect("mirror");
 
-        for (id, expected) in [
-            (1u32, b"branch-a-bytes".as_slice()),
-            (2u32, b"branch-b-bytes"),
+        for (dir_name, expected) in [
+            ("02-py-deob", b"branch-a-bytes".as_slice()),
+            ("03-js-deob", b"branch-b-bytes"),
         ] {
-            let slug: String = stage_slug(Some(if id == 1 { "py.deob" } else { "js.deob" }));
-            let bin: PathBuf = root
-                .join("final")
-                .join(format!("{id:02}-{slug}"))
-                .join("output.bin");
+            let bin: PathBuf = root.join("final").join(dir_name).join("output.bin");
             let got: Vec<u8> = std::fs::read(&bin).expect("terminal final output.bin readable");
-            assert_eq!(got.as_slice(), expected, "terminal {id} bytes mismatch");
+            assert_eq!(
+                got.as_slice(),
+                expected,
+                "terminal {dir_name} bytes mismatch"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&root);

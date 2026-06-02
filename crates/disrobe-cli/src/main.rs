@@ -382,7 +382,7 @@ enum Cmd {
         dry_run: bool,
         #[arg(
             long,
-            help = "mirror each stage's byte-exact output under <out>/stages/NN-<pass>/ and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
+            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
     },
@@ -405,7 +405,7 @@ enum Cmd {
         chain_pin: Option<String>,
         #[arg(
             long,
-            help = "mirror each stage's byte-exact output under <out>/stages/NN-<pass>/ and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
+            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
     },

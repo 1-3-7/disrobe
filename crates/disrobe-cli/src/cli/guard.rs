@@ -86,6 +86,14 @@ fn enclosing_out_index(parts: &[Component<'_>]) -> Option<usize> {
     })
 }
 
+fn is_numbered_step(name: &std::ffi::OsStr) -> bool {
+    let Some(s): Option<&str> = name.to_str() else {
+        return false;
+    };
+    let bytes: &[u8] = s.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2] == b'-'
+}
+
 fn is_in_stage_mirror(canonical: &Path) -> bool {
     let parts: Vec<Component<'_>> = canonical.components().collect();
     let Some(out_index): Option<usize> = enclosing_out_index(&parts) else {
@@ -99,6 +107,7 @@ fn is_in_stage_mirror(canonical: &Path) -> bool {
             Component::Normal(name) => {
                 **name == *std::ffi::OsStr::new("stages")
                     || **name == *std::ffi::OsStr::new("final")
+                    || is_numbered_step(name)
             }
             _ => false,
         })
@@ -262,6 +271,27 @@ mod tests {
         std::fs::create_dir_all(&stage_dir).expect("mk stage dir");
         let candidate: PathBuf = stage_dir.join("not-yet-written.bin");
         assert!(!candidate.exists());
+        let decision: Decision = guard_decision(&candidate, &[]);
+        assert!(matches!(
+            decision,
+            Decision::Deny {
+                reason: GuardReason::StageMirrorContainment,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn deny_on_flat_numbered_step_dir() {
+        let dir: tempfile::TempDir = tempdir().expect("tempdir");
+        let step_dir: PathBuf = dir
+            .path()
+            .join("out")
+            .join("demo-chain")
+            .join("01-pyarmor-unpack");
+        std::fs::create_dir_all(&step_dir).expect("mk step dir");
+        let candidate: PathBuf = step_dir.join("output.bin");
+        std::fs::write(&candidate, b"stage").expect("write stage");
         let decision: Decision = guard_decision(&candidate, &[]);
         assert!(matches!(
             decision,
