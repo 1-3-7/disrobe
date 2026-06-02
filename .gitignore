@@ -183,6 +183,9 @@ corpus/mobile/macho/
 
 !corpus/dotnet/**
 
+!corpus/native/packers/upx/hello.original.exe
+!corpus/native/packers/upx/hello.packed.nrv2b.exe
+
 corpus/mobile/macho-mac/
 corpus/mobile/macho-*/
 corpus/**/*.fat

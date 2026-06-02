@@ -124,9 +124,9 @@ fn write_decompile_script(script_path: &Path, decompile_out: &Path) -> miette::R
 pub(crate) fn unpack(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     use disrobe_pass_native::{
         FsgUnpackOutput, MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer,
-        PackerDetection, PetitePhase2EmulatedOutput, UnpackerStatus, detect_packers, unpack_fsg,
-        unpack_mew, unpack_mpress, unpack_nspack_emulated, unpack_petite_phase2_emulated,
-        unpack_with_upx_cli,
+        PackerDetection, PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput,
+        detect_packers, unpack_fsg, unpack_mew, unpack_mpress, unpack_nspack_emulated,
+        unpack_petite_phase2_emulated, unpack_upx,
     };
 
     let bytes: Vec<u8> = std::fs::read(&input)
@@ -143,29 +143,12 @@ pub(crate) fn unpack(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()>
     let status: UnpackerStatus = packer.unpacker_status();
 
     let recovered: Vec<u8> = match status {
-        UnpackerStatus::ExternalCliWrap => {
-            let mut input_tmp: PathBuf = std::env::temp_dir();
-            input_tmp.push(format!(
-                "disrobe-native-unpack-in-{}.bin",
-                std::process::id()
-            ));
-            let mut output_tmp: PathBuf = std::env::temp_dir();
-            output_tmp.push(format!(
-                "disrobe-native-unpack-out-{}.bin",
-                std::process::id()
-            ));
-            std::fs::write(&input_tmp, &bytes)
-                .map_err(|e| miette::miette!("DR-NATIVE-0032: write tmp: {e}"))?;
-            let _ = std::fs::remove_file(&output_tmp);
-            unpack_with_upx_cli(input_tmp.as_path(), output_tmp.as_path())
-                .map_err(|e| miette::miette!("DR-NATIVE-0033: upx -d failed: {e}"))?;
-            let recovered: Vec<u8> = std::fs::read(&output_tmp)
-                .map_err(|e| miette::miette!("DR-NATIVE-0034: read upx out: {e}"))?;
-            let _ = std::fs::remove_file(&input_tmp);
-            let _ = std::fs::remove_file(&output_tmp);
-            recovered
-        }
         UnpackerStatus::Implemented => match packer {
+            Packer::Upx => {
+                let o: UpxUnpackOutput = unpack_upx(&bytes)
+                    .map_err(|e| miette::miette!("DR-NATIVE-0048: upx unpack failed: {e}"))?;
+                o.recovered_image
+            }
             Packer::Petite => {
                 let o: PetitePhase2EmulatedOutput = unpack_petite_phase2_emulated(&bytes)
                     .map_err(|e| miette::miette!("DR-NATIVE-0035: petite unpack failed: {e}"))?;

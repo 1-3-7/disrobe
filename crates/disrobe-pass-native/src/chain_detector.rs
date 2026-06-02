@@ -11,9 +11,9 @@ use disrobe_core::pass::PassId;
 
 use crate::packers::{
     Detection as PackerDetection, FsgUnpackOutput, MewUnpackOutput, MpressUnpackOutput,
-    NspackEmulatedReport, Packer, PetitePhase2EmulatedOutput, UnpackerStatus,
+    NspackEmulatedReport, Packer, PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput,
     detect as detect_packers, unpack_fsg, unpack_mew, unpack_mpress, unpack_nspack_emulated,
-    unpack_petite_phase2_emulated, unpack_with_upx_cli,
+    unpack_petite_phase2_emulated, unpack_upx,
 };
 
 pub const PASS_ID: PassId = "native.packer-unpack";
@@ -78,7 +78,6 @@ pub static PACKER_PASS: PackerPass = PackerPass;
 /// statuses surface an honest, actionable error rather than a fake success.
 fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<Artifact> {
     match packer.unpacker_status() {
-        UnpackerStatus::ExternalCliWrap => run_upx(artifact),
         UnpackerStatus::Implemented => run_rust_unpacker(packer, artifact),
         UnpackerStatus::StubEvalPending => Err(CoreError::PassFailure(format!(
             "DR-NAT-0902: native.packer-unpack: {label} detected; Rust unpacker stub-eval pending \
@@ -108,6 +107,11 @@ fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<Artifact> 
 fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<Artifact> {
     let packed: &[u8] = &artifact.envelope;
     let recovered: Vec<u8> = match packer {
+        Packer::Upx => {
+            let out: UpxUnpackOutput =
+                unpack_upx(packed).map_err(|e| pass_err("DR-NAT-0917", packer, &e))?;
+            out.recovered_image
+        }
         Packer::Petite => {
             let out: PetitePhase2EmulatedOutput = unpack_petite_phase2_emulated(packed)
                 .map_err(|e| pass_err("DR-NAT-0910", packer, &e))?;
@@ -155,28 +159,6 @@ fn pass_err(code: &str, packer: Packer, err: &crate::error::Error) -> CoreError 
         "{code}: native.packer-unpack: {label} unpack failed: {err}",
         label = packer.label(),
     ))
-}
-
-fn run_upx(artifact: &Artifact) -> CoreResult<Artifact> {
-    let mut input_tmp: std::path::PathBuf = std::env::temp_dir();
-    input_tmp.push(format!("disrobe-upx-in-{:x}.bin", artifact.root_hash[0]));
-    let mut output_tmp: std::path::PathBuf = std::env::temp_dir();
-    output_tmp.push(format!("disrobe-upx-out-{:x}.bin", artifact.root_hash[0]));
-    std::fs::write(&input_tmp, &artifact.envelope)
-        .map_err(|e| CoreError::PassFailure(format!("DR-NAT-0903: write tmp: {e}")))?;
-    let _ = std::fs::remove_file(&output_tmp);
-    unpack_with_upx_cli(input_tmp.as_path(), output_tmp.as_path())
-        .map_err(|e| CoreError::PassFailure(format!("DR-NAT-0904: upx -d failed: {e}")))?;
-    let unpacked: Vec<u8> = std::fs::read(&output_tmp)
-        .map_err(|e| CoreError::PassFailure(format!("DR-NAT-0905: read upx out: {e}")))?;
-    let _ = std::fs::remove_file(&input_tmp);
-    let _ = std::fs::remove_file(&output_tmp);
-    if unpacked.is_empty() {
-        return Err(CoreError::PassFailure(
-            "DR-NAT-0906: upx produced empty output".to_string(),
-        ));
-    }
-    Ok(Artifact::new(Rung::Raw, unpacked, artifact.root_hash))
 }
 
 fn highest_priority(mut dets: Vec<PackerDetection>) -> Option<PackerDetection> {
@@ -380,12 +362,10 @@ mod tests {
             Packer::Mpress,
         ];
         for p in implemented {
-            assert!(
-                matches!(
-                    p.unpacker_status(),
-                    UnpackerStatus::Implemented | UnpackerStatus::ExternalCliWrap
-                ),
-                "{} must be Implemented/ExternalCliWrap for CLI dispatch",
+            assert_eq!(
+                p.unpacker_status(),
+                UnpackerStatus::Implemented,
+                "{} must be Implemented for CLI dispatch",
                 p.label()
             );
             let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 256], [0u8; 32]);

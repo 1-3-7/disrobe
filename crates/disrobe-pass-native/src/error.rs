@@ -88,4 +88,7 @@ pub enum Error {
         trait_name: &'static str,
         pr_hint: &'static str,
     },
+
+    #[error("DR-NATIVE-0022: UPX decode failure ({stage}): {detail}")]
+    UpxDecode { stage: &'static str, detail: String },
 }

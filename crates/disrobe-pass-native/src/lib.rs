@@ -95,13 +95,13 @@ pub use packers::{
     NspackRecoveryStatus, NspackSection, NspackUnpackReport, Packer, PetitePhase2EmulatedOutput,
     PetiteUnpackReport, PetiteUnpackResult, RecoveredImport, RecoveredImportFn,
     RecoveredResource as NspackRecoveredResource,
-    RecoveredSectionName as NspackRecoveredSectionName, UnpackOutput, UnpackerStatus,
-    compute_byte_recovery, decompress_kkrunchy_classic, detect as detect_packers, dis_filter,
-    dis_unfilter, fingerprint_chain, locate_classic_stream, parse_kkrunchy_header,
+    RecoveredSectionName as NspackRecoveredSectionName, UnpackerStatus, UpxMethod, UpxPackHeader,
+    UpxUnpackOutput, compute_byte_recovery, decompress_kkrunchy_classic, detect as detect_packers,
+    dis_filter, dis_unfilter, fingerprint_chain, locate_classic_stream, parse_kkrunchy_header,
     parse_nspack_layout, unpack_fsg, unpack_kkrunchy, unpack_kkrunchy_emulated, unpack_mew,
     unpack_mew_emulated, unpack_mpress, unpack_nspack, unpack_nspack_emulated,
     unpack_nspack_emulated_with_baseline, unpack_nspack_emulated_with_baseline_raw, unpack_petite,
-    unpack_petite_phase2_emulated, unpack_petite_with_report, unpack_with_upx_cli,
+    unpack_petite_phase2_emulated, unpack_petite_with_report, unpack_upx,
 };
 pub use pass::{
     DecompilerProbeSummary, NativePass, NativePassReport, PASS_INPUT_PATH_CAP, PassInput,

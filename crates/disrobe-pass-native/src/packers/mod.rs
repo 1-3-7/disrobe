@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use wait_timeout::ChildExt as _;
 
-use crate::error::{Error, Result};
+pub mod upx_cleanroom;
+
+pub use upx_cleanroom::{UpxMethod, UpxPackHeader, UpxUnpackOutput, unpack_upx};
 
 pub mod petite_unpack;
 
@@ -158,8 +156,7 @@ impl Packer {
     #[must_use]
     pub const fn unpacker_status(self) -> UnpackerStatus {
         match self {
-            Self::Upx => UnpackerStatus::ExternalCliWrap,
-            Self::Fsg | Self::Petite | Self::Mpress | Self::Nspack | Self::Mew => {
+            Self::Upx | Self::Fsg | Self::Petite | Self::Mpress | Self::Nspack | Self::Mew => {
                 UnpackerStatus::Implemented
             }
             Self::Kkrunchy => UnpackerStatus::StubEvalPending,
@@ -188,7 +185,6 @@ impl Packer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UnpackerStatus {
-    ExternalCliWrap,
     Implemented,
     StubEvalPending,
     DetectOnly,
@@ -550,68 +546,6 @@ fn memmem_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|w: &[u8]| w == needle)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnpackOutput {
-    pub packer: Packer,
-    pub status: UnpackerStatus,
-    pub stdout: Vec<u8>,
-    pub stderr: String,
-    pub output_path: Option<String>,
-}
-
-#[expect(
-    clippy::duration_suboptimal_units,
-    reason = "from_mins is unstable (duration_constructors, rust#120301); from_secs is the stable form"
-)]
-pub fn unpack_with_upx_cli(input: &Path, output: &Path) -> Result<UnpackOutput> {
-    let tool: &str = "upx";
-    let mut child: std::process::Child = Command::new(tool)
-        .arg("-d")
-        .arg("-o")
-        .arg(output)
-        .arg(input)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e: std::io::Error| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::MissingTool(tool.to_owned()),
-            _ => Error::Io(e),
-        })?;
-    let timeout: Duration = Duration::from_secs(60);
-    let status: std::process::ExitStatus = match child.wait_timeout(timeout).map_err(Error::Io)? {
-        Some(s) => s,
-        None => {
-            child.kill().ok();
-            return Err(Error::BackendTimeout(
-                tool.to_owned(),
-                timeout.as_millis() as u64,
-            ));
-        }
-    };
-    let mut stdout_bytes: Vec<u8> = Vec::new();
-    let mut stderr_text: String = String::new();
-    if let Some(mut s) = child.stdout.take() {
-        std::io::Read::read_to_end(&mut s, &mut stdout_bytes).map_err(Error::Io)?;
-    }
-    if let Some(mut s) = child.stderr.take() {
-        std::io::Read::read_to_string(&mut s, &mut stderr_text).map_err(Error::Io)?;
-    }
-    if !status.success() {
-        return Err(Error::BackendFailed {
-            tool: tool.to_owned(),
-            status: status.code().unwrap_or(-1),
-            stderr: stderr_text,
-        });
-    }
-    Ok(UnpackOutput {
-        packer: Packer::Upx,
-        status: UnpackerStatus::ExternalCliWrap,
-        stdout: stdout_bytes,
-        stderr: stderr_text,
-        output_path: Some(output.to_string_lossy().into_owned()),
-    })
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -694,21 +628,6 @@ mod tests {
         buf[40..47].copy_from_slice(b".aspack");
         let hits: Vec<Detection> = fingerprint_chain(&buf);
         assert_eq!(hits.len(), 2);
-    }
-
-    #[test]
-    fn upx_cli_missing_path_or_input_yields_actionable_error() {
-        let out: Result<UnpackOutput> = unpack_with_upx_cli(
-            Path::new("disrobe-native-this-file-does-not-exist.bin"),
-            Path::new("out.exe"),
-        );
-        match out {
-            Err(Error::MissingTool(tool)) => assert_eq!(tool, "upx"),
-            Err(Error::BackendFailed { tool, .. }) => assert_eq!(tool, "upx"),
-            Err(Error::Io(_)) => {}
-            Err(other) => panic!("unexpected error: {other:?}"),
-            Ok(_) => panic!("must not succeed on missing input"),
-        }
     }
 
     #[test]

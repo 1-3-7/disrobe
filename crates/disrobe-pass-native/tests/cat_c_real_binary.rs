@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_native::{
-    DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackOutput, UnpackerStatus,
-    detect_format, detect_packers, unpack_with_upx_cli,
+    DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackerStatus, UpxMethod,
+    UpxUnpackOutput, detect_format, detect_packers, unpack_upx,
 };
 
 fn corpus_root() -> PathBuf {
@@ -57,10 +57,7 @@ fn upx_detects_hello_x64_real_binary() {
         has_packer(&hits, Packer::Upx),
         "real UPX-packed hello.exe must be detected: hits={hits:?}"
     );
-    assert_eq!(
-        Packer::Upx.unpacker_status(),
-        UnpackerStatus::ExternalCliWrap
-    );
+    assert_eq!(Packer::Upx.unpacker_status(), UnpackerStatus::Implemented);
 }
 
 #[test]
@@ -158,34 +155,19 @@ fn upx_round_trip_ripgrep_byte_compare_and_recover_runs() {
 }
 
 #[test]
-fn upx_cli_can_unpack_hello_to_tmp() {
-    if !upx_available() {
-        println!("SKIP: upx CLI not on PATH");
-        return;
-    }
-    let input: PathBuf = corpus_root().join("upx").join("hello.exe");
-    if !input.exists() {
-        eprintln!("skipping: upx/hello.exe corpus fixture absent");
-        return;
-    }
-    let Some(baseline): Option<Vec<u8>> = read_corpus("upx/hello.original.exe") else {
-        eprintln!("skipping: upx/hello.original.exe corpus fixture absent");
+fn in_house_nrv2b_unpacks_hello_to_original_image() {
+    let Some(packed): Option<Vec<u8>> = read_corpus("upx/hello.packed.nrv2b.exe") else {
+        eprintln!("skipping: upx/hello.packed.nrv2b.exe corpus fixture absent");
         return;
     };
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-upx-roundtrip-{}.exe", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let result: UnpackOutput =
-        unpack_with_upx_cli(&input, &tmp).expect("upx CLI must succeed on real hello.exe");
-    assert_eq!(result.packer, Packer::Upx);
-    assert_eq!(result.status, UnpackerStatus::ExternalCliWrap);
-    let recovered: Vec<u8> = std::fs::read(&tmp).expect("upx must have written recovered file");
+    let out: UpxUnpackOutput =
+        unpack_upx(&packed).expect("in-house NRV2B unpacker must succeed on real fixture");
+    assert_eq!(out.method, UpxMethod::Nrv2b);
     assert!(
-        recovered.starts_with(b"MZ"),
-        "recovered file must be a valid PE/MZ container"
+        out.adler_verified,
+        "UCL adler32 over the recovered image must match the PackHeader u_adler"
     );
-    assert_eq!(recovered.len(), baseline.len());
-    let _ = std::fs::remove_file(&tmp);
+    assert!(out.block_count >= 1);
 }
 
 #[test]
