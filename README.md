@@ -81,7 +81,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 | Capability | PyArmor-Unpacker | Static-Unpack-1shot | PyArmor-Deobfuscator | `disrobe` |
 |---|---|---|---|---|
 | PyArmor v6/v7 | y | y | partial | y |
-| PyArmor v8 / v9-pro | n | partial | n | y |
+| PyArmor v8 / v9-pro | n | partial | n | y (70/72 real-corpus source recovery) |
 | Fully static (no `marshal.loads` injection) | partial | y | y | y |
 | 14 obfuscators + AST-evaluator backend | n | n | n | y |
 | License | GPL-3.0 | GPL-3.0 | MIT | Apache-2.0 |
@@ -153,12 +153,12 @@ No FOSS toolkit covers this range; UPX only unpacks UPX, de4dot only .NET, the r
 
 | Packer | `disrobe` |
 |---|---|
-| UPX | byte-identical |
+| UPX | byte-identical, in-house clean-room NRV2B (no `upx -d`) |
 | MPRESS (clean-room LZMA1 split-nibble) | 91.58% byte-recovery |
 | NSPack (adaptive range coder) | content 98.6-99.3%; whole-file 50-94% |
 | FSG | 2/3 byte-identical |
 | Petite (x86 stub emulator) | 97.8% content on hello32 |
-| kkrunchy (header reconstructor) | 6.4% structural; full depacker deferred |
+| kkrunchy | 17.8% via in-house CCA range-decoder; byte-identical needs the x86 stub emulator |
 | MEW (emulated dynamic-fetch) | 91.8% / 95.0% / 64.5% across 3 fixtures |
 | Commercial tier (VMProtect, Themida, Enigma, +15) | honest detect-only by design |
 
