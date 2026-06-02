@@ -371,20 +371,49 @@ pub fn unpack_kkrunchy(packed_bytes: &[u8]) -> Result<KkrunchyUnpackOutput> {
             None
         };
 
-    let (packed_payload, note): (Vec<u8>, String) = match classic_decode {
-        Some((stream_off, decoded_len, payload)) => {
+    let classic_emulated: Option<Vec<u8>> =
+        if matches!(header.variant, KkrunchyVariant::Classic023A) {
+            crate::packers::kkrunchy_phase2::unpack_kkrunchy_phase2_emulated(packed_bytes)
+                .ok()
+                .map(
+                    |out: crate::packers::kkrunchy_phase2::KkrunchyPhaseTwoOutput| {
+                        out.recovered_file_image
+                    },
+                )
+        } else {
+            None
+        };
+
+    let (packed_payload, note): (Vec<u8>, String) = match (classic_emulated, classic_decode) {
+        (Some(file_image), Some((stream_off, decoded_len, _payload)))
+            if file_image.starts_with(b"MZ") =>
+        {
+            let note: String = format!(
+                "kkrunchy classic 0.23a unpack: located the CCA range-coder stream at file offset {stream_off:#x} \
+                 (structurally derived from the depacker stub's `mov [ebp], image_base+stream_rva` source-pointer seed) \
+                 and decoded {decoded_len} bytes of the depacked memory-image intermediate via decompress_kkrunchy_classic(); \
+                 the CCA decoder is clean-room and reference-verified against fg's public-domain depacker_simple.cpp. \
+                 The on-disk OEP image is then reconstructed by replaying the depacker stub through the in-house x86 \
+                 stub_emu interpreter (kkrunchy_phase2): the stub's LZ loop writes the OEP .text to image base 0x400000, \
+                 the import bootstrap is rebuilt from the recovered descriptor + the stub's name table \
+                 (kernel32.dll / GetStdHandle / WriteFile / ExitProcess), and a canonical PE32 header is synthesized \
+                 from the recovered entry point, section geometry, and located import/IAT data directories.",
+            );
+            (file_image, note)
+        }
+        (_, Some((stream_off, decoded_len, payload))) => {
             let note: String = format!(
                 "kkrunchy classic 0.23a unpack: located the CCA range-coder stream at file offset {stream_off:#x} \
                  (structurally derived from the depacker stub's `mov [ebp], image_base+stream_rva` source-pointer seed) \
                  and decoded {decoded_len} bytes of decompressed payload via decompress_kkrunchy_classic(). \
                  The CCA decoder is clean-room and reference-verified against fg's public-domain depacker_simple.cpp; \
                  the located stream is the real on-disk classic stream (verbatim import bootstrap recovered: \
-                 kernel32.dll / LoadLibraryA-class resolver + name table). Full .text byte-identity is bounded by a \
-                 residual decoder-state divergence in the match-dense DisFilter region; see corpus MANIFEST kkrunchy.classic.",
+                 kernel32.dll / LoadLibraryA-class resolver + name table). The stub_emu OEP reconstruction was \
+                 unavailable for this image, so the depacked memory-image intermediate is surfaced directly.",
             );
             (payload, note)
         }
-        None => {
+        (_, None) => {
             let note: String = format!(
                 "kkrunchy structural unpack: identified {variant_label} variant, section 'kkrunchy' at file offset {:#x} ({} bytes raw, vsize {:#x}). \
                  DisFilter inverse is available via dis_unfilter(); the kkrunchy proprietary compression backend (arithmetic-coded \

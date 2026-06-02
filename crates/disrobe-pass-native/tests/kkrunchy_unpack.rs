@@ -17,7 +17,7 @@ use disrobe_pass_native::{
     parse_kkrunchy_header, unpack_kkrunchy, unpack_kkrunchy_emulated,
 };
 
-const CLASSIC_MEASURED_FLOOR_BP: u32 = 1_700;
+const CLASSIC_MEASURED_FLOOR_BP: u32 = 10_000;
 
 const HELLO_ORIGINAL: &[u8] = include_bytes!("../../../corpus/native/packers/kkrunchy/hello.exe");
 const HELLO_PACKED_K7: &[u8] =
@@ -205,9 +205,10 @@ fn classic_cca_recovers_real_fixture_payload() {
 
     let report: KkrunchyByteRecoveryReport = compute_byte_recovery(original, &out.packed_payload);
     eprintln!(
-        "kkrunchy classic CCA byte recovery vs 1024 B original: {} / {} matching ({:.2}%) \
-         [recovered_len={}] -- the recovered payload is the real decompressed import-bootstrap \
-         region; full .text byte-identity is bounded by residual decoder drift in the DisFilter tail.",
+        "kkrunchy classic byte recovery vs 1024 B original: {} / {} matching ({:.2}%) \
+         [recovered_len={}] -- the recovered payload is the on-disk OEP image reconstructed by \
+         replaying the depacker stub through the in-house stub_emu interpreter and rebuilding the \
+         stripped import table from the recovered descriptor + bootstrap name list.",
         report.matching_bytes,
         report.original_len,
         report.pct(),
@@ -216,9 +217,9 @@ fn classic_cca_recovers_real_fixture_payload() {
 
     assert!(
         report.recovery_pct_basis_points >= CLASSIC_MEASURED_FLOOR_BP,
-        "classic CCA byte recovery regressed below the measured floor: {:.2}% < {:.2}% \
-         (the decoder genuinely decompresses the real stream; a regression here means the \
-         stream locator or decoder broke)",
+        "classic byte recovery regressed below the measured floor: {:.2}% < {:.2}% \
+         (the stub_emu replay reconstructs the OEP image byte-exact; a regression here means the \
+         emulator, the PE reconstruction, or the import-table rebuild broke)",
         report.pct(),
         f64::from(CLASSIC_MEASURED_FLOOR_BP) / 100.0,
     );

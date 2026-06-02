@@ -55,6 +55,10 @@ pub mod kkrunchy_cca;
 
 pub use kkrunchy_cca::{KkrunchyClassicStream, decompress_kkrunchy_classic, locate_classic_stream};
 
+pub mod kkrunchy_phase2;
+
+pub use kkrunchy_phase2::{KkrunchyPhaseTwoOutput, unpack_kkrunchy_phase2_emulated};
+
 pub mod mew_unpack;
 
 pub use mew_unpack::{
