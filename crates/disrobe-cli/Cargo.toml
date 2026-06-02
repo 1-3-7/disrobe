@@ -157,4 +157,5 @@ insta = { workspace = true }
 insta-cmd = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = "0.28"
+tempfile = "3"
 wait-timeout = { workspace = true }

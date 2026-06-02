@@ -37,6 +37,8 @@ use cli::flutter::{self, FlutterCmd};
 use cli::globals::{self, Globals, ProgressMode};
 #[cfg(feature = "go")]
 use cli::go::{self, GoCmd};
+#[cfg(feature = "chain")]
+use cli::guard;
 #[cfg(feature = "mobile")]
 use cli::hermes::{self, HermesCmd};
 use cli::init::{self as init_cmd, IdeFlavor};
@@ -419,16 +421,11 @@ enum Cmd {
     },
     #[cfg(feature = "chain")]
     #[command(
-        about = "verify a chain.json's per-stage output hashes match a committed reference chain.json"
+        about = "ground-truth guards: verify chain.json hashes, or deny edits to stage outputs"
     )]
     Guard {
-        #[arg(help = "subject chain.json to verify")]
-        subject: PathBuf,
-        #[arg(
-            long,
-            help = "reference chain.json holding the ground-truth per-stage output hashes"
-        )]
-        reference: PathBuf,
+        #[command(subcommand)]
+        action: GuardCmd,
     },
     #[command(about = "run disrobe as an HTTP daemon, gRPC server, or LSP-over-stdio")]
     Serve {
@@ -594,6 +591,34 @@ enum Cmd {
         new: String,
         #[arg(long, help = "optional rationale captured alongside the rename")]
         note: Option<String>,
+    },
+}
+
+#[cfg(feature = "chain")]
+#[derive(Subcommand, Debug)]
+enum GuardCmd {
+    #[command(about = "verify a chain.json's per-stage output hashes match a committed reference")]
+    Verify {
+        #[arg(help = "subject chain.json to verify")]
+        subject: PathBuf,
+        #[arg(
+            long,
+            help = "reference chain.json holding ground-truth per-stage output hashes"
+        )]
+        reference: PathBuf,
+    },
+    #[command(
+        about = "deny a write/edit to a ground-truth stage path (out/**/stages|final or .disrobe-stage-lock), allow elsewhere"
+    )]
+    Check {
+        #[arg(help = "candidate path about to be written/edited (need not exist yet)")]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "extra protected root subtree(s); repeatable / comma-separated"
+        )]
+        root: Vec<PathBuf>,
     },
 }
 
@@ -776,7 +801,7 @@ fn main() -> miette::Result<()> {
         Cmd::Flutter { action } => flutter::run(action),
         #[cfg(feature = "mobile")]
         Cmd::Mobile { action } => mobile::run(action),
-        Cmd::Envelope { action } => envelope::run(action),
+        Cmd::Envelope { action } => envelope::run(action, fmt),
         #[cfg(feature = "chain")]
         Cmd::Auto {
             input,
@@ -805,7 +830,12 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "chain")]
         Cmd::Diff { left, right } => chain_compare::run_diff(left, right, fmt),
         #[cfg(feature = "chain")]
-        Cmd::Guard { subject, reference } => chain_compare::run_guard(subject, reference, fmt),
+        Cmd::Guard { action } => match action {
+            GuardCmd::Verify { subject, reference } => {
+                chain_compare::run_guard(subject, reference, fmt)
+            }
+            GuardCmd::Check { path, root } => guard::run_check(path, root, fmt),
+        },
         Cmd::Serve {
             bind,
             stdio,
@@ -834,7 +864,7 @@ fn main() -> miette::Result<()> {
             )
         }
         Cmd::Status => status_cmd::run(fmt),
-        Cmd::Verify { path } => envelope::run(EnvelopeCmd::Verify { input: path }),
+        Cmd::Verify { path } => envelope::run(EnvelopeCmd::Verify { input: path }, fmt),
         Cmd::Explain { code } => explain::run(code, fmt),
         Cmd::Passes => print_passes(),
         Cmd::Doctor { auto_install, yes } => doctor::run_with_options(fmt, auto_install, yes),

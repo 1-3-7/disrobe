@@ -140,6 +140,33 @@ pub(super) const CLI_B: &[CodeEntry] = &[
         crate_path: "crates/disrobe-cli/src/cli/envelope.rs",
     },
     CodeEntry {
+        code: "DR-CLI-0088",
+        title: "cannot read envelope for diff/migrate-check",
+        description: "one of the two .dr envelopes could not be read or its sidecar failed to decode.",
+        common_causes: &[
+            "bad path",
+            "file is not a disrobe envelope",
+            "truncated sidecar",
+        ],
+        common_fixes: &["verify both paths point at valid .dr envelopes"],
+        crate_path: "crates/disrobe-cli/src/cli/envelope.rs",
+    },
+    CodeEntry {
+        code: "DR-CLI-0089",
+        title: "envelope migration is unsound",
+        description: "no transcode path exists, or a Requires capability is unsatisfiable, or a Produces capability is dropped/downgraded.",
+        common_causes: &[
+            "incompatible rungs",
+            "capability major-version bump",
+            "dropped output capability",
+        ],
+        common_fixes: &[
+            "register the missing transcode",
+            "align capability majors between source and target",
+        ],
+        crate_path: "crates/disrobe-cli/src/cli/envelope.rs",
+    },
+    CodeEntry {
         code: "DR-CLI-0090",
         title: "auto sniff: cannot read input",
         description: "the input file given to `disrobe auto` could not be read.",
@@ -291,5 +318,29 @@ pub(super) const CLI_B: &[CodeEntry] = &[
         common_causes: &["permission denied"],
         common_fixes: &["fix permissions"],
         crate_path: "crates/disrobe-cli/src/cli/status.rs",
+    },
+    CodeEntry {
+        code: "DR-CLI-0320",
+        title: "guard denied write to ground-truth stage path",
+        description: "the candidate path is a committed chain stage output (out/**/stages|final, a .disrobe-stage-lock-marked file, or under an explicit --root) and must not be edited.",
+        common_causes: &[
+            "editing a mirrored stage output.bin",
+            "writing inside out/**/final",
+            "path under a .disrobe-stage-lock",
+        ],
+        common_fixes: &[
+            "edit the pass source, not the captured stage artifact",
+            "re-run `disrobe chain` to regenerate stages",
+            "remove the .disrobe-stage-lock if the lock is stale",
+        ],
+        crate_path: "crates/disrobe-cli/src/cli/guard.rs",
+    },
+    CodeEntry {
+        code: "DR-CLI-0321",
+        title: "guard: cannot resolve --root",
+        description: "a `--root` protected subtree could not be canonicalized.",
+        common_causes: &["nonexistent root dir", "permission denied"],
+        common_fixes: &["pass an existing directory to --root"],
+        crate_path: "crates/disrobe-cli/src/cli/guard.rs",
     },
 ];

@@ -25,6 +25,8 @@ pub(crate) mod globals;
 #[cfg(feature = "go")]
 pub(crate) mod go;
 pub(crate) mod grpc;
+#[cfg(feature = "chain")]
+pub(crate) mod guard;
 #[cfg(feature = "mobile")]
 pub(crate) mod hermes;
 pub(crate) mod init;
