@@ -207,6 +207,9 @@ corpus/mobile/macho/
 !corpus/native/packers/upx/hello.original.exe
 !corpus/native/packers/upx/hello.packed.nrv2b.exe
 
+!corpus/mobile/hermes/hello/index.android.bundle
+!corpus/mobile/hermes/hello/hello.bundle.js
+
 corpus/mobile/macho-mac/
 corpus/mobile/macho-*/
 !corpus/mobile/macho-mac/SwiftHello.original

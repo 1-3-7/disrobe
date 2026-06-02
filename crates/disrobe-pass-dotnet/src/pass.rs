@@ -8,6 +8,7 @@ use crate::aot::{AotReport, detect as detect_aot};
 use crate::cil;
 use crate::metadata::{MetadataRoot, RuntimeLabel, parse_metadata_root};
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
+use crate::peel::{ConfuserConstantsRecovery, peel_confuserex_constants};
 use crate::protectors::{DetectionReport, Protector, detect_all};
 use crate::r2r::{R2rReport, detect as detect_r2r};
 
@@ -59,6 +60,7 @@ pub struct PassSummary {
     pub protectors_detected: Vec<Protector>,
     pub opcode_table_size: u32,
     pub opcode_spec_coverage_pct: u32,
+    pub recovered_constants: Vec<String>,
 }
 
 pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
@@ -72,6 +74,16 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
     let stream_names: Vec<String> = root.streams.keys().cloned().collect();
     let mut protectors: Vec<Protector> = detection.matches.keys().copied().collect();
     protectors.sort();
+    let recovered_constants: Vec<String> = peel_confuserex_constants(image)
+        .ok()
+        .flatten()
+        .map(|r: ConfuserConstantsRecovery| {
+            r.strings_recovered
+                .into_iter()
+                .map(|s: crate::peel::RecoveredString| s.text)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(PassSummary {
         pe_bitness: format!("{:?}", pe.bitness),
         machine: pe.machine,
@@ -84,6 +96,7 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
         protectors_detected: protectors,
         opcode_table_size: u32::try_from(cil::total_opcode_count()).unwrap_or(u32::MAX),
         opcode_spec_coverage_pct: cil::coverage_percent(),
+        recovered_constants,
     })
 }
 
