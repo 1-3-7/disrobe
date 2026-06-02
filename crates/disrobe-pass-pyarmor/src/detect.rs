@@ -108,10 +108,10 @@ fn parse_v8v9(payload: &[u8]) -> Result<Detection> {
     let serial: String = core::str::from_utf8(&payload[2..8])
         .unwrap_or("000000")
         .to_owned();
-    let version: PyarmorVersion = match serial.as_bytes() {
-        s if s.starts_with(b"008") => PyarmorVersion::V8,
-        s if s.starts_with(b"009") => PyarmorVersion::V9,
-        _ => PyarmorVersion::V9,
+    let (version, confidence): (PyarmorVersion, DetectionConfidence) = match serial.as_bytes() {
+        s if s.starts_with(b"008") => (PyarmorVersion::V8, DetectionConfidence::High),
+        s if s.starts_with(b"009") => (PyarmorVersion::V9, DetectionConfidence::High),
+        _ => (PyarmorVersion::V9, DetectionConfidence::Medium),
     };
     let python_major: u8 = payload[9];
     let python_minor: u8 = payload[10];
@@ -142,7 +142,7 @@ fn parse_v8v9(payload: &[u8]) -> Result<Detection> {
         payload_size_in_payload: ciphertext_size,
         iv: Some(iv),
         raw_header: payload[..64.min(payload.len())].to_vec(),
-        confidence: DetectionConfidence::High,
+        confidence,
         diagnostics: Vec::new(),
     })
 }

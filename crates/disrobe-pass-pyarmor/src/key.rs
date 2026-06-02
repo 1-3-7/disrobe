@@ -41,6 +41,7 @@ pub(crate) struct RuntimeKeyMaterial {
     pub serial: String,
     pub aes_key: [u8; 16],
     pub mix_str_nonce: [u8; 12],
+    pub runtime_descriptor: Option<u32>,
 }
 
 impl core::fmt::Debug for RuntimeKeyMaterial {
@@ -49,6 +50,7 @@ impl core::fmt::Debug for RuntimeKeyMaterial {
             .field("serial", &self.serial)
             .field("aes_key", &"[redacted; 16]")
             .field("mix_str_nonce", &"[redacted; 12]")
+            .field("runtime_descriptor", &self.runtime_descriptor)
             .finish()
     }
 }
@@ -142,10 +144,16 @@ pub(crate) fn extract_runtime_key(runtime_bytes: &[u8]) -> Result<RuntimeKeyMate
         mix_str_nonce.copy_from_slice(&part_3[..12]);
     }
 
+    let runtime_descriptor: Option<u32> = anchor.checked_sub(8).and_then(|p: usize| {
+        head.get(p..p + 4)
+            .map(|w: &[u8]| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+    });
+
     Ok(RuntimeKeyMaterial {
         serial,
         aes_key,
         mix_str_nonce,
+        runtime_descriptor,
     })
 }
 

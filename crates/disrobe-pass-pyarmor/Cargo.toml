@@ -39,6 +39,7 @@ bytes = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [dev-dependencies]
+disrobe-py-marshal = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }
 divan = { workspace = true }

@@ -127,6 +127,19 @@ pub fn unpack_static_with_config(bytes: &[u8], cfg: &UnpackConfig) -> Result<Unp
             (None, None) => None,
         };
 
+    let mut detection: Detection = detection;
+    if detection.confidence != DetectionConfidence::High
+        && let Some(rt) = runtime_info.as_ref()
+        && let Some(rt_ver) = rt.descriptor_version
+    {
+        detection.version = rt_ver;
+        detection.confidence = DetectionConfidence::High;
+        detection.diagnostics.push(
+            "DR-PYARM-DISCRIM: serial 000000 ambiguous; version resolved from runtime descriptor word"
+                .to_owned(),
+        );
+    }
+
     let outcome: VersionedOutcome = match detection.version {
         PyarmorVersion::V6 => decrypt_v6::run(bytes, &detection, runtime_info.as_ref(), cfg)?,
         PyarmorVersion::V7 => decrypt_v7::run(bytes, &detection, runtime_info.as_ref(), cfg)?,

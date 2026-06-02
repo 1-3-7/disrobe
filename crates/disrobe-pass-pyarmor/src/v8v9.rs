@@ -74,6 +74,7 @@ pub(crate) fn decrypt(
         serial,
         aes_key,
         mix_str_nonce,
+        runtime_descriptor: _,
     }: RuntimeKeyMaterial = material;
 
     if let Some(det_serial) = detection.serial.as_ref()

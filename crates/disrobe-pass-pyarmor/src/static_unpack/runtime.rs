@@ -1,3 +1,4 @@
+use crate::detect::PyarmorVersion;
 use crate::error::Result;
 use crate::key::{RuntimeKeyMaterial, extract_runtime_key};
 
@@ -30,6 +31,7 @@ pub struct RuntimeInfoSummary {
     pub arch: RuntimeArch,
     pub embedded_data_offset: Option<usize>,
     pub size_hint: usize,
+    pub descriptor_version: Option<PyarmorVersion>,
 }
 
 impl core::fmt::Debug for RuntimeInfoSummary {
@@ -41,6 +43,7 @@ impl core::fmt::Debug for RuntimeInfoSummary {
             .field("arch", &self.arch.label())
             .field("embedded_data_offset", &self.embedded_data_offset)
             .field("size_hint", &self.size_hint)
+            .field("descriptor_version", &self.descriptor_version)
             .finish()
     }
 }
@@ -49,6 +52,11 @@ pub fn load_runtime_info(runtime_bytes: &[u8]) -> Result<RuntimeInfoSummary> {
     let material: RuntimeKeyMaterial = extract_runtime_key(runtime_bytes)?;
     let arch: RuntimeArch = sniff_arch(runtime_bytes);
     let embedded_data_offset: Option<usize> = locate_pyarmor_vax(runtime_bytes);
+    let descriptor_version: Option<PyarmorVersion> = match material.runtime_descriptor {
+        Some(1u32) => Some(PyarmorVersion::V8),
+        Some(3u32) => Some(PyarmorVersion::V9),
+        _ => None,
+    };
     Ok(RuntimeInfoSummary {
         serial: material.serial,
         aes_key: material.aes_key,
@@ -56,6 +64,7 @@ pub fn load_runtime_info(runtime_bytes: &[u8]) -> Result<RuntimeInfoSummary> {
         arch,
         embedded_data_offset,
         size_hint: runtime_bytes.len(),
+        descriptor_version,
     })
 }
 
