@@ -215,7 +215,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 utoipa = "5.5.0"
 wait-timeout = "0.2.1"
 walrus = "0.24.5"
-wasm-tools = "1.250.0"
+wasm-tools = "1.251.0"
 wasmparser = "0.250.0"
 wasmtime = "36.0.10"
 yaxpeax-arch = "0.3.2"
