@@ -18,6 +18,7 @@
     clippy::map_unwrap_or
 )]
 
+pub mod arsc;
 pub mod attributes;
 pub mod axml;
 pub mod backends;
@@ -36,6 +37,7 @@ pub mod jar;
 pub mod kotlin;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
+pub mod oat;
 pub mod obfuscators;
 pub mod pass;
 pub mod proguard;
@@ -45,6 +47,10 @@ pub mod scala;
 pub mod smali;
 pub mod stub_emulator;
 
+pub use arsc::{
+    RES_STRING_POOL_TYPE, RES_TABLE_PACKAGE_TYPE, RES_TABLE_TYPE, ResChunkHeader, ResStringPool,
+    ResTablePackage, ResourceTable, parse_arsc,
+};
 pub use attributes::{
     BootstrapMethod, ClassStructure, RecordComponent, analyze as analyze_class_structure,
 };
@@ -84,6 +90,10 @@ pub use jar::{
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
 #[cfg(feature = "llm-metadata")]
 pub use llm::{JvmInstr, JvmLlmInput, METADATA_CAPABILITY as JVM_METADATA_CAPABILITY};
+pub use oat::{
+    DexOptHeader, InstructionSet, OAT_MAGIC, ODEX_MAGIC, OatFile, OatHeader, OatVersion, OdexFile,
+    parse_oat, parse_oat_header, parse_odex, parse_odex_header,
+};
 pub use obfuscators::{
     CffUndoStats, Detection, Protector, StringStrip, WatermarkFinding, detect_all,
     detect_allatori_watermarks, strip_encrypted_strings, undo_control_flow,

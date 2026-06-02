@@ -4,9 +4,11 @@ use disrobe_core::{
     Artifact, Capability, CoreError, LegacyPass, PassId, Result as CoreResult, Rung,
 };
 
+use crate::arsc::{RES_TABLE_TYPE, ResourceTable, parse_arsc};
 use crate::classfile::{CLASS_MAGIC, ClassFile, parse as parse_classfile};
 use crate::dex::{DEX_MAGIC_PREFIX, DexFile, parse as parse_dex};
 use crate::jar::{JIMAGE_MAGIC, JMOD_MAGIC, Jimage, JmodExtract, extract_jmod, parse_jimage};
+use crate::oat::{ODEX_MAGIC, OdexFile, parse_oat, parse_odex};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct JvmPass;
@@ -61,6 +63,43 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<JvmSummary> {
             field_count: dex.field_ids.len(),
         });
     }
+    if first4 == ODEX_MAGIC {
+        let odex: OdexFile = parse_odex(bytes)?;
+        return Ok(JvmSummary {
+            kind: "odex".to_owned(),
+            major_version: 0,
+            minor_version: 0,
+            java_version: Some(odex.dex.header.version.android_marketing().to_owned()),
+            constant_pool_len: odex.dex.strings.len(),
+            method_count: odex.dex.method_ids.len(),
+            field_count: odex.dex.field_ids.len(),
+        });
+    }
+    if u16::from_le_bytes([first4[0], first4[1]]) == RES_TABLE_TYPE {
+        let table: ResourceTable = parse_arsc(bytes)?;
+        return Ok(JvmSummary {
+            kind: "arsc".to_owned(),
+            major_version: 0,
+            minor_version: 0,
+            java_version: None,
+            constant_pool_len: table.global_strings.strings.len(),
+            method_count: table.packages.len(),
+            field_count: table.package_count as usize,
+        });
+    }
+    if first4 == [0x7F, b'E', b'L', b'F']
+        && let Ok(oat) = parse_oat(bytes)
+    {
+        return Ok(JvmSummary {
+            kind: "oat".to_owned(),
+            major_version: 0,
+            minor_version: 0,
+            java_version: None,
+            constant_pool_len: oat.dex_locations.len(),
+            method_count: oat.header.dex_file_count as usize,
+            field_count: oat.header.key_value_store.len(),
+        });
+    }
     if first4 == JMOD_MAGIC {
         let jmod: JmodExtract = extract_jmod(bytes)?;
         return Ok(JvmSummary {
@@ -99,6 +138,9 @@ impl LegacyPass for JvmPass {
         || Capability::produces("jvm.proguard.mapping", 1),
         || Capability::produces("jvm.jmod", 1),
         || Capability::produces("jvm.jimage", 1),
+        || Capability::produces("jvm.oat", 1),
+        || Capability::produces("jvm.odex", 1),
+        || Capability::produces("android.arsc", 1),
     ];
 
     fn id(&self) -> PassId {
@@ -147,7 +189,7 @@ mod tests {
         assert_eq!(PassMetadata::id(&p), "jvm.deob");
         assert_eq!(p.consumes(), &[Rung::Raw]);
         assert_eq!(p.emits(), &[Rung::Disasm]);
-        assert_eq!(p.produced_capabilities().len(), 6);
+        assert_eq!(p.produced_capabilities().len(), 9);
     }
 
     #[test]

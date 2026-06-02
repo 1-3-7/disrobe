@@ -107,4 +107,33 @@ pub enum Error {
 
     #[error("DR-JVM-0092: not an Android App Bundle (missing BundleConfig.pb at zip root)")]
     NotAab,
+
+    #[error("DR-JVM-0027: invalid OAT magic: expected 'oat\\n', got {0:?}")]
+    BadOatMagic([u8; 4]),
+
+    #[error("DR-JVM-0028: invalid ODEX (DexOptHeader) magic: expected 'dey\\n', got {0:?}")]
+    BadOdexMagic([u8; 4]),
+
+    #[error("DR-JVM-0029: unsupported OAT version {0:?}")]
+    UnsupportedOatVersion([u8; 4]),
+
+    #[error(
+        "DR-JVM-0030: OAT data region not locatable (no 'oatdata' symbol or '.rodata' section); \
+         offset {offset} out of range (size {size})"
+    )]
+    OatOffsetOutOfRange { offset: usize, size: usize },
+
+    #[error(
+        "DR-JVM-0031: invalid resources.arsc chunk: expected RES_TABLE_TYPE 0x0002, got type 0x{0:04X}"
+    )]
+    BadArscChunk(u16),
+
+    #[error(
+        "DR-JVM-0032: resources.arsc truncated at offset {offset} (needed {needed}, had {had})"
+    )]
+    ArscTruncated {
+        offset: usize,
+        needed: usize,
+        had: usize,
+    },
 }

@@ -35,3 +35,4 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
 insta = { workspace = true }
+object = { workspace = true, features = ["write"] }
