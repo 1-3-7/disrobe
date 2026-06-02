@@ -28,6 +28,7 @@ pub mod fixtures;
 pub mod flirt;
 pub mod format;
 pub mod format_wire;
+pub mod lang;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 pub mod obfuscators;
@@ -71,6 +72,7 @@ pub use format_wire::{
     format_objc as format_objc_lifted, format_rust as format_rust_lifted,
     format_swift as format_swift_lifted,
 };
+pub use lang::{LanguageHit, NativeLanguage, detect as detect_languages};
 #[cfg(feature = "llm-metadata")]
 pub use llm::{
     METADATA_CAPABILITY as NATIVE_METADATA_CAPABILITY, NativeImport, NativeInstr, NativeLlmInput,

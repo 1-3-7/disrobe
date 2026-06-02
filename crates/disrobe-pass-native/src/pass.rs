@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::crypto_consts::{CryptoConstHit, detect_crypto_constants};
 use crate::decompile::{DecompilerBackend, Probe, probe_all};
 use crate::format::{DetectedFormat, detect as detect_format};
+use crate::lang::{LanguageHit, detect as detect_languages};
 use crate::obfuscators::{ObfuscatorHit, detect as detect_obfuscators};
 use crate::packers::{Detection as PackerDetection, detect as detect_packers};
 
@@ -27,6 +28,7 @@ impl LegacyPass for NativePass {
         || Capability::produces("native.packer-fingerprinted", 1),
         || Capability::produces("native.obfuscator-fingerprinted", 1),
         || Capability::produces("native.crypto-constant-fingerprinted", 1),
+        || Capability::produces("native.language-detected", 1),
         || Capability::produces("disasm.native", 1),
     ];
 
@@ -41,12 +43,14 @@ impl LegacyPass for NativePass {
         let packers: Vec<PackerDetection> = detect_packers(&input.bytes);
         let obfuscators: Vec<ObfuscatorHit> = detect_obfuscators(&input.bytes);
         let crypto_constants: Vec<CryptoConstHit> = detect_crypto_constants(&input.bytes);
+        let languages: Vec<LanguageHit> = detect_languages(&input.bytes);
         let backend_probe: NativePassReport = NativePassReport {
             source_path: input.source_path.clone(),
             format,
             packers,
             obfuscators,
             crypto_constants,
+            languages,
             decompiler_probe: probe_all_serializable(),
             byte_count: input.bytes.len() as u64,
         };
@@ -95,6 +99,7 @@ pub struct NativePassReport {
     pub packers: Vec<PackerDetection>,
     pub obfuscators: Vec<ObfuscatorHit>,
     pub crypto_constants: Vec<CryptoConstHit>,
+    pub languages: Vec<LanguageHit>,
     pub decompiler_probe: Vec<DecompilerProbeSummary>,
     pub byte_count: u64,
 }
@@ -154,7 +159,7 @@ mod tests {
         assert_eq!(p.consumes(), &[Rung::Raw]);
         assert_eq!(p.emits(), &[Rung::Disasm]);
         assert_eq!(p.required_capabilities().len(), 1);
-        assert_eq!(p.produced_capabilities().len(), 5);
+        assert_eq!(p.produced_capabilities().len(), 6);
     }
 
     #[test]
