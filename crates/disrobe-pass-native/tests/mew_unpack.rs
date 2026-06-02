@@ -10,30 +10,47 @@
     clippy::cast_precision_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
-
 use disrobe_pass_native::error::Error;
 use disrobe_pass_native::packers::{
     MewImport, MewRecovery, MewUnpackOutput, aplib_decode_bytetagged_lossy,
     decode_compressed_payload, unpack_mew,
 };
 
-fn corpus_path(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("mew");
-    p.push(name);
-    p
-}
+const ACCESSENUM_PACKED: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/AccessEnum.packed.mew.exe"
+));
+const ACCESSENUM_ORIGINAL: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/AccessEnum.original.exe"
+));
+const AUTOLOGON_PACKED: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/Autologon.packed.mew.exe"
+));
+const AUTOLOGON_ORIGINAL: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/Autologon.original.exe"
+));
+const CLOCKRES_PACKED: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/Clockres.packed.mew.exe"
+));
+const CLOCKRES_ORIGINAL: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../corpus/native/packers/mew/Clockres.original.exe"
+));
 
-fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let p: PathBuf = corpus_path(name);
-    fs::read(&p).ok()
+fn fixture(name: &str) -> &'static [u8] {
+    match name {
+        "AccessEnum.packed.mew.exe" => ACCESSENUM_PACKED,
+        "AccessEnum.original.exe" => ACCESSENUM_ORIGINAL,
+        "Autologon.packed.mew.exe" => AUTOLOGON_PACKED,
+        "Autologon.original.exe" => AUTOLOGON_ORIGINAL,
+        "Clockres.packed.mew.exe" => CLOCKRES_PACKED,
+        "Clockres.original.exe" => CLOCKRES_ORIGINAL,
+        other => panic!("unknown MEW fixture {other}"),
+    }
 }
 
 fn expect_mew_anchors(out: &MewUnpackOutput, packed_size: u64, label: &str) {
@@ -82,12 +99,9 @@ fn expect_mew_anchors(out: &MewUnpackOutput, packed_size: u64, label: &str) {
 }
 
 fn run_round_trip(corpus_name: &str) {
-    let Some(packed): Option<Vec<u8>> = read_corpus(corpus_name) else {
-        println!("skip: {corpus_name} missing from corpus");
-        return;
-    };
+    let packed: &[u8] = fixture(corpus_name);
     let packed_len: u64 = packed.len() as u64;
-    let out: MewUnpackOutput = unpack_mew(&packed).expect("MEW unpack must succeed structurally");
+    let out: MewUnpackOutput = unpack_mew(packed).expect("MEW unpack must succeed structurally");
     expect_mew_anchors(&out, packed_len, corpus_name);
     println!(
         "{corpus_name}: packed={packed_len}B stream_decoded={} decoded_bytes={} imports={} OEP_RVA={:#x}",
@@ -129,11 +143,8 @@ fn test_mew_rejects_truncated_input() {
 
 #[test]
 fn test_mew_unpacked_pe_has_recovered_oep_inside_image_range() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("AccessEnum.packed.mew.exe") else {
-        println!("skip: AccessEnum fixture missing");
-        return;
-    };
-    let out: MewUnpackOutput = unpack_mew(&packed).expect("AccessEnum must unpack");
+    let packed: &[u8] = fixture("AccessEnum.packed.mew.exe");
+    let out: MewUnpackOutput = unpack_mew(packed).expect("AccessEnum must unpack");
     assert!(
         out.original_entry_point_rva > 0 && out.original_entry_point_rva < 0x0100_0000,
         "OEP RVA must be a plausible image-relative address, got {:#x}",
@@ -155,11 +166,8 @@ fn test_mew_unpacked_pe_runs() {
     ];
     let mut any_decoded: bool = false;
     for name in fixtures {
-        let Some(packed): Option<Vec<u8>> = read_corpus(name) else {
-            println!("skip: {name} missing");
-            continue;
-        };
-        let out: MewUnpackOutput = unpack_mew(&packed).expect("MEW fixture must validate");
+        let packed: &[u8] = fixture(name);
+        let out: MewUnpackOutput = unpack_mew(packed).expect("MEW fixture must validate");
         assert!(
             out.original_entry_point_rva > 0 && out.original_entry_point_rva < 0x0100_0000,
             "{name}: recovered OEP RVA must be plausible, got {:#x}",
@@ -184,7 +192,10 @@ fn test_mew_unpacked_pe_runs() {
             out.imports.len(),
         );
     }
-    let _ = any_decoded;
+    assert!(
+        any_decoded,
+        "at least one real fixture must decode its LZMA stream (stream_decoded=true)",
+    );
 }
 
 #[test]
@@ -271,14 +282,11 @@ fn build_minimal_synthetic_mew() -> Vec<u8> {
 
 #[test]
 fn test_mew_diagnose_aplib_failure() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("AccessEnum.packed.mew.exe") else {
-        println!("skip: AccessEnum fixture missing");
-        return;
-    };
-    let out: MewUnpackOutput = unpack_mew(&packed).expect("AccessEnum must unpack structurally");
+    let packed: &[u8] = fixture("AccessEnum.packed.mew.exe");
+    let out: MewUnpackOutput = unpack_mew(packed).expect("AccessEnum must unpack structurally");
     let compressed_size: u32 = out.ep_stub_trailer_off - out.compressed_payload_off;
     let result: Result<Vec<u8>, Error> = decode_compressed_payload(
-        &packed,
+        packed,
         out.compressed_payload_off,
         compressed_size,
         out.section_0_virtual_size,
@@ -357,21 +365,15 @@ fn best_alignment_recovery_pct(recovered: &[u8], original: &[u8]) -> (f64, usize
 /// Assert the REAL MEW byte-recovery against the original on a real fixture.
 ///
 /// `floor` is the genuine achieved percentage via the default-build LZMA1
-/// rebuilder path (`unpack_mew` → `decode_mpress_lzma`, no Cargo feature gate).
+/// rebuilder path (`unpack_mew` -> `decode_mpress_lzma`, no Cargo feature gate).
 /// Per-fixture ceilings are real and differ: the trailing IAT/reloc zones the
 /// MEW runtime stub rebuilds are not in the LZMA stream, so resource-heavy or
 /// reloc-heavy fixtures top out lower. These are honest numbers, not targets.
 fn run_byte_recovery_test(name: &str, floor: f64) {
-    let Some(packed): Option<Vec<u8>> = read_corpus(name) else {
-        println!("skip: {name} missing from corpus (fixture pending)");
-        return;
-    };
+    let packed: &[u8] = fixture(name);
     let original_name: String = name.replace(".packed.mew.exe", ".original.exe");
-    let Some(original): Option<Vec<u8>> = read_corpus(&original_name) else {
-        println!("skip: {original_name} missing baseline (fixture pending)");
-        return;
-    };
-    let out: MewUnpackOutput = unpack_mew(&packed).expect("MEW unpack must succeed");
+    let original: &[u8] = fixture(&original_name);
+    let out: MewUnpackOutput = unpack_mew(packed).expect("MEW unpack must succeed");
     assert!(
         out.stream_decoded,
         "{name}: default-build MEW unpack must decode the LZMA stream (stream_decoded=true), \
@@ -387,7 +389,7 @@ fn run_byte_recovery_test(name: &str, floor: f64) {
         "{name}: decoded image must be non-empty",
     );
     let (recovery_pct, best_off): (f64, usize) =
-        best_alignment_recovery_pct(&out.raw_image, &original);
+        best_alignment_recovery_pct(&out.raw_image, original);
     println!(
         "{name}: decoded={}B (vs orig {}B) best_align=0x{best_off:x} recovery_pct={recovery_pct:.2}% (floor {floor:.1}%)",
         out.raw_image.len(),
@@ -432,21 +434,13 @@ fn test_mew_byte_identical_recovery_via_lzma_rebuilder() {
         ("Clockres.packed.mew.exe", 90),
     ];
     let mut any_at_target: bool = false;
-    let mut any_present: bool = false;
     for (name, min_pct) in fixtures {
-        let Some(packed): Option<Vec<u8>> = read_corpus(name) else {
-            println!("skip: {name} missing");
-            continue;
-        };
+        let packed: &[u8] = fixture(name);
         let orig_name: String = name.replace(".packed.mew.exe", ".original.exe");
-        let Some(orig): Option<Vec<u8>> = read_corpus(&orig_name) else {
-            println!("skip: {orig_name} baseline missing");
-            continue;
-        };
-        any_present = true;
-        let out = unpack_mew_emulated(&packed).expect("emulated unpack must succeed");
+        let orig: &[u8] = fixture(&orig_name);
+        let out = unpack_mew_emulated(packed).expect("emulated unpack must succeed");
         let rec: &[u8] = &out.decompressed_image;
-        let (best_match, best_off): (usize, usize) = scan_alignment(rec, &orig);
+        let (best_match, best_off): (usize, usize) = scan_alignment(rec, orig);
         let compare_len: usize = rec.len().min(orig.len().saturating_sub(best_off));
         let pct: f64 = if compare_len == 0 {
             0.0
@@ -473,10 +467,6 @@ fn test_mew_byte_identical_recovery_via_lzma_rebuilder() {
         if pct >= 90.0 {
             any_at_target = true;
         }
-    }
-    if !any_present {
-        eprintln!("skip: no mew fixtures present");
-        return;
     }
     assert!(
         any_at_target,
@@ -520,11 +510,8 @@ fn test_mew_all_fixtures_share_aplib_decoder_signature() {
         "Clockres.packed.mew.exe",
     ];
     for name in fixtures {
-        let Some(packed): Option<Vec<u8>> = read_corpus(name) else {
-            println!("skip: {name} missing");
-            continue;
-        };
-        let out: MewUnpackOutput = unpack_mew(&packed).expect("MEW fixture must validate");
+        let packed: &[u8] = fixture(name);
+        let out: MewUnpackOutput = unpack_mew(packed).expect("MEW fixture must validate");
         let s1_start: usize = out.section_1_raw_off as usize;
         let decoder_bytes: &[u8] = &packed[s1_start..s1_start + 12];
         assert_eq!(

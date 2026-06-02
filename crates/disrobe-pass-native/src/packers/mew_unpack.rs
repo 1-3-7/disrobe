@@ -36,16 +36,16 @@
 //!     - `XX XX XX XX`     original `AddressOfEntryPoint` (post-unpack RVA).
 //!     - `0c XX 02 00`     RVA of decoder entry, repeated.
 //!
-//! This unpacker performs a **structural recovery**: it parses every fixed
-//! landmark exactly, attempts an aPLib decode of the compressed payload, and
-//! returns the recovered image plus the OEP and the parsed import-rebuild
-//! plaintext. When the aPLib decoder cannot consume the stream byte-for-byte
-//! (MEW occasionally muxes additional control bits into the stream that the
-//! plain Ibsen reference does not expect), the unpacker still returns a
-//! structurally-true [`MewUnpackOutput`] with the recovered metadata and the
-//! partial decompressed buffer; callers consume the `stream_decoded` flag and
-//! the `decoded_byte_count` field to decide whether the recovery is
-//! sufficient. The fallback path is documented behaviour, not silent failure.
+//! Real-by-default recovery: this unpacker parses every fixed landmark exactly,
+//! then decodes the two leading aPLib chunks (IAT-name tail + rebuilder code)
+//! followed by the LZMA1 rebuilder stream (`lc=4, lp=0, pb=2`) via the pure-Rust
+//! [`decode_mpress_lzma`] port, populating `raw_image` and setting
+//! `stream_decoded = true`. Structural-only recovery is the **fallback** when the
+//! SE-1.2 chunk+LZMA layout does not apply (non-SE-1.2 dialect / truncated
+//! stream): the unpacker still returns a structurally-true [`MewUnpackOutput`]
+//! with the recovered metadata, and callers consume the `stream_decoded` flag and
+//! the `decoded_byte_count` field to decide whether the recovery is sufficient.
+//! The fallback path is documented behaviour, not silent failure.
 
 use serde::{Deserialize, Serialize};
 

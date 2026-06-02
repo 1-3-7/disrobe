@@ -51,13 +51,6 @@ pub use kkrunchy_unpack::{
     unpack_kkrunchy, unpack_kkrunchy_emulated,
 };
 
-pub mod kkrunchy_reconstruct;
-
-pub use kkrunchy_reconstruct::{
-    KkrunchyHeaderReconstructionEmulator, KkrunchyReconstructionConfidence,
-    KkrunchyReconstructionPlan,
-};
-
 pub mod kkrunchy_cca;
 
 pub use kkrunchy_cca::{KkrunchyClassicStream, decompress_kkrunchy_classic, locate_classic_stream};

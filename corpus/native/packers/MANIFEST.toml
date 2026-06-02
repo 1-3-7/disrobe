@@ -435,28 +435,25 @@ name = "MEW"
 version = "11 SE 1.2 (Northfox 2004)"
 install_method = "not-obtained-but-not-required - pre-packed fixtures sourced from PackingData corpus"
 install_path = ""
-status = "structural-recovery-implemented"
+status = "lzma-rebuilder-byte-recovery"
 fixture_source = "github.com/chesvectain/PackingData (MIT-licensed pre-packed real binaries; originals from PackingData/Notpacked/)"
 limitation = """
-MEW 11 SE compresses the original image with an aPLib-family stream decoded by the gamma2 routine
-embedded at section[1] offset 0. v0.8 W4D ships a faithful clean-room Rust port of the textbook Joergen
-Ibsen aPLib byte-tagged depacker (crates/disrobe-pass-native/src/packers/mew_unpack.rs::aplib_decode_bytetagged),
-which round-trips correctly on synthetic streams (validated by 8 lib-unit tests including bit-reader
-MSB-first ordering, first-byte literal, terminator short-match, and short-match round-trip). On the three
-real MEW fixtures the byte-tagged decoder produces only ~0.01% recovery because the on-disk stream layout
-diverges from the Ibsen reference: the decoder enters a long-match arm at step 10 with an offset that
-requires R0 reuse, but the textbook init has R0=0. Exhaustive search over 12 initial-state variants
-(`emit_first_byte_literal` x `lwm` x `r0`) confirms no plain-Ibsen configuration recovers the original
-bytes - meaning MEW's runtime get_bit subroutine (the pointer at *EBX referenced by the gamma2 decoder)
-applies a stream transformation (bit-mux, byte-permutation, or two-stream split) that requires either
-unicorn-engine stub emulation or full RE of the runtime-patched fetcher. Coordinator marked
-unicorn-engine BLOCKED for GPL-2.0 + libclang reasons during W4D, so byte recovery defers to a follow-up
-wave. The unpacker ships as **structural recovery** plus an algorithmically-verified aPLib decoder ready
-to plug into a future stream-fetcher implementation: it parses every fixed landmark (DOS+NT headers,
-two-section table, gamma2 decoder prologue, IAT-rebuild plaintext, 25-byte EP-stub trailer) exactly,
-recovers the original AddressOfEntryPoint RVA and the kernel32.dll!LoadLibraryA + GetProcAddress
-bootstrap pair plus the per-DLL import-name plaintext zone, and reports stream_decoded=false when the
-aPLib pass cannot consume the byte-tagged stream.
+MEW 11 SE 1.2 compresses the original image as two leading aPLib chunks (IAT-name tail + rebuilder code)
+followed by an LZMA1 stream (lc=4, lp=0, pb=2). The default build decodes this layout with the pure-Rust
+decode_mpress_lzma port (crates/disrobe-pass-native/src/packers/mpress_lzma.rs) driven from
+unpack_mew - no external process, no Cargo feature gate, no unsafe. The decompressed image populates
+raw_image and sets stream_decoded=true; the honest recovery verdict is MewRecovery::Decompressed.
+
+The real per-fixture ceiling is set by what the LZMA stream physically contains: the trailing IAT and
+relocation zones that the MEW runtime stub rebuilds in memory are NOT present in the LZMA stream, so
+reloc/resource-heavy binaries top out lower. Measured best-alignment byte-recovery against the originals:
+Clockres 95.05%, AccessEnum 91.80%, Autologon 64.46%. These are honest ceilings, not targets - Autologon
+is reloc-heavy and its rebuilt zones lie outside the stream. The textbook byte-tagged aPLib decoder
+(aplib_decode_bytetagged) remains a documented fallback that genuinely fails at step ~9 on the real
+streams; it is not the primary path. The unpacker also parses every fixed landmark (DOS+NT headers,
+two-section table, gamma2 decoder prologue, IAT-rebuild plaintext, 25-byte EP-stub trailer) exactly and
+recovers the original AddressOfEntryPoint RVA plus the kernel32.dll!LoadLibraryA + GetProcAddress
+bootstrap pair and the per-DLL import-name plaintext zone.
 """
 
 [[packers.runs]]
@@ -467,12 +464,12 @@ packed_sha256 = "576f741a4f1e99b8a4b82273b59e505807de3f13eeb680dd5397b2dc74e79bb
 packed_size_bytes = 41810
 compression_ratio_pct = 23.9
 original_path = "corpus/native/packers/mew/AccessEnum.original.exe"
-unpacker_status = "structural-recovery"
+unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x35110"
 recovered_imports = 347
-stream_decoded = false
-byte_recovery_pct = 0.01
-notes = "MEW 11 SE 1.2 layout validated. 2-section: section[0] 'MEW\\0F\\x12\\xd2\\xc3' virtual-only, section[1] holds gamma2 decoder + compressed payload + IAT-rebuild + EP stub trailer. Structural recovery verified by `cargo test --test mew_unpack test_mew_accessenum_round_trip`. Byte-recovery measured by `test_mew_accessenum_byte_recovery`."
+stream_decoded = true
+byte_recovery_pct = 91.80
+notes = "MEW 11 SE 1.2 layout validated. 2-section: section[0] 'MEW\\0F\\x12\\xd2\\xc3' virtual-only, section[1] holds gamma2 decoder + compressed payload + IAT-rebuild + EP stub trailer. LZMA1 rebuilder stream (lc=4,lp=0,pb=2) decoded to 166627 B via decode_mpress_lzma. Byte-recovery 91.80% measured by `test_mew_accessenum_byte_recovery` (asserts honest floor 90.0% at best_align 0x1000)."
 
 [[packers.runs]]
 input = "Autologon.exe (138920 B, Sysinternals)"
@@ -482,12 +479,12 @@ packed_sha256 = "6906d7f3794d3aff60d1c339d21dab18de0109b2b33a9ca11fcb01e71f0cc95
 packed_size_bytes = 47510
 compression_ratio_pct = 34.2
 original_path = "corpus/native/packers/mew/Autologon.original.exe"
-unpacker_status = "structural-recovery"
+unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x2e754"
 recovered_imports = 371
-stream_decoded = false
-byte_recovery_pct = 0.0
-notes = "Same MEW 11 SE layout. Imports include the bootstrap pair plus 369 additional per-DLL/per-API ASCII entries recovered from the plaintext IAT-rebuild zone. Byte-recovery measured by `test_mew_autologon_byte_recovery`."
+stream_decoded = true
+byte_recovery_pct = 64.46
+notes = "Same MEW 11 SE layout. Imports include the bootstrap pair plus 369 additional per-DLL/per-API ASCII entries recovered from the plaintext IAT-rebuild zone. LZMA1 stream decoded to 128215 B. Reloc-heavy: rebuilt IAT/reloc zones lie outside the LZMA stream, so byte-recovery tops out at 64.46% (honest ceiling, not a target) measured by `test_mew_autologon_byte_recovery` (asserts floor 63.0% at best_align 0x400)."
 
 [[packers.runs]]
 input = "Clockres.exe (139944 B, Sysinternals)"
@@ -497,9 +494,9 @@ packed_sha256 = "c717a038be8d4035d5aeb1e8d16ce851ad203b677f77e87bfbb9baab97f32fa
 packed_size_bytes = 47784
 compression_ratio_pct = 34.1
 original_path = "corpus/native/packers/mew/Clockres.original.exe"
-unpacker_status = "structural-recovery"
+unpacker_status = "lzma-rebuilder-byte-recovery"
 recovered_oep_rva = "0x2f866"
 recovered_imports = 363
-stream_decoded = false
-byte_recovery_pct = 0.0
-notes = "Third real-binary witness. Identical MEW 11 SE skeleton. All three fixtures pass the gamma2-decoder-prologue signature check (`33 C9 41 FF 13 13 C9 FF 13 72 F8 C3` at section[1] offset 0). Byte-recovery measured by `test_mew_clockres_byte_recovery`."
+stream_decoded = true
+byte_recovery_pct = 95.05
+notes = "Third real-binary witness. Identical MEW 11 SE skeleton. All three fixtures pass the gamma2-decoder-prologue signature check (`33 C9 41 FF 13 13 C9 FF 13 72 F8 C3` at section[1] offset 0). LZMA1 stream decoded to 119448 B; highest recovery of the three at 95.05% measured by `test_mew_clockres_byte_recovery` (asserts floor 94.0% at best_align 0x400)."

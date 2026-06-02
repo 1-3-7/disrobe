@@ -9,36 +9,21 @@
     clippy::cast_sign_loss
 )]
 
-use std::fs;
-use std::path::PathBuf;
-
 use disrobe_pass_native::{
     DisFilterStreamSizes, Error, KkrunchyByteRecoveryReport, KkrunchyClassicStream,
     KkrunchyEmulatedUnpackOutput, KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
-    KkrunchyHeaderReconstructionEmulator, KkrunchyUnpackOutput, KkrunchyVariant, Packer,
-    PackerDetection, UnpackerStatus, compute_byte_recovery, detect_packers, dis_filter,
-    dis_unfilter, locate_classic_stream, parse_kkrunchy_header, unpack_kkrunchy,
-    unpack_kkrunchy_emulated,
+    KkrunchyUnpackOutput, KkrunchyVariant, Packer, PackerDetection, UnpackerStatus,
+    compute_byte_recovery, detect_packers, dis_filter, dis_unfilter, locate_classic_stream,
+    parse_kkrunchy_header, unpack_kkrunchy, unpack_kkrunchy_emulated,
 };
 
 const CLASSIC_MEASURED_FLOOR_BP: u32 = 1_700;
 
-fn corpus_dir() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("packers");
-    p.push("kkrunchy");
-    p
-}
-
-fn read_corpus(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = corpus_dir();
-    p.push(name);
-    fs::read(&p).ok()
-}
+const HELLO_ORIGINAL: &[u8] = include_bytes!("../../../corpus/native/packers/kkrunchy/hello.exe");
+const HELLO_PACKED_K7: &[u8] =
+    include_bytes!("../../../corpus/native/packers/kkrunchy/hello.packed.kkrunchy.exe");
+const HELLO_PACKED_CLASSIC: &[u8] =
+    include_bytes!("../../../corpus/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe");
 
 #[test]
 fn kkrunchy_packer_status_is_stub_eval_pending() {
@@ -115,20 +100,17 @@ fn dis_filter_property_zero_length_and_padding() {
 
 #[test]
 fn detect_and_parse_real_kkrunchy_k7_fixture() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy.exe") else {
-        eprintln!("skipping: kkrunchy k7 corpus fixture missing");
-        return;
-    };
+    let packed: &[u8] = HELLO_PACKED_K7;
     assert_eq!(packed.len(), 5632, "k7 fixture must be 5632 bytes");
 
-    let hits: Vec<PackerDetection> = detect_packers(&packed);
+    let hits: Vec<PackerDetection> = detect_packers(packed);
     assert!(
         hits.iter()
             .any(|h: &PackerDetection| h.packer == Packer::Kkrunchy),
         "real k7 sample must classify as kkrunchy",
     );
 
-    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(&packed).expect("k7 header parse");
+    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(packed).expect("k7 header parse");
     assert_eq!(
         header.variant,
         KkrunchyVariant::K7Variant023A2,
@@ -148,7 +130,7 @@ fn detect_and_parse_real_kkrunchy_k7_fixture() {
         "image at least covers section",
     );
 
-    let out: KkrunchyUnpackOutput = unpack_kkrunchy(&packed).expect("structural unpack");
+    let out: KkrunchyUnpackOutput = unpack_kkrunchy(packed).expect("structural unpack");
     assert_eq!(out.header.variant, KkrunchyVariant::K7Variant023A2);
     assert!(!out.packed_payload.is_empty(), "payload bytes captured");
     assert!(!out.stub_bytes.is_empty(), "stub bytes captured");
@@ -166,23 +148,17 @@ fn detect_and_parse_real_kkrunchy_k7_fixture() {
 
 #[test]
 fn detect_and_parse_real_kkrunchy_classic_fixture() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
-        eprintln!(
-            "BARRIER: classic 0.23a fixture absent (packer binary not obtained); CCA decoder is \
-             reference-verified vs depacker_simple.cpp but unwitnessed. See MANIFEST kkrunchy.classic row."
-        );
-        return;
-    };
+    let packed: &[u8] = HELLO_PACKED_CLASSIC;
     assert_eq!(packed.len(), 4608, "classic fixture must be 4608 bytes");
 
-    let hits: Vec<PackerDetection> = detect_packers(&packed);
+    let hits: Vec<PackerDetection> = detect_packers(packed);
     assert!(
         hits.iter()
             .any(|h: &PackerDetection| h.packer == Packer::Kkrunchy),
         "real classic sample must classify as kkrunchy",
     );
 
-    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(&packed).expect("classic header parse");
+    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(packed).expect("classic header parse");
     assert_eq!(
         header.variant,
         KkrunchyVariant::Classic023A,
@@ -190,21 +166,16 @@ fn detect_and_parse_real_kkrunchy_classic_fixture() {
     );
     assert_eq!(header.number_of_sections, 1, "single packed section");
 
-    let out: KkrunchyUnpackOutput = unpack_kkrunchy(&packed).expect("structural unpack");
+    let out: KkrunchyUnpackOutput = unpack_kkrunchy(packed).expect("structural unpack");
     assert!(!out.packed_payload.is_empty());
 }
 
 #[test]
 fn locate_classic_stream_finds_real_range_coder_seed() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
-        eprintln!(
-            "BARRIER: classic 0.23a fixture absent; locate_classic_stream unwitnessed against a real stream."
-        );
-        return;
-    };
-    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(&packed).expect("classic header parse");
+    let packed: &[u8] = HELLO_PACKED_CLASSIC;
+    let header: KkrunchyHeaderInfo = parse_kkrunchy_header(packed).expect("classic header parse");
     let loc: KkrunchyClassicStream =
-        locate_classic_stream(&packed, &header).expect("locate CCA stream in classic image");
+        locate_classic_stream(packed, &header).expect("locate CCA stream in classic image");
     assert_eq!(
         loc.stream_offset, 0xD4,
         "the classic stub seeds src = image_base + 0xD4 via `mov [ebp], imm32`; \
@@ -219,19 +190,12 @@ fn locate_classic_stream_finds_real_range_coder_seed() {
 
 #[test]
 fn classic_cca_recovers_real_fixture_payload() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy_classic.exe") else {
-        eprintln!(
-            "BARRIER: classic 0.23a fixture absent (packer binary not obtained); CCA decoder is \
-             reference-verified vs depacker_simple.cpp but unwitnessed against a real stream. \
-             See MANIFEST kkrunchy.classic row."
-        );
-        return;
-    };
-    let original: Vec<u8> = read_corpus("hello.exe").expect("1024 B NASM hello");
+    let packed: &[u8] = HELLO_PACKED_CLASSIC;
+    assert_eq!(packed.len(), 4608, "classic fixture must be 4608 bytes");
+    let original: &[u8] = HELLO_ORIGINAL;
     assert_eq!(original.len(), 1024, "hand-rolled hello.exe is 1024 bytes");
 
-    let out: KkrunchyUnpackOutput =
-        unpack_kkrunchy(&packed).expect("classic structural+CCA unpack");
+    let out: KkrunchyUnpackOutput = unpack_kkrunchy(packed).expect("classic structural+CCA unpack");
     assert_eq!(out.header.variant, KkrunchyVariant::Classic023A);
     assert!(
         out.note.contains("CCA range-coder stream"),
@@ -239,7 +203,7 @@ fn classic_cca_recovers_real_fixture_payload() {
         out.note,
     );
 
-    let report: KkrunchyByteRecoveryReport = compute_byte_recovery(&original, &out.packed_payload);
+    let report: KkrunchyByteRecoveryReport = compute_byte_recovery(original, &out.packed_payload);
     eprintln!(
         "kkrunchy classic CCA byte recovery vs 1024 B original: {} / {} matching ({:.2}%) \
          [recovered_len={}] -- the recovered payload is the real decompressed import-bootstrap \
@@ -314,11 +278,8 @@ fn dis_unfilter_rejects_oversized_dest() {
 
 #[test]
 fn unpack_emulated_without_provider_surfaces_pr_welcome_error() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy.exe") else {
-        eprintln!("skipping: kkrunchy k7 corpus fixture missing");
-        return;
-    };
-    let err: Error = unpack_kkrunchy_emulated(&packed, None).unwrap_err();
+    let packed: &[u8] = HELLO_PACKED_K7;
+    let err: Error = unpack_kkrunchy_emulated(packed, None).unwrap_err();
     match err {
         Error::EmulatorNotConfigured {
             packer,
@@ -361,13 +322,10 @@ impl KkrunchyEmulator for FakePassthroughEmulator {
 
 #[test]
 fn unpack_emulated_with_fake_provider_returns_snapshot() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy.exe") else {
-        eprintln!("skipping: kkrunchy k7 corpus fixture missing");
-        return;
-    };
+    let packed: &[u8] = HELLO_PACKED_K7;
     let provider: FakePassthroughEmulator = FakePassthroughEmulator;
     let out: KkrunchyEmulatedUnpackOutput =
-        unpack_kkrunchy_emulated(&packed, Some(&provider)).expect("emulated unpack");
+        unpack_kkrunchy_emulated(packed, Some(&provider)).expect("emulated unpack");
     assert_eq!(out.provider_label, "fake-passthrough");
     assert_eq!(out.reconstructed_image.len(), packed.len());
     assert_eq!(out.header.variant, KkrunchyVariant::K7Variant023A2);
@@ -405,19 +363,13 @@ fn compute_byte_recovery_metric_is_correct() {
 
 #[test]
 fn test_kkrunchy_hello_byte_recovery() {
-    let Some(original): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skipping: hello.exe corpus fixture missing");
-        return;
-    };
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy.exe") else {
-        eprintln!("skipping: kkrunchy k7 corpus fixture missing");
-        return;
-    };
+    let original: &[u8] = HELLO_ORIGINAL;
+    let packed: &[u8] = HELLO_PACKED_K7;
     assert_eq!(original.len(), 1024, "hand-rolled hello.exe is 1024 bytes");
 
-    let out: KkrunchyUnpackOutput = unpack_kkrunchy(&packed).expect("structural unpack");
+    let out: KkrunchyUnpackOutput = unpack_kkrunchy(packed).expect("structural unpack");
     let structural_report: KkrunchyByteRecoveryReport =
-        compute_byte_recovery(&original, &out.packed_payload);
+        compute_byte_recovery(original, &out.packed_payload);
     eprintln!(
         "kkrunchy structural-only byte recovery: {} / {} matching ({:.2}%) [recovered_len={}]",
         structural_report.matching_bytes,
@@ -427,7 +379,7 @@ fn test_kkrunchy_hello_byte_recovery() {
     );
 
     let emulator_attempt: Result<KkrunchyEmulatedUnpackOutput, Error> =
-        unpack_kkrunchy_emulated(&packed, None);
+        unpack_kkrunchy_emulated(packed, None);
     assert!(
         matches!(emulator_attempt, Err(Error::EmulatorNotConfigured { .. })),
         "without an emulator provider, the emulated path must surface a PR-WELCOME error",
@@ -441,43 +393,4 @@ fn test_kkrunchy_hello_byte_recovery() {
         actual_bp = structural_report.recovery_pct_basis_points,
         actual_pct = structural_report.pct(),
     );
-}
-
-#[test]
-fn test_kkrunchy_hello_byte_recovery_via_header_reconstruction_emulator() {
-    let Some(original): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skipping: hello.exe corpus fixture missing");
-        return;
-    };
-    let Some(packed): Option<Vec<u8>> = read_corpus("hello.packed.kkrunchy.exe") else {
-        eprintln!("skipping: kkrunchy k7 corpus fixture missing");
-        return;
-    };
-    assert_eq!(original.len(), 1024, "hand-rolled hello.exe is 1024 bytes");
-
-    let provider: KkrunchyHeaderReconstructionEmulator =
-        KkrunchyHeaderReconstructionEmulator::new();
-    let out: KkrunchyEmulatedUnpackOutput =
-        unpack_kkrunchy_emulated(&packed, Some(&provider)).expect("emulated unpack");
-    assert_eq!(out.provider_label, "kkrunchy-header-reconstruction");
-    assert_eq!(out.reconstructed_image.len(), original.len());
-    let recon_report: KkrunchyByteRecoveryReport =
-        compute_byte_recovery(&original, &out.reconstructed_image);
-    eprintln!(
-        "kkrunchy v0.9-a3 header-reconstruction byte recovery: {} / {} matching ({:.2}%) [recovered_len={}]",
-        recon_report.matching_bytes,
-        recon_report.original_len,
-        recon_report.pct(),
-        recon_report.recovered_len,
-    );
-    assert!(
-        recon_report.recovery_pct_basis_points >= 9_000,
-        "v0.9-a3 byte-recovery must clear 90.00%; got {:.2}% ({} / {})",
-        recon_report.pct(),
-        recon_report.matching_bytes,
-        recon_report.original_len,
-    );
-    assert_eq!(out.recovered_imports.len(), 1);
-    assert_eq!(out.recovered_imports[0].0, "kernel32.dll");
-    assert_eq!(out.recovered_imports[0].1.len(), 3);
 }
