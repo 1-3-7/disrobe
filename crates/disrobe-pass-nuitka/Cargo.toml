@@ -1,0 +1,39 @@
+[package]
+name = "disrobe-pass-nuitka"
+description = "Nuitka detector + constants-table extractor + symbol/module recovery for the disrobe deobfuscation suite. Source-level recovery is mathematically impossible (Nuitka emits C then native), so this pass surfaces detection, version, onefile unwrap, constants blob, and the function/module name graph."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["nuitka", "decompile", "deobfuscation", "python", "reverse-engineering"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+md5 = { workspace = true }
+disrobe-binfmt = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+disrobe-pass-pickle = { workspace = true }
+object = { workspace = true }
+zstd = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+serde_json = { workspace = true }

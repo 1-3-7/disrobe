@@ -1,0 +1,46 @@
+name: Sample doesn't decompile correctly
+description: A pass runs but produces wrong, incomplete, or no output for your sample.
+labels: [wrong-output]
+body:
+  - type: input
+    id: pass
+    attributes:
+      label: Pass used
+      placeholder: 'disrobe pyarmor unpack, disrobe auto, ...'
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: disrobe version
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Actual output
+      description: Paste the relevant portion of the output, including any DR-* error codes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What were you expecting?
+    validations:
+      required: true
+
+  - type: input
+    id: sample_hash
+    attributes:
+      label: Input sample hash (SHA-256 or BLAKE3)
+      description: If you can share the file publicly, attach it. If not, the hash helps identify if it matches a known sample.

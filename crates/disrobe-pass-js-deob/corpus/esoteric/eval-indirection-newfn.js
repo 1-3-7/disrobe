@@ -1,0 +1,1 @@
+(new Function("return 7 * 6;"))();

@@ -1,0 +1,75 @@
+{
+  "keys": {
+    "accessKey": "REDACTED",
+    "secretKey": "REDACTED"
+  },
+  "applicationId": "6a13b110ba33fa38c090cb54",
+  "jscramblerVersion": "8.5",
+  "mode": "manual",
+  "areSubscribersOrdered": false,
+  "useRecommendedOrder": true,
+  "tolerateMinification": true,
+  "profilingDataMode": "off",
+  "useAppClassification": true,
+  "browsers": {},
+  "sourceMaps": false,
+  "params": [
+    {
+      "name": "objectPropertiesSparsing"
+    },
+    {
+      "name": "variableMasking"
+    },
+    {
+      "name": "whitespaceRemoval"
+    },
+    {
+      "name": "dotToBracketNotation"
+    },
+    {
+      "name": "duplicateLiteralsRemoval",
+      "options": {
+        "options": [
+          "localOnly"
+        ],
+        "mode": [
+          "optimization"
+        ]
+      }
+    },
+    {
+      "name": "stringConcealing"
+    },
+    {
+      "name": "functionReordering"
+    },
+    {
+      "name": "propertyKeysObfuscation",
+      "options": {
+        "encoding": [
+          "hexadecimal"
+        ]
+      }
+    },
+    {
+      "name": "regexObfuscation"
+    },
+    {
+      "options": {
+        "features": [
+          "opaqueSteps"
+        ]
+      },
+      "name": "controlFlowFlattening"
+    },
+    {
+      "name": "booleanToAnything"
+    },
+    {
+      "name": "identifiersRenaming"
+    },
+    {
+      "name": "globalVariableIndirection"
+    }
+  ]
+}

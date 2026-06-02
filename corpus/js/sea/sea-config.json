@@ -1,0 +1,7 @@
+{
+  "main": "main.js",
+  "output": "sea-prep.blob",
+  "useSnapshot": false,
+  "useCodeCache": true,
+  "disableExperimentalSEAWarning": true
+}

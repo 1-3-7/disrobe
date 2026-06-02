@@ -1,0 +1,43 @@
+[package]
+name = "disrobe-core"
+description = "Shared traits, error types, capability model, and pass-dispatch primitives for the disrobe decompiler/deobfuscator suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+chain = ["dep:blake3"]
+
+[dependencies]
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+async-trait = { workspace = true }
+once_cell = { workspace = true }
+regex = { workspace = true }
+camino = { workspace = true }
+wait-timeout = { workspace = true }
+rand = { workspace = true }
+blake3 = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "chain_bench"
+harness = false
+required-features = ["chain"]

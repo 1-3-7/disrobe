@@ -1,0 +1,38 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # weekly, monday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'seconds per fuzz target'
+        required: false
+        default: '300'
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - chain_driver
+          - chain_spec_parser
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: fuzz
+        run: |
+          DURATION=${{ github.event.inputs.duration || '300' }}
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=${DURATION}
+      - name: upload corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/

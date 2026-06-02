@@ -1,0 +1,1 @@
+exec("i = 699\naA = 293\nGGG = 'uLEJwUSDFZeNsXKWiUMgkFRemWtDijjjFneANGrNMZnDjcxHNxbEtHwrGfLKDxOoGkAmHrkPyWREmjl'\nN = [(lambda www: www + 1)(Z72727024328172) for Z72727024328172 in range(5)]")

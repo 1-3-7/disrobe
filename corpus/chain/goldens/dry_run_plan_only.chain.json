@@ -1,0 +1,48 @@
+{
+  "final_format": null,
+  "input": {
+    "blake3": "47831de5d536023944398066bf47373c9d8bd77b3aa072f3d8af6afc62307cd9",
+    "detected": [],
+    "path": "synthetic://plan-only",
+    "size": 29
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "47831de5d536023944398066bf47373c9d8bd77b3aa072f3d8af6afc62307cd9",
+      "input_size": 29,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 4,
+    "kind": "plan-only",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 0,
+    "layers": 0,
+    "max_branch_depth": 0,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "dry-run"
+}

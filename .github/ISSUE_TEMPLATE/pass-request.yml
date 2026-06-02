@@ -1,0 +1,39 @@
+name: Pass request
+description: Request support for a new protector, obfuscator, or bytecode format.
+labels: [pass-request]
+body:
+  - type: input
+    id: protector
+    attributes:
+      label: Protector / format name
+      placeholder: 'PyArmor v10, VMProtect 3.x, ...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What is it?
+      description: Brief description of the protector — what language, what it does, how common it is.
+    validations:
+      required: true
+
+  - type: input
+    id: sample_hash
+    attributes:
+      label: Sample hash (SHA-256 or BLAKE3)
+      description: Hash of a sample that exhibits this protection. Attach the sample if you can.
+
+  - type: textarea
+    id: research
+    attributes:
+      label: Existing research or tooling
+      description: Links to papers, blog posts, existing tools, or reverse-engineering notes.
+
+  - type: textarea
+    id: legal
+    attributes:
+      label: Legal context
+      description: |
+        Is this a commercial protector with an active legal program (e.g. EULA, active enforcement)?
+        Grey-zone protectors require a research review before a pass ships.

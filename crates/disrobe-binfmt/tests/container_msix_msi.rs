@@ -1,0 +1,41 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::io::{Cursor, Write as _};
+
+use disrobe_binfmt::containers::msi::{MsiSummary, parse_msi_minimal};
+use disrobe_binfmt::containers::msix::{MsixManifest, parse_appx_manifest};
+
+fn synth_appx_archive(manifest: &str) -> Vec<u8> {
+    let buf: Vec<u8> = Vec::new();
+    let mut zw: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(Cursor::new(buf));
+    let opts: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+    zw.start_file("AppxManifest.xml", opts).expect("start");
+    zw.write_all(manifest.as_bytes()).expect("write");
+    zw.finish().expect("finish").into_inner()
+}
+
+#[test]
+fn msix_manifest_round_trip_basic_identity() {
+    let xml: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<Package>
+  <Identity Name="Vendor.App" Publisher="CN=Vendor" Version="2.5.6.0"/>
+  <Properties><DisplayName>Vendor Application</DisplayName></Properties>
+</Package>"#;
+    let bytes: Vec<u8> = synth_appx_archive(xml);
+    let manifest: MsixManifest = parse_appx_manifest(&bytes).expect("parse appx");
+    assert_eq!(manifest.package_name.as_deref(), Some("Vendor.App"));
+    assert_eq!(manifest.version.as_deref(), Some("2.5.6.0"));
+    assert_eq!(manifest.display_name.as_deref(), Some("Vendor Application"));
+}
+
+#[test]
+fn msi_empty_package_parses_with_default_tables() {
+    let buf: Vec<u8> = Vec::new();
+    let cursor: Cursor<Vec<u8>> = Cursor::new(buf);
+    let mut package: msi::Package<Cursor<Vec<u8>>> =
+        msi::Package::create(msi::PackageType::Installer, cursor).expect("create msi");
+    package.flush().expect("flush");
+    let inner: Vec<u8> = package.into_inner().expect("inner").into_inner();
+    let summary: MsiSummary = parse_msi_minimal(&inner).expect("parse synth msi");
+    assert!(!summary.tables.is_empty());
+}

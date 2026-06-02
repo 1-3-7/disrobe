@@ -1,0 +1,470 @@
+# compiler: R8
+# compiler_version: 9.1.31
+# common_typos_disable
+# {"id":"com.android.tools.r8.mapping","version":"2.2"}
+# pg_map_id: bc5e79d642a8d3322101483db148519e813bfb4f8e90c28378991ea789d275f7
+# pg_map_hash: SHA-256 bc5e79d642a8d3322101483db148519e813bfb4f8e90c28378991ea789d275f7
+EdgeCases -> EdgeCases:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    int finalField -> a
+    java.util.concurrent.atomic.AtomicInteger CTR -> b
+    1:7:void <clinit>():62:68 -> <clinit>
+    1:1:void <init>(int):88:88 -> <init>
+    2:2:int bumpStatic():76:76 -> <init>
+    2:2:void <init>(int):72 -> <init>
+    3:3:void <init>(int):89:89 -> <init>
+    1:1:int lambda$multiplier$0(int,int):0:0 -> a
+    2:7:java.lang.String describeShape(EdgeCases$Shape):138:143 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lq;)Ljava/lang/String;"}
+    8:12:java.lang.String describeShape(EdgeCases$Shape):138:142 -> a
+    13:14:java.lang.String describeShape(EdgeCases$Shape):141:141 -> a
+    15:16:java.lang.String describeShape(EdgeCases$Shape):140:140 -> a
+    17:17:java.lang.String describeShape(EdgeCases$Shape):139:139 -> a
+    18:33:java.lang.Object classify(java.lang.Object):320:335 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/Object;)Ljava/lang/String;"}
+    34:34:java.lang.Integer lambda$chain$0(int):403:403 -> a
+    35:35:java.lang.Integer lambda$chain$1(java.lang.Integer):404:404 -> a
+    36:36:java.lang.Integer lambda$chain$4(java.lang.Throwable):406:406 -> a
+    37:37:EdgeCases$Adder adderFn():446:446 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Le;"}
+    38:38:java.lang.Integer lambda$reducerFn$0(java.lang.Integer,java.lang.Integer):450:450 -> a
+    39:39:java.util.Map groupByLength(java.util.List):470:470 -> a
+    40:40:boolean lambda$wordCount$0(java.lang.String):475:475 -> a
+    41:41:java.lang.Object deepPattern(java.lang.Object):801:801 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lm;)Ljava/lang/String;"}
+    42:42:java.lang.Object EdgeCases$Pair.first():783:783 -> a
+    42:42:java.lang.Object deepPattern(java.lang.Object):802 -> a
+      # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/NullPointerException;)"],"actions":["removeInnerFrames(1)"]}
+    43:43:java.lang.Object deepPattern(java.lang.Object):806:806 -> a
+    44:44:java.lang.Object deepPattern(java.lang.Object):804:804 -> a
+    45:45:java.lang.Object EdgeCases$Pair.second():783:783 -> a
+    45:45:java.lang.Object deepPattern(java.lang.Object):804 -> a
+    46:46:java.lang.Object deepPattern(java.lang.Object):804:804 -> a
+    47:47:java.lang.Object deepPattern(java.lang.Object):802:802 -> a
+    48:48:java.lang.Object EdgeCases$Pair.second():783:783 -> a
+    48:48:java.lang.Object deepPattern(java.lang.Object):802 -> a
+    49:50:java.lang.Object deepPattern(java.lang.Object):802:803 -> a
+    51:55:java.lang.Object deepPattern(java.lang.Object):802:806 -> a
+    56:56:java.lang.Object deepPattern(java.lang.Object):801:801 -> a
+    57:65:java.lang.Object executeWith(java.util.concurrent.Executor,java.util.function.Supplier):882:890 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/util/concurrent/ExecutorService;Ljava/util/function/Supplier;)Ljava/lang/Object;"}
+    66:68:void lambda$executeWith$0(java.util.concurrent.CompletableFuture,java.util.function.Supplier):885:887 -> a
+    69:72:java.util.List dropWhile(java.util.List,java.util.function.Predicate):1151:1154 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/util/List;Ljava/util/function/Predicate;)Ljava/util/ArrayList;"}
+    73:75:java.util.Map indexBy(java.util.List,java.util.function.Function):1158:1160 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/util/List;Ljava/util/function/Function;)Ljava/util/HashMap;"}
+    76:81:java.lang.Number arithmeticPoly(java.lang.Number,java.lang.Number):1208:1213 -> a
+    82:82:java.lang.Number arithmeticPoly(java.lang.Number,java.lang.Number):1212:1212 -> a
+    83:83:java.lang.Number arithmeticPoly(java.lang.Number,java.lang.Number):1211:1211 -> a
+    84:84:java.lang.Number arithmeticPoly(java.lang.Number,java.lang.Number):1210:1210 -> a
+    85:85:java.lang.Number arithmeticPoly(java.lang.Number,java.lang.Number):1209:1209 -> a
+    86:86:java.util.stream.Stream nonNull(java.util.stream.Stream):1222:1222 -> a
+    1:1:java.util.concurrent.CompletionStage lambda$chain$2(java.lang.Integer):405:405 -> b
+    2:2:java.util.Iterator lambda$closureCaptureLoop$0(int):644:644 -> b
+    3:3:java.util.Iterator lambda$closureCaptureLoop$1(java.util.List):658:658 -> b
+    4:4:java.lang.Object EdgeCases$Pair.first():783:783 -> b
+    4:4:java.lang.String unpackPair(EdgeCases$Pair):794 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lm;)Ljava/lang/String;"}
+    5:5:java.lang.String unpackPair(EdgeCases$Pair):794:794 -> b
+    6:6:java.lang.Object EdgeCases$Pair.second():783:783 -> b
+    6:6:java.lang.String unpackPair(EdgeCases$Pair):794 -> b
+    7:8:java.lang.String unpackPair(EdgeCases$Pair):794:795 -> b
+    9:9:java.lang.String unpackPair(EdgeCases$Pair):794:794 -> b
+    10:14:java.lang.String bitTwiddling(int):840:844 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    15:23:java.lang.String dispatchByType(java.lang.Object):1195:1203 -> b
+    24:24:java.lang.String dispatchByType(java.lang.Object):1202:1202 -> b
+    25:25:java.lang.String dispatchByType(java.lang.Object):1201:1201 -> b
+    26:26:java.lang.String dispatchByType(java.lang.Object):1200:1200 -> b
+    27:27:java.lang.String dispatchByType(java.lang.Object):1199:1199 -> b
+    28:28:java.lang.String dispatchByType(java.lang.Object):1198:1198 -> b
+    29:29:java.lang.String dispatchByType(java.lang.Object):1197:1197 -> b
+    30:30:java.lang.String dispatchByType(java.lang.Object):1196:1196 -> b
+    1:1:java.lang.Object lambda$repeat$0(java.lang.Object):0:0 -> c
+    2:2:int lambda$squares$0(int):0:0 -> c
+    3:3:double totalArea(java.util.List):148:148 -> c
+    4:8:java.util.concurrent.CompletableFuture chain(int):402:406 -> c
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/concurrent/CompletableFuture;"}
+    9:9:java.lang.Integer lambda$chain$3(java.lang.Integer):405:405 -> c
+    1:2:java.lang.Integer lambda$virtualThreadFanout$0(int):390:391 -> d
+    3:3:java.lang.String lambda$formatter$0(java.lang.Integer):454:454 -> d
+    4:7:java.lang.Object checkedCast(java.lang.Object,java.lang.Class):811:814 -> d
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/Object;"}
+    8:8:java.lang.Object checkedCast(java.lang.Object,java.lang.Class):812:812 -> d
+    1:1:int recursiveFactorial(int):480:480 -> e
+    2:19:java.lang.Iterable closureCaptureLoop(int):641:658 -> e
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/Iterable;"}
+    20:20:java.lang.Integer lambda$main$0(java.lang.Integer):1283:1283 -> e
+    1:1:java.util.function.Function formatter():454:454 -> f
+    2:2:boolean lambda$main$2(java.lang.Integer):1329:1329 -> f
+    1:1:java.lang.String joinSquares(int):750:750 -> g
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    2:2:boolean lambda$main$3(java.lang.Integer):1349:1349 -> g
+    1:1:java.lang.String lambda$main$1():1286:1286 -> h
+    2:2:boolean lambda$main$4(java.lang.Integer):1350:1350 -> h
+    1:1:java.lang.Integer lambda$main$5():1374:1374 -> i
+    2:2:boolean lambda$main$6(java.lang.Integer):1423:1423 -> i
+    1:1:java.util.function.Supplier listSupplier():458:458 -> j
+    2:2:boolean lambda$main$7(java.lang.Integer):1424:1424 -> j
+    1:3:java.lang.String multiCatch(java.lang.String):363:365 -> k
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    1:1:java.util.function.IntUnaryOperator multiplier(int):280:280 -> l
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/function/IntUnaryOperator;"}
+    1:1:EdgeCases$Reducer reducerFn():450:450 -> m
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ln;"}
+    1:17:void main(java.lang.String[]):1257:1273 -> main
+    18:18:EdgeCases$Direction EdgeCases$Direction.opposite():188:188 -> main
+    18:18:void main(java.lang.String[]):1273 -> main
+    19:22:void main(java.lang.String[]):1273:1276 -> main
+    23:23:EdgeCases$Repository EdgeCases$Repository.inMemory():237:237 -> main
+    23:23:void main(java.lang.String[]):1278 -> main
+    24:24:void main(java.lang.String[]):1279:1279 -> main
+    25:25:void EdgeCases$Repository$1.put(java.lang.Object,java.lang.Object):247:247 -> main
+    25:25:void main(java.lang.String[]):1279 -> main
+    26:28:void main(java.lang.String[]):1280:1282 -> main
+    29:30:java.util.List sortedCopy(java.util.Collection):258:259 -> main
+    29:30:void main(java.lang.String[]):1282 -> main
+    31:32:void main(java.lang.String[]):1282:1283 -> main
+    33:35:java.util.List mapAll(java.util.List,java.util.function.Function):264:266 -> main
+    33:35:void main(java.lang.String[]):1283 -> main
+    36:37:void main(java.lang.String[]):1283:1284 -> main
+    38:39:int sumWith(java.util.function.IntBinaryOperator,int[]):273:274 -> main
+    38:39:void main(java.lang.String[]):1284 -> main
+    40:42:void main(java.lang.String[]):1284:1286 -> main
+    43:43:java.util.function.Supplier memoize(java.util.function.Supplier):284:284 -> main
+    43:43:void main(java.lang.String[]):1286 -> main
+    44:46:void main(java.lang.String[]):1287:1289 -> main
+    47:54:void main(java.lang.String[]):1289:1296 -> main
+    55:60:int divSafe(int,int):353:358 -> main
+    55:60:void main(java.lang.String[]):1296 -> main
+    61:61:int divSafe(int,int):357:357 -> main
+    61:61:void main(java.lang.String[]):1296 -> main
+    62:69:void main(java.lang.String[]):1296:1303 -> main
+    70:78:java.lang.String textBlockDemo():410:418 -> main
+    70:78:void main(java.lang.String[]):1303 -> main
+    79:81:void main(java.lang.String[]):1303:1305 -> main
+    82:84:int[] varargsBasic(int,int[]):426:428 -> main
+    82:84:void main(java.lang.String[]):1305 -> main
+    85:86:void main(java.lang.String[]):1305:1306 -> main
+    87:87:java.util.List safeVarargs(java.lang.Object[]):434:434 -> main
+    87:87:void main(java.lang.String[]):1306 -> main
+    88:95:void main(java.lang.String[]):1306:1313 -> main
+    96:96:int sumViaStream(int[]):466:466 -> main
+    96:96:void main(java.lang.String[]):1313 -> main
+    97:102:void main(java.lang.String[]):1313:1318 -> main
+    103:104:void main(java.lang.String[]):1318:1319 -> main
+    105:108:int gcd(int,int):494:497 -> main
+    105:108:void main(java.lang.String[]):1319 -> main
+    109:110:void main(java.lang.String[]):1319:1320 -> main
+    111:112:void main(java.lang.String[]):1320:1321 -> main
+    113:113:double accumulate(double[]):516:516 -> main
+    113:113:void main(java.lang.String[]):1321 -> main
+    114:116:void main(java.lang.String[]):1321:1323 -> main
+    117:117:boolean isPalindrome(java.lang.String):526:526 -> main
+    117:117:void main(java.lang.String[]):1323 -> main
+    118:119:void main(java.lang.String[]):1323:1324 -> main
+    120:120:int countVowels(java.lang.String):538:538 -> main
+    120:120:void main(java.lang.String[]):1324 -> main
+    121:122:void main(java.lang.String[]):1324:1325 -> main
+    123:125:int[] reverseArray(int[]):548:550 -> main
+    123:125:void main(java.lang.String[]):1325 -> main
+    126:129:void main(java.lang.String[]):1325:1328 -> main
+    130:131:double sumAsDouble(java.util.List):561:562 -> main
+    130:131:void main(java.lang.String[]):1328 -> main
+    132:133:void main(java.lang.String[]):1328:1329 -> main
+    134:139:java.util.Optional firstMatch(java.util.Collection,java.util.function.Predicate):568:573 -> main
+    134:139:void main(java.lang.String[]):1329 -> main
+    140:143:void main(java.lang.String[]):1329:1332 -> main
+    144:144:void main(java.lang.String[]):1332:1332 -> main
+    145:145:void EdgeCases$2.run():635:635 -> main
+    145:145:void main(java.lang.String[]):1335 -> main
+    146:153:void main(java.lang.String[]):1336:1343 -> main
+    154:156:void main(java.lang.String[]):1343:1345 -> main
+    157:157:java.util.SortedMap intoSorted(java.util.Map):706:706 -> main
+    157:157:void main(java.lang.String[]):1345 -> main
+    158:159:void main(java.lang.String[]):1346:1347 -> main
+    160:162:java.util.Set uniqueOrdered(java.lang.Iterable):710:712 -> main
+    160:162:void main(java.lang.String[]):1347 -> main
+    163:164:void main(java.lang.String[]):1347:1348 -> main
+    165:166:java.util.List reverseList(java.util.List):718:719 -> main
+    165:166:void main(java.lang.String[]):1348 -> main
+    167:168:void main(java.lang.String[]):1348:1349 -> main
+    169:170:int countMatches(java.util.List,java.util.function.Predicate):725:726 -> main
+    169:170:void main(java.lang.String[]):1349 -> main
+    171:172:void main(java.lang.String[]):1349:1350 -> main
+    173:173:java.util.Map partition(java.util.List,java.util.function.Predicate):734:734 -> main
+    173:173:void main(java.lang.String[]):1350 -> main
+    174:175:void main(java.lang.String[]):1350:1351 -> main
+    176:177:java.lang.Object foldLeft(java.util.List,java.lang.Object,java.util.function.BiFunction):739:740 -> main
+    176:177:void main(java.lang.String[]):1351 -> main
+    178:182:void main(java.lang.String[]):1351:1355 -> main
+    183:187:java.util.Map mapBuilders():767:771 -> main
+    183:187:void main(java.lang.String[]):1355 -> main
+    188:188:java.util.Map mapBuilders():766:766 -> main
+    188:188:void main(java.lang.String[]):1355 -> main
+    189:190:void main(java.lang.String[]):1355:1356 -> main
+    191:191:java.util.List listBuilders():776:776 -> main
+    191:191:void main(java.lang.String[]):1356 -> main
+    192:193:void main(java.lang.String[]):1356:1357 -> main
+    194:194:java.util.Set setBuilders():780:780 -> main
+    194:194:void main(java.lang.String[]):1357 -> main
+    195:202:void main(java.lang.String[]):1357:1364 -> main
+    203:204:java.util.Set enumSet(java.lang.Class):818:819 -> main
+    203:204:void main(java.lang.String[]):1364 -> main
+    205:207:void main(java.lang.String[]):1364:1366 -> main
+    208:208:int boxedMath(java.lang.Integer,java.lang.Integer):828:828 -> main
+    208:208:void main(java.lang.String[]):1366 -> main
+    209:210:void main(java.lang.String[]):1366:1367 -> main
+    211:211:long bigCompute(long):834:834 -> main
+    211:211:void main(java.lang.String[]):1367 -> main
+    212:214:void main(java.lang.String[]):1367:1369 -> main
+    215:219:java.lang.String hexDump(byte[]):848:852 -> main
+    215:219:void main(java.lang.String[]):1369 -> main
+    220:221:void main(java.lang.String[]):1369:1370 -> main
+    222:225:int[][] makeGrid(int,int):862:865 -> main
+    222:225:void main(java.lang.String[]):1370 -> main
+    226:227:int sumGrid(int[][]):873:874 -> main
+    226:227:void main(java.lang.String[]):1370 -> main
+    228:238:void main(java.lang.String[]):1370:1380 -> main
+    239:240:java.util.Optional firstOf(java.lang.Iterable):898:899 -> main
+    239:240:void main(java.lang.String[]):1380 -> main
+    241:245:void main(java.lang.String[]):1380:1384 -> main
+    246:246:EdgeCases$Vector2D EdgeCases$Vector2D.add(EdgeCases$Vector2D):912:912 -> main
+    246:246:void main(java.lang.String[]):1384 -> main
+    247:248:void main(java.lang.String[]):1384:1385 -> main
+    249:250:void main(java.lang.String[]):1385:1386 -> main
+    251:251:double EdgeCases$Vector2D.magnitude():920:920 -> main
+    251:251:void main(java.lang.String[]):1386 -> main
+    252:253:void main(java.lang.String[]):1386:1387 -> main
+    254:259:EdgeCases$Vector2D centerOfMass(java.util.List):948:953 -> main
+    254:259:void main(java.lang.String[]):1387 -> main
+    260:262:void main(java.lang.String[]):1387:1389 -> main
+    263:263:int hailstone(int):959:959 -> main
+    263:263:void main(java.lang.String[]):1389 -> main
+    264:265:void main(java.lang.String[]):1389:1390 -> main
+    266:272:java.util.List primesUpTo(int):966:972 -> main
+    266:272:void main(java.lang.String[]):1390 -> main
+    273:274:void main(java.lang.String[]):1390:1391 -> main
+    275:284:java.lang.String binFormat(int,int):980:989 -> main
+    275:284:void main(java.lang.String[]):1391 -> main
+    285:286:void main(java.lang.String[]):1391:1392 -> main
+    287:289:int countDigits(long):997:999 -> main
+    287:289:void main(java.lang.String[]):1392 -> main
+    290:291:void main(java.lang.String[]):1392:1393 -> main
+    292:295:long sumDigits(long):1007:1010 -> main
+    292:295:void main(java.lang.String[]):1393 -> main
+    296:297:void main(java.lang.String[]):1393:1394 -> main
+    298:300:java.util.List chunked(java.util.List,int):1016:1018 -> main
+    298:300:void main(java.lang.String[]):1394 -> main
+    301:302:void main(java.lang.String[]):1394:1395 -> main
+    303:305:java.util.List windowed(java.util.List):1024:1026 -> main
+    303:305:void main(java.lang.String[]):1395 -> main
+    306:307:void main(java.lang.String[]):1395:1396 -> main
+    308:308:void main(java.lang.String[]):1396:1396 -> main
+    309:310:java.lang.Object reduce(java.util.List,java.lang.Object,java.util.function.BiFunction):1033:1034 -> main
+    309:310:void main(java.lang.String[]):1396 -> main
+    311:312:void main(java.lang.String[]):1396:1397 -> main
+    313:315:int maxOrMin(int[],boolean):1043:1045 -> main
+    313:315:void main(java.lang.String[]):1397 -> main
+    316:317:void main(java.lang.String[]):1397:1398 -> main
+    318:318:double mean(double[]):1057:1057 -> main
+    318:318:void main(java.lang.String[]):1398 -> main
+    319:320:void main(java.lang.String[]):1398:1399 -> main
+    321:321:double mean(double[]):1057:1057 -> main
+    321:321:double variance(double[]):1067 -> main
+    321:321:void main(java.lang.String[]):1399 -> main
+    322:322:double variance(double[]):1069:1069 -> main
+    322:322:void main(java.lang.String[]):1399 -> main
+    323:324:void main(java.lang.String[]):1399:1400 -> main
+    325:328:int dotInt(int[],int[]):1077:1080 -> main
+    325:328:void main(java.lang.String[]):1400 -> main
+    329:331:void main(java.lang.String[]):1400:1402 -> main
+    332:342:int[][] matrixMul(int[][],int[][]):1086:1096 -> main
+    332:342:void main(java.lang.String[]):1402 -> main
+    343:345:void main(java.lang.String[]):1403:1405 -> main
+    346:355:java.lang.String join(java.lang.Iterable,java.lang.String):1103:1112 -> main
+    346:355:void main(java.lang.String[]):1405 -> main
+    356:357:void main(java.lang.String[]):1405:1406 -> main
+    358:358:void main(java.lang.String[]):1406:1406 -> main
+    359:359:java.lang.Object tap(java.lang.Object,java.util.function.Consumer):1116:1116 -> main
+    359:359:void main(java.lang.String[]):1406 -> main
+    360:361:void main(java.lang.String[]):1406:1407 -> main
+    362:365:java.lang.Comparable clamp(java.lang.Comparable,java.lang.Comparable,java.lang.Comparable):1226:1229 -> main
+    362:365:void main(java.lang.String[]):1407 -> main
+    366:366:void main(java.lang.String[]):1407:1407 -> main
+    367:368:EdgeCases$FluentBuilder mapBuilder():1241:1242 -> main
+    367:368:void main(java.lang.String[]):1409 -> main
+    369:369:void main(java.lang.String[]):1409:1409 -> main
+    370:370:EdgeCases$FluentBuilder EdgeCases$5.set(java.lang.String,java.lang.Object):1245:1245 -> main
+    370:370:void main(java.lang.String[]):1409 -> main
+    371:371:void main(java.lang.String[]):1409:1409 -> main
+    372:372:EdgeCases$FluentBuilder EdgeCases$5.set(java.lang.String,java.lang.Object):1245:1245 -> main
+    372:372:void main(java.lang.String[]):1409 -> main
+    373:376:void main(java.lang.String[]):1409:1412 -> main
+    377:383:java.lang.String collatzPath(int):1174:1180 -> main
+    377:383:void main(java.lang.String[]):1412 -> main
+    384:385:void main(java.lang.String[]):1412:1413 -> main
+    386:386:long countSetBitsRange(long,long):1186:1186 -> main
+    386:386:void main(java.lang.String[]):1413 -> main
+    387:397:void main(java.lang.String[]):1413:1423 -> main
+    398:403:java.util.List takeWhile(java.util.List,java.util.function.Predicate):1139:1144 -> main
+    398:403:void main(java.lang.String[]):1423 -> main
+    404:407:void main(java.lang.String[]):1423:1426 -> main
+    408:408:java.util.Optional coalesce(java.util.Optional,java.util.Optional):1166:1166 -> main
+    408:408:void main(java.lang.String[]):1426 -> main
+    409:412:void main(java.lang.String[]):1426:1429 -> main
+    413:414:void main(java.lang.String[]):1376:1377 -> main
+    1:1:java.util.List repeat(java.lang.Object,int):1170:1170 -> n
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/List;"}
+    1:9:java.lang.String shapeFacts(java.lang.Object):339:347 -> o
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    10:10:java.lang.String shapeFacts(java.lang.Object):346:346 -> o
+    11:11:java.lang.String shapeFacts(java.lang.Object):345:345 -> o
+    12:12:java.lang.String shapeFacts(java.lang.Object):344:344 -> o
+    13:13:java.lang.String shapeFacts(java.lang.Object):343:343 -> o
+    14:14:java.lang.String shapeFacts(java.lang.Object):342:342 -> o
+    15:15:java.lang.String shapeFacts(java.lang.Object):341:341 -> o
+    16:16:java.lang.String shapeFacts(java.lang.Object):339:339 -> o
+    1:1:java.util.stream.IntStream squares(int):746:746 -> p
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/stream/IntStream;"}
+    1:1:java.lang.String stringInterpolation(java.lang.String,int):894:894 -> q
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    1:3:java.lang.String throwsCheckedAndReports():759:761 -> r
+    1:11:java.lang.String tryWithResources():370:380 -> s
+    12:12:java.lang.String tryWithResources():370:370 -> s
+    1:15:java.lang.String virtualThreadFanout(int):384:398 -> t
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/lang/String;"}
+    16:16:java.lang.String virtualThreadFanout(int):385:385 -> t
+    1:3:java.util.SortedMap wordCount(java.lang.String):474:476 -> u
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/SortedMap;"}
+EdgeCases$1 -> a:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.lang.Object value -> a
+    boolean ready -> b
+    java.util.function.Supplier val$base -> c
+    1:1:void <init>(java.util.function.Supplier):284:284 -> <init>
+    1:9:java.lang.Object get():290:298 -> get
+EdgeCases$2 -> R8$$REMOVED$$CLASS$$0:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+EdgeCases$3 -> b:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    int seen -> a
+    int val$captured -> b
+    1:2:void <init>(int):644:645 -> <init>
+    1:1:boolean hasNext():649:649 -> hasNext
+    1:1:java.lang.Integer next():654:654 -> next
+    1:1:java.lang.Object next():644 -> next
+EdgeCases$4 -> c:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.util.Iterator outer -> a
+    java.util.Iterator inner -> b
+    1:3:void <init>(java.util.List):658:660 -> <init>
+    1:4:boolean hasNext():664:667 -> hasNext
+    1:1:java.lang.Integer next():672:672 -> next
+    1:1:java.lang.Object next():658 -> next
+EdgeCases$5 -> d:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.util.LinkedHashMap val$data -> a
+    1:1:void <init>(java.util.LinkedHashMap):1242:1242 -> <init>
+    1:1:java.util.Map build():1251:1251 -> a
+    1:1:java.lang.Object build():1242 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/Map;"}
+EdgeCases$Adder -> e:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    int add(int,int) -> a
+EdgeCases$Circle -> f:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(double):100:100 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+    1:1:boolean equals(java.lang.Object):99:99 -> equals
+    1:1:int hashCode():99:99 -> hashCode
+    1:1:java.lang.String toString():99:99 -> toString
+EdgeCases$Direction -> k:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    EdgeCases$Direction WEST -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Lj;"}
+    EdgeCases$Direction[] $VALUES -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"[Lk;"}
+    1:19:void <clinit>():152:170 -> <clinit>
+    20:20:EdgeCases$Direction[] $values():151:151 -> <clinit>
+    20:20:void <clinit>():151 -> <clinit>
+    21:21:void <clinit>():151:151 -> <clinit>
+    1:1:void <init>(java.lang.String,int,int,int):180:180 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/String;I)V"}
+    1:1:EdgeCases$Direction valueOf(java.lang.String):151:151 -> valueOf
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/String;)Lk;"}
+    1:1:EdgeCases$Direction[] values():151:151 -> values
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()[Lk;"}
+EdgeCases$Direction$1 -> g:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(java.lang.String,int,int,int):152:152 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+EdgeCases$Direction$2 -> h:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(java.lang.String,int,int,int):158:158 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+EdgeCases$Direction$3 -> i:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(java.lang.String,int,int,int):164:164 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+EdgeCases$Direction$4 -> j:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(java.lang.String,int,int,int):170:170 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+EdgeCases$EmptyShape -> l:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    EdgeCases$EmptyShape INSTANCE -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ll;"}
+    1:1:void <clinit>():127:127 -> <clinit>
+    double area() -> a
+EdgeCases$Pair -> m:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.lang.Object first -> a
+    java.lang.Object second -> b
+    1:1:void <init>(java.lang.Object,java.lang.Object):783:783 -> <init>
+    1:1:boolean equals(java.lang.Object):783:783 -> equals
+    1:1:int hashCode():783:783 -> hashCode
+    1:1:java.lang.String toString():783:783 -> toString
+EdgeCases$Reducer -> n:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.lang.Object reduce(java.lang.Object,java.lang.Object) -> a
+EdgeCases$Repository -> p:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:java.util.Optional find(java.lang.Object):233:233 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/Optional;"}
+    2:2:java.lang.Object EdgeCases$Repository$1.get(java.lang.Object):242:242 -> a
+    2:2:java.util.Optional find(java.lang.Object):233 -> a
+    3:3:java.util.Optional find(java.lang.Object):233:233 -> a
+EdgeCases$Repository$1 -> o:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    java.util.Map store -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/util/concurrent/ConcurrentHashMap;"}
+    1:2:void <init>():237:238 -> <init>
+EdgeCases$Shape -> q:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    double area() -> a
+EdgeCases$Square -> r:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(double):112:112 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+    1:1:boolean equals(java.lang.Object):112:112 -> equals
+    1:1:int hashCode():112:112 -> hashCode
+    1:1:java.lang.String toString():112:112 -> toString
+EdgeCases$Triangle -> s:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    1:1:void <init>(double,double):119:119 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+    1:1:boolean equals(java.lang.Object):119:119 -> equals
+    1:1:int hashCode():119:119 -> hashCode
+    1:1:java.lang.String toString():119:119 -> toString
+EdgeCases$Vector2D -> t:
+# {"id":"sourceFile","fileName":"EdgeCases.java"}
+    double x -> a
+    double y -> b
+    1:3:void <init>(double,double):906:908 -> <init>
+    1:4:boolean equals(java.lang.Object):928:931 -> equals
+    1:1:int hashCode():936:936 -> hashCode
+    1:1:java.lang.String toString():941:941 -> toString

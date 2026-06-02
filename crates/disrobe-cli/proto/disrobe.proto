@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package disrobe.v1;
+
+service Disrobe {
+  rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+  rpc EnvelopeVerify(EnvelopeVerifyRequest) returns (EnvelopeVerifyResponse);
+  rpc EnvelopeCreate(EnvelopeCreateRequest) returns (EnvelopeCreateResponse);
+  rpc Passes(PassesRequest) returns (PassesResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Version(VersionRequest) returns (VersionResponse);
+}
+
+message AnalyzeRequest {
+  bytes bytes_inline = 1;
+  string hint = 2;
+}
+
+message AnalyzeResponse {
+  string routed_action = 1;
+  uint64 bytes_read = 2;
+  string blake3_hash = 3;
+  string reason = 4;
+  repeated string candidates = 5;
+}
+
+message ExplainRequest {
+  string code = 1;
+}
+
+message ExplainResponse {
+  string code = 1;
+  bool known = 2;
+  string title = 3;
+  string description = 4;
+  string crate_path = 5;
+}
+
+message EnvelopeVerifyRequest {
+  bytes bytes_inline = 1;
+}
+
+message EnvelopeVerifyResponse {
+  bool verified = 1;
+  uint32 version = 2;
+  string rung = 3;
+  uint64 hot_bytes = 4;
+  uint64 cold_bytes = 5;
+  string root_hash_blake3 = 6;
+}
+
+message EnvelopeCreateRequest {
+  bytes bytes_inline = 1;
+  string source_label = 2;
+  string produced_by = 3;
+  string detected_format = 4;
+}
+
+message EnvelopeCreateResponse {
+  bytes envelope_inline = 1;
+  uint64 envelope_bytes = 2;
+  uint64 bytes_in = 3;
+  string root_hash_blake3 = 4;
+  string source_hash_blake3 = 5;
+}
+
+message PassesRequest {}
+
+message PassDescriptor {
+  string name = 1;
+  string description = 2;
+}
+
+message PassesResponse {
+  repeated PassDescriptor passes = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+}
+
+message VersionRequest {}
+
+message VersionResponse {
+  string name = 1;
+  string version = 2;
+  string api = 3;
+}

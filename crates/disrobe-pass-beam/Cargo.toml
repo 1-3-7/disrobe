@@ -1,0 +1,35 @@
+[package]
+name = "disrobe-pass-beam"
+description = "BEAM (Erlang/Elixir) bytecode parser + disassembler + Core Erlang lift + Elixir Dbgi recovery + Erlang-Prism port + EZ archive extract."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["beam", "erlang", "elixir", "bytecode", "decompile"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }

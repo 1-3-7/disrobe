@@ -1,0 +1,25 @@
+name: benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'crates/**/benches/**'
+      - '.github/workflows/benchmark.yml'
+
+jobs:
+  bench:
+    name: benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run benchmarks
+        run: cargo bench --workspace 2>&1 | tee bench-output.txt
+      - name: upload results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ github.sha }}
+          path: bench-output.txt

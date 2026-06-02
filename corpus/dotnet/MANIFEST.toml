@@ -1,0 +1,276 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-05-25"
+sdk = "dotnet-sdk-9.0.314"
+
+[[fixture]]
+name = "HelloApp"
+path = "HelloApp.dll"
+kind = "managed-pe"
+target_framework = "net9.0"
+provenance = "real"
+source = ".developer/dotnet-samples/HelloApp/Program.cs"
+build = "dotnet build -c Release"
+description = "minimal net9.0 console-app DLL; baseline smoke fixture"
+
+[[fixture]]
+name = "HelloApp.r2r.exe"
+path = "HelloApp.r2r.exe"
+kind = "r2r-pe-exe"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+build = "dotnet publish -c Release -r win-x64 --self-contained -p:PublishReadyToRun=true"
+description = "self-contained ReadyToRun executable with embedded coreclr; baseline smoke fixture"
+
+[[fixture]]
+name = "HelloApp.r2r.dll"
+path = "HelloApp.r2r.dll"
+kind = "r2r-pe-dll"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+build = "dotnet publish -c Release -r win-x64 --self-contained -p:PublishReadyToRun=true"
+description = "ReadyToRun assembly DLL from self-contained publish; baseline smoke fixture"
+
+[[fixture]]
+name = "HelloAppAot.exe"
+path = "HelloAppAot.exe"
+kind = "nativeaot-pe-exe"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+build = "dotnet publish -c Release -r win-x64 (PublishAot=true)"
+description = "fully linked native AOT executable; no managed PE inside; baseline smoke fixture"
+
+[[fixture]]
+name = "HelloAppAot.dll"
+path = "HelloAppAot.dll"
+kind = "managed-pe-prelink"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+description = "managed DLL produced by the AOT compiler prior to the native link step"
+
+[[fixture]]
+name = "HelloAppLegacy"
+path = "HelloAppLegacy.dll"
+kind = "managed-pe"
+target_framework = "netstandard2.0"
+provenance = "real"
+build = "dotnet build -c Release -f netstandard2.0"
+description = "minimal netstandard2.0 library DLL accepted by ConfuserEx2/Obfuscar"
+
+[[fixture]]
+name = "HelloAppLegacy.confuserex2"
+path = "HelloAppLegacy.confuserex2.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "netstandard2.0"
+protector = "ConfuserEx2"
+protector_version = "1.6.0"
+protector_repo = "mkaring/ConfuserEx"
+provenance = "real"
+description = "HelloAppLegacy.dll processed by ConfuserEx2 v1.6.0 with normal preset + ctrl-flow + constants + rename + resources"
+
+[[fixture]]
+name = "SampleConstants.confuserex2"
+path = "SampleConstants.confuserex2.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "net48"
+protector = "ConfuserEx2"
+protector_version = "1.6.0"
+protector_repo = "mkaring/ConfuserEx"
+preset = "none+constants"
+provenance = "real"
+known_plaintext = "DISROBE_CONFUSER_CONSTANT_PROOF_8842"
+description = "constants-only ConfuserEx2 build (no rename/cflow/anti-tamper) so the injected Get/Initialize constant decoder is cleanly recoverable; Secret() string is behind <Module>.Get<string>(1242836064) and is absent from the raw bytes"
+
+[[fixture]]
+name = "HelloAppLegacy.obfuscar"
+path = "HelloAppLegacy.obfuscar.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "netstandard2.0"
+protector = "Obfuscar"
+protector_version = "2.2.50"
+protector_tool = "Obfuscar.GlobalTool"
+provenance = "real"
+description = "HelloAppLegacy.dll processed by Obfuscar v2.2.50 with HidePrivateApi+RenameProperties+RenameEvents+RenameFields"
+
+[[fixture]]
+name = "EdgeCases.baseline"
+path = "megafile/EdgeCases.baseline.dll"
+kind = "managed-pe"
+target_framework = "netstandard2.0"
+provenance = "real"
+source = "megafile/EdgeCases.cs + megafile/EdgeCasesMore.cs + megafile/Polyfills.cs"
+build = "dotnet publish EdgeCases.csproj -c Release -f netstandard2.0"
+description = "megafile (2498 LOC) covering C# 6-13 features: records, init-only, primary ctors, list/property/relational patterns, switch expressions, with-expressions, ref structs, Span/Memory, ref/in/out, generic math (net7+), async/await, IAsyncEnumerable, IDisposable/IAsyncDisposable, P/Invoke + LibraryImport, struct layouts, fixed buffers, unsafe blocks, raw strings, UTF-8 literals, target-typed new, collection expressions, expression trees, LINQ method+query syntax"
+
+[[fixture]]
+name = "EdgeCases.confuserex2"
+path = "megafile/EdgeCases.confuserex2.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "netstandard2.0"
+protector = "ConfuserEx2"
+protector_version = "1.6.0"
+provenance = "real"
+build = "Confuser.CLI.exe EdgeCases.crproj"
+description = "EdgeCases.baseline.dll obfuscated by ConfuserEx2 v1.6.0; same preset as HelloAppLegacy"
+
+[[fixture]]
+name = "EdgeCases.obfuscar"
+path = "megafile/EdgeCases.obfuscar.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "netstandard2.0"
+protector = "Obfuscar"
+protector_version = "2.2.50"
+provenance = "real"
+description = "EdgeCases.baseline.dll renamed by Obfuscar v2.2.50"
+
+[[fixture]]
+name = "EdgeCases.r2r"
+path = "megafile/EdgeCases.r2r.dll"
+kind = "r2r-pe-dll"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+build = "dotnet publish EdgeCases.csproj -c Release -f net9.0 -r win-x64 --self-contained -p:PublishReadyToRun=true"
+description = "ReadyToRun-compiled EdgeCases (net9.0); contains R2R header + native code stubs"
+
+[[fixture]]
+name = "EdgeCases.nativeaot"
+path = "megafile/EdgeCases.nativeaot.exe"
+kind = "nativeaot-pe-exe"
+target_framework = "net9.0"
+runtime_id = "win-x64"
+provenance = "real"
+source = ".developer/dotnet-samples/EdgeCasesAot/Program.cs"
+build = "dotnet publish EdgeCasesAot.csproj -c Release -r win-x64 (PublishAot=true)"
+description = "fully linked NativeAOT executable; a separate top-level project exercises AOT compatibility; the megafile EdgeCases library itself is not AOT-trim-safe (reflection + expression trees) so the AOT exe is a sibling demo of NativeAOT itself"
+
+[[fixture]]
+name = "EdgeCases.cs"
+path = "megafile/EdgeCases.cs"
+kind = "source"
+description = "1177-LOC primary megafile source"
+
+[[fixture]]
+name = "EdgeCasesMore.cs"
+path = "megafile/EdgeCasesMore.cs"
+kind = "source"
+description = "1181-LOC extension megafile source (collections, algorithms, async patterns)"
+
+[[fixture]]
+name = "Polyfills.cs"
+path = "megafile/Polyfills.cs"
+kind = "source"
+description = "netstandard2.0 polyfills for modern attributes + Index/Range"
+
+[paid-protectors]
+status = "tier-1-attribute-strip-shipped; tier-2-algorithm-specs-shipped; tier-3-detect-only"
+reason = "v0.8 Wave 3A shipped clean-room peel_* infrastructure for all 13+2 protectors. Tier-1 (Reactor/Eaz/SmartAssembly/Babel/Agile/Crypto) emits ReportOnlyEncryptedResource; Tier-2 (DeepSea/Spices/Skater/Dotfuscator/Goliath) emits AttributeStripAndReport; Tier-3 (ArmDot/Themida/ILProtector/MaxToCode) emits DetectOnlyNativeOrVm. Algorithm specs at .developer/v0.8-w3a-protector-specs/."
+
+[[paid-protectors.entry]]
+name = ".NET Reactor"
+peel = "peel_dotnet_reactor"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "Watermark detection + name classification ships; full Rijndael resource decryption is PR-WELCOME pending licensed sample."
+
+[[paid-protectors.entry]]
+name = "Eazfuscator.NET"
+peel = "peel_eazfuscator"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "Pre-VM tier peelable in principle; VM-tier (Eaz 5.x+) PROTECTOR-UNOBTAINABLE for static round-trip."
+
+[[paid-protectors.entry]]
+name = "SmartAssembly"
+peel = "peel_smartassembly"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "Watermark + #=q/#=z name detection ships; full XOR decryption needs static-cctor constant evaluation."
+
+[[paid-protectors.entry]]
+name = "Babel.NET"
+peel = "peel_babel_net"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "Watermark + classification ships; BabelInflater + RC4 + Blowfish-CFB port is PR-WELCOME."
+
+[[paid-protectors.entry]]
+name = "DeepSea"
+peel = "peel_deepsea"
+strategy = "attribute-strip-and-report"
+status = "REAL-PEELED-PARTIAL"
+note = "Discontinued; fixtures unavailable on official channels."
+
+[[paid-protectors.entry]]
+name = "Spices.Net"
+peel = "peel_spices_net"
+strategy = "attribute-strip-and-report"
+status = "REAL-PEELED-PARTIAL"
+note = "Cyrillic homoglyph rename detection planned; full unscramble PR-WELCOME."
+
+[[paid-protectors.entry]]
+name = "Skater"
+peel = "peel_skater"
+strategy = "attribute-strip-and-report"
+status = "REAL-PEELED-PARTIAL"
+note = "Simple XOR string decrypter; full peel needs static-field magic byte extraction."
+
+[[paid-protectors.entry]]
+name = "Dotfuscator"
+peel = "peel_dotfuscator"
+strategy = "attribute-strip-and-report"
+status = "REAL-PEELED-PARTIAL"
+note = "CE bundled with VS = fixture-obtainable; overload-induction reversal PR-WELCOME."
+
+[[paid-protectors.entry]]
+name = "Goliath.NET"
+peel = "peel_goliath"
+strategy = "attribute-strip-and-report"
+status = "PROTECTOR-UNOBTAINABLE"
+note = "Discontinued upstream; SHA1-XOR string decryption ported when sample lands."
+
+[[paid-protectors.entry]]
+name = "CryptoObfuscator"
+peel = "peel_crypto_obfuscator"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "3DES string + DES resource ciphers; full port PR-WELCOME pending sample."
+
+[[paid-protectors.entry]]
+name = "ArmDot"
+peel = "peel_armdot"
+strategy = "detect-only-native-or-vm"
+status = "PROTECTOR-UNOBTAINABLE"
+note = "Custom per-method VM with LCG-encrypted opcodes; outside static-peel scope."
+
+[[paid-protectors.entry]]
+name = "Agile.NET"
+peel = "peel_agile_net"
+strategy = "report-only-encrypted-resource"
+status = "REAL-PEELED-PARTIAL"
+note = "Native-PE-section CIL encryption requires loader-emulation; MX-tier is full VM."
+
+[[paid-protectors.entry]]
+name = "Themida (.NET wrapper)"
+peel = "peel_themida_dotnet"
+strategy = "detect-only-native-or-vm"
+status = "PROTECTOR-UNOBTAINABLE"
+note = "Oreans VM-protected native loader; managed PE only exists in RWX memory at runtime."
+
+[[paid-protectors.entry]]
+name = "ILProtector"
+peel = "peel_ilprotector"
+strategy = "detect-only-native-or-vm"
+status = "PROTECTOR-UNOBTAINABLE"
+note = "Native Protect32/64.dll required at runtime; static-peel needs native-DLL emulation."
+
+[[paid-protectors.entry]]
+name = "MaxToCode"
+peel = "peel_maxtocode"
+strategy = "detect-only-native-or-vm"
+status = "PROTECTOR-UNOBTAINABLE"
+note = "Native loader + per-method decryption stub; static-peel needs loader emulation."

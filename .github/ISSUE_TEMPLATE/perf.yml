@@ -1,0 +1,36 @@
+name: Performance issue
+description: A pass is unexpectedly slow, uses too much memory, or produces large output.
+labels: [performance]
+body:
+  - type: input
+    id: pass
+    attributes:
+      label: Pass / command
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: disrobe version
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement
+      description: How did you measure this? Wall time, peak RSS, output size, etc.
+    validations:
+      required: true
+
+  - type: input
+    id: sample_hash
+    attributes:
+      label: Input sample hash
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and CPU
+      placeholder: 'Linux, x86_64, 8-core'

@@ -1,0 +1,77 @@
+[default]
+extend-ignore-re = [
+    "(?Rm)^.*# spellchecker:disable-line$",
+    "(?s)(#|//)\\s*spellchecker:off.*?(?:\\s*(#|//)\\s*spellchecker:on)?\\s*$",
+]
+
+[default.extend-words]
+# project terms
+disrobe = "disrobe"
+disrobed = "disrobed"
+deobf = "deobf"
+PyArmor = "PyArmor"
+bytenode = "bytenode"
+asar = "asar"
+flate = "flate"
+miette = "miette"
+rkyv = "rkyv"
+postcard = "postcard"
+wasmtime = "wasmtime"
+wasmparser = "wasmparser"
+walrus = "walrus"
+bytecheck = "bytecheck"
+landlock = "landlock"
+seccompiler = "seccompiler"
+napi = "napi"
+maturin = "maturin"
+oxc = "oxc"
+divan = "divan"
+fastwebsockets = "fastwebsockets"
+yaxpeax = "yaxpeax"
+mlua = "mlua"
+rmcp = "rmcp"
+sigstore = "sigstore"
+minisign = "minisign"
+zigbuild = "zigbuild"
+lefthook = "lefthook"
+
+# domain identifiers, opcodes, statutory citations, dwarf sections, packer locals
+SEH = "SEH"
+Seh = "Seh"
+seh = "seh"
+Ede = "Ede"
+Aranges = "Aranges"
+aranges = "aranges"
+Setp = "Setp"
+ifle = "ifle"
+mke = "mke"
+lits = "lits"
+tre = "tre"
+siz = "siz"
+nd = "nd"
+pn = "pn"
+ba = "ba"
+BA = "BA"
+hel = "hel"
+UEST = "UEST"
+mis = "mis"
+clen = "clen"
+truncat = "truncat"
+unparseable = "unparseable"
+writeable = "writeable"
+compileable = "compileable"
+iput = "iput"
+IST = "IST"
+GTI = "GTI"
+Strng = "Strng"
+Ot = "Ot"
+
+[files]
+extend-exclude = [
+    "corpus/**",
+    "fuzz/corpus/**",
+    "docs/book/book/**",
+    "target/**",
+    "**/*.dr",
+    "**/*.lock",
+]

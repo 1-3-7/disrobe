@@ -1,0 +1,34 @@
+SOURCEdefender (.pye) real-sample fixture
+=========================================
+
+hello.pye  (185 bytes) -- real SOURCEdefender-armored payload of the source below.
+hello.py   (22 bytes)  -- the plaintext oracle: print("Hello World!")
+
+Source / provenance
+-------------------
+Both files are taken verbatim from the Lazza/SourceRestorer project examples:
+  https://raw.githubusercontent.com/Lazza/SourceRestorer/main/examples/hello.pye
+  https://raw.githubusercontent.com/Lazza/SourceRestorer/main/examples/hello.py
+
+Algorithm reference
+-------------------
+The in-house Rust decryptor in crates/disrobe-pass-sourcedefender reimplements the
+proprietary `sourcedefender` PyPI library's .pye scheme clean-room, cross-checked against:
+  - GuardianN06/SourceUndefender (sourceundefender.py, Unlicense / public domain)
+  - Lazza/SourceRestorer (monkeypatches tgcrypto.ctr256_decrypt + msgpack, confirming
+    cipher = AES-256-CTR and payload = msgpack map with `code` / `eol_timestamp`).
+
+Format (this 185-byte sample, hand-decoded byte-for-byte)
+--------------------------------------------------------
+1. Armor markers: "--BEGIN SOURCEDEFENDER FILE---" / "---END SOURCEDEFENDER FILE----".
+   Line[0] = BEGIN, line[1] = IV, line[2..n-1] = ciphertext, line[n-1] = END.
+2. Each armored line is Ascii85 (Python stdlib a85, alphabet chr(33)..chr(117)) then
+   zlib-inflated. IV -> 16 bytes (310dbdb9...), ciphertext -> 58 bytes.
+3. KDF: password = presalt = basename without extension ("hello", UTF-8).
+   key64 = blake2b(password, 64); salt16 = blake2b(presalt, 16);
+   aes_key = blake2b(key=key64, salt=salt16, 32). For "hello":
+   2e8ef91afe6da4abd8e665aaf2104d5027ccfbfdb1890da81b40bf628d7d8c98.
+4. Cipher: AES-256-CTR, full 16-byte IV as the initial big-endian counter.
+5. Payload: msgpack map {code: 'print("Hello World!")\n', ttl_info: '', eol_timestamp: ...}.
+   Free version => `code` is the source string; paid => marshalled code object under
+   `original_code`.

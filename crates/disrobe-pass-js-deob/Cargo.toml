@@ -1,0 +1,49 @@
+[package]
+name = "disrobe-pass-js-deob"
+description = "JavaScript / TypeScript deobfuscator for the disrobe suite. Targets obfuscator.io, javascript-obfuscator, JSObfu, Jscrambler-style transforms, modern bundler reversal (Vite/Rollup/esbuild/Turbopack/Bun/webpack). Built on oxc (the post-swc parser used by Rolldown)."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["javascript", "typescript", "deobfuscator", "oxc", "webcrack"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+oxc = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_parser = { workspace = true }
+oxc_ast = { workspace = true }
+oxc_span = { workspace = true }
+oxc_semantic = { workspace = true }
+oxc_codegen = { workspace = true }
+boa_engine = { workspace = true }
+regex = "1"
+base64 = "0.22"
+indexmap = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+
+[dev-dependencies]
+insta = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "full_pipeline"
+harness = false

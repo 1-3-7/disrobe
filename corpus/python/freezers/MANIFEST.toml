@@ -1,0 +1,87 @@
+schema_version = 1
+generated_at = "2026-05-25"
+source_app = "hello"
+source_app_description = "Wraps corpus/python/decompile/playground/edge_cases_3_6..3_12.py (6-band chain, ~4181 LOC). hello/__init__.py eagerly imports each band; main() invokes edge_cases_3_12.exercise()."
+python_runtime = "CPython 3.12.10"
+host_platform = "win_amd64"
+
+[shiv]
+file = "shiv/hello.pyz"
+sha256 = "4ff1a2f007680451fdd6a941bc392600447ddc714582b843c3ac69a0b7c4cd79"
+size = 83343
+tool = "shiv"
+tool_version = "1.0.8"
+generation_command = "shiv -c hello -o hello.pyz hello-0.1.0-py3-none-any.whl --no-deps"
+regen_env_var = "DISROBE_SHIV_REGEN"
+extracted_dir = "shiv/extracted/"
+
+[pex]
+file = "pex/hello.pex"
+sha256 = "5818bb776234972b0a2a273415eb303673136b62ca19c4cb722b6b2531dd79f2"
+size = 923554
+tool = "pex"
+tool_version = "2.95.3"
+generation_command = "pex --python python3.12 --entry-point hello:main -o hello.pex hello-0.1.0-py3-none-any.whl"
+regen_env_var = "DISROBE_PEX_REGEN"
+extracted_dir = "pex/extracted/"
+
+[py2exe]
+file = "py2exe/hello.exe"
+sha256 = "9459248e8c44a66dc37142e239c0cb31fc71822e05b985b1dddbf85d533829bd"
+size = 40960
+tool = "py2exe"
+tool_version = "0.14.0.0"
+generation_command = "python setup.py py2exe  (bundle_files=3, optimize=0, compressed=true; companion library.zip in extracted/)"
+regen_env_var = "DISROBE_PY2EXE_REGEN"
+host_platform = "win_amd64"
+extracted_dir = "py2exe/extracted/"
+notes = "py2exe is Windows-only. Python 3.12+ rejects bundle_files<3, so library.zip ships as a sibling and the .exe loads it."
+
+[cxfreeze]
+file = "cxfreeze/hello.exe"
+sha256 = "bd5a7d2980fb566f68a5ecb85cf8b6472ad095ce7818ac5a9c94ce1e4d574442"
+size = 17920
+tool = "cx_Freeze"
+tool_version = "8.6.4"
+generation_command = "cxfreeze --script hello.py --target-name hello --target-dir build"
+regen_env_var = "DISROBE_CXFREEZE_REGEN"
+extracted_dir = "cxfreeze/extracted/"
+notes = "cx_Freeze emits the stub binary plus a sibling lib/ directory containing python312.dll, library.zip, and compiled .pyc resources."
+
+[briefcase]
+file = "briefcase/hello.exe"
+sha256 = "1b515eda4ec1efb56b096c45b0a61c11682f5f397c11d5e6f1338ef62bd96327"
+size = 134656
+tool = "briefcase"
+tool_version = "0.4.2"
+generation_command = "briefcase new --no-input -Q bootstrap=Console ...; briefcase create windows; briefcase update windows; briefcase build windows; briefcase package windows --adhoc-sign"
+regen_env_var = "DISROBE_BRIEFCASE_REGEN"
+extracted_dir = "briefcase/extracted/"
+secondary_file = "briefcase/hello.msi"
+secondary_sha256 = "d28c2db2f9fc92430c1ab7453d0294863e8286b300b550188d9f3c3bfd18ce9f"
+secondary_size = 10076160
+notes = "Sibling layout under extracted/ matches briefcase windows runtime: app/ + app_packages/ + python-stdlib (via embedded python). Detector probes for app_packages|python-stdlib|briefcase.toml siblings."
+
+[pyoxidizer]
+file = "pyoxidizer/hello.exe"
+sha256 = ""
+size = 0
+tool = "pyoxidizer"
+tool_version = "0.24.0"
+generation_command = "DISROBE_PYOXIDIZER_REGEN=1 cargo test -p disrobe-pass-pyfreeze --test pyoxidizer_real_binary"
+regen_env_var = "DISROBE_PYOXIDIZER_REGEN"
+extracted_dir = "pyoxidizer/extracted/"
+status = "real-existing-gated-on-tool"
+notes = """Real-fixture-gated via existing pyoxidizer_real_binary.rs test. Binary lives under target/test-fixtures/pyoxidizer-built/<hash>/ instead of corpus/ because pyoxidizer build is multi-minute and the binary embeds a Python distribution.
+
+NB (2026-05-25): cargo install pyoxidizer fails on Rust 1.95 + Windows SDK 10 due to libgit2-sys 0.14 missing __imp_OpenProcessToken / __imp_CheckTokenMembership / 13 other advapi32 symbols. pyoxidizer 0.24.0 is unmaintained. Test correctly graceful-skips when binary is absent."""
+
+[zipapp]
+file = "zipapp/hello.pyz"
+sha256 = "d1a7891afe1b0a47494df8ed5b2a41c632d8116fe97c25f5cab1325cb2d9dd42"
+size = 150068
+tool = "stdlib.zipapp"
+tool_version = "cpython-3.12.10"
+generation_command = "python -m zipapp <stage-dir> -o hello.pyz   (stage-dir contains hello/ + top-level edge_cases_3_*.py + __main__.py)"
+regen_env_var = "DISROBE_ZIPAPP_REGEN"
+extracted_dir = "zipapp/extracted/"

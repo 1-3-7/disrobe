@@ -1,0 +1,116 @@
+schema_version = "1"
+crate = "disrobe-pass-shell"
+generated_on = "2026-05-25"
+
+[notes]
+amsi = "Windows Defender AMSI blocks loading the upstream Bohannon Invoke-Obfuscation module on this build, so the per-level fixtures here are produced by a from-spec generator (corpus/shell/powershell/megafile/edge_cases.ps1 driven through equivalent transforms) that emits the same Token / AST / String / Encoding / Compress / Launcher shapes Invoke-Obfuscation produces. Each level is a real, executable PowerShell payload that the disrobe reverse passes accept."
+megafile_strategy = "Per-shell megafile (corpus/shell/<lang>/megafile/edge_cases.<ext>) is the canonical large fixture. Obfuscators are also re-run on the megafile where the tool tolerates large input (Bashfuscator command/case_swapper and compress/gzip; Invoke-Obfuscation encoding + compress)."
+
+[powershell.invoke_obfuscation]
+source = "github:danielbohannon/Invoke-Obfuscation@main"
+status = "FROM-SPEC-GENERATOR"
+reason = "Defender AMSI signature on the upstream module blocks `. .\\Out-ObfuscatedTokenCommand.ps1`. Generator: tools/gen-invoke-obf-fixtures (rerun from C:\\Users\\-\\AppData\\Local\\Temp\\shell-tools\\gen-invoke-obf-fixtures.ps1). Outputs exercise the same reverse passes."
+fixtures = [
+  "powershell/invoke-obfuscation/token/hello.ps1",
+  "powershell/invoke-obfuscation/ast/hello.ps1",
+  "powershell/invoke-obfuscation/string/hello.ps1",
+  "powershell/invoke-obfuscation/encoding/hello.ps1",
+  "powershell/invoke-obfuscation/compress/hello.ps1",
+  "powershell/invoke-obfuscation/launcher/hello.ps1",
+  "powershell/invoke-obfuscation/encoding/edge_cases.ps1",
+  "powershell/invoke-obfuscation/compress/edge_cases.ps1",
+]
+
+[powershell.invoke_stealth]
+source = "github:JoelGMSec/Invoke-Stealth@main"
+status = "REAL-FIXTURE"
+technique = "ReverseB64"
+fixtures = ["powershell/invoke-stealth/hello.ps1"]
+
+[powershell.chameleon]
+source = "bundled in Invoke-Stealth/Resources/Chameleon (tokyoneon Chameleon python port)"
+status = "REAL-FIXTURE"
+upstream_root_status = "github:tokyoneon/Chameleon -> 404 (DEAD). Recovered via Invoke-Stealth bundle."
+fixtures = ["powershell/chameleon/hello.ps1"]
+
+[powershell.psobf]
+source = "github:gh0x0st/Invoke-PSObfuscation@main"
+status = "REAL-FIXTURE"
+upstream_root_status = "github:DanielArrais/psobf -> 404 (DEAD). gh0x0st/Invoke-PSObfuscation used as documented replacement."
+fixtures = ["powershell/psobf/hello.ps1"]
+
+[powershell.isesteroids]
+source = "powershellmagazine.com/isesteroids (commercial paid product by Tobias Weltner)"
+status = "TOOL-PAID-DEFER"
+reason = "ISESteroids is a paid commercial PowerShell ISE add-on. The Tokenize / Compress / String technique surface is reproduced by the from-spec invoke-obfuscation generator above; no separate fixture is added pending a license."
+
+[powershell.powerhell]
+source = "github:UndeadSec/PowerHell@main"
+status = "TOOL-DEAD-DOCUMENT"
+reason = "Upstream returns HTTP 404 (repo removed)."
+
+[powershell.ps_obfuscation_bible]
+source = "github:danielbohannon/PS-Obfuscation-Bible@main"
+status = "TOOL-DEAD-DOCUMENT"
+reason = "Upstream returns HTTP 404 (repo removed). The PowerShell obfuscation techniques catalogued in the original `Out-*.ps1` family of Invoke-Obfuscation cover the same surface."
+
+[powershell.megafile]
+status = "SYNTHESIZED"
+description = "Hand-written ~1000-LOC PowerShell file covering enums, classes (including inheritance + events on .cls), advanced functions with full param-set / ValidateScript / ValidateRange / ValidateSet / dynamicparam, ValidatePattern, splatting (named + positional), pipeline binding, hashtables (standard + ordered + nested), ArrayList vs generic List vs Queue vs Stack, here-strings (single + double), format operator (date / float / percent / multi-column), switch with -Wildcard / -Regex / condition lambdas, try/catch/finally with typed catch + traps, jobs, runspaces (pool), modules (New-Module), filter, pipeline composition, WMI / CIM / COM declarations, registry & ACL access, type accelerators, atomic file writes, comment-based help, custom enums with [Flags()], reflection (Get-TypeMembers), workflows, regex compiled, PS7+ null-coalescing / ternary / pipeline chain && / || / ForEach-Object -Parallel, steppable pipelines, argument completers, async tasks, encoded command round-trip."
+path = "powershell/megafile/edge_cases.ps1"
+
+[bash.bashfuscator]
+source = "github:Bashfuscator/Bashfuscator@master"
+status = "REAL-FIXTURE"
+fixtures = [
+  "bash/bashfuscator/token/hello.sh",
+  "bash/bashfuscator/string/hello.sh",
+  "bash/bashfuscator/obfuscate/hello.sh",
+  "bash/bashfuscator/compress/hello.sh",
+  "bash/bashfuscator/obfuscate/edge_cases.sh",
+  "bash/bashfuscator/compress/edge_cases.sh",
+]
+mutator_map = { token = "token/forcode", string = "string/hex_hash", obfuscate = "command/case_swapper", compress = "compress/gzip" }
+
+[bash.megafile]
+status = "SYNTHESIZED"
+description = "Hand-written ~800-LOC bash file: all parameter expansion forms (default/assign/error/alt, substring, length, prefix/suffix removal, replace, case conversion, indirect, ${var@op}), arithmetic ($((..)) / let / (( .. )) / awk for floats), arrays (indexed + assoc, += append, unset, slice, indices), command + process substitution, here-docs (plain / interpolated / tab-stripped) and here-strings, all redirection forms incl. fd dup, traps (EXIT/ERR/INT/USR1/USR2/RETURN), brace expansion (range, step, letters, pairs, padded, reverse), globs/extglob/nullglob/globstar/nocaseglob, [[ ]] regex with BASH_REMATCH, conditional expressions (-e/-r/-x/-nt/-ef/-n/-z), case/esac with pattern lists incl. extglob, while/until/for/select/for-c-style, declare/local/readonly/typeset/nameref/-i/-x/-l/-u, builtin vs external (enable/builtin/\\printf), signals (kill/trap), getopts, mapfile/readarray, coproc/fifo, ${var@Q/P/A/a}, lastpipe shopt, pseudo-class via assoc array, memo via assoc array, recursive trap chain."
+path = "bash/megafile/edge_cases.sh"
+
+[batch.builtin_obfuscator]
+source = "tools/batch_obfuscate.py (from-spec techniques: caret-escape, var-split with delayed expansion, FOR /F substring quoting, exec-via-call)"
+status = "FROM-SPEC-GENERATOR"
+techniques = ["caret", "varsplit", "forsubstr", "call"]
+fixtures = [
+  "batch/baseline/hello.bat",
+  "batch/caret/hello.bat",
+  "batch/varsplit/hello.bat",
+  "batch/forsubstr/hello.bat",
+  "batch/call/hello.bat",
+]
+
+[batch.megafile]
+status = "SYNTHESIZED"
+description = "Hand-written ~430-LOC batch script: variables (normal + delayed expansion), arithmetic via SET /A incl. bitwise / shifts, ALL parameter modifiers (~%n, %~d/p/n/x/s/a/t/z/dp/fnx), substring + replace, IF EXIST/DEFINED/ERRORLEVEL/EQU/GEQ/case-insensitive, &&/||, FOR /F (file, command, skip, eol, tokens), FOR /L numeric, FOR /D directories, FOR /R recursive, GOTO/CALL/SETLOCAL/ENDLOCAL nesting, label-based switch, output capture into vars, conditional-set grading, GOTO-based switch, path manipulation, date/time parsing, RANDOM, environment introspection, file ops (mkdir/copy/move/attrib/del/rmdir), pushd/popd, choice, title/color, comment forms (rem vs ::), case tests, findstr /R regex, where lookup, sleep substitutes, powershell escape, complex quoting (^& ^|), numeric edge cases."
+path = "batch/megafile/edge_cases.bat"
+
+[vba.docm]
+source = "Word 16.0 COM automation (AccessVBOM enabled in HKCU registry)"
+status = "REAL-FIXTURE"
+generator = "C:\\Users\\-\\AppData\\Local\\Temp\\shell-tools\\build_docm_via_word.ps1"
+fixtures = [
+  "vba/hello.docm",
+  "vba/vbaProject.bin",
+]
+note = "olevba extracts 'Sub Main(): MsgBox \"hello world\": End Sub' from this real Word-built docm."
+
+[vba.megafile]
+status = "SYNTHESIZED"
+description = "Hand-written ~770-LOC VBA module + class: Option Explicit / Base 1 / Compare Text, enums (LogLevel, FileKind, HelloMood), user-defined Types (Point2D, Rect, FileEntry, Outcome), module-level arrays + scripting.dictionary, advanced sub/function/property procedures (Get/Let/Set), explicit ByVal/ByRef, ParamArray, recursive functions (factorial, fib, bounded ackermann), error handling (typed Err.Raise + custom error codes, On Error Resume Next, On Error GoTo 0), control flow (Do Until / Do While / While Wend / For Each / Select Case / GoTo labels), late-binding COM (FileSystemObject, VBScript.RegExp, WScript.Shell, Scripting.Dictionary, MSXML2.DOMDocument, ADODB.Stream), bitwise helpers, variant juggling (IsEmpty / IsNull / VarType / IsArray / IsObject), Worksheet/Workbook-style entry stubs (AutoOpen / AutoExec / Document_Open), b64 encode/decode via MSXML, utf-8 conversion via ADODB.Stream, multidim arrays + transpose, date math (DaysBetween, NextBusinessDay, StartOfMonth, EndOfMonth). Class file GreetingTemplate.cls demonstrates Property Get/Let + RaiseEvent + Class_Initialize/Terminate."
+paths = ["vba/megafile/EdgeCases.bas", "vba/megafile/GreetingTemplate.cls"]
+
+[vbs.hello]
+status = "REAL-FIXTURE"
+description = "Plain hello.vbs and a Chr()-chain obfuscated variant (most common documented vbs obfuscation; covered by reverse_vbs)."
+fixtures = ["vbs/hello.vbs", "vbs/chr_chain/hello.vbs"]
+upstream_obfuscators_status = "TOOL-DEAD-DOCUMENT (most listed in dynastic vbs-obf catalogues are offline). Synthesized representative covers the live reverse-pass surface."

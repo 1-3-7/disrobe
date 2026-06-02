@@ -1,0 +1,38 @@
+[package]
+name = "disrobe-pass-sourcedefender"
+description = "SOURCEdefender (.pye) commercial Python source-protection decryptor. Reverse-engineered AES-256 + BLAKE2b key-derivation per published FOSS unpackers (vxnetrip, Gerald-tech2, GuardianN06)."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["sourcedefender", "decompile", "deobfuscation", "python", "aes"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+disrobe-pass-py-disasm = { workspace = true }
+aes = { workspace = true }
+ctr = { workspace = true }
+blake2 = "0.10"
+flate2 = { workspace = true }
+rmpv = "1"
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }

@@ -1,0 +1,1921 @@
+# coding=utf-8
+
+
+from __future__ import absolute_import, print_function
+
+import functools
+import glob
+import hashlib
+import itertools
+import json
+import os
+import zipfile
+from abc import abstractmethod
+from collections import OrderedDict, defaultdict
+
+from pex import sdist, targets
+from pex.atomic_directory import AtomicDirectory, atomic_directory
+from pex.build_system import pep_517
+from pex.cache.dirs import BuiltWheelDir, CacheDir
+from pex.common import (
+    open_zip,
+    pluralize,
+    safe_mkdir,
+    safe_mkdtemp,
+    safe_open,
+    safe_relative_symlink,
+)
+from pex.compatibility import url_unquote, urlparse
+from pex.dependency_configuration import DependencyConfiguration
+from pex.dist_metadata import (
+    DistMetadata,
+    Distribution,
+    ProjectMetadata,
+    Requirement,
+    is_tar_sdist,
+    is_wheel,
+    is_zip_sdist,
+)
+from pex.exceptions import production_assert
+from pex.fingerprinted_distribution import FingerprintedDistribution
+from pex.installed_wheel import InstalledWheel
+from pex.jobs import Job, Raise, SpawnedJob, execute_parallel, iter_map_parallel
+from pex.network_configuration import NetworkConfiguration
+from pex.orderedset import OrderedSet
+from pex.pep_425 import CompatibilityTags
+from pex.pep_427 import InstallableType, WheelError, install_wheel_chroot
+from pex.pep_440 import Version
+from pex.pep_503 import ProjectName
+from pex.pip.download_observer import DownloadObserver
+from pex.pip.installation import get_pip
+from pex.pip.local_project import digest_local_project
+from pex.pip.tool import PackageIndexConfiguration
+from pex.pip.version import PipVersionValue
+from pex.requirements import LocalProjectRequirement, URLRequirement
+from pex.resolve.package_repository import ReposConfiguration
+from pex.resolve.requirement_configuration import RequirementConfiguration
+from pex.resolve.resolver_configuration import BuildConfiguration, PipLog, ResolverVersion
+from pex.resolve.resolvers import (
+    ResolvedDistribution,
+    Resolver,
+    ResolveResult,
+    Unsatisfiable,
+    Untranslatable,
+    check_resolve,
+)
+from pex.resolve.target_system import TargetSystem, UniversalTarget
+from pex.result import Error
+from pex.targets import AbbreviatedPlatform, CompletePlatform, LocalInterpreter, Target, Targets
+from pex.third_party.packaging.specifiers import SpecifierSet
+from pex.third_party.packaging.tags import Tag
+from pex.tracer import TRACER
+from pex.typing import TYPE_CHECKING
+from pex.util import CacheHelper
+from pex.variables import ENV
+
+if TYPE_CHECKING:
+    from typing import (
+        DefaultDict,
+        Dict,
+        FrozenSet,
+        Iterable,
+        Iterator,
+        List,
+        Mapping,
+        Optional,
+        Sequence,
+        Set,
+        Tuple,
+        Union,
+    )
+
+    import attr
+
+    from pex.requirements import ParsedRequirement
+else:
+    from pex.third_party import attr
+
+
+@attr.s(frozen=True)
+class DownloadTarget(object):
+    @classmethod
+    def current(cls):
+        # type: () -> DownloadTarget
+        return cls(target=targets.current())
+
+    target = attr.ib()
+    universal_target = attr.ib(default=None)
+
+    def render_description(self):
+        # type: () -> str
+        target_description = self.target.render_description()
+        if self.universal_target:
+            description_components = ["universal resolve"]
+            if self.universal_target.systems and frozenset(
+                self.universal_target.systems
+            ) != frozenset(TargetSystem.values()):
+                description_components.append(
+                    "targeting {systems}".format(
+                        systems=" and ".join(map(str, self.universal_target.systems))
+                    )
+                )
+            if self.universal_target.implementation:
+                description_components.append(
+                    "for {impl}".format(impl=self.universal_target.implementation)
+                )
+            description_components.append("using {target}".format(target=target_description))
+            return " ".join(description_components)
+        return target_description
+
+    def id(self, complete=False):
+        # type: (bool) -> str
+
+        if self.universal_target:
+            id_components = ["universal"]
+            if self.universal_target.implementation:
+                id_components.append(str(self.universal_target.implementation))
+            id_components.append(
+                "-and-".join(map(str, self.universal_target.systems or TargetSystem.values()))
+            )
+            if complete:
+                id_components.append(
+                    hashlib.sha1(str(self.universal_target.marker()).encode("utf-8")).hexdigest()
+                )
+            return "-".join(id_components)
+
+        if isinstance(self.target, LocalInterpreter):
+
+            return self.target.interpreter.version_string
+        if isinstance(self.target, AbbreviatedPlatform):
+            return str(self.target.platform)
+        if isinstance(self.target, CompletePlatform):
+            return str(self.target.platform.tag)
+
+        return self.target.id
+
+
+def _uniqued_download_requests(requests=None):
+    # type: (Optional[Iterable[DownloadRequest]]) -> Tuple[DownloadRequest, ...]
+    return tuple(OrderedSet(requests)) if requests is not None else ()
+
+
+@attr.s(frozen=True)
+class PipLogManager(object):
+    @staticmethod
+    def _target_id(download_target):
+        # type: (DownloadTarget) -> str
+
+        universal_target = download_target.universal_target
+        if universal_target:
+            id_components = ["universal"]
+            if universal_target.implementation:
+                id_components.append(str(universal_target.implementation))
+            id_components.extend(map(str, universal_target.systems or TargetSystem.values()))
+            return "-and-".join(id_components)
+
+        target = download_target.target
+        if isinstance(target, LocalInterpreter):
+
+            return target.interpreter.version_string
+        if isinstance(target, AbbreviatedPlatform):
+            return str(target.platform)
+        if isinstance(target, CompletePlatform):
+            return str(target.platform.tag)
+        return target.id
+
+    @classmethod
+    def create(
+        cls,
+        log,
+        download_targets,
+    ):
+        # type: (...) -> PipLogManager
+        log_by_download_target = {}
+        if log and len(download_targets) == 1:
+            log_by_download_target[download_targets[0]] = log.path
+        elif log:
+            log_dir = safe_mkdtemp(prefix="pex-pip-log.")
+            log_by_download_target.update(
+                (
+                    download_target,
+                    os.path.join(
+                        log_dir,
+                        "pip.{target}.log".format(target=download_target.id(complete=True)),
+                    ),
+                )
+                for download_target in download_targets
+            )
+        return cls(log=log, log_by_download_target=log_by_download_target)
+
+    log = attr.ib()
+    _log_by_download_target = attr.ib()
+
+    def finalize_log(self):
+        # type: () -> None
+        if not self.log:
+            return
+
+        target_count = len(self._log_by_download_target)
+        if target_count <= 1:
+            return
+
+        with safe_open(self.log.path, "a") as out_fp:
+            for index, (download_target, log) in enumerate(
+                self._log_by_download_target.items(), start=1
+            ):
+                prefix = "{index}/{count}]{target}".format(
+                    index=index, count=target_count, target=download_target.id()
+                )
+                if not os.path.exists(log):
+                    print(
+                        "{prefix}: WARNING: no Pip log was generated!".format(prefix=prefix),
+                        file=out_fp,
+                    )
+                    continue
+
+                with open(log) as in_fp:
+                    for line in in_fp:
+                        out_fp.write("{prefix}: {line}".format(prefix=prefix, line=line))
+
+    def get_log(self, download_target):
+        # type: (DownloadTarget) -> Optional[str]
+        return self._log_by_download_target.get(download_target)
+
+
+@attr.s(frozen=True)
+class Report(object):
+    @classmethod
+    def parse(
+        cls,
+        download_target,
+        report,
+    ):
+        # type: (...) -> Report
+
+        with open(report) as fp:
+            data = json.load(fp)
+
+        project_metadata = []
+        for distribution in data["install"]:
+            metadata = distribution["metadata"]
+            project_metadata.append(
+                ProjectMetadata(
+                    project_name=ProjectName(metadata["name"]),
+                    version=Version(metadata["version"]),
+                    requires_python=SpecifierSet(metadata.get("requires_python", "")),
+                    requires_dists=tuple(
+                        Requirement.parse(requirement)
+                        for requirement in metadata.get("requires_dist", ())
+                    ),
+                )
+            )
+        return cls(
+            download_target=download_target,
+            metadata={metadata.project_name: metadata for metadata in project_metadata},
+        )
+
+    download_target = attr.ib()
+    metadata = attr.ib()
+
+
+@attr.s(frozen=True)
+class Reports(object):
+    reports = attr.ib(default=())
+
+    def __iter__(self):
+        # type: () -> Iterator[Report]
+        return iter(self.reports)
+
+
+@attr.s(frozen=True)
+class _PipSession(object):
+    requests = attr.ib(converter=_uniqued_download_requests)
+    direct_requirements = attr.ib()
+    allow_prereleases = attr.ib(default=False)
+    transitive = attr.ib(default=True)
+    package_index_configuration = attr.ib(default=None)
+    build_configuration = attr.ib(default=BuildConfiguration())
+    observer = attr.ib(default=None)
+    pip_log = attr.ib(default=None)
+    pip_version = attr.ib(default=None)
+    resolver = attr.ib(default=None)
+    dependency_configuration = attr.ib(
+        default=DependencyConfiguration()
+    )
+
+    def iter_local_projects(self):
+        # type: () -> Iterator[BuildRequest]
+        for requirement in self.direct_requirements:
+            if isinstance(requirement, LocalProjectRequirement):
+                for request in self.requests:
+                    yield BuildRequest.for_directory(
+                        target=request.target,
+                        source_path=requirement.path,
+                        editable=requirement.editable,
+                    )
+
+    def generate_reports(self, max_parallel_jobs=None):
+        # type: (Optional[int]) -> Reports
+
+        if not self.requests or not any(request.has_requirements for request in self.requests):
+
+            return Reports()
+
+        dest = safe_mkdtemp(
+            prefix="resolver_report.", dir=safe_mkdir(CacheDir.DOWNLOADS.path(".tmp"))
+        )
+
+        log_manager = PipLogManager.create(
+            self.pip_log,
+            download_targets=tuple(request.download_target for request in self.requests),
+        )
+        if self.pip_log and not self.pip_log.user_specified:
+            TRACER.log(
+                "Preserving `pip install --dry-run` log at {log_path}".format(
+                    log_path=self.pip_log.path
+                ),
+                V=ENV.PEX_VERBOSE,
+            )
+
+        spawn_report = functools.partial(
+            self._spawn_report, resolved_target_dir=dest, log_manager=log_manager
+        )
+        with TRACER.timed(
+            "Resolving for:\n  {}".format(
+                "\n  ".join(request.render_description() for request in self.requests)
+            )
+        ):
+            try:
+                return Reports(
+                    reports=tuple(
+                        Report.parse(download_request.download_target, report)
+                        for download_request, report in zip(
+                            self.requests,
+                            execute_parallel(
+                                inputs=self.requests,
+                                spawn_func=spawn_report,
+                                error_handler=Raise[DownloadRequest, str](Unsatisfiable),
+                                max_jobs=max_parallel_jobs,
+                            ),
+                        )
+                    )
+                )
+            finally:
+                log_manager.finalize_log()
+
+    def _spawn_report(
+        self,
+        request,
+        resolved_target_dir,
+        log_manager,
+    ):
+        # type: (...) -> SpawnedJob[str]
+
+        report_dir = safe_mkdir(
+            os.path.join(resolved_target_dir, request.download_target.id(complete=True))
+        )
+        report = os.path.join(report_dir, "pip-report.json")
+        download_target = request.download_target
+        observer = (
+            self.observer.observe_download(
+                download_target=download_target, download_dir=resolved_target_dir
+            )
+            if self.observer
+            else None
+        )
+
+        target = download_target.target
+
+        download_job = get_pip(
+            interpreter=target.get_interpreter(),
+            version=self.pip_version,
+            resolver=self.resolver,
+            extra_requirements=(
+                self.package_index_configuration.extra_pip_requirements
+                if self.package_index_configuration
+                else ()
+            ),
+        ).spawn_report(
+            report_path=report,
+            requirements=map(str, request.requirements),
+            requirement_files=request.requirement_files,
+            constraint_files=request.constraint_files,
+            allow_prereleases=self.allow_prereleases,
+            transitive=self.transitive,
+            target=target,
+            package_index_configuration=self.package_index_configuration,
+            build_configuration=self.build_configuration,
+            observer=observer,
+            dependency_configuration=self.dependency_configuration,
+            universal_target=download_target.universal_target,
+            log=log_manager.get_log(download_target),
+        )
+
+        return SpawnedJob.wait(job=download_job, result=report)
+
+    def download_distributions(self, dest=None, max_parallel_jobs=None):
+        # type: (...) -> List[DownloadResult]
+
+        if not self.requests or not any(request.has_requirements for request in self.requests):
+
+            return []
+
+        dest = dest or safe_mkdtemp(
+            prefix="resolver_download.", dir=safe_mkdir(CacheDir.DOWNLOADS.path(".tmp"))
+        )
+
+        log_manager = PipLogManager.create(
+            self.pip_log,
+            download_targets=tuple(request.download_target for request in self.requests),
+        )
+        if self.pip_log and not self.pip_log.user_specified:
+            TRACER.log(
+                "Preserving `pip download` log at {log_path}".format(log_path=self.pip_log.path),
+                V=ENV.PEX_VERBOSE,
+            )
+
+        spawn_download = functools.partial(
+            self._spawn_download,
+            resolved_dists_dir=dest,
+            log_manager=log_manager,
+        )
+        with TRACER.timed(
+            "Resolving for:\n  {}".format(
+                "\n  ".join(request.render_description() for request in self.requests)
+            )
+        ):
+            try:
+                return list(
+                    execute_parallel(
+                        inputs=self.requests,
+                        spawn_func=spawn_download,
+                        error_handler=Raise[DownloadRequest, DownloadResult](Unsatisfiable),
+                        max_jobs=max_parallel_jobs,
+                    )
+                )
+            finally:
+                log_manager.finalize_log()
+
+    def _spawn_download(
+        self,
+        request,
+        resolved_dists_dir,
+        log_manager,
+    ):
+        # type: (...) -> SpawnedJob[DownloadResult]
+
+        requirement_config = RequirementConfiguration(
+            requirements=request.requirements,
+            requirement_files=request.requirement_files,
+            constraint_files=request.constraint_files,
+        )
+        network_configuration = (
+            self.package_index_configuration.network_configuration
+            if self.package_index_configuration
+            else None
+        )
+        subdirectory_by_filename = {}
+        for parsed_requirement in requirement_config.parse_requirements(network_configuration):
+            if not isinstance(parsed_requirement, URLRequirement):
+                continue
+            subdirectory = parsed_requirement.subdirectory
+            if subdirectory:
+                subdirectory_by_filename[parsed_requirement.filename] = subdirectory
+
+        download_target = request.download_target
+        download_dir = os.path.join(resolved_dists_dir, download_target.id(complete=True))
+        observer = (
+            self.observer.observe_download(
+                download_target=download_target, download_dir=download_dir
+            )
+            if self.observer
+            else None
+        )
+
+        download_result = DownloadResult(download_target, download_dir, subdirectory_by_filename)
+        target = download_target.target
+        download_job = get_pip(
+            interpreter=target.get_interpreter(),
+            version=self.pip_version,
+            resolver=self.resolver,
+            extra_requirements=(
+                self.package_index_configuration.extra_pip_requirements
+                if self.package_index_configuration
+                else ()
+            ),
+        ).spawn_download_distributions(
+            download_dir=download_dir,
+            requirements=map(str, request.requirements),
+            requirement_files=request.requirement_files,
+            constraint_files=request.constraint_files,
+            allow_prereleases=self.allow_prereleases,
+            transitive=self.transitive,
+            target=target,
+            package_index_configuration=self.package_index_configuration,
+            build_configuration=self.build_configuration,
+            observer=observer,
+            dependency_configuration=self.dependency_configuration,
+            universal_target=download_target.universal_target,
+            log=log_manager.get_log(download_target),
+        )
+
+        return SpawnedJob.wait(job=download_job, result=download_result)
+
+
+@attr.s(frozen=True)
+class DownloadResult(object):
+    @staticmethod
+    def _is_wheel(path):
+        # type: (str) -> bool
+        return is_wheel(path) and zipfile.is_zipfile(path)
+
+    download_target = attr.ib()
+    download_dir = attr.ib()
+    subdirectory_by_filename = attr.ib()
+
+    def _iter_distribution_paths(self):
+        # type: () -> Iterator[str]
+        if not os.path.exists(self.download_dir):
+            return
+        for distribution in os.listdir(self.download_dir):
+            yield os.path.join(self.download_dir, distribution)
+
+    def build_requests(self):
+        # type: () -> Iterator[BuildRequest]
+        for distribution_path in self._iter_distribution_paths():
+            if not self._is_wheel(distribution_path):
+                subdirectory = self.subdirectory_by_filename.get(
+                    os.path.basename(distribution_path)
+                )
+                production_assert(
+                    os.path.isfile(distribution_path),
+                    (
+                        "Pip download results should always be files and never local project "
+                        "directories."
+                    ),
+                )
+                yield BuildRequest.for_file(
+                    target=self.download_target,
+                    source_path=distribution_path,
+                    subdirectory=subdirectory,
+                )
+
+    def install_requests(self):
+        # type: () -> Iterator[InstallRequest]
+        for distribution_path in self._iter_distribution_paths():
+            if self._is_wheel(distribution_path):
+                yield InstallRequest.create(
+                    target=self.download_target, wheel_path=distribution_path
+                )
+
+
+class IntegrityError(Exception):
+    pass
+
+
+if TYPE_CHECKING:
+    from pex.hashing import Hasher
+
+
+def _hasher():
+    # type: () -> Hasher
+
+    return hashlib.sha256()
+
+
+def _fingerprint_file(path):
+    # type: (str) -> str
+    return CacheHelper.hash(path, digest=_hasher())
+
+
+def _fingerprint_directory(path):
+    # type: (str) -> str
+    return CacheHelper.dir_hash(path, digest=_hasher())
+
+
+class BuildError(Exception):
+    pass
+
+
+def _fingerprint_local_project(
+    path,
+    target,
+    resolver=None,
+    pip_version=None,
+):
+    # type: (...) -> str
+    if resolver:
+        build_system_resolver = resolver
+    else:
+        from pex.resolve.configured_resolver import ConfiguredResolver
+
+        build_system_resolver = ConfiguredResolver.default()
+
+    hasher = _hasher()
+    result = digest_local_project(
+        directory=path,
+        digest=hasher,
+        target=target,
+        resolver=build_system_resolver,
+        pip_version=pip_version,
+    )
+    if isinstance(result, Error):
+        raise BuildError(
+            "Failed to create an sdist for hashing from the local project at {path}: "
+            "{err}".format(path=path, err=result)
+        )
+    return hasher.hexdigest()
+
+
+def _as_download_target(target):
+    # type: (Union[DownloadTarget, Target]) -> DownloadTarget
+    return target if isinstance(target, DownloadTarget) else DownloadTarget(target)
+
+
+@attr.s(frozen=True)
+class BuildRequest(object):
+    @classmethod
+    def for_file(
+        cls,
+        target,
+        source_path,
+        subdirectory=None,
+    ):
+        # type: (...) -> BuildRequest
+        fingerprint = _fingerprint_file(source_path)
+        return cls(
+            download_target=_as_download_target(target),
+            source_path=source_path,
+            fingerprint=fingerprint,
+            subdirectory=subdirectory,
+            editable=False,
+        )
+
+    @classmethod
+    def for_directory(
+        cls,
+        target,
+        source_path,
+        subdirectory=None,
+        editable=False,
+    ):
+        # type: (...) -> BuildRequest
+        download_target = _as_download_target(target)
+        return cls(
+            download_target=download_target,
+            source_path=source_path,
+            fingerprint=None,
+            subdirectory=subdirectory,
+            editable=editable,
+        )
+
+    download_target = attr.ib(converter=_as_download_target)
+    source_path = attr.ib()
+    fingerprint = attr.ib()
+    subdirectory = attr.ib()
+    editable = attr.ib()
+
+    @property
+    def target(self):
+        # type: () -> Target
+        return self.download_target.target
+
+    def prepare(self, ensure_extracted=False):
+        # type: (bool) -> Tuple[str, bool]
+
+        if not ensure_extracted and not self.subdirectory:
+            return self.source_path, self.editable
+
+        if os.path.isdir(self.source_path):
+            project = self.source_path
+            if self.subdirectory:
+                project = os.path.join(project, self.subdirectory)
+            return project, self.editable
+
+
+        extracted_sdist = CacheDir.EXTRACTED_SDISTS.path(
+            self.fingerprint or _fingerprint_file(self.source_path)
+        )
+        with atomic_directory(extracted_sdist) as atomic_dir:
+            if not atomic_dir.is_finalized():
+                if is_zip_sdist(self.source_path):
+                    with open_zip(self.source_path) as zf:
+                        zf.extractall(atomic_dir.work_dir)
+                elif is_tar_sdist(self.source_path):
+                    sdist.extract_tarball(self.source_path, dest_dir=atomic_dir.work_dir)
+                else:
+                    raise BuildError(
+                        "Unexpected archive type for sdist {project}".format(
+                            project=self.source_path
+                        )
+                    )
+                listing = os.listdir(atomic_dir.work_dir)
+                if len(listing) != 1:
+                    raise BuildError(
+                        "Expected one top-level project directory to be extracted from {project}, "
+                        "found {count}: {listing}".format(
+                            project=self.source_path, count=len(listing), listing=", ".join(listing)
+                        )
+                    )
+
+        listing = os.listdir(extracted_sdist)
+        project = os.path.join(extracted_sdist, listing[0])
+        if self.subdirectory:
+            project = os.path.join(project, self.subdirectory)
+        return project, False
+
+    def result(
+        self,
+        source_path=None,
+        honor_editable=False,
+    ):
+        # type: (...) -> BuildResult
+        return BuildResult.from_request(
+            self, source_path=source_path, honor_editable=honor_editable
+        )
+
+
+@attr.s(frozen=True)
+class BuildResult(object):
+    @classmethod
+    def from_request(
+        cls,
+        build_request,
+        source_path=None,
+        honor_editable=False,
+    ):
+        # type: (...) -> BuildResult
+        if build_request.fingerprint:
+            built_wheel = BuiltWheelDir.create(
+                sdist=source_path or build_request.source_path,
+                fingerprint=build_request.fingerprint,
+                target=build_request.target,
+                editable=honor_editable and build_request.editable,
+            )
+            target_dir = built_wheel.dist_dir
+        else:
+            target_dir = os.path.join(safe_mkdtemp(), "build")
+        return cls(request=build_request, atomic_dir=AtomicDirectory(target_dir))
+
+    request = attr.ib()
+    _atomic_dir = attr.ib()
+
+    @property
+    def is_built(self):
+        # type: () -> bool
+        return self._atomic_dir.is_finalized()
+
+    @property
+    def build_dir(self):
+        # type: () -> str
+        return self._atomic_dir.work_dir
+
+    @property
+    def dist_dir(self):
+        # type: () -> str
+        return self._atomic_dir.target_dir
+
+    def finalize_build(self, check_compatible=True):
+        # type: (bool) -> InstallRequest
+        self._atomic_dir.finalize()
+        wheels = glob.glob(os.path.join(self.dist_dir, "*.whl"))
+        if len(wheels) != 1:
+            raise AssertionError(
+                "Build of {request} produced {count} artifacts; expected 1:\n{actual}".format(
+                    request=self.request,
+                    count=len(wheels),
+                    actual="\n".join(
+                        "{index}. {wheel}".format(index=index, wheel=wheel)
+                        for index, wheel in enumerate(wheels)
+                    ),
+                )
+            )
+        wheel_path = wheels[0]
+        if check_compatible and self.request.target.is_foreign:
+            wheel = Distribution.load(wheel_path)
+            wheel_tag_match = self.request.target.wheel_applies(wheel)
+            incompatible = isinstance(self.request.target, CompletePlatform) and not wheel_tag_match
+            if (
+                not incompatible
+                and not wheel_tag_match
+                and isinstance(self.request.target, AbbreviatedPlatform)
+            ):
+
+                def collect_platforms(tags):
+                    # type: (Iterable[Tag]) -> Tuple[FrozenSet[str], bool]
+                    platforms = []
+                    is_linux = False
+                    for tag in tags:
+                        platforms.append(tag.platform)
+                        if "linux" in tag.platform:
+                            is_linux = True
+                    return frozenset(platforms), is_linux
+
+                wheel_platform_tags, is_linux_wheel = collect_platforms(
+                    CompatibilityTags.from_wheel(
+                        wheel, platform_tag=self.request.target.platform_tag
+                    )
+                )
+                abbreviated_target_platform_tags, is_linux_abbreviated_target = collect_platforms(
+                    self.request.target.supported_tags
+                )
+
+
+                if not (is_linux_wheel and is_linux_abbreviated_target):
+                    if is_linux_wheel ^ is_linux_abbreviated_target:
+                        incompatible = True
+                    else:
+                        common_platforms = abbreviated_target_platform_tags.intersection(
+                            wheel_platform_tags
+                        )
+                        if not common_platforms:
+                            incompatible = True
+                        elif common_platforms == frozenset(["any"]):
+
+
+                            incompatible = not wheel_tag_match
+            if incompatible:
+                raise ValueError(
+                    "No pre-built wheel was available for {project_name} {version}.\n"
+                    "Successfully built the wheel {wheel} from the sdist {sdist} but it is not "
+                    "compatible with the requested foreign target {target}.\n"
+                    "You'll need to build a wheel from {sdist} on the foreign target platform and "
+                    "make it available to Pex via a `--find-links` repo or a custom "
+                    "`--index`.".format(
+                        project_name=wheel.project_name,
+                        version=wheel.version,
+                        wheel=os.path.basename(wheel_path),
+                        sdist=os.path.basename(self.request.source_path),
+                        target=self.request.target.render_description(),
+                    )
+                )
+        return InstallRequest.create(
+            self.request.target, wheel_path, was_built_locally=True, editable=self.request.editable
+        )
+
+
+@attr.s(frozen=True)
+class InstallRequest(object):
+    @classmethod
+    def create(
+        cls,
+        target,
+        wheel_path,
+        was_built_locally=False,
+        editable=False,
+    ):
+        # type: (...) -> InstallRequest
+        fingerprint = _fingerprint_file(wheel_path)
+        return cls(
+            download_target=_as_download_target(target),
+            wheel_path=wheel_path,
+            fingerprint=fingerprint,
+            was_built_locally=was_built_locally,
+            editable=editable,
+        )
+
+    download_target = attr.ib(converter=_as_download_target)
+    wheel_path = attr.ib()
+    fingerprint = attr.ib()
+    was_built_locally = attr.ib(default=False)
+    editable = attr.ib(default=False)
+
+    @property
+    def target(self):
+        # type: () -> Target
+        return self.download_target.target
+
+    @property
+    def wheel_file(self):
+        # type: () -> str
+        return os.path.basename(self.wheel_path)
+
+    def result(self, installation_root):
+        # type: (str) -> InstallResult
+        return InstallResult.from_request(self, installation_root=installation_root)
+
+
+@attr.s(frozen=True)
+class InstallResult(object):
+    @classmethod
+    def from_request(
+        cls,
+        install_request,
+        installation_root,
+    ):
+        # type: (...) -> InstallResult
+        install_chroot = os.path.join(
+            installation_root, install_request.fingerprint, install_request.wheel_file
+        )
+        return cls(
+            request=install_request,
+            installation_root=installation_root,
+            atomic_dir=AtomicDirectory(install_chroot),
+        )
+
+    request = attr.ib()
+    _installation_root = attr.ib()
+    _atomic_dir = attr.ib()
+
+    @property
+    def is_installed(self):
+        # type: () -> bool
+        return self._atomic_dir.is_finalized()
+
+    def wheel_file(self):
+        # type: () -> str
+        return self.request.wheel_file
+
+    @property
+    def build_chroot(self):
+        # type: () -> str
+        return self._atomic_dir.work_dir
+
+    @property
+    def install_chroot(self):
+        # type: () -> str
+        return self._atomic_dir.target_dir
+
+    def finalize_install(self, install_requests):
+        # type: (Iterable[InstallRequest]) -> Iterator[ResolvedDistribution]
+        self._atomic_dir.finalize()
+
+
+        cached_fingerprint = None
+        try:
+            installed_wheel = InstalledWheel.load(self.install_chroot)
+        except InstalledWheel.LoadError:
+
+            pass
+        else:
+            cached_fingerprint = installed_wheel.fingerprint
+
+        wheel_dir_hash = cached_fingerprint or _fingerprint_directory(self.install_chroot)
+        runtime_key_dir = os.path.join(self._installation_root, wheel_dir_hash)
+        with atomic_directory(runtime_key_dir) as atomic_dir:
+            if not atomic_dir.is_finalized():
+
+
+                safe_relative_symlink(
+                    self.install_chroot, os.path.join(atomic_dir.work_dir, self.request.wheel_file)
+                )
+
+        return self._iter_resolved_distributions(install_requests, fingerprint=wheel_dir_hash)
+
+    def _iter_resolved_distributions(
+        self,
+        install_requests,
+        fingerprint,
+    ):
+        # type: (...) -> Iterator[ResolvedDistribution]
+        if self.is_installed:
+            distribution = Distribution.load(self.install_chroot)
+            for install_request in install_requests:
+                yield ResolvedDistribution(
+                    target=install_request.target,
+                    fingerprinted_distribution=FingerprintedDistribution(distribution, fingerprint),
+                )
+
+
+class WheelBuilder(object):
+    def __init__(
+        self,
+        package_index_configuration=None,
+        build_configuration=BuildConfiguration(),
+        verify_wheels=True,
+        pip_version=None,
+        resolver=None,
+    ):
+        # type: (...) -> None
+        self._package_index_configuration = package_index_configuration
+        self._build_configuration = build_configuration
+        self._verify_wheels = verify_wheels
+        self._pip_version = pip_version
+        self._resolver = resolver
+
+    def _categorize_build_requests(
+        self,
+        build_requests,
+        check_compatible=True,
+    ):
+        # type: (...) -> Tuple[Iterable[BuildRequest], DefaultDict[str, OrderedSet[InstallRequest]]]
+        unsatisfied_build_requests = []
+        build_results = defaultdict(
+            OrderedSet
+        )
+        for build_request in build_requests:
+            build_result = build_request.result(
+                honor_editable=self._build_configuration.honor_editable
+            )
+            if not build_result.is_built:
+                TRACER.log(
+                    "Building {} to {}".format(build_request.source_path, build_result.dist_dir)
+                )
+                unsatisfied_build_requests.append(build_request)
+            else:
+                TRACER.log(
+                    "Using cached build of {} at {}".format(
+                        build_request.source_path, build_result.dist_dir
+                    )
+                )
+                build_results[build_request.source_path].add(
+                    build_result.finalize_build(check_compatible=check_compatible)
+                )
+        return unsatisfied_build_requests, build_results
+
+    def _spawn_wheel_build(self, build_request):
+        # type: (BuildRequest) -> SpawnedJob[BuildResult]
+        source_path, editable = build_request.prepare()
+        build_result = build_request.result(
+            source_path, honor_editable=self._build_configuration.honor_editable
+        )
+        if build_result.is_built:
+            TRACER.log(
+                "Using cached build of {} at {}".format(
+                    build_request.source_path, build_result.dist_dir
+                )
+            )
+            return SpawnedJob.completed(build_result)
+
+        def spawn_build_wheel():
+            # type: () -> SpawnedJob[BuildResult]
+            build_job = get_pip(
+                interpreter=build_request.target.get_interpreter(),
+                version=self._pip_version,
+                resolver=self._resolver,
+                extra_requirements=(
+                    self._package_index_configuration.extra_pip_requirements
+                    if self._package_index_configuration is not None
+                    else ()
+                ),
+            ).spawn_build_wheels(
+                requirements=[source_path],
+                wheel_dir=build_result.build_dir,
+                package_index_configuration=self._package_index_configuration,
+                interpreter=build_request.target.get_interpreter(),
+                build_configuration=self._build_configuration,
+                verify=self._verify_wheels,
+            )
+            return SpawnedJob.wait(job=build_job, result=build_result)
+
+        if self._build_configuration.honor_editable and editable:
+            if not self._resolver:
+                raise BuildError(
+                    "A resolver is required to build an local editable project.\n"
+                    "Cannot build: {project}".format(project=source_path)
+                )
+
+            def maybe_spawn_build_wheel(err):
+                # type: (Job.Error) -> SpawnedJob[BuildResult]
+                if pep_517.is_hook_unavailable_error(err):
+                    return spawn_build_wheel()
+                raise err
+
+
+            return (
+                pep_517.spawn_build_editable(
+                    project_directory=source_path,
+                    wheel_dir=build_result.build_dir,
+                    target=build_request.target,
+                    resolver=self._resolver,
+                    pip_version=self._pip_version,
+                )
+                .map(lambda _: build_result)
+                .or_else(maybe_spawn_build_wheel)
+            )
+
+        return spawn_build_wheel()
+
+    def build_wheels(
+        self,
+        build_requests,
+        max_parallel_jobs=None,
+        check_compatible=True,
+    ):
+        # type: (...) -> Mapping[str, OrderedSet[InstallRequest]]
+
+        if not build_requests:
+
+            return {}
+
+        with TRACER.timed(
+            "Building distributions for:" "\n  {}".format("\n  ".join(map(str, build_requests)))
+        ):
+            build_requests, build_results = self._categorize_build_requests(
+                build_requests=build_requests,
+                check_compatible=check_compatible,
+            )
+
+            for build_result in execute_parallel(
+                inputs=build_requests,
+                spawn_func=self._spawn_wheel_build,
+                error_handler=Raise[BuildRequest, BuildResult](Untranslatable),
+                max_jobs=max_parallel_jobs,
+            ):
+                build_results[build_result.request.source_path].add(
+                    build_result.finalize_build(check_compatible=check_compatible)
+                )
+
+        return build_results
+
+
+@attr.s(frozen=True)
+class DirectRequirements(object):
+    @classmethod
+    def calculate(
+        cls,
+        direct_requirements,
+        install_requests,
+        local_project_directory_to_sdist=None,
+    ):
+        # type: (...) -> DirectRequirements
+
+
+        with TRACER.timed(
+            "Calculating project names for direct requirements:"
+            "\n  {}".format("\n  ".join(map(str, direct_requirements)))
+        ):
+
+            def iter_direct_requirements():
+                # type: () -> Iterator[Requirement]
+                for requirement in direct_requirements:
+                    if not isinstance(requirement, LocalProjectRequirement):
+                        yield requirement.requirement
+                        continue
+
+                    if requirement.project_name is not None:
+                        yield requirement.as_requirement()
+                        continue
+
+                    install_reqs = install_requests.get(requirement.path)
+                    if not install_reqs and local_project_directory_to_sdist:
+                        local_project_directory = local_project_directory_to_sdist.get(
+                            requirement.path
+                        )
+                        if local_project_directory:
+                            install_reqs = install_requests.get(local_project_directory)
+                    if not install_reqs:
+                        raise AssertionError(
+                            "Failed to compute a project name for {requirement}. No corresponding "
+                            "wheel was found from amongst:\n{install_requests}".format(
+                                requirement=requirement,
+                                install_requests="\n".join(
+                                    sorted(
+                                        "{path} -> {wheel_path} {fingerprint}".format(
+                                            path=path,
+                                            wheel_path=build_result.wheel_path,
+                                            fingerprint=build_result.fingerprint,
+                                        )
+                                        for path, build_results in install_requests.items()
+                                        for build_result in build_results
+                                    )
+                                ),
+                            )
+                        )
+                    for install_req in install_reqs:
+                        yield requirement.as_requirement(dist=install_req.wheel_path)
+
+            direct_requirements_by_project_name = defaultdict(
+                OrderedSet
+            )
+            for direct_requirement in iter_direct_requirements():
+                direct_requirements_by_project_name[direct_requirement.project_name].add(
+                    direct_requirement
+                )
+            return cls(direct_requirements_by_project_name)
+
+    _direct_requirements_by_project_name = (
+        attr.ib()
+    )
+
+    def adjust(self, distributions):
+        # type: (Iterable[ResolvedDistribution]) -> Iterable[ResolvedDistribution]
+        resolved_distributions = OrderedSet()
+        for resolved_distribution in distributions:
+            distribution = resolved_distribution.distribution
+            direct_reqs = [
+                req
+                for req in self._direct_requirements_by_project_name[
+                    distribution.metadata.project_name
+                ]
+                if distribution in req and resolved_distribution.target.requirement_applies(req)
+            ]
+            resolved_distributions.add(
+                resolved_distribution.with_direct_requirements(direct_requirements=direct_reqs)
+            )
+        return resolved_distributions
+
+
+def _perform_install(
+    installed_wheels_dir,
+    install_request,
+):
+    # type: (...) -> InstallResult
+    install_result = install_request.result(installed_wheels_dir)
+    install_wheel_chroot(
+        wheel=install_request.wheel_path,
+        destination=install_result.build_chroot,
+        normalize_file_stat=install_request.was_built_locally,
+    )
+    return install_result
+
+
+class BuildAndInstallRequest(object):
+    def __init__(
+        self,
+        build_requests,
+        install_requests,
+        direct_requirements=None,
+        package_index_configuration=None,
+        compile=False,
+        build_configuration=BuildConfiguration(),
+        verify_wheels=True,
+        pip_version=None,
+        resolver=None,
+        dependency_configuration=DependencyConfiguration(),
+    ):
+        # type: (...) -> None
+        self._build_requests = tuple(build_requests)
+        self._install_requests = tuple(install_requests)
+        self._direct_requirements = tuple(direct_requirements or ())
+        self._compile = compile
+        self._wheel_builder = WheelBuilder(
+            package_index_configuration=package_index_configuration,
+            build_configuration=build_configuration,
+            verify_wheels=verify_wheels,
+            pip_version=pip_version,
+            resolver=resolver,
+        )
+        self._pip_version = pip_version
+        self._resolver = resolver
+        self._dependency_configuration = dependency_configuration
+
+    @staticmethod
+    def _categorize_install_requests(
+        install_requests,
+        installed_wheels_dir,
+    ):
+        # type: (...) -> Tuple[Iterable[InstallRequest], Iterable[InstallResult]]
+        unsatisfied_install_requests = []
+        install_results = []
+        for install_request in install_requests:
+            install_result = install_request.result(installed_wheels_dir)
+            if not install_result.is_installed:
+                TRACER.log(
+                    "Installing {} in {}".format(
+                        install_request.wheel_path, install_result.install_chroot
+                    ),
+                    V=2,
+                )
+                unsatisfied_install_requests.append(install_request)
+            else:
+                TRACER.log(
+                    "Using cached installation of {} at {}".format(
+                        install_request.wheel_file, install_result.install_chroot
+                    ),
+                    V=2,
+                )
+                install_results.append(install_result)
+        return unsatisfied_install_requests, install_results
+
+    def _resolve_direct_file_deps(
+        self,
+        install_requests,
+        max_parallel_jobs=None,
+        analyzed=None,
+    ):
+        # type: (...) -> Iterable[InstallRequest]
+
+        already_analyzed = analyzed or set()
+
+        to_install = OrderedSet()
+        to_build = OrderedSet()
+        for install_request in install_requests:
+            metadata = DistMetadata.load(install_request.wheel_path)
+            for requirement in metadata.requires_dists:
+                if requirement.project_name in already_analyzed:
+                    continue
+                if not requirement.url:
+                    continue
+                urlinfo = urlparse.urlparse(requirement.url)
+                if urlinfo.scheme != "file":
+                    continue
+                dist_path = url_unquote(urlinfo.path).rstrip()
+                if not os.path.exists(dist_path):
+                    raise Unsatisfiable(
+                        "The {wheel} wheel has a dependency on {url} which does not exist on this "
+                        "machine.".format(wheel=install_request.wheel_file, url=requirement.url)
+                    )
+                if is_wheel(dist_path):
+                    to_install.add(InstallRequest.create(install_request.target, dist_path))
+                elif os.path.isdir(dist_path):
+                    to_build.add(BuildRequest.for_directory(install_request.target, dist_path))
+                else:
+                    to_build.add(BuildRequest.for_file(install_request.target, dist_path))
+            already_analyzed.add(metadata.project_name)
+
+        all_install_requests = OrderedSet(install_requests)
+        if to_build:
+            build_results = self._wheel_builder.build_wheels(
+                build_requests=to_build, max_parallel_jobs=max_parallel_jobs
+            )
+            to_install.update(itertools.chain.from_iterable(build_results.values()))
+        if to_install:
+            all_install_requests.update(
+                self._resolve_direct_file_deps(
+                    to_install, max_parallel_jobs=max_parallel_jobs, analyzed=already_analyzed
+                )
+            )
+        return all_install_requests
+
+    def _build_distributions(
+        self,
+        max_parallel_jobs=None,
+        local_project_directory_to_sdist=None,
+    ):
+        # type: (...) -> Tuple[DirectRequirements, Iterable[InstallRequest]]
+
+        to_install = list(self._install_requests)
+
+
+        build_results = self._wheel_builder.build_wheels(
+            build_requests=self._build_requests,
+            max_parallel_jobs=max_parallel_jobs,
+        )
+        to_install.extend(itertools.chain.from_iterable(build_results.values()))
+
+
+        all_install_requests = self._resolve_direct_file_deps(
+            to_install, max_parallel_jobs=max_parallel_jobs
+        )
+
+
+        direct_requirements = DirectRequirements.calculate(
+            self._direct_requirements,
+            build_results,
+            local_project_directory_to_sdist=local_project_directory_to_sdist,
+        )
+
+        return direct_requirements, all_install_requests
+
+    def build_distributions(
+        self,
+        ignore_errors=False,
+        max_parallel_jobs=None,
+        local_project_directory_to_sdist=None,
+    ):
+        # type: (...) -> Iterable[ResolvedDistribution]
+
+        if not any((self._build_requests, self._install_requests)):
+
+            return ()
+
+        direct_requirements, all_install_requests = self._build_distributions(
+            max_parallel_jobs=max_parallel_jobs,
+            local_project_directory_to_sdist=local_project_directory_to_sdist,
+        )
+
+        wheels = OrderedSet(
+            ResolvedDistribution(
+                target=install_request.target,
+                fingerprinted_distribution=FingerprintedDistribution(
+                    distribution=Distribution.load(install_request.wheel_path),
+                    fingerprint=install_request.fingerprint,
+                ),
+            )
+            for install_request in all_install_requests
+        )
+
+        if not ignore_errors:
+            with TRACER.timed("Checking build"):
+                check_resolve(self._dependency_configuration, wheels)
+        return direct_requirements.adjust(wheels)
+
+    def install_distributions(
+        self,
+        ignore_errors=False,
+        max_parallel_jobs=None,
+        local_project_directory_to_sdist=None,
+    ):
+        # type: (...) -> Iterable[ResolvedDistribution]
+
+        if not any((self._build_requests, self._install_requests)):
+
+            return ()
+
+        installed_wheels_dir = CacheDir.INSTALLED_WHEELS.path()
+        perform_install = functools.partial(_perform_install, installed_wheels_dir)
+
+        installations = []
+
+
+        direct_requirements, all_install_requests = self._build_distributions(
+            max_parallel_jobs=max_parallel_jobs,
+            local_project_directory_to_sdist=local_project_directory_to_sdist,
+        )
+
+
+        install_requests_by_wheel_file = (
+            OrderedDict()
+        )
+        for install_request in all_install_requests:
+            install_requests_by_wheel_file.setdefault(install_request.wheel_file, []).append(
+                install_request
+            )
+
+        representative_install_requests = [
+            requests[0] for requests in install_requests_by_wheel_file.values()
+        ]
+
+        def add_installation(install_result):
+            install_requests = install_requests_by_wheel_file[install_result.request.wheel_file]
+            installations.extend(install_result.finalize_install(install_requests))
+
+        with TRACER.timed(
+            "Installing {} distributions".format(len(representative_install_requests))
+        ):
+            install_requests, install_results = self._categorize_install_requests(
+                install_requests=representative_install_requests,
+                installed_wheels_dir=installed_wheels_dir,
+            )
+            for install_result in install_results:
+                add_installation(install_result)
+
+            try:
+                for install_result in iter_map_parallel(
+                    inputs=install_requests,
+                    function=perform_install,
+                    noun="wheel",
+                    verb="install",
+                    verb_past="installed",
+                    max_jobs=max_parallel_jobs,
+                    costing_function=lambda req: os.path.getsize(req.wheel_path),
+                    result_render_function=InstallResult.wheel_file,
+                ):
+                    add_installation(install_result)
+            except WheelError as e:
+                raise Untranslatable("Failed to install a wheel: {err}".format(err=e))
+
+        installations = list(direct_requirements.adjust(installations))
+        if not ignore_errors:
+            with TRACER.timed("Checking install"):
+                check_resolve(self._dependency_configuration, installations)
+        return installations
+
+
+def _parse_reqs(
+    requirements=None,
+    requirement_files=None,
+    network_configuration=None,
+):
+    # type: (...) -> Tuple[ParsedRequirement, ...]
+    requirement_configuration = RequirementConfiguration(
+        requirements=requirements, requirement_files=requirement_files
+    )
+    return requirement_configuration.parse_requirements(network_configuration=network_configuration)
+
+
+def resolve(
+    targets=Targets(),
+    requirements=None,
+    requirement_files=None,
+    constraint_files=None,
+    allow_prereleases=False,
+    transitive=True,
+    repos_configuration=ReposConfiguration(),
+    resolver_version=None,
+    network_configuration=None,
+    build_configuration=BuildConfiguration(),
+    compile=False,
+    max_parallel_jobs=None,
+    ignore_errors=False,
+    verify_wheels=True,
+    pip_log=None,
+    pip_version=None,
+    resolver=None,
+    use_pip_config=False,
+    extra_pip_requirements=(),
+    keyring_provider=None,
+    uploaded_prior_to=None,
+    result_type=InstallableType.INSTALLED_WHEEL_CHROOT,
+    dependency_configuration=DependencyConfiguration(),
+):
+    # type: (...) -> ResolveResult
+
+    if not build_configuration.allow_wheels:
+        foreign_targets = [
+            target
+            for target in targets.unique_targets()
+            if not isinstance(target, LocalInterpreter)
+        ]
+        if foreign_targets:
+            raise ValueError(
+                "Cannot ignore wheels (use_wheel=False) when resolving for foreign {platforms}: "
+                "{foreign_platforms}".format(
+                    platforms=pluralize(foreign_targets, "platform"),
+                    foreign_platforms=", ".join(
+                        target.render_description() for target in foreign_targets
+                    ),
+                )
+            )
+
+
+    direct_requirements = _parse_reqs(requirements, requirement_files, network_configuration)
+    package_index_configuration = PackageIndexConfiguration.create(
+        pip_version=pip_version,
+        resolver_version=resolver_version,
+        repos_configuration=repos_configuration,
+        network_configuration=network_configuration,
+        use_pip_config=use_pip_config,
+        extra_pip_requirements=extra_pip_requirements,
+        keyring_provider=keyring_provider,
+        uploaded_prior_to=uploaded_prior_to,
+    )
+
+    requests = tuple(
+        DownloadRequest(
+            download_target=DownloadTarget(target=target),
+            requirements=requirements,
+            requirement_files=requirement_files,
+            constraint_files=constraint_files,
+        )
+        for target in targets.unique_targets()
+    )
+
+    build_requests, download_results = _download_internal(
+        requests=requests,
+        direct_requirements=direct_requirements,
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        package_index_configuration=package_index_configuration,
+        build_configuration=build_configuration,
+        max_parallel_jobs=max_parallel_jobs,
+        pip_log=pip_log,
+        pip_version=pip_version,
+        resolver=resolver,
+        dependency_configuration=dependency_configuration,
+    )
+
+    install_requests = []
+    for download_result in download_results:
+        build_requests.extend(download_result.build_requests())
+        install_requests.extend(download_result.install_requests())
+
+    build_and_install_request = BuildAndInstallRequest(
+        build_requests=build_requests,
+        install_requests=install_requests,
+        direct_requirements=direct_requirements,
+        package_index_configuration=package_index_configuration,
+        compile=compile,
+        build_configuration=build_configuration,
+        verify_wheels=verify_wheels,
+        pip_version=pip_version,
+        resolver=resolver,
+        dependency_configuration=dependency_configuration,
+    )
+
+    ignore_errors = ignore_errors or not transitive
+    distributions = tuple(
+        build_and_install_request.install_distributions(
+            ignore_errors=ignore_errors, max_parallel_jobs=max_parallel_jobs
+        )
+        if result_type is InstallableType.INSTALLED_WHEEL_CHROOT
+        else build_and_install_request.build_distributions(
+            ignore_errors=ignore_errors, max_parallel_jobs=max_parallel_jobs
+        )
+    )
+    return ResolveResult(
+        dependency_configuration=dependency_configuration,
+        distributions=distributions,
+        type=result_type,
+    )
+
+
+def _download_internal(
+    requests,
+    direct_requirements,
+    allow_prereleases=False,
+    transitive=True,
+    package_index_configuration=None,
+    build_configuration=BuildConfiguration(),
+    dest=None,
+    max_parallel_jobs=None,
+    observer=None,
+    pip_log=None,
+    pip_version=None,
+    resolver=None,
+    dependency_configuration=DependencyConfiguration(),
+):
+    # type: (...) -> Tuple[List[BuildRequest], List[DownloadResult]]
+
+    pip_session = _PipSession(
+        requests=requests,
+        direct_requirements=direct_requirements,
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        package_index_configuration=package_index_configuration,
+        build_configuration=build_configuration,
+        observer=observer,
+        pip_log=pip_log,
+        pip_version=pip_version,
+        resolver=resolver,
+        dependency_configuration=dependency_configuration,
+    )
+
+    local_projects = list(pip_session.iter_local_projects())
+    download_results = pip_session.download_distributions(
+        dest=dest, max_parallel_jobs=max_parallel_jobs
+    )
+    return local_projects, download_results
+
+
+@attr.s(frozen=True)
+class LocalDistribution(object):
+    path = attr.ib()
+    fingerprint = attr.ib()
+    download_target = attr.ib(factory=DownloadTarget.current)
+    subdirectory = attr.ib(default=None)
+    editable = attr.ib(default=False)
+
+    @property
+    def target(self):
+        # type: () -> Target
+        return self.download_target.target
+
+    @property
+    def is_wheel(self):
+        return is_wheel(self.path) and zipfile.is_zipfile(self.path)
+
+
+@attr.s(frozen=True)
+class Downloaded(object):
+    local_distributions = attr.ib()
+
+
+class ResolveObserver(object):
+    @abstractmethod
+    def observe_download(
+        self,
+        download_target,
+        download_dir,
+    ):
+        # type: (...) -> DownloadObserver
+        raise NotImplementedError()
+
+
+def download(
+    targets=Targets(),
+    requirements=None,
+    requirement_files=None,
+    constraint_files=None,
+    allow_prereleases=False,
+    transitive=True,
+    repos_configuration=ReposConfiguration(),
+    resolver_version=None,
+    network_configuration=None,
+    build_configuration=BuildConfiguration(),
+    dest=None,
+    max_parallel_jobs=None,
+    observer=None,
+    pip_log=None,
+    pip_version=None,
+    resolver=None,
+    use_pip_config=False,
+    extra_pip_requirements=(),
+    keyring_provider=None,
+    dependency_configuration=DependencyConfiguration(),
+):
+    # type: (...) -> Downloaded
+    return download_requests(
+        requests=tuple(
+            DownloadRequest(
+                download_target=DownloadTarget(target),
+                requirements=requirements,
+                requirement_files=requirement_files,
+                constraint_files=constraint_files,
+            )
+            for target in targets.unique_targets()
+        ),
+        direct_requirements=_parse_reqs(requirements, requirement_files, network_configuration),
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        repos_configuration=repos_configuration,
+        resolver_version=resolver_version,
+        network_configuration=network_configuration,
+        build_configuration=build_configuration,
+        dest=dest,
+        max_parallel_jobs=max_parallel_jobs,
+        observer=observer,
+        pip_log=pip_log,
+        pip_version=pip_version,
+        resolver=resolver,
+        use_pip_config=use_pip_config,
+        extra_pip_requirements=extra_pip_requirements,
+        keyring_provider=keyring_provider,
+        dependency_configuration=dependency_configuration,
+    )
+
+
+def _as_parsed_req_tuple(items):
+    # type: (Optional[Iterable[ParsedRequirement]]) -> Tuple[ParsedRequirement, ...]
+    if not items:
+        return ()
+    return items if isinstance(items, tuple) else tuple(items)
+
+
+def _as_str_tuple(items):
+    # type: (Optional[Iterable[str]]) -> Tuple[str, ...]
+    if not items:
+        return ()
+    return items if isinstance(items, tuple) else tuple(items)
+
+
+@attr.s(frozen=True)
+class DownloadRequest(object):
+    @classmethod
+    def create(
+        cls,
+        target,
+        universal_target=None,
+        requirement_configuration=RequirementConfiguration(),
+        provenance=None,
+    ):
+        # type: (...) -> DownloadRequest
+        return cls(
+            download_target=DownloadTarget(target=target, universal_target=universal_target),
+            requirements=requirement_configuration.requirements,
+            requirement_files=requirement_configuration.requirement_files,
+            constraint_files=requirement_configuration.constraint_files,
+            provenance=provenance,
+        )
+
+    download_target = attr.ib()
+    requirements = attr.ib(
+        default=(), converter=_as_parsed_req_tuple
+    )
+    requirement_files = attr.ib(default=(), converter=_as_str_tuple)
+    constraint_files = attr.ib(default=(), converter=_as_str_tuple)
+    provenance = attr.ib(default=None)
+
+    def render_description(self):
+        # type: () -> str
+        description = self.download_target.render_description()
+        if not self.provenance:
+            return description
+        return "{description} from {provenance}".format(
+            description=description, provenance=self.provenance
+        )
+
+    @property
+    def target(self):
+        # type: () -> Target
+        return self.download_target.target
+
+    @property
+    def universal_target(self):
+        # type: () -> Optional[UniversalTarget]
+        return self.download_target.universal_target
+
+    @property
+    def has_requirements(self):
+        return bool(self.requirements) or bool(self.requirement_files)
+
+
+def download_requests(
+    requests,
+    direct_requirements,
+    allow_prereleases=False,
+    transitive=True,
+    repos_configuration=ReposConfiguration(),
+    resolver_version=None,
+    network_configuration=None,
+    build_configuration=BuildConfiguration(),
+    dest=None,
+    max_parallel_jobs=None,
+    observer=None,
+    pip_log=None,
+    pip_version=None,
+    resolver=None,
+    use_pip_config=False,
+    extra_pip_requirements=(),
+    keyring_provider=None,
+    uploaded_prior_to=None,
+    dependency_configuration=DependencyConfiguration(),
+):
+    # type: (...) -> Downloaded
+
+    package_index_configuration = PackageIndexConfiguration.create(
+        pip_version=pip_version,
+        resolver_version=resolver_version,
+        repos_configuration=repos_configuration,
+        network_configuration=network_configuration,
+        use_pip_config=use_pip_config,
+        extra_pip_requirements=extra_pip_requirements,
+        keyring_provider=keyring_provider,
+        uploaded_prior_to=uploaded_prior_to,
+    )
+
+    build_requests, download_results = _download_internal(
+        requests=requests,
+        direct_requirements=direct_requirements,
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        package_index_configuration=package_index_configuration,
+        build_configuration=build_configuration,
+        dest=dest,
+        max_parallel_jobs=max_parallel_jobs,
+        observer=observer,
+        pip_log=pip_log,
+        pip_version=pip_version,
+        resolver=resolver,
+        dependency_configuration=dependency_configuration,
+    )
+
+    local_distributions = []
+
+    def add_build_requests(requests):
+        # type: (Iterable[BuildRequest]) -> None
+        for request in requests:
+            if request.fingerprint:
+                fingerprint = request.fingerprint
+            else:
+                production_assert(os.path.isdir(request.source_path))
+                fingerprint = _fingerprint_local_project(
+                    path=request.source_path,
+                    target=request.target,
+                    resolver=resolver,
+                    pip_version=pip_version,
+                )
+            local_distributions.append(
+                LocalDistribution(
+                    download_target=request.download_target,
+                    path=request.source_path,
+                    fingerprint=fingerprint,
+                    subdirectory=request.subdirectory,
+                    editable=request.editable,
+                )
+            )
+
+    add_build_requests(build_requests)
+    for download_result in download_results:
+        add_build_requests(download_result.build_requests())
+        for install_request in download_result.install_requests():
+            local_distributions.append(
+                LocalDistribution(
+                    download_target=install_request.download_target,
+                    path=install_request.wheel_path,
+                    fingerprint=install_request.fingerprint,
+                )
+            )
+
+    return Downloaded(local_distributions=tuple(local_distributions))
+
+
+def reports(
+    requests,
+    direct_requirements,
+    allow_prereleases=False,
+    transitive=True,
+    repos_configuration=ReposConfiguration(),
+    resolver_version=None,
+    network_configuration=None,
+    build_configuration=BuildConfiguration(),
+    max_parallel_jobs=None,
+    observer=None,
+    pip_log=None,
+    pip_version=None,
+    resolver=None,
+    use_pip_config=False,
+    extra_pip_requirements=(),
+    keyring_provider=None,
+    uploaded_prior_to=None,
+    dependency_configuration=DependencyConfiguration(),
+):
+    # type: (...) -> Reports
+
+    package_index_configuration = PackageIndexConfiguration.create(
+        pip_version=pip_version,
+        resolver_version=resolver_version,
+        repos_configuration=repos_configuration,
+        network_configuration=network_configuration,
+        use_pip_config=use_pip_config,
+        extra_pip_requirements=extra_pip_requirements,
+        keyring_provider=keyring_provider,
+        uploaded_prior_to=uploaded_prior_to,
+    )
+
+    pip_session = _PipSession(
+        requests=requests,
+        direct_requirements=direct_requirements,
+        allow_prereleases=allow_prereleases,
+        transitive=transitive,
+        package_index_configuration=package_index_configuration,
+        build_configuration=build_configuration,
+        observer=observer,
+        pip_log=pip_log,
+        pip_version=pip_version,
+        resolver=resolver,
+        dependency_configuration=dependency_configuration,
+    )
+
+    return pip_session.generate_reports(max_parallel_jobs=max_parallel_jobs)

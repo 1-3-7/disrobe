@@ -1,0 +1,87 @@
+{
+  "final_format": "Erlang",
+  "input": {
+    "blake3": "30ac5358134a9488e9f233fa17fac8045516601adc81bac27983646ef8442c31",
+    "detected": [
+      "beam-file"
+    ],
+    "path": "corpus://beam/erlang/hello.beam",
+    "size": 876
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "30ac5358134a9488e9f233fa17fac8045516601adc81bac27983646ef8442c31",
+      "input_size": 876,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [
+        {
+          "band": "high",
+          "chosen": true,
+          "confidence": 0.9700000286102295,
+          "explain": "beam classify: beam-file",
+          "family": "interpreter-bytecode",
+          "format_tag": "beam-file",
+          "markers": [
+            "FOR1+BEAM iff header"
+          ],
+          "pass_id": "beam.classify",
+          "specificity": 30
+        }
+      ],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": "beam-file",
+      "id": 1,
+      "input_blake3": "30ac5358134a9488e9f233fa17fac8045516601adc81bac27983646ef8442c31",
+      "input_size": 876,
+      "metadata": {},
+      "output_blake3": "30ac5358134a9488e9f233fa17fac8045516601adc81bac27983646ef8442c31",
+      "output_kind": {
+        "formatted": false,
+        "kind": "source",
+        "language": "Erlang"
+      },
+      "output_size": 876,
+      "parent_id": 0,
+      "pass": "beam.classify",
+      "verdict": "complete"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 1,
+    "layers": 1,
+    "max_branch_depth": 1,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "complete"
+}

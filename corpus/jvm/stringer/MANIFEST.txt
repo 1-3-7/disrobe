@@ -1,0 +1,32 @@
+Licel Stringer (JVM string-encryption) real-sample fixture
+==========================================================
+
+Source / provenance
+-------------------
+All three .class files are extracted verbatim from:
+  huzpsb/JavaObfuscatorTest -- sample/Stringer.jar (CC0 1.0, public domain dedication)
+  https://raw.githubusercontent.com/huzpsb/JavaObfuscatorTest/main/sample/Stringer.jar
+The whole jar is 305 KB (> the 256 KB fixture cap); only the minimal subset proving the
+real Stringer scheme is committed here.
+
+Files
+-----
+Digi.class    (1852 B) -- jar path pack/tests/basics/accu/Digi.class. A real obfuscated
+                          CALLER carrying 3 genuine encrypted String constants
+                          (constant-pool #27 / #50 / #52, high-code-unit) and the decrypt
+                          call site invokestatic d.J:(Ljava/lang/Object;I)Ljava/lang/String;.
+Handler.class (777 B)  -- jar path ube/tms/Handler.class. Runtime caller proving the
+                          ube.tms.uh.T:(Object,int)->String shape and the inline
+                          per-call-site int-key construction.
+uh.class      (11095 B)-- jar path ube/tms/uh.class. The actual stack-trace-keyed decryptor
+                          body (LRU cache, lazy global key table via z7878(), getStackTrace
+                          caller hashCode XOR, BigInteger[] tableswitch state machine).
+
+Why disrobe stays detect-only on Stringer
+------------------------------------------
+Stringer's runtime decrypt is anti-tamper and stack-trace-keyed: the recovered plaintext
+is a function of the calling class+method hashCode (via Thread.currentThread().getStackTrace()),
+a lazily-built global Object[] key table, BigInteger[] state, and an LRU cache. Reproducing
+it statically would require emulating per-call-site caller identity inside a near-full JVM,
+which is out of scope for a static peel pass. disrobe therefore detects and parses the
+protector honestly and does NOT fabricate cleartext; the 3 encrypted constants remain opaque.

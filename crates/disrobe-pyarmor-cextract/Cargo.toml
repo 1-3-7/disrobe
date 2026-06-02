@@ -1,0 +1,39 @@
+[package]
+name = "disrobe-pyarmor-cextract"
+description = "C-level PyEval_EvalCode intercept for capturing PyArmor v6/v7 user-code bytecode. Uses PEP 669 sys.monitoring (Py 3.12+) and PyEval_SetProfile (Py 3.9-3.11) to capture code objects executed directly by the _pytransform runtime DLL, bypassing builtins.exec / marshal.loads / sys.settrace surfaces. Companion to disrobe-pyarmor-pytrace (which remains as the Python-level fallback)."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["pyarmor", "deobfuscation", "intercept", "python", "pyo3"]
+categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+
+[lib]
+name = "disrobe_cextract"
+crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
+
+[dependencies]
+pyo3 = { workspace = true }
+pyo3-ffi = { workspace = true }
+blake3 = { version = "1", default-features = false, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[lints]
+workspace = true

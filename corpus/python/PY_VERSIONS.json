@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "generated": "2026-05-25",
+  "host": {
+    "os": "Windows 11 Pro 10.0.26200",
+    "arch": "x86_64",
+    "uv": "0.11.15"
+  },
+  "edge_cases_source": "corpus/python/decompile/playground/edge_cases.py",
+  "compile_artifact_dir": "out/",
+  "versions": [
+    {
+      "id": "2.7",
+      "full_version": "2.7.18",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.2",
+      "path": "C:\\Python27\\python.exe",
+      "uv_shim": null,
+      "invoke": "C:\\Python27\\python.exe",
+      "sha256": "9856aeb5a4cfcd3e768ae183cbb330bfdcf1a2fe4c9634bb1a59ba53047f43a4",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 695 'type Vector = list[float]' at line 59 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.6",
+      "full_version": "3.6.8",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.3.6",
+      "path": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python36\\python.exe",
+      "uv_shim": "uv run --python 3.6 python",
+      "invoke": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python36\\python.exe",
+      "sha256": "3125f746b9b3f4fc3ea4208a0c09ba60f44f99e643d41ecb474cd9a57dca3d12",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 695 'type Vector = list[float]' at line 59 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.7",
+      "full_version": "3.7.9",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.3.7",
+      "path": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python37\\python.exe",
+      "uv_shim": "uv run --python 3.7 python",
+      "invoke": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python37\\python.exe",
+      "sha256": "0c170406f111b3d882c885b31b9de075ccca7e2cb25b4851ebc75646d92c8b18",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 695 'type Vector = list[float]' at line 59 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.8",
+      "full_version": "3.8.20",
+      "implementation": "cpython",
+      "installer": "uv (python-build-standalone)",
+      "path": "C:\\Users\\-\\AppData\\Roaming\\uv\\python\\cpython-3.8-windows-x86_64-none\\python.exe",
+      "uv_shim": "uv run --python 3.8 python",
+      "invoke": "uv run --python 3.8 python",
+      "sha256": "2b2cec1adc7f81729f08af668c42ea14eacd78abae43dbb832cd053226e65004",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 695 'type Vector = list[float]' at line 59 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.9",
+      "full_version": "3.9.13",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.3.9",
+      "path": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+      "uv_shim": "uv run --python 3.9 python",
+      "invoke": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python39\\python.exe",
+      "sha256": "07c96337729e3c4c986e8f5660a97cb475c4c04842606be2654b37892af57de9",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 695 'type Vector = list[float]' at line 59 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.10",
+      "full_version": "3.10.20",
+      "implementation": "cpython",
+      "installer": "uv (python-build-standalone)",
+      "path": "C:\\Users\\-\\AppData\\Roaming\\uv\\python\\cpython-3.10-windows-x86_64-none\\python.exe",
+      "uv_shim": "uv run --python 3.10 python",
+      "invoke": "uv run --python 3.10 python",
+      "sha256": "2bdbae17400bff061816d79509538f89fd9ac028eeff59d09909574754d1f0be",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 701 multiline f-string at line 1484 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.11",
+      "full_version": "3.11.15",
+      "implementation": "cpython",
+      "installer": "uv (python-build-standalone)",
+      "path": "C:\\Users\\-\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\python.exe",
+      "uv_shim": "uv run --python 3.11 python",
+      "invoke": "uv run --python 3.11 python",
+      "sha256": "79da12a25593240a25a214c3de88bcec67c93d2641d8a9bfd1d329bfdf7a27b5",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 701 multiline f-string at line 1484 (Python 3.12+ syntax)"
+    },
+    {
+      "id": "3.12",
+      "full_version": "3.12.10",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.3.12",
+      "path": "C:\\Users\\-\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "uv_shim": "uv run --python 3.12 python",
+      "invoke": "uv run --python 3.12 python",
+      "sha256": "4d6f5f81a4bca11191c4c7c6b43632694d0a4ce74e068619d8fdc161d469859a",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 696 type-param default 'def pep696_default[U = int]' at line 1603 (Python 3.13+ syntax; guarded by sys.version_info check at runtime but py_compile still parses it)"
+    },
+    {
+      "id": "3.13",
+      "full_version": "3.13.13",
+      "implementation": "cpython",
+      "installer": "uv (python-build-standalone)",
+      "path": "C:\\Users\\-\\AppData\\Roaming\\uv\\python\\cpython-3.13-windows-x86_64-none\\python.exe",
+      "uv_shim": "uv run --python 3.13 python",
+      "invoke": "uv run --python 3.13 python",
+      "sha256": "8b4c0adb8d4f51d5dc8709f34543f78014ee142ae3c25ae480f34046aa5f986b",
+      "edge_cases_compile": "pass",
+      "compiled_artifact": "out/edge_cases_3.13.pyc",
+      "compiled_size": 103860
+    },
+    {
+      "id": "3.14",
+      "full_version": "3.14.5",
+      "implementation": "cpython",
+      "installer": "winget:Python.Python.3.14 (also uv-managed shim at C:\\Users\\-\\AppData\\Local\\Python\\bin\\python3.14.exe)",
+      "path": "C:\\Python314\\python.exe",
+      "uv_shim": "uv run --python 3.14 python",
+      "invoke": "uv run --python 3.14 python",
+      "sha256": "3adbbf2af609e206e3ca18cd55fc7c4b52f5c8bb8218dd99fd5a9e50d7a193cd",
+      "edge_cases_compile": "pass",
+      "compiled_artifact": "out/edge_cases_3.14.pyc",
+      "compiled_size": 135034
+    },
+    {
+      "id": "pypy3.10",
+      "full_version": "PyPy 7.3.19 (CPython 3.10.16 compatible)",
+      "implementation": "pypy",
+      "installer": "uv (python-build-standalone)",
+      "path": "C:\\Users\\-\\AppData\\Roaming\\uv\\python\\pypy-3.10.16-windows-x86_64-none\\pypy3.10.exe",
+      "uv_shim": "uv run --python pypy@3.10 python",
+      "invoke": "uv run --python pypy@3.10 python",
+      "sha256": "29a64464f7144735154ac7a673ebe6529a3b8e883f35a4c73cb0a19949d4e4ff",
+      "edge_cases_compile": "fail",
+      "edge_cases_failure": "syntax-incompatible: PEP 701 multiline f-string at line 1484 (CPython 3.12+ syntax; PyPy 7.3.19 targets 3.10)"
+    }
+  ],
+  "tier1_passing": ["3.13", "3.14"],
+  "tier1_blocked_by_syntax": ["2.7", "3.6", "3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "pypy3.10"],
+  "notes": [
+    "Every Tier-1 version IS installed and verified runnable.",
+    "edge_cases.py currently uses 3.13+ syntactic features (PEP 695 line 59, PEP 701 multiline f-string line 1484, PEP 696 default at line 1603).",
+    "To make older versions compile a meaningful subset, edge_cases.py should be split into per-version syntax bands or guarded with `# version: >=X.Y` markers the test harness parses.",
+    "PowerShell -c '...' single-quote tricks corrupt the source line; tests MUST invoke compile via a script file or use `python -X utf8 path/to/probe.py src dst`."
+  ]
+}

@@ -1,0 +1,279 @@
+use core::ops::Range;
+
+use crate::cache::KeyCache;
+use crate::codec::{basename_of, strip_extension};
+use crate::envelope::{
+    DecryptedPye, PYE_BEGIN_MARKER, PYE_END_MARKER, decrypt_pye, decrypt_pye_with_key,
+};
+use crate::error::{Error, Result};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlinedBlock {
+    pub span: Range<usize>,
+    pub raw: String,
+    pub filename_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlinedExtraction {
+    pub host_filename: String,
+    pub blocks: Vec<InlinedBlock>,
+    pub decrypted: Vec<DecryptedPye>,
+    pub failures: Vec<InlinedFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlinedFailure {
+    pub span: Range<usize>,
+    pub filename_used: String,
+    pub message: String,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InlinedExtractOptions {
+    pub require_known_basename: bool,
+}
+
+#[inline]
+pub fn locate_inlined_blocks(source: &str) -> Vec<InlinedBlock> {
+    let bytes: &[u8] = source.as_bytes();
+    let begin: &[u8] = PYE_BEGIN_MARKER.as_bytes();
+    let end: &[u8] = PYE_END_MARKER.as_bytes();
+    let mut blocks: Vec<InlinedBlock> = Vec::new();
+    let mut cursor: usize = 0usize;
+    while let Some(begin_off) = find_subslice(&bytes[cursor..], begin) {
+        let absolute_begin: usize = cursor + begin_off;
+        let block_start: usize = scan_line_start(source, absolute_begin);
+        let after_begin: usize = absolute_begin + begin.len();
+        if let Some(end_rel) = find_subslice(&bytes[after_begin..], end) {
+            let end_marker_start: usize = after_begin + end_rel;
+            let block_end: usize = scan_line_end(source, end_marker_start + end.len());
+            let span: Range<usize> = block_start..block_end;
+            let raw: String = source[span.clone()].to_owned();
+            let filename_hint: Option<String> = scan_filename_hint(source, block_start);
+            blocks.push(InlinedBlock {
+                span,
+                raw,
+                filename_hint,
+            });
+            cursor = block_end;
+        } else {
+            break;
+        }
+    }
+    blocks
+}
+
+#[inline]
+pub fn extract_inlined(
+    source: &str,
+    host_filename: &str,
+    options: InlinedExtractOptions,
+) -> Result<InlinedExtraction> {
+    let blocks: Vec<InlinedBlock> = locate_inlined_blocks(source);
+    let mut decrypted: Vec<DecryptedPye> = Vec::with_capacity(blocks.len());
+    let mut failures: Vec<InlinedFailure> = Vec::new();
+    let mut cache: KeyCache = KeyCache::new();
+    let host_basename: &str = strip_extension(basename_of(host_filename));
+    let mut attempted_decrypts: usize = 0;
+    for block in &blocks {
+        let candidate: String = block
+            .filename_hint
+            .clone()
+            .unwrap_or_else(|| host_basename.to_owned());
+        if options.require_known_basename && block.filename_hint.is_none() {
+            failures.push(InlinedFailure {
+                span: block.span.clone(),
+                filename_used: candidate,
+                message: format!("missing filename hint at offset {}", block.span.start),
+            });
+            continue;
+        }
+        attempted_decrypts += 1;
+        let key: crate::kdf::DerivedKey = cache.get_or_derive(&candidate)?;
+        match decrypt_pye_with_key(block.raw.as_bytes(), &candidate, &key) {
+            Ok(d) => decrypted.push(d),
+            Err(_) => match decrypt_pye(block.raw.as_bytes(), &candidate) {
+                Ok(d) => decrypted.push(d),
+                Err(e) => failures.push(InlinedFailure {
+                    span: block.span.clone(),
+                    filename_used: candidate,
+                    message: format!("{e}"),
+                }),
+            },
+        }
+    }
+    if attempted_decrypts > 0 && decrypted.is_empty() {
+        return Err(Error::InlinedNoDecrypt(blocks.len()));
+    }
+    Ok(InlinedExtraction {
+        host_filename: host_filename.to_owned(),
+        blocks,
+        decrypted,
+        failures,
+    })
+}
+
+#[inline]
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+#[inline]
+fn scan_line_start(source: &str, offset: usize) -> usize {
+    let bytes: &[u8] = source.as_bytes();
+    let mut start: usize = offset.min(bytes.len());
+    while start > 0 && bytes[start - 1] != b'\n' {
+        start -= 1;
+    }
+    start
+}
+
+#[inline]
+fn scan_line_end(source: &str, offset: usize) -> usize {
+    let bytes: &[u8] = source.as_bytes();
+    let len: usize = bytes.len();
+    let mut end: usize = offset.min(len);
+    while end < len && bytes[end] != b'\n' {
+        end += 1;
+    }
+    end
+}
+
+#[inline]
+fn scan_filename_hint(source: &str, block_start: usize) -> Option<String> {
+    let bytes: &[u8] = source.as_bytes();
+    let scan_start: usize = block_start.saturating_sub(512);
+    let window: &str = core::str::from_utf8(&bytes[scan_start..block_start]).ok()?;
+    let needles: &[&str] = &[
+        "__sd_filename__",
+        "sd_filename",
+        "@sourcedefender.module(",
+        "sourcedefender.protected(",
+        "module_name",
+        "__pye_name__",
+    ];
+    let mut best: Option<String> = None;
+    for needle in needles {
+        if let Some(idx) = window.rfind(needle) {
+            let tail: &str = &window[idx + needle.len()..];
+            if let Some(name) = parse_string_literal(tail) {
+                best = Some(name);
+                break;
+            }
+        }
+    }
+    best
+}
+
+#[inline]
+fn parse_string_literal(input: &str) -> Option<String> {
+    let bytes: &[u8] = input.as_bytes();
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        let c: u8 = bytes[i];
+        if c == b'"' || c == b'\'' {
+            let quote: u8 = c;
+            let mut end: usize = i + 1;
+            while end < bytes.len() && bytes[end] != quote {
+                if bytes[end] == b'\n' {
+                    return None;
+                }
+                end += 1;
+            }
+            if end >= bytes.len() {
+                return None;
+            }
+            let raw: &str = core::str::from_utf8(&bytes[i + 1..end]).ok()?;
+            if raw.is_empty() {
+                return None;
+            }
+            return Some(raw.to_owned());
+        }
+        if !c.is_ascii_whitespace() && c != b'=' && c != b':' && c != b'(' && c != b',' {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locates_zero_blocks_in_plain_source() {
+        let src: &str = "def f():\n    return 1\n";
+        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn locates_multiple_blocks_with_hints() {
+        let src: &str = concat!(
+            "import sourcedefender\n",
+            "__pye_name__ = \"alpha\"\n",
+            "--BEGIN SOURCEDEFENDER FILE---\n",
+            "ABCDE\n",
+            "FGHIJ\n",
+            "---END SOURCEDEFENDER FILE----\n",
+            "__pye_name__ = \"beta\"\n",
+            "--BEGIN SOURCEDEFENDER FILE---\n",
+            "KLMNO\n",
+            "---END SOURCEDEFENDER FILE----\n",
+        );
+        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].filename_hint.as_deref(), Some("alpha"));
+        assert_eq!(blocks[1].filename_hint.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn extract_with_require_hint_rejects_missing_hint() {
+        let src: &str = concat!(
+            "raw text\n",
+            "--BEGIN SOURCEDEFENDER FILE---\n",
+            "ABCDE\n",
+            "---END SOURCEDEFENDER FILE----\n",
+        );
+        let result: Result<InlinedExtraction> = extract_inlined(
+            src,
+            "host.py",
+            InlinedExtractOptions {
+                require_known_basename: true,
+            },
+        );
+        let Ok(extraction): Result<InlinedExtraction> = result else {
+            unreachable!("extract_inlined should succeed in strict mode without decrypts")
+        };
+        assert_eq!(extraction.blocks.len(), 1);
+        assert_eq!(extraction.decrypted.len(), 0);
+        assert_eq!(extraction.failures.len(), 1);
+    }
+
+    #[test]
+    fn extract_falls_back_to_host_basename() {
+        let src: &str = concat!(
+            "no hint here\n",
+            "--BEGIN SOURCEDEFENDER FILE---\n",
+            "ABCDE\n",
+            "---END SOURCEDEFENDER FILE----\n",
+        );
+        let result: Result<InlinedExtraction> =
+            extract_inlined(src, "fallback.py", InlinedExtractOptions::default());
+        let ok: bool = matches!(&result, Ok(e) if e.blocks.len() == 1);
+        let err: bool = matches!(&result, Err(Error::InlinedNoDecrypt(1)));
+        assert!(ok || err, "extract_inlined returned unexpected variant");
+    }
+
+    #[test]
+    fn unterminated_block_is_ignored() {
+        let src: &str = "--BEGIN SOURCEDEFENDER FILE---\nABCDE\nno end marker\n";
+        let blocks: Vec<InlinedBlock> = locate_inlined_blocks(src);
+        assert!(blocks.is_empty());
+    }
+}

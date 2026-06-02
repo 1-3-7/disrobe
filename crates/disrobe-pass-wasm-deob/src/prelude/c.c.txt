@@ -1,0 +1,174 @@
+/* disrobe wasm lift target=c (wasm2c-parity, self-contained) */
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <math.h>
+
+static uint8_t wasm_memory[64 * 1024];
+static int64_t wasm_globals[64];
+
+static inline int32_t wasm_i32_add(int32_t a, int32_t b) { return (int32_t)((uint32_t)a + (uint32_t)b); }
+static inline int32_t wasm_i32_sub(int32_t a, int32_t b) { return (int32_t)((uint32_t)a - (uint32_t)b); }
+static inline int32_t wasm_i32_mul(int32_t a, int32_t b) { return (int32_t)((uint32_t)a * (uint32_t)b); }
+static inline int32_t wasm_i32_div_s(int32_t a, int32_t b) { return b == 0 ? 0 : (a == INT32_MIN && b == -1 ? INT32_MIN : a / b); }
+static inline int32_t wasm_i32_div_u(int32_t a, int32_t b) { return b == 0 ? 0 : (int32_t)((uint32_t)a / (uint32_t)b); }
+static inline int32_t wasm_i32_rem_s(int32_t a, int32_t b) { return b == 0 ? 0 : (a == INT32_MIN && b == -1 ? 0 : a % b); }
+static inline int32_t wasm_i32_rem_u(int32_t a, int32_t b) { return b == 0 ? 0 : (int32_t)((uint32_t)a % (uint32_t)b); }
+static inline int32_t wasm_i32_and(int32_t a, int32_t b) { return a & b; }
+static inline int32_t wasm_i32_or(int32_t a, int32_t b) { return a | b; }
+static inline int32_t wasm_i32_xor(int32_t a, int32_t b) { return a ^ b; }
+static inline int32_t wasm_i32_shl(int32_t a, int32_t b) { return (int32_t)((uint32_t)a << ((uint32_t)b & 31)); }
+static inline int32_t wasm_i32_shr_s(int32_t a, int32_t b) { return a >> ((uint32_t)b & 31); }
+static inline int32_t wasm_i32_shr_u(int32_t a, int32_t b) { return (int32_t)((uint32_t)a >> ((uint32_t)b & 31)); }
+static inline int32_t wasm_i32_rotl(int32_t a, int32_t b) { uint32_t x = (uint32_t)a, n = (uint32_t)b & 31; return (int32_t)((x << n) | (x >> ((32 - n) & 31))); }
+static inline int32_t wasm_i32_rotr(int32_t a, int32_t b) { uint32_t x = (uint32_t)a, n = (uint32_t)b & 31; return (int32_t)((x >> n) | (x << ((32 - n) & 31))); }
+static inline int32_t wasm_i32_eq(int32_t a, int32_t b) { return a == b; }
+static inline int32_t wasm_i32_ne(int32_t a, int32_t b) { return a != b; }
+static inline int32_t wasm_i32_lt_s(int32_t a, int32_t b) { return a < b; }
+static inline int32_t wasm_i32_lt_u(int32_t a, int32_t b) { return (uint32_t)a < (uint32_t)b; }
+static inline int32_t wasm_i32_gt_s(int32_t a, int32_t b) { return a > b; }
+static inline int32_t wasm_i32_gt_u(int32_t a, int32_t b) { return (uint32_t)a > (uint32_t)b; }
+static inline int32_t wasm_i32_le_s(int32_t a, int32_t b) { return a <= b; }
+static inline int32_t wasm_i32_le_u(int32_t a, int32_t b) { return (uint32_t)a <= (uint32_t)b; }
+static inline int32_t wasm_i32_ge_s(int32_t a, int32_t b) { return a >= b; }
+static inline int32_t wasm_i32_ge_u(int32_t a, int32_t b) { return (uint32_t)a >= (uint32_t)b; }
+
+static inline int64_t wasm_i64_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
+static inline int64_t wasm_i64_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
+static inline int64_t wasm_i64_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
+static inline int64_t wasm_i64_div_s(int64_t a, int64_t b) { return b == 0 ? 0 : (a == INT64_MIN && b == -1 ? INT64_MIN : a / b); }
+static inline int64_t wasm_i64_div_u(int64_t a, int64_t b) { return b == 0 ? 0 : (int64_t)((uint64_t)a / (uint64_t)b); }
+static inline int64_t wasm_i64_rem_s(int64_t a, int64_t b) { return b == 0 ? 0 : (a == INT64_MIN && b == -1 ? 0 : a % b); }
+static inline int64_t wasm_i64_rem_u(int64_t a, int64_t b) { return b == 0 ? 0 : (int64_t)((uint64_t)a % (uint64_t)b); }
+static inline int64_t wasm_i64_and(int64_t a, int64_t b) { return a & b; }
+static inline int64_t wasm_i64_or(int64_t a, int64_t b) { return a | b; }
+static inline int64_t wasm_i64_xor(int64_t a, int64_t b) { return a ^ b; }
+static inline int64_t wasm_i64_shl(int64_t a, int64_t b) { return (int64_t)((uint64_t)a << ((uint64_t)b & 63)); }
+static inline int64_t wasm_i64_shr_s(int64_t a, int64_t b) { return a >> ((uint64_t)b & 63); }
+static inline int64_t wasm_i64_shr_u(int64_t a, int64_t b) { return (int64_t)((uint64_t)a >> ((uint64_t)b & 63)); }
+static inline int64_t wasm_i64_rotl(int64_t a, int64_t b) { uint64_t x = (uint64_t)a, n = (uint64_t)b & 63; return (int64_t)((x << n) | (x >> ((64 - n) & 63))); }
+static inline int64_t wasm_i64_rotr(int64_t a, int64_t b) { uint64_t x = (uint64_t)a, n = (uint64_t)b & 63; return (int64_t)((x >> n) | (x << ((64 - n) & 63))); }
+static inline int32_t wasm_i64_eq(int64_t a, int64_t b) { return a == b; }
+static inline int32_t wasm_i64_ne(int64_t a, int64_t b) { return a != b; }
+static inline int32_t wasm_i64_lt_s(int64_t a, int64_t b) { return a < b; }
+static inline int32_t wasm_i64_lt_u(int64_t a, int64_t b) { return (uint64_t)a < (uint64_t)b; }
+static inline int32_t wasm_i64_gt_s(int64_t a, int64_t b) { return a > b; }
+static inline int32_t wasm_i64_gt_u(int64_t a, int64_t b) { return (uint64_t)a > (uint64_t)b; }
+static inline int32_t wasm_i64_le_s(int64_t a, int64_t b) { return a <= b; }
+static inline int32_t wasm_i64_le_u(int64_t a, int64_t b) { return (uint64_t)a <= (uint64_t)b; }
+static inline int32_t wasm_i64_ge_s(int64_t a, int64_t b) { return a >= b; }
+static inline int32_t wasm_i64_ge_u(int64_t a, int64_t b) { return (uint64_t)a >= (uint64_t)b; }
+
+static inline float wasm_f32_add(float a, float b) { return a + b; }
+static inline float wasm_f32_sub(float a, float b) { return a - b; }
+static inline float wasm_f32_mul(float a, float b) { return a * b; }
+static inline float wasm_f32_div(float a, float b) { return a / b; }
+static inline float wasm_f32_min(float a, float b) { return a < b ? a : b; }
+static inline float wasm_f32_max(float a, float b) { return a > b ? a : b; }
+static inline float wasm_f32_copysign(float a, float b) { return copysignf(a, b); }
+static inline int32_t wasm_f32_eq(float a, float b) { return a == b; }
+static inline int32_t wasm_f32_ne(float a, float b) { return a != b; }
+static inline int32_t wasm_f32_lt(float a, float b) { return a < b; }
+static inline int32_t wasm_f32_gt(float a, float b) { return a > b; }
+static inline int32_t wasm_f32_le(float a, float b) { return a <= b; }
+static inline int32_t wasm_f32_ge(float a, float b) { return a >= b; }
+
+static inline double wasm_f64_add(double a, double b) { return a + b; }
+static inline double wasm_f64_sub(double a, double b) { return a - b; }
+static inline double wasm_f64_mul(double a, double b) { return a * b; }
+static inline double wasm_f64_div(double a, double b) { return a / b; }
+static inline double wasm_f64_min(double a, double b) { return a < b ? a : b; }
+static inline double wasm_f64_max(double a, double b) { return a > b ? a : b; }
+static inline double wasm_f64_copysign(double a, double b) { return copysign(a, b); }
+static inline int32_t wasm_f64_eq(double a, double b) { return a == b; }
+static inline int32_t wasm_f64_ne(double a, double b) { return a != b; }
+static inline int32_t wasm_f64_lt(double a, double b) { return a < b; }
+static inline int32_t wasm_f64_gt(double a, double b) { return a > b; }
+static inline int32_t wasm_f64_le(double a, double b) { return a <= b; }
+static inline int32_t wasm_f64_ge(double a, double b) { return a >= b; }
+
+static inline int32_t wasm_i32_eqz(int32_t a) { return a == 0; }
+static inline int32_t wasm_i64_eqz(int64_t a) { return a == 0; }
+static inline int32_t wasm_i32_clz(int32_t a) { return a == 0 ? 32 : __builtin_clz((uint32_t)a); }
+static inline int32_t wasm_i32_ctz(int32_t a) { return a == 0 ? 32 : __builtin_ctz((uint32_t)a); }
+static inline int32_t wasm_i32_popcnt(int32_t a) { return __builtin_popcount((uint32_t)a); }
+static inline int64_t wasm_i64_clz(int64_t a) { return a == 0 ? 64 : __builtin_clzll((uint64_t)a); }
+static inline int64_t wasm_i64_ctz(int64_t a) { return a == 0 ? 64 : __builtin_ctzll((uint64_t)a); }
+static inline int64_t wasm_i64_popcnt(int64_t a) { return __builtin_popcountll((uint64_t)a); }
+
+static inline float wasm_f32_abs(float a) { return fabsf(a); }
+static inline float wasm_f32_neg(float a) { return -a; }
+static inline float wasm_f32_ceil(float a) { return ceilf(a); }
+static inline float wasm_f32_floor(float a) { return floorf(a); }
+static inline float wasm_f32_trunc(float a) { return truncf(a); }
+static inline float wasm_f32_nearest(float a) { return rintf(a); }
+static inline float wasm_f32_sqrt(float a) { return sqrtf(a); }
+static inline double wasm_f64_abs(double a) { return fabs(a); }
+static inline double wasm_f64_neg(double a) { return -a; }
+static inline double wasm_f64_ceil(double a) { return ceil(a); }
+static inline double wasm_f64_floor(double a) { return floor(a); }
+static inline double wasm_f64_trunc(double a) { return trunc(a); }
+static inline double wasm_f64_nearest(double a) { return rint(a); }
+static inline double wasm_f64_sqrt(double a) { return sqrt(a); }
+
+static inline int32_t wasm_i32_wrap_i64(int64_t a) { return (int32_t)a; }
+static inline int64_t wasm_i64_extend_i32_s(int32_t a) { return (int64_t)a; }
+static inline int64_t wasm_i64_extend_i32_u(int32_t a) { return (int64_t)(uint32_t)a; }
+static inline int32_t wasm_i32_extend8_s(int32_t a) { return (int8_t)a; }
+static inline int32_t wasm_i32_extend16_s(int32_t a) { return (int16_t)a; }
+static inline int64_t wasm_i64_extend8_s(int64_t a) { return (int8_t)a; }
+static inline int64_t wasm_i64_extend16_s(int64_t a) { return (int16_t)a; }
+static inline int64_t wasm_i64_extend32_s(int64_t a) { return (int32_t)a; }
+static inline int32_t wasm_i32_trunc_f32_s(float a) { return (int32_t)a; }
+static inline int32_t wasm_i32_trunc_f32_u(float a) { return (int32_t)(uint32_t)a; }
+static inline int32_t wasm_i32_trunc_f64_s(double a) { return (int32_t)a; }
+static inline int32_t wasm_i32_trunc_f64_u(double a) { return (int32_t)(uint32_t)a; }
+static inline int64_t wasm_i64_trunc_f32_s(float a) { return (int64_t)a; }
+static inline int64_t wasm_i64_trunc_f32_u(float a) { return (int64_t)(uint64_t)a; }
+static inline int64_t wasm_i64_trunc_f64_s(double a) { return (int64_t)a; }
+static inline int64_t wasm_i64_trunc_f64_u(double a) { return (int64_t)(uint64_t)a; }
+static inline float wasm_f32_convert_i32_s(int32_t a) { return (float)a; }
+static inline float wasm_f32_convert_i32_u(int32_t a) { return (float)(uint32_t)a; }
+static inline float wasm_f32_convert_i64_s(int64_t a) { return (float)a; }
+static inline float wasm_f32_convert_i64_u(int64_t a) { return (float)(uint64_t)a; }
+static inline double wasm_f64_convert_i32_s(int32_t a) { return (double)a; }
+static inline double wasm_f64_convert_i32_u(int32_t a) { return (double)(uint32_t)a; }
+static inline double wasm_f64_convert_i64_s(int64_t a) { return (double)a; }
+static inline double wasm_f64_convert_i64_u(int64_t a) { return (double)(uint64_t)a; }
+static inline float wasm_f32_demote_f64(double a) { return (float)a; }
+static inline double wasm_f64_promote_f32(float a) { return (double)a; }
+static inline int32_t wasm_i32_reinterpret_f32(float a) { int32_t r; memcpy(&r, &a, 4); return r; }
+static inline int64_t wasm_i64_reinterpret_f64(double a) { int64_t r; memcpy(&r, &a, 8); return r; }
+static inline float wasm_f32_reinterpret_i32(int32_t a) { float r; memcpy(&r, &a, 4); return r; }
+static inline double wasm_f64_reinterpret_i64(int64_t a) { double r; memcpy(&r, &a, 8); return r; }
+
+static inline size_t wasm_mem_addr(int32_t addr, uint64_t offset) { return (size_t)((uint32_t)addr) + (size_t)offset; }
+static inline int32_t wasm_load_i32(int32_t a, uint64_t o) { int32_t r = 0; size_t p = wasm_mem_addr(a, o); if (p + 4 <= sizeof(wasm_memory)) memcpy(&r, wasm_memory + p, 4); return r; }
+static inline int64_t wasm_load_i64(int32_t a, uint64_t o) { int64_t r = 0; size_t p = wasm_mem_addr(a, o); if (p + 8 <= sizeof(wasm_memory)) memcpy(&r, wasm_memory + p, 8); return r; }
+static inline float wasm_load_f32(int32_t a, uint64_t o) { return wasm_f32_reinterpret_i32(wasm_load_i32(a, o)); }
+static inline double wasm_load_f64(int32_t a, uint64_t o) { return wasm_f64_reinterpret_i64(wasm_load_i64(a, o)); }
+static inline int32_t wasm_load_i32_8u(int32_t a, uint64_t o) { size_t p = wasm_mem_addr(a, o); return p < sizeof(wasm_memory) ? (int32_t)wasm_memory[p] : 0; }
+static inline int32_t wasm_load_i32_8s(int32_t a, uint64_t o) { return (int8_t)wasm_load_i32_8u(a, o); }
+static inline int32_t wasm_load_i32_16u(int32_t a, uint64_t o) { uint16_t r = 0; size_t p = wasm_mem_addr(a, o); if (p + 2 <= sizeof(wasm_memory)) memcpy(&r, wasm_memory + p, 2); return (int32_t)r; }
+static inline int32_t wasm_load_i32_16s(int32_t a, uint64_t o) { return (int16_t)wasm_load_i32_16u(a, o); }
+static inline int64_t wasm_load_i64_8u(int32_t a, uint64_t o) { return (int64_t)(uint32_t)wasm_load_i32_8u(a, o); }
+static inline int64_t wasm_load_i64_8s(int32_t a, uint64_t o) { return (int8_t)wasm_load_i32_8u(a, o); }
+static inline int64_t wasm_load_i64_16u(int32_t a, uint64_t o) { return (int64_t)(uint32_t)wasm_load_i32_16u(a, o); }
+static inline int64_t wasm_load_i64_16s(int32_t a, uint64_t o) { return (int16_t)wasm_load_i32_16u(a, o); }
+static inline int64_t wasm_load_i64_32u(int32_t a, uint64_t o) { return (int64_t)(uint32_t)wasm_load_i32(a, o); }
+static inline int64_t wasm_load_i64_32s(int32_t a, uint64_t o) { return (int64_t)wasm_load_i32(a, o); }
+
+static inline void wasm_store_i32(int32_t a, uint64_t o, int32_t v) { size_t p = wasm_mem_addr(a, o); if (p + 4 <= sizeof(wasm_memory)) memcpy(wasm_memory + p, &v, 4); }
+static inline void wasm_store_i64(int32_t a, uint64_t o, int64_t v) { size_t p = wasm_mem_addr(a, o); if (p + 8 <= sizeof(wasm_memory)) memcpy(wasm_memory + p, &v, 8); }
+static inline void wasm_store_f32(int32_t a, uint64_t o, float v) { wasm_store_i32(a, o, wasm_i32_reinterpret_f32(v)); }
+static inline void wasm_store_f64(int32_t a, uint64_t o, double v) { wasm_store_i64(a, o, wasm_i64_reinterpret_f64(v)); }
+static inline void wasm_store_i32_8(int32_t a, uint64_t o, int32_t v) { size_t p = wasm_mem_addr(a, o); if (p < sizeof(wasm_memory)) wasm_memory[p] = (uint8_t)v; }
+static inline void wasm_store_i32_16(int32_t a, uint64_t o, int32_t v) { uint16_t x = (uint16_t)v; size_t p = wasm_mem_addr(a, o); if (p + 2 <= sizeof(wasm_memory)) memcpy(wasm_memory + p, &x, 2); }
+static inline void wasm_store_i64_8(int32_t a, uint64_t o, int64_t v) { wasm_store_i32_8(a, o, (int32_t)v); }
+static inline void wasm_store_i64_16(int32_t a, uint64_t o, int64_t v) { wasm_store_i32_16(a, o, (int32_t)v); }
+static inline void wasm_store_i64_32(int32_t a, uint64_t o, int64_t v) { wasm_store_i32(a, o, (int32_t)v); }
+
+static inline int64_t wasm_global_get(uint32_t i) { return i < 64 ? wasm_globals[i] : 0; }
+static inline void wasm_global_set(uint32_t i, int64_t v) { if (i < 64) wasm_globals[i] = v; }
+static inline int32_t wasm_memory_size(void) { return (int32_t)(sizeof(wasm_memory) / (64 * 1024)); }
+static inline int32_t wasm_memory_grow(int32_t delta) { (void)delta; return (int32_t)(sizeof(wasm_memory) / (64 * 1024)); }
