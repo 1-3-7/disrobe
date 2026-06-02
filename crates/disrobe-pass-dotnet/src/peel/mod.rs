@@ -22,6 +22,7 @@ pub mod static_decrypt;
 pub mod agile_net;
 pub mod armdot;
 pub mod babel_net;
+pub mod confuserex_constants;
 pub mod confuserex_resources;
 pub mod crypto_obfuscator;
 pub mod deepsea;
@@ -40,6 +41,9 @@ pub mod themida_dotnet;
 pub use agile_net::peel_agile_net;
 pub use armdot::peel_armdot;
 pub use babel_net::peel_babel_net;
+pub use confuserex_constants::{
+    ConfuserConstantsRecovery, RecoveredString, peel_confuserex_constants,
+};
 pub use confuserex_resources::{
     ConfuserExRecovery, ManifestResourceClassification, peel_confuserex_resources,
 };
@@ -336,6 +340,24 @@ pub(crate) fn peel_confuserex(image: &[u8], protector: Protector) -> Result<Peel
                 .to_string(),
         ),
     };
+    let mut notes: Vec<String> = vec![note];
+    if let Some(constants) = confuserex_constants::peel_confuserex_constants(image)? {
+        notes.push(format!(
+            "ConfuserEx2 constants decrypted: blob_rva=0x{:x} size={} seed=0x{:08x} \
+             pool_len={} strings_recovered={} [{}]",
+            constants.blob_rva,
+            constants.blob_size,
+            constants.seed,
+            constants.constant_pool_len,
+            constants.strings_recovered.len(),
+            constants
+                .strings_recovered
+                .iter()
+                .map(|s: &confuserex_constants::RecoveredString| s.text.as_str())
+                .collect::<Vec<&str>>()
+                .join(", "),
+        ));
+    }
     Ok(PeelReport {
         protector,
         strategy,
@@ -349,7 +371,7 @@ pub(crate) fn peel_confuserex(image: &[u8], protector: Protector) -> Result<Peel
         bytes_out: bytes_in,
         recovered_decoders: decoders.pure_decoders_found,
         recovered_constants: decoders.constants_recovered,
-        notes: vec![note],
+        notes,
     })
 }
 

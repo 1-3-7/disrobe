@@ -73,6 +73,19 @@ provenance = "real"
 description = "HelloAppLegacy.dll processed by ConfuserEx2 v1.6.0 with normal preset + ctrl-flow + constants + rename + resources"
 
 [[fixture]]
+name = "SampleConstants.confuserex2"
+path = "SampleConstants.confuserex2.dll"
+kind = "managed-pe-obfuscated"
+target_framework = "net48"
+protector = "ConfuserEx2"
+protector_version = "1.6.0"
+protector_repo = "mkaring/ConfuserEx"
+preset = "none+constants"
+provenance = "real"
+known_plaintext = "DISROBE_CONFUSER_CONSTANT_PROOF_8842"
+description = "constants-only ConfuserEx2 build (no rename/cflow/anti-tamper) so the injected Get/Initialize constant decoder is cleanly recoverable; Secret() string is behind <Module>.Get<string>(1242836064) and is absent from the raw bytes"
+
+[[fixture]]
 name = "HelloAppLegacy.obfuscar"
 path = "HelloAppLegacy.obfuscar.dll"
 kind = "managed-pe-obfuscated"
