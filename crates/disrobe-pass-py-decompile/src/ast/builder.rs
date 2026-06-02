@@ -9558,7 +9558,9 @@ fn is_yield_from_send_pattern(ops: &[CanonicalOp], yield_idx: usize) -> bool {
         match &ops[k] {
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             CanonicalOp::Send(_) if !saw_send => saw_send = true,
-            CanonicalOp::LoadConst(_) if saw_send && !saw_const_none => {
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7)
+                if saw_send && !saw_const_none =>
+            {
                 saw_const_none = true;
             }
             CanonicalOp::GetIter if saw_send && saw_const_none && !saw_get_iter => {
