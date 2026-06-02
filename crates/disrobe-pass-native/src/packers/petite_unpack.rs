@@ -121,8 +121,36 @@ pub fn unpack_petite(packed_bytes: &[u8]) -> Result<Vec<u8>> {
 /// Same conditions as [`unpack_petite`].
 pub fn unpack_petite_with_report(packed_bytes: &[u8]) -> Result<UnpackResult> {
     let packed: PackedPetite = parse_packed_petite(packed_bytes)?;
-    let stream: DecodedStream = decode_petite_stream(&packed)?;
     let imports: Vec<RecoveredImport> = parse_petite_import_table(&packed)?;
+
+    if parse_phase_one_stub(&packed).is_some()
+        && let Ok(emu) = crate::packers::unpack_petite_phase2_emulated(packed_bytes)
+        && emu.recovered_memory_image.starts_with(b"MZ")
+        && let Some(image) = reconstruct_from_memory_image(&packed, &emu.recovered_memory_image)
+    {
+        let recoverable_pct: u32 = if image.bytes.is_empty() {
+            0
+        } else {
+            let known: u64 = image.deterministic_bytes as u64;
+            let total: u64 = image.bytes.len() as u64;
+            ((known.saturating_mul(10_000) / total) as u32).min(10_000)
+        };
+        let report: UnpackReport = build_report(
+            &packed,
+            packed_bytes.len(),
+            image.bytes.len(),
+            imports,
+            image.section_count,
+            recoverable_pct,
+            true,
+        )?;
+        return Ok(UnpackResult {
+            bytes: image.bytes,
+            report,
+        });
+    }
+
+    let stream: DecodedStream = decode_petite_stream(&packed)?;
     let reconstruction: Reconstruction = reconstruct_image(&packed, &stream, &imports)?;
 
     let recoverable_pct: u32 = if reconstruction.bytes.is_empty() {
@@ -133,21 +161,42 @@ pub fn unpack_petite_with_report(packed_bytes: &[u8]) -> Result<UnpackResult> {
         ((known.saturating_mul(10_000) / total) as u32).min(10_000)
     };
 
-    let report: UnpackReport = UnpackReport {
-        packed_size: packed_bytes.len() as u64,
-        unpacked_size: reconstruction.bytes.len() as u64,
-        original_image_base: u64::from(packed.optional.image_base),
-        original_entry_point_rva: packed.optional.entry_point_rva,
-        recovered_section_count: u16::try_from(reconstruction.original_sections.len())
-            .map_err(|_| Error::GoblinParse("recovered section count overflowed u16".into()))?,
-        recovered_imports: imports,
-        byte_recoverable_pct: recoverable_pct,
-        stream_decoded: stream.fully_decoded,
-    };
+    let section_count: u16 = u16::try_from(reconstruction.original_sections.len())
+        .map_err(|_| Error::GoblinParse("recovered section count overflowed u16".into()))?;
+    let report: UnpackReport = build_report(
+        &packed,
+        packed_bytes.len(),
+        reconstruction.bytes.len(),
+        imports,
+        section_count,
+        recoverable_pct,
+        stream.fully_decoded,
+    )?;
 
     Ok(UnpackResult {
         bytes: reconstruction.bytes,
         report,
+    })
+}
+
+fn build_report(
+    packed: &PackedPetite<'_>,
+    packed_len: usize,
+    unpacked_len: usize,
+    imports: Vec<RecoveredImport>,
+    section_count: u16,
+    recoverable_pct: u32,
+    stream_decoded: bool,
+) -> Result<UnpackReport> {
+    Ok(UnpackReport {
+        packed_size: packed_len as u64,
+        unpacked_size: unpacked_len as u64,
+        original_image_base: u64::from(packed.optional.image_base),
+        original_entry_point_rva: packed.optional.entry_point_rva,
+        recovered_section_count: section_count,
+        recovered_imports: imports,
+        byte_recoverable_pct: recoverable_pct,
+        stream_decoded,
     })
 }
 
@@ -178,6 +227,8 @@ struct OptionalHeaderPe32 {
     import_dir_rva: u32,
     iat_dir_rva: u32,
     iat_dir_size: u32,
+    size_of_image: u32,
+    size_of_headers: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +298,8 @@ fn parse_packed_petite(bytes: &[u8]) -> Result<PackedPetite<'_>> {
         import_dir_rva: read_u32_le(bytes, opt_off + 96 + 8)?,
         iat_dir_rva: read_u32_le(bytes, opt_off + 96 + 96)?,
         iat_dir_size: read_u32_le(bytes, opt_off + 96 + 100)?,
+        size_of_image: read_u32_le(bytes, opt_off + 56)?,
+        size_of_headers: read_u32_le(bytes, opt_off + 60)?,
     };
     let sec_off: usize = opt_off + coff.size_of_optional_header as usize;
     let sec_table_end: usize = sec_off
@@ -928,6 +981,282 @@ fn reconstruct_image(
         deterministic_bytes: deterministic,
         original_sections,
     })
+}
+
+/// Minimum trailing-zero padding (bytes) that separates two adjacent original
+/// sections inside the emulated memory image; a shorter zero run is treated as
+/// intra-section slack rather than a section boundary.
+const SECTION_GAP_MIN_ZEROS: u32 = 64;
+
+#[derive(Debug, Clone)]
+struct EmulatedReconstruction {
+    bytes: Vec<u8>,
+    deterministic_bytes: usize,
+    section_count: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DerivedSection {
+    name: [u8; 8],
+    virtual_address: u32,
+    virtual_size: u32,
+    raw_size: u32,
+    pointer_to_raw_data: u32,
+    characteristics: u32,
+}
+
+/// Reconstruct the original on-disk PE by slicing the phase-2 emulated memory
+/// image along the original section boundaries.
+///
+/// The original section table, names, and base-relocation stream are discarded
+/// by Petite and are not present in the packed file or the post-emulation
+/// image; the boundaries are therefore recovered structurally from the memory
+/// image itself: the original `SizeOfImage` equals the virtual address of the
+/// trailing `petite` metadata section, and each content section is delimited by
+/// a [`SECTION_ALIGNMENT`](OptionalHeaderPe32::section_alignment)-aligned
+/// trailing zero gap. The discarded `.reloc` page is emitted zero-filled (the
+/// loader rebuilds relocations at map time), which is the one region that
+/// cannot be reproduced byte-exact.
+///
+/// Returns `None` when the memory image does not expose a usable header or
+/// trailing `petite` boundary, in which case the caller falls back to the
+/// static structural reconstruction.
+#[allow(clippy::too_many_lines)]
+fn reconstruct_from_memory_image(
+    packed: &PackedPetite<'_>,
+    mem: &[u8],
+) -> Option<EmulatedReconstruction> {
+    let section_alignment: u32 = if packed.optional.section_alignment == 0 {
+        SECTION_ALIGNMENT_DEFAULT
+    } else {
+        packed.optional.section_alignment
+    };
+    let file_alignment: u32 = if packed.optional.file_alignment == 0 {
+        FILE_ALIGNMENT_DEFAULT
+    } else {
+        packed.optional.file_alignment
+    };
+
+    let e_lfanew: usize = read_u32_le(mem, FILE_HEADER_OFFSET_E_LFANEW).ok()? as usize;
+    if mem.get(e_lfanew..e_lfanew + 4)? != b"PE\x00\x00" {
+        return None;
+    }
+    let coff_off: usize = e_lfanew + PE_SIGNATURE_LEN;
+    let opt_off: usize = coff_off + COFF_HEADER_LEN;
+    let mem_optional_len: u16 = read_u16_le(mem, coff_off + 16).ok()?;
+    let mem_section_count: usize = read_u16_le(mem, coff_off + 2).ok()? as usize;
+    let mem_sec_table: usize = opt_off + mem_optional_len as usize;
+
+    let original_size_of_image: u32 = (0..mem_section_count)
+        .find_map(|i: usize| {
+            let s: usize = mem_sec_table + i * SECTION_HEADER_LEN;
+            let name: &[u8] = mem.get(s..s + 8)?;
+            if name.starts_with(b"petite") || name.starts_with(b".petite") {
+                read_u32_le(mem, s + 12).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(packed.optional.size_of_image);
+    if original_size_of_image <= section_alignment {
+        return None;
+    }
+
+    let starts: Vec<u32> = detect_section_starts(mem, original_size_of_image, section_alignment);
+    if starts.is_empty() {
+        return None;
+    }
+
+    let size_of_headers: u32 = if packed.optional.size_of_headers == 0 {
+        align_up(0x400, file_alignment)
+    } else {
+        packed.optional.size_of_headers
+    };
+
+    let mut derived: Vec<DerivedSection> = Vec::with_capacity(starts.len());
+    let mut raw_cursor: u32 = size_of_headers;
+    for (idx, &start) in starts.iter().enumerate() {
+        let end: u32 = starts
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(original_size_of_image);
+        let virtual_size: u32 = section_virtual_size(mem, start, end);
+        let raw_size: u32 = align_up(virtual_size, file_alignment);
+        let name: [u8; 8] = default_section_name(idx, starts.len());
+        let characteristics: u32 = default_section_characteristics(idx, starts.len());
+        derived.push(DerivedSection {
+            name,
+            virtual_address: start,
+            virtual_size,
+            raw_size,
+            pointer_to_raw_data: raw_cursor,
+            characteristics,
+        });
+        raw_cursor = raw_cursor.checked_add(raw_size)?;
+    }
+
+    let total: usize = raw_cursor as usize;
+    let image_ceiling: usize =
+        PETITE_MAX_PREALLOC.min(packed.raw.len().saturating_mul(PETITE_MAX_IMAGE_RATIO));
+    if total == 0 || total > image_ceiling {
+        return None;
+    }
+
+    let mut out: Vec<u8> = vec![0u8; total];
+    let header_copy: usize = (size_of_headers as usize).min(mem.len()).min(out.len());
+    out[..header_copy].copy_from_slice(&mem[..header_copy]);
+
+    let section_count: u16 = u16::try_from(derived.len()).ok()?;
+    write_reconstructed_header(
+        &mut out,
+        packed,
+        &derived,
+        e_lfanew,
+        size_of_headers,
+        original_size_of_image,
+        section_alignment,
+        file_alignment,
+        section_count,
+    )?;
+
+    let mut deterministic: usize = header_copy;
+    for sec in &derived {
+        let va: usize = sec.virtual_address as usize;
+        let ptr: usize = sec.pointer_to_raw_data as usize;
+        let raw: usize = sec.raw_size as usize;
+        let take: usize = raw.min(mem.len().saturating_sub(va));
+        if ptr + take <= out.len() && va + take <= mem.len() {
+            out[ptr..ptr + take].copy_from_slice(&mem[va..va + take]);
+            if sec.virtual_size > 0 {
+                deterministic += take;
+            }
+        }
+    }
+
+    Some(EmulatedReconstruction {
+        bytes: out,
+        deterministic_bytes: deterministic,
+        section_count,
+    })
+}
+
+fn detect_section_starts(mem: &[u8], size_of_image: u32, section_alignment: u32) -> Vec<u32> {
+    let mut starts: Vec<u32> = vec![section_alignment];
+    let page_has_content = |page: u32| -> bool {
+        let lo: usize = page as usize;
+        let hi: usize = (page.saturating_add(section_alignment) as usize).min(mem.len());
+        lo < hi && mem[lo..hi].iter().any(|b: &u8| *b != 0)
+    };
+    let mut last_content_page: u32 = section_alignment;
+    let mut page: u32 = section_alignment.saturating_mul(2);
+    let mut previous_had_content: bool = true;
+    while page < size_of_image {
+        let this_has_content: bool = page_has_content(page);
+        let mut zero_run: u32 = 0;
+        let mut k: i64 = i64::from(page) - 1;
+        while k >= 0 && mem.get(k as usize) == Some(&0) && zero_run < section_alignment {
+            zero_run += 1;
+            k -= 1;
+        }
+        if this_has_content && previous_had_content && zero_run >= SECTION_GAP_MIN_ZEROS {
+            starts.push(page);
+        }
+        if this_has_content {
+            last_content_page = page;
+        }
+        previous_had_content = this_has_content;
+        page += section_alignment;
+    }
+    let trailing: u32 = last_content_page.saturating_add(section_alignment);
+    if trailing < size_of_image && !starts.contains(&trailing) {
+        starts.push(trailing);
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+fn section_virtual_size(mem: &[u8], start: u32, end: u32) -> u32 {
+    let lo: usize = start as usize;
+    let hi: usize = (end as usize).min(mem.len());
+    if lo >= hi {
+        return end.saturating_sub(start);
+    }
+    mem[lo..hi]
+        .iter()
+        .rposition(|b: &u8| *b != 0)
+        .map_or(end - start, |off: usize| {
+            u32::try_from(off + 1).unwrap_or(end - start)
+        })
+}
+
+fn default_section_name(index: usize, count: usize) -> [u8; 8] {
+    if index == 0 {
+        *b".text\x00\x00\x00"
+    } else if index + 1 == count {
+        *b".reloc\x00\x00"
+    } else if index == 1 {
+        *b".rdata\x00\x00"
+    } else {
+        *b".data\x00\x00\x00"
+    }
+}
+
+fn default_section_characteristics(index: usize, count: usize) -> u32 {
+    if index == 0 {
+        0x6000_0020
+    } else if index + 1 == count {
+        0x4200_0040
+    } else {
+        0xC000_0040
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_reconstructed_header(
+    out: &mut [u8],
+    packed: &PackedPetite<'_>,
+    sections: &[DerivedSection],
+    e_lfanew: usize,
+    size_of_headers: u32,
+    size_of_image: u32,
+    section_alignment: u32,
+    file_alignment: u32,
+    section_count: u16,
+) -> Option<()> {
+    out.get(0x3c..0x40)?;
+    out[FILE_HEADER_OFFSET_E_LFANEW..FILE_HEADER_OFFSET_E_LFANEW + 4]
+        .copy_from_slice(&u32::try_from(e_lfanew).ok()?.to_le_bytes());
+    out.get(e_lfanew..e_lfanew + 4)?;
+    out[e_lfanew..e_lfanew + 4].copy_from_slice(b"PE\x00\x00");
+    let coff_off: usize = e_lfanew + PE_SIGNATURE_LEN;
+    out[coff_off..coff_off + 2].copy_from_slice(&MACHINE_I386.to_le_bytes());
+    out[coff_off + 2..coff_off + 4].copy_from_slice(&section_count.to_le_bytes());
+    out[coff_off + 16..coff_off + 18].copy_from_slice(&IMAGE_NT_OPTIONAL_HDR32_SIZE.to_le_bytes());
+    out[coff_off + 18..coff_off + 20].copy_from_slice(&packed.coff.characteristics.to_le_bytes());
+
+    let opt_off: usize = coff_off + COFF_HEADER_LEN;
+    out[opt_off..opt_off + 2].copy_from_slice(&PE32_MAGIC.to_le_bytes());
+    out[opt_off + 16..opt_off + 20].copy_from_slice(&packed.optional.entry_point_rva.to_le_bytes());
+    out[opt_off + 28..opt_off + 32].copy_from_slice(&packed.optional.image_base.to_le_bytes());
+    out[opt_off + 32..opt_off + 36].copy_from_slice(&section_alignment.to_le_bytes());
+    out[opt_off + 36..opt_off + 40].copy_from_slice(&file_alignment.to_le_bytes());
+    out[opt_off + 56..opt_off + 60].copy_from_slice(&size_of_image.to_le_bytes());
+    out[opt_off + 60..opt_off + 64].copy_from_slice(&size_of_headers.to_le_bytes());
+
+    let sec_table_off: usize = opt_off + OPTIONAL_HEADER_STANDARD_LEN;
+    for (i, sec) in sections.iter().enumerate() {
+        let s: usize = sec_table_off + i * SECTION_HEADER_LEN;
+        out.get(s..s + SECTION_HEADER_LEN)?;
+        out[s..s + 8].copy_from_slice(&sec.name);
+        out[s + 8..s + 12].copy_from_slice(&sec.virtual_size.to_le_bytes());
+        out[s + 12..s + 16].copy_from_slice(&sec.virtual_address.to_le_bytes());
+        out[s + 16..s + 20].copy_from_slice(&sec.raw_size.to_le_bytes());
+        out[s + 20..s + 24].copy_from_slice(&sec.pointer_to_raw_data.to_le_bytes());
+        out[s + 24..s + 36].copy_from_slice(&[0u8; 12]);
+        out[s + 36..s + 40].copy_from_slice(&sec.characteristics.to_le_bytes());
+    }
+    Some(())
 }
 
 fn infer_original_sections(
