@@ -7661,6 +7661,11 @@ fn collect_capture_names(
                     names.push(id);
                 }
             }
+            CanonicalOp::StoreFastLoadFast(store_slot, _) => {
+                if let Ok(id) = local_name_at(code, *store_slot, k) {
+                    names.push(id);
+                }
+            }
             _ => {}
         }
     }
@@ -8056,6 +8061,89 @@ fn last_gate_after(
     last_gate
 }
 
+/// Number of subject captures a recovered pattern fixes structurally, i.e. how many `STORE_FAST`
+/// slots its own binding machinery consumes. Literal and wildcard sub-patterns bind nothing; named
+/// captures and a `**rest` each bind one. Any capture store beyond this count in the arm window is
+/// the enclosing subject `as`, never part of the inner pattern.
+fn pattern_capture_count(pattern: &Pattern) -> usize {
+    match pattern {
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => 0,
+        Pattern::MatchStar(name) => usize::from(name.is_some()),
+        Pattern::MatchAs { pattern, name } => {
+            usize::from(name.is_some()) + pattern.as_deref().map_or(0, pattern_capture_count)
+        }
+        Pattern::MatchSequence(elems) | Pattern::MatchOr(elems) => {
+            elems.iter().map(pattern_capture_count).sum()
+        }
+        Pattern::MatchMapping { patterns, rest, .. } => {
+            patterns.iter().map(pattern_capture_count).sum::<usize>() + usize::from(rest.is_some())
+        }
+        Pattern::MatchClass {
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            patterns.iter().map(pattern_capture_count).sum::<usize>()
+                + kwd_patterns
+                    .iter()
+                    .map(pattern_capture_count)
+                    .sum::<usize>()
+        }
+    }
+}
+
+/// Structural capture count for the enclosing-`as` lift, defined only for the structured arm kinds
+/// whose inner classifier is slot-bounded (`MATCH_CLASS` / sequence unpack). Mapping arms self-wrap
+/// their outer `as` inside [`classify_mapping_pattern`] and scalar/value arms route through the
+/// dup-based `as` paths, so both return `None` here to avoid double-lifting.
+fn structural_capture_count(
+    stream: &DecodedStream,
+    from: usize,
+    scan_end: usize,
+    inner: &Pattern,
+) -> Option<usize> {
+    match inner {
+        Pattern::MatchClass { .. } => Some(pattern_capture_count(inner)),
+        Pattern::MatchSequence(_) => {
+            let mut count: Option<usize> = None;
+            for k in from..scan_end.min(stream.ops.len()) {
+                match &stream.ops[k] {
+                    CanonicalOp::UnpackSequence(n) => {
+                        count = Some(count.unwrap_or(0) + *n as usize);
+                    }
+                    CanonicalOp::UnpackEx(arg) => {
+                        count = Some(
+                            count.unwrap_or(0) + (arg & 0xFF) as usize + (arg >> 8) as usize + 1,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            count.or_else(|| Some(pattern_capture_count(inner)))
+        }
+        _ => None,
+    }
+}
+
+/// Remove an over-collected trailing outer-`as` name from a structured inner pattern. Sequence inners
+/// whose final element was folded from a fused `STORE_FAST_STORE_FAST(elem, outer)` carry the outer
+/// name as a spurious last element; pop it. All other inners (class arms are slot-bounded by
+/// `total_slots`, so they never fold the outer store) are returned unchanged.
+fn strip_trailing_outer_as(inner: Pattern, outer: &str) -> Pattern {
+    match inner {
+        Pattern::MatchSequence(mut elems)
+            if matches!(
+                elems.last(),
+                Some(Pattern::MatchAs { name: Some(n), .. }) if n == outer
+            ) =>
+        {
+            elems.pop();
+            Pattern::MatchSequence(elems)
+        }
+        other => other,
+    }
+}
+
 fn classify_pattern(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -8107,7 +8195,28 @@ fn classify_pattern(
     let inner: Pattern =
         classify_simple_pattern(code, stream, inner_start, fail_target, region_end);
 
-    if double_dup {
+    if let Some(structural) = structural_capture_count(stream, inner_start, scan_end, &inner) {
+        let names: Vec<String> = collect_capture_names(code, stream, inner_start, scan_end);
+        if names.len() == structural + 1
+            && let Some(outer) = names.last()
+        {
+            return Pattern::MatchAs {
+                pattern: Some(Box::new(strip_trailing_outer_as(inner, outer))),
+                name: Some(outer.clone()),
+            };
+        }
+        if double_dup && let Some(name) = names.last() {
+            return Pattern::MatchAs {
+                pattern: Some(Box::new(inner)),
+                name: Some(name.clone()),
+            };
+        }
+    } else if double_dup
+        && !matches!(
+            inner,
+            Pattern::MatchMapping { .. } | Pattern::MatchAs { .. }
+        )
+    {
         let names: Vec<String> = collect_capture_names(code, stream, inner_start, scan_end);
         if let Some(name) = names.last() {
             return Pattern::MatchAs {
@@ -8281,6 +8390,9 @@ fn classify_sequence_pattern(
     star_before.map_or_else(
         || match fixed_len {
             Some(0) => Pattern::MatchSequence(Vec::new()),
+            Some(n) if (n as usize) < names.len() => {
+                Pattern::MatchSequence(captures_to_patterns(&names[..n as usize]))
+            }
             _ => Pattern::MatchSequence(captures_to_patterns(&names)),
         },
         |before: u32| {
@@ -8346,7 +8458,7 @@ fn classify_mapping_pattern(
     });
 
     let mut value_patterns: Vec<Pattern> = Vec::new();
-    let mut stores: Vec<(usize, String)> = Vec::new();
+    let mut stores: Vec<MappingStore> = Vec::new();
     let mut k2: usize = keys_end;
     while k2 < scan_end {
         match &stream.ops[k2] {
@@ -8379,20 +8491,20 @@ fn classify_mapping_pattern(
             }
             CanonicalOp::StoreFast(slot) => {
                 if let Ok(name) = local_name_at(code, *slot, k2) {
-                    stores.push((k2, name));
+                    stores.push(MappingStore { name, fused: false });
                 }
             }
             CanonicalOp::StoreName(slot) => {
                 if let Ok(name) = name_at(&code.names, *slot, k2, "name") {
-                    stores.push((k2, name));
+                    stores.push(MappingStore { name, fused: false });
                 }
             }
             CanonicalOp::StoreFastStoreFast(a, b) => {
                 if let Ok(name) = local_name_at(code, *a, k2) {
-                    stores.push((k2, name));
+                    stores.push(MappingStore { name, fused: true });
                 }
                 if let Ok(name) = local_name_at(code, *b, k2) {
-                    stores.push((k2, name));
+                    stores.push(MappingStore { name, fused: false });
                 }
             }
             _ => {}
@@ -8401,23 +8513,21 @@ fn classify_mapping_pattern(
     }
 
     let capture_key_count: usize = key_count.saturating_sub(value_patterns.len());
-    let rest_idx: Option<usize> = if stores.len() > capture_key_count {
-        dict_rest_marker
-            .and_then(|marker: usize| {
-                stores
-                    .iter()
-                    .position(|(at, _): &(usize, String)| *at > marker)
-            })
-            .or_else(|| stores.iter().position(|_| true).map(|_| stores.len() - 1))
-    } else {
-        None
-    };
+    let (rest_idx, outer_idx): (Option<usize>, Option<usize>) = mapping_rest_and_outer(
+        &stores,
+        capture_key_count,
+        dict_rest_marker.is_some(),
+        stream.version.minor(),
+    );
     let rest: Option<String> =
-        rest_idx.and_then(|i: usize| stores.get(i).map(|(_, n): &(usize, String)| n.clone()));
+        rest_idx.and_then(|i: usize| stores.get(i).map(|s: &MappingStore| s.name.clone()));
+    let outer_as: Option<String> =
+        outer_idx.and_then(|i: usize| stores.get(i).map(|s: &MappingStore| s.name.clone()));
     let capture_names: Vec<String> = stores
-        .into_iter()
+        .iter()
         .enumerate()
-        .filter_map(|(i, (_, n)): (usize, (usize, String))| (Some(i) != rest_idx).then_some(n))
+        .filter(|(i, _): &(usize, &MappingStore)| Some(*i) != rest_idx && Some(*i) != outer_idx)
+        .map(|(_, s): (usize, &MappingStore)| s.name.clone())
         .collect();
 
     let mut value_iter: usize = 0;
@@ -8444,10 +8554,64 @@ fn classify_mapping_pattern(
         })
         .collect();
 
-    Pattern::MatchMapping {
+    let mapping: Pattern = Pattern::MatchMapping {
         keys,
         patterns,
         rest,
+    };
+    match outer_as {
+        Some(name) => Pattern::MatchAs {
+            pattern: Some(Box::new(mapping)),
+            name: Some(name),
+        },
+        None => mapping,
+    }
+}
+
+/// One recovered binding store from a mapping arm's tail, tagged with whether it was the first half of
+/// a fused `STORE_FAST_STORE_FAST` (3.13+). The fusion tag identifies the adjacent `(rest, as)` pair
+/// the modern lowering emits in one op.
+#[derive(Debug, Clone)]
+struct MappingStore {
+    name: String,
+    fused: bool,
+}
+
+/// Disambiguate a mapping arm's trailing stores into `(rest_idx, outer_as_idx)`. `**rest` exists only
+/// when the rest machinery marker (`BUILD_MAP`/`DICT_UPDATE`/`DELETE_SUBSCR`, or 3.10's
+/// `COPY_DICT_WITHOUT_KEYS`) is present; the remaining over-count past the key-value captures is the
+/// outer subject `as`. The `(rest, as)` pair's store order is `CPython`-version-divergent: 3.13+ fuses
+/// it as one `STORE_FAST_STORE_FAST(rest, as)`; 3.11/3.12 emit `rest, as, kv...`; 3.10 emits
+/// `kv..., rest, as`. Resolution keys on the fusion tag, then on the minor version for the plain forms.
+fn mapping_rest_and_outer(
+    stores: &[MappingStore],
+    capture_key_count: usize,
+    has_rest_marker: bool,
+    minor: u8,
+) -> (Option<usize>, Option<usize>) {
+    let total: usize = stores.len();
+    if !has_rest_marker {
+        let outer_idx: Option<usize> = (total > capture_key_count).then_some(total - 1);
+        return (None, outer_idx);
+    }
+    let extra: usize = total.saturating_sub(capture_key_count);
+    if extra == 0 {
+        return (None, None);
+    }
+    let has_outer: bool = extra >= 2;
+    if let Some(fused_first) = stores.iter().position(|s: &MappingStore| s.fused)
+        && fused_first + 1 < total
+    {
+        let outer_idx: Option<usize> = has_outer.then_some(fused_first + 1);
+        return (Some(fused_first), outer_idx);
+    }
+    if minor <= 10 {
+        let rest_idx: usize = capture_key_count.min(total - 1);
+        let outer_idx: Option<usize> = has_outer.then_some(total - 1);
+        (Some(rest_idx), outer_idx)
+    } else {
+        let outer_idx: Option<usize> = has_outer.then_some(1);
+        (Some(0), outer_idx)
     }
 }
 
@@ -12207,6 +12371,10 @@ fn build_linear_stmts_sim_seed(
                     out.push(class_def);
                     continue;
                 }
+                if let Some(class_def) = try_build_decorated_class_def(code, &value, &target_name) {
+                    out.push(class_def);
+                    continue;
+                }
                 if let Some(const_idx) = nested_code_index(&value)
                     && let Some(mut fn_def) =
                         build_nested_function_def(code, const_idx, target_name.clone(), false)
@@ -12293,6 +12461,10 @@ fn build_linear_stmts_sim_seed(
                     continue;
                 }
                 if let Some(class_def) = try_build_class_def(code, &value, &target_name) {
+                    out.push(class_def);
+                    continue;
+                }
+                if let Some(class_def) = try_build_decorated_class_def(code, &value, &target_name) {
                     out.push(class_def);
                     continue;
                 }
@@ -13294,6 +13466,113 @@ fn import_module_to_stmt(marker: &ImportModuleMarker, store_name: &str) -> Stmt 
     }])
 }
 
+/// 3.14 defers class-scope annotations (`x: int`, `y: int = 0`) into an `__annotate__` code object
+/// stored under the class-namespace key `__annotate_func__`; the class body itself only carries the
+/// value-bearing `STORE_NAME` (`y = 0`) and nothing for the value-less `x`. Recover the annotations
+/// from the recovered `__annotate_func__` function body (a sequence of `__classdict__["name"] = ann`
+/// assigns) and thread them back: upgrade a matching value `Assign` to an `AnnAssign`, or insert a
+/// bare `AnnAssign` where the body had no statement, then drop the synthetic `__annotate_func__` def.
+fn thread_class_annotations(mut body: Vec<Stmt>) -> Vec<Stmt> {
+    let annotations: Vec<(String, Expr)> = body
+        .iter()
+        .find_map(|s: &Stmt| match s {
+            Stmt::FunctionDef {
+                name,
+                body: fn_body,
+                ..
+            } if name == "__annotate_func__" => Some(class_annotation_pairs(fn_body)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if annotations.is_empty() {
+        return body;
+    }
+    body.retain(
+        |s: &Stmt| !matches!(s, Stmt::FunctionDef { name, .. } if name == "__annotate_func__"),
+    );
+    let mut threaded: Vec<Stmt> = Vec::with_capacity(body.len() + annotations.len());
+    let mut consumed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (name, annotation) in &annotations {
+        let existing: Option<usize> = body.iter().position(|s: &Stmt| match s {
+            Stmt::Assign { targets, .. } => matches!(
+                targets.as_slice(),
+                [Expr::Name { id, .. }] if id == name
+            ),
+            _ => false,
+        });
+        match existing {
+            Some(pos) => {
+                consumed.insert(pos);
+                let Stmt::Assign { value, line, .. }: Stmt = body[pos].clone() else {
+                    continue;
+                };
+                threaded.push(Stmt::AnnAssign {
+                    target: Expr::Name {
+                        id: name.clone(),
+                        ctx: ExprCtx::Store,
+                        line: None,
+                    },
+                    annotation: annotation.clone(),
+                    value: Some(value),
+                    simple: true,
+                    line,
+                });
+            }
+            None => threaded.push(Stmt::AnnAssign {
+                target: Expr::Name {
+                    id: name.clone(),
+                    ctx: ExprCtx::Store,
+                    line: None,
+                },
+                annotation: annotation.clone(),
+                value: None,
+                simple: true,
+                line: None,
+            }),
+        }
+    }
+    for (pos, stmt) in body.into_iter().enumerate() {
+        if !consumed.contains(&pos) {
+            threaded.push(stmt);
+        }
+    }
+    threaded
+}
+
+/// Extract ordered `(name, annotation)` pairs from a recovered `__annotate_func__` body whose
+/// statements are `__classdict__["name"] = annotation` subscript assigns.
+fn class_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
+    let mut pairs: Vec<(String, Expr)> = Vec::new();
+    for stmt in fn_body {
+        let Stmt::Assign { targets, value, .. }: &Stmt = stmt else {
+            continue;
+        };
+        let [
+            Expr::Subscript {
+                value: base, slice, ..
+            },
+        ]: &[Expr] = targets.as_slice()
+        else {
+            continue;
+        };
+        let Expr::Name { id, .. }: &Expr = base.as_ref() else {
+            continue;
+        };
+        if id != "__classdict__" {
+            continue;
+        }
+        let Expr::Constant {
+            value: ConstValue::Str(name),
+            ..
+        }: &Expr = slice.as_ref()
+        else {
+            continue;
+        };
+        pairs.push((name.clone(), unstringify_annotation(value.clone())));
+    }
+    pairs
+}
+
 fn try_build_class_def(parent: &CodeObject, value: &Expr, target_name: &str) -> Option<Stmt> {
     let Expr::Call {
         func,
@@ -13323,7 +13602,8 @@ fn try_build_class_def(parent: &CodeObject, value: &Expr, target_name: &str) -> 
     let stripped: Vec<Stmt> = strip_class_implicit(strip_module_implicit_return(
         strip_module_docstring_stmt(body_raw, nested),
     ));
-    let processed: Vec<Stmt> = postprocess_body(stripped, BodyKind::Class);
+    let processed: Vec<Stmt> =
+        thread_class_annotations(postprocess_body(stripped, BodyKind::Class));
     let final_body: Vec<Stmt> = if processed.is_empty() {
         vec![Stmt::Pass]
     } else {
@@ -14500,6 +14780,44 @@ fn nested_code_object_at(code: &CodeObject, idx: u32) -> Option<&CodeObject> {
     match obj {
         Object::Code(boxed) => Some(boxed.as_ref()),
         _ => None,
+    }
+}
+
+fn try_build_decorated_class_def(
+    parent: &CodeObject,
+    value: &Expr,
+    target_name: &str,
+) -> Option<Stmt> {
+    let mut decorators: Vec<Expr> = Vec::new();
+    let mut cursor: &Expr = value;
+    loop {
+        let Expr::Call {
+            func,
+            args,
+            keywords,
+        }: &Expr = cursor
+        else {
+            return None;
+        };
+        if is_build_class_marker(func) {
+            if decorators.is_empty() {
+                return None;
+            }
+            let mut class_def: Stmt = try_build_class_def(parent, cursor, target_name)?;
+            let Stmt::ClassDef {
+                decorators: slot, ..
+            }: &mut Stmt = &mut class_def
+            else {
+                return None;
+            };
+            *slot = decorators;
+            return Some(class_def);
+        }
+        if args.len() != 1 || !keywords.is_empty() {
+            return None;
+        }
+        decorators.push((**func).clone());
+        cursor = &args[0];
     }
 }
 

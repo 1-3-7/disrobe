@@ -76,14 +76,18 @@ literal_tuple	3.8
 match_as	3.10
 match_capture	3.10
 match_class	3.10
+match_class_as	3.10
+match_class_as_guard	3.10
 match_class_kwd_capture	3.10
 match_class_kwd_literal	3.10
 match_class_kwd_mixed	3.10
 match_guard	3.10
 match_literal	3.10
 match_mapping	3.10
+match_mapping_as	3.10
 match_or	3.10
 match_sequence	3.10
+match_sequence_as	3.10
 raise_from	3.8
 slice_basic	3.8
 slice_open	3.8
@@ -112,3 +116,5 @@ with_as	3.8
 with_multi	3.8
 with_nested	3.8
 with_simple	3.8
+class_decorated	3.8
+class_decorated_stacked	3.8

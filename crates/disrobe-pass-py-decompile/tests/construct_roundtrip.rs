@@ -627,3 +627,171 @@ fn eval_f_106(interpreter: &Path, script: &Path) -> i64 {
         .parse::<i64>()
         .unwrap_or_else(|_| panic!("f([1,2,3]) did not print an int, got {stdout:?}"))
 }
+
+/// Compile `fixture` under `interpreter` on 3.14, run the full decompile pipeline, recompile the
+/// recovered source, and return `(recovered_source, round_trip_verdict)`. Scratch artifacts land in
+/// `REPORT_DIR/<scratch_name>` so each regression keeps its own isolated `.pyc`/`.py` pair.
+fn decompile_and_roundtrip_3_14(
+    interpreter: &Path,
+    fixture: &str,
+    scratch_name: &str,
+) -> (String, Verdict) {
+    let scratch: PathBuf = PathBuf::from(REPORT_DIR).join(scratch_name);
+    let _ = fs::create_dir_all(&scratch);
+    let source_path: PathBuf = PathBuf::from(CASES_DIR).join(fixture);
+    assert!(
+        source_path.is_file(),
+        "missing fixture {}",
+        source_path.display()
+    );
+
+    let orig_pyc: PathBuf = scratch.join("orig.3.14.pyc");
+    compile_source(interpreter, &source_path, &orig_pyc)
+        .unwrap_or_else(|e| panic!("orig compile 3.14: {e}"));
+    let (original_code, marshal_version): (CodeObject, MarshalVersion) =
+        read_code(&orig_pyc).unwrap_or_else(|e| panic!("read orig 3.14: {e}"));
+    let decompile_version: disrobe_pass_py_decompile::bytecode::version::PyVersion =
+        marshal_to_decompile(marshal_version).unwrap_or_else(|e| panic!("version map: {e:?}"));
+    let source: String = build_real_source(&original_code, &decompile_version, marshal_version)
+        .unwrap_or_else(|e| panic!("decompile 3.14: {e}"));
+
+    let recovered_path: PathBuf = scratch.join("recovered.3.14.py");
+    fs::write(&recovered_path, &source).expect("write recovered");
+    let recompiled_pyc: PathBuf = scratch.join("recovered.3.14.pyc");
+    compile_source(interpreter, &recovered_path, &recompiled_pyc)
+        .unwrap_or_else(|e| panic!("recompile 3.14:\n{source}\n--- error: {e}"));
+    let (recompiled_code, _): (CodeObject, MarshalVersion) =
+        read_code(&recompiled_pyc).unwrap_or_else(|e| panic!("read recompiled 3.14: {e}"));
+    let verdict: Verdict = semantic_equiv(&original_code, &recompiled_code, marshal_version);
+    (source, verdict)
+}
+
+/// GAP B regression: an outer `as name` on a structured match pattern (`case int() as n`,
+/// `case [a] as whole`, `case {"k": vv} as m`, including a fused guard `case str() as t if t` and the
+/// rest+as interaction `case {"k": vv, **rest} as m`) must thread the subject-capture store into the
+/// enclosing `Pattern::MatchAs.name` across every 3.10-3.14 lowering. Asserts each recovered source
+/// carries the literal `as`-binding tokens and that no corruption survives (no spurious `**m`, no
+/// doubled sequence element). The authoritative proof remains `construct_roundtrip_per_version`
+/// recompiling these four fixtures to equivalent bytecode at `THRESHOLD_PCT=100`.
+#[test]
+fn match_structured_as_bindings_survive() {
+    let mut interpreters: BTreeMap<&'static str, PathBuf> = BTreeMap::new();
+    for &(_, _, alias) in VERSIONS {
+        if let Some(p) = find_interpreter(alias) {
+            interpreters.insert(alias, p);
+        }
+    }
+    let scratch: PathBuf = PathBuf::from(REPORT_DIR).join("match-as-scratch");
+    let _ = fs::create_dir_all(&scratch);
+
+    let expectations: &[(&str, &[&str], &[&str])] = &[
+        ("match_class_as", &["int() as n", "str() as t"], &[]),
+        ("match_class_as_guard", &["str() as t", "if t"], &[]),
+        ("match_sequence_as", &["[a] as whole"], &["a, whole]"]),
+        (
+            "match_mapping_as",
+            &["} as m", "vv", "rest"],
+            &["**m", "**vv"],
+        ),
+    ];
+
+    let mut checked: usize = 0;
+    for alias in ["3.10", "3.11", "3.12", "3.13", "3.14"] {
+        let Some(interpreter): Option<&PathBuf> = interpreters.get(alias) else {
+            continue;
+        };
+        for (construct, must, must_not) in expectations {
+            let source_path: PathBuf = PathBuf::from(CASES_DIR).join(format!("{construct}.py"));
+            let orig_pyc: PathBuf = scratch.join(format!("{construct}.{alias}.pyc"));
+            compile_source(interpreter, &source_path, &orig_pyc)
+                .unwrap_or_else(|e| panic!("compile {construct} {alias}: {e}"));
+            let (code, marshal_version): (CodeObject, MarshalVersion) =
+                read_code(&orig_pyc).unwrap_or_else(|e| panic!("read {construct} {alias}: {e}"));
+            let decompile_version: disrobe_pass_py_decompile::bytecode::version::PyVersion =
+                marshal_to_decompile(marshal_version)
+                    .unwrap_or_else(|e| panic!("version map {alias}: {e:?}"));
+            let src: String = build_real_source(&code, &decompile_version, marshal_version)
+                .unwrap_or_else(|e| panic!("decompile {construct} {alias}: {e}"));
+            for needle in *must {
+                assert!(
+                    src.contains(needle),
+                    "py{alias} {construct}: lost `{needle}` in:\n{src}"
+                );
+            }
+            for forbidden in *must_not {
+                assert!(
+                    !src.contains(forbidden),
+                    "py{alias} {construct}: corrupt `{forbidden}` in:\n{src}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "no 3.10-3.14 interpreter to validate structured `as` bindings"
+    );
+}
+
+/// GAP A regression: module-level DECORATED classes (`@dataclass class B: ...`) must resolve+recurse
+/// the nested class code object into a real `class B(...): <body>` with the decorator attached, not
+/// leak `__DR_BUILD_CLASS__` / `__DR_CODE_CONST_NN__` placeholders through a plain `Assign`. Asserts
+/// on 3.14: the recovered source carries `@dataclass`/`class B`, no placeholder substring survives,
+/// and the recompiled bytecode is Perfect/Semantic-equivalent to the original.
+#[test]
+fn decorated_class_recovers_no_placeholder_3_14() {
+    let Some(interpreter): Option<PathBuf> = find_interpreter("3.14") else {
+        return;
+    };
+    let (source, verdict): (String, Verdict) = decompile_and_roundtrip_3_14(
+        &interpreter,
+        "class_decorated.py",
+        "decorated-class-scratch",
+    );
+    assert!(
+        !source.contains("__DR_BUILD_CLASS__") && !source.contains("__DR_CODE_CONST_"),
+        "decorated class leaked a placeholder; got:\n{source}"
+    );
+    assert!(
+        source.contains("@dataclass") && source.contains("class B"),
+        "decorated class must recover `@dataclass`/`class B`; got:\n{source}"
+    );
+    assert!(
+        matches!(verdict, Verdict::Perfect | Verdict::Semantic),
+        "decorated class round-trip not equivalent: {verdict:?}\nsource:\n{source}"
+    );
+}
+
+/// GAP A stacked-decorator order oracle: `@tag @seal class S(dict): ...` must recover both decorators
+/// in source order (`@tag` above `@seal`), preserve the real base `dict` and the method body, leak no
+/// placeholder, and round-trip Perfect/Semantic on 3.14. A Perfect/Semantic verdict proves the decorator
+/// emit order is byte-correct, since a swapped order recompiles to divergent `STORE_NAME` sequencing.
+#[test]
+fn stacked_decorated_class_order_3_14() {
+    let Some(interpreter): Option<PathBuf> = find_interpreter("3.14") else {
+        return;
+    };
+    let (source, verdict): (String, Verdict) = decompile_and_roundtrip_3_14(
+        &interpreter,
+        "class_decorated_stacked.py",
+        "stacked-decorated-class-scratch",
+    );
+    assert!(
+        !source.contains("__DR_BUILD_CLASS__") && !source.contains("__DR_CODE_CONST_"),
+        "stacked decorated class leaked a placeholder; got:\n{source}"
+    );
+    assert!(
+        source.contains("@tag") && source.contains("@seal") && source.contains("class S(dict)"),
+        "stacked decorated class must recover `@tag`/`@seal`/`class S(dict)`; got:\n{source}"
+    );
+    let tag_at: usize = source.find("@tag").expect("@tag present");
+    let seal_at: usize = source.find("@seal").expect("@seal present");
+    assert!(
+        tag_at < seal_at,
+        "decorator order wrong: `@tag` must precede `@seal`; got:\n{source}"
+    );
+    assert!(
+        matches!(verdict, Verdict::Perfect | Verdict::Semantic),
+        "stacked decorated class round-trip not equivalent: {verdict:?}\nsource:\n{source}"
+    );
+}
