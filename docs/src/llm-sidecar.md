@@ -1,6 +1,6 @@
 # LLM sidecar and provenance
 
-disrobe is built to feed coding agents. Any pass can emit a structured metadata bundle that lets an LLM reason about recovered code without re-deriving its structure — call graph, types, control flow, capability surface, decompile provenance, and round-trip verdict, all in one schema-conforming sidecar.
+`disrobe` is built to feed coding agents. Any pass can emit a structured metadata bundle that lets an LLM reason about recovered code without re-deriving its structure — call graph, types, control flow, capability surface, decompile provenance, and round-trip verdict, all in one schema-conforming sidecar.
 
 ## Turning it on
 

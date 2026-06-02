@@ -1,6 +1,6 @@
 # Mobile (Hermes / Flutter)
 
-disrobe detects the runtime inside a mobile package, extracts React Native bundles, lifts Hermes bytecode to a JavaScript surface, and dumps Flutter Dart AOT layouts.
+`disrobe` detects the runtime inside a mobile package, extracts React Native bundles, lifts Hermes bytecode to a JavaScript surface, and dumps Flutter Dart AOT layouts.
 
 ## Runtime detection and extraction
 
@@ -29,4 +29,4 @@ disrobe flutter decompile libapp.so --out estimate.txt      # best-effort: heade
 disrobe flutter obfmap obfuscation_map.json --out map.json   # parse obfuscation_map into a typed lookup
 ```
 
-The Dart AOT snapshot parser is validated on a real `rustdesk` `libapp.so`. Where the snapshot format walls off full decompilation, disrobe emits a best-effort estimate and reports the boundary.
+The Dart AOT snapshot parser is validated on a real `rustdesk` `libapp.so`. Where the snapshot format walls off full decompilation, `disrobe` emits a best-effort estimate and reports the boundary.

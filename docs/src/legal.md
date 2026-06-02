@@ -8,7 +8,7 @@ Grey-zone commercial protectors (PyArmor paid tier, ionCube, SourceGuardian, Zen
 
 The same flag unlocks the `decryption-keys` category of the `--llm` sidecar; without it, requesting that category fails with `DR-CLI-0420`.
 
-## What disrobe will not do
+## What `disrobe` will not do
 
 - It does not ship copyrighted third-party obfuscated bytecode in its public corpus. Fixtures are baked locally from known-good inputs.
 - Grey-zone protectors ship recognizers first; escalation to a full peel only happens after a written legal-posture review committed to `docs/legal/<protector>-stance.md`.
@@ -16,4 +16,4 @@ The same flag unlocks the `decryption-keys` category of the `--llm` sidecar; wit
 
 ## License
 
-disrobe is licensed under Apache-2.0. See [LICENSE-APACHE](https://github.com/1-3-7/disrobe/blob/main/LICENSE-APACHE) and [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE).
+`disrobe` is licensed under Apache-2.0. See [LICENSE-APACHE](https://github.com/1-3-7/disrobe/blob/main/LICENSE-APACHE) and [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE).

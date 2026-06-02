@@ -1,6 +1,6 @@
 # Architecture overview
 
-disrobe is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
+`disrobe` is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
 
 ## The shape of a recovery
 
@@ -47,4 +47,4 @@ The rest of this section expands each pillar:
 
 ## Determinism is a design constraint, not a feature
 
-The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes disrobe output usable as a forensic baseline and as a `disrobe diff` input across versions.
+The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes `disrobe` output usable as a forensic baseline and as a `disrobe diff` input across versions.

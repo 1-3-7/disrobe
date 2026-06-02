@@ -1,4 +1,4 @@
-# disrobe
+# `disrobe`
 
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Docs](https://github.com/1-3-7/disrobe/actions/workflows/docs.yml/badge.svg)](https://1-3-7.github.io/disrobe/)
@@ -6,9 +6,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 
-**A deterministic deobfuscator and decompiler for the modern stack, in a single Rust binary.**
+**Strip the obfuscation, read the source.   A deterministic deobfuscator and decompiler for the modern stack, in a single Rust binary.**
 
-One tool covers Python (1.0-3.15), JavaScript/TypeScript, WebAssembly, JVM + Android, .NET + native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Lua/LuaJIT/Luau, PHP, Ruby, Erlang/Elixir, Swift/Objective-C, AS3/Flash, and the 22 native packers commonly stacked on top of them - pyc decompiler, PyArmor unpacker, PyInstaller/Nuitka extractor, dex-to-Java, UPX unpacker, JS unbundler, Wasm lifter, all in one place.
+One tool covers Python (1.0-3.15), JavaScript/TypeScript, WebAssembly, JVM + Android, .NET + native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Lua/LuaJIT/Luau, PHP, Ruby, Erlang/Elixir, Swift/Objective-C, AS3/Flash, and the 22 native packers commonly stacked on top of them - pyc decompiler, PyArmor unpacker, PyInstaller/Nuitka extractor, dex-to-Java, UPX unpacker, JS unbundler, WASM lifter, all in one place.
 
 Full documentation: **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/)**
 
@@ -20,21 +20,21 @@ $ disrobe auto suspect.exe --out recovered/
 # final               ok    -> recovered/final/
 ```
 
-## What is disrobe
+## What is `disrobe`
 
-disrobe strips the obfuscation, freezing, packing, and protection layers off a binary so you can read what it actually does - without executing it. It is built for forensic and recovery work where reproducibility matters:
+`disrobe` strips the obfuscation, freezing, packing, and protection layers off a binary so you can read what it actually does - without executing it. It is built for forensic and recovery work where reproducibility matters:
 
 - **Deterministic.** No model anywhere in the decompile path. Same input, same output, every machine, every run - so the output is a usable evidence and diff baseline.
 - **Single static binary.** No JVM, no Python runtime, no Docker. One `cargo build --release`. Drops into CI headlessly.
 - **Content-addressed.** Every artifact persists as a `.dr` envelope (rkyv hot payload + postcard cold sidecar + BLAKE3 root). Cache hits are byte-identical; chains compose offline.
-- **Honest.** Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode. Recovery that is not perfect is labelled, never faked. Commercial-tier packers disrobe cannot unpack are reported as detect-only by design.
+- **Honest.** Every decompilation is recompiled on its matching runtime (if applicable) and compared opcode-for-opcode. Recovery that is not perfect is labelled, never faked. Commercial-tier packers `disrobe` cannot unpack are reported as detect-only by design.
 - **Agent-ready.** Any pass can emit a structured `--llm` metadata sidecar (call graph, types, control flow, capability surface, decompile provenance) so a coding agent reasons about recovered code without re-deriving it.
 
 ## Supported languages and formats
 
 Every cell is backed by a fixture in `corpus/` and an integration test in `crates/disrobe-cli/tests/` - nothing is aspirational.
 
-| Ecosystem | What disrobe does |
+| Ecosystem | What `disrobe` does |
 |---|---|
 | **Python bytecode** | Per-version disassembler + in-house decompiler for CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython. `match`, walrus, f/t-strings (PEP 750), exception groups, PEP 695/696/709 round-trip-verified. |
 | **Python freezers** | PyInstaller 2.x-6.20+, Nuitka (onefile/standalone/module/wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye`. |
@@ -54,9 +54,161 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 | **Python pickle** | Static disasm + symbolic-VM trace + safety grading + polyglot + ML-model detection. Never unpickles. |
 | **Containers** | 26 formats (ZIP/tar/7z/`.deb`/`.rpm`/`.iso`/MSI/NSIS/Docker/OCI/SquashFS/...) with auto-detect, chaining, and universal zip-slip + bomb guards. |
 
+## Comparison
+<details>
+<summary>Per-ecosystem comparison tables (decompilers, freezers, protectors, JS, WASM, JVM, .NET, native, packers, Go, Lua, shell, PHP, Ruby, BEAM, Swift, Flash, Hermes, Flutter, containers)</summary>
+
+### Python freezers
+
+| Capability | pyinstxtractor(-ng) | nuitka-extractor | `disrobe` |
+|---|---|---|---|
+| PyInstaller 2.x-6.x | y | n | y (6.20+) |
+| Nuitka onefile/standalone, `as_archive`, signed-PE, wheel | n | partial | y |
+| cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` | n | n | y |
+| Auto-chain into PyArmor + `.pyc` decompile | n | n | y |
+| License | GPL-3.0 | varies | Apache-2.0 |
+
+### Python protectors
+
+| Capability | PyArmor-Unpacker | Static-Unpack-1shot | PyArmor-Deobfuscator | `disrobe` |
+|---|---|---|---|---|
+| PyArmor v6/v7 | y | y | partial | y |
+| PyArmor v8 / v9-pro | n | partial | n | y |
+| Fully static (no `marshal.loads` injection) | partial | y | y | y |
+| 14 obfuscators + AST-evaluator backend | n | n | n | y |
+| License | GPL-3.0 | GPL-3.0 | MIT | Apache-2.0 |
+
+### JavaScript / TypeScript
+
+| Capability | webcrack | synchrony | REstringer | `disrobe` |
+|---|---|---|---|---|
+| obfuscator.io (full 9-stage) | y | y (older) | y | y |
+| js-confuser / Jscrambler (36x12) | partial | n | partial | y |
+| Esoteric encoders / V8/Bytenode | partial | n | partial | y |
+| Unbundle 10 bundlers | partial | n | n | y |
+| License | MIT | GPL-3.0 | MIT | Apache-2.0 |
+
+### WebAssembly
+
+| Capability | wasm-decompile | wasm2c | wasm-tools | `disrobe` |
+|---|---|---|---|---|
+| Lift to C / Rust / TypeScript / WAT | C only | raw C | WAT only | all four |
+| GC, component model, threads, SIMD, memory64 | partial | partial | y | y |
+| DWARF recovery / 5 obfuscator reversers | n | n | n | y |
+| License | Apache-2.0 | Apache-2.0 | Apache-2.0/MIT | Apache-2.0 |
+
+### JVM (Java / Kotlin / Scala)
+
+| Capability | CFR | Vineflower | Procyon | `disrobe` |
+|---|---|---|---|---|
+| Classfile 1.0.2-25 | y | y | y | y (wraps + own validator) |
+| Records, sealed, pattern matching | partial | y | partial | y |
+| Obfuscator reversers (Zelix, Allatori, Stringer, DashO) | n | n | n | y |
+| ProGuard/R8 mapping replay / headless wrap | n | n | n | y |
+| License | MIT | Apache-2.0 | Apache-2.0 | Apache-2.0 |
+
+### Android (DEX / APK)
+
+| Capability | jadx | Apktool | dex2jar | `disrobe` |
+|---|---|---|---|---|
+| DEX 1.0-16 to Java | y | n | JAR only | y (wraps jadx) |
+| APK resource decode | partial | y | n | y (wraps Apktool) |
+| Smali round-trip / DexGuard reverser | y / n | y / n | n | y / y |
+| Chain APK -> dex -> jadx + smali + manifest | partial | n | n | y |
+| License | Apache-2.0 | Apache-2.0 | Apache-2.0 | Apache-2.0 |
+
+### .NET / CIL
+
+| Capability | ILSpy | dnSpyEx | de4dot | `disrobe` |
+|---|---|---|---|---|
+| CIL -> C# decompile | y | y | n | y (wraps ILSpy) |
+| 20+ obfuscator reversers | n | n | y (frozen 2020) | y (modern fork + own) |
+| R2R lift / native AOT symbol recovery | partial / n | partial / n | n | y / y |
+| Deterministic `.dr` envelope | n | n | n | y |
+| License | MIT | GPL-3.0 | GPL-3.0 | Apache-2.0 |
+
+### Native (PE / ELF / Mach-O / COFF)
+
+`disrobe` does **not** compete with Ghidra/IDA/Binary Ninja for raw decompilation - it is the unpack + symbol-recovery + chain-detect layer that feeds them cleaner input.
+
+| Capability | Ghidra | IDA Pro | radare2 | `disrobe` |
+|---|---|---|---|---|
+| Full decompiler to pseudo-C | y | y | partial | n (feeds these) |
+| Multi-format parse + multi-arch disasm | y | y | y | y |
+| Rust + C++ demangle + restoration | partial | partial | partial | y (4172 Rust + 312 C++ on real ripgrep/git) |
+| Single binary, no JVM/Python, headless CI | n | n | partial | y |
+| License | Apache-2.0 | commercial | LGPL/GPL | Apache-2.0 |
+
+### Native packers
+
+No FOSS toolkit covers this range; UPX only unpacks UPX, de4dot only .NET, the rest are per-packer one-off scripts. `disrobe` is the first general-purpose FOSS unpacker for the tier, with per-fixture honest scores in `corpus/native/packers/MANIFEST.toml`.
+
+| Packer | `disrobe` |
+|---|---|
+| UPX | byte-identical |
+| MPRESS (clean-room LZMA1 split-nibble) | 91.58% byte-recovery |
+| NSPack (adaptive range coder) | content 98.6-99.3%; whole-file 50-94% |
+| FSG | 2/3 byte-identical |
+| Petite (x86 stub emulator) | 97.8% content on hello32 |
+| kkrunchy (header reconstructor) | 6.4% structural; full depacker deferred |
+| MEW (emulated dynamic-fetch) | 91.8% / 95.0% / 64.5% across 3 fixtures |
+| Commercial tier (VMProtect, Themida, Enigma, +15) | honest detect-only by design |
+
+### Go
+
+| Capability | GoReSym | redress | garble-undo | `disrobe` |
+|---|---|---|---|---|
+| Stripped symbol recovery | y (<=1.24) | y | n | y (1.2-1.26, 557/557 on 1.26.3) |
+| pclntab 1.2-1.25 / embedded-FS walker | y / n | y / n | n | y / y |
+| Garble undo / UPX-on-Go auto-chain | n | n | partial | partial / y |
+| License | MIT | AGPL-3.0 | - | Apache-2.0 |
+
+### Lua / LuaJIT / Luau
+
+| Capability | unluac | LuaDec | luajit-decompiler-v2 | `disrobe` |
+|---|---|---|---|---|
+| Lua 5.1-5.4 | y | partial | n | y (per-dialect lifters) |
+| LuaJIT 2.0/2.1 / Luau | n | n | y / n | y |
+| 11 obfuscators (MoonSec, Ironbrew2, ...) | n | n | n | partial (WeAreDevs reversed; VM-walled others detected) |
+| License | MIT | MIT | MIT | Apache-2.0 |
+
+### Shell / PowerShell / Batch / VBA
+
+| Capability | Revoke-Obfuscation | Invoke-Deobfuscation | `disrobe` |
+|---|---|---|---|
+| Invoke-Obfuscation levels 1-6 | detect-only | y | y |
+| Bash/Bashfuscator round-trip / batch / VBA decompress | n | n | y |
+| VBA p-code disasm | n | n | honest detect-only (header parse; opcode-table is the pcodedmp-scope wall) |
+| License | Apache-2.0 | MIT | Apache-2.0 |
+
+### PHP
+
+The FOSS landscape is essentially nothing; the dominant tools are paid server-side services.
+
+| Capability | DeZender (paid) | php-decode | `disrobe` |
+|---|---|---|---|
+| ionCube / SourceGuardian / Zend Guard structural decode | y (server-side) | partial | y (offline) |
+| Phar walker / FOPO unwrap / token re-emit (no upload) | n | partial | y |
+| License | commercial | varies | Apache-2.0 |
+
+### Ruby / BEAM / Swift / Flash / Hermes / Flutter / Containers
+
+| Ecosystem | Field | `disrobe` edge |
+|---|---|---|
+| **Ruby** | yarvdis (disasm only), rb-decompile (abandoned) | MRI/YARV 1.9-3.4 + mruby **source-level decompile** |
+| **BEAM** | beam_lib, BeamFile | Core Erlang lift + Elixir `Dbgi` + `.ez` extract |
+| **Swift / Obj-C** | class-dump (2013), Hopper (paid) | Swift + Obj-C class-dump, SwiftConfidential/SwiftShield rename-undo, FairPlay detect-only |
+| **AS3 / Flash** | JPEXS | parser + disasm, feeds JPEXS (full source wrap planned) |
+| **Hermes** | hbctool (<=v84), hermes-dec | v60-v96, decompile, validated on live 66 MiB Discord bundle in CI |
+| **Flutter** | blutter (Android-only), reFlutter | Dart snapshot parser, single-binary CLI, validated on real `rustdesk` `libapp.so` |
+| **Containers** | 7-Zip, libarchive | 26 kinds, auto-detect + chain through nested layers, bomb guards |
+
+</details>
+
+
 ## Install
 
-disrobe is **GitHub-only**: prebuilt binaries from the Releases tab, or build from source. There is intentionally no PyPI/npm/Homebrew/crates.io/Docker channel.
+Prebuilt binaries from the Releases tab, or build from source. See below.
 
 ### Prebuilt binaries (recommended)
 
@@ -123,11 +275,11 @@ Unpacking and decryption passes operate at **Raw** (byte-identical unpack lives 
 
 ## Safety posture
 
-By default disrobe **does not execute the sample** - every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths (PyArmor v6/v7 dynamic-hook, BCC native lift) are behind explicit `--allow-dynamic` / `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened: pure-Rust with `unsafe` forbidden workspace-wide, shared decompression-bomb and zip-slip quotas, depth-capped and cycle-detected chains. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/forensics-safety.html).
+By default `disrobe` **does not execute the sample** - every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths (PyArmor v6/v7 dynamic-hook, BCC native lift) are behind explicit `--allow-dynamic` / `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/forensics-safety.html).
 
 ## Documentation
 
-The full docs site lives at **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/)** - architecture, the IR ladder, the chain runner, per-language guides, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/), built with mdBook and deployed via GitHub Pages.
+The full docs site lives at **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/)** - architecture, the IR ladder, the chain runner, per-language guides, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/).
 
 ## Legal
 

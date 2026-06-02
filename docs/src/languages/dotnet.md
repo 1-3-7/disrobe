@@ -1,6 +1,6 @@
 # .NET / CIL
 
-disrobe parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, reverses 20+ obfuscators, and handles ReadyToRun and Native AOT images.
+`disrobe` parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, reverses 20+ obfuscators, and handles ReadyToRun and Native AOT images.
 
 ## Decompiling
 
@@ -10,7 +10,7 @@ disrobe dotnet decompile App.exe --backend dnspyex --out src/
 disrobe dotnet decompile App.dll --backend de4dot --out src/
 ```
 
-Routes a .NET PE (`.dll` / `.exe`) through ILSpy, dnSpy, dnSpyEx, or de4dot. disrobe owns the in-house CIL disassembler (full opcode table) and the CIL-to-C#/F#/VB lowering, so the structural recovery is its own even when a rendering backend is used.
+Routes a .NET PE (`.dll` / `.exe`) through ILSpy, dnSpy, dnSpyEx, or de4dot. `disrobe` owns the in-house CIL disassembler (full opcode table) and the CIL-to-C#/F#/VB lowering, so the structural recovery is its own even when a rendering backend is used.
 
 ## Static analysis
 
@@ -23,7 +23,7 @@ disrobe dotnet backends                  # report available .NET backends on PAT
 
 ## Obfuscator reversal
 
-disrobe reverses the .NET obfuscator field — ConfuserEx and ConfuserEx2 (string decryption, control-flow flattening, constants, anti-tamper, resources), .NET Reactor, Eazfuscator.NET, SmartAssembly, Dotfuscator, Babel, CryptoObfuscator, Agile.NET, ArmDot, Goliath, Skater, Spices.Net, Obfuscar, and more. Grey-zone commercial protectors are gated behind `--i-have-authorization`.
+`disrobe` reverses the .NET obfuscator field — ConfuserEx and ConfuserEx2 (string decryption, control-flow flattening, constants, anti-tamper, resources), .NET Reactor, Eazfuscator.NET, SmartAssembly, Dotfuscator, Babel, CryptoObfuscator, Agile.NET, ArmDot, Goliath, Skater, Spices.Net, Obfuscar, and more. Grey-zone commercial protectors are gated behind `--i-have-authorization`.
 
 ## Chaining
 

@@ -24,7 +24,7 @@ Include a description and impact, a minimal reproducer (input bytes, command lin
 
 - Decompilation output correctness on adversarial input — that is correctness work flagged by the round-trip metric, not a security bug. File a normal issue.
 - Compute exhaustion from legitimate input (a slow decompile of a 67 MiB bundle is not a vulnerability).
-- Issues in third-party tools disrobe wraps — report to their upstreams.
+- Issues in third-party tools `disrobe` wraps — report to their upstreams.
 
 ## Hardening posture
 

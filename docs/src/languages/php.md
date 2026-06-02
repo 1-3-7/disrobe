@@ -1,6 +1,6 @@
 # PHP
 
-The FOSS landscape for PHP encoders is essentially nothing — the dominant tools are paid, server-side upload services. disrobe decodes the common encoders fully offline.
+The FOSS landscape for PHP encoders is essentially nothing — the dominant tools are paid, server-side upload services. `disrobe` decodes the common encoders fully offline.
 
 ```sh
 disrobe php decode payload.php --out clean.php       # phar / ionCube / SourceGuardian / ZendGuard

@@ -4,7 +4,7 @@ Contributions are welcome under the [Contributor Covenant 2.1](https://github.co
 
 ## Building and testing
 
-disrobe builds with a single stable Rust 1.95+ toolchain:
+`disrobe` builds with a single stable Rust 1.95+ toolchain:
 
 ```sh
 cargo build --release
@@ -37,7 +37,7 @@ Every capability claim must be backed by a fixture in `corpus/` and a passing te
 
 ## Honesty over hype
 
-disrobe had a fabrication audit early in its life, and the lesson stuck: a decode that only passes against synthetic, self-generated fixtures is not a feature. Per-pass work is verified against a real corpus and the upstream format spec. Partial recovery is labelled honestly with a confidence tier; detect-only is stated as detect-only. If you are not sure a capability works against real-world input, say so in the PR.
+`disrobe` had a fabrication audit early in its life, and the lesson stuck: a decode that only passes against synthetic, self-generated fixtures is not a feature. Per-pass work is verified against a real corpus and the upstream format spec. Partial recovery is labelled honestly with a confidence tier; detect-only is stated as detect-only. If you are not sure a capability works against real-world input, say so in the PR.
 
 ## Reporting bugs
 

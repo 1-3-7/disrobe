@@ -1,6 +1,6 @@
 # Diff and guard tooling
 
-disrobe treats recovered artifacts as a forensic baseline you can diff across versions and protect against tampering. Two command families support this: `disrobe diff` and `disrobe guard`.
+`disrobe` treats recovered artifacts as a forensic baseline you can diff across versions and protect against tampering. Two command families support this: `disrobe diff` and `disrobe guard`.
 
 ## `disrobe diff` — structural chain diff
 

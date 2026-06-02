@@ -1,6 +1,6 @@
 # The five-rung IR ladder
 
-Every artifact disrobe recovers climbs the same five-rung intermediate-representation ladder. A pass never jumps arbitrarily; it lifts an artifact from one rung to the next, which is what lets passes from completely different ecosystems compose through a shared envelope.
+Every artifact `disrobe` recovers climbs the same five-rung intermediate-representation ladder. A pass never jumps arbitrarily; it lifts an artifact from one rung to the next, which is what lets passes from completely different ecosystems compose through a shared envelope.
 
 ```text
    Raw  ──>  Disasm  ──>  MIR  ──>  HIR  ──>  Surface

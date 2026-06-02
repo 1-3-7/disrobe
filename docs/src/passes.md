@@ -42,7 +42,7 @@ Rather than hard-coding which pass follows which, each pass declares:
 
 When the chain runner picks the next pass, it matches the current envelope's produced capabilities against each candidate pass's requirements. A pass only runs if its requirements are satisfiable. This is why `disrobe auto` can detect that a PyInstaller archive contains a PyArmor-protected module and route it through the unpack-then-decompile chain without any per-combination glue code.
 
-Capabilities are versioned. A pass can require, for example, "a CPython 3.12 code object at the Disasm rung," and the resolver will refuse to feed it a 2.7 object. This keeps the chain sound across the wide version ranges disrobe supports.
+Capabilities are versioned. A pass can require, for example, "a CPython 3.12 code object at the Disasm rung," and the resolver will refuse to feed it a 2.7 object. This keeps the chain sound across the wide version ranges `disrobe` supports.
 
 ## Standardized emits
 
