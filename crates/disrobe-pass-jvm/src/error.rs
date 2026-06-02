@@ -56,6 +56,9 @@ pub enum Error {
     #[error("DR-JVM-0015: JMOD magic mismatch (expected 'JM' + version, got {0:?})")]
     BadJmodMagic([u8; 4]),
 
+    #[error("DR-JVM-0026: JIMAGE table/region offset {offset} out of range (image size {size})")]
+    JimageOutOfRange { offset: usize, size: usize },
+
     #[error("DR-JVM-MissingTool: required external backend not on PATH: {0}")]
     MissingTool(String),
 
@@ -101,4 +104,7 @@ pub enum Error {
 
     #[error("DR-JVM-0025: malformed bytecode at offset {offset}: {reason}")]
     BadBytecode { offset: usize, reason: &'static str },
+
+    #[error("DR-JVM-0092: not an Android App Bundle (missing BundleConfig.pb at zip root)")]
+    NotAab,
 }

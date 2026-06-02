@@ -77,8 +77,9 @@ pub use dex::{
 pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};
 pub use jar::{
-    ApkExtract, JIMAGE_MAGIC, JarEntry, JarExtract, JimageHeader, JmodExtract,
-    extract as extract_jar, extract_apk, extract_jmod, parse_jimage_header,
+    AabExtract, AabModule, ApkExtract, JIMAGE_MAGIC, JMOD_MAGIC, JarEntry, JarExtract, Jimage,
+    JimageHeader, JimageResource, JmodExtract, extract as extract_jar, extract_aab, extract_apk,
+    extract_jmod, parse_jimage, parse_jimage_header,
 };
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
 #[cfg(feature = "llm-metadata")]

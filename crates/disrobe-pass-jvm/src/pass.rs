@@ -6,6 +6,7 @@ use disrobe_core::{
 
 use crate::classfile::{CLASS_MAGIC, ClassFile, parse as parse_classfile};
 use crate::dex::{DEX_MAGIC_PREFIX, DexFile, parse as parse_dex};
+use crate::jar::{JIMAGE_MAGIC, JMOD_MAGIC, Jimage, JmodExtract, extract_jmod, parse_jimage};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct JvmPass;
@@ -60,6 +61,30 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<JvmSummary> {
             field_count: dex.field_ids.len(),
         });
     }
+    if first4 == JMOD_MAGIC {
+        let jmod: JmodExtract = extract_jmod(bytes)?;
+        return Ok(JvmSummary {
+            kind: "jmod".to_owned(),
+            major_version: 0,
+            minor_version: 0,
+            java_version: None,
+            constant_pool_len: jmod.classes.len(),
+            method_count: jmod.native_libs.len(),
+            field_count: jmod.resources.len(),
+        });
+    }
+    if first4 == JIMAGE_MAGIC.to_le_bytes() || first4 == JIMAGE_MAGIC.to_be_bytes() {
+        let img: Jimage = parse_jimage(bytes)?;
+        return Ok(JvmSummary {
+            kind: "jimage".to_owned(),
+            major_version: img.header.version_major,
+            minor_version: img.header.version_minor,
+            java_version: None,
+            constant_pool_len: img.resources.len(),
+            method_count: 0,
+            field_count: 0,
+        });
+    }
     Err(crate::error::Error::BadMagic(u32::from_be_bytes(first4)))
 }
 
@@ -72,6 +97,8 @@ impl LegacyPass for JvmPass {
         || Capability::produces("jvm.dex", 1),
         || Capability::produces("jvm.axml", 1),
         || Capability::produces("jvm.proguard.mapping", 1),
+        || Capability::produces("jvm.jmod", 1),
+        || Capability::produces("jvm.jimage", 1),
     ];
 
     fn id(&self) -> PassId {
@@ -120,7 +147,7 @@ mod tests {
         assert_eq!(PassMetadata::id(&p), "jvm.deob");
         assert_eq!(p.consumes(), &[Rung::Raw]);
         assert_eq!(p.emits(), &[Rung::Disasm]);
-        assert_eq!(p.produced_capabilities().len(), 4);
+        assert_eq!(p.produced_capabilities().len(), 6);
     }
 
     #[test]
