@@ -306,3 +306,5 @@ corpus/**/*.actual.json
 !corpus/python/decompile/playground/__pycache__/*.pyc
 
 !corpus/native/packers/mew/*.exe
+
+!corpus/python/pyarmor/**/*.pyd
