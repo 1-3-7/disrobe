@@ -2,6 +2,7 @@ name: release
 
 on:
   push:
+    branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]*']
   workflow_dispatch: {}
 
@@ -54,6 +55,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: compute release tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "REL_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "REL_TAG=latest" >> "$GITHUB_ENV"
+          fi
+
       - uses: actions/setup-python@v6
         id: setup-python
         with:
@@ -97,7 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STAGE="disrobe-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          STAGE="disrobe-${REL_TAG}-${{ matrix.target }}"
           mkdir -p "dist/${STAGE}"
           cp "target/${{ matrix.target }}/release/disrobe" "dist/${STAGE}/"
           cp README.md LICENSE-APACHE LICENSE-MIT NOTICE SECURITY.md CHANGELOG.md "dist/${STAGE}/" 2>/dev/null || true
@@ -113,7 +123,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "disrobe-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $stage = "disrobe-$env:REL_TAG-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/disrobe.exe" "dist/$stage/"
           foreach ($f in @("README.md","LICENSE-APACHE","LICENSE-MIT","NOTICE","SECURITY.md","CHANGELOG.md")) {
@@ -132,7 +142,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STAGE="disrobe-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          STAGE="disrobe-${REL_TAG}-${{ matrix.target }}"
           cd dist
           cosign sign-blob --yes \
             --bundle "${STAGE}.tar.zst.cosign.bundle" \
@@ -142,7 +152,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "disrobe-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $stage = "disrobe-$env:REL_TAG-${{ matrix.target }}"
           Push-Location dist
           cosign sign-blob --yes --bundle "$stage.zip.cosign.bundle" "$stage.zip"
           Pop-Location
@@ -162,7 +172,8 @@ jobs:
     name: release
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
 
@@ -184,8 +195,27 @@ jobs:
           done
           ls -la
 
+      - name: compute release metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            { echo "REL_TAG=${GITHUB_REF_NAME}"; echo "REL_NAME=${GITHUB_REF_NAME}"; } >> "$GITHUB_ENV"
+          else
+            { echo "REL_TAG=latest"; echo "REL_NAME=disrobe latest (${GITHUB_SHA:0:7})"; } >> "$GITHUB_ENV"
+          fi
+
+      - name: delete previous rolling release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.REL_TAG }}
+          name: ${{ env.REL_NAME }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
