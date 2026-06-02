@@ -9968,14 +9968,23 @@ fn detect_inline_comprehension(stream: &DecodedStream, lo: usize, hi: usize) -> 
             CanonicalOp::BuildList(0) | CanonicalOp::BuildSet(0) | CanonicalOp::BuildMap(0)
         )
     })?;
-    let for_iter: usize = (accumulator + 1..hi)
-        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::ForIter(_)))?;
-    let end_for: usize = resolve_jump_target(stream, for_iter, &stream.ops[for_iter])
-        .filter(|t: &usize| *t > for_iter && *t <= hi)?;
+    let header: usize = (accumulator + 1..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::ForIter(_) | CanonicalOp::GetAnext
+        )
+    })?;
+    let end_for: usize = match stream.ops[header] {
+        CanonicalOp::ForIter(_) => resolve_jump_target(stream, header, &stream.ops[header])
+            .filter(|t: &usize| *t > header && *t <= hi)?,
+        _ => (header + 1..hi)
+            .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::EndAsyncFor))
+            .map(|e: usize| (e + 1).min(hi))?,
+    };
     Some(InlineComp {
         clear_idx,
         accumulator,
-        for_iter,
+        for_iter: header,
         end_for,
     })
 }
@@ -9996,10 +10005,20 @@ fn detect_nested_inline_comp(
             CanonicalOp::BuildList(0) | CanonicalOp::BuildSet(0) | CanonicalOp::BuildMap(0)
         )
     })?;
-    let for_iter: usize = (accumulator + 1..outer_end_for)
-        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::ForIter(_)))?;
-    let end_for: usize = resolve_jump_target(stream, for_iter, &stream.ops[for_iter])
-        .filter(|t: &usize| *t > for_iter && *t <= outer_end_for)?;
+    let header: usize = (accumulator + 1..outer_end_for).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::ForIter(_) | CanonicalOp::GetAnext
+        )
+    })?;
+    let end_for: usize = match stream.ops[header] {
+        CanonicalOp::ForIter(_) => resolve_jump_target(stream, header, &stream.ops[header])
+            .filter(|t: &usize| *t > header && *t <= outer_end_for)?,
+        _ => (header + 1..outer_end_for)
+            .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::EndAsyncFor))
+            .map(|e: usize| (e + 1).min(outer_end_for))?,
+    };
+    let for_iter: usize = header;
     let clear_idx: usize = (body_start..accumulator)
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadFastAndClear(_)))
@@ -10076,12 +10095,12 @@ fn inline_comp_expr(code: &CodeObject, stream: &DecodedStream, comp: &InlineComp
     }: ComprehensionParts = inline_comp_element(code, stream, comp.for_iter, comp.end_for, kind);
     let nested_bound: usize = detect_nested_inline_comp(stream, comp.for_iter + 1, comp.end_for)
         .map_or(comp.end_for, |n: InlineComp| n.clear_idx);
+    let head_is_async: bool = matches!(stream.ops.get(comp.for_iter), Some(CanonicalOp::GetAnext));
     let mut generators: Vec<Comprehension> = comprehension_generators_in(
         code,
         stream,
         kind,
         iter.clone(),
-        false,
         comp.for_iter,
         nested_bound,
     );
@@ -10090,7 +10109,7 @@ fn inline_comp_expr(code: &CodeObject, stream: &DecodedStream, comp: &InlineComp
             target,
             iter,
             ifs,
-            is_async: false,
+            is_async: head_is_async,
         });
     }
     Some(comp_expr_from_parts(kind, elt, key_value, generators))
@@ -10167,12 +10186,12 @@ fn try_structure_inline_comprehension(
     }: ComprehensionParts = inline_comp_element(code, stream, comp.for_iter, comp.end_for, kind);
     let nested_bound: usize = detect_nested_inline_comp(stream, comp.for_iter + 1, comp.end_for)
         .map_or(comp.end_for, |n: InlineComp| n.clear_idx);
+    let head_is_async: bool = matches!(stream.ops.get(comp.for_iter), Some(CanonicalOp::GetAnext));
     let mut generators: Vec<Comprehension> = comprehension_generators_in(
         code,
         stream,
         kind,
         iter.clone(),
-        false,
         comp.for_iter,
         nested_bound,
     );
@@ -10181,7 +10200,7 @@ fn try_structure_inline_comprehension(
             target,
             iter,
             ifs,
-            is_async: false,
+            is_async: head_is_async,
         });
     }
     let result: Expr = comp_expr_from_parts(kind, elt, key_value, generators);
@@ -10290,7 +10309,6 @@ fn try_structure_inframe_listcomp(
         stream,
         CompKind::List,
         iter.clone(),
-        false,
         for_iter,
         end_for,
     );
@@ -12367,6 +12385,11 @@ fn build_linear_stmts_sim_seed(
                     out.push(generic_def);
                     continue;
                 }
+                if let Some(decorated) = try_build_decorated_generic_def(code, &value, &target_name)
+                {
+                    out.push(decorated);
+                    continue;
+                }
                 if let Some(class_def) = try_build_class_def(code, &value, &target_name) {
                     out.push(class_def);
                     continue;
@@ -12458,6 +12481,11 @@ fn build_linear_stmts_sim_seed(
                 }
                 if let Some(generic_def) = try_build_generic_def(code, &value, &target_name) {
                     out.push(generic_def);
+                    continue;
+                }
+                if let Some(decorated) = try_build_decorated_generic_def(code, &value, &target_name)
+                {
+                    out.push(decorated);
                     continue;
                 }
                 if let Some(class_def) = try_build_class_def(code, &value, &target_name) {
@@ -13555,10 +13583,7 @@ fn class_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
         else {
             continue;
         };
-        let Expr::Name { id, .. }: &Expr = base.as_ref() else {
-            continue;
-        };
-        if id != "__classdict__" {
+        if !is_class_annotation_base(base.as_ref()) {
             continue;
         }
         let Expr::Constant {
@@ -13571,6 +13596,18 @@ fn class_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
         pairs.push((name.clone(), unstringify_annotation(value.clone())));
     }
     pairs
+}
+
+/// The subscript base a deferred `__annotate__` body assigns each annotation into: a non-generic
+/// class scope stores into the `__classdict__` cell, whereas a PEP 695 generic class scope builds
+/// the annotations map locally (`BUILD_MAP 0`) and writes `<map>["name"] = ann`, which the
+/// structurer recovers as an empty-dict-literal base.
+fn is_class_annotation_base(base: &Expr) -> bool {
+    match base {
+        Expr::Name { id, .. } => id == "__classdict__",
+        Expr::Dict { keys, values } => keys.is_empty() && values.is_empty(),
+        _ => false,
+    }
 }
 
 fn try_build_class_def(parent: &CodeObject, value: &Expr, target_name: &str) -> Option<Stmt> {
@@ -13836,6 +13873,35 @@ fn collect_wrapper_type_params(
                     });
                 }
             }
+            CanonicalOp::CallIntrinsic2(5) => {
+                let Some(default): Option<Expr> = prev_make_function_const(ops, i)
+                    .and_then(|j: usize| match ops[j] {
+                        CanonicalOp::LoadConst(slot) => Some(slot),
+                        _ => None,
+                    })
+                    .and_then(|slot: u32| {
+                        unwrap_evaluator_expr(
+                            wrapper,
+                            &Expr::Name {
+                                id: format!("{DR_CODE_CONST_PREFIX}{slot}__"),
+                                ctx: ExprCtx::Load,
+                                line: None,
+                            },
+                        )
+                    })
+                else {
+                    continue;
+                };
+                if let Some(param) = params.last_mut() {
+                    match param {
+                        TypeParam::TypeVar { default: slot, .. }
+                        | TypeParam::ParamSpec { default: slot, .. }
+                        | TypeParam::TypeVarTuple { default: slot, .. } => {
+                            *slot = Some(default);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -13918,7 +13984,7 @@ fn try_build_generic_def(parent: &CodeObject, value: &Expr, target_name: &str) -
     let Expr::Call { func, args, .. } = value else {
         return None;
     };
-    if !args.is_empty() {
+    if args.len() > 1 {
         return None;
     }
     let const_idx: u32 = nested_code_index(func)?;
@@ -13926,7 +13992,70 @@ fn try_build_generic_def(parent: &CodeObject, value: &Expr, target_name: &str) -
     if !is_generic_wrapper(wrapper) {
         return None;
     }
-    extract_generic(wrapper, target_name)
+    let value_defaults: Vec<Expr> = args.first().map(value_default_tuple).unwrap_or_default();
+    extract_generic(wrapper, target_name, &value_defaults)
+}
+
+/// The positional `__defaults__` tuple a generic-function wrapper receives as its single call
+/// argument (`MAKE_FUNCTION <wrapper>; SWAP 2; CALL 0` with a leading `LOAD_CONST (d0, d1, …)`):
+/// these are the inner def's value defaults, which the wrapper threads in via its `.defaults`
+/// local rather than baking into the inner code object, so they must be lifted from the call site.
+fn value_default_tuple(arg: &Expr) -> Vec<Expr> {
+    defaults_from_expr(arg.clone())
+}
+
+/// Peel a decorator chain wrapping a PEP 695 generic wrapper call
+/// (`Call(decorator, [Call(decorator, [… Call(wrapper, [..])])])`) and lift the inner
+/// `def X[...]` / `class X[...]`, re-attaching the outer decorators in source order. The inner
+/// wrapper may carry one redundant value-default arg (see `try_build_generic_def`), which is
+/// discarded.
+fn try_build_decorated_generic_def(
+    parent: &CodeObject,
+    value: &Expr,
+    target_name: &str,
+) -> Option<Stmt> {
+    let mut decorators: Vec<Expr> = Vec::new();
+    let mut cursor: &Expr = value;
+    loop {
+        let Expr::Call {
+            func,
+            args,
+            keywords,
+        } = cursor
+        else {
+            return None;
+        };
+        if let Some(const_idx) = nested_code_index(func) {
+            if decorators.is_empty() {
+                return None;
+            }
+            if args.len() > 1 {
+                return None;
+            }
+            let wrapper: &CodeObject = nested_code_object_at(parent, const_idx)?;
+            if !is_generic_wrapper(wrapper) {
+                return None;
+            }
+            let value_defaults: Vec<Expr> =
+                args.first().map(value_default_tuple).unwrap_or_default();
+            let mut def: Stmt = extract_generic(wrapper, target_name, &value_defaults)?;
+            match &mut def {
+                Stmt::ClassDef {
+                    decorators: slot, ..
+                }
+                | Stmt::FunctionDef {
+                    decorators: slot, ..
+                } => *slot = decorators,
+                _ => return None,
+            }
+            return Some(def);
+        }
+        if args.len() != 1 || !keywords.is_empty() {
+            return None;
+        }
+        decorators.push((**func).clone());
+        cursor = &args[0];
+    }
 }
 
 /// Lift a PEP 695 GENERIC `type` alias (`type Name[...] = value`) out of its `<generic parameters of
@@ -13975,7 +14104,11 @@ fn try_build_generic_type_alias(
     })
 }
 
-fn extract_generic(wrapper: &CodeObject, target_name: &str) -> Option<Stmt> {
+fn extract_generic(
+    wrapper: &CodeObject,
+    target_name: &str,
+    value_defaults: &[Expr],
+) -> Option<Stmt> {
     let nested_version: PyVersion = pick_nested_version(wrapper);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
     let ops: Vec<CanonicalOp> = decode_stream(wrapper, opmap.as_ref(), &nested_version);
@@ -13987,7 +14120,7 @@ fn extract_generic(wrapper: &CodeObject, target_name: &str) -> Option<Stmt> {
     if is_class {
         extract_generic_class(wrapper, inner_idx, target_name, type_params)
     } else {
-        extract_generic_function(wrapper, inner_idx, target_name, type_params)
+        extract_generic_function(wrapper, inner_idx, target_name, type_params, value_defaults)
     }
 }
 
@@ -14046,6 +14179,7 @@ fn extract_generic_function(
     inner_idx: u32,
     target_name: &str,
     type_params: Vec<crate::ast::node::TypeParam>,
+    value_defaults: &[Expr],
 ) -> Option<Stmt> {
     let mut fn_def: Stmt =
         build_nested_function_def(wrapper, inner_idx, target_name.to_owned(), false)?;
@@ -14053,10 +14187,15 @@ fn extract_generic_function(
         attach_fn_meta(&mut fn_def, &meta);
     }
     if let Stmt::FunctionDef {
-        type_params: tp, ..
+        type_params: tp,
+        args,
+        ..
     } = &mut fn_def
     {
         *tp = type_params;
+        if args.defaults.is_empty() && !value_defaults.is_empty() {
+            args.defaults = value_defaults.to_vec();
+        }
     }
     Some(fn_def)
 }
@@ -15083,7 +15222,7 @@ fn try_build_comprehension_expr(parent: &CodeObject, func: &Expr, args: &[Expr])
     let parts: ComprehensionParts = extract_comprehension_parts(nested, &stream.ops, comp_kind);
     let is_async: bool = (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
     let mut generators: Vec<Comprehension> =
-        comprehension_generators(nested, &stream, comp_kind, iter, is_async);
+        comprehension_generators(nested, &stream, comp_kind, iter);
     if generators.is_empty() {
         generators.push(Comprehension {
             target: parts.target,
@@ -15136,58 +15275,109 @@ fn comprehension_generators(
     stream: &DecodedStream,
     kind: CompKind,
     outer_iter: Expr,
-    is_async: bool,
 ) -> Vec<Comprehension> {
-    comprehension_generators_in(
-        nested,
-        stream,
-        kind,
-        outer_iter,
-        is_async,
-        0,
-        stream.ops.len(),
-    )
+    comprehension_generators_in(nested, stream, kind, outer_iter, 0, stream.ops.len())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One comprehension clause header located by the generator scan: a sync `FOR_ITER` or an async
+/// `GET_ANEXT`, tagged with its async-ness so each generator stamps the correct `is_async`.
+#[derive(Debug, Clone, Copy)]
+struct CompClause {
+    header: usize,
+    is_async: bool,
+}
+
 fn comprehension_generators_in(
     nested: &CodeObject,
     stream: &DecodedStream,
     kind: CompKind,
     outer_iter: Expr,
-    is_async: bool,
     lo: usize,
     hi: usize,
 ) -> Vec<Comprehension> {
     let hi: usize = hi.min(stream.ops.len());
-    let for_iters: Vec<usize> = (lo..hi)
-        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::ForIter(_)))
+    let mut clauses: Vec<CompClause> = (lo..hi)
+        .filter_map(|k: usize| match stream.ops[k] {
+            CanonicalOp::ForIter(_) => Some(CompClause {
+                header: k,
+                is_async: false,
+            }),
+            CanonicalOp::GetAnext => Some(CompClause {
+                header: k,
+                is_async: true,
+            }),
+            _ => None,
+        })
         .collect();
-    if for_iters.is_empty() {
+    clauses.sort_unstable_by_key(|c: &CompClause| c.header);
+    if clauses.is_empty() {
         return Vec::new();
     }
-    let mut generators: Vec<Comprehension> = Vec::with_capacity(for_iters.len());
+    let mut generators: Vec<Comprehension> = Vec::with_capacity(clauses.len());
     let mut prev_target_end: usize = lo;
-    for (gi, &for_iter) in for_iters.iter().enumerate() {
+    for (gi, clause) in clauses.iter().enumerate() {
         let iter: Expr = if gi == 0 {
             outer_iter.clone()
         } else {
-            comp_inner_iter(nested, stream, prev_target_end, for_iter)
+            comp_inner_iter(nested, stream, prev_target_end, clause.header)
         };
-        let (target, after_target): (Expr, usize) = comp_loop_target(nested, stream, for_iter + 1);
-        let clause_end: usize = for_iters.get(gi + 1).copied().unwrap_or(hi);
+        let target_scan_start: usize = comp_clause_target_start(stream, clause, hi);
+        let (target, after_target): (Expr, usize) =
+            comp_loop_target(nested, stream, target_scan_start);
+        let clause_end: usize = clauses
+            .get(gi + 1)
+            .map_or(hi, |next: &CompClause| next.header);
         let ifs: Vec<Expr> = comp_clause_filters(nested, stream, after_target, clause_end);
         generators.push(Comprehension {
             target,
             iter,
             ifs,
-            is_async: false,
+            is_async: clause.is_async,
         });
         prev_target_end = after_target;
     }
-    let _ = is_async;
     let _ = kind;
     generators
+}
+
+/// The index at which the loop-variable `STORE_*` begins for a comprehension clause. A sync
+/// `FOR_ITER` stores immediately at `header + 1`. An async clause's `GET_ANEXT` is followed by the
+/// awaited `__anext__` poll (`LOAD_CONST None; SEND/YIELD_FROM; …; END_SEND` on 3.12+, or
+/// `LOAD_CONST None; YIELD_FROM; POP_BLOCK` on 3.8-3.11); the target store is the first
+/// `STORE_FAST*`/`STORE_NAME`/`UNPACK_*` after that poll, located by skipping the await machinery.
+fn comp_clause_target_start(stream: &DecodedStream, clause: &CompClause, hi: usize) -> usize {
+    if !clause.is_async {
+        return clause.header + 1;
+    }
+    (clause.header + 1..hi)
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreFastLoadFast(_, _)
+                    | CanonicalOp::StoreFastStoreFast(_, _)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::UnpackSequence(_)
+                    | CanonicalOp::UnpackEx(_)
+            )
+        })
+        .unwrap_or(clause.header + 1)
+}
+
+/// Whether the guarding conditional jump's target is the element-skip path: a loop back-edge, the
+/// next `FOR_ITER`, or an `async for` loop header (`GET_ANEXT`/`END_ASYNC_FOR`). The complement is a
+/// forward jump into the append (keep) body.
+fn filter_jump_target_is_skip(stream: &DecodedStream, cond_idx: usize) -> bool {
+    resolve_jump_target(stream, cond_idx, &stream.ops[cond_idx])
+        .and_then(|t: usize| first_significant(stream, t, stream.ops.len()))
+        .is_some_and(|s: usize| {
+            is_back_edge(&stream.ops[s])
+                || matches!(
+                    stream.ops[s],
+                    CanonicalOp::ForIter(_) | CanonicalOp::GetAnext | CanonicalOp::EndAsyncFor
+                )
+        })
 }
 
 /// Whether a comprehension filter keeps the element when its condition is true. The guarding
@@ -15198,12 +15388,7 @@ fn filter_keeps_when_true(stream: &DecodedStream, cond_idx: usize) -> bool {
         stream.ops[cond_idx],
         CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueBackward(_)
     );
-    let target_is_skip: bool = resolve_jump_target(stream, cond_idx, &stream.ops[cond_idx])
-        .and_then(|t: usize| first_significant(stream, t, stream.ops.len()))
-        .is_some_and(|s: usize| {
-            is_back_edge(&stream.ops[s]) || matches!(stream.ops[s], CanonicalOp::ForIter(_))
-        });
-    if target_is_skip {
+    if filter_jump_target_is_skip(stream, cond_idx) {
         !jump_true
     } else {
         jump_true
@@ -15312,20 +15497,53 @@ fn comp_clause_filters(
                 build_linear_stmts_sim(nested, slice_clamped(&stream.ops, expr_lo, i))
                     .unwrap_or_default();
             if let Some(cond) = residual.into_iter().next_back() {
-                let keep_when_true: bool = filter_keeps_when_true(stream, i);
-                ifs.push(if keep_when_true {
-                    cond
-                } else {
-                    Expr::UnaryOp {
-                        op: crate::bytecode::opcode::UnaryOp::Not,
-                        operand: Box::new(cond),
-                    }
-                });
+                ifs.push(comp_filter_expr(stream, i, cond));
             }
         }
         i += 1;
     }
     ifs
+}
+
+/// Build one comprehension `if` clause from its guarding conditional jump. A `None`-fused guard
+/// (`POP_JUMP_IF_NONE`/`POP_JUMP_IF_NOT_NONE`, which canonicalize to `PopJumpIf{True,False}` and
+/// carry their `is`/`is not None` semantics only in `stream.none_jump_kind`) reconstructs the
+/// `value is None` / `value is not None` compare. `none_jump_kind` encodes the test that holds on
+/// fall-through (jump not taken); when the jump targets the skip path the element is kept on
+/// fall-through, so the test is used as-is, otherwise it is flipped (`is`↔`is not`, never
+/// `not`-wrapped, to stay byte-identical on recompile). A plain truthiness guard keeps `cond` (or
+/// `not cond`) per `filter_keeps_when_true`.
+fn comp_filter_expr(stream: &DecodedStream, cond_idx: usize, cond: Expr) -> Expr {
+    if let Some(none_kind) = stream.none_jump_kind.get(&cond_idx).copied() {
+        let kept_kind: NoneJumpKind = if filter_jump_target_is_skip(stream, cond_idx) {
+            none_kind
+        } else {
+            match none_kind {
+                NoneJumpKind::IsNone => NoneJumpKind::IsNotNone,
+                NoneJumpKind::IsNotNone => NoneJumpKind::IsNone,
+            }
+        };
+        let op: CmpOp = match kept_kind {
+            NoneJumpKind::IsNone => CmpOp::Is,
+            NoneJumpKind::IsNotNone => CmpOp::IsNot,
+        };
+        return Expr::Compare {
+            left: Box::new(cond),
+            ops: vec![op],
+            comparators: vec![Expr::Constant {
+                value: ConstValue::None,
+                line: None,
+            }],
+        };
+    }
+    if filter_keeps_when_true(stream, cond_idx) {
+        cond
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(cond),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

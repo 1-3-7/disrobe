@@ -118,3 +118,10 @@ with_nested	3.8
 with_simple	3.8
 class_decorated	3.8
 class_decorated_stacked	3.8
+generic_class_decorated_default	3.14
+generic_class_method_default	3.14
+generic_func_value_default	3.14
+async_comp_for_dict	3.8
+async_comp_for_list	3.8
+async_comp_for_mixed	3.8
+generic_typevar_default	3.14

@@ -5,9 +5,14 @@
     clippy::missing_const_for_fn
 )]
 
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
 use disrobe_pass_py_decompile::ast::{Comprehension, Expr, ExprCtx};
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
 use disrobe_pass_py_decompile::codegen::{CodeEmitter, DefaultEmitter};
+use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
+use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, read_pyc};
 
 #[test]
 fn list_comp_with_multi_for_and_if() {
@@ -115,4 +120,93 @@ fn name(id: &str, ctx: ExprCtx) -> Expr {
         ctx,
         line: None,
     }
+}
+
+const CASES_DIR: &str = "../../corpus/python/decompile/construct/cases";
+
+fn find_3_14() -> Option<PathBuf> {
+    let output: std::process::Output = Command::new("uv")
+        .args(["python", "find", "3.14"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let path: PathBuf = PathBuf::from(raw);
+    path.is_file().then_some(path)
+}
+
+fn compile_3_14(interpreter: &Path, source: &Path, pyc: &Path) {
+    let script: &str =
+        "import py_compile,sys;py_compile.compile(sys.argv[1],cfile=sys.argv[2],doraise=True)";
+    let output: std::process::Output = Command::new(interpreter)
+        .args([
+            "-c",
+            script,
+            source.to_str().expect("source path utf8"),
+            pyc.to_str().expect("pyc path utf8"),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn interpreter");
+    assert!(
+        output.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Builder-level guard for Gap B (async-comprehension reconstruction). Before the fix the inline
+/// detector required a trailing `FOR_ITER`, so a pure-async dict comp decompiled to an empty body
+/// and the `async for`/inner `await` were lost. Drives the full `build_real_source` pipeline on the
+/// in-corpus 3.14 pyc of `async_comp_for_dict` and asserts the `async for` clause + inner `await`
+/// recover, the body is non-empty, and no raw `__DR_CODE_CONST_` wrapper leaks.
+#[test]
+fn async_comp_for_dict_recovers_async_for_3_14() {
+    let Some(interpreter): Option<PathBuf> = find_3_14() else {
+        return;
+    };
+    let source_path: PathBuf = PathBuf::from(CASES_DIR).join("async_comp_for_dict.py");
+    assert!(
+        source_path.is_file(),
+        "missing fixture {}",
+        source_path.display()
+    );
+    let scratch: PathBuf = PathBuf::from("../../target/py-construct-metric/async-comp-gapb");
+    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+    let pyc: PathBuf = scratch.join("async_comp_for_dict.3.14.pyc");
+    compile_3_14(&interpreter, &source_path, &pyc);
+
+    let bytes: Vec<u8> = std::fs::read(&pyc).expect("read pyc");
+    let parsed: disrobe_py_marshal::PycFile = read_pyc(&bytes).expect("read_pyc");
+    let version: MarshalVersion = parsed.header.version;
+    let code: CodeObject = match parsed.code {
+        Object::Code(boxed) => *boxed,
+        other => panic!("top-level not code: {other:?}"),
+    };
+    let decompile_version: PyVersion = marshal_to_decompile(version).expect("version map");
+    let source: String = build_real_source(&code, &decompile_version, version)
+        .expect("decompile async_comp_for_dict");
+    assert!(
+        source.contains("async for x in ait(xs)"),
+        "recovered source must carry the async-for clause; got:\n{source}"
+    );
+    assert!(
+        source.contains("await g(x)"),
+        "recovered source must carry the inner await; got:\n{source}"
+    );
+    assert!(
+        !source.contains("__DR_CODE_CONST_"),
+        "recovered source must not leak a code-const wrapper; got:\n{source}"
+    );
+    let body: &str = source
+        .split_once("return")
+        .map_or("", |(_, tail): (&str, &str)| tail.trim());
+    assert!(
+        !body.is_empty(),
+        "recovered comprehension body must be non-empty; got:\n{source}"
+    );
 }
