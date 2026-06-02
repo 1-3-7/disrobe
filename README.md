@@ -16,9 +16,17 @@ Full documentation: **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/
 $ disrobe auto suspect.exe --out recovered/
 # detected: PE -> UPX -> rust-demangle
 # stage 01-upx        ok    (byte-identical unpack, 1.18 MiB in 9 ms)
-# stage 02-demangle   ok    (4172 Rust symbols, 312 C++ symbols, 0 unresolved)
+# stage 02-demangle   ok    (Rust + C++ symbols demangled, 0 unresolved)
 # final               ok    -> recovered/final/
 ```
+
+## What only `disrobe` does
+
+A few things `disrobe` does that no other tool, free or commercial, does at all:
+
+- **Decompiles every CPython from 1.0 to 3.15 — deterministically, in one engine.** Nothing else spans this range: uncompyle6 stops at 3.8, decompyle3 around 3.9, pycdc is partial and undocumented on modern releases, and the ML-based decompilers aren't reproducible. `disrobe` is the first to recover the newest syntax — `match`, t-strings (PEP 750), exception groups, PEP 695/696 generics — and it recompiles every result on the matching interpreter and diffs it opcode-for-opcode. Construct-level recovery is **100%, recompile-equivalent, across 3.8–3.14**; 3.15 (beta) and the 1.0–3.7 legacy range are closing the last few percent.
+- **Covers the entire modern stack in a single static binary.** Python, JavaScript/TypeScript, WebAssembly, JVM/Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, Hermes, Flutter — one `cargo build`, no JVM or Python runtime to install. No other tool, and no short stack of them, spans these in one place.
+- **Produces deterministic, evidence-grade output.** No model anywhere in the decompile path: the same input yields byte-identical output on every machine, content-addressed in a `.dr` envelope. A decompile becomes a forensic baseline and a diff target — something neither Ghidra/IDA nor any ML decompiler is built to give you.
 
 ## What is `disrobe`
 
