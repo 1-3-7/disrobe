@@ -4195,8 +4195,13 @@ fn async_with_trailing_return(
     let mut loads: usize = 0;
     while i < hi && loads < 3 {
         match &stream.ops[i] {
-            CanonicalOp::LoadConst(_) | CanonicalOp::Dup => loads += 1,
-            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                loads += 1;
+            }
+            CanonicalOp::Push(0)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
             _ => return Ok(None),
         }
         i += 1;
@@ -4275,6 +4280,8 @@ fn skip_await_poll(stream: &DecodedStream, from: usize, hi: usize) -> usize {
         match &stream.ops[i] {
             CanonicalOp::YieldFrom => return i + 1,
             CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadCommonConst(7)
+            | CanonicalOp::Push(0)
             | CanonicalOp::Send(_)
             | CanonicalOp::Yield
             | CanonicalOp::Resume(_)
@@ -10622,6 +10629,25 @@ fn first_significant(stream: &DecodedStream, from: usize, hi: usize) -> Option<u
     })
 }
 
+/// Whether the `Push(0)` at `idx` is the 3.15 await ABI's SEND-receiver NULL slot, i.e. the
+/// immediately preceding significant op (skipping `CACHE`/`NOP`/`EXTENDED_ARG`) is `GET_AWAITABLE`.
+/// Pre-3.15 await sequences carry no such slot, so this never fires there; the only other source of
+/// `Push(0)` is the `LOAD_GLOBAL`/`LOAD_ATTR` method self-slot, which always PRECEDES its load op and
+/// thus is never preceded by `GET_AWAITABLE`.
+#[inline]
+fn is_await_null_slot(ops: &[CanonicalOp], idx: usize) -> bool {
+    let mut k: usize = idx;
+    while k > 0 {
+        k -= 1;
+        match &ops[k] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::GetAwaitable => return true,
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// The last significant op of `[lo, hi)` is a hard control-flow terminator (`return` / `raise` /
 /// `reraise`), ignoring trailing structural padding.
 fn region_ends_in_hard_terminator(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
@@ -11921,6 +11947,7 @@ fn build_linear_stmts_sim_seed(
             }
             CanonicalOp::Swap(n) => sim.swap(usize::from(*n)),
             CanonicalOp::RotN(n) => sim.rotn(usize::from(*n)),
+            CanonicalOp::Push(_) if is_await_null_slot(ops, idx) => {}
             CanonicalOp::Push(_) => sim.push(Expr::Name {
                 id: DR_NULL_MARKER.to_owned(),
                 ctx: ExprCtx::Load,
@@ -15684,6 +15711,7 @@ fn extract_comprehension_parts(
                     ctx: ExprCtx::Load,
                 });
             }
+            CanonicalOp::Push(_) if is_await_null_slot(ops, idx) => {}
             CanonicalOp::Push(_) => sim.push(Expr::Name {
                 id: DR_NULL_MARKER.to_owned(),
                 ctx: ExprCtx::Load,
