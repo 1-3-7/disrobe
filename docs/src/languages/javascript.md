@@ -1,6 +1,6 @@
 # JavaScript / TypeScript
 
-`disrobe` deobfuscates obfuscated JS/TS, splits bundled output back into per-module sources, and inspects packaged JS runtimes.
+**disrobe** deobfuscates obfuscated JS/TS, splits bundled output back into per-module sources, and inspects packaged JS runtimes.
 
 ## Deobfuscation
 
@@ -24,7 +24,7 @@ Splits a bundled file back into per-module sources across Webpack 4/5, Vite, Rol
 disrobe js inspect app.jsc
 ```
 
-Inspects V8 cached-data (`.jsc`), Node SEA blobs, nexe-built executables, nw.js zip-suffix bundles, and Electron `.asar` containers. It prints real detection plus an honest snapshot-deserialize wall where the V8 snapshot format prevents full recovery — `disrobe` reports the boundary rather than fabricating past it.
+Inspects V8 cached-data (`.jsc`), Node SEA blobs, nexe-built executables, nw.js zip-suffix bundles, and Electron `.asar` containers. It prints real detection plus an honest snapshot-deserialize wall where the V8 snapshot format prevents full recovery — **disrobe** reports the boundary rather than fabricating past it.
 
 ## Chaining
 

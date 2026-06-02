@@ -16,4 +16,4 @@ The same flag unlocks the `decryption-keys` category of the `--llm` sidecar; wit
 
 ## License
 
-`disrobe` is licensed under Apache-2.0. See [LICENSE-APACHE](https://github.com/1-3-7/disrobe/blob/main/LICENSE-APACHE) and [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE).
+**disrobe** is licensed under Apache-2.0. See [LICENSE-APACHE](https://github.com/1-3-7/disrobe/blob/main/LICENSE-APACHE) and [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE).

@@ -1,6 +1,6 @@
 # The daemon: HTTP, gRPC, LSP, MCP
 
-`disrobe serve` runs `disrobe` as a long-lived service over four protocols. The core capability is the same — analyze bytes, return recovered artifacts — exposed through whichever transport fits the caller.
+`disrobe serve` runs **disrobe** as a long-lived service over four protocols. The core capability is the same — analyze bytes, return recovered artifacts — exposed through whichever transport fits the caller.
 
 ```sh
 disrobe serve                              # HTTP on 127.0.0.1:7373
@@ -24,7 +24,7 @@ Exposed alongside HTTP with `--grpc`. Includes health and reflection services.
 
 ## MCP companion
 
-`--mcp` runs the rmcp-based Model Context Protocol companion, exposing `disrobe`'s capabilities as MCP tools — `verify`, `rename`, `annot`, and `provenance_lookup` — so an MCP-aware agent (Claude Code, Cursor, and others) can call `disrobe` directly as a tool server.
+`--mcp` runs the rmcp-based Model Context Protocol companion, exposing **disrobe**'s capabilities as MCP tools — `verify`, `rename`, `annot`, and `provenance_lookup` — so an MCP-aware agent (Claude Code, Cursor, and others) can call **disrobe** directly as a tool server.
 
 ## Security posture
 

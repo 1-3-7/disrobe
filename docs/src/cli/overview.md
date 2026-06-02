@@ -1,6 +1,6 @@
 # CLI overview
 
-Every `disrobe` operation follows one shape:
+Every **disrobe** operation follows one shape:
 
 ```sh
 disrobe <pass> <action> <input> [--out <path>] [flags]

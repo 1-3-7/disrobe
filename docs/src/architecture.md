@@ -1,6 +1,6 @@
 # Architecture overview
 
-`disrobe` is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
+**disrobe** is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
 
 ## The shape of a recovery
 
@@ -27,7 +27,7 @@ The workspace splits into a small set of shared cores and one crate per ecosyste
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |
 | `disrobe-py-marshal` | CPython marshal reader: code objects across 1.0-3.15. |
 | `disrobe-pass-*` | One crate per ecosystem (py-decompile, py-disasm, py-deob, pyarmor, pyinstaller, pyfreeze, nuitka, js-deob, wasm-deob, jvm, dotnet, native, go, lua, php, ruby, beam, pickle, swift-objc, as3, mobile, sourcedefender). |
-| `disrobe-cli` | The `disrobe` binary: argument parsing, output formats, the chain runner, the daemon. |
+| `disrobe-cli` | The **disrobe** binary: argument parsing, output formats, the chain runner, the daemon. |
 | `disrobe-validator` | Walks a corpus and validates every fixture round-trips, used in CI. |
 
 ## The `Pass` trait
@@ -47,4 +47,4 @@ The rest of this section expands each pillar:
 
 ## Determinism is a design constraint, not a feature
 
-The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes `disrobe` output usable as a forensic baseline and as a `disrobe diff` input across versions.
+The entire architecture exists to make output reproducible. There is no model in the decompile path. RNG-backed backends take an explicit `--seed`. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes **disrobe** output usable as a forensic baseline and as a `disrobe diff` input across versions.

@@ -1,6 +1,6 @@
 # Swift / Objective-C
 
-`disrobe` class-dumps Mach-O binaries, reverses Swift rename-obfuscation maps, and decrypts SwiftConfidential blobs.
+**disrobe** class-dumps Mach-O binaries, reverses Swift rename-obfuscation maps, and decrypts SwiftConfidential blobs.
 
 ```sh
 disrobe swift classdump App.app/App --out dump.txt           # single-slice ObjC/Swift class-dump

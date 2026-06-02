@@ -1,6 +1,6 @@
 # The `.dr` envelope
 
-The `.dr` envelope is `disrobe`'s content-addressed wire format. Every recovered artifact can be persisted as one, and the chain runner uses envelopes internally to pass work between stages. The format is designed for one thing above all: **deterministic, verifiable, offline-composable caching**.
+The `.dr` envelope is **disrobe**'s content-addressed wire format. Every recovered artifact can be persisted as one, and the chain runner uses envelopes internally to pass work between stages. The format is designed for one thing above all: **deterministic, verifiable, offline-composable caching**.
 
 ## Anatomy
 
@@ -36,11 +36,11 @@ disrobe envelope diff a.dr b.dr        # version, rung, flags, root hash, produc
 disrobe envelope migrate-check a.dr --to-version 0.9.0 --to-rung surface
 ```
 
-`migrate-check` answers a precise question: can this envelope be transcoded from its `(version, rung)` to the target `(version, rung)` such that a transcode path exists *and* every `Requires` capability remains satisfiable? It is how `disrobe` stays sound across schema bumps without silently dropping capability guarantees.
+`migrate-check` answers a precise question: can this envelope be transcoded from its `(version, rung)` to the target `(version, rung)` such that a transcode path exists *and* every `Requires` capability remains satisfiable? It is how **disrobe** stays sound across schema bumps without silently dropping capability guarantees.
 
 ## Transcoding across schema versions
 
-`disrobe-ir` carries a transcode registry keyed on `(from_version, from_rung, to_version, to_rung)`. Identity transcodes are registered for every rung at every version, and real transcodes are registered for the migration paths `disrobe` supports. Transcoding never changes the rung implicitly — a transcode moves an envelope across schema versions while it stays at the same rung, which keeps the operation auditable.
+`disrobe-ir` carries a transcode registry keyed on `(from_version, from_rung, to_version, to_rung)`. Identity transcodes are registered for every rung at every version, and real transcodes are registered for the migration paths **disrobe** supports. Transcoding never changes the rung implicitly — a transcode moves an envelope across schema versions while it stays at the same rung, which keeps the operation auditable.
 
 ## Hardening
 

@@ -1,10 +1,10 @@
 # Forensics and malware-safety posture
 
-`disrobe` is designed to be run against hostile input by analysts who must not detonate it. This page states precisely what does and does not execute, so you can decide what to run inside a sandbox.
+**disrobe** is designed to be run against hostile input by analysts who must not detonate it. This page states precisely what does and does not execute, so you can decide what to run inside a sandbox.
 
 ## The default is static analysis — no sample execution
 
-By default, **`disrobe` does not execute the sample.** Every default path is pure static analysis: it parses bytes, decodes bytecode, walks structures, and emits derived artifacts. It does not unpickle, does not call `__reduce__`, does not run a packed binary, does not invoke a sample's entry point.
+By default, ****disrobe** does not execute the sample.** Every default path is pure static analysis: it parses bytes, decodes bytecode, walks structures, and emits derived artifacts. It does not unpickle, does not call `__reduce__`, does not run a packed binary, does not invoke a sample's entry point.
 
 This holds for the entire pickle suite in particular. `disrobe pickle trace` runs a **symbolic** VM: it walks the opcode stream and builds the object graph without instantiating a single real object or resolving a single real global. `disrobe pickle safety` grades danger statically. You can audit a downloaded `.pt` or `.pkl` for what it *would* do on load without ever letting it load.
 
@@ -17,7 +17,7 @@ There are a small number of paths that *can* execute code, and every one is behi
 | PyArmor v6/v7 dynamic-hook | `--allow-dynamic` | Runs the obfuscated wrapper in a watched subprocess to capture marshal streams. Watchdog timeout via `--dynamic-timeout` (default 60s). |
 | PyArmor BCC native-body lift | `--allow-bcc` | Lifts BCC-protected native bodies via Ghidra-headless on PATH (Ghidra runs, not the sample's logic in-process). |
 
-If you must use `--allow-dynamic`, **do it inside an isolated sandbox** (a disposable VM or container with no network and no access to anything you care about). `disrobe` gives you the watchdog timeout and a captured-marshal manifest, but a dynamic hook is, by definition, executing adversarial code. The pure-static paths (v8, v9-pro) need no such gate.
+If you must use `--allow-dynamic`, **do it inside an isolated sandbox** (a disposable VM or container with no network and no access to anything you care about). **disrobe** gives you the watchdog timeout and a captured-marshal manifest, but a dynamic hook is, by definition, executing adversarial code. The pure-static paths (v8, v9-pro) need no such gate.
 
 ## Subprocess backends
 
@@ -25,7 +25,7 @@ The optional external backends (Ghidra, CFR, Vineflower, jadx, ILSpy, dnSpy, de4
 
 ## Hardened parsing surface
 
-Because `disrobe` parses adversarial binary input all day, the parsing surface is hardened as a first-class concern:
+Because **disrobe** parses adversarial binary input all day, the parsing surface is hardened as a first-class concern:
 
 - **Pure-Rust, `unsafe` forbidden workspace-wide.** The only opt-outs are the two pyo3 C-interop crates (`disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`), gated behind explicit features. Any panic or abort on adversarial input that is not a clean `Result::Err` is a bug.
 - **Resource-exhaustion guards.** Zip-bombs, decompression bombs, container-recursion bombs, and malformed-length-field bombs are defused by the shared quota machinery in `crates/disrobe-binfmt/src/quota.rs` (per-entry cap, aggregate cap, recursion-depth cap).

@@ -1,6 +1,6 @@
 # WebAssembly
 
-`disrobe` parses WebAssembly modules and lifts them to four target surfaces, reverses Wasm-specific obfuscators, and decodes the Component Model and GC type graphs.
+**disrobe** parses WebAssembly modules and lifts them to four target surfaces, reverses Wasm-specific obfuscators, and decodes the Component Model and GC type graphs.
 
 ## Decompilation
 

@@ -1,6 +1,6 @@
 # Go
 
-`disrobe` recovers symbols from stripped and garbled Go binaries across PE, ELF, and Mach-O, parsing the Go runtime's own metadata tables.
+**disrobe** recovers symbols from stripped and garbled Go binaries across PE, ELF, and Mach-O, parsing the Go runtime's own metadata tables.
 
 ```sh
 disrobe go recover app --out symbols.json
