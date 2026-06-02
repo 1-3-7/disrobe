@@ -77,6 +77,11 @@ pub(crate) enum PyCmd {
             help = "emit a JSON manifest line on stdout after the summary (sidecar always written)"
         )]
         json: bool,
+        #[arg(
+            long,
+            help = "skip the recompile-equivalence check (no Python subprocess; for sandboxed/paranoid runs)"
+        )]
+        no_roundtrip: bool,
         #[arg(long, value_delimiter = ',', help = "comma-separated emit kinds")]
         emit: Vec<String>,
     },
@@ -119,8 +124,9 @@ pub(crate) fn run(action: PyCmd, llm_flags: &LlmFlags) -> miette::Result<()> {
             out,
             backend,
             json,
+            no_roundtrip,
             emit,
-        } => decompile::decompile(input, out, backend, json, emit, llm_flags),
+        } => decompile::decompile(input, out, backend, json, no_roundtrip, emit, llm_flags),
         PyCmd::Extract { input, out } => extract::extract(input, out),
     }
 }

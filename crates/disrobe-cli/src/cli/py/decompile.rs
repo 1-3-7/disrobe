@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use disrobe_llm_metadata::{LlmMetadataEmitter, MetadataSelection};
 use disrobe_pass_py_decompile::{
     NativeDecompile, RoundtripOutcome, RoundtripStatus, decompile_pyc, roundtrip_native,
+    roundtrip_skipped,
 };
 
 use super::super::llm::{self as llm_cli, LlmFlags};
@@ -14,6 +15,7 @@ pub(super) fn decompile(
     out: Option<PathBuf>,
     backend: DecompileBackend,
     json: bool,
+    no_roundtrip: bool,
     emit_kinds: Vec<String>,
     llm_flags: &LlmFlags,
 ) -> miette::Result<()> {
@@ -42,7 +44,7 @@ pub(super) fn decompile(
         }
     };
 
-    let outcome: DecompileOutcome = run_native_backend(&bytes)?;
+    let outcome: DecompileOutcome = run_native_backend(&bytes, no_roundtrip)?;
 
     std::fs::write(&source_path, outcome.source.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0062: cannot write decompiled source: {e}"))?;
@@ -139,10 +141,12 @@ struct DecompileOutcome {
     roundtrip: Option<RoundtripOutcome>,
 }
 
-fn run_native_backend(bytes: &[u8]) -> miette::Result<DecompileOutcome> {
+fn run_native_backend(bytes: &[u8], no_roundtrip: bool) -> miette::Result<DecompileOutcome> {
     let native: NativeDecompile = decompile_pyc(bytes)
         .map_err(|e| miette::miette!("DR-CLI-0065: native decompile engine failed: {e}"))?;
-    let rt: RoundtripOutcome = if native.recovered_directly {
+    let rt: RoundtripOutcome = if no_roundtrip {
+        roundtrip_skipped()
+    } else if native.recovered_directly {
         roundtrip_native(
             &native.source,
             &native.code,
@@ -175,7 +179,7 @@ fn roundtrip_to_json(rt: &RoundtripOutcome) -> serde_json::Value {
         RoundtripStatus::RecompileFailed { stderr } => {
             Some(serde_json::Value::String(stderr.clone()))
         }
-        RoundtripStatus::Perfect | RoundtripStatus::Semantic => None,
+        RoundtripStatus::Perfect | RoundtripStatus::Semantic | RoundtripStatus::Skipped => None,
     };
     serde_json::json!({
         "status": rt.status.as_label(),

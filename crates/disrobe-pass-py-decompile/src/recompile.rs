@@ -14,6 +14,7 @@ pub enum RoundtripStatus {
     CodeDiff { detail: String },
     NoInterpreter { hint: String },
     RecompileFailed { stderr: String },
+    Skipped,
 }
 
 impl RoundtripStatus {
@@ -25,7 +26,17 @@ impl RoundtripStatus {
             Self::CodeDiff { .. } => "code-diff",
             Self::NoInterpreter { .. } => "no-interpreter",
             Self::RecompileFailed { .. } => "recompile-failed",
+            Self::Skipped => "skipped",
         }
+    }
+}
+
+#[must_use]
+pub fn roundtrip_skipped() -> RoundtripOutcome {
+    RoundtripOutcome {
+        status: RoundtripStatus::Skipped,
+        interpreter_path: None,
+        interpreter_version: None,
     }
 }
 
@@ -126,13 +137,22 @@ fn probe_python(name: &str) -> Option<(PathBuf, MarshalVersion)> {
     Some((exe, MarshalVersion { major, minor }))
 }
 
+/// Resolves `exe` to an absolute interpreter path using `PATH` entries only.
+///
+/// Empty and relative `PATH` entries are skipped so that the current working
+/// directory is never searched. On Windows an empty entry denotes the cwd; a
+/// malware-dropped `python.exe` in the analyst's directory must never shadow a
+/// legitimate install. Only an absolute path to an existing file is accepted.
 fn which_on_path(exe: &str) -> Option<PathBuf> {
     let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            continue;
+        }
         for variant in [exe, &format!("{exe}.exe")] {
-            let p: PathBuf = dir.join(variant);
-            if p.is_file() {
-                return Some(p);
+            let candidate: PathBuf = dir.join(variant);
+            if candidate.is_absolute() && candidate.is_file() {
+                return Some(candidate);
             }
         }
     }

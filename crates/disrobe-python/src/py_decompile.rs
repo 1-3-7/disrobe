@@ -49,6 +49,7 @@ impl From<RoundtripStatus> for RoundtripReport {
             RoundtripStatus::RecompileFailed { stderr } => {
                 ("recompile-failed".to_owned(), Some(stderr))
             }
+            RoundtripStatus::Skipped => ("skipped".to_owned(), None),
         };
         Self {
             status,

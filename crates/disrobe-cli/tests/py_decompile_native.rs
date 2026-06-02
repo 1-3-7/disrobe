@@ -179,6 +179,48 @@ fn native_decompile_recovers_greet_function() {
 }
 
 #[test]
+fn no_roundtrip_skips_interpreter_and_marks_skipped() {
+    let Some(python): Option<PathBuf> = locate_python() else {
+        eprintln!("skipping no_roundtrip: no python on PATH");
+        return;
+    };
+    let dir: PathBuf = temp_dir("no_roundtrip");
+    let py_path: PathBuf = dir.join("no_roundtrip.py");
+    let pyc_path: PathBuf = dir.join("no_roundtrip.pyc");
+    let out_dir: PathBuf = dir.join("recovered");
+    std::fs::write(&py_path, b"def greet(name):\n    return f\"hi, {name}\"\n").expect("write py");
+    if let Err(e) = compile_py_to_pyc(&python, &py_path, &pyc_path) {
+        panic!("compile no_roundtrip: {e}");
+    }
+    let args: Vec<String> = vec![
+        "py".to_owned(),
+        "decompile".to_owned(),
+        pyc_path.to_string_lossy().into_owned(),
+        "--out".to_owned(),
+        out_dir.to_string_lossy().into_owned(),
+        "--no-roundtrip".to_owned(),
+        "--json".to_owned(),
+    ];
+    let (code, stdout, stderr): (i32, String, String) = run_disrobe(&args);
+    assert_eq!(code, 0, "disrobe failed: stdout={stdout}\nstderr={stderr}");
+    assert!(
+        stdout.contains("py decompile: OK"),
+        "missing OK line. stdout={stdout}"
+    );
+    let recovered: PathBuf = out_dir.join("no_roundtrip.py");
+    assert!(
+        recovered.exists(),
+        "recovered source missing under --no-roundtrip"
+    );
+    let manifest_body: String =
+        std::fs::read_to_string(out_dir.join("manifest.json")).expect("read manifest.json");
+    assert!(
+        manifest_body.contains("\"status\": \"skipped\""),
+        "roundtrip not marked skipped: {manifest_body}"
+    );
+}
+
+#[test]
 fn native_decompile_recovers_arithmetic_module() {
     case(
         "math_ops",
