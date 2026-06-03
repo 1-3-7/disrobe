@@ -562,16 +562,24 @@ pub enum SwitchKey {
     Values(Vec<i32>),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PrecomputedSwitch {
+    pub default: Option<BlockId>,
+    pub cases: Vec<(SwitchKey, BlockId)>,
+}
+
 #[derive(Debug)]
 pub struct Structurer<'a> {
     cfg: &'a Cfg,
     dom: &'a Dominators,
     loops: &'a [NaturalLoop],
     insns: &'a [Instruction],
+    switch_map: BTreeMap<BlockId, PrecomputedSwitch>,
     visited: BTreeSet<BlockId>,
     loop_header_of: BTreeMap<BlockId, BlockId>,
     loop_exits: BTreeMap<BlockId, BlockId>,
     try_groups: Vec<GroupedTry>,
+    suppress_try_at: Option<BlockId>,
     depth: usize,
     work: usize,
     pub had_irreducible: bool,
@@ -583,6 +591,16 @@ impl<'a> Structurer<'a> {
         dom: &'a Dominators,
         loops: &'a [NaturalLoop],
         insns: &'a [Instruction],
+    ) -> Self {
+        Self::with_switch_map(cfg, dom, loops, insns, BTreeMap::new())
+    }
+
+    pub fn with_switch_map(
+        cfg: &'a Cfg,
+        dom: &'a Dominators,
+        loops: &'a [NaturalLoop],
+        insns: &'a [Instruction],
+        switch_map: BTreeMap<BlockId, PrecomputedSwitch>,
     ) -> Self {
         let mut loop_header_of: BTreeMap<BlockId, BlockId> = BTreeMap::new();
         for l in loops {
@@ -602,10 +620,12 @@ impl<'a> Structurer<'a> {
             dom,
             loops,
             insns,
+            switch_map,
             visited: BTreeSet::new(),
             loop_header_of,
             loop_exits,
             try_groups,
+            suppress_try_at: None,
             depth: 0,
             work: 0,
             had_irreducible: false,
@@ -656,7 +676,9 @@ impl<'a> Structurer<'a> {
                 break;
             }
 
-            if let Some(try_group) = self.try_group_at_block(b) {
+            if self.suppress_try_at != Some(b)
+                && let Some(try_group) = self.try_group_at_block(b)
+            {
                 let try_end_block: Option<BlockId> = self
                     .cfg
                     .pc_to_block
@@ -670,7 +692,10 @@ impl<'a> Structurer<'a> {
                         self.cfg.pc_to_block.get(hpc).map(|&bid| (t.clone(), bid))
                     })
                     .collect();
+                let prev_suppress: Option<BlockId> = self.suppress_try_at;
+                self.suppress_try_at = Some(b);
                 let body_region: Region = self.structure_at(b, try_end_block);
+                self.suppress_try_at = prev_suppress;
                 let mut handlers_out: Vec<(Option<String>, Region)> = Vec::new();
                 let after_try: Option<BlockId> = try_end_block;
                 for (catch_type, handler_bid) in handler_block_ids {
@@ -744,10 +769,12 @@ impl<'a> Structurer<'a> {
             dom: self.dom,
             loops: self.loops,
             insns: self.insns,
+            switch_map: self.switch_map.clone(),
             visited: BTreeSet::new(),
             loop_header_of: self.loop_header_of.clone(),
             loop_exits: self.loop_exits.clone(),
             try_groups: self.try_groups.clone(),
+            suppress_try_at: None,
             depth: self.depth,
             work: self.work,
             had_irreducible: false,
@@ -801,6 +828,26 @@ impl<'a> Structurer<'a> {
     }
 
     fn structure_switch(&mut self, head: BlockId, _stop: Option<BlockId>) -> Region {
+        if let Some(precomputed) = self.switch_map.get(&head).cloned() {
+            let join: Option<BlockId> = find_switch_join(self.cfg, self.dom, head);
+            let mut cases: Vec<(SwitchKey, Region)> = Vec::with_capacity(precomputed.cases.len());
+            for (key, target) in precomputed.cases {
+                if Some(target) == precomputed.default {
+                    continue;
+                }
+                let r: Region = self.structure_at(target, join);
+                cases.push((key, r));
+            }
+            let default_region: Option<Box<Region>> = precomputed
+                .default
+                .map(|d| Box::new(self.structure_at(d, join)));
+            return Region::Switch {
+                head,
+                cases,
+                default: default_region,
+                join,
+            };
+        }
         let block: &BasicBlock = &self.cfg.blocks[head.0 as usize];
         let last_idx: usize = block.insn_range.1.saturating_sub(1);
         let switch_insn: Option<&Instruction> = self.insns.get(last_idx);

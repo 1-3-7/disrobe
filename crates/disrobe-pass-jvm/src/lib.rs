@@ -27,7 +27,7 @@ pub mod bytecode;
 pub mod chain_detector;
 pub mod classfile;
 pub mod dalvik;
-pub mod dalvik_decode;
+pub mod dalvik_cfg;
 pub mod decompile;
 pub mod decompile_struct;
 pub mod descriptor;
@@ -69,29 +69,27 @@ pub use classfile::{
     MIN_MAJOR, MethodInfo, parse as parse_classfile,
 };
 pub use dalvik::{
-    DalvikOp, disassemble_units as disassemble_dalvik,
-    instruction_width as dalvik_instruction_width, opcode as dalvik_opcode,
-    payload_width as dalvik_payload_width,
+    DalvikInsn, DalvikOp, InsnFormat, SwitchPayload, dalvik_format, decode_method,
+    disassemble_units as disassemble_dalvik, opcode as dalvik_opcode, parse_packed_switch,
+    parse_sparse_switch,
 };
-pub use dalvik_decode::{
-    DalvikFormat, DecodedInsn, IndexKind, Operands as DalvikOperands, decode_all as decode_dalvik,
-    decode_one as decode_dalvik_one, format_of as dalvik_format_of,
-    index_kind_of as dalvik_index_kind_of,
-};
+pub use dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg, build_dalvik_cfg_from_code_item};
 pub use decompile::{
     DecompiledClass, class_access_keywords, decompile_class, decompile_classfile_bytes,
     member_access_keywords,
+};
+pub use decompile_struct::{
+    BasicBlock, BlockId, Cfg, Dominators, Edge, EdgeKind, ExceptionRegion, NaturalLoop,
+    PrecomputedSwitch, Region, Structurer, SwitchKey, compute_dominators, find_natural_loops,
 };
 pub use descriptor::{
     JavaType, MethodDescriptor, binary_to_source, parse_field as parse_field_descriptor,
     parse_method as parse_method_descriptor,
 };
 pub use dex::{
-    CatchHandlerEntry, ClassDataItem, CodeItem, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX, DexClass,
-    DexFile, DexHeader, DexVersion, EncodedCatchHandler, EncodedField, EncodedMethod, FieldId,
-    MethodId, MultiDex, NO_INDEX, ProtoId, TryItem, parse as parse_dex, parse_class_data,
-    parse_code_item as parse_dex_code_item, parse_header as parse_dex_header, parse_multi_dex,
-    walk_classes as walk_dex_classes,
+    CodeItem, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX, DexFile, DexHeader, DexVersion, FieldId, MethodId,
+    MultiDex, ProtoId, TryItem, parse as parse_dex, parse_code_items,
+    parse_header as parse_dex_header, parse_multi_dex,
 };
 pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};
@@ -128,7 +126,7 @@ pub use provenance_header::{
     scala_decompiled_header, smali_disasm_header,
 };
 pub use scala::{Demangled as ScalaDemangled, demangle as demangle_scala};
-pub use smali::{SmaliEmission, emit as emit_smali};
+pub use smali::{SmaliEmission, emit as emit_smali, emit_method_body, emit_method_body_from_insns};
 pub use stub_emulator::{
     DecryptStub, EmulationError, decrypt_constant, emulate_char_array, find_char_array_decrypt,
 };
