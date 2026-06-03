@@ -1,0 +1,90 @@
+lang:python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-py-*/**'
+          - 'crates/disrobe-py-marshal/**'
+          - 'crates/disrobe-python/**'
+          - 'crates/disrobe-pass-pyfreeze/**'
+          - 'crates/disrobe-pass-pyinstaller/**'
+          - 'crates/disrobe-pass-nuitka/**'
+          - 'crates/disrobe-pass-pickle/**'
+          - 'crates/disrobe-pass-pyarmor/**'
+          - 'crates/disrobe-pyarmor-*/**'
+          - 'crates/disrobe-pass-sourcedefender/**'
+
+lang:jvm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-jvm/**'
+          - 'crates/disrobe-pass-beam/**'
+
+lang:dotnet:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-dotnet/**'
+
+lang:js:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-js-deob/**'
+          - 'crates/disrobe-pass-wasm-deob/**'
+
+lang:native:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-native/**'
+          - 'crates/disrobe-pass-go/**'
+          - 'crates/disrobe-pass-swift-objc/**'
+
+lang:scripting:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-lua/**'
+          - 'crates/disrobe-pass-php/**'
+          - 'crates/disrobe-pass-ruby/**'
+          - 'crates/disrobe-pass-shell/**'
+          - 'crates/disrobe-pass-as3/**'
+
+lang:mobile:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-pass-mobile/**'
+
+area:core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-core/**'
+          - 'crates/disrobe-ir/**'
+          - 'crates/disrobe-binfmt/**'
+          - 'crates/disrobe-validator/**'
+
+area:cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-cli/**'
+
+area:llm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/disrobe-llm-metadata/**'
+          - 'crates/disrobe-mcp/**'
+
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/*.yml'
+          - 'deny.toml'
+          - 'cliff.toml'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - '**/*.md'
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'Cargo.lock'
+          - '**/Cargo.toml'

@@ -1,0 +1,10 @@
+<link href="{{ path_to_root }}pagefind/pagefind-ui.css" rel="stylesheet" />
+<script src="{{ path_to_root }}pagefind/pagefind-ui.js"></script>
+<script>
+  window.addEventListener("DOMContentLoaded", function () {
+    var mount = document.getElementById("pagefind-search");
+    if (mount && window.PagefindUI) {
+      new window.PagefindUI({ element: "#pagefind-search", showSubResults: true, bundlePath: "{{ path_to_root }}pagefind/" });
+    }
+  });
+</script>

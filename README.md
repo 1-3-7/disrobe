@@ -284,7 +284,7 @@ Unpacking and decryption passes operate at **Raw** (byte-identical unpack lives 
 
 ## Safety posture
 
-By default `disrobe` **does not execute the sample** - every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths (PyArmor v6/v7 dynamic-hook, BCC native lift) are behind explicit `--allow-dynamic` / `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/forensics-safety.html).
+By default `disrobe` **does not execute the sample** - every default path is pure static analysis. The pickle suite is symbolic and never unpickles. The only code-execution paths (PyArmor v6/v7 dynamic-hook, BCC native lift) are behind explicit `--allow-dynamic` / `--allow-bcc` flags with a watchdog; run those inside a sandbox. The parsing surface is hardened. See [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/forensics-safety.html) and the full [threat-model](https://1-3-7.github.io/disrobe/threat-model.html).
 
 ## Documentation
 

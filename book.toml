@@ -15,7 +15,7 @@ preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/1-3-7/disrobe"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/1-3-7/disrobe/edit/main/{path}"
-site-url = "/disrobe/"
+site-url = "/disrobe/latest/"
 no-section-label = false
 
 [output.html.search]

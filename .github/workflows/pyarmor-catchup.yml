@@ -1,0 +1,51 @@
+name: pyarmor-catchup
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: pyarmor-catchup
+  cancel-in-progress: false
+
+jobs:
+  open-tracking-issue:
+    name: open monthly pyarmor catch-up issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: create issue if none open for this period
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          period="$(date -u +%Y-%m)"
+          label="pyarmor-catchup"
+          title="pyarmor catch-up: ${period}"
+          existing="$(gh issue list --state open --label "${label}" --search "in:title ${period}" --json number --jq 'length')"
+          if [ "${existing}" -gt 0 ]; then
+            echo "open ${label} issue for ${period} already exists; skipping."
+            exit 0
+          fi
+          gh label create "${label}" --color BFD4F2 --description "Monthly PyArmor release tracking" --force >/dev/null 2>&1 || true
+          gh issue create \
+            --label "${label}" \
+            --title "${title}" \
+            --body "$(cat <<'BODY'
+          Monthly PyArmor release-tracking sweep.
+
+          - Check the latest PyArmor release on PyPI and the changelog for new runtime
+            (`pyarmor_runtime`) layouts, opcode-rotation changes, or new RFT / BCC modes.
+          - Diff against the formats disrobe's `disrobe-pass-pyarmor` and
+            `disrobe-pyarmor-*` crates currently recognize.
+          - File follow-up `pass-request` issues for any unsupported tier or version.
+          - Update `docs/legal/pyarmor-stance.md` if EULA tiers or licensing changed.
+
+          This issue was opened automatically by `.github/workflows/pyarmor-catchup.yml`.
+          BODY
+          )"

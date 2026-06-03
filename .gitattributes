@@ -1,4 +1,10 @@
 assets/graphs/*.svg text eol=lf
+docs/**/*.md text eol=lf
+docs/errors/*.md text eol=lf
+docs/decisions/*.md text eol=lf
+docs/legal/*.md text eol=lf
+theme/*.hbs text eol=lf
+.github/**/*.yml text eol=lf
 *.jsc binary
 *.pkl binary
 *.luac binary

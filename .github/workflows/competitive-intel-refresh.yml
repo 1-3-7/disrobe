@@ -1,0 +1,60 @@
+name: competitive-intel-refresh
+
+on:
+  schedule:
+    - cron: '0 6 1 1,4,7,10 *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: competitive-intel-refresh
+  cancel-in-progress: false
+
+jobs:
+  open-tracking-issue:
+    name: open quarterly competitive-intel refresh issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: create issue if none open for this period
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          year="$(date -u +%Y)"
+          month="$(date -u +%m)"
+          case "${month}" in
+            01) quarter="Q1" ;;
+            04) quarter="Q2" ;;
+            07) quarter="Q3" ;;
+            10) quarter="Q4" ;;
+            *)  quarter="Q$(( (10#${month} - 1) / 3 + 1 ))" ;;
+          esac
+          period="${year}-${quarter}"
+          label="competitive-intel"
+          title="competitive intel refresh: ${period}"
+          existing="$(gh issue list --state open --label "${label}" --search "in:title ${period}" --json number --jq 'length')"
+          if [ "${existing}" -gt 0 ]; then
+            echo "open ${label} issue for ${period} already exists; skipping."
+            exit 0
+          fi
+          gh label create "${label}" --color D4C5F9 --description "Quarterly competitor and FOSS landscape review" --force >/dev/null 2>&1 || true
+          gh issue create \
+            --label "${label}" \
+            --title "${title}" \
+            --body "$(cat <<'BODY'
+          Quarterly competitive-intelligence refresh.
+
+          - Re-survey FOSS deobfuscators / decompilers per pass family and update the
+            per-pass competitor matrix.
+          - Re-check uncontested greenfield obfuscator targets for new entrants.
+          - Record findings in `docs/competitive-intel/` using `TEMPLATE.md`.
+          - Open `pass-request` or `enhancement` issues for newly relevant gaps.
+
+          This issue was opened automatically by
+          `.github/workflows/competitive-intel-refresh.yml`.
+          BODY
+          )"
