@@ -5,6 +5,7 @@
     clippy::missing_const_for_fn
 )]
 
+pub(crate) mod band;
 pub(crate) mod tokenize;
 
 use disrobe_pass_py_decompile::ast::{ConstValue, Expr, ExprCtx};
