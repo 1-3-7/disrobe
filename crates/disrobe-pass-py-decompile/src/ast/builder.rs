@@ -4579,7 +4579,57 @@ fn structure_with_body(
         }
         return Ok(out);
     }
-    structure_stmts(code, stream, body_start, body_end)
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    if !swap_present
+        && let Some(ret) = with_post_cleanup_return(code, stream, body_end, region_end)?
+    {
+        out.push(ret);
+    }
+    Ok(out)
+}
+
+/// Recover the `with cm: return <value>` idiom where the returned value is re-materialized AFTER the
+/// implicit `__exit__(None, None, None)` cleanup rather than stashed across it via `Swap(2)`. On the
+/// normal-exit path `CPython` lays the cleanup block(s) then `LOAD <value>; RETURN_VALUE` (or
+/// `RETURN_CONST`); the body region therefore ends at the cleanup with no on-stack value, so the
+/// `swap_present` recovery never fires and the `return` is otherwise dropped. Skips every consecutive
+/// cleanup block (one per open context manager), then recovers the return ONLY when it sits on the
+/// straight-line normal-exit path: no exception handler (`PUSH_EXC_INFO`/`WITH_EXCEPT_START`) and no
+/// forward conditional jump may intervene, otherwise the candidate is the surrounding function's own
+/// epilogue (`return None`) reached on fall-through and must NOT be folded into the with body.
+fn with_post_cleanup_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    region_end: usize,
+) -> Result<Option<Stmt>> {
+    let mut ret_start: usize = body_end;
+    let mut cleanups: usize = 0;
+    while let Some(next) = skip_with_cleanup_block(stream, ret_start, region_end) {
+        ret_start = next;
+        cleanups += 1;
+    }
+    if cleanups == 0 {
+        return Ok(None);
+    }
+    let Some(ret_idx): Option<usize> = (ret_start..region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return Ok(None);
+    };
+    let guarded: bool = (ret_start..ret_idx).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+        ) || is_forward_cond_jump(&stream.ops[k])
+    });
+    if guarded {
+        return Ok(None);
+    }
+    recover_return_at(code, stream, ret_start, region_end)
 }
 
 /// Whether the with-cleanup tail at `body_end` is the value-returning idiom: one implicit
@@ -4618,7 +4668,9 @@ fn skip_with_cleanup_block(
     let mut loads: usize = 0;
     while i < region_end && loads < 3 {
         match &stream.ops[i] {
-            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) => loads += 1,
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                loads += 1;
+            }
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             _ => return None,
         }
@@ -9408,6 +9460,57 @@ fn is_legacy_with_exit_triple(stream: &DecodedStream, start: usize, hi: usize) -
     matches!(stream.ops[call], CanonicalOp::CallFunction(3))
 }
 
+/// Recover the pre-3.11 `with cm: return <const>` idiom whose returned value is re-materialized AFTER
+/// the implicit `__exit__(None, None, None)` cleanup (`LOAD_CONST None; DUP; DUP; CALL 3; POP; LOAD
+/// <value>; RETURN_VALUE`) rather than stashed across it via `ROT_N`. `body_end` points at the cleanup
+/// `LOAD_CONST None`; skip past the cleanup `CALL` and discarding `POP`, then recover the trailing
+/// return ONLY when it sits on the straight-line normal-exit path - any `WITH_EXCEPT_START` /
+/// `PUSH_EXC_INFO` handler op or forward conditional jump before the return marks the surrounding
+/// function epilogue reached on fall-through, which must not be folded into the with body.
+fn legacy_with_post_cleanup_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    region_end: usize,
+) -> Result<Option<Stmt>> {
+    if !is_legacy_with_exit_triple(stream, body_end, region_end) {
+        return Ok(None);
+    }
+    let Some(call): Option<usize> = (body_end..region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CallFunction(_) | CanonicalOp::CallFunctionKw(_)
+        )
+    }) else {
+        return Ok(None);
+    };
+    let Some(pop): Option<usize> = first_significant(stream, call + 1, region_end) else {
+        return Ok(None);
+    };
+    if !matches!(stream.ops[pop], CanonicalOp::Pop) {
+        return Ok(None);
+    }
+    let ret_start: usize = pop + 1;
+    let Some(ret_idx): Option<usize> = (ret_start..region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return Ok(None);
+    };
+    let guarded: bool = (ret_start..ret_idx).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+        ) || is_forward_cond_jump(&stream.ops[k])
+    });
+    if guarded {
+        return Ok(None);
+    }
+    recover_return_at(code, stream, ret_start, region_end)
+}
+
 fn legacy_with_body_bound(
     stream: &DecodedStream,
     body_start: usize,
@@ -9599,7 +9702,13 @@ fn structure_legacy_with(
         }
         stmts
     } else {
-        structure_stmts(code, stream, body_start, body_end)?
+        let mut stmts: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+        if !region_contains_setup_with(stream, body_start, body_end)
+            && let Some(ret) = legacy_with_post_cleanup_return(code, stream, body_end, region_end)?
+        {
+            stmts.push(ret);
+        }
+        stmts
     };
     let with_stmt: Stmt = Stmt::With {
         items: vec![WithItem {
@@ -9798,10 +9907,9 @@ fn structure_stmts(
         Some(s) => rewrite_jump_to_break_continue(stream, jumped, s, join),
         None => jumped,
     };
-    let negated_single_branch: bool = !negate
-        && orelse_start.is_none()
-        && !fallthrough.is_empty()
-        && !stream.none_jump_kind.contains_key(&jump_idx);
+    let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
+    let negated_single_branch: bool =
+        !negate && orelse_start.is_none() && !fallthrough.is_empty() && !none_jump;
     let (test, body, orelse): (Expr, Vec<Stmt>, Vec<Stmt>) = if negated_single_branch {
         (
             Expr::UnaryOp {
@@ -9811,7 +9919,7 @@ fn structure_stmts(
             fallthrough,
             Vec::new(),
         )
-    } else if negate {
+    } else if negate || none_jump {
         (test, fallthrough, jumped)
     } else {
         (test, jumped, fallthrough)
