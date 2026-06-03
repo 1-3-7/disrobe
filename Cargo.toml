@@ -8,6 +8,7 @@ members = [
     "crates/disrobe-llm-metadata",
     "crates/disrobe-mcp",
     "crates/disrobe-pass-as3",
+    "crates/disrobe-plugin-host",
     "crates/disrobe-pass-beam",
     "crates/disrobe-pass-dotnet",
     "crates/disrobe-pass-go",
@@ -16,9 +17,11 @@ members = [
     "crates/disrobe-pass-lua",
     "crates/disrobe-pass-mobile",
     "crates/disrobe-pass-native",
+    "crates/disrobe-pass-nativelang",
     "crates/disrobe-pass-nuitka",
     "crates/disrobe-pass-php",
     "crates/disrobe-pass-pickle",
+    "crates/disrobe-playground",
     "crates/disrobe-pass-py-decompile",
     "crates/disrobe-pass-py-deob",
     "crates/disrobe-pass-py-disasm",
@@ -26,14 +29,17 @@ members = [
     "crates/disrobe-pass-pyfreeze",
     "crates/disrobe-pass-pyinstaller",
     "crates/disrobe-pass-ruby",
+    "crates/disrobe-pass-scriptlang",
     "crates/disrobe-pass-shell",
     "crates/disrobe-pass-sourcedefender",
     "crates/disrobe-pass-swift-objc",
     "crates/disrobe-pass-wasm-deob",
+    "crates/disrobe-plugin-loader",
     "crates/disrobe-py-marshal",
     "crates/disrobe-pyarmor-cextract",
     "crates/disrobe-pyarmor-pytrace",
     "crates/disrobe-python",
+    "crates/disrobe-transcode",
     "crates/disrobe-validator",
     "xtask",
 ]
@@ -136,10 +142,13 @@ disrobe-pass-pyarmor = { path = "crates/disrobe-pass-pyarmor", version = "0.9.0"
 disrobe-pass-pyfreeze = { path = "crates/disrobe-pass-pyfreeze", version = "0.9.0" }
 disrobe-pass-pyinstaller = { path = "crates/disrobe-pass-pyinstaller", version = "0.9.0" }
 disrobe-pass-ruby = { path = "crates/disrobe-pass-ruby", version = "0.9.0" }
+disrobe-pass-scriptlang = { path = "crates/disrobe-pass-scriptlang", version = "0.9.0" }
 disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.9.0" }
 disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.9.0" }
 disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.9.0" }
 disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.9.0" }
+disrobe-playground = { path = "crates/disrobe-playground", version = "0.9.0" }
+disrobe-plugin-host = { path = "crates/disrobe-plugin-host", version = "0.9.0" }
 disrobe-py-marshal = { path = "crates/disrobe-py-marshal", version = "0.9.0" }
 divan = "0.1.21"
 eyre = "0.6.12"

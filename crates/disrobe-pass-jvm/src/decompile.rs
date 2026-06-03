@@ -331,7 +331,7 @@ struct MethodBody {
 }
 
 #[derive(Clone)]
-enum Expr {
+pub(crate) enum Expr {
     Const(String),
     Local(String),
     This,
@@ -379,7 +379,7 @@ enum Expr {
 }
 
 impl Expr {
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         match self {
             Self::Const(s) | Self::Local(s) | Self::Opaque(s) => s.clone(),
             Self::This => "this".to_string(),
@@ -870,9 +870,9 @@ fn local_name(index: u16, params: &[(u16, String)]) -> String {
         .map_or_else(|| format!("var{index}"), |(_, n)| n.clone())
 }
 
-const MAX_DUP_EXPR_NODES: usize = 1024;
+pub(crate) const MAX_DUP_EXPR_NODES: usize = 1024;
 
-fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
+pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
     fn walk(e: &Expr, cap: usize, acc: &mut usize) {
         if *acc >= cap {
             return;

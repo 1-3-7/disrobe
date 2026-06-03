@@ -1,0 +1,31 @@
+[package]
+name = "disrobe-pass-nativelang"
+description = "Natively-compiled language recovery pass: Nim/Zig/Crystal binary fingerprinting, symbol demangling (Itanium/dotted/Crystal type-path), runtime+GC-metadata and std-symbol recovery. Source is not recoverable; symbols/metadata only."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["nim", "zig", "crystal", "demangle", "reverse-engineering"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+object = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }

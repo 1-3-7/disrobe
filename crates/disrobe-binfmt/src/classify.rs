@@ -39,6 +39,25 @@ pub enum NativeFormat {
     MachO,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeLangHint {
+    Nim,
+    Zig,
+    Crystal,
+}
+
+impl NativeLangHint {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Nim => "nim",
+            Self::Zig => "zig",
+            Self::Crystal => "crystal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
@@ -58,6 +77,7 @@ pub struct InputClassification {
     pub candidates: Vec<(Action, Confidence)>,
     pub reason: String,
     pub native: Option<crate::native::NativeFile>,
+    pub native_lang: Option<NativeLangHint>,
 }
 
 const PE_MAGIC: &[u8; 2] = b"MZ";
@@ -83,6 +103,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
             candidates: Vec::new(),
             reason: "empty input".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
 
@@ -102,6 +123,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
                 container_kind.label()
             ),
             native: None,
+            native_lang: None,
         };
     }
 
@@ -112,6 +134,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
             candidates: vec![(Action::Decompile { lang: Lang::Python }, Confidence(0.95))],
             reason,
             native: None,
+            native_lang: None,
         };
     }
 
@@ -121,6 +144,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
             candidates: vec![(Action::Decompile { lang: Lang::Wasm }, Confidence(0.95))],
             reason: "wasm \\0asm magic detected".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
 
@@ -130,6 +154,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
             candidates: vec![(Action::Decompile { lang: Lang::Java }, Confidence(0.95))],
             reason: "java class magic 0xcafebabe detected".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
 
@@ -149,6 +174,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
                     "native {native:?} + pyinstaller MEI cookie - extract archive then decompile .pyc"
                 ),
                 native: parsed,
+                native_lang: None,
             };
         }
         if bytes_contains(bytes, b"NUITKA_VERSION") || bytes_contains(bytes, b"Nuitka_VERSION") {
@@ -157,13 +183,29 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
                 candidates: vec![(Action::Decompile { lang: Lang::Native }, Confidence(0.75))],
                 reason: "native binary + Nuitka markers - semantic recovery only".to_owned(),
                 native: parsed,
+                native_lang: None,
             };
         }
+        let native_lang: Option<NativeLangHint> = native_lang_fingerprint(bytes);
+        let reason: String = native_lang.map_or_else(
+            || format!("native {native:?} binary - pass-first native handling"),
+            |lang: NativeLangHint| {
+                format!(
+                    "native {native:?} binary + {} fingerprint - symbol/metadata recovery (source not recoverable)",
+                    lang.label()
+                )
+            },
+        );
+        let confidence: f32 = if native_lang.is_some() { 0.8 } else { 0.6 };
         return InputClassification {
             primary_action: Action::Decompile { lang: Lang::Native },
-            candidates: vec![(Action::Decompile { lang: Lang::Native }, Confidence(0.6))],
-            reason: format!("native {native:?} binary - pass-first native handling"),
+            candidates: vec![(
+                Action::Decompile { lang: Lang::Native },
+                Confidence(confidence),
+            )],
+            reason,
             native: parsed,
+            native_lang,
         };
     }
 
@@ -183,6 +225,7 @@ pub fn classify_input(path: &Path, bytes: &[u8]) -> InputClassification {
             )],
             reason: "sourcedefender PYE006.0 magic detected".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
 
@@ -211,6 +254,7 @@ fn classify_source_text(path: &Path, bytes: &[u8]) -> InputClassification {
             reason: "typescript extension - already source, no obfuscator-family heuristic"
                 .to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("js" | "jsx" | "mjs" | "cjs") => classify_js_text(text_head),
         Some("py") => InputClassification {
@@ -218,12 +262,14 @@ fn classify_source_text(path: &Path, bytes: &[u8]) -> InputClassification {
             candidates: vec![(Action::Decompile { lang: Lang::Python }, Confidence(0.6))],
             reason: "python .py extension - already source".to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("pyc" | "pyo") => InputClassification {
             primary_action: Action::Decompile { lang: Lang::Python },
             candidates: vec![(Action::Decompile { lang: Lang::Python }, Confidence(0.6))],
             reason: "python .pyc extension".to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("pye") => InputClassification {
             primary_action: Action::ChainExtract {
@@ -240,30 +286,35 @@ fn classify_source_text(path: &Path, bytes: &[u8]) -> InputClassification {
             )],
             reason: "sourcedefender .pye extension - decrypt then decompile".to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("wasm") => InputClassification {
             primary_action: Action::Decompile { lang: Lang::Wasm },
             candidates: vec![(Action::Decompile { lang: Lang::Wasm }, Confidence(0.6))],
             reason: ".wasm extension".to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("wat") => InputClassification {
             primary_action: Action::Decompile { lang: Lang::Wasm },
             candidates: vec![(Action::Decompile { lang: Lang::Wasm }, Confidence(0.6))],
             reason: ".wat extension".to_owned(),
             native: None,
+            native_lang: None,
         },
         Some("class") => InputClassification {
             primary_action: Action::Decompile { lang: Lang::Java },
             candidates: vec![(Action::Decompile { lang: Lang::Java }, Confidence(0.6))],
             reason: ".class extension".to_owned(),
             native: None,
+            native_lang: None,
         },
         _ => InputClassification {
             primary_action: Action::Unknown,
             candidates: Vec::new(),
             reason: "no magic, no recognized extension".to_owned(),
             native: None,
+            native_lang: None,
         },
     }
 }
@@ -282,6 +333,7 @@ fn classify_js_text(text_head: &str) -> InputClassification {
             )],
             reason: "obfuscator.io banner present".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
     if text_head.contains("jscrambler") {
@@ -297,6 +349,7 @@ fn classify_js_text(text_head: &str) -> InputClassification {
             )],
             reason: "jscrambler banner present".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
     if has_high_hex_identifier_density(text_head) {
@@ -312,6 +365,7 @@ fn classify_js_text(text_head: &str) -> InputClassification {
             )],
             reason: "high _0xXXXX identifier density + eval/decode shape".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
     if text_head.contains("_$_") && text_head.contains("globalThis") {
@@ -327,6 +381,7 @@ fn classify_js_text(text_head: &str) -> InputClassification {
             )],
             reason: "js-confuser dispatcher pattern (_$_ + globalThis)".to_owned(),
             native: None,
+            native_lang: None,
         };
     }
     InputClassification {
@@ -341,6 +396,7 @@ fn classify_js_text(text_head: &str) -> InputClassification {
         )],
         reason: "javascript source, no obfuscator markers - pass-through".to_owned(),
         native: None,
+        native_lang: None,
     }
 }
 
@@ -414,6 +470,38 @@ fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
         return false;
     }
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+const NIM_LANG_MARKERS: &[&[u8]] = &[b"NimMainModule", b"NimMainInner", b"PreMainInner"];
+const ZIG_LANG_MARKERS: &[&[u8]] = &[
+    b"start.posixCallMainAndExit",
+    b"start.callMain",
+    b"__zig_probe_stack",
+];
+const CRYSTAL_LANG_MARKERS: &[&[u8]] = &[
+    b"__crystal_raise",
+    b"Crystal::EventLoop",
+    b"Crystal::System",
+];
+
+#[must_use]
+pub fn native_lang_fingerprint(bytes: &[u8]) -> Option<NativeLangHint> {
+    let score = |markers: &[&[u8]]| -> usize {
+        markers
+            .iter()
+            .filter(|m: &&&[u8]| bytes_contains(bytes, m))
+            .count()
+    };
+    let candidates: [(NativeLangHint, usize); 3] = [
+        (NativeLangHint::Nim, score(NIM_LANG_MARKERS)),
+        (NativeLangHint::Zig, score(ZIG_LANG_MARKERS)),
+        (NativeLangHint::Crystal, score(CRYSTAL_LANG_MARKERS)),
+    ];
+    candidates
+        .into_iter()
+        .filter(|(_, hits): &(NativeLangHint, usize)| *hits > 0)
+        .max_by_key(|(_, hits): &(NativeLangHint, usize)| *hits)
+        .map(|(lang, _): (NativeLangHint, usize)| lang)
 }
 
 #[cfg(test)]
@@ -588,5 +676,48 @@ mod tests {
             panic!("expected deob");
         };
         assert_eq!(family, ObfuscatorFamily::JavaScriptObfuscator);
+    }
+
+    fn corpus_native(rel: &str) -> Option<Vec<u8>> {
+        let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("..");
+        p.push("..");
+        p.push("corpus");
+        p.push("native");
+        p.push(rel);
+        std::fs::read(&p).ok()
+    }
+
+    #[test]
+    fn native_lang_fingerprint_distinguishes_zig_nim_crystal() {
+        let cases: [(&str, NativeLangHint); 3] = [
+            ("zig/hello.zig.elf", NativeLangHint::Zig),
+            ("nim/hello.nim.elf", NativeLangHint::Nim),
+            ("crystal/hello.cr.exe", NativeLangHint::Crystal),
+        ];
+        for (rel, expected) in cases {
+            let Some(bytes): Option<Vec<u8>> = corpus_native(rel) else {
+                eprintln!("FIXTURE PENDING: corpus/native/{rel}");
+                continue;
+            };
+            assert_eq!(
+                native_lang_fingerprint(&bytes),
+                Some(expected),
+                "fingerprint mismatch for {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_native_lang_surfaces_hint() {
+        let Some(bytes): Option<Vec<u8>> = corpus_native("zig/hello.zig.elf") else {
+            return;
+        };
+        let cl: InputClassification = classify_input(&PathBuf::from("hello"), &bytes);
+        assert_eq!(cl.native_lang, Some(NativeLangHint::Zig));
+        assert!(matches!(
+            cl.primary_action,
+            Action::Decompile { lang: Lang::Native }
+        ));
     }
 }

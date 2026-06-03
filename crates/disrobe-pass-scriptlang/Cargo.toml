@@ -1,0 +1,34 @@
+[package]
+name = "disrobe-pass-scriptlang"
+description = "Scripted/VM/cross-target language recovery: Perl B::Concise op-tree reader, R RDS/saveRDS deserializer, Tcl starkit/tclkit container extractor, Haxe cross-target detector + router."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["perl", "tcl", "haxe", "starkit", "deobfuscation"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+zip = { workspace = true }

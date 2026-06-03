@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::redundant_pub_crate)]
 
+mod blob_scan;
 mod body;
 mod buildinfo;
 mod c_module;
@@ -27,6 +28,7 @@ pub(crate) mod util;
 mod variant;
 mod version_db;
 
+pub use blob_scan::{BlobLeaf, BlobScan, scan_constants_blob};
 pub use body::{
     BinOpKind, CmpOpKind, LiftFidelity, PythonExpr, PythonStmt, extract_impl_body_text, lift_body,
 };
@@ -40,7 +42,7 @@ pub use constants::{
     decode_const_file,
 };
 pub use decompile::{
-    DecompSourceKind, NuitkaDecompilation, decompile_binary, decompile_build_dir,
+    BinaryConstants, DecompSourceKind, NuitkaDecompilation, decompile_binary, decompile_build_dir,
     decompile_const_bytes,
 };
 pub use demangle::{DemangledFunction, NuitkaSymbolKind, demangle_function};

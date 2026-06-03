@@ -279,6 +279,9 @@ pub enum Language {
     Hermes,
     V8Bytecode,
     JvmBytecode,
+    Perl,
+    Tcl,
+    Haxe,
 }
 
 impl Language {
@@ -326,6 +329,9 @@ impl Language {
             Self::Hermes => "Hermes",
             Self::V8Bytecode => "V8 Bytecode",
             Self::JvmBytecode => "JVM Bytecode",
+            Self::Perl => "Perl",
+            Self::Tcl => "Tcl",
+            Self::Haxe => "Haxe",
         }
     }
 
@@ -340,6 +346,8 @@ impl Language {
             | Self::Php
             | Self::Elixir
             | Self::Batch
+            | Self::Perl
+            | Self::Tcl
             | Self::Vba => CommentStyle::Hash,
             Self::JavaScript
             | Self::TypeScript
@@ -362,6 +370,7 @@ impl Language {
             | Self::Go
             | Self::V8Bytecode
             | Self::JvmBytecode
+            | Self::Haxe
             | Self::Hermes => CommentStyle::DoubleSlash,
             Self::Lua | Self::Haskell => CommentStyle::DoubleDash,
             Self::Wat | Self::CommonLisp => CommentStyle::SemiSemi,

@@ -8,9 +8,9 @@ use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_jvm::{
     AndroidBackend, BackendCapability, BackendInvocation, CLASS_MAGIC, ClassFile, DEX_MAGIC_PREFIX,
-    DecompiledClass, DexFile, Instruction, JarExtract, JvmBackend, Operands, decompile_class,
-    detect_available, disassemble, extract_jar, invoke_android, invoke_jvm, parse_classfile,
-    parse_code_attribute, parse_dex,
+    DecompiledClass, DecompiledDex, DexFile, Instruction, JarExtract, JvmBackend, Operands,
+    decompile_class, decompile_dex, detect_available, disassemble, extract_jar, invoke_android,
+    invoke_jvm, parse_classfile, parse_code_attribute, parse_dex,
 };
 use std::fmt::Write as _;
 
@@ -129,9 +129,11 @@ fn decompile(
         ClassformatKind::Dex => {
             let dx: DexFile =
                 parse_dex(&bytes).map_err(|e| miette::miette!("DR-CLI-0403: dex parse: {e}"))?;
+            let native: DecompiledDex = decompile_dex(&dx, &bytes);
+            native_emitted = emit_native_dex(&emit_kinds, &out_dir, &stem, &native)?;
             let invocation: Option<BackendInvocation> =
                 run_android_backend(&caps, backend_choice, &input, &out_dir, timeout_secs)?;
-            dex_summary(&input, &dx, invocation.as_ref())
+            dex_summary(&input, &dx, &native, invocation.as_ref())
         }
         ClassformatKind::Jar => {
             let extract: JarExtract = extract_jar(&bytes)
@@ -141,9 +143,11 @@ fn decompile(
             jar_summary(&input, &extract, invocation.as_ref())
         }
         ClassformatKind::Apk => {
+            let native: DecompiledDex = decompile_apk_dexes(&bytes);
+            native_emitted = emit_native_dex(&emit_kinds, &out_dir, &stem, &native)?;
             let invocation: Option<BackendInvocation> =
                 run_android_backend(&caps, backend_choice, &input, &out_dir, timeout_secs)?;
-            apk_summary(&input, invocation.as_ref())
+            apk_summary(&input, &native, invocation.as_ref())
         }
         ClassformatKind::Unknown => {
             return Err(miette::miette!(
@@ -376,12 +380,11 @@ fn pick_android_backend(
         JvmBackendKind::Dex2Jar => Some(AndroidBackend::Dex2Jar),
         _ => None,
     };
-    if let Some(b) = want
-        && caps.android.contains(&b)
-    {
+    let b: AndroidBackend = want?;
+    if caps.android.contains(&b) {
         return Some(b);
     }
-    caps.android.first().copied()
+    None
 }
 
 const fn jvm_label(b: JvmBackend) -> &'static str {
@@ -427,6 +430,7 @@ fn classfile_summary(
 fn dex_summary(
     input: &std::path::Path,
     dx: &DexFile,
+    native: &DecompiledDex,
     invocation: Option<&BackendInvocation>,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -437,6 +441,11 @@ fn dex_summary(
         "string_count": dx.strings.len(),
         "class_count": dx.class_descriptors.len(),
         "type_name_count": dx.type_names.len(),
+        "native_decompiler": "disrobe-dalvik",
+        "native_class_count": native.class_count,
+        "native_method_count": native.method_count,
+        "native_fully_lifted_methods": native.fully_lifted_methods,
+        "native_fallback_methods": native.fallback_methods,
         "backend_invoked": invocation.is_some(),
         "backend_exit_code": invocation.map(|i| i.exit_code),
     })
@@ -461,15 +470,53 @@ fn jar_summary(
 
 fn apk_summary(
     input: &std::path::Path,
+    native: &DecompiledDex,
     invocation: Option<&BackendInvocation>,
 ) -> serde_json::Value {
     serde_json::json!({
         "schema": "disrobe.jvm.decompile/v0",
         "input": input.display().to_string(),
         "format": "apk",
+        "native_decompiler": "disrobe-dalvik",
+        "native_class_count": native.class_count,
+        "native_method_count": native.method_count,
+        "native_fully_lifted_methods": native.fully_lifted_methods,
         "backend_invoked": invocation.is_some(),
         "backend_exit_code": invocation.map(|i| i.exit_code),
     })
+}
+
+fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
+    let mut combined: DecompiledDex = DecompiledDex {
+        source: String::new(),
+        class_count: 0,
+        method_count: 0,
+        fully_lifted_methods: 0,
+        fallback_methods: 0,
+    };
+    let Ok(extract): Result<JarExtract, _> = extract_jar(apk_bytes) else {
+        return combined;
+    };
+    for entry in &extract.entries {
+        let leaf: &str = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+        let is_classes_dex: bool = leaf.starts_with("classes")
+            && std::path::Path::new(leaf)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dex"));
+        if !is_classes_dex {
+            continue;
+        }
+        let Ok(dx): Result<DexFile, _> = parse_dex(&entry.bytes) else {
+            continue;
+        };
+        let part: DecompiledDex = decompile_dex(&dx, &entry.bytes);
+        combined.source.push_str(&part.source);
+        combined.class_count += part.class_count;
+        combined.method_count += part.method_count;
+        combined.fully_lifted_methods += part.fully_lifted_methods;
+        combined.fallback_methods += part.fallback_methods;
+    }
+    combined
 }
 
 fn sanitize_entry_path(out_dir: &std::path::Path, raw: &str) -> PathBuf {
@@ -566,6 +613,22 @@ fn operand_text(insn: &Instruction) -> String {
         Operands::TableSwitch { low, high, .. } => format!(" {low}..{high}"),
         Operands::LookupSwitch { pairs, .. } => format!(" npairs={}", pairs.len()),
     }
+}
+
+fn emit_native_dex(
+    emit_kinds: &[String],
+    out_dir: &std::path::Path,
+    stem: &str,
+    native: &DecompiledDex,
+) -> miette::Result<bool> {
+    let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
+    let want_source: bool = spec.is_empty() || spec.contains(EmitKind::Source);
+    if want_source {
+        let path: PathBuf = out_dir.join(format!("{stem}.java"));
+        std::fs::write(&path, &native.source)
+            .map_err(|e| miette::miette!("DR-CLI-0422: cannot write native dex source: {e}"))?;
+    }
+    Ok(want_source)
 }
 
 fn emit_native_artifacts(

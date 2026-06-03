@@ -55,7 +55,7 @@ impl AstBuilder for DefaultAstBuilder {
         let body: Vec<Stmt> = prepend_global_decls(
             code,
             &stream.ops,
-            postprocess_body(stripped, BodyKind::Module),
+            thread_module_annotations(postprocess_body(stripped, BodyKind::Module)),
         );
         Ok(AstModule {
             docstring: module_docstring,
@@ -2967,6 +2967,67 @@ fn except_star_body_end(stream: &DecodedStream, region: &TryRegion, truncated_en
     trim_try_body_jump(stream, region.try_start, region.handler_start)
 }
 
+/// Index where the inline function epilogue begins inside an `except*` body whose protected region is a
+/// nested `async with`. On 3.12+ `CPython` lays the post-`try` epilogue (`if failure is not None:
+/// return failure` and the trailing `return {...}`) INLINE between the `async with`'s normal-exit
+/// `__aexit__` cleanup and the with's out-of-line `WITH_EXCEPT_START` handler block - i.e. INSIDE the
+/// `except*` body span. Source-faithfully that epilogue sits AFTER the whole `try`/`except*`, so the
+/// `except*` body must stop at the epilogue and the epilogue must be re-structured as the construct
+/// successor. Locate the with-handler `PUSH_EXC_INFO` (just before the nested `WITH_EXCEPT_START`),
+/// then the normal-exit `__aexit__` `None`-triple immediately preceding it, and return the index past
+/// that cleanup. `None` when there is no nested with-handler, when the post-cleanup flow is NOT a
+/// guarded branch (a with-trailing-return idiom, not an epilogue), or when no real statement follows -
+/// so plain `except*`-over-`async with` cells keep their existing body end and stay byte-identical.
+fn except_star_nested_with_epilogue_span(
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Option<(usize, usize)> {
+    let with_except: usize = (region.try_start..region.handler_start)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart))?;
+    let with_handler_start: usize = (region.try_start..with_except)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))?;
+    let cleanup_triple: usize =
+        (region.try_start..with_handler_start)
+            .rev()
+            .find(|&k: &usize| {
+                is_none_const_push(&stream.ops[k])
+                    && is_exit_none_triple(stream, k, with_handler_start)
+            })?;
+    let epilogue_start: usize = async_with_cleanup_end(stream, cleanup_triple, with_handler_start)?;
+    if !async_with_exit_guarded_by_branch(stream, epilogue_start, with_handler_start) {
+        return None;
+    }
+    let epilogue_end: usize = except_star_epilogue_end(stream, epilogue_start, with_handler_start)?;
+    if epilogue_start >= epilogue_end || !slice_has_real_stmt(stream, epilogue_start, epilogue_end)
+    {
+        return None;
+    }
+    Some((epilogue_start, epilogue_end))
+}
+
+/// The op index one past the last real epilogue statement, before the `async with`'s out-of-line
+/// suspension/handler machinery. The inline epilogue ends at its final `RETURN`/`RETURN_CONST`; the ops
+/// that follow up to the with-handler `PUSH_EXC_INFO` (`CLEANUP_THROW`, `JUMP_BACKWARD_NO_INTERRUPT`,
+/// `END_SEND`, jump-overs) are the with's send-poll tail, never user statements, and must NOT be fed to
+/// the structurer (they mis-parse as a spurious `while True` / `await None` loop). Returns the index
+/// after the last return; `None` when the span carries no return (not a recognisable epilogue).
+fn except_star_epilogue_end(
+    stream: &DecodedStream,
+    epilogue_start: usize,
+    with_handler_start: usize,
+) -> Option<usize> {
+    (epilogue_start..with_handler_start)
+        .rev()
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+        })
+        .map(|last_return: usize| last_return + 1)
+}
+
 fn structure_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2976,11 +3037,8 @@ fn structure_try(
 ) -> Result<Vec<Stmt>> {
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
     let (stmt, consumed_end, gap_succ): (Stmt, usize, Vec<Stmt>) = if region.is_with {
-        (
-            structure_with(code, stream, region)?,
-            region.region_end,
-            Vec::new(),
-        )
+        let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+        (with_stmt, region.region_end, with_tail)
     } else {
         let extended_end: usize =
             extend_try_body(code, stream, region.try_end, region.handler_start);
@@ -2996,8 +3054,18 @@ fn structure_try(
             let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, star_body_end)?;
             let handlers: Vec<ExceptHandler> =
                 parse_except_star_handlers(code, stream, region.handler_start, region.region_end)?;
-            let succ_scan_start: usize = extended_end.max(star_body_end);
-            let succ_end: usize = trim_try_body_jump(stream, succ_scan_start, region.handler_start);
+            let inline_epilogue: Option<(usize, usize)> =
+                except_star_nested_with_epilogue_span(stream, region);
+            let (succ_scan_start, succ_end): (usize, usize) =
+                if let Some((start, end)) = inline_epilogue {
+                    (start, end)
+                } else {
+                    let scan_start: usize = extended_end.max(star_body_end);
+                    (
+                        scan_start,
+                        trim_try_body_jump(stream, scan_start, region.handler_start),
+                    )
+                };
             let succ: Vec<Stmt> = if succ_scan_start < succ_end
                 && slice_has_real_stmt(stream, succ_scan_start, succ_end)
             {
@@ -4109,7 +4177,7 @@ fn structure_async_with(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &TryRegion,
-) -> Result<Option<Stmt>> {
+) -> Result<Option<(Stmt, Vec<Stmt>)>> {
     let with_except: usize = match (region.handler_start..region.region_end)
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart))
     {
@@ -4170,15 +4238,53 @@ fn structure_async_with(
     if let Some(ret) = async_with_trailing_return(code, stream, body_end, search_end)? {
         body.push(ret);
     }
-    Ok(Some(Stmt::With {
-        items: vec![WithItem {
-            context_expr,
-            optional_vars,
-        }],
-        body: non_empty(body),
-        is_async: true,
-        line: None,
-    }))
+    Ok(Some((
+        Stmt::With {
+            items: vec![WithItem {
+                context_expr,
+                optional_vars,
+            }],
+            body: non_empty(body),
+            is_async: true,
+            line: None,
+        },
+        Vec::new(),
+    )))
+}
+
+/// Skip the normal-exit `__aexit__(None, None, None)` cleanup an async `with` emits after its body:
+/// the `LOAD_CONST None` triple, the exit `CALL`, the awaited poll, and the discarding `POP`. Returns
+/// the index where ordinary post-with flow resumes (the `return EXPR` of a with-trailing-return idiom,
+/// OR the inline function epilogue on 3.12+). `None` when no cleanup triple begins at `body_end`.
+fn async_with_cleanup_end(stream: &DecodedStream, body_end: usize, hi: usize) -> Option<usize> {
+    let mut i: usize = body_end;
+    let mut loads: usize = 0;
+    while i < hi && loads < 3 {
+        match &stream.ops[i] {
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                loads += 1;
+            }
+            CanonicalOp::Push(0)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    if loads < 3 {
+        return None;
+    }
+    let call: usize =
+        (i..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+    let after_await: usize = (call + 1..hi)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
+        .map_or(call + 1, |g: usize| skip_await_poll(stream, g + 1, hi));
+    Some(
+        first_significant(stream, after_await, hi)
+            .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Pop))
+            .map_or(after_await, |p: usize| p + 1),
+    )
 }
 
 /// On the `return EXPR` exit path of an async `with`, `CPython` emits the awaited
@@ -4191,35 +4297,9 @@ fn async_with_trailing_return(
     body_end: usize,
     hi: usize,
 ) -> Result<Option<Stmt>> {
-    let mut i: usize = body_end;
-    let mut loads: usize = 0;
-    while i < hi && loads < 3 {
-        match &stream.ops[i] {
-            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
-                loads += 1;
-            }
-            CanonicalOp::Push(0)
-            | CanonicalOp::Cache
-            | CanonicalOp::Nop
-            | CanonicalOp::ExtendedArg(_) => {}
-            _ => return Ok(None),
-        }
-        i += 1;
-    }
-    if loads < 3 {
+    let Some(ret_start): Option<usize> = async_with_cleanup_end(stream, body_end, hi) else {
         return Ok(None);
-    }
-    let call: usize =
-        match (i..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_))) {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-    let after_await: usize = (call + 1..hi)
-        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
-        .map_or(call + 1, |g: usize| skip_await_poll(stream, g + 1, hi));
-    let ret_start: usize = first_significant(stream, after_await, hi)
-        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Pop))
-        .map_or(after_await, |p: usize| p + 1);
+    };
     if async_with_exit_guarded_by_branch(stream, ret_start, hi) {
         return Ok(None);
     }
@@ -4404,31 +4484,38 @@ fn collect_with_chain(
     Ok((items, cursor))
 }
 
-fn structure_with(code: &CodeObject, stream: &DecodedStream, region: &TryRegion) -> Result<Stmt> {
-    if let Some(stmt) = structure_async_with(code, stream, region)? {
-        return Ok(stmt);
+fn structure_with(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Result<(Stmt, Vec<Stmt>)> {
+    if let Some(stmt_and_tail) = structure_async_with(code, stream, region)? {
+        return Ok(stmt_and_tail);
     }
     let (chain, body_start): (Vec<WithChainEntry>, usize) =
         collect_with_chain(code, stream, region)?;
     if chain.is_empty() {
         let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, region.try_end)?;
-        return Ok(Stmt::With {
-            items: vec![WithItem {
-                context_expr: Expr::Constant {
-                    value: ConstValue::None,
-                    line: None,
-                },
-                optional_vars: None,
-            }],
-            body: non_empty(body),
-            is_async: false,
-            line: None,
-        });
+        return Ok((
+            Stmt::With {
+                items: vec![WithItem {
+                    context_expr: Expr::Constant {
+                        value: ConstValue::None,
+                        line: None,
+                    },
+                    optional_vars: None,
+                }],
+                body: non_empty(body),
+                is_async: false,
+                line: None,
+            },
+            Vec::new(),
+        ));
     }
     let search_end: usize = region.region_end.max(region.try_end);
     let body_end: usize = with_body_end(stream, body_start, search_end);
     let body: Vec<Stmt> = structure_with_body(code, stream, body_start, body_end, search_end)?;
-    Ok(assemble_with_chain(chain, body))
+    Ok((assemble_with_chain(chain, body), Vec::new()))
 }
 
 /// Assemble the recovered (non-empty) `with`-setup chain into a faithful statement. Consecutive
@@ -8731,9 +8818,11 @@ fn classify_class_pattern(
 /// Reconstruct the ordered class sub-patterns of one `match`-class arm across the two distinct
 /// `CPython` lowerings. 3.11+ lowers a successful `MATCH_CLASS` to `UNPACK_SEQUENCE total_slots` which
 /// pushes the slots with slot 0 on top; a `SWAP n` may reorder so a non-top slot is tested next, and
-/// each slot is consumed by a literal compare, a capture store, the fused `STORE_FAST_STORE_FAST`, or
-/// a `POP_TOP` wildcard drop. Tracking the slot-index stack across `SWAP`/consume yields each slot's
-/// sub-pattern by true position. 3.10 instead leaves the matched-attrs tuple on the stack and
+/// each slot is consumed by a literal compare, a capture store, the fused `STORE_FAST_STORE_FAST`, the
+/// fused `STORE_FAST_LOAD_FAST` (3.13+ binds the capture and re-loads it for an immediate guard, so the
+/// store slot is the binding), or a `POP_TOP` wildcard drop. Tracking the slot-index stack across
+/// `SWAP`/consume yields each slot's sub-pattern by true position. 3.10 instead leaves the matched-attrs
+/// tuple on the stack and
 /// subscripts each tested slot by index (`DUP_TOP; LOAD_CONST <i>; BINARY_SUBSCR; <test|capture>`),
 /// emitting nothing for wildcard slots. Presence of `UNPACK_SEQUENCE` selects the modern walk;
 /// otherwise the subscript-indexed walk fills the addressed slots and leaves the rest wildcard. The
@@ -8797,6 +8886,17 @@ fn recover_class_subpatterns(
                 if let Some(si) = value_stack.pop() {
                     let name: String =
                         name_at(&code.names, *slot, k, "name").unwrap_or_else(|_| "_".to_owned());
+                    slots[si] = Pattern::MatchAs {
+                        pattern: None,
+                        name: Some(name),
+                    };
+                }
+                k += 1;
+            }
+            CanonicalOp::StoreFastLoadFast(store_slot, _) => {
+                if let Some(si) = value_stack.pop() {
+                    let name: String =
+                        local_name_at(code, *store_slot, k).unwrap_or_else(|_| "_".to_owned());
                     slots[si] = Pattern::MatchAs {
                         pattern: None,
                         name: Some(name),
@@ -13620,6 +13720,173 @@ fn thread_class_annotations(mut body: Vec<Stmt>) -> Vec<Stmt> {
         }
     }
     threaded
+}
+
+/// 3.14 (PEP 649/749) defers MODULE-scope annotations (`X: T = v`, `X: T`) into a top-level
+/// `__annotate__` code object guarded by a per-module `__conditional_annotations__` set. The module
+/// body keeps only the value-bearing `STORE_NAME` (`X = v`) plus a `__conditional_annotations__` seed
+/// (`__conditional_annotations__ = set()`, already dropped by `is_conditional_annotations_seed`) and,
+/// per annotated name, a `__conditional_annotations__.add(idx)` membership marker that the structurer
+/// surfaces as a dangling `__conditional_annotations__` expression. Recover the `(name, annotation)`
+/// pairs from the synthetic `def __annotate__` body - each a `if idx in __conditional_annotations__:
+/// <annotation>[name] = ...` clause whose subscript BASE is the annotation expression and whose slice
+/// is the name literal - then upgrade the matching value `Assign` to an `AnnAssign` (or insert a bare
+/// `AnnAssign` where the body had no value), and drop both the synthetic `__annotate__` def and the
+/// leftover `__conditional_annotations__` membership expression. Mirrors `thread_class_annotations`
+/// for module scope so 3.14 modules recover `X: T = v` instead of leaking the lazy-annotation shell.
+fn thread_module_annotations(mut body: Vec<Stmt>) -> Vec<Stmt> {
+    let annotations: Vec<(String, Expr)> = body
+        .iter()
+        .find_map(|s: &Stmt| match s {
+            Stmt::FunctionDef {
+                name,
+                body: fn_body,
+                ..
+            } if name == "__annotate__" => Some(module_annotation_pairs(fn_body)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if annotations.is_empty() {
+        return body;
+    }
+    body.retain(|s: &Stmt| {
+        !matches!(s, Stmt::FunctionDef { name, .. } if name == "__annotate__")
+            && !is_conditional_annotations_membership(s)
+    });
+    let mut threaded: Vec<Stmt> = Vec::with_capacity(body.len() + annotations.len());
+    for stmt in body {
+        let upgrade: Option<(String, Expr)> = match &stmt {
+            Stmt::Assign { targets, .. } => match targets.as_slice() {
+                [Expr::Name { id, .. }] => annotations
+                    .iter()
+                    .find(|(name, _): &&(String, Expr)| name == id)
+                    .map(|(name, annotation): &(String, Expr)| (name.clone(), annotation.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (upgrade, stmt) {
+            (Some((name, annotation)), Stmt::Assign { value, line, .. }) => {
+                threaded.push(Stmt::AnnAssign {
+                    target: Expr::Name {
+                        id: name,
+                        ctx: ExprCtx::Store,
+                        line: None,
+                    },
+                    annotation,
+                    value: Some(value),
+                    simple: true,
+                    line,
+                });
+            }
+            (_, stmt) => threaded.push(stmt),
+        }
+    }
+    let assigned: std::collections::BTreeSet<&String> = threaded
+        .iter()
+        .filter_map(|s: &Stmt| match s {
+            Stmt::AnnAssign {
+                target: Expr::Name { id, .. },
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .collect();
+    let bare: Vec<Stmt> = annotations
+        .iter()
+        .filter(|(name, _): &&(String, Expr)| !assigned.contains(name))
+        .map(|(name, annotation): &(String, Expr)| Stmt::AnnAssign {
+            target: Expr::Name {
+                id: name.clone(),
+                ctx: ExprCtx::Store,
+                line: None,
+            },
+            annotation: annotation.clone(),
+            value: None,
+            simple: true,
+            line: None,
+        })
+        .collect();
+    threaded.splice(0..0, bare);
+    threaded
+}
+
+/// Ordered `(name, annotation)` pairs from a recovered module-scope `__annotate__` body. Each
+/// annotation lives inside an `if idx in __conditional_annotations__:` guard whose single body
+/// statement assigns into `<annotation>[name]`; the subscript base is the annotation and the string
+/// slice is the annotated name. Plain (unconditional) subscript-store bodies are accepted too so a
+/// non-conditional 3.14 `__annotate__` shape still recovers.
+fn module_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
+    let mut pairs: Vec<(String, Expr)> = Vec::new();
+    for stmt in fn_body {
+        match stmt {
+            Stmt::If { test, body, .. } if is_conditional_annotations_test(test) => {
+                for inner in body {
+                    if let Some(pair) = module_annotation_subscript_pair(inner) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+            _ => {
+                if let Some(pair) = module_annotation_subscript_pair(stmt) {
+                    pairs.push(pair);
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// `<annotation>[name] = ...` -> `(name, annotation)`. The 3.14 lazy-annotation body materializes the
+/// annotations dict via `STORE_SUBSCR` against an empty `BUILD_MAP`, which the linear structurer
+/// surfaces as a subscript-store whose base is the annotation expression and whose slice is the name
+/// string literal.
+fn module_annotation_subscript_pair(stmt: &Stmt) -> Option<(String, Expr)> {
+    let Stmt::Assign { targets, .. }: &Stmt = stmt else {
+        return None;
+    };
+    let [
+        Expr::Subscript {
+            value: base, slice, ..
+        },
+    ]: &[Expr] = targets.as_slice()
+    else {
+        return None;
+    };
+    let Expr::Constant {
+        value: ConstValue::Str(name),
+        ..
+    }: &Expr = slice.as_ref()
+    else {
+        return None;
+    };
+    Some((name.clone(), unstringify_annotation((**base).clone())))
+}
+
+/// True for the `<int> in __conditional_annotations__` membership test that guards each 3.14 lazy
+/// module annotation.
+fn is_conditional_annotations_test(test: &Expr) -> bool {
+    let Expr::Compare {
+        ops, comparators, ..
+    }: &Expr = test
+    else {
+        return false;
+    };
+    matches!(ops.as_slice(), [CmpOp::In])
+        && matches!(
+            comparators.as_slice(),
+            [Expr::Name { id, .. }] if id == "__conditional_annotations__"
+        )
+}
+
+/// True for the leftover `__conditional_annotations__.add(idx)` membership marker the structurer
+/// surfaces as a bare `__conditional_annotations__` expression statement once the seed assign is
+/// stripped; dropping it keeps the recovered 3.14 module free of lazy-annotation scaffolding.
+fn is_conditional_annotations_membership(s: &Stmt) -> bool {
+    let Stmt::Expr(expr): &Stmt = s else {
+        return false;
+    };
+    matches!(expr, Expr::Name { id, .. } if id == "__conditional_annotations__")
 }
 
 /// Extract ordered `(name, annotation)` pairs from a recovered `__annotate_func__` body whose

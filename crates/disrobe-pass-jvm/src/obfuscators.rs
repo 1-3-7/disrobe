@@ -70,7 +70,32 @@ pub fn detect_all(cf: &ClassFile) -> Vec<Detection> {
     if let Some(d) = detect_yguard(cf, &strings) {
         out.push(d);
     }
+    if let Some(d) = detect_skidsuite2(cf, &strings) {
+        out.push(d);
+    }
+    if let Some(d) = detect_jbco(cf, &strings) {
+        out.push(d);
+    }
     out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpstreamStatus {
+    Active,
+    Archived,
+    Dead,
+}
+
+#[must_use]
+pub const fn upstream_status(protector: Protector) -> UpstreamStatus {
+    match protector {
+        Protector::ProguardR8
+        | Protector::Allatori
+        | Protector::DexGuard
+        | Protector::ZelixKlassMaster => UpstreamStatus::Active,
+        Protector::Stringer | Protector::DashO => UpstreamStatus::Archived,
+        Protector::YGuard | Protector::SkidSuite2 | Protector::Jbco => UpstreamStatus::Dead,
+    }
 }
 
 fn class_name_from_cp(cf: &ClassFile, idx: u16) -> Option<String> {
@@ -277,6 +302,79 @@ fn detect_yguard(_cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<Det
     if score >= 30 {
         Some(Detection {
             protector: Protector::YGuard,
+            confidence: score.min(100),
+            evidence,
+        })
+    } else {
+        None
+    }
+}
+
+fn detect_skidsuite2(cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<Detection> {
+    let mut evidence: Vec<String> = Vec::new();
+    let mut score: u8 = 0;
+    for s in strings.values() {
+        let lower: String = s.to_ascii_lowercase();
+        if lower.contains("skidsuite") || lower.contains("me.lpk") || lower.contains("lpk/skidsuite")
+        {
+            score = score.saturating_add(70);
+            evidence.push(format!("SkidSuite2 marker: '{s}'"));
+        }
+    }
+    if let Some(name) = class_name_from_cp(cf, cf.this_class)
+        && (name.contains("lpk/skidsuite") || name.contains("me/lpk"))
+    {
+        score = score.saturating_add(50);
+        evidence.push(format!("SkidSuite2 class prefix: '{name}'"));
+    }
+    if score >= 50 {
+        Some(Detection {
+            protector: Protector::SkidSuite2,
+            confidence: score.min(100),
+            evidence,
+        })
+    } else {
+        None
+    }
+}
+
+fn detect_jbco(cf: &ClassFile, strings: &BTreeMap<u16, String>) -> Option<Detection> {
+    let mut evidence: Vec<String> = Vec::new();
+    let mut score: u8 = 0;
+    for s in strings.values() {
+        let lower: String = s.to_ascii_lowercase();
+        if lower.contains("jbco") || lower.contains("soot.jbco") || s.contains("ca.mcgill.sable") {
+            score = score.saturating_add(70);
+            evidence.push(format!("JBCO marker: '{s}'"));
+        }
+    }
+    let jsr_ret_methods: usize = cf
+        .methods
+        .iter()
+        .filter(|m| {
+            m.attributes.iter().any(|attr| {
+                cf.utf8_at(attr.name_index)
+                    .map(|n| n == "Code")
+                    .unwrap_or(false)
+                    && crate::bytecode::parse_code_attribute(&attr.info)
+                        .ok()
+                        .and_then(|c| crate::bytecode::disassemble(&c.code).ok())
+                        .map(|insns: Vec<crate::bytecode::Instruction>| {
+                            insns.iter().any(|i| matches!(i.opcode, 0xA8 | 0xC9 | 0xA9))
+                        })
+                        .unwrap_or(false)
+            })
+        })
+        .count();
+    if jsr_ret_methods >= 2 {
+        score = score.saturating_add(35);
+        evidence.push(format!(
+            "{jsr_ret_methods} methods use JBCO-style jsr/ret control flow"
+        ));
+    }
+    if score >= 50 {
+        Some(Detection {
+            protector: Protector::Jbco,
             confidence: score.min(100),
             evidence,
         })

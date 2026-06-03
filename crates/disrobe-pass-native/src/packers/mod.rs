@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod pe_sections;
+
+pub use pe_sections::{DataDirectory, PeImage, PeSection, parse_pe_image};
+
 pub mod upx_cleanroom;
 
 pub use upx_cleanroom::{UpxMethod, UpxPackHeader, UpxUnpackOutput, unpack_upx};
@@ -68,6 +72,27 @@ pub use mew_unpack::{
 };
 
 pub use mew_unpack::{MewEmulatedOutput, MewLeadingChunk, MewLzmaProps, unpack_mew_emulated};
+
+pub mod yodas_crypter;
+
+pub use yodas_crypter::{
+    RecoveredSection, SectionRecovery, YodasCrypterCarve, YodasCrypterReport,
+    recover_yodas_crypter_carve, unpack_yodas_crypter,
+};
+
+pub mod yodas_protector;
+
+pub use yodas_protector::{CarvedSection, YodasProtectorReport, carve_yodas_protector};
+
+pub mod aspack_unpack;
+
+pub use aspack_unpack::{
+    AspackRecovery, AspackReport, CarvedBlock, RecoveredObject, unpack_aspack,
+};
+
+pub mod pecompact_unpack;
+
+pub use pecompact_unpack::{CarvedCode, PecompactRecovery, PecompactReport, unpack_pecompact};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -153,15 +178,18 @@ impl Packer {
     #[must_use]
     pub const fn unpacker_status(self) -> UnpackerStatus {
         match self {
-            Self::Upx | Self::Fsg | Self::Petite | Self::Mpress | Self::Nspack | Self::Mew => {
-                UnpackerStatus::Implemented
-            }
+            Self::Upx
+            | Self::Fsg
+            | Self::Petite
+            | Self::Mpress
+            | Self::Nspack
+            | Self::Mew
+            | Self::YodasCrypter => UnpackerStatus::Implemented,
             Self::Kkrunchy => UnpackerStatus::StubEvalPending,
             Self::AsPack
             | Self::AsProtect
             | Self::Morphine
             | Self::PeCompact
-            | Self::YodasCrypter
             | Self::YodasProtector
             | Self::NPack
             | Self::NeoLite => UnpackerStatus::StubEvalPending,

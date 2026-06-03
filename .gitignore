@@ -337,6 +337,10 @@ corpus/**/*.actual.json
 !corpus/python/decompile/playground/__pycache__/*.pyc
 
 !corpus/native/packers/mew/*.exe
+!corpus/native/packers/aspack/*.exe
+!corpus/native/packers/pecompact/*.exe
+!corpus/native/packers/yodas_crypter/*.exe
+!corpus/native/packers/yodas_protector/*.exe
 
 !corpus/python/pyarmor/**/*.pyd
 !corpus/python/pyarmor/**/*.so
