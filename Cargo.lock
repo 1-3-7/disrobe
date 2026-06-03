@@ -2597,6 +2597,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-transcode"
+version = "0.9.0"
+dependencies = [
+ "blake3",
+ "disrobe-core",
+ "disrobe-ir",
+ "rkyv",
+]
+
+[[package]]
 name = "disrobe-validator"
 version = "0.9.0"
 dependencies = [

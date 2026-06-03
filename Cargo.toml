@@ -36,6 +36,7 @@ members = [
     "crates/disrobe-pyarmor-cextract",
     "crates/disrobe-pyarmor-pytrace",
     "crates/disrobe-python",
+    "crates/disrobe-transcode",
     "crates/disrobe-validator",
     "xtask",
 ]
