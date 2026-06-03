@@ -65,6 +65,8 @@ IST = "IST"
 GTI = "GTI"
 Strng = "Strng"
 Ot = "Ot"
+aassign = "aassign"
+thi = "thi"
 
 [files]
 extend-exclude = [

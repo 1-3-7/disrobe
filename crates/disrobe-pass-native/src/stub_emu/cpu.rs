@@ -54,6 +54,7 @@ pub struct Cpu {
     pub mode: CpuMode,
     fs_base: u64,
     gs_base: u64,
+    seh_dispatch: bool,
 }
 
 impl Cpu {
@@ -65,8 +66,27 @@ impl Cpu {
             mode,
             fs_base: 0,
             gs_base: 0,
+            seh_dispatch: false,
         }
     }
+
+    /// Enable structured-exception-handling dispatch on guest memory faults.
+    ///
+    /// PECompact 2.x (and other SEH-driven packers) deliberately raise an access
+    /// violation - typically `mov [eax], ecx` with `eax = 0` - to transfer
+    /// control into the decompressor installed as the current SEH handler. When
+    /// enabled, a guest fault is not surfaced as [`ExitReason::GuestFault`];
+    /// instead the emulator reads the `EXCEPTION_REGISTRATION_RECORD` at
+    /// `fs:[0]`, sets `EAX = ContinueExecution(0)` per the handler ABI, pushes a
+    /// synthetic return frame, and transfers to the handler. The handler chain is
+    /// walked at most [`Self::SEH_MAX_DEPTH`] deep so a corrupt chain cannot spin.
+    pub fn enable_seh_dispatch(&mut self) {
+        self.seh_dispatch = true;
+        self.mem.block_null_page();
+    }
+
+    const SEH_MAX_DEPTH: u32 = 16;
+    const SEH_END_OF_CHAIN: u64 = 0xFFFF_FFFF;
 
     /// Set the linear base address that an `fs:`-prefixed memory operand adds
     /// to its computed effective address. On Win32 the FS segment points at the
@@ -125,7 +145,12 @@ impl Cpu {
             match self.execute_one(&insn, host) {
                 Ok(Some(reason)) => break reason,
                 Ok(None) => {}
-                Err(e) => break ExitReason::GuestFault(e.to_string()),
+                Err(e) => {
+                    if self.seh_dispatch && self.dispatch_seh(ip) {
+                        continue;
+                    }
+                    break ExitReason::GuestFault(e.to_string());
+                }
             }
         };
         if trace {
@@ -142,6 +167,101 @@ impl Cpu {
             }
         }
         Ok(result)
+    }
+
+    /// Dispatch a guest access violation to the current Win32 SEH handler.
+    ///
+    /// Reads the `EXCEPTION_REGISTRATION_RECORD` head at `fs:[0]`, builds the
+    /// standard x86 dispatch frame - a synthetic `EXCEPTION_RECORD`, a `CONTEXT`
+    /// capturing the faulting register state (notably `CONTEXT.Eip = fault_ip`),
+    /// and the four handler arguments - then transfers to the handler. PECompact
+    /// installs its decompressor as this handler; it inspects the `CONTEXT`,
+    /// rewrites `Eip` to the next stage, and the dispatch frame's resume path
+    /// continues there. Returns `true` if a handler was found and entered.
+    fn dispatch_seh(&mut self, fault_ip: u64) -> bool {
+        if self.mode != CpuMode::Bits32 {
+            return false;
+        }
+        let chain_head: u64 = match self.mem.read_u32(self.fs_base) {
+            Ok(v) => u64::from(v),
+            Err(_) => return false,
+        };
+        let mut record: u64 = chain_head;
+        let mut depth: u32 = 0;
+        while record != Self::SEH_END_OF_CHAIN && record != 0 && depth < Self::SEH_MAX_DEPTH {
+            let handler: u64 = match self.mem.read_u32(record.wrapping_add(4)) {
+                Ok(v) => u64::from(v),
+                Err(_) => return false,
+            };
+            if self.mem.is_mapped(handler) {
+                return self.enter_seh_handler(handler, record, fault_ip);
+            }
+            let next: u64 = match self.mem.read_u32(record) {
+                Ok(v) => u64::from(v),
+                Err(_) => return false,
+            };
+            if next == record {
+                break;
+            }
+            record = next;
+            depth += 1;
+        }
+        false
+    }
+
+    fn enter_seh_handler(&mut self, handler: u64, frame: u64, fault_ip: u64) -> bool {
+        const CONTEXT_EAX: u64 = 0xB0;
+        const CONTEXT_EIP: u64 = 0xB8;
+        let ctx: u64 = self.regs.get(Reg::Rsp).wrapping_sub(0x400) & !0xFu64;
+        let exc_rec: u64 = ctx.wrapping_sub(0x100);
+        if self.mem.write_u32(exc_rec, 0xC000_0005).is_err() {
+            return false;
+        }
+        let _ = self.mem.write_u32(exc_rec + 4, 0);
+        let _ = self.mem.write_u32(exc_rec + 8, 0);
+        let _ = self.mem.write_u32(exc_rec + 12, fault_ip as u32);
+        for off in (0..0x2cc).step_by(4) {
+            let _ = self.mem.write_u32(ctx + off, 0);
+        }
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX, self.regs.get(Reg::Rax) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 4, self.regs.get(Reg::Rcx) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 8, self.regs.get(Reg::Rdx) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 12, self.regs.get(Reg::Rbx) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 16, self.regs.get(Reg::Rsp) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 20, self.regs.get(Reg::Rbp) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 24, self.regs.get(Reg::Rsi) as u32);
+        let _ = self
+            .mem
+            .write_u32(ctx + CONTEXT_EAX + 28, self.regs.get(Reg::Rdi) as u32);
+        let _ = self.mem.write_u32(ctx + CONTEXT_EIP, fault_ip as u32);
+        let dispatcher: u64 = ctx.wrapping_sub(0x200);
+        let mut sp: u64 = ctx.wrapping_sub(0x40) & !0xFu64;
+        let push = |cpu: &mut Self, sp: &mut u64, v: u64| {
+            *sp = sp.wrapping_sub(4);
+            let _ = cpu.mem.write_u32(*sp, v as u32);
+        };
+        push(self, &mut sp, dispatcher);
+        push(self, &mut sp, ctx);
+        push(self, &mut sp, frame);
+        push(self, &mut sp, exc_rec);
+        push(self, &mut sp, fault_ip);
+        self.regs.set(Reg::Rsp, sp);
+        self.regs.rip = handler;
+        true
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2053,6 +2173,54 @@ mod tests {
         cpu.regs.set(Reg::Rsp, 0x2_0FF0);
         cpu.regs.rip = base;
         cpu
+    }
+
+    #[test]
+    fn seh_dispatch_transfers_null_write_fault_to_handler() {
+        const TEB: u64 = 0x7EFD_E000;
+        const HANDLER: u64 = 0x0050_0000;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem.map(0x4000, 0x1000, Perm::RWX);
+        cpu.mem.map(0x2_0000, 0x4000, Perm::RW);
+        cpu.mem.map(TEB, 0x2000, Perm::RW);
+        cpu.mem.map(HANDLER, 0x1000, Perm::RWX);
+        cpu.set_fs_base(TEB);
+        let frame: u64 = 0x2_2000;
+        cpu.mem.write_u32(frame, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_u32(frame + 4, HANDLER as u32).unwrap();
+        cpu.mem.write_u32(TEB, frame as u32).unwrap();
+        let prog: [u8; 4] = [0x33, 0xC0, 0x89, 0x08];
+        cpu.mem.write_unchecked(0x4000, &prog);
+        cpu.mem.write_unchecked(HANDLER, &[0xEB, 0xFE]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_3F00);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 100).unwrap();
+        assert!(
+            matches!(exit, ExitReason::StepCap(_)),
+            "handler is an infinite loop; SEH dispatch must keep running, got {exit:?}",
+        );
+        assert_eq!(
+            cpu.regs.rip, HANDLER,
+            "a null write under SEH dispatch must transfer to the registered handler",
+        );
+    }
+
+    #[test]
+    fn seh_dispatch_disabled_surfaces_guest_fault() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.mem.map(0x4000, 0x1000, Perm::RWX);
+        cpu.mem.map(0x2_0000, 0x1000, Perm::RW);
+        cpu.mem.write_unchecked(0x4000, &[0x33, 0xC0, 0x89, 0x08]);
+        cpu.regs.rip = 0x4000;
+        cpu.regs.set(Reg::Rsp, 0x2_0FF0);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 100).unwrap();
+        assert!(
+            matches!(exit, ExitReason::GuestFault(_)),
+            "without SEH dispatch a null write must surface as a guest fault, got {exit:?}",
+        );
     }
 
     #[test]

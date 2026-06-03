@@ -85,6 +85,8 @@ fn build_registry() -> PassRegistry {
     r.register(&disrobe_pass_beam::chain_detector::BEAM_PASS);
     #[cfg(feature = "as3")]
     r.register(&disrobe_pass_as3::chain_detector::AS3_PASS);
+    #[cfg(feature = "scriptlang")]
+    r.register(&disrobe_pass_scriptlang::chain_detector::SCRIPTLANG_PASS);
     r
 }
 
@@ -510,5 +512,6 @@ mod tests {
         assert!(r.get("go.classify").is_some());
         assert!(r.get("beam.classify").is_some());
         assert!(r.get("as3.classify").is_some());
+        assert!(r.get("scriptlang.classify").is_some());
     }
 }

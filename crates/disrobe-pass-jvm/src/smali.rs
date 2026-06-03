@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dex::DexFile;
+use crate::dalvik::{DalvikInsn, InsnFormat, decode_method};
+use crate::dex::{CodeItem, DexFile, TryItem};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,114 @@ pub fn emit(dex: &DexFile) -> Result<SmaliEmission> {
         text,
         lossy_notes: lossy,
     })
+}
+
+#[must_use]
+pub fn emit_method_body(item: &CodeItem) -> String {
+    let insns: Vec<DalvikInsn> = decode_method(&item.insns);
+    emit_method_body_from_insns(
+        &item.method_name,
+        &item.method_descriptor,
+        item.is_direct,
+        item.registers_size,
+        &insns,
+        &item.tries,
+    )
+}
+
+#[must_use]
+pub fn emit_method_body_from_insns(
+    name: &str,
+    descriptor: &str,
+    is_direct: bool,
+    registers_size: u16,
+    insns: &[DalvikInsn],
+    tries: &[TryItem],
+) -> String {
+    let mut labels: BTreeSet<u32> = BTreeSet::new();
+    for insn in insns {
+        if let Some(t) = insn.branch_target_pc() {
+            labels.insert(t);
+        }
+    }
+    for t in tries {
+        labels.insert(t.start_addr);
+        labels.insert(t.start_addr + u32::from(t.insn_count));
+        for (_, addr) in &t.handlers {
+            labels.insert(*addr);
+        }
+        if let Some(addr) = t.catch_all {
+            labels.insert(addr);
+        }
+    }
+
+    let mut out: String = String::with_capacity(insns.len() * 32);
+    let kind: &str = if is_direct { "direct" } else { "virtual" };
+    let _ = writeln!(out, ".method {kind} {name}{descriptor}");
+    let _ = writeln!(out, "    .registers {registers_size}");
+    for t in tries {
+        let try_end: u32 = t.start_addr + u32::from(t.insn_count);
+        for (catch_type, addr) in &t.handlers {
+            let ty: &str = catch_type.as_deref().unwrap_or("Ljava/lang/Throwable;");
+            let _ = writeln!(
+                out,
+                "    .catch {ty} {{:label_{:x} .. :label_{:x}}} :label_{:x}",
+                t.start_addr, try_end, addr
+            );
+        }
+        if let Some(addr) = t.catch_all {
+            let _ = writeln!(
+                out,
+                "    .catchall {{:label_{:x} .. :label_{:x}}} :label_{:x}",
+                t.start_addr, try_end, addr
+            );
+        }
+    }
+    for insn in insns {
+        if labels.contains(&insn.pc) {
+            let _ = writeln!(out, "    :label_{:x}", insn.pc);
+        }
+        let _ = writeln!(out, "    {}", render_insn(insn, &labels));
+    }
+    let _ = writeln!(out, ".end method");
+    out
+}
+
+fn render_insn(insn: &DalvikInsn, _labels: &BTreeSet<u32>) -> String {
+    let mnemonic: &str = insn.mnemonic;
+    let regs: String = insn
+        .regs
+        .iter()
+        .map(|r: &u16| format!("v{r}"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let mut tail: String = String::new();
+    if let Some(target) = insn.branch_target_pc() {
+        if !tail.is_empty() {
+            tail.push_str(", ");
+        }
+        let _ = write!(tail, ":label_{target:x}");
+    } else if let Some(lit) = insn.literal {
+        let _ = write!(tail, "{lit}");
+    } else if let Some(idx) = insn.index {
+        let _ = write!(tail, "@{idx}");
+    }
+    match (regs.is_empty(), tail.is_empty()) {
+        (true, true) => mnemonic.to_owned(),
+        (false, true) => format!("{mnemonic} {regs}"),
+        (true, false) => format!("{mnemonic} {tail}"),
+        (false, false) => match insn.format {
+            InsnFormat::Fmt35c
+            | InsnFormat::Fmt3rc
+            | InsnFormat::Fmt35mi
+            | InsnFormat::Fmt35ms
+            | InsnFormat::Fmt3rmi
+            | InsnFormat::Fmt3rms
+            | InsnFormat::Fmt45cc
+            | InsnFormat::Fmt4rcc => format!("{mnemonic} {{{regs}}}, {tail}"),
+            _ => format!("{mnemonic} {regs}, {tail}"),
+        },
+    }
 }
 
 #[cfg(test)]

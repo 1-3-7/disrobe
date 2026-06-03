@@ -336,7 +336,18 @@ corpus/**/*.actual.json
 !corpus/python/decompile/playground/*.pyc
 !corpus/python/decompile/playground/__pycache__/*.pyc
 
+# differential-vs-source playground gate: minimal git-tracked clean source +
+# its real Berserker-obfuscated form so the differential oracle is non-empty in
+# a clean CI checkout. The clean .py is the independent (never-emitted) oracle;
+# regen via .developer/gen_playground_differential.py.
+!corpus/python/obfuscators/playground/
+!corpus/python/obfuscators/playground/*.py
+
 !corpus/native/packers/mew/*.exe
+!corpus/native/packers/aspack/*.exe
+!corpus/native/packers/pecompact/*.exe
+!corpus/native/packers/yodas_crypter/*.exe
+!corpus/native/packers/yodas_protector/*.exe
 
 !corpus/python/pyarmor/**/*.pyd
 !corpus/python/pyarmor/**/*.so

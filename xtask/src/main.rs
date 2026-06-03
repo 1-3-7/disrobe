@@ -6,6 +6,7 @@
 
 mod codegen;
 mod errdocs;
+mod playground;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,12 @@ enum Cmd {
     ReleasePackage,
     Schemas,
     GenErrorDocs,
+    Playground {
+        #[arg(long)]
+        sample_per_kind: Option<usize>,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        fail_on_circular: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -50,6 +57,10 @@ fn main() -> ExitCode {
         Cmd::ReleasePackage => run_release_package(),
         Cmd::Schemas => run_schemas(),
         Cmd::GenErrorDocs => run_gen_error_docs(),
+        Cmd::Playground {
+            sample_per_kind,
+            fail_on_circular,
+        } => run_playground(sample_per_kind, fail_on_circular),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -151,6 +162,15 @@ struct BakePlan {
     script: PathBuf,
     extra_flags: Vec<&'static str>,
     powershell_wrap: bool,
+}
+
+fn run_playground(sample_per_kind: Option<usize>, fail_on_circular: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let opts: playground::PlaygroundOptions = playground::PlaygroundOptions {
+        sample_per_kind,
+        fail_under_circularity: fail_on_circular,
+    };
+    playground::run(&root, &opts)
 }
 
 fn run_schemas() -> Result<()> {

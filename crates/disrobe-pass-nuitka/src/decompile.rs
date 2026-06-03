@@ -1,21 +1,49 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::blob_scan::{BlobScan, scan_constants_blob};
 use crate::c_module::{CModuleStructure, parse_c_module};
 use crate::const_manifest::{ConstantManifest, parse_constant_manifest};
 use crate::constants::{ConstantsPool, ConstantsTable, decode_const_file};
 use crate::detect::{Detection, detect_in_bytes};
 use crate::error::{Error, Result};
-use crate::onefile::{OnefilePayload, extract_onefile};
+use crate::onefile::{OnefileEntry, OnefilePayload, extract_onefile};
 use crate::surface::{SurfaceModule, build_surface};
 use crate::version_db::{NuitkaVersionReport, detect_nuitka_version};
+
+/// Constants recovered directly from a compiled binary's data-composer blob.
+///
+/// This is the only constant source available once Nuitka has emitted native code: the raw
+/// `.const` pickle streams do not survive into release output.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryConstants {
+    pub blob_offset: u64,
+    pub blob_len: u64,
+    pub strings: BTreeSet<String>,
+    pub ints: BTreeSet<i64>,
+    pub container_count: u32,
+}
+
+impl From<&BlobScan> for BinaryConstants {
+    fn from(scan: &BlobScan) -> Self {
+        Self {
+            blob_offset: scan.blob_offset as u64,
+            blob_len: scan.blob_len as u64,
+            strings: scan.strings.clone(),
+            ints: scan.ints.clone(),
+            container_count: scan.container_count,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NuitkaDecompilation {
     pub schema: String,
     pub manifest: Option<ConstantManifest>,
     pub constants: ConstantsTable,
+    pub binary_constants: Option<BinaryConstants>,
     pub version: NuitkaVersionReport,
     pub source_kind: DecompSourceKind,
     pub surface: Option<SurfaceModule>,
@@ -91,6 +119,7 @@ pub fn decompile_build_dir(build_dir: &Path) -> Result<NuitkaDecompilation> {
         schema: SCHEMA.to_owned(),
         manifest,
         constants,
+        binary_constants: None,
         version,
         source_kind: DecompSourceKind::BuildDir,
         surface,
@@ -155,18 +184,36 @@ pub fn decompile_binary(path: &Path) -> Result<NuitkaDecompilation> {
     };
     let version: NuitkaVersionReport = detect_nuitka_version(&bytes, None, python_abi);
 
+    let mut notes: Vec<String> = Vec::new();
+    let binary_constants: Option<BinaryConstants> = if let Some(scan) = scan_constants_blob(&bytes)
+    {
+        notes.push(format!(
+            "embedded-standalone binary: recovered {} string and {} int constants from the \
+             in-binary data-composer blob at offset {} (length {})",
+            scan.strings.len(),
+            scan.ints.len(),
+            scan.blob_offset,
+            scan.blob_len
+        ));
+        Some(BinaryConstants::from(&scan))
+    } else {
+        notes.push(
+            "embedded-standalone binary: no data-composer constants blob located; \
+             the blob may be encrypted or stripped"
+                .to_owned(),
+        );
+        None
+    };
+
     Ok(NuitkaDecompilation {
         schema: SCHEMA.to_owned(),
         manifest: None,
         constants: ConstantsTable::default(),
+        binary_constants,
         version,
         source_kind: DecompSourceKind::EmbeddedStandalone,
         surface: None,
-        notes: vec![
-            "embedded-standalone binary: constants live in the in-binary blob; \
-             no sibling .build directory found, so no .const recovery performed"
-                .to_owned(),
-        ],
+        notes,
     })
 }
 
@@ -215,6 +262,8 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
         notes.push("onefile payload carried no .const constant files".to_owned());
     }
 
+    let binary_constants: Option<BinaryConstants> = scan_inner_blob(&payload.entries, &mut notes);
+
     let python_abi: Option<(u8, u8)> = python_abi_from_binary(bytes);
     let version: NuitkaVersionReport = detect_nuitka_version(bytes, None, python_abi);
 
@@ -222,11 +271,50 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
         schema: SCHEMA.to_owned(),
         manifest,
         constants,
+        binary_constants,
         version,
         source_kind: DecompSourceKind::OnefilePayload,
         surface: None,
         notes,
     })
+}
+
+/// Recover the data-composer constants blob from the inner compiled module carried by a
+/// onefile payload. The first PE/ELF/Mach-O entry whose blob scan qualifies is taken; the
+/// onefile bootstrap itself never holds the constants, only the embedded main module does.
+fn scan_inner_blob(entries: &[OnefileEntry], notes: &mut Vec<String>) -> Option<BinaryConstants> {
+    for entry in entries {
+        if !is_native_image(&entry.data) {
+            continue;
+        }
+        if let Some(scan) = scan_constants_blob(&entry.data) {
+            notes.push(format!(
+                "onefile inner module '{}': recovered {} string and {} int constants from its \
+                 data-composer blob",
+                entry.filename,
+                scan.strings.len(),
+                scan.ints.len()
+            ));
+            return Some(BinaryConstants::from(&scan));
+        }
+    }
+    notes.push(
+        "onefile payload carried no inner module with a recoverable data-composer blob".to_owned(),
+    );
+    None
+}
+
+#[inline]
+fn is_native_image(data: &[u8]) -> bool {
+    matches!(
+        data.get(0..4),
+        Some(
+            [b'M', b'Z', _, _]
+                | [0x7F, b'E', b'L', b'F']
+                | [0xFE, 0xED, 0xFA, 0xCE | 0xCF]
+                | [0xCE | 0xCF, 0xFA, 0xED, 0xFE]
+        )
+    )
 }
 
 fn read_manifest(build_dir: &Path, notes: &mut Vec<String>) -> Result<Option<ConstantManifest>> {

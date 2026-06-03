@@ -1,0 +1,27 @@
+[package]
+name = "disrobe-plugin-loader"
+description = "Signed WASM-Component plugin loader for the disrobe suite. Loads a WebAssembly Component only when its minisign signature verifies against a trusted key and its TOML manifest grants every imported WIT capability; rejects unsigned, tampered, untrusted, capability-overreaching, or malformed components."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords = ["wasm", "component-model", "plugin", "minisign", "sandbox"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "runtime", "std"] }
+minisign = "0.9.1"
+toml = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+wat = "1"
+base64 = { workspace = true }

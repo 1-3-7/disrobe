@@ -16,7 +16,8 @@ pub mod native_graph;
 pub mod quota;
 
 pub use classify::{
-    Action, Confidence, InputClassification, Lang, NativeFormat, ObfuscatorFamily, classify_input,
+    Action, Confidence, InputClassification, Lang, NativeFormat, NativeLangHint, ObfuscatorFamily,
+    classify_input, native_lang_fingerprint,
 };
 pub use container::{ContainerKind, detect_container, detect_container_with_hint};
 pub use error::{Error, Result};

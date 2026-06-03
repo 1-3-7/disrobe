@@ -460,6 +460,261 @@ fn decode_mutf8_lossy(raw: &[u8]) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TryItem {
+    pub start_addr: u32,
+    pub insn_count: u16,
+    pub handlers: Vec<(Option<String>, u32)>,
+    pub catch_all: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeItem {
+    pub method_name: String,
+    pub method_descriptor: String,
+    pub class: String,
+    pub is_direct: bool,
+    pub registers_size: u16,
+    pub ins_size: u16,
+    pub outs_size: u16,
+    pub insns: Vec<u16>,
+    pub tries: Vec<TryItem>,
+}
+
+fn read_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
+    let mut result: i32 = 0;
+    let mut shift: u32 = 0;
+    let mut cursor: usize = off;
+    loop {
+        if cursor >= bytes.len() {
+            return Err(Error::Truncated {
+                offset: cursor,
+                needed: 1,
+                had: 0,
+            });
+        }
+        let b: u8 = bytes[cursor];
+        cursor += 1;
+        result |= i32::from(b & 0x7F) << shift;
+        shift += 7;
+        if (b & 0x80) == 0 {
+            if shift < 32 && (b & 0x40) != 0 {
+                result |= -(1i32 << shift);
+            }
+            break;
+        }
+        if shift >= 32 {
+            break;
+        }
+    }
+    Ok((result, cursor))
+}
+
+type ParsedCode = (u16, u16, u16, Vec<u16>, Vec<TryItem>);
+type ParsedHandlers = (Vec<(Option<String>, u32)>, Option<u32>);
+
+fn parse_code_item(bytes: &[u8], code_off: usize, type_names: &[String]) -> Option<ParsedCode> {
+    if code_off + 16 > bytes.len() {
+        return None;
+    }
+    let registers_size: u16 = read_u16_at(bytes, code_off)?;
+    let ins_size: u16 = read_u16_at(bytes, code_off + 2)?;
+    let outs_size: u16 = read_u16_at(bytes, code_off + 4)?;
+    let tries_size: u16 = read_u16_at(bytes, code_off + 6)?;
+    let insns_size: usize = read_u32_at(bytes, code_off + 12)? as usize;
+    let insns_off: usize = code_off + 16;
+    if insns_off + insns_size * 2 > bytes.len() {
+        return None;
+    }
+    let mut insns: Vec<u16> = Vec::with_capacity(insns_size);
+    for k in 0..insns_size {
+        insns.push(read_u16_at(bytes, insns_off + k * 2)?);
+    }
+    let mut tries: Vec<TryItem> = Vec::new();
+    if tries_size > 0 {
+        let mut after_insns: usize = insns_off + insns_size * 2;
+        if insns_size % 2 == 1 {
+            after_insns += 2;
+        }
+        let tries_off: usize = after_insns;
+        let handlers_base: usize = tries_off + usize::from(tries_size) * 8;
+        let mut raw_tries: Vec<(u32, u16, u16)> = Vec::with_capacity(usize::from(tries_size));
+        for t in 0..usize::from(tries_size) {
+            let entry: usize = tries_off + t * 8;
+            let start_addr: u32 = read_u32_at(bytes, entry)?;
+            let insn_count: u16 = read_u16_at(bytes, entry + 4)?;
+            let handler_off: u16 = read_u16_at(bytes, entry + 6)?;
+            raw_tries.push((start_addr, insn_count, handler_off));
+        }
+        for (start_addr, insn_count, handler_off) in raw_tries {
+            let abs: usize = handlers_base + usize::from(handler_off);
+            let (handlers, catch_all): (Vec<(Option<String>, u32)>, Option<u32>) =
+                parse_encoded_catch_handler(bytes, abs, type_names).unwrap_or_default();
+            tries.push(TryItem {
+                start_addr,
+                insn_count,
+                handlers,
+                catch_all,
+            });
+        }
+    }
+    Some((registers_size, ins_size, outs_size, insns, tries))
+}
+
+fn parse_encoded_catch_handler(
+    bytes: &[u8],
+    off: usize,
+    type_names: &[String],
+) -> Option<ParsedHandlers> {
+    let (size, mut cursor): (i32, usize) = read_sleb128(bytes, off).ok()?;
+    let mut handlers: Vec<(Option<String>, u32)> = Vec::new();
+    let count: usize = size.unsigned_abs() as usize;
+    for _ in 0..count {
+        let (type_idx, n1): (u32, usize) = read_uleb128(bytes, cursor).ok()?;
+        let (addr, n2): (u32, usize) = read_uleb128(bytes, n1).ok()?;
+        let catch_type: Option<String> = type_names.get(type_idx as usize).cloned();
+        handlers.push((catch_type, addr));
+        cursor = n2;
+    }
+    let catch_all: Option<u32> = if size <= 0 {
+        let (addr, _n): (u32, usize) = read_uleb128(bytes, cursor).ok()?;
+        Some(addr)
+    } else {
+        None
+    };
+    Some((handlers, catch_all))
+}
+
+#[must_use]
+pub fn parse_code_items(dex: &DexFile, bytes: &[u8]) -> Vec<CodeItem> {
+    let header: &DexHeader = &dex.header;
+    let class_defs_off: usize = header.class_defs_off as usize;
+    let mut out: Vec<CodeItem> = Vec::new();
+    for ci in 0..header.class_defs_size as usize {
+        let base: usize = class_defs_off + ci * 32;
+        let Some(class_idx): Option<u32> = read_u32_at(bytes, base) else {
+            break;
+        };
+        let class_name: String = type_at(&dex.type_names, class_idx as usize);
+        let Some(class_data_off): Option<u32> = read_u32_at(bytes, base + 24) else {
+            continue;
+        };
+        if class_data_off == 0 {
+            continue;
+        }
+        walk_class_data(dex, bytes, class_data_off as usize, &class_name, &mut out);
+    }
+    out
+}
+
+fn walk_class_data(
+    dex: &DexFile,
+    bytes: &[u8],
+    class_data_off: usize,
+    class_name: &str,
+    out: &mut Vec<CodeItem>,
+) {
+    let Ok((static_fields, n1)): Result<(u32, usize)> = read_uleb128(bytes, class_data_off) else {
+        return;
+    };
+    let Ok((instance_fields, n2)): Result<(u32, usize)> = read_uleb128(bytes, n1) else {
+        return;
+    };
+    let Ok((direct_methods, n3)): Result<(u32, usize)> = read_uleb128(bytes, n2) else {
+        return;
+    };
+    let Ok((virtual_methods, n4)): Result<(u32, usize)> = read_uleb128(bytes, n3) else {
+        return;
+    };
+    let after_static: usize = skip_encoded_fields(bytes, n4, static_fields);
+    let after_instance: usize = skip_encoded_fields(bytes, after_static, instance_fields);
+    let after_direct: usize = walk_encoded_methods(
+        dex,
+        bytes,
+        after_instance,
+        direct_methods,
+        class_name,
+        true,
+        out,
+    );
+    let _after_virtual: usize = walk_encoded_methods(
+        dex,
+        bytes,
+        after_direct,
+        virtual_methods,
+        class_name,
+        false,
+        out,
+    );
+}
+
+fn skip_encoded_fields(bytes: &[u8], mut o: usize, count: u32) -> usize {
+    for _ in 0..count {
+        let Ok((_idx_diff, n1)): Result<(u32, usize)> = read_uleb128(bytes, o) else {
+            return o;
+        };
+        let Ok((_access, n2)): Result<(u32, usize)> = read_uleb128(bytes, n1) else {
+            return n1;
+        };
+        o = n2;
+    }
+    o
+}
+
+fn walk_encoded_methods(
+    dex: &DexFile,
+    bytes: &[u8],
+    mut o: usize,
+    count: u32,
+    class_name: &str,
+    is_direct: bool,
+    out: &mut Vec<CodeItem>,
+) -> usize {
+    let mut method_idx: u32 = 0;
+    for k in 0..count {
+        let Ok((idx_diff, n1)): Result<(u32, usize)> = read_uleb128(bytes, o) else {
+            return o;
+        };
+        let Ok((_access, n2)): Result<(u32, usize)> = read_uleb128(bytes, n1) else {
+            return n1;
+        };
+        let Ok((code_off, n3)): Result<(u32, usize)> = read_uleb128(bytes, n2) else {
+            return n2;
+        };
+        method_idx = if k == 0 {
+            idx_diff
+        } else {
+            method_idx + idx_diff
+        };
+        if code_off != 0
+            && let Some(parsed) = parse_code_item(bytes, code_off as usize, &dex.type_names)
+        {
+            let (registers_size, ins_size, outs_size, insns, tries): ParsedCode = parsed;
+            let method: Option<&MethodId> = dex.method_ids.get(method_idx as usize);
+            let method_name: String = method.map(|m| m.name.clone()).unwrap_or_default();
+            let method_descriptor: String = method
+                .map(|m| {
+                    let params: String = m.proto.parameters.concat();
+                    format!("({params}){}", m.proto.return_type)
+                })
+                .unwrap_or_default();
+            out.push(CodeItem {
+                method_name,
+                method_descriptor,
+                class: class_name.to_owned(),
+                is_direct,
+                registers_size,
+                ins_size,
+                outs_size,
+                insns,
+                tries,
+            });
+        }
+        o = n3;
+    }
+    o
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultiDex {
     pub files: Vec<DexFile>,
 }

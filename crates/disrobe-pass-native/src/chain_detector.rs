@@ -10,10 +10,12 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
 use crate::packers::{
-    Detection as PackerDetection, FsgUnpackOutput, MewUnpackOutput, MpressUnpackOutput,
-    NspackEmulatedReport, Packer, PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput,
-    detect as detect_packers, unpack_fsg, unpack_mew, unpack_mpress, unpack_nspack_emulated,
-    unpack_petite_phase2_emulated, unpack_upx,
+    AspackPhaseTwoOutput, Detection as PackerDetection, FsgUnpackOutput, MewUnpackOutput,
+    MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
+    PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput, YodasCrypterCarve,
+    detect as detect_packers, recover_yodas_crypter_carve, unpack_aspack_phase2_emulated,
+    unpack_fsg, unpack_mew, unpack_mpress, unpack_nspack_emulated,
+    unpack_pecompact_phase2_emulated, unpack_petite_phase2_emulated, unpack_upx,
 };
 
 pub const PASS_ID: PassId = "native.packer-unpack";
@@ -136,6 +138,21 @@ fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<Artifact
             let out: MpressUnpackOutput =
                 unpack_mpress(packed).map_err(|e| pass_err("DR-NAT-0916", packer, &e))?;
             out.decompressed_image
+        }
+        Packer::YodasCrypter => {
+            let carve: YodasCrypterCarve = recover_yodas_crypter_carve(packed)
+                .map_err(|e| pass_err("DR-NAT-0918", packer, &e))?;
+            carve.recovered_image
+        }
+        Packer::AsPack => {
+            let out: AspackPhaseTwoOutput = unpack_aspack_phase2_emulated(packed, None)
+                .map_err(|e| pass_err("DR-NAT-0919", packer, &e))?;
+            out.recovered_memory_image
+        }
+        Packer::PeCompact => {
+            let out: PecompactPhaseTwoOutput = unpack_pecompact_phase2_emulated(packed, None)
+                .map_err(|e| pass_err("DR-NAT-0920", packer, &e))?;
+            out.recovered_memory_image
         }
         other => {
             return Err(CoreError::PassFailure(format!(
@@ -313,6 +330,7 @@ mod tests {
             (&b"MEW"[..], "DR-NAT-0912"),
             (&b"FSG!"[..], "DR-NAT-0913"),
             (&b".MPRESS1"[..], "DR-NAT-0916"),
+            (&b"yC2.0"[..], "DR-NAT-0918"),
         ] {
             let mut buf: Vec<u8> = vec![0u8; 512];
             buf[64..64 + sig.len()].copy_from_slice(sig);
@@ -353,13 +371,14 @@ mod tests {
 
     #[test]
     fn every_implemented_packer_has_a_dispatch_arm() {
-        let implemented: [Packer; 6] = [
+        let implemented: [Packer; 7] = [
             Packer::Upx,
             Packer::Petite,
             Packer::Nspack,
             Packer::Mew,
             Packer::Fsg,
             Packer::Mpress,
+            Packer::YodasCrypter,
         ];
         for p in implemented {
             assert_eq!(
