@@ -8818,9 +8818,11 @@ fn classify_class_pattern(
 /// Reconstruct the ordered class sub-patterns of one `match`-class arm across the two distinct
 /// `CPython` lowerings. 3.11+ lowers a successful `MATCH_CLASS` to `UNPACK_SEQUENCE total_slots` which
 /// pushes the slots with slot 0 on top; a `SWAP n` may reorder so a non-top slot is tested next, and
-/// each slot is consumed by a literal compare, a capture store, the fused `STORE_FAST_STORE_FAST`, or
-/// a `POP_TOP` wildcard drop. Tracking the slot-index stack across `SWAP`/consume yields each slot's
-/// sub-pattern by true position. 3.10 instead leaves the matched-attrs tuple on the stack and
+/// each slot is consumed by a literal compare, a capture store, the fused `STORE_FAST_STORE_FAST`, the
+/// fused `STORE_FAST_LOAD_FAST` (3.13+ binds the capture and re-loads it for an immediate guard, so the
+/// store slot is the binding), or a `POP_TOP` wildcard drop. Tracking the slot-index stack across
+/// `SWAP`/consume yields each slot's sub-pattern by true position. 3.10 instead leaves the matched-attrs
+/// tuple on the stack and
 /// subscripts each tested slot by index (`DUP_TOP; LOAD_CONST <i>; BINARY_SUBSCR; <test|capture>`),
 /// emitting nothing for wildcard slots. Presence of `UNPACK_SEQUENCE` selects the modern walk;
 /// otherwise the subscript-indexed walk fills the addressed slots and leaves the rest wildcard. The
@@ -8884,6 +8886,17 @@ fn recover_class_subpatterns(
                 if let Some(si) = value_stack.pop() {
                     let name: String =
                         name_at(&code.names, *slot, k, "name").unwrap_or_else(|_| "_".to_owned());
+                    slots[si] = Pattern::MatchAs {
+                        pattern: None,
+                        name: Some(name),
+                    };
+                }
+                k += 1;
+            }
+            CanonicalOp::StoreFastLoadFast(store_slot, _) => {
+                if let Some(si) = value_stack.pop() {
+                    let name: String =
+                        local_name_at(code, *store_slot, k).unwrap_or_else(|_| "_".to_owned());
                     slots[si] = Pattern::MatchAs {
                         pattern: None,
                         name: Some(name),
