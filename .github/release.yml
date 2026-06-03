@@ -1,0 +1,49 @@
+changelog:
+  exclude:
+    labels:
+      - stale
+      - duplicate
+      - invalid
+      - wontfix
+    authors:
+      - dependabot
+      - github-actions
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+        - semver:major
+
+    - title: New passes and formats
+      labels:
+        - pass-request
+        - new-pass
+
+    - title: Features and enhancements
+      labels:
+        - enhancement
+
+    - title: Decompiler accuracy and correctness
+      labels:
+        - wrong-output
+        - bug
+
+    - title: Performance
+      labels:
+        - performance
+
+    - title: Security and hardening
+      labels:
+        - security
+
+    - title: Documentation
+      labels:
+        - documentation
+
+    - title: Dependencies
+      labels:
+        - dependencies
+
+    - title: Other changes
+      labels:
+        - '*'

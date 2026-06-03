@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "theme/**"
       - "book.toml"
       - "README.md"
       - ".github/workflows/docs.yml"
@@ -37,13 +38,37 @@ jobs:
       - name: Build book
         run: mdbook build
 
+      - name: Index with Pagefind
+        run: npx -y pagefind --site docs/book
+
+      - name: Assemble Pages site with /latest/ doc root
+        run: |
+          set -euo pipefail
+          rm -rf site
+          mkdir -p site/latest
+          cp -a docs/book/. site/latest/
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta http-equiv="refresh" content="0; url=./latest/" />
+              <link rel="canonical" href="./latest/" />
+              <title>disrobe documentation</title>
+            </head>
+            <body>
+              <p>Redirecting to the <a href="./latest/">latest disrobe documentation</a>.</p>
+            </body>
+          </html>
+          HTML
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book
+          path: site
 
   deploy:
     needs: build
