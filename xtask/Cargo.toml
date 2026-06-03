@@ -17,6 +17,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+disrobe-playground = { workspace = true, features = ["chain"] }
 clap = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
 camino = { workspace = true }

@@ -153,6 +153,7 @@ tonic-build = { workspace = true }
 protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
+disrobe-playground = { workspace = true, features = ["chain"] }
 insta = { workspace = true }
 insta-cmd = { workspace = true }
 serde_json = { workspace = true }

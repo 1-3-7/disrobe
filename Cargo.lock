@@ -1888,6 +1888,7 @@ dependencies = [
  "disrobe-pass-sourcedefender",
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
+ "disrobe-playground",
  "disrobe-py-marshal",
  "fastwebsockets",
  "futures",
@@ -2481,6 +2482,43 @@ dependencies = [
  "wasmparser 0.250.0",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "disrobe-playground"
+version = "0.9.0"
+dependencies = [
+ "blake3",
+ "disrobe-binfmt",
+ "disrobe-core",
+ "disrobe-pass-as3",
+ "disrobe-pass-beam",
+ "disrobe-pass-dotnet",
+ "disrobe-pass-go",
+ "disrobe-pass-js-deob",
+ "disrobe-pass-jvm",
+ "disrobe-pass-lua",
+ "disrobe-pass-mobile",
+ "disrobe-pass-native",
+ "disrobe-pass-nuitka",
+ "disrobe-pass-php",
+ "disrobe-pass-py-decompile",
+ "disrobe-pass-py-deob",
+ "disrobe-pass-py-disasm",
+ "disrobe-pass-pyarmor",
+ "disrobe-pass-pyfreeze",
+ "disrobe-pass-pyinstaller",
+ "disrobe-pass-ruby",
+ "disrobe-pass-shell",
+ "disrobe-pass-sourcedefender",
+ "disrobe-pass-swift-objc",
+ "disrobe-pass-wasm-deob",
+ "disrobe-py-marshal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+ "walkdir",
 ]
 
 [[package]]
@@ -9174,6 +9212,7 @@ dependencies = [
  "blake3",
  "camino",
  "clap",
+ "disrobe-playground",
  "eyre",
  "serde",
  "serde_json",
