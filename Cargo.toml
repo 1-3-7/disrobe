@@ -17,6 +17,7 @@ members = [
     "crates/disrobe-pass-lua",
     "crates/disrobe-pass-mobile",
     "crates/disrobe-pass-native",
+    "crates/disrobe-pass-nativelang",
     "crates/disrobe-pass-nuitka",
     "crates/disrobe-pass-php",
     "crates/disrobe-pass-pickle",

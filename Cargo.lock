@@ -2193,6 +2193,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-pass-nativelang"
+version = "0.9.0"
+dependencies = [
+ "disrobe-core",
+ "disrobe-ir",
+ "insta",
+ "miette",
+ "object",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "disrobe-pass-nuitka"
 version = "0.9.0"
 dependencies = [

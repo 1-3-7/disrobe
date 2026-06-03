@@ -10,3 +10,6 @@ corpus/mobile/macho-mac/SwiftHello.original binary
 corpus/mobile/macho-mac/SwiftHello.obfuscated binary
 corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.original binary
 corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.obfuscated binary
+corpus/native/zig/hello.zig.elf binary
+corpus/native/nim/hello.nim.elf binary
+corpus/native/crystal/hello.cr.exe binary
