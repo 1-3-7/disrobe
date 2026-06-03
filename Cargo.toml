@@ -32,6 +32,7 @@ members = [
     "crates/disrobe-pass-sourcedefender",
     "crates/disrobe-pass-swift-objc",
     "crates/disrobe-pass-wasm-deob",
+    "crates/disrobe-plugin-loader",
     "crates/disrobe-py-marshal",
     "crates/disrobe-pyarmor-cextract",
     "crates/disrobe-pyarmor-pytrace",
