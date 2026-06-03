@@ -5,6 +5,7 @@
 )]
 
 mod codegen;
+mod errdocs;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ enum Cmd {
     },
     ReleasePackage,
     Schemas,
+    GenErrorDocs,
 }
 
 fn main() -> ExitCode {
@@ -47,6 +49,7 @@ fn main() -> ExitCode {
         } => run_bake_fixtures(dry_run, edge_cases),
         Cmd::ReleasePackage => run_release_package(),
         Cmd::Schemas => run_schemas(),
+        Cmd::GenErrorDocs => run_gen_error_docs(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -165,6 +168,16 @@ fn run_schemas() -> Result<()> {
     println!(
         "xtask schemas: wrote 4 JSON Schemas under {}",
         out_dir.display()
+    );
+    Ok(())
+}
+
+fn run_gen_error_docs() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let written: usize = errdocs::generate(&root)?;
+    println!(
+        "xtask gen-error-docs: wrote {written} error-code page(s) + index under {}",
+        errdocs::errors_doc_dir(&root).display()
     );
     Ok(())
 }

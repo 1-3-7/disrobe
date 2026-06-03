@@ -44,6 +44,7 @@
 - [Diff and guard tooling](./cli/diff-guard.md)
 - [The daemon: HTTP, gRPC, LSP, MCP](./cli/serve.md)
 - [Forensics and malware-safety posture](./forensics-safety.md)
+- [Threat model](./threat-model.md)
 
 # Project
 

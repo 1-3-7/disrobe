@@ -1,0 +1,39 @@
+name: stale
+
+on:
+  schedule:
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: stale
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    name: mark and close stale issues
+    runs-on: ubuntu-latest
+    steps:
+      - name: mark and close stale issues per .github/stale.yml policy
+        uses: actions/stale@v9
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: stale
+          exempt-issue-labels: 'pinned,security,pass-request,wrong-output,help-wanted,good-first-issue'
+          exempt-all-issue-assignees: true
+          exempt-all-issue-milestones: true
+          operations-per-run: 30
+          stale-issue-message: >
+            This issue has had no activity for 60 days. It will be closed in 14 days if no
+            further activity occurs. If it is still relevant, leave a comment or attach a
+            reproducing sample hash to keep it open. Sample-doesn't-work and pass-request
+            issues are never auto-closed.
+          close-issue-message: >
+            Closed as stale. Reopen with fresh details or a reproducing sample hash if the
+            problem persists.

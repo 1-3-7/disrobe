@@ -1,0 +1,66 @@
+name: Security report (non-sensitive)
+description: Report a hardening gap, sandbox-escape concern, or supply-chain issue that is NOT an exploitable vulnerability.
+labels: [security]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do NOT file an exploitable vulnerability here. Public issues are world-readable.
+        For anything that could be weaponized against users, open a private advisory instead:
+        https://github.com/1-3-7/disrobe/security/advisories/new
+
+        Use this form only for non-sensitive security concerns: missing hardening, an
+        over-broad capability, a dependency you believe should be pinned or audited, or a
+        question about disrobe's non-execution / sandbox stance.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Sandbox / isolation hardening
+        - Supply-chain (dependency, build, release)
+        - Plugin / WASM capability boundary
+        - Non-execution stance (input that might be executed)
+        - Documentation / threat-model gap
+        - Other (non-exploitable)
+    validations:
+      required: true
+
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern
+      description: What is the trust-boundary or hardening gap, and why does it matter?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to observe it
+      description: Commands, config, or code paths that demonstrate the concern. Do not attach live malware.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: disrobe version
+      placeholder: 'disrobe --version output'
+    validations:
+      required: true
+
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Suggested mitigation
+      description: Optional. How you think it should be addressed.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: This is NOT an exploitable vulnerability. If it is, I will use the private advisory channel instead.
+          required: true

@@ -1,0 +1,25 @@
+daysUntilStale: 60
+daysUntilClose: 14
+exemptLabels:
+  - pinned
+  - security
+  - pass-request
+  - wrong-output
+  - help-wanted
+  - good-first-issue
+exemptProjects: true
+exemptMilestones: true
+exemptAssignees: true
+staleLabel: stale
+markComment: >
+  This issue has had no activity for 60 days. It will be closed in 14 days if no
+  further activity occurs. If it is still relevant, leave a comment or attach a
+  reproducing sample hash to keep it open. Sample-doesn't-work and pass-request
+  issues are never auto-closed.
+unmarkComment: >
+  Reopened from stale: thanks for the update.
+closeComment: >
+  Closed as stale. Reopen with fresh details or a reproducing sample hash if the
+  problem persists.
+limitPerRun: 30
+only: issues
