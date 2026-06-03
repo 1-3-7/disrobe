@@ -1,0 +1,22 @@
+[package]
+name = "disrobe-plugin-host"
+description = "Capability-gated WebAssembly plugin sandbox for the disrobe suite. Runs untrusted plugin modules under fuel metering, an epoch-deadline wall-clock watchdog, a linear-memory byte cap, and a structurally empty linker that denies all ambient host imports."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["wasm", "sandbox", "wasmtime", "capability", "plugin"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wasmtime = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+wat = "1"
