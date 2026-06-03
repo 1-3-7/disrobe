@@ -182,6 +182,11 @@ corpus/mobile/macho/
 !corpus/jvm/r8/EdgeCasesKt-r8.jar
 !corpus/jvm/megafile/EdgeCases-baseline.jar
 
+!corpus/apk/fixture-v1-signed.apk
+!corpus/apk/fixture-v2v3-signed.apk
+!corpus/apk/fixture-v2v3-signed.apk.idsig
+!corpus/apk/fixture-tampered.apk
+
 !corpus/jvm/stringer/Digi.class
 !corpus/jvm/stringer/Handler.class
 !corpus/jvm/stringer/uh.class
