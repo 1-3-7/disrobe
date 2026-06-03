@@ -151,6 +151,35 @@ fn read_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
     Ok((result, cursor))
 }
 
+fn read_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
+    let mut result: i32 = 0;
+    let mut shift: u32 = 0;
+    let mut cursor: usize = off;
+    loop {
+        if cursor >= bytes.len() {
+            return Err(Error::Truncated {
+                offset: cursor,
+                needed: 1,
+                had: 0,
+            });
+        }
+        let b: u8 = bytes[cursor];
+        cursor += 1;
+        result |= i32::from(b & 0x7F) << shift;
+        shift += 7;
+        if (b & 0x80) == 0 {
+            if shift < 32 && (b & 0x40) != 0 {
+                result |= -1_i32 << shift;
+            }
+            break;
+        }
+        if shift >= 32 {
+            return Err(Error::BadDexEndian(0));
+        }
+    }
+    Ok((result, cursor))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtoId {
     pub shorty: String,
@@ -410,6 +439,279 @@ fn parse_method_ids(
         });
     }
     out
+}
+
+pub const NO_INDEX: u32 = 0xFFFF_FFFF;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncodedField {
+    pub field_idx: u32,
+    pub access_flags: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncodedMethod {
+    pub method_idx: u32,
+    pub access_flags: u32,
+    pub code_off: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TryItem {
+    pub start_addr: u32,
+    pub insn_count: u16,
+    pub handler_off: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatchHandlerEntry {
+    pub type_idx: u32,
+    pub addr: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncodedCatchHandler {
+    pub handlers: Vec<CatchHandlerEntry>,
+    pub catch_all_addr: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeItem {
+    pub registers_size: u16,
+    pub ins_size: u16,
+    pub outs_size: u16,
+    pub tries_size: u16,
+    pub debug_info_off: u32,
+    pub insns: Vec<u16>,
+    pub tries: Vec<TryItem>,
+    pub handlers: Vec<EncodedCatchHandler>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassDataItem {
+    pub static_fields: Vec<EncodedField>,
+    pub instance_fields: Vec<EncodedField>,
+    pub direct_methods: Vec<EncodedMethod>,
+    pub virtual_methods: Vec<EncodedMethod>,
+}
+
+impl ClassDataItem {
+    pub fn methods(&self) -> impl Iterator<Item = &EncodedMethod> {
+        self.direct_methods
+            .iter()
+            .chain(self.virtual_methods.iter())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexClass {
+    pub descriptor: String,
+    pub access_flags: u32,
+    pub superclass: Option<String>,
+    pub interfaces: Vec<String>,
+    pub source_file: Option<String>,
+    pub class_data: Option<ClassDataItem>,
+}
+
+fn parse_encoded_fields(
+    bytes: &[u8],
+    mut off: usize,
+    count: u32,
+) -> Result<(Vec<EncodedField>, usize)> {
+    let mut out: Vec<EncodedField> = Vec::with_capacity(count as usize);
+    let mut field_idx: u32 = 0;
+    for _ in 0..count {
+        let (idx_diff, n1): (u32, usize) = read_uleb128(bytes, off)?;
+        let (access_flags, n2): (u32, usize) = read_uleb128(bytes, n1)?;
+        field_idx = field_idx.wrapping_add(idx_diff);
+        out.push(EncodedField {
+            field_idx,
+            access_flags,
+        });
+        off = n2;
+    }
+    Ok((out, off))
+}
+
+fn parse_encoded_methods(
+    bytes: &[u8],
+    mut off: usize,
+    count: u32,
+) -> Result<(Vec<EncodedMethod>, usize)> {
+    let mut out: Vec<EncodedMethod> = Vec::with_capacity(count as usize);
+    let mut method_idx: u32 = 0;
+    for _ in 0..count {
+        let (idx_diff, n1): (u32, usize) = read_uleb128(bytes, off)?;
+        let (access_flags, n2): (u32, usize) = read_uleb128(bytes, n1)?;
+        let (code_off, n3): (u32, usize) = read_uleb128(bytes, n2)?;
+        method_idx = method_idx.wrapping_add(idx_diff);
+        out.push(EncodedMethod {
+            method_idx,
+            access_flags,
+            code_off,
+        });
+        off = n3;
+    }
+    Ok((out, off))
+}
+
+pub fn parse_class_data(bytes: &[u8], off: usize) -> Result<ClassDataItem> {
+    let (static_count, n1): (u32, usize) = read_uleb128(bytes, off)?;
+    let (instance_count, n2): (u32, usize) = read_uleb128(bytes, n1)?;
+    let (direct_count, n3): (u32, usize) = read_uleb128(bytes, n2)?;
+    let (virtual_count, n4): (u32, usize) = read_uleb128(bytes, n3)?;
+    let (static_fields, after_static): (Vec<EncodedField>, usize) =
+        parse_encoded_fields(bytes, n4, static_count)?;
+    let (instance_fields, after_instance): (Vec<EncodedField>, usize) =
+        parse_encoded_fields(bytes, after_static, instance_count)?;
+    let (direct_methods, after_direct): (Vec<EncodedMethod>, usize) =
+        parse_encoded_methods(bytes, after_instance, direct_count)?;
+    let (virtual_methods, _after_virtual): (Vec<EncodedMethod>, usize) =
+        parse_encoded_methods(bytes, after_direct, virtual_count)?;
+    Ok(ClassDataItem {
+        static_fields,
+        instance_fields,
+        direct_methods,
+        virtual_methods,
+    })
+}
+
+fn parse_catch_handlers(bytes: &[u8], off: usize) -> Result<Vec<EncodedCatchHandler>> {
+    let (list_size, mut cursor): (u32, usize) = read_uleb128(bytes, off)?;
+    let mut out: Vec<EncodedCatchHandler> = Vec::with_capacity(list_size as usize);
+    for _ in 0..list_size {
+        let (raw_size, n1): (i32, usize) = read_sleb128(bytes, cursor)?;
+        let typed_count: usize = raw_size.unsigned_abs() as usize;
+        let mut handlers: Vec<CatchHandlerEntry> = Vec::with_capacity(typed_count);
+        let mut c: usize = n1;
+        for _ in 0..typed_count {
+            let (type_idx, a1): (u32, usize) = read_uleb128(bytes, c)?;
+            let (addr, a2): (u32, usize) = read_uleb128(bytes, a1)?;
+            handlers.push(CatchHandlerEntry { type_idx, addr });
+            c = a2;
+        }
+        let catch_all_addr: Option<u32> = if raw_size <= 0 {
+            let (addr, a): (u32, usize) = read_uleb128(bytes, c)?;
+            c = a;
+            Some(addr)
+        } else {
+            None
+        };
+        out.push(EncodedCatchHandler {
+            handlers,
+            catch_all_addr,
+        });
+        cursor = c;
+    }
+    Ok(out)
+}
+
+pub fn parse_code_item(bytes: &[u8], code_off: usize) -> Result<CodeItem> {
+    let need_end: usize = code_off + 16;
+    if need_end > bytes.len() {
+        return Err(Error::Truncated {
+            offset: code_off,
+            needed: 16,
+            had: bytes.len().saturating_sub(code_off),
+        });
+    }
+    let registers_size: u16 = read_u16_at(bytes, code_off).unwrap_or(0);
+    let ins_size: u16 = read_u16_at(bytes, code_off + 2).unwrap_or(0);
+    let outs_size: u16 = read_u16_at(bytes, code_off + 4).unwrap_or(0);
+    let tries_size: u16 = read_u16_at(bytes, code_off + 6).unwrap_or(0);
+    let debug_info_off: u32 = read_u32_at(bytes, code_off + 8).unwrap_or(0);
+    let insns_size: u32 = read_u32_at(bytes, code_off + 12).unwrap_or(0);
+    let insns_off: usize = code_off + 16;
+    let insns_end: usize = insns_off + insns_size as usize * 2;
+    if insns_end > bytes.len() {
+        return Err(Error::Truncated {
+            offset: insns_off,
+            needed: insns_size as usize * 2,
+            had: bytes.len().saturating_sub(insns_off),
+        });
+    }
+    let mut insns: Vec<u16> = Vec::with_capacity(insns_size as usize);
+    for k in 0..insns_size as usize {
+        insns.push(read_u16_at(bytes, insns_off + k * 2).unwrap_or(0));
+    }
+    let mut tries: Vec<TryItem> = Vec::with_capacity(tries_size as usize);
+    let mut handlers: Vec<EncodedCatchHandler> = Vec::new();
+    if tries_size != 0 {
+        let padded: usize = if insns_size % 2 == 1 {
+            insns_end + 2
+        } else {
+            insns_end
+        };
+        let tries_end: usize = padded + tries_size as usize * 8;
+        if tries_end <= bytes.len() {
+            for t in 0..tries_size as usize {
+                let entry: usize = padded + t * 8;
+                let start_addr: u32 = read_u32_at(bytes, entry).unwrap_or(0);
+                let insn_count: u16 = read_u16_at(bytes, entry + 4).unwrap_or(0);
+                let handler_off: u16 = read_u16_at(bytes, entry + 6).unwrap_or(0);
+                tries.push(TryItem {
+                    start_addr,
+                    insn_count,
+                    handler_off,
+                });
+            }
+            handlers = parse_catch_handlers(bytes, tries_end).unwrap_or_default();
+        }
+    }
+    Ok(CodeItem {
+        registers_size,
+        ins_size,
+        outs_size,
+        tries_size,
+        debug_info_off,
+        insns,
+        tries,
+        handlers,
+    })
+}
+
+pub fn walk_classes(bytes: &[u8], dex: &DexFile) -> Result<Vec<DexClass>> {
+    let header: &DexHeader = &dex.header;
+    let base: usize = header.class_defs_off as usize;
+    let count: usize = header.class_defs_size as usize;
+    let mut out: Vec<DexClass> = Vec::with_capacity(count.min(bytes.len()));
+    for i in 0..count {
+        let cd_off: usize = base + i * 32;
+        let Some(class_idx): Option<u32> = read_u32_at(bytes, cd_off) else {
+            break;
+        };
+        let access_flags: u32 = read_u32_at(bytes, cd_off + 4).unwrap_or(0);
+        let superclass_idx: u32 = read_u32_at(bytes, cd_off + 8).unwrap_or(NO_INDEX);
+        let interfaces_off: u32 = read_u32_at(bytes, cd_off + 12).unwrap_or(0);
+        let source_file_idx: u32 = read_u32_at(bytes, cd_off + 16).unwrap_or(NO_INDEX);
+        let class_data_off: u32 = read_u32_at(bytes, cd_off + 24).unwrap_or(0);
+        let descriptor: String = type_at(&dex.type_names, class_idx as usize);
+        let superclass: Option<String> = if superclass_idx == NO_INDEX {
+            None
+        } else {
+            Some(type_at(&dex.type_names, superclass_idx as usize))
+        };
+        let source_file: Option<String> = if source_file_idx == NO_INDEX {
+            None
+        } else {
+            Some(string_at(&dex.strings, source_file_idx as usize))
+        };
+        let interfaces: Vec<String> = parse_type_list(bytes, interfaces_off, &dex.type_names);
+        let class_data: Option<ClassDataItem> = if class_data_off == 0 {
+            None
+        } else {
+            Some(parse_class_data(bytes, class_data_off as usize)?)
+        };
+        out.push(DexClass {
+            descriptor,
+            access_flags,
+            superclass,
+            interfaces,
+            source_file,
+            class_data,
+        });
+    }
+    Ok(out)
 }
 
 fn decode_mutf8_lossy(raw: &[u8]) -> String {

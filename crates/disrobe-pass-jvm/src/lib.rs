@@ -27,6 +27,7 @@ pub mod bytecode;
 pub mod chain_detector;
 pub mod classfile;
 pub mod dalvik;
+pub mod dalvik_decode;
 pub mod decompile;
 pub mod decompile_struct;
 pub mod descriptor;
@@ -67,7 +68,16 @@ pub use classfile::{
     Attribute, CLASS_MAGIC, ClassFile, ConstantPoolEntry, FieldInfo, JavaVersion, MAX_MAJOR,
     MIN_MAJOR, MethodInfo, parse as parse_classfile,
 };
-pub use dalvik::{DalvikOp, disassemble_units as disassemble_dalvik, opcode as dalvik_opcode};
+pub use dalvik::{
+    DalvikOp, disassemble_units as disassemble_dalvik,
+    instruction_width as dalvik_instruction_width, opcode as dalvik_opcode,
+    payload_width as dalvik_payload_width,
+};
+pub use dalvik_decode::{
+    DalvikFormat, DecodedInsn, IndexKind, Operands as DalvikOperands, decode_all as decode_dalvik,
+    decode_one as decode_dalvik_one, format_of as dalvik_format_of,
+    index_kind_of as dalvik_index_kind_of,
+};
 pub use decompile::{
     DecompiledClass, class_access_keywords, decompile_class, decompile_classfile_bytes,
     member_access_keywords,
@@ -77,8 +87,11 @@ pub use descriptor::{
     parse_method as parse_method_descriptor,
 };
 pub use dex::{
-    DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX, DexFile, DexHeader, DexVersion, FieldId, MethodId, MultiDex,
-    ProtoId, parse as parse_dex, parse_header as parse_dex_header, parse_multi_dex,
+    CatchHandlerEntry, ClassDataItem, CodeItem, DEX_ENDIAN_TAG, DEX_MAGIC_PREFIX, DexClass,
+    DexFile, DexHeader, DexVersion, EncodedCatchHandler, EncodedField, EncodedMethod, FieldId,
+    MethodId, MultiDex, NO_INDEX, ProtoId, TryItem, parse as parse_dex, parse_class_data,
+    parse_code_item as parse_dex_code_item, parse_header as parse_dex_header, parse_multi_dex,
+    walk_classes as walk_dex_classes,
 };
 pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};

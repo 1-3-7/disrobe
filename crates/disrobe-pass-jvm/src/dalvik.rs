@@ -271,6 +271,13 @@ pub const fn opcode(op: u8) -> DalvikOp {
     }
 }
 
+#[inline]
+#[must_use]
+pub fn instruction_width(code: &[u16], i: usize, op: u8) -> usize {
+    let default_width: usize = usize::from(opcode(op).units);
+    payload_width(code, i, op).unwrap_or(default_width).max(1)
+}
+
 #[must_use]
 pub fn disassemble_units(code: &[u16]) -> Vec<(u32, &'static str)> {
     let mut out: Vec<(u32, &'static str)> = Vec::new();
@@ -280,24 +287,24 @@ pub fn disassemble_units(code: &[u16]) -> Vec<(u32, &'static str)> {
         let op: u8 = (unit & 0xFF) as u8;
         let info: DalvikOp = opcode(op);
         out.push((i as u32, info.mnemonic));
-        let default_width: usize = usize::from(info.units);
-        let width: usize = payload_width(code, i, op).unwrap_or(default_width);
-        i += width.max(1);
+        let width: usize = instruction_width(code, i, op);
+        i += width;
     }
     out
 }
 
-fn payload_width(code: &[u16], i: usize, op: u8) -> Option<usize> {
+#[must_use]
+pub fn payload_width(code: &[u16], i: usize, op: u8) -> Option<usize> {
     let unit: u16 = *code.get(i)?;
     match op {
         0x00 => match unit >> 8 {
             0x01 => {
                 let size: usize = usize::from(*code.get(i + 1)?);
-                Some(size + 2)
+                Some(4 + size * 2)
             }
             0x02 => {
                 let size: usize = usize::from(*code.get(i + 1)?);
-                Some(size * 2 + 4)
+                Some(2 + size * 4)
             }
             0x03 => {
                 let element_width: usize = usize::from(*code.get(i + 1)?);

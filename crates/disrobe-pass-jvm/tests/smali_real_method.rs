@@ -1,93 +1,35 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use disrobe_pass_jvm::disassemble_dalvik;
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+use disrobe_pass_jvm::{
+    ClassDataItem, CodeItem, DexClass, DexFile, EncodedMethod, disassemble_dalvik, parse_dex,
+    parse_dex_code_item, walk_dex_classes,
+};
 
 const HELLO_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/Hello.dex");
 
-#[inline]
-fn u16_at(b: &[u8], o: usize) -> u16 {
-    u16::from_le_bytes([b[o], b[o + 1]])
-}
-
-#[inline]
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-
-fn uleb(b: &[u8], o: usize) -> (u32, usize) {
-    let mut result: u32 = 0;
-    let mut shift: u32 = 0;
-    let mut cursor: usize = o;
-    loop {
-        let byte: u8 = b[cursor];
-        cursor += 1;
-        result |= u32::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-    }
-    (result, cursor)
-}
-
-fn code_unit_slice(b: &[u8], code_off: usize) -> Vec<u16> {
-    let insns_size: usize = u32_at(b, code_off + 12) as usize;
-    let insns_off: usize = code_off + 16;
-    let mut units: Vec<u16> = Vec::with_capacity(insns_size);
-    for k in 0..insns_size {
-        units.push(u16_at(b, insns_off + k * 2));
-    }
-    units
-}
-
-fn skip_encoded_fields(b: &[u8], mut o: usize, count: u32) -> usize {
-    for _ in 0..count {
-        let (_field_idx_diff, n1): (u32, usize) = uleb(b, o);
-        let (_access_flags, n2): (u32, usize) = uleb(b, n1);
-        o = n2;
-    }
-    o
-}
-
-fn collect_method_code_offsets(b: &[u8], mut o: usize, count: u32, out: &mut Vec<usize>) -> usize {
-    for _ in 0..count {
-        let (_method_idx_diff, n1): (u32, usize) = uleb(b, o);
-        let (_access_flags, n2): (u32, usize) = uleb(b, n1);
-        let (code_off, n3): (u32, usize) = uleb(b, n2);
-        if code_off != 0 {
-            out.push(code_off as usize);
-        }
-        o = n3;
-    }
-    o
-}
-
-fn all_code_offsets(b: &[u8]) -> Vec<usize> {
-    let class_defs_size: u32 = u32_at(b, 96);
-    let class_defs_off: usize = u32_at(b, 100) as usize;
-    let mut offsets: Vec<usize> = Vec::new();
-    for ci in 0..class_defs_size as usize {
-        let base: usize = class_defs_off + ci * 32;
-        let class_data_off: usize = u32_at(b, base + 24) as usize;
-        if class_data_off == 0 {
+fn code_items(bytes: &[u8]) -> Vec<CodeItem> {
+    let dex: DexFile = parse_dex(bytes).expect("parse dex");
+    let classes: Vec<DexClass> = walk_dex_classes(bytes, &dex).expect("walk classes");
+    let mut out: Vec<CodeItem> = Vec::new();
+    for class in &classes {
+        let Some(data): Option<&ClassDataItem> = class.class_data.as_ref() else {
             continue;
+        };
+        for method in data.methods() {
+            let m: &EncodedMethod = method;
+            if m.code_off == 0 {
+                continue;
+            }
+            out.push(parse_dex_code_item(bytes, m.code_off as usize).expect("code_item"));
         }
-        let (static_fields, n1): (u32, usize) = uleb(b, class_data_off);
-        let (instance_fields, n2): (u32, usize) = uleb(b, n1);
-        let (direct_methods, n3): (u32, usize) = uleb(b, n2);
-        let (virtual_methods, n4): (u32, usize) = uleb(b, n3);
-        let after_static: usize = skip_encoded_fields(b, n4, static_fields);
-        let after_instance: usize = skip_encoded_fields(b, after_static, instance_fields);
-        let after_direct: usize =
-            collect_method_code_offsets(b, after_instance, direct_methods, &mut offsets);
-        let _after_virtual: usize =
-            collect_method_code_offsets(b, after_direct, virtual_methods, &mut offsets);
     }
-    offsets
+    out
 }
 
 fn emit_method_smali(units: &[u16]) -> String {
-    use std::fmt::Write as _;
     let decoded: Vec<(u32, &'static str)> = disassemble_dalvik(units);
     let mut body: String = String::with_capacity(decoded.len() * 24);
     let _ = writeln!(body, ".method <recovered>()V");
@@ -101,23 +43,21 @@ fn emit_method_smali(units: &[u16]) -> String {
 #[test]
 fn disassembles_real_dex_method_to_concrete_mnemonics() {
     assert_eq!(&HELLO_DEX[..4], b"dex\n", "fixture is a real DEX");
-    let offsets: Vec<usize> = all_code_offsets(HELLO_DEX);
+    let items: Vec<CodeItem> = code_items(HELLO_DEX);
     assert!(
-        !offsets.is_empty(),
-        "walked real class_data to at least one code_item"
+        !items.is_empty(),
+        "library walker reached at least one code_item"
     );
 
-    let mut all_mnemonics: std::collections::BTreeSet<&'static str> =
-        std::collections::BTreeSet::new();
+    let mut all_mnemonics: BTreeSet<&'static str> = BTreeSet::new();
     let mut richest_body: String = String::new();
     let mut richest_len: usize = 0;
-    for code_off in &offsets {
-        let units: Vec<u16> = code_unit_slice(HELLO_DEX, *code_off);
-        if units.len() > richest_len {
-            richest_len = units.len();
-            richest_body = emit_method_smali(&units);
+    for code in &items {
+        if code.insns.len() > richest_len {
+            richest_len = code.insns.len();
+            richest_body = emit_method_smali(&code.insns);
         }
-        for (_off, mnemonic) in disassemble_dalvik(&units) {
+        for (_off, mnemonic) in disassemble_dalvik(&code.insns) {
             all_mnemonics.insert(mnemonic);
         }
     }
@@ -153,13 +93,12 @@ fn disassembles_real_dex_method_to_concrete_mnemonics() {
 
 #[test]
 fn smallest_real_method_is_init_invoke_direct_return_void() {
-    let offsets: Vec<usize> = all_code_offsets(HELLO_DEX);
-    let init_units: Vec<u16> = offsets
+    let items: Vec<CodeItem> = code_items(HELLO_DEX);
+    let init: &CodeItem = items
         .iter()
-        .map(|o| code_unit_slice(HELLO_DEX, *o))
-        .find(|u| u.len() == 4)
+        .find(|c| c.insns.len() == 4)
         .expect("Greeter.<init> code_item with 4 units");
-    let decoded: Vec<&'static str> = disassemble_dalvik(&init_units)
+    let decoded: Vec<&'static str> = disassemble_dalvik(&init.insns)
         .into_iter()
         .map(|(_, m)| m)
         .collect();
