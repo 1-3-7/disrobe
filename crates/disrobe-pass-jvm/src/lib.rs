@@ -28,6 +28,8 @@ pub mod chain_detector;
 pub mod classfile;
 pub mod dalvik;
 pub mod dalvik_cfg;
+pub mod dalvik_decompile;
+pub mod dalvik_lift;
 pub mod decompile;
 pub mod decompile_struct;
 pub mod descriptor;
@@ -74,6 +76,9 @@ pub use dalvik::{
     parse_sparse_switch,
 };
 pub use dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg, build_dalvik_cfg_from_code_item};
+pub use dalvik_decompile::{
+    DecompiledDex, decompile_dex, decompile_dex_bytes as decompile_dex_from_bytes,
+};
 pub use decompile::{
     DecompiledClass, class_access_keywords, decompile_class, decompile_classfile_bytes,
     member_access_keywords,
