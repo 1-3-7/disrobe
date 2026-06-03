@@ -38,3 +38,4 @@ chain = ["disrobe-core/chain"]
 insta = { workspace = true }
 serde_json = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
+blake3 = { workspace = true }
