@@ -29,6 +29,7 @@ members = [
     "crates/disrobe-pass-pyfreeze",
     "crates/disrobe-pass-pyinstaller",
     "crates/disrobe-pass-ruby",
+    "crates/disrobe-pass-scriptlang",
     "crates/disrobe-pass-shell",
     "crates/disrobe-pass-sourcedefender",
     "crates/disrobe-pass-swift-objc",
@@ -141,6 +142,7 @@ disrobe-pass-pyarmor = { path = "crates/disrobe-pass-pyarmor", version = "0.9.0"
 disrobe-pass-pyfreeze = { path = "crates/disrobe-pass-pyfreeze", version = "0.9.0" }
 disrobe-pass-pyinstaller = { path = "crates/disrobe-pass-pyinstaller", version = "0.9.0" }
 disrobe-pass-ruby = { path = "crates/disrobe-pass-ruby", version = "0.9.0" }
+disrobe-pass-scriptlang = { path = "crates/disrobe-pass-scriptlang", version = "0.9.0" }
 disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.9.0" }
 disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.9.0" }
 disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.9.0" }

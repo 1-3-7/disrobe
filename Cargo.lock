@@ -1890,6 +1890,7 @@ dependencies = [
  "disrobe-pass-pyfreeze",
  "disrobe-pass-pyinstaller",
  "disrobe-pass-ruby",
+ "disrobe-pass-scriptlang",
  "disrobe-pass-shell",
  "disrobe-pass-sourcedefender",
  "disrobe-pass-swift-objc",
@@ -2416,6 +2417,22 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "disrobe-pass-scriptlang"
+version = "0.9.0"
+dependencies = [
+ "disrobe-core",
+ "disrobe-ir",
+ "flate2",
+ "insta",
+ "miette",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "zip",
 ]
 
 [[package]]
