@@ -55,7 +55,7 @@ impl AstBuilder for DefaultAstBuilder {
         let body: Vec<Stmt> = prepend_global_decls(
             code,
             &stream.ops,
-            postprocess_body(stripped, BodyKind::Module),
+            thread_module_annotations(postprocess_body(stripped, BodyKind::Module)),
         );
         Ok(AstModule {
             docstring: module_docstring,
@@ -13720,6 +13720,173 @@ fn thread_class_annotations(mut body: Vec<Stmt>) -> Vec<Stmt> {
         }
     }
     threaded
+}
+
+/// 3.14 (PEP 649/749) defers MODULE-scope annotations (`X: T = v`, `X: T`) into a top-level
+/// `__annotate__` code object guarded by a per-module `__conditional_annotations__` set. The module
+/// body keeps only the value-bearing `STORE_NAME` (`X = v`) plus a `__conditional_annotations__` seed
+/// (`__conditional_annotations__ = set()`, already dropped by `is_conditional_annotations_seed`) and,
+/// per annotated name, a `__conditional_annotations__.add(idx)` membership marker that the structurer
+/// surfaces as a dangling `__conditional_annotations__` expression. Recover the `(name, annotation)`
+/// pairs from the synthetic `def __annotate__` body - each a `if idx in __conditional_annotations__:
+/// <annotation>[name] = ...` clause whose subscript BASE is the annotation expression and whose slice
+/// is the name literal - then upgrade the matching value `Assign` to an `AnnAssign` (or insert a bare
+/// `AnnAssign` where the body had no value), and drop both the synthetic `__annotate__` def and the
+/// leftover `__conditional_annotations__` membership expression. Mirrors `thread_class_annotations`
+/// for module scope so 3.14 modules recover `X: T = v` instead of leaking the lazy-annotation shell.
+fn thread_module_annotations(mut body: Vec<Stmt>) -> Vec<Stmt> {
+    let annotations: Vec<(String, Expr)> = body
+        .iter()
+        .find_map(|s: &Stmt| match s {
+            Stmt::FunctionDef {
+                name,
+                body: fn_body,
+                ..
+            } if name == "__annotate__" => Some(module_annotation_pairs(fn_body)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if annotations.is_empty() {
+        return body;
+    }
+    body.retain(|s: &Stmt| {
+        !matches!(s, Stmt::FunctionDef { name, .. } if name == "__annotate__")
+            && !is_conditional_annotations_membership(s)
+    });
+    let mut threaded: Vec<Stmt> = Vec::with_capacity(body.len() + annotations.len());
+    for stmt in body {
+        let upgrade: Option<(String, Expr)> = match &stmt {
+            Stmt::Assign { targets, .. } => match targets.as_slice() {
+                [Expr::Name { id, .. }] => annotations
+                    .iter()
+                    .find(|(name, _): &&(String, Expr)| name == id)
+                    .map(|(name, annotation): &(String, Expr)| (name.clone(), annotation.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (upgrade, stmt) {
+            (Some((name, annotation)), Stmt::Assign { value, line, .. }) => {
+                threaded.push(Stmt::AnnAssign {
+                    target: Expr::Name {
+                        id: name,
+                        ctx: ExprCtx::Store,
+                        line: None,
+                    },
+                    annotation,
+                    value: Some(value),
+                    simple: true,
+                    line,
+                });
+            }
+            (_, stmt) => threaded.push(stmt),
+        }
+    }
+    let assigned: std::collections::BTreeSet<&String> = threaded
+        .iter()
+        .filter_map(|s: &Stmt| match s {
+            Stmt::AnnAssign {
+                target: Expr::Name { id, .. },
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .collect();
+    let bare: Vec<Stmt> = annotations
+        .iter()
+        .filter(|(name, _): &&(String, Expr)| !assigned.contains(name))
+        .map(|(name, annotation): &(String, Expr)| Stmt::AnnAssign {
+            target: Expr::Name {
+                id: name.clone(),
+                ctx: ExprCtx::Store,
+                line: None,
+            },
+            annotation: annotation.clone(),
+            value: None,
+            simple: true,
+            line: None,
+        })
+        .collect();
+    threaded.splice(0..0, bare);
+    threaded
+}
+
+/// Ordered `(name, annotation)` pairs from a recovered module-scope `__annotate__` body. Each
+/// annotation lives inside an `if idx in __conditional_annotations__:` guard whose single body
+/// statement assigns into `<annotation>[name]`; the subscript base is the annotation and the string
+/// slice is the annotated name. Plain (unconditional) subscript-store bodies are accepted too so a
+/// non-conditional 3.14 `__annotate__` shape still recovers.
+fn module_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
+    let mut pairs: Vec<(String, Expr)> = Vec::new();
+    for stmt in fn_body {
+        match stmt {
+            Stmt::If { test, body, .. } if is_conditional_annotations_test(test) => {
+                for inner in body {
+                    if let Some(pair) = module_annotation_subscript_pair(inner) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+            _ => {
+                if let Some(pair) = module_annotation_subscript_pair(stmt) {
+                    pairs.push(pair);
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// `<annotation>[name] = ...` -> `(name, annotation)`. The 3.14 lazy-annotation body materializes the
+/// annotations dict via `STORE_SUBSCR` against an empty `BUILD_MAP`, which the linear structurer
+/// surfaces as a subscript-store whose base is the annotation expression and whose slice is the name
+/// string literal.
+fn module_annotation_subscript_pair(stmt: &Stmt) -> Option<(String, Expr)> {
+    let Stmt::Assign { targets, .. }: &Stmt = stmt else {
+        return None;
+    };
+    let [
+        Expr::Subscript {
+            value: base, slice, ..
+        },
+    ]: &[Expr] = targets.as_slice()
+    else {
+        return None;
+    };
+    let Expr::Constant {
+        value: ConstValue::Str(name),
+        ..
+    }: &Expr = slice.as_ref()
+    else {
+        return None;
+    };
+    Some((name.clone(), unstringify_annotation((**base).clone())))
+}
+
+/// True for the `<int> in __conditional_annotations__` membership test that guards each 3.14 lazy
+/// module annotation.
+fn is_conditional_annotations_test(test: &Expr) -> bool {
+    let Expr::Compare {
+        ops, comparators, ..
+    }: &Expr = test
+    else {
+        return false;
+    };
+    matches!(ops.as_slice(), [CmpOp::In])
+        && matches!(
+            comparators.as_slice(),
+            [Expr::Name { id, .. }] if id == "__conditional_annotations__"
+        )
+}
+
+/// True for the leftover `__conditional_annotations__.add(idx)` membership marker the structurer
+/// surfaces as a bare `__conditional_annotations__` expression statement once the seed assign is
+/// stripped; dropping it keeps the recovered 3.14 module free of lazy-annotation scaffolding.
+fn is_conditional_annotations_membership(s: &Stmt) -> bool {
+    let Stmt::Expr(expr): &Stmt = s else {
+        return false;
+    };
+    matches!(expr, Expr::Name { id, .. } if id == "__conditional_annotations__")
 }
 
 /// Extract ordered `(name, annotation)` pairs from a recovered `__annotate_func__` body whose

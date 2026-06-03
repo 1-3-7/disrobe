@@ -88,25 +88,19 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
 /// recompile the recovered source, and assert the round-trip is byte-identical or norm-equivalent
 /// against the original code object.
 ///
-/// HONEST STATUS (2026-05-30): the combined construct exposes real decompiler defects that the
-/// isolated single-construct matrix does not trigger, because here the `match` lives nested inside
-/// `try` -> `async with` -> `for`. The engine recovers the function shell, the
-/// `async with asyncio.TaskGroup()` header, and the four-arm `match`/`case` dispatch. The keyword
-/// class sub-patterns are now RECOVERED CORRECTLY (`HttpResponse(status=200, body=b"")` keeps both
-/// keyword literal sub-patterns; the `status=200, body=body` arm binds `body` to its own keyword in
-/// order) - proven across 3.10-3.14 by the `match_class_kwd_{literal,capture,mixed}` construct rows.
-/// Two defects remain OPEN: the engine still (a) drops the PEP 654
-/// `try/except* ConnectionError / except* ValueError` wrapper and (b) collapses
-/// `for resp in payloads:` into `resp = payloads`. Both cascade from the same root cause: when a
-/// `try` body is an `async with`, the with's setup walks back over the context-manager expression so
-/// its region spuriously shadows the enclosing `try`/`except*`, and forcing the outer region to win
-/// instead mangles the with body. Fixing that safely needs a region/body-range overhaul that risks
-/// the green try/except/else/finally and async-with cells, so it is deliberately deferred rather than
-/// shipped as wrong code. Full semantic round-trip is therefore NOT yet achieved; see the `remaining`
-/// notes. This test pins the genuine structural recovery that IS real today (now including correct
-/// keyword sub-patterns) and records the per-version recovered source + the live except*/for-loop gap
-/// to `target/py-modern-request-handler/`, NOT a fake green. When the except*/for-loop structuring is
-/// fixed, flip `EXPECT_SEMANTIC` to `true`.
+/// STATUS (2026-06-03): the combined construct round-trips WHOLE-MODULE semantic-equivalent on every
+/// available 3.11-3.14 interpreter, and the `modern_request_handler` FUNCTION round-trips BYTE-IDENTICAL
+/// on all of them. The engine recovers the function shell, the `async with asyncio.TaskGroup()` header,
+/// the `for resp in payloads:` loop, the four-arm `match`/`case` dispatch (including the keyword class
+/// sub-patterns and the single-keyword-CAPTURE arm `case HttpResponse(status=code)`), the refutable-
+/// pattern guards, and the PEP 654 `except* ConnectionError`/`except* ValueError` wrapper. The four
+/// residuals that previously blocked whole-module equivalence are all closed: (1) the module-level
+/// `@dataclass HttpResponse` class recovers with no `__DR_BUILD_CLASS__`/`__DR_CODE_CONST_` placeholder;
+/// (2) the 3.12+ inline epilogue laid inside the `except*` span is structured as the construct successor;
+/// (3) the 3.13/3.14 single-keyword-capture match-arm lowers correctly; and (4) the 3.14 PEP 649/749
+/// lazy module annotations are recovered from the deferred `__annotate__` body and threaded back as an
+/// in-place `AnnAssign`. This test asserts that genuine recovery on every version and records the
+/// per-version recovered source to `target/py-modern-request-handler/`.
 #[test]
 fn modern_request_handler_structural_recovery_and_gap() {
     let _ = fs::create_dir_all(REPORT_DIR);
@@ -269,46 +263,32 @@ fn modern_request_handler_structural_recovery_and_gap() {
         );
     } else {
         println!(
-            "HONEST STATUS: the `modern_request_handler` FUNCTION (the RESIDUAL 2 subject) is now \
-             recovered with the `except* ConnectionError`/`except* ValueError` wrapper, the \
-             `async with asyncio.TaskGroup() as tg` body, the `for resp in payloads:` loop, the \
-             `match`/`case` dispatch, the keyword class sub-patterns AND the refutable-pattern guards \
-             (`(size := len(body)) > 0`, `code >= 400`) - all asserted above on every version. The \
-             function round-trips BYTE-IDENTICAL on {handler_ok}/{checked} versions (3.11 + 3.12). \
-             CLOSED here: (a) the module-level `@dataclass`-decorated `HttpResponse` class now recovers \
-             cleanly with NO `__DR_BUILD_CLASS__`/`__DR_CODE_CONST_` placeholder; (b) on 3.12 the inline \
-             function epilogue (`if failure is not None: return failure` + the trailing `return {{...}}`) \
-             that `CPython` 3.12+ lays INLINE inside the `except*` exception-table span - between the \
-             `async with`'s normal-exit `__aexit__` and the OUT-OF-LINE `WITH_EXCEPT_START` handler - is \
-             now structured as the `try`/`except*` construct SUCCESSOR (the with region no longer drops \
-             it), proven by the byte-equal 3.12 handler. EXPECT_SEMANTIC (whole-MODULE byte/semantic \
-             equality) stays false ONLY because 3.13/3.14 carry a residual ORTHOGONAL to RESIDUAL 2: a \
-             single-keyword-CAPTURE match-arm miscompile (`case HttpResponse(status=code)` recovers as \
-             `case HttpResponse(status=400) as code`) that diverges the handler `co_code`. That match \
-             lowering is its own defect, deferred honestly rather than papered over. semantic round-trip \
-             on {semantic_ok}/{checked} versions."
+            "RESIDUAL: whole-MODULE semantic equivalence not yet universal - {semantic_ok}/{checked} \
+             versions round-tripped semantically, {handler_ok}/{checked} byte-identical at the handler. \
+             EXPECT_SEMANTIC stays false until every available 3.11-3.14 interpreter is Some(true); see \
+             {}.",
+            report_path.display()
         );
     }
 }
 
-/// Whole-MODULE semantic equality is still blocked on 3.13/3.14 by a residual orthogonal to RESIDUAL 2:
-/// a single-keyword-CAPTURE match-arm miscompile (`case HttpResponse(status=code)` recovers as
-/// `case HttpResponse(status=400) as code`) that diverges the handler `co_code`. The module-level
-/// `@dataclass` class-def now recovers cleanly (no `__DR_BUILD_CLASS__`/`__DR_CODE_CONST_` leak) and the
-/// 3.12 inline-epilogue-in-`except*`-span layout is closed (epilogue now structured as the construct
-/// successor), so 3.11+3.12 round-trip the handler byte-identical. Flip to `true` only when the 3.13/3.14
-/// match-arm miscompile is also closed. The FUNCTION-level gate below (`HANDLER_BYTE_EQUAL_FLOOR`) is the
-/// hard, ratcheting proof of the RESIDUAL 2 + inline-epilogue fix.
-const EXPECT_SEMANTIC: bool = false;
+/// Whole-MODULE semantic equality across 3.11-3.14 is CLOSED. The four residuals are all fixed: (1) the
+/// module-level `@dataclass` class-def recovers cleanly (no `__DR_BUILD_CLASS__`/`__DR_CODE_CONST_` leak);
+/// (2) the 3.12 inline-epilogue-in-`except*`-span layout is structured as the construct successor; (3) the
+/// 3.13/3.14 single-keyword-CAPTURE match-arm (`case HttpResponse(status=code)`) lowers correctly; and
+/// (4) the 3.14 PEP 649/749 lazy module annotations (`REQUEST_ID: ContextVar[str] = ...`) are recovered
+/// from the deferred `__annotate__` body and threaded back as an in-place `AnnAssign`, dropping the
+/// synthetic `__annotate__` def and the `__conditional_annotations__` membership scaffolding. With all
+/// four closed, `semantic_equiv_of_recovered` is `Some(true)` on every available 3.11-3.14 interpreter and
+/// the handler round-trips byte-identical on all of them, so whole-MODULE recompile-equivalence holds.
+const EXPECT_SEMANTIC: bool = true;
 
 /// Hard floor: the `modern_request_handler` FUNCTION must round-trip BYTE-IDENTICAL on at least this many
-/// of the available 3.11-3.14 interpreters. Set to 2 - proven on 3.11 AND 3.12, where the `except*` +
-/// `async with` + `for` + `match` + guards recompile to identical `co_code`/`co_consts`/`co_names`. 3.12
-/// joined 3.11 once the inline-epilogue residual (the post-`async with` `if failure is not None: return
-/// failure` laid inside the `except*` span on 3.12+) was structured as the construct successor instead of
-/// being dropped. Ratchets UP as the residual closes on 3.13/3.14 (still blocked by the orthogonal
-/// 3.13/3.14 single-keyword-capture match-arm miscompile, `status=code` -> `status=400 as code`); never down.
-const HANDLER_BYTE_EQUAL_FLOOR: usize = 2;
+/// of the available 3.11-3.14 interpreters. Set to 4 - proven on 3.11/3.12/3.13/3.14, where the `except*` +
+/// `async with` + `for` + `match` + guards recompile to identical `co_code`/`co_consts`/`co_names`. 3.13
+/// and 3.14 joined 3.11+3.12 once the single-keyword-capture match-arm lowering and (for 3.14) the lazy
+/// module-annotation recovery were closed. Ratchets UP only; never down.
+const HANDLER_BYTE_EQUAL_FLOOR: usize = 4;
 
 /// Recompile the recovered source and compare to the original code object. `Some(true)` =
 /// `Perfect`/`Semantic`, `Some(false)` = `CodeDiff`, `None` = the recovered source did not even
