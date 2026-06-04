@@ -546,6 +546,7 @@ struct LiftCtx<'a> {
     module: &'a HermesModule,
     code: &'a [u8],
     regs: BTreeMap<u32, String>,
+    env_levels: BTreeMap<u32, u32>,
     reconstructed: usize,
     fallback: usize,
 }
@@ -556,9 +557,21 @@ impl<'a> LiftCtx<'a> {
             module,
             code,
             regs: BTreeMap::new(),
+            env_levels: BTreeMap::new(),
             reconstructed: 0,
             fallback: 0,
         }
+    }
+
+    /// Records that register `reg` now holds an environment located `level`
+    /// scopes up the lexical chain, so later `LoadFromEnvironment`/
+    /// `StoreToEnvironment` reads can name captured variables by `(level, slot)`.
+    fn set_env(&mut self, reg: u32, level: u32) {
+        self.env_levels.insert(reg, level);
+    }
+
+    fn env_level(&self, reg: u32) -> u32 {
+        self.env_levels.get(&reg).copied().unwrap_or(0)
     }
 
     fn reg_expr(&self, r: u32) -> String {
@@ -757,6 +770,18 @@ fn is_valid_js_identifier(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c: char| c == '_' || c == '$' || c.is_ascii_alphanumeric())
+}
+
+/// Synthesizes a stable, readable name for a captured variable at lexical
+/// `(level, slot)`. The original identifier is erased by HBC (no debug info), so
+/// the name is positional but consistent across every read and write of the slot.
+#[must_use]
+fn captured_var(level: u32, slot: u64) -> String {
+    if level == 0 {
+        format!("cvar{slot}")
+    } else {
+        format!("cvar{level}_{slot}")
+    }
 }
 
 #[must_use]
@@ -1007,10 +1032,182 @@ fn lift_instruction(
             let d: u32 = reg_of(ops.first());
             let src: String = ctx.reg_expr(reg_of(ops.get(1)));
             ctx.set_reg(d, src);
+            if let Some(level) = ctx.env_levels.get(&reg_of(ops.get(1))).copied() {
+                ctx.set_env(d, level);
+            }
+            ctx.reconstructed += 1;
+        }
+        "CreateEnvironment" => {
+            let d: u32 = reg_of(ops.first());
+            ctx.set_reg(d, "$env".to_owned());
+            ctx.set_env(d, 0);
+            ctx.reconstructed += 1;
+        }
+        "CreateInnerEnvironment" => {
+            let d: u32 = reg_of(ops.first());
+            let parent: u32 = reg_of(ops.get(1));
+            ctx.set_reg(d, "$env".to_owned());
+            ctx.set_env(d, ctx.env_level(parent));
+            ctx.reconstructed += 1;
+        }
+        "GetEnvironment" => {
+            let d: u32 = reg_of(ops.first());
+            let levels: u32 = uint_of(ops.get(1)) as u32;
+            ctx.set_reg(d, "$env".to_owned());
+            ctx.set_env(d, levels);
+            ctx.reconstructed += 1;
+        }
+        "LoadFromEnvironment" | "LoadFromEnvironmentL" => {
+            let d: u32 = reg_of(ops.first());
+            let env_reg: u32 = reg_of(ops.get(1));
+            let slot: u64 = uint_of(ops.get(2));
+            let level: u32 = ctx.env_level(env_reg);
+            ctx.set_reg(d, captured_var(level, slot));
+            ctx.reconstructed += 1;
+        }
+        "StoreToEnvironment"
+        | "StoreToEnvironmentL"
+        | "StoreNPToEnvironment"
+        | "StoreNPToEnvironmentL" => {
+            let env_reg: u32 = reg_of(ops.first());
+            let slot: u64 = uint_of(ops.get(1));
+            let value: String = ctx.reg_expr(reg_of(ops.get(2)));
+            let level: u32 = ctx.env_level(env_reg);
+            let name: String = captured_var(level, slot);
+            stmts.push(BlockStmt::Line(format!("{name} = {value};")));
             ctx.reconstructed += 1;
         }
         "GetGlobalObject" => {
             ctx.set_reg(reg_of(ops.first()), "globalThis".to_owned());
+            ctx.reconstructed += 1;
+        }
+        "IteratorBegin" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("{src}[Symbol.iterator]()"));
+            ctx.reconstructed += 1;
+        }
+        "IteratorNext" => {
+            let d: u32 = reg_of(ops.first());
+            let it: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("{it}.next().value"));
+            ctx.reconstructed += 1;
+        }
+        "IteratorClose" => {
+            let it: String = ctx.reg_expr(reg_of(ops.first()));
+            stmts.push(BlockStmt::Line(format!("{it}.return?.();")));
+            ctx.reconstructed += 1;
+        }
+        "GetPNameList" => {
+            let d: u32 = reg_of(ops.first());
+            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("Object.keys({obj})"));
+            ctx.reconstructed += 1;
+        }
+        "GetNextPName" => {
+            let d: u32 = reg_of(ops.first());
+            let props: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let idx: String = ctx.reg_expr(reg_of(ops.get(3)));
+            ctx.set_reg(d, format!("{props}[{idx}]"));
+            ctx.reconstructed += 1;
+        }
+        "StartGenerator" | "CompleteGenerator" => {
+            ctx.reconstructed += 1;
+        }
+        "SaveGenerator" | "SaveGeneratorLong" => {
+            stmts.push(BlockStmt::Line("yield;".to_owned()));
+            ctx.reconstructed += 1;
+        }
+        "ResumeGenerator" => {
+            let d: u32 = reg_of(ops.first());
+            ctx.set_reg(d, "$resumed".to_owned());
+            ctx.reconstructed += 1;
+        }
+        "CreateGenerator" | "CreateGeneratorLongIndex" => {
+            let d: u32 = reg_of(ops.first());
+            let fid: u32 = match ops.get(2) {
+                Some(OperandValue::FunctionId(f)) => *f,
+                _ => 0,
+            };
+            let nm: String = ctx.func_name(fid);
+            ctx.set_reg(d, format!("function* {nm}() {{ /* fn #{fid} */ }}"));
+            ctx.reconstructed += 1;
+        }
+        "ToNumber" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("+{src}"));
+            ctx.reconstructed += 1;
+        }
+        "ToNumeric" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, src);
+            ctx.reconstructed += 1;
+        }
+        "ToInt32" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("({src} | 0)"));
+            ctx.reconstructed += 1;
+        }
+        "AddEmptyString" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("(\"\" + {src})"));
+            ctx.reconstructed += 1;
+        }
+        "GetNewTarget" => {
+            ctx.set_reg(reg_of(ops.first()), "new.target".to_owned());
+            ctx.reconstructed += 1;
+        }
+        "ReifyArguments" | "GetArgumentsLength" | "GetArgumentsPropByVal" => {
+            let d: u32 = reg_of(ops.first());
+            let expr: String = match name {
+                "GetArgumentsLength" => "arguments.length".to_owned(),
+                "GetArgumentsPropByVal" => {
+                    let key: String = ctx.reg_expr(reg_of(ops.get(1)));
+                    format!("arguments[{key}]")
+                }
+                _ => "arguments".to_owned(),
+            };
+            ctx.set_reg(d, expr);
+            ctx.reconstructed += 1;
+        }
+        "DirectEval" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("eval({src})"));
+            ctx.reconstructed += 1;
+        }
+        "DeclareGlobalVar" | "ThrowIfHasRestrictedGlobalProperty" => {
+            let nm: String = ctx.ident_or_string(strid_of(ops.first()));
+            stmts.push(BlockStmt::Line(format!("var {nm};")));
+            ctx.reconstructed += 1;
+        }
+        "ThrowIfEmpty" => {
+            let d: u32 = reg_of(ops.first());
+            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, src);
+            ctx.reconstructed += 1;
+        }
+        "CallDirect" | "CallDirectLongIndex" => {
+            let d: u32 = reg_of(ops.first());
+            let argc: u64 = uint_of(ops.get(1)).saturating_sub(1);
+            let fid: u32 = match ops.get(2) {
+                Some(OperandValue::FunctionId(f)) => *f,
+                _ => 0,
+            };
+            let callee: String = ctx.func_name(fid);
+            let rendered: u64 = argc.min(MAX_RENDERED_CALL_ARGS);
+            let mut args: String = String::with_capacity(rendered as usize * 4);
+            for i in 0..rendered {
+                if i > 0 {
+                    args.push_str(", ");
+                }
+                let _ = write!(args, "a{i}");
+            }
+            ctx.set_reg(d, format!("{callee}({args})"));
             ctx.reconstructed += 1;
         }
         "GetByIdShort" | "GetById" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong" => {
@@ -1020,12 +1217,32 @@ fn lift_instruction(
             ctx.set_reg(d, format!("{obj}.{prop}"));
             ctx.reconstructed += 1;
         }
-        "PutById" | "PutByIdLong" | "TryPutById" | "TryPutByIdLong" | "PutNewOwnById"
-        | "PutNewOwnByIdLong" | "PutNewOwnByIdShort" => {
+        "PutById"
+        | "PutByIdLong"
+        | "TryPutById"
+        | "TryPutByIdLong"
+        | "PutNewOwnById"
+        | "PutNewOwnByIdLong"
+        | "PutNewOwnByIdShort"
+        | "PutNewOwnNEById"
+        | "PutNewOwnNEByIdLong" => {
             let obj: String = ctx.reg_expr(reg_of(ops.first()));
             let val: String = ctx.reg_expr(reg_of(ops.get(1)));
             let prop: String = ctx.ident_or_string(strid_of(ops.get(2)).max(strid_of(ops.get(3))));
             stmts.push(BlockStmt::Line(format!("{obj}.{prop} = {val};")));
+            ctx.reconstructed += 1;
+        }
+        "GetBuiltinClosure" => {
+            let d: u32 = reg_of(ops.first());
+            let builtin_id: u64 = uint_of(ops.get(1));
+            ctx.set_reg(d, super::builtins::builtin_name(builtin_id));
+            ctx.reconstructed += 1;
+        }
+        "Debugger" => {
+            stmts.push(BlockStmt::Line("debugger;".to_owned()));
+            ctx.reconstructed += 1;
+        }
+        "AsyncBreakCheck" | "ProfilePoint" | "Unreachable" => {
             ctx.reconstructed += 1;
         }
         "GetByVal" => {
@@ -1040,6 +1257,60 @@ fn lift_instruction(
             let key: String = ctx.reg_expr(reg_of(ops.get(1)));
             let val: String = ctx.reg_expr(reg_of(ops.get(2)));
             stmts.push(BlockStmt::Line(format!("{obj}[{key}] = {val};")));
+            ctx.reconstructed += 1;
+        }
+        "PutOwnByIndex" | "PutOwnByIndexL" => {
+            let obj: String = ctx.reg_expr(reg_of(ops.first()));
+            let val: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let idx: u64 = uint_of(ops.get(2));
+            stmts.push(BlockStmt::Line(format!("{obj}[{idx}] = {val};")));
+            ctx.reconstructed += 1;
+        }
+        "PutOwnByVal" => {
+            let obj: String = ctx.reg_expr(reg_of(ops.first()));
+            let val: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let key: String = ctx.reg_expr(reg_of(ops.get(2)));
+            stmts.push(BlockStmt::Line(format!("{obj}[{key}] = {val};")));
+            ctx.reconstructed += 1;
+        }
+        "PutOwnGetterSetterByVal" => {
+            let obj: String = ctx.reg_expr(reg_of(ops.first()));
+            let key: String = ctx.reg_expr(reg_of(ops.get(1)));
+            stmts.push(BlockStmt::Line(format!(
+                "Object.defineProperty({obj}, {key}, {{ get, set }});"
+            )));
+            ctx.reconstructed += 1;
+        }
+        "DelById" | "DelByIdLong" => {
+            let d: u32 = reg_of(ops.first());
+            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let prop: String = ctx.ident_or_string(strid_of(ops.get(2)));
+            let expr: String = format!("delete {obj}.{prop}");
+            if reg_read_later(d, inst, instructions) {
+                ctx.set_reg(d, expr);
+            } else {
+                stmts.push(BlockStmt::Line(format!("{expr};")));
+                ctx.set_reg(d, format!("r{d}"));
+            }
+            ctx.reconstructed += 1;
+        }
+        "DelByVal" => {
+            let d: u32 = reg_of(ops.first());
+            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let key: String = ctx.reg_expr(reg_of(ops.get(2)));
+            let expr: String = format!("delete {obj}[{key}]");
+            if reg_read_later(d, inst, instructions) {
+                ctx.set_reg(d, expr);
+            } else {
+                stmts.push(BlockStmt::Line(format!("{expr};")));
+                ctx.set_reg(d, format!("r{d}"));
+            }
+            ctx.reconstructed += 1;
+        }
+        "NewObjectWithParent" => {
+            let d: u32 = reg_of(ops.first());
+            let parent: String = ctx.reg_expr(reg_of(ops.get(1)));
+            ctx.set_reg(d, format!("Object.create({parent})"));
             ctx.reconstructed += 1;
         }
         "NewObject" => {
@@ -1396,6 +1667,7 @@ pub struct DecompiledFunction {
     pub has_if: bool,
     pub has_loop: bool,
     pub has_try_catch: bool,
+    pub is_generator: bool,
     pub source: String,
 }
 
@@ -1466,6 +1738,16 @@ pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunc
         .any(|s: &BlockStmt| matches!(s, BlockStmt::CondJump { .. }));
     let has_try_catch: bool = header.has_exception_handler
         || instructions.iter().any(|i: &Instruction| i.name == "Catch");
+    let is_generator: bool = instructions.iter().any(|i: &Instruction| {
+        matches!(
+            &*i.name,
+            "StartGenerator"
+                | "SaveGenerator"
+                | "SaveGeneratorLong"
+                | "ResumeGenerator"
+                | "CompleteGenerator"
+        )
+    });
 
     let params: Vec<String> = (0..header.param_count.saturating_sub(1))
         .map(|p: u32| format!("arg{p}"))
@@ -1475,8 +1757,13 @@ pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunc
     } else {
         ""
     };
+    let fn_keyword: &str = if is_generator {
+        "function*"
+    } else {
+        "function"
+    };
     let source: String = format!(
-        "function {name}({}) {{{strict}\n{body}}}",
+        "{fn_keyword} {name}({}) {{{strict}\n{body}}}",
         params.join(", ")
     );
 
@@ -1493,6 +1780,7 @@ pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunc
         has_if,
         has_loop,
         has_try_catch,
+        is_generator,
         source,
     }
 }
@@ -2082,6 +2370,190 @@ mod tests {
     }
 
     #[test]
+    fn decompile_environment_capture() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("CreateEnvironment"));
+        code.push(0u8);
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[1u8, 42u8]);
+        code.push(opcode_byte("StoreToEnvironment"));
+        code.extend_from_slice(&[0u8, 3u8, 1u8]);
+        code.push(opcode_byte("LoadFromEnvironment"));
+        code.extend_from_slice(&[2u8, 0u8, 3u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(2u8);
+        let module: HermesModule = module_with(&["outer"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("cvar3 = 42;"),
+            "expected captured-var store; src: {}",
+            f.source
+        );
+        assert!(
+            f.source.contains("return cvar3;"),
+            "expected captured-var load; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_environment_scope_levels() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("GetEnvironment"));
+        code.extend_from_slice(&[0u8, 2u8]);
+        code.push(opcode_byte("LoadFromEnvironment"));
+        code.extend_from_slice(&[1u8, 0u8, 5u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["f"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("return cvar2_5;"),
+            "expected level-2 captured var; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_iterator_for_of() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("IteratorBegin"));
+        code.extend_from_slice(&[2u8, 1u8]);
+        code.push(opcode_byte("IteratorNext"));
+        code.extend_from_slice(&[3u8, 2u8, 1u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(3u8);
+        let module: HermesModule = module_with(&["iter"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("arg0[Symbol.iterator]().next().value"),
+            "expected iterator protocol; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_for_in_pname() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("GetPNameList"));
+        code.extend_from_slice(&[2u8, 1u8, 3u8, 4u8]);
+        code.push(opcode_byte("GetNextPName"));
+        code.extend_from_slice(&[5u8, 2u8, 1u8, 3u8, 4u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(5u8);
+        let module: HermesModule = module_with(&["loop"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("Object.keys(arg0)"),
+            "expected for-in prop list; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_generator_function() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("StartGenerator"));
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[0u8, 1u8]);
+        code.push(opcode_byte("SaveGenerator"));
+        code.push(2u8);
+        code.push(opcode_byte("ResumeGenerator"));
+        code.extend_from_slice(&[1u8, 2u8]);
+        code.push(opcode_byte("CompleteGenerator"));
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["gen"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(f.is_generator, "expected generator flag; src: {}", f.source);
+        assert!(
+            f.source.contains("function* gen("),
+            "expected function* keyword; src: {}",
+            f.source
+        );
+        assert!(
+            f.source.contains("yield;"),
+            "expected yield point; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_delete_and_coercion() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("DelById"));
+        code.extend_from_slice(&[2u8, 1u8, 0u8, 0u8]);
+        code.push(opcode_byte("ToNumber"));
+        code.extend_from_slice(&[3u8, 1u8]);
+        code.push(opcode_byte("ToInt32"));
+        code.extend_from_slice(&[4u8, 1u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(4u8);
+        let module: HermesModule = module_with(&["prop"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("delete arg0.prop"),
+            "expected delete; src: {}",
+            f.source
+        );
+        assert!(
+            f.source.contains("(arg0 | 0)"),
+            "expected ToInt32 coercion; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_arguments_and_new_target() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("GetNewTarget"));
+        code.push(0u8);
+        code.push(opcode_byte("GetArgumentsLength"));
+        code.extend_from_slice(&[1u8, 0u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["f"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("arguments.length"),
+            "expected arguments.length; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_object_create_parent() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("NewObjectWithParent"));
+        code.extend_from_slice(&[2u8, 1u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(2u8);
+        let module: HermesModule = module_with(&["mk"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("Object.create(arg0)"),
+            "expected Object.create; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
     fn decompile_bigint_literal_synthesis() {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("LoadConstBigInt"));
@@ -2153,5 +2625,192 @@ mod tests {
         let code: Vec<u8> = vec![opcode_byte("Debugger"); MAX_DECODED_INSTRUCTIONS + 50_000];
         let instructions: Vec<Instruction> = decode_instructions(&code);
         assert_eq!(instructions.len(), MAX_DECODED_INSTRUCTIONS);
+    }
+
+    #[test]
+    fn opcode_table_coverage_excludes_only_instrumentation() {
+        let mut unhandled: Vec<&str> = Vec::new();
+        for spec in OPCODES {
+            let n: &str = spec.name;
+            let handled: bool = binop_symbol(n).is_some()
+                || unop_symbol(n).is_some()
+                || jump_condition(n).is_some()
+                || HANDLED_OPCODES.contains(&n);
+            if !handled {
+                unhandled.push(n);
+            }
+        }
+        assert!(
+            unhandled.is_empty(),
+            "every non-jump opcode must resugar or be a documented no-op; missing: {unhandled:?}"
+        );
+    }
+
+    /// Every opcode with an explicit `lift_instruction` match arm. Kept in sync
+    /// with the match so `opcode_table_coverage_excludes_only_instrumentation`
+    /// fails loudly if a family is dropped. Binops/unops/jump-conditions are
+    /// covered by their dedicated symbol tables and are intentionally absent.
+    const HANDLED_OPCODES: &[&str] = &[
+        "LoadConstUInt8",
+        "LoadConstInt",
+        "LoadConstDouble",
+        "LoadConstZero",
+        "LoadConstString",
+        "LoadConstStringLongIndex",
+        "LoadConstUndefined",
+        "LoadConstEmpty",
+        "LoadConstNull",
+        "LoadConstTrue",
+        "LoadConstFalse",
+        "LoadConstBigInt",
+        "LoadConstBigIntLongIndex",
+        "LoadParam",
+        "LoadParamLong",
+        "LoadThisNS",
+        "CoerceThisNS",
+        "Mov",
+        "MovLong",
+        "CreateEnvironment",
+        "CreateInnerEnvironment",
+        "GetEnvironment",
+        "LoadFromEnvironment",
+        "LoadFromEnvironmentL",
+        "StoreToEnvironment",
+        "StoreToEnvironmentL",
+        "StoreNPToEnvironment",
+        "StoreNPToEnvironmentL",
+        "GetGlobalObject",
+        "IteratorBegin",
+        "IteratorNext",
+        "IteratorClose",
+        "GetPNameList",
+        "GetNextPName",
+        "GetByIdShort",
+        "GetById",
+        "GetByIdLong",
+        "TryGetById",
+        "TryGetByIdLong",
+        "PutById",
+        "PutByIdLong",
+        "TryPutById",
+        "TryPutByIdLong",
+        "PutNewOwnById",
+        "PutNewOwnByIdLong",
+        "PutNewOwnByIdShort",
+        "PutNewOwnNEById",
+        "PutNewOwnNEByIdLong",
+        "GetBuiltinClosure",
+        "Debugger",
+        "AsyncBreakCheck",
+        "ProfilePoint",
+        "Unreachable",
+        "GetByVal",
+        "PutByVal",
+        "PutOwnByIndex",
+        "PutOwnByIndexL",
+        "PutOwnByVal",
+        "PutOwnGetterSetterByVal",
+        "DelById",
+        "DelByIdLong",
+        "DelByVal",
+        "NewObjectWithParent",
+        "NewObject",
+        "NewObjectWithBuffer",
+        "NewObjectWithBufferLong",
+        "NewArray",
+        "NewArrayWithBuffer",
+        "NewArrayWithBufferLong",
+        "CreateThis",
+        "SelectObject",
+        "CreateClosure",
+        "CreateClosureLongIndex",
+        "CreateGeneratorClosure",
+        "CreateGeneratorClosureLongIndex",
+        "CreateAsyncClosure",
+        "CreateAsyncClosureLongIndex",
+        "CreateRegExp",
+        "SwitchImm",
+        "CallBuiltin",
+        "CallBuiltinLong",
+        "StartGenerator",
+        "CompleteGenerator",
+        "SaveGenerator",
+        "SaveGeneratorLong",
+        "ResumeGenerator",
+        "CreateGenerator",
+        "CreateGeneratorLongIndex",
+        "ToNumber",
+        "ToNumeric",
+        "ToInt32",
+        "AddEmptyString",
+        "GetNewTarget",
+        "ReifyArguments",
+        "GetArgumentsLength",
+        "GetArgumentsPropByVal",
+        "DirectEval",
+        "DeclareGlobalVar",
+        "ThrowIfHasRestrictedGlobalProperty",
+        "ThrowIfEmpty",
+        "CallDirect",
+        "CallDirectLongIndex",
+        "Call",
+        "CallLong",
+        "Construct",
+        "ConstructLong",
+        "Call1",
+        "Call2",
+        "Call3",
+        "Call4",
+        "Ret",
+        "Throw",
+        "Catch",
+        "Jmp",
+        "JmpLong",
+        "JmpTrue",
+        "JmpTrueLong",
+        "JmpFalse",
+        "JmpFalseLong",
+        "JmpUndefined",
+        "JmpUndefinedLong",
+    ];
+
+    #[test]
+    fn all_families_oracle_low_fallback() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("CreateEnvironment"));
+        code.push(0u8);
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        code.push(opcode_byte("StoreToEnvironment"));
+        code.extend_from_slice(&[0u8, 2u8, 1u8]);
+        code.push(opcode_byte("IteratorBegin"));
+        code.extend_from_slice(&[2u8, 1u8]);
+        code.push(opcode_byte("IteratorNext"));
+        code.extend_from_slice(&[3u8, 2u8, 1u8]);
+        code.push(opcode_byte("ToInt32"));
+        code.extend_from_slice(&[4u8, 3u8]);
+        code.push(opcode_byte("DelByVal"));
+        code.extend_from_slice(&[6u8, 1u8, 4u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(6u8);
+        let module: HermesModule = module_with(&["mix"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(
+            f.fallback_ops, 0,
+            "all-families function must have zero fallback; src: {}",
+            f.source
+        );
+        for expected in [
+            "cvar2 = arg0;",
+            "[Symbol.iterator]()",
+            ".next().value",
+            "delete arg0[",
+        ] {
+            assert!(
+                f.source.contains(expected),
+                "expected `{expected}` in recovered source; src: {}",
+                f.source
+            );
+        }
     }
 }

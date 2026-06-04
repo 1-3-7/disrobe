@@ -3,10 +3,11 @@
 | references | 14 | clean-room study sources + licenses (Hermes, Dart VM) |
 | hermes-literal-format | 30 | objKeyBuffer/objValueBuffer serialized-literal encoding |
 | hermes-regex-format | 48 | regExpStorage compiled-bytecode + flag/group recovery |
-| hermes-recovery-ceiling | 64 | what HBC discards; honest lossy ceiling |
-| flutter-snapshot-format | 74 | Dart AOT snapshot header + section layout |
-| flutter-recovery-ceiling | 88 | AOT ARM64 body ceiling (45-55% static) |
-| measurement | 100 | how before/after percentages are measured |
+| hermes-recovery-ceiling | 56 | what HBC discards; honest lossy ceiling |
+| hermes-opcode-families | 63 | env/iterator/generator/property/coercion resugaring |
+| flutter-snapshot-format | 95 | Dart AOT snapshot header + section layout |
+| flutter-recovery-ceiling | 110 | AOT ARM64 body ceiling (45-55% static) |
+| measurement | 122 | how before/after percentages are measured |
 
 ## references
 
@@ -59,6 +60,35 @@ HBC discards: source text, comments, original identifier names of locals (regist
 exact regex source. ~90-92% readable-construct recovery is the ceiling: object/array literals, string/
 number/bigint constants, member access, calls, control flow, regex flags+skeleton are recoverable;
 local variable names and comments are permanently lost.
+
+## hermes-opcode-families (v96 BytecodeList.def, MIT, clean-room)
+
+Resugaring of opcode families beyond constants/binops, each verified by synthetic-HBC round-trip
+(encoder follows the spec operand order, decoder under test = non-circular):
+
+- ENVIRONMENT/CLOSURE CAPTURE: `CreateEnvironment(dst)`, `CreateInnerEnvironment(dst,parent,size)`,
+  `GetEnvironment(dst,levels)` track an env register's lexical level; `LoadFromEnvironment(dst,env,slot)`
+  reads and `StoreToEnvironment[L]`/`StoreNPToEnvironment[L](env,slot,val)` writes a captured variable
+  named `cvar{slot}` (level 0) or `cvar{level}_{slot}`. Original name erased by HBC -> positional name.
+- ITERATOR (for-of): `IteratorBegin(it,src)` -> `it = src[Symbol.iterator]()`; `IteratorNext(r,it,src)`
+  -> `r = it.next().value`; `IteratorClose(it,ignoreExc)` -> `it.return?.()`.
+- FOR-IN: `GetPNameList(arr,obj,idx,size)` -> `for..in` props of obj; `GetNextPName(k,arr,obj,idx,size)`
+  -> next key `k`.
+- GENERATORS: `StartGenerator`/`CompleteGenerator` mark a `function*` body; `SaveGenerator[Long](addr)`
+  -> `yield` point; `ResumeGenerator(res,done,...)` -> resumed value. `CreateGenerator[LongIndex]` ->
+  `function* name()`.
+- PROPERTY/OWN-PROP: `DelById[Long](dst,obj,strid)` -> `delete obj.prop`; `DelByVal(dst,obj,key)` ->
+  `delete obj[key]`; `PutOwnByIndex[L]`/`PutOwnByVal` -> indexed array/own writes; `NewObjectWithParent`
+  -> `Object.create(parent)`; `PutNewOwnNEById[Long]` -> non-enumerable own define.
+- COERCION/ARGS/MISC: `ToNumber`->`+x`, `ToNumeric`/`ToInt32`->`(x|0)`, `AddEmptyString`->`("" + x)`,
+  `GetNewTarget`->`new.target`, `ReifyArguments`/`GetArgumentsLength`/`GetArgumentsPropByVal`->
+  `arguments`, `DirectEval`->`eval(x)`, `CallDirect[LongIndex]`-> direct fn-table call,
+  `DeclareGlobalVar`->`var name` at global scope, `ThrowIfEmpty`-> TDZ check passthrough.
+
+Exception handler table (`try/catch`) lives in the per-function info section, only for OVERFLOWED
+function headers: `ExceptionHandlerTableHeader{count:u32}` then `count x {start,end,target:u32}`. The
+real `hello` v96 fixture has no exception handlers, so try/catch reconstruction is implemented against
+the table format but cannot be measured on the committed corpus (honest, documented).
 
 ## flutter-snapshot-format
 
