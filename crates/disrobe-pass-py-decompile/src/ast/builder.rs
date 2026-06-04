@@ -6990,6 +6990,23 @@ fn recover_while_test(code: &CodeObject, stream: &DecodedStream, region: &LoopRe
 /// produces a single `Expr::IfExp` seeded into the `SIM` for the post-join region, which then handles
 /// the downstream consumer (`Return`, `StoreFast`, `Subscript`, etc.). Recursively detects nested
 /// ternaries in the body or else region.
+/// Index of the value-form ternary's then-branch skip jump (`JUMP_FORWARD`/`JUMP_ABSOLUTE` to the
+/// join). It normally sits at `target - 1`, but on 3.11 the else branch may open with a `LOAD_GLOBAL`
+/// method-self `PUSH_NULL` slot that the `POP_JUMP_IF_*` target lands ON, so the skip jump is one or
+/// more `PUSH`/cache/nop ops before `target`. Scan back from `target` past that padding to the real
+/// skip jump; returns `target - 1` unchanged when no padding intervenes.
+fn ternary_body_jump_before(stream: &DecodedStream, from: usize, target: usize) -> usize {
+    let mut k: usize = target;
+    while k > from {
+        k -= 1;
+        match stream.ops[k] {
+            CanonicalOp::Push(_) | CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            _ => return k,
+        }
+    }
+    target.saturating_sub(1)
+}
+
 fn try_structure_ternary_expr(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -7002,22 +7019,22 @@ fn try_structure_ternary_expr(
         return Ok(None);
     }
     let last_test_jump: usize = ternary_test_chain_end(stream, lo, jump_idx, target);
-    let body_last: usize = target - 1;
+    let body_last: usize = ternary_body_jump_before(stream, last_test_jump + 1, target);
     if !matches!(
         stream.ops[body_last],
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
         return Ok(None);
     }
+    let orelse_start: usize = body_last + 1;
     let Some(join): Option<usize> = resolve_jump_target(stream, body_last, &stream.ops[body_last])
-        .filter(|j: &usize| *j > target && *j <= hi)
+        .filter(|j: &usize| *j > body_last && *j <= hi)
     else {
         return Ok(None);
     };
     if last_test_jump + 1 > body_last {
         return Ok(None);
     }
-    let orelse_start: usize = target;
     let Some((head_stmts, below_stack, test_raw)): Option<TernaryTest> =
         build_ternary_test_expr(code, stream, lo, jump_idx, last_test_jump, target)?
     else {
