@@ -11070,6 +11070,22 @@ fn comp_expr_from_parts(
     }
 }
 
+/// True when a forward conditional jump (an `if`/`while` guard or sibling branch) precedes the inline
+/// comprehension in `[lo, comp.clear_idx)` and skips forward within the region. The comp fold runs at
+/// the top of the structurer and rebuilds its leading `head` with the flat value sim, which mangles any
+/// preceding control flow; deferring lets the if/loop structurer process the leading statements first
+/// and reach the comp as a later top-level statement in its own sub-region. A backward jump (a prior
+/// loop's back-edge already structured away) does not count; only a forward branch ahead of the comp.
+fn comp_preceded_by_branch(stream: &DecodedStream, lo: usize, comp: &InlineComp) -> bool {
+    (lo..comp.clear_idx).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > k && t <= comp.clear_idx)
+    })
+}
+
 fn try_structure_inline_comprehension(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -11085,6 +11101,9 @@ fn try_structure_inline_comprehension(
         && comp.clear_idx < region.handler_start
         && !try_enclosed_by_loop(stream, lo, hi, &region)
     {
+        return Ok(None);
+    }
+    if comp_preceded_by_branch(stream, lo, &comp) {
         return Ok(None);
     }
     let kind: CompKind = match stream.ops[comp.accumulator] {
