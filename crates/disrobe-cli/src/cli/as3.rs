@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_as3::abc::{disasm as disasm_abc, parse as parse_abc};
+use disrobe_pass_as3::decompile::render_program;
 use disrobe_pass_as3::swf::{
     DoAbc, Swf, SwfTag, TagCode, parse as parse_swf, parse_do_abc, parse_do_abc_legacy,
 };
@@ -73,8 +74,14 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Re
             "DR-CLI-0735: .swf has no DoABC / DoABCDefine tags (no AS3 to disassemble)"
         ));
     }
+    let emit_source: bool = emit
+        .iter()
+        .flat_map(|raw: &String| raw.split(','))
+        .any(|piece: &str| piece.trim().eq_ignore_ascii_case("source"));
     let mut total_instructions: usize = 0;
     let mut total_methods: usize = 0;
+    let mut total_classes: usize = 0;
+    let mut source_files: usize = 0;
     for (label, block) in &abc_blocks {
         let abc: AbcFile = parse_abc(&block.abc_bytes)
             .map_err(|e| miette::miette!("DR-CLI-0736: abc parse {label}: {e}"))?;
@@ -92,6 +99,7 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Re
             }));
         }
         total_methods += abc.method_bodies.len();
+        total_classes += abc.instances.len();
         let block_path: PathBuf = out_dir.join(format!("{label}.json"));
         let payload: serde_json::Value = serde_json::json!({
             "schema": "disrobe.as3.disasm/v0",
@@ -106,6 +114,15 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Re
             serde_json::to_vec_pretty(&payload).unwrap_or_default(),
         )
         .map_err(|e| miette::miette!("DR-CLI-0738: cannot write {label}: {e}"))?;
+
+        if emit_source && !abc.instances.is_empty() {
+            let source: String = render_program(&abc)
+                .map_err(|e| miette::miette!("DR-CLI-0742: as3 decompile {label}: {e}"))?;
+            let source_path: PathBuf = out_dir.join(format!("{label}.source.as3"));
+            std::fs::write(&source_path, source.as_bytes())
+                .map_err(|e| miette::miette!("DR-CLI-0743: cannot write {label} source: {e}"))?;
+            source_files += 1;
+        }
     }
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let manifest: serde_json::Value = serde_json::json!({
@@ -114,16 +131,24 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Re
         "swf_version": swf.header.version,
         "compression": format!("{:?}", swf.header.compression),
         "abc_blocks": abc_blocks.len(),
+        "classes": total_classes,
         "methods": total_methods,
         "instructions": total_instructions,
+        "source_files": source_files,
     });
     std::fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|e| miette::miette!("DR-CLI-0739: cannot write manifest: {e}"))?;
+    let stub_kinds: Vec<String> = emit
+        .iter()
+        .flat_map(|raw: &String| raw.split(','))
+        .map(|piece: &str| piece.trim().to_owned())
+        .filter(|piece: &String| !piece.is_empty() && !piece.eq_ignore_ascii_case("source"))
+        .collect();
     crate::cli::emit::apply_not_applicable_stubs(
-        &emit,
+        &stub_kinds,
         &out_dir,
         &stem,
         "as3-disasm",
@@ -133,8 +158,12 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Re
     println!("  input:        {}", input.display());
     println!("  swf version:  {}", swf.header.version);
     println!("  abc blocks:   {}", abc_blocks.len());
+    println!("  classes:      {total_classes}");
     println!("  methods:      {total_methods}");
     println!("  instructions: {total_instructions}");
+    if emit_source {
+        println!("  source files: {source_files}");
+    }
     println!("  out dir:      {}", out_dir.display());
     println!("  manifest:     {}", manifest_path.display());
     Ok(())

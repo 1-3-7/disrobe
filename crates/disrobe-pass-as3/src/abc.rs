@@ -76,6 +76,28 @@ impl ConstantPool {
         self.string_at(self.namespaces[i].name_index)
     }
 
+    /// The namespace URI for rendering a `QName`, returning an empty string for
+    /// the public namespace (name index 0) so a bare identifier is emitted
+    /// rather than the `*::` any-namespace sentinel.
+    pub fn namespace_uri(&self, idx: u32) -> Result<&str> {
+        if idx == 0 {
+            return Ok("");
+        }
+        let i: usize = idx as usize;
+        if i >= self.namespaces.len() {
+            return Err(Error::AbcBadPoolIndex {
+                pool: "namespaces",
+                idx: i,
+                size: self.namespaces.len(),
+            });
+        }
+        let name_index: u32 = self.namespaces[i].name_index;
+        if name_index == 0 {
+            return Ok("");
+        }
+        self.string_at(name_index)
+    }
+
     pub fn multiname_at(&self, idx: u32) -> Result<&Multiname> {
         if idx == 0 {
             return Err(Error::AbcBadPoolIndex {
@@ -109,12 +131,12 @@ impl ConstantPool {
                 ns_index,
                 name_index,
             } => {
-                let ns: &str = self.namespace_name(*ns_index)?;
+                let ns: &str = self.namespace_uri(*ns_index)?;
                 let name: &str = self.string_at(*name_index)?;
                 if ns.is_empty() {
                     name.to_owned()
                 } else {
-                    format!("{ns}::{name}")
+                    format!("{ns}.{name}")
                 }
             }
             Multiname::Multiname {
@@ -150,6 +172,7 @@ pub struct MethodInfo {
     pub param_types: Vec<u32>,
     pub name_index: u32,
     pub flags: u8,
+    pub param_names: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +200,9 @@ pub struct MethodBody {
 pub struct TraitInfo {
     pub name_index: u32,
     pub kind: u8,
+    pub slot_id: u32,
+    pub method_index: u32,
+    pub type_name: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -557,9 +583,11 @@ fn parse_method_info(r: &mut Reader<'_>) -> Result<MethodInfo> {
             let _kind: u8 = r.u8()?;
         }
     }
+    let mut param_names: Vec<u32> = Vec::new();
     if (flags & METHOD_FLAG_HAS_PARAM_NAMES) != 0 {
+        param_names.reserve_exact(param_count as usize);
         for _ in 0..param_count {
-            let _name: u32 = r.u30()?;
+            param_names.push(r.u30()?);
         }
     }
     Ok(MethodInfo {
@@ -567,6 +595,7 @@ fn parse_method_info(r: &mut Reader<'_>) -> Result<MethodInfo> {
         param_types,
         name_index,
         flags,
+        param_names,
     })
 }
 
@@ -574,21 +603,23 @@ fn parse_trait(r: &mut Reader<'_>) -> Result<TraitInfo> {
     let name_index: u32 = r.u30()?;
     let kind_byte: u8 = r.u8()?;
     let kind: u8 = kind_byte & 0x0F;
-    match kind {
+    let (slot_id, method_index, type_name): (u32, u32, u32) = match kind {
         0 | 6 => {
-            let _slot_id: u32 = r.u30()?;
-            let _type_name: u32 = r.u30()?;
+            let slot_id: u32 = r.u30()?;
+            let type_name: u32 = r.u30()?;
             let vindex: u32 = r.u30()?;
             if vindex != 0 {
                 let _vkind: u8 = r.u8()?;
             }
+            (slot_id, 0, type_name)
         }
         1..=5 => {
-            let _disp_or_slot_id: u32 = r.u30()?;
-            let _method_or_class: u32 = r.u30()?;
+            let slot_id: u32 = r.u30()?;
+            let method_index: u32 = r.u30()?;
+            (slot_id, method_index, 0)
         }
         other => return Err(Error::AbcUnknownTraitKind(other, name_index)),
-    }
+    };
     if (kind_byte & 0x40) != 0 {
         let metadata_count: u32 = r.u30()?;
         for _ in 0..metadata_count {
@@ -598,6 +629,9 @@ fn parse_trait(r: &mut Reader<'_>) -> Result<TraitInfo> {
     Ok(TraitInfo {
         name_index,
         kind: kind_byte,
+        slot_id,
+        method_index,
+        type_name,
     })
 }
 
