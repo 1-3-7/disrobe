@@ -41,14 +41,14 @@ Every artifact is content-addressed and persisted as a `.dr` envelope (rkyv payl
 | **.NET / CIL** | In-house CIL to C#/F#/VB; full PE + CLR + table-stream parser, R2R + native-AOT classify, 20+ obfuscator reversers (ConfuserEx2, .NET Reactor, Eazfuscator, ...). Optional `--backend ilspy|dnspy|de4dot`. |
 | **Native (PE/ELF/Mach-O/COFF)** | DWARF/PDB/STABS across x86/ARM/RISC-V/MIPS/PowerPC/SPARC/eBPF; Rust + C++ demangle + restoration. The unpack + symbol-recovery + chain-detect layer that feeds Ghidra/IDA cleaner input. |
 | **Native packers** | UPX (byte-identical), kkrunchy classic (byte-exact), NSPack, Petite, MPRESS, FSG, MEW, ASPack, PECompact, Yoda's via clean-room decoders + an in-house x86 stub emulator. Detect + carve on the virtualized tier (VMProtect, Themida, Enigma, ...). |
-| **Go** | GoReSym + redress symbol recovery, garble undo, embedded-FS walker, pclntab 1.2-1.26 (557/557 type-name resolution on 1.26.3, locally reproducible). |
+| **Go** | GoReSym + redress symbol recovery, garble undo, embedded-FS walker, pclntab 1.2-1.26 (~557 type names resolved on 1.26.3 in a local run; CI gates the resolution rate at >=85%). |
 | **Nim / Zig / Crystal** | Detect + name-demangle + symbol/metadata recovery from each binary's own symtab and type table. Source is not recoverable (compiled languages); demangling is the deliverable. |
 | **Perl / R / Tcl / Haxe** | Tcl starkit byte-identical extract, R `.rds` round-trip, Perl `B::Concise` op-tree, Haxe cross-target detect + route. |
 | **Lua** | 5.1-5.4, LuaJIT 2.0/2.1, Luau, GLua, and 11 obfuscators including MoonSec v1-v3 and Ironbrew2. |
 | **Shell** | PowerShell Invoke-Obfuscation levels 1-6, Bashfuscator, batch, VBA p-code (detect-only header parse). |
 | **PHP / Ruby / BEAM** | ionCube/SourceGuardian/Zend Guard structural decode + Phar; MRI/YARV 1.9-3.4 + mruby decompile; BEAM chunk parse + Core Erlang lift + Elixir `Dbgi`. |
 | **React Native Hermes** | Bytecode v60-v96, validated locally on a non-redistributable 66 MiB Discord bundle: 122,633 functions, 0 errors. |
-| **Flutter / Swift / AS3** | Dart AOT snapshot parser; Mach-O class-dump + SwiftConfidential/SwiftShield rename-undo; SWF + ABC bytecode disasm (local corpus only; not CI-validated). |
+| **Flutter / Swift / AS3** | Dart AOT snapshot parser (class/method names and library URIs from the snapshot string table; ARM64 AOT erases bodies, so counts are reported raw with no body recovery); Mach-O class-dump + SwiftConfidential/SwiftShield rename-undo; SWF + ABC bytecode disasm (local corpus only; not CI-validated). |
 | **Python pickle** | Static disasm + symbolic-VM trace + safety grading + polyglot + ML-model detection. Never unpickles. |
 | **Containers** | 26 formats (ZIP/tar/7z/`.deb`/`.rpm`/`.iso`/MSI/NSIS/Docker/OCI/SquashFS/...) with auto-detect, chaining, and universal zip-slip + bomb guards. |
 
@@ -68,7 +68,7 @@ Full per-ecosystem comparison tables (freezers, protectors, Lua, shell, PHP, Rub
 
 ## Limits
 
-`.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting; recovery is structurally faithful but never byte-identical (Dalvik body ceiling ~60-75%). Nuitka onefile/standalone unpack is byte-exact, but Nuitka compiles Python to C to native, so recovered function bodies are skeleton-to-partial (~30-50%) while symbols and constants recover cleanly. Nim/Zig/Crystal have no source recovery; demangling, symbol, and metadata recovery from the binary's own tables is the deliverable.
+`.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting; recovery is structurally faithful but never byte-identical (Dalvik body ceiling ~60-75%). Nuitka onefile/standalone unpack is byte-exact, but Nuitka compiles Python to C to native, so recovered function bodies are skeleton-to-partial (~30-50%) while symbols and constants recover cleanly. Nim/Zig/Crystal and Flutter Dart AOT have no source-body recovery; demangling, symbol, name, and metadata recovery from the binary's own tables is the deliverable.
 
 VMProtect, Themida, Enigma, and the commercial tier are detect plus section-carve only.
 
