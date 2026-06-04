@@ -620,19 +620,17 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
     ///   header, duplicated as `stmts; continue;`.
     fn duplicable_terminal(&self, bid: BlockId) -> Option<Structured> {
         match self.cfg.terminators[bid] {
-            Terminator::Return
-                if self.block_code[bid].stmts.iter().all(|s: &LinearStmt| {
-                    matches!(s, LinearStmt::Return(_) | LinearStmt::Throw(_))
-                }) =>
-            {
-                Some(self.return_stmt(bid))
+            Terminator::Return if self.is_small_duplicable(bid) => {
+                let mut s: Vec<Structured> = Vec::new();
+                push_block_stmts(&mut s, &self.block_code[bid].stmts);
+                s.push(self.return_stmt(bid));
+                Some(finish_seq(s))
             }
-            Terminator::Throw
-                if self.block_code[bid].stmts.iter().all(|s: &LinearStmt| {
-                    matches!(s, LinearStmt::Return(_) | LinearStmt::Throw(_))
-                }) =>
-            {
-                Some(self.throw_stmt(bid))
+            Terminator::Throw if self.is_small_duplicable(bid) => {
+                let mut s: Vec<Structured> = Vec::new();
+                push_block_stmts(&mut s, &self.block_code[bid].stmts);
+                s.push(self.throw_stmt(bid));
+                Some(finish_seq(s))
             }
             Terminator::FallThrough(next) | Terminator::Goto(next)
                 if self.is_continue_tail(bid, next) =>
@@ -651,6 +649,20 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             }
             _ => None,
         }
+    }
+
+    /// Whether `bid`'s statements are a short, side-effect-local sequence safe to duplicate at a jump
+    /// site: only local/field assignments and the trailing `return`/`throw`, at most a few lines.
+    fn is_small_duplicable(&self, bid: BlockId) -> bool {
+        const MAX_DUP_STMTS: usize = 3;
+        let stmts: &[LinearStmt] = &self.block_code[bid].stmts;
+        stmts.len() <= MAX_DUP_STMTS
+            && stmts.iter().all(|s: &LinearStmt| {
+                matches!(
+                    s,
+                    LinearStmt::Assign { .. } | LinearStmt::Return(_) | LinearStmt::Throw(_)
+                )
+            })
     }
 
     /// Whether `bid` is a short block (at most a few statements) whose successor `next` is the
