@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+pub mod demangler;
+pub mod snapshot;
+
+pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
+pub use snapshot::{
+    DartFunctionBoundary, DartStaticRecovery, ImageHeader, parse_image_header, recover_dart_static,
+};
+
 pub const DART_SNAPSHOT_MAGIC: u32 = 0xdcdc_f5f5;
 
 const DART_SNAPSHOT_VERSION_HASH_LEN: usize = 32;
@@ -35,15 +43,15 @@ pub struct SnapshotSection {
     pub bytes_preview: Vec<u8>,
 }
 
+/// Snapshot kind, matching Dart VM `Snapshot::Kind` (`runtime/vm/snapshot.h`):
+/// `kFull=0, kFullJIT=1, kFullAOT=2, kModule=3, kInvalid=4`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DartSnapshotKind {
     Full,
-    FullCore,
     FullJit,
     FullAot,
-    Message,
-    None,
+    Module,
     Invalid,
     Unknown(u64),
 }
@@ -53,14 +61,17 @@ impl DartSnapshotKind {
     pub const fn from_raw(raw: u64) -> Self {
         match raw {
             0 => Self::Full,
-            1 => Self::FullCore,
-            2 => Self::FullJit,
-            3 => Self::FullAot,
-            4 => Self::Message,
-            5 => Self::None,
-            6 => Self::Invalid,
+            1 => Self::FullJit,
+            2 => Self::FullAot,
+            3 => Self::Module,
+            4 => Self::Invalid,
             other => Self::Unknown(other),
         }
+    }
+
+    #[must_use]
+    pub const fn includes_code(self) -> bool {
+        matches!(self, Self::FullJit | Self::FullAot | Self::Module)
     }
 }
 
@@ -80,6 +91,7 @@ pub struct DartAotDecompile {
     pub class_table_entry_estimate: usize,
     pub object_pool_estimate: usize,
     pub readable_strings: Vec<String>,
+    pub static_recovery: DartStaticRecovery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,12 +285,52 @@ pub fn decompile_dart_aot(bytes: &[u8]) -> Result<DartAotDecompile> {
         })
         .count();
     let readable_strings: Vec<String> = extract_readable_ascii(bytes, 4);
+    let static_recovery: DartStaticRecovery = recover_dart_static(bytes, &[]);
     Ok(DartAotDecompile {
         header,
         class_table_entry_estimate: class_table_estimate,
         object_pool_estimate,
         readable_strings,
+        static_recovery,
     })
+}
+
+/// Decompiles a Dart AOT `libapp.so` end-to-end.
+///
+/// Parses the ELF, locates the isolate data and instructions snapshot sections,
+/// and runs the full static recovery (function boundaries + signatures from the
+/// instructions image, class and method names from the data snapshot). This is
+/// the highest-fidelity entry point because it sees the instructions image,
+/// which a bare snapshot blob does not.
+pub fn decompile_libapp_so(bytes: &[u8]) -> Result<DartStaticRecovery> {
+    let file: ObjFile<'_> =
+        ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
+    let layout: LibAppLayout = parse_libapp_so(bytes)?;
+    let isolate_data: Vec<u8> = section_bytes(&file, layout.isolate_snapshot_data.as_ref());
+    let isolate_instructions: Vec<u8> =
+        section_bytes(&file, layout.isolate_snapshot_instructions.as_ref());
+    Ok(recover_dart_static(&isolate_data, &isolate_instructions))
+}
+
+#[must_use]
+fn section_bytes(file: &ObjFile<'_>, section: Option<&SnapshotSection>) -> Vec<u8> {
+    let Some(sec): Option<&SnapshotSection> = section else {
+        return Vec::new();
+    };
+    for s in file.sections() {
+        let s_addr: u64 = s.address();
+        let s_size: u64 = s.size();
+        if sec.address >= s_addr && sec.address + sec.size <= s_addr + s_size {
+            let off: usize = (sec.address - s_addr) as usize;
+            let end: usize = off.saturating_add(sec.size as usize);
+            if let Ok(data) = s.data()
+                && end <= data.len()
+            {
+                return data[off..end].to_vec();
+            }
+        }
+    }
+    Vec::new()
 }
 
 fn extract_readable_ascii(bytes: &[u8], min_len: usize) -> Vec<String> {
@@ -360,7 +412,7 @@ mod tests {
         buf.extend_from_slice(&DART_SNAPSHOT_MAGIC.to_le_bytes());
         let length_field: u64 = 1024;
         buf.extend_from_slice(&length_field.to_le_bytes());
-        let kind_field: u64 = 3;
+        let kind_field: u64 = 2;
         buf.extend_from_slice(&kind_field.to_le_bytes());
         let version_hash: [u8; 32] = *b"abcdef0123456789abcdef0123456789";
         buf.extend_from_slice(&version_hash);
@@ -379,7 +431,7 @@ mod tests {
         let header: DartSnapshotHeader = parse_dart_snapshot(&bytes).expect("parse snap");
         assert_eq!(header.magic, DART_SNAPSHOT_MAGIC);
         assert_eq!(header.length, 1024);
-        assert_eq!(header.kind_raw, 3);
+        assert_eq!(header.kind_raw, 2);
         assert_eq!(header.kind, DartSnapshotKind::FullAot);
         assert_eq!(header.version_hash, "abcdef0123456789abcdef0123456789");
         assert!(header.features.contains("product"));

@@ -240,7 +240,7 @@ fn synth_dart_snapshot() -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(&DART_SNAPSHOT_MAGIC.to_le_bytes());
     buf.extend_from_slice(&0x800u64.to_le_bytes());
-    buf.extend_from_slice(&3u64.to_le_bytes());
+    buf.extend_from_slice(&2u64.to_le_bytes());
     buf.extend_from_slice(b"abcdef0123456789abcdef0123456789");
     buf.extend_from_slice(b"product no-causal_async_stacks");
     buf.push(0u8);
