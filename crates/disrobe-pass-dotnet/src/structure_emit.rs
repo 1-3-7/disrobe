@@ -71,6 +71,10 @@ pub(crate) struct Handler {
 struct LoopFrame {
     header: BlockId,
     exit: Option<BlockId>,
+    /// In-loop "continue block" (e.g. a `for` increment) whose sole successor is the header; a jump
+    /// to it is a `continue` that first runs its statements. `None` when the header is the only
+    /// continue point.
+    continue_block: Option<BlockId>,
 }
 
 struct Structurer<'a, N: TokenNamer> {
@@ -209,6 +213,10 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
                 seq.push(Structured::Continue);
                 return None;
             }
+            if Some(next) == frame.continue_block {
+                self.push_continue_via(next, seq);
+                return None;
+            }
             if Some(next) == frame.exit {
                 seq.push(Structured::Break);
                 return None;
@@ -224,6 +232,14 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         Some(next)
     }
 
+    /// Emit a `continue` that targets the loop's continue block: run the continue block's statements
+    /// (the increment) then loop back. Safe to duplicate because continue blocks are side-effect
+    /// local (`i++`, re-test setup).
+    fn push_continue_via(&self, cont: BlockId, seq: &mut Vec<Structured>) {
+        push_block_stmts(seq, &self.block_code[cont].stmts);
+        seq.push(Structured::Continue);
+    }
+
     fn emit_loop(&mut self, lp_idx: usize, seq: &mut Vec<Structured>) -> Option<BlockId> {
         let header: BlockId = self.cfg.loops[lp_idx].header;
         let exit: Option<BlockId> = self.loop_exit(lp_idx);
@@ -232,7 +248,12 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
 
         let header_term: Terminator = self.cfg.terminators[header].clone();
         let header_stmts_empty: bool = self.block_code[header].stmts.is_empty();
-        self.loop_stack.push(LoopFrame { header, exit });
+        let continue_block: Option<BlockId> = self.loop_continue_block(lp_idx);
+        self.loop_stack.push(LoopFrame {
+            header,
+            exit,
+            continue_block,
+        });
 
         let while_node: Structured = match (&header_term, header_stmts_empty) {
             (Terminator::Cond { taken, fallthrough }, true)
@@ -426,6 +447,11 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             if target == frame.header {
                 return Structured::Continue;
             }
+            if Some(target) == frame.continue_block {
+                let mut s: Vec<Structured> = Vec::new();
+                self.push_continue_via(target, &mut s);
+                return finish_seq(s);
+            }
             if Some(target) == frame.exit {
                 return Structured::Break;
             }
@@ -574,10 +600,67 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         }
     }
 
+    /// Emit a jump to `bid`. When the target is a small terminal block (`return`/`throw` with no
+    /// side-effecting statements), inline a duplicate of it instead of a `goto` - this mirrors
+    /// `ILSpy`'s return-block duplication and removes the most common residual jumps. Otherwise fall
+    /// back to a real labeled `goto`.
     fn goto(&mut self, bid: BlockId) -> Structured {
+        if let Some(dup) = self.duplicable_terminal(bid) {
+            return dup;
+        }
         let off: u32 = self.cfg.blocks[bid].start;
         self.goto_targets.insert(off);
         Structured::Goto(off)
+    }
+
+    /// If `bid` is a small block whose tail is a control transfer that can be safely duplicated,
+    /// produce an inline copy of it for a jump site instead of a `goto`:
+    /// * `return`/`throw` blocks (return-block duplication, as in `ILSpy`);
+    /// * a "continue tail": a short block (few statements) that falls through to the innermost loop
+    ///   header, duplicated as `stmts; continue;`.
+    fn duplicable_terminal(&self, bid: BlockId) -> Option<Structured> {
+        match self.cfg.terminators[bid] {
+            Terminator::Return
+                if self.block_code[bid].stmts.iter().all(|s: &LinearStmt| {
+                    matches!(s, LinearStmt::Return(_) | LinearStmt::Throw(_))
+                }) =>
+            {
+                Some(self.return_stmt(bid))
+            }
+            Terminator::Throw
+                if self.block_code[bid].stmts.iter().all(|s: &LinearStmt| {
+                    matches!(s, LinearStmt::Return(_) | LinearStmt::Throw(_))
+                }) =>
+            {
+                Some(self.throw_stmt(bid))
+            }
+            Terminator::FallThrough(next) | Terminator::Goto(next)
+                if self.is_continue_tail(bid, next) =>
+            {
+                let mut s: Vec<Structured> = Vec::new();
+                push_block_stmts(&mut s, &self.block_code[bid].stmts);
+                if self
+                    .loop_stack
+                    .last()
+                    .is_some_and(|f: &LoopFrame| f.continue_block == Some(next))
+                {
+                    push_block_stmts(&mut s, &self.block_code[next].stmts);
+                }
+                s.push(Structured::Continue);
+                Some(finish_seq(s))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `bid` is a short block (at most a few statements) whose successor `next` is the
+    /// current loop's header or continue block, making it a duplicable `continue` tail.
+    fn is_continue_tail(&self, bid: BlockId, next: BlockId) -> bool {
+        const MAX_DUP_STMTS: usize = 4;
+        self.loop_stack
+            .last()
+            .is_some_and(|f: &LoopFrame| f.header == next || f.continue_block == Some(next))
+            && self.block_code[bid].stmts.len() <= MAX_DUP_STMTS
     }
 
     fn in_current_loop(&self, header: BlockId) -> bool {
@@ -686,6 +769,28 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
         } else {
             (negate(&raw, self.lang), fallthrough)
         }
+    }
+
+    /// The loop's "continue block": an in-loop block, distinct from the header, whose only successor
+    /// is the header and that is the target of a back-edge (a `for` increment / `while` re-test
+    /// pre-block). Jumps to it are `continue` statements that first run its statements. Returns
+    /// `None` when no such single block exists (then only the header serves as the continue point).
+    fn loop_continue_block(&self, lp_idx: usize) -> Option<BlockId> {
+        let lp: &NaturalLoop = &self.cfg.loops[lp_idx];
+        let header: BlockId = lp.header;
+        let mut candidate: Option<BlockId> = None;
+        for &b in &lp.body {
+            if b == header {
+                continue;
+            }
+            if self.cfg.blocks[b].succs == [header] {
+                if candidate.is_some() {
+                    return None;
+                }
+                candidate = Some(b);
+            }
+        }
+        candidate.filter(|&b: &BlockId| self.cfg.blocks[b].preds.len() >= 2)
     }
 
     /// The loop's single exit block: a successor of some loop block that is itself outside the loop
