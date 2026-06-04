@@ -42,13 +42,15 @@ pub use flutter::{
     parse_flutter_apk, parse_flutter_obfuscation_map, parse_libapp_so,
 };
 pub use hermes::{
-    DecompileReport, DecompiledFunction, DisassemblyReport, FunctionDisasm, HERMES_MAGIC,
-    HERMES_MAGIC_LE_BYTES, HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesHeader, HermesModule,
-    HermesStringKind, JsLiftReport, SmallFunctionHeader,
+    BufferKind, DecompileReport, DecompiledFunction, DisassemblyReport, FunctionDisasm,
+    HERMES_MAGIC, HERMES_MAGIC_LE_BYTES, HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesHeader,
+    HermesModule, HermesStringKind, JsLiftReport, LiteralValue, RecoveredRegExp, RegExpTableEntry,
+    SmallFunctionHeader, decode_literals as decode_hermes_literals,
     decompile_function as decompile_hermes_function, decompile_module as decompile_hermes_module,
     disassemble as disassemble_hermes, disassemble_function_instructions as hermes_disasm_function,
     header_size_for_version, lift_to_js_surface as hermes_lift_to_js_surface,
     parse as parse_hermes_module, parse_header as parse_hermes_header,
+    recover_regexps as recover_hermes_regexps,
 };
 pub use ios::{
     FatArchEntry, IpaEntry, IpaExtractionReport, MACHO_FAT_MAGIC_64_BE, MACHO_FAT_MAGIC_BE,

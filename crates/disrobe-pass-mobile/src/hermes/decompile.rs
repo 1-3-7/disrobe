@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+use super::literals::{BufferKind, LiteralValue, decode_literals, render_key, render_value};
 use super::{HermesModule, SmallFunctionHeader};
 
 /// Upper bound on synthesized call-argument placeholders rendered per call site.
@@ -597,6 +598,120 @@ impl<'a> LiftCtx<'a> {
             .filter(|s: &String| !s.is_empty())
             .unwrap_or_else(|| format!("$func{id}"))
     }
+
+    fn object_literal(&self, num_literals: usize, key_idx: usize, val_idx: usize) -> String {
+        let keys: Vec<LiteralValue> = decode_literals(
+            &self.module.obj_key_buffer,
+            key_idx,
+            num_literals,
+            BufferKind::Key,
+        );
+        let vals: Vec<LiteralValue> = decode_literals(
+            &self.module.obj_value_buffer,
+            val_idx,
+            num_literals,
+            BufferKind::Value,
+        );
+        if keys.is_empty() {
+            return "{}".to_owned();
+        }
+        let resolve_ident = |id: u32| self.string_or_ident_name(id);
+        let resolve_str = |id: u32| self.string_lit_by_id(id);
+        let mut out: String = String::with_capacity(num_literals * 8 + 2);
+        out.push_str("{ ");
+        for (i, key) in keys.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            let key_text: String = render_object_key(key, &resolve_ident);
+            out.push_str(&key_text);
+            out.push_str(": ");
+            match vals.get(i) {
+                Some(v) => out.push_str(&render_value(v, &resolve_str)),
+                None => out.push_str("undefined"),
+            }
+        }
+        out.push_str(" }");
+        out
+    }
+
+    fn array_literal(&self, num_elems: usize, val_idx: usize) -> String {
+        let vals: Vec<LiteralValue> = decode_literals(
+            &self.module.array_buffer,
+            val_idx,
+            num_elems,
+            BufferKind::Value,
+        );
+        if vals.is_empty() {
+            return "[]".to_owned();
+        }
+        let resolve_str = |id: u32| self.string_lit_by_id(id);
+        let mut out: String = String::with_capacity(num_elems * 4 + 2);
+        out.push('[');
+        for (i, v) in vals.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&render_value(v, &resolve_str));
+        }
+        out.push(']');
+        out
+    }
+
+    fn string_lit_by_id(&self, id: u32) -> String {
+        match self.module.strings.get(id as usize) {
+            Some(s) => js_string_literal(s),
+            None => match self.module.identifiers.get(id as usize) {
+                Some(s) => js_string_literal(s),
+                None => format!("$str{id}"),
+            },
+        }
+    }
+
+    fn string_or_ident_name(&self, id: u32) -> String {
+        if let Some(s) = self.module.strings.get(id as usize)
+            && !s.is_empty()
+        {
+            return s.clone();
+        }
+        if let Some(s) = self.module.identifiers.get(id as usize)
+            && !s.is_empty()
+        {
+            return s.clone();
+        }
+        format!("$str{id}")
+    }
+}
+
+/// Renders an object-literal key, bracket-quoting keys that are not valid
+/// JavaScript identifiers (numeric or punctuated) so the emitted literal stays
+/// syntactically valid.
+#[must_use]
+fn render_object_key<F>(key: &LiteralValue, resolve_ident: &F) -> String
+where
+    F: Fn(u32) -> String,
+{
+    match key {
+        LiteralValue::StringId(id) => {
+            let name: String = resolve_ident(*id);
+            if is_valid_js_identifier(&name) {
+                name
+            } else {
+                js_string_literal(&name)
+            }
+        }
+        other => render_key(other, resolve_ident),
+    }
+}
+
+#[must_use]
+fn is_valid_js_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c == '$' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c: char| c == '_' || c == '$' || c.is_ascii_alphanumeric())
 }
 
 #[must_use]
@@ -877,12 +992,29 @@ fn lift_instruction(
             stmts.push(BlockStmt::Line(format!("{obj}[{key}] = {val};")));
             ctx.reconstructed += 1;
         }
-        "NewObject" | "NewObjectWithBuffer" | "NewObjectWithBufferLong" => {
+        "NewObject" => {
             ctx.set_reg(reg_of(ops.first()), "{}".to_owned());
             ctx.reconstructed += 1;
         }
-        "NewArray" | "NewArrayWithBuffer" | "NewArrayWithBufferLong" => {
+        "NewObjectWithBuffer" | "NewObjectWithBufferLong" => {
+            let d: u32 = reg_of(ops.first());
+            let num_literals: usize = uint_of(ops.get(2)) as usize;
+            let key_idx: usize = uint_of(ops.get(3)) as usize;
+            let val_idx: usize = uint_of(ops.get(4)) as usize;
+            let lit: String = ctx.object_literal(num_literals, key_idx, val_idx);
+            ctx.set_reg(d, lit);
+            ctx.reconstructed += 1;
+        }
+        "NewArray" => {
             ctx.set_reg(reg_of(ops.first()), "[]".to_owned());
+            ctx.reconstructed += 1;
+        }
+        "NewArrayWithBuffer" | "NewArrayWithBufferLong" => {
+            let d: u32 = reg_of(ops.first());
+            let num_elems: usize = uint_of(ops.get(2)) as usize;
+            let val_idx: usize = uint_of(ops.get(3)) as usize;
+            let lit: String = ctx.array_literal(num_elems, val_idx);
+            ctx.set_reg(d, lit);
             ctx.reconstructed += 1;
         }
         "CreateThis" => {
@@ -1110,6 +1242,7 @@ pub struct DecompileReport {
     pub total_reconstructed_ops: usize,
     pub total_fallback_ops: usize,
     pub functions: Vec<DecompiledFunction>,
+    pub regexps: Vec<super::regex::RecoveredRegExp>,
 }
 
 #[must_use]
@@ -1305,6 +1438,8 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         }
         functions.push(f);
     }
+    let regexps: Vec<super::regex::RecoveredRegExp> =
+        super::regex::recover_regexps(&module.reg_exp_table, &module.reg_exp_storage);
     DecompileReport {
         hermes_version: module.header.version,
         function_count: module.functions.len(),
@@ -1312,6 +1447,7 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         total_reconstructed_ops: total_reconstructed,
         total_fallback_ops: total_fallback,
         functions,
+        regexps,
     }
 }
 
@@ -1390,6 +1526,11 @@ mod tests {
             overflow_resolved: 0,
             utf16_strings: 0,
             raw_bytecode_size: code.len(),
+            array_buffer: Vec::new(),
+            obj_key_buffer: Vec::new(),
+            obj_value_buffer: Vec::new(),
+            reg_exp_table: Vec::new(),
+            reg_exp_storage: Vec::new(),
             raw_image: code,
         }
     }
@@ -1571,6 +1712,132 @@ mod tests {
         let instructions: Vec<Instruction> = decode_instructions(&code);
         let cfg: Cfg = build_cfg(&instructions);
         assert!(!cfg.blocks.is_empty());
+    }
+
+    fn module_with_buffers(
+        idents: &[&str],
+        strings: &[&str],
+        code: Vec<u8>,
+        param_count: u32,
+        key_buffer: Vec<u8>,
+        value_buffer: Vec<u8>,
+        array_buffer: Vec<u8>,
+    ) -> HermesModule {
+        let mut module: HermesModule = module_with(idents, strings, code, param_count);
+        module.obj_key_buffer = key_buffer;
+        module.obj_value_buffer = value_buffer;
+        module.array_buffer = array_buffer;
+        module
+    }
+
+    #[test]
+    fn decompile_object_literal_from_buffers() {
+        let mut key_buffer: Vec<u8> = Vec::new();
+        key_buffer.push(0x50 | 2);
+        key_buffer.extend_from_slice(&1u16.to_le_bytes());
+        key_buffer.extend_from_slice(&2u16.to_le_bytes());
+        let mut value_buffer: Vec<u8> = Vec::new();
+        value_buffer.push(0x70 | 1);
+        value_buffer.extend_from_slice(&42i32.to_le_bytes());
+        value_buffer.push(0x10 | 1);
+
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("NewObjectWithBuffer"));
+        code.push(0u8);
+        code.extend_from_slice(&2u16.to_le_bytes());
+        code.extend_from_slice(&2u16.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+
+        let module: HermesModule = module_with_buffers(
+            &["build", "count", "enabled"],
+            &[],
+            code,
+            1,
+            key_buffer,
+            value_buffer,
+            Vec::new(),
+        );
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("{ count: 42, enabled: true }"),
+            "expected object literal; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_array_literal_from_buffer() {
+        let mut array_buffer: Vec<u8> = Vec::new();
+        array_buffer.push(0x70 | 3);
+        array_buffer.extend_from_slice(&1i32.to_le_bytes());
+        array_buffer.extend_from_slice(&2i32.to_le_bytes());
+        array_buffer.extend_from_slice(&3i32.to_le_bytes());
+
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("NewArrayWithBuffer"));
+        code.push(0u8);
+        code.extend_from_slice(&3u16.to_le_bytes());
+        code.extend_from_slice(&3u16.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+
+        let module: HermesModule = module_with_buffers(
+            &["build"],
+            &[],
+            code,
+            1,
+            Vec::new(),
+            Vec::new(),
+            array_buffer,
+        );
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("[1, 2, 3]"),
+            "expected array literal; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn object_literal_quotes_non_identifier_keys() {
+        let mut key_buffer: Vec<u8> = Vec::new();
+        key_buffer.push(0x50 | 1);
+        key_buffer.extend_from_slice(&0u16.to_le_bytes());
+        let mut value_buffer: Vec<u8> = Vec::new();
+        value_buffer.push(0x70 | 1);
+        value_buffer.extend_from_slice(&1i32.to_le_bytes());
+
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("NewObjectWithBuffer"));
+        code.push(0u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+
+        let module: HermesModule = module_with_buffers(
+            &["data-id"],
+            &[],
+            code,
+            1,
+            key_buffer,
+            value_buffer,
+            Vec::new(),
+        );
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("\"data-id\": 1"),
+            "expected quoted key; src: {}",
+            f.source
+        );
     }
 
     #[test]

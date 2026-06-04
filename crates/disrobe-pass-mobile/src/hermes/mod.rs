@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 pub mod decompile;
+pub mod literals;
+pub mod regex;
 
 pub use decompile::{
     DecompileReport, DecompiledFunction, decompile_function, decompile_module,
     disassemble_function_instructions,
 };
+pub use literals::{BufferKind, LiteralValue, decode_literals};
+pub use regex::{RecoveredRegExp, recover_regexps};
 
 pub const HERMES_MAGIC: u64 = 0x1f19_03c1_03bc_1fc6;
 pub const HERMES_MAGIC_LE_BYTES: [u8; 8] = HERMES_MAGIC.to_le_bytes();
@@ -82,7 +86,22 @@ pub struct HermesModule {
     pub utf16_strings: usize,
     pub raw_bytecode_size: usize,
     #[serde(skip)]
+    pub array_buffer: Vec<u8>,
+    #[serde(skip)]
+    pub obj_key_buffer: Vec<u8>,
+    #[serde(skip)]
+    pub obj_value_buffer: Vec<u8>,
+    pub reg_exp_table: Vec<RegExpTableEntry>,
+    #[serde(skip)]
+    pub reg_exp_storage: Vec<u8>,
+    #[serde(skip)]
     pub raw_image: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegExpTableEntry {
+    pub offset: u32,
+    pub length: u32,
 }
 
 impl HermesModule {
@@ -190,6 +209,32 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         }
     }
     let raw_bytecode_size: usize = bytes.len().saturating_sub(header_size);
+
+    let mut buffer_cursor: usize = align_up(storage_end, 4);
+    let array_buffer: Vec<u8> =
+        take_buffer(bytes, &mut buffer_cursor, header.array_buffer_size as usize);
+    buffer_cursor = align_up(buffer_cursor, 4);
+    let obj_key_buffer: Vec<u8> = take_buffer(
+        bytes,
+        &mut buffer_cursor,
+        header.obj_key_buffer_size as usize,
+    );
+    buffer_cursor = align_up(buffer_cursor, 4);
+    let obj_value_buffer: Vec<u8> = take_buffer(
+        bytes,
+        &mut buffer_cursor,
+        header.obj_value_buffer_size as usize,
+    );
+    buffer_cursor = align_up(buffer_cursor, 4);
+    let (reg_exp_table, reg_exp_storage): (Vec<RegExpTableEntry>, Vec<u8>) = parse_reg_exp_section(
+        bytes,
+        &mut buffer_cursor,
+        header.reg_exp_count as usize,
+        header.reg_exp_storage_size as usize,
+        header.big_int_count as usize,
+        header.big_int_storage_size as usize,
+    );
+
     Ok(HermesModule {
         header,
         functions,
@@ -199,8 +244,64 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         overflow_resolved,
         utf16_strings,
         raw_bytecode_size,
+        array_buffer,
+        obj_key_buffer,
+        obj_value_buffer,
+        reg_exp_table,
+        reg_exp_storage,
         raw_image: bytes.to_vec(),
     })
+}
+
+#[must_use]
+fn take_buffer(bytes: &[u8], cursor: &mut usize, size: usize) -> Vec<u8> {
+    let start: usize = *cursor;
+    let end: usize = start.saturating_add(size).min(bytes.len());
+    if start >= bytes.len() || end <= start {
+        *cursor = start.min(bytes.len());
+        return Vec::new();
+    }
+    *cursor = end;
+    bytes[start..end].to_vec()
+}
+
+/// Parses the bigint table+storage (skipped) then the regexp table+storage from
+/// the v94-96 segment order. The bigint section precedes the regexp section, so
+/// it must be stepped over even though the bigint literals themselves are not
+/// reconstructed here. Returns an empty result if any offset runs past the
+/// input rather than reading out of bounds.
+#[must_use]
+fn parse_reg_exp_section(
+    bytes: &[u8],
+    cursor: &mut usize,
+    reg_exp_count: usize,
+    reg_exp_storage_size: usize,
+    big_int_count: usize,
+    big_int_storage_size: usize,
+) -> (Vec<RegExpTableEntry>, Vec<u8>) {
+    const BIGINT_TABLE_ENTRY_SIZE: usize = 8;
+    const REGEXP_TABLE_ENTRY_SIZE: usize = 8;
+    let big_int_table_bytes: usize = big_int_count.saturating_mul(BIGINT_TABLE_ENTRY_SIZE);
+    *cursor = cursor.saturating_add(big_int_table_bytes);
+    *cursor = align_up(*cursor, 4);
+    *cursor = cursor.saturating_add(big_int_storage_size);
+    *cursor = align_up(*cursor, 4);
+
+    let table_bytes: usize = reg_exp_count.saturating_mul(REGEXP_TABLE_ENTRY_SIZE);
+    if cursor.saturating_add(table_bytes) > bytes.len() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut table: Vec<RegExpTableEntry> = Vec::with_capacity(reg_exp_count);
+    for i in 0..reg_exp_count {
+        let base: usize = *cursor + i * REGEXP_TABLE_ENTRY_SIZE;
+        let offset: u32 = u32::from_le_bytes(slice_4(bytes, base));
+        let length: u32 = u32::from_le_bytes(slice_4(bytes, base + 4));
+        table.push(RegExpTableEntry { offset, length });
+    }
+    *cursor += table_bytes;
+    *cursor = align_up(*cursor, 4);
+    let storage: Vec<u8> = take_buffer(bytes, cursor, reg_exp_storage_size);
+    (table, storage)
 }
 
 const SMALL_FUNCTION_HEADER_SIZE: usize = 16;

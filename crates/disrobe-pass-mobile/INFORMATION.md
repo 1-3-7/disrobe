@@ -1,0 +1,87 @@
+| section | line | summary |
+|---------|-----:|---------|
+| references | 14 | clean-room study sources + licenses (Hermes, Dart VM) |
+| hermes-literal-format | 30 | objKeyBuffer/objValueBuffer serialized-literal encoding |
+| hermes-regex-format | 48 | regExpStorage compiled-bytecode + flag/group recovery |
+| hermes-recovery-ceiling | 64 | what HBC discards; honest lossy ceiling |
+| flutter-snapshot-format | 74 | Dart AOT snapshot header + section layout |
+| flutter-recovery-ceiling | 88 | AOT ARM64 body ceiling (45-55% static) |
+| measurement | 100 | how before/after percentages are measured |
+
+## references
+
+Clean-room study only; no reference source copied. All formats reimplemented in original Rust.
+
+- facebook/hermes (MIT) — bytecode file format, serialized-literal encoding, regex bytecode/flags.
+  Studied headers: `include/hermes/BCGen/HBC/BytecodeFileFormat.h`,
+  `include/hermes/BCGen/SerializedLiteralGenerator.h`, `include/hermes/BCGen/SerializedLiteralParser.h`,
+  `include/hermes/BCGen/HBC/BytecodeList.def`, `include/hermes/Regex/RegexSerialization.h`,
+  `include/hermes/Regex/RegexBytecode.h`, `include/hermes/Regex/RegexTypes.h`,
+  `include/hermes/Regex/RegexOpcodes.def`. License: MIT (permits clean-room reimplementation).
+- dart-lang/sdk (BSD-3-Clause) — VM snapshot header + section symbol layout.
+  Studied: `runtime/vm/snapshot.h`, `runtime/vm/clustered_snapshot` concepts, `runtime/vm/image_snapshot.h`.
+  License: BSD-3-Clause.
+
+Clones were placed in `C:/Users/-/AppData/Local/Temp/disrobe-refs/` (outside repo) and deleted after study.
+
+## hermes-literal-format
+
+Object/array literals are serialized into three blobs referenced by header sizes
+(`objKeyBufferSize`, `objValueBufferSize` / `arrayBufferSize` in v94-96). Encoding (per
+`SerializedLiteralParser::parseImpl`):
+
+- A buffer is a sequence of runs. Each run begins with a tag byte.
+- If `tag & 0x80`: the run length is 2 bytes => `((tag & 0x0f) << 8) | next_byte`; else `tag & 0x0f`.
+- Element type = `tag & 0x70` (TagMask). Types: Null/PrivateName=0x00, True=0x10, False=0x20,
+  Number=0x30 (f64 LE, 8B), LongString=0x40 (u32 LE id, 4B), ShortString=0x50 (u16 LE id, 2B),
+  Undefined=0x60, Integer=0x70 (i32 LE, 4B). Bool/Null/Undefined carry zero payload bytes.
+- Key buffer uses the same encoding but Null tag means PrivateName; True/False/Undefined illegal.
+- `NewObjectWithBuffer Reg8, sizeHint, numLiterals, keyBufferIdx, valueBufferIdx` (v94-96 5-operand)
+  pairs `numLiterals` keys from keyBuffer@keyBufferIdx with `numLiterals` values from valueBuffer@valueBufferIdx.
+- `NewArrayWithBuffer Reg8, sizeHint, numElems, valueBufferIdx` reads `numElems` values.
+
+## hermes-regex-format
+
+`regExpStorage` is a concatenation of compiled-regex bytecodes; `regExpTable` is `(offset,length)` pairs.
+Each entry begins with a 6-byte `RegexBytecodeHeader`: markedCount(u16 LE), loopCount(u16 LE),
+syntaxFlags(u8), constraints(u8); then a compiled opcode stream.
+
+Flag bits (RegexTypes FlagBits): ICASE=1<<0, GLOBAL=1<<1, MULTILINE=1<<2, UCODE=1<<3, DOTALL=1<<4,
+STICKY=1<<5, INDICES=1<<6. JS flag string order: d g i m s u y.
+
+HONEST: the **source pattern text is NOT stored** — only compiled bytecode. We recover flags + group
+count exactly, and a best-effort literal skeleton from MatchChar8/16, MatchNChar8, anchors, brackets.
+Non-literal structure (alternation/loops/lookaround) is summarized, not exactly round-tripped.
+
+## hermes-recovery-ceiling
+
+HBC discards: source text, comments, original identifier names of locals (registers), formatting,
+exact regex source. ~90-92% readable-construct recovery is the ceiling: object/array literals, string/
+number/bigint constants, member access, calls, control flow, regex flags+skeleton are recoverable;
+local variable names and comments are permanently lost.
+
+## flutter-snapshot-format
+
+`libapp.so` is an ELF exporting four symbols: `_kDartVmSnapshotData`, `_kDartVmSnapshotInstructions`,
+`_kDartIsolateSnapshotData`, `_kDartIsolateSnapshotInstructions`. The Data blobs begin with a snapshot
+header: magic(u32 LE 0xdcdcf5f5), length(u64), kind(u64; 3=FullAOT), version_hash(32 ASCII hex),
+features(NUL-terminated). After the header comes a clustered object stream (ClassTable, ObjectPool,
+code objects). Instructions blob is raw ARM64.
+
+## flutter-recovery-ceiling
+
+Dart AOT emits optimized ARM64: locals are register-allocated away, async lowered to state machines,
+closures specialized. Source bodies are ~45-55% recoverable static-max. We deliver: function boundaries
+(Code-object headers in instructions), ARM64 calling-convention signature inference (param count from
+register usage), class/type/function tables from the object pool, and demangled names. Bodies are marked
+skeleton/partial — full statement-level decompilation is out of static reach.
+
+## measurement
+
+Hermes: readable-construct recovery measured on the corpus `hello` v96 bundle (real bytecode) plus
+round-trip synthetic tests that encode buffers per the upstream spec then assert decode equivalence
+(non-circular: encoder follows spec, not our decoder). Percentage = reconstructed_ops / total_ops over
+the decompiled module.
+
+Flutter: measured against the snapshot's own class/function/string tables — count of recovered
+boundaries+signatures+names vs total Code objects found.
