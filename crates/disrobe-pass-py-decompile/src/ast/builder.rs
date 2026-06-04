@@ -3381,6 +3381,54 @@ fn strip_leading_stmts(body: &mut Vec<Stmt>, prefix: &[Stmt]) {
 /// row protecting the whole try+except, whose body is duplicated inline on every normal exit and
 /// must be trimmed from the body / handlers / else - pycdc combo `BLK_FINALLY`). Returns the statement
 /// and the op index past everything consumed.
+/// On 3.11+ a `return X` that follows a `try/except` (no `else` in source) is INLINED by `CPython` onto
+/// every exit path: once at the try body's normal exit (the `[protected_end, handler_start)` gap) and
+/// once at each handler's `POP_EXCEPT`-then-return tail. The gap copy then masquerades as an `else:`. When
+/// the gap is exactly that single `return` and every handler ends with the identical statement, it is the
+/// shared construct-exit tail, not an `else` - return it so the caller emits it once after the `try` and
+/// strips the per-handler copies. Returns `None` (genuine `else`) when the handlers don't all share it.
+fn shared_construct_exit_return(raw: &[Stmt], handlers: &[ExceptHandler]) -> Option<Vec<Stmt>> {
+    let [exit @ Stmt::Return(_)]: &[Stmt] = raw else {
+        return None;
+    };
+    if handlers.is_empty() {
+        return None;
+    }
+    let exit_repr: String = format!("{exit:?}");
+    let all_share: bool = handlers.iter().all(|h: &ExceptHandler| {
+        h.body
+            .last()
+            .is_some_and(|s: &Stmt| format!("{s:?}") == exit_repr)
+    });
+    all_share.then(|| vec![exit.clone()])
+}
+
+/// Drop the trailing shared construct-exit `return` (recovered by `shared_construct_exit_return` and
+/// re-emitted once after the `try`) from each except handler body so it is not duplicated inside the
+/// handlers. A handler that becomes empty falls back to a single `pass`.
+fn strip_shared_exit_return(
+    handlers: Vec<ExceptHandler>,
+    construct_tail: &[Stmt],
+) -> Vec<ExceptHandler> {
+    let [tail]: &[Stmt] = construct_tail else {
+        return handlers;
+    };
+    let tail_repr: String = format!("{tail:?}");
+    handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            if h.body
+                .last()
+                .is_some_and(|s: &Stmt| format!("{s:?}") == tail_repr)
+            {
+                h.body.pop();
+                h.body = non_empty(h.body);
+            }
+            h
+        })
+        .collect()
+}
+
 fn structure_try_except_family(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3450,11 +3498,18 @@ fn structure_try_except_family(
                     raw.pop();
                 }
                 (raw, tail)
+            } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
+                (Vec::new(), shared)
             } else {
                 (raw, Vec::new())
             }
         }
         None => (Vec::new(), Vec::new()),
+    };
+    let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
+        handlers
+    } else {
+        strip_shared_exit_return(handlers, &construct_tail)
     };
 
     let consumed: usize = combo
