@@ -64,9 +64,19 @@ local variable names and comments are permanently lost.
 
 `libapp.so` is an ELF exporting four symbols: `_kDartVmSnapshotData`, `_kDartVmSnapshotInstructions`,
 `_kDartIsolateSnapshotData`, `_kDartIsolateSnapshotInstructions`. The Data blobs begin with a snapshot
-header: magic(u32 LE 0xdcdcf5f5), length(u64), kind(u64; 3=FullAOT), version_hash(32 ASCII hex),
+header: magic(u32 LE 0xdcdcf5f5), length(i64), kind(i64), version_hash(32 ASCII hex),
 features(NUL-terminated). After the header comes a clustered object stream (ClassTable, ObjectPool,
-code objects). Instructions blob is raw ARM64.
+code objects). Instructions blob begins with a 64-byte `Image` header (kObjectStartAlignment): two
+target words (imageSize, instructionsSectionOffset), then raw ARM64.
+
+CORRECTION: the real Dart VM `Snapshot::Kind` is `kFull=0, kFullJIT=1, kFullAOT=2, kModule=3,
+kInvalid=4` (`runtime/vm/snapshot.h`) — NOT the 0/1/2/3=Full/Core/Jit/Aot the prior code assumed.
+Fixed; FullAOT is value 2.
+
+ARM64 function boundary signature: every Dart AOT frame opens with `PushPair(FP,LR)` =
+`stp x29,x30,[sp,#-16]!` (`0xA9BF7BFD`) then `mov x29,sp` (`0x910003FD`) (`Assembler::EnterFrame`).
+Scanning for this pair on 4-byte (kBarePayloadAlignment) granularity yields function boundaries.
+Argument-register signature is inferred from x0..x7 reads in the prologue window.
 
 ## flutter-recovery-ceiling
 

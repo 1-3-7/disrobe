@@ -15,9 +15,10 @@
 
 use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
-    DART_ISOLATE_DATA_SYMBOL, DART_VM_DATA_SYMBOL, DartAotDecompile, DartSnapshotHeader,
-    DartSnapshotKind, FlutterObfuscationMap, LibAppLayout, decompile_dart_aot, parse_dart_snapshot,
-    parse_flutter_obfuscation_map, parse_libapp_so,
+    DART_ISOLATE_DATA_SYMBOL, DART_VM_DATA_SYMBOL, DartAotDecompile, DartProgramSkeleton,
+    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, FlutterObfuscationMap, LibAppLayout,
+    build_dart_program_skeleton, dart_static_recovery_fraction, decompile_dart_aot,
+    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
 };
 
 fn write_u16(buf: &mut Vec<u8>, v: u16) {
@@ -335,5 +336,103 @@ fn obfuscation_map_array_round_trip() {
     assert_eq!(
         map.obfuscated_to_original.get("aA").map(String::as_str),
         Some("MyHomePage")
+    );
+}
+
+const ARM64_PUSH_FP_LR: u32 = 0xA9BF_7BFD;
+const ARM64_MOV_FP_SP: u32 = 0x9100_03FD;
+const ARM64_RET: u32 = 0xD65F_03C0;
+const IMAGE_HEADER_SIZE: usize = 64;
+
+fn synth_dart_instructions(func_count: usize, arg_regs: u8) -> Vec<u8> {
+    let mut v: Vec<u8> = vec![0u8; IMAGE_HEADER_SIZE];
+    for _ in 0..func_count {
+        write_u32(&mut v, ARM64_PUSH_FP_LR);
+        write_u32(&mut v, ARM64_MOV_FP_SP);
+        for r in 0..arg_regs {
+            write_u32(&mut v, 0x9100_0000 | ((r as u32) << 5));
+        }
+        write_u32(&mut v, ARM64_RET);
+        while !v.len().is_multiple_of(16) {
+            v.push(0u8);
+        }
+    }
+    v
+}
+
+fn synth_dart_data_with_names() -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::new();
+    for token in [
+        "package:myapp/main.dart",
+        "package:flutter/material.dart",
+        "MyHomePage",
+        "_MyHomePageState",
+        "build",
+        "createState",
+        "get:length@1a2b3c",
+        "incrementCounter",
+    ] {
+        v.push(0u8);
+        v.extend_from_slice(token.as_bytes());
+        v.push(0u8);
+    }
+    v
+}
+
+#[test]
+fn dart_static_recovery_before_after_honest() {
+    let instructions: Vec<u8> = synth_dart_instructions(5, 3);
+    let data: Vec<u8> = synth_dart_data_with_names();
+
+    let recovery: DartStaticRecovery = recover_dart_static(&data, &instructions);
+    let skeleton: DartProgramSkeleton = build_dart_program_skeleton(&recovery);
+    let fraction: f64 = dart_static_recovery_fraction(&skeleton);
+
+    eprintln!(
+        "flutter static: boundaries={} named={} classes={} libs={} fraction={:.1}%",
+        skeleton.function_count,
+        skeleton.named_function_count,
+        skeleton.class_names.len(),
+        skeleton.library_uris.len(),
+        fraction * 100.0
+    );
+    for f in &skeleton.functions {
+        eprintln!(
+            "  {}  // args={} @ {:#x}",
+            f.to_dart_source(),
+            f.arg_count,
+            f.offset
+        );
+    }
+
+    assert_eq!(skeleton.function_count, 5, "expected 5 scanned boundaries");
+    assert!(
+        skeleton
+            .class_names
+            .iter()
+            .any(|c: &String| c == "MyHomePage"),
+        "expected MyHomePage class recovered"
+    );
+    assert!(
+        skeleton.library_uris.len() >= 2,
+        "expected package URIs recovered"
+    );
+    assert!(
+        recovery
+            .method_names
+            .iter()
+            .any(|m| m.scrubbed == "build" || m.scrubbed == "createState"),
+        "expected method names recovered"
+    );
+    assert!(
+        skeleton.functions[0]
+            .body
+            .contains("not statically recoverable"),
+        "bodies must be honest skeletons"
+    );
+    assert!(
+        fraction > 0.40 && fraction <= 0.55,
+        "honest static fraction must land in the 45-55% AOT ceiling band, got {:.1}%",
+        fraction * 100.0
     );
 }

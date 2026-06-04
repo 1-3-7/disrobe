@@ -8,9 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 pub mod demangler;
+pub mod libapp_parser;
 pub mod snapshot;
 
 pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
+pub use libapp_parser::{
+    DartFunctionSkeleton, DartProgramSkeleton, build_program_skeleton, static_recovery_fraction,
+};
 pub use snapshot::{
     DartFunctionBoundary, DartStaticRecovery, ImageHeader, parse_image_header, recover_dart_static,
 };
