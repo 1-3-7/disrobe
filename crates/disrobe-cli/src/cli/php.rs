@@ -7,8 +7,8 @@ use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_php::{
     AuthorizationToken, DecodeOutcome, EncoderDetection, EncoderFamily, PeelOptions, PeelReport,
-    PharArchive, ioncube_encoder, parse_phar, peel_eval_chain, sourceguardian_encoder,
-    zend_guard_encoder,
+    PharArchive, RecoveryReport, RecoveryStage, ioncube_encoder, parse_phar, peel_eval_chain,
+    recover_php, sourceguardian_encoder, zend_guard_encoder,
 };
 
 use super::emit::EmitSpec;
@@ -361,6 +361,23 @@ fn decode_encoder(
             (residual_ciphertext.len(), recovered.len())
         }
     };
+    let recovery: Option<RecoveryReport> = recover_php(bytes, auth).ok();
+    let mut skeleton_path: Option<PathBuf> = None;
+    let mut recovery_json: serde_json::Value = serde_json::Value::Null;
+    if let Some(rep) = &recovery {
+        recovery_json = serde_json::json!({
+            "stage": format!("{:?}", rep.stage),
+            "key_provenance": rep.key_provenance,
+            "residual_ciphertext_len": rep.residual_ciphertext_len,
+            "notes": rep.notes,
+        });
+        if matches!(rep.stage, RecoveryStage::OpArrayDecompiled) && !rep.output.is_empty() {
+            let path: PathBuf = out_dir.join(format!("{stem}.{label}.skeleton.php"));
+            std::fs::write(&path, rep.output.as_bytes())
+                .map_err(|e| miette::miette!("DR-CLI-0583: cannot write skeleton: {e}"))?;
+            skeleton_path = Some(path);
+        }
+    }
     Ok(serde_json::json!({
         "schema": "disrobe.php.decode/v0",
         "input": input.display().to_string(),
@@ -371,6 +388,8 @@ fn decode_encoder(
         "payload_path": payload_path.display().to_string(),
         "ciphertext_len": cipher_len,
         "plaintext_len": plain_len,
+        "skeleton_path": skeleton_path.map(|p| p.display().to_string()),
+        "recovery": recovery_json,
     }))
 }
 

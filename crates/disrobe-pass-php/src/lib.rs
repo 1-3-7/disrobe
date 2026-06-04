@@ -16,6 +16,7 @@ pub mod key_extractor;
 pub mod pass;
 pub mod peel;
 pub mod phar;
+pub mod pipeline;
 pub mod protectors;
 pub mod provenance_header;
 pub mod sigs;
@@ -46,6 +47,7 @@ pub use phar::{
     PharArchive, PharCompression, PharEntry, extract_entry as extract_phar_entry,
     parse as parse_phar,
 };
+pub use pipeline::{RecoveryReport, RecoveryStage, recover as recover_php};
 pub use protectors::{
     ProtectorDetection, ProtectorFamily, ioncube as ioncube_protector,
     sourceguardian as sourceguardian_protector, zend_guard as zend_guard_protector,

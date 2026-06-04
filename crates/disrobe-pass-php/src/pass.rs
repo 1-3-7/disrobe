@@ -4,6 +4,7 @@ use disrobe_core::{
 use disrobe_ir::{Envelope, decode_raw};
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::{RecoveryReport, recover};
 use crate::{PhpDetection, PhpKind, detect_php};
 
 pub const PASS_INPUT_PATH_CAP: &str = "raw.php";
@@ -31,12 +32,14 @@ impl LegacyPass for PhpPass {
                 "DR-PHP-PASS: no PHP source/phar/bcg signature".to_owned(),
             ));
         }
+        let recovery: Option<RecoveryReport> = recover(&input.bytes, None).ok();
         let report: PhpPassReport = PhpPassReport {
             source_path: input.source_path,
             kind: format!("{:?}", detection.kind),
             confidence: format!("{:?}", detection.confidence),
             has_halt_compiler: detection.has_halt_compiler,
             open_tag_offset: detection.open_tag_offset,
+            recovery,
         };
         let payload: Vec<u8> = serde_json::to_vec(&report).map_err(|e: serde_json::Error| {
             CoreError::PassFailure(format!("DR-PHP-PASS: serialize: {e}"))
@@ -84,6 +87,7 @@ pub struct PhpPassReport {
     pub confidence: String,
     pub has_halt_compiler: bool,
     pub open_tag_offset: Option<usize>,
+    pub recovery: Option<RecoveryReport>,
 }
 
 #[cfg(test)]
