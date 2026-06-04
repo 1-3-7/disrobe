@@ -7591,18 +7591,9 @@ fn build_shortcircuit_stack_expr(
     Ok(fold_shortcircuit_operands(resolved))
 }
 
-/// Reassemble a compound-boolean `assert A and B [and C ...]` from its short-circuit lowering. `CPython`
-/// compiles `assert <test>` as the test's jump-threaded boolean evaluated for truth: each leading
-/// `and`-conjunct emits `<value>; POP_JUMP_IF_FALSE raise` and the final conjunct emits
-/// `<value>; POP_JUMP_IF_TRUE pass`, with the false fall-through landing on `LOAD_ASSERTION_ERROR;
-/// RAISE_VARARGS 1`. The generic if-structurer stops at the first conjunct and flushes the remainder as
-/// a bare expression plus a phantom `assert False`; this folds the whole conjunct run into one
-/// `BoolOp::And` test and emits `assert <test>`, then continues structuring from the pass successor.
-/// Gated to two-or-more conjuncts (the single-test assert is already recovered post-hoc by
-/// `recover_assert_idiom`). Returns `None` when the region is not a compound-boolean assert.
 /// The op that pushes the `AssertionError` raised by a failed `assert`: the dedicated
 /// `LOAD_ASSERTION_ERROR` opcode on 3.9+, or a `LOAD_GLOBAL AssertionError` on 3.8 and earlier (which
-/// had no dedicated opcode). Used to anchor the compound-assert raise site across versions.
+/// had no dedicated opcode). Used to anchor the assert raise site across versions.
 fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
     match op {
         CanonicalOp::LoadAssertionError => true,
@@ -7613,6 +7604,15 @@ fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
     }
 }
 
+/// Reassemble an `assert <test>[, <msg>]` from its short-circuit lowering. `CPython` compiles the test
+/// as a jump-threaded boolean evaluated for truth: each leading `and`-conjunct emits
+/// `<value>; POP_JUMP_IF_FALSE raise`, the final conjunct emits `<value>; POP_JUMP_IF_TRUE pass`, and the
+/// false fall-through lands on `LOAD_ASSERTION_ERROR; [<msg>; CALL]; RAISE_VARARGS 1`. The generic
+/// if-structurer stops at the first conjunct and emits a bare expression plus a phantom `assert False`
+/// (compound) or an `if not <test>: assert False` (single); this folds the whole conjunct run into one
+/// test (`BoolOp::And` for two-or-more, the lone expr otherwise), recovers an optional message from the
+/// `AssertionError(<msg>)` call, emits `assert <test>[, <msg>]`, and continues from the pass successor.
+/// Returns `None` when the region is not an assert.
 fn try_structure_compound_assert(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -7620,20 +7620,21 @@ fn try_structure_compound_assert(
     hi: usize,
 ) -> Result<Option<Vec<Stmt>>> {
     let Some(raise_idx): Option<usize> = (lo..hi).find(|&k: &usize| {
-        is_assertion_error_load(code, &stream.ops[k])
-            && first_significant(stream, k + 1, hi)
-                .is_some_and(|n: usize| matches!(stream.ops[n], CanonicalOp::Raise(_)))
+        is_assertion_error_load(code, &stream.ops[k]) && assert_raise_after(stream, k, hi).is_some()
     }) else {
         return Ok(None);
     };
-    let raise_op: usize = first_significant(stream, raise_idx + 1, hi).unwrap_or(raise_idx + 1);
+    let (raise_op, msg): (usize, Option<Expr>) = match assert_raise_after(stream, raise_idx, hi) {
+        Some((r, m)) => (r, assert_msg_expr(code, stream, raise_idx, r, m)?),
+        None => return Ok(None),
+    };
     let pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
     let jump_indices: Vec<usize> = (lo..raise_idx)
         .filter(|&k: &usize| {
             is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
         })
         .collect();
-    if jump_indices.len() < 2 {
+    if jump_indices.is_empty() {
         return Ok(None);
     }
     let mut head: Vec<Stmt> = Vec::new();
@@ -7667,18 +7668,65 @@ fn try_structure_compound_assert(
         operands.push(value);
         value_lo = jump + 1;
     }
-    let test: Expr = Expr::BoolOp {
-        op: crate::ast::node::BoolOpKind::And,
-        values: operands,
+    let test: Expr = if operands.len() == 1 {
+        operands.into_iter().next().unwrap_or(Expr::Constant {
+            value: ConstValue::True,
+            line: None,
+        })
+    } else {
+        Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::And,
+            values: operands,
+        }
     };
     let mut out: Vec<Stmt> = head;
     out.push(Stmt::Assert {
         test,
-        msg: None,
+        msg,
         line: None,
     });
     out.extend(structure_stmts(code, stream, pass_target, hi)?);
     Ok(Some(out))
+}
+
+/// Resolve the `RAISE_VARARGS` that closes an assert's failure path beginning at the
+/// `LOAD_ASSERTION_ERROR` site `raise_idx`, plus a flag for whether the error is CALLED with a message
+/// (`LOAD_ASSERTION_ERROR; <msg>; CALL; RAISE`) versus raised bare (`LOAD_ASSERTION_ERROR; RAISE`).
+/// Returns `(raise_op_index, has_message)`, or `None` when the tail is not an assert raise.
+fn assert_raise_after(stream: &DecodedStream, raise_idx: usize, hi: usize) -> Option<(usize, bool)> {
+    let next: usize = first_significant(stream, raise_idx + 1, hi)?;
+    if matches!(stream.ops[next], CanonicalOp::Raise(_)) {
+        return Some((next, false));
+    }
+    let call: usize = (raise_idx + 1..hi)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+    let raise: usize = first_significant(stream, call + 1, hi)?;
+    matches!(stream.ops[raise], CanonicalOp::Raise(_)).then_some((raise, true))
+}
+
+/// Recover the optional message expression of an `assert <test>, <msg>`: the operands pushed between the
+/// `LOAD_ASSERTION_ERROR` at `raise_idx` and the `RAISE_VARARGS` at `raise_op` form
+/// `AssertionError(<msg>)`. Replay that span through the value SIM (seeded with the error name) and
+/// return the single call argument. `None` flags a bare `raise AssertionError` (no message).
+fn assert_msg_expr(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    raise_idx: usize,
+    raise_op: usize,
+    has_message: bool,
+) -> Result<Option<Expr>> {
+    if !has_message {
+        return Ok(None);
+    }
+    let call: usize = match (raise_idx + 1..raise_op)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))
+    {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let (_stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[raise_idx + 1..call])?;
+    Ok(residual.into_iter().next_back())
 }
 
 /// Recover a return-form ternary chain `return X if c0 else (Y if c1 else Z)` as a single
