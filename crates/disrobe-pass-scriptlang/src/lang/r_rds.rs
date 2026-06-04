@@ -6,6 +6,12 @@ const MAX_DEPTH: usize = 256usize;
 
 const NILVALUE_SXP: u32 = 254u32;
 const REF_SXP: u32 = 255u32;
+const GLOBALENV_SXP: u32 = 253u32;
+const UNBOUNDVALUE_SXP: u32 = 252u32;
+const MISSINGARG_SXP: u32 = 251u32;
+const BASENAMESPACE_SXP: u32 = 250u32;
+const EMPTYENV_SXP: u32 = 242u32;
+const BASEENV_SXP: u32 = 241u32;
 const NILSXP: u32 = 0u32;
 const SYMSXP: u32 = 1u32;
 const LISTSXP: u32 = 2u32;
@@ -45,6 +51,27 @@ pub struct RdsHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RdsFormal {
+    pub name: String,
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RdsEnvironment {
+    pub is_reference: bool,
+    pub frame_bindings: Vec<String>,
+    pub enclosing: Option<Box<Self>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RdsClosure {
+    pub formals: Vec<RdsFormal>,
+    pub body: String,
+    pub environment: RdsEnvironment,
+    pub rendered: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RdsObject {
     pub header: RdsHeader,
     pub root_type: String,
@@ -53,6 +80,7 @@ pub struct RdsObject {
     pub class: Vec<String>,
     pub symbols: Vec<String>,
     pub string_values: Vec<String>,
+    pub closures: Vec<RdsClosure>,
     pub node_count: usize,
 }
 
@@ -137,6 +165,8 @@ struct Walk {
     class: Vec<String>,
     symbols: Vec<String>,
     string_values: Vec<String>,
+    closures: Vec<RdsClosure>,
+    ref_table: Vec<String>,
     node_count: usize,
 }
 
@@ -178,6 +208,8 @@ pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
         class: Vec::new(),
         symbols: Vec::new(),
         string_values: Vec::new(),
+        closures: Vec::new(),
+        ref_table: Vec::new(),
         node_count: 0usize,
     };
     let (root_type, root_length): (String, Option<usize>) = walk_item(&mut r, &mut walk, 0)?;
@@ -193,6 +225,7 @@ pub fn read_rds(bytes: &[u8]) -> Result<RdsObject> {
         class: walk.class,
         symbols: walk.symbols,
         string_values: walk.string_values,
+        closures: walk.closures,
         node_count: walk.node_count,
     })
 }
@@ -211,12 +244,20 @@ fn walk_item(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<(Strin
 
     let length: Option<usize> = match sxp {
         NILVALUE_SXP | NILSXP => None,
-        REF_SXP => None,
+        REF_SXP => {
+            let _index: usize = ref_index(flags, r)?;
+            None
+        }
         SYMSXP => {
             let (_t, _l): (String, Option<usize>) = walk_item(r, w, depth + 1)?;
             None
         }
-        LISTSXP | LANGSXP | CLOSXP => {
+        CLOSXP => {
+            let closure: RdsClosure = recurse_closure(r, w, has_attr, has_tag, depth + 1)?;
+            w.closures.push(closure);
+            return Ok((label, None));
+        }
+        LISTSXP | LANGSXP => {
             if has_attr {
                 walk_attributes(r, w, depth + 1)?;
             }
@@ -280,6 +321,7 @@ fn walk_item(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<(Strin
             Some(count)
         }
         ENVSXP => {
+            w.ref_table.push(String::new());
             let _locked: i32 = r.i32()?;
             let _enclos: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
             let _frame: (String, Option<usize>) = walk_item(r, w, depth + 1)?;
@@ -300,10 +342,11 @@ fn walk_item(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<(Strin
     if sxp == SYMSXP
         && let Some(name) = w.string_values.last().cloned()
     {
-        w.symbols.push(name);
+        w.symbols.push(name.clone());
+        w.ref_table.push(name);
     }
 
-    if has_attr && !matches!(sxp, LISTSXP | LANGSXP | CLOSXP) {
+    if has_attr && !matches!(sxp, LISTSXP | LANGSXP) {
         walk_attributes(r, w, depth + 1)?;
     }
 
@@ -338,6 +381,409 @@ fn walk_attributes(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<
         next = r.u32()?;
     }
     Ok(())
+}
+
+/// Structurally decodes a CLOSXP (closure) into formals, body, and its environment chain.
+///
+/// R serializes closures losslessly: after the flags integer come the attributes (if any), the
+/// closure environment as the `tag` slot, the formals pairlist as `car`, and the body language
+/// object as `cdr`. Every field round-trips, so the recovered function definition is exact.
+fn recurse_closure(
+    r: &mut XdrReader<'_>,
+    w: &mut Walk,
+    has_attr: bool,
+    has_tag: bool,
+    depth: usize,
+) -> Result<RdsClosure> {
+    if depth > MAX_DEPTH {
+        return Err(Error::RdsDepthExceeded(MAX_DEPTH));
+    }
+    if has_attr {
+        walk_attributes(r, w, depth + 1)?;
+    }
+    let environment: RdsEnvironment = if has_tag {
+        match read_rvalue(r, w, depth + 1)? {
+            RValue::Environment(env) => env,
+            _ => RdsEnvironment {
+                is_reference: false,
+                frame_bindings: Vec::new(),
+                enclosing: None,
+            },
+        }
+    } else {
+        RdsEnvironment {
+            is_reference: false,
+            frame_bindings: Vec::new(),
+            enclosing: None,
+        }
+    };
+    let formals_value: RValue = read_rvalue(r, w, depth + 1)?;
+    let body_value: RValue = read_rvalue(r, w, depth + 1)?;
+    let formals: Vec<RdsFormal> = read_formals(&formals_value);
+    let body: String = render_rvalue(&body_value);
+    let rendered: String = render_closure(&formals, &body);
+    Ok(RdsClosure {
+        formals,
+        body,
+        environment,
+        rendered,
+    })
+}
+
+#[derive(Debug, Clone)]
+enum RValue {
+    Null,
+    Symbol(String),
+    Pairlist(Vec<(Option<String>, Self)>),
+    Lang(Vec<Self>),
+    StringVec(Vec<String>),
+    RealVec(Vec<f64>),
+    IntVec(Vec<i64>),
+    Environment(RdsEnvironment),
+    Other,
+}
+
+fn read_rvalue(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RValue> {
+    if depth > MAX_DEPTH {
+        return Err(Error::RdsDepthExceeded(MAX_DEPTH));
+    }
+    w.node_count += 1;
+    let flags: u32 = r.u32()?;
+    let sxp: u32 = flags & 0xFFu32;
+    let has_attr: bool = (flags & HAS_ATTR_BIT) != 0;
+    let has_tag: bool = (flags & HAS_TAG_BIT) != 0;
+
+    match sxp {
+        NILVALUE_SXP | NILSXP | UNBOUNDVALUE_SXP => Ok(RValue::Null),
+        MISSINGARG_SXP => Ok(RValue::Symbol(String::new())),
+        GLOBALENV_SXP | EMPTYENV_SXP | BASEENV_SXP | BASENAMESPACE_SXP => {
+            Ok(RValue::Environment(RdsEnvironment {
+                is_reference: true,
+                frame_bindings: Vec::new(),
+                enclosing: None,
+            }))
+        }
+        REF_SXP => {
+            let index: usize = ref_index(flags, r)?;
+            Ok(RValue::Symbol(
+                w.ref_table.get(index).cloned().unwrap_or_default(),
+            ))
+        }
+        SYMSXP => {
+            let printname: RValue = read_rvalue(r, w, depth + 1)?;
+            let name: String = match printname {
+                RValue::StringVec(ref v) => v.first().cloned().unwrap_or_default(),
+                RValue::Symbol(ref s) => s.clone(),
+                _ => String::new(),
+            };
+            if !name.is_empty() {
+                w.symbols.push(name.clone());
+                w.ref_table.push(name.clone());
+            }
+            Ok(RValue::Symbol(name))
+        }
+        CHARSXP => {
+            let len: i32 = r.i32()?;
+            if len >= 0 {
+                let s: String = r.string(len as usize)?;
+                w.string_values.push(s.clone());
+                Ok(RValue::StringVec(vec![s]))
+            } else {
+                Ok(RValue::StringVec(vec![String::new()]))
+            }
+        }
+        LISTSXP | LANGSXP => {
+            if has_attr {
+                walk_attributes(r, w, depth + 1)?;
+            }
+            let tag: Option<String> = if has_tag {
+                match read_rvalue(r, w, depth + 1)? {
+                    RValue::Symbol(s) => Some(s),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let car: RValue = read_rvalue(r, w, depth + 1)?;
+            let cdr: RValue = read_rvalue(r, w, depth + 1)?;
+            if sxp == LANGSXP {
+                let mut items: Vec<RValue> = vec![car];
+                flatten_pairlist(cdr, &mut items);
+                Ok(RValue::Lang(items))
+            } else {
+                let mut pairs: Vec<(Option<String>, RValue)> = vec![(tag, car)];
+                flatten_named_pairlist(cdr, &mut pairs);
+                Ok(RValue::Pairlist(pairs))
+            }
+        }
+        STRSXP => {
+            let n: i32 = r.i32()?;
+            let count: usize = n.max(0) as usize;
+            let mut out: Vec<String> = Vec::with_capacity(count);
+            for _ in 0..count {
+                if let RValue::StringVec(mut v) = read_rvalue(r, w, depth + 1)? {
+                    out.append(&mut v);
+                }
+            }
+            Ok(RValue::StringVec(out))
+        }
+        REALSXP => {
+            let n: i32 = r.i32()?;
+            let count: usize = n.max(0) as usize;
+            let mut out: Vec<f64> = Vec::with_capacity(count);
+            for _ in 0..count {
+                out.push(r.f64()?);
+            }
+            Ok(RValue::RealVec(out))
+        }
+        LGLSXP | INTSXP => {
+            let n: i32 = r.i32()?;
+            let count: usize = n.max(0) as usize;
+            let mut out: Vec<i64> = Vec::with_capacity(count);
+            for _ in 0..count {
+                out.push(i64::from(r.i32()?));
+            }
+            Ok(RValue::IntVec(out))
+        }
+        ENVSXP => {
+            w.ref_table.push(String::new());
+            let env: RdsEnvironment = read_environment(r, w, depth + 1)?;
+            Ok(RValue::Environment(env))
+        }
+        _ => {
+            let mut tmp: Walk = Walk {
+                names: Vec::new(),
+                class: Vec::new(),
+                symbols: Vec::new(),
+                string_values: Vec::new(),
+                closures: Vec::new(),
+                ref_table: std::mem::take(&mut w.ref_table),
+                node_count: 0,
+            };
+            rewind_and_walk(r, &mut tmp, flags, sxp, has_attr, has_tag, depth)?;
+            w.ref_table = tmp.ref_table;
+            w.symbols.append(&mut tmp.symbols);
+            w.string_values.append(&mut tmp.string_values);
+            w.closures.append(&mut tmp.closures);
+            Ok(RValue::Other)
+        }
+    }
+}
+
+fn rewind_and_walk(
+    r: &mut XdrReader<'_>,
+    w: &mut Walk,
+    _flags: u32,
+    sxp: u32,
+    has_attr: bool,
+    _has_tag: bool,
+    depth: usize,
+) -> Result<()> {
+    match sxp {
+        CPLXSXP => {
+            let n: i32 = r.i32()?;
+            r.skip((n.max(0) as usize).saturating_mul(16))?;
+        }
+        RAWSXP => {
+            let n: i32 = r.i32()?;
+            r.skip(n.max(0) as usize)?;
+        }
+        VECSXP | S4SXP => {
+            let n: i32 = r.i32()?;
+            for _ in 0..n.max(0) {
+                let _e: RValue = read_rvalue(r, w, depth + 1)?;
+            }
+        }
+        SPECIALSXP | BUILTINSXP => {
+            let len: i32 = r.i32()?;
+            if len >= 0 {
+                let _name: String = r.string(len as usize)?;
+            }
+        }
+        _ => return Err(Error::RdsUnsupportedType(sxp)),
+    }
+    if has_attr {
+        walk_attributes(r, w, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn read_environment(r: &mut XdrReader<'_>, w: &mut Walk, depth: usize) -> Result<RdsEnvironment> {
+    let _locked: i32 = r.i32()?;
+    let enclos: RValue = read_rvalue(r, w, depth + 1)?;
+    let frame: RValue = read_rvalue(r, w, depth + 1)?;
+    let _hashtab: RValue = read_rvalue(r, w, depth + 1)?;
+    let _attr: RValue = read_rvalue(r, w, depth + 1)?;
+    let frame_bindings: Vec<String> = match frame {
+        RValue::Pairlist(pairs) => pairs
+            .into_iter()
+            .filter_map(|(tag, _): (Option<String>, RValue)| tag)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let enclosing: Option<Box<RdsEnvironment>> = match enclos {
+        RValue::Environment(env) => Some(Box::new(env)),
+        _ => None,
+    };
+    Ok(RdsEnvironment {
+        is_reference: false,
+        frame_bindings,
+        enclosing,
+    })
+}
+
+fn ref_index(flags: u32, r: &mut XdrReader<'_>) -> Result<usize> {
+    let packed: u32 = flags >> 8;
+    let index: u32 = if packed == 0 { r.u32()? } else { packed };
+    Ok((index as usize).saturating_sub(1))
+}
+
+fn flatten_pairlist(cdr: RValue, items: &mut Vec<RValue>) {
+    match cdr {
+        RValue::Pairlist(pairs) => {
+            for (_tag, value) in pairs {
+                items.push(value);
+            }
+        }
+        RValue::Lang(more) => items.extend(more),
+        RValue::Null => {}
+        other => items.push(other),
+    }
+}
+
+fn flatten_named_pairlist(cdr: RValue, pairs: &mut Vec<(Option<String>, RValue)>) {
+    match cdr {
+        RValue::Pairlist(more) => pairs.extend(more),
+        RValue::Null => {}
+        other => pairs.push((None, other)),
+    }
+}
+
+fn read_formals(value: &RValue) -> Vec<RdsFormal> {
+    match value {
+        RValue::Pairlist(pairs) => pairs
+            .iter()
+            .filter_map(|(tag, default): &(Option<String>, RValue)| {
+                tag.as_ref().map(|name: &String| RdsFormal {
+                    name: name.clone(),
+                    default: formal_default(default),
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn formal_default(value: &RValue) -> Option<String> {
+    match value {
+        RValue::Symbol(s) if s.is_empty() => None,
+        RValue::Null => None,
+        other => Some(render_rvalue(other)),
+    }
+}
+
+fn render_closure(formals: &[RdsFormal], body: &str) -> String {
+    let params: String = formals
+        .iter()
+        .map(|f: &RdsFormal| match &f.default {
+            Some(def) => format!("{} = {def}", f.name),
+            None => f.name.clone(),
+        })
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("function({params}) {body}")
+}
+
+fn render_rvalue(value: &RValue) -> String {
+    match value {
+        RValue::Null => "NULL".to_owned(),
+        RValue::Symbol(s) => s.clone(),
+        RValue::StringVec(v) if v.len() == 1 => format!("\"{}\"", v[0]),
+        RValue::StringVec(v) => format!(
+            "c({})",
+            v.iter()
+                .map(|s: &String| format!("\"{s}\""))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ),
+        RValue::RealVec(v) if v.len() == 1 => render_real(v[0]),
+        RValue::RealVec(v) => format!(
+            "c({})",
+            v.iter()
+                .map(|x: &f64| render_real(*x))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ),
+        RValue::IntVec(v) if v.len() == 1 => format!("{}L", v[0]),
+        RValue::IntVec(v) => format!(
+            "c({})",
+            v.iter()
+                .map(|x: &i64| format!("{x}L"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ),
+        RValue::Lang(items) => render_call(items),
+        RValue::Pairlist(_) | RValue::Environment(_) | RValue::Other => "...".to_owned(),
+    }
+}
+
+fn render_call(items: &[RValue]) -> String {
+    let Some((head, args)): Option<(&RValue, &[RValue])> = items.split_first() else {
+        return "()".to_owned();
+    };
+    let head_name: String = render_rvalue(head);
+    if let Some(symbol) = binary_operator(&head_name)
+        && args.len() == 2
+    {
+        return format!(
+            "{} {symbol} {}",
+            render_rvalue(&args[0]),
+            render_rvalue(&args[1])
+        );
+    }
+    if head_name == "{" {
+        let body: String = args
+            .iter()
+            .map(render_rvalue)
+            .collect::<Vec<String>>()
+            .join("; ");
+        return format!("{{ {body} }}");
+    }
+    let rendered_args: String = args
+        .iter()
+        .map(render_rvalue)
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("{head_name}({rendered_args})")
+}
+
+fn binary_operator(name: &str) -> Option<&'static str> {
+    match name {
+        "+" => Some("+"),
+        "-" => Some("-"),
+        "*" => Some("*"),
+        "/" => Some("/"),
+        "^" => Some("^"),
+        "%%" => Some("%%"),
+        "==" => Some("=="),
+        "!=" => Some("!="),
+        "<" => Some("<"),
+        ">" => Some(">"),
+        "<=" => Some("<="),
+        ">=" => Some(">="),
+        "&&" => Some("&&"),
+        "||" => Some("||"),
+        "<-" => Some("<-"),
+        _ => None,
+    }
+}
+
+fn render_real(x: f64) -> String {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        format!("{x:.0}")
+    } else {
+        format!("{x}")
+    }
 }
 
 fn sxp_label(sxp: u32) -> String {

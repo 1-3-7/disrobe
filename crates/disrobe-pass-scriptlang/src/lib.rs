@@ -30,10 +30,8 @@ pub use lang::haxe::{
 };
 pub use lang::perl::{PerlOp, PerlOpTree, PerlSub};
 pub use lang::perl_bytecode::{ByteOrder, BytecodeHeader, is_bytecode, read_bytecode};
-pub use lang::perl_decompile::{
-    DecompileWalker, PerlSource, PerlStatement, PerlSubSource,
-};
-pub use lang::r_rds::{RdsEncoding, RdsHeader, RdsObject};
+pub use lang::perl_decompile::{DecompileWalker, PerlSource, PerlStatement, PerlSubSource};
+pub use lang::r_rds::{RdsClosure, RdsEncoding, RdsEnvironment, RdsFormal, RdsHeader, RdsObject};
 pub use lang::rcpp::{EmbeddedNativeImage, NativeImageFormat, RcppFingerprint};
 pub use lang::tcl::{StarkitContainer, StarkitEntry, StarkitFormat};
 pub use lang::{ScriptArtifact, ScriptLang, analyze, analyze_rcpp, classify};

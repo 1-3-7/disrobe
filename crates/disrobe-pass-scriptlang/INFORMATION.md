@@ -32,7 +32,15 @@ NAME WALL (honest, ~75% ceiling): lexical (pad) names like `$name`, `$a`, `$b`, 
 
 ## r-closures
 
-(reserved for r_rds CLOSXP/ENVSXP recursion notes)
+`r_rds.rs` `recurse_closure()` structurally decodes a CLOSXP into `RdsClosure { formals, body, environment, rendered }`.
+R serializes closures LOSSLESSLY (R Internals): flags, attrib?, tag = CLOENV, car = FORMALS pairlist, cdr = BODY language object.
+- formals: tagged pairlist; each tag symbol = parameter name, value = default expr or `MISSINGARG_SXP` (251) for no default.
+- body: a LANGSXP call tree, deparsed by `render_call` (binary operators like `+ - * / ^` rendered infix, `{` blocks, generic `f(args)` calls).
+- environment: ENVSXP read via `read_environment` (locked, enclos, frame, hashtab, attr); frame binding tag-names captured; singleton envs (GLOBALENV 253 / EMPTYENV 242 / BASEENV 241 / BASENAMESPACE 250) recognized as references.
+
+REFERENCE TABLE: a unified `Walk.ref_table` is threaded through BOTH the flat `walk_item` and structured `read_rvalue`. Symbols and non-singleton environments claim a ref slot on first write; REFSXP (255) resolves via the packed index (`flags >> 8`, or a trailing u32 when 0). This is what lets a symbol used in both formals and body (e.g. `x`, `y`) resolve back to its name on the second occurrence. Slot order: SYMSXP pushes after printname; ENVSXP pushes BEFORE its contents (so it can self-reference). MISSINGARG/UNBOUNDVALUE/singleton-env tokens consume no extra bytes.
+
+Verified non-circularly in `tests/real_r_closure.rs` against hand-encoded R wire bytes (the documented format, not a decoder re-emit): `function(x, y) x + y` -> formals [x, y], body `x + y`; `function(n = 1) n * 2` -> default `1`, body `n * 2`. R is lossless once implemented: formals/body/env all recover exactly (no name wall, unlike Perl).
 
 ## tcl-obfuscation
 

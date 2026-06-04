@@ -114,9 +114,16 @@ fn build_report(
             names.sort();
             names.dedup();
             let mut detail: String = format!(
-                "rds v{} root={} len={:?} class={:?}",
-                obj.header.version, obj.root_type, obj.root_length, obj.class
+                "rds v{} root={} len={:?} class={:?} closures={}",
+                obj.header.version,
+                obj.root_type,
+                obj.root_length,
+                obj.class,
+                obj.closures.len()
             );
+            for closure in &obj.closures {
+                names.push(closure.rendered.clone());
+            }
             if let Some(fp) = rcpp {
                 let _ = write!(
                     detail,
