@@ -102,6 +102,10 @@ pub mod pecompact_phase2;
 
 pub use pecompact_phase2::{PecompactPhaseTwoOutput, unpack_pecompact_phase2_emulated};
 
+pub mod chain_sigs;
+
+pub use chain_sigs::{CHAIN_SIGNATURES, ChainDetection, ChainSignature, detect_packer_chain};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {
