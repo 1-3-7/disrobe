@@ -13541,6 +13541,21 @@ fn build_linear_stmts_sim_seed(
                 sim.push(load_local(code, *b, idx)?);
             }
             CanonicalOp::StoreFastLoadFast(a, b) => {
+                if idx > 0 && matches!(ops[idx - 1], CanonicalOp::Copy(1) | CanonicalOp::Dup) {
+                    let _dup: Expr = sim.pop_or_synth(code, idx);
+                    let underlying: Expr = sim.pop_or_synth(code, idx);
+                    let name: String = local_name_at(code, *a, idx)?;
+                    sim.push(Expr::NamedExpr {
+                        target: Box::new(Expr::Name {
+                            id: name,
+                            ctx: ExprCtx::Store,
+                            line: None,
+                        }),
+                        value: Box::new(underlying),
+                    });
+                    sim.push(load_local(code, *b, idx)?);
+                    continue;
+                }
                 let value: Expr = sim.pop_or_synth(code, idx);
                 let target: Expr = local_target(code, *a, idx)?;
                 out.push(Stmt::Assign {
