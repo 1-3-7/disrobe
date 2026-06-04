@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dbgi::DebugInfo;
+use crate::elixir_quoted::{self, QuotedClause};
 use crate::error::{Error, Result};
 use crate::etf::Term;
 
@@ -37,11 +38,26 @@ pub fn recover(module_atom: &str, info: &DebugInfo) -> Result<ElixirRecovery> {
         scan_for_defs_and_attrs(metadata, &mut attributes, &mut definitions);
     }
 
+    let module_name: String = elixir_quoted::strip_module_prefix(module_atom);
     let mut src: String = String::new();
     src.push_str("defmodule ");
-    src.push_str(module_atom);
+    src.push_str(&module_name);
     src.push_str(" do\n");
     for (name, term) in &attributes {
+        if matches!(name.as_str(), "moduledoc" | "doc" | "typedoc")
+            && let Some(text) = term.as_str()
+        {
+            src.push_str("  @");
+            src.push_str(name);
+            src.push_str(" \"\"\"\n");
+            for line in text.lines() {
+                src.push_str("  ");
+                src.push_str(line);
+                src.push('\n');
+            }
+            src.push_str("  \"\"\"\n");
+            continue;
+        }
         src.push_str("  @");
         src.push_str(name);
         src.push(' ');
@@ -49,19 +65,11 @@ pub fn recover(module_atom: &str, info: &DebugInfo) -> Result<ElixirRecovery> {
         src.push('\n');
     }
     for def in &definitions {
-        src.push_str("  ");
-        src.push_str(&def.kind);
-        src.push(' ');
-        src.push_str(&def.name);
-        src.push_str("(/");
-        src.push_str(&def.arity.to_string());
-        src.push_str(") do\n");
-        for c in &def.clauses {
-            src.push_str("    ");
-            src.push_str(c);
+        for clause in &def.clauses {
+            src.push_str("  ");
+            src.push_str(clause);
             src.push('\n');
         }
-        src.push_str("  end\n");
     }
     src.push_str("end\n");
 
@@ -141,7 +149,9 @@ fn try_capture_definition(term: &Term, out: &mut Vec<ElixirDefinition>) {
         && let Some(list) = rest.as_list()
     {
         for clause in list {
-            clauses.push(render_term_inline(clause));
+            if let Some(rendered) = render_definition_clause(&kind, name, clause) {
+                clauses.push(rendered);
+            }
         }
     }
     out.push(ElixirDefinition {
@@ -150,6 +160,36 @@ fn try_capture_definition(term: &Term, out: &mut Vec<ElixirDefinition>) {
         arity,
         clauses,
     });
+}
+
+/// Renders one definition clause to full `kind name(params) [when guard] do ... end`
+/// source via the quoted-AST printer.
+fn render_definition_clause(kind: &str, name: &str, clause: &Term) -> Option<String> {
+    let QuotedClause {
+        params,
+        guard,
+        body,
+    }: QuotedClause = elixir_quoted::render_clause(clause)?;
+    let head: String = if params.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}({})", params.join(", "))
+    };
+    let guard_clause: String = guard.map_or_else(String::new, |g: String| format!(" when {g}"));
+    let body_indented: String = body
+        .lines()
+        .map(|line: &str| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("    {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "{kind} {head}{guard_clause} do\n{body_indented}\n  end"
+    ))
 }
 
 fn try_capture_attribute(term: &Term, out: &mut Vec<(String, Term)>) {

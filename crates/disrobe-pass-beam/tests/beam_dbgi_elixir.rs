@@ -20,6 +20,8 @@ use crate::common::{
 fn build_elixir_beam() -> Vec<u8> {
     let atoms: Vec<u8> = build_atu8(&["Elixir.Greeter", "elixir_erl", "hello"]);
 
+    let hello_clause: Vec<u8> =
+        etf_small_tuple(&[etf_nil(), etf_nil(), etf_nil(), etf_binary(b"world")]);
     let metadata: Vec<u8> = etf_map(&[
         (
             etf_binary(b"definitions"),
@@ -28,7 +30,7 @@ fn build_elixir_beam() -> Vec<u8> {
                     etf_small_tuple(&[etf_atom("hello"), etf_small_int(0)]),
                     etf_atom("def"),
                     etf_atom("public"),
-                    etf_list(&[etf_atom("clause_placeholder")], &etf_nil()),
+                    etf_list(&[hello_clause], &etf_nil()),
                 ])],
                 &etf_nil(),
             ),
@@ -92,6 +94,20 @@ fn recovers_elixir_definitions_and_source() {
         recovered.attributes.iter().any(|(k, _)| k == "vsn"),
         "expected vsn attribute"
     );
-    assert!(recovered.source.contains("defmodule Elixir.Greeter"));
-    assert!(recovered.source.contains("hello"));
+    assert!(
+        recovered.source.contains("defmodule Greeter do"),
+        "expected stripped module header, got:\n{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("def hello do"),
+        "expected rendered def hello, got:\n{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("\"world\""),
+        "expected rendered clause body, got:\n{}",
+        recovered.source
+    );
+    assert!(recovered.source.trim_end().ends_with("end"));
 }

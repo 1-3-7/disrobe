@@ -17,8 +17,27 @@ use crate::common::{
     etf_nil, etf_small_int, etf_small_tuple, wrap_etf,
 };
 
+fn var(name: &str) -> Vec<u8> {
+    etf_small_tuple(&[etf_atom(name), etf_nil(), etf_atom("nil")])
+}
+
 fn build_uncompressed_elixir_beam() -> Vec<u8> {
     let atoms: Vec<u8> = build_atu8(&["Elixir.Math", "elixir_erl", "add", "pi"]);
+    let add_body: Vec<u8> = etf_small_tuple(&[
+        etf_small_tuple(&[
+            etf_atom("."),
+            etf_nil(),
+            etf_list(&[etf_atom("erlang"), etf_atom("+")], &etf_nil()),
+        ]),
+        etf_nil(),
+        etf_list(&[var("a"), var("b")], &etf_nil()),
+    ]);
+    let add_clause: Vec<u8> = etf_small_tuple(&[
+        etf_nil(),
+        etf_list(&[var("a"), var("b")], &etf_nil()),
+        etf_nil(),
+        add_body,
+    ]);
     let metadata: Vec<u8> = etf_map(&[
         (
             etf_binary(b"definitions"),
@@ -27,7 +46,7 @@ fn build_uncompressed_elixir_beam() -> Vec<u8> {
                     etf_small_tuple(&[etf_atom("add"), etf_small_int(2)]),
                     etf_atom("def"),
                     etf_atom("public"),
-                    etf_list(&[etf_atom("clause_one")], &etf_nil()),
+                    etf_list(&[add_clause], &etf_nil()),
                 ])],
                 &etf_nil(),
             ),
@@ -64,8 +83,21 @@ fn elixir_recovery_emits_source_with_attributes() {
     let recovered: ElixirRecovery =
         recover_elixir(beam.module_name().unwrap(), &info).expect("recover");
     assert_eq!(recovered.backend, "elixir_erl");
-    assert!(recovered.source.starts_with("defmodule Elixir.Math do"));
+    assert!(
+        recovered.source.starts_with("defmodule Math do"),
+        "got:\n{}",
+        recovered.source
+    );
     assert!(recovered.source.contains("@moduledoc"));
     assert!(recovered.source.contains("@pi"));
-    assert!(recovered.source.contains("def add"));
+    assert!(
+        recovered.source.contains("def add(a, b) do"),
+        "expected rendered add/2 head, got:\n{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("a + b"),
+        "expected recovered + operator body, got:\n{}",
+        recovered.source
+    );
 }
