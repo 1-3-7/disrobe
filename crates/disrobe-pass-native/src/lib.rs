@@ -50,8 +50,9 @@ pub use cxx_recovery::{
     demangle_msvc, parse_itanium_lsda, parse_windows_seh_scope_table, recover_itanium_rtti,
 };
 pub use debug_info::{
-    DwarfSummary, DwarfVersion, PdbSummary, StabsEntry, classify_dwarf_versions, parse_stabs,
-    summarize_dwarf, summarize_pdb,
+    DwarfSummary, DwarfVersion, PdbBinaryMatch, PdbRecovery, PdbSummary, PdbSymbolInfo,
+    PdbSymbolKind, PdbTypeInfo, PdbTypeKind, StabsEntry, classify_dwarf_versions, parse_stabs,
+    recover_pdb, summarize_dwarf, summarize_pdb,
 };
 pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
