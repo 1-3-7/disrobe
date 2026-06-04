@@ -112,6 +112,10 @@ pub use vmprotect_carve::{
     CarvedVmpSection, SectionPerms, SyntheticImport, VmProtectCarve, carve_vmprotect,
 };
 
+pub mod themida_carve;
+
+pub use themida_carve::{OreansProduct, ThemidaCarve, carve_themida};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {

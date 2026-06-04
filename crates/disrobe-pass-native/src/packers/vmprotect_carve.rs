@@ -47,6 +47,14 @@ impl SectionPerms {
             execute: c & IMAGE_SCN_MEM_EXECUTE != 0,
         }
     }
+
+    /// Decode PE section `Characteristics` flags into read/write/execute
+    /// permissions. Shared with sibling protector carvers (e.g.
+    /// [`super::themida_carve`]) that reconstruct the same geometry.
+    #[must_use]
+    pub const fn from_characteristics_public(c: u32) -> Self {
+        Self::from_characteristics(c)
+    }
 }
 
 /// A carved VMProtect section: its reconstructed header geometry plus the raw
