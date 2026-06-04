@@ -17276,8 +17276,15 @@ fn extract_comprehension_parts(
             }
             CanonicalOp::MapAdd => {
                 if matches!(kind, CompKind::Dict) {
-                    let v: Option<Expr> = sim.try_pop();
-                    let k: Option<Expr> = sim.try_pop();
+                    let pre38_order: bool = active_version()
+                        .is_some_and(|v: PyVersion| v.major() == 3 && v.minor() < 8);
+                    let top: Option<Expr> = sim.try_pop();
+                    let below: Option<Expr> = sim.try_pop();
+                    let (k, v): (Option<Expr>, Option<Expr>) = if pre38_order {
+                        (top, below)
+                    } else {
+                        (below, top)
+                    };
                     if let (Some(kk), Some(vv)) = (k, v) {
                         elt = Some(kk.clone());
                         key_value = Some((kk, vv));
