@@ -38,6 +38,7 @@ impl AstBuilder for DefaultAstBuilder {
         version: &PyVersion,
     ) -> Result<AstModule> {
         set_active_version(version);
+        set_future_annotations(code.flags);
         let opmap: Box<dyn OpcodeMap> = map_for(version.clone());
         let stream: DecodedStream = decode_stream_with_offsets(code, opmap.as_ref(), version);
         let module_docstring: Option<String> = class_docstring(code, &stream.ops);
@@ -451,7 +452,7 @@ fn merge_annotations(body: Vec<Stmt>) -> Vec<Stmt> {
                 Expr::Constant {
                     value: ConstValue::Str(annotation_str),
                     ..
-                } => parse_annotation_string(annotation_str),
+                } if future_annotations_active() => parse_annotation_string(annotation_str),
                 other => other.clone(),
             };
             if try_attach_annotation(&mut out, slot_name, &annotation_expr) {
@@ -15196,9 +15197,14 @@ fn annotations_from_expr(expr: Expr) -> (Vec<(String, Expr)>, Option<Expr>) {
 }
 
 /// Re-parse a stringified (`PEP 563`) annotation const back into the real annotation `Expr`, matching
-/// the module-level `merge_annotations` convention. A non-`Str` annotation (a real recovered object,
-/// the no-future-import case) is returned untouched.
+/// the module-level `merge_annotations` convention. Only fires when the module compiled under
+/// `from __future__ import annotations` (which stringifies every annotation); otherwise a string-const
+/// annotation is a genuine quoted forward reference (`-> "Color"`) and must round-trip as a string
+/// literal, so it is returned untouched. A non-`Str` annotation is likewise returned untouched.
 fn unstringify_annotation(value: Expr) -> Expr {
+    if !future_annotations_active() {
+        return value;
+    }
     match value {
         Expr::Constant {
             value: ConstValue::Str(s),
@@ -16662,6 +16668,23 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static LOOP_FRAMES: std::cell::RefCell<Vec<LoopFrame>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    static FUTURE_ANNOTATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `co_flags` bit set when a module compiled under `from __future__ import annotations` (PEP 563): all
+/// annotation expressions are stringified into `str` consts. Only then may a string-const annotation be
+/// un-stringified back to its source `Expr`; without it a quoted annotation (`-> "Color"`) is a genuine
+/// string literal and must stay quoted, or the recompiled `MAKE_FUNCTION` gains a spurious name load.
+const CO_FUTURE_ANNOTATIONS: i32 = 0x0100_0000;
+
+fn set_future_annotations(flags: i32) {
+    FUTURE_ANNOTATIONS.with(|slot: &std::cell::Cell<bool>| {
+        slot.set(flags & CO_FUTURE_ANNOTATIONS != 0);
+    });
+}
+
+fn future_annotations_active() -> bool {
+    FUTURE_ANNOTATIONS.with(std::cell::Cell::get)
 }
 
 #[derive(Debug, Clone)]
