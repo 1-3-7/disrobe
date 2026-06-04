@@ -87,11 +87,34 @@ fn measure(rel: &str, chunk: LuaChunk) {
     );
 }
 
+fn strip_debug(p: &mut LuaProto) {
+    p.locals.clear();
+    p.source_lines.clear();
+    for u in &mut p.upvalues {
+        u.name.clear();
+    }
+    for child in &mut p.protos {
+        strip_debug(child);
+    }
+}
+
+fn measure_stripped(rel: &str, mut chunk: LuaChunk) {
+    strip_debug(&mut chunk.main);
+    let out: DecompiledChunk = decompile::lua51::decompile(&chunk).expect("decompile");
+    let placeholders: usize = placeholder_register_count(&out.source);
+    let synthetic_locals: usize = out.source.matches("loc_").count();
+    eprintln!(
+        "[fidelity-nodebug] {rel}: residual R<n> placeholders={placeholders}; synthetic loc_ names={synthetic_locals}; out_bytes={}",
+        out.source.len()
+    );
+}
+
 #[test]
 fn report_local_name_recovery() {
     if let Some(b) = load("luac/edge_cases.5_1.luac") {
         let b: Vec<u8> = b;
         measure("5.1", lua51::read(&b).expect("5.1"));
+        measure_stripped("5.1", lua51::read(&b).expect("5.1"));
     }
     if let Some(b) = load("luac/edge_cases.5_2.luac") {
         let b: Vec<u8> = b;

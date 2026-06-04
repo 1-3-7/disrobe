@@ -75,6 +75,7 @@ struct LiftState {
     warnings: Vec<String>,
     dialect: LuaDialect,
     scopes: LocalScopes,
+    register_alias_tracker: BTreeMap<u32, String>,
     pc: usize,
 }
 
@@ -87,8 +88,21 @@ impl LiftState {
             warnings: Vec::new(),
             dialect,
             scopes: LocalScopes::default(),
+            register_alias_tracker: BTreeMap::new(),
             pc: 0,
         }
+    }
+
+    /// Stable synthetic name for a register slot whose value has no debug name
+    /// and no live expression in the linear trace (a cross-block or
+    /// uninitialised read). Naming every such slot `loc{slot}` keeps every
+    /// reference to the same slot coherent rather than scattering raw `R{n}`.
+    #[inline]
+    fn synth_alias(&self, idx: u32) -> String {
+        self.register_alias_tracker
+            .get(&idx)
+            .cloned()
+            .unwrap_or_else(|| format!("loc{idx}"))
     }
 
     #[inline]
@@ -99,7 +113,7 @@ impl LiftState {
         let idx: usize = i as usize;
         match self.regs.get(idx) {
             Some(s) if !s.is_empty() => s.clone(),
-            _ => format!("R{idx}"),
+            _ => self.synth_alias(i),
         }
     }
 
@@ -997,8 +1011,19 @@ fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool, dialect: LuaDialect
     if nresults == 1 {
         state.push(&call);
     } else if nresults >= 2 {
+        let next_pc: usize = state.pc + 1;
         let targets: Vec<String> = (0..nresults - 1)
-            .map(|i: u32| format!("r{}_{}", d.a + i, state.lines.len()))
+            .map(|i: u32| {
+                let slot: u32 = d.a + i;
+                state.scopes.name_at(next_pc, slot).map_or_else(
+                    || {
+                        let synth: String = format!("loc{slot}");
+                        state.register_alias_tracker.insert(slot, synth.clone());
+                        synth
+                    },
+                    str::to_owned,
+                )
+            })
             .collect();
         state.push(&format!("local {} = {call}", targets.join(", ")));
         for (i, t) in targets.iter().enumerate() {
@@ -1193,7 +1218,7 @@ mod tests {
         let code: Vec<u32> = vec![enc_abc(12, 2, 0, 1), enc_abc(30, 0, 0, 0)];
         let p: LuaProto = proto(code, Vec::new(), 4);
         let out: LiftedProto = lift_proto(&p, 0);
-        assert!(out.source.contains("(R0 + R1)"), "got: {}", out.source);
+        assert!(out.source.contains("(loc0 + loc1)"), "got: {}", out.source);
     }
 
     #[test]
@@ -1206,7 +1231,7 @@ mod tests {
         ];
         let p: LuaProto = proto(code, consts, 3);
         let out: LiftedProto = lift_proto(&p, 0);
-        assert!(out.source.contains(".x = R1"), "got: {}", out.source);
+        assert!(out.source.contains(".x = loc1"), "got: {}", out.source);
     }
 
     #[test]
@@ -1294,6 +1319,6 @@ mod tests {
         let ret: u32 = enc_abc(38, 2, 2, 0);
         let p: LuaProto = proto(vec![band, ret], Vec::new(), 4);
         let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua53, 0);
-        assert!(out.source.contains("(R0 & R1)"), "got: {}", out.source);
+        assert!(out.source.contains("(loc0 & loc1)"), "got: {}", out.source);
     }
 }
