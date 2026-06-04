@@ -10894,15 +10894,13 @@ fn try_structure_inline_comprehension(
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetIter | CanonicalOp::GetAiter))
         .unwrap_or(comp.clear_idx);
-    let (head, iter_residual): (Vec<Stmt>, Vec<Expr>) =
+    let (head, mut iter_residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[lo..iter_end])?;
-    let iter: Expr = iter_residual
-        .into_iter()
-        .next_back()
-        .unwrap_or(Expr::Constant {
-            value: ConstValue::None,
-            line: None,
-        });
+    let iter: Expr = iter_residual.pop().unwrap_or(Expr::Constant {
+        value: ConstValue::None,
+        line: None,
+    });
+    let pre_residual: Vec<Expr> = iter_residual;
     let ComprehensionParts {
         target,
         elt,
@@ -10936,8 +10934,15 @@ fn try_structure_inline_comprehension(
         })
         .collect();
     let mut out: Vec<Stmt> = head;
-    let tail_stmts: Vec<Stmt> =
-        consume_inline_comp_result(code, stream, result, comp.end_for, &clear_slots, hi)?;
+    let tail_stmts: Vec<Stmt> = consume_inline_comp_result(
+        code,
+        stream,
+        result,
+        comp.end_for,
+        &clear_slots,
+        hi,
+        pre_residual,
+    )?;
     out.extend(tail_stmts);
     Ok(Some(out))
 }
@@ -11277,6 +11282,7 @@ fn consume_inline_comp_result(
     end_for: usize,
     clear_slots: &[u32],
     hi: usize,
+    pre_residual: Vec<Expr>,
 ) -> Result<Vec<Stmt>> {
     let is_restore_noise = |op: &CanonicalOp| -> bool {
         matches!(
@@ -11294,48 +11300,63 @@ fn consume_inline_comp_result(
         }
         j
     };
-    match stream.ops.get(consumer) {
-        Some(CanonicalOp::Return | CanonicalOp::ReturnConst(_)) => {
-            Ok(vec![Stmt::Return(Some(result))])
+    if pre_residual.is_empty() {
+        match stream.ops.get(consumer) {
+            Some(CanonicalOp::Return | CanonicalOp::ReturnConst(_)) => {
+                return Ok(vec![Stmt::Return(Some(result))]);
+            }
+            Some(CanonicalOp::StoreFast(slot)) => {
+                let target: Expr = local_target(code, *slot, consumer)?;
+                let mut out: Vec<Stmt> = vec![Stmt::Assign {
+                    targets: vec![target],
+                    value: result,
+                    type_comment: None,
+                    line: None,
+                }];
+                out.extend(structure_stmts(
+                    code,
+                    stream,
+                    tail_after(stream, consumer + 1),
+                    hi,
+                )?);
+                return Ok(out);
+            }
+            Some(CanonicalOp::StoreName(slot) | CanonicalOp::StoreGlobal(slot)) => {
+                let target: Expr = Expr::Name {
+                    id: name_at(&code.names, *slot, consumer, "name")?,
+                    ctx: ExprCtx::Store,
+                    line: None,
+                };
+                let mut out: Vec<Stmt> = vec![Stmt::Assign {
+                    targets: vec![target],
+                    value: result,
+                    type_comment: None,
+                    line: None,
+                }];
+                out.extend(structure_stmts(
+                    code,
+                    stream,
+                    tail_after(stream, consumer + 1),
+                    hi,
+                )?);
+                return Ok(out);
+            }
+            _ => return Ok(vec![Stmt::Expr(result)]),
         }
-        Some(CanonicalOp::StoreFast(slot)) => {
-            let target: Expr = local_target(code, *slot, consumer)?;
-            let mut out: Vec<Stmt> = vec![Stmt::Assign {
-                targets: vec![target],
-                value: result,
-                type_comment: None,
-                line: None,
-            }];
-            out.extend(structure_stmts(
-                code,
-                stream,
-                tail_after(stream, consumer + 1),
-                hi,
-            )?);
-            Ok(out)
-        }
-        Some(CanonicalOp::StoreName(slot) | CanonicalOp::StoreGlobal(slot)) => {
-            let target: Expr = Expr::Name {
-                id: name_at(&code.names, *slot, consumer, "name")?,
-                ctx: ExprCtx::Store,
-                line: None,
-            };
-            let mut out: Vec<Stmt> = vec![Stmt::Assign {
-                targets: vec![target],
-                value: result,
-                type_comment: None,
-                line: None,
-            }];
-            out.extend(structure_stmts(
-                code,
-                stream,
-                tail_after(stream, consumer + 1),
-                hi,
-            )?);
-            Ok(out)
-        }
-        _ => Ok(vec![Stmt::Expr(result)]),
     }
+    let mut seed: Vec<Expr> = pre_residual;
+    seed.push(result);
+    let (consumed, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim_seed(code, &stream.ops[consumer..hi], seed)?;
+    if !consumed.is_empty() {
+        return Ok(consumed);
+    }
+    Ok(residual
+        .into_iter()
+        .next_back()
+        .map(Stmt::Expr)
+        .into_iter()
+        .collect())
 }
 
 fn first_significant(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
