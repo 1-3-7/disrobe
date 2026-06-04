@@ -1,6 +1,7 @@
 pub mod haxe;
 pub mod perl;
 pub mod perl_bytecode;
+pub mod perl_decompile;
 pub mod r_rds;
 pub mod rcpp;
 pub mod tcl;
