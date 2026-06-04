@@ -1,4 +1,4 @@
-# `disrobe`
+# disrobe
 
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Docs](https://github.com/1-3-7/disrobe/actions/workflows/docs.yml/badge.svg)](https://1-3-7.github.io/disrobe/)
@@ -6,9 +6,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 
-**A multi-language decompiler and deobfuscator in a single Rust binary. Deterministic, with no machine learning in the decompile path.**
+**A deterministic multi-language decompiler and deobfuscator suite written in Rust.**
 
-One binary peels the bytecode, packers, freezers, and protectors stacked across the software supply chain: Python (1.0-3.15), JavaScript and TypeScript, WebAssembly, JVM and Android, .NET and native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Go, Lua, PHP, Ruby, Erlang and Elixir, Swift and Objective-C, AS3, Nim, Zig, Crystal, Perl, R, Tcl, and Haxe.
+`disrobe` peels the bytecode, packers, freezers, and protectors stacked across the software supply chain: Python (1.0-3.15), JavaScript and TypeScript, WebAssembly, JVM and Android, .NET and native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Go, Lua, PHP, Ruby, Erlang and Elixir, Swift and Objective-C, AS3, Nim, Zig, Crystal, Perl, R, Tcl, and Haxe.
 
 Full documentation: **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/)**
 
@@ -28,21 +28,7 @@ The Python, JVM/Kotlin, Dalvik, .NET CIL, and WebAssembly decompilers are writte
 
 Every artifact is content-addressed and persisted as a `.dr` envelope (rkyv payload, postcard sidecar, BLAKE3 root), so cache hits are byte-identical and chains compose offline. Recovery is measured against an independent reference, not the tool's own output: recovered Python is recompiled on the matching interpreter and compared opcode-for-opcode, and unpacked bytes are compared to the original. Lossy results carry their measured score under `SEMANTIC`, `PARTIAL`, or `SKELETON` and are never rounded up; what the tool cannot fully recover is reported as detect-only. Any pass can also emit an `--llm` metadata sidecar (call graph, types, control flow, capability surface, provenance).
 
-## Numbers
-
-Each figure is pinned by a test under `crates/*/tests/`.
-
-**Python.** The per-construct gate is 100%: every supported construct compiles, decompiles, recompiles on its own CPython, and matches bytecode, across 3.6 through 3.15 (ten versions, over a hundred constructs; `construct_roundtrip`). Whole-module recompilation, where a 2000-line module must match in its entirety and one diff fails the file, stands at 13 of 44 modules and rises each commit (`roundtrip_metric`). The `1.0-3.15` banner is a support range, not an accuracy claim: the gate runs on-box interpreters from 3.6, while 1.0-2.5 has no installable interpreter and is matched at the token level, near 84% value-equivalent on the 1.0-3.5 band.
-
-**JVM and Android.** The in-house decompiler is the default; `.class` and `.dex` lift through one structurer. dex-to-Java recovers every method signature and the full control-flow structure. Body fidelity sits near 60-75%, because Dalvik discards local names, generics, and lambda desugaring, so byte-identical reproduction is not attainable. APK signature schemes v1 through v3 verify (`dex2jar_real_bodies`, `dalvik_decompile_oracle`, `apk_signature_verify`).
-
-**PyArmor.** 70 of 72 source recoveries across v6 through v9-pro, measured on real protected wrappers rather than synthetic fixtures (`static_unpack_corpus`).
-
-**Native packers.** UPX unpacks byte-identical through a clean-room NRV2B decoder. kkrunchy's classic stream is byte-exact via the in-house x86 stub emulator; its k7 variant reaches 6.44%, bounded by a closed PAQ backend. NSPack recovers 98-99% of content sections, Petite about 98%, MPRESS about 92%; FSG is byte-identical, and MEW, ASPack, PECompact, and Yoda's are covered. VMProtect and Themida are detect-and-carve, with devirtualization out of scope. Per-fixture scores are in `corpus/native/packers/MANIFEST.toml`.
-
 ## Supported languages and formats
-
-Every cell is backed by a fixture in `corpus/` and an integration test in `crates/*/tests/`.
 
 | Ecosystem | What `disrobe` does |
 |---|---|
@@ -68,8 +54,6 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 
 ## Comparison
 
-One deterministic binary spans every ecosystem below.
-
 | Ecosystem | Leading tools | Where `disrobe` differs |
 |---|---|---|
 | **Python** | pycdc, pylingual, uncompyle6, decompyle3, pychd | Spans 3.6-3.15 in one engine with in-band recompile-equivalence; deterministic, no LLM, no benchmark contamination. uncompyle6 stops at 3.8, decompyle3 ~3.9; the ML-based tools are non-reproducible and contamination-flagged. |
@@ -86,11 +70,7 @@ Full per-ecosystem comparison tables (freezers, protectors, Lua, shell, PHP, Rub
 
 `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting; recovery is structurally faithful but never byte-identical (Dalvik body ceiling ~60-75%). Nuitka onefile/standalone unpack is byte-exact, but Nuitka compiles Python to C to native, so recovered function bodies are skeleton-to-partial (~30-50%) while symbols and constants recover cleanly. Nim/Zig/Crystal have no source recovery; demangling, symbol, and metadata recovery from the binary's own tables is the deliverable.
 
-VMProtect, Themida, Enigma, and the commercial tier are detect plus section-carve only; full devirtualization is deferred to a dedicated VM-lifter pass. ASProtect and Morphine are detect plus scaffold, since byte-unpack is sourcing-blocked. kkrunchy k7 is capped at 6.44% by its closed-source PAQ backend; the classic variant is byte-exact 100%.
-
-Sourcing-blocked, with no obtainable real sample and never faked: Bangcle/Ijiami/Qihoo Android packers, DexGuard control-flow obfuscation, the Minecraft-modding obfuscator family, PyArmor v9 HWID/license/network bind-mode, and assorted mobile artifacts.
-
-Distribution is GitHub Releases, prebuilt binaries, and the mdBook Pages site only. No PyPI, npm, Homebrew, AUR, Scoop, winget, Docker, or crates.io.
+VMProtect, Themida, Enigma, and the commercial tier are detect plus section-carve only.
 
 ## Install
 
