@@ -13,7 +13,10 @@ use crate::rename::{RenameStats, rename_hex_idents};
 use crate::string_array::{StringArrayRecovery, recover as recover_string_array};
 use crate::unminify::{UnminifyStats, unminify};
 
+use super::control_flow_object::{ControlFlowObjectResult, merge_control_flow_objects};
+use super::control_flow_switch::{ControlFlowSwitchResult, unflatten_control_flow_switch};
 use super::controls::ObfControl;
+use super::normalize_strings::{NormalizeStringsResult, normalize_escaped_strings};
 use super::presets::Preset;
 
 #[derive(Debug, Clone, Default)]
@@ -57,6 +60,9 @@ pub struct Output {
     pub bracket_accesses_rewritten: usize,
     pub dispatcher_call_sites_inlined: usize,
     pub flatten_dispatches_collapsed: usize,
+    pub control_flow_objects_merged: usize,
+    pub control_flow_switches_unflattened: usize,
+    pub string_literals_normalized: usize,
     pub opaque_predicates_folded: usize,
     pub packed_blocks_expanded: usize,
     pub unminify_stats: UnminifyStats,
@@ -73,6 +79,7 @@ pub fn deobfuscate(source: &str, opts: &Options) -> Result<Output> {
         current = run_statements(current, opts, &mut out)?;
         current = run_strings(current, opts, &mut out);
         current = run_control_flow(current, opts, &mut out);
+        current = run_statements(current, opts, &mut out)?;
         current = run_predicates(current, opts, &mut out);
         current = run_objects(current, opts, &mut out);
         current = run_unminify_block(current, opts, &mut out);
@@ -115,23 +122,60 @@ fn run_strings(mut current: String, opts: &Options, out: &mut Output) -> String 
         return current;
     }
     let packing: PackingReversalResult = reverse_packing(&current);
-    if packing.blocks_expanded == 0 {
-        return current;
+    if packing.blocks_expanded > 0 {
+        out.packed_blocks_expanded += packing.blocks_expanded;
+        out.controls_applied.insert(ObfControl::Strings);
+        bump(
+            &mut out.per_control_stats,
+            "strings",
+            usize_to_u64(packing.blocks_expanded),
+        );
+        current = packing.rewritten_source;
     }
-    out.packed_blocks_expanded += packing.blocks_expanded;
-    out.controls_applied.insert(ObfControl::Strings);
-    bump(
-        &mut out.per_control_stats,
-        "strings",
-        usize_to_u64(packing.blocks_expanded),
-    );
-    current = packing.rewritten_source;
+    let normalized: NormalizeStringsResult = normalize_escaped_strings(&current);
+    if normalized.literals_normalized > 0 {
+        out.string_literals_normalized += normalized.literals_normalized;
+        out.controls_applied.insert(ObfControl::Strings);
+        bump(
+            &mut out.per_control_stats,
+            "strings",
+            usize_to_u64(normalized.literals_normalized),
+        );
+        current = normalized.rewritten_source;
+    }
     current
 }
 
 fn run_control_flow(mut current: String, opts: &Options, out: &mut Output) -> String {
+    let wants_cfo: bool = opts.controls.contains(&ObfControl::Objects)
+        || opts.controls.contains(&ObfControl::ControlFlowFlattening);
+    if wants_cfo {
+        let cfo: ControlFlowObjectResult = merge_control_flow_objects(&current);
+        if cfo.objects_merged > 0 {
+            out.control_flow_objects_merged += cfo.objects_merged;
+            out.controls_applied.insert(ObfControl::Objects);
+            bump(
+                &mut out.per_control_stats,
+                "objects",
+                usize_to_u64(cfo.call_sites_inlined),
+            );
+            current = cfo.rewritten_source;
+        }
+    }
     if !opts.controls.contains(&ObfControl::ControlFlowFlattening) {
         return current;
+    }
+    let switch: ControlFlowSwitchResult = unflatten_control_flow_switch(&current);
+    if switch.switches_unflattened > 0 {
+        out.control_flow_switches_unflattened += switch.switches_unflattened;
+        out.controls_applied
+            .insert(ObfControl::ControlFlowFlattening);
+        bump(
+            &mut out.per_control_stats,
+            "controlFlowFlattening",
+            usize_to_u64(switch.switches_unflattened),
+        );
+        current = switch.rewritten_source;
     }
     let flatten: FlattenReversalResult = reverse_flatten(&current);
     if flatten.dispatches_collapsed > 0 {

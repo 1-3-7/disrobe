@@ -1,6 +1,9 @@
+mod control_flow_object;
+mod control_flow_switch;
 mod controls;
 mod detection;
 mod dispatch;
+mod normalize_strings;
 mod presets;
 
 pub use controls::ObfControl;
