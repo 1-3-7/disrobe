@@ -545,6 +545,7 @@ mod tests {
             results,
             exported: true,
             imported: false,
+            local_names: Vec::new(),
         }
     }
 

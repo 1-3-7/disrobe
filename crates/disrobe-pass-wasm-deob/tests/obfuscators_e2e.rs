@@ -478,6 +478,7 @@ fn full_pipeline_smoke_detect_through_lift() {
         results: vec![WpValType::I32],
         exported: true,
         imported: false,
+        local_names: Vec::new(),
     };
     let callees: CalleeNames = CalleeNames::new(Vec::new());
     let mut visited: bool = false;

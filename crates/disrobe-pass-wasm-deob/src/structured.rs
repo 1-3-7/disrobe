@@ -113,7 +113,8 @@ impl Translator<'_> {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    let _ = write!(s, "p{i}: {}", rust_ty(*ty));
+                    let name: String = self.param_name(i);
+                    let _ = write!(s, "{name}: {}", rust_ty(*ty));
                 }
                 s.push(')');
                 if let Some(ret) = self.sig.results.first() {
@@ -127,7 +128,8 @@ impl Translator<'_> {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    let _ = write!(s, "p{i}: {}", ts_ty(*ty));
+                    let name: String = self.param_name(i);
+                    let _ = write!(s, "{name}: {}", ts_ty(*ty));
                 }
                 let ret: &str = self.sig.results.first().map_or("void", |t| ts_ty(*t));
                 let _ = writeln!(s, "): {ret} {{");
@@ -142,7 +144,8 @@ impl Translator<'_> {
                         if i > 0 {
                             s.push_str(", ");
                         }
-                        let _ = write!(s, "{} p{i}", c_ty(*ty));
+                        let name: String = self.param_name(i);
+                        let _ = write!(s, "{} {name}", c_ty(*ty));
                     }
                 }
                 s.push_str(") {\n");
@@ -162,18 +165,23 @@ impl Translator<'_> {
             .collect();
         for (i, ty) in decls {
             let init: &str = zero_lit(ty, self.lang);
+            let name: String = self.local_name(u32::try_from(i).unwrap_or(u32::MAX));
             match self.lang {
                 HighLang::Rust => {
-                    let _ = writeln!(self.out, "    let mut l{i}: {} = {init};", rust_ty(ty));
+                    let _ = writeln!(self.out, "    let mut {name}: {} = {init};", rust_ty(ty));
                 }
                 HighLang::TypeScript => {
-                    let _ = writeln!(self.out, "    let l{i}: {} = {init};", ts_ty(ty));
+                    let _ = writeln!(self.out, "    let {name}: {} = {init};", ts_ty(ty));
                 }
                 HighLang::C => {
-                    let _ = writeln!(self.out, "    {} l{i} = {init};", c_ty(ty));
+                    let _ = writeln!(self.out, "    {} {name} = {init};", c_ty(ty));
                 }
             }
         }
+    }
+
+    fn param_name(&self, index: usize) -> String {
+        self.local_name(u32::try_from(index).unwrap_or(u32::MAX))
     }
 
     fn pad(&self) -> String {
@@ -181,6 +189,9 @@ impl Translator<'_> {
     }
 
     fn local_name(&self, idx: u32) -> String {
+        if let Some(real) = self.sig.local_name(idx) {
+            return sanitize_local(real);
+        }
         if (idx as usize) < self.sig.params.len() {
             format!("p{idx}")
         } else {
@@ -943,6 +954,82 @@ fn f64_lit(bits: u64, lang: HighLang) -> String {
         HighLang::TypeScript => format!("wasmF64FromBits(0x{bits:016x}n)"),
         HighLang::C => format!("wasm_f64_reinterpret_i64((int64_t)0x{bits:016x}ull)"),
     }
+}
+
+/// Sanitizes a debug-info local name into a valid lowered identifier, prefixing an
+/// underscore when the raw name collides with a reserved word in any target language.
+fn sanitize_local(raw: &str) -> String {
+    let mut out: String = String::with_capacity(raw.len() + 1);
+    for (i, ch) in raw.chars().enumerate() {
+        let ok: bool = if i == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if ok { ch } else { '_' });
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    if is_reserved_word(&out) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+fn is_reserved_word(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "else"
+            | "enum"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "ref"
+            | "return"
+            | "self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "function"
+            | "var"
+            | "void"
+            | "int"
+            | "char"
+            | "double"
+            | "float"
+            | "class"
+            | "new"
+            | "delete"
+            | "this"
+            | "default"
+            | "switch"
+            | "case"
+            | "do"
+            | "goto"
+    )
 }
 
 fn snake_to_camel(name: &str) -> String {

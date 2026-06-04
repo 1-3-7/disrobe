@@ -12,6 +12,12 @@ pub struct FunctionSig {
     pub results: Vec<ValType>,
     pub exported: bool,
     pub imported: bool,
+    /// Real local names indexed by wasm local index (params first, then declared
+    /// locals). `None` at an index means no debug name is available and the lifter
+    /// falls back to positional `p{idx}`/`l{idx}`. Empty when no DWARF / source map
+    /// is present — name recovery is honestly debug-info gated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<Option<String>>,
 }
 
 impl FunctionSig {
@@ -24,7 +30,17 @@ impl FunctionSig {
             results: Vec::new(),
             exported: false,
             imported: false,
+            local_names: Vec::new(),
         }
+    }
+
+    /// Real name for the local at `index`, if a debug-info name was attached.
+    #[inline]
+    #[must_use]
+    pub fn local_name(&self, index: u32) -> Option<&str> {
+        self.local_names
+            .get(index as usize)
+            .and_then(Option::as_deref)
     }
 }
 
@@ -75,6 +91,58 @@ impl ModuleSignatures {
     pub fn callee_names(&self) -> Vec<String> {
         self.sigs.iter().map(|s| s.name.clone()).collect()
     }
+
+    /// Mutable access to a defined function's signature for name attachment.
+    #[inline]
+    pub fn defined_sig_mut(&mut self, defined_index: u32) -> Option<&mut FunctionSig> {
+        let abs: usize =
+            (self.imported_function_count as usize).checked_add(defined_index as usize)?;
+        self.sigs.get_mut(abs)
+    }
+
+    /// Attaches real local names to every defined function from a `(name, params,
+    /// locals)`-style provider keyed by defined-function index. Names are
+    /// index-aligned: params first (source order), then declared locals. Returns the
+    /// count of functions that received at least one name (name recovery is honestly
+    /// debug-info gated — zero when no provider yields names).
+    pub fn attach_local_names<F>(&mut self, mut provider: F) -> usize
+    where
+        F: FnMut(u32) -> Vec<Option<String>>,
+    {
+        let defined_count: u32 = u32::try_from(
+            self.sigs
+                .len()
+                .saturating_sub(self.imported_function_count as usize),
+        )
+        .unwrap_or(u32::MAX);
+        let mut attached: usize = 0;
+        for defined_index in 0..defined_count {
+            let names: Vec<Option<String>> = provider(defined_index);
+            if names.iter().any(Option::is_some)
+                && let Some(sig) = self.defined_sig_mut(defined_index)
+            {
+                sig.local_names = names;
+                attached += 1;
+            }
+        }
+        attached
+    }
+}
+
+/// Orders DWARF parameter and variable names into a wasm-local-indexed vector.
+///
+/// Source-order parameters come first, then declared variables (which the WASM
+/// lowering emits as the trailing locals). `None` slots mark anonymous entries.
+#[must_use]
+pub fn dwarf_local_names(
+    parameter_names: &[Option<String>],
+    variable_names: &[Option<String>],
+) -> Vec<Option<String>> {
+    let mut out: Vec<Option<String>> =
+        Vec::with_capacity(parameter_names.len() + variable_names.len());
+    out.extend(parameter_names.iter().cloned());
+    out.extend(variable_names.iter().cloned());
+    out
 }
 
 struct RawFuncType {
@@ -167,6 +235,7 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             results,
             exported: export_names.iter().any(|(i, _)| *i == function_index),
             imported: true,
+            local_names: Vec::new(),
         });
     }
 
@@ -186,6 +255,7 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             results,
             exported: export_names.iter().any(|(i, _)| *i == function_index),
             imported: false,
+            local_names: Vec::new(),
         });
     }
 

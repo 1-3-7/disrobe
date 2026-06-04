@@ -16,6 +16,7 @@ fn sig(name: &str, params: Vec<ValType>, results: Vec<ValType>) -> FunctionSig {
         results,
         exported: true,
         imported: false,
+        local_names: Vec::new(),
     }
 }
 

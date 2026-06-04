@@ -58,6 +58,7 @@ fn deeply_nested_expression_lift_does_not_overflow_stack() {
         results: vec![ValType::I32],
         exported: false,
         imported: false,
+        local_names: Vec::new(),
     };
     let callees: CalleeNames = CalleeNames::new(Vec::new());
     for payload in Parser::new(0).parse_all(&bytes) {

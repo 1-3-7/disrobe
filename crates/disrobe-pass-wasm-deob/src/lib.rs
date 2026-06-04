@@ -30,6 +30,7 @@ mod lift_wat;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 mod memory64;
+pub mod name_recovery;
 mod obfuscators;
 pub mod pass;
 mod provenance_header;
@@ -73,6 +74,9 @@ pub use lift::{
 pub use lift_c::c_runtime_prelude;
 pub use lift_wat::{lift_module_to_wat, wat_module_header};
 pub use memory64::{MemoryRecord, MemoryReport, scan_memories};
+#[cfg(feature = "dwarf")]
+pub use name_recovery::attach_dwarf_names;
+pub use name_recovery::{NameRecoveryStats, attach_sourcemap_names};
 pub use obfuscators::{
     CrypticBytesDetection, CrypticBytesPeel, DefragStats, DispatcherInfo, IntegrityStripStats,
     NameStrategy, OpaquePredStats, StubInfo, UnflattenStats, UnwrappedSegment, WobfuscatorTable,
@@ -87,14 +91,14 @@ pub use provenance_header::{
     ts_lifted_header, wat_decompiled_header,
 };
 pub use signature::{
-    FunctionSig, ModuleSignatures, count_defined_function_bodies, extract_signatures,
-    signatures_or_placeholders,
+    FunctionSig, ModuleSignatures, count_defined_function_bodies, dwarf_local_names,
+    extract_signatures, signatures_or_placeholders,
 };
+pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};
 pub use sourcemap::{
     SOURCE_MAPPING_URL_SECTION, Segment as SourceMapSegment, SourceMap, extract_source_mapping_url,
     parse_source_map,
 };
-pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};
 pub use ssa::{
     BlockTarget, CallSignatures, ConstVal, GlobalSet, LocalId, OpKind, SideEffect, SsaBlock,
     SsaFunction, SsaMemArg, SsaTerm, SsaValue, UnOp, ValueDef, ValueId, build_ssa,
