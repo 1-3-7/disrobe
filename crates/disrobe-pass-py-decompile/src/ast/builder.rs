@@ -9781,6 +9781,95 @@ fn is_dup_value_arm_with_cleanup(stream: &DecodedStream, idx: usize, hi: usize) 
     false
 }
 
+/// Recover a two-case `match <subject>:\n  case <lit>:\n    ...\n  case _:\n    ...` whose single-literal
+/// arm `CPython` lowers without the usual subject `COPY`/`DUP` (there is nothing to keep for a later
+/// arm): `<subject>; LOAD_CONST <lit>; COMPARE_OP ==; POP_JUMP_IF_FALSE wild; <arm1>; wild: NOP; <arm2>`.
+/// The generic match-head scan needs a subject dup, so this falls through to the if-structurer and
+/// recovers a plain `if <subject> == <lit>:` — which recompiles ONE byte short because it drops the
+/// wildcard arm's subject-discard `POP_TOP` (peephole-folded to that `NOP` at the second-arm head). The
+/// `NOP` at the `POP_JUMP_IF_FALSE` target is the unambiguous match-wildcard signal (a real
+/// `if x == lit:` has the two arms contiguous, no `NOP`); rebuild the `match` so the discard regenerates.
+fn try_structure_literal_wildcard_match(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if !stream.supports_match() {
+        return Ok(None);
+    }
+    let Some(jump_idx): Option<usize> = (lo..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        )
+    }) else {
+        return Ok(None);
+    };
+    let Some(cmp_idx): Option<usize> = last_significant_back(stream, lo, jump_idx) else {
+        return Ok(None);
+    };
+    if !matches!(stream.ops[cmp_idx], CanonicalOp::Compare(CmpOp::Eq)) {
+        return Ok(None);
+    }
+    let Some(lit_idx): Option<usize> = last_significant_back(stream, lo, cmp_idx) else {
+        return Ok(None);
+    };
+    let literal: Expr = match &stream.ops[lit_idx] {
+        CanonicalOp::LoadConst(slot) => load_const(code, *slot, lit_idx)?,
+        CanonicalOp::LoadSmallInt(v) => Expr::Constant {
+            value: ConstValue::Int(i128::from(*v)),
+            line: None,
+        },
+        _ => return Ok(None),
+    };
+    let Some(wild): Option<usize> = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
+        .filter(|t: &usize| *t > jump_idx && *t < hi)
+    else {
+        return Ok(None);
+    };
+    if !matches!(stream.ops[wild], CanonicalOp::Nop) {
+        return Ok(None);
+    }
+    let subject_end: usize = lit_idx;
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..subject_end])?;
+    let Some(subject): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    if !head.is_empty() {
+        return Ok(None);
+    }
+    let arm1: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, wild)?;
+    if !matches!(
+        arm1.last(),
+        Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+    ) {
+        return Ok(None);
+    }
+    let arm2: Vec<Stmt> = structure_stmts(code, stream, wild + 1, hi)?;
+    let cases: Vec<MatchCase> = vec![
+        MatchCase {
+            pattern: Pattern::MatchValue(literal),
+            guard: None,
+            body: non_empty(arm1),
+        },
+        MatchCase {
+            pattern: Pattern::MatchAs {
+                pattern: None,
+                name: None,
+            },
+            guard: None,
+            body: non_empty(arm2),
+        },
+    ];
+    Ok(Some(vec![Stmt::Match {
+        subject,
+        cases,
+        line: None,
+    }]))
+}
+
 fn structure_match(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -10440,6 +10529,9 @@ fn structure_stmts(
         && !match_head_enclosed_by_loop(stream, lo, hi)
         && let Some((stmts, _consumed)) = structure_match(code, stream, lo, hi)?
     {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_literal_wildcard_match(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     if stream.version.major() == 3
