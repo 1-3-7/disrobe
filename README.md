@@ -6,9 +6,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 [![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org)
 
-**A deterministic, multi-language deobfuscator and decompiler in a single Rust binary. No model in the decompile path. Output you can diff and cite.**
+**A multi-language decompiler and deobfuscator in a single Rust binary. Deterministic, with no machine learning in the decompile path.**
 
-One binary peels the bytecode, packers, freezers, and protectors stacked across the software supply chain: Python (support range 1.0-3.15), JavaScript/TypeScript, WebAssembly, JVM and Android, .NET and native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Go, Lua/LuaJIT/Luau, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, AS3/Flash, Nim/Zig/Crystal, Perl/R/Tcl/Haxe, and the native packers layered on top. It bundles in-house Python and JVM/Dalvik decompilers, a PyArmor unpacker, a PyInstaller/Nuitka extractor, dex-to-Java, UPX/kkrunchy/NSPack unpackers, a JS unbundler, and a WASM lifter.
+One binary peels the bytecode, packers, freezers, and protectors stacked across the software supply chain: Python (1.0-3.15), JavaScript and TypeScript, WebAssembly, JVM and Android, .NET and native AOT, native PE/ELF/Mach-O, React Native Hermes, Flutter Dart AOT, Go, Lua, PHP, Ruby, Erlang and Elixir, Swift and Objective-C, AS3, Nim, Zig, Crystal, Perl, R, Tcl, and Haxe.
 
 Full documentation: **[1-3-7.github.io/disrobe](https://1-3-7.github.io/disrobe/)**
 
@@ -20,39 +20,25 @@ $ disrobe auto suspect.exe --out recovered/
 # final               ok    -> recovered/final/
 ```
 
-## What `disrobe` is
+## What it does
 
-`disrobe` strips the obfuscation, freezing, packing, and protection off a binary so you can read what it does without executing it. It targets forensic and recovery work where reproducibility matters.
+`disrobe` strips obfuscation, freezing, packing, and protection off a binary so you can read what it does without running it. It is built for forensic and recovery work, where the same input must give the same output on every machine and every run. Nothing in the decompile path is statistical, so there is no model to drift and nothing to retrain. The build is one static binary with no JVM, Python, or Docker dependency: `cargo build --release`, then run it headlessly in CI.
 
-No model runs anywhere in the decompile path. Same input, same output, on every machine and every run. The output is a stable evidence and diff baseline.
+The Python, JVM/Kotlin, Dalvik, .NET CIL, and WebAssembly decompilers are written in Rust and ship as the product. CFR, Vineflower, Procyon, jadx, ILSpy, dnSpy, and de4dot are optional `--backend` fallbacks, off by default. On native PE/ELF/Mach-O it does not attempt raw decompilation; it unpacks, recovers symbols, and detects packer chains, then hands Ghidra, IDA, or Binary Ninja cleaner input.
 
-The Python, JVM/Kotlin, Dalvik, .NET CIL, and WASM decompilers are written in Rust and ship as the product. External decompilers (CFR, Vineflower, Procyon, jadx, ILSpy, dnSpy, de4dot) are optional `--backend` fallbacks, off by default. For native PE/ELF/Mach-O, `disrobe` is the unpack and symbol-recovery layer that feeds Ghidra/IDA/Binary Ninja cleaner input; it does not do raw native decompilation.
+Every artifact is content-addressed and persisted as a `.dr` envelope (rkyv payload, postcard sidecar, BLAKE3 root), so cache hits are byte-identical and chains compose offline. Recovery is measured against an independent reference, not the tool's own output: recovered Python is recompiled on the matching interpreter and compared opcode-for-opcode, and unpacked bytes are compared to the original. Lossy results carry their measured score under `SEMANTIC`, `PARTIAL`, or `SKELETON` and are never rounded up; what the tool cannot fully recover is reported as detect-only. Any pass can also emit an `--llm` metadata sidecar (call graph, types, control flow, capability surface, provenance).
 
-The build is a single static binary. No JVM, no Python runtime, no Docker. `cargo build --release`, then drop it into CI headlessly.
+## Numbers
 
-Output is content-addressed. Every artifact persists as a `.dr` envelope: rkyv hot payload, postcard cold sidecar, BLAKE3 root. Cache hits are byte-identical and chains compose offline.
+Each figure is pinned by a test under `crates/*/tests/`.
 
-Every recovery is gated against an independent ground truth. Recovered Python is recompiled on the matching interpreter and diffed opcode-for-opcode; unpacked bytes are compared to the original. Lossy recovery is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` with a measured ledger, never rounded up. Protectors `disrobe` cannot fully unpack are reported as detect-only.
+**Python.** The per-construct gate is 100%: every supported construct compiles, decompiles, recompiles on its own CPython, and matches bytecode, across 3.6 through 3.15 (ten versions, over a hundred constructs; `construct_roundtrip`). Whole-module recompilation, where a 2000-line module must match in its entirety and one diff fails the file, stands at 13 of 44 modules and rises each commit (`roundtrip_metric`). The `1.0-3.15` banner is a support range, not an accuracy claim: the gate runs on-box interpreters from 3.6, while 1.0-2.5 has no installable interpreter and is matched at the token level, near 84% value-equivalent on the 1.0-3.5 band.
 
-Any pass can emit a structured `--llm` metadata sidecar (call graph, types, control flow, capability surface, decompile provenance) so a coding agent reasons about recovered code without re-deriving it.
+**JVM and Android.** The in-house decompiler is the default; `.class` and `.dex` lift through one structurer. dex-to-Java recovers every method signature and the full control-flow structure. Body fidelity sits near 60-75%, because Dalvik discards local names, generics, and lambda desugaring, so byte-identical reproduction is not attainable. APK signature schemes v1 through v3 verify (`dex2jar_real_bodies`, `dalvik_decompile_oracle`, `apk_signature_verify`).
 
-## Capability and numbers
+**PyArmor.** 70 of 72 source recoveries across v6 through v9-pro, measured on real protected wrappers rather than synthetic fixtures (`static_unpack_corpus`).
 
-Every number below is enforced by a test in `crates/*/tests/`. The ceiling ledger and the de-circularized oracle work are detailed in [Ceilings and what is deferred](#ceilings-and-what-is-deferred).
-
-**Python decompiler.** Two metrics. The per-construct gate is 100%: every supported construct is compiled, decompiled, recompiled on its own CPython interpreter, and diffed for bytecode equivalence across the full 3.6-3.15 stable matrix (10 versions x 100+ constructs, threshold pinned at 100%). Deterministic, in-house Rust, no model. Verified by `cargo test -p disrobe-pass-py-decompile --test construct_roundtrip`. The whole-corpus monolith is ~28.9%: a single 2000-line kitchen-sink module must recompile to equivalent bytecode in its entirety, where one diff anywhere fails the whole file. The measured frontier is 13/44 modules (~28.9%), ratcheted up per commit and never lowered (`WHOLE_MODULE_FLOOR_PCT`). This is the stress-test frontier, not a capability cap. Verified by `cargo test -p disrobe-pass-py-decompile --test roundtrip_metric`. `1.0-3.15` is a support range, not an accuracy claim: the modern gate runs on-box interpreters (3.6+), legacy 1.0-2.5 has no installable interpreter and is token-match only (recovered source compared to original tokens, not recompiled), and the 1.0-3.5 legacy band measures ~84% value-equivalent.
-
-**JVM and Android.** In-house Rust decompilers are the default. Java/Kotlin `.class` and Dalvik `.dex` lift through the same structurer. dex2jar produces real method bodies at ~20.3% byte-exact plus 100% of method signatures and control-flow structure; body fidelity is capped at ~60-75% because Dalvik erases local names, generics, and lambda desugaring. APK signature schemes v1/v2/v3 verify; RASP and dead-protector families are detect-only. Verified by `cargo test -p disrobe-pass-jvm` (`dex2jar_real_bodies`, `dalvik_decompile_oracle`, `apk_signature_verify`).
-
-**PyArmor.** 70/72 real-corpus source recoveries across v6 through v9-pro (default, super, no-wrap), measured on the committed real-wrapper corpus, not synthetic fixtures. Verified by `cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus`.
-
-**Native packers.** Byte-honest, per-packer. UPX is byte-identical via clean-room NRV2B (~0.01-0.03% diff is section padding and timestamps). kkrunchy classic is 100.00% byte-exact via the in-house stub emulator; the k7 variant is 6.44%, capped by a closed-source PAQ backend. NSPack recovers 98.59-99.34% of content sections. Petite is ~97.8% content via x86 stub emulation. MPRESS is ~91.6-92.4%. FSG 2/3 are byte-identical. MEW/M020/ASPack/PECompact/Yoda's are covered. VMProtect and Themida are detect plus section-carve; full devirtualization is deferred. Per-fixture scores live in `corpus/native/packers/MANIFEST.toml`.
-
-## De-circularized oracles
-
-A self-referential test (decompile what this tool obfuscated, then verify against the same tool's notion of correct) inflates coverage to nothing. Each oracle below gates on an independent ground truth: a third-party tool's output, a real binary's own symbol table, or an in-band CPython recompile. An anti-gaming playground plants a circular canary and asserts the real tree trips zero circular findings.
-
-Python decompile gates on in-band CPython recompile-equivalence; the interpreter is the judge. PyArmor gates on real `_pytransform` ELF/Mach-O wrappers, with the synthetic-tautology oracle deleted. py-deob recovers 12/14 obfuscator families on a corpus generated by the real third-party obfuscation tools; the other 2 are sourcing-blocked, marked, and not faked. js-deob runs differentially against real obfuscator output plus reconstructed webpack source maps. PyInstaller gates on a committed non-circular carchive round-trip. Nim/Zig/Crystal recover symbols and metadata from each binary's own symtab and type table and assert `source_recoverable=false`, since these are compiled languages where demangling and symbol recovery is the deliverable.
+**Native packers.** UPX unpacks byte-identical through a clean-room NRV2B decoder. kkrunchy's classic stream is byte-exact via the in-house x86 stub emulator; its k7 variant reaches 6.44%, bounded by a closed PAQ backend. NSPack recovers 98-99% of content sections, Petite about 98%, MPRESS about 92%; FSG is byte-identical, and MEW, ASPack, PECompact, and Yoda's are covered. VMProtect and Themida are detect-and-carve, with devirtualization out of scope. Per-fixture scores are in `corpus/native/packers/MANIFEST.toml`.
 
 ## Supported languages and formats
 
@@ -82,7 +68,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 
 ## Comparison
 
-`disrobe` is one static binary, deterministic with no LLM in the decompile path, with content-addressed output and round-trip verification, applied across every ecosystem below.
+One deterministic binary spans every ecosystem below.
 
 | Ecosystem | Leading tools | Where `disrobe` differs |
 |---|---|---|
@@ -96,9 +82,7 @@ Every cell is backed by a fixture in `corpus/` and an integration test in `crate
 
 Full per-ecosystem comparison tables (freezers, protectors, Lua, shell, PHP, Ruby, BEAM, Swift, Flash, Hermes, Flutter, containers) are in the [docs](https://1-3-7.github.io/disrobe/).
 
-## Ceilings and what is deferred
-
-`disrobe` states its limits in the open. None is rounded up or hidden.
+## Limits
 
 `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting; recovery is structurally faithful but never byte-identical (Dalvik body ceiling ~60-75%). Nuitka onefile/standalone unpack is byte-exact, but Nuitka compiles Python to C to native, so recovered function bodies are skeleton-to-partial (~30-50%) while symbols and constants recover cleanly. Nim/Zig/Crystal have no source recovery; demangling, symbol, and metadata recovery from the binary's own tables is the deliverable.
 
