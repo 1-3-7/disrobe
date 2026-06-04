@@ -402,16 +402,92 @@ fn lifts_conditional_branch_to_goto() {
     let names: LocalNames = local_names_for(&abc, abc.methods.get(1));
     let rendered: String = render_body(&lifted, &names, "");
     assert!(
-        rendered.contains("if ((arg1 != 0)) goto L"),
-        "expected ifne lowered to conditional goto, got:\n{rendered}"
+        rendered.contains("if ((arg1 == 0)) {"),
+        "ifne skip must structure into a negated if-block, got:\n{rendered}"
     );
     assert!(
-        rendered.matches("return").count() == 2,
+        rendered.contains("return 1;") && rendered.contains("return 0;"),
         "both return paths must be present, got:\n{rendered}"
     );
     assert!(
-        rendered.contains(':'),
-        "branch target label must be emitted, got:\n{rendered}"
+        !rendered.contains("goto"),
+        "single-entry forward branch must not leave a goto, got:\n{rendered}"
+    );
+}
+
+#[test]
+fn structures_forward_conditional_skip_into_if_block() {
+    let mut pool: PoolBuilder = PoolBuilder::new();
+    let pkg_ns: u32 = pool.intern_ns(0x16, "");
+    let class_mn: u32 = pool.intern_qname(pkg_ns, "Guard");
+    let obj_mn: u32 = pool.intern_qname(pkg_ns, "Object");
+    let m_mn: u32 = pool.intern_qname(pkg_ns, "run");
+    let flag_mn: u32 = pool.intern_qname(pkg_ns, "flag");
+
+    let mut code: Vec<u8> = Vec::new();
+    code.push(0xD1);
+    code.push(0x24);
+    code.push(0x00);
+    let if_pos: usize = code.len();
+    code.push(0x13);
+    s24(0, &mut code);
+    let after_if: usize = code.len();
+    code.push(0xD0);
+    code.push(0x26);
+    code.push(0x61);
+    u30(flag_mn, &mut code);
+    let label_off: usize = code.len();
+    code.push(0x47);
+    let rel: i32 = (label_off as i32) - (after_if as i32);
+    let patch: u32 = rel as u32;
+    code[if_pos + 1] = (patch & 0xFF) as u8;
+    code[if_pos + 2] = ((patch >> 8) & 0xFF) as u8;
+    code[if_pos + 3] = ((patch >> 16) & 0xFF) as u8;
+
+    let spec: AbcSpec = AbcSpec {
+        pool,
+        methods: vec![
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![],
+                name: 0,
+                param_names: vec![],
+            },
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![obj_mn],
+                name: m_mn,
+                param_names: vec![],
+            },
+        ],
+        bodies: vec![BodySpec {
+            method: 1,
+            max_stack: 2,
+            local_count: 2,
+            code,
+        }],
+        class_name_mn: class_mn,
+        super_mn: obj_mn,
+        iinit: 0,
+        method_traits: vec![(m_mn, 1, 0x01)],
+    };
+
+    let abc: AbcFile = parse_fixture(&assemble(&spec));
+    let lifted: LiftedBody =
+        lift_body(&abc, &abc.method_bodies[0], abc.methods.get(1)).expect("lift");
+    let names: LocalNames = local_names_for(&abc, abc.methods.get(1));
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        rendered.contains("if ((arg1 != 0)) {"),
+        "ifeq skip must negate to != and open a block, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("    this.flag = true;"),
+        "block body must be indented one level deeper, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("goto"),
+        "no goto should remain, got:\n{rendered}"
     );
 }
 

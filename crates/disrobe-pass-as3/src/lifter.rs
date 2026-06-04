@@ -246,6 +246,10 @@ pub enum Stmt {
         selector: Expr,
         cases: usize,
     },
+    IfBlock {
+        cond: Expr,
+        body: Vec<Self>,
+    },
     Comment(String),
 }
 
@@ -778,6 +782,92 @@ fn expr_has_effect(e: &Expr) -> bool {
     )
 }
 
+/// Logically negate a recovered branch condition for `if`-block structuring.
+/// Comparison operators flip to their complement; everything else is wrapped
+/// in `!(...)` (rendered without the redundant outer parens for unary `!`).
+fn negate(cond: Expr) -> Expr {
+    if let Expr::Binary { op, lhs, rhs } = &cond {
+        let flipped: Option<&'static str> = match *op {
+            "==" => Some("!="),
+            "!=" => Some("=="),
+            "===" => Some("!=="),
+            "!==" => Some("==="),
+            "<" => Some(">="),
+            "<=" => Some(">"),
+            ">" => Some("<="),
+            ">=" => Some("<"),
+            _ => None,
+        };
+        if let Some(new_op) = flipped {
+            return Expr::Binary {
+                op: new_op,
+                lhs: lhs.clone(),
+                rhs: rhs.clone(),
+            };
+        }
+    }
+    if let Expr::Unary { op: "!", operand } = cond {
+        return *operand;
+    }
+    Expr::Unary {
+        op: "!",
+        operand: Box::new(cond),
+    }
+}
+
+/// True when `label` is referenced by exactly one `If`/`Jump` in `stmts`.
+/// Single-entry forward branches are the only ones safe to fold into a block.
+fn label_ref_count(stmts: &[Stmt], label: usize) -> usize {
+    stmts
+        .iter()
+        .filter(|s: &&Stmt| match s {
+            Stmt::If { target_label, .. } | Stmt::Jump { target_label } => *target_label == label,
+            _ => false,
+        })
+        .count()
+}
+
+/// Conservatively re-structure the canonical forward conditional skip
+/// `if (cond) goto L; <body>; L:` into `if (!cond) { <body> }`.
+///
+/// Strict guards: the matching `Label(L)` must appear later at the same nesting
+/// level, `L` must be referenced exactly once (single entry), and the spanned
+/// body must contain no labels and no jumps/ifs that escape the span. Anything
+/// that fails a guard is left as labeled-goto pseudocode, so the transform
+/// never reorders or drops a statement.
+fn structure_if_blocks(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let mut i: usize = 0;
+    while i < stmts.len() {
+        if let Stmt::If { cond, target_label } = &stmts[i] {
+            let label: usize = *target_label;
+            if label_ref_count(&stmts, label) == 1
+                && let Some(end_rel) = stmts[i + 1..]
+                    .iter()
+                    .position(|s: &Stmt| matches!(s, Stmt::Label(l) if *l == label))
+            {
+                let body_slice: &[Stmt] = &stmts[i + 1..i + 1 + end_rel];
+                let body_is_clean: bool = !body_slice.iter().any(|s: &Stmt| {
+                    matches!(
+                        s,
+                        Stmt::Label(_) | Stmt::Jump { .. } | Stmt::If { .. } | Stmt::IfBlock { .. }
+                    )
+                });
+                if body_is_clean && !body_slice.is_empty() {
+                    let cond: Expr = negate(cond.clone());
+                    let body: Vec<Stmt> = body_slice.to_vec();
+                    out.push(Stmt::IfBlock { cond, body });
+                    i = i + 1 + end_rel + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(stmts[i].clone());
+        i += 1;
+    }
+    out
+}
+
 /// Lift one method body into a sequence of recovered statements by abstractly
 /// interpreting the AVM2 operand stack. `info` supplies recovered param names
 /// for local-slot naming.
@@ -809,12 +899,12 @@ pub fn lift_body(
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
     }
-    let recovered: bool = lifter
-        .statements
+    let statements: Vec<Stmt> = structure_if_blocks(lifter.statements);
+    let recovered: bool = statements
         .iter()
         .any(|s: &Stmt| matches!(s, Stmt::Return(_) | Stmt::Throw(_)));
     Ok(LiftedBody {
-        statements: lifter.statements,
+        statements,
         recovered,
     })
 }
@@ -896,6 +986,14 @@ fn render_stmt(out: &mut String, stmt: &Stmt, names: &LocalNames, indent: &str) 
                 "{indent}switch ({}) {{ /* {cases} cases */ }}",
                 selector.render(names)
             );
+        }
+        Stmt::IfBlock { cond, body } => {
+            let _ = writeln!(out, "{indent}if ({}) {{", cond.render(names));
+            let inner: String = format!("{indent}    ");
+            for s in body {
+                render_stmt(out, s, names, &inner);
+            }
+            let _ = writeln!(out, "{indent}}}");
         }
         Stmt::Comment(c) => {
             let _ = writeln!(out, "{indent}// {c}");
