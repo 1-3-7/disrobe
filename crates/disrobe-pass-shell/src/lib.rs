@@ -49,10 +49,11 @@ pub use detect::{Detection, Dialect, Family, detect};
 pub use error::{Error, Result};
 pub use format_wire::format_identity;
 pub use powershell::{
-    Ast, AstNode, InvokeObfuscationLevel, Lexer, ObfTechnique, ReverseReport, Token, TokenKind,
-    parse_ast, parse_bible, reverse_ast, reverse_chameleon, reverse_compress, reverse_encoding,
-    reverse_invoke_stealth, reverse_isesteroids, reverse_launcher, reverse_powerhell,
-    reverse_psobf, reverse_string, reverse_token,
+    Ast, AstNode, InvokeObfuscationLevel, Lexer, ObfTechnique, ObfuscatorDetection, PsObfuscator,
+    ReverseReport, Token, TokenKind, obfuscator_detect, parse_ast, parse_bible, reverse_ast,
+    reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
+    reverse_isesteroids, reverse_launcher, reverse_powerhell, reverse_psobf, reverse_string,
+    reverse_token,
 };
 pub use provenance_header::{
     bash_deobfuscated_header, batch_deobfuscated_header, powershell_deobfuscated_header,

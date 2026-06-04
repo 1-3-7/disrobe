@@ -50,6 +50,18 @@ pub fn reverse_token(input: &str) -> ReverseReport {
             out = charrun;
         }
     }
+    if let Some(decoded) = decode_numeric_char_pipeline(&out) {
+        if decoded != out {
+            transformations.push("decode-numeric-char-pipeline".to_owned());
+            out = decoded;
+        }
+    }
+    if let Some(canon) = canonicalise_iex_indirection(&out) {
+        if canon != out {
+            transformations.push("canonicalise-iex-indirection".to_owned());
+            out = canon;
+        }
+    }
     if let Some(splatted) = collapse_splatting(&out) {
         if splatted != out {
             transformations.push("collapse-splatting".to_owned());
@@ -253,6 +265,98 @@ fn decode_char_array_concatenations(s: &str) -> Option<String> {
     }
     out.push_str(&s[last..]);
     Some(out)
+}
+
+static NUMERIC_PIPELINE: LazyLock<Regex> = LazyLock::new(|| {
+    crate::regex_util::safe_regex(
+        r"(?is)\(\s*((?:0x)?[0-9A-Fa-f]{1,4}(?:\s*,\s*(?:0x)?[0-9A-Fa-f]{1,4}){1,})\s*\)?\s*\|\s*(?:%|ForEach(?:-Object)?)\s*\{[^}]*?\[char\][^}]*?\}\s*\)?\s*-join\s*''",
+    )
+});
+
+static PIPELINE_BXOR: LazyLock<Regex> =
+    LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)-b\s*xor\s+(0x[0-9A-Fa-f]+|\d+)"));
+
+static PIPELINE_BASE: LazyLock<Regex> = LazyLock::new(|| {
+    crate::regex_util::safe_regex(r"(?i)toint(?:16|32|64)\s*\(\s*\$_\s*,\s*(\d+)\s*\)")
+});
+
+fn decode_numeric_char_pipeline(s: &str) -> Option<String> {
+    if !NUMERIC_PIPELINE.is_match(s) {
+        return None;
+    }
+    let result: std::borrow::Cow<'_, str> =
+        NUMERIC_PIPELINE.replace_all(s, |c: &regex::Captures<'_>| {
+            let whole: &str = c.get(0).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
+            let list: &str = c.get(1).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
+            let xor_key: Option<u32> = PIPELINE_BXOR
+                .captures(whole)
+                .and_then(|x: regex::Captures<'_>| x.get(1))
+                .and_then(|m: regex::Match<'_>| parse_int_token(m.as_str()));
+            let radix: u32 = PIPELINE_BASE
+                .captures(whole)
+                .and_then(|x: regex::Captures<'_>| x.get(1))
+                .and_then(|m: regex::Match<'_>| m.as_str().parse::<u32>().ok())
+                .filter(|r: &u32| matches!(*r, 2 | 8 | 16))
+                .unwrap_or(0);
+            let mut decoded: String = String::new();
+            for tok in list.split(',') {
+                let raw: &str = tok.trim();
+                let value: Option<u32> = if radix == 0 {
+                    parse_int_token(raw)
+                } else {
+                    u32::from_str_radix(
+                        raw.trim_start_matches("0x").trim_start_matches("0X"),
+                        radix,
+                    )
+                    .ok()
+                };
+                let Some(mut n): Option<u32> = value else {
+                    return whole.to_owned();
+                };
+                if let Some(k) = xor_key {
+                    n ^= k;
+                }
+                match char::from_u32(n) {
+                    Some(ch) => decoded.push(ch),
+                    None => return whole.to_owned(),
+                }
+            }
+            format!("\"{decoded}\"")
+        });
+    Some(result.into_owned())
+}
+
+fn parse_int_token(tok: &str) -> Option<u32> {
+    let t: &str = tok.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        t.parse::<u32>().ok()
+    }
+}
+
+static IEX_INDIRECT: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)&?\s*\(\s*\$env:ComSpec\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)",
+        r"(?i)&?\s*\(\s*\(\s*(?:Get-Variable|GV|Variable)\s+'?\*mdr\*'?\s*\)\.Name\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)",
+        r"(?i)&?\s*\(\s*\$VerbosePreference\.ToString\s*\(\s*\)\s*\[[\d,\s]+\]\s*-Join\s*''\s*\)",
+        r"(?i)&?\s*\(\s*\$ShellId\s*\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]\s*-Join\s*''\s*\)",
+    ]
+    .into_iter()
+    .map(crate::regex_util::safe_regex)
+    .collect()
+});
+
+fn canonicalise_iex_indirection(s: &str) -> Option<String> {
+    let mut out: String = s.to_owned();
+    let mut touched: bool = false;
+    for re in IEX_INDIRECT.iter() {
+        if re.is_match(&out) {
+            out = re.replace_all(&out, "Invoke-Expression").into_owned();
+            touched = true;
+        }
+    }
+    if touched { Some(out) } else { None }
 }
 
 static SPLAT: LazyLock<Regex> =
@@ -511,6 +615,50 @@ mod tests {
     fn token_decodes_char_array() {
         let r: ReverseReport = reverse_token("[char]73 + [char]69 + [char]88");
         assert!(r.output.contains("\"IEX\""));
+    }
+
+    #[test]
+    fn token_decodes_ascii_numeric_pipeline() {
+        let r: ReverseReport = reverse_token("(72,101,108,108,111 | %{[char]$_}) -join ''");
+        assert!(r.output.contains("\"Hello\""), "out: {}", r.output);
+        assert!(
+            r.transformations
+                .contains(&"decode-numeric-char-pipeline".to_owned())
+        );
+    }
+
+    #[test]
+    fn token_decodes_bxor_numeric_pipeline() {
+        let plain: &str = "IEX";
+        let key: u32 = 42;
+        let encoded: String = plain
+            .bytes()
+            .map(|b: u8| (u32::from(b) ^ key).to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        let src: String =
+            format!("({encoded} | ForEach-Object {{[char]($_ -bxor {key})}}) -join ''");
+        let r: ReverseReport = reverse_token(&src);
+        assert!(r.output.contains("\"IEX\""), "out: {}", r.output);
+    }
+
+    #[test]
+    fn token_decodes_hex_numeric_pipeline() {
+        let r: ReverseReport =
+            reverse_token("(0x48,0x69 | %{[char][Convert]::ToInt16($_,16)}) -join ''");
+        assert!(r.output.contains("\"Hi\""), "out: {}", r.output);
+    }
+
+    #[test]
+    fn token_canonicalises_comspec_indirection() {
+        let r: ReverseReport = reverse_token("&( $env:ComSpec[4,15,25]-Join'')( 'Get-Process' )");
+        assert!(r.output.contains("Invoke-Expression"), "out: {}", r.output);
+    }
+
+    #[test]
+    fn token_canonicalises_mdr_variable_indirection() {
+        let r: ReverseReport = reverse_token("((Variable '*mdr*').Name[3,11,2]-Join'')( $sc )");
+        assert!(r.output.contains("Invoke-Expression"), "out: {}", r.output);
     }
 
     #[test]
