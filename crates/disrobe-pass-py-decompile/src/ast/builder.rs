@@ -6412,6 +6412,36 @@ fn leading_guard_if_encloses_loop(
     target > region.back_edge && target <= hi
 }
 
+/// Byte-index ranges `[clear_idx, end_for)` of every top-level inline comprehension in `[lo, hi)`. The
+/// envelopes are computed once so all three loop detectors in `find_loop` can skip headers buried inside
+/// them: when a comprehension trails an `if`/branch, `comp_preceded_by_branch` defers the comp fold so
+/// the branch structures first, but the comp's own `FOR_ITER` and back-edges would otherwise be grabbed
+/// as a spurious user loop (the single-detector skip whack-a-moled across the for/while/back-edge paths).
+/// Marking the envelope once and skipping ranges inside it makes the comp opaque to loop detection, so
+/// the if-structurer reaches the comp as a top-level statement in its own sub-region.
+fn inline_comp_envelopes(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<(usize, usize)> {
+    let mut envelopes: Vec<(usize, usize)> = Vec::new();
+    let mut cursor: usize = lo;
+    while cursor < hi {
+        let Some(comp): Option<InlineComp> = detect_inline_comprehension(stream, cursor, hi) else {
+            break;
+        };
+        if comp.end_for <= comp.clear_idx {
+            break;
+        }
+        envelopes.push((comp.clear_idx, comp.end_for));
+        cursor = comp.end_for;
+    }
+    envelopes
+}
+
+#[inline]
+fn in_any_envelope(envelopes: &[(usize, usize)], idx: usize) -> bool {
+    envelopes
+        .iter()
+        .any(|&(start, end): &(usize, usize)| idx >= start && idx < end)
+}
+
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -6421,12 +6451,16 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
     {
         return Some(region);
     }
+    let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, hi);
     let mut best: Option<LoopRegion> = None;
     for i in lo..hi {
         if matches!(
             stream.ops[i],
             CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
         ) {
+            if in_any_envelope(&comp_envelopes, i) {
+                continue;
+            }
             let raw_exit: usize =
                 resolve_jump_target(stream, i, &stream.ops[i]).filter(|t: &usize| *t > i)?;
             let back_edge: usize = (i + 1..hi)
@@ -6450,6 +6484,9 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
         }
     }
     for j in lo..hi {
+        if in_any_envelope(&comp_envelopes, j) {
+            continue;
+        }
         if (is_cond_back_edge(&stream.ops[j]) || is_cond_jump_with_backward_target(stream, j))
             && let Some(t) = resolve_jump_target(stream, j, &stream.ops[j])
             && t >= lo
@@ -8665,7 +8702,7 @@ struct ForwardOrAlt {
 /// JUMP_FORWARD(shared body)` into ONE shared body, where 3.10 and 3.12+ duplicate the body per
 /// alternative. Only 3.11 needs the forward-jump grouping pass.
 fn uses_forward_jump_or(stream: &DecodedStream) -> bool {
-    stream.version.major() == 3 && stream.version.minor() == 11
+    stream.version.major() == 3 && stream.version.minor() >= 11
 }
 
 /// Parse one alternative of a 3.11 forward-jump or-group starting at `alt_start`. The shape is
