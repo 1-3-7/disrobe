@@ -13,7 +13,9 @@ pub use jscrambler::{
     IntegrityStripStats, OpaquePredStats, kill_opaque_predicates, strip_integrity_imports,
 };
 pub use name_obfuscator::{NameStrategy, classify_export_strategy};
-pub use tigress::{DispatcherInfo, UnflattenStats, detect_dispatcher, unflatten};
+pub use tigress::{
+    DispatcherInfo, UnflattenStats, detect_dispatcher, unflatten, unflatten_to_fixed_point,
+};
 pub use wasmixer::{
     DefragStats, StubInfo, UnwrappedSegment, defragment, detect_decrypt_stubs, unwrap_decryption,
 };

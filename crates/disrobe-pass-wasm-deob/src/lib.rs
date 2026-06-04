@@ -82,7 +82,8 @@ pub use obfuscators::{
     NameStrategy, OpaquePredStats, StubInfo, UnflattenStats, UnwrappedSegment, WobfuscatorTable,
     classify_export_strategy, defragment, detect_cryptic_bytes, detect_decrypt_stubs,
     detect_dispatcher, extract_optable, kill_opaque_predicates, lift_op_to_rust_fn,
-    peel_cryptic_bytes, strip_integrity_imports, unflatten, unwrap_decryption,
+    peel_cryptic_bytes, strip_integrity_imports, unflatten, unflatten_to_fixed_point,
+    unwrap_decryption,
 };
 pub use pass::{WasmDeobLegacyPass, WasmPassReport};
 pub use provenance_header::{
