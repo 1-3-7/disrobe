@@ -192,9 +192,8 @@ pub struct MonomorphizationGroup {
 pub fn group_monomorphizations(symbols: &[&str]) -> Vec<MonomorphizationGroup> {
     let mut by_origin: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for s in symbols {
-        let origin: String = match s.split("$LT$").next() {
-            Some(stem) if stem.len() < s.len() => stem.trim_end_matches("::").to_owned(),
-            _ => continue,
+        let Some(origin): Option<String> = monomorphization_origin(s) else {
+            continue;
         };
         by_origin.entry(origin).or_default().insert((*s).to_owned());
     }
@@ -206,6 +205,25 @@ pub fn group_monomorphizations(symbols: &[&str]) -> Vec<MonomorphizationGroup> {
             instances,
         })
         .collect()
+}
+
+/// The generic-origin stem of a monomorphized symbol: the path up to the first
+/// type-argument bracket, in either the legacy (`$LT$`) or v0-demangled (`<`)
+/// encoding. Returns `None` for symbols carrying no generic arguments.
+fn monomorphization_origin(symbol: &str) -> Option<String> {
+    let cut: usize = symbol
+        .find("$LT$")
+        .map(|i: usize| (i, "$LT$".len()))
+        .into_iter()
+        .chain(symbol.find('<').map(|i: usize| (i, '<'.len_utf8())))
+        .min_by_key(|(i, _len): &(usize, usize)| *i)
+        .map(|(i, _len): (usize, usize)| i)?;
+    let stem: &str = symbol[..cut].trim_end_matches("::");
+    if stem.is_empty() {
+        None
+    } else {
+        Some(stem.to_owned())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +376,36 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].generic_origin.contains("Option"));
         assert!(out[0].instances.len() >= 2);
+    }
+
+    #[test]
+    fn mono_grouper_handles_v0_demangled_generics() {
+        let syms: [&str; 3] = [
+            "core::option::Option<u32>::unwrap",
+            "core::option::Option<u64>::unwrap",
+            "lone_function::run",
+        ];
+        let out: Vec<MonomorphizationGroup> = group_monomorphizations(&syms);
+        assert_eq!(
+            out.len(),
+            1,
+            "v0-demangled monomorphizations must group by their generic origin",
+        );
+        assert_eq!(out[0].generic_origin, "core::option::Option");
+        assert_eq!(out[0].instances.len(), 2);
+    }
+
+    #[test]
+    fn mono_grouper_prefers_earliest_bracket_across_encodings() {
+        assert_eq!(
+            monomorphization_origin("a::b<T>::c").as_deref(),
+            Some("a::b"),
+        );
+        assert_eq!(
+            monomorphization_origin("a::b$LT$T$GT$::c").as_deref(),
+            Some("a::b"),
+        );
+        assert!(monomorphization_origin("a::b::c").is_none());
     }
 
     #[test]
