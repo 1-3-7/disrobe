@@ -3764,12 +3764,19 @@ fn structure_pre311_try_except(
     }
 
     let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
-    let handlers: Vec<ExceptHandler> =
+    let mut handlers: Vec<ExceptHandler> =
         parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
-    let orelse: Vec<Stmt> = match else_region {
+    let mut orelse: Vec<Stmt> = match else_region {
         Some((s, e)) => structure_stmts(code, stream, s, e)?,
         None => Vec::new(),
     };
+    if let Some((else_start, _)) = else_region
+        && let Some(shared) = shared_construct_exit_return(&orelse, &handlers)
+    {
+        orelse.clear();
+        handlers = strip_shared_exit_return(handlers, &shared);
+        consumed = else_start;
+    }
     Ok((
         Stmt::Try {
             body: non_empty(body),
