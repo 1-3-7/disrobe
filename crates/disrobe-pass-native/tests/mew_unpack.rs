@@ -409,6 +409,64 @@ fn run_byte_recovery_test(name: &str, floor: f64) {
     );
 }
 
+/// The MEW LZMA rebuilder emits the original's *file image*; `.text` (pure
+/// code) must come out byte-identical, and the residual that holds the overall
+/// figure below 100% must be confined to the runtime-rebuilt zones (the IAT at
+/// the head of `.rdata`, the relocated pointer table at the head of `.data`,
+/// `.rsrc`, `.reloc`) - which MEW physically stores as zeros in the stream and
+/// the stub patches at load time. This locks in the honest recovery profile and
+/// proves there is no `.text` decoder drift.
+fn run_text_byte_identical_test(name: &str, file_align: usize) {
+    use disrobe_pass_native::packers::section_recovery::{
+        GranuleRecovery, SectionRecoveryReport, file_image_section_report,
+    };
+    let packed: &[u8] = fixture(name);
+    let original_name: String = name.replace(".packed.mew.exe", ".original.exe");
+    let original: &[u8] = fixture(&original_name);
+    let out: MewUnpackOutput = unpack_mew(packed).expect("MEW unpack must succeed");
+    assert!(out.stream_decoded, "{name}: stream must decode");
+    let report: SectionRecoveryReport =
+        file_image_section_report(original, &out.raw_image, file_align, &[]).expect("file report");
+    let text: &GranuleRecovery = report
+        .sections
+        .iter()
+        .find(|s: &&GranuleRecovery| s.name == ".text")
+        .expect(".text row must exist");
+    println!(
+        "{name}: .text {}/{} ({:.2}%); content {:.2}%",
+        text.matching,
+        text.compared,
+        text.recovery_pct(),
+        report.content_recovery_pct(),
+    );
+    assert!(
+        text.compared > 0,
+        "{name}: .text must be compared (non-empty span)",
+    );
+    assert!(
+        text.is_byte_identical(),
+        "{name}: .text (pure code) must recover byte-identically; got {}/{} = {:.2}%",
+        text.matching,
+        text.compared,
+        text.recovery_pct(),
+    );
+}
+
+#[test]
+fn test_mew_accessenum_text_byte_identical() {
+    run_text_byte_identical_test("AccessEnum.packed.mew.exe", 0x1000);
+}
+
+#[test]
+fn test_mew_clockres_text_byte_identical() {
+    run_text_byte_identical_test("Clockres.packed.mew.exe", 0x400);
+}
+
+#[test]
+fn test_mew_autologon_text_byte_identical() {
+    run_text_byte_identical_test("Autologon.packed.mew.exe", 0x400);
+}
+
 #[test]
 fn test_mew_accessenum_byte_recovery() {
     run_byte_recovery_test("AccessEnum.packed.mew.exe", 90.0);

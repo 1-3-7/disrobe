@@ -10,7 +10,7 @@ pub mod section_recovery;
 
 pub use section_recovery::{
     GranuleRecovery, SectionRecoveryReport, SectionRole, build_loaded_image,
-    section_recovery_report,
+    file_image_section_report, section_recovery_report,
 };
 
 pub mod upx_cleanroom;

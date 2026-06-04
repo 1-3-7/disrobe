@@ -254,30 +254,10 @@ pub fn section_recovery_report(
         let role: SectionRole = classify_section(name_bytes, stub_names);
         let off: usize = sec.virtual_address as usize;
         let span_end: usize = (off + sec.virtual_size as usize).min(compare_len);
-        let (mut matching, mut compared): (usize, usize) = (0, 0);
-        let mut first_mismatch_rel: Option<u32> = None;
-        let mut mismatch_runs: u32 = 0;
-        let mut in_run: bool = false;
-        if off < span_end {
-            for j in off..span_end {
-                compared += 1;
-                if recovered[j] == baseline[j] {
-                    matching += 1;
-                    in_run = false;
-                } else {
-                    if first_mismatch_rel.is_none() {
-                        first_mismatch_rel = Some((j - off) as u32);
-                    }
-                    if !in_run {
-                        mismatch_runs += 1;
-                        in_run = true;
-                    }
-                }
-            }
-        }
+        let span: SpanStats = compare_span(recovered, &baseline, off, span_end);
         if role == SectionRole::Content {
-            content_matching += matching;
-            content_compared += compared;
+            content_matching += span.matching;
+            content_compared += span.compared;
         }
         rows.push(GranuleRecovery {
             name: String::from_utf8_lossy(name_bytes).into_owned(),
@@ -285,10 +265,10 @@ pub fn section_recovery_report(
             virtual_size: sec.virtual_size,
             raw_size: sec.raw_size,
             role,
-            compared,
-            matching,
-            first_mismatch_rel,
-            mismatch_runs,
+            compared: span.compared,
+            matching: span.matching,
+            first_mismatch_rel: span.first_mismatch_rel,
+            mismatch_runs: span.mismatch_runs,
         });
     }
 
@@ -309,6 +289,159 @@ fn loaded_capacity(img: &PeImage) -> usize {
         .max()
         .unwrap_or(0);
     u64::from(img.size_of_image).max(last) as usize
+}
+
+/// Per-span comparison accumulator.
+struct SpanStats {
+    matching: usize,
+    compared: usize,
+    first_mismatch_rel: Option<u32>,
+    mismatch_runs: u32,
+}
+
+/// Compare `recovered[lo..hi]` against `reference[lo..hi]`, accumulating match
+/// count, first-mismatch offset (relative to `lo`) and the number of contiguous
+/// mismatch runs. Reads are bounded by both slices' lengths.
+fn compare_span(recovered: &[u8], reference: &[u8], lo: usize, hi: usize) -> SpanStats {
+    let mut matching: usize = 0;
+    let mut compared: usize = 0;
+    let mut first_mismatch_rel: Option<u32> = None;
+    let mut mismatch_runs: u32 = 0;
+    let mut in_run: bool = false;
+    let end: usize = hi.min(recovered.len()).min(reference.len());
+    let mut j: usize = lo;
+    while j < end {
+        compared += 1;
+        if recovered[j] == reference[j] {
+            matching += 1;
+            in_run = false;
+        } else {
+            if first_mismatch_rel.is_none() {
+                first_mismatch_rel = Some((j - lo) as u32);
+            }
+            if !in_run {
+                mismatch_runs += 1;
+                in_run = true;
+            }
+        }
+        j += 1;
+    }
+    SpanStats {
+        matching,
+        compared,
+        first_mismatch_rel,
+        mismatch_runs,
+    }
+}
+
+/// Section-granule recovery for a **file-offset-indexed** recovered blob.
+///
+/// Some unpackers (MEW's LZMA rebuilder, FSG) emit the original's *file image*
+/// rather than its loaded VA image: the decoded blob's byte `i` corresponds to
+/// the original's raw file offset `file_align + i`. This compares each original
+/// section's raw body (located at its `raw_pointer`) against the matching slice
+/// of the decoded blob, the natural oracle for that emission shape.
+///
+/// `file_align` is the original file offset that decoded-blob index 0 maps to
+/// (callers derive it by best-alignment scan; MEW's is the first section's
+/// `raw_pointer`, e.g. `0x400`/`0x1000`). The reported `virtual_address` field
+/// carries the section's `raw_pointer` in this mode so the row still keys to a
+/// real on-disk location.
+///
+/// # Errors
+///
+/// Propagates [`crate::error::Error`] from PE parsing of `original`.
+pub fn file_image_section_report(
+    original: &[u8],
+    recovered: &[u8],
+    file_align: usize,
+    stub_names: &[&[u8]],
+) -> Result<SectionRecoveryReport> {
+    let img: PeImage = parse_pe_image(original)?;
+    let mut rows: Vec<GranuleRecovery> = Vec::with_capacity(img.sections.len());
+    let mut content_matching: usize = 0;
+    let mut content_compared: usize = 0;
+
+    for sec in &img.sections {
+        let name_bytes: &[u8] = sec.name_trimmed();
+        let role: SectionRole = classify_section(name_bytes, stub_names);
+        let raw_off: usize = sec.raw_pointer as usize;
+        let raw_sz: usize = sec.raw_size as usize;
+        let span: SpanStats = if raw_off >= file_align {
+            let dec_lo: usize = raw_off - file_align;
+            let dec_hi: usize = dec_lo + raw_sz;
+            compare_span_offset(recovered, original, dec_lo, dec_hi, raw_off)
+        } else {
+            SpanStats {
+                matching: 0,
+                compared: 0,
+                first_mismatch_rel: None,
+                mismatch_runs: 0,
+            }
+        };
+        if role == SectionRole::Content {
+            content_matching += span.matching;
+            content_compared += span.compared;
+        }
+        rows.push(GranuleRecovery {
+            name: String::from_utf8_lossy(name_bytes).into_owned(),
+            virtual_address: sec.raw_pointer,
+            virtual_size: sec.virtual_size,
+            raw_size: sec.raw_size,
+            role,
+            compared: span.compared,
+            matching: span.matching,
+            first_mismatch_rel: span.first_mismatch_rel,
+            mismatch_runs: span.mismatch_runs,
+        });
+    }
+
+    Ok(SectionRecoveryReport {
+        sections: rows,
+        content_matching,
+        content_compared,
+    })
+}
+
+/// Compare `recovered[dec_lo..dec_hi]` against `original[orig_lo..]` byte-for-
+/// byte (the file-offset oracle where decoded index and original raw offset run
+/// in lockstep but start from different bases).
+fn compare_span_offset(
+    recovered: &[u8],
+    original: &[u8],
+    dec_lo: usize,
+    dec_hi: usize,
+    orig_lo: usize,
+) -> SpanStats {
+    let mut matching: usize = 0;
+    let mut compared: usize = 0;
+    let mut first_mismatch_rel: Option<u32> = None;
+    let mut mismatch_runs: u32 = 0;
+    let mut in_run: bool = false;
+    let len: usize = (dec_hi - dec_lo)
+        .min(recovered.len().saturating_sub(dec_lo))
+        .min(original.len().saturating_sub(orig_lo));
+    for k in 0..len {
+        compared += 1;
+        if recovered[dec_lo + k] == original[orig_lo + k] {
+            matching += 1;
+            in_run = false;
+        } else {
+            if first_mismatch_rel.is_none() {
+                first_mismatch_rel = Some(k as u32);
+            }
+            if !in_run {
+                mismatch_runs += 1;
+                in_run = true;
+            }
+        }
+    }
+    SpanStats {
+        matching,
+        compared,
+        first_mismatch_rel,
+        mismatch_runs,
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +552,58 @@ mod tests {
             .expect(".aspack row");
         assert_eq!(stub.role, SectionRole::Stub);
         assert!((report.content_recovery_pct() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn file_image_report_aligns_by_raw_offset() {
+        let body_text: [u8; 32] = [0xAA; 32];
+        let orig: Vec<u8> = pe_with_sections(&[
+            (b".text", 0x1000, 0x400, &body_text),
+            (b".data", 0x2000, 0x600, &[0xCC; 16]),
+        ]);
+        let file_align: usize = 0x400;
+        let mut recovered: Vec<u8> = vec![0u8; orig.len() - file_align];
+        recovered.copy_from_slice(&orig[file_align..]);
+        let report: SectionRecoveryReport =
+            file_image_section_report(&orig, &recovered, file_align, &[]).expect("file report");
+        assert!((report.content_recovery_pct() - 100.0).abs() < f64::EPSILON);
+        let text: &GranuleRecovery = report
+            .sections
+            .iter()
+            .find(|s: &&GranuleRecovery| s.name == ".text")
+            .expect(".text row");
+        assert_eq!(text.virtual_address, 0x400);
+        assert!(text.is_byte_identical());
+    }
+
+    #[test]
+    fn file_image_report_isolates_zeroed_iat_zone() {
+        let mut data_body: [u8; 32] = [0xCC; 32];
+        data_body[..8].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        let orig: Vec<u8> = pe_with_sections(&[
+            (b".text", 0x1000, 0x400, &[0xAA; 32]),
+            (b".data", 0x2000, 0x600, &data_body),
+        ]);
+        let file_align: usize = 0x400;
+        let mut recovered: Vec<u8> = vec![0u8; orig.len() - file_align];
+        recovered.copy_from_slice(&orig[file_align..]);
+        for b in &mut recovered[(0x600 - file_align)..(0x600 - file_align + 8)] {
+            *b = 0;
+        }
+        let report: SectionRecoveryReport =
+            file_image_section_report(&orig, &recovered, file_align, &[]).expect("file report");
+        let text: &GranuleRecovery = report
+            .sections
+            .iter()
+            .find(|s: &&GranuleRecovery| s.name == ".text")
+            .expect(".text row");
+        assert!(
+            text.is_byte_identical(),
+            ".text (pure code) must stay byte-identical even when .data IAT zone is zeroed",
+        );
+        let worst: Vec<&GranuleRecovery> = report.mismatching_content_sections();
+        assert_eq!(worst.len(), 1);
+        assert_eq!(worst[0].name, ".data");
+        assert_eq!(worst[0].first_mismatch_rel, Some(0));
     }
 }
