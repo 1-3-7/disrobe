@@ -116,6 +116,16 @@ pub mod themida_carve;
 
 pub use themida_carve::{OreansProduct, ThemidaCarve, carve_themida};
 
+pub mod asprotect_unpack;
+
+pub use asprotect_unpack::{
+    AsProtectLayout, AsProtectRecovery, asprotect_layout, unpack_asprotect,
+};
+
+pub mod morphine_unpack;
+
+pub use morphine_unpack::{MorphineLayout, MorphineRecovery, morphine_layout, unpack_morphine};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {
