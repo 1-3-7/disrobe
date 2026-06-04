@@ -75,6 +75,9 @@ pub fn skip_absent_corpus(test_name: &str, obf: &str) {
     );
 }
 
+/// Shared synthetic edge-case sources. These are clean inputs fed to a pass's own `bake()`
+/// re-implementation; they are NOT real third-party-tool output. Anything driven through them via
+/// `run_edge_cases` is a self-consistency smoke test only and does NOT gate real-recovery claims.
 pub const EDGE_CASES: &[(&str, &str)] = &[
     ("hello_world", "print('hello world')\n"),
     (
@@ -115,6 +118,10 @@ pub const EDGE_CASES: &[(&str, &str)] = &[
     ),
 ];
 
+/// NON-GATING synthetic helper: bakes each `EDGE_CASES` source with the pass's own `bake()` and
+/// asserts `peel()` accepts it. This validates the `bake()` -> `peel()` model round-trip only and
+/// is CIRCULAR with respect to real-tool recovery (same author for both directions). Real-recovery
+/// accuracy must be gated by the `<family>_real.rs` tests that read independent committed fixtures.
 pub fn run_edge_cases<F: Fn(&str) -> String, P: Fn(&[u8]) -> bool>(bake: F, peel_ok: P) -> usize {
     let mut count: usize = 0;
     for (name, src) in EDGE_CASES {
