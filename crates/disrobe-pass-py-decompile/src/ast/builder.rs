@@ -7536,6 +7536,96 @@ fn build_shortcircuit_stack_expr(
     Ok(fold_shortcircuit_operands(resolved))
 }
 
+/// Reassemble a compound-boolean `assert A and B [and C ...]` from its short-circuit lowering. `CPython`
+/// compiles `assert <test>` as the test's jump-threaded boolean evaluated for truth: each leading
+/// `and`-conjunct emits `<value>; POP_JUMP_IF_FALSE raise` and the final conjunct emits
+/// `<value>; POP_JUMP_IF_TRUE pass`, with the false fall-through landing on `LOAD_ASSERTION_ERROR;
+/// RAISE_VARARGS 1`. The generic if-structurer stops at the first conjunct and flushes the remainder as
+/// a bare expression plus a phantom `assert False`; this folds the whole conjunct run into one
+/// `BoolOp::And` test and emits `assert <test>`, then continues structuring from the pass successor.
+/// Gated to two-or-more conjuncts (the single-test assert is already recovered post-hoc by
+/// `recover_assert_idiom`). Returns `None` when the region is not a compound-boolean assert.
+/// The op that pushes the `AssertionError` raised by a failed `assert`: the dedicated
+/// `LOAD_ASSERTION_ERROR` opcode on 3.9+, or a `LOAD_GLOBAL AssertionError` on 3.8 and earlier (which
+/// had no dedicated opcode). Used to anchor the compound-assert raise site across versions.
+fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
+    match op {
+        CanonicalOp::LoadAssertionError => true,
+        CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => {
+            name_at_either(code, *slot).is_ok_and(|n: String| n == "AssertionError")
+        }
+        _ => false,
+    }
+}
+
+fn try_structure_compound_assert(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(raise_idx): Option<usize> = (lo..hi).find(|&k: &usize| {
+        is_assertion_error_load(code, &stream.ops[k])
+            && first_significant(stream, k + 1, hi)
+                .is_some_and(|n: usize| matches!(stream.ops[n], CanonicalOp::Raise(_)))
+    }) else {
+        return Ok(None);
+    };
+    let raise_op: usize = first_significant(stream, raise_idx + 1, hi).unwrap_or(raise_idx + 1);
+    let pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
+    let jump_indices: Vec<usize> = (lo..raise_idx)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        .collect();
+    if jump_indices.len() < 2 {
+        return Ok(None);
+    }
+    let mut head: Vec<Stmt> = Vec::new();
+    let mut operands: Vec<Expr> = Vec::new();
+    let mut value_lo: usize = lo;
+    for (n, &jump) in jump_indices.iter().enumerate() {
+        let target: usize = match resolve_jump_target(stream, jump, &stream.ops[jump]) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let jumps_false: bool = matches!(
+            stream.ops[jump],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        );
+        let conjunct_ok: bool =
+            (jumps_false && target <= raise_idx) || (!jumps_false && target >= pass_target);
+        if !conjunct_ok {
+            return Ok(None);
+        }
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[value_lo..jump])?;
+        let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        if n == 0 {
+            head = stmts;
+        } else if !stmts.is_empty() {
+            return Ok(None);
+        }
+        let value: Expr = none_jump_test(stream, jump, value.clone()).unwrap_or(value);
+        operands.push(value);
+        value_lo = jump + 1;
+    }
+    let test: Expr = Expr::BoolOp {
+        op: crate::ast::node::BoolOpKind::And,
+        values: operands,
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::Assert {
+        test,
+        msg: None,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, pass_target, hi)?);
+    Ok(Some(out))
+}
+
 /// Recover a return-form ternary chain `return X if c0 else (Y if c1 else Z)` as a single
 /// `Stmt::Return(IfExp)` rather than an `if/return` cascade. On 3.13 the cascade form lowers each
 /// constant arm via the `RETURN_CONST` peephole (`LOAD_CONST; RETURN_VALUE` collapses to one op),
@@ -10051,6 +10141,9 @@ fn structure_stmts(
         && let Some(expr) = build_shortcircuit_stack_expr(code, stream, lo, hi - 1)?
     {
         return Ok(vec![Stmt::Return(Some(expr))]);
+    }
+    if let Some(stmts) = try_structure_compound_assert(code, stream, lo, hi)? {
+        return Ok(stmts);
     }
     let mut cond_at: Option<usize> = None;
     for i in lo..hi {
