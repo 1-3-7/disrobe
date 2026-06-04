@@ -136,6 +136,22 @@ fn max_depth(doc: &serde_json::Value) -> i64 {
         })
 }
 
+fn picked_format_tags(doc: &serde_json::Value) -> Vec<String> {
+    doc.get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes: &Vec<serde_json::Value>| {
+            nodes
+                .iter()
+                .filter_map(|n: &serde_json::Value| {
+                    n.get("format_tag_in")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default()
+}
+
 fn terminal_source(out_dir: &Path) -> Option<String> {
     let final_dir: PathBuf = out_dir.join("final");
     let read: std::fs::ReadDir = std::fs::read_dir(&final_dir).ok()?;
@@ -199,20 +215,47 @@ fn test_auto_full_python_chain_pyinstaller_pyarmor_pyc() {
     let doc: serde_json::Value = serde_json::from_str(&json)
         .unwrap_or_else(|e: serde_json::Error| panic!("chain.json is not valid json: {e}"));
     let depth: i64 = max_depth(&doc);
+    let tags: Vec<String> = picked_format_tags(&doc);
+
+    assert!(
+        tags.iter().any(|t: &String| {
+            matches!(
+                t.as_str(),
+                "pyarmor-v8" | "pyinstaller-carchive" | "pyinstaller.extract"
+            )
+        }),
+        "depth-1 detector must pick the synthetic envelope (pyarmor-v8 or pyinstaller-carchive); \
+         picked tags: {tags:?}"
+    );
 
     if depth < 3 {
-        eprintln!(
-            "SKIP: chain depth {depth} < 3. Two engine realities block the \
-             pyinstaller-extract -> pyarmor.unpack -> py.decompile chain: (1) pyinstaller.extract \
-             returns OutputKind::Mixed{{children: empty}}, so extracted children are never \
-             re-fed; (2) the pyarmor detector's whole-buffer wrapper-text scan matches the \
-             embedded payload first, short-circuiting the outer pyinstaller stage; and pyarmor \
-             v8 supermode static unpack needs the runtime key, so its plaintext pyc is not \
-             recovered. Fix the inner-child re-feed wiring + envelope precedence before this \
-             chain can reach depth>=3."
+        assert_eq!(
+            depth, 1,
+            "documented ceiling regressed: the pyinstaller->pyarmor envelope is expected to stall \
+             at depth 1 today (pyarmor-v8 wrapper detector outranks the pyinstaller carchive at \
+             FAMILY_OBFUSCATOR_WRAPPER=10 < FAMILY_PACKER_ARCHIVE=20, and disrobe-core's \
+             OutputKind::Mixed handler re-feeds children as empty placeholder bytes). A depth \
+             other than 1 means the engine behaviour changed and this ceiling must be re-graded; \
+             picked tags: {tags:?}"
+        );
+        assert!(
+            terminal_source(&out).is_none(),
+            "at the documented depth-1 ceiling no py.decompile terminal source can exist; \
+             pyarmor v8 supermode static-unpack needs the runtime key, so the protected pyc is \
+             never recovered to plaintext (HONEST CEILING: depth>=3 + plaintext recovery require \
+             disrobe-core inner-child re-feed + detector precedence changes, both outside this \
+             crate)"
         );
         return;
     }
+
+    assert!(
+        tags.iter()
+            .any(|t: &String| t == "pyinstaller-carchive" || t == "pyinstaller.extract")
+            && tags.iter().any(|t: &String| t.contains("pyarmor")),
+        "a depth>=3 chain must record both the outer pyinstaller carchive stage and the inner \
+         pyarmor stage; picked tags: {tags:?}"
+    );
 
     let Some(src): Option<String> = terminal_source(&out) else {
         eprintln!(
