@@ -35,6 +35,7 @@ pub mod pass;
 mod provenance_header;
 mod signature;
 mod simd;
+pub mod sourcemap;
 mod ssa;
 mod stack_switching;
 mod structure;
@@ -88,6 +89,10 @@ pub use provenance_header::{
 pub use signature::{
     FunctionSig, ModuleSignatures, count_defined_function_bodies, extract_signatures,
     signatures_or_placeholders,
+};
+pub use sourcemap::{
+    SOURCE_MAPPING_URL_SECTION, Segment as SourceMapSegment, SourceMap, extract_source_mapping_url,
+    parse_source_map,
 };
 pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};
 pub use ssa::{
