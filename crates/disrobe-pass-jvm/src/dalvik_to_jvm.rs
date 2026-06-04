@@ -41,6 +41,11 @@ pub(crate) struct EmittedCode {
     pub(crate) bytes: Vec<u8>,
     pub(crate) max_stack: u16,
     pub(crate) max_locals: u16,
+    /// Pre-serialized `Code` sub-attributes (currently only `StackMapTable`),
+    /// each as `name_index(u2) length(u4) body`. Empty for branchless bodies.
+    pub(crate) attributes: Vec<u8>,
+    /// Number of entries packed into `attributes`.
+    pub(crate) attribute_count: u16,
 }
 
 struct Emitter<'a> {
@@ -140,6 +145,8 @@ pub(crate) fn emit_method_code(
         bytes: emitter.code,
         max_stack: emitter.max_stack.max(2) as u16,
         max_locals: emitter.max_locals,
+        attributes: Vec::new(),
+        attribute_count: 0,
     })
 }
 

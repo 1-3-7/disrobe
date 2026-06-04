@@ -506,21 +506,44 @@ fn stub_code(cp: &mut ConstantPool) -> (Vec<u8>, u16) {
 /// register/branch layout, so byte-identical reproduction of javac output is
 /// not attainable. Methods with branches, loops, switches, allocation, or any
 /// unsupported opcode fall back to `stub_code` so the class still verifies.
+struct BuiltBody {
+    code: Vec<u8>,
+    max_stack: u16,
+    max_locals: u16,
+    sub_attrs: Vec<u8>,
+    sub_attr_count: u16,
+    recovered: bool,
+}
+
 fn build_real_or_stub_body(
     dex: &DexFile,
     cp: &mut ConstantPool,
     method: &TranslatedMethod,
     code_item: Option<&CodeItem>,
-) -> (Vec<u8>, u16, u16, bool) {
+) -> BuiltBody {
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     if let Some(item) = code_item {
         let emitted: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static);
         if let Some(emitted) = emitted {
-            return (emitted.bytes, emitted.max_stack, emitted.max_locals, true);
+            return BuiltBody {
+                code: emitted.bytes,
+                max_stack: emitted.max_stack,
+                max_locals: emitted.max_locals,
+                sub_attrs: emitted.attributes,
+                sub_attr_count: emitted.attribute_count,
+                recovered: true,
+            };
         }
     }
     let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
-    (code, max_stack, method_local_slots(method), false)
+    BuiltBody {
+        code,
+        max_stack,
+        max_locals: method_local_slots(method),
+        sub_attrs: Vec::new(),
+        sub_attr_count: 0,
+        recovered: false,
+    }
 }
 
 fn build_method_attr(
@@ -538,17 +561,17 @@ fn build_method_attr(
     out.extend_from_slice(&cp.utf8(&method.descriptor).to_be_bytes());
     let mut recovered: bool = false;
     if needs_code {
-        let (code, max_stack, max_locals, real): (Vec<u8>, u16, u16, bool) =
-            build_real_or_stub_body(dex, cp, method, code_item);
-        recovered = real;
+        let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item);
+        recovered = body.recovered;
         let code_attr_name: u16 = cp.utf8("Code");
         let mut code_attr: Vec<u8> = Vec::new();
-        code_attr.extend_from_slice(&max_stack.to_be_bytes());
-        code_attr.extend_from_slice(&max_locals.to_be_bytes());
-        code_attr.extend_from_slice(&(code.len() as u32).to_be_bytes());
-        code_attr.extend_from_slice(&code);
+        code_attr.extend_from_slice(&body.max_stack.to_be_bytes());
+        code_attr.extend_from_slice(&body.max_locals.to_be_bytes());
+        code_attr.extend_from_slice(&(body.code.len() as u32).to_be_bytes());
+        code_attr.extend_from_slice(&body.code);
         code_attr.extend_from_slice(&0u16.to_be_bytes());
-        code_attr.extend_from_slice(&0u16.to_be_bytes());
+        code_attr.extend_from_slice(&body.sub_attr_count.to_be_bytes());
+        code_attr.extend_from_slice(&body.sub_attrs);
         out.extend_from_slice(&1u16.to_be_bytes());
         out.extend_from_slice(&code_attr_name.to_be_bytes());
         out.extend_from_slice(&(code_attr.len() as u32).to_be_bytes());
