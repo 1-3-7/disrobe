@@ -1,6 +1,7 @@
 pub mod haxe;
 pub mod perl;
 pub mod r_rds;
+pub mod rcpp;
 pub mod tcl;
 
 use std::io::Read;
@@ -84,6 +85,12 @@ pub fn analyze(bytes: &[u8]) -> Result<ScriptArtifact> {
         return Ok(ScriptArtifact::Perl(perl::read_concise(bytes)?));
     }
     Err(Error::Unrecognized)
+}
+
+pub fn analyze_rcpp(bytes: &[u8]) -> Result<rcpp::RcppFingerprint> {
+    let rds_bytes: Vec<u8> = maybe_gunzip_rds(bytes).ok_or(Error::Unrecognized)?;
+    let obj: r_rds::RdsObject = r_rds::read_rds(&rds_bytes)?;
+    Ok(rcpp::fingerprint(&obj, &rds_bytes))
 }
 
 fn rds_detectable(bytes: &[u8]) -> bool {

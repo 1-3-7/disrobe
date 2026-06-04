@@ -4,7 +4,10 @@ use disrobe_core::{
 use disrobe_ir::{Envelope, decode_raw};
 use serde::{Deserialize, Serialize};
 
-use crate::lang::{ScriptArtifact, ScriptLang, analyze, classify};
+use std::fmt::Write as _;
+
+use crate::lang::rcpp::RcppFingerprint;
+use crate::lang::{ScriptArtifact, ScriptLang, analyze, analyze_rcpp, classify};
 
 pub const PASS_INPUT_PATH_CAP: &str = "raw.scriptlang";
 
@@ -34,7 +37,15 @@ impl LegacyPass for ScriptLangPass {
             analyze(&input.bytes).map_err(|e: crate::error::Error| {
                 CoreError::PassFailure(format!("DR-SCRIPT-PASS: {e}"))
             })?;
-        let report: ScriptLangReport = build_report(input.source_path, lang, &artifact_data);
+        let rcpp: Option<RcppFingerprint> = if lang == ScriptLang::R {
+            analyze_rcpp(&input.bytes)
+                .ok()
+                .filter(RcppFingerprint::is_rcpp)
+        } else {
+            None
+        };
+        let report: ScriptLangReport =
+            build_report(input.source_path, lang, &artifact_data, rcpp.as_ref());
         let payload: Vec<u8> = serde_json::to_vec(&report).map_err(|e: serde_json::Error| {
             CoreError::PassFailure(format!("DR-SCRIPT-PASS encode: {e}"))
         })?;
@@ -88,6 +99,7 @@ fn build_report(
     source_path: String,
     lang: ScriptLang,
     artifact: &ScriptArtifact,
+    rcpp: Option<&RcppFingerprint>,
 ) -> ScriptLangReport {
     let (symbol_count, recovered_names, detail): (usize, Vec<String>, String) = match artifact {
         ScriptArtifact::Perl(tree) => {
@@ -101,10 +113,25 @@ fn build_report(
             names.extend(obj.symbols.iter().cloned());
             names.sort();
             names.dedup();
-            let detail: String = format!(
+            let mut detail: String = format!(
                 "rds v{} root={} len={:?} class={:?}",
                 obj.header.version, obj.root_type, obj.root_length, obj.class
             );
+            if let Some(fp) = rcpp {
+                let _ = write!(
+                    detail,
+                    " rcpp=1 markers={:?} native_images={} route={}",
+                    fp.class_markers,
+                    fp.embedded_images.len(),
+                    crate::lang::rcpp::NATIVE_ROUTE_PASS_ID
+                );
+                let mut img_names: Vec<String> = fp
+                    .embedded_images
+                    .iter()
+                    .map(|img| format!("rcpp-native:{}@{}", img.format.label(), img.offset))
+                    .collect();
+                names.append(&mut img_names);
+            }
             (names.len(), names, detail)
         }
         ScriptArtifact::Tcl(container) => {
@@ -185,6 +212,76 @@ mod tests {
             serde_json::from_slice(&out.envelope).expect("decode report");
         assert_eq!(report.language, "haxe-target");
         assert!(report.detail.contains("js.deob"));
+    }
+
+    fn rcpp_module_rds() -> Vec<u8> {
+        const NILVALUE_SXP: u32 = 254u32;
+        const SYMSXP: u32 = 1u32;
+        const LISTSXP: u32 = 2u32;
+        const CHARSXP: u32 = 9u32;
+        const STRSXP: u32 = 16u32;
+        const RAWSXP: u32 = 24u32;
+        const VECSXP: u32 = 19u32;
+        const HAS_ATTR_BIT: u32 = 1u32 << 9;
+        const HAS_TAG_BIT: u32 = 1u32 << 10;
+        let char_sxp = |out: &mut Vec<u8>, s: &str| {
+            out.extend_from_slice(&CHARSXP.to_be_bytes());
+            out.extend_from_slice(&(s.len() as i32).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
+        };
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(b"X\n");
+        out.extend_from_slice(&3i32.to_be_bytes());
+        out.extend_from_slice(&0x04_05_00i32.to_be_bytes());
+        out.extend_from_slice(&0x03_05_00i32.to_be_bytes());
+        out.extend_from_slice(&5i32.to_be_bytes());
+        out.extend_from_slice(b"UTF-8");
+        out.extend_from_slice(&(VECSXP | HAS_ATTR_BIT).to_be_bytes());
+        out.extend_from_slice(&2i32.to_be_bytes());
+        out.extend_from_slice(&STRSXP.to_be_bytes());
+        out.extend_from_slice(&1i32.to_be_bytes());
+        char_sxp(&mut out, "RcppExports");
+        let mut so: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 0x02, 0x01, 0x01, 0x00];
+        so.extend_from_slice(&[0u8; 56]);
+        out.extend_from_slice(&RAWSXP.to_be_bytes());
+        out.extend_from_slice(&(so.len() as i32).to_be_bytes());
+        out.extend_from_slice(&so);
+        out.extend_from_slice(&(LISTSXP | HAS_TAG_BIT).to_be_bytes());
+        out.extend_from_slice(&SYMSXP.to_be_bytes());
+        char_sxp(&mut out, "names");
+        out.extend_from_slice(&STRSXP.to_be_bytes());
+        out.extend_from_slice(&2i32.to_be_bytes());
+        char_sxp(&mut out, "exports");
+        char_sxp(&mut out, "dll");
+        out.extend_from_slice(&NILVALUE_SXP.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn pass_run_surfaces_rcpp_routing() {
+        let body: Vec<u8> = rcpp_module_rds();
+        let bytes: Vec<u8> = synth_envelope("module.rds", &body);
+        let input: Artifact = Artifact::with_capabilities(
+            Rung::Raw,
+            bytes,
+            [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
+            [9u8; 32],
+        );
+        let out: Artifact = ScriptLangPass.run(&input).expect("run");
+        let report: ScriptLangReport =
+            serde_json::from_slice(&out.envelope).expect("decode report");
+        assert_eq!(report.language, "r-rds");
+        assert!(report.detail.contains("rcpp=1"), "detail={}", report.detail);
+        assert!(report.detail.contains("native_images=1"));
+        assert!(report.detail.contains("disrobe-pass-native"));
+        assert!(
+            report
+                .recovered_names
+                .iter()
+                .any(|n: &String| n.starts_with("rcpp-native:elf@")),
+            "carved native image must appear in recovered names: {:?}",
+            report.recovered_names
+        );
     }
 
     #[test]

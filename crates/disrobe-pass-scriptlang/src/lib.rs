@@ -28,8 +28,9 @@ pub use error::{Error, Result};
 pub use lang::haxe::{HaxeFingerprint, HaxeTarget};
 pub use lang::perl::{PerlOp, PerlOpTree, PerlSub};
 pub use lang::r_rds::{RdsEncoding, RdsHeader, RdsObject};
+pub use lang::rcpp::{EmbeddedNativeImage, NativeImageFormat, RcppFingerprint};
 pub use lang::tcl::{StarkitContainer, StarkitEntry, StarkitFormat};
-pub use lang::{ScriptArtifact, ScriptLang, analyze, classify};
+pub use lang::{ScriptArtifact, ScriptLang, analyze, analyze_rcpp, classify};
 pub use pass::{ScriptLangPass, ScriptLangReport};
 pub use provenance_header::{language_for, render_with_header, scriptlang_header};
 
