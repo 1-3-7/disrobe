@@ -1,4 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Validates the Perl `ByteLoader` reader against a SPEC-FAITHFUL SYNTHETIC stream assembled
+//! in-test from the documented `ByteLoader 0.06` wire format. This is NOT a real
+//! `perl -MO=Bytecode` artifact: the `B::Bytecode`/`ByteLoader` compiler back end was removed
+//! from core Perl at 5.22, so no current toolchain can emit one. The reader is therefore proven
+//! against the format spec, not an upstream-produced binary.
 
 use disrobe_pass_scriptlang::PerlOpTree;
 use disrobe_pass_scriptlang::lang::perl::PerlSub;
@@ -91,7 +96,7 @@ fn bytecode_classifies_and_analyzes_as_perl() {
 }
 
 #[test]
-fn bytecode_recovers_hello_pl_pv_strings_oracle() {
+fn bytecode_reads_synthetic_pv_strings() {
     for order in [ByteOrder::Little, ByteOrder::Big] {
         let bc: Vec<u8> = hello_bytecode(order);
         let tree: PerlOpTree = read_bytecode(&bc).expect("parse");

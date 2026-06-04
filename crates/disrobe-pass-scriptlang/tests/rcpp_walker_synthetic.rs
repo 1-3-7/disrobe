@@ -1,4 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Rcpp native-image walker tests. `plain_hello_rds_is_not_rcpp` runs against the real committed
+//! `fixtures/hello.rds` (genuine R `saveRDS` output). The marker / ELF-carve tests run against a
+//! SPEC-FAITHFUL SYNTHETIC RDS blob assembled in-test from the documented R serialization (XDR)
+//! wire format: they prove the walker parses the format and carves a marked native image, NOT
+//! recovery of a real compiled Rcpp module (a real Rcpp `.rds` carrying an embedded shared object
+//! is sourcing-pending).
 
 use disrobe_pass_scriptlang::lang::r_rds::read_rds;
 use disrobe_pass_scriptlang::lang::rcpp::{NativeImageFormat, RcppFingerprint, fingerprint};
@@ -75,7 +81,7 @@ fn plain_hello_rds_is_not_rcpp() {
 }
 
 #[test]
-fn rcpp_module_blob_detects_markers_oracle() {
+fn rcpp_module_blob_detects_markers_synthetic() {
     let blob: Vec<u8> = rcpp_module_rds();
     assert_eq!(classify(&blob), Some(ScriptLang::R));
     let fp: RcppFingerprint = analyze_rcpp(&blob).expect("analyze rcpp");
@@ -96,7 +102,7 @@ fn rcpp_module_blob_detects_markers_oracle() {
 }
 
 #[test]
-fn rcpp_module_blob_extracts_and_routes_elf_oracle() {
+fn rcpp_module_blob_extracts_and_routes_elf_synthetic() {
     let blob: Vec<u8> = rcpp_module_rds();
     let fp: RcppFingerprint = analyze_rcpp(&blob).expect("analyze rcpp");
     assert_eq!(
