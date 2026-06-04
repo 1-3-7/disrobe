@@ -78,7 +78,7 @@ pub use backends::{
 };
 pub use bytecode::{
     CodeAttribute, ExceptionEntry, Instruction, OpcodeInfo, OperandShape, Operands, branch_target,
-    disassemble, opcode_info, parse_code_attribute, resolve_ref,
+    disassemble, escape_java_string, opcode_info, parse_code_attribute, resolve_ref,
 };
 pub use classfile::{
     Attribute, CLASS_MAGIC, ClassFile, ConstantPoolEntry, FieldInfo, JavaVersion, MAX_MAJOR,

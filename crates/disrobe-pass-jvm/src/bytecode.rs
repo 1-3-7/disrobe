@@ -586,6 +586,34 @@ pub fn branch_target(insn: &Instruction) -> Option<u32> {
     }
 }
 
+/// Renders a constant-pool UTF-8 value as a valid Java double-quoted string.
+///
+/// Escapes the backslash, double quote, the standard whitespace escapes, and
+/// any remaining control or non-printable code unit as a `\\uXXXX` sequence so
+/// the decompiled source compiles cleanly under `javac`.
+#[must_use]
+pub fn escape_java_string(s: &str) -> String {
+    let mut out: String = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 || c == '\u{7F}' => {
+                let _ = std::fmt::Write::write_fmt(&mut out, format_args!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 pub fn resolve_ref(cf: &ClassFile, index: u16) -> Option<String> {
     let idx: usize = usize::from(index);
     if idx == 0 || idx >= cf.constant_pool.len() {
@@ -610,7 +638,7 @@ pub fn resolve_ref(cf: &ClassFile, index: u16) -> Option<String> {
         }
         ConstantPoolEntry::Class { .. } => cf.class_name(index).ok().map(str::to_string),
         ConstantPoolEntry::String { utf8_index } => {
-            cf.utf8_at(*utf8_index).ok().map(|s| format!("\"{s}\""))
+            cf.utf8_at(*utf8_index).ok().map(escape_java_string)
         }
         ConstantPoolEntry::Integer(v) => Some(v.to_string()),
         ConstantPoolEntry::Float(bits) => Some(format!("{}f", f32::from_bits(*bits))),

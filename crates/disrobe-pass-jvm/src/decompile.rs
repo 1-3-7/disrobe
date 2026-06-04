@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -359,6 +359,10 @@ pub(crate) enum Expr {
         value: Box<Self>,
         ty: String,
     },
+    Cmp {
+        lhs: Box<Self>,
+        rhs: Box<Self>,
+    },
     ArrayLength(Box<Self>),
     ArrayLoad {
         array: Box<Self>,
@@ -392,6 +396,9 @@ impl Expr {
             Self::Cast { ty, value } => format!("(({ty}) {})", value.render()),
             Self::InstanceOf { value, ty } => {
                 format!("({} instanceof {ty})", value.render())
+            }
+            Self::Cmp { lhs, rhs } => {
+                format!("Integer.compare({}, {})", lhs.render(), rhs.render())
             }
             Self::ArrayLength(arr) => format!("{}.length", arr.render()),
             Self::ArrayLoad { array, index } => {
@@ -438,16 +445,19 @@ fn lift_method_body(
             fully_lifted: true,
         };
     }
-    if let Some(body) = lift_structured(cf, code, &insns, params) {
+    let bootstraps: Vec<crate::attributes::BootstrapMethod> =
+        crate::attributes::analyze(cf).bootstrap_methods;
+    if let Some(body) = lift_structured(cf, code, &insns, params, &bootstraps) {
         return body;
     }
-    lift_method_body_flat(cf, &insns, params)
+    lift_method_body_flat(cf, &insns, params, &bootstraps)
 }
 
 fn lift_method_body_flat(
     cf: &ClassFile,
     insns: &[Instruction],
     params: &[(u16, String)],
+    bootstraps: &[crate::attributes::BootstrapMethod],
 ) -> MethodBody {
     let targets: BTreeSet<u32> = branch_targets(insns);
     let mut out: String = String::new();
@@ -461,7 +471,7 @@ fn lift_method_body_flat(
             stack.clear();
             let _ = writeln!(out, "{indent}// :L{}", insn.pc);
         }
-        let lifted: LiftResult = lift_one(cf, insn, &mut stack, params);
+        let lifted: LiftResult = lift_one(cf, insn, &mut stack, params, bootstraps);
         match lifted {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{indent}{s};");
@@ -489,6 +499,7 @@ fn lift_structured(
     code: &CodeAttribute,
     insns: &[Instruction],
     params: &[(u16, String)],
+    bootstraps: &[crate::attributes::BootstrapMethod],
 ) -> Option<MethodBody> {
     let cfg: Cfg = build_cfg(insns, code, |idx: u16| {
         cf.class_name(idx).ok().map(str::to_string)
@@ -503,15 +514,64 @@ fn lift_structured(
         cfg: &cfg,
         insns,
         params,
+        bootstraps,
         rendered_blocks: BTreeSet::new(),
         fully_lifted: !structurer.had_irreducible,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
+    let decls: String = local_declarations(insns, params);
     Some(MethodBody {
-        text: out,
+        text: format!("{decls}{out}"),
         fully_lifted: ctx.fully_lifted,
     })
+}
+
+/// Hoists a `Type varN;` declaration to the top of the method body for every
+/// non-parameter local that the bytecode writes, inferring the JVM slot type
+/// from the store opcode family (`istore`/`lstore`/`fstore`/`dstore`/`astore`).
+/// javac discards local names and only the verifier's slot type survives, so
+/// emitting a single widest-fit declaration per written slot is what makes the
+/// reconstructed assignments (`varN = ...;`) compile rather than referencing an
+/// undeclared symbol.
+fn local_declarations(insns: &[Instruction], params: &[(u16, String)]) -> String {
+    let param_slots: BTreeSet<u16> = params.iter().map(|(i, _)| *i).collect();
+    let mut slot_type: BTreeMap<u16, &'static str> = BTreeMap::new();
+    for insn in insns {
+        let ty: &'static str = match insn.opcode {
+            0x36 | 0x3B..=0x3E => "int",
+            0x37 | 0x3F..=0x42 => "long",
+            0x38 | 0x43..=0x46 => "float",
+            0x39 | 0x47..=0x4A => "double",
+            0x3A | 0x4B..=0x4E => "Object",
+            _ => continue,
+        };
+        let slot: u16 = match (insn.opcode, &insn.operands) {
+            (0x36..=0x3A, Operands::Local(idx)) => *idx,
+            (0x3B..=0x3E, _) => u16::from(insn.opcode - 0x3B),
+            (0x3F..=0x42, _) => u16::from(insn.opcode - 0x3F),
+            (0x43..=0x46, _) => u16::from(insn.opcode - 0x43),
+            (0x47..=0x4A, _) => u16::from(insn.opcode - 0x47),
+            (0x4B..=0x4E, _) => u16::from(insn.opcode - 0x4B),
+            _ => continue,
+        };
+        if param_slots.contains(&slot) {
+            continue;
+        }
+        slot_type
+            .entry(slot)
+            .and_modify(|cur: &mut &'static str| {
+                if *cur != ty {
+                    *cur = "Object";
+                }
+            })
+            .or_insert(ty);
+    }
+    let mut out: String = String::new();
+    for (slot, ty) in &slot_type {
+        let _ = writeln!(out, "        {ty} var{slot};");
+    }
+    out
 }
 
 struct RenderCtx<'a> {
@@ -519,6 +579,7 @@ struct RenderCtx<'a> {
     cfg: &'a Cfg,
     insns: &'a [Instruction],
     params: &'a [(u16, String)],
+    bootstraps: &'a [crate::attributes::BootstrapMethod],
     rendered_blocks: BTreeSet<BlockId>,
     fully_lifted: bool,
 }
@@ -606,9 +667,11 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(ctx, try_body, out, level + 1);
-            for (catch_type, handler_region) in handlers {
-                let ty: &str = catch_type.as_deref().unwrap_or("Throwable");
-                let _ = writeln!(out, "{pad}}} catch ({ty} ex) {{");
+            for (i, (catch_type, handler_region)) in handlers.iter().enumerate() {
+                let ty: String = catch_type
+                    .as_deref()
+                    .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
+                let _ = writeln!(out, "{pad}}} catch ({ty} ex{i}) {{");
                 render_region(ctx, handler_region, out, level + 1);
             }
             let _ = writeln!(out, "{pad}}}");
@@ -644,7 +707,7 @@ fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: 
         ) {
             continue;
         }
-        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params);
+        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps);
         match lifted {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
@@ -678,7 +741,7 @@ fn render_if_condition(
     let mut stack: Vec<Expr> = Vec::new();
     let already_rendered: bool = !ctx.rendered_blocks.insert(head);
     for ins in &ctx.insns[start..body_end] {
-        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params);
+        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps);
         if already_rendered {
             continue;
         }
@@ -704,12 +767,12 @@ fn render_if_condition(
 
 fn render_branch_condition(insn: &Instruction, stack: &mut Vec<Expr>) -> String {
     match insn.opcode {
-        0x99 => unary_cond_kept(stack, "== 0"),
-        0x9A => unary_cond_kept(stack, "!= 0"),
-        0x9B => unary_cond_kept(stack, "< 0"),
-        0x9C => unary_cond_kept(stack, ">= 0"),
-        0x9D => unary_cond_kept(stack, "> 0"),
-        0x9E => unary_cond_kept(stack, "<= 0"),
+        0x99 => unary_or_cmp_cond(stack, "==", "== 0"),
+        0x9A => unary_or_cmp_cond(stack, "!=", "!= 0"),
+        0x9B => unary_or_cmp_cond(stack, "<", "< 0"),
+        0x9C => unary_or_cmp_cond(stack, ">=", ">= 0"),
+        0x9D => unary_or_cmp_cond(stack, ">", "> 0"),
+        0x9E => unary_or_cmp_cond(stack, "<=", "<= 0"),
         0x9F | 0xA5 => binary_cond_kept(stack, "=="),
         0xA0 | 0xA6 => binary_cond_kept(stack, "!="),
         0xA1 => binary_cond_kept(stack, "<"),
@@ -725,6 +788,14 @@ fn render_branch_condition(insn: &Instruction, stack: &mut Vec<Expr>) -> String 
 fn unary_cond_kept(stack: &mut Vec<Expr>, suffix: &str) -> String {
     let v: Expr = pop_expr(stack);
     format!("{} {suffix}", v.render())
+}
+
+fn unary_or_cmp_cond(stack: &mut Vec<Expr>, rel_op: &str, zero_suffix: &str) -> String {
+    let v: Expr = pop_expr(stack);
+    match v {
+        Expr::Cmp { lhs, rhs } => format!("{} {rel_op} {}", lhs.render(), rhs.render()),
+        other => format!("{} {zero_suffix}", other.render()),
+    }
 }
 
 fn binary_cond_kept(stack: &mut Vec<Expr>, op: &str) -> String {
@@ -748,7 +819,7 @@ fn render_switch_subject(
     let mut stack: Vec<Expr> = Vec::new();
     let already_rendered: bool = !ctx.rendered_blocks.insert(head);
     for ins in &ctx.insns[start..body_end] {
-        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params);
+        let lifted: LiftResult = lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps);
         if already_rendered {
             continue;
         }
@@ -880,6 +951,7 @@ pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
         *acc += 1;
         match e {
             Expr::Binary { lhs, rhs, .. }
+            | Expr::Cmp { lhs, rhs }
             | Expr::ArrayLoad {
                 array: lhs,
                 index: rhs,
@@ -920,6 +992,7 @@ fn lift_one(
     insn: &Instruction,
     stack: &mut Vec<Expr>,
     params: &[(u16, String)],
+    bootstraps: &[crate::attributes::BootstrapMethod],
 ) -> LiftResult {
     let op: u8 = insn.opcode;
     match op {
@@ -1020,7 +1093,7 @@ fn lift_one(
         0xB2 | 0xB4 => field_get(cf, insn, stack, op == 0xB2),
         0xB3 | 0xB5 => field_put(cf, insn, stack, op == 0xB3),
         0xB6..=0xB9 => invoke(cf, insn, stack, op),
-        0xBA => invoke_dynamic(stack),
+        0xBA => invoke_dynamic(cf, insn, stack, bootstraps),
         0xBB => new_object(cf, insn, stack),
         0xBC | 0xBD => new_array(cf, insn, stack),
         0xBE => array_length(stack),
@@ -1062,8 +1135,7 @@ fn binary_op(stack: &mut Vec<Expr>, op: &'static str) -> LiftResult {
     let rhs: Expr = pop_expr(stack);
     let lhs: Expr = pop_expr(stack);
     if op == "cmp" {
-        stack.push(Expr::Binary {
-            op: "/*cmp*/<",
+        stack.push(Expr::Cmp {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
         });
@@ -1160,12 +1232,12 @@ fn cast_numeric(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
 fn conditional_branch(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
     let target: u32 = branch_target(insn).unwrap_or(0);
     let cond: String = match insn.opcode {
-        0x99 => unary_cond(stack, "== 0"),
-        0x9A => unary_cond(stack, "!= 0"),
-        0x9B => unary_cond(stack, "< 0"),
-        0x9C => unary_cond(stack, ">= 0"),
-        0x9D => unary_cond(stack, "> 0"),
-        0x9E => unary_cond(stack, "<= 0"),
+        0x99 => unary_or_cmp_cond(stack, "==", "== 0"),
+        0x9A => unary_or_cmp_cond(stack, "!=", "!= 0"),
+        0x9B => unary_or_cmp_cond(stack, "<", "< 0"),
+        0x9C => unary_or_cmp_cond(stack, ">=", ">= 0"),
+        0x9D => unary_or_cmp_cond(stack, ">", "> 0"),
+        0x9E => unary_or_cmp_cond(stack, "<=", "<= 0"),
         0x9F | 0xA5 => binary_cond(stack, "=="),
         0xA0 | 0xA6 => binary_cond(stack, "!="),
         0xA1 => binary_cond(stack, "<"),
@@ -1175,11 +1247,6 @@ fn conditional_branch(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
         _ => "?".to_string(),
     };
     LiftResult::ControlFlow(format!("if ({cond}) goto L{target};"))
-}
-
-fn unary_cond(stack: &mut Vec<Expr>, suffix: &str) -> String {
-    let v: Expr = pop_expr(stack);
-    format!("{} {suffix}", v.render())
 }
 
 fn binary_cond(stack: &mut Vec<Expr>, op: &str) -> String {
@@ -1321,9 +1388,145 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
     }
 }
 
-fn invoke_dynamic(stack: &mut Vec<Expr>) -> LiftResult {
-    stack.push(Expr::Opaque("/*invokedynamic*/ lambda$()".to_string()));
-    LiftResult::Pushed
+fn invoke_dynamic(
+    cf: &ClassFile,
+    insn: &Instruction,
+    stack: &mut Vec<Expr>,
+    bootstraps: &[crate::attributes::BootstrapMethod],
+) -> LiftResult {
+    let Operands::ConstPool(idx) = &insn.operands else {
+        return push(stack, Expr::Opaque("lambda$()".to_string()));
+    };
+    let Some(indy): Option<&crate::classfile::ConstantPoolEntry> =
+        cf.constant_pool.get(usize::from(*idx))
+    else {
+        return push(stack, Expr::Opaque("lambda$()".to_string()));
+    };
+    let crate::classfile::ConstantPoolEntry::InvokeDynamic {
+        bootstrap_method_attr_index,
+        name_and_type_index,
+    } = indy
+    else {
+        return push(stack, Expr::Opaque("lambda$()".to_string()));
+    };
+    let Some((indy_name, indy_desc)): Option<(String, String)> =
+        name_and_type_parts(cf, *name_and_type_index)
+    else {
+        return push(stack, Expr::Opaque("lambda$()".to_string()));
+    };
+    let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(&indy_desc) else {
+        return push(stack, Expr::Opaque("lambda$()".to_string()));
+    };
+    let argc: usize = parsed.params.len();
+    let popped: usize = argc.min(stack.len());
+    let args: Vec<Expr> = stack.split_off(stack.len() - popped);
+
+    let bsm: Option<&crate::attributes::BootstrapMethod> =
+        bootstraps.get(usize::from(*bootstrap_method_attr_index));
+    let bsm_name: Option<String> = bsm.and_then(|b| method_handle_ref_name(cf, b.method_ref_index));
+
+    if matches!(
+        bsm_name.as_deref(),
+        Some("makeConcatWithConstants" | "makeConcat")
+    ) {
+        let recipe: Option<String> = bsm
+            .filter(|_| bsm_name.as_deref() == Some("makeConcatWithConstants"))
+            .and_then(|b| b.arguments.first())
+            .and_then(|&a| bootstrap_string_arg(cf, a));
+        let folded: Expr = fold_string_concat(recipe.as_deref(), &args);
+        return push(stack, folded);
+    }
+
+    if matches!(parsed.returns, JavaType::Object(_)) {
+        let impl_ref: Option<String> = bsm
+            .and_then(|b| b.arguments.get(1).copied())
+            .and_then(|a| method_handle_ref_name(cf, a));
+        let target: String =
+            impl_ref.map_or_else(|| format!("{indy_name}$lambda"), |m| format!("this::{m}"));
+        return push(stack, Expr::Opaque(target));
+    }
+    push(stack, Expr::Opaque(format!("{indy_name}()")))
+}
+
+fn name_and_type_parts(cf: &ClassFile, index: u16) -> Option<(String, String)> {
+    let entry: &crate::classfile::ConstantPoolEntry = cf.constant_pool.get(usize::from(index))?;
+    if let crate::classfile::ConstantPoolEntry::NameAndType {
+        name_index,
+        descriptor_index,
+    } = entry
+    {
+        let name: String = cf.utf8_at(*name_index).ok()?.to_string();
+        let desc: String = cf.utf8_at(*descriptor_index).ok()?.to_string();
+        Some((name, desc))
+    } else {
+        None
+    }
+}
+
+fn method_handle_ref_name(cf: &ClassFile, index: u16) -> Option<String> {
+    let entry: &crate::classfile::ConstantPoolEntry = cf.constant_pool.get(usize::from(index))?;
+    let crate::classfile::ConstantPoolEntry::MethodHandle {
+        reference_index, ..
+    } = entry
+    else {
+        return None;
+    };
+    let reference: String = bytecode::resolve_ref(cf, *reference_index)?;
+    let (owner_name, _desc): (&str, &str) = reference.rsplit_once(':')?;
+    let (_owner, name): (&str, &str) = owner_name.rsplit_once('.')?;
+    Some(name.to_string())
+}
+
+fn bootstrap_string_arg(cf: &ClassFile, index: u16) -> Option<String> {
+    let entry: &crate::classfile::ConstantPoolEntry = cf.constant_pool.get(usize::from(index))?;
+    if let crate::classfile::ConstantPoolEntry::String { utf8_index } = entry {
+        cf.utf8_at(*utf8_index).ok().map(str::to_string)
+    } else {
+        None
+    }
+}
+
+/// Reconstructs a `String` concatenation desugared into a
+/// `StringConcatFactory.makeConcatWithConstants` invokedynamic. The recipe
+/// string interleaves literal text with `` (dynamic argument) and
+/// `` (constant pool) markers; this walks the recipe, substituting each
+/// `` with the next stack argument and emitting literal runs as quoted
+/// strings, yielding `"x=" + a + ", y=" + b`. With no recipe (`makeConcat`)
+/// the arguments are simply joined with `+`.
+fn fold_string_concat(recipe: Option<&str>, args: &[Expr]) -> Expr {
+    let mut pieces: Vec<String> = Vec::new();
+    match recipe {
+        Some(r) => {
+            let mut arg_iter: std::slice::Iter<'_, Expr> = args.iter();
+            let mut literal: String = String::new();
+            for ch in r.chars() {
+                match ch {
+                    '\u{0001}' => {
+                        if !literal.is_empty() {
+                            pieces.push(bytecode::escape_java_string(&literal));
+                            literal.clear();
+                        }
+                        if let Some(a) = arg_iter.next() {
+                            pieces.push(a.render());
+                        }
+                    }
+                    '\u{0002}' => {}
+                    c => literal.push(c),
+                }
+            }
+            if !literal.is_empty() {
+                pieces.push(bytecode::escape_java_string(&literal));
+            }
+        }
+        None => pieces.extend(args.iter().map(Expr::render)),
+    }
+    if pieces.is_empty() {
+        return Expr::Const("\"\"".to_string());
+    }
+    if pieces.first().is_none_or(|p: &String| !p.starts_with('"')) {
+        pieces.insert(0, "\"\"".to_string());
+    }
+    Expr::Opaque(format!("({})", pieces.join(" + ")))
 }
 
 fn new_object(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {

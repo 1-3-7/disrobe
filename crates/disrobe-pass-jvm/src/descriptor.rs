@@ -28,7 +28,7 @@ impl JavaType {
             Self::Short => "short".to_string(),
             Self::Boolean => "boolean".to_string(),
             Self::Void => "void".to_string(),
-            Self::Object(internal) => binary_to_source(internal),
+            Self::Object(internal) => binary_name_to_source(internal),
             Self::Array(inner) => format!("{}[]", inner.render()),
         }
     }
@@ -42,12 +42,41 @@ impl JavaType {
 
 #[must_use]
 pub fn binary_to_source(internal: &str) -> String {
+    if internal.starts_with('[')
+        && let Some(ty) = parse_field(internal)
+    {
+        return ty.render();
+    }
+    binary_name_to_source(internal)
+}
+
+fn binary_name_to_source(internal: &str) -> String {
     let trimmed: &str = internal.trim_start_matches('L').trim_end_matches(';');
-    let dotted: String = trimmed.replace('/', ".");
+    let slashed: String = trimmed.replace('/', ".");
+    let dotted: String = nested_separator_to_dot(&slashed);
     match dotted.strip_prefix("java.lang.") {
         Some(simple) if !simple.contains('.') => simple.to_string(),
         _ => dotted,
     }
+}
+
+/// Converts the JVM nested-class separator `$` to the Java source `.` only for
+/// named inner classes; an anonymous-class segment (all-digit, e.g. `Foo$1`) or
+/// a synthetic lambda segment keeps the `$` so the name stays a single valid
+/// identifier rather than an illegal `Foo.1`.
+fn nested_separator_to_dot(name: &str) -> String {
+    let mut out: String = String::with_capacity(name.len());
+    for (i, segment) in name.split('$').enumerate() {
+        if i > 0 {
+            let named: bool = segment
+                .chars()
+                .next()
+                .is_some_and(|c: char| c.is_alphabetic() || c == '_');
+            out.push(if named { '.' } else { '$' });
+        }
+        out.push_str(segment);
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
