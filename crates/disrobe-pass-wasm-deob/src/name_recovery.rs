@@ -1,4 +1,6 @@
-use crate::signature::{ModuleSignatures, dwarf_local_names};
+use crate::signature::ModuleSignatures;
+#[cfg(feature = "dwarf")]
+use crate::signature::dwarf_local_names;
 use crate::sourcemap::SourceMap;
 
 /// Outcome of attaching debug-info names to a module's signatures.
