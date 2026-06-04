@@ -3061,6 +3061,46 @@ fn except_star_epilogue_end(
         .map(|last_return: usize| last_return + 1)
 }
 
+/// Extend a `try:` protected-body end that `CPython`'s exception table cut short inside an inlined
+/// comprehension. A 3.12+ `[... for ...]` in a `try:` body is wrapped by its OWN `LOAD_FAST_AND_CLEAR`
+/// cleanup entry, so the user handler's protected range ends at the comp's `BUILD_LIST 0` accumulator
+/// rather than past the whole comp — splitting the comp across `protected_end` and corrupting both the
+/// recovered body and the phantom `else`. When `protected_end` lands at/inside an inline-comp envelope
+/// in `[try_start, handler_start)`, push it to the comp's `end_for` plus the trailing slot-restore noise
+/// so the full comp stays in the try body. Idempotent and a no-op when no comp straddles the boundary.
+fn extend_protected_end_over_comp(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    let mut end: usize = protected_end.max(try_start);
+    while let Some(comp) = detect_inline_comprehension(stream, try_start, handler_start) {
+        if comp.clear_idx >= end || comp.end_for <= end {
+            break;
+        }
+        let mut new_end: usize = comp.end_for;
+        while new_end < handler_start
+            && matches!(
+                stream.ops[new_end],
+                CanonicalOp::Pop
+                    | CanonicalOp::Swap(_)
+                    | CanonicalOp::Cache
+                    | CanonicalOp::Nop
+                    | CanonicalOp::ExtendedArg(_)
+                    | CanonicalOp::StoreFast(_)
+            )
+        {
+            new_end += 1;
+        }
+        if new_end <= end {
+            break;
+        }
+        end = new_end;
+    }
+    end.min(handler_start)
+}
+
 fn structure_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3286,7 +3326,7 @@ fn try_else_split(
         return None;
     }
     let else_start: usize = protected_end;
-    let else_end: usize = region.handler_start;
+    let else_end: usize = trim_trailing_comp_cleanup(stream, else_start, region.handler_start);
     if else_start >= else_end {
         return None;
     }
@@ -3296,6 +3336,42 @@ fn try_else_split(
         return None;
     }
     Some((else_start, else_end))
+}
+
+/// Trim the dead inline-comp reraise-cleanup tail (`SWAP; POP; SWAP; STORE_FAST <clear-slot>; RERAISE`)
+/// that a 3.12+ comprehension inside a `try:` body leaves in the `[protected_end, handler_start)` span
+/// after the try-body's protected end was extended over the comp. This cleanup re-installs the cleared
+/// loop variable on the comp's own exception path and is never user source, so it must not materialize as
+/// a phantom `<slot> = None; raise` at the end of the recovered `else`/tail. Cut the region back to the
+/// last op before a trailing `RERAISE` reached only through that swap/store cleanup; a no-op when the
+/// region does not end in such a cleanup.
+fn trim_trailing_comp_cleanup(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let last: usize = match (lo..hi)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    {
+        Some(k) => k,
+        None => return hi,
+    };
+    if !matches!(stream.ops[last], CanonicalOp::Reraise(_)) {
+        return hi;
+    }
+    let mut k: usize = last;
+    while k > lo {
+        match stream.ops[k - 1] {
+            CanonicalOp::Swap(_)
+            | CanonicalOp::Pop
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Reraise(_) => k -= 1,
+            _ => break,
+        }
+    }
+    k
 }
 
 /// The else region must be entered by direct fall-through: its first op is a real statement, not a
@@ -3454,7 +3530,8 @@ fn structure_try_except_family(
         .as_ref()
         .map_or(0, |c: &ComboFinally| c.inline_copy_len);
     let has_combo: bool = combo.is_some();
-    let protected_end: usize = region.protected_end.max(region.try_start);
+    let protected_end: usize =
+        extend_protected_end_over_comp(stream, region.try_start, region.protected_end, region.handler_start);
 
     if stream.is_pre_311() && !has_combo {
         let (stmt, consumed): (Stmt, usize) =
@@ -3488,6 +3565,7 @@ fn structure_try_except_family(
         handlers
     };
 
+    let body_had_comp: bool = protected_end > region.protected_end;
     let (orelse, construct_tail): (Vec<Stmt>, Vec<Stmt>) = match normal_region {
         Some((s, e)) => {
             let mut raw: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
@@ -3498,6 +3576,8 @@ fn structure_try_except_family(
                     raw.pop();
                 }
                 (raw, tail)
+            } else if body_had_comp {
+                (Vec::new(), raw)
             } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
                 (Vec::new(), shared)
             } else {
@@ -10885,6 +10965,14 @@ fn try_structure_inline_comprehension(
     let Some(comp): Option<InlineComp> = detect_inline_comprehension(stream, lo, hi) else {
         return Ok(None);
     };
+    if let Some(region) = find_try_region(stream, lo, hi)
+        && region.try_start > lo
+        && region.try_start <= comp.clear_idx
+        && comp.clear_idx < region.handler_start
+        && !try_enclosed_by_loop(stream, lo, hi, &region)
+    {
+        return Ok(None);
+    }
     let kind: CompKind = match stream.ops[comp.accumulator] {
         CanonicalOp::BuildSet(_) => CompKind::Set,
         CanonicalOp::BuildMap(_) => CompKind::Dict,
