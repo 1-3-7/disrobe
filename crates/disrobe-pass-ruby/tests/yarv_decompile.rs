@@ -67,8 +67,8 @@ fn decompiles_real_greeter_iseq_with_class_and_methods() {
         "expected `module Tiny`, got:\n{src}"
     );
     assert!(
-        src.contains("def initialize") && src.contains("def greet"),
-        "expected def initialize/greet, got:\n{src}"
+        src.contains("def initialize(who)") && src.contains("def greet"),
+        "expected def initialize(who)/greet with recovered method params, got:\n{src}"
     );
     assert!(
         src.contains(".new(\"world\")") || src.contains("new(\"world\")"),
@@ -145,6 +145,33 @@ fn recovers_block_parameter_names_from_megafile_block_iseqs() {
     assert!(
         multi_param_block,
         "expected at least one multi-parameter block in the megafile"
+    );
+}
+
+#[test]
+fn recovers_method_signatures_and_metaprogramming_surface_from_megafile() {
+    let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/edge_cases.rb.yarvc") else {
+        eprintln!("skip: mri/yarv/edge_cases.rb.yarvc fixture absent");
+        return;
+    };
+    let analysis: RubyAnalysis = analyze_bytes(&bytes, "edge_cases.rb.yarvc").expect("analyze");
+    let yarv = analysis.yarv.expect("yarv");
+    let src: &str = &yarv.decompiled.source;
+    let methods_with_params: usize = src
+        .lines()
+        .filter(|l| l.trim_start().starts_with("def ") && l.contains('('))
+        .count();
+    assert!(
+        methods_with_params >= 50,
+        "expected many recovered method signatures with params, got {methods_with_params}"
+    );
+    assert!(
+        src.contains("def method_missing(name)"),
+        "expected `def method_missing(name)` with its recovered parameter"
+    );
+    assert!(
+        src.contains("define_method") && src.contains("class_eval { ... }"),
+        "expected define_method and class_eval metaprogramming surface"
     );
 }
 

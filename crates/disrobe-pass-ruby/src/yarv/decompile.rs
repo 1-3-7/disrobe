@@ -266,12 +266,18 @@ fn step(
         }
         "definemethod" => {
             let name: String = id_or_index(instr, 0);
-            stmts.push(format!("def {name}; ...; end"));
+            stmts.push(format!(
+                "def {name}{}; ...; end",
+                method_param_list(instr, ctx)
+            ));
             push(stack, format!(":{name}"));
         }
         "definesmethod" => {
             let name: String = id_or_index(instr, 0);
-            stmts.push(format!("def self.{name}; ...; end"));
+            stmts.push(format!(
+                "def self.{name}{}; ...; end",
+                method_param_list(instr, ctx)
+            ));
             push(stack, format!(":{name}"));
         }
         "defineclass" => {
@@ -373,6 +379,20 @@ fn string_literal_body(s: &str) -> Option<&str> {
         return None;
     }
     Some(inner)
+}
+
+/// Render a `definemethod`/`definesmethod` parameter list `(a, b)` from the method body iseq's lead
+/// parameters (operand #1 is its iseq ref). Yields an empty string when the method takes no named
+/// positional parameters, so the surface reads `def name; ...; end`.
+fn method_param_list(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> String {
+    let params: Option<&[&str]> = match instr.operands.get(1) {
+        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.block_params(*index),
+        _ => None,
+    };
+    match params {
+        Some(names) if !names.is_empty() => format!("({})", names.join(", ")),
+        _ => String::new(),
+    }
 }
 
 /// Render an `opt_getconstant_path` operand: resolve the cache array into `A::B::C` when possible,
@@ -703,6 +723,48 @@ mod tests {
         assert!(stmts.iter().any(|s| s == "total = 0"), "stmts: {stmts:?}");
         assert!(
             stmts.iter().any(|s| s == "return total"),
+            "stmts: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn definemethod_renders_param_list_from_method_iseq() {
+        let method_body: YarvIseqBody = YarvIseqBody {
+            index: 1,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("who".to_owned())],
+            param_lead_num: 1,
+            instructions: Vec::new(),
+        };
+        let main: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 2,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            instructions: vec![
+                instr(
+                    "definemethod",
+                    vec![
+                        YarvOperand::Id("initialize".to_owned()),
+                        YarvOperand::IseqRef(1),
+                    ],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![main.clone(), method_body],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        let stmts: Vec<String> = super::decompile_body(&main, &ctx);
+        assert!(
+            stmts.iter().any(|s| s == "def initialize(who); ...; end"),
             "stmts: {stmts:?}"
         );
     }
