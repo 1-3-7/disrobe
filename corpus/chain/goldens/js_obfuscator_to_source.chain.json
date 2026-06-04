@@ -54,13 +54,13 @@
       "input_blake3": "34d25b2a866af9145e29e4dfa2feec64c6277f57fb9fc57c036a91dc7cf9d7f7",
       "input_size": 63,
       "metadata": {},
-      "output_blake3": "364960c062b1d63ce2e24dad78945e60c06f3090c1753602ef2f5e64be8052f4",
+      "output_blake3": "20cb6129de02a1f3237a96f1e1d42790954bd2bd23104de9b2c51fe5f1ff4d2f",
       "output_kind": {
         "formatted": true,
         "kind": "source",
         "language": "JavaScript"
       },
-      "output_size": 1091,
+      "output_size": 1239,
       "parent_id": 0,
       "pass": "js.deob",
       "verdict": "complete"
