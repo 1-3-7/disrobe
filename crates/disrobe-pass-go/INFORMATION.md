@@ -1,13 +1,13 @@
 | section | line | summary |
 |---------|-----:|---------|
-| architecture | 14 | module map and analysis data flow |
-| signature-scan | 30 | magic-stomp-resilient pclntab recovery design |
-| generics | 52 | go 1.18+ generic-instantiation recovery |
-| dwarf | 66 | dwarf type-param/local recovery on stripped-with-debug |
-| garble-wall | 78 | what garble removes and why -tiny names are irreversible |
-| refs-licenses | 90 | study-only references and their licenses |
-| measured | 102 | honest before/after recovery numbers on the corpus |
-| invariants | 118 | what must hold across changes |
+| architecture | 12 | module map and analysis data flow |
+| signature-scan | 23 | magic-stomp-resilient pclntab recovery design |
+| generics | 40 | go 1.18+ generic-instantiation recovery |
+| dwarf | 51 | dwarf type-param/local recovery on stripped-with-debug |
+| garble-wall | 58 | three garble effects: structure, names, literals |
+| refs-licenses | 84 | study-only references and their licenses |
+| measured | 92 | honest before/after recovery numbers on the corpus |
+| invariants | 112 | what must hold across changes |
 
 ## architecture
 
@@ -57,12 +57,29 @@ local-variable names that survive on `go build` WITHOUT `-w` (DWARF kept). Go st
 
 ## garble-wall
 
-`garble -literals` XORs string literals (recoverable: garble.rs scan_xor_strings). `garble`
-name-hashing replaces every package/symbol/field name with `hash(name, buildseed)` truncated
-base64; the seed is HMAC-SHA256-derived and NOT embedded in a `-trimpath` build, so original
-names are an INFORMATION-THEORETIC wall — no inversion exists. `garble -tiny` additionally
-strips the entire pclntab + moduledata + funcname table; nothing structural survives, so func
-recovery is genuinely 0 (the `hello_garble.exe -tiny` fixture). We document, never fake.
+Three distinct garble effects, three distinct outcomes:
+
+1. STRUCTURE — the `hello_garble.exe` fixture (`garble -literals -tiny`) KEEPS its pclntab,
+   so the signature scan (with magic-stomp recovery) reconstructs all 2091 funcs, 561 types,
+   22 itabs, and the generic instantiations. Empirically verified: the fixture contains
+   `runtime.main`/`main.main` and the funcname table is intact. The recovered USER names are
+   the garble HASHES verbatim (`internal/sync.(*CWQFRMIDV).xYiPuxqUqs`) — we read them
+   faithfully, we do not invent the pre-hash name.
+
+2. NAMES — garble name-hashing replaces each package/symbol/field name with
+   `base64(hmac-sha256(name, buildseed))[:n]`. The seed is NOT embedded in a `-trimpath`
+   build, so the original names are an INFORMATION-THEORETIC wall — no inversion exists. The
+   `function_name_looks_garble_hashed` heuristic only DETECTS hashed names (low readable-run,
+   dense case-alternation or embedded digit); it never claims to reverse them.
+
+3. LITERALS — `garble -literals` obfuscates string literals with a per-literal FULL-LENGTH
+   random key and reverses it in an init thunk. `recover_strings` reverses the statically
+   tractable subset: single-byte XOR/ADD/SUB and short repeating-key XOR, each gated by a
+   key-histogram OUTLIER test plus a dictionary/phrase check so brute force over a multi-MB
+   `.rdata` does not avalanche into false positives (proven by `single_op_scan_quiet_on_random_data`
+   and the ground-truth `single_op_scan_recovers_known_xor_blob`). garble's full-length-key
+   scheme is NOT reversed here — that needs init-thunk emulation — and `literal_recovery_limit`
+   documents this. The fixture's own source literals are confirmed NOT recoverable statically.
 
 ## refs-licenses
 
@@ -77,12 +94,20 @@ Clones lived in `%TEMP%/disrobe-refs/`, deleted after study.
 Corpus = real go1.26.3 PE binaries (tests/fixtures, git-ignored, regen.ps1). Numbers from the
 `measure` example, ground-truthed against each binary's OWN pclntab/typelinks (not a re-emit).
 
-| fixture | before funcs | after funcs | before named-types | after named-types |
-|---------|-------------:|------------:|-------------------:|------------------:|
-| hello_normal | 2085 | 2085 | 557/557 | 557/557 |
-| hello_stripped | 2085 | 2085 | 557/557 | 557/557 |
-| hello_magic_stomped | 0 | (filled by signature_scan) | 0 | (filled) |
-| hello_garble (-tiny) | 0 | 0 (wall) | 0 | 0 (wall) |
+| fixture | before funcs | after funcs | before named-types | after named-types | notes |
+|---------|-------------:|------------:|-------------------:|------------------:|-------|
+| hello_normal | 2085 | 2085 | 557/557 | 557/557 | already 100%; +2731 dwarf-detailed fns |
+| hello_stripped | 2085 | 2085 | 557/557 | 557/557 | via pclntab backsearch; no dwarf (-w) |
+| hello_magic_stomped | 0 | 2085 | 0 | 557/557 | signature_scan magic-stomp recovery |
+| hello_garble (-literals -tiny) | 0 | 2091 | 0 | 561/561 | structure recovered; user NAMES are garble hashes (wall) |
+| hello_generics | 1953 | 1962 | 530/530 | 532/532 | +50 generic fns, 5 user generic instantiations, 2549 dwarf-detailed |
+
+Item-by-item honest before/after:
+- signature_scan: magic-stomped & garble-tiny binaries 0 -> full pclntab (2085 / 2091 funcs).
+- generics: 0 -> 56-65 structured instantiations per generics binary (5 user, rest stdlib).
+- dwarf: 0 -> ~2550-2770 functions gain param/local/type-param names (non-stripped only).
+- garble literals: full-key scheme NOT statically reversible; single/repeating-key subset is
+  reversed and proven on synthetic ground truth; seedless name-hashing is the irreversible wall.
 
 ## invariants
 
