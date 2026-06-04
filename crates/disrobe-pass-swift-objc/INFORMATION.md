@@ -48,8 +48,12 @@ Guards: `MAX_DEPTH` recursion bound, `MAX_NODES` allocation budget (`spend`), ch
 `__objc_classlist`, walk each `class_t -> class_ro_t`, and recover class names, superclasses,
 instance/class methods (selector + ObjC type-encoding, both big and small/relative method-list
 forms), ivars (name + encoding + offset), and properties. `__objc_methname`/`__objc_methtype`/
-`__objc_classname` C-string tables are also exposed. No change was needed beyond verifying it
-against the real `corpus/mobile/macho-mac/SwiftHello.*` binaries.
+`__objc_classname` C-string tables are also exposed. Verified against the real
+`corpus/mobile/macho-mac/SwiftHello.*` binaries.
+
+`pass.rs` now surfaces a `MetadataSummary` on every `SliceReport` (ObjC class/interface/method/
+typed-method/selector/type-encoding counts + Swift reflected/named-type and mangled/demangled
+symbol counts) so consumers see the recovery at a glance without traversing the full dump.
 
 ## symbol-table
 

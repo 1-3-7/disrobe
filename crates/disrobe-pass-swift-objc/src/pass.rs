@@ -6,7 +6,9 @@ use crate::fairplay::{self, FairPlayStatus};
 use crate::ipa::{self, IpaInventory};
 use crate::macho::{self, FatArchEntry, MachoKind, ParsedSlice};
 use crate::objc::{self, ObjcClassDump};
+use crate::objc_records;
 use crate::swift::{self, SwiftClassDump};
+use crate::swift_reflect;
 
 #[derive(Debug, Default)]
 pub struct SwiftObjcPass;
@@ -30,9 +32,25 @@ pub enum ContainerKind {
 pub struct SliceReport {
     pub cpu_label: String,
     pub bitness_bits: u32,
+    pub metadata_summary: MetadataSummary,
     pub swift: SwiftClassDump,
     pub objc: ObjcClassDump,
     pub fairplay: FairPlayStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataSummary {
+    pub objc_classes: usize,
+    pub objc_interfaces_recovered: usize,
+    pub objc_methods_recovered: usize,
+    pub objc_typed_methods: usize,
+    pub objc_unique_selectors: usize,
+    pub objc_unique_method_types: usize,
+    pub objc_unique_class_names: usize,
+    pub swift_reflected_types: usize,
+    pub swift_named_types: usize,
+    pub swift_mangled_symbols: usize,
+    pub swift_demangled_symbols: usize,
 }
 
 pub const PASS_ID: PassId = "ios.swift_objc";
@@ -131,12 +149,50 @@ fn build_slice_report(slice: &[u8], parsed: &ParsedSlice) -> SliceReport {
         macho::Bitness::Bits32 => 32,
         macho::Bitness::Bits64 => 64,
     };
+    let metadata_summary: MetadataSummary = summarize(&swift_dump, &objc_dump);
     SliceReport {
         cpu_label: parsed.header.cpu.label().to_owned(),
         bitness_bits: bits,
+        metadata_summary,
         swift: swift_dump,
         objc: objc_dump,
         fairplay: fp,
+    }
+}
+
+fn summarize(swift: &SwiftClassDump, objc: &ObjcClassDump) -> MetadataSummary {
+    let objc_methods_recovered: usize = objc
+        .interfaces
+        .iter()
+        .map(|i: &objc_records::ObjcInterface| i.instance_methods.len() + i.class_methods.len())
+        .sum();
+    let objc_typed_methods: usize = objc
+        .interfaces
+        .iter()
+        .flat_map(|i: &objc_records::ObjcInterface| {
+            i.instance_methods.iter().chain(i.class_methods.iter())
+        })
+        .filter(|m: &&objc_records::ObjcMethod| m.types.is_some())
+        .count();
+    let swift_named_types: usize = swift
+        .reflected_types
+        .iter()
+        .filter(|t: &&swift_reflect::SwiftTypeReflection| {
+            t.demangled_type_name.is_some() || t.mangled_type_name.is_some()
+        })
+        .count();
+    MetadataSummary {
+        objc_classes: objc.class_count,
+        objc_interfaces_recovered: objc.interfaces.len(),
+        objc_methods_recovered,
+        objc_typed_methods,
+        objc_unique_selectors: objc.unique_selectors.len(),
+        objc_unique_method_types: objc.unique_method_types.len(),
+        objc_unique_class_names: objc.unique_class_names.len(),
+        swift_reflected_types: swift.reflected_types.len(),
+        swift_named_types,
+        swift_mangled_symbols: swift.mangled_symbols.len(),
+        swift_demangled_symbols: swift.demangled.len(),
     }
 }
 
