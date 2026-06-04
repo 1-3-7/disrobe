@@ -99,6 +99,22 @@ fn run(name: &str) {
             .count(),
         a.typemeta.generics.iter().filter(|g| g.shape_args).count(),
     );
+    let dwarf_detailed: usize = a
+        .dwarf
+        .functions
+        .iter()
+        .filter(|f| !f.params.is_empty() || !f.locals.is_empty() || !f.type_params.is_empty())
+        .count();
+    println!(
+        "        dwarf present={} compressed={} v{:?} CUs={} funcs={} named-detail={} types={}",
+        a.dwarf.present,
+        a.dwarf.compressed,
+        a.dwarf.dwarf_version,
+        a.dwarf.compile_units,
+        a.dwarf.functions.len(),
+        dwarf_detailed,
+        a.dwarf.type_names.len(),
+    );
     if name == "hello_generics.exe" {
         let main_generics: BTreeSet<&str> = a
             .typemeta

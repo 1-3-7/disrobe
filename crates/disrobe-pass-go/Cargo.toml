@@ -20,6 +20,8 @@ disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 object = { workspace = true }
 goblin = { workspace = true }
+gimli = { workspace = true }
+flate2 = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

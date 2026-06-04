@@ -5,6 +5,7 @@
 pub mod binary;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
+pub mod dwarf;
 pub mod embed_fs;
 pub mod error;
 pub mod format_wire;
@@ -22,6 +23,7 @@ pub mod types;
 use serde::{Deserialize, Serialize};
 
 pub use binary::{Endian, GoImage, ImageKind, Section};
+pub use dwarf::{DwarfFunction, DwarfReport, recover_dwarf};
 pub use embed_fs::{EmbedFile, EmbedReport, extract_embed};
 pub use error::{Error, Result};
 pub use format_wire::format_go;
@@ -60,6 +62,7 @@ pub struct GoAnalysis {
     pub stripped: StrippedReport,
     pub garble: GarbleReport,
     pub embed: EmbedReport,
+    pub dwarf: DwarfReport,
 }
 
 pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
@@ -119,6 +122,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
     let stripped: StrippedReport = analyze_stripped(&image, &symbols, buildversion.clone());
     let garble: GarbleReport = analyze_garble(&image, &symbols);
     let embed: EmbedReport = extract_embed(&image);
+    let dwarf: DwarfReport = recover_dwarf(&image);
     Ok(GoAnalysis {
         image_kind: image_kind_label(image.kind),
         ptr_size: image.ptr_size,
@@ -130,6 +134,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
         stripped,
         garble,
         embed,
+        dwarf,
     })
 }
 

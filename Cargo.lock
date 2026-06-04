@@ -2076,6 +2076,8 @@ dependencies = [
  "disrobe-core",
  "disrobe-ir",
  "disrobe-llm-metadata",
+ "flate2",
+ "gimli 0.32.3",
  "goblin",
  "insta",
  "miette",
