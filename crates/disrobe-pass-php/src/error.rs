@@ -109,4 +109,34 @@ pub enum Error {
 
     #[error("DR-PHP-0082: Zend Guard payload header malformed: {0}")]
     ZendGuardBadHeader(&'static str),
+
+    #[error("DR-PHP-0090: op_array container magic mismatch (expected 'DZOA')")]
+    OpArrayBadMagic,
+
+    #[error("DR-PHP-0091: op_array container version {0} unsupported")]
+    OpArrayUnsupportedVersion(u8),
+
+    #[error("DR-PHP-0092: op_array truncated at offset {offset}: need {need} more bytes")]
+    OpArrayTruncated { offset: usize, need: usize },
+
+    #[error("DR-PHP-0093: op_array field '{field}' value {value} exceeds sane cap {cap}")]
+    OpArrayFieldOversize {
+        field: &'static str,
+        value: u32,
+        cap: u32,
+    },
+
+    #[error(
+        "DR-PHP-0094: op_array bad operand-type byte {0:#04x} (not one of IS_UNUSED/CONST/TMP/VAR/CV)"
+    )]
+    OpArrayBadOperandType(u8),
+
+    #[error("DR-PHP-0095: op_array bad op_array kind tag {0}")]
+    OpArrayBadKind(u8),
+
+    #[error("DR-PHP-0096: op_array bad literal tag {0}")]
+    OpArrayBadLiteralTag(u8),
+
+    #[error("DR-PHP-0097: op_array nesting too deep ({0})")]
+    OpArrayNestTooDeep(u32),
 }

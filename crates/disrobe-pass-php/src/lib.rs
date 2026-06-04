@@ -7,6 +7,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod bcompiler;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
+pub mod decompile;
 pub mod detect;
 pub mod encoder;
 pub mod error;
@@ -20,6 +21,11 @@ pub mod sigs;
 pub mod token;
 
 pub use bcompiler::{BCG_MIN_HEADER, BcgHeader, BcgKind, read_header as read_bcg_header};
+pub use decompile::{
+    Branch, Cfg, Decompilation, Fidelity, Literal, OPARRAY_MAGIC, OPARRAY_VERSION, Op, OpArray,
+    OpArrayKind, OperandType, build_cfg, decompile as decompile_oparray, opcode_name,
+    parse_oparray,
+};
 pub use detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
 pub use encoder::{
     AuthorizationToken, DecodeOutcome, EncoderDetection, EncoderFamily, EncoderHeader,
