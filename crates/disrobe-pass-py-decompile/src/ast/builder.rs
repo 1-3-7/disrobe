@@ -2979,6 +2979,38 @@ fn except_star_body_end(stream: &DecodedStream, region: &TryRegion, truncated_en
 /// that cleanup. `None` when there is no nested with-handler, when the post-cleanup flow is NOT a
 /// guarded branch (a with-trailing-return idiom, not an epilogue), or when no real statement follows -
 /// so plain `except*`-over-`async with` cells keep their existing body end and stay byte-identical.
+/// The normal-exit successor of a PEP 654 `except*` group: the statements that run after every arm has
+/// been processed and the residual group did NOT need re-raising. `CPython` closes the group dispatch
+/// with `CALL_INTRINSIC_2 (prep_reraise_star); COPY 1; POP_JUMP_IF_TRUE reraise; POP_TOP; POP_EXCEPT`,
+/// then emits the post-construct fall-through (e.g. `return handled`) inline before the cold
+/// `SWAP; POP_EXCEPT; RERAISE` epilogue. The generic gap scan misses this because the tail sits past the
+/// handler entry, inside the region, not before it. Locate the `POP_EXCEPT` that follows the reraise
+/// guard's fall-through and return `[tail_start, cold_epilogue_start)` so the successor recovers. Returns
+/// `None` when the fall-through carries no real statement (3.11 routes the tail past the region instead).
+fn except_star_normal_exit_span(
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Option<(usize, usize)> {
+    let intrinsic: usize = (region.handler_start..region.region_end)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallIntrinsic2(_)))?;
+    let guard_jump: usize = (intrinsic + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopJumpIfTrue(_)))?;
+    let pop_except: usize = (guard_jump + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))?;
+    let tail_start: usize = first_significant(stream, pop_except + 1, region.region_end)?;
+    let cold_start: usize = (tail_start..region.region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Swap(_) | CanonicalOp::Reraise(_)
+        )
+    })?;
+    if tail_start >= cold_start || !slice_has_real_stmt(stream, tail_start, cold_start) {
+        return None;
+    }
+    Some((tail_start, cold_start))
+}
+
 fn except_star_nested_with_epilogue_span(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3056,7 +3088,8 @@ fn structure_try(
             let handlers: Vec<ExceptHandler> =
                 parse_except_star_handlers(code, stream, region.handler_start, region.region_end)?;
             let inline_epilogue: Option<(usize, usize)> =
-                except_star_nested_with_epilogue_span(stream, region);
+                except_star_nested_with_epilogue_span(stream, region)
+                    .or_else(|| except_star_normal_exit_span(stream, region));
             let (succ_scan_start, succ_end): (usize, usize) =
                 if let Some((start, end)) = inline_epilogue {
                     (start, end)
