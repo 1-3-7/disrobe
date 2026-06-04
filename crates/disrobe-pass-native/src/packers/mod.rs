@@ -106,6 +106,12 @@ pub mod chain_sigs;
 
 pub use chain_sigs::{CHAIN_SIGNATURES, ChainDetection, ChainSignature, detect_packer_chain};
 
+pub mod vmprotect_carve;
+
+pub use vmprotect_carve::{
+    CarvedVmpSection, SectionPerms, SyntheticImport, VmProtectCarve, carve_vmprotect,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {

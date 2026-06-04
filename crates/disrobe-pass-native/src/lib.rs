@@ -85,8 +85,8 @@ pub use obfuscators::{
     unflatten_tigress_stub,
 };
 pub use packers::{
-    AspackPhaseTwoOutput, CHAIN_SIGNATURES, ChainDetection, ChainSignature, Confidence,
-    Detection as PackerDetection, DisFilterStreamSizes, FsgImport, FsgUnpackOutput,
+    AspackPhaseTwoOutput, CHAIN_SIGNATURES, CarvedVmpSection, ChainDetection, ChainSignature,
+    Confidence, Detection as PackerDetection, DisFilterStreamSizes, FsgImport, FsgUnpackOutput,
     KkrunchyByteRecoveryReport, KkrunchyClassicStream, KkrunchyEmulatedUnpackOutput,
     KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo, KkrunchyPhaseTwoOutput,
     KkrunchyUnpackOutput, KkrunchyVariant, MewEmulatedOutput, MewImport, MewLeadingChunk,
@@ -94,8 +94,9 @@ pub use packers::{
     MpressUnpackOutput, NspackEmulatedReport, NspackLayout, NspackRecoveryStatus, NspackSection,
     NspackUnpackReport, Packer, PetitePhase2EmulatedOutput, PetiteUnpackReport, PetiteUnpackResult,
     RecoveredImport, RecoveredImportFn, RecoveredResource as NspackRecoveredResource,
-    RecoveredSectionName as NspackRecoveredSectionName, UnpackerStatus, UpxMethod, UpxPackHeader,
-    UpxUnpackOutput, compute_byte_recovery, decompress_kkrunchy_classic, detect as detect_packers,
+    RecoveredSectionName as NspackRecoveredSectionName, SectionPerms, SyntheticImport,
+    UnpackerStatus, UpxMethod, UpxPackHeader, UpxUnpackOutput, VmProtectCarve, carve_vmprotect,
+    compute_byte_recovery, decompress_kkrunchy_classic, detect as detect_packers,
     detect_packer_chain, dis_filter, dis_unfilter, fingerprint_chain, locate_classic_stream,
     parse_kkrunchy_header, parse_nspack_layout, unpack_aspack_phase2_emulated, unpack_fsg,
     unpack_kkrunchy, unpack_kkrunchy_emulated, unpack_kkrunchy_phase2_emulated, unpack_mew,
