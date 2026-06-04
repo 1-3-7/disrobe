@@ -2238,7 +2238,10 @@ dependencies = [
 name = "disrobe-pass-php"
 version = "0.9.0"
 dependencies = [
+ "aes",
  "base64",
+ "cbc",
+ "cipher",
  "disrobe-core",
  "disrobe-ir",
  "flate2",
