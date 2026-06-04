@@ -7641,6 +7641,7 @@ fn dup_leads_match_test(stream: &DecodedStream, from: usize, hi: usize) -> bool 
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadAttr(_)
             | CanonicalOp::StoreFast(_)
             | CanonicalOp::StoreName(_)
             | CanonicalOp::Dup
@@ -8051,6 +8052,24 @@ fn forward_or_binding(
     None
 }
 
+/// A bare `case _:` wildcard arm keeps the subject live (it is matched, not consumed), so `CPython`
+/// discards the duplicated subject copy with a `POP_TOP` at the arm head — peephole-folded to a `NOP`
+/// on 3.10. The match dispatch's no-match fall-through (an implicit `return None` past the final
+/// refutable arm) has no live subject and so begins with a value load or terminator directly, with no
+/// leading `POP_TOP`/`NOP`. The discard op therefore distinguishes a real trailing `case _:` from the
+/// synthesized exit; without it the exit would materialize as a phantom wildcard arm that recompiles to
+/// two extra bytes for the absent subject pop. `CACHE`/`EXTENDED_ARG` are pure layout and skipped.
+fn wildcard_discards_subject(stream: &DecodedStream, arm_start: usize, region_end: usize) -> bool {
+    (arm_start..region_end.min(stream.ops.len()))
+        .find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .is_some_and(|k: usize| matches!(stream.ops[k], CanonicalOp::Pop | CanonicalOp::Nop))
+}
+
 fn extract_match_case(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -8066,6 +8085,9 @@ fn extract_match_case(
         arm_fail_target(stream, arm_start, region_end)
     else {
         let names: Vec<String> = collect_capture_names(code, stream, arm_start, region_end);
+        if names.is_empty() && !wildcard_discards_subject(stream, arm_start, region_end) {
+            return None;
+        }
         let body_start: usize = match_body_start(stream, arm_start, region_end, region_end);
         let pattern: Pattern = Pattern::MatchAs {
             pattern: None,
@@ -8464,7 +8486,10 @@ fn classify_simple_pattern(
             classify_mapping_pattern(code, stream, first, fail_target, region_end)
         }
         CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_) => {
-            classify_class_pattern(code, stream, first, fail_target, region_end)
+            classify_dotted_value_pattern(code, stream, first, fail_target, region_end)
+                .unwrap_or_else(|| {
+                    classify_class_pattern(code, stream, first, fail_target, region_end)
+                })
         }
         CanonicalOp::LoadConst(slot) => {
             if let Some(next) = first_significant(stream, first + 1, scan_end) {
@@ -8788,6 +8813,53 @@ fn mapping_rest_and_outer(
         let outer_idx: Option<usize> = has_outer.then_some(1);
         (Some(0), outer_idx)
     }
+}
+
+/// A dotted-name value pattern (`case Status.OK:`) lowers as `LOAD_GLOBAL/LOAD_NAME base; LOAD_ATTR
+/// attr...; COMPARE_OP ==; POP_JUMP_IF_FALSE next-arm` — an equality test against the looked-up value,
+/// not a `MATCH_CLASS` destructure. A bare-name value pattern is illegal Python (a bare capitalised
+/// name is a capture, not a value), so this only fires when at least one `LOAD_ATTR` forms a dotted
+/// reference. Returns the `MatchValue(<dotted expr>)` when the load chain is closed by an equality
+/// compare with no intervening `MATCH_CLASS`; otherwise `None` so the caller falls back to the class
+/// pattern path.
+fn classify_dotted_value_pattern(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    head: usize,
+    fail_target: usize,
+    region_end: usize,
+) -> Option<Pattern> {
+    let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
+    let base_id: String = match &stream.ops[head] {
+        CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot).ok()?,
+        CanonicalOp::LoadName(slot) => name_at(&code.names, *slot, head, "name").ok()?,
+        _ => return None,
+    };
+    let mut expr: Expr = Expr::Name {
+        id: base_id,
+        ctx: ExprCtx::Load,
+        line: None,
+    };
+    let mut attr_count: usize = 0;
+    let mut k: usize = head + 1;
+    while k < scan_end {
+        match &stream.ops[k] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::LoadAttr(slot) => {
+                let attr: String = name_at(&code.names, *slot, k, "attr").ok()?;
+                expr = Expr::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    ctx: ExprCtx::Load,
+                };
+                attr_count += 1;
+            }
+            CanonicalOp::Compare(CmpOp::Eq) if attr_count > 0 => return Some(Pattern::MatchValue(expr)),
+            _ => return None,
+        }
+        k += 1;
+    }
+    None
 }
 
 fn classify_class_pattern(
