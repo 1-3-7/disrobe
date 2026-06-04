@@ -38,13 +38,13 @@ pub use error::{Error, Result};
 pub use flutter::{
     DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL, DART_SNAPSHOT_MAGIC, DART_VM_DATA_SYMBOL,
     DART_VM_INSTR_SYMBOL, DartAotDecompile, DartFunctionBoundary, DartFunctionSkeleton,
-    DartNameKind, DartProgramSkeleton, DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery,
-    DemangledName, FlutterApkLayout, FlutterObfuscationMap, ImageHeader, LibAppLayout,
-    SnapshotSection, build_program_skeleton as build_dart_program_skeleton, decompile_dart_aot,
-    decompile_libapp_so, demangle as demangle_dart_name,
+    DartNameKind, DartProgramSkeleton, DartRecoveryCounts, DartSnapshotHeader, DartSnapshotKind,
+    DartStaticRecovery, DemangledName, FlutterApkLayout, FlutterObfuscationMap, ImageHeader,
+    LibAppLayout, SnapshotSection, build_program_skeleton as build_dart_program_skeleton,
+    decompile_dart_aot, decompile_libapp_so, demangle as demangle_dart_name,
     demangle_qualified as demangle_dart_qualified, parse_dart_snapshot, parse_flutter_apk,
     parse_flutter_obfuscation_map, parse_image_header as parse_dart_image_header, parse_libapp_so,
-    recover_dart_static, static_recovery_fraction as dart_static_recovery_fraction,
+    recover_dart_static, recovery_counts as dart_recovery_counts,
 };
 pub use hermes::{
     BigIntTableEntry, BufferKind, DecompileReport, DecompiledFunction, DisassemblyReport,

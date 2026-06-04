@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
     DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL, DART_SNAPSHOT_MAGIC, DART_VM_DATA_SYMBOL,
-    DART_VM_INSTR_SYMBOL, DartSnapshotHeader, DartSnapshotKind, LibAppLayout, SnapshotSection,
-    parse_dart_snapshot, parse_libapp_so,
+    DART_VM_INSTR_SYMBOL, DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, LibAppLayout,
+    SnapshotSection, decompile_libapp_so, parse_dart_snapshot, parse_libapp_so,
 };
 
 fn fixture_path() -> PathBuf {
@@ -182,5 +182,35 @@ fn rustdesk_libapp_parse_finds_dart_snapshot_symbols() {
         iso_instr.size,
         header.kind,
         header.version_hash
+    );
+}
+
+#[test]
+fn rustdesk_static_recovery_reports_raw_counts() {
+    let bytes: Vec<u8> = match load_fixture(&fixture_path()) {
+        Some(b) => b,
+        None => {
+            eprintln!(
+                "skip: libapp.so fixture missing — no synthetic substitute; flutter aot recovery is only reported against the real binary's own snapshot string table"
+            );
+            return;
+        }
+    };
+    let recovery: DartStaticRecovery =
+        decompile_libapp_so(&bytes).expect("decompile real libapp.so");
+    eprintln!(
+        "rustdesk flutter aot RAW recovery (measured against the binary's own isolate snapshot): function_boundaries={} classes={} methods={} library_uris={} bodies_recovered=0 (arm64 register-erasure wall)",
+        recovery.function_boundary_count,
+        recovery.class_names.len(),
+        recovery.method_names.len(),
+        recovery.library_uris.len()
+    );
+    assert!(
+        recovery.function_boundary_count > 0,
+        "real instructions image must yield at least one ARM64 frame prologue"
+    );
+    assert!(
+        recovery.class_names.len() + recovery.method_names.len() > 0,
+        "real isolate data snapshot must yield at least one Dart identifier"
     );
 }

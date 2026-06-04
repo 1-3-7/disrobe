@@ -16,9 +16,10 @@
 use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
     DART_ISOLATE_DATA_SYMBOL, DART_VM_DATA_SYMBOL, DartAotDecompile, DartProgramSkeleton,
-    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, FlutterObfuscationMap, LibAppLayout,
-    build_dart_program_skeleton, dart_static_recovery_fraction, decompile_dart_aot,
-    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
+    DartRecoveryCounts, DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery,
+    FlutterObfuscationMap, LibAppLayout, build_dart_program_skeleton, dart_recovery_counts,
+    decompile_dart_aot, parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so,
+    recover_dart_static,
 };
 
 fn write_u16(buf: &mut Vec<u8>, v: u16) {
@@ -360,7 +361,7 @@ fn synth_dart_instructions(func_count: usize, arg_regs: u8) -> Vec<u8> {
     v
 }
 
-fn synth_dart_data_with_names() -> Vec<u8> {
+fn synth_dart_classifier_input() -> Vec<u8> {
     let mut v: Vec<u8> = Vec::new();
     for token in [
         "package:myapp/main.dart",
@@ -380,59 +381,53 @@ fn synth_dart_data_with_names() -> Vec<u8> {
 }
 
 #[test]
-fn dart_static_recovery_before_after_honest() {
+fn arm64_boundary_scanner_counts_prologues() {
     let instructions: Vec<u8> = synth_dart_instructions(5, 3);
-    let data: Vec<u8> = synth_dart_data_with_names();
-
-    let recovery: DartStaticRecovery = recover_dart_static(&data, &instructions);
+    let recovery: DartStaticRecovery = recover_dart_static(&[], &instructions);
     let skeleton: DartProgramSkeleton = build_dart_program_skeleton(&recovery);
-    let fraction: f64 = dart_static_recovery_fraction(&skeleton);
-
-    eprintln!(
-        "flutter static: boundaries={} named={} classes={} libs={} fraction={:.1}%",
-        skeleton.function_count,
-        skeleton.named_function_count,
-        skeleton.class_names.len(),
-        skeleton.library_uris.len(),
-        fraction * 100.0
+    assert_eq!(
+        skeleton.function_count, 5,
+        "scanner must count the 5 planted ARM64 frame prologues"
     );
     for f in &skeleton.functions {
-        eprintln!(
-            "  {}  // args={} @ {:#x}",
-            f.to_dart_source(),
-            f.arg_count,
-            f.offset
+        assert!(
+            f.body.contains("not statically recoverable"),
+            "every body is the AOT register-erasure marker, never reconstructed"
         );
     }
+    let counts: DartRecoveryCounts = dart_recovery_counts(&skeleton);
+    assert_eq!(counts.bodies_recovered, 0, "bodies are never recoverable");
+}
 
-    assert_eq!(skeleton.function_count, 5, "expected 5 scanned boundaries");
+#[test]
+fn name_classifier_buckets_dart_identifiers() {
+    let data: Vec<u8> = synth_dart_classifier_input();
+    let recovery: DartStaticRecovery = recover_dart_static(&data, &[]);
     assert!(
-        skeleton
+        recovery
+            .library_uris
+            .iter()
+            .any(|u: &String| u == "package:myapp/main.dart"),
+        "library-uri bucket must catch package: prefixes"
+    );
+    assert!(
+        recovery
             .class_names
             .iter()
             .any(|c: &String| c == "MyHomePage"),
-        "expected MyHomePage class recovered"
-    );
-    assert!(
-        skeleton.library_uris.len() >= 2,
-        "expected package URIs recovered"
+        "class bucket must catch upper-camel identifiers"
     );
     assert!(
         recovery
             .method_names
             .iter()
             .any(|m| m.scrubbed == "build" || m.scrubbed == "createState"),
-        "expected method names recovered"
+        "method bucket must catch lower-camel identifiers"
     );
-    assert!(
-        skeleton.functions[0]
-            .body
-            .contains("not statically recoverable"),
-        "bodies must be honest skeletons"
-    );
-    assert!(
-        fraction > 0.40 && fraction <= 0.55,
-        "honest static fraction must land in the 45-55% AOT ceiling band, got {:.1}%",
-        fraction * 100.0
+    eprintln!(
+        "classifier raw counts on synthetic input: classes={} methods={} libraries={} (mechanics test, NOT a recovery rate)",
+        recovery.class_names.len(),
+        recovery.method_names.len(),
+        recovery.library_uris.len()
     );
 }

@@ -6,7 +6,7 @@
 | hermes-recovery-ceiling | 56 | what HBC discards; honest lossy ceiling |
 | hermes-opcode-families | 63 | env/iterator/generator/property/coercion resugaring |
 | flutter-snapshot-format | 95 | Dart AOT snapshot header + section layout |
-| flutter-recovery-ceiling | 110 | AOT ARM64 body ceiling (45-55% static) |
+| flutter-recovery-ceiling | 110 | AOT ARM64 body wall; raw counts only, no percentage |
 | measurement | 122 | how before/after percentages are measured |
 
 ## references
@@ -111,10 +111,15 @@ Argument-register signature is inferred from x0..x7 reads in the prologue window
 ## flutter-recovery-ceiling
 
 Dart AOT emits optimized ARM64: locals are register-allocated away, async lowered to state machines,
-closures specialized. Source bodies are ~45-55% recoverable static-max. We deliver: function boundaries
-(Code-object headers in instructions), ARM64 calling-convention signature inference (param count from
-register usage), class/type/function tables from the object pool, and demangled names. Bodies are marked
-skeleton/partial — full statement-level decompilation is out of static reach.
+closures specialized. Source bodies are NOT statically recoverable at all — zero bodies. We deliver,
+as RAW INTEGER COUNTS only: function boundaries (ARM64 frame prologues in the instructions image),
+argument-register signatures, class names, demangled method names, and library URIs from the data
+snapshot string table. There is NO recovery percentage: the binary carries no source-line denominator,
+so any percentage would be invented. The earlier `static_recovery_fraction` was a reverse-fit formula
+(`named_share.mul_add(0.45, structure_bonus).min(0.55)`) capped to a documented "45-55%" target and
+"verified" only by re-recovering names a test had itself planted — that was a fabricated metric and has
+been deleted. Honest framing: "recovers N classes, M methods, K library URIs, B boundaries; bodies = 0
+(ARM64 register-erasure wall)."
 
 ## measurement
 
@@ -123,5 +128,9 @@ round-trip synthetic tests that encode buffers per the upstream spec then assert
 (non-circular: encoder follows spec, not our decoder). Percentage = reconstructed_ops / total_ops over
 the decompiled module.
 
-Flutter: measured against the snapshot's own class/function/string tables — count of recovered
-boundaries+signatures+names vs total Code objects found.
+Flutter: RAW COUNTS only, never a percentage. The real per-binary counts are reported by
+`rustdesk_static_recovery_reports_raw_counts` in `tests/real_flutter_rustdesk.rs`, measured against the
+committed real `libapp.so`'s OWN isolate snapshot string table + instructions image; it skips (no
+synthetic substitute) when the fixture is absent. The synthetic tests in `tests/flutter_libapp_so.rs`
+(`arm64_boundary_scanner_counts_prologues`, `name_classifier_buckets_dart_identifiers`) exercise only
+the scanner/classifier MECHANICS on planted input and are explicitly NOT a recovery-rate oracle.

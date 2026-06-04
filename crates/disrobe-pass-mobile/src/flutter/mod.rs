@@ -13,7 +13,8 @@ pub mod snapshot;
 
 pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
 pub use libapp_parser::{
-    DartFunctionSkeleton, DartProgramSkeleton, build_program_skeleton, static_recovery_fraction,
+    DartFunctionSkeleton, DartProgramSkeleton, DartRecoveryCounts, build_program_skeleton,
+    recovery_counts,
 };
 pub use snapshot::{
     DartFunctionBoundary, DartStaticRecovery, ImageHeader, parse_image_header, recover_dart_static,

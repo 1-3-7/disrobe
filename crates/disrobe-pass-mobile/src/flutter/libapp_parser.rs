@@ -91,24 +91,34 @@ pub fn build_program_skeleton(recovery: &DartStaticRecovery) -> DartProgramSkele
     }
 }
 
-/// Fraction of static structure recovered, used for honest before/after
+/// Raw counts of what was actually recovered from the snapshot, for honest
 /// reporting.
 ///
-/// The share of function boundaries that received a real demangled name plus the
-/// presence of class/library structure. Capped at the documented 45-55% AOT body
-/// ceiling because bodies are never statically recovered.
+/// Every field is a direct integer count of distinct artifacts extracted from
+/// the AOT data snapshot's string table and the instructions image, never a
+/// derived or capped percentage. Bodies are intentionally absent: ARM64 AOT
+/// register-erases locals, so no body is statically recoverable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartRecoveryCounts {
+    pub function_boundaries: usize,
+    pub named_functions: usize,
+    pub class_names: usize,
+    pub library_uris: usize,
+    pub bodies_recovered: usize,
+}
+
+/// Counts the distinct artifacts recovered into a program skeleton. Bodies are
+/// always zero — the ARM64 AOT register-erasure wall — and that zero is stated
+/// rather than hidden.
 #[must_use]
-pub fn static_recovery_fraction(skeleton: &DartProgramSkeleton) -> f64 {
-    if skeleton.function_count == 0 {
-        return 0.0;
+pub fn recovery_counts(skeleton: &DartProgramSkeleton) -> DartRecoveryCounts {
+    DartRecoveryCounts {
+        function_boundaries: skeleton.function_count,
+        named_functions: skeleton.named_function_count,
+        class_names: skeleton.class_names.len(),
+        library_uris: skeleton.library_uris.len(),
+        bodies_recovered: 0,
     }
-    let named_share: f64 = skeleton.named_function_count as f64 / skeleton.function_count as f64;
-    let structure_bonus: f64 = if skeleton.class_names.is_empty() {
-        0.0
-    } else {
-        0.1
-    };
-    named_share.mul_add(0.45, structure_bonus).min(0.55)
 }
 
 #[cfg(test)]
@@ -191,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_fraction_respects_ceiling() {
+    fn recovery_counts_are_raw_integers() {
         let rec: DartStaticRecovery = recovery(
             vec![boundary(0x10, 1), boundary(0x20, 1)],
             vec![
@@ -201,14 +211,20 @@ mod tests {
             vec!["C".to_owned()],
         );
         let skel: DartProgramSkeleton = build_program_skeleton(&rec);
-        let frac: f64 = static_recovery_fraction(&skel);
-        assert!(frac > 0.4 && frac <= 0.55, "fraction {frac}");
+        let counts: DartRecoveryCounts = recovery_counts(&skel);
+        assert_eq!(counts.function_boundaries, 2);
+        assert_eq!(counts.named_functions, 2);
+        assert_eq!(counts.class_names, 1);
+        assert_eq!(counts.bodies_recovered, 0);
     }
 
     #[test]
-    fn empty_program_is_zero() {
+    fn empty_program_counts_zero() {
         let rec: DartStaticRecovery = recovery(Vec::new(), Vec::new(), Vec::new());
         let skel: DartProgramSkeleton = build_program_skeleton(&rec);
-        assert!(static_recovery_fraction(&skel).abs() < f64::EPSILON);
+        let counts: DartRecoveryCounts = recovery_counts(&skel);
+        assert_eq!(counts.function_boundaries, 0);
+        assert_eq!(counts.named_functions, 0);
+        assert_eq!(counts.bodies_recovered, 0);
     }
 }

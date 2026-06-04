@@ -73,9 +73,10 @@ pub struct DartStaticRecovery {
 /// string clusters.
 ///
 /// HONEST: Dart AOT register-allocates locals away and lowers async to state
-/// machines, so statement-level bodies are not statically recoverable. This
-/// recovers boundaries + signatures + names (the ~45-55% static ceiling), and
-/// every body remains a skeleton.
+/// machines, so statement-level bodies are not statically recoverable — zero
+/// bodies, always. This recovers boundaries + signatures + names as raw counts;
+/// there is no recovery percentage because no source-line denominator survives
+/// in the binary. Every body remains a skeleton.
 #[must_use]
 pub fn recover_dart_static(isolate_data: &[u8], isolate_instructions: &[u8]) -> DartStaticRecovery {
     let function_boundaries: Vec<DartFunctionBoundary> =
