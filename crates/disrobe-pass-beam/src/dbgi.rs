@@ -24,6 +24,9 @@ pub fn parse(term: &Term) -> Result<DebugInfo> {
             .as_atom()
             .ok_or_else(|| Error::NotElixirDbgi("missing backend atom".to_owned()))?
             .to_owned();
+        if backend == "erl_abstract_code" {
+            return Ok(parse_erl_abstract_code(&tuple[2]));
+        }
         let metadata: Term = decode_metadata(&tuple[2])?;
         return Ok(DebugInfo::ElixirV1 { backend, metadata });
     }
@@ -46,6 +49,24 @@ pub fn parse(term: &Term) -> Result<DebugInfo> {
         });
     }
     Ok(DebugInfo::Other(term.clone()))
+}
+
+/// Decodes the `erl_abstract_code` backend payload `{Forms, CompileOpts}` of a
+/// modern `debug_info_v1` chunk. Earlier OTP emitted `{:raw_abstract_v1, Forms}`
+/// directly (handled below); the `debug_info_v1`-wrapped form is OTP 20+.
+fn parse_erl_abstract_code(payload: &Term) -> DebugInfo {
+    if let Some(inner) = payload.as_tuple()
+        && inner.len() == 2
+    {
+        return DebugInfo::ErlangAbstractCode {
+            forms: inner[0].clone(),
+            compile_opts: inner[1].clone(),
+        };
+    }
+    DebugInfo::ErlangAbstractCode {
+        forms: payload.clone(),
+        compile_opts: Term::Nil,
+    }
 }
 
 fn decode_metadata(term: &Term) -> Result<Term> {
