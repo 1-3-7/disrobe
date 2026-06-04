@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_pyinstaller::{
-    extract_archive, find_cookie, walk_toc, Cookie, EntryType, ExtractOutput, ExtractedEntry,
-    TocEntry,
+    Cookie, EntryType, ExtractOutput, ExtractedEntry, TocEntry, extract_archive, find_cookie,
+    walk_toc,
 };
 
 const MEI_MAGIC: &[u8; 8] = b"MEI\x0C\x0B\x0A\x0B\x0E";
@@ -72,8 +72,7 @@ fn locate_cpython312() -> Option<CPython312> {
             program: program.to_owned(),
             args: args.iter().map(|s: &&str| (*s).to_owned()).collect(),
         };
-        let probe: &str =
-            "import sys,importlib.util,binascii; v=sys.version_info; sys.stdout.write(f'{v.major}.{v.minor}|'); sys.stdout.write(binascii.hexlify(importlib.util.MAGIC_NUMBER).decode())";
+        let probe: &str = "import sys,importlib.util,binascii; v=sys.version_info; sys.stdout.write(f'{v.major}.{v.minor}|'); sys.stdout.write(binascii.hexlify(importlib.util.MAGIC_NUMBER).decode())";
         let Some(raw): Option<Vec<u8>> = candidate.run_capture(probe) else {
             continue;
         };
@@ -102,8 +101,8 @@ fn push_u32_be(buf: &mut Vec<u8>, v: u32) {
 }
 
 fn zlib_compress(input: &[u8]) -> Vec<u8> {
-    use flate2::write::ZlibEncoder;
     use flate2::Compression;
+    use flate2::write::ZlibEncoder;
     use std::io::Write;
     let mut enc: ZlibEncoder<Vec<u8>> = ZlibEncoder::new(Vec::new(), Compression::new(9));
     enc.write_all(input).expect("zlib write");
@@ -265,11 +264,13 @@ fn pi_carchive_round_trip_recovers_bytecode_equivalent_source() {
     let script_body: &[u8] = recovered_marshal_body(script);
     let module_body: &[u8] = recovered_marshal_body(module);
     assert_eq!(
-        script_body, oracle_marshal.as_slice(),
+        script_body,
+        oracle_marshal.as_slice(),
         "recovered SCRIPT bytecode must byte-match an INDEPENDENT cpython recompile of the reference source (non-circular oracle)"
     );
     assert_eq!(
-        module_body, oracle_marshal.as_slice(),
+        module_body,
+        oracle_marshal.as_slice(),
         "recovered MODULE bytecode must byte-match an INDEPENDENT cpython recompile of the reference source (non-circular oracle)"
     );
 

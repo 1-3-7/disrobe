@@ -7000,7 +7000,10 @@ fn ternary_body_jump_before(stream: &DecodedStream, from: usize, target: usize) 
     while k > from {
         k -= 1;
         match stream.ops[k] {
-            CanonicalOp::Push(_) | CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Push(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
             _ => return k,
         }
     }
@@ -7711,7 +7714,11 @@ fn try_structure_compound_assert(
 /// `LOAD_ASSERTION_ERROR` site `raise_idx`, plus a flag for whether the error is CALLED with a message
 /// (`LOAD_ASSERTION_ERROR; <msg>; CALL; RAISE`) versus raised bare (`LOAD_ASSERTION_ERROR; RAISE`).
 /// Returns `(raise_op_index, has_message)`, or `None` when the tail is not an assert raise.
-fn assert_raise_after(stream: &DecodedStream, raise_idx: usize, hi: usize) -> Option<(usize, bool)> {
+fn assert_raise_after(
+    stream: &DecodedStream,
+    raise_idx: usize,
+    hi: usize,
+) -> Option<(usize, bool)> {
     let next: usize = first_significant(stream, raise_idx + 1, hi)?;
     if matches!(stream.ops[next], CanonicalOp::Raise(_)) {
         return Some((next, false));
@@ -9098,7 +9105,9 @@ fn classify_dotted_value_pattern(
                 };
                 attr_count += 1;
             }
-            CanonicalOp::Compare(CmpOp::Eq) if attr_count > 0 => return Some(Pattern::MatchValue(expr)),
+            CanonicalOp::Compare(CmpOp::Eq) if attr_count > 0 => {
+                return Some(Pattern::MatchValue(expr));
+            }
             _ => return None,
         }
         k += 1;
@@ -10092,13 +10101,16 @@ fn elif_arm_continues_to_loop(
     if (back + 1..body_end).any(|k: usize| {
         !matches!(
             stream.ops[k],
-            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) | CanonicalOp::Push(_)
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::Push(_)
         )
     }) {
         return None;
     }
-    let lands_on_header: bool = resolve_jump_target(stream, back, &stream.ops[back])
-        .is_some_and(|t: usize| t <= header);
+    let lands_on_header: bool =
+        resolve_jump_target(stream, back, &stream.ops[back]).is_some_and(|t: usize| t <= header);
     if !lands_on_header {
         return None;
     }
@@ -10168,7 +10180,11 @@ fn structure_elif_chain_arm(
         }
         let arm_back: Option<usize> = (jump_target..hi).find(|&k: &usize| lands_on_header(k));
         arm_back.map_or((jump_target, hi, hi), |b: usize| {
-            (jump_target, b, first_significant(stream, b + 1, hi).unwrap_or(hi))
+            (
+                jump_target,
+                b,
+                first_significant(stream, b + 1, hi).unwrap_or(hi),
+            )
         })
     };
     let (head, residual): (Vec<Stmt>, Vec<Expr>) =

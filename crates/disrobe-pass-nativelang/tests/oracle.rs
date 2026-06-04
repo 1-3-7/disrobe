@@ -280,9 +280,9 @@ fn crystal_demangler_recovers_source_derived_names_non_circular() {
         "demangler did not recover any Crystal:: runtime namespace type"
     );
 
-    let iocp: bool = demangled.iter().any(|d| {
-        d.module.as_deref() == Some("Crystal::EventLoop") && d.name == "IOCP"
-    });
+    let iocp: bool = demangled
+        .iter()
+        .any(|d| d.module.as_deref() == Some("Crystal::EventLoop") && d.name == "IOCP");
     assert!(iocp, "demangler did not recover Crystal::EventLoop::IOCP");
 }
 

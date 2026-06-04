@@ -293,17 +293,7 @@ fn square_area_code_bytes_are_exact() {
     let lo: u8 = (getfield_idx & 0xFF) as u8;
 
     let expected: Vec<u8> = vec![
-        ALOAD_0,
-        GETFIELD,
-        hi,
-        lo,
-        DSTORE_1,
-        DLOAD_1,
-        DLOAD_1,
-        DMUL,
-        DSTORE_1,
-        DLOAD_1,
-        DRETURN,
+        ALOAD_0, GETFIELD, hi, lo, DSTORE_1, DLOAD_1, DLOAD_1, DMUL, DSTORE_1, DLOAD_1, DRETURN,
     ];
     assert_eq!(
         code.code, expected,

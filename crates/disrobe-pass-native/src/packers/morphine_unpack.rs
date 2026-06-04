@@ -14,7 +14,7 @@
 //! the *structural* half honestly:
 //!
 //! - [`morphine_layout`] parses the PE entry/section geometry of any input
-//!   claiming to be Morphine-crypted,
+//!   claiming to be Morphine-encrypted,
 //! - [`unpack_morphine`] wires the recovery through the in-house
 //!   [`crate::stub_emu`] CPU+memory path (maps the image, seeds the entry,
 //!   ready to single-step the polymorphic decryptor) but, lacking a sample to
@@ -34,7 +34,7 @@ use crate::stub_emu::{Cpu, CpuMode, Memory, Perm, Reg};
 const EMU_STACK_BASE: u64 = 0x0012_0000;
 const EMU_STACK_SIZE: u64 = 0x0004_0000;
 
-/// Parsed structural facts about a Morphine-crypted PE: the entry geometry the
+/// Parsed structural facts about a Morphine-encrypted PE: the entry geometry the
 /// polymorphic decryptor stub would be driven from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MorphineLayout {
@@ -60,7 +60,7 @@ pub enum MorphineRecovery {
     },
 }
 
-/// Parse the structural layout of a Morphine-crypted PE.
+/// Parse the structural layout of a Morphine-encrypted PE.
 ///
 /// # Errors
 ///
@@ -78,7 +78,7 @@ pub fn morphine_layout(packed: &[u8]) -> Result<MorphineLayout> {
 /// Attempt a Morphine unpack.
 ///
 /// Parses the layout and initializes the [`crate::stub_emu`] CPU + paged-memory
-/// environment over the crypted image (the same structural path the shipped
+/// environment over the encrypted image (the same structural path the shipped
 /// phase-2 unpackers use), then returns the honest recovery state. With no
 /// in-corpus Morphine sample to validate the polymorphic decrypt loop against,
 /// this never claims byte-recovery — it returns
@@ -99,7 +99,7 @@ pub fn unpack_morphine(packed: &[u8]) -> Result<MorphineRecovery> {
             "Morphine byte-recovery is a documented sourcing tail: no Morphine sample is \
 in corpus and the malware-adjacent crypter cannot be installed/downloaded in this environment, so \
 there is no independent ground truth to grade against. The PE structural layout is parsed and the \
-in-house stub_emu CPU+memory environment is initialized over the crypted image (ready to \
+in-house stub_emu CPU+memory environment is initialized over the encrypted image (ready to \
 single-step the polymorphic decryptor stub), but the measured byte-recovery floor is 0% until a \
 real sample lands in corpus. Detection ships; the unpack remainder is honestly deferred, never \
 faked via a circular oracle."
