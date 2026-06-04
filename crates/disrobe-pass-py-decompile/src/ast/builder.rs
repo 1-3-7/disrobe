@@ -7592,11 +7592,12 @@ fn build_shortcircuit_stack_expr(
 }
 
 /// The op that pushes the `AssertionError` raised by a failed `assert`: the dedicated
-/// `LOAD_ASSERTION_ERROR` opcode on 3.9+, or a `LOAD_GLOBAL AssertionError` on 3.8 and earlier (which
-/// had no dedicated opcode). Used to anchor the assert raise site across versions.
+/// `LOAD_ASSERTION_ERROR` opcode on 3.9-3.13, the `LOAD_COMMON_CONSTANT 0` slot on 3.14+ (which folded
+/// the builtin exceptions into a common-constant table), or a `LOAD_GLOBAL AssertionError` on 3.8 and
+/// earlier (no dedicated opcode). Used to anchor the assert raise site across versions.
 fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
     match op {
-        CanonicalOp::LoadAssertionError => true,
+        CanonicalOp::LoadAssertionError | CanonicalOp::LoadCommonConst(0) => true,
         CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => {
             name_at_either(code, *slot).is_ok_and(|n: String| n == "AssertionError")
         }
