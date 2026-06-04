@@ -27,6 +27,7 @@ mod symbols;
 pub(crate) mod util;
 mod variant;
 mod version_db;
+mod version_specific_patterns;
 
 pub use blob_scan::{BlobLeaf, BlobScan, scan_constants_blob};
 pub use body::{

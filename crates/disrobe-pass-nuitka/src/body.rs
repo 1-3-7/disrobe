@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::constants::ConstantsPool;
+use crate::version_specific_patterns::{EraPatternPack, guess_era_from_csource, pack_for_era};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -447,16 +448,18 @@ fn resolve_through_map(
 struct BodyCtx<'a> {
     lines: &'a [&'a str],
     pool: &'a ConstantsPool,
+    pack: EraPatternPack,
     map: BTreeMap<String, PythonExpr>,
     stmts: Vec<PythonStmt>,
 }
 
 impl<'a> BodyCtx<'a> {
-    fn new(lines: &'a [&'a str], pool: &'a ConstantsPool) -> Self {
+    fn new(lines: &'a [&'a str], pool: &'a ConstantsPool, pack: EraPatternPack) -> Self {
         let map: BTreeMap<String, PythonExpr> = build_tmp_map(lines, pool);
         Self {
             lines,
             pool,
+            pack,
             map,
             stmts: Vec::new(),
         }
@@ -525,10 +528,11 @@ impl<'a> BodyCtx<'a> {
 
     fn try_if_block(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("RICH_COMPARE_LT_NBOOL_OBJECT_LONG(") {
+        let needle: &str = self.pack.rich_compare_lt;
+        if !line.contains(needle) {
             return None;
         }
-        let args: (&str, &str) = extract_two_args(line, "RICH_COMPARE_LT_NBOOL_OBJECT_LONG(")?;
+        let args: (&str, &str) = extract_two_args(line, needle)?;
         let lhs: PythonExpr = self.resolve_tok(args.0);
         let rhs: PythonExpr = self.resolve_tok(args.1);
         let test: PythonExpr = PythonExpr::Compare {
@@ -578,26 +582,21 @@ impl<'a> BodyCtx<'a> {
             return Vec::new();
         }
         let slice: &[&str] = &self.lines[from..end];
-        let child: BodyCtx<'_> = BodyCtx::new(slice, self.pool);
+        let child: BodyCtx<'_> = BodyCtx::new(slice, self.pool, self.pack);
         child.lift()
     }
 
     fn try_runtime_tuple_unpack(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("MAKE_TUPLE_EMPTY(") {
+        if !line.contains(self.pack.make_tuple_empty) {
             return None;
         }
 
         let first_raw: String = find_set_item0_var(self.lines, start + 1, 6)?;
         let first_expr: PythonExpr = self.resolve_tok(&first_raw);
-        let add_line: &str = find_nearby_line(
-            self.lines,
-            start + 1,
-            40,
-            "BINARY_OPERATION_ADD_OBJECT_OBJECT_OBJECT(",
-        )?;
-        let add_args: (&str, &str) =
-            extract_two_args(add_line, "BINARY_OPERATION_ADD_OBJECT_OBJECT_OBJECT(")?;
+        let add_needle: &str = self.pack.binary_add_object;
+        let add_line: &str = find_nearby_line(self.lines, start + 1, 40, add_needle)?;
+        let add_args: (&str, &str) = extract_two_args(add_line, add_needle)?;
         let add_left: PythonExpr = self.resolve_tok(add_args.0);
         let add_right: PythonExpr = self.resolve_tok(add_args.1);
         let add_expr: PythonExpr = PythonExpr::BinOp {
@@ -631,10 +630,11 @@ impl<'a> BodyCtx<'a> {
 
     fn try_tuple_unpack_const(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("MAKE_ITERATOR_INFALLIBLE(") {
+        let needle: &str = self.pack.make_iterator_infallible;
+        if !line.contains(needle) {
             return None;
         }
-        let inner: &str = extract_single_arg(line, "MAKE_ITERATOR_INFALLIBLE(")?;
+        let inner: &str = extract_single_arg(line, needle)?;
         let source_tok: &str = inner.trim().trim_end_matches(';');
 
         let resolved_value: PythonExpr = self.resolve_tok(source_tok);
@@ -657,11 +657,11 @@ impl<'a> BodyCtx<'a> {
 
     fn try_for_loop(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("BINARY_OPERATION_SUB_OBJECT_OBJECT_LONG(") {
+        let needle: &str = self.pack.binary_sub_long;
+        if !line.contains(needle) {
             return None;
         }
-        let args: (&str, &str) =
-            extract_two_args(line, "BINARY_OPERATION_SUB_OBJECT_OBJECT_LONG(")?;
+        let args: (&str, &str) = extract_two_args(line, needle)?;
         let left: PythonExpr = self.resolve_tok(args.0);
         let right: PythonExpr = self.resolve_tok(args.1);
         let sub_expr: PythonExpr = PythonExpr::BinOp {
@@ -692,7 +692,7 @@ impl<'a> BodyCtx<'a> {
 
     fn try_print_call(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("LOOKUP_BUILTIN(const_str_plain_print)") {
+        if !line.contains(self.pack.lookup_builtin_print) {
             return None;
         }
 
@@ -700,9 +700,9 @@ impl<'a> BodyCtx<'a> {
             find_nearby_line(self.lines, start + 1, 5, "module_var_accessor_")?;
         let fn_name: String = extract_module_var_fn(accessor_line)?;
 
-        let pos_args_line: &str =
-            find_nearby_line(self.lines, start + 1, 25, "CALL_FUNCTION_WITH_POS_ARGS1(")?;
-        let tuple_tok: &str = extract_tuple_from_pos_args1(pos_args_line)?;
+        let call_needle: &str = self.pack.call_pos_args1;
+        let pos_args_line: &str = find_nearby_line(self.lines, start + 1, 25, call_needle)?;
+        let tuple_tok: &str = extract_tuple_from_pos_args1(pos_args_line, call_needle)?;
         let arg: PythonExpr = resolve_const_token(tuple_tok, self.pool);
         let single_arg: PythonExpr = unwrap_single_tuple(arg);
 
@@ -724,7 +724,7 @@ impl<'a> BodyCtx<'a> {
 
     fn try_fstring_join(&self, start: usize) -> Option<(PythonStmt, usize)> {
         let line: &str = self.lines[start].trim();
-        if !line.contains("PyUnicode_Join(") {
+        if !line.contains(self.pack.unicode_join) {
             return None;
         }
 
@@ -732,9 +732,9 @@ impl<'a> BodyCtx<'a> {
         let digest_tok: &str = extract_digest_token(digest_line)?;
         let prefix: PythonExpr = resolve_const_token(digest_tok, self.pool);
 
-        let format_line: &str =
-            find_nearby_before(self.lines, start, 30, "BUILTIN_FORMAT(tstate,")?;
-        let param: &str = extract_format_param(format_line)?;
+        let format_needle: &str = self.pack.builtin_format;
+        let format_line: &str = find_nearby_before(self.lines, start, 30, format_needle)?;
+        let param: &str = extract_format_param(format_line, format_needle)?;
         let param_expr: PythonExpr = if param.starts_with("par_") {
             PythonExpr::Name(param.strip_prefix("par_").unwrap_or(param).to_owned())
         } else if param.starts_with("var_") {
@@ -1062,8 +1062,8 @@ fn extract_module_var_fn(line: &str) -> Option<String> {
     full.split('$').next_back().map(str::to_owned)
 }
 
-fn extract_tuple_from_pos_args1(line: &str) -> Option<&str> {
-    let after: &str = line.split("CALL_FUNCTION_WITH_POS_ARGS1(").nth(1)?;
+fn extract_tuple_from_pos_args1<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    let after: &str = line.split(prefix).nth(1)?;
     let close: usize = after.find(')')?;
     let inner: &str = &after[..close];
     let comma: usize = inner.rfind(',')?;
@@ -1092,8 +1092,8 @@ fn extract_digest_token(line: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-fn extract_format_param(line: &str) -> Option<&str> {
-    let after: &str = line.split("BUILTIN_FORMAT(tstate,").nth(1)?;
+fn extract_format_param<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    let after: &str = line.split(prefix).nth(1)?;
     let close: usize = after.find(')')?;
     let inner: &str = &after[..close];
     let comma: usize = inner.find(',')?;
@@ -1105,8 +1105,9 @@ pub fn lift_body(
     _params: &[String],
     pool: &ConstantsPool,
 ) -> (Vec<PythonStmt>, LiftFidelity) {
+    let pack: EraPatternPack = pack_for_era(guess_era_from_csource(c_body));
     let lines: Vec<&str> = c_body.lines().collect();
-    let ctx: BodyCtx<'_> = BodyCtx::new(&lines, pool);
+    let ctx: BodyCtx<'_> = BodyCtx::new(&lines, pool, pack);
     let stmts: Vec<PythonStmt> = ctx.lift();
 
     let fidelity: LiftFidelity = if stmts.is_empty() {
