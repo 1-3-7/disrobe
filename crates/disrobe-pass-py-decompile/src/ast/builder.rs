@@ -4758,8 +4758,10 @@ fn structure_async_with(
         )));
     }
     let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let owned_by_enclosing_try: bool =
+        async_with_return_owned_by_enclosing_try(stream, body_end, search_end, stream.ops.len());
     let trailing: Option<Stmt> = async_with_trailing_return(code, stream, body_end, search_end)?;
-    let post_with: Vec<Stmt> = if trailing.is_some() {
+    let post_with: Vec<Stmt> = if trailing.is_some() || owned_by_enclosing_try {
         Vec::new()
     } else {
         async_with_post_tail(code, stream, body_end, region.handler_start)?
@@ -4880,12 +4882,16 @@ fn async_with_cleanup_end(stream: &DecodedStream, body_end: usize, hi: usize) ->
 /// then lays the `try`'s exception handlers (`PUSH_EXC_INFO` / `CHECK_EG_MATCH`) cold afterward. That
 /// return belongs to the enclosing `try`, not the `with` body, so it must not be folded into the with
 /// (else it duplicates as a phantom trailing return inside the with). Detect an exception-handler
-/// dispatch following the candidate return within the search window: its presence marks the return as
-/// the enclosing try's construct-exit, recovered by `structure_try` once the with is consumed.
+/// dispatch following the candidate return: its presence marks the return as the enclosing try's
+/// construct-exit, recovered by `structure_try` once the with is consumed. The candidate return is
+/// found within the with's normal-exit window `[ret_start, hi)`, but the enclosing `try`/`except*`
+/// handler dispatch is laid PAST the with's own exception region, so the `CHECK_EG_MATCH`/
+/// `CHECK_EXC_MATCH` lookahead scans the full remaining stream `[ret_idx, scan_end)`.
 fn async_with_return_owned_by_enclosing_try(
     stream: &DecodedStream,
     ret_start: usize,
     hi: usize,
+    scan_end: usize,
 ) -> bool {
     let Some(ret_idx): Option<usize> = (ret_start..hi).find(|&k: &usize| {
         matches!(
@@ -4895,7 +4901,7 @@ fn async_with_return_owned_by_enclosing_try(
     }) else {
         return false;
     };
-    (ret_idx + 1..hi).any(|k: usize| {
+    (ret_idx + 1..scan_end).any(|k: usize| {
         matches!(
             stream.ops[k],
             CanonicalOp::CheckEgMatch | CanonicalOp::CheckExcMatch
@@ -4915,7 +4921,7 @@ fn async_with_trailing_return(
     if async_with_exit_guarded_by_branch(stream, ret_start, hi) {
         return Ok(None);
     }
-    if async_with_return_owned_by_enclosing_try(stream, ret_start, hi) {
+    if async_with_return_owned_by_enclosing_try(stream, ret_start, hi, stream.ops.len()) {
         return Ok(None);
     }
     recover_return_at(code, stream, ret_start, hi)
