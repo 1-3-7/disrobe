@@ -50,6 +50,74 @@ pub struct ChainDetection {
     pub witnesses: Vec<Detection>,
 }
 
+impl ChainDetection {
+    /// Numeric confidence score for the whole chain.
+    ///
+    /// Each layer is only as trustworthy as the byte marker that witnessed it,
+    /// so the chain's overall certainty is the **joint probability** of every
+    /// layer being correctly identified: the product of the per-stage
+    /// probabilities. A four-layer Medium chain is necessarily less certain than
+    /// a two-layer High chain even though both carry a coarse `confidence` enum.
+    /// This makes that intuition quantitative and orderable.
+    #[must_use]
+    pub fn confidence_score(&self) -> ChainConfidenceScore {
+        let stages: Vec<StageConfidence> = self
+            .witnesses
+            .iter()
+            .zip(self.layers.iter())
+            .map(|(w, layer): (&Detection, &Packer)| StageConfidence {
+                packer: *layer,
+                probability: stage_probability(w.confidence),
+            })
+            .collect();
+        let overall: f64 = stages
+            .iter()
+            .map(|s: &StageConfidence| s.probability)
+            .product();
+        ChainConfidenceScore { stages, overall }
+    }
+}
+
+/// Per-stage and overall numeric confidence for a detected chain.
+///
+/// `overall` is the product of every stage probability: the chain is correctly
+/// identified only if **all** of its layers are, so the joint probability is the
+/// product (stages treated as independent witnesses, which holds because each
+/// layer is proven by a distinct, non-overlapping byte marker).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChainConfidenceScore {
+    pub stages: Vec<StageConfidence>,
+    pub overall: f64,
+}
+
+impl ChainConfidenceScore {
+    /// `overall` as an integer percentage, rounded to the nearest whole percent.
+    #[must_use]
+    pub fn overall_pct(&self) -> u8 {
+        (self.overall * 100.0).round().clamp(0.0, 100.0) as u8
+    }
+}
+
+/// One stage's numeric confidence within a [`ChainConfidenceScore`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StageConfidence {
+    pub packer: Packer,
+    pub probability: f64,
+}
+
+/// Map a single-signature witness [`Confidence`] to a per-stage probability.
+///
+/// Mirrors the numbers `chain_detector::verdict_for` already assigns to single
+/// detections (High = 0.96, Medium = 0.80, Low = 0.60), so a chain's score is
+/// consistent with the standalone detection confidences it is built from.
+const fn stage_probability(c: Confidence) -> f64 {
+    match c {
+        Confidence::High => 0.96,
+        Confidence::Medium => 0.80,
+        Confidence::Low => 0.60,
+    }
+}
+
 /// Curated ledger of multi-layer packer/protector chains.
 ///
 /// Observed in the wild (malware crypter stacks, nested-packer crackmes,
@@ -365,5 +433,59 @@ mod tests {
             (20..=30).contains(&n),
             "the chain ledger must carry 20-30 curated fingerprints, got {n}",
         );
+    }
+
+    #[test]
+    fn confidence_score_is_product_of_stage_probabilities() {
+        let buf: Vec<u8> = buf_with_markers(&[b"UPX!", b".aspack"]);
+        let chains: Vec<ChainDetection> = detect_packer_chain(&buf);
+        let found: &ChainDetection = chains
+            .iter()
+            .find(|c: &&ChainDetection| c.layers == vec![Packer::Upx, Packer::AsPack])
+            .expect("UPX + ASPack chain");
+        let score: ChainConfidenceScore = found.confidence_score();
+        assert_eq!(score.stages.len(), 2);
+        let expected: f64 = 0.96 * 0.96;
+        assert!(
+            (score.overall - expected).abs() < 1e-9,
+            "two High stages must multiply to {expected}, got {}",
+            score.overall,
+        );
+        assert_eq!(score.overall_pct(), 92);
+    }
+
+    #[test]
+    fn longer_chain_scores_lower_than_its_high_confidence_prefix() {
+        let triple_buf: Vec<u8> = buf_with_markers(&[b"UPX!", b".aspack", b".vmp0"]);
+        let chains: Vec<ChainDetection> = detect_packer_chain(&triple_buf);
+        let triple: &ChainDetection = chains
+            .iter()
+            .find(|c: &&ChainDetection| c.layers.len() == 3)
+            .expect("triple chain");
+        let two: &ChainDetection = chains
+            .iter()
+            .find(|c: &&ChainDetection| c.layers == vec![Packer::Upx, Packer::AsPack])
+            .expect("two-layer subset");
+        assert!(
+            triple.confidence_score().overall < two.confidence_score().overall,
+            "a longer chain's joint probability must be strictly lower than its prefix's",
+        );
+    }
+
+    #[test]
+    fn every_stage_probability_is_a_valid_probability() {
+        let buf: Vec<u8> = buf_with_markers(&[b"UPX!", b".aspack", b".vmp0"]);
+        for chain in detect_packer_chain(&buf) {
+            let score: ChainConfidenceScore = chain.confidence_score();
+            for stage in &score.stages {
+                assert!(
+                    (0.0..=1.0).contains(&stage.probability),
+                    "stage probability for {:?} out of range: {}",
+                    stage.packer,
+                    stage.probability,
+                );
+            }
+            assert!((0.0..=1.0).contains(&score.overall));
+        }
     }
 }

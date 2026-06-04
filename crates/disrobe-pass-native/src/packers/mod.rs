@@ -111,7 +111,10 @@ pub use pecompact_phase2::{PecompactPhaseTwoOutput, unpack_pecompact_phase2_emul
 
 pub mod chain_sigs;
 
-pub use chain_sigs::{CHAIN_SIGNATURES, ChainDetection, ChainSignature, detect_packer_chain};
+pub use chain_sigs::{
+    CHAIN_SIGNATURES, ChainConfidenceScore, ChainDetection, ChainSignature, StageConfidence,
+    detect_packer_chain,
+};
 
 pub mod vmprotect_carve;
 
