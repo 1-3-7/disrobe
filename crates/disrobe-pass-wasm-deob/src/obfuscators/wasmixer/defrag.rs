@@ -5,13 +5,111 @@ use walrus::{
     ElementId, ElementItems, ElementKind, ExportItem, FunctionId, Module, ModuleConfig, TableId,
 };
 
+use serde::Serialize;
+
 use crate::error::{Error, Result};
+use crate::types::{AccessPattern, BaseOrigin};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DefragStats {
     pub fragments_inlined: usize,
     pub functions_dropped: usize,
     pub elements_pruned: usize,
+}
+
+/// A recovered contiguous heap region reassembled from scattered accesses.
+///
+/// Holds a base pointer plus the access shape Wasmixer's heap defragmentation spread
+/// across the module, clustered back together by base origin and power-of-two alignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HeapRegion {
+    pub base: BaseOrigin,
+    pub alignment: u32,
+    pub min_offset: i32,
+    pub max_offset: i32,
+    pub element_width: u32,
+    pub access_count: usize,
+    pub strided: bool,
+}
+
+impl HeapRegion {
+    /// Byte span the region covers from its lowest to highest observed access,
+    /// inclusive of the final element width.
+    #[inline]
+    #[must_use]
+    pub fn byte_span(&self) -> u32 {
+        let lo: i64 = i64::from(self.min_offset);
+        let hi: i64 = i64::from(self.max_offset) + i64::from(self.element_width);
+        u32::try_from(hi.saturating_sub(lo).max(0)).unwrap_or(u32::MAX)
+    }
+}
+
+/// Recovers adaptive heap regions from a function's memory access patterns.
+///
+/// Wasmixer fragments a logical heap allocation into many small, misaligned accesses
+/// to frustrate type recovery. This clusters accesses by `(base origin, alignment)` so
+/// each contiguous logical buffer re-emerges as one [`HeapRegion`] with an inferred
+/// element width (the modal access width) and a strided/scalar classification.
+#[must_use]
+pub fn recover_heap_regions(patterns: &[AccessPattern]) -> Vec<HeapRegion> {
+    let mut clusters: BTreeMap<(BaseOrigin, u32), Vec<&AccessPattern>> = BTreeMap::new();
+    for pattern in patterns {
+        if matches!(pattern.base_origin, BaseOrigin::Unknown) {
+            continue;
+        }
+        clusters
+            .entry((pattern.base_origin, pattern.alignment))
+            .or_default()
+            .push(pattern);
+    }
+
+    let mut regions: Vec<HeapRegion> = Vec::with_capacity(clusters.len());
+    for ((base, alignment), members) in clusters {
+        if members.is_empty() {
+            continue;
+        }
+        let element_width: u32 = modal_width(&members);
+        let mut offsets: Vec<i32> = members.iter().map(|p| p.offset_class).collect();
+        offsets.sort_unstable();
+        let min_offset: i32 = *offsets.first().unwrap_or(&0);
+        let max_offset: i32 = *offsets.last().unwrap_or(&0);
+        let strided: bool =
+            members.iter().any(|p| p.is_indexed) || offsets_are_strided(&offsets, element_width);
+        regions.push(HeapRegion {
+            base,
+            alignment,
+            min_offset,
+            max_offset,
+            element_width,
+            access_count: members.len(),
+            strided,
+        });
+    }
+    regions
+}
+
+fn modal_width(members: &[&AccessPattern]) -> u32 {
+    let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
+    for member in members {
+        *counts.entry(member.width.max(1)).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
+        .map_or(4, |(width, _)| width)
+}
+
+fn offsets_are_strided(sorted_offsets: &[i32], stride: u32) -> bool {
+    if sorted_offsets.len() < 3 {
+        return false;
+    }
+    let stride_i: i32 = i32::try_from(stride).unwrap_or(i32::MAX);
+    if stride_i == 0 {
+        return false;
+    }
+    sorted_offsets
+        .windows(2)
+        .all(|pair| pair[1].saturating_sub(pair[0]) == stride_i)
 }
 
 pub fn defragment(bytes: &[u8]) -> Result<(Vec<u8>, DefragStats)> {
@@ -293,5 +391,63 @@ mod tests {
     fn constexpr_to_i64_i64_value() {
         let expr: walrus::ConstExpr = walrus::ConstExpr::Value(Value::I64(-3));
         assert_eq!(constexpr_to_i64(&expr), -3);
+    }
+
+    fn access(base: BaseOrigin, alignment: u32, offset: i32, width: u32) -> AccessPattern {
+        use crate::types::LoadKind;
+        AccessPattern {
+            load_kind: Some(LoadKind::I32),
+            store_kind: None,
+            width,
+            alignment,
+            offset_class: offset,
+            base_origin: base,
+            is_indexed: false,
+        }
+    }
+
+    #[test]
+    fn heap_recovery_ignores_unknown_base() {
+        let patterns: Vec<AccessPattern> = vec![
+            access(BaseOrigin::Unknown, 4, 0, 4),
+            access(BaseOrigin::Unknown, 4, 4, 4),
+        ];
+        assert!(recover_heap_regions(&patterns).is_empty());
+    }
+
+    #[test]
+    fn heap_recovery_clusters_by_base_and_alignment() {
+        let p: BaseOrigin = BaseOrigin::Param(0);
+        let patterns: Vec<AccessPattern> = vec![
+            access(p, 4, 0, 4),
+            access(p, 4, 4, 4),
+            access(p, 4, 8, 4),
+            access(p, 1, 0, 1),
+        ];
+        let regions: Vec<HeapRegion> = recover_heap_regions(&patterns);
+        assert_eq!(regions.len(), 2, "two alignment clusters under one base");
+        let aligned: &HeapRegion = regions
+            .iter()
+            .find(|r| r.alignment == 4)
+            .expect("4-byte region");
+        assert_eq!(aligned.access_count, 3);
+        assert_eq!(aligned.element_width, 4);
+        assert_eq!(aligned.min_offset, 0);
+        assert_eq!(aligned.max_offset, 8);
+        assert!(aligned.strided, "0/4/8 stride-4 region is strided");
+        assert_eq!(aligned.byte_span(), 12);
+    }
+
+    #[test]
+    fn heap_recovery_modal_width_breaks_ties_low() {
+        let p: BaseOrigin = BaseOrigin::Global(2);
+        let patterns: Vec<AccessPattern> =
+            vec![access(p, 8, 0, 8), access(p, 8, 8, 4), access(p, 8, 16, 4)];
+        let regions: Vec<HeapRegion> = recover_heap_regions(&patterns);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(
+            regions[0].element_width, 4,
+            "modal width is 4 (two of three)"
+        );
     }
 }

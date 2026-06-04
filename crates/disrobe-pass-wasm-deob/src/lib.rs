@@ -78,11 +78,12 @@ pub use memory64::{MemoryRecord, MemoryReport, scan_memories};
 pub use name_recovery::attach_dwarf_names;
 pub use name_recovery::{NameRecoveryStats, attach_sourcemap_names};
 pub use obfuscators::{
-    CrypticBytesDetection, CrypticBytesPeel, DefragStats, DispatcherInfo, IntegrityStripStats,
-    NameStrategy, OpaquePredStats, StubInfo, UnflattenStats, UnwrappedSegment, WobfuscatorTable,
-    classify_export_strategy, defragment, detect_cryptic_bytes, detect_decrypt_stubs,
-    detect_dispatcher, extract_optable, kill_opaque_predicates, lift_op_to_rust_fn,
-    peel_cryptic_bytes, strip_integrity_imports, unflatten, unflatten_to_fixed_point,
+    CrypticBytesDetection, CrypticBytesPeel, DefragStats, DispatcherInfo, HeapRegion,
+    IntegrityCfgStats, IntegrityStripStats, NameStrategy, OpaquePredStats, StubInfo,
+    UnflattenStats, UnwrappedSegment, WobfuscatorTable, classify_export_strategy, defragment,
+    detect_cryptic_bytes, detect_decrypt_stubs, detect_dispatcher, eliminate_integrity_guards,
+    extract_optable, kill_opaque_predicates, lift_op_to_rust_fn, peel_cryptic_bytes,
+    recover_heap_regions, strip_integrity_imports, unflatten, unflatten_to_fixed_point,
     unwrap_decryption,
 };
 pub use pass::{WasmDeobLegacyPass, WasmPassReport};
