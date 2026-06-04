@@ -22,6 +22,7 @@ pub mod crypto_consts;
 pub mod cxx_recovery;
 pub mod debug_info;
 pub mod decompile;
+pub mod dwarf_sourcemap;
 pub mod error;
 pub mod fingerprint;
 pub mod fixtures;
@@ -54,6 +55,9 @@ pub use debug_info::{
 };
 pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
+};
+pub use dwarf_sourcemap::{
+    CompileUnit, DwarfSourcemap, LineRow, synthesize_dwarf_sourcemap,
 };
 pub use error::{Error, Result};
 pub use fingerprint::{

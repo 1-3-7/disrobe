@@ -99,13 +99,46 @@ pub(crate) fn decompile(
         "native-decompile",
         "not implemented for the native decompile pass in this build",
     )?;
+    let sourcemap_path: Option<PathBuf> =
+        emit_dwarf_sourcemap_if_requested(&emit, &input, &out_dir, &stem)?;
     println!("native decompile: OK");
+    if let Some(path) = sourcemap_path {
+        println!("  sourcemap:    {}", path.display());
+    }
     println!("  input:        {}", input.display());
     println!("  ghidra:       {}", ghidra.display());
     println!("  out dir:      {}", out_dir.display());
     println!("  decompile:    {}", decompile_out.display());
     println!("  manifest:     {}", manifest_path.display());
     Ok(())
+}
+
+fn emit_dwarf_sourcemap_if_requested(
+    emit: &[String],
+    input: &Path,
+    out_dir: &Path,
+    stem: &str,
+) -> miette::Result<Option<PathBuf>> {
+    let spec: crate::cli::emit::EmitSpec = crate::cli::emit::EmitSpec::parse(emit)?;
+    if !spec.contains(crate::cli::emit::EmitKind::Sourcemap) {
+        return Ok(None);
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0010: cannot read input for sourcemap: {e}"))?;
+    let map: disrobe_pass_native::DwarfSourcemap =
+        disrobe_pass_native::synthesize_dwarf_sourcemap(&bytes).map_err(|e| {
+            miette::miette!(
+                "DR-NATIVE-0011: native --emit sourcemap: no recoverable DWARF in {}: {e}",
+                input.display()
+            )
+        })?;
+    let path: PathBuf = crate::cli::emit::write_applicable_payload(
+        out_dir,
+        stem,
+        crate::cli::emit::EmitKind::Sourcemap,
+        &map.to_sourcemap_json(),
+    )?;
+    Ok(Some(path))
 }
 
 fn write_decompile_script(script_path: &Path, decompile_out: &Path) -> miette::Result<()> {
