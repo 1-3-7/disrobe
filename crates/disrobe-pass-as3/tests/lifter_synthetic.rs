@@ -481,3 +481,139 @@ fn full_class_skeleton_has_lifted_method_body() {
         "old stub marker must be gone: {skel}"
     );
 }
+
+/// Honest recovery measurement: assemble a class whose four instance methods
+/// each carry a substantive body, then confirm the lifter renders a non-empty
+/// body for every one and the old stub markers never appear. Before this work
+/// every method rendered as `{ /* method */ }` (0/N bodies); the assertion
+/// here is the after-state floor (4/4).
+#[test]
+fn measures_method_body_recovery_rate() {
+    let mut pool: PoolBuilder = PoolBuilder::new();
+    let pkg_ns: u32 = pool.intern_ns(0x16, "");
+    let class_mn: u32 = pool.intern_qname(pkg_ns, "Widget");
+    let obj_mn: u32 = pool.intern_qname(pkg_ns, "Object");
+    let trace_mn: u32 = pool.intern_qname(pkg_ns, "trace");
+    let value_mn: u32 = pool.intern_qname(pkg_ns, "value");
+    let label: u32 = pool.intern_string("w");
+
+    let m_names: [u32; 4] = [
+        pool.intern_qname(pkg_ns, "init"),
+        pool.intern_qname(pkg_ns, "scale"),
+        pool.intern_qname(pkg_ns, "log"),
+        pool.intern_qname(pkg_ns, "clamp"),
+    ];
+
+    let mut init_code: Vec<u8> = Vec::new();
+    init_code.push(0xD0);
+    init_code.push(0xD1);
+    init_code.push(0x61);
+    u30(value_mn, &mut init_code);
+    init_code.push(0x47);
+
+    let scale_code: Vec<u8> = vec![0xD1, 0x24, 0x02, 0xA2, 0x48];
+
+    let mut log_code: Vec<u8> = Vec::new();
+    log_code.push(0xD0);
+    log_code.push(0x30);
+    log_code.push(0x5D);
+    u30(trace_mn, &mut log_code);
+    log_code.push(0x2C);
+    u30(label, &mut log_code);
+    log_code.push(0x4F);
+    u30(trace_mn, &mut log_code);
+    u30(1, &mut log_code);
+    log_code.push(0x47);
+
+    let clamp_code: Vec<u8> = vec![0xD1, 0x24, 0x00, 0x14, 0x00, 0x00, 0x00, 0x24, 0x00, 0x48];
+
+    let bodies: Vec<BodySpec> = vec![
+        BodySpec {
+            method: 1,
+            max_stack: 2,
+            local_count: 1,
+            code: init_code,
+        },
+        BodySpec {
+            method: 2,
+            max_stack: 2,
+            local_count: 2,
+            code: scale_code,
+        },
+        BodySpec {
+            method: 3,
+            max_stack: 2,
+            local_count: 1,
+            code: log_code,
+        },
+        BodySpec {
+            method: 4,
+            max_stack: 2,
+            local_count: 2,
+            code: clamp_code,
+        },
+    ];
+
+    let methods: Vec<MethodSpec> = (0..=4)
+        .map(|i: u32| MethodSpec {
+            return_type: 0,
+            param_types: if i == 0 { vec![] } else { vec![obj_mn] },
+            name: if i == 0 { 0 } else { m_names[(i - 1) as usize] },
+            param_names: vec![],
+        })
+        .collect();
+
+    let spec: AbcSpec = AbcSpec {
+        pool,
+        methods,
+        bodies,
+        class_name_mn: class_mn,
+        super_mn: obj_mn,
+        iinit: 0,
+        method_traits: vec![
+            (m_names[0], 1, 0x01),
+            (m_names[1], 2, 0x01),
+            (m_names[2], 3, 0x01),
+            (m_names[3], 4, 0x01),
+        ],
+    };
+
+    let abc: AbcFile = parse_fixture(&assemble(&spec));
+    let mut lifted_bodies: usize = 0;
+    let total: usize = abc.method_bodies.len();
+    for (i, body) in abc.method_bodies.iter().enumerate() {
+        let info: Option<&disrobe_pass_as3::abc::MethodInfo> = abc.methods.get(i + 1);
+        let lifted: LiftedBody = lift_body(&abc, body, info).expect("lift");
+        let names: LocalNames = local_names_for(&abc, info);
+        let rendered: String = render_body(&lifted, &names, "");
+        if !rendered.trim().is_empty() {
+            lifted_bodies += 1;
+        }
+    }
+    assert_eq!(
+        lifted_bodies, total,
+        "every substantive method body must lift to non-empty pseudocode"
+    );
+
+    let skel: String = render_class_skeleton(&abc, &abc.instances[0]).expect("skeleton");
+    assert!(
+        !skel.contains("/* method */") && !skel.contains("/* getter */"),
+        "no stub markers may remain: {skel}"
+    );
+    assert!(
+        skel.contains("this.value = arg1;"),
+        "property assignment must be recovered: {skel}"
+    );
+    assert!(
+        skel.contains("return (arg1 * 2);"),
+        "arithmetic return must be recovered: {skel}"
+    );
+    assert!(
+        skel.contains("trace(\"w\")"),
+        "call recovery must be present: {skel}"
+    );
+    assert!(
+        skel.contains("goto L"),
+        "branch recovery must be present: {skel}"
+    );
+}

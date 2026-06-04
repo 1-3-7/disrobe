@@ -17,7 +17,7 @@ pub use abc::{AbcFile, ConstantPool, DisasmLine, Multiname};
 pub use decompile::{render_class_skeleton, render_program};
 pub use error::{Error, Result};
 pub use lifter::{Expr, LiftedBody, LocalNames, Stmt, lift_body, local_names_for, render_body};
-pub use obf::{ConfidenceScore, ObfuscationReport, ObfuscationSignal, analyze};
+pub use obf::{ConfidenceScore, KnownTool, ObfuscationReport, ObfuscationSignal, analyze};
 pub use other_langs::{DetectedLanguage, DetectionReport, detect_source_or_binary};
 pub use pass::{As3Pass, As3PassReport, PASS_INPUT_PATH_CAP, PassInput, decode_pass_input};
 pub use provenance_header::{as3_decompiled_header, render_as3_with_header};
