@@ -4,10 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+pub mod bigint;
+pub mod builtins;
 pub mod decompile;
 pub mod literals;
 pub mod regex;
 
+pub use bigint::{bigint_literal, recover_bigints};
+pub use builtins::{builtin_name, is_template_object_builtin};
 pub use decompile::{
     DecompileReport, DecompiledFunction, decompile_function, decompile_module,
     disassemble_function_instructions,
@@ -91,6 +95,9 @@ pub struct HermesModule {
     pub obj_key_buffer: Vec<u8>,
     #[serde(skip)]
     pub obj_value_buffer: Vec<u8>,
+    pub big_int_table: Vec<BigIntTableEntry>,
+    #[serde(skip)]
+    pub big_int_storage: Vec<u8>,
     pub reg_exp_table: Vec<RegExpTableEntry>,
     #[serde(skip)]
     pub reg_exp_storage: Vec<u8>,
@@ -100,6 +107,12 @@ pub struct HermesModule {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegExpTableEntry {
+    pub offset: u32,
+    pub length: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BigIntTableEntry {
     pub offset: u32,
     pub length: u32,
 }
@@ -226,13 +239,17 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         header.obj_value_buffer_size as usize,
     );
     buffer_cursor = align_up(buffer_cursor, 4);
+    let (big_int_table, big_int_storage): (Vec<BigIntTableEntry>, Vec<u8>) = parse_big_int_section(
+        bytes,
+        &mut buffer_cursor,
+        header.big_int_count as usize,
+        header.big_int_storage_size as usize,
+    );
     let (reg_exp_table, reg_exp_storage): (Vec<RegExpTableEntry>, Vec<u8>) = parse_reg_exp_section(
         bytes,
         &mut buffer_cursor,
         header.reg_exp_count as usize,
         header.reg_exp_storage_size as usize,
-        header.big_int_count as usize,
-        header.big_int_storage_size as usize,
     );
 
     Ok(HermesModule {
@@ -247,6 +264,8 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         array_buffer,
         obj_key_buffer,
         obj_value_buffer,
+        big_int_table,
+        big_int_storage,
         reg_exp_table,
         reg_exp_storage,
         raw_image: bytes.to_vec(),
@@ -265,28 +284,49 @@ fn take_buffer(bytes: &[u8], cursor: &mut usize, size: usize) -> Vec<u8> {
     bytes[start..end].to_vec()
 }
 
-/// Parses the bigint table+storage (skipped) then the regexp table+storage from
-/// the v94-96 segment order. The bigint section precedes the regexp section, so
-/// it must be stepped over even though the bigint literals themselves are not
-/// reconstructed here. Returns an empty result if any offset runs past the
-/// input rather than reading out of bounds.
+/// Parses the bigint `(offset,length)` table then its raw little-endian
+/// two's-complement digit storage, advancing the cursor past both. The bigint
+/// section precedes the regexp section in the v94-96 segment order. Returns an
+/// empty result (and advances the cursor as far as is safe) if any offset runs
+/// past the input rather than reading out of bounds.
+#[must_use]
+fn parse_big_int_section(
+    bytes: &[u8],
+    cursor: &mut usize,
+    big_int_count: usize,
+    big_int_storage_size: usize,
+) -> (Vec<BigIntTableEntry>, Vec<u8>) {
+    const BIGINT_TABLE_ENTRY_SIZE: usize = 8;
+    let table_bytes: usize = big_int_count.saturating_mul(BIGINT_TABLE_ENTRY_SIZE);
+    if cursor.saturating_add(table_bytes) > bytes.len() {
+        *cursor = bytes.len();
+        return (Vec::new(), Vec::new());
+    }
+    let mut table: Vec<BigIntTableEntry> = Vec::with_capacity(big_int_count);
+    for i in 0..big_int_count {
+        let base: usize = *cursor + i * BIGINT_TABLE_ENTRY_SIZE;
+        let offset: u32 = u32::from_le_bytes(slice_4(bytes, base));
+        let length: u32 = u32::from_le_bytes(slice_4(bytes, base + 4));
+        table.push(BigIntTableEntry { offset, length });
+    }
+    *cursor += table_bytes;
+    *cursor = align_up(*cursor, 4);
+    let storage: Vec<u8> = take_buffer(bytes, cursor, big_int_storage_size);
+    *cursor = align_up(*cursor, 4);
+    (table, storage)
+}
+
+/// Parses the regexp `(offset,length)` table then its compiled-bytecode storage
+/// from the v94-96 segment order, advancing the cursor. Returns an empty result
+/// if any offset runs past the input rather than reading out of bounds.
 #[must_use]
 fn parse_reg_exp_section(
     bytes: &[u8],
     cursor: &mut usize,
     reg_exp_count: usize,
     reg_exp_storage_size: usize,
-    big_int_count: usize,
-    big_int_storage_size: usize,
 ) -> (Vec<RegExpTableEntry>, Vec<u8>) {
-    const BIGINT_TABLE_ENTRY_SIZE: usize = 8;
     const REGEXP_TABLE_ENTRY_SIZE: usize = 8;
-    let big_int_table_bytes: usize = big_int_count.saturating_mul(BIGINT_TABLE_ENTRY_SIZE);
-    *cursor = cursor.saturating_add(big_int_table_bytes);
-    *cursor = align_up(*cursor, 4);
-    *cursor = cursor.saturating_add(big_int_storage_size);
-    *cursor = align_up(*cursor, 4);
-
     let table_bytes: usize = reg_exp_count.saturating_mul(REGEXP_TABLE_ENTRY_SIZE);
     if cursor.saturating_add(table_bytes) > bytes.len() {
         return (Vec::new(), Vec::new());

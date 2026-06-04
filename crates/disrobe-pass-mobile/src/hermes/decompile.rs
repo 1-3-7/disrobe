@@ -40,6 +40,12 @@ const MAX_REG_EXPR_BYTES: usize = 4096;
 /// body is closed with an honest omission marker instead of growing further.
 const MAX_RENDER_BYTES: usize = 1 << 20;
 
+/// Upper bound on dense `SwitchImm` case entries reconstructed. `maxVal-minVal`
+/// is two u32 operands, so a forged pair could request billions of cases; real
+/// switches are tiny, so anything past this is treated as a non-recoverable
+/// table and the switch falls back to a scrutinee-only summary.
+const MAX_SWITCH_CASES: u64 = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Operand {
     Reg8,
@@ -538,15 +544,17 @@ pub(crate) fn build_cfg(instructions: &[Instruction]) -> Cfg {
 
 struct LiftCtx<'a> {
     module: &'a HermesModule,
+    code: &'a [u8],
     regs: BTreeMap<u32, String>,
     reconstructed: usize,
     fallback: usize,
 }
 
 impl<'a> LiftCtx<'a> {
-    fn new(module: &'a HermesModule) -> Self {
+    fn new(module: &'a HermesModule, code: &'a [u8]) -> Self {
         LiftCtx {
             module,
+            code,
             regs: BTreeMap::new(),
             reconstructed: 0,
             fallback: 0,
@@ -680,6 +688,59 @@ impl<'a> LiftCtx<'a> {
             return s.clone();
         }
         format!("$str{id}")
+    }
+
+    fn raw_string(&self, id: u32) -> String {
+        self.module
+            .strings
+            .get(id as usize)
+            .or_else(|| self.module.identifiers.get(id as usize))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn bigint_lit(&self, id: u32) -> String {
+        let Some(entry): Option<&super::BigIntTableEntry> =
+            self.module.big_int_table.get(id as usize)
+        else {
+            return format!("$bigint{id}n");
+        };
+        let start: usize = entry.offset as usize;
+        let end: usize = start.saturating_add(entry.length as usize);
+        match self.module.big_int_storage.get(start..end) {
+            Some(slice) if !slice.is_empty() => super::bigint::bigint_literal(slice),
+            _ => format!("$bigint{id}n"),
+        }
+    }
+
+    fn switch_cases(
+        &self,
+        inst_offset: usize,
+        table_offset: u64,
+        min_val: u64,
+        max_val: u64,
+    ) -> Vec<(i64, usize)> {
+        if max_val < min_val {
+            return Vec::new();
+        }
+        let entry_count: u64 = max_val - min_val + 1;
+        if entry_count > MAX_SWITCH_CASES {
+            return Vec::new();
+        }
+        let table_base: usize = inst_offset.saturating_add(table_offset as usize);
+        let aligned_base: usize = (table_base + 3) & !3usize;
+        let mut cases: Vec<(i64, usize)> = Vec::with_capacity(entry_count as usize);
+        for k in 0..entry_count {
+            let entry_at: usize = aligned_base + (k as usize) * 4;
+            let Some(raw): Option<&[u8]> = self.code.get(entry_at..entry_at + 4) else {
+                break;
+            };
+            let rel: i32 = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+            let target: usize = (inst_offset as i64 + rel as i64).max(0) as usize;
+            let case_value: i64 = min_val as i64 + k as i64;
+            cases.push((case_value, target));
+        }
+        cases
     }
 }
 
@@ -831,6 +892,11 @@ pub(crate) enum BlockStmt {
         fallthrough: Option<usize>,
     },
     Jump(usize),
+    Switch {
+        scrutinee: String,
+        cases: Vec<(i64, usize)>,
+        default: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1047,6 +1113,64 @@ fn lift_instruction(
                 "function"
             };
             ctx.set_reg(d, format!("{prefix} {nm}() {{ /* fn #{fid} */ }}"));
+            ctx.reconstructed += 1;
+        }
+        "CreateRegExp" => {
+            let d: u32 = reg_of(ops.first());
+            let pattern: String = ctx.raw_string(strid_of(ops.get(1)));
+            let flags: String = ctx.raw_string(strid_of(ops.get(2)));
+            ctx.set_reg(d, format!("/{pattern}/{flags}"));
+            ctx.reconstructed += 1;
+        }
+        "SwitchImm" => {
+            let scrutinee: String = ctx.reg_expr(reg_of(ops.first()));
+            let table_offset: u64 = uint_of(ops.get(1));
+            let default: usize = match ops.get(2) {
+                Some(OperandValue::Target(t)) => *t,
+                _ => 0,
+            };
+            let min_val: u64 = uint_of(ops.get(3));
+            let max_val: u64 = uint_of(ops.get(4));
+            let cases: Vec<(i64, usize)> =
+                ctx.switch_cases(inst.offset, table_offset, min_val, max_val);
+            stmts.push(BlockStmt::Switch {
+                scrutinee,
+                cases,
+                default,
+            });
+            ctx.reconstructed += 1;
+        }
+        "CallBuiltin" | "CallBuiltinLong" => {
+            let d: u32 = reg_of(ops.first());
+            let builtin_id: u64 = uint_of(ops.get(1));
+            let argc: u64 = uint_of(ops.get(2)).saturating_sub(1);
+            if super::builtins::is_template_object_builtin(builtin_id) {
+                ctx.set_reg(d, "`${/* template */}`".to_owned());
+                ctx.reconstructed += 1;
+                return;
+            }
+            let callee: String = super::builtins::builtin_name(builtin_id);
+            let rendered: u64 = argc.min(MAX_RENDERED_CALL_ARGS);
+            let mut args: String = String::with_capacity(rendered as usize * 4);
+            for i in 0..rendered {
+                if i > 0 {
+                    args.push_str(", ");
+                }
+                let _ = write!(args, "a{i}");
+            }
+            if argc > rendered {
+                let _ = write!(args, ", /* +{} args */", argc - rendered);
+            }
+            ctx.set_reg(d, format!("{callee}({args})"));
+            ctx.reconstructed += 1;
+        }
+        "LoadConstBigInt" | "LoadConstBigIntLongIndex" => {
+            let d: u32 = reg_of(ops.first());
+            let bid: u32 = match ops.get(1) {
+                Some(OperandValue::BigIntId(b)) => *b,
+                _ => 0,
+            };
+            ctx.set_reg(d, ctx.bigint_lit(bid));
             ctx.reconstructed += 1;
         }
         "Call" | "CallLong" | "Construct" | "ConstructLong" => {
@@ -1287,7 +1411,7 @@ pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunc
     let instructions: Vec<Instruction> = decode_instructions(code);
     let cfg: Cfg = build_cfg(&instructions);
 
-    let mut ctx: LiftCtx<'_> = LiftCtx::new(module);
+    let mut ctx: LiftCtx<'_> = LiftCtx::new(module, code);
     let lifted: Vec<LiftedBlock> = cfg
         .blocks
         .iter()
@@ -1419,6 +1543,24 @@ fn render_block_stmts(
                     .map_or_else(String::new, |b: &usize| format!(" else goto L{b};"));
                 let _ = writeln!(out, "{indent}if ({cond}) goto {tlabel};{flabel}");
             }
+            BlockStmt::Switch {
+                scrutinee,
+                cases,
+                default,
+            } => {
+                let _ = writeln!(out, "{indent}switch ({scrutinee}) {{");
+                for (value, target) in cases {
+                    let tlabel: String = block_index
+                        .get(target)
+                        .map_or_else(|| format!("@{target:#06x}"), |b: &usize| format!("L{b}"));
+                    let _ = writeln!(out, "{indent}  case {value}: goto {tlabel};");
+                }
+                let dlabel: String = block_index
+                    .get(default)
+                    .map_or_else(|| format!("@{default:#06x}"), |b: &usize| format!("L{b}"));
+                let _ = writeln!(out, "{indent}  default: goto {dlabel};");
+                let _ = writeln!(out, "{indent}}}");
+            }
         }
     }
 }
@@ -1529,6 +1671,8 @@ mod tests {
             array_buffer: Vec::new(),
             obj_key_buffer: Vec::new(),
             obj_value_buffer: Vec::new(),
+            big_int_table: Vec::new(),
+            big_int_storage: Vec::new(),
             reg_exp_table: Vec::new(),
             reg_exp_storage: Vec::new(),
             raw_image: code,
@@ -1836,6 +1980,129 @@ mod tests {
         assert!(
             f.source.contains("\"data-id\": 1"),
             "expected quoted key; src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn decompile_create_regexp_exact_pattern() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("CreateRegExp"));
+        code.push(0u8);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&[], &["\\d+[a-z]*", "gi"], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("/\\d+[a-z]*/gi"),
+            "expected exact regex literal; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_callbuiltin_resolves_native_name() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("CallBuiltin"));
+        code.push(0u8);
+        code.push(34u8);
+        code.push(2u8);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&[], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("Object.keys("),
+            "expected Object.keys; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_callbuiltin_template_object_marks_template_literal() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("CallBuiltin"));
+        code.push(0u8);
+        code.push(39u8);
+        code.push(2u8);
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&[], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("template"),
+            "expected template literal marker; src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn decompile_bigint_literal_synthesis() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadConstBigInt"));
+        code.push(0u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let mut module: HermesModule = module_with(&["x"], &[], code, 1);
+        module.big_int_storage = 123_456_789u64.to_le_bytes().to_vec();
+        module.big_int_table = vec![crate::hermes::BigIntTableEntry {
+            offset: 0,
+            length: 8,
+        }];
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("return 123456789n;"),
+            "expected bigint literal; src: {}",
+            f.source
+        );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn decompile_switch_imm_dense_table() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[1u8, 1u8]);
+        let switch_off: usize = code.len();
+        code.push(opcode_byte("SwitchImm"));
+        let header_len: usize = 1 + 1 + 4 + 4 + 4 + 4;
+        let default_target_rel: i32 = 100;
+        let table_offset: u32 = header_len as u32;
+        code.push(1u8);
+        code.extend_from_slice(&table_offset.to_le_bytes());
+        code.extend_from_slice(&default_target_rel.to_le_bytes());
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.extend_from_slice(&2u32.to_le_bytes());
+        while (code.len()) % 4 != 0 {
+            code.push(opcode_byte("Debugger"));
+        }
+        let table_at: usize = code.len();
+        for k in 0i32..3 {
+            let rel: i32 = 200 + k * 4 - switch_off as i32;
+            code.extend_from_slice(&rel.to_le_bytes());
+        }
+        let _ = table_at;
+        let module: HermesModule = module_with(&[], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(
+            f.source.contains("switch ("),
+            "expected switch; src: {}",
+            f.source
+        );
+        assert!(
+            f.source.contains("case 0:") && f.source.contains("case 2:"),
+            "expected dense cases 0..2; src: {}",
+            f.source
+        );
+        assert!(
+            f.source.contains("default:"),
+            "expected default; src: {}",
             f.source
         );
     }
