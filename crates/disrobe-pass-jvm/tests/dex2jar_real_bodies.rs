@@ -12,6 +12,13 @@ use std::path::PathBuf;
 use disrobe_pass_jvm::bytecode::{CodeAttribute, Instruction, disassemble, parse_code_attribute};
 use disrobe_pass_jvm::classfile::{Attribute, ClassFile, MethodInfo};
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
+
+const ALOAD_0: u8 = 0x2A;
+const GETFIELD: u8 = 0xB4;
+const DSTORE_1: u8 = 0x48;
+const DLOAD_1: u8 = 0x27;
+const DMUL: u8 = 0x6B;
+const DRETURN: u8 = 0xAF;
 use disrobe_pass_jvm::parse_classfile;
 
 fn corpus(parts: &[&str]) -> PathBuf {
@@ -286,15 +293,17 @@ fn square_area_code_bytes_are_exact() {
     let lo: u8 = (getfield_idx & 0xFF) as u8;
 
     let expected: Vec<u8> = vec![
-        0x2A, // aload_0  (Dalvik 'this' register remapped to JVM local 0)
-        0xB4, hi, lo,   // getfield side:D
-        0x48, // dstore_1
-        0x27, // dload_1
-        0x27, // dload_1
-        0x6B, // dmul
-        0x48, // dstore_1
-        0x27, // dload_1
-        0xAF, // dreturn
+        ALOAD_0,
+        GETFIELD,
+        hi,
+        lo,
+        DSTORE_1,
+        DLOAD_1,
+        DLOAD_1,
+        DMUL,
+        DSTORE_1,
+        DLOAD_1,
+        DRETURN,
     ];
     assert_eq!(
         code.code, expected,
