@@ -63,7 +63,24 @@ first becomes the canonical id and the rest are recorded as aliases.
 
 Semantic recovery (control flow + operators) is provably lossless for structured
 WASM and measured by WAT round-trip equality on the corpus. Name recovery is
-measured separately and only nonzero when DWARF or a source map is present.
+measured separately and only nonzero when DWARF, a source map, or a name section
+is present.
+
+Measured (`tests/semantic_recovery_corpus.rs`, independent `wat::parse_str`
+re-parser as ground truth):
+- 28 corpus modules parsed, 3 skipped (GC/component/feature WATs the structured
+  lifter does not target).
+- Semantic recovery: 76/76 = 100.0% of defined function bodies round-trip.
+- Name recovery on this corpus: 76/76 = 100.0% — but ALL of that is from the wasm
+  name/export sections (every fixture is named). The DWARF/source-map path is what
+  raises name recovery on STRIPPED binaries; with neither name section nor DWARF nor
+  `.wasm.map`, name recovery is 0% and the lifter emits positional `p/l/func_N`
+  (a real ceiling, proven by `name_recovery_e2e::positional_names_without_debug_info`).
+
+Before this work: lifter always emitted positional `p{idx}`/`l{idx}` even when DWARF
+or a source map carried real names (~75-80% effective source quality, names lost).
+After: real names flow through whenever debug info is present; semantic round-trip
+unchanged at 100% (it was already lossless for structured WASM).
 
 ## invariants
 
