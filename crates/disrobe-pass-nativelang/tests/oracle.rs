@@ -216,7 +216,13 @@ fn parse_crystal_source(src: &str) -> SourceTruth {
     SourceTruth { classes, methods }
 }
 
-fn crystal_codegen_symbols(truth: &SourceTruth) -> Vec<String> {
+/// Builds Crystal symbols in the documented `Class#method` / `Class.class` mangling convention
+/// from the real source-truth names. The mangled FORM is constructed here — no real compiled
+/// Crystal binary symbol table is committed — so this exercises the demangler against the spec
+/// convention, NOT against upstream `crystal build` output. See
+/// [`crystal_compiled_binary_roundtrip_sourcing_blocked`] for the real-binary gap. Contrast the
+/// Zig/Nim oracles, which read symbols from real committed ELF64 binaries.
+fn crystal_spec_mangled_symbols(truth: &SourceTruth) -> Vec<String> {
     let mut syms: Vec<String> = Vec::new();
     for class in &truth.classes {
         syms.push(format!("{class}.class"));
@@ -232,7 +238,7 @@ fn crystal_codegen_symbols(truth: &SourceTruth) -> Vec<String> {
 }
 
 #[test]
-fn crystal_demangler_recovers_source_derived_names_non_circular() {
+fn crystal_demangler_reverses_spec_constructed_mangling() {
     let src: String = std::fs::read_to_string(crystal_source_path()).expect("read hello.cr source");
     let truth: SourceTruth = parse_crystal_source(&src);
     assert!(
@@ -248,7 +254,7 @@ fn crystal_demangler_recovers_source_derived_names_non_circular() {
         );
     }
 
-    let symbols: Vec<String> = crystal_codegen_symbols(&truth);
+    let symbols: Vec<String> = crystal_spec_mangled_symbols(&truth);
     let demangled: Vec<DemangledSymbol> =
         symbols.iter().filter_map(|s| demangle_crystal(s)).collect();
 
