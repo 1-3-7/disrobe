@@ -170,6 +170,63 @@ fn erlang_megafile_recovers_full_bodies() {
     );
 }
 
+/// With the `Dbgi` chunk stripped, recovery falls to the register-named
+/// core-lift. The module-attribute emitter must still recover `-module`,
+/// `-export`, and `-behaviour` from the chunk tables, drop the compiler-injected
+/// `module_info` accessors, and emit no bogus `-import` directives (the original
+/// source has none). This is the honest no-Dbgi cohort (the register-name wall).
+#[test]
+fn erlang_no_dbgi_core_lift_recovers_module_attributes() {
+    let bytes: Vec<u8> = erlang_megafile();
+    let stripped: Vec<u8> = strip_dbgi(&bytes);
+    let beam: BeamFile = BeamFile::parse(&stripped).unwrap();
+    assert!(beam.chunks.dbgi.is_none(), "Dbgi must be stripped");
+    let surface: ErlangSurface = recover_erlang(&beam).expect("recover");
+    assert_eq!(surface.recovered_from, RecoverySource::CoreLifted);
+    assert!(surface.source.starts_with("-module(edge_cases)."));
+    assert!(
+        surface.source.contains("-behaviour(gen_server)."),
+        "behaviour attribute should be recovered from the Attr chunk\n{}",
+        &surface.source[..surface.source.len().min(400)]
+    );
+    assert!(
+        !surface.source.contains("module_info"),
+        "compiler-injected module_info must not appear"
+    );
+    assert!(
+        !surface.source.contains("-import("),
+        "BIF/external calls are not -import directives"
+    );
+    assert!(surface.source.contains("main() ->"));
+    assert!(surface.source.contains("handle_call("));
+}
+
+/// Drops the `Dbgi` chunk from a BEAM IFF so recovery is forced onto core-lift.
+fn strip_dbgi(bytes: &[u8]) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut cursor: usize = 12;
+    while cursor + 8 <= bytes.len() {
+        let tag: &[u8] = &bytes[cursor..cursor + 4];
+        let len: usize = u32::from_be_bytes([
+            bytes[cursor + 4],
+            bytes[cursor + 5],
+            bytes[cursor + 6],
+            bytes[cursor + 7],
+        ]) as usize;
+        let total: usize = 8 + len.div_ceil(4) * 4;
+        if tag != b"Dbgi" {
+            body.extend_from_slice(&bytes[cursor..(cursor + total).min(bytes.len())]);
+        }
+        cursor += total;
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(12 + body.len());
+    out.extend_from_slice(b"FOR1");
+    out.extend_from_slice(&u32::try_from(4 + body.len()).unwrap().to_be_bytes());
+    out.extend_from_slice(b"BEAM");
+    out.extend_from_slice(&body);
+    out
+}
+
 fn sig_tokens(src: &str) -> std::collections::BTreeSet<String> {
     let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut cur: String = String::new();

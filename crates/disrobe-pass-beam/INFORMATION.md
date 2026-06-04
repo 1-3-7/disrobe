@@ -55,20 +55,33 @@ clause's leading type/relational test chain (see `body_lift::clause`).
 
 ## module-attrs
 
-`surface::render_module_header` emits `-module`/`-export` from the Atom +
-ExpT tables when Dbgi abstract code is absent.
+`surface::render_from_core` emits `-module` (Atom table) + `-export` (ExpT) and
+recovers `-behaviour`/custom attributes from the `Attr` chunk when no Dbgi is
+present. The compiler-injected `module_info/0,1` exports are dropped, and the
+`ImpT` table is NOT rendered as `-import` directives (Erlang external calls are
+qualified `mod:fun`, not imports — emitting them was invalid and was removed).
 
 ## recovery-measurement
 
-`tests/elixir_source_recover.rs` and `examples/measure_recovery.rs` token-match
-the recovered source against the original corpus `.ex`/`.erl` (independent
-ground truth, NOT re-emitted). Two cohorts reported separately:
-- with-Dbgi: Elixir megafile (full quoted AST present) -> defs/arities/bodies.
-- no-Dbgi: Erlang core-lift (register names absent is the wall).
+`tests/elixir_source_recover.rs`, `tests/erlang_dbgi_recover.rs`, and
+`examples/measure_recovery.rs` token-match recovered source against the original
+corpus `.ex`/`.erl` (independent ground truth, NOT re-emitted). The no-Dbgi
+cohort is produced by stripping the `Dbgi` chunk from the IFF and re-parsing.
 
-Token recovery = fraction of original significant tokens (idents, atoms,
-operators, keywords) present in recovered output, order-independent at the
-definition level.
+Measured on the OTP-29 / Elixir-1.18.4 megafile (commit-pinned corpus):
+
+| cohort | path | recovery |
+|--------|------|----------|
+| Elixir + Dbgi | `ElixirDbgiForm` (quoted-AST printer) | root-module def names 63/63 = 100%; idiomatic recompilable source |
+| Erlang + Dbgi | `AbstractCode` (`erl_pp`-shaped printer) | 330/331 tokens = 99.7%, 62/62 fn-heads (only `?MODULE` macro lost) |
+| Erlang, no Dbgi | `CoreLifted` (register-named) | 244/331 tokens = 73.7% — the register-name wall |
+
+The Erlang Dbgi parse bug (modern `{debug_info_v1, erl_abstract_code, _}` was
+misclassified as the Elixir backend) had been masking the abstract-code path
+entirely; fixing backend dispatch lifted Erlang+Dbgi from ~0% to 99.7%.
+
+Token recovery = fraction of original significant tokens (idents >=2 chars,
+atoms, operators, keywords) present in recovered output, order-independent.
 
 ## invariants
 

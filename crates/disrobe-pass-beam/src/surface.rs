@@ -50,7 +50,8 @@ pub fn recover(beam: &BeamFile) -> Result<ErlangSurface> {
         }
     }
     let core: CoreModule = crate::core_erlang::lift(beam)?;
-    let source: String = render_from_core(&core);
+    let attributes: Option<&Term> = beam.chunks.attributes.as_ref().map(|a| &a.term);
+    let source: String = render_from_core(&core, attributes);
     Ok(ErlangSurface {
         module,
         source,
@@ -173,28 +174,71 @@ fn small_int(t: &Term) -> Option<u32> {
     }
 }
 
-fn render_from_core(core: &CoreModule) -> String {
+/// Whether an export is an auto-generated `module_info` accessor (BEAM injects
+/// `module_info/0` and `module_info/1` into every module; they are not part of
+/// the original source).
+fn is_module_info_export(name: &str, arity: u32) -> bool {
+    name == "module_info" && (arity == 0 || arity == 1)
+}
+
+fn render_from_core(core: &CoreModule, attributes: Option<&Term>) -> String {
     let mut out: String = String::new();
     out.push_str("-module(");
     out.push_str(&core.module);
     out.push_str(").\n");
-    if !core.exports.is_empty() {
+    if let Some(attrs) = attributes {
+        render_module_attributes(&mut out, attrs);
+    }
+    let exports: Vec<String> = core
+        .exports
+        .iter()
+        .filter(|(n, a): &&(String, u32)| !is_module_info_export(n, *a))
+        .map(|(n, a): &(String, u32)| format!("{}/{a}", render_atom_name(n)))
+        .collect();
+    if !exports.is_empty() {
         out.push_str("-export([");
-        let parts: Vec<String> = core
-            .exports
-            .iter()
-            .map(|(n, a): &(String, u32)| format!("{n}/{a}"))
-            .collect();
-        out.push_str(&parts.join(", "));
+        out.push_str(&exports.join(", "));
         out.push_str("]).\n");
     }
-    for (m, n, a) in &core.imports {
-        out.push_str(&format!("-import({m}, [{n}/{a}]).\n"));
-    }
     for f in &core.functions {
+        if is_module_info_export(&f.name, f.arity) {
+            continue;
+        }
         render_function(&mut out, f);
     }
     out
+}
+
+/// Emits source-level module attributes recovered from the `Attr` chunk
+/// (`[{behaviour, [gen_server]}, {vsn, [...]}, ...]`). `vsn` is the
+/// compiler-injected module version and is skipped as noise.
+fn render_module_attributes(out: &mut String, attrs: &Term) {
+    let Some(list) = attrs.as_list() else {
+        return;
+    };
+    for attr in list {
+        let Some(tuple) = attr.as_tuple() else {
+            continue;
+        };
+        if tuple.len() != 2 {
+            continue;
+        }
+        let Some(name) = tuple[0].as_atom() else {
+            continue;
+        };
+        if name == "vsn" {
+            continue;
+        }
+        let value: &Term = match tuple[1].as_list() {
+            Some([single]) => single,
+            _ => &tuple[1],
+        };
+        out.push('-');
+        out.push_str(name);
+        out.push('(');
+        out.push_str(&render_inline(value));
+        out.push_str(").\n");
+    }
 }
 
 fn render_function(out: &mut String, f: &CoreFunction) {
