@@ -26,7 +26,9 @@ use crate::error::{Error, Result};
 pub use browserify::detect as detect_browserify;
 pub use bun::detect as detect_bun;
 pub use esbuild::detect as detect_esbuild;
-pub use graph::{ChunkNode, ModuleGraph, UnbundleGraphResult, write_graph};
+pub use graph::{
+    ChunkAnnotation, ChunkKind, ChunkNode, ModuleGraph, UnbundleGraphResult, write_graph,
+};
 pub use manifest::{ViteManifest, ViteManifestEntry, parse_vite_manifest, vite_manifest_to_graph};
 pub use parcel::detect as detect_parcel;
 pub use require_rewrite::{build_id_to_path_map, rewrite_modules, rewrite_requires};
@@ -34,8 +36,10 @@ pub use rolldown::detect as detect_rolldown;
 pub use rollup::detect as detect_rollup;
 pub use sourcemap::{SourceMapInfo, find as find_source_map};
 pub use sourcemap_synth::{
-    DecodedInlineMap, SourceMapEmit, SynthesizedSourceMap, decode_inline_data_url,
-    emit as emit_source_maps, serialize as serialize_source_map, synthesize_from_modules,
+    DecodedInlineMap, DecodedMappings, MappingSegment, RecoveredSourceMap, SourceMapEmit,
+    SynthesizedSourceMap, decode_inline_data_url, decode_mappings, decode_vlq,
+    emit as emit_source_maps, parse_source_map, serialize as serialize_source_map,
+    synthesize_from_modules,
 };
 pub use systemjs::detect as detect_systemjs;
 pub use turbopack::detect as detect_turbopack;

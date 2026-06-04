@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::graph::{ChunkNode, ModuleGraph};
+use super::graph::{ChunkAnnotation, ChunkKind, ChunkNode, ModuleGraph};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,12 +50,34 @@ pub fn vite_manifest_to_graph(manifest: &ViteManifest) -> ModuleGraph {
         if entry.is_entry && graph.entry.is_none() {
             graph.entry = Some(key.clone());
         }
+        let kind: ChunkKind = infer_chunk_kind(key, entry);
         graph.upsert_chunk(node);
+        graph.annotate_chunk(
+            key.clone(),
+            ChunkAnnotation {
+                kind,
+                chunk_name: entry.name.clone(),
+                prefetch: false,
+                preload: false,
+            },
+        );
         if let Some(src) = entry.src.as_ref() {
             graph.link_module_to_chunk(src, key);
         }
     }
     graph
+}
+
+fn infer_chunk_kind(key: &str, entry: &ViteManifestEntry) -> ChunkKind {
+    if entry.is_entry {
+        ChunkKind::Entry
+    } else if entry.is_dynamic_entry {
+        ChunkKind::DynamicEntry
+    } else if key.starts_with('_') {
+        ChunkKind::Shared
+    } else {
+        ChunkKind::Unknown
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +122,27 @@ mod tests {
         assert_eq!(
             g.chunks.get("src/main.ts").expect("main").imports,
             vec!["_shared-xyz.js"]
+        );
+    }
+
+    #[test]
+    fn infers_chunk_kind_per_manifest_entry() {
+        let m: ViteManifest = parse_vite_manifest(MANIFEST).expect("parse");
+        let g: ModuleGraph = vite_manifest_to_graph(&m);
+        assert_eq!(
+            g.chunk_annotations.get("src/main.ts").expect("main").kind,
+            ChunkKind::Entry
+        );
+        assert_eq!(
+            g.chunk_annotations.get("src/lazy.ts").expect("lazy").kind,
+            ChunkKind::DynamicEntry
+        );
+        assert_eq!(
+            g.chunk_annotations
+                .get("_shared-xyz.js")
+                .expect("shared")
+                .kind,
+            ChunkKind::Shared
         );
     }
 }

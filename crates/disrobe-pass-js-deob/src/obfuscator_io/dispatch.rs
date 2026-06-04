@@ -18,6 +18,7 @@ use super::control_flow_switch::{ControlFlowSwitchResult, unflatten_control_flow
 use super::controls::ObfControl;
 use super::normalize_strings::{NormalizeStringsResult, normalize_escaped_strings};
 use super::presets::Preset;
+use super::scope_proxy::{ScopeProxyResult, merge_scope_proxies};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -61,6 +62,7 @@ pub struct Output {
     pub dispatcher_call_sites_inlined: usize,
     pub flatten_dispatches_collapsed: usize,
     pub control_flow_objects_merged: usize,
+    pub scope_proxy_objects_merged: usize,
     pub control_flow_switches_unflattened: usize,
     pub string_literals_normalized: usize,
     pub opaque_predicates_folded: usize,
@@ -160,6 +162,18 @@ fn run_control_flow(mut current: String, opts: &Options, out: &mut Output) -> St
                 usize_to_u64(cfo.call_sites_inlined),
             );
             current = cfo.rewritten_source;
+        }
+        let scoped: ScopeProxyResult = merge_scope_proxies(&current);
+        if scoped.objects_merged > 0 {
+            out.control_flow_objects_merged += scoped.objects_merged;
+            out.scope_proxy_objects_merged += scoped.objects_merged;
+            out.controls_applied.insert(ObfControl::Objects);
+            bump(
+                &mut out.per_control_stats,
+                "objects",
+                usize_to_u64(scoped.call_sites_inlined),
+            );
+            current = scoped.rewritten_source;
         }
     }
     if !opts.controls.contains(&ObfControl::ControlFlowFlattening) {

@@ -5,6 +5,7 @@ mod detection;
 mod dispatch;
 mod normalize_strings;
 mod presets;
+mod scope_proxy;
 
 pub use controls::ObfControl;
 pub use detection::{ObfuscatorIoDetection, detect};

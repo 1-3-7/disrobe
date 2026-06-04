@@ -1,8 +1,68 @@
 use regex::Regex;
 
-use super::graph::{ChunkNode, ModuleGraph};
+use super::graph::{ChunkAnnotation, ChunkKind, ChunkNode, ModuleGraph};
 use super::scan::find_top_level_object_entries;
 use super::{BundlerDetection, BundlerKind, ExtractedModule};
+
+/// One webpack dynamic-import magic comment, e.g.
+/// `import(/* webpackChunkName: "x", webpackPrefetch: true */ "./mod")`.
+/// Webpack only preserves these in non-minified output; recovering them lets
+/// the module graph label async chunks with their author-given names and
+/// prefetch/preload intent.
+#[derive(Debug, Clone)]
+pub(super) struct MagicComment {
+    pub target: String,
+    pub chunk_name: Option<String>,
+    pub prefetch: bool,
+    pub preload: bool,
+}
+
+pub(super) fn parse_magic_comments(source: &str) -> Vec<MagicComment> {
+    let Ok(re): Result<Regex, regex::Error> =
+        Regex::new(r#"import\s*\(\s*((?:/\*[\s\S]*?\*/\s*)+)?["']([^"']+)["']"#)
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<MagicComment> = Vec::new();
+    for caps in re.captures_iter(source) {
+        let Some(target): Option<&str> = caps.get(2).map(|m: regex::Match<'_>| m.as_str()) else {
+            continue;
+        };
+        let comment_blob: &str = caps.get(1).map_or("", |m: regex::Match<'_>| m.as_str());
+        let chunk_name: Option<String> = extract_magic_string(comment_blob, "webpackChunkName");
+        let prefetch: bool = extract_magic_bool(comment_blob, "webpackPrefetch");
+        let preload: bool = extract_magic_bool(comment_blob, "webpackPreload");
+        if comment_blob.contains("webpack") || chunk_name.is_some() {
+            out.push(MagicComment {
+                target: target.to_owned(),
+                chunk_name,
+                prefetch,
+                preload,
+            });
+        }
+    }
+    out
+}
+
+fn extract_magic_string(blob: &str, key: &str) -> Option<String> {
+    let pattern: String = format!(r#"{}\s*:\s*["']([^"']+)["']"#, regex::escape(key));
+    let re: Regex = Regex::new(&pattern).ok()?;
+    re.captures(blob)?
+        .get(1)
+        .map(|m: regex::Match<'_>| m.as_str().to_owned())
+}
+
+fn extract_magic_bool(blob: &str, key: &str) -> bool {
+    let pattern: String = format!(r"{}\s*:\s*(true|false)", regex::escape(key));
+    Regex::new(&pattern)
+        .ok()
+        .and_then(|re: Regex| {
+            re.captures(blob).and_then(|c: regex::Captures<'_>| {
+                c.get(1).map(|m: regex::Match<'_>| m.as_str() == "true")
+            })
+        })
+        .unwrap_or(false)
+}
 
 pub fn detect(source: &str) -> BundlerDetection {
     let head: &str = &source[..source.len().min(256 * 1024)];
@@ -119,10 +179,50 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
             }
         }
     }
+    annotate_dynamic_chunks(source, &mut graph);
     if let Some(info) = super::sourcemap::find(source) {
         graph.sourcemap_urls.insert("main".to_owned(), info.url);
     }
     graph
+}
+
+fn annotate_dynamic_chunks(source: &str, graph: &mut ModuleGraph) {
+    let comments: Vec<MagicComment> = parse_magic_comments(source);
+    if comments.is_empty() {
+        return;
+    }
+    let dynamic_targets: std::collections::BTreeSet<String> = graph
+        .chunks
+        .values()
+        .flat_map(|c: &ChunkNode| c.dynamic_imports.iter().cloned())
+        .collect();
+    for comment in comments {
+        let kind: ChunkKind = if comment.prefetch || comment.preload {
+            ChunkKind::Async
+        } else {
+            ChunkKind::DynamicEntry
+        };
+        let annotation: ChunkAnnotation = ChunkAnnotation {
+            kind,
+            chunk_name: comment.chunk_name.clone(),
+            prefetch: comment.prefetch,
+            preload: comment.preload,
+        };
+        let key: String = comment
+            .chunk_name
+            .clone()
+            .filter(|name: &String| graph.chunks.contains_key(name))
+            .or_else(|| {
+                dynamic_targets
+                    .iter()
+                    .find(|t: &&String| {
+                        comment.target.ends_with(t.as_str()) || t.ends_with(&comment.target)
+                    })
+                    .cloned()
+            })
+            .unwrap_or(comment.target);
+        graph.annotate_chunk(key, annotation);
+    }
 }
 
 fn group_modules_by_chunk(
@@ -282,5 +382,33 @@ mod tests {
         assert_eq!(mods.len(), 2);
         assert!(mods.iter().any(|m| m.id == "./src/a.js"));
         assert!(mods.iter().any(|m| m.id == "./src/b.js"));
+    }
+
+    #[test]
+    fn parses_chunk_name_and_prefetch_magic_comments() {
+        let src: &str = r#"const m = import(/* webpackChunkName: "lazy-panel", webpackPrefetch: true */ "./panel.js");"#;
+        let comments: Vec<MagicComment> = parse_magic_comments(src);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].chunk_name.as_deref(), Some("lazy-panel"));
+        assert!(comments[0].prefetch);
+        assert!(!comments[0].preload);
+        assert_eq!(comments[0].target, "./panel.js");
+    }
+
+    #[test]
+    fn parses_preload_magic_comment() {
+        let src: &str =
+            r#"import(/* webpackPreload: true, webpackChunkName: "p" */ "./preload.js");"#;
+        let comments: Vec<MagicComment> = parse_magic_comments(src);
+        assert_eq!(comments.len(), 1);
+        assert!(comments[0].preload);
+        assert_eq!(comments[0].chunk_name.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn plain_import_without_magic_comment_is_ignored() {
+        let src: &str = r#"const x = import("./plain.js");"#;
+        let comments: Vec<MagicComment> = parse_magic_comments(src);
+        assert!(comments.is_empty());
     }
 }

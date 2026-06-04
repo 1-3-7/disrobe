@@ -28,14 +28,16 @@ mod unminify;
 pub mod v8;
 
 pub use bundle::{
-    BundlerDetection, BundlerKind, ChunkNode, DecodedInlineMap, ExtractedModule, ModuleGraph,
+    BundlerDetection, BundlerKind, ChunkAnnotation, ChunkKind, ChunkNode, DecodedInlineMap,
+    DecodedMappings, ExtractedModule, MappingSegment, ModuleGraph, RecoveredSourceMap,
     SourceMapEmit, SourceMapInfo, SynthesizedSourceMap, UnbundleGraphResult, UnbundleResult,
     ViteManifest, ViteManifestEntry, auto_unbundle, build_id_to_path_map, decode_inline_data_url,
-    detect_browserify, detect_bun, detect_esbuild, detect_parcel, detect_rolldown, detect_rollup,
-    detect_systemjs, detect_turbopack, detect_vite, detect_webpack4, detect_webpack5,
-    emit_source_maps, find_source_map, parse_vite_manifest, rewrite_modules, rewrite_requires,
-    serialize_source_map, synthesize_from_modules, unbundle, unbundle_with_graph,
-    unbundle_with_sourcemaps, vite_manifest_to_graph, write_graph, write_modules, write_sourcemaps,
+    decode_mappings, decode_vlq, detect_browserify, detect_bun, detect_esbuild, detect_parcel,
+    detect_rolldown, detect_rollup, detect_systemjs, detect_turbopack, detect_vite,
+    detect_webpack4, detect_webpack5, emit_source_maps, find_source_map, parse_source_map,
+    parse_vite_manifest, rewrite_modules, rewrite_requires, serialize_source_map,
+    synthesize_from_modules, unbundle, unbundle_with_graph, unbundle_with_sourcemaps,
+    vite_manifest_to_graph, write_graph, write_modules, write_sourcemaps,
 };
 pub use detect::{Detection, JsObfuscator, detect};
 pub use error::{Error, Result};

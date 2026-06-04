@@ -239,3 +239,53 @@ fn high_preset_recovers_clean_tokens_above_threshold() {
         &out.source[..out.source.len().min(2000)]
     );
 }
+
+fn balanced(source: &str) -> bool {
+    let (mut paren, mut brace, mut bracket): (i64, i64, i64) = (0, 0, 0);
+    let mut in_str: Option<char> = None;
+    let mut escaped: bool = false;
+    for c in source.chars() {
+        if let Some(q) = in_str {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                in_str = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => in_str = Some(c),
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '{' => brace += 1,
+            '}' => brace -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            _ => {}
+        }
+    }
+    paren == 0 && brace == 0 && bracket == 0
+}
+
+#[test]
+fn scope_proxy_merges_iife_objects_without_corruption() {
+    let Some(src): Option<String> = read_preset("high") else {
+        return;
+    };
+    let out: ObfuscatorIoOutput = run_full(&src);
+    assert!(
+        out.scope_proxy_objects_merged >= 5,
+        "scope-aware proxy merge must clear several self-defending-IIFE objects the regex pass guards out; got {}",
+        out.scope_proxy_objects_merged
+    );
+    assert!(
+        balanced(&out.source),
+        "merged output must keep delimiters balanced (no IIFE corruption)"
+    );
+    assert!(
+        out.source.contains("'divide by zero'") || out.source.contains("divide by zero"),
+        "real strings must survive the scope merge"
+    );
+}

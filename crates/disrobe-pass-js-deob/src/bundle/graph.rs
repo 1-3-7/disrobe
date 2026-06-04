@@ -6,6 +6,40 @@ use serde::Serialize;
 use super::ExtractedModule;
 use crate::error::Result;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ChunkKind {
+    #[default]
+    Unknown,
+    Entry,
+    DynamicEntry,
+    Shared,
+    Async,
+}
+
+impl ChunkKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Entry => "entry",
+            Self::DynamicEntry => "dynamic-entry",
+            Self::Shared => "shared",
+            Self::Async => "async",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChunkAnnotation {
+    pub kind: ChunkKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_name: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prefetch: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preload: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ChunkNode {
     pub id: String,
@@ -21,6 +55,8 @@ pub struct ModuleGraph {
     pub chunks: BTreeMap<String, ChunkNode>,
     pub module_to_chunk: BTreeMap<String, String>,
     pub sourcemap_urls: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub chunk_annotations: BTreeMap<String, ChunkAnnotation>,
 }
 
 impl ModuleGraph {
@@ -47,6 +83,10 @@ impl ModuleGraph {
         {
             chunk.modules.push(module_id.to_owned());
         }
+    }
+
+    pub fn annotate_chunk(&mut self, chunk_id: impl Into<String>, annotation: ChunkAnnotation) {
+        self.chunk_annotations.insert(chunk_id.into(), annotation);
     }
 }
 
