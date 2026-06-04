@@ -57,6 +57,7 @@ pub enum PythonExpr {
         args: Vec<Self>,
     },
     Tuple(Vec<Self>),
+    List(Vec<Self>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,85 +122,223 @@ fn strip_mod_consts(token: &str) -> &str {
 
 fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonExpr {
     let t: &str = strip_mod_consts(token.trim().trim_end_matches(';'));
-    if t == "const_int_0" || t == "global_constants[2]" {
-        return PythonExpr::Const("0".to_owned());
+    if let Some(expr) = resolve_singleton_token(t) {
+        return expr;
     }
-    if let Some(rest) = t.strip_prefix("const_int_pos_") {
-        return PythonExpr::Const(rest.to_owned());
+    if let Some(expr) = resolve_numeric_token(t) {
+        return expr;
     }
-    if let Some(rest) = t.strip_prefix("const_int_neg_") {
-        return PythonExpr::Const(format!("-{rest}"));
+    if let Some(expr) = resolve_string_token(t, pool) {
+        return expr;
     }
-    if let Some(rest) = t.strip_prefix("const_str_plain_") {
-        return PythonExpr::Const(format!("'{rest}'"));
+    if let Some(expr) = resolve_bytes_token(t, pool) {
+        return expr;
     }
-    if t == "const_str_empty" {
-        return PythonExpr::Const("''".to_owned());
-    }
-    if let Some(hex) = t.strip_prefix("const_str_digest_") {
-        if let Some(s) = pool.digest_to_string.get(hex) {
-            return PythonExpr::Const(format!("'{s}'"));
-        }
-        return PythonExpr::Const(format!("UNRESOLVED:{hex}"));
-    }
-    if let Some(inner) = t.strip_prefix("const_tuple_")
-        && let Some(inner2) = inner.strip_suffix("_tuple")
+    if let Some(inner) = t
+        .strip_prefix("const_tuple_")
+        .and_then(|i: &str| i.strip_suffix("_tuple"))
     {
-        return resolve_tuple_inner(inner2, pool);
+        return resolve_sequence_inner(inner, pool, false);
+    }
+    if let Some(inner) = t
+        .strip_prefix("const_list_")
+        .and_then(|i: &str| i.strip_suffix("_list"))
+    {
+        return resolve_sequence_inner(inner, pool, true);
+    }
+    if t == "const_tuple_empty" {
+        return PythonExpr::Tuple(Vec::new());
+    }
+    if t == "const_list_empty" {
+        return PythonExpr::List(Vec::new());
     }
     PythonExpr::Name(t.to_owned())
 }
 
-fn resolve_tuple_inner(inner: &str, pool: &ConstantsPool) -> PythonExpr {
+fn resolve_singleton_token(t: &str) -> Option<PythonExpr> {
+    let lit: &str = match t {
+        "const_true" => "True",
+        "const_false" => "False",
+        "const_none" => "None",
+        "const_ellipsis" => "...",
+        _ => return None,
+    };
+    Some(PythonExpr::Const(lit.to_owned()))
+}
+
+fn resolve_numeric_token(t: &str) -> Option<PythonExpr> {
+    if t == "const_int_0" || t == "const_long_0" || t == "global_constants[2]" {
+        return Some(PythonExpr::Const("0".to_owned()));
+    }
+    for prefix in ["const_int_pos_", "const_long_pos_"] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return Some(PythonExpr::Const(rest.to_owned()));
+        }
+    }
+    for prefix in ["const_int_neg_", "const_long_neg_"] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return Some(PythonExpr::Const(format!("-{rest}")));
+        }
+    }
+    if let Some(rest) = t
+        .strip_prefix("const_int_hex_")
+        .or_else(|| t.strip_prefix("const_long_hex_"))
+    {
+        return Some(PythonExpr::Const(format!("0x{rest}")));
+    }
+    if let Some(rest) = t.strip_prefix("const_float_") {
+        return Some(resolve_float_fragment(rest));
+    }
+    None
+}
+
+fn resolve_float_fragment(fragment: &str) -> PythonExpr {
+    if fragment == "plus_nan" || fragment == "minus_nan" {
+        return PythonExpr::Const("float('nan')".to_owned());
+    }
+    let restored: String = fragment.replace("minus_", "-").replace('_', ".");
+    PythonExpr::Const(restored)
+}
+
+fn resolve_string_token(t: &str, pool: &ConstantsPool) -> Option<PythonExpr> {
+    let body: &str = t.strip_prefix("const_str_")?;
+    Some(resolve_string_fragment(body, pool, false))
+}
+
+fn resolve_bytes_token(t: &str, pool: &ConstantsPool) -> Option<PythonExpr> {
+    let body: &str = t.strip_prefix("const_bytes_")?;
+    Some(resolve_string_fragment(body, pool, true))
+}
+
+fn resolve_string_fragment(body: &str, pool: &ConstantsPool, is_bytes: bool) -> PythonExpr {
+    let prefix: &str = if is_bytes { "b" } else { "" };
+    if let Some(rest) = body.strip_prefix("plain_") {
+        return PythonExpr::Const(format!("{prefix}'{rest}'"));
+    }
+    if let Some(rest) = body.strip_prefix("chr_")
+        && let Ok(code) = rest.parse::<u32>()
+        && let Some(ch) = char::from_u32(code)
+    {
+        return PythonExpr::Const(format!("{prefix}'{}'", escape_char_literal(ch)));
+    }
+    if let Some(rest) = body.strip_prefix("angle_") {
+        return PythonExpr::Const(format!("{prefix}'<{rest}>'"));
+    }
+    let named: Option<&str> = match body {
+        "empty" => Some(""),
+        "null" => Some("\\x00"),
+        "space" => Some(" "),
+        "dot" => Some("."),
+        "newline" => Some("\\n"),
+        "slash" => Some("/"),
+        "backslash" => Some("\\\\"),
+        "underscore" => Some("_"),
+        _ => None,
+    };
+    if let Some(literal) = named {
+        return PythonExpr::Const(format!("{prefix}'{literal}'"));
+    }
+    if let Some(hex) = body.strip_prefix("digest_") {
+        if let Some(s) = pool.digest_to_string.get(hex) {
+            return PythonExpr::Const(format!("{prefix}'{s}'"));
+        }
+        return PythonExpr::Const(format!("UNRESOLVED:{hex}"));
+    }
+    PythonExpr::Const(format!("UNRESOLVED:{body}"))
+}
+
+fn escape_char_literal(ch: char) -> String {
+    match ch {
+        '\n' => "\\n".to_owned(),
+        '\t' => "\\t".to_owned(),
+        '\r' => "\\r".to_owned(),
+        '\'' => "\\'".to_owned(),
+        '\\' => "\\\\".to_owned(),
+        c if c.is_control() => format!("\\x{:02x}", c as u32),
+        c => c.to_string(),
+    }
+}
+
+fn resolve_sequence_inner(inner: &str, pool: &ConstantsPool, is_list: bool) -> PythonExpr {
     let items: Vec<PythonExpr> = split_tuple_tokens(inner)
         .into_iter()
         .map(|tok: String| resolve_const_token(&tok, pool))
         .collect();
-    PythonExpr::Tuple(items)
+    if is_list {
+        PythonExpr::List(items)
+    } else {
+        PythonExpr::Tuple(items)
+    }
 }
+
+const SINGLE_SEGMENT_PREFIXES: &[&str] = &[
+    "str_plain_",
+    "str_digest_",
+    "str_chr_",
+    "str_angle_",
+    "bytes_plain_",
+    "bytes_digest_",
+    "bytes_chr_",
+    "int_pos_",
+    "int_neg_",
+    "int_hex_",
+    "long_pos_",
+    "long_neg_",
+    "long_hex_",
+];
+
+const ATOMIC_FRAGMENTS: &[&str] = &[
+    "true",
+    "false",
+    "none",
+    "ellipsis",
+    "int_0",
+    "long_0",
+    "str_empty",
+    "str_null",
+    "str_space",
+    "str_dot",
+    "str_newline",
+    "str_slash",
+    "str_backslash",
+    "str_underscore",
+    "tuple_empty",
+    "list_empty",
+];
 
 fn split_tuple_tokens(inner: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut remaining: &str = inner;
-    loop {
-        if remaining.is_empty() {
-            break;
-        }
-        if let Some(r) = remaining.strip_prefix("str_plain_") {
-            let end: usize = r.find('_').unwrap_or(r.len());
-            let name: &str = &r[..end];
-            out.push(format!("const_str_plain_{name}"));
-            remaining = if end < r.len() { &r[end + 1..] } else { "" };
-        } else if let Some(r) = remaining.strip_prefix("str_digest_") {
-            let end: usize = r.find('_').unwrap_or(r.len());
-            let hex: &str = &r[..end];
-            out.push(format!("const_str_digest_{hex}"));
-            remaining = if end < r.len() { &r[end + 1..] } else { "" };
-        } else if let Some(r) = remaining.strip_prefix("int_pos_") {
-            let end: usize = r.find('_').unwrap_or(r.len());
-            let num: &str = &r[..end];
-            out.push(format!("const_int_pos_{num}"));
-            remaining = if end < r.len() { &r[end + 1..] } else { "" };
-        } else if let Some(r) = remaining.strip_prefix("int_neg_") {
-            let end: usize = r.find('_').unwrap_or(r.len());
-            let num: &str = &r[..end];
-            out.push(format!("const_int_neg_{num}"));
-            remaining = if end < r.len() { &r[end + 1..] } else { "" };
-        } else if remaining.starts_with("int_0") {
-            out.push("const_int_0".to_owned());
-            remaining = remaining.strip_prefix("int_0").unwrap_or(remaining);
-            remaining = remaining.strip_prefix('_').unwrap_or(remaining);
-        } else {
-            let end: usize = remaining.find('_').unwrap_or(remaining.len());
-            out.push(remaining[..end].to_owned());
-            remaining = if end < remaining.len() {
-                &remaining[end + 1..]
-            } else {
-                ""
-            };
-        }
+    while !remaining.is_empty() {
+        let (fragment, rest): (&str, &str) = next_sequence_fragment(remaining);
+        out.push(format!("const_{fragment}"));
+        remaining = rest;
     }
     out
+}
+
+fn next_sequence_fragment(remaining: &str) -> (&str, &str) {
+    for atom in ATOMIC_FRAGMENTS {
+        if remaining == *atom {
+            return (remaining, "");
+        }
+        if let Some(rest) = remaining.strip_prefix(atom)
+            && rest.starts_with('_')
+        {
+            return (&remaining[..atom.len()], &rest[1..]);
+        }
+    }
+    for prefix in SINGLE_SEGMENT_PREFIXES {
+        if let Some(after) = remaining.strip_prefix(prefix) {
+            let seg_end: usize = after.find('_').unwrap_or(after.len());
+            let frag_end: usize = prefix.len() + seg_end;
+            let next: &str = remaining.get(frag_end + 1..).unwrap_or("");
+            return (&remaining[..frag_end], next);
+        }
+    }
+    let end: usize = remaining.find('_').unwrap_or(remaining.len());
+    let next: &str = remaining.get(end + 1..).unwrap_or("");
+    (&remaining[..end], next)
 }
 
 fn contains_unresolved(expr: &PythonExpr) -> bool {
@@ -213,7 +352,7 @@ fn contains_unresolved(expr: &PythonExpr) -> bool {
         PythonExpr::Call { func, args } => {
             contains_unresolved(func) || args.iter().any(contains_unresolved)
         }
-        PythonExpr::Tuple(items) => items.iter().any(contains_unresolved),
+        PythonExpr::Tuple(items) | PythonExpr::List(items) => items.iter().any(contains_unresolved),
     }
 }
 
@@ -979,4 +1118,125 @@ pub fn lift_body(
     };
 
     (stmts, fidelity)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn lit(token: &str) -> String {
+        let pool: ConstantsPool = ConstantsPool::default();
+        match resolve_const_token(token, &pool) {
+            PythonExpr::Const(s) => s,
+            other => panic!("expected Const for `{token}`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn singleton_tokens_invert_to_python_literals() {
+        assert_eq!(lit("const_true"), "True");
+        assert_eq!(lit("const_false"), "False");
+        assert_eq!(lit("const_none"), "None");
+        assert_eq!(lit("const_ellipsis"), "...");
+    }
+
+    #[test]
+    fn integer_tokens_cover_zero_pos_neg_hex() {
+        assert_eq!(lit("const_int_0"), "0");
+        assert_eq!(lit("const_int_pos_42"), "42");
+        assert_eq!(lit("const_int_neg_7"), "-7");
+        assert_eq!(lit("const_int_hex_deadbeef"), "0xdeadbeef");
+        assert_eq!(lit("const_long_pos_100"), "100");
+        assert_eq!(lit("const_long_neg_3"), "-3");
+    }
+
+    #[test]
+    fn float_tokens_restore_dot_and_sign() {
+        assert_eq!(lit("const_float_3_14"), "3.14");
+        assert_eq!(lit("const_float_minus_1_5"), "-1.5");
+        assert_eq!(lit("const_float_plus_nan"), "float('nan')");
+    }
+
+    #[test]
+    fn string_tokens_cover_plain_special_and_chr() {
+        assert_eq!(lit("const_str_plain_hello"), "'hello'");
+        assert_eq!(lit("const_str_empty"), "''");
+        assert_eq!(lit("const_str_space"), "' '");
+        assert_eq!(lit("const_str_dot"), "'.'");
+        assert_eq!(lit("const_str_newline"), "'\\n'");
+        assert_eq!(lit("const_str_underscore"), "'_'");
+        assert_eq!(lit("const_str_chr_65"), "'A'");
+        assert_eq!(lit("const_str_angle_module"), "'<module>'");
+    }
+
+    #[test]
+    fn bytes_tokens_carry_b_prefix() {
+        assert_eq!(lit("const_bytes_plain_data"), "b'data'");
+        assert_eq!(lit("const_bytes_empty"), "b''");
+    }
+
+    #[test]
+    fn empty_collection_tokens_invert() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        assert_eq!(
+            resolve_const_token("const_tuple_empty", &pool),
+            PythonExpr::Tuple(Vec::new())
+        );
+        assert_eq!(
+            resolve_const_token("const_list_empty", &pool),
+            PythonExpr::List(Vec::new())
+        );
+    }
+
+    #[test]
+    fn nested_sequence_fragments_split_correctly() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let got: PythonExpr = resolve_const_token("const_tuple_int_0_int_pos_1_tuple", &pool);
+        assert_eq!(
+            got,
+            PythonExpr::Tuple(vec![
+                PythonExpr::Const("0".to_owned()),
+                PythonExpr::Const("1".to_owned()),
+            ])
+        );
+
+        let mixed: PythonExpr =
+            resolve_const_token("const_tuple_str_plain_name_int_neg_2_true_tuple", &pool);
+        assert_eq!(
+            mixed,
+            PythonExpr::Tuple(vec![
+                PythonExpr::Const("'name'".to_owned()),
+                PythonExpr::Const("-2".to_owned()),
+                PythonExpr::Const("True".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn list_sequence_fragment_yields_list_expr() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let got: PythonExpr = resolve_const_token("const_list_int_pos_1_int_pos_2_list", &pool);
+        assert_eq!(
+            got,
+            PythonExpr::List(vec![
+                PythonExpr::Const("1".to_owned()),
+                PythonExpr::Const("2".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn split_tuple_handles_atomic_and_segment_mix() {
+        let frags: Vec<String> = split_tuple_tokens("none_str_plain_x_int_0_ellipsis");
+        assert_eq!(
+            frags,
+            vec![
+                "const_none".to_owned(),
+                "const_str_plain_x".to_owned(),
+                "const_int_0".to_owned(),
+                "const_ellipsis".to_owned(),
+            ]
+        );
+    }
 }

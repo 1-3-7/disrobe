@@ -440,14 +440,26 @@ fn emit_expr(expr: &PythonExpr) -> String {
                 .map(emit_expr)
                 .collect::<Vec<String>>()
                 .join(", ");
-            format!("({inner})")
+            if items.len() == 1 {
+                format!("({inner},)")
+            } else {
+                format!("({inner})")
+            }
+        }
+        PythonExpr::List(items) => {
+            let inner: String = items
+                .iter()
+                .map(emit_expr)
+                .collect::<Vec<String>>()
+                .join(", ");
+            format!("[{inner}]")
         }
     }
 }
 
 fn emit_expr_unpack(expr: &PythonExpr) -> String {
     match expr {
-        PythonExpr::Tuple(items) => items
+        PythonExpr::Tuple(items) | PythonExpr::List(items) => items
             .iter()
             .map(emit_expr)
             .collect::<Vec<String>>()
