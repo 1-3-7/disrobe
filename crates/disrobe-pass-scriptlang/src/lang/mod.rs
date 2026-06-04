@@ -1,5 +1,6 @@
 pub mod haxe;
 pub mod perl;
+pub mod perl_bytecode;
 pub mod r_rds;
 pub mod rcpp;
 pub mod tcl;
@@ -65,7 +66,7 @@ pub fn classify(bytes: &[u8]) -> Option<ScriptLang> {
     if rds_detectable(bytes) {
         return Some(ScriptLang::R);
     }
-    if perl::is_concise(bytes) {
+    if perl_bytecode::is_bytecode(bytes) || perl::is_concise(bytes) {
         return Some(ScriptLang::Perl);
     }
     None
@@ -80,6 +81,9 @@ pub fn analyze(bytes: &[u8]) -> Result<ScriptArtifact> {
     }
     if let Some(rds_bytes) = maybe_gunzip_rds(bytes) {
         return Ok(ScriptArtifact::R(r_rds::read_rds(&rds_bytes)?));
+    }
+    if perl_bytecode::is_bytecode(bytes) {
+        return Ok(ScriptArtifact::Perl(perl_bytecode::read_bytecode(bytes)?));
     }
     if perl::is_concise(bytes) {
         return Ok(ScriptArtifact::Perl(perl::read_concise(bytes)?));
