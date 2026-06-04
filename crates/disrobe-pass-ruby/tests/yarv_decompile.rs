@@ -82,6 +82,36 @@ fn decompiles_real_greeter_iseq_with_class_and_methods() {
 }
 
 #[test]
+fn recovers_real_local_variable_name_from_iseq_local_table() {
+    let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/greeter.rb.yarvc") else {
+        eprintln!("skip: mri/yarv/greeter.rb.yarvc fixture absent");
+        return;
+    };
+    let analysis: RubyAnalysis = analyze_bytes(&bytes, "greeter.rb.yarvc").expect("analyze");
+    let yarv = analysis.yarv.expect("yarv");
+    let initialize_body = yarv
+        .ibf
+        .iseqs
+        .iter()
+        .find(|b| b.local_table.iter().any(|n| n.as_deref() == Some("who")))
+        .expect("an iseq body whose local_table preserves the `who` parameter");
+    assert_eq!(
+        initialize_body.local_table,
+        vec![Some("who".to_owned())],
+        "initialize(who) should recover exactly its single named local from the local_table"
+    );
+    let src: &str = &yarv.decompiled.source;
+    assert!(
+        src.contains("@who = who"),
+        "decompiled body should bind `@who = who` via the recovered local name, got:\n{src}"
+    );
+    assert!(
+        !src.contains("@who = local3") && !src.contains("= local"),
+        "no synthetic local{{N}} placeholder should survive where the local_table named the slot, got:\n{src}"
+    );
+}
+
+#[test]
 fn recovers_thousands_of_instructions_from_real_megafile_iseq() {
     let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/edge_cases.rb.yarvc") else {
         eprintln!("skip: mri/yarv/edge_cases.rb.yarvc fixture absent");

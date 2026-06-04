@@ -96,6 +96,9 @@ pub struct YarvIseqBody {
     pub offset: u32,
     pub iseq_size: u32,
     pub instructions: Vec<YarvIbfInstruction>,
+    /// Local-variable names recovered from this body's `local_table`, in table order. An entry is
+    /// `None` when the slot is a compiler-hidden local (dumped as an integer rather than a symbol).
+    pub local_table: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -225,18 +228,29 @@ impl ObjectTable<'_> {
     }
 }
 
-/// 0-indexed positions of the `small_values` within an iseq body header (ruby 3.3/3.4 layout,
-/// identical up through `ci_size`): `bytecode_offset` stored at #2 as `body_offset - stored`,
-/// `bytecode_size` at #3, `ci_entries_offset` at #32 (`body_offset - stored`), `ci_size` at #40.
+/// 0-indexed positions of the `small_values` within an iseq body header, calibrated against the
+/// real ruby 3.3/3.4 corpus dumps (`IBF_ISEQ_ENABLE_LOCAL_BUFFER` off, so every offset resolves
+/// against the global object list): `iseq_size` at #1, `bytecode_offset` at #2 (`body_offset -
+/// stored`), `bytecode_size` at #3, `local_table_offset` at #26 (`body_offset - stored`),
+/// `ci_entries_offset` at #32 (`body_offset - stored`), `local_table_size` at #35, and `ci_size`
+/// at #40. These positions are empirically anchored on the corpus (greeter `initialize(who)` =>
+/// `local_table_offset` resolves to the `who` symbol with `local_table_size` 1; `puts
+/// ...new("world").greet` => three call sites with `ci_size` 3), confirmed by tracing every
+/// `read_small_value` of the body header against the shipped 3.4.9 dump.
+const BODY_READ_LOCAL_TABLE_OFFSET: usize = 26;
 const BODY_READ_CI_ENTRIES_OFFSET: usize = 32;
+const BODY_READ_LOCAL_TABLE_SIZE: usize = 35;
 const BODY_READ_CI_SIZE: usize = 40;
 const BODY_HEADER_READS: usize = 41;
 const IBF_MAX_CI_ENTRIES: usize = 1_048_576;
+const IBF_MAX_LOCALS: usize = 65_536;
 
 struct BodyHeader {
     iseq_size: usize,
     bytecode_offset: usize,
     bytecode_size: usize,
+    local_table_offset: Option<usize>,
+    local_table_size: usize,
     ci_entries_offset: Option<usize>,
     ci_size: usize,
 }
@@ -250,6 +264,8 @@ fn parse_body_header(
     let mut iseq_size: usize = 0;
     let mut bytecode_offset: usize = 0;
     let mut bytecode_size: usize = 0;
+    let mut local_table_offset: Option<usize> = None;
+    let mut local_table_size: usize = 0;
     let mut ci_entries_offset: Option<usize> = None;
     let mut ci_size: usize = 0;
     let reads: usize = if ci_layout_known {
@@ -266,9 +282,16 @@ fn parse_body_header(
                 bytecode_offset = body_offset.checked_sub(rel)?;
             }
             3 => bytecode_size = usize::try_from(raw).ok()?,
+            BODY_READ_LOCAL_TABLE_OFFSET => {
+                let rel: usize = usize::try_from(raw).ok()?;
+                local_table_offset = body_offset.checked_sub(rel);
+            }
             BODY_READ_CI_ENTRIES_OFFSET => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 ci_entries_offset = body_offset.checked_sub(rel);
+            }
+            BODY_READ_LOCAL_TABLE_SIZE => {
+                local_table_size = usize::try_from(raw).ok()?.min(IBF_MAX_LOCALS);
             }
             BODY_READ_CI_SIZE => ci_size = usize::try_from(raw).ok()?.min(IBF_MAX_CI_ENTRIES),
             _ => {}
@@ -279,9 +302,36 @@ fn parse_body_header(
         iseq_size,
         bytecode_offset,
         bytecode_size,
+        local_table_offset,
+        local_table_size,
         ci_entries_offset,
         ci_size,
     })
+}
+
+/// Parse a body's `local_table`: a 4-byte-aligned `ID[local_table_size]` array (`ibf_dump_local_table`
+/// in `compile.c`), each `ID` a little-endian u32 object-table index resolving to a symbol whose
+/// literal is the local-variable name. Compiler-hidden locals are dumped as integers (no symbol
+/// literal) and surface as `None`.
+fn parse_local_table(
+    bytes: &[u8],
+    objects: &ObjectTable<'_>,
+    offset: usize,
+    size: usize,
+) -> Vec<Option<String>> {
+    let aligned: usize = offset.div_ceil(4).saturating_mul(4);
+    let mut names: Vec<Option<String>> = Vec::with_capacity(size.min(4096));
+    for i in 0..size {
+        let at: usize = match aligned.checked_add(i.wrapping_mul(4)) {
+            Some(at) => at,
+            None => break,
+        };
+        let Some(id_index) = read_u32_le(bytes, at) else {
+            break;
+        };
+        names.push(objects.literal(u64::from(id_index)).map(str::to_owned));
+    }
+    names
 }
 
 fn parse_ci_entries(
@@ -348,6 +398,13 @@ fn decode_iseq_body(
         _ => Vec::new(),
     };
 
+    let local_table: Vec<Option<String>> = match header.local_table_offset {
+        Some(lt_off) if lt_off <= bytes.len() && header.local_table_size > 0 => {
+            parse_local_table(bytes, objects, lt_off, header.local_table_size)
+        }
+        _ => Vec::new(),
+    };
+
     let bytecode_end: usize = header
         .bytecode_offset
         .checked_add(header.bytecode_size)?
@@ -358,6 +415,7 @@ fn decode_iseq_body(
             offset: body_offset,
             iseq_size: u32::try_from(header.iseq_size).unwrap_or(u32::MAX),
             instructions: Vec::new(),
+            local_table,
         });
     }
 
@@ -430,6 +488,7 @@ fn decode_iseq_body(
         offset: body_offset,
         iseq_size: u32::try_from(header.iseq_size).unwrap_or(u32::MAX),
         instructions,
+        local_table,
     })
 }
 
@@ -555,6 +614,57 @@ mod tests {
         let (v, next): (u64, usize) = read_small_value(&bytes, 0).expect("decode");
         assert_eq!(v, 0x40);
         assert_eq!(next, 2);
+    }
+
+    #[test]
+    fn local_table_resolves_object_indices_to_symbol_names() {
+        let objects: Vec<IbfObject> = vec![
+            IbfObject {
+                index: 0,
+                offset: 0,
+                kind: IbfObjectKind::Nil,
+                literal: None,
+                element_count: None,
+            },
+            IbfObject {
+                index: 1,
+                offset: 0,
+                kind: IbfObjectKind::Symbol,
+                literal: Some("count".to_owned()),
+                element_count: None,
+            },
+            IbfObject {
+                index: 2,
+                offset: 0,
+                kind: IbfObjectKind::Symbol,
+                literal: Some("name".to_owned()),
+                element_count: None,
+            },
+        ];
+        let table: ObjectTable<'_> = ObjectTable { objects: &objects };
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        let names: Vec<Option<String>> = parse_local_table(&bytes, &table, 0, 2);
+        assert_eq!(
+            names,
+            vec![Some("name".to_owned()), Some("count".to_owned())]
+        );
+    }
+
+    #[test]
+    fn local_table_hidden_slot_is_none() {
+        let objects: Vec<IbfObject> = vec![IbfObject {
+            index: 0,
+            offset: 0,
+            kind: IbfObjectKind::Fixnum,
+            literal: None,
+            element_count: None,
+        }];
+        let table: ObjectTable<'_> = ObjectTable { objects: &objects };
+        let bytes: [u8; 4] = 0u32.to_le_bytes();
+        let names: Vec<Option<String>> = parse_local_table(&bytes, &table, 0, 1);
+        assert_eq!(names, vec![None]);
     }
 
     #[test]

@@ -108,6 +108,7 @@ mod tests {
             index: 0,
             offset: 0,
             iseq_size: 3,
+            local_table: Vec::new(),
             instructions: vec![
                 YarvIbfInstruction {
                     pc: 0,

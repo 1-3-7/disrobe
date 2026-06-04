@@ -86,17 +86,42 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
     }
 }
 
+/// `VM_ENV_DATA_SIZE` in `vm_core.h`: the fixed environment slots a `getlocal`/`setlocal` operand
+/// is biased by before it indexes the local table.
+const VM_ENV_DATA_SIZE: u64 = 3;
+
 fn decompile_body(body: &YarvIseqBody) -> Vec<String> {
     let mut stack: Vec<String> = Vec::with_capacity(32);
     let mut stmts: Vec<String> = Vec::new();
     for instr in &body.instructions {
-        step(instr, &mut stack, &mut stmts);
+        step(instr, &body.local_table, &mut stack, &mut stmts);
     }
     stmts
 }
 
+/// Resolve a `getlocal`/`setlocal` operand to its source name via the body's `local_table`. YARV
+/// erases names to environment offsets; when the dump preserved the table (non-hidden locals) the
+/// slot index is `local_table_size - (operand - VM_ENV_DATA_SIZE) - 1` (`local_var_name` in
+/// `iseq.c`). Falls back to `local{N}` when the table is absent or the slot is hidden.
+fn local_name(local_table: &[Option<String>], operand: u64) -> String {
+    let size: u64 = local_table.len() as u64;
+    let resolved: Option<&str> = operand
+        .checked_sub(VM_ENV_DATA_SIZE)
+        .and_then(|op| size.checked_sub(op))
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|idx| usize::try_from(idx).ok())
+        .and_then(|idx| local_table.get(idx))
+        .and_then(Option::as_deref);
+    resolved.map_or_else(|| format!("local{operand}"), str::to_owned)
+}
+
 #[allow(clippy::match_same_arms)]
-fn step(instr: &YarvIbfInstruction, stack: &mut Vec<String>, stmts: &mut Vec<String>) {
+fn step(
+    instr: &YarvIbfInstruction,
+    local_table: &[Option<String>],
+    stack: &mut Vec<String>,
+    stmts: &mut Vec<String>,
+) {
     let m: &str = instr.mnemonic.as_str();
     match m {
         "putnil" => push(stack, "nil".to_owned()),
@@ -112,7 +137,7 @@ fn step(instr: &YarvIbfInstruction, stack: &mut Vec<String>, stmts: &mut Vec<Str
         "putobject_INT2FIX_0_" => push(stack, "0".to_owned()),
         "putobject_INT2FIX_1_" => push(stack, "1".to_owned()),
         "getlocal" | "getlocal_WC_0" | "getlocal_WC_1" => {
-            push(stack, format!("local{}", operand_num(instr, 0)));
+            push(stack, local_name(local_table, operand_num(instr, 0)));
         }
         "getinstancevariable" => push(stack, ivar_name(instr, 0)),
         "getglobal" => push(stack, id_or_index(instr, 0)),
@@ -157,7 +182,10 @@ fn step(instr: &YarvIbfInstruction, stack: &mut Vec<String>, stmts: &mut Vec<Str
         }
         "setlocal" | "setlocal_WC_0" | "setlocal_WC_1" => {
             let v: String = pop(stack);
-            stmts.push(format!("local{} = {v}", operand_num(instr, 0)));
+            stmts.push(format!(
+                "{} = {v}",
+                local_name(local_table, operand_num(instr, 0))
+            ));
         }
         "setinstancevariable" => {
             let v: String = pop(stack);
@@ -399,6 +427,7 @@ mod tests {
             index: 0,
             offset: 0,
             iseq_size: 4,
+            local_table: Vec::new(),
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -423,11 +452,43 @@ mod tests {
     }
 
     #[test]
+    fn local_name_maps_env_offset_through_local_table() {
+        let table: Vec<Option<String>> = vec![Some("a".to_owned()), Some("b".to_owned())];
+        assert_eq!(local_name(&table, 4), "a");
+        assert_eq!(local_name(&table, 3), "b");
+        assert_eq!(local_name(&table, 99), "local99");
+        assert_eq!(local_name(&[], 3), "local3");
+    }
+
+    #[test]
+    fn getlocal_setlocal_use_recovered_names() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 4,
+            local_table: vec![Some("total".to_owned())],
+            instructions: vec![
+                instr("putobject", vec![YarvOperand::Num(0)]),
+                instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(stmts.iter().any(|s| s == "total = 0"), "stmts: {stmts:?}");
+        assert!(
+            stmts.iter().any(|s| s == "return total"),
+            "stmts: {stmts:?}"
+        );
+    }
+
+    #[test]
     fn surfaces_binary_op() {
         let body: YarvIseqBody = YarvIseqBody {
             index: 0,
             offset: 0,
             iseq_size: 4,
+            local_table: Vec::new(),
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(1)]),
                 instr("putobject", vec![YarvOperand::Num(2)]),
