@@ -292,6 +292,75 @@ pub fn decode_base64_variant(input: &str, alphabet: &BTreeMap<char, u8>) -> Opti
     Some(out)
 }
 
+/// Extracts every `string.char(a, b, c, ...)` numeric byte array in `text`.
+///
+/// Returns one byte vector per call. Each argument is an integer literal
+/// (decimal or `0x` hex); non-numeric arguments abort that call's extraction.
+/// This is the literal Lua representation `MoonSec` V1 emits for its string pool.
+#[must_use]
+pub fn extract_string_char_arrays(text: &str) -> Vec<Vec<u8>> {
+    let needle: &str = "string.char(";
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut search_from: usize = 0;
+    while let Some(rel) = text[search_from..].find(needle) {
+        let open: usize = search_from + rel + needle.len();
+        let Some(close_rel): Option<usize> = text[open..].find(')') else {
+            break;
+        };
+        let body: &str = &text[open..open + close_rel];
+        if let Some(bytes) = parse_byte_list(body)
+            && !bytes.is_empty()
+        {
+            out.push(bytes);
+        }
+        search_from = open + close_rel + 1;
+    }
+    out
+}
+
+#[must_use]
+fn parse_byte_list(body: &str) -> Option<Vec<u8>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    for tok in body.split(',') {
+        let t: &str = tok.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let value: i64 = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            i64::from_str_radix(hex, 16).ok()?
+        } else {
+            t.parse::<i64>().ok()?
+        };
+        if !(0..=255).contains(&value) {
+            return None;
+        }
+        bytes.push(value as u8);
+    }
+    Some(bytes)
+}
+
+/// Recovers a string-pool byte array XOR'd against a single fixed key byte.
+///
+/// This is the `MoonSec` V2 string layer: `pool[i] = plain[i] ~ key`. XOR is its
+/// own inverse, so applying the same key again yields the original bytes.
+#[must_use]
+pub fn xor_decode_fixed(encoded: &[u8], key: u8) -> Vec<u8> {
+    encoded.iter().map(|b: &u8| b ^ key).collect()
+}
+
+/// Recovers a string-pool byte array XOR'd against an index-advancing key.
+///
+/// The key rolls by the 0-based index: `pool[i] = plain[i] ~ ((key + i) & 0xFF)`.
+/// This is the second documented `MoonSec` V2 variant; it is fully reversible.
+#[must_use]
+pub fn xor_decode_rolling(encoded: &[u8], key: u8) -> Vec<u8> {
+    encoded
+        .iter()
+        .enumerate()
+        .map(|(i, b): (usize, &u8)| b ^ key.wrapping_add((i & 0xFF) as u8))
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -370,5 +439,34 @@ mod tests {
         let mut pool2: Vec<u32> = (1u32..=6).collect();
         apply_permutation(&mut pool2, &[(2, 5)]);
         assert_eq!(pool2, vec![1, 5, 4, 3, 2, 6]);
+    }
+
+    #[test]
+    fn extract_decimal_string_char_array() {
+        let text: &str = "local s = string.char(72, 101, 108, 108, 111) print(s)";
+        let arrays: Vec<Vec<u8>> = extract_string_char_arrays(text);
+        assert_eq!(arrays, vec![b"Hello".to_vec()]);
+    }
+
+    #[test]
+    fn extract_hex_and_multiple_arrays() {
+        let text: &str =
+            "a=string.char(0x4d,0x6f,0x6f,0x6e);b=string.char(83, 101, 99) ;c=string.char()";
+        let arrays: Vec<Vec<u8>> = extract_string_char_arrays(text);
+        assert_eq!(arrays, vec![b"Moon".to_vec(), b"Sec".to_vec()]);
+    }
+
+    #[test]
+    fn fixed_xor_round_trips_against_known_key() {
+        let plain: &[u8] = b"MoonSec";
+        let key: u8 = 0x5A;
+        let encoded: Vec<u8> = plain.iter().map(|b: &u8| b ^ key).collect();
+        assert_eq!(xor_decode_fixed(&encoded, key), plain);
+    }
+
+    #[test]
+    fn rolling_xor_recovers_index_keyed_pool() {
+        let encoded: Vec<u8> = vec![0x48 ^ 0x10, 0x69 ^ 0x11, 0x21 ^ 0x12];
+        assert_eq!(xor_decode_rolling(&encoded, 0x10), b"Hi!".to_vec());
     }
 }
