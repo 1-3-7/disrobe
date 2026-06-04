@@ -10,4 +10,4 @@ pub use pcode::{
 };
 pub use pcode_lift::{SemanticLift, semantic_lift};
 pub use pcode_real::{RealModuleDisasm, RealPCodeLine, RealPCodeReport, disassemble_pcode_real};
-pub use vbs::{VbsReport, deobfuscate_vbs};
+pub use vbs::{VbsReport, deobfuscate_vbs, deobfuscate_vbs_with_policy};

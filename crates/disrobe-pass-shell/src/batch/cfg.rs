@@ -250,7 +250,7 @@ pub fn resolve_cfg(input: &str) -> BatchCfg {
             match edge.kind {
                 EdgeKind::Call => push_unique(&mut call_targets, target),
                 EdgeKind::Goto | EdgeKind::ConditionalGoto => {
-                    push_unique(&mut goto_targets, target)
+                    push_unique(&mut goto_targets, target);
                 }
                 _ => {}
             }

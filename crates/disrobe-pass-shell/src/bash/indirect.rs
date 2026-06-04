@@ -8,11 +8,14 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::policy::DynamicPolicy;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IndirectionReport {
     pub steps: Vec<String>,
     pub output: String,
+    pub eval_depth: usize,
+    pub walls: Vec<String>,
 }
 
 static IFS_INDIRECT: LazyLock<Regex> =
@@ -39,23 +42,81 @@ static B64_GZIP: LazyLock<Regex> = LazyLock::new(|| {
 static EVAL_WRAP: LazyLock<Regex> =
     LazyLock::new(|| crate::regex_util::safe_regex(r#"(?s)\beval\s+(?:'(.*?)'|"(.*?)")"#));
 
+/// Statically peel one bash indirection layer (IFS substitution, printf-hex, base64[/gzip]
+/// pipe, and a single `eval` unwrap), under the default static-only policy.
 pub fn peel_indirection(input: &str) -> Result<IndirectionReport> {
+    peel_indirection_with_policy(input, DynamicPolicy::default())
+}
+
+/// Iteratively peel nested bash indirection up to the [`DynamicPolicy`] eval-depth cap.
+///
+/// Each `eval`/base64 layer that reveals a further `eval` counts as one unit of eval depth.
+/// Under [`DynamicPolicy::StaticOnly`] peeling stops after
+/// [`crate::policy::STATIC_EVAL_DEPTH_CAP`] layers and records a wall if more remain, so a
+/// deeply self-decoding payload is never followed past the safe static horizon without an
+/// explicit `--allow-dynamic` opt-in.
+pub fn peel_indirection_with_policy(
+    input: &str,
+    policy: DynamicPolicy,
+) -> Result<IndirectionReport> {
     let mut steps: Vec<String> = Vec::new();
+    let mut walls: Vec<String> = Vec::new();
     let mut current: String = input.to_owned();
-    if IFS_INDIRECT.is_match(&current) {
-        current = IFS_INDIRECT.replace_all(&current, " ").into_owned();
+    let mut eval_depth: usize = 0;
+    loop {
+        let before: String = current.clone();
+        peel_non_eval_layers(&mut current, &mut steps)?;
+        if !EVAL_WRAP.is_match(&current) {
+            if current == before {
+                break;
+            }
+            continue;
+        }
+        let next_depth: usize = eval_depth + 1;
+        if !policy.permits_depth(next_depth) {
+            walls.push(format!(
+                "eval depth {next_depth} exceeds static cap {}; re-run with --allow-dynamic to peel further",
+                policy.max_eval_depth()
+            ));
+            break;
+        }
+        let snapshot: String = current.clone();
+        let Some(cap): Option<regex::Captures<'_>> = EVAL_WRAP.captures(&snapshot) else {
+            break;
+        };
+        let body: &str = first_capture(&cap, &[1usize, 2usize]);
+        if body.is_empty() {
+            break;
+        }
+        current = EVAL_WRAP
+            .replace(&current, regex::NoExpand(body))
+            .into_owned();
+        eval_depth = next_depth;
+        steps.push("strip-eval".to_owned());
+    }
+    Ok(IndirectionReport {
+        steps,
+        output: current,
+        eval_depth,
+        walls,
+    })
+}
+
+fn peel_non_eval_layers(current: &mut String, steps: &mut Vec<String>) -> Result<()> {
+    if IFS_INDIRECT.is_match(current) {
+        *current = IFS_INDIRECT.replace_all(current, " ").into_owned();
         steps.push("substitute-ifs".to_owned());
     }
     let printed: std::borrow::Cow<'_, str> =
-        PRINTF_HEX.replace_all(&current, |c: &regex::Captures<'_>| {
+        PRINTF_HEX.replace_all(current, |c: &regex::Captures<'_>| {
             let raw: &str = first_capture(c, &[1usize, 2usize]);
             decode_printf_hex(raw)
         });
-    if printed != current {
+    if printed != *current {
         steps.push("printf-hex-decode".to_owned());
-        current = printed.into_owned();
+        *current = printed.into_owned();
     }
-    if let Some(cap) = B64_GZIP.captures(&current) {
+    if let Some(cap) = B64_GZIP.captures(current) {
         let blob: &str = first_capture(&cap, &[1usize, 2usize, 3usize]);
         if !blob.is_empty() {
             let raw: Vec<u8> = BASE64_STD.decode(blob)?;
@@ -64,27 +125,17 @@ pub fn peel_indirection(input: &str) -> Result<IndirectionReport> {
             let mut out: Vec<u8> = Vec::with_capacity(raw.len() * 4);
             dec.read_to_end(&mut out)?;
             steps.push("gzip-inflate".to_owned());
-            current = String::from_utf8_lossy(&out).into_owned();
+            *current = String::from_utf8_lossy(&out).into_owned();
         }
-    } else if let Some(cap) = B64_PIPE.captures(&current) {
+    } else if let Some(cap) = B64_PIPE.captures(current) {
         let blob: &str = first_capture(&cap, &[1usize, 2usize, 3usize]);
         if !blob.is_empty() {
             let raw: Vec<u8> = BASE64_STD.decode(blob)?;
             steps.push("base64-decode".to_owned());
-            current = String::from_utf8_lossy(&raw).into_owned();
+            *current = String::from_utf8_lossy(&raw).into_owned();
         }
     }
-    if let Some(cap) = EVAL_WRAP.captures(&current.clone()) {
-        let body: &str = first_capture(&cap, &[1usize, 2usize]);
-        if !body.is_empty() {
-            current = body.to_owned();
-            steps.push("strip-eval".to_owned());
-        }
-    }
-    Ok(IndirectionReport {
-        steps,
-        output: current,
-    })
+    Ok(())
 }
 
 use crate::regex_util::first_capture;
@@ -111,6 +162,7 @@ fn decode_printf_hex(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::STATIC_EVAL_DEPTH_CAP;
 
     #[test]
     fn substitutes_ifs_tokens() -> Result<()> {
@@ -133,6 +185,58 @@ mod tests {
         let src: String = format!("echo '{b64}' | base64 -d");
         let r: IndirectionReport = peel_indirection(&src)?;
         assert!(r.output.contains(payload));
+        Ok(())
+    }
+
+    /// Builds a base64-then-eval onion: each layer's plaintext is a fresh `eval 'echo BLOB | base64 -d'`,
+    /// so peeling the base64 reveals the next `eval` without quote-nesting limits.
+    fn nested_b64_eval(depth: usize) -> String {
+        let mut inner: String = "id".to_owned();
+        for _ in 0..depth {
+            let b64: String = BASE64_STD.encode(&inner);
+            inner = format!("eval 'echo {b64} | base64 -d'");
+        }
+        inner
+    }
+
+    #[test]
+    fn static_policy_stops_at_eval_depth_two() -> Result<()> {
+        let src: String = nested_b64_eval(4);
+        let r: IndirectionReport = peel_indirection(&src)?;
+        assert_eq!(r.eval_depth, 2, "eval_depth={}", r.eval_depth);
+        assert!(
+            !r.walls.is_empty(),
+            "deeply nested eval must record a static-cap wall; out={}",
+            r.output
+        );
+        assert!(
+            r.output.contains("eval"),
+            "layers should remain unpeeled under static cap; out={}",
+            r.output
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn allow_dynamic_peels_past_two() -> Result<()> {
+        let src: String = nested_b64_eval(4);
+        let r: IndirectionReport = peel_indirection_with_policy(&src, DynamicPolicy::AllowDynamic)?;
+        assert!(
+            r.eval_depth > STATIC_EVAL_DEPTH_CAP,
+            "allow-dynamic must peel past the static cap; eval_depth={}",
+            r.eval_depth
+        );
+        assert!(r.output.contains("id"), "out={}", r.output);
+        assert!(r.walls.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn single_eval_layer_peels_under_static() -> Result<()> {
+        let r: IndirectionReport = peel_indirection(r#"eval 'whoami'"#)?;
+        assert_eq!(r.eval_depth, 1);
+        assert!(r.output.contains("whoami"));
+        assert!(r.walls.is_empty());
         Ok(())
     }
 }

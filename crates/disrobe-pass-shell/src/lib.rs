@@ -36,18 +36,20 @@ pub mod detect;
 pub mod error;
 pub mod format_wire;
 pub mod pass;
+pub mod policy;
 pub mod powershell;
 pub mod provenance_header;
 pub mod vba;
 
 pub use bash::{
     BashToken, BashTokenKind, BashfuscatorLevel, BashfuscatorReport, IndirectionReport,
-    peel_indirection, reverse_bashfuscator, tokenize_bash,
+    peel_indirection, peel_indirection_with_policy, reverse_bashfuscator, tokenize_bash,
 };
 pub use batch::{BasicBlock, BatchCfg, BatchReport, CfgEdge, EdgeKind, resolve_cfg, reverse_batch};
 pub use detect::{Detection, Dialect, Family, detect};
 pub use error::{Error, Result};
 pub use format_wire::format_identity;
+pub use policy::{DynamicPolicy, STATIC_EVAL_DEPTH_CAP};
 pub use powershell::{
     Ast, AstNode, InvokeObfuscationLevel, Lexer, ObfTechnique, ObfuscatorDetection, PsObfuscator,
     ReverseReport, Token, TokenKind, obfuscator_detect, parse_ast, parse_bible, reverse_ast,
@@ -63,8 +65,9 @@ pub use provenance_header::{
 pub use vba::extract::ContainerKind;
 pub use vba::{
     ExtractedModule, ExtractedProject, PCodeDisasm, PCodeInstruction, RealModuleDisasm,
-    RealPCodeLine, RealPCodeReport, SemanticLift, VbsReport, deobfuscate_vbs, disassemble_pcode,
-    disassemble_pcode_real, extract_from_bytes, semantic_lift,
+    RealPCodeLine, RealPCodeReport, SemanticLift, VbsReport, deobfuscate_vbs,
+    deobfuscate_vbs_with_policy, disassemble_pcode, disassemble_pcode_real, extract_from_bytes,
+    semantic_lift,
 };
 pub use vba::{PCodeStreamHeader, PCodeWall, PCodeWallDetail};
 
