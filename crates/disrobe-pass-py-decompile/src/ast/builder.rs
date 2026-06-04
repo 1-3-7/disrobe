@@ -11346,17 +11346,64 @@ fn consume_inline_comp_result(
     }
     let mut seed: Vec<Expr> = pre_residual;
     seed.push(result);
+    let consumer_end: usize = (consumer..hi)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadFastAndClear(_)))
+        .map_or(hi, |next_comp: usize| {
+            (consumer..next_comp)
+                .rev()
+                .find(|&k: &usize| {
+                    matches!(
+                        stream.ops[k],
+                        CanonicalOp::GetIter | CanonicalOp::GetAiter
+                    )
+                })
+                .map_or(next_comp, |get_iter: usize| {
+                    inline_comp_consumer_boundary(stream, consumer, get_iter)
+                })
+        });
     let (consumed, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim_seed(code, &stream.ops[consumer..hi], seed)?;
-    if !consumed.is_empty() {
-        return Ok(consumed);
+        build_linear_stmts_sim_seed(code, &stream.ops[consumer..consumer_end], seed)?;
+    let mut out: Vec<Stmt> = if consumed.is_empty() {
+        residual
+            .into_iter()
+            .next_back()
+            .map(Stmt::Expr)
+            .into_iter()
+            .collect()
+    } else {
+        consumed
+    };
+    out.extend(structure_stmts(code, stream, consumer_end, hi)?);
+    Ok(out)
+}
+
+/// The op index at which the seeded replay of an inline-comp consumer must stop so the NEXT inline comp
+/// (opening at `get_iter`'s `GET_ITER` ahead of its `LOAD_FAST_AND_CLEAR`) is structured in its own
+/// sub-region rather than flattened by the value sim. Walk back from `get_iter` over the leading value
+/// loads that belong to the next comp's iterable/operand stack so they are NOT consumed as part of this
+/// statement; the boundary is the first op past the current statement's own consumer run.
+fn inline_comp_consumer_boundary(
+    stream: &DecodedStream,
+    consumer: usize,
+    get_iter: usize,
+) -> usize {
+    let mut k: usize = get_iter;
+    while k > consumer {
+        match stream.ops[k - 1] {
+            CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadAttr(_)
+            | CanonicalOp::Push(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => k -= 1,
+            _ => break,
+        }
     }
-    Ok(residual
-        .into_iter()
-        .next_back()
-        .map(Stmt::Expr)
-        .into_iter()
-        .collect())
+    k
 }
 
 fn first_significant(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
