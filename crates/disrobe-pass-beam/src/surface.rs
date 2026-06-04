@@ -49,7 +49,8 @@ pub fn recover(beam: &BeamFile) -> Result<ErlangSurface> {
             DebugInfo::Other(_) => {}
         }
     }
-    let core: CoreModule = crate::core_erlang::lift(beam)?;
+    let mut core: CoreModule = crate::core_erlang::lift(beam)?;
+    crate::body_lift::comprehension::resugar_module(&mut core);
     let attributes: Option<&Term> = beam.chunks.attributes.as_ref().map(|a| &a.term);
     let source: String = render_from_core(&core, attributes);
     Ok(ErlangSurface {

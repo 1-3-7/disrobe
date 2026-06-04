@@ -201,6 +201,41 @@ fn erlang_no_dbgi_core_lift_recovers_module_attributes() {
     assert!(surface.source.contains("handle_call("));
 }
 
+/// In the no-Dbgi core-lift, a single-generator list comprehension is lowered to
+/// a `'-f/1-lc$^0/1-0-'` recursive helper. The resugarer must reconstruct the
+/// surface `[Elem || G <- Src, Filters]` and drop the inlined helper, while
+/// leaving the tuple-pattern generator (`{K, V} <- Pairs`) as its faithful
+/// recursion (the single-var resugarer declines it rather than mis-recover).
+#[test]
+fn erlang_no_dbgi_resugars_single_generator_list_comprehension() {
+    let stripped: Vec<u8> = strip_dbgi(&erlang_megafile());
+    let beam: BeamFile = BeamFile::parse(&stripped).unwrap();
+    let surface: ErlangSurface = recover_erlang(&beam).expect("recover");
+    let src: &str = &surface.source;
+
+    let lc_line: &str = src
+        .lines()
+        .skip_while(|l: &&str| !l.starts_with("list_comprehension(X0)"))
+        .nth(1)
+        .expect("list_comprehension body line");
+    assert!(
+        lc_line.contains("||") && lc_line.contains("<-"),
+        "expected surface list comprehension, got: {lc_line}"
+    );
+    assert!(
+        lc_line.contains("* 2") && lc_line.contains("rem 2"),
+        "comprehension should recover the element and rem filter: {lc_line}"
+    );
+    assert!(
+        !src.contains("list_comprehension/1-lc$^0"),
+        "the inlined single-generator helper must be removed"
+    );
+    assert!(
+        src.contains("list_comprehension_filtered/1-lc$^0"),
+        "the tuple-pattern comprehension keeps its faithful helper recursion"
+    );
+}
+
 /// Drops the `Dbgi` chunk from a BEAM IFF so recovery is forced onto core-lift.
 fn strip_dbgi(bytes: &[u8]) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(bytes.len());
