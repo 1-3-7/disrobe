@@ -67,7 +67,15 @@ pub fn class_dump(slice: &[u8], parsed: &ParsedSlice) -> SwiftClassDump {
     let reflected_types: Vec<SwiftTypeReflection> =
         swift_reflect::parse_field_descriptors(slice, parsed, demangle_fn);
 
-    let mangled_symbols: Vec<String> = collect_mangled_swift_strings(reflection_strings.as_ref());
+    let mut mangled_symbols: Vec<String> =
+        collect_mangled_swift_strings(reflection_strings.as_ref());
+    for sym in macho::symbol_names(slice, parsed) {
+        if demangle::looks_like_swift_mangled(&sym) {
+            mangled_symbols.push(sym);
+        }
+    }
+    mangled_symbols.sort_unstable();
+    mangled_symbols.dedup();
     let mut demangled: BTreeMap<String, String> = BTreeMap::new();
     for sym in &mangled_symbols {
         if let Ok(d) = demangle::demangle(sym) {

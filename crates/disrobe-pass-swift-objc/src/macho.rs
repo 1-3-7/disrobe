@@ -13,10 +13,16 @@ pub const MH_CIGAM_64: u32 = 0xCFFA_EDFE;
 
 pub const LC_SEGMENT: u32 = 0x1;
 pub const LC_SEGMENT_64: u32 = 0x19;
+pub const LC_SYMTAB: u32 = 0x2;
 pub const LC_ENCRYPTION_INFO: u32 = 0x21;
 pub const LC_ENCRYPTION_INFO_64: u32 = 0x2C;
 pub const LC_CODE_SIGNATURE: u32 = 0x1D;
 pub const LC_REQ_DYLD: u32 = 0x8000_0000;
+
+const NLIST_64_SIZE: usize = 16;
+const NLIST_32_SIZE: usize = 12;
+const MAX_SYMBOLS: usize = 1 << 22;
+const MAX_SYMBOL_LEN: usize = 4096;
 
 pub const MACH_HEADER_32_SIZE: usize = 28;
 pub const MACH_HEADER_64_SIZE: usize = 32;
@@ -133,6 +139,14 @@ pub struct EncryptionInfo {
     pub crypt_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SymtabInfo {
+    pub sym_off: u32,
+    pub num_syms: u32,
+    pub str_off: u32,
+    pub str_size: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedSlice {
     pub header: SliceHeader,
@@ -141,6 +155,7 @@ pub struct ParsedSlice {
     pub encryption: Option<EncryptionInfo>,
     pub code_signature_off: Option<u32>,
     pub code_signature_size: Option<u32>,
+    pub symtab: Option<SymtabInfo>,
 }
 
 #[inline]
@@ -388,6 +403,7 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
     let mut encryption: Option<EncryptionInfo> = None;
     let mut code_signature_off: Option<u32> = None;
     let mut code_signature_size: Option<u32> = None;
+    let mut symtab: Option<SymtabInfo> = None;
     let mut cursor: usize = header_size;
 
     for idx in 0..ncmds {
@@ -438,6 +454,18 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
                 code_signature_off = Some(off);
                 code_signature_size = Some(size);
             }
+            LC_SYMTAB => {
+                let sym_off: u32 = read_u32(slice, cursor + 8)?;
+                let num_syms: u32 = read_u32(slice, cursor + 12)?;
+                let str_off: u32 = read_u32(slice, cursor + 16)?;
+                let str_size: u32 = read_u32(slice, cursor + 20)?;
+                symtab = Some(SymtabInfo {
+                    sym_off,
+                    num_syms,
+                    str_off,
+                    str_size,
+                });
+            }
             _ => {}
         }
         cursor += cmdsize_usize;
@@ -450,7 +478,56 @@ pub fn parse_slice(slice: &[u8]) -> Result<ParsedSlice> {
         encryption,
         code_signature_off,
         code_signature_size,
+        symtab,
     })
+}
+
+#[must_use]
+pub fn symbol_names(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
+    let Some(symtab): Option<SymtabInfo> = parsed.symtab else {
+        return Vec::new();
+    };
+    let entry_size: usize = match parsed.header.bitness {
+        Bitness::Bits64 => NLIST_64_SIZE,
+        Bitness::Bits32 => NLIST_32_SIZE,
+    };
+    let read_u32: ReadU32 = match parsed.header.endian {
+        Endian::Little => u32_le,
+        Endian::Big => u32_be,
+    };
+    let sym_base: usize = symtab.sym_off as usize;
+    let str_base: usize = symtab.str_off as usize;
+    let str_end: usize = str_base.saturating_add(symtab.str_size as usize);
+    let count: usize = (symtab.num_syms as usize).min(MAX_SYMBOLS);
+    let mut out: Vec<String> = Vec::with_capacity(count);
+    for i in 0..count {
+        let Some(entry_off): Option<usize> = i
+            .checked_mul(entry_size)
+            .and_then(|delta: usize| sym_base.checked_add(delta))
+        else {
+            break;
+        };
+        let Ok(n_strx): Result<u32> = read_u32(slice, entry_off) else {
+            break;
+        };
+        let name_off: usize = str_base.saturating_add(n_strx as usize);
+        if name_off >= str_end {
+            continue;
+        }
+        if let Some(name) = read_cstr_bounded(slice, name_off, str_end.min(slice.len()))
+            && !name.is_empty()
+        {
+            out.push(name);
+        }
+    }
+    out
+}
+
+fn read_cstr_bounded(slice: &[u8], start: usize, hard_end: usize) -> Option<String> {
+    let cap: usize = start.checked_add(MAX_SYMBOL_LEN)?.min(hard_end);
+    let window: &[u8] = slice.get(start..cap)?;
+    let nul: usize = window.iter().position(|b: &u8| *b == 0)?;
+    std::str::from_utf8(&window[..nul]).ok().map(str::to_owned)
 }
 
 #[must_use]

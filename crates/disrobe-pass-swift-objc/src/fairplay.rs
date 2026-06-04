@@ -62,6 +62,7 @@ mod tests {
             encryption,
             code_signature_off: None,
             code_signature_size: None,
+            symtab: None,
         }
     }
 

@@ -22,8 +22,8 @@ pub use ipa::{
 };
 pub use macho::{
     Bitness, CpuKind, EncryptionInfo, Endian, FatArchEntry, LoadCommand, MachoKind, ParsedSlice,
-    Section, Segment, SliceHeader, detect_magic, find_section, parse_slice, section_bytes,
-    slice_bytes, walk_fat,
+    Section, Segment, SliceHeader, SymtabInfo, detect_magic, find_section, parse_slice,
+    section_bytes, slice_bytes, symbol_names, walk_fat,
 };
 pub use objc::{
     ObjcClassDump, ObjcPointerList, ObjcStringTable, SelectorIndex, class_dump as objc_class_dump,
