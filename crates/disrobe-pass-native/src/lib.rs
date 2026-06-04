@@ -22,6 +22,7 @@ pub mod crypto_consts;
 pub mod cxx_recovery;
 pub mod debug_info;
 pub mod decompile;
+pub mod dwarf_sourcemap;
 pub mod error;
 pub mod fingerprint;
 pub mod fixtures;
@@ -55,6 +56,7 @@ pub use debug_info::{
 pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
 };
+pub use dwarf_sourcemap::{CompileUnit, DwarfSourcemap, LineRow, synthesize_dwarf_sourcemap};
 pub use error::{Error, Result};
 pub use fingerprint::{
     ASCII_XREF_MIN_LEN, FINGERPRINT_SCHEMA, FingerprintSidecar, StringXref, extract_ascii_xrefs,
@@ -85,23 +87,26 @@ pub use obfuscators::{
     unflatten_tigress_stub,
 };
 pub use packers::{
-    AspackPhaseTwoOutput, Confidence, Detection as PackerDetection, DisFilterStreamSizes,
+    AsProtectLayout, AsProtectRecovery, AspackPhaseTwoOutput, CHAIN_SIGNATURES, CarvedVmpSection,
+    ChainDetection, ChainSignature, Confidence, Detection as PackerDetection, DisFilterStreamSizes,
     FsgImport, FsgUnpackOutput, KkrunchyByteRecoveryReport, KkrunchyClassicStream,
     KkrunchyEmulatedUnpackOutput, KkrunchyEmulationSnapshot, KkrunchyEmulator, KkrunchyHeaderInfo,
     KkrunchyPhaseTwoOutput, KkrunchyUnpackOutput, KkrunchyVariant, MewEmulatedOutput, MewImport,
-    MewLeadingChunk, MewLzmaProps, MewRecovery, MewUnpackOutput, MpressImport, MpressInfo,
-    MpressRecoveryStatus, MpressUnpackOutput, NspackEmulatedReport, NspackLayout,
-    NspackRecoveryStatus, NspackSection, NspackUnpackReport, Packer, PetitePhase2EmulatedOutput,
-    PetiteUnpackReport, PetiteUnpackResult, RecoveredImport, RecoveredImportFn,
-    RecoveredResource as NspackRecoveredResource,
-    RecoveredSectionName as NspackRecoveredSectionName, UnpackerStatus, UpxMethod, UpxPackHeader,
-    UpxUnpackOutput, compute_byte_recovery, decompress_kkrunchy_classic, detect as detect_packers,
-    dis_filter, dis_unfilter, fingerprint_chain, locate_classic_stream, parse_kkrunchy_header,
-    parse_nspack_layout, unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy,
-    unpack_kkrunchy_emulated, unpack_kkrunchy_phase2_emulated, unpack_mew, unpack_mew_emulated,
-    unpack_mpress, unpack_nspack, unpack_nspack_emulated, unpack_nspack_emulated_with_baseline,
-    unpack_nspack_emulated_with_baseline_raw, unpack_petite, unpack_petite_phase2_emulated,
-    unpack_petite_with_report, unpack_upx,
+    MewLeadingChunk, MewLzmaProps, MewRecovery, MewUnpackOutput, MorphineLayout, MorphineRecovery,
+    MpressImport, MpressInfo, MpressRecoveryStatus, MpressUnpackOutput, NspackEmulatedReport,
+    NspackLayout, NspackRecoveryStatus, NspackSection, NspackUnpackReport, OreansProduct, Packer,
+    PetitePhase2EmulatedOutput, PetiteUnpackReport, PetiteUnpackResult, RecoveredImport,
+    RecoveredImportFn, RecoveredResource as NspackRecoveredResource,
+    RecoveredSectionName as NspackRecoveredSectionName, SectionPerms, SyntheticImport,
+    ThemidaCarve, UnpackerStatus, UpxMethod, UpxPackHeader, UpxUnpackOutput, VmProtectCarve,
+    asprotect_layout, carve_themida, carve_vmprotect, compute_byte_recovery,
+    decompress_kkrunchy_classic, detect as detect_packers, detect_packer_chain, dis_filter,
+    dis_unfilter, fingerprint_chain, locate_classic_stream, morphine_layout, parse_kkrunchy_header,
+    parse_nspack_layout, unpack_aspack_phase2_emulated, unpack_asprotect, unpack_fsg,
+    unpack_kkrunchy, unpack_kkrunchy_emulated, unpack_kkrunchy_phase2_emulated, unpack_mew,
+    unpack_mew_emulated, unpack_morphine, unpack_mpress, unpack_nspack, unpack_nspack_emulated,
+    unpack_nspack_emulated_with_baseline, unpack_nspack_emulated_with_baseline_raw, unpack_petite,
+    unpack_petite_phase2_emulated, unpack_petite_with_report, unpack_upx,
 };
 pub use pass::{
     DecompilerProbeSummary, NativePass, NativePassReport, PASS_INPUT_PATH_CAP, PassInput,

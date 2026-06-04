@@ -54,13 +54,13 @@
       "input_blake3": "2c4b928e9759ce9877a0cbaa29cfadef7fc056d3c7eeca33801d6c6fc082be23",
       "input_size": 13806,
       "metadata": {},
-      "output_blake3": "ae1fdd9e4257521778eb13edb5d83122473e45675285584f5fb1135aa533b185",
+      "output_blake3": "0aaeeca2e13e0d27a09e310d18fe5b66199574caa67f364ab4e323e45539166f",
       "output_kind": {
         "formatted": true,
         "kind": "source",
         "language": "Python"
       },
-      "output_size": 6716,
+      "output_size": 6453,
       "parent_id": 0,
       "pass": "py.decompile",
       "verdict": "complete"

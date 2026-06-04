@@ -28,7 +28,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    GenBindings,
+    GenBindings {
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
     BakeFixtures {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         dry_run: bool,
@@ -49,7 +52,7 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli: Cli = Cli::parse();
     let result: Result<()> = match cli.command {
-        Cmd::GenBindings => run_gen_bindings(),
+        Cmd::GenBindings { out_dir } => run_gen_bindings(out_dir),
         Cmd::BakeFixtures {
             dry_run,
             edge_cases,
@@ -202,14 +205,15 @@ fn run_gen_error_docs() -> Result<()> {
     Ok(())
 }
 
-fn run_gen_bindings() -> Result<()> {
+fn run_gen_bindings(out_dir: Option<PathBuf>) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     let schemas_dir: PathBuf = root.join("schemas").join("v0").join("json");
     if !schemas_dir.is_dir() {
         run_schemas()?;
     }
-    let py_dir: PathBuf = root.join("bindings").join("python");
-    let ts_dir: PathBuf = root.join("bindings").join("typescript");
+    let bindings_root: PathBuf = out_dir.unwrap_or_else(|| root.join("bindings"));
+    let py_dir: PathBuf = bindings_root.join("python");
+    let ts_dir: PathBuf = bindings_root.join("typescript");
     let schemas: Vec<SchemaArtifact> = load_schemas(&schemas_dir)?;
     let summary: CodegenSummary = write_bindings(&schemas, &py_dir, &ts_dir)?;
     println!(

@@ -102,6 +102,30 @@ pub mod pecompact_phase2;
 
 pub use pecompact_phase2::{PecompactPhaseTwoOutput, unpack_pecompact_phase2_emulated};
 
+pub mod chain_sigs;
+
+pub use chain_sigs::{CHAIN_SIGNATURES, ChainDetection, ChainSignature, detect_packer_chain};
+
+pub mod vmprotect_carve;
+
+pub use vmprotect_carve::{
+    CarvedVmpSection, SectionPerms, SyntheticImport, VmProtectCarve, carve_vmprotect,
+};
+
+pub mod themida_carve;
+
+pub use themida_carve::{OreansProduct, ThemidaCarve, carve_themida};
+
+pub mod asprotect_unpack;
+
+pub use asprotect_unpack::{
+    AsProtectLayout, AsProtectRecovery, asprotect_layout, unpack_asprotect,
+};
+
+pub mod morphine_unpack;
+
+pub use morphine_unpack::{MorphineLayout, MorphineRecovery, morphine_layout, unpack_morphine};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {
@@ -194,8 +218,8 @@ impl Packer {
             | Self::Mew
             | Self::AsPack
             | Self::PeCompact
-            | Self::YodasCrypter => UnpackerStatus::Implemented,
-            Self::Kkrunchy => UnpackerStatus::StubEvalPending,
+            | Self::YodasCrypter
+            | Self::Kkrunchy => UnpackerStatus::Implemented,
             Self::AsProtect
             | Self::Morphine
             | Self::YodasProtector

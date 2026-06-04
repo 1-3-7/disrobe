@@ -10,11 +10,11 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
 use crate::packers::{
-    AspackPhaseTwoOutput, Detection as PackerDetection, FsgUnpackOutput, MewUnpackOutput,
-    MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
+    AspackPhaseTwoOutput, Detection as PackerDetection, FsgUnpackOutput, KkrunchyUnpackOutput,
+    MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
     PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput, YodasCrypterCarve,
     detect as detect_packers, recover_yodas_crypter_carve, unpack_aspack_phase2_emulated,
-    unpack_fsg, unpack_mew, unpack_mpress, unpack_nspack_emulated,
+    unpack_fsg, unpack_kkrunchy, unpack_mew, unpack_mpress, unpack_nspack_emulated,
     unpack_pecompact_phase2_emulated, unpack_petite_phase2_emulated, unpack_upx,
 };
 
@@ -153,6 +153,11 @@ fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<Artifact
             let out: PecompactPhaseTwoOutput = unpack_pecompact_phase2_emulated(packed, None)
                 .map_err(|e| pass_err("DR-NAT-0920", packer, &e))?;
             out.recovered_memory_image
+        }
+        Packer::Kkrunchy => {
+            let out: KkrunchyUnpackOutput =
+                unpack_kkrunchy(packed).map_err(|e| pass_err("DR-NAT-0921", packer, &e))?;
+            out.packed_payload
         }
         other => {
             return Err(CoreError::PassFailure(format!(

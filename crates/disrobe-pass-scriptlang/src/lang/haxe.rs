@@ -110,6 +110,147 @@ fn parse_js_version(head: &[u8]) -> Option<String> {
     }
 }
 
+const JVM_CLASS_MAGIC: [u8; 4] = [0xca, 0xfe, 0xba, 0xbe];
+const JVM_MAJOR_MIN: u16 = 45u16;
+const JVM_MAJOR_MAX: u16 = 69u16;
+const PE_MAGIC: [u8; 2] = [b'M', b'Z'];
+const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+const MACHO_MAGICS: [[u8; 4]; 4] = [
+    [0xcf, 0xfa, 0xed, 0xfe],
+    [0xce, 0xfa, 0xed, 0xfe],
+    [0xfe, 0xed, 0xfa, 0xcf],
+    [0xfe, 0xed, 0xfa, 0xce],
+];
+const PE_NT_SIGNATURE: [u8; 4] = [b'P', b'E', 0x00, 0x00];
+const CLR_DATA_DIRECTORY_INDEX: usize = 14usize;
+const HXCPP_MARKERS: &[&[u8]] = &[
+    b"hxcpp",
+    b"HX_DECLARE_CLASS",
+    b"::hx::",
+    b"__hxcpp",
+    b"hx::Object",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HaxeCrossTarget {
+    JvmClassfile,
+    DotNetCil,
+    Hxcpp,
+}
+
+impl HaxeCrossTarget {
+    #[must_use]
+    pub const fn route_pass_id(self) -> &'static str {
+        match self {
+            Self::JvmClassfile => "jvm.classify",
+            Self::DotNetCil => "dotnet.classify",
+            Self::Hxcpp => "disrobe-pass-native",
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::JvmClassfile => "haxe-jvm",
+            Self::DotNetCil => "haxe-cs",
+            Self::Hxcpp => "haxe-cpp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HaxeCrossRoute {
+    pub target: HaxeCrossTarget,
+    pub route_pass_id: &'static str,
+    pub haxe_marker_present: bool,
+}
+
+#[must_use]
+pub fn route_cross_target(bytes: &[u8]) -> Option<HaxeCrossRoute> {
+    if is_jvm_classfile(bytes) {
+        return Some(HaxeCrossRoute {
+            target: HaxeCrossTarget::JvmClassfile,
+            route_pass_id: HaxeCrossTarget::JvmClassfile.route_pass_id(),
+            haxe_marker_present: window_contains(bytes, b"haxe") || window_contains(bytes, b"Haxe"),
+        });
+    }
+    if is_dotnet_pe(bytes) {
+        return Some(HaxeCrossRoute {
+            target: HaxeCrossTarget::DotNetCil,
+            route_pass_id: HaxeCrossTarget::DotNetCil.route_pass_id(),
+            haxe_marker_present: window_contains(bytes, b"haxe") || window_contains(bytes, b"Haxe"),
+        });
+    }
+    if is_hxcpp(bytes) {
+        return Some(HaxeCrossRoute {
+            target: HaxeCrossTarget::Hxcpp,
+            route_pass_id: HaxeCrossTarget::Hxcpp.route_pass_id(),
+            haxe_marker_present: true,
+        });
+    }
+    None
+}
+
+fn is_jvm_classfile(bytes: &[u8]) -> bool {
+    if bytes.len() < 8 || bytes[..4] != JVM_CLASS_MAGIC {
+        return false;
+    }
+    let major: u16 = u16::from_be_bytes([bytes[6], bytes[7]]);
+    (JVM_MAJOR_MIN..=JVM_MAJOR_MAX).contains(&major)
+}
+
+fn is_dotnet_pe(bytes: &[u8]) -> bool {
+    pe_clr_directory(bytes).is_some_and(|(rva, size): (u32, u32)| rva != 0 && size != 0)
+}
+
+fn pe_clr_directory(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 0x40 || bytes[..2] != PE_MAGIC {
+        return None;
+    }
+    let lfanew: usize =
+        u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+    if bytes.len() < lfanew + 0x18 || bytes[lfanew..lfanew + 4] != PE_NT_SIGNATURE {
+        return None;
+    }
+    let opt_magic_pos: usize = lfanew + 0x18;
+    let opt_magic: u16 = u16::from_le_bytes([bytes[opt_magic_pos], bytes[opt_magic_pos + 1]]);
+    let dir_table_offset: usize = match opt_magic {
+        0x10b => opt_magic_pos + 0x60,
+        0x20b => opt_magic_pos + 0x70,
+        _ => return None,
+    };
+    let entry_pos: usize = dir_table_offset + CLR_DATA_DIRECTORY_INDEX * 8;
+    if bytes.len() < entry_pos + 8 {
+        return None;
+    }
+    let rva: u32 = u32::from_le_bytes([
+        bytes[entry_pos],
+        bytes[entry_pos + 1],
+        bytes[entry_pos + 2],
+        bytes[entry_pos + 3],
+    ]);
+    let size: u32 = u32::from_le_bytes([
+        bytes[entry_pos + 4],
+        bytes[entry_pos + 5],
+        bytes[entry_pos + 6],
+        bytes[entry_pos + 7],
+    ]);
+    Some((rva, size))
+}
+
+fn is_hxcpp(bytes: &[u8]) -> bool {
+    let is_native: bool = starts_with(bytes, &ELF_MAGIC)
+        || starts_with(bytes, &PE_MAGIC)
+        || MACHO_MAGICS.iter().any(|m: &[u8; 4]| starts_with(bytes, m));
+    let has_cpp_source: bool =
+        window_contains(bytes, b"#include") && window_contains(bytes, b"HX_");
+    let has_marker: bool = HXCPP_MARKERS
+        .iter()
+        .any(|m: &&[u8]| window_contains(bytes, m));
+    has_marker && (is_native || has_cpp_source || window_contains(bytes, b".cpp"))
+}
+
 #[inline]
 fn starts_with(bytes: &[u8], prefix: &[u8]) -> bool {
     bytes.len() >= prefix.len() && &bytes[..prefix.len()] == prefix
@@ -158,5 +299,81 @@ mod tests {
     #[test]
     fn rejects_non_haxe() {
         assert!(detect(b"plain text file with no haxe markers").is_none());
+    }
+
+    fn jvm_class_stub(major: u16) -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend_from_slice(&JVM_CLASS_MAGIC);
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&major.to_be_bytes());
+        v.extend_from_slice(&[0u8; 8]);
+        v
+    }
+
+    fn dotnet_pe_stub(clr_rva: u32, clr_size: u32) -> Vec<u8> {
+        let lfanew: usize = 0x80usize;
+        let opt_magic_pos: usize = lfanew + 0x18;
+        let dir_table: usize = opt_magic_pos + 0x60;
+        let entry: usize = dir_table + CLR_DATA_DIRECTORY_INDEX * 8;
+        let mut v: Vec<u8> = vec![0u8; entry + 8];
+        v[0] = b'M';
+        v[1] = b'Z';
+        v[0x3c..0x40].copy_from_slice(&(lfanew as u32).to_le_bytes());
+        v[lfanew..lfanew + 4].copy_from_slice(&PE_NT_SIGNATURE);
+        v[opt_magic_pos..opt_magic_pos + 2].copy_from_slice(&0x10b_u16.to_le_bytes());
+        v[entry..entry + 4].copy_from_slice(&clr_rva.to_le_bytes());
+        v[entry + 4..entry + 8].copy_from_slice(&clr_size.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn routes_jvm_classfile_to_jvm_pass() {
+        let class: Vec<u8> = jvm_class_stub(52);
+        let route: HaxeCrossRoute = route_cross_target(&class).expect("jvm route");
+        assert_eq!(route.target, HaxeCrossTarget::JvmClassfile);
+        assert_eq!(route.route_pass_id, "jvm.classify");
+    }
+
+    #[test]
+    fn rejects_macho_fat_as_jvm_classfile() {
+        let mut fat: Vec<u8> = JVM_CLASS_MAGIC.to_vec();
+        fat.extend_from_slice(&2u32.to_be_bytes());
+        fat.extend_from_slice(&[0u8; 16]);
+        assert!(
+            route_cross_target(&fat).is_none(),
+            "Mach-O FAT (CAFEBABE + nfat_arch=2) must not be misread as a classfile"
+        );
+    }
+
+    #[test]
+    fn routes_dotnet_pe_clr_to_dotnet_pass() {
+        let pe: Vec<u8> = dotnet_pe_stub(0x2000, 0x48);
+        let route: HaxeCrossRoute = route_cross_target(&pe).expect("dotnet route");
+        assert_eq!(route.target, HaxeCrossTarget::DotNetCil);
+        assert_eq!(route.route_pass_id, "dotnet.classify");
+    }
+
+    #[test]
+    fn rejects_native_pe_without_clr_directory() {
+        let pe: Vec<u8> = dotnet_pe_stub(0, 0);
+        assert!(
+            route_cross_target(&pe).is_none(),
+            "a PE with an empty CLR data directory is not a .NET image"
+        );
+    }
+
+    #[test]
+    fn routes_hxcpp_source_to_native_pass() {
+        let cpp: &[u8] =
+            b"#include <hxcpp.h>\nHX_DECLARE_CLASS0(Main)\nvoid ::hx::Main_obj::main(){}\n";
+        let route: HaxeCrossRoute = route_cross_target(cpp).expect("hxcpp route");
+        assert_eq!(route.target, HaxeCrossTarget::Hxcpp);
+        assert_eq!(route.route_pass_id, "disrobe-pass-native");
+        assert!(route.haxe_marker_present);
+    }
+
+    #[test]
+    fn cross_router_ignores_plain_text() {
+        assert!(route_cross_target(b"just some prose, no headers").is_none());
     }
 }

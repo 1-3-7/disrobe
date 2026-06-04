@@ -32,6 +32,7 @@ pub mod dalvik;
 pub mod dalvik_cfg;
 pub mod dalvik_decompile;
 pub mod dalvik_lift;
+pub mod dalvik_to_jvm;
 pub mod decompile;
 pub mod decompile_struct;
 pub mod descriptor;

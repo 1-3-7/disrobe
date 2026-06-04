@@ -86,6 +86,12 @@ pub(crate) enum JsCmd {
             help = "force a specific bundler runtime; default auto-detects from runtime markers"
         )]
         target: UnbundleTarget,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds; sourcemap synthesizes per-chunk v3 source maps and decodes embedded data-url maps"
+        )]
+        emit: Vec<String>,
     },
 }
 
@@ -135,7 +141,12 @@ pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
             full,
             emit,
         ),
-        JsCmd::Unbundle { input, out, target } => unbundle(input, out, target),
+        JsCmd::Unbundle {
+            input,
+            out,
+            target,
+            emit,
+        } => unbundle(input, out, target, emit),
     }
 }
 
@@ -730,7 +741,12 @@ fn apply_legacy(
     }
 }
 
-fn unbundle(input: PathBuf, out: Option<PathBuf>, target: UnbundleTarget) -> miette::Result<()> {
+fn unbundle(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    target: UnbundleTarget,
+    emit: Vec<String>,
+) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0045: cannot read input: {e}"))?;
     let source_text: &str = std::str::from_utf8(&bytes)
@@ -813,6 +829,14 @@ fn unbundle(input: PathBuf, out: Option<PathBuf>, target: UnbundleTarget) -> mie
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e: std::io::Error| miette::miette!("DR-CLI-0057: cannot write manifest: {e}"))?;
 
+    let stem: String = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("js-unbundle")
+        .to_owned();
+    let sourcemaps: Option<SourcemapEmitSummary> =
+        emit_sourcemaps_if_requested(&emit, source_text, result.kind, &out_root, &stem)?;
+
     println!("js unbundle: OK");
     println!("  bundler:      {}", result.kind.as_str());
     println!("  matched:      {}", result.detection.matched);
@@ -824,5 +848,66 @@ fn unbundle(input: PathBuf, out: Option<PathBuf>, target: UnbundleTarget) -> mie
     for (id, path) in &written {
         println!("    - {id}: {}", path.display());
     }
+    if let Some(maps) = &sourcemaps {
+        println!(
+            "  sourcemaps:   {} synthesized, {} embedded -> {}",
+            maps.synthesized,
+            maps.embedded,
+            maps.dir.display()
+        );
+        for (chunk, path) in &maps.written {
+            println!("    - {chunk}: {}", path.display());
+        }
+    }
     Ok(())
+}
+
+#[derive(Debug)]
+struct SourcemapEmitSummary {
+    synthesized: usize,
+    embedded: usize,
+    dir: PathBuf,
+    written: std::collections::BTreeMap<String, PathBuf>,
+}
+
+fn emit_sourcemaps_if_requested(
+    emit: &[String],
+    source_text: &str,
+    kind: disrobe_pass_js_deob::BundlerKind,
+    out_root: &std::path::Path,
+    stem: &str,
+) -> miette::Result<Option<SourcemapEmitSummary>> {
+    let spec: crate::cli::emit::EmitSpec = crate::cli::emit::EmitSpec::parse(emit)?;
+    if spec.is_empty() {
+        return Ok(None);
+    }
+    let non_sourcemap: Vec<String> = spec
+        .iter()
+        .filter(|k: &crate::cli::emit::EmitKind| *k != crate::cli::emit::EmitKind::Sourcemap)
+        .map(|k: crate::cli::emit::EmitKind| k.label().to_owned())
+        .collect();
+    crate::cli::emit::apply_not_applicable_stubs(
+        &non_sourcemap,
+        out_root,
+        stem,
+        "js-unbundle",
+        "not implemented for the js unbundle pass in this build",
+    )?;
+    if !spec.contains(crate::cli::emit::EmitKind::Sourcemap) {
+        return Ok(None);
+    }
+    let (_, emitted): (
+        disrobe_pass_js_deob::UnbundleGraphResult,
+        disrobe_pass_js_deob::SourceMapEmit,
+    ) = disrobe_pass_js_deob::unbundle_with_sourcemaps(kind, source_text)
+        .map_err(|e| miette::miette!("DR-CLI-0058: js --emit sourcemap synthesis failed: {e}"))?;
+    let written: std::collections::BTreeMap<String, PathBuf> =
+        disrobe_pass_js_deob::write_sourcemaps(out_root, &emitted)
+            .map_err(|e| miette::miette!("DR-CLI-0059: cannot write js sourcemaps: {e}"))?;
+    Ok(Some(SourcemapEmitSummary {
+        synthesized: emitted.per_chunk.len(),
+        embedded: emitted.embedded.len(),
+        dir: out_root.join("sourcemaps"),
+        written,
+    }))
 }

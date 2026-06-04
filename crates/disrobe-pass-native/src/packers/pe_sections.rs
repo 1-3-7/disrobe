@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
 const DOS_E_LFANEW_OFFSET: usize = 0x3C;
@@ -57,7 +59,7 @@ pub struct PeImage {
     pub sections: Vec<PeSection>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataDirectory {
     pub virtual_address: u32,
     pub size: u32,

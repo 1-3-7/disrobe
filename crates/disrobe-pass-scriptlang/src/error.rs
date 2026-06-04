@@ -17,6 +17,18 @@ pub enum Error {
     #[error("DR-SCRIPT-0201: B::Concise dump declared no subroutines or main program")]
     PerlEmptyDump,
 
+    #[error("DR-SCRIPT-0210: not a B::Bytecode/ByteLoader binary stream (missing PLBC magic)")]
+    NotPerlBytecode,
+
+    #[error("DR-SCRIPT-0211: truncated B::Bytecode stream at offset {0}")]
+    PerlBytecodeTruncated(usize),
+
+    #[error("DR-SCRIPT-0212: unknown B::Bytecode opcode {0}")]
+    PerlBytecodeUnknownOp(u8),
+
+    #[error("DR-SCRIPT-0213: B::Bytecode stream contained no instructions")]
+    PerlBytecodeEmpty,
+
     #[error("DR-SCRIPT-0300: not an RDS stream: bad magic {0:?}")]
     NotRds([u8; 2]),
 

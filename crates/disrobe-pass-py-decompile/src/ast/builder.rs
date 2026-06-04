@@ -38,6 +38,7 @@ impl AstBuilder for DefaultAstBuilder {
         version: &PyVersion,
     ) -> Result<AstModule> {
         set_active_version(version);
+        set_future_annotations(code.flags);
         let opmap: Box<dyn OpcodeMap> = map_for(version.clone());
         let stream: DecodedStream = decode_stream_with_offsets(code, opmap.as_ref(), version);
         let module_docstring: Option<String> = class_docstring(code, &stream.ops);
@@ -451,7 +452,7 @@ fn merge_annotations(body: Vec<Stmt>) -> Vec<Stmt> {
                 Expr::Constant {
                     value: ConstValue::Str(annotation_str),
                     ..
-                } => parse_annotation_string(annotation_str),
+                } if future_annotations_active() => parse_annotation_string(annotation_str),
                 other => other.clone(),
             };
             if try_attach_annotation(&mut out, slot_name, &annotation_expr) {
@@ -2978,6 +2979,38 @@ fn except_star_body_end(stream: &DecodedStream, region: &TryRegion, truncated_en
 /// that cleanup. `None` when there is no nested with-handler, when the post-cleanup flow is NOT a
 /// guarded branch (a with-trailing-return idiom, not an epilogue), or when no real statement follows -
 /// so plain `except*`-over-`async with` cells keep their existing body end and stay byte-identical.
+/// The normal-exit successor of a PEP 654 `except*` group: the statements that run after every arm has
+/// been processed and the residual group did NOT need re-raising. `CPython` closes the group dispatch
+/// with `CALL_INTRINSIC_2 (prep_reraise_star); COPY 1; POP_JUMP_IF_TRUE reraise; POP_TOP; POP_EXCEPT`,
+/// then emits the post-construct fall-through (e.g. `return handled`) inline before the cold
+/// `SWAP; POP_EXCEPT; RERAISE` epilogue. The generic gap scan misses this because the tail sits past the
+/// handler entry, inside the region, not before it. Locate the `POP_EXCEPT` that follows the reraise
+/// guard's fall-through and return `[tail_start, cold_epilogue_start)` so the successor recovers. Returns
+/// `None` when the fall-through carries no real statement (3.11 routes the tail past the region instead).
+fn except_star_normal_exit_span(
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Option<(usize, usize)> {
+    let intrinsic: usize = (region.handler_start..region.region_end)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallIntrinsic2(_)))?;
+    let guard_jump: usize = (intrinsic + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopJumpIfTrue(_)))?;
+    let pop_except: usize = (guard_jump + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))?;
+    let tail_start: usize = first_significant(stream, pop_except + 1, region.region_end)?;
+    let cold_start: usize = (tail_start..region.region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Swap(_) | CanonicalOp::Reraise(_)
+        )
+    })?;
+    if tail_start >= cold_start || !slice_has_real_stmt(stream, tail_start, cold_start) {
+        return None;
+    }
+    Some((tail_start, cold_start))
+}
+
 fn except_star_nested_with_epilogue_span(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3055,7 +3088,8 @@ fn structure_try(
             let handlers: Vec<ExceptHandler> =
                 parse_except_star_handlers(code, stream, region.handler_start, region.region_end)?;
             let inline_epilogue: Option<(usize, usize)> =
-                except_star_nested_with_epilogue_span(stream, region);
+                except_star_nested_with_epilogue_span(stream, region)
+                    .or_else(|| except_star_normal_exit_span(stream, region));
             let (succ_scan_start, succ_end): (usize, usize) =
                 if let Some((start, end)) = inline_epilogue {
                     (start, end)
@@ -3347,6 +3381,54 @@ fn strip_leading_stmts(body: &mut Vec<Stmt>, prefix: &[Stmt]) {
 /// row protecting the whole try+except, whose body is duplicated inline on every normal exit and
 /// must be trimmed from the body / handlers / else - pycdc combo `BLK_FINALLY`). Returns the statement
 /// and the op index past everything consumed.
+/// On 3.11+ a `return X` that follows a `try/except` (no `else` in source) is INLINED by `CPython` onto
+/// every exit path: once at the try body's normal exit (the `[protected_end, handler_start)` gap) and
+/// once at each handler's `POP_EXCEPT`-then-return tail. The gap copy then masquerades as an `else:`. When
+/// the gap is exactly that single `return` and every handler ends with the identical statement, it is the
+/// shared construct-exit tail, not an `else` - return it so the caller emits it once after the `try` and
+/// strips the per-handler copies. Returns `None` (genuine `else`) when the handlers don't all share it.
+fn shared_construct_exit_return(raw: &[Stmt], handlers: &[ExceptHandler]) -> Option<Vec<Stmt>> {
+    let [exit @ Stmt::Return(_)]: &[Stmt] = raw else {
+        return None;
+    };
+    if handlers.is_empty() {
+        return None;
+    }
+    let exit_repr: String = format!("{exit:?}");
+    let all_share: bool = handlers.iter().all(|h: &ExceptHandler| {
+        h.body
+            .last()
+            .is_some_and(|s: &Stmt| format!("{s:?}") == exit_repr)
+    });
+    all_share.then(|| vec![exit.clone()])
+}
+
+/// Drop the trailing shared construct-exit `return` (recovered by `shared_construct_exit_return` and
+/// re-emitted once after the `try`) from each except handler body so it is not duplicated inside the
+/// handlers. A handler that becomes empty falls back to a single `pass`.
+fn strip_shared_exit_return(
+    handlers: Vec<ExceptHandler>,
+    construct_tail: &[Stmt],
+) -> Vec<ExceptHandler> {
+    let [tail]: &[Stmt] = construct_tail else {
+        return handlers;
+    };
+    let tail_repr: String = format!("{tail:?}");
+    handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            if h.body
+                .last()
+                .is_some_and(|s: &Stmt| format!("{s:?}") == tail_repr)
+            {
+                h.body.pop();
+                h.body = non_empty(h.body);
+            }
+            h
+        })
+        .collect()
+}
+
 fn structure_try_except_family(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3416,11 +3498,18 @@ fn structure_try_except_family(
                     raw.pop();
                 }
                 (raw, tail)
+            } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
+                (Vec::new(), shared)
             } else {
                 (raw, Vec::new())
             }
         }
         None => (Vec::new(), Vec::new()),
+    };
+    let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
+        handlers
+    } else {
+        strip_shared_exit_return(handlers, &construct_tail)
     };
 
     let consumed: usize = combo
@@ -6901,6 +6990,26 @@ fn recover_while_test(code: &CodeObject, stream: &DecodedStream, region: &LoopRe
 /// produces a single `Expr::IfExp` seeded into the `SIM` for the post-join region, which then handles
 /// the downstream consumer (`Return`, `StoreFast`, `Subscript`, etc.). Recursively detects nested
 /// ternaries in the body or else region.
+/// Index of the value-form ternary's then-branch skip jump (`JUMP_FORWARD`/`JUMP_ABSOLUTE` to the
+/// join). It normally sits at `target - 1`, but on 3.11 the else branch may open with a `LOAD_GLOBAL`
+/// method-self `PUSH_NULL` slot that the `POP_JUMP_IF_*` target lands ON, so the skip jump is one or
+/// more `PUSH`/cache/nop ops before `target`. Scan back from `target` past that padding to the real
+/// skip jump; returns `target - 1` unchanged when no padding intervenes.
+fn ternary_body_jump_before(stream: &DecodedStream, from: usize, target: usize) -> usize {
+    let mut k: usize = target;
+    while k > from {
+        k -= 1;
+        match stream.ops[k] {
+            CanonicalOp::Push(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
+            _ => return k,
+        }
+    }
+    target.saturating_sub(1)
+}
+
 fn try_structure_ternary_expr(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -6913,22 +7022,22 @@ fn try_structure_ternary_expr(
         return Ok(None);
     }
     let last_test_jump: usize = ternary_test_chain_end(stream, lo, jump_idx, target);
-    let body_last: usize = target - 1;
+    let body_last: usize = ternary_body_jump_before(stream, last_test_jump + 1, target);
     if !matches!(
         stream.ops[body_last],
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
         return Ok(None);
     }
+    let orelse_start: usize = body_last + 1;
     let Some(join): Option<usize> = resolve_jump_target(stream, body_last, &stream.ops[body_last])
-        .filter(|j: &usize| *j > target && *j <= hi)
+        .filter(|j: &usize| *j > body_last && *j <= hi)
     else {
         return Ok(None);
     };
     if last_test_jump + 1 > body_last {
         return Ok(None);
     }
-    let orelse_start: usize = target;
     let Some((head_stmts, below_stack, test_raw)): Option<TernaryTest> =
         build_ternary_test_expr(code, stream, lo, jump_idx, last_test_jump, target)?
     else {
@@ -7502,6 +7611,149 @@ fn build_shortcircuit_stack_expr(
     Ok(fold_shortcircuit_operands(resolved))
 }
 
+/// The op that pushes the `AssertionError` raised by a failed `assert`: the dedicated
+/// `LOAD_ASSERTION_ERROR` opcode on 3.9-3.13, the `LOAD_COMMON_CONSTANT 0` slot on 3.14+ (which folded
+/// the builtin exceptions into a common-constant table), or a `LOAD_GLOBAL AssertionError` on 3.8 and
+/// earlier (no dedicated opcode). Used to anchor the assert raise site across versions.
+fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
+    match op {
+        CanonicalOp::LoadAssertionError | CanonicalOp::LoadCommonConst(0) => true,
+        CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => {
+            name_at_either(code, *slot).is_ok_and(|n: String| n == "AssertionError")
+        }
+        _ => false,
+    }
+}
+
+/// Reassemble an `assert <test>[, <msg>]` from its short-circuit lowering. `CPython` compiles the test
+/// as a jump-threaded boolean evaluated for truth: each leading `and`-conjunct emits
+/// `<value>; POP_JUMP_IF_FALSE raise`, the final conjunct emits `<value>; POP_JUMP_IF_TRUE pass`, and the
+/// false fall-through lands on `LOAD_ASSERTION_ERROR; [<msg>; CALL]; RAISE_VARARGS 1`. The generic
+/// if-structurer stops at the first conjunct and emits a bare expression plus a phantom `assert False`
+/// (compound) or an `if not <test>: assert False` (single); this folds the whole conjunct run into one
+/// test (`BoolOp::And` for two-or-more, the lone expr otherwise), recovers an optional message from the
+/// `AssertionError(<msg>)` call, emits `assert <test>[, <msg>]`, and continues from the pass successor.
+/// Returns `None` when the region is not an assert.
+fn try_structure_compound_assert(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(raise_idx): Option<usize> = (lo..hi).find(|&k: &usize| {
+        is_assertion_error_load(code, &stream.ops[k]) && assert_raise_after(stream, k, hi).is_some()
+    }) else {
+        return Ok(None);
+    };
+    let (raise_op, msg): (usize, Option<Expr>) = match assert_raise_after(stream, raise_idx, hi) {
+        Some((r, m)) => (r, assert_msg_expr(code, stream, raise_idx, r, m)?),
+        None => return Ok(None),
+    };
+    let pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
+    let jump_indices: Vec<usize> = (lo..raise_idx)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        .collect();
+    if jump_indices.is_empty() {
+        return Ok(None);
+    }
+    let mut head: Vec<Stmt> = Vec::new();
+    let mut operands: Vec<Expr> = Vec::new();
+    let mut value_lo: usize = lo;
+    for (n, &jump) in jump_indices.iter().enumerate() {
+        let target: usize = match resolve_jump_target(stream, jump, &stream.ops[jump]) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let jumps_false: bool = matches!(
+            stream.ops[jump],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        );
+        let conjunct_ok: bool =
+            (jumps_false && target <= raise_idx) || (!jumps_false && target >= pass_target);
+        if !conjunct_ok {
+            return Ok(None);
+        }
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[value_lo..jump])?;
+        let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        if n == 0 {
+            head = stmts;
+        } else if !stmts.is_empty() {
+            return Ok(None);
+        }
+        let value: Expr = none_jump_test(stream, jump, value.clone()).unwrap_or(value);
+        operands.push(value);
+        value_lo = jump + 1;
+    }
+    let test: Expr = if operands.len() == 1 {
+        operands.into_iter().next().unwrap_or(Expr::Constant {
+            value: ConstValue::True,
+            line: None,
+        })
+    } else {
+        Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::And,
+            values: operands,
+        }
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::Assert {
+        test,
+        msg,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, pass_target, hi)?);
+    Ok(Some(out))
+}
+
+/// Resolve the `RAISE_VARARGS` that closes an assert's failure path beginning at the
+/// `LOAD_ASSERTION_ERROR` site `raise_idx`, plus a flag for whether the error is CALLED with a message
+/// (`LOAD_ASSERTION_ERROR; <msg>; CALL; RAISE`) versus raised bare (`LOAD_ASSERTION_ERROR; RAISE`).
+/// Returns `(raise_op_index, has_message)`, or `None` when the tail is not an assert raise.
+fn assert_raise_after(
+    stream: &DecodedStream,
+    raise_idx: usize,
+    hi: usize,
+) -> Option<(usize, bool)> {
+    let next: usize = first_significant(stream, raise_idx + 1, hi)?;
+    if matches!(stream.ops[next], CanonicalOp::Raise(_)) {
+        return Some((next, false));
+    }
+    let call: usize = (raise_idx + 1..hi)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+    let raise: usize = first_significant(stream, call + 1, hi)?;
+    matches!(stream.ops[raise], CanonicalOp::Raise(_)).then_some((raise, true))
+}
+
+/// Recover the optional message expression of an `assert <test>, <msg>`: the operands pushed between the
+/// `LOAD_ASSERTION_ERROR` at `raise_idx` and the `RAISE_VARARGS` at `raise_op` form
+/// `AssertionError(<msg>)`. Replay that span through the value SIM (seeded with the error name) and
+/// return the single call argument. `None` flags a bare `raise AssertionError` (no message).
+fn assert_msg_expr(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    raise_idx: usize,
+    raise_op: usize,
+    has_message: bool,
+) -> Result<Option<Expr>> {
+    if !has_message {
+        return Ok(None);
+    }
+    let call: usize = match (raise_idx + 1..raise_op)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))
+    {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let (_stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[raise_idx + 1..call])?;
+    Ok(residual.into_iter().next_back())
+}
+
 /// Recover a return-form ternary chain `return X if c0 else (Y if c1 else Z)` as a single
 /// `Stmt::Return(IfExp)` rather than an `if/return` cascade. On 3.13 the cascade form lowers each
 /// constant arm via the `RETURN_CONST` peephole (`LOAD_CONST; RETURN_VALUE` collapses to one op),
@@ -7640,6 +7892,7 @@ fn dup_leads_match_test(stream: &DecodedStream, from: usize, hi: usize) -> bool 
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadAttr(_)
             | CanonicalOp::StoreFast(_)
             | CanonicalOp::StoreName(_)
             | CanonicalOp::Dup
@@ -8050,6 +8303,24 @@ fn forward_or_binding(
     None
 }
 
+/// A bare `case _:` wildcard arm keeps the subject live (it is matched, not consumed), so `CPython`
+/// discards the duplicated subject copy with a `POP_TOP` at the arm head — peephole-folded to a `NOP`
+/// on 3.10. The match dispatch's no-match fall-through (an implicit `return None` past the final
+/// refutable arm) has no live subject and so begins with a value load or terminator directly, with no
+/// leading `POP_TOP`/`NOP`. The discard op therefore distinguishes a real trailing `case _:` from the
+/// synthesized exit; without it the exit would materialize as a phantom wildcard arm that recompiles to
+/// two extra bytes for the absent subject pop. `CACHE`/`EXTENDED_ARG` are pure layout and skipped.
+fn wildcard_discards_subject(stream: &DecodedStream, arm_start: usize, region_end: usize) -> bool {
+    (arm_start..region_end.min(stream.ops.len()))
+        .find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .is_some_and(|k: usize| matches!(stream.ops[k], CanonicalOp::Pop | CanonicalOp::Nop))
+}
+
 fn extract_match_case(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -8065,6 +8336,9 @@ fn extract_match_case(
         arm_fail_target(stream, arm_start, region_end)
     else {
         let names: Vec<String> = collect_capture_names(code, stream, arm_start, region_end);
+        if names.is_empty() && !wildcard_discards_subject(stream, arm_start, region_end) {
+            return None;
+        }
         let body_start: usize = match_body_start(stream, arm_start, region_end, region_end);
         let pattern: Pattern = Pattern::MatchAs {
             pattern: None,
@@ -8463,7 +8737,10 @@ fn classify_simple_pattern(
             classify_mapping_pattern(code, stream, first, fail_target, region_end)
         }
         CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_) => {
-            classify_class_pattern(code, stream, first, fail_target, region_end)
+            classify_dotted_value_pattern(code, stream, first, fail_target, region_end)
+                .unwrap_or_else(|| {
+                    classify_class_pattern(code, stream, first, fail_target, region_end)
+                })
         }
         CanonicalOp::LoadConst(slot) => {
             if let Some(next) = first_significant(stream, first + 1, scan_end) {
@@ -8787,6 +9064,55 @@ fn mapping_rest_and_outer(
         let outer_idx: Option<usize> = has_outer.then_some(1);
         (Some(0), outer_idx)
     }
+}
+
+/// A dotted-name value pattern (`case Status.OK:`) lowers as `LOAD_GLOBAL/LOAD_NAME base; LOAD_ATTR
+/// attr...; COMPARE_OP ==; POP_JUMP_IF_FALSE next-arm` — an equality test against the looked-up value,
+/// not a `MATCH_CLASS` destructure. A bare-name value pattern is illegal Python (a bare capitalised
+/// name is a capture, not a value), so this only fires when at least one `LOAD_ATTR` forms a dotted
+/// reference. Returns the `MatchValue(<dotted expr>)` when the load chain is closed by an equality
+/// compare with no intervening `MATCH_CLASS`; otherwise `None` so the caller falls back to the class
+/// pattern path.
+fn classify_dotted_value_pattern(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    head: usize,
+    fail_target: usize,
+    region_end: usize,
+) -> Option<Pattern> {
+    let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
+    let base_id: String = match &stream.ops[head] {
+        CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot).ok()?,
+        CanonicalOp::LoadName(slot) => name_at(&code.names, *slot, head, "name").ok()?,
+        _ => return None,
+    };
+    let mut expr: Expr = Expr::Name {
+        id: base_id,
+        ctx: ExprCtx::Load,
+        line: None,
+    };
+    let mut attr_count: usize = 0;
+    let mut k: usize = head + 1;
+    while k < scan_end {
+        match &stream.ops[k] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::LoadAttr(slot) => {
+                let attr: String = name_at(&code.names, *slot, k, "attr").ok()?;
+                expr = Expr::Attribute {
+                    value: Box::new(expr),
+                    attr,
+                    ctx: ExprCtx::Load,
+                };
+                attr_count += 1;
+            }
+            CanonicalOp::Compare(CmpOp::Eq) if attr_count > 0 => {
+                return Some(Pattern::MatchValue(expr));
+            }
+            _ => return None,
+        }
+        k += 1;
+    }
+    None
 }
 
 fn classify_class_pattern(
@@ -9749,6 +10075,141 @@ fn else_jump_exits_to_shared_join(
     join >= hi && target < hi
 }
 
+/// True when a then-branch ending at `body_end` is the first arm of an `if/elif` (no trailing `else`)
+/// inside a loop. `CPython` lowers such an `if A: ... elif B: ...` so the first arm's normal exit is a
+/// `JUMP_BACKWARD` straight to the loop header (the implicit per-iteration continue), and the `elif`
+/// test occupies `[target, hi)`, itself exiting via its own back-edge. The generic structurer only
+/// opens an `else` on a FORWARD skip-jump, so without this the two arms flatten into sibling `if`s and
+/// the first arm loses its skip — the recompiled bytecode drops the `JUMP` that `CPython` emits to hop
+/// over the `elif` test. Recover it as a real `orelse` so the emitter renders `elif` and the skip
+/// regenerates. Gated to inside a loop frame whose header the first arm's back-edge targets, with a
+/// genuine forward conditional opening `[target, hi)`.
+fn elif_arm_continues_to_loop(
+    stream: &DecodedStream,
+    jump_idx: usize,
+    body_end: usize,
+    target: usize,
+    hi: usize,
+) -> Option<(usize, usize)> {
+    if target >= hi || body_end <= jump_idx + 1 {
+        return None;
+    }
+    let header: usize = loop_continue_target()?;
+    let back: usize = (jump_idx + 1..body_end)
+        .rev()
+        .find(|&k: &usize| is_back_edge(&stream.ops[k]))?;
+    if (back + 1..body_end).any(|k: usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::Push(_)
+        )
+    }) {
+        return None;
+    }
+    let lands_on_header: bool =
+        resolve_jump_target(stream, back, &stream.ops[back]).is_some_and(|t: usize| t <= header);
+    if !lands_on_header {
+        return None;
+    }
+    let elif_lo: usize = first_significant(stream, back + 1, hi).unwrap_or(target);
+    let elif_jump: usize = (elif_lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    })?;
+    let valid: bool = resolve_jump_target(stream, elif_jump, &stream.ops[elif_jump])
+        .is_some_and(|t: usize| t > elif_jump && t <= hi);
+    if !valid {
+        return None;
+    }
+    let orelse_at: usize = (back + 1).min(body_end);
+    Some((back, orelse_at))
+}
+
+/// Structure the `orelse` region of an `if/elif` (no trailing `else`) inside a loop, where each `elif`
+/// arm is lowered by `CPython` as `<cond> POP_JUMP_IF_{TRUE,FALSE} <arm-body>` with the false path
+/// falling into a `JUMP_BACKWARD` to the loop header (the implicit per-iteration continue) and the arm
+/// body laid out after that back-edge. The generic forward-if structurer treats the conditional's
+/// jump target as the JOIN and so loses both the body and the continue, flushing the test as a bare
+/// expression statement. This recovers the arm as `if <cond>: <body>` (recursing into the body and any
+/// deeper `elif`), which the emitter renders as `elif` and which recompiles to the same skip/continue
+/// layout. Falls back to the generic structurer when the region is not a recognizable arm.
+fn structure_elif_chain_arm(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Vec<Stmt>> {
+    let Some(cond_at): Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+    }) else {
+        return structure_stmts(code, stream, lo, hi);
+    };
+    let Some(jump_target): Option<usize> =
+        resolve_jump_target(stream, cond_at, &stream.ops[cond_at])
+            .filter(|t: &usize| *t > cond_at && *t <= hi)
+    else {
+        return structure_stmts(code, stream, lo, hi);
+    };
+    let header: usize = match loop_continue_target() {
+        Some(h) => h,
+        None => return structure_stmts(code, stream, lo, hi),
+    };
+    let lands_on_header = |idx: usize| -> bool {
+        is_back_edge(&stream.ops[idx])
+            && resolve_jump_target(stream, idx, &stream.ops[idx])
+                .is_some_and(|t: usize| t <= header)
+    };
+    let jump_skips_arm: bool = matches!(
+        stream.ops[cond_at],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    );
+    let (arm_body_start, arm_end, next_arm_start): (usize, usize, usize) = if jump_skips_arm {
+        let arm_back: usize = (cond_at + 1..jump_target)
+            .rev()
+            .find(|&k: &usize| lands_on_header(k))
+            .unwrap_or(jump_target);
+        (cond_at + 1, arm_back, jump_target)
+    } else {
+        let pre_continue: bool = (cond_at + 1..jump_target).any(|k: usize| lands_on_header(k));
+        if !pre_continue {
+            return structure_stmts(code, stream, lo, hi);
+        }
+        let arm_back: Option<usize> = (jump_target..hi).find(|&k: &usize| lands_on_header(k));
+        arm_back.map_or((jump_target, hi, hi), |b: usize| {
+            (
+                jump_target,
+                b,
+                first_significant(stream, b + 1, hi).unwrap_or(hi),
+            )
+        })
+    };
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..cond_at])?;
+    let raw_test: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
+        value: ConstValue::True,
+        line: None,
+    });
+    let test: Expr = none_jump_test(stream, cond_at, raw_test.clone()).unwrap_or(raw_test);
+    let body: Vec<Stmt> = structure_stmts(code, stream, arm_body_start, arm_end)?;
+    let deeper: Vec<Stmt> = if next_arm_start < hi {
+        structure_elif_chain_arm(code, stream, next_arm_start, hi)?
+    } else {
+        Vec::new()
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(body),
+        orelse: deeper,
+        line: None,
+    });
+    Ok(out)
+}
+
 fn structure_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -9818,6 +10279,9 @@ fn structure_stmts(
     {
         return Ok(vec![Stmt::Return(Some(expr))]);
     }
+    if let Some(stmts) = try_structure_compound_assert(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
     let mut cond_at: Option<usize> = None;
     for i in lo..hi {
         if is_forward_cond_jump(&stream.ops[i])
@@ -9869,6 +10333,7 @@ fn structure_stmts(
     let mut join: usize = target;
     let mut orelse_start: Option<usize> = None;
     let mut else_via_jump: bool = false;
+    let mut else_via_continue: bool = false;
     if body_end > jump_idx + 1 {
         let last: usize = body_end - 1;
         if let CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) = stream.ops[last]
@@ -9880,6 +10345,16 @@ fn structure_stmts(
             orelse_start = Some(target);
             else_via_jump = true;
         }
+    }
+    let mut elif_body_end: usize = body_end;
+    if orelse_start.is_none()
+        && let Some((back, orelse_at)) =
+            elif_arm_continues_to_loop(stream, jump_idx, body_end, target, hi)
+    {
+        join = hi;
+        orelse_start = Some(orelse_at);
+        elif_body_end = back;
+        else_via_continue = true;
     }
     if orelse_start.is_none()
         && target < hi
@@ -9893,17 +10368,24 @@ fn structure_stmts(
     }
     let body_real_end: usize = if else_via_jump {
         body_end.saturating_sub(1)
+    } else if else_via_continue {
+        elif_body_end
     } else {
         body_end
     };
     let fallthrough: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_real_end)?;
-    let fallthrough: Vec<Stmt> =
-        rewrite_jump_to_break_continue(stream, fallthrough, jump_idx + 1, body_real_end);
+    let fallthrough: Vec<Stmt> = if else_via_continue {
+        fallthrough
+    } else {
+        rewrite_jump_to_break_continue(stream, fallthrough, jump_idx + 1, body_real_end)
+    };
     let jumped: Vec<Stmt> = match orelse_start {
+        Some(s) if else_via_continue => structure_elif_chain_arm(code, stream, s, join)?,
         Some(s) => structure_stmts(code, stream, s, join)?,
         None => Vec::new(),
     };
     let jumped: Vec<Stmt> = match orelse_start {
+        Some(_) if else_via_continue => jumped,
         Some(s) => rewrite_jump_to_break_continue(stream, jumped, s, join),
         None => jumped,
     };
@@ -15050,9 +15532,14 @@ fn annotations_from_expr(expr: Expr) -> (Vec<(String, Expr)>, Option<Expr>) {
 }
 
 /// Re-parse a stringified (`PEP 563`) annotation const back into the real annotation `Expr`, matching
-/// the module-level `merge_annotations` convention. A non-`Str` annotation (a real recovered object,
-/// the no-future-import case) is returned untouched.
+/// the module-level `merge_annotations` convention. Only fires when the module compiled under
+/// `from __future__ import annotations` (which stringifies every annotation); otherwise a string-const
+/// annotation is a genuine quoted forward reference (`-> "Color"`) and must round-trip as a string
+/// literal, so it is returned untouched. A non-`Str` annotation is likewise returned untouched.
 fn unstringify_annotation(value: Expr) -> Expr {
+    if !future_annotations_active() {
+        return value;
+    }
     match value {
         Expr::Constant {
             value: ConstValue::Str(s),
@@ -16516,6 +17003,23 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static LOOP_FRAMES: std::cell::RefCell<Vec<LoopFrame>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    static FUTURE_ANNOTATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `co_flags` bit set when a module compiled under `from __future__ import annotations` (PEP 563): all
+/// annotation expressions are stringified into `str` consts. Only then may a string-const annotation be
+/// un-stringified back to its source `Expr`; without it a quoted annotation (`-> "Color"`) is a genuine
+/// string literal and must stay quoted, or the recompiled `MAKE_FUNCTION` gains a spurious name load.
+const CO_FUTURE_ANNOTATIONS: i32 = 0x0100_0000;
+
+fn set_future_annotations(flags: i32) {
+    FUTURE_ANNOTATIONS.with(|slot: &std::cell::Cell<bool>| {
+        slot.set(flags & CO_FUTURE_ANNOTATIONS != 0);
+    });
+}
+
+fn future_annotations_active() -> bool {
+    FUTURE_ANNOTATIONS.with(std::cell::Cell::get)
 }
 
 #[derive(Debug, Clone)]
