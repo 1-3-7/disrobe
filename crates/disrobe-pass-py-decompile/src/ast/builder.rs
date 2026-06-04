@@ -2753,6 +2753,74 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
     best
 }
 
+/// Frame-aware variant of `find_try_region` for the `if <cond>:\n    try: ...` layout where `CPython`
+/// lays the inner `try`'s cold handler AFTER the enclosing `if`'s false-branch — so the handler index is
+/// PAST the windowed if-body `body_hi` and the standard `find_try_region` (which requires `handler_start
+/// < hi`) rejects it. Locates a modern (3.11+) `PUSH_EXC_INFO` try whose protected body opens in
+/// `[lo, body_hi)` and whose handler lands in `[body_hi, outer_hi)`, modeling the discontiguous if-body
+/// (normal flow + cold handler) the region-recursive structurer cannot otherwise span. Returns `None`
+/// when no such straddling try exists; never used for the contiguous case that `find_try_region` serves.
+fn find_protected_try_with_outer_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    body_hi: usize,
+    outer_hi: usize,
+) -> Option<TryRegion> {
+    if stream.exception_table.is_empty() {
+        return None;
+    }
+    let mut best: Option<TryRegion> = None;
+    for entry in &stream.exception_table {
+        let try_start: usize = stream.index_for_offset(entry.start)?;
+        let handler_start: usize = stream.index_for_offset(entry.target)?;
+        if !(lo..body_hi).contains(&try_start)
+            || handler_start < body_hi
+            || handler_start >= outer_hi
+        {
+            continue;
+        }
+        if !matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        ) {
+            continue;
+        }
+        if matches!(
+            stream.ops.get(handler_start + 1),
+            Some(CanonicalOp::WithExceptStart)
+        ) {
+            continue;
+        }
+        let protected_end: usize = stream
+            .index_for_offset_ceil(entry.end())
+            .unwrap_or(handler_start)
+            .min(handler_start);
+        let try_end: usize = stream
+            .index_for_offset(entry.end())
+            .unwrap_or(handler_start)
+            .min(handler_start);
+        let region_end: usize = handler_join(stream, handler_start, outer_hi).min(outer_hi);
+        let is_finally: bool =
+            is_pure_finally_handler_shape(stream, handler_start, region_end, false);
+        let candidate: TryRegion = TryRegion {
+            try_start,
+            protected_end,
+            try_end,
+            handler_start,
+            region_end,
+            is_with: false,
+            is_finally,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|b: &TryRegion| candidate.try_start < b.try_start)
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
 fn is_pre311_except_or_finally_handler(
     stream: &DecodedStream,
     handler_start: usize,
@@ -3143,6 +3211,138 @@ fn extend_protected_end_over_comp(
         end = new_end;
     }
     end.min(handler_start)
+}
+
+/// Recover an `if <cond>:` whose body is a `try/except` whose cold handler `CPython` lays out PAST the
+/// `if`'s false-branch (the discontiguous if-body: normal flow `[guard+1, ft)` plus the cold handler
+/// `[handler_start, region_end)`, with the `if`-false-branch `[ft, handler_start)` wedged between). A
+/// windowed `structure_try` at the outer level swallows the `if` (linearizing its test) and a windowed
+/// if-body excludes the out-of-range handler, so the classic `if action == "list":\n    try: ...` lost
+/// both. Locate the straddling try via the exception table (handler past the windowed if-body), build
+/// `try`/`except` from its protected body + handler range, and emit
+/// `if cond: <try> else: <ft..handler_start>`. Strictly gated: the guard must head the region (no prior
+/// branch), the try-body must open strictly inside `[guard+1, ft)`, and the handler must sit at/just
+/// past `ft`; returns `None` otherwise so the contiguous cases keep the proven region path untouched.
+fn try_structure_guarded_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(guard): Option<usize> = (lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if (lo..guard).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return Ok(None);
+    }
+    let Some(false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> =
+        find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi)
+    else {
+        return Ok(None);
+    };
+    if region.is_finally
+        || region.try_start <= guard
+        || region.try_start >= false_target
+        || region.handler_start < false_target
+        || first_significant(stream, false_target, region.handler_start).is_none()
+    {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    if !head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if matches!(
+        stream.ops[guard],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let body_end: usize = extend_protected_end_over_comp(
+        stream,
+        region.try_start,
+        region.protected_end,
+        false_target,
+    );
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, region.region_end)?;
+    let try_stmt: Stmt = Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    };
+    let mut if_body: Vec<Stmt> = vec![try_stmt];
+    if_body.extend(structure_stmts(code, stream, body_end, false_target)?);
+    let orelse_end: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+    let orelse: Vec<Stmt> = structure_stmts(code, stream, false_target, orelse_end)?;
+    let mut out: Vec<Stmt> = vec![Stmt::If {
+        test,
+        body: non_empty(if_body),
+        orelse,
+        line: None,
+    }];
+    out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+    Ok(Some(out))
+}
+
+/// True when a `try` `region` sits wholly inside a LEADING `if`/`while` guard whose body window the
+/// region-windowed `find_try_region` would otherwise structure try-first, swallowing the `if`. The guard
+/// heads `[lo, hi)` (no prior statement branch) and its false target lands at or past the try's
+/// `region_end`, so the entire try (body + handler) is the `if`-true-body and the `if`-false-branch
+/// follows. This is the contiguous 3.11 layout (the inner listcomp is a separate code object, so the
+/// handler stays in the if-body window) — distinct from the discontiguous 3.12 case handled by
+/// `try_structure_guarded_try`. Defer to the if-structurer, which windows the if-body and recovers the
+/// try in place. Gated to a modern (`PUSH_EXC_INFO`) non-`with` region so `with`/finally are untouched.
+fn try_enclosed_by_leading_guard(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> bool {
+    if region.is_with || region.is_finally {
+        return false;
+    }
+    let _ = hi;
+    let Some(guard): Option<usize> = (lo..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return false;
+    };
+    if (lo..guard).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return false;
+    }
+    resolve_jump_target(stream, guard, &stream.ops[guard])
+        .is_some_and(|t: usize| t >= region.region_end && t > region.handler_start)
 }
 
 fn structure_try(
@@ -3693,6 +3893,47 @@ fn split_construct_tail_after_finally(raw: &mut Vec<Stmt>, finalbody: &[Stmt]) -
         .collect()
 }
 
+/// Distinguish a genuine pre-3.11 `try/except/else` from a `try/except` followed by a sibling tail. Both
+/// lay the success-path code (`return ...`) in the `[POP_BLOCK-exit, ...)` gap, but a real `else:` is the
+/// function's LAST suite, so `CPython` appends the implicit `return None` epilogue (`LOAD_CONST <None>;
+/// RETURN_VALUE`) at the very end of the gap, AFTER the else body's own return. A construct tail's own
+/// `return` IS the function epilogue, with no trailing `None`-return. Returns true (keep `else:`) when the
+/// gap ends in that dead `None`-return following a prior `return`/`raise`. Used ONLY for the non-finally
+/// `try/except[/else]` shape — the finally combo inlines its own copies on each exit and is excluded.
+fn pre311_else_is_real(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    else_start: usize,
+    else_end: usize,
+) -> bool {
+    let Some(last): Option<usize> = (else_start..else_end)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return false;
+    };
+    if !matches!(stream.ops[last], CanonicalOp::Return) {
+        return false;
+    }
+    let Some(prev): Option<usize> = (else_start..last)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return false;
+    };
+    if !loads_none(code, &stream.ops[prev]) {
+        return false;
+    }
+    (else_start..prev)
+        .rev()
+        .find_map(|k: usize| match stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_) => Some(true),
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => None,
+            _ => Some(false),
+        })
+        .unwrap_or(false)
+}
+
 /// Structure a pre-3.11 `try/except[/else]`. The protected body ends at the `POP_BLOCK` that closes
 /// the try block (its byte index is recorded in `pre311_pop_block_idx`); any fall-through code between
 /// that `POP_BLOCK` and the first except handler - entered directly, ending before the handler - is the
@@ -3728,11 +3969,22 @@ fn structure_pre311_try_except(
                 pre311_handler_swallow_target(stream, region.handler_start, jt).is_some_and(
                     |t: usize| pre311_skip_jumps(stream, t, region_bound) == else_start,
                 );
-            if pre311_region_has_real_stmt(stream, else_start, else_end) && !shared_with_handler {
+            let real_else: bool = !pre311_enclosed_by_finally(stream, region)
+                && pre311_else_is_real(code, stream, else_start, else_end);
+            if pre311_region_has_real_stmt(stream, else_start, else_end)
+                && !shared_with_handler
+                && (real_else || pre311_enclosed_by_finally(stream, region))
+            {
                 body_end = pb;
                 handler_region_end = jt;
                 else_region = Some((else_start, else_end));
                 consumed = consumed.max(else_end);
+            } else if pre311_region_has_real_stmt(stream, else_start, else_end)
+                && !shared_with_handler
+            {
+                body_end = pb;
+                handler_region_end = jt;
+                consumed = else_start;
             } else if shared_with_handler {
                 body_end = pb;
                 handler_region_end = jt;
@@ -10596,8 +10848,12 @@ fn structure_stmts(
     {
         return structure_loop(code, stream, lo, hi, &loop_region);
     }
+    if let Some(stmts) = try_structure_guarded_try(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
     if let Some(try_region) = find_try_region(stream, lo, hi)
         && !try_enclosed_by_loop(stream, lo, hi, &try_region)
+        && !try_enclosed_by_leading_guard(stream, lo, hi, &try_region)
     {
         return structure_try(code, stream, lo, hi, &try_region);
     }
