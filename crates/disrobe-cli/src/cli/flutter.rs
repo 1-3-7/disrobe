@@ -167,6 +167,9 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette:
     );
     println!("  object pool:  {} (estimate)", dec.object_pool_estimate);
     println!("  readable str: {}", dec.readable_strings.len());
+    println!("  classes:      {}", dec.static_recovery.class_names.len());
+    println!("  methods:      {}", dec.static_recovery.method_names.len());
+    println!("  libraries:    {}", dec.static_recovery.library_uris.len());
     println!("  wrote:        {}", out_path.display());
     Ok(())
 }
