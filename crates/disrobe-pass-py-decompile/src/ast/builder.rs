@@ -11352,10 +11352,7 @@ fn consume_inline_comp_result(
             (consumer..next_comp)
                 .rev()
                 .find(|&k: &usize| {
-                    matches!(
-                        stream.ops[k],
-                        CanonicalOp::GetIter | CanonicalOp::GetAiter
-                    )
+                    matches!(stream.ops[k], CanonicalOp::GetIter | CanonicalOp::GetAiter)
                 })
                 .map_or(next_comp, |get_iter: usize| {
                     inline_comp_consumer_boundary(stream, consumer, get_iter)
