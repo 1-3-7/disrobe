@@ -93,8 +93,8 @@ pub use provenance_header::{
     ts_lifted_header, wat_decompiled_header,
 };
 pub use signature::{
-    FunctionSig, ModuleSignatures, count_defined_function_bodies, dwarf_local_names,
-    extract_signatures, signatures_or_placeholders,
+    ExportAlias, FunctionSig, ModuleSignatures, count_defined_function_bodies,
+    dedup_export_aliases, dwarf_local_names, extract_signatures, signatures_or_placeholders,
 };
 pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};
 pub use sourcemap::{
@@ -114,8 +114,8 @@ pub use structure::{StructuredFunction, StructuredNode, reloop_inverse};
 pub use tail_call::{TailCallKind, TailCallRecord, TailCallReport, scan_tail_calls};
 pub use threads::{AtomicOpKind, AtomicOpRecord, SharedMemoryRecord, ThreadsReport, scan_threads};
 pub use types::{
-    AccessPattern, BaseOrigin, FieldRecord, LoadKind, RecoveredType, RecoveredTypes, StoreKind,
-    WasmValType, classify_aggregates,
+    AccessPattern, BaseOrigin, FieldRecord, LoadKind, NamedField, NamedType, RecoveredType,
+    RecoveredTypes, StoreKind, WasmValType, classify_aggregates, synthesize_named_types,
 };
 
 pub use component::{

@@ -48,6 +48,16 @@ impl FunctionSig {
 pub struct ModuleSignatures {
     sigs: Vec<FunctionSig>,
     imported_function_count: u32,
+    export_aliases: Vec<ExportAlias>,
+}
+
+/// One exported function and any additional export names that alias the same
+/// underlying function index, recovered from the export section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExportAlias {
+    pub function_index: u32,
+    pub canonical: String,
+    pub aliases: Vec<String>,
 }
 
 impl ModuleSignatures {
@@ -90,6 +100,25 @@ impl ModuleSignatures {
     #[must_use]
     pub fn callee_names(&self) -> Vec<String> {
         self.sigs.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Deduplicated export aliases: each entry is a function index, its canonical export
+    /// name, and the additional names that export the same function (empty for the
+    /// common single-name case).
+    #[inline]
+    #[must_use]
+    pub fn export_aliases(&self) -> &[ExportAlias] {
+        &self.export_aliases
+    }
+
+    /// Export aliases that genuinely carry more than one name, i.e. where the same
+    /// function is exported under multiple identifiers (a real dedup-worthy case).
+    #[must_use]
+    pub fn aliased_exports(&self) -> Vec<&ExportAlias> {
+        self.export_aliases
+            .iter()
+            .filter(|a| !a.aliases.is_empty())
+            .collect()
     }
 
     /// Mutable access to a defined function's signature for name attachment.
@@ -259,10 +288,44 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         });
     }
 
+    let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
+
     Ok(ModuleSignatures {
         sigs,
         imported_function_count,
+        export_aliases,
     })
+}
+
+/// Deduplicates raw `(function_index, export_name)` pairs into one [`ExportAlias`] each.
+///
+/// The first name in export order is canonical and the rest become sanitized aliases;
+/// export-section order is preserved for deterministic output.
+#[must_use]
+pub fn dedup_export_aliases(export_names: &[(u32, String)]) -> Vec<ExportAlias> {
+    let mut order: Vec<u32> = Vec::new();
+    let mut grouped: std::collections::BTreeMap<u32, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (index, name) in export_names {
+        let bucket: &mut Vec<String> = grouped.entry(*index).or_default();
+        if bucket.is_empty() {
+            order.push(*index);
+        }
+        bucket.push(sanitize_identifier(name));
+    }
+    order
+        .into_iter()
+        .filter_map(|index: u32| {
+            let names: Vec<String> = grouped.remove(&index)?;
+            let mut iter: std::vec::IntoIter<String> = names.into_iter();
+            let canonical: String = iter.next()?;
+            Some(ExportAlias {
+                function_index: index,
+                canonical,
+                aliases: iter.collect(),
+            })
+        })
+        .collect()
 }
 
 fn type_signature(func_types: &[RawFuncType], type_index: u32) -> (Vec<ValType>, Vec<ValType>) {
@@ -378,5 +441,43 @@ mod tests {
     #[test]
     fn garbage_yields_error() {
         assert!(extract_signatures(b"not wasm").is_err());
+    }
+
+    #[test]
+    fn dedup_export_aliases_groups_same_index() {
+        let raw: Vec<(u32, String)> = vec![
+            (3, "compute".to_owned()),
+            (3, "computeAlias".to_owned()),
+            (4, "other".to_owned()),
+        ];
+        let aliases: Vec<ExportAlias> = dedup_export_aliases(&raw);
+        assert_eq!(aliases.len(), 2);
+        let compute: &ExportAlias = aliases
+            .iter()
+            .find(|a| a.function_index == 3)
+            .expect("index 3");
+        assert_eq!(compute.canonical, "compute");
+        assert_eq!(compute.aliases, vec!["computeAlias".to_owned()]);
+        let other: &ExportAlias = aliases
+            .iter()
+            .find(|a| a.function_index == 4)
+            .expect("index 4");
+        assert!(other.aliases.is_empty());
+    }
+
+    #[test]
+    fn aliased_exports_recovered_from_module() {
+        let wat: &str = r#"
+            (module
+              (func $impl (param i32) (result i32) local.get 0)
+              (export "run" (func $impl))
+              (export "run_alias" (func $impl)))
+        "#;
+        let bytes: Vec<u8> = wat::parse_str(wat).expect("wat");
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        let aliased: Vec<&ExportAlias> = sigs.aliased_exports();
+        assert_eq!(aliased.len(), 1, "one function exported under two names");
+        assert_eq!(aliased[0].canonical, "run");
+        assert_eq!(aliased[0].aliases, vec!["run_alias".to_owned()]);
     }
 }

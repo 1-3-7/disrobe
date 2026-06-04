@@ -191,6 +191,107 @@ const fn width_to_valtype(width: u32) -> WasmValType {
     }
 }
 
+/// A named field within a synthesized struct: a stable identifier plus its byte offset,
+/// width, and inferred value type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NamedField {
+    pub name: String,
+    pub offset: i32,
+    pub width: u32,
+    pub kind: WasmValType,
+}
+
+/// A synthesized, named aggregate type recovered from clustered memory accesses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum NamedType {
+    Struct {
+        name: String,
+        fields: Vec<NamedField>,
+    },
+    Array {
+        name: String,
+        elem: WasmValType,
+        elem_size: u32,
+        count: Option<u32>,
+    },
+    Scalar {
+        name: String,
+        kind: WasmValType,
+    },
+}
+
+impl NamedType {
+    #[inline]
+    #[must_use]
+    pub fn type_name(&self) -> &str {
+        match self {
+            Self::Struct { name, .. } | Self::Array { name, .. } | Self::Scalar { name, .. } => {
+                name
+            }
+        }
+    }
+}
+
+/// Synthesizes named struct / array / scalar declarations from clustered aggregates.
+///
+/// Each base origin yields one named type (`Struct_param0`, `Array_global2`, ...) whose
+/// fields are named by byte offset (`field_0`, `field_4`, ...). This gives the lifter a
+/// real nominal type instead of an anonymous offset soup; field offset, width, and
+/// inferred value type carry through verbatim from the access-pattern clustering.
+#[must_use]
+pub fn synthesize_named_types(aggregates: &[(BaseOrigin, RecoveredType)]) -> Vec<NamedType> {
+    aggregates
+        .iter()
+        .map(|(base, ty)| synthesize_one(*base, ty))
+        .collect()
+}
+
+fn synthesize_one(base: BaseOrigin, ty: &RecoveredType) -> NamedType {
+    let suffix: String = base_suffix(base);
+    match ty {
+        RecoveredType::Scalar(kind) => NamedType::Scalar {
+            name: format!("Scalar_{suffix}"),
+            kind: *kind,
+        },
+        RecoveredType::Array { elem_size, count } => NamedType::Array {
+            name: format!("Array_{suffix}"),
+            elem: width_to_valtype(*elem_size),
+            elem_size: *elem_size,
+            count: *count,
+        },
+        RecoveredType::Struct { fields } => NamedType::Struct {
+            name: format!("Struct_{suffix}"),
+            fields: fields
+                .iter()
+                .map(|f| NamedField {
+                    name: field_name(f.offset),
+                    offset: f.offset,
+                    width: f.width,
+                    kind: f.kind,
+                })
+                .collect(),
+        },
+    }
+}
+
+fn base_suffix(base: BaseOrigin) -> String {
+    match base {
+        BaseOrigin::Local(id) => format!("local{}", id.0),
+        BaseOrigin::Global(g) => format!("global{g}"),
+        BaseOrigin::Param(p) => format!("param{p}"),
+        BaseOrigin::Heap => "heap".to_owned(),
+        BaseOrigin::Unknown => "anon".to_owned(),
+    }
+}
+
+fn field_name(offset: i32) -> String {
+    if offset < 0 {
+        format!("field_neg{}", offset.unsigned_abs())
+    } else {
+        format!("field_{offset}")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
@@ -254,5 +355,43 @@ mod tests {
         p.is_indexed = true;
         let out: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&[p]);
         assert!(matches!(out[0].1, RecoveredType::Array { count: None, .. }));
+    }
+
+    #[test]
+    fn named_struct_synthesizes_offset_field_names() {
+        let base: BaseOrigin = BaseOrigin::Param(2);
+        let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), pat(base, 12, 8)];
+        let aggregates: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&patterns);
+        let named: Vec<NamedType> = synthesize_named_types(&aggregates);
+        assert_eq!(named.len(), 1);
+        match &named[0] {
+            NamedType::Struct { name, fields } => {
+                assert_eq!(name, "Struct_param2");
+                assert_eq!(fields.len(), 3);
+                assert_eq!(fields[0].name, "field_0");
+                assert_eq!(fields[1].name, "field_4");
+                assert_eq!(fields[2].name, "field_12");
+                assert_eq!(fields[2].kind, WasmValType::I64);
+            }
+            other => panic!("expected named struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_array_and_scalar_naming() {
+        let arr_base: BaseOrigin = BaseOrigin::Global(5);
+        let arr: Vec<AccessPattern> = vec![
+            pat(arr_base, 0, 4),
+            pat(arr_base, 4, 4),
+            pat(arr_base, 8, 4),
+        ];
+        let named: Vec<NamedType> = synthesize_named_types(&classify_aggregates(&arr));
+        assert_eq!(named[0].type_name(), "Array_global5");
+
+        let scalar_base: BaseOrigin = BaseOrigin::Local(LocalId(1));
+        let scalar: Vec<AccessPattern> = vec![pat(scalar_base, 0, 4)];
+        let named_scalar: Vec<NamedType> = synthesize_named_types(&classify_aggregates(&scalar));
+        assert!(matches!(named_scalar[0], NamedType::Scalar { .. }));
+        assert_eq!(named_scalar[0].type_name(), "Scalar_local1");
     }
 }
