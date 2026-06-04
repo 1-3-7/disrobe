@@ -1,7 +1,71 @@
+use std::collections::BTreeMap;
+
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
-use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaProto};
+use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto};
 
 const MAX_LIFT_DEPTH: usize = 200;
+
+/// Maps a register slot to its real debug-declared local name at a given pc.
+///
+/// Lua's `LocVar` table lists locals in declaration order; at any `pc`, the
+/// locals whose live range `[start_pc, end_pc)` covers `pc` occupy consecutive
+/// registers from slot 0 upward in that declaration order. Reconstructing this
+/// assignment yields genuine names instead of synthetic `R{n}` placeholders.
+#[derive(Debug, Clone, Default)]
+struct LocalScopes {
+    by_pc: Vec<BTreeMap<u32, String>>,
+    activations: Vec<Vec<(u32, String)>>,
+    has_names: bool,
+}
+
+impl LocalScopes {
+    fn build(locals: &[LuaLocal], code_len: usize) -> Self {
+        let any_named: bool = locals.iter().any(|l: &LuaLocal| is_ident(&l.name));
+        if !any_named {
+            return Self::default();
+        }
+        let mut by_pc: Vec<BTreeMap<u32, String>> = vec![BTreeMap::new(); code_len + 1];
+        let mut activations: Vec<Vec<(u32, String)>> = vec![Vec::new(); code_len + 1];
+        for (pc, slot_map) in by_pc.iter_mut().enumerate() {
+            let pc_u: u32 = pc as u32;
+            let mut slot: u32 = 0;
+            for loc in locals {
+                if loc.start_pc <= pc_u && pc_u < loc.end_pc {
+                    if is_ident(&loc.name) {
+                        slot_map.entry(slot).or_insert_with(|| loc.name.clone());
+                        if loc.start_pc == pc_u
+                            && let Some(acts) = activations.get_mut(pc)
+                        {
+                            acts.push((slot, loc.name.clone()));
+                        }
+                    }
+                    slot += 1;
+                }
+            }
+        }
+        Self {
+            by_pc,
+            activations,
+            has_names: true,
+        }
+    }
+
+    #[inline]
+    fn name_at(&self, pc: usize, reg: u32) -> Option<&str> {
+        if !self.has_names {
+            return None;
+        }
+        self.by_pc
+            .get(pc)
+            .and_then(|m: &BTreeMap<u32, String>| m.get(&reg))
+            .map(String::as_str)
+    }
+
+    #[inline]
+    fn activating_at(&self, pc: usize) -> &[(u32, String)] {
+        self.activations.get(pc).map_or(&[], Vec::as_slice)
+    }
+}
 
 #[derive(Debug, Clone)]
 struct LiftState {
@@ -10,6 +74,8 @@ struct LiftState {
     indent: usize,
     warnings: Vec<String>,
     dialect: LuaDialect,
+    scopes: LocalScopes,
+    pc: usize,
 }
 
 impl LiftState {
@@ -20,11 +86,16 @@ impl LiftState {
             indent: 1,
             warnings: Vec::new(),
             dialect,
+            scopes: LocalScopes::default(),
+            pc: 0,
         }
     }
 
     #[inline]
     fn reg(&self, i: u32) -> String {
+        if let Some(name) = self.scopes.name_at(self.pc, i) {
+            return name.to_owned();
+        }
         let idx: usize = i as usize;
         match self.regs.get(idx) {
             Some(s) if !s.is_empty() => s.clone(),
@@ -231,10 +302,14 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
         };
     }
     let mut state: LiftState = LiftState::new(p.max_stack_size, dialect);
+    state.scopes = LocalScopes::build(&p.locals, p.code.len());
     for i in 0..u32::from(p.num_params) {
-        state.set_reg(i, format!("p{i}"));
+        let name: String = state
+            .scopes
+            .name_at(0, i)
+            .map_or_else(|| format!("p{i}"), str::to_owned);
+        state.set_reg(i, name);
     }
-    seed_local_names(p, &mut state);
     let jump_targets: Vec<bool> = compute_jump_targets(p, dialect);
     let mut fully_structured: bool = true;
     let mut table_locals: u32 = 0;
@@ -242,6 +317,8 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
     let n: usize = p.code.len();
 
     while pc < n {
+        state.pc = pc;
+        emit_local_activations(&mut state, p, pc);
         if jump_targets.get(pc).copied().unwrap_or(false) {
             state.push(&format!("::lbl_{pc}::"));
         }
@@ -861,8 +938,8 @@ fn emit_closure(
     match p.protos.get(child_idx) {
         Some(child) => {
             let lifted: LiftedProto = lift_proto_dialect(child, dialect, depth + 1);
-            let params: String = (0..child.num_params)
-                .map(|i: u8| format!("p{i}"))
+            let params: String = (0..u32::from(child.num_params))
+                .map(|i: u32| proto_param_name(child, i))
                 .collect::<Vec<String>>()
                 .join(", ");
             let header: String = if child.is_vararg != 0 {
@@ -949,14 +1026,53 @@ fn emit_return(state: &mut LiftState, d: &Decoded) {
     }
 }
 
-fn seed_local_names(p: &LuaProto, state: &mut LiftState) {
-    for (slot, loc) in p.locals.iter().enumerate() {
-        if loc.start_pc == 0 && is_ident(&loc.name) {
-            let reg: u32 = slot as u32;
-            if reg >= u32::from(p.num_params) {
-                state.set_reg(reg, loc.name.clone());
+/// Resolves the real source name of parameter slot `slot`.
+///
+/// Uses the debug chunk when present, falling back to the synthetic `p{slot}`
+/// placeholder. Parameters occupy the lowest register slots and are live from
+/// `pc == 0`.
+#[must_use]
+pub fn proto_param_name(p: &LuaProto, slot: u32) -> String {
+    let mut idx: u32 = 0;
+    for loc in &p.locals {
+        if loc.start_pc == 0 && idx < u32::from(p.num_params) {
+            if idx == slot && is_ident(&loc.name) {
+                return loc.name.clone();
             }
+            idx += 1;
         }
+    }
+    format!("p{slot}")
+}
+
+/// Emits `local name = <value>` when debug-named locals become live at `pc`.
+///
+/// The defining value already sits in the raw register slot (computed by the
+/// prior instruction); reading it directly (not through the scoped accessor)
+/// avoids self-referential `local x = x` output.
+fn emit_local_activations(state: &mut LiftState, p: &LuaProto, pc: usize) {
+    if pc == 0 || !state.scopes.has_names {
+        return;
+    }
+    let acts: Vec<(u32, String)> = state.scopes.activating_at(pc).to_vec();
+    if acts.is_empty() {
+        return;
+    }
+    let num_params: u32 = u32::from(p.num_params);
+    for (slot, name) in acts {
+        if slot < num_params {
+            continue;
+        }
+        let raw: String = state.regs.get(slot as usize).cloned().unwrap_or_default();
+        let trivial_self: bool = raw.is_empty()
+            || raw == name
+            || (raw.starts_with('R') && raw[1..].chars().all(|c: char| c.is_ascii_digit()));
+        if trivial_self {
+            state.push(&format!("local {name}"));
+        } else {
+            state.push(&format!("local {name} = {raw}"));
+        }
+        state.set_reg(slot, name);
     }
 }
 

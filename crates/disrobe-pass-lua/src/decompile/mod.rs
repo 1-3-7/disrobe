@@ -40,8 +40,8 @@ fn lifter_banner(dialect: LuaDialect) -> &'static str {
 
 #[must_use]
 fn main_signature(main: &LuaProto) -> String {
-    let params: String = (0..main.num_params)
-        .map(|i: u8| format!("p{i}"))
+    let params: String = (0..u32::from(main.num_params))
+        .map(|i: u32| crate::decompile::lift::proto_param_name(main, i))
         .collect::<Vec<String>>()
         .join(", ");
     match (params.is_empty(), main.is_vararg != 0) {

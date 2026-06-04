@@ -110,12 +110,12 @@ fn lua52_megafile_lifts_arithmetic_and_field_assignments() {
         "expected literal-table recovery"
     );
     assert!(
-        out.source.contains("(p0 + p1)"),
-        "expected real arithmetic recovery"
+        out.source.contains("(a + b)"),
+        "expected real arithmetic recovery with debug-named params"
     );
     assert!(
-        out.source.contains("(p0 .. p1)"),
-        "expected real concat recovery"
+        out.source.contains("(a .. b)"),
+        "expected real concat recovery with debug-named params"
     );
     assert!(
         out.source.contains("for fv_"),
@@ -142,12 +142,12 @@ fn lua53_megafile_lifts_bitwise_and_integer_constants() {
         "expected real integer constant recovery in 5.3"
     );
     assert!(
-        out.source.contains("(p0 / p1)") && out.source.contains("(p0 % p1)"),
-        "expected real arithmetic in 5.3 megafile"
+        out.source.contains("(a / b)") && out.source.contains("(a % b)"),
+        "expected real arithmetic in 5.3 megafile with debug-named params"
     );
     assert!(
-        out.source.contains("(p0 .. p1)"),
-        "expected real concat in 5.3 megafile"
+        out.source.contains("(a .. b)"),
+        "expected real concat in 5.3 megafile with debug-named params"
     );
     assert!(out.source.contains("string.format"));
 }
