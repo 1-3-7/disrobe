@@ -3574,8 +3574,12 @@ fn structure_try_except_family(
         .as_ref()
         .map_or(0, |c: &ComboFinally| c.inline_copy_len);
     let has_combo: bool = combo.is_some();
-    let protected_end: usize =
-        extend_protected_end_over_comp(stream, region.try_start, region.protected_end, region.handler_start);
+    let protected_end: usize = extend_protected_end_over_comp(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+    );
 
     if stream.is_pre_311() && !has_combo {
         let (stmt, consumed): (Stmt, usize) =
@@ -14925,7 +14929,9 @@ fn unwrap_evaluator_expr(parent: &CodeObject, marker: &Expr) -> Option<Expr> {
 fn starred_default_unpack_index(ops: &[CanonicalOp]) -> Option<usize> {
     let ret: usize = ops
         .iter()
-        .rposition(|op: &CanonicalOp| matches!(op, CanonicalOp::Return | CanonicalOp::ReturnConst(_)))
+        .rposition(|op: &CanonicalOp| {
+            matches!(op, CanonicalOp::Return | CanonicalOp::ReturnConst(_))
+        })
         .unwrap_or(ops.len());
     let unpack: usize = (0..ret).rev().find(|&k: &usize| {
         !matches!(
