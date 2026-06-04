@@ -21,6 +21,8 @@ pub mod protectors;
 pub mod provenance_header;
 pub mod r2r;
 pub mod signature;
+pub mod state_machine;
+pub mod state_machine_reverse;
 pub mod structure_emit;
 pub mod structurize;
 pub mod tables;

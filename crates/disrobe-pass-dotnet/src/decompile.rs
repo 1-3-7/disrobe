@@ -49,6 +49,8 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     let mut bodyless: u32 = 0;
     let mut failed: u32 = 0;
     for ty in &model.types {
+        let state_machine: Option<crate::state_machine::StateMachine> =
+            crate::state_machine::classify(ty);
         for m in &ty.methods {
             decompile_one(
                 &pe,
@@ -56,6 +58,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
                 &resolver,
                 ty,
                 m,
+                state_machine.as_ref(),
                 lang,
                 &mut methods,
                 &mut bodyless,
@@ -80,6 +83,7 @@ fn decompile_one(
     resolver: &Resolver,
     ty: &TypeModel,
     m: &MethodModel,
+    state_machine: Option<&crate::state_machine::StateMachine>,
     lang: TargetLang,
     methods: &mut Vec<StructuredMethod>,
     bodyless: &mut u32,
@@ -114,7 +118,17 @@ fn decompile_one(
                 resolver,
                 has_this: !m.is_static(),
             };
-            methods.push(decompile_method_in(&header_sig, &body, &namer, lang));
+            let mut structured: StructuredMethod =
+                decompile_method_in(&header_sig, &body, &namer, lang);
+            if lang == TargetLang::CSharp
+                && let Some(sm) = state_machine
+                && crate::state_machine::is_move_next(m)
+            {
+                let (reversed, _points): (String, u32) =
+                    crate::state_machine_reverse::reverse_move_next(&structured.body, sm);
+                structured.body = reversed;
+            }
+            methods.push(structured);
         }
         Err(_) => *failed = failed.saturating_add(1),
     }
