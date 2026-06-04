@@ -586,11 +586,62 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             .any(|f: &LoopFrame| f.header == header)
     }
 
-    /// The join point of an `if`: the immediate post-dominator of the condition block, which is the
-    /// structured merge point both arms reach.
-    fn if_join(&self, bid: BlockId, _taken: BlockId, _fallthrough: BlockId) -> Option<BlockId> {
+    /// The join point of an `if`: the structured merge point both arms reach.
+    ///
+    /// Uses the immediate post-dominator when it is a real block. When that is the virtual exit (one
+    /// or both arms return/throw), falls back to the lowest-offset block reachable from *both* arms
+    /// (the convergence point), so shared tail code after the `if` is emitted inline rather than via
+    /// a `goto`.
+    fn if_join(&self, bid: BlockId, taken: BlockId, fallthrough: BlockId) -> Option<BlockId> {
         let pd: BlockId = *self.ipdom.get(bid)?;
-        (pd != usize::MAX).then_some(pd)
+        if pd != usize::MAX {
+            return Some(pd);
+        }
+        let from_taken: BTreeSet<BlockId> = self.forward_reachable(taken);
+        let from_ft: BTreeSet<BlockId> = self.forward_reachable(fallthrough);
+        let shared: Option<BlockId> = from_taken
+            .intersection(&from_ft)
+            .copied()
+            .min_by_key(|&b: &BlockId| self.cfg.blocks[b].start);
+        if shared.is_some() {
+            return shared;
+        }
+        // No shared merge: one arm exits via `return`/`throw`. The textual continuation is whichever
+        // arm does not immediately dead-end in a terminal block, so the tail code emits after the
+        // `if` with no `else`.
+        let taken_terminal: bool = self.block_is_terminal(taken);
+        let ft_terminal: bool = self.block_is_terminal(fallthrough);
+        match (taken_terminal, ft_terminal) {
+            (true, false) => Some(fallthrough),
+            (false, true) => Some(taken),
+            _ => None,
+        }
+    }
+
+    /// Whether a block ends the method directly via `return`/`throw`/`endfinally`.
+    fn block_is_terminal(&self, b: BlockId) -> bool {
+        matches!(
+            self.cfg.terminators[b],
+            Terminator::Return | Terminator::Throw | Terminator::EndFinally
+        )
+    }
+
+    /// Blocks reachable forward from `start` (inclusive), bounded by the dominator subtree of the
+    /// containing region so the search stays local.
+    fn forward_reachable(&self, start: BlockId) -> BTreeSet<BlockId> {
+        let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+        let mut stack: Vec<BlockId> = vec![start];
+        while let Some(b) = stack.pop() {
+            if !seen.insert(b) {
+                continue;
+            }
+            for &s in &self.cfg.blocks[b].succs {
+                if !seen.contains(&s) {
+                    stack.push(s);
+                }
+            }
+        }
+        seen
     }
 
     fn switch_join(&self, bid: BlockId, _cases: &[BlockId], _ft: BlockId) -> Option<BlockId> {
@@ -886,7 +937,7 @@ fn render(text: &mut String, node: &Structured, depth: usize, lang: TargetLang) 
         }
         Structured::While { cond, body } => render_while(text, cond.as_deref(), body, depth, lang),
         Structured::If { cond, then, els } => {
-            render_if(text, cond, then, els.as_deref(), depth, lang)
+            render_if(text, cond, then, els.as_deref(), depth, lang);
         }
         Structured::Switch {
             selector,

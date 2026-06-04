@@ -26,6 +26,7 @@ fn main() -> std::io::Result<()> {
     let mut with_trycatch: usize = 0;
     let mut cf_total: usize = 0;
     let mut cf_clean: usize = 0;
+    let mut goto_without_underflow: usize = 0;
     let dump: bool = std::env::args().any(|a: String| a == "--dump");
 
     for m in &asm.methods {
@@ -62,6 +63,9 @@ fn main() -> std::io::Result<()> {
                 cf_clean += 1;
             }
         }
+        if goto && !uf {
+            goto_without_underflow += 1;
+        }
     }
 
     println!("module={}", asm.module_name);
@@ -77,7 +81,7 @@ fn main() -> std::io::Result<()> {
         "control_flow_methods={cf_total} fully_structured={cf_clean} ({:.1}% of CF methods)",
         pct(cf_clean, cf_total)
     );
-    println!("stack_underflow={underflow}");
+    println!("stack_underflow={underflow} goto_without_underflow={goto_without_underflow}");
     println!(
         "with_loop={with_loop} with_if={with_if} with_switch={with_switch} with_trycatch={with_trycatch}"
     );
