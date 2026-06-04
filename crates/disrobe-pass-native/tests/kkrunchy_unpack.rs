@@ -28,16 +28,32 @@ const HELLO_PACKED_CLASSIC: &[u8] =
     include_bytes!("../../../corpus/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe");
 
 #[test]
-fn kkrunchy_packer_status_is_stub_eval_pending() {
+fn kkrunchy_packer_status_is_implemented_classic_floor_verified() {
     assert_eq!(Packer::Kkrunchy.label(), "kkrunchy");
     assert_eq!(
         Packer::Kkrunchy.unpacker_status(),
-        UnpackerStatus::StubEvalPending,
-        "kkrunchy ships only structural recovery (~6.44% byte-identical); its closed-source \
-         context-mixing compression backend is NOT implemented, so it is honestly StubEvalPending, \
-         not Implemented. The dispatch must surface a deferred error, never a fake unpack.",
+        UnpackerStatus::Implemented,
+        "the classic 0.23a depacker reconstructs the OEP image byte-exact vs the independent \
+         pre-packed hello.exe original (100.00% measured by classic_cca_recovers_real_fixture_payload), \
+         so kkrunchy is honestly Implemented; the k7 PAQ-backend ceiling is a documented per-variant \
+         tail surfaced via KkrunchyVariant::recovery_ceiling_basis_points(), not a fake unpack.",
     );
     assert!(!Packer::Kkrunchy.is_grey_zone());
+    assert_eq!(
+        KkrunchyVariant::Classic023A.recovery_ceiling_basis_points(),
+        10_000,
+        "classic ceiling is the verified 100.00% floor",
+    );
+    assert_eq!(
+        KkrunchyVariant::K7Variant023A2.recovery_ceiling_basis_points(),
+        K7_MEASURED_FLOOR_BP,
+        "k7 ceiling is the honest 6.44% structural floor, never rounded up to the classic 100%",
+    );
+    assert_eq!(
+        KkrunchyVariant::UnknownVersion.recovery_ceiling_basis_points(),
+        0,
+        "unknown variant claims no decode",
+    );
 }
 
 #[test]

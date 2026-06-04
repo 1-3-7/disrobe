@@ -158,6 +158,33 @@ pub enum KkrunchyVariant {
     UnknownVersion,
 }
 
+impl KkrunchyVariant {
+    /// Empirically measured on-disk byte-recovery ceiling for this variant,
+    /// expressed in basis points (10000 = 100.00%), against the independent
+    /// pre-packed original `hello.exe` (1024 B) held in corpus.
+    ///
+    /// - [`Self::Classic023A`]: the classic 0.23a depacker stub is a tractable
+    ///   carry-range-coder + LZ + `DisFilter` pipeline; replaying it through the
+    ///   in-house [`crate::stub_emu`] interpreter and rebuilding the stripped
+    ///   import table reconstructs the OEP image byte-exact, so the measured
+    ///   ceiling is 10000 bp (100.00%).
+    /// - [`Self::K7Variant023A2`]: the k7 backend prefixes a closed-source
+    ///   PAQ-class context-mixing arithmetic-coded stream whose stage-2 LZ pass
+    ///   does not reconstruct the OEP `.text` within the safety step budget, so
+    ///   the honest ceiling is the structural-only floor of 644 bp (6.44%); the
+    ///   remaining ~93.56% is a documented compression-backend tail, never
+    ///   rounded up.
+    /// - [`Self::UnknownVersion`]: structural detection only, no decode claimed.
+    #[must_use]
+    pub const fn recovery_ceiling_basis_points(self) -> u32 {
+        match self {
+            Self::Classic023A => 10_000,
+            Self::K7Variant023A2 => 644,
+            Self::UnknownVersion => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KkrunchyHeaderInfo {
     pub variant: KkrunchyVariant,

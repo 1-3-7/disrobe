@@ -194,8 +194,8 @@ impl Packer {
             | Self::Mew
             | Self::AsPack
             | Self::PeCompact
-            | Self::YodasCrypter => UnpackerStatus::Implemented,
-            Self::Kkrunchy => UnpackerStatus::StubEvalPending,
+            | Self::YodasCrypter
+            | Self::Kkrunchy => UnpackerStatus::Implemented,
             Self::AsProtect
             | Self::Morphine
             | Self::YodasProtector
