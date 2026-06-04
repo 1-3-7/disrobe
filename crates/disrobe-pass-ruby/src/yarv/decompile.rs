@@ -50,13 +50,13 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
     let mut out: String = String::with_capacity(512);
     out.push_str("# YARV IBF decompile (clean-room iseq opcode-body lifting)\n");
 
-    let block_params: BlockParams<'_> = BlockParams::from_image(image);
+    let ctx: DecompileContext<'_> = DecompileContext::from_image(image);
 
     let mut statement_count: u32 = 0;
     let fidelity: Fidelity = if image.iseqs.iter().any(|b| !b.instructions.is_empty()) {
         for body in &image.iseqs {
             let label: &str = if body.index == 0 { "<main>" } else { "<iseq>" };
-            let stmts: Vec<String> = decompile_body(body, &block_params);
+            let stmts: Vec<String> = decompile_body(body, &ctx);
             let _: core::result::Result<(), core::fmt::Error> = writeln!(
                 out,
                 "# iseq {} ({}): {} instruction(s)",
@@ -92,14 +92,15 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
 /// is biased by before it indexes the local table.
 const VM_ENV_DATA_SIZE: u64 = 3;
 
-/// Per-iseq block-parameter names, indexed by iseq table position. A `send` whose block-iseq
-/// operand points here renders `recv.method(args) { |params| ... }` with the recovered parameter
-/// names. `param.lead_num` leading `local_table` entries are the positional block parameters.
-struct BlockParams<'a> {
-    by_index: Vec<Vec<&'a str>>,
+/// Cross-iseq decompile context: per-iseq block-parameter names (`param.lead_num` leading
+/// `local_table` entries) plus the object table, so a `send` block-iseq operand renders
+/// `recv.method(args) { |params| ... }` and an `opt_getconstant_path` cache resolves to `A::B::C`.
+struct DecompileContext<'a> {
+    block_params_by_index: Vec<Vec<&'a str>>,
+    objects: &'a [crate::yarv::ibf::IbfObject],
 }
 
-impl<'a> BlockParams<'a> {
+impl<'a> DecompileContext<'a> {
     fn from_image(image: &'a IbfImage) -> Self {
         let max_index: usize = image
             .iseqs
@@ -107,7 +108,7 @@ impl<'a> BlockParams<'a> {
             .map(|b| b.index as usize)
             .max()
             .map_or(0, |m| m + 1);
-        let mut by_index: Vec<Vec<&'a str>> = vec![Vec::new(); max_index];
+        let mut block_params_by_index: Vec<Vec<&'a str>> = vec![Vec::new(); max_index];
         for body in &image.iseqs {
             let lead: usize = body.param_lead_num as usize;
             let params: Vec<&'a str> = body
@@ -116,32 +117,48 @@ impl<'a> BlockParams<'a> {
                 .take(lead)
                 .filter_map(Option::as_deref)
                 .collect();
-            if let Some(slot) = by_index.get_mut(body.index as usize) {
+            if let Some(slot) = block_params_by_index.get_mut(body.index as usize) {
                 *slot = params;
             }
         }
-        Self { by_index }
+        Self {
+            block_params_by_index,
+            objects: &image.objects,
+        }
     }
 
-    fn params(&self, iseq_index: u32) -> Option<&[&'a str]> {
-        self.by_index
+    fn block_params(&self, iseq_index: u32) -> Option<&[&'a str]> {
+        self.block_params_by_index
             .get(iseq_index as usize)
             .map(Vec::as_slice)
             .filter(|p| !p.is_empty())
     }
+
+    /// Resolve a constant-path cache array into `A::B::C`. The IBF array stores the path as a
+    /// sequence of symbol object-indices (`[:Tiny, :Greeter]` for `Tiny::Greeter`). Returns `None`
+    /// when the object is not an array of symbols (so the caller falls back to `obj[N]`).
+    fn constant_path(&self, object_index: u32) -> Option<String> {
+        let array: &crate::yarv::ibf::IbfObject = self.objects.get(object_index as usize)?;
+        if array.kind != IbfObjectKind::Array || array.elements.is_empty() {
+            return None;
+        }
+        let mut names: Vec<&str> = Vec::with_capacity(array.elements.len());
+        for &elem in &array.elements {
+            let obj: &crate::yarv::ibf::IbfObject = self.objects.get(elem as usize)?;
+            if obj.kind != IbfObjectKind::Symbol {
+                return None;
+            }
+            names.push(obj.literal.as_deref()?);
+        }
+        Some(names.join("::"))
+    }
 }
 
-fn decompile_body(body: &YarvIseqBody, block_params: &BlockParams<'_>) -> Vec<String> {
+fn decompile_body(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> Vec<String> {
     let mut stack: Vec<String> = Vec::with_capacity(32);
     let mut stmts: Vec<String> = Vec::new();
     for instr in &body.instructions {
-        step(
-            instr,
-            &body.local_table,
-            block_params,
-            &mut stack,
-            &mut stmts,
-        );
+        step(instr, &body.local_table, ctx, &mut stack, &mut stmts);
     }
     stmts
 }
@@ -166,7 +183,7 @@ fn local_name(local_table: &[Option<String>], operand: u64) -> String {
 fn step(
     instr: &YarvIbfInstruction,
     local_table: &[Option<String>],
-    block_params: &BlockParams<'_>,
+    ctx: &DecompileContext<'_>,
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) {
@@ -174,12 +191,8 @@ fn step(
     match m {
         "putnil" => push(stack, "nil".to_owned()),
         "putself" => push(stack, "self".to_owned()),
-        "putobject"
-        | "putstring"
-        | "putchilledstring"
-        | "duparray"
-        | "duphash"
-        | "opt_getconstant_path" => {
+        "opt_getconstant_path" => push(stack, constant_path_value(instr, ctx)),
+        "putobject" | "putstring" | "putchilledstring" | "duparray" | "duphash" => {
             push(stack, operand_value(instr, 0));
         }
         "putobject_INT2FIX_0_" => push(stack, "0".to_owned()),
@@ -206,7 +219,7 @@ fn step(
             push(stack, render_interpolation(&parts));
         }
         "opt_send_without_block" | "send" | "invokesuper" | "sendforward" => {
-            emit_send(instr, block_params, stack);
+            emit_send(instr, ctx, stack);
         }
         "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" => {
             emit_unary_call(instr, stack);
@@ -362,7 +375,18 @@ fn string_literal_body(s: &str) -> Option<&str> {
     Some(inner)
 }
 
-fn emit_send(instr: &YarvIbfInstruction, block_params: &BlockParams<'_>, stack: &mut Vec<String>) {
+/// Render an `opt_getconstant_path` operand: resolve the cache array into `A::B::C` when possible,
+/// otherwise fall back to the generic operand rendering (`obj[N]`).
+fn constant_path_value(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> String {
+    if let Some(YarvOperand::ObjectRef(index)) = instr.operands.first()
+        && let Some(path) = ctx.constant_path(*index)
+    {
+        return path;
+    }
+    operand_value(instr, 0)
+}
+
+fn emit_send(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>, stack: &mut Vec<String>) {
     let (method, argc): (String, usize) = match instr.operands.first() {
         Some(YarvOperand::Call { method, argc }) => (method.clone(), *argc as usize),
         Some(YarvOperand::Id(name)) => (name.clone(), 0),
@@ -370,7 +394,7 @@ fn emit_send(instr: &YarvIbfInstruction, block_params: &BlockParams<'_>, stack: 
     };
     let block: Option<String> = match instr.operands.get(1) {
         Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => {
-            Some(render_block(block_params.params(*index)))
+            Some(render_block(ctx.block_params(*index)))
         }
         _ => None,
     };
@@ -518,6 +542,7 @@ mod tests {
             kind,
             literal: literal.map(str::to_owned),
             element_count: None,
+            elements: Vec::new(),
         }
     }
 
@@ -529,8 +554,8 @@ mod tests {
             recovered_literal_count: 0,
             recovered_instruction_count: 0,
         };
-        let block_params: BlockParams<'_> = BlockParams::from_image(&image);
-        super::decompile_body(body, &block_params)
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        super::decompile_body(body, &ctx)
     }
 
     fn instr(mnemonic: &str, operands: Vec<YarvOperand>) -> YarvIbfInstruction {
@@ -683,6 +708,55 @@ mod tests {
     }
 
     #[test]
+    fn constant_path_joins_symbol_elements() {
+        let objects: Vec<IbfObject> = vec![
+            IbfObject {
+                index: 0,
+                offset: 0,
+                kind: IbfObjectKind::Array,
+                literal: None,
+                element_count: Some(2),
+                elements: vec![1, 2],
+            },
+            obj(1, IbfObjectKind::Symbol, Some("Tiny")),
+            obj(2, IbfObjectKind::Symbol, Some("Greeter")),
+        ];
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects,
+            iseqs: Vec::new(),
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        assert_eq!(ctx.constant_path(0).as_deref(), Some("Tiny::Greeter"));
+    }
+
+    #[test]
+    fn constant_path_rejects_non_symbol_array() {
+        let objects: Vec<IbfObject> = vec![
+            IbfObject {
+                index: 0,
+                offset: 0,
+                kind: IbfObjectKind::Array,
+                literal: None,
+                element_count: Some(1),
+                elements: vec![1],
+            },
+            obj(1, IbfObjectKind::String, Some("not a const")),
+        ];
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects,
+            iseqs: Vec::new(),
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        assert_eq!(ctx.constant_path(0), None);
+    }
+
+    #[test]
     fn render_block_formats_named_and_anonymous_params() {
         assert_eq!(render_block(Some(&["x", "y"])), "{ |x, y| ... }");
         assert_eq!(render_block(Some(&["i"])), "{ |i| ... }");
@@ -728,8 +802,8 @@ mod tests {
             recovered_literal_count: 0,
             recovered_instruction_count: 0,
         };
-        let block_params: BlockParams<'_> = BlockParams::from_image(&image);
-        let stmts: Vec<String> = super::decompile_body(&main, &block_params);
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
+        let stmts: Vec<String> = super::decompile_body(&main, &ctx);
         assert!(
             stmts.iter().any(|s| s.contains(".each { |n| ... }")),
             "stmts: {stmts:?}"

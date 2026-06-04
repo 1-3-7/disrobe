@@ -1,10 +1,12 @@
 | section | line | summary |
 |---------|-----:|---------|
-| references | 12 | study-only upstream sources + licenses used for clean-room |
-| ibf-body-layout | 22 | verified small_value positions in the iseq body header |
-| local-table | 34 | how local names are recovered and the env-offset mapping |
-| concatstrings | 44 | string-interpolation boundary heuristic |
-| gaps | 52 | known fidelity walls (register names, metaprogramming) |
+| references | 14 | study-only upstream sources + licenses used for clean-room |
+| ibf-body-layout | 24 | verified small_value positions in the iseq body header |
+| local-table | 36 | how local names are recovered and the env-offset mapping |
+| blocks | 44 | block-parameter recovery from the send block-iseq |
+| concatstrings | 50 | string-interpolation boundary heuristic |
+| constant-path | 58 | resolving opt_getconstant_path caches to A::B::C |
+| gaps | 66 | known fidelity walls (register names, IC types, metaprogramming) |
 
 ## references
 
@@ -40,17 +42,36 @@ dumped as integers (no symbol literal) and surface as `None`. A `getlocal`/`setl
 maps to slot `local_table_size - (op - VM_ENV_DATA_SIZE) - 1`; out-of-range or hidden slots fall back
 to the synthetic `local{N}` placeholder.
 
+## blocks
+
+A `send`/`opt_send_without_block` carries a block-iseq operand (`-1`/`u32::MAX` when none, e.g.
+`&block`/`&:sym` pass-through). When set, the referenced iseq's leading `param.lead_num` local names
+are its block parameters, rendered as `recv.method(args) { |a, b| ... }`. Block bodies are not
+inlined; the `{ ... }` is a faithful structural marker.
+
 ## concatstrings
 
-`concatstrings n` joins the top `n` stack entries that form a single interpolated string. When any
-joined part is a quoted string literal, the result is rendered as a Ruby interpolation
-`"...#{expr}..."` reconstructed from the alternating literal/expression parts, instead of a `+`
-chain, so `"hello, #{@who}!"` round-trips rather than surfacing as `@who + ... + "!"`.
+`concatstrings n` joins the top `n` stack entries that form a single interpolated string. The
+coercion idiom `dup; objtostring; anytostring` is modelled (objtostring identity, anytostring drops
+the spare dup) so the interpolated expression survives. When any joined part is a quoted string
+literal, the result is rendered as a Ruby interpolation `"...#{expr}..."`, else a `+` concatenation;
+`"hello, #{@who}!"` round-trips rather than surfacing as `@who + ... + "!"`.
+
+## constant-path
+
+`opt_getconstant_path` references an inline-cache array dumped as `[len, sym0, sym1, ...]` (each a
+symbol object-index). The path is joined with `::` (`[:Tiny, :Greeter]` => `Tiny::Greeter`). The
+resolver is strict: a non-symbol element aborts resolution and falls back to `obj[N]`, so no path is
+fabricated. Runtime IC *type* state (receiver class for `opt_send`) is reset on `to_binary` dump and
+is therefore not statically recoverable; the constant cache is the only deterministic IC win.
 
 ## gaps
 
 - Register/name wall: YARV erases names that are not in the `local_table` (block-local temporaries,
-  some rescued exception slots). Those still surface as `local{N}`.
+  some rescued exception slots). On the megafile ~66% of `getlocal`/`setlocal` operands resolve to a
+  real name; the rest stay `local{N}`.
+- IC type wall: receiver-class inline caches are cleared on dump, so `opt_send` receivers cannot be
+  disambiguated by runtime type; only the constant-path cache survives.
 - Metaprogramming wall: `define_method`/`class_eval` bodies are separate iseqs reached through a
   block; the surface is detected and rendered where the method name is a deterministic literal,
   otherwise the dynamic name is left as the recovered expression.

@@ -49,6 +49,10 @@ pub struct IbfObject {
     pub kind: IbfObjectKind,
     pub literal: Option<String>,
     pub element_count: Option<u32>,
+    /// Object-table indices of an `Array` object's elements, used to resolve a constant-path cache
+    /// (`opt_getconstant_path`) into `A::B::C`. Empty for non-arrays and arrays whose element
+    /// indices ran past the buffer.
+    pub elements: Vec<u32>,
 }
 
 /// One decoded YARV instruction within an iseq body, with operands resolved against the object /
@@ -185,6 +189,7 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
     let after_tag: usize = off.saturating_add(1);
     let mut literal: Option<String> = None;
     let mut element_count: Option<u32> = None;
+    let mut elements: Vec<u32> = Vec::new();
     match kind {
         IbfObjectKind::String | IbfObjectKind::Symbol => {
             if let Some((_enc, p1)) = read_small_value(bytes, after_tag)
@@ -199,12 +204,18 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
             }
         }
         IbfObjectKind::Array => {
-            if let Some((_flags, p1)) = read_small_value(bytes, after_tag)
-                && let Some((count, _p2)) = read_small_value(bytes, p1)
-            {
+            if let Some((count, mut ep)) = read_small_value(bytes, after_tag) {
                 let capped: u32 =
                     u32::try_from(count.min(IBF_ARRAY_LEN_CAP as u64)).unwrap_or(u32::MAX);
                 element_count = Some(capped);
+                elements.reserve((capped as usize).min(64));
+                for _ in 0..capped {
+                    let Some((elem, next)) = read_small_value(bytes, ep) else {
+                        break;
+                    };
+                    elements.push(u32::try_from(elem).unwrap_or(u32::MAX));
+                    ep = next;
+                }
             }
         }
         _ => {}
@@ -215,6 +226,7 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
         kind,
         literal,
         element_count,
+        elements,
     }
 }
 
@@ -567,6 +579,7 @@ pub(crate) fn parse_image(
                 kind: IbfObjectKind::Unknown,
                 literal: None,
                 element_count: None,
+                elements: Vec::new(),
             });
             continue;
         }
@@ -637,6 +650,7 @@ mod tests {
                 kind: IbfObjectKind::Nil,
                 literal: None,
                 element_count: None,
+                elements: Vec::new(),
             },
             IbfObject {
                 index: 1,
@@ -644,6 +658,7 @@ mod tests {
                 kind: IbfObjectKind::Symbol,
                 literal: Some("count".to_owned()),
                 element_count: None,
+                elements: Vec::new(),
             },
             IbfObject {
                 index: 2,
@@ -651,6 +666,7 @@ mod tests {
                 kind: IbfObjectKind::Symbol,
                 literal: Some("name".to_owned()),
                 element_count: None,
+                elements: Vec::new(),
             },
         ];
         let table: ObjectTable<'_> = ObjectTable { objects: &objects };
@@ -672,6 +688,7 @@ mod tests {
             kind: IbfObjectKind::Fixnum,
             literal: None,
             element_count: None,
+            elements: Vec::new(),
         }];
         let table: ObjectTable<'_> = ObjectTable { objects: &objects };
         let bytes: [u8; 4] = 0u32.to_le_bytes();
