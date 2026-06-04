@@ -95,12 +95,7 @@ pub fn recover_trait_vtables(symbols: &[&str]) -> Vec<VtableEntry> {
         if !s.contains("$LT$") && !s.contains("vtable") && !s.contains(" as ") {
             continue;
         }
-        let trait_name: Option<String> = s
-            .split("$LT$")
-            .nth(1)
-            .and_then(|tail: &str| tail.split("$u20$as$u20$").nth(1))
-            .and_then(|tail: &str| tail.split("$GT$").next())
-            .map(str::to_owned);
+        let trait_name: Option<String> = extract_trait_name(s);
         out.push(VtableEntry {
             address: i as u64,
             function: (*s).to_owned(),
@@ -108,6 +103,52 @@ pub fn recover_trait_vtables(symbols: &[&str]) -> Vec<VtableEntry> {
         });
     }
     out
+}
+
+/// Extract the trait name from a trait-impl symbol in either encoding.
+///
+/// Legacy mangled symbols carry the impl as `$LT$Type$u20$as$u20$Trait$GT$`;
+/// rustc-v0-demangled symbols carry the already-de-escaped form
+/// `<Type as Trait>` (the shape produced by [`demangle`] on a modern binary).
+/// The trait name is the text after `as` and before the closing bracket, with
+/// any generic arguments trimmed. Returns `None` for inherent-impl symbols
+/// (`<Type>::method`) that carry no `as Trait` clause.
+fn extract_trait_name(symbol: &str) -> Option<String> {
+    let legacy_after_as: Option<&str> = symbol.split("$u20$as$u20$").nth(1);
+    if let Some(after_as) = legacy_after_as {
+        return after_as
+            .split("$GT$")
+            .next()
+            .map(str::trim)
+            .filter(|t: &&str| !t.is_empty())
+            .map(str::to_owned);
+    }
+    let lt: usize = symbol.find('<')?;
+    let inner: &str = &symbol[lt + 1..];
+    let close: usize = matching_angle_close(inner)?;
+    let impl_clause: &str = &inner[..close];
+    let (_, after_as): (&str, &str) = impl_clause.rsplit_once(" as ")?;
+    let trimmed: &str = after_as.split('<').next().unwrap_or(after_as).trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+/// Index of the `>` that closes the `<` already consumed by the caller,
+/// honouring nesting (`<A<B> as C>` must close on the *outer* `>`).
+fn matching_angle_close(s: &str) -> Option<usize> {
+    let mut depth: u32 = 0;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth == 0 => return Some(idx),
+            '>' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +301,41 @@ mod tests {
             ["_ZN54_$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$core..fmt..Debug$GT$3fmt17h0E"];
         let out: Vec<VtableEntry> = recover_trait_vtables(&syms);
         assert_eq!(out.len(), 1);
+        assert_eq!(out[0].trait_name.as_deref(), Some("core..fmt..Debug"));
+    }
+
+    #[test]
+    fn vtable_recovery_extracts_trait_from_v0_demangled() {
+        let syms: [&str; 1] = ["<alloc::vec::Vec<T> as core::fmt::Debug>::fmt"];
+        let out: Vec<VtableEntry> = recover_trait_vtables(&syms);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].trait_name.as_deref(),
+            Some("core::fmt::Debug"),
+            "v0-demangled trait impls must yield the trait name, not None",
+        );
+    }
+
+    #[test]
+    fn vtable_recovery_handles_generic_trait_in_v0_form() {
+        let syms: [&str; 1] = ["<std::collections::HashMap<K, V> as core::ops::Index<Q>>::index"];
+        let out: Vec<VtableEntry> = recover_trait_vtables(&syms);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].trait_name.as_deref(),
+            Some("core::ops::Index"),
+            "the generic trait's args must be trimmed from the recovered name",
+        );
+    }
+
+    #[test]
+    fn vtable_recovery_inherent_impl_has_no_trait() {
+        let syms: [&str; 1] = ["<core::option::Option<T>>::unwrap"];
+        let out: Vec<VtableEntry> = recover_trait_vtables(&syms);
+        assert!(
+            out.is_empty() || out[0].trait_name.is_none(),
+            "an inherent impl (no `as Trait`) must not fabricate a trait name",
+        );
     }
 
     #[test]
