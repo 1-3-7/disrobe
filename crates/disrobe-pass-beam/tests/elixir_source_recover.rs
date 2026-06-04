@@ -13,7 +13,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use disrobe_pass_beam::{
-    BeamFile, DebugInfo, ElixirRecovery, EzArchive, parse_dbgi, recover_elixir,
+    BeamFile, DebugInfo, ElixirRecovery, ErlangSurface, EzArchive, RecoverySource, parse_dbgi,
+    recover_elixir, recover_erlang,
 };
 
 fn corpus(rel: &str) -> PathBuf {
@@ -221,4 +222,16 @@ fn elixir_submodules_recover_headers() {
         );
         assert!(rec.source.trim_end().ends_with("end"));
     }
+}
+
+/// `recover_erlang` on an Elixir beam routes through the Dbgi quoted-AST path
+/// (`ElixirDbgiForm`) and returns idiomatic Elixir, not a core-lifted fallback.
+#[test]
+fn recover_erlang_routes_elixir_dbgi_to_elixir_source() {
+    let beam: BeamFile = beam_from_ez("Elixir.EdgeCases.beam");
+    let surface: ErlangSurface = recover_erlang(&beam).expect("recover");
+    assert_eq!(surface.recovered_from, RecoverySource::ElixirDbgiForm);
+    assert!(surface.source.starts_with("defmodule EdgeCases do"));
+    assert!(surface.source.contains("def main do"));
+    assert!(surface.source.contains("def comprehension_simple(list)"));
 }

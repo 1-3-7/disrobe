@@ -16,6 +16,7 @@ pub struct ErlangSurface {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoverySource {
     AbstractCode,
+    ElixirDbgiForm,
     CoreLifted,
 }
 
@@ -24,18 +25,31 @@ pub fn recover(beam: &BeamFile) -> Result<ErlangSurface> {
         .module_name()
         .ok_or(Error::MissingChunk("Atom (module name)"))?
         .to_owned();
-    let core: CoreModule = crate::core_erlang::lift(beam)?;
     if let Some(dbgi) = &beam.chunks.dbgi {
         let info: DebugInfo = crate::dbgi::parse(&dbgi.term)?;
-        if let DebugInfo::ErlangAbstractCode { forms, .. } = info {
-            let source: String = render_abstract_forms(&module, &forms, &core);
-            return Ok(ErlangSurface {
-                module,
-                source,
-                recovered_from: RecoverySource::AbstractCode,
-            });
+        match &info {
+            DebugInfo::ErlangAbstractCode { forms, .. } => {
+                let core: CoreModule = crate::core_erlang::lift(beam)?;
+                let source: String = render_abstract_forms(&module, forms, &core);
+                return Ok(ErlangSurface {
+                    module,
+                    source,
+                    recovered_from: RecoverySource::AbstractCode,
+                });
+            }
+            DebugInfo::ElixirV1 { .. } => {
+                let recovered: crate::elixir::ElixirRecovery =
+                    crate::elixir::recover(&module, &info)?;
+                return Ok(ErlangSurface {
+                    module,
+                    source: recovered.source,
+                    recovered_from: RecoverySource::ElixirDbgiForm,
+                });
+            }
+            DebugInfo::Other(_) => {}
         }
     }
+    let core: CoreModule = crate::core_erlang::lift(beam)?;
     let source: String = render_from_core(&core);
     Ok(ErlangSurface {
         module,
