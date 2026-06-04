@@ -50,11 +50,13 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
     let mut out: String = String::with_capacity(512);
     out.push_str("# YARV IBF decompile (clean-room iseq opcode-body lifting)\n");
 
+    let block_params: BlockParams<'_> = BlockParams::from_image(image);
+
     let mut statement_count: u32 = 0;
     let fidelity: Fidelity = if image.iseqs.iter().any(|b| !b.instructions.is_empty()) {
         for body in &image.iseqs {
             let label: &str = if body.index == 0 { "<main>" } else { "<iseq>" };
-            let stmts: Vec<String> = decompile_body(body);
+            let stmts: Vec<String> = decompile_body(body, &block_params);
             let _: core::result::Result<(), core::fmt::Error> = writeln!(
                 out,
                 "# iseq {} ({}): {} instruction(s)",
@@ -90,11 +92,56 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
 /// is biased by before it indexes the local table.
 const VM_ENV_DATA_SIZE: u64 = 3;
 
-fn decompile_body(body: &YarvIseqBody) -> Vec<String> {
+/// Per-iseq block-parameter names, indexed by iseq table position. A `send` whose block-iseq
+/// operand points here renders `recv.method(args) { |params| ... }` with the recovered parameter
+/// names. `param.lead_num` leading `local_table` entries are the positional block parameters.
+struct BlockParams<'a> {
+    by_index: Vec<Vec<&'a str>>,
+}
+
+impl<'a> BlockParams<'a> {
+    fn from_image(image: &'a IbfImage) -> Self {
+        let max_index: usize = image
+            .iseqs
+            .iter()
+            .map(|b| b.index as usize)
+            .max()
+            .map_or(0, |m| m + 1);
+        let mut by_index: Vec<Vec<&'a str>> = vec![Vec::new(); max_index];
+        for body in &image.iseqs {
+            let lead: usize = body.param_lead_num as usize;
+            let params: Vec<&'a str> = body
+                .local_table
+                .iter()
+                .take(lead)
+                .filter_map(Option::as_deref)
+                .collect();
+            if let Some(slot) = by_index.get_mut(body.index as usize) {
+                *slot = params;
+            }
+        }
+        Self { by_index }
+    }
+
+    fn params(&self, iseq_index: u32) -> Option<&[&'a str]> {
+        self.by_index
+            .get(iseq_index as usize)
+            .map(Vec::as_slice)
+            .filter(|p| !p.is_empty())
+    }
+}
+
+fn decompile_body(body: &YarvIseqBody, block_params: &BlockParams<'_>) -> Vec<String> {
     let mut stack: Vec<String> = Vec::with_capacity(32);
     let mut stmts: Vec<String> = Vec::new();
     for instr in &body.instructions {
-        step(instr, &body.local_table, &mut stack, &mut stmts);
+        step(
+            instr,
+            &body.local_table,
+            block_params,
+            &mut stack,
+            &mut stmts,
+        );
     }
     stmts
 }
@@ -119,6 +166,7 @@ fn local_name(local_table: &[Option<String>], operand: u64) -> String {
 fn step(
     instr: &YarvIbfInstruction,
     local_table: &[Option<String>],
+    block_params: &BlockParams<'_>,
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) {
@@ -158,7 +206,7 @@ fn step(
             push(stack, render_interpolation(&parts));
         }
         "opt_send_without_block" | "send" | "invokesuper" | "sendforward" => {
-            emit_send(instr, stack);
+            emit_send(instr, block_params, stack);
         }
         "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" => {
             emit_unary_call(instr, stack);
@@ -314,16 +362,36 @@ fn string_literal_body(s: &str) -> Option<&str> {
     Some(inner)
 }
 
-fn emit_send(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
+fn emit_send(instr: &YarvIbfInstruction, block_params: &BlockParams<'_>, stack: &mut Vec<String>) {
     let (method, argc): (String, usize) = match instr.operands.first() {
         Some(YarvOperand::Call { method, argc }) => (method.clone(), *argc as usize),
         Some(YarvOperand::Id(name)) => (name.clone(), 0),
         _ => ("call".to_owned(), 0),
     };
+    let block: Option<String> = match instr.operands.get(1) {
+        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => {
+            Some(render_block(block_params.params(*index)))
+        }
+        _ => None,
+    };
     let args: Vec<String> = pop_n(stack, argc);
     let recv: String = pop(stack);
-    let call: String = render_method_call(&recv, &method, &args);
+    let mut call: String = render_method_call(&recv, &method, &args);
+    if let Some(block) = block {
+        call.push(' ');
+        call.push_str(&block);
+    }
     push(stack, call);
+}
+
+/// Render a recovered block as `{ |a, b| ... }` from its parameter names, or `{ ... }` when the
+/// block has no named positional parameters. The caller guards against the sentinel `-1` block-iseq
+/// operand (`&block`/`&:sym` pass-through), which is not a literal block.
+fn render_block(params: Option<&[&str]>) -> String {
+    match params {
+        Some(names) if !names.is_empty() => format!("{{ |{}| ... }}", names.join(", ")),
+        _ => "{ ... }".to_owned(),
+    }
 }
 
 fn emit_unary_call(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
@@ -453,6 +521,18 @@ mod tests {
         }
     }
 
+    fn decompile_body(body: &YarvIseqBody) -> Vec<String> {
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![body.clone()],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let block_params: BlockParams<'_> = BlockParams::from_image(&image);
+        super::decompile_body(body, &block_params)
+    }
+
     fn instr(mnemonic: &str, operands: Vec<YarvOperand>) -> YarvIbfInstruction {
         YarvIbfInstruction {
             pc: 0,
@@ -490,6 +570,7 @@ mod tests {
             offset: 0,
             iseq_size: 7,
             local_table: Vec::new(),
+            param_lead_num: 0,
             instructions: vec![
                 instr(
                     "putobject",
@@ -545,6 +626,7 @@ mod tests {
             offset: 0,
             iseq_size: 4,
             local_table: Vec::new(),
+            param_lead_num: 0,
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -584,6 +666,7 @@ mod tests {
             offset: 0,
             iseq_size: 4,
             local_table: vec![Some("total".to_owned())],
+            param_lead_num: 0,
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(0)]),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -600,12 +683,98 @@ mod tests {
     }
 
     #[test]
+    fn render_block_formats_named_and_anonymous_params() {
+        assert_eq!(render_block(Some(&["x", "y"])), "{ |x, y| ... }");
+        assert_eq!(render_block(Some(&["i"])), "{ |i| ... }");
+        assert_eq!(render_block(Some(&[])), "{ ... }");
+        assert_eq!(render_block(None), "{ ... }");
+    }
+
+    #[test]
+    fn send_with_block_iseq_renders_block_params() {
+        let block_body: YarvIseqBody = YarvIseqBody {
+            index: 1,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("n".to_owned())],
+            param_lead_num: 1,
+            instructions: Vec::new(),
+        };
+        let main: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 3,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr(
+                    "send",
+                    vec![
+                        YarvOperand::Call {
+                            method: "each".to_owned(),
+                            argc: 0,
+                        },
+                        YarvOperand::IseqRef(1),
+                    ],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![main.clone(), block_body],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let block_params: BlockParams<'_> = BlockParams::from_image(&image);
+        let stmts: Vec<String> = super::decompile_body(&main, &block_params);
+        assert!(
+            stmts.iter().any(|s| s.contains(".each { |n| ... }")),
+            "stmts: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn send_with_sentinel_block_iseq_has_no_block() {
+        let main: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 3,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            instructions: vec![
+                instr("putself", vec![]),
+                instr(
+                    "send",
+                    vec![
+                        YarvOperand::Call {
+                            method: "map".to_owned(),
+                            argc: 0,
+                        },
+                        YarvOperand::IseqRef(u32::MAX),
+                    ],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&main);
+        assert!(
+            stmts.iter().any(|s| s == "return map"),
+            "no block should be rendered for sentinel iseq ref, stmts: {stmts:?}"
+        );
+        assert!(stmts.iter().all(|s| !s.contains('{')), "stmts: {stmts:?}");
+    }
+
+    #[test]
     fn surfaces_binary_op() {
         let body: YarvIseqBody = YarvIseqBody {
             index: 0,
             offset: 0,
             iseq_size: 4,
             local_table: Vec::new(),
+            param_lead_num: 0,
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(1)]),
                 instr("putobject", vec![YarvOperand::Num(2)]),

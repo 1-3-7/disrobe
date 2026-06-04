@@ -116,6 +116,35 @@ fn recovers_real_local_variable_name_from_iseq_local_table() {
 }
 
 #[test]
+fn recovers_block_parameter_names_from_megafile_block_iseqs() {
+    let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/edge_cases.rb.yarvc") else {
+        eprintln!("skip: mri/yarv/edge_cases.rb.yarvc fixture absent");
+        return;
+    };
+    let analysis: RubyAnalysis = analyze_bytes(&bytes, "edge_cases.rb.yarvc").expect("analyze");
+    let yarv = analysis.yarv.expect("yarv");
+    let src: &str = &yarv.decompiled.source;
+    assert!(
+        src.contains(".each { |n| ... }"),
+        "expected a recovered each block with a single named block parameter from the megafile"
+    );
+    assert!(
+        src.contains(".map { |i| ... }") || src.contains(".map { |x| ... }"),
+        "expected a recovered map block with a single named block parameter from the megafile"
+    );
+    let multi_param_block: bool = src.lines().any(|l| {
+        l.contains("{ |")
+            && l[l.find("{ |").unwrap_or(0)..]
+                .split_once('|')
+                .is_some_and(|(_, rest)| rest.split_once('|').is_some_and(|(p, _)| p.contains(',')))
+    });
+    assert!(
+        multi_param_block,
+        "expected at least one multi-parameter block in the megafile"
+    );
+}
+
+#[test]
 fn recovers_thousands_of_instructions_from_real_megafile_iseq() {
     let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/edge_cases.rb.yarvc") else {
         eprintln!("skip: mri/yarv/edge_cases.rb.yarvc fixture absent");

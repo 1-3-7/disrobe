@@ -99,6 +99,9 @@ pub struct YarvIseqBody {
     /// Local-variable names recovered from this body's `local_table`, in table order. An entry is
     /// `None` when the slot is a compiler-hidden local (dumped as an integer rather than a symbol).
     pub local_table: Vec<Option<String>>,
+    /// Number of leading required positional parameters (`param.lead_num`); the block/method
+    /// parameter names are the first `param_lead_num` entries of `local_table`.
+    pub param_lead_num: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,6 +240,7 @@ impl ObjectTable<'_> {
 /// `local_table_offset` resolves to the `who` symbol with `local_table_size` 1; `puts
 /// ...new("world").greet` => three call sites with `ci_size` 3), confirmed by tracing every
 /// `read_small_value` of the body header against the shipped 3.4.9 dump.
+const BODY_READ_PARAM_LEAD_NUM: usize = 6;
 const BODY_READ_LOCAL_TABLE_OFFSET: usize = 26;
 const BODY_READ_CI_ENTRIES_OFFSET: usize = 32;
 const BODY_READ_LOCAL_TABLE_SIZE: usize = 35;
@@ -249,6 +253,7 @@ struct BodyHeader {
     iseq_size: usize,
     bytecode_offset: usize,
     bytecode_size: usize,
+    param_lead_num: u32,
     local_table_offset: Option<usize>,
     local_table_size: usize,
     ci_entries_offset: Option<usize>,
@@ -264,6 +269,7 @@ fn parse_body_header(
     let mut iseq_size: usize = 0;
     let mut bytecode_offset: usize = 0;
     let mut bytecode_size: usize = 0;
+    let mut param_lead_num: u32 = 0;
     let mut local_table_offset: Option<usize> = None;
     let mut local_table_size: usize = 0;
     let mut ci_entries_offset: Option<usize> = None;
@@ -282,6 +288,9 @@ fn parse_body_header(
                 bytecode_offset = body_offset.checked_sub(rel)?;
             }
             3 => bytecode_size = usize::try_from(raw).ok()?,
+            BODY_READ_PARAM_LEAD_NUM => {
+                param_lead_num = u32::try_from(raw).unwrap_or(0).min(IBF_MAX_LOCALS as u32);
+            }
             BODY_READ_LOCAL_TABLE_OFFSET => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 local_table_offset = body_offset.checked_sub(rel);
@@ -302,6 +311,7 @@ fn parse_body_header(
         iseq_size,
         bytecode_offset,
         bytecode_size,
+        param_lead_num,
         local_table_offset,
         local_table_size,
         ci_entries_offset,
@@ -416,6 +426,7 @@ fn decode_iseq_body(
             iseq_size: u32::try_from(header.iseq_size).unwrap_or(u32::MAX),
             instructions: Vec::new(),
             local_table,
+            param_lead_num: header.param_lead_num,
         });
     }
 
@@ -489,6 +500,7 @@ fn decode_iseq_body(
         iseq_size: u32::try_from(header.iseq_size).unwrap_or(u32::MAX),
         instructions,
         local_table,
+        param_lead_num: header.param_lead_num,
     })
 }
 
