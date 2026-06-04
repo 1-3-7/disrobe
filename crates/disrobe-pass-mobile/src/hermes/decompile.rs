@@ -577,20 +577,17 @@ impl<'a> LiftCtx<'a> {
     }
 
     fn string_lit(&self, id: u32) -> String {
-        match self.module.strings.get(id as usize) {
+        match self.module.string_by_global_id(id) {
             Some(s) => js_string_literal(s),
             None => format!("$str{id}"),
         }
     }
 
     fn ident_or_string(&self, id: u32) -> String {
-        if let Some(s) = self.module.strings.get(id as usize) {
-            return s.clone();
+        match self.module.string_by_global_id(id) {
+            Some(s) => s.to_owned(),
+            None => format!("$str{id}"),
         }
-        if let Some(s) = self.module.identifiers.get(id as usize) {
-            return s.clone();
-        }
-        format!("$str{id}")
     }
 
     fn func_name(&self, id: u32) -> String {
@@ -599,9 +596,8 @@ impl<'a> LiftCtx<'a> {
             .get(id as usize)
             .and_then(|f: &SmallFunctionHeader| {
                 self.module
-                    .identifiers
-                    .get(f.function_name_id as usize)
-                    .cloned()
+                    .string_by_global_id(f.function_name_id)
+                    .map(str::to_owned)
             })
             .filter(|s: &String| !s.is_empty())
             .unwrap_or_else(|| format!("$func{id}"))
@@ -667,35 +663,23 @@ impl<'a> LiftCtx<'a> {
     }
 
     fn string_lit_by_id(&self, id: u32) -> String {
-        match self.module.strings.get(id as usize) {
+        match self.module.string_by_global_id(id) {
             Some(s) => js_string_literal(s),
-            None => match self.module.identifiers.get(id as usize) {
-                Some(s) => js_string_literal(s),
-                None => format!("$str{id}"),
-            },
+            None => format!("$str{id}"),
         }
     }
 
     fn string_or_ident_name(&self, id: u32) -> String {
-        if let Some(s) = self.module.strings.get(id as usize)
-            && !s.is_empty()
-        {
-            return s.clone();
+        match self.module.string_by_global_id(id) {
+            Some(s) if !s.is_empty() => s.to_owned(),
+            _ => format!("$str{id}"),
         }
-        if let Some(s) = self.module.identifiers.get(id as usize)
-            && !s.is_empty()
-        {
-            return s.clone();
-        }
-        format!("$str{id}")
     }
 
     fn raw_string(&self, id: u32) -> String {
         self.module
-            .strings
-            .get(id as usize)
-            .or_else(|| self.module.identifiers.get(id as usize))
-            .cloned()
+            .string_by_global_id(id)
+            .map(str::to_owned)
             .unwrap_or_default()
     }
 
@@ -1193,7 +1177,13 @@ fn lift_instruction(
             if argc > rendered {
                 let _ = write!(args, ", /* +{} args */", argc - rendered);
             }
-            ctx.set_reg(d, format!("{new_kw}{callee}({args})"));
+            let call_expr: String = format!("{new_kw}{callee}({args})");
+            if reg_read_later(d, inst, instructions) {
+                ctx.set_reg(d, call_expr);
+            } else {
+                stmts.push(BlockStmt::Line(format!("{call_expr};")));
+                ctx.set_reg(d, format!("r{d}"));
+            }
             ctx.reconstructed += 1;
         }
         "Call1" | "Call2" | "Call3" | "Call4" => {
@@ -1206,7 +1196,13 @@ fn lift_instruction(
                     _ => "?".to_owned(),
                 })
                 .collect();
-            ctx.set_reg(d, format!("{callee}({})", args.join(", ")));
+            let call_expr: String = format!("{callee}({})", args.join(", "));
+            if reg_read_later(d, inst, instructions) {
+                ctx.set_reg(d, call_expr);
+            } else {
+                stmts.push(BlockStmt::Line(format!("{call_expr};")));
+                ctx.set_reg(d, format!("r{d}"));
+            }
             ctx.reconstructed += 1;
         }
         "Ret" => {
@@ -1282,6 +1278,51 @@ fn push_cond_jump(
         target,
         fallthrough,
     });
+}
+
+/// Whether the value written into register `d` by `inst` is read by a later
+/// instruction in the same function before being overwritten.
+///
+/// Used to decide whether a call result should inline into its consumer or be
+/// emitted as a standalone side-effecting statement. The scan stops at the first
+/// instruction that writes `d` as its destination (operand 0), since that kills
+/// the current value; any read of `d` as a non-destination operand before then
+/// counts as a use. Bounded to a forward window so worst-case cost stays linear.
+#[must_use]
+fn reg_read_later(d: u32, inst: &Instruction, instructions: &[Instruction]) -> bool {
+    const WINDOW: usize = 64;
+    let Some(pos): Option<usize> = instructions
+        .iter()
+        .position(|i: &Instruction| i.offset == inst.offset)
+    else {
+        return true;
+    };
+    let end: usize = (pos + 1 + WINDOW).min(instructions.len());
+    for later in &instructions[pos + 1..end] {
+        for (oi, op) in later.operands.iter().enumerate() {
+            if let OperandValue::Reg(r) = op
+                && *r == d
+            {
+                if oi == 0 && writes_first_operand(&later.name) {
+                    return false;
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether an opcode writes its first operand as a destination register. Jumps
+/// and stores read their first operand instead of writing it, so they must be
+/// excluded from the "kills the value" check in `reg_read_later`.
+#[must_use]
+fn writes_first_operand(name: &str) -> bool {
+    !(is_terminator(name)
+        || name.starts_with("Put")
+        || name.starts_with("Store")
+        || name.starts_with("Def")
+        || matches!(name, "Throw" | "Ret" | "Catch" | "Debugger"))
 }
 
 #[must_use]
@@ -1402,10 +1443,9 @@ pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunc
                 overflowed: false,
             });
     let name: String = module
-        .identifiers
-        .get(header.function_name_id as usize)
-        .filter(|s: &&String| !s.is_empty())
-        .cloned()
+        .string_by_global_id(header.function_name_id)
+        .filter(|s: &&str| !s.is_empty())
+        .map(str::to_owned)
         .unwrap_or_else(|| format!("$func{index}"));
     let code: &[u8] = module.function_code(index);
     let instructions: Vec<Instruction> = decode_instructions(code);
@@ -1724,9 +1764,9 @@ mod tests {
         code.push(opcode_byte("GetGlobalObject"));
         code.push(0u8);
         code.push(opcode_byte("GetByIdShort"));
-        code.extend_from_slice(&[1u8, 0u8, 0u8, 1u8]);
+        code.extend_from_slice(&[1u8, 0u8, 0u8, 2u8]);
         code.push(opcode_byte("LoadConstString"));
-        code.extend_from_slice(&[2u8, 0u8, 0u8]);
+        code.extend_from_slice(&[3u8, 0u8, 0u8]);
         code.push(opcode_byte("Call1"));
         code.extend_from_slice(&[3u8, 1u8, 2u8]);
         code.push(opcode_byte("Ret"));

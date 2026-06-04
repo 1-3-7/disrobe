@@ -118,6 +118,21 @@ pub struct BigIntTableEntry {
 }
 
 impl HermesModule {
+    /// Resolves a function's name from its global string-table index. Hermes
+    /// stores function names as indices into the combined table (identifiers
+    /// first, then non-identifier strings), so an index past `identifier_count`
+    /// resolves into the `strings` vector.
+    #[must_use]
+    pub fn string_by_global_id(&self, global_id: u32) -> Option<&str> {
+        let id: usize = global_id as usize;
+        if id < self.identifiers.len() {
+            return self.identifiers.get(id).map(String::as_str);
+        }
+        self.strings
+            .get(id - self.identifiers.len())
+            .map(String::as_str)
+    }
+
     #[must_use]
     pub fn function_code(&self, index: usize) -> &[u8] {
         let Some(f): Option<&SmallFunctionHeader> = self.functions.get(index) else {
@@ -521,8 +536,8 @@ fn parse_small_function_table(
         let word3: u32 = u32::from_le_bytes(slice_4(bytes, base + 12));
         let offset: u32 = word0 & 0x01ff_ffff;
         let param_count: u32 = word0 >> 25;
-        let bytecode_size_bytes: u32 = word1 & 0x00ff_ffff;
-        let function_name_id_lo: u32 = word1 >> 24;
+        let bytecode_size_bytes: u32 = word1 & 0x0000_7fff;
+        let function_name_id_lo: u32 = (word1 >> 15) & 0x0001_ffff;
         let info_offset: u32 = word2 & 0x01ff_ffff;
         let frame_size: u32 = word2 >> 25;
         let env_size: u32 = word3 & 0x0000_00ff;
@@ -698,9 +713,8 @@ pub fn disassemble(module: &HermesModule) -> DisassemblyReport {
     let mut functions: Vec<FunctionDisasm> = Vec::with_capacity(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
         let name: String = module
-            .identifiers
-            .get(f.function_name_id as usize)
-            .cloned()
+            .string_by_global_id(f.function_name_id)
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("$func{i}"));
         functions.push(FunctionDisasm {
             index: i,
@@ -739,9 +753,8 @@ pub fn lift_to_js_surface(module: &HermesModule) -> JsLiftReport {
     let mut function_surface: Vec<String> = Vec::with_capacity(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
         let name: String = module
-            .identifiers
-            .get(f.function_name_id as usize)
-            .cloned()
+            .string_by_global_id(f.function_name_id)
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("$func{i}"));
         let strict: &str = if f.strict_mode {
             "\"use strict\"; "
@@ -860,7 +873,7 @@ mod tests {
         let write_cache: u8 = 0;
         let flag_byte: u8 = 0b0000_0100;
         let word0: u32 = fn_offset | (fn_param_count << 25);
-        let word1: u32 = fn_bcsize | (fn_name_id << 24);
+        let word1: u32 = (fn_bcsize & 0x0000_7fff) | ((fn_name_id & 0x0001_ffff) << 15);
         let word2: u32 = fn_info_offset | (fn_frame_size << 25);
         let word3: u32 = (fn_env_size & 0xff)
             | ((read_cache as u32) << 8)

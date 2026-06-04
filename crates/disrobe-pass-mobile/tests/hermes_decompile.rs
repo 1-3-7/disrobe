@@ -26,6 +26,65 @@ fn discord_fixture() -> PathBuf {
         .join("index.android.bundle")
 }
 
+fn hello_fixture() -> PathBuf {
+    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
+    Path::new(manifest_dir)
+        .join("..")
+        .join("..")
+        .join("corpus")
+        .join("mobile")
+        .join("hermes")
+        .join("hello")
+        .join("index.android.bundle")
+}
+
+#[test]
+fn hello_bundle_recovers_readable_constructs() {
+    let path: PathBuf = hello_fixture();
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read hello bundle");
+    let module: HermesModule = parse_hermes_module(&bytes).expect("parse hello module");
+    let report: DecompileReport = decompile_hermes_module(&module);
+
+    let total_ops: usize = report.total_reconstructed_ops + report.total_fallback_ops;
+    let recovery: f64 = if total_ops == 0 {
+        0.0
+    } else {
+        report.total_reconstructed_ops as f64 / total_ops as f64
+    };
+    eprintln!(
+        "hello: version={} fns={} body={} ops={}r/{}f recovery={:.1}%",
+        report.hermes_version,
+        report.function_count,
+        report.functions_with_body,
+        report.total_reconstructed_ops,
+        report.total_fallback_ops,
+        recovery * 100.0
+    );
+
+    let entry: &DecompiledFunction = report
+        .functions
+        .iter()
+        .find(|f: &&DecompiledFunction| f.name == "disrobeHermesEntry")
+        .expect("entry function present");
+    eprintln!("--- disrobeHermesEntry ---\n{}", entry.source);
+
+    assert!(
+        entry.source.contains("\"disrobe-hermes-token\""),
+        "expected recovered string literal; src: {}",
+        entry.source
+    );
+    assert!(
+        entry.source.contains("print"),
+        "expected print call; src: {}",
+        entry.source
+    );
+    assert!(
+        recovery >= 0.80,
+        "expected >=80% op recovery on hello bundle, got {:.1}%",
+        recovery * 100.0
+    );
+}
+
 #[test]
 fn discord_bundle_decompiles_most_functions() {
     let path: PathBuf = discord_fixture();

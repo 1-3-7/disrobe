@@ -64,9 +64,9 @@ fn synth(version: u32) -> Vec<u8> {
     while buf.len() < header_size {
         buf.push(0u8);
     }
-    let word0: u32 = 0 | (1u32 << 25);
-    let word1: u32 = 0u32 | (1u32 << 24);
-    let word2: u32 = 0 | (2u32 << 25);
+    let word0: u32 = 1u32 << 25;
+    let word1: u32 = 1u32 << 15;
+    let word2: u32 = 2u32 << 25;
     let word3: u32 = 0u32;
     buf.extend_from_slice(&word0.to_le_bytes());
     buf.extend_from_slice(&word1.to_le_bytes());
