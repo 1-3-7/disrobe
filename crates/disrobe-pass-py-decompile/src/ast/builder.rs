@@ -1176,6 +1176,8 @@ fn decode_stream_with_offsets(
     let setup_loop_end: std::collections::BTreeMap<usize, usize> =
         if version.major() < 3 || version.minor() < 2 {
             collect_setup_loop_ends(code, opmap, &offsets)
+        } else if version.major() == 3 && version.minor() < 8 {
+            collect_setup_loop_ends_wordcode(code, opmap, &offsets)
         } else {
             std::collections::BTreeMap::new()
         };
@@ -1400,6 +1402,48 @@ fn collect_setup_loop_ends(
             byte_ends.insert(u32::try_from(cursor).unwrap_or(u32::MAX), end_byte);
         }
         cursor += 3;
+    }
+    let mut out: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for (idx, off) in offsets.iter().enumerate() {
+        if let Some(end_byte) = byte_ends.get(off) {
+            let end_idx: usize = offsets.partition_point(|&o: &u32| o < *end_byte);
+            out.insert(idx, end_idx);
+        }
+    }
+    out
+}
+
+/// Word-code (3.6-3.7) analogue of `collect_setup_loop_ends`: `SETUP_LOOP` survives in these versions
+/// (removed in 3.8) but the stream is 2-byte word-code, so the legacy 3-byte reader misses it. Walk the
+/// 2-byte instructions, fold `EXTENDED_ARG`, and for each `SETUP_LOOP` record its loop-end byte (the
+/// forward arg delta from the next instruction). Used by `legacy_loop_orelse_end` to bound a break-less
+/// `for`/`while` `else:` clause, whose `POP_BLOCK`-exit-to-end span is otherwise indistinguishable from
+/// plain post-loop code on 3.6/3.7.
+fn collect_setup_loop_ends_wordcode(
+    code: &CodeObject,
+    opmap: &dyn OpcodeMap,
+    offsets: &[u32],
+) -> std::collections::BTreeMap<usize, usize> {
+    let bytes: &[u8] = &code.code;
+    let mut byte_ends: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    let mut cursor: usize = 0;
+    let mut extended: u32 = 0;
+    while cursor + 1 < bytes.len() {
+        let raw: u8 = bytes[cursor];
+        let arg_byte: u8 = bytes[cursor + 1];
+        if is_extended_arg(opmap, raw) {
+            extended = (extended | u32::from(arg_byte)) << 8;
+            cursor += 2;
+            continue;
+        }
+        let arg: u32 = extended | u32::from(arg_byte);
+        extended = 0;
+        if opmap.opname(raw) == "SETUP_LOOP" {
+            let after: u32 = u32::try_from(cursor + 2).unwrap_or(u32::MAX);
+            let end_byte: u32 = after.saturating_add(arg);
+            byte_ends.insert(u32::try_from(cursor).unwrap_or(u32::MAX), end_byte);
+        }
+        cursor += 2;
     }
     let mut out: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
     for (idx, off) in offsets.iter().enumerate() {
@@ -4488,6 +4532,34 @@ fn async_with_cleanup_end(stream: &DecodedStream, body_end: usize, hi: usize) ->
 /// `__aexit__(None, None, None)` cleanup BEFORE the `return`, so the body's trailing `return EXPR`
 /// lands after the implicit exit call. Skip the exit triple/call/await poll and re-simulate the
 /// residual `return` (or `RETURN_CONST`).
+/// When an `async with` is the last statement of an enclosing `try:` body, `CPython` inlines the
+/// enclosing construct's success-exit `return EXPR` right after the with's awaited `__aexit__` cleanup,
+/// then lays the `try`'s exception handlers (`PUSH_EXC_INFO` / `CHECK_EG_MATCH`) cold afterward. That
+/// return belongs to the enclosing `try`, not the `with` body, so it must not be folded into the with
+/// (else it duplicates as a phantom trailing return inside the with). Detect an exception-handler
+/// dispatch following the candidate return within the search window: its presence marks the return as
+/// the enclosing try's construct-exit, recovered by `structure_try` once the with is consumed.
+fn async_with_return_owned_by_enclosing_try(
+    stream: &DecodedStream,
+    ret_start: usize,
+    hi: usize,
+) -> bool {
+    let Some(ret_idx): Option<usize> = (ret_start..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return false;
+    };
+    (ret_idx + 1..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckEgMatch | CanonicalOp::CheckExcMatch
+        )
+    })
+}
+
 fn async_with_trailing_return(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -4498,6 +4570,9 @@ fn async_with_trailing_return(
         return Ok(None);
     };
     if async_with_exit_guarded_by_branch(stream, ret_start, hi) {
+        return Ok(None);
+    }
+    if async_with_return_owned_by_enclosing_try(stream, ret_start, hi) {
         return Ok(None);
     }
     recover_return_at(code, stream, ret_start, hi)
