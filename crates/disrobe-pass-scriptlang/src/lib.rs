@@ -25,7 +25,9 @@ pub mod pass;
 pub mod provenance_header;
 
 pub use error::{Error, Result};
-pub use lang::haxe::{HaxeFingerprint, HaxeTarget};
+pub use lang::haxe::{
+    HaxeCrossRoute, HaxeCrossTarget, HaxeFingerprint, HaxeTarget, route_cross_target,
+};
 pub use lang::perl::{PerlOp, PerlOpTree, PerlSub};
 pub use lang::r_rds::{RdsEncoding, RdsHeader, RdsObject};
 pub use lang::rcpp::{EmbeddedNativeImage, NativeImageFormat, RcppFingerprint};
