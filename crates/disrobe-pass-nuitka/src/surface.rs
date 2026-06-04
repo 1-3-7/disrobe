@@ -472,6 +472,7 @@ fn emit_stmt(stmt: &PythonStmt, indent: usize) -> String {
     let prefix: String = emit_indent(indent);
     match stmt {
         PythonStmt::Return(e) => format!("{prefix}return {}\n", emit_expr(e)),
+        PythonStmt::Raise(e) => format!("{prefix}raise {}\n", emit_expr(e)),
         PythonStmt::Expr(e) => format!("{prefix}{}\n", emit_expr(e)),
         PythonStmt::Assign { targets, value } => {
             format!("{prefix}{} = {}\n", targets.join(", "), emit_expr(value))

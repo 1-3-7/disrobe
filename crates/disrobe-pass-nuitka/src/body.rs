@@ -82,6 +82,7 @@ pub enum PythonStmt {
         iter: PythonExpr,
         body: Vec<Self>,
     },
+    Raise(PythonExpr),
     Expr(PythonExpr),
 }
 
@@ -359,7 +360,9 @@ fn contains_unresolved(expr: &PythonExpr) -> bool {
 
 fn stmt_has_unresolved(stmt: &PythonStmt) -> bool {
     match stmt {
-        PythonStmt::Return(e) | PythonStmt::Expr(e) => contains_unresolved(e),
+        PythonStmt::Return(e) | PythonStmt::Expr(e) | PythonStmt::Raise(e) => {
+            contains_unresolved(e)
+        }
         PythonStmt::If { test, body, orelse } => {
             contains_unresolved(test)
                 || body.iter().any(stmt_has_unresolved)
@@ -510,6 +513,12 @@ impl<'a> BodyCtx<'a> {
             }
 
             if let Some((stmt, consumed)) = self.try_fstring_join(i) {
+                self.stmts.push(stmt);
+                i += consumed;
+                continue;
+            }
+
+            if let Some((stmt, consumed)) = self.try_raise(i) {
                 self.stmts.push(stmt);
                 i += consumed;
                 continue;
@@ -747,6 +756,26 @@ impl<'a> BodyCtx<'a> {
             parts: vec![prefix, param_expr],
         };
         Some((PythonStmt::Return(fstring), 3))
+    }
+
+    fn try_raise(&self, start: usize) -> Option<(PythonStmt, usize)> {
+        let line: &str = self.lines[start].trim();
+        if !line.contains(self.pack.raise_exception_with_value) {
+            return None;
+        }
+
+        let ctor_line: &str =
+            find_nearby_before(self.lines, start, 30, "CALL_FUNCTION_WITH_SINGLE_ARG(")?;
+        let (called, arg): (&str, &str) =
+            extract_two_args(ctor_line, "CALL_FUNCTION_WITH_SINGLE_ARG(tstate,")?;
+        let exc_name: String = builtin_exception_name(called.trim())?;
+        let arg_expr: PythonExpr = self.resolve_tok(arg.trim());
+
+        let raise_expr: PythonExpr = PythonExpr::Call {
+            func: Box::new(PythonExpr::Name(exc_name)),
+            args: vec![arg_expr],
+        };
+        Some((PythonStmt::Raise(raise_expr), 1))
     }
 
     fn try_return(&self, start: usize) -> Option<(PythonStmt, usize)> {
@@ -1100,6 +1129,14 @@ fn extract_format_param<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     Some(inner[..comma].trim())
 }
 
+fn builtin_exception_name(called: &str) -> Option<String> {
+    let name: &str = called.strip_prefix("PyExc_")?;
+    if name.is_empty() || !name.chars().all(|c: char| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
 pub fn lift_body(
     c_body: &str,
     _params: &[String],
@@ -1238,6 +1275,40 @@ mod tests {
                 "const_int_0".to_owned(),
                 "const_ellipsis".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn builtin_exception_name_strips_pyexc_prefix() {
+        assert_eq!(
+            builtin_exception_name("PyExc_SystemExit"),
+            Some("SystemExit".to_owned())
+        );
+        assert_eq!(
+            builtin_exception_name("PyExc_ValueError"),
+            Some("ValueError".to_owned())
+        );
+        assert_eq!(builtin_exception_name("tmp_called_value_1"), None);
+        assert_eq!(builtin_exception_name("PyExc_"), None);
+    }
+
+    #[test]
+    fn raise_idiom_lifts_to_raise_statement() {
+        let body: &str = r"{
+tmp_raise_type_1 = CALL_FUNCTION_WITH_SINGLE_ARG(tstate, PyExc_ValueError, mod_consts.const_str_plain_boom);
+exception_state.exception_value = tmp_raise_type_1;
+exception_lineno = 3;
+RAISE_EXCEPTION_WITH_VALUE(tstate, &exception_state);
+goto frame_exception_exit_1;
+}";
+        let pool: ConstantsPool = ConstantsPool::default();
+        let (stmts, _): (Vec<PythonStmt>, LiftFidelity) = lift_body(body, &[], &pool);
+        assert_eq!(
+            stmts,
+            vec![PythonStmt::Raise(PythonExpr::Call {
+                func: Box::new(PythonExpr::Name("ValueError".to_owned())),
+                args: vec![PythonExpr::Const("'boom'".to_owned())],
+            })]
         );
     }
 }
