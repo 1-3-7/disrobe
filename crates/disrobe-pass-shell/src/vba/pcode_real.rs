@@ -59,13 +59,12 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
     let mut walls: Vec<PCodeWallDetail> = Vec::new();
     for module_name in &dir_parse.modules {
         let stream_path: String = format!("/VBA/{module_name}");
-        let module_bytes_compressed: Vec<u8> = match read_stream(&mut comp, &stream_path) {
+        let module_bytes: Vec<u8> = match read_stream(&mut comp, &stream_path) {
             Ok(b) => b,
             Err(_) => continue,
         };
         let module_offset: usize =
             find_module_text_offset(&dir_data, module_name, endian).unwrap_or(0);
-        let module_bytes: Vec<u8> = decompress_ovba(&module_bytes_compressed)?;
         match disassemble_module(
             &module_bytes,
             &identifiers,
@@ -781,7 +780,7 @@ fn walk_pcode_line(
             }
         }
         out.push(PCodeInstruction {
-            offset: abs_start + (o - line.len() + line.len()),
+            offset: abs_start + o,
             opcode_raw,
             mnemonic: opc.mnem.to_owned(),
         });

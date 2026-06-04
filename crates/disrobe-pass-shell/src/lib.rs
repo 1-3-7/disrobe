@@ -62,8 +62,8 @@ pub use provenance_header::{
 pub use vba::extract::ContainerKind;
 pub use vba::{
     ExtractedModule, ExtractedProject, PCodeDisasm, PCodeInstruction, RealModuleDisasm,
-    RealPCodeLine, RealPCodeReport, VbsReport, deobfuscate_vbs, disassemble_pcode,
-    disassemble_pcode_real, extract_from_bytes,
+    RealPCodeLine, RealPCodeReport, SemanticLift, VbsReport, deobfuscate_vbs, disassemble_pcode,
+    disassemble_pcode_real, extract_from_bytes, semantic_lift,
 };
 pub use vba::{PCodeStreamHeader, PCodeWall, PCodeWallDetail};
 
