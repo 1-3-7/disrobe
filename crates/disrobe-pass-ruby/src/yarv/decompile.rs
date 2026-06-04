@@ -155,14 +155,16 @@ fn step(
         "concatstrings" => {
             let n: usize = operand_num(instr, 0) as usize;
             let parts: Vec<String> = pop_n(stack, n);
-            push(stack, parts.join(" + "));
+            push(stack, render_interpolation(&parts));
         }
         "opt_send_without_block" | "send" | "invokesuper" | "sendforward" => {
             emit_send(instr, stack);
         }
-        "objtostring" | "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" => {
+        "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" => {
             emit_unary_call(instr, stack);
         }
+        "objtostring" => {}
+        "anytostring" => collapse_interp_coercion(stack),
         "opt_plus" => emit_binop(instr, stack, "+"),
         "opt_minus" => emit_binop(instr, stack, "-"),
         "opt_mult" => emit_binop(instr, stack, "*"),
@@ -250,9 +252,66 @@ fn step(
                 push(stack, top);
             }
         }
-        "nop" | "putspecialobject" | "anytostring" | "intern" | "tostring" => {}
+        "nop" | "putspecialobject" | "intern" | "tostring" => {}
         _ => {}
     }
+}
+
+/// Collapse the YARV string-interpolation coercion idiom `dup; objtostring; anytostring`: the `dup`
+/// left two copies of the interpolated value and `objtostring` is treated as identity, so
+/// `anytostring` discards the spare copy, leaving one expression to feed `concatstrings`.
+fn collapse_interp_coercion(stack: &mut Vec<String>) {
+    if stack.len() >= 2 {
+        let top: String = pop(stack);
+        let below: String = pop(stack);
+        push(stack, if top == below { top } else { below });
+    }
+}
+
+/// Reconstruct a `concatstrings` join. When the parts mix quoted string literals with expressions
+/// the result is a Ruby interpolation `"text#{expr}text"`; a single part passes through unchanged;
+/// an all-expression join (no literal anchor) falls back to a `+` concatenation so nothing is
+/// fabricated.
+fn render_interpolation(parts: &[String]) -> String {
+    match parts {
+        [] => "\"\"".to_owned(),
+        [single] => single.clone(),
+        _ => {
+            let has_literal: bool = parts.iter().any(|p| is_string_literal(p));
+            if !has_literal {
+                return parts.join(" + ");
+            }
+            let mut out: String = String::with_capacity(MAX_EXPR_LEN.min(128));
+            out.push('"');
+            for part in parts {
+                if let Some(body) = string_literal_body(part) {
+                    out.push_str(body);
+                } else {
+                    out.push_str("#{");
+                    out.push_str(part);
+                    out.push('}');
+                }
+            }
+            out.push('"');
+            out
+        }
+    }
+}
+
+#[inline]
+fn is_string_literal(s: &str) -> bool {
+    string_literal_body(s).is_some()
+}
+
+/// The inner text of a Rust-`Debug`-rendered string literal (`"..."`), or `None` when `s` is not a
+/// plain double-quoted literal (e.g. an expression, or a literal containing nested quotes/escapes
+/// that would be unsafe to splice verbatim into an interpolation).
+fn string_literal_body(s: &str) -> Option<&str> {
+    let inner: &str = s.strip_prefix('"')?.strip_suffix('"')?;
+    if inner.contains('"') || inner.contains('\\') || inner.contains("#{") {
+        return None;
+    }
+    Some(inner)
 }
 
 fn emit_send(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
@@ -401,6 +460,64 @@ mod tests {
             mnemonic: mnemonic.to_owned(),
             operands,
         }
+    }
+
+    #[test]
+    fn interpolation_reconstructs_from_mixed_parts() {
+        let parts: Vec<String> = vec![
+            "\"hello, \"".to_owned(),
+            "@who".to_owned(),
+            "\"!\"".to_owned(),
+        ];
+        assert_eq!(render_interpolation(&parts), "\"hello, #{@who}!\"");
+    }
+
+    #[test]
+    fn interpolation_all_expression_parts_fall_back_to_concat() {
+        let parts: Vec<String> = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(render_interpolation(&parts), "a + b");
+    }
+
+    #[test]
+    fn interpolation_single_part_passes_through() {
+        assert_eq!(render_interpolation(&["x".to_owned()]), "x");
+    }
+
+    #[test]
+    fn interp_coercion_idiom_collapses_to_single_expr() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 7,
+            local_table: Vec::new(),
+            instructions: vec![
+                instr(
+                    "putobject",
+                    vec![YarvOperand::Literal("hello, ".to_owned())],
+                ),
+                instr(
+                    "getinstancevariable",
+                    vec![YarvOperand::Id("@who".to_owned())],
+                ),
+                instr("dup", vec![]),
+                instr(
+                    "objtostring",
+                    vec![YarvOperand::Call {
+                        method: "to_s".to_owned(),
+                        argc: 0,
+                    }],
+                ),
+                instr("anytostring", vec![]),
+                instr("putobject", vec![YarvOperand::Literal("!".to_owned())]),
+                instr("concatstrings", vec![YarvOperand::Num(3)]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts.iter().any(|s| s == "return \"hello, #{@who}!\""),
+            "stmts: {stmts:?}"
+        );
     }
 
     #[test]

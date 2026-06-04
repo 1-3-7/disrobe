@@ -75,6 +75,10 @@ fn decompiles_real_greeter_iseq_with_class_and_methods() {
         "expected `new(\"world\")` call, got:\n{src}"
     );
     assert!(
+        src.contains("\"hello, #{@who}!\""),
+        "expected recovered string interpolation `\"hello, #{{@who}}!\"`, got:\n{src}"
+    );
+    assert!(
         yarv.ibf.iseqs.len() >= 5,
         "greeter has 5 iseq bodies, got {}",
         yarv.ibf.iseqs.len()
