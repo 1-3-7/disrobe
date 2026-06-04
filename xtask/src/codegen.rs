@@ -323,9 +323,27 @@ fn render_python_def(name: &str, def: &Value, schema: &Value, defs: &Map<String,
     out
 }
 
+fn escape_string_literal(s: &str) -> String {
+    let mut out: String = String::with_capacity(s.len() + 2);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn python_literal(value: &Value) -> String {
     match value {
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        Value::String(s) => format!("\"{}\"", escape_string_literal(s)),
         Value::Bool(b) => if *b { "True" } else { "False" }.to_owned(),
         Value::Number(n) => n.to_string(),
         Value::Null => "None".to_owned(),
@@ -495,7 +513,7 @@ fn render_typescript_def(
 
 fn ts_literal(value: &Value) -> String {
     match value {
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        Value::String(s) => format!("\"{}\"", escape_string_literal(s)),
         Value::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
         Value::Number(n) => n.to_string(),
         Value::Null => "null".to_owned(),
@@ -692,6 +710,27 @@ mod tests {
         let ts: String = render_dts("merged", &schema);
         assert!(ts.contains("  a: string;"));
         assert!(ts.contains("  b: number;"));
+    }
+
+    #[test]
+    fn const_with_control_byte_is_escaped_not_embedded() {
+        let schema: Value = json!({
+            "title": "Magic",
+            "type": "object",
+            "properties": {"magic": {"type": "string", "const": "DISROBE\u{0}"}}
+        });
+        let py: String = render_pyi("magic", &schema);
+        assert!(
+            !py.contains('\u{0}'),
+            "rendered .pyi must not embed a raw NUL byte"
+        );
+        assert!(py.contains("DISROBE\\u0000"), "got: {py}");
+        let ts: String = render_dts("magic", &schema);
+        assert!(
+            !ts.contains('\u{0}'),
+            "rendered .d.ts must not embed a raw NUL byte"
+        );
+        assert!(ts.contains("DISROBE\\u0000"), "got: {ts}");
     }
 
     #[test]
