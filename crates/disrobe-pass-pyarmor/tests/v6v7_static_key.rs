@@ -5,11 +5,16 @@
     clippy::print_stderr
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use disrobe_pass_pyarmor::{Detection, PyarmorVersion, detect_from_wrapper};
+use disrobe_pass_pyarmor::{
+    Detection, PyarmorVersion, StaticDecryptStatus, StaticUnpackConfig, StaticUnpackOutput,
+    detect_from_wrapper, unpack_static_with_config,
+};
+use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
 
-const AES_RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+const KNOWN_MARKER: &[u8] = b"try_except_basic";
+const PY312: PyVersion = PyVersion::new(3, 12);
 
 fn corpus_root() -> PathBuf {
     let here: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -22,27 +27,141 @@ fn corpus_root() -> PathBuf {
         .join("pyarmor")
 }
 
-#[test]
-fn v6v7_static_key_synthetic_elf_round_trip() {
-    let key: [u8; 16] = [
-        0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
-        0x66,
-    ];
-    let mut rodata: Vec<u8> = vec![0u8; 256];
-    rodata[..16].copy_from_slice(&key);
-    rodata[64..64 + AES_RCON.len()].copy_from_slice(&AES_RCON);
-    let elf: Vec<u8> = synth_elf64_with_rodata(&rodata);
-    let tmp: PathBuf =
-        std::env::temp_dir().join("disrobe-v6v7-static-key-runtime-fixture/_pytransform.so");
-    let _ = std::fs::create_dir_all(tmp.parent().expect("parent"));
-    std::fs::write(&tmp, &elf).expect("write fixture");
+struct PlatformRuntimeCase {
+    relative_id: &'static str,
+    runtime_format: &'static str,
+    expected_version: PyarmorVersion,
+}
 
-    let runtime_bytes: Vec<u8> = std::fs::read(&tmp).expect("read fixture");
-    assert!(
-        runtime_bytes.windows(AES_RCON.len()).any(|w| w == AES_RCON),
-        "rcon must be present in fixture"
+const CROSS_PLATFORM_RUNTIME_CASES: [PlatformRuntimeCase; 5] = [
+    PlatformRuntimeCase {
+        relative_id: "v8/platform_linux",
+        runtime_format: "ELF64/x86_64",
+        expected_version: PyarmorVersion::V8,
+    },
+    PlatformRuntimeCase {
+        relative_id: "v8/platform_linux_aarch64",
+        runtime_format: "ELF64/aarch64",
+        expected_version: PyarmorVersion::V8,
+    },
+    PlatformRuntimeCase {
+        relative_id: "v8/platform_darwin",
+        runtime_format: "Mach-O",
+        expected_version: PyarmorVersion::V8,
+    },
+    PlatformRuntimeCase {
+        relative_id: "v9/platform_linux",
+        runtime_format: "ELF64/x86_64",
+        expected_version: PyarmorVersion::V9,
+    },
+    PlatformRuntimeCase {
+        relative_id: "v9/platform_darwin",
+        runtime_format: "Mach-O",
+        expected_version: PyarmorVersion::V9,
+    },
+];
+
+#[test]
+fn cross_platform_elf_macho_runtime_keypath_recovers_real_source() {
+    let root: PathBuf = corpus_root();
+    if !root.is_dir() {
+        eprintln!("skipped: pyarmor corpus absent at {}", root.display());
+        return;
+    }
+
+    let mut proven: usize = 0;
+    for case in &CROSS_PLATFORM_RUNTIME_CASES {
+        let dir: PathBuf = root.join(case.relative_id);
+        let wrapper: PathBuf = dir.join("chunk_00_try_except_basic_try_except_else.py");
+        let Some(runtime): Option<PathBuf> = find_native_runtime(&dir) else {
+            panic!(
+                "{}: real {} runtime fixture must be committed under the corpus",
+                case.relative_id, case.runtime_format
+            );
+        };
+
+        let text: String = std::fs::read_to_string(&wrapper)
+            .unwrap_or_else(|_| panic!("{}: wrapper .py is readable", case.relative_id));
+        let (_detection, payload): (Detection, Vec<u8>) = detect_from_wrapper(&text)
+            .unwrap_or_else(|_| panic!("{}: wrapper carries a payload literal", case.relative_id));
+        let runtime_bytes: Vec<u8> = std::fs::read(&runtime)
+            .unwrap_or_else(|_| panic!("{}: native runtime is readable", case.relative_id));
+
+        let cfg: StaticUnpackConfig = StaticUnpackConfig {
+            runtime_bytes: Some(runtime_bytes),
+            strict: true,
+            ..StaticUnpackConfig::default()
+        };
+        let out: StaticUnpackOutput = unpack_static_with_config(&payload, &cfg).unwrap_or_else(|e| {
+            panic!(
+                "{}: in-house key extraction over the real {} runtime + AES decrypt must succeed: {e}",
+                case.relative_id, case.runtime_format
+            )
+        });
+
+        assert_eq!(
+            out.pyarmor_version, case.expected_version,
+            "{}: runtime-descriptor discrimination must hold on non-PE binaries",
+            case.relative_id
+        );
+        assert_eq!(
+            out.status,
+            StaticDecryptStatus::Functional,
+            "{}: decrypt over the {} runtime key must be Functional",
+            case.relative_id,
+            case.runtime_format
+        );
+
+        let (offset, code): (usize, Box<CodeObject>) = locate_real_code_object(&out.plaintext)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: decrypted body must contain a genuine marshalled CodeObject",
+                    case.relative_id
+                )
+            });
+        assert!(
+            offset >= 0x20,
+            "{}: marshal stream lives beyond the structural header",
+            case.relative_id
+        );
+        assert!(
+            contains_subslice(&out.plaintext, KNOWN_MARKER),
+            "{}: pre-obfuscation identifier `try_except_basic` survives in the decrypted bytes",
+            case.relative_id
+        );
+        assert!(
+            co_names_contains(&code, "try_except_basic"),
+            "{}: recovered co_names carry the independent ground-truth identifier",
+            case.relative_id
+        );
+
+        proven += 1;
+    }
+
+    assert_eq!(
+        proven,
+        CROSS_PLATFORM_RUNTIME_CASES.len(),
+        "every committed cross-platform ELF/Mach-O runtime fixture must drive a real recovery"
     );
-    assert_eq!(&runtime_bytes[64..64 + 16], &key[..]);
+}
+
+#[test]
+fn no_v6_or_v7_real_corpus_is_sourcing_blocked() {
+    let root: PathBuf = corpus_root();
+    if !root.is_dir() {
+        return;
+    }
+    let v6: PathBuf = root.join("v6");
+    let v7: PathBuf = root.join("v7");
+    let v7_super: PathBuf = root.join("v7-super");
+    let baked_runtimes: PathBuf = root.join("_pytransform-runtimes");
+    if v6.is_dir() || v7.is_dir() || v7_super.is_dir() || baked_runtimes.is_dir() {
+        return;
+    }
+    eprintln!(
+        "honest ceiling: no v6/v7 real corpus present under {}; v6/v7 recovery is sourcing-blocked and unclaimed (only v8/v9 trial fixtures exist)",
+        root.display()
+    );
 }
 
 #[test]
@@ -107,7 +226,7 @@ fn v7_wrapper_detect_when_baked_fixture_present() {
             break;
         }
     }
-    let Some(text) = wrapper_text else {
+    let Some(text): Option<String> = wrapper_text else {
         eprintln!("skipped: no pyarmor wrapper found in {}", v7_dir.display());
         return;
     };
@@ -119,84 +238,59 @@ fn v7_wrapper_detect_when_baked_fixture_present() {
     ));
 }
 
-fn synth_elf64_with_rodata(rodata: &[u8]) -> Vec<u8> {
-    const EHDR_SIZE: u16 = 64;
-    const SHDR_SIZE: u16 = 64;
-    const SHDR_COUNT: u16 = 3;
-    let shstrtab: &[u8] = b"\0.rodata\0.shstrtab\0";
-
-    let mut layout: Vec<u8> = Vec::new();
-    layout.extend_from_slice(&[0u8; 64]);
-
-    let rodata_offset: u64 = layout.len() as u64;
-    layout.extend_from_slice(rodata);
-    pad_to_align(&mut layout, 16);
-    let shstrtab_offset: u64 = layout.len() as u64;
-    layout.extend_from_slice(shstrtab);
-    pad_to_align(&mut layout, 8);
-    let shdr_offset: u64 = layout.len() as u64;
-    let shdr_total: usize = usize::from(SHDR_SIZE) * usize::from(SHDR_COUNT);
-    layout.extend(core::iter::repeat_n(0u8, shdr_total));
-
-    layout[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-    layout[4] = 2;
-    layout[5] = 1;
-    layout[6] = 1;
-    layout[7] = 0;
-    layout[16..18].copy_from_slice(&3u16.to_le_bytes());
-    layout[18..20].copy_from_slice(&62u16.to_le_bytes());
-    layout[20..24].copy_from_slice(&1u32.to_le_bytes());
-    layout[40..48].copy_from_slice(&shdr_offset.to_le_bytes());
-    layout[52..54].copy_from_slice(&EHDR_SIZE.to_le_bytes());
-    layout[58..60].copy_from_slice(&SHDR_SIZE.to_le_bytes());
-    layout[60..62].copy_from_slice(&SHDR_COUNT.to_le_bytes());
-    layout[62..64].copy_from_slice(&2u16.to_le_bytes());
-
-    let shdr_base: usize = usize::try_from(shdr_offset).expect("shdr_offset fits usize");
-    let write_shdr = |buf: &mut Vec<u8>,
-                      slot: usize,
-                      name_off: u32,
-                      sh_type: u32,
-                      sh_flags: u64,
-                      sh_addr: u64,
-                      sh_offset: u64,
-                      sh_size: u64| {
-        let base: usize = shdr_base + slot * usize::from(SHDR_SIZE);
-        buf[base..base + 4].copy_from_slice(&name_off.to_le_bytes());
-        buf[base + 4..base + 8].copy_from_slice(&sh_type.to_le_bytes());
-        buf[base + 8..base + 16].copy_from_slice(&sh_flags.to_le_bytes());
-        buf[base + 16..base + 24].copy_from_slice(&sh_addr.to_le_bytes());
-        buf[base + 24..base + 32].copy_from_slice(&sh_offset.to_le_bytes());
-        buf[base + 32..base + 40].copy_from_slice(&sh_size.to_le_bytes());
-    };
-
-    write_shdr(&mut layout, 0, 0, 0, 0, 0, 0, 0);
-    write_shdr(
-        &mut layout,
-        1,
-        1,
-        1,
-        2,
-        0x0040_1000,
-        rodata_offset,
-        rodata.len() as u64,
-    );
-    write_shdr(
-        &mut layout,
-        2,
-        9,
-        3,
-        0,
-        0,
-        shstrtab_offset,
-        shstrtab.len() as u64,
-    );
-    layout
+fn find_native_runtime(dir: &Path) -> Option<PathBuf> {
+    let entries: std::fs::ReadDir = std::fs::read_dir(dir).ok()?;
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path: PathBuf = entry.path();
+        if path.is_dir() {
+            subdirs.push(path);
+        } else if is_native_runtime(&path) {
+            return Some(path);
+        }
+    }
+    for subdir in subdirs {
+        if let Some(found) = find_native_runtime(&subdir) {
+            return Some(found);
+        }
+    }
+    None
 }
 
-fn pad_to_align(buf: &mut Vec<u8>, align: usize) {
-    let remainder: usize = buf.len() % align;
-    if remainder != 0 {
-        buf.extend(core::iter::repeat_n(0u8, align - remainder));
+fn is_native_runtime(path: &Path) -> bool {
+    let Some(name): Option<&str> = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    name.starts_with("pyarmor_runtime")
+        && matches!(
+            path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("so" | "dylib")
+        )
+}
+
+fn locate_real_code_object(plaintext: &[u8]) -> Option<(usize, Box<CodeObject>)> {
+    for (i, &b) in plaintext.iter().enumerate() {
+        if b == 0xE3
+            && let Ok(Object::Code(code)) = load(&plaintext[i..], PY312)
+        {
+            return Some((i, code));
+        }
     }
+    None
+}
+
+fn co_names_contains(code: &CodeObject, needle: &str) -> bool {
+    code.names.iter().any(|name: &Object| match name {
+        Object::Unicode { value, .. }
+        | Object::ShortAscii { value, .. }
+        | Object::String { value, .. } => value == needle,
+        _ => false,
+    })
+}
+
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    needle.len() <= haystack.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window: &[u8]| window == needle)
 }
