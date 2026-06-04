@@ -7,7 +7,8 @@
 )]
 
 use disrobe_pass_native::{
-    CompileUnit, DwarfSourcemap, Error, LineRow, synthesize_dwarf_sourcemap,
+    CompileUnit, DwarfSourcemap, Error, LineRow, ReconstructedType, TypeKind, TypeReconstruction,
+    reconstruct_dwarf_types, synthesize_dwarf_sourcemap,
 };
 
 const ZIG_ELF: &[u8] = include_bytes!("../../../corpus/native/zig/hello.zig.elf");
@@ -100,6 +101,113 @@ fn synthesizes_dwarf_sourcemap_from_nim_elf() {
         "nim DWARF sourcemap: {} CUs, {} line rows",
         map.compile_units.len(),
         map.line_rows.len(),
+    );
+}
+
+#[test]
+fn reconstructs_real_dwarf_types_from_zig_elf() {
+    let rec: TypeReconstruction =
+        reconstruct_dwarf_types(ZIG_ELF).expect("zig ELF carries real type DIEs");
+    assert!(
+        !rec.types.is_empty(),
+        "the zig binary embeds base/pointer/struct/array type DIEs; reconstruction must be non-empty",
+    );
+    let has_base: bool = rec
+        .types
+        .iter()
+        .any(|t: &ReconstructedType| t.kind == TypeKind::Base);
+    let has_struct: bool = rec
+        .types
+        .iter()
+        .any(|t: &ReconstructedType| t.kind == TypeKind::Structure);
+    assert!(
+        has_base && has_struct,
+        "real DWARF must yield both base and structure types (non-circular: names come from \
+         the binary's own .debug_str), got base={has_base} struct={has_struct}",
+    );
+    let pointer_member_present: bool = rec.types.iter().any(|t: &ReconstructedType| {
+        t.members
+            .iter()
+            .any(|m: &disrobe_pass_native::TypeMember| m.type_name.contains('*'))
+    });
+    assert!(
+        pointer_member_present,
+        "at least one struct member must resolve to a pointer type (recursive DW_AT_type follow)",
+    );
+    let cov: f64 = rec.coverage.pct();
+    let ratio: f64 = rec.type_reconstruction_ratio();
+    println!(
+        "zig types: {} reconstructed ({} named, ratio {:.1}%); line-coverage of .text {:.1}% \
+         ({}/{} bytes); split_dwarf={:?}",
+        rec.types.len(),
+        rec.named_type_count(),
+        ratio * 100.0,
+        cov,
+        rec.coverage.covered_bytes,
+        rec.coverage.text_size,
+        rec.split_dwarf,
+    );
+    assert!(
+        cov >= 80.0,
+        "line-coverage of .text must clear the 80% line-recovery target on a real DWARF binary, \
+         got {cov:.1}%",
+    );
+    assert!(
+        ratio >= 0.5,
+        "majority of reconstructed types must resolve to a concrete name, got {:.1}%",
+        ratio * 100.0,
+    );
+}
+
+#[test]
+fn reconstructs_real_dwarf_types_from_nim_elf() {
+    let rec: TypeReconstruction =
+        reconstruct_dwarf_types(NIM_ELF).expect("nim ELF carries real type DIEs");
+    assert!(!rec.types.is_empty(), "nim binary embeds type DIEs");
+    let has_typedef: bool = rec
+        .types
+        .iter()
+        .any(|t: &ReconstructedType| t.kind == TypeKind::Typedef);
+    println!(
+        "nim types: {} reconstructed ({} named); typedef_present={has_typedef}; \
+         line-coverage {:.1}%; split_dwarf={:?}",
+        rec.types.len(),
+        rec.named_type_count(),
+        rec.coverage.pct(),
+        rec.split_dwarf,
+    );
+    assert!(
+        rec.coverage.pct() >= 80.0,
+        "nim .text line-coverage must clear 80%, got {:.1}%",
+        rec.coverage.pct(),
+    );
+}
+
+#[test]
+fn split_dwarf_info_reports_single_file_dwarf_honestly() {
+    let rec: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
+    assert!(
+        !rec.split_dwarf.has_skeleton_units,
+        "the zig fixture is single-file DWARF (no DW_AT_dwo_name); the resolver must report \
+         has_skeleton_units=false rather than inventing a .dwo reference",
+    );
+    assert!(
+        rec.split_dwarf.dwo_names.is_empty(),
+        "no .dwo names must be reported for a single-file object",
+    );
+}
+
+#[test]
+fn split_dwarf_resolver_detects_companion_sections_when_present() {
+    let nim: TypeReconstruction = reconstruct_dwarf_types(NIM_ELF).expect("nim reconstruct");
+    let zig: TypeReconstruction = reconstruct_dwarf_types(ZIG_ELF).expect("zig reconstruct");
+    assert!(
+        !nim.split_dwarf.has_skeleton_units && !zig.split_dwarf.has_skeleton_units,
+        "neither fixture is a split-DWARF skeleton; the resolver must report that honestly",
+    );
+    assert!(
+        !zig.split_dwarf.has_addr_index,
+        "the resolver's .debug_addr probe must reflect the real section table, not a guess",
     );
 }
 

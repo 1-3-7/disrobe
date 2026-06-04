@@ -56,7 +56,10 @@ pub use debug_info::{
 pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
 };
-pub use dwarf_sourcemap::{CompileUnit, DwarfSourcemap, LineRow, synthesize_dwarf_sourcemap};
+pub use dwarf_sourcemap::{
+    CompileUnit, CoverageScore, DwarfSourcemap, LineRow, ReconstructedType, SplitDwarfInfo,
+    TypeKind, TypeMember, TypeReconstruction, reconstruct_dwarf_types, synthesize_dwarf_sourcemap,
+};
 pub use error::{Error, Result};
 pub use fingerprint::{
     ASCII_XREF_MIN_LEN, FINGERPRINT_SCHEMA, FingerprintSidecar, StringXref, extract_ascii_xrefs,
