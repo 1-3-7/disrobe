@@ -10,8 +10,9 @@
 | constant-path | 90 | resolving opt_getconstant_path caches to A::B::C |
 | exceptions | 98 | catch_table -> begin/rescue/ensure reconstruction |
 | case-when | 108 | dispatch + no-dispatch case/when, fixnum/regexp literals |
-| compound-assignment | 118 | ||=/&&= folding |
-| gaps | 126 | honest ceilings (pattern matching, []||=, register names) |
+| case-in | 116 | case/in pattern matching: value/class/range/bind/guard/else |
+| compound-assignment | 130 | ||=/&&= folding |
+| gaps | 138 | honest ceilings (structural patterns, []||=, register names) |
 
 ## references
 
@@ -36,9 +37,9 @@ Recovery fidelity is measured non-circularly: the recovered `.rb` is recompiled 
 the opcodes of the fixture's own committed original `.rb` (never re-emitted through our own builder).
 The `recover` example prints recovered source for a `.yarvc`. Measured opcode-multiset equivalence on
 the 3.4.9 corpus: hello 100% (4/4), greeter 94% (75/79), megafile 79% (whole-file recompiles;
-15690/19673). The megafile is a 1677-LOC every-feature stress file; 357/446 methods recover >=70%,
+15690/19673). The megafile is a 1677-LOC every-feature stress file; 356/446 methods recover >=70%,
 only 3 fully missing. Focused per-feature fixtures recompile near-exactly: case/when 97%, rescue 91%,
-op-assign 97%.
+op-assign 97%, and `case/in` value/class/bind-guard/else patterns 97-98%.
 
 ## ibf-body-layout
 
@@ -109,8 +110,20 @@ Two forms fold to `case subject; when V; ...; else; ...; end`: (a) literal whens
 `dup; opt_case_dispatch <hash>, ELSE` then a `<value>; topn 1; ===; branchif WHEN` ladder; (b)
 non-literal whens (class/range/regex/lambda) emit the bare `topn/===/branchif` ladder with no jump
 table. Fixnum objects decode to their numeric value (`(raw >> 1)`, new bare `NumLiteral` operand) and
-Regexp objects to `/source/` (source-string post-pass, slashes escaped). `case/in` pattern matching is
-NOT folded (see gaps).
+Regexp objects to `/source/` (source-string post-pass, slashes escaped).
+
+## case-in
+
+`case/in` pattern matching is recognized by its skeleton: a subject load, an arm ladder of
+`dup; <test>; checkmatch 2; branchif ARM`, and a fall-through that either raises
+`NoMatchingPatternError` (no `else`) or runs a `pop; pop; <else-body>` (with `else`). Folded forms:
+value/constant (`in 1`), class (`in Integer`), range (`in 1..10`), the `=> bind` capture (a `setlocal`
+after the test), the `if <guard>` (the expression before the success branch), and the `else` arm. The
+`=> bind` and guard may reference a register-erased local (renders `local{N}`, valid + recompilable).
+Structural patterns (array `in [a, b]`, find `in [*, x, *]`, hash `in {k:}`, struct `in P(x:)`)
+deconstruct via `checktype`/`deconstruct`/`deconstruct_keys`; a case containing any structural arm
+returns `None` from the arm parser so the whole case falls back to linear `if`/`else` (never emits an
+invalid `in [...]`). See gaps.
 
 ## compound-assignment
 
@@ -127,10 +140,15 @@ recompilable Ruby — these constructs are dropped or approximated, never fabric
 - Register/name wall: YARV erases names absent from the `local_table` (block-local temporaries,
   hidden positional params, rescue `=> e` in the parent frame). They stay `local{N}`/bare (arity and
   structure preserved); name lost. This is genuine bytecode erasure, not a decoder limitation.
-- Pattern matching (`case/in`): the dominant remaining gap. Array/find/hash deconstruction
-  (`checkmatch`/`deconstruct`/`deconstruct_keys`), type patterns, guards (`in X => n if ...`), and
-  alternatives desugar to large `checktype`/`getlocal`/branch ladders that are not reassembled into
-  `case ... in ... end`. The `<module:Patterns>` (560 op) / `classify` (273 op) methods drive it.
+- Pattern matching (`case/in`) STRUCTURAL forms: value/class/range/bind/guard/else patterns now fold
+  to `case ... in ... end` (fixtures 97-98% opcode-equiv). The remaining gap is array/find/hash/struct
+  patterns: their deconstruct ladder (`checktype`/`deconstruct`/`deconstruct_keys`/`opt_aref`/length
+  check + `respond_to?` + per-shape error machinery, 100+ insns/arm with an inline fall-through rather
+  than a clean `branchif ARM_BODY`) is not reassembled. A mixed case (`classify`: 7 simple arms + array/
+  hash arms) bails entirely because any structural arm makes the whole case fall back to linear. The
+  `<module:Patterns>` (560 op) / `classify` (273 op) / `deconstruct_point` (159 op) methods drive the
+  residual; the element binds are recoverable (`opt_aref N; setlocal var`) but the control-flow
+  reconstruction is too version-spanning to land safely without a dedicated pass.
 - `[]||=` compound: hash/array-index conditional assignment (`dupn`/`opt_aref`/`opt_aset` dance) is
   tracked for stack balance but not reassembled.
 - Loops: only `while`/`until` structure; `for`, `loop`, `begin..end while`, and value-carrying
