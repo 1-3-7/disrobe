@@ -210,6 +210,7 @@ mod tests {
             category: cat.to_owned(),
             detail: detail.to_owned(),
             offset,
+            confidence: disrobe_pass_pickle::ConfidenceTier::SignatureCertain,
         }
     }
 
