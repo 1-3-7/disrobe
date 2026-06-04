@@ -216,7 +216,12 @@ pub(crate) fn emit_branch_method_code(
     }
     if insns
         .iter()
-        .any(|i: &DalvikInsn| i.is_switch() || matches!(i.op, 0x0D | 0x24 | 0x25 | 0x26 | 0x22))
+        .any(|i: &DalvikInsn| i.is_switch() || matches!(i.op, 0x0D | 0x24 | 0x25 | 0x26))
+    {
+        return None;
+    }
+    if insns.iter().any(|i: &DalvikInsn| i.op == 0x22)
+        && !new_instance_pairs_are_block_local(&insns)
     {
         return None;
     }
@@ -346,6 +351,39 @@ fn collect_leaders(insns: &[DalvikInsn]) -> BTreeSet<u32> {
     leaders
 }
 
+/// True when every `new-instance vDest` reaches its matching
+/// `invoke-direct {vDest, ...} <init>` without crossing a basic-block boundary.
+/// The deferred `new; dup; ...; invokespecial; astore` fusion keeps the
+/// uninitialized reference on the operand stack only within one block, so a
+/// pair split across a branch target (which would need an
+/// `Uninitialized_variable_info` frame) is rejected; in practice d8 keeps the
+/// pair adjacent, so this admits the common case without that frame machinery.
+fn new_instance_pairs_are_block_local(insns: &[DalvikInsn]) -> bool {
+    let leaders: BTreeSet<u32> = collect_leaders(insns);
+    for (k, insn) in insns.iter().enumerate() {
+        if insn.op != 0x22 {
+            continue;
+        }
+        let Some(&dest): Option<&u16> = insn.regs.first() else {
+            return false;
+        };
+        let mut matched: bool = false;
+        for follow in &insns[k + 1..] {
+            if leaders.contains(&follow.pc) {
+                return false;
+            }
+            if follow.op == 0x70 && follow.regs.first().copied() == Some(dest) {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return false;
+        }
+    }
+    true
+}
+
 impl Emitter<'_> {
     fn seed_parameter_types(&mut self, parsed: &MethodDescriptor, is_static: bool) {
         let mut cursor: u16 = self.first_param_reg;
@@ -392,13 +430,20 @@ impl Emitter<'_> {
     /// type map from the analysis's block-entry state so loads at the start of
     /// the block use exactly the types the synthesized frame declares.
     fn enter_cfg_instruction(&mut self, insn: &DalvikInsn) {
+        let is_leader: bool = self
+            .cfg
+            .as_ref()
+            .is_some_and(|c: &CfgEmit| c.block_leaders.contains(&insn.pc));
+        if is_leader {
+            self.discard_pending_result();
+        }
         let off: usize = self.code.len();
         let Some(cfg): Option<&mut CfgEmit> = self.cfg.as_mut() else {
             return;
         };
         cfg.cur_pc = insn.pc;
         cfg.jvm_offset_of_pc.insert(insn.pc, off);
-        if cfg.block_leaders.contains(&insn.pc) {
+        if is_leader {
             if let Some(slots) = cfg.block_entry_slots.get(&insn.pc) {
                 self.reg_type = slots.clone();
             } else {
@@ -730,6 +775,7 @@ impl Emitter<'_> {
                 return;
             }
             if matches!(op, 0x28..=0x2A | 0x32..=0x3D) {
+                self.discard_pending_result();
                 self.emit_branch(insn);
                 return;
             }

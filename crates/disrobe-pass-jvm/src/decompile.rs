@@ -373,6 +373,10 @@ pub(crate) enum Expr {
         ty: String,
         size: Box<Self>,
     },
+    ArrayInit {
+        ty: String,
+        elements: Vec<Self>,
+    },
     Invoke {
         receiver: Option<Box<Self>>,
         owner: String,
@@ -406,6 +410,10 @@ impl Expr {
             }
             Self::New(ty) => format!("new {ty}()"),
             Self::NewArray { ty, size } => format!("new {ty}[{}]", size.render()),
+            Self::ArrayInit { ty, elements } => {
+                let rendered: Vec<String> = elements.iter().map(Self::render).collect();
+                format!("new {ty}[]{{{}}}", rendered.join(", "))
+            }
             Self::Invoke {
                 receiver,
                 owner,
@@ -614,8 +622,12 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             head,
             then_body,
             else_body,
+            join,
             ..
         } => {
+            if try_render_conditional_expr(ctx, *head, then_body, else_body, *join, out, level) {
+                return;
+            }
             let cond: String = render_if_condition(ctx, *head, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}if ({}) {{", invert(&cond));
@@ -672,7 +684,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                     .as_deref()
                     .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
                 let _ = writeln!(out, "{pad}}} catch ({ty} ex{i}) {{");
-                render_region(ctx, handler_region, out, level + 1);
+                render_handler_region(ctx, handler_region, &format!("ex{i}"), out, level + 1);
             }
             let _ = writeln!(out, "{pad}}}");
         }
@@ -692,13 +704,67 @@ fn block_insn_range(ctx: &RenderCtx<'_>, bid: BlockId) -> (usize, usize) {
     b.insn_range
 }
 
+/// Renders a catch handler, seeding the caught exception (which the JVM places
+/// on the operand stack at handler entry) so the handler's first instruction —
+/// typically `astore` into a local or `pop` to discard — consumes the named
+/// catch parameter instead of an empty stack (which would render `?`).
+fn render_handler_region(
+    ctx: &mut RenderCtx<'_>,
+    region: &Region,
+    exc_name: &str,
+    out: &mut String,
+    level: usize,
+) {
+    let first: Option<BlockId> = match region {
+        Region::Block(b) => Some(*b),
+        Region::Sequence(items) => items.first().and_then(|r| match r {
+            Region::Block(b) => Some(*b),
+            _ => None,
+        }),
+        _ => None,
+    };
+    let Some(first_bid): Option<BlockId> = first else {
+        render_region(ctx, region, out, level);
+        return;
+    };
+    if ctx.rendered_blocks.contains(&first_bid) {
+        render_region(ctx, region, out, level);
+        return;
+    }
+    let seed: Vec<Expr> = vec![Expr::Local(exc_name.to_string())];
+    render_block_seeded(ctx, first_bid, out, level, seed);
+    match region {
+        Region::Block(_) => {}
+        Region::Sequence(items) => {
+            for r in &items[1..] {
+                render_region(ctx, r, out, level);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: usize) {
+    render_block_seeded(ctx, bid, out, level, Vec::new());
+}
+
+/// Renders a basic block's instructions to source, optionally pre-seeding the
+/// operand stack so a value produced by a preceding region (e.g. a folded
+/// conditional expression) is consumed by this block's first instruction
+/// instead of being lost to the per-block stack reset.
+fn render_block_seeded(
+    ctx: &mut RenderCtx<'_>,
+    bid: BlockId,
+    out: &mut String,
+    level: usize,
+    seed: Vec<Expr>,
+) {
     if !ctx.rendered_blocks.insert(bid) {
         return;
     }
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
     let pad: String = indent_string(level);
-    let mut stack: Vec<Expr> = Vec::new();
+    let mut stack: Vec<Expr> = seed;
     for ins in &ctx.insns[start..end] {
         let op: u8 = ins.opcode;
         if matches!(
@@ -724,6 +790,154 @@ fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: 
             }
         }
     }
+}
+
+/// Lifts a block that is a pure value producer (no side-effecting statement,
+/// no control flow) to the single `Expr` it leaves on the stack, ignoring a
+/// trailing unconditional `goto`/`return`-less terminator. Returns `None` if
+/// the block emits a statement, underflows, or nets anything other than one
+/// value. Used to reconstruct conditional (`?:`) expressions whose two arms
+/// each push one value across a join.
+fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> Option<Expr> {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let mut stack: Vec<Expr> = Vec::new();
+    for ins in &ctx.insns[start..end] {
+        let op: u8 = ins.opcode;
+        if matches!(op, 0xA7 | 0xC8) {
+            continue;
+        }
+        if matches!(op, 0x99..=0xA6 | 0xC6 | 0xC7 | 0xAA | 0xAB | 0xA9 | 0xAC..=0xB1 | 0xBF) {
+            return None;
+        }
+        match lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps) {
+            LiftResult::Pushed => {}
+            LiftResult::Statement(_) | LiftResult::ControlFlow(_) | LiftResult::Unhandled => {
+                return None;
+            }
+        }
+    }
+    if stack.len() == seed_count + 1 {
+        stack.pop()
+    } else {
+        None
+    }
+}
+
+/// A region is a single-block value arm when it is exactly one `Region::Block`.
+fn single_block(region: &Region) -> Option<BlockId> {
+    match region {
+        Region::Block(b) => Some(*b),
+        Region::Sequence(items) => match items.as_slice() {
+            [Region::Block(b)] => Some(*b),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Reconstructs a Java conditional expression (`cond ? a : b`) from an
+/// if/then/else whose two arms are pure single-value producers feeding a common
+/// join. javac compiles `cond ? a : b` (and `if/else` with two `return`s of a
+/// value) to a branch that leaves one value on the operand stack at the join;
+/// the per-block renderer would otherwise drop that value and emit `?`. When the
+/// pattern matches, the folded ternary is seeded onto the join block's stack so
+/// its consumer (`return`, store, or further expression) renders correctly.
+/// Returns `true` when it handled the region.
+fn try_render_conditional_expr(
+    ctx: &mut RenderCtx<'_>,
+    head: BlockId,
+    then_body: &Region,
+    else_body: &Region,
+    join: Option<BlockId>,
+    out: &mut String,
+    level: usize,
+) -> bool {
+    let Some(join_bid): Option<BlockId> = join else {
+        return false;
+    };
+    let (Some(then_b), Some(else_b)): (Option<BlockId>, Option<BlockId>) =
+        (single_block(then_body), single_block(else_body))
+    else {
+        return false;
+    };
+    if ctx.rendered_blocks.contains(&then_b)
+        || ctx.rendered_blocks.contains(&else_b)
+        || ctx.rendered_blocks.contains(&join_bid)
+    {
+        return false;
+    }
+    if head_has_statements(ctx, head) {
+        return false;
+    }
+    let (Some(then_val), Some(else_val)): (Option<Expr>, Option<Expr>) = (
+        lift_block_to_value(ctx, then_b, 0),
+        lift_block_to_value(ctx, else_b, 0),
+    ) else {
+        return false;
+    };
+    if !join_consumes_one_value(ctx, join_bid) {
+        return false;
+    }
+    let cond: String = condition_only(ctx, head);
+    let displayed: String = invert(&cond);
+    let ternary: Expr = Expr::Opaque(format!(
+        "({displayed} ? {} : {})",
+        then_val.render(),
+        else_val.render()
+    ));
+    ctx.rendered_blocks.insert(then_b);
+    ctx.rendered_blocks.insert(else_b);
+    render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
+    true
+}
+
+/// True when the head block emits any side-effecting statement before its
+/// terminating conditional branch (so it cannot be folded into a ternary head).
+fn head_has_statements(ctx: &RenderCtx<'_>, head: BlockId) -> bool {
+    let (start, end): (usize, usize) = block_insn_range(ctx, head);
+    if start == end {
+        return false;
+    }
+    let mut stack: Vec<Expr> = Vec::new();
+    for ins in &ctx.insns[start..end - 1] {
+        match lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps) {
+            LiftResult::Pushed => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// True when the join block's first non-shuffle instruction consumes exactly
+/// one operand-stack value (a return, a single store, or an arithmetic/compare
+/// consumer), which is the shape a folded ternary value flows into.
+fn join_consumes_one_value(ctx: &RenderCtx<'_>, bid: BlockId) -> bool {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let Some(first): Option<&Instruction> = ctx.insns.get(start..end).and_then(|s| s.first())
+    else {
+        return false;
+    };
+    matches!(
+        first.opcode,
+        0xAC..=0xB0 | 0x36..=0x4E | 0xB3 | 0xB5 | 0x57
+    )
+}
+
+/// Returns the condition expression of a head block without emitting its
+/// (verified statement-free) prefix to the output.
+fn condition_only(ctx: &mut RenderCtx<'_>, head: BlockId) -> String {
+    let (start, end): (usize, usize) = block_insn_range(ctx, head);
+    if start == end {
+        return "true".to_string();
+    }
+    let body_end: usize = end - 1;
+    let mut stack: Vec<Expr> = Vec::new();
+    for ins in &ctx.insns[start..body_end] {
+        let _ = lift_one(ctx.cf, ins, &mut stack, ctx.params, ctx.bootstraps);
+    }
+    ctx.rendered_blocks.insert(head);
+    let term: &Instruction = &ctx.insns[body_end];
+    render_branch_condition(term, &mut stack)
 }
 
 fn render_if_condition(
@@ -972,6 +1186,11 @@ pub(crate) fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
                     walk(a, cap, acc);
                 }
             }
+            Expr::ArrayInit { elements, .. } => {
+                for el in elements {
+                    walk(el, cap, acc);
+                }
+            }
             Expr::Const(_)
             | Expr::Local(_)
             | Expr::This
@@ -1199,12 +1418,64 @@ fn array_store(stack: &mut Vec<Expr>) -> LiftResult {
     let value: Expr = pop_expr(stack);
     let index: Expr = pop_expr(stack);
     let array: Expr = pop_expr(stack);
+    if let Some(result) = try_fold_array_init(stack, &array, &index, &value) {
+        return result;
+    }
     LiftResult::Statement(format!(
         "{}[{}] = {}",
         array.render(),
         index.render(),
         value.render()
     ))
+}
+
+/// Folds an `array[index] = value` from a javac array-initializer (`new T[N]`
+/// followed by `dup; <i>; <v>; *astore` per element) into an `Expr::ArrayInit`.
+/// After the `*astore` consumes the dup'd array reference, the surviving
+/// reference is the stack top; when the consumed array is the freshly-allocated
+/// `new T[const]` (or an in-progress `ArrayInit`) and the index is the next
+/// expected constant slot, the value is appended to the surviving array's
+/// element list and the statement is suppressed. Anything irregular (non-const
+/// index, gaps, no surviving dup) falls back to the explicit assignment.
+fn try_fold_array_init(
+    stack: &mut [Expr],
+    array: &Expr,
+    index: &Expr,
+    value: &Expr,
+) -> Option<LiftResult> {
+    let idx: usize = const_index(index)?;
+    let elem_ty: String = match array {
+        Expr::NewArray { ty, size } if idx == 0 => {
+            let _declared: usize = const_index(size)?;
+            ty.clone()
+        }
+        Expr::ArrayInit { ty, elements } if idx == elements.len() => ty.clone(),
+        _ => return None,
+    };
+    let top: &mut Expr = stack.last_mut()?;
+    match top {
+        Expr::NewArray { ty, .. } if idx == 0 && *ty == elem_ty => {
+            *top = Expr::ArrayInit {
+                ty: elem_ty,
+                elements: vec![value.clone()],
+            };
+            Some(LiftResult::Pushed)
+        }
+        Expr::ArrayInit { ty, elements } if *ty == elem_ty && elements.len() == idx => {
+            elements.push(value.clone());
+            Some(LiftResult::Pushed)
+        }
+        _ => None,
+    }
+}
+
+/// Parses a constant integer expression to its `usize` value, for verifying an
+/// array-initializer's element index is the next sequential slot.
+fn const_index(e: &Expr) -> Option<usize> {
+    match e {
+        Expr::Const(s) => s.parse::<usize>().ok(),
+        _ => None,
+    }
 }
 
 fn store_local(insn: &Instruction, stack: &mut Vec<Expr>, params: &[(u16, String)]) -> LiftResult {

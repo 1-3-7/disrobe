@@ -262,3 +262,116 @@ fn report_decompiled_recompile_acceptance() {
     let pct: f64 = compiled_ok as f64 * 100.0 / total.max(1) as f64;
     eprintln!("decompiled top-level units recompiled by javac: {compiled_ok}/{total} ({pct:.1}%)");
 }
+
+/// Line ranges of each method body in a generated `.java`, keyed by a method
+/// signature label, derived from the brace-depth structure. Used to attribute
+/// javac error line numbers back to the method that produced them.
+fn method_line_ranges(src: &str) -> Vec<(String, usize, usize)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out: Vec<(String, usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    let mut depth: i32 = 0;
+    while i < lines.len() {
+        let trimmed: &str = lines[i].trim();
+        let is_member: bool = depth == 1
+            && (trimmed.contains('(')
+                && (trimmed.contains(" static ")
+                    || trimmed.starts_with("public ")
+                    || trimmed.starts_with("private ")
+                    || trimmed.starts_with("protected ")
+                    || trimmed.starts_with("static")))
+            && trimmed.contains('{')
+            && !trimmed.starts_with("//");
+        if is_member {
+            let start: usize = i + 1;
+            let mut d: i32 =
+                trimmed.matches('{').count() as i32 - trimmed.matches('}').count() as i32;
+            let mut j: usize = i + 1;
+            while j < lines.len() && d > 0 {
+                d += lines[j].matches('{').count() as i32;
+                d -= lines[j].matches('}').count() as i32;
+                j += 1;
+            }
+            out.push((trimmed.to_string(), start, j + 1));
+            i = j;
+        } else {
+            depth += lines[i].matches('{').count() as i32;
+            depth -= lines[i].matches('}').count() as i32;
+            i += 1;
+        }
+    }
+    out
+}
+
+/// NON-CIRCULAR per-method recompile oracle: emit the decompiled `EdgeCases`
+/// class, compile it with the real `javac` against the independent baseline jar
+/// (which resolves every cross-referenced type and member), then attribute each
+/// reported error line to the method that contains it. A method "recompiles"
+/// when it produces zero javac errors. javac — not our own builder — is the
+/// judge, so the percentage is an honest behavioral-correctness lower bound for
+/// the method bodies (nested/anonymous classes are excluded since the single
+/// top-level emit cannot host them).
+#[test]
+fn report_per_method_javac_recompile() {
+    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP: javac not on PATH");
+        return;
+    };
+    let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
+    let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
+        eprintln!("skip: baseline jar absent");
+        return;
+    };
+    let Some((_n, bytes)): Option<&(String, Vec<u8>)> =
+        classes.iter().find(|(n, _)| n == "EdgeCases.class")
+    else {
+        eprintln!("skip: EdgeCases.class absent");
+        return;
+    };
+    let cf: ClassFile = parse_classfile(bytes).expect("parse");
+    let d: DecompiledClass = decompile_class(&cf);
+
+    let dir: PathBuf = std::env::temp_dir().join("disrobe_per_method_recompile");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path: PathBuf = dir.join("EdgeCases.java");
+    std::fs::write(&path, &d.source).expect("write");
+
+    let out: std::process::Output = Command::new(&javac)
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-cp")
+        .arg(&jar)
+        .arg("-d")
+        .arg(&dir)
+        .arg(&path)
+        .output()
+        .expect("javac");
+    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
+
+    let mut error_lines: Vec<usize> = Vec::new();
+    for line in stderr.lines() {
+        if let Some(rest) = line.split("EdgeCases.java:").nth(1)
+            && let Some(num) = rest.split(':').next()
+            && let Ok(n) = num.parse::<usize>()
+        {
+            error_lines.push(n);
+        }
+    }
+
+    let ranges: Vec<(String, usize, usize)> = method_line_ranges(&d.source);
+    let total: usize = ranges.len();
+    let mut ok: usize = 0;
+    for (_label, start, end) in &ranges {
+        let has_error: bool = error_lines.iter().any(|&l| l >= *start && l < *end);
+        if !has_error {
+            ok += 1;
+        }
+    }
+    let pct: f64 = ok as f64 * 100.0 / total.max(1) as f64;
+    eprintln!(
+        "PER-METHOD JAVAC RECOMPILE (EdgeCases top-level): {ok}/{total} methods error-free \
+         ({pct:.1}%); total javac errors: {}",
+        error_lines.len()
+    );
+}
