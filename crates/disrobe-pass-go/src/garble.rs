@@ -115,6 +115,8 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
     let mut goresym_seen: usize = 0;
     let mut total: usize = 0;
     let mut short_pkg_hits: usize = 0;
+    let mut user_funcs: usize = 0;
+    let mut hashed_funcs: usize = 0;
     for f in &syms.funcs {
         total += 1;
         if f.name.starts_with("runtime.")
@@ -131,6 +133,12 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
                 short_pkg_hits += 1;
             }
         }
+        if !is_known_stdlib_package(&f.name) {
+            user_funcs += 1;
+            if function_name_looks_garble_hashed(&f.name) {
+                hashed_funcs += 1;
+            }
+        }
     }
     if total > 0 {
         #[allow(clippy::cast_precision_loss)]
@@ -140,6 +148,11 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
         } else if short_pkg_hits * 8 > total {
             score += 1;
         }
+    }
+    if user_funcs >= 4 && hashed_funcs * 3 >= user_funcs {
+        score += 3;
+    } else if hashed_funcs >= 2 {
+        score += 1;
     }
     let buildinfo_present: bool = image.sections.iter().any(|s: &crate::binary::Section<'_>| {
         s.data.windows(14).any(|w: &[u8]| w == b"\xff Go buildinf:")
@@ -162,6 +175,128 @@ fn score_garble_signals(image: &GoImage<'_>, syms: &GoSymbols) -> u32 {
         score += 1;
     }
     score
+}
+
+const STDLIB_PACKAGE_ROOTS: &[&str] = &[
+    "runtime",
+    "internal",
+    "sync",
+    "syscall",
+    "reflect",
+    "unicode",
+    "encoding",
+    "errors",
+    "io",
+    "os",
+    "fmt",
+    "strconv",
+    "strings",
+    "sort",
+    "bytes",
+    "bufio",
+    "context",
+    "time",
+    "math",
+    "crypto",
+    "net",
+    "path",
+    "hash",
+    "compress",
+    "html",
+    "regexp",
+    "text",
+    "container",
+    "embed",
+    "iter",
+    "slices",
+    "maps",
+    "cmp",
+    "vendor",
+    "main",
+];
+
+fn is_known_stdlib_package(qualified: &str) -> bool {
+    let head: &str = qualified.split('.').next().unwrap_or(qualified);
+    let root: &str = head.rsplit('/').next().unwrap_or(head);
+    let first_seg: &str = head.split('/').next().unwrap_or(head);
+    STDLIB_PACKAGE_ROOTS.contains(&root) || STDLIB_PACKAGE_ROOTS.contains(&first_seg)
+}
+
+/// Heuristic flag for a garble-hashed function leaf identifier.
+///
+/// Garble replaces identifiers with the base64 of a truncated HMAC: an erratically
+/// cased token with no readable word. We flag a leaf (last `.`-separated component,
+/// receiver markup stripped) that is 7..=24 chars, mixes upper+lower, has NO readable
+/// run of >=5 same-case letters, and either alternates case densely or carries an
+/// embedded digit. Readable Go names (`expandAVX512`, `parseInt`) keep a long
+/// lowercase run and are rejected. This is a detection SIGNAL only; garble seedless
+/// names are never recovered.
+fn function_name_looks_garble_hashed(name: &str) -> bool {
+    let leaf: &str = name
+        .rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(')')
+        .trim_start_matches('(')
+        .trim_start_matches('*');
+    if leaf.len() < 7 || leaf.len() > 24 {
+        return false;
+    }
+    if !leaf
+        .bytes()
+        .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return false;
+    }
+    let has_upper: bool = leaf.bytes().any(|b: u8| b.is_ascii_uppercase());
+    let has_lower: bool = leaf.bytes().any(|b: u8| b.is_ascii_lowercase());
+    if !(has_upper && has_lower) {
+        return false;
+    }
+    let letters: usize = leaf
+        .bytes()
+        .filter(|b: &u8| b.is_ascii_alphabetic())
+        .count();
+    if letters == 0 {
+        return false;
+    }
+    if longest_lower_run(leaf) >= 5 || longest_upper_run(leaf) >= 5 {
+        return false;
+    }
+    let transitions: usize = leaf
+        .as_bytes()
+        .windows(2)
+        .filter(|w: &&[u8]| {
+            w[0].is_ascii_alphabetic()
+                && w[1].is_ascii_alphabetic()
+                && w[0].is_ascii_uppercase() != w[1].is_ascii_uppercase()
+        })
+        .count();
+    let dense_case_alternation: bool = transitions * 3 >= leaf.len();
+    let digit_among_letters: bool = leaf.bytes().any(|b: u8| b.is_ascii_digit());
+    dense_case_alternation || digit_among_letters
+}
+
+fn longest_lower_run(s: &str) -> usize {
+    longest_run(s, u8::is_ascii_lowercase)
+}
+
+fn longest_upper_run(s: &str) -> usize {
+    longest_run(s, u8::is_ascii_uppercase)
+}
+
+fn longest_run(s: &str, pred: fn(&u8) -> bool) -> usize {
+    let mut best: usize = 0;
+    let mut cur: usize = 0;
+    for b in s.bytes() {
+        if pred(&b) {
+            cur += 1;
+            best = best.max(cur);
+        } else {
+            cur = 0;
+        }
+    }
+    best
 }
 
 fn is_probably_go(image: &GoImage<'_>) -> bool {
@@ -304,4 +439,59 @@ fn extract_seed_hash(image: &GoImage<'_>) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn garble_hash_detector_fires_on_obfuscated_leaves() {
+        for name in [
+            "main.(*mkXHPRuUzL).jiKA6SaXcuN",
+            "internal/sync.(*CWQFRMIDV).xYiPuxqUqs",
+            "main.nK3dlj0_DVvb",
+            "main.qXVft7yaku",
+        ] {
+            assert!(
+                function_name_looks_garble_hashed(name),
+                "expected {name} to read as garble-hashed"
+            );
+        }
+    }
+
+    #[test]
+    fn garble_hash_detector_rejects_readable_go_names() {
+        for name in [
+            "main.greet",
+            "runtime.expandAVX512_1",
+            "fmt.Fprintln",
+            "strconv.parseInt",
+            "main.describe",
+            "net/http.(*Server).ListenAndServe",
+        ] {
+            assert!(
+                !function_name_looks_garble_hashed(name),
+                "expected {name} to read as a normal symbol"
+            );
+        }
+    }
+
+    #[test]
+    fn stdlib_package_classification() {
+        assert!(is_known_stdlib_package("runtime.main"));
+        assert!(is_known_stdlib_package("internal/abi.TypeOf"));
+        assert!(is_known_stdlib_package("net/http.Serve"));
+        assert!(is_known_stdlib_package("main.main"));
+        assert!(!is_known_stdlib_package("github.com/x/y.Foo"));
+        assert!(!is_known_stdlib_package("mkXHPRuUzL.jiKA6SaXcuN"));
+    }
+
+    #[test]
+    fn longest_run_counts_consecutive_case() {
+        assert_eq!(longest_lower_run("expandAVX"), 6);
+        assert_eq!(longest_upper_run("xYZABCd"), 5);
+        assert_eq!(longest_lower_run("aBcDeF"), 1);
+    }
 }
