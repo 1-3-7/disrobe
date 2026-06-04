@@ -44,7 +44,7 @@ pub use bash::{
     BashToken, BashTokenKind, BashfuscatorLevel, BashfuscatorReport, IndirectionReport,
     peel_indirection, reverse_bashfuscator, tokenize_bash,
 };
-pub use batch::{BatchReport, reverse_batch};
+pub use batch::{BasicBlock, BatchCfg, BatchReport, CfgEdge, EdgeKind, resolve_cfg, reverse_batch};
 pub use detect::{Detection, Dialect, Family, detect};
 pub use error::{Error, Result};
 pub use format_wire::format_identity;

@@ -4,6 +4,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
+pub mod cfg;
+
+pub use cfg::{BasicBlock, BatchCfg, CfgEdge, EdgeKind, resolve_cfg};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchReport {
     pub random_substitutions: usize,
