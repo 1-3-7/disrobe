@@ -36,7 +36,10 @@ pub use provenance_header::{
 };
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
 pub use symbols::{GoFunc, GoSymbols, package_histogram, parse_symbols};
-pub use types::{GoItab, GoTypeMeta, GoTypeRef, extract_typemeta, type_kind_label};
+pub use types::{
+    GoGenericInstantiation, GoItab, GoTypeMeta, GoTypeRef, extract_typemeta, parse_generic_name,
+    parse_generic_type_info, type_kind_label,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -71,7 +74,8 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
         Ok(located) => {
             let symbols: GoSymbols = parse_symbols(&image, &located)?;
             let moduledata: Moduledata = locate_moduledata(&image, &located);
-            let typemeta: GoTypeMeta = extract_typemeta(&image, &moduledata);
+            let mut typemeta: GoTypeMeta = extract_typemeta(&image, &moduledata);
+            merge_function_generics(&mut typemeta, &symbols);
             (
                 located.header.version.label().to_owned(),
                 symbols,
@@ -105,6 +109,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                 types: Vec::new(),
                 itabs: Vec::new(),
                 strings: Vec::new(),
+                generics: Vec::new(),
             };
             ("pclntab-absent".to_owned(), empty_syms, empty_md, empty_tm)
         }
@@ -134,4 +139,17 @@ fn image_kind_label(k: ImageKind) -> String {
         ImageKind::Elf => "elf".to_owned(),
         ImageKind::MachO => "macho".to_owned(),
     }
+}
+
+/// Fold generic instantiations recovered from the pclntab funcname table into the
+/// typemeta's `generics`, deduping against the type-derived ones already present.
+fn merge_function_generics(typemeta: &mut GoTypeMeta, symbols: &GoSymbols) {
+    use std::collections::BTreeSet;
+
+    let func_names = symbols.funcs.iter().map(|f| f.name.as_str());
+    let from_funcs: Vec<GoGenericInstantiation> =
+        parse_generic_type_info(func_names, std::iter::empty::<&str>());
+    let mut combined: BTreeSet<GoGenericInstantiation> = typemeta.generics.drain(..).collect();
+    combined.extend(from_funcs);
+    typemeta.generics = combined.into_iter().collect();
 }

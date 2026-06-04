@@ -89,16 +89,26 @@ fn run(name: &str) {
         m.generic_funcs,
         m.generic_types,
     );
-    if name == "hello_generics.exe" {
-        let gnames: BTreeSet<&str> = a
-            .symbols
-            .funcs
+    println!(
+        "        structured-generics={} (from-fn={}, shape-args={})",
+        a.typemeta.generics.len(),
+        a.typemeta
+            .generics
             .iter()
-            .map(|f| f.name.as_str())
-            .filter(|n| n.starts_with("main.") && n.contains('['))
+            .filter(|g| g.from_function)
+            .count(),
+        a.typemeta.generics.iter().filter(|g| g.shape_args).count(),
+    );
+    if name == "hello_generics.exe" {
+        let main_generics: BTreeSet<&str> = a
+            .typemeta
+            .generics
+            .iter()
+            .filter(|g| g.base.starts_with("main."))
+            .map(|g| g.full.as_str())
             .collect();
-        for g in gnames {
-            println!("        generic-fn: {g}");
+        for g in main_generics {
+            println!("        main-generic: {g}");
         }
     }
 }

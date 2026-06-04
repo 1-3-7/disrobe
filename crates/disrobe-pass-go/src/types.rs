@@ -26,6 +26,24 @@ pub struct GoTypeMeta {
     pub types: Vec<GoTypeRef>,
     pub itabs: Vec<GoItab>,
     pub strings: Vec<String>,
+    pub generics: Vec<GoGenericInstantiation>,
+}
+
+/// A recovered Go 1.18+ generic instantiation.
+///
+/// Example: `main.Sum[go.shape.int]` or `sync.HashTrieMap[interface {},interface {}]`.
+/// `base` is the generic before its bracket; `type_args` are the top-level
+/// (comma-split, bracket-balanced) arguments. `shape_args` is set when every argument
+/// is a GC-shape (`go.shape.*`), the monomorphized form the compiler emits; the source
+/// type arg is not always recoverable from a shape, so callers must not present shapes
+/// as source types.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GoGenericInstantiation {
+    pub full: String,
+    pub base: String,
+    pub type_args: Vec<String>,
+    pub shape_args: bool,
+    pub from_function: bool,
 }
 
 const TYPELINKS_WALK_CAP: usize = 1 << 14;
@@ -108,11 +126,147 @@ fn extract_typemeta_versioned(
         }
     }
 
+    let type_name_iter = types.iter().filter_map(|t: &GoTypeRef| t.name.as_deref());
+    let generics: Vec<GoGenericInstantiation> =
+        parse_generic_type_info(std::iter::empty::<&str>(), type_name_iter);
+
     GoTypeMeta {
         types,
         itabs,
         strings: strings.into_iter().collect(),
+        generics,
     }
+}
+
+const GENERIC_SHAPE_PREFIX: &str = "go.shape.";
+
+/// Recover Go 1.18+ generic instantiations from already-extracted names.
+///
+/// Two genuine sources, both the binary's own tables: instantiated FUNCTION names
+/// (`main.Sum[go.shape.int]`) from the pclntab funcname table, and instantiated TYPE
+/// names (`sync.HashTrieMap[interface {},interface {}]`) from typelinks. We parse the
+/// bracketed argument list with bracket-balanced comma splitting, dedup, and sort.
+/// Nothing is synthesized; a name without a balanced `[...]` is skipped.
+#[must_use]
+pub fn parse_generic_type_info<'a, F, T>(
+    func_names: F,
+    type_names: T,
+) -> Vec<GoGenericInstantiation>
+where
+    F: IntoIterator<Item = &'a str>,
+    T: IntoIterator<Item = &'a str>,
+{
+    let mut out: BTreeSet<GoGenericInstantiation> = BTreeSet::new();
+    for name in func_names {
+        if let Some(inst) = parse_generic_name(name, true) {
+            out.insert(inst);
+        }
+    }
+    for name in type_names {
+        if let Some(inst) = parse_generic_name(name, false) {
+            out.insert(inst);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// Parse a single generic instantiation string.
+///
+/// Returns `None` for non-generic names and for names whose brackets are an
+/// array/slice/map prefix rather than a type-arg list (`[]uint8`, `[8]int`,
+/// `map[string]int`), which are not instantiations.
+#[must_use]
+pub fn parse_generic_name(name: &str, from_function: bool) -> Option<GoGenericInstantiation> {
+    let open: usize = first_top_level_open_bracket(name)?;
+    if open == 0 {
+        return None;
+    }
+    let close: usize = matching_close_bracket(name, open)?;
+    if close != name.len().saturating_sub(1) && !name[close + 1..].starts_with('.') {
+        return None;
+    }
+    let base: &str = &name[..open];
+    if base.is_empty() || !base.contains('.') {
+        return None;
+    }
+    if base.starts_with("type:") || base.starts_with("go:") {
+        return None;
+    }
+    let inner: &str = &name[open + 1..close];
+    let type_args: Vec<String> = split_top_level_commas(inner);
+    if type_args.is_empty() || type_args.iter().any(String::is_empty) {
+        return None;
+    }
+    let shape_args: bool = type_args
+        .iter()
+        .all(|a: &String| a.starts_with(GENERIC_SHAPE_PREFIX));
+    Some(GoGenericInstantiation {
+        full: name[..=close].to_owned(),
+        base: base.to_owned(),
+        type_args,
+        shape_args,
+        from_function,
+    })
+}
+
+/// The first `[` that begins a generic type-arg list: it must be preceded by an
+/// identifier character (rejecting `[]T`, `[8]T`, and `map[K]V`'s leading `[`).
+fn first_top_level_open_bracket(name: &str) -> Option<usize> {
+    let bytes: &[u8] = name.as_bytes();
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' if depth == 0 => {
+                let prev: u8 = if i == 0 { 0 } else { bytes[i - 1] };
+                if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'}' || prev == b')' {
+                    return Some(i);
+                }
+                depth += 1;
+            }
+            b'[' => depth += 1,
+            b']' if depth > 0 => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn matching_close_bracket(name: &str, open: usize) -> Option<usize> {
+    let bytes: &[u8] = name.as_bytes();
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(inner: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start: usize = 0;
+    let bytes: &[u8] = inner.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' | b'{' | b'(' => depth += 1,
+            b']' | b'}' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(inner[start..i].trim().to_owned());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim().to_owned());
+    out
 }
 
 /// `abi.Type` (Go 1.17+ "stable") field byte offsets for a 64-bit target.
@@ -353,6 +507,69 @@ mod tests {
         assert!(!plausible_type_name("_"));
         assert!(!plausible_type_name("\u{1}\u{2}"));
         assert!(!plausible_type_name("123"));
+    }
+
+    #[test]
+    fn generic_parse_function_instantiation() {
+        let g: GoGenericInstantiation = parse_generic_name("main.Sum[go.shape.int]", true).unwrap();
+        assert_eq!(g.base, "main.Sum");
+        assert_eq!(g.type_args, vec!["go.shape.int".to_owned()]);
+        assert!(g.shape_args);
+        assert!(g.from_function);
+        assert_eq!(g.full, "main.Sum[go.shape.int]");
+    }
+
+    #[test]
+    fn generic_parse_multi_arg_with_commas() {
+        let g: GoGenericInstantiation =
+            parse_generic_name("main.MapKeys[go.shape.string,go.shape.int]", true).unwrap();
+        assert_eq!(
+            g.type_args,
+            vec!["go.shape.string".to_owned(), "go.shape.int".to_owned()]
+        );
+    }
+
+    #[test]
+    fn generic_parse_method_on_generic_receiver() {
+        let g: GoGenericInstantiation =
+            parse_generic_name("main.Box[go.shape.int].Describe", true).unwrap();
+        assert_eq!(g.base, "main.Box");
+        assert_eq!(g.full, "main.Box[go.shape.int]");
+        assert_eq!(g.type_args, vec!["go.shape.int".to_owned()]);
+    }
+
+    #[test]
+    fn generic_parse_nested_interface_arg() {
+        let g: GoGenericInstantiation =
+            parse_generic_name("sync.HashTrieMap[interface {},interface {}]", false).unwrap();
+        assert_eq!(g.base, "sync.HashTrieMap");
+        assert_eq!(
+            g.type_args,
+            vec!["interface {}".to_owned(), "interface {}".to_owned()]
+        );
+        assert!(!g.shape_args);
+    }
+
+    #[test]
+    fn generic_parse_rejects_non_generic_bracket_forms() {
+        assert!(parse_generic_name("[]uint8", false).is_none());
+        assert!(parse_generic_name("[8]int", false).is_none());
+        assert!(parse_generic_name("map[string]int", false).is_none());
+        assert!(parse_generic_name("runtime.g", false).is_none());
+        assert!(parse_generic_name("type:.eq.foo[go.shape.int]", true).is_none());
+    }
+
+    #[test]
+    fn generic_harvest_dedups_and_sorts() {
+        let funcs: [&str; 3] = [
+            "main.Sum[go.shape.int]",
+            "main.Sum[go.shape.int]",
+            "main.Sum[go.shape.float64]",
+        ];
+        let types: [&str; 1] = ["sync.Map[interface {},interface {}]"];
+        let out: Vec<GoGenericInstantiation> = parse_generic_type_info(funcs, types);
+        assert_eq!(out.len(), 3);
+        assert!(out.windows(2).all(|w| w[0] <= w[1]));
     }
 
     #[test]

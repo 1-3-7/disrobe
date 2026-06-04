@@ -43,6 +43,8 @@ pub const HELLO_NORMAL: &str = "hello_normal.exe";
 pub const HELLO_STRIPPED: &str = "hello_stripped.exe";
 pub const HELLO_GARBLE: &str = "hello_garble.exe";
 pub const HELLO_EMBED: &str = "hello_embed.exe";
+pub const HELLO_GENERICS: &str = "hello_generics.exe";
+pub const HELLO_GENERICS_STRIPPED: &str = "hello_generics_stripped.exe";
 
 const PCLNTAB_MAGICS: [[u8; 4]; 4] = [
     [0xfb, 0xff, 0xff, 0xff],
