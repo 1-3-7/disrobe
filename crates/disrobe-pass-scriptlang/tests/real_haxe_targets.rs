@@ -106,3 +106,56 @@ fn real_haxe_hxcpp_target_routes_to_native_oracle() {
         "hxcpp emission carries the hx:: marker derived from Main.hx"
     );
 }
+
+#[test]
+fn haxe_ceiling_is_route_only_for_every_real_emitted_target() {
+    let js: HaxeFingerprint = detect(HAXE_JS).expect("js");
+    assert_eq!(
+        js.route_pass_id, "js.deob",
+        "the haxe ceiling is to route the emitted js to the js deobfuscator, not reimplement it"
+    );
+    let swf: HaxeFingerprint = detect(HAXE_SWF).expect("swf");
+    assert_eq!(
+        swf.route_pass_id, "as3.classify",
+        "emitted swf carries only a fingerprint; route to the as3 pass"
+    );
+    let hl: HaxeFingerprint = detect(HAXE_HL).expect("hl");
+    assert_eq!(
+        hl.route_pass_id, "scriptlang.classify",
+        "hashlink is haxe's own vm bytecode with no downstream pass; it stays fingerprint-only here"
+    );
+}
+
+#[test]
+fn haxe_cross_target_routing_matrix_is_exhaustive_and_stable() {
+    let jvm: HaxeCrossRoute = route_cross_target(&jvm_class_stub(52)).expect("jvm classfile route");
+    assert_eq!(
+        (jvm.target, jvm.route_pass_id),
+        (HaxeCrossTarget::JvmClassfile, "jvm.classify")
+    );
+    let cs: HaxeCrossRoute = route_cross_target(&dotnet_pe_stub()).expect("dotnet route");
+    assert_eq!(
+        (cs.target, cs.route_pass_id),
+        (HaxeCrossTarget::DotNetCil, "dotnet.classify")
+    );
+    let cpp: HaxeCrossRoute = route_cross_target(HAXE_HXCPP).expect("hxcpp route");
+    assert_eq!(
+        (cpp.target, cpp.route_pass_id),
+        (HaxeCrossTarget::Hxcpp, "disrobe-pass-native")
+    );
+}
+
+#[test]
+fn haxe_fingerprint_is_metadata_only_no_source_recovery() {
+    let art: ScriptArtifact = analyze(HAXE_JS).expect("analyze");
+    let ScriptArtifact::Haxe(fp): ScriptArtifact = art else {
+        panic!("expected a Haxe artifact, got {art:?}");
+    };
+    assert!(
+        fp.haxe_confirmed,
+        "the haxe artifact is purely a fingerprint: target + route + version, with no recovered \
+         source symbols; the cross-target ceiling means recovery happens in the routed-to pass"
+    );
+    assert_eq!(fp.target, HaxeTarget::JavaScript);
+    assert_eq!(fp.route_pass_id, "js.deob");
+}
