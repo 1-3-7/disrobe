@@ -49,6 +49,8 @@ struct Emitter<'a> {
     code: Vec<u8>,
     reg_type: BTreeMap<u16, Slot>,
     const_kind: BTreeMap<u16, Slot>,
+    const_zero: BTreeSet<u16>,
+    pending_new: BTreeMap<u16, String>,
     pending_result: Option<Slot>,
     cur_stack: i32,
     max_stack: i32,
@@ -113,6 +115,8 @@ pub(crate) fn emit_method_code(
         code: Vec::with_capacity(insns.len() * 3),
         reg_type: BTreeMap::new(),
         const_kind,
+        const_zero: BTreeSet::new(),
+        pending_new: BTreeMap::new(),
         pending_result: None,
         cur_stack: 0,
         max_stack: 0,
@@ -129,7 +133,7 @@ pub(crate) fn emit_method_code(
         }
         emitter.translate(insn, &parsed);
     }
-    if emitter.bailed {
+    if emitter.bailed || !emitter.pending_new.is_empty() {
         return None;
     }
     Some(EmittedCode {
@@ -198,6 +202,10 @@ impl Emitter<'_> {
     }
 
     fn emit_load(&mut self, reg: u16) {
+        if self.pending_new.contains_key(&reg) {
+            self.bail();
+            return;
+        }
         let slot: Slot = self.reg_slot(reg);
         let Some(index): Option<u16> = self.local_index(reg) else {
             return;
@@ -211,6 +219,20 @@ impl Emitter<'_> {
         };
         self.emit_local_op(index, fast, family);
         self.adjust_stack(slot.width());
+    }
+
+    /// Loads `reg` for a context that requires a reference. Dalvik encodes a
+    /// `null` argument as `const v, 0` (an int 0), so when the source register
+    /// was last written by a zero constant this emits `aconst_null` rather than
+    /// reading an int-typed local slot through `aload`, which the verifier would
+    /// reject as a bad local-variable type.
+    fn emit_ref_arg(&mut self, reg: u16) {
+        if self.const_zero.contains(&reg) || !matches!(self.reg_slot(reg), Slot::Ref) {
+            self.push(0x01);
+            self.adjust_stack(1);
+        } else {
+            self.emit_load(reg);
+        }
     }
 
     fn emit_store(&mut self, reg: u16, slot: Slot) {
@@ -227,6 +249,7 @@ impl Emitter<'_> {
         self.emit_local_op(index, fast, family);
         self.adjust_stack(-slot.width());
         self.set_reg(reg, slot);
+        self.const_zero.remove(&reg);
     }
 
     fn emit_local_op(&mut self, index: u16, fast_base: u8, slow_family: u8) {
@@ -385,6 +408,9 @@ impl Emitter<'_> {
         } else {
             self.push_int_const(bits);
             self.emit_store(dest, Slot::Int);
+            if bits == 0 {
+                self.const_zero.insert(dest);
+            }
         }
     }
 
@@ -468,8 +494,21 @@ impl Emitter<'_> {
         self.emit_store(dest, Slot::Int);
     }
 
-    const fn new_instance(&mut self, _regs: &[u16], _insn: &DalvikInsn) {
-        self.bail();
+    /// Records a pending `new-instance vDest, Type` without emitting yet. The
+    /// matching `invoke-direct {vDest, ...} Type.<init>` fuses both into the
+    /// canonical `new Type; dup; <args>; invokespecial; astore vDest` idiom so
+    /// the uninitialized reference never lives in a local (which the strict
+    /// `StackMapTable`-era verifier rejects). If the pending allocation is read
+    /// before its constructor runs, the emitter bails to the verifiable stub.
+    fn new_instance(&mut self, regs: &[u16], insn: &DalvikInsn) {
+        let Some(&dest): Option<&u16> = regs.first() else {
+            return;
+        };
+        let Some(ty): Option<String> = self.type_at(insn.index) else {
+            self.bail();
+            return;
+        };
+        self.pending_new.insert(dest, internal_of(&ty));
     }
 
     fn new_array(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -670,6 +709,18 @@ impl Emitter<'_> {
         let is_interface: bool = matches!(op, 0x72 | 0x78);
         let is_special: bool = matches!(op, 0x70 | 0x76);
 
+        if is_special
+            && name == "<init>"
+            && let Some(&recv) = insn.regs.first()
+            && self
+                .pending_new
+                .get(&recv)
+                .is_some_and(|t: &String| *t == owner)
+        {
+            self.emit_constructor(recv, &owner, &name, &descriptor, &param_types, &insn.regs);
+            return;
+        }
+
         let mut reg_iter: std::slice::Iter<'_, u16> = insn.regs.iter();
         let mut consumed: i32 = 0;
         if !is_static && let Some(&recv) = reg_iter.next() {
@@ -680,8 +731,12 @@ impl Emitter<'_> {
         for param in &param_types {
             let slot: Slot = field_slot(param);
             if let Some(&reg) = reg_iter.next() {
-                self.set_reg(reg, slot);
-                self.emit_load(reg);
+                if matches!(slot, Slot::Ref) {
+                    self.emit_ref_arg(reg);
+                } else {
+                    self.set_reg(reg, slot);
+                    self.emit_load(reg);
+                }
                 consumed += slot.width();
             }
             if slot.category_two() {
@@ -715,6 +770,53 @@ impl Emitter<'_> {
             self.adjust_stack(slot.width());
             self.pending_result = Some(slot);
         }
+    }
+
+    /// Emits the fused `new Owner; dup; <args>; invokespecial Owner.<init>;
+    /// astore recv` for a `new-instance`/`invoke-direct <init>` pair. The
+    /// uninitialized reference stays on the operand stack (via `dup`) until the
+    /// constructor consumes it, so it never occupies a local and the strict
+    /// verifier accepts the body without a stack-map frame.
+    fn emit_constructor(
+        &mut self,
+        recv: u16,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+        param_types: &[String],
+        regs: &[u16],
+    ) {
+        self.pending_new.remove(&recv);
+        let class_idx: u16 = self.cp.class_const(owner);
+        self.push(0xBB);
+        self.push_u16(class_idx);
+        self.adjust_stack(1);
+        self.push(0x59);
+        self.adjust_stack(1);
+        let mut reg_iter: std::slice::Iter<'_, u16> = regs.iter();
+        let _ = reg_iter.next();
+        let mut consumed: i32 = 0;
+        for param in param_types {
+            let slot: Slot = field_slot(param);
+            if let Some(&reg) = reg_iter.next() {
+                if matches!(slot, Slot::Ref) {
+                    self.emit_ref_arg(reg);
+                } else {
+                    self.set_reg(reg, slot);
+                    self.emit_load(reg);
+                }
+                consumed += slot.width();
+            }
+            if slot.category_two() {
+                let _ = reg_iter.next();
+            }
+        }
+        let method_idx: u16 = self.cp.methodref(owner, name, descriptor);
+        self.push(0xB7);
+        self.push_u16(method_idx);
+        self.adjust_stack(-consumed - 1);
+        self.emit_store(recv, Slot::Ref);
+        self.pending_result = None;
     }
 
     fn neg(&mut self, op: u8, regs: &[u16]) {

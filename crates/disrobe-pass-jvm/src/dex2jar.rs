@@ -67,9 +67,11 @@ pub struct Dex2JarResult {
     /// `Code` attribute (vs. the `UnsupportedOperationException` stub). Class
     /// shape, signatures, and field/interface tables recover at ~100%; method
     /// *bodies* are fundamentally lossy (Dalvik erases names, generics, lambda
-    /// desugaring, and the original register/branch layout), so this counts
-    /// only the branchless straight-line subset that reproduces verified
-    /// bytecode without stack-map synthesis.
+    /// desugaring, and the original register/branch layout), so this counts the
+    /// branchless subset — straight-line arithmetic/field/array/invoke bodies
+    /// plus `new-instance`/`<init>` allocations fused to `new; dup; ...;
+    /// invokespecial` — that reproduces verified bytecode without stack-map
+    /// synthesis. Branch/loop/switch/try bodies keep the verifiable stub.
     pub bodies_recovered: usize,
 }
 
@@ -494,8 +496,9 @@ fn stub_code(cp: &mut ConstantPool) -> (Vec<u8>, u16) {
 }
 
 /// Lowers a Dalvik method body to a verifiable JVM `Code` attribute when the
-/// body fits the branchless straight-line subset (getters, setters, field and
-/// array access, arithmetic, casts, single-result invokes, scalar returns).
+/// body fits the branchless subset (getters, setters, field and array access,
+/// arithmetic, casts, single-result invokes, scalar returns, and
+/// `new-instance`/`<init>` allocations fused to the canonical stack idiom).
 ///
 /// Signatures and high-level control-flow structure recover at ~100%, but
 /// recovered *bodies* hit a hard lossy ceiling (~60-75%): Dalvik erases local

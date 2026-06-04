@@ -12,6 +12,7 @@ Clean-room studied (algorithm/approach only; no source copied or paraphrased):
 - Vineflower (github.com/Vineflower/vineflower) — Apache-2.0. Control-flow structuring, string-concat indy folding.
 - CFR (github.com/leibnitz27/cfr) — MIT. `BadCompareRewriter` cmp-fusion approach (`Op02WithProcessedDataAndRefs`), comparison lowering.
 - Procyon (github.com/mstrobel/procyon) — Apache-2.0. General region-based structuring reference.
+- enjarify / dex2jar (Apache-2.0) — register->stack lowering with empty-stack-at-boundaries invariant; `new-instance`/`<init>` fusion to keep the uninitialized ref on the stack (never in a local); const-0-as-null disambiguation.
 
 ## decompiler-algorithms
 
@@ -21,6 +22,8 @@ Clean-room studied (algorithm/approach only; no source copied or paraphrased):
 - local declarations (decompile.rs `local_declarations`): hoists `Type varN;` per written non-parameter slot, type inferred from the store-opcode family. Required because javac discards names; only the verifier slot type survives.
 - string escaping (bytecode.rs `escape_java_string`): renders CP UTF-8 as a valid Java literal (`\\`, `\"`, `\n`/`\r`/`\t`/`\b`/`\f`, `\uXXXX` for control/non-printable).
 - nested-class rendering (descriptor.rs `nested_separator_to_dot`): `$`→`.` for named inner classes, keeps `$` for anonymous (all-digit) segments; array descriptors (`[I`) render via `parse_field`.
+- dex2jar constructor fusion (dalvik_to_jvm.rs `new_instance`/`emit_constructor`): defers `new-instance vDest` (records `pending_new`), then at the matching `invoke-direct {vDest,...} <init>` emits `new; dup; <args>; invokespecial; astore vDest`. The uninitialized ref stays on the stack so the strict verifier accepts it with no stack-map frame. `emit_load` of a still-pending register bails; leftover pending allocations bail.
+- const-0-as-null (dalvik_to_jvm.rs `const_zero`/`emit_ref_arg`): a register written by `const v,0` and later consumed as a reference argument emits `aconst_null` instead of `aload` of an int slot.
 
 ## metrics
 
