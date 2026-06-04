@@ -1,12 +1,14 @@
 | section | line | summary |
 |---------|-----:|---------|
-| references | 14 | study-only upstream sources + licenses used for clean-room |
-| ibf-body-layout | 24 | verified small_value positions in the iseq body header |
-| local-table | 36 | how local names are recovered and the env-offset mapping |
-| blocks | 44 | block-parameter recovery from the send block-iseq |
-| concatstrings | 50 | string-interpolation boundary heuristic |
-| constant-path | 58 | resolving opt_getconstant_path caches to A::B::C |
-| gaps | 66 | known fidelity walls (register names, IC types, metaprogramming) |
+| references | 16 | study-only upstream sources + licenses used for clean-room |
+| recompile-oracle | 28 | non-circular recompile-equivalence harness + measured % |
+| ibf-body-layout | 40 | verified small_value positions in the iseq body header |
+| local-table | 52 | how local names are recovered and the env-offset mapping |
+| nesting | 60 | recursive method/class/module/block body emission |
+| control-flow | 68 | branch-offset model; if/else, &&/||/&., while/until |
+| concatstrings | 80 | string-interpolation boundary heuristic |
+| constant-path | 88 | resolving opt_getconstant_path caches to A::B::C |
+| gaps | 96 | honest ceilings (register names, exceptions, case/when, compound-assign) |
 
 ## references
 
@@ -23,6 +25,15 @@ reimplemented in original Rust. No upstream source text is copied into this crat
   `BSDL`). Only the wire layout and opcode semantics were learned; no code was reproduced.
 - Study clone lived in `C:/Users/-/AppData/Local/Temp/disrobe-refs/ruby-src` (Bump v3.4.9,
   `76cca827`) and is deleted after use.
+
+## recompile-oracle
+
+Recovery fidelity is measured non-circularly: the recovered `.rb` is recompiled by the real
+`ruby --dump=insns` / `RubyVM::InstructionSequence.compile` and its opcode multiset is diffed against
+the opcodes of the fixture's own committed original `.rb` (never re-emitted through our own builder).
+The `recover` example prints recovered source for a `.yarvc`. Measured opcode-multiset equivalence on
+the 3.4.9 corpus: hello 100% (4/4), greeter 94% (75/79), megafile 78% (whole-file recompiles;
+15443/19673). The megafile is a 1677-LOC every-feature stress file; 329/446 methods recover >=70%.
 
 ## ibf-body-layout
 
@@ -42,12 +53,24 @@ dumped as integers (no symbol literal) and surface as `None`. A `getlocal`/`setl
 maps to slot `local_table_size - (op - VM_ENV_DATA_SIZE) - 1`; out-of-range or hidden slots fall back
 to the synthetic `local{N}` placeholder.
 
-## blocks
+## nesting
 
-A `send`/`opt_send_without_block` carries a block-iseq operand (`-1`/`u32::MAX` when none, e.g.
-`&block`/`&:sym` pass-through). When set, the referenced iseq's leading `param.lead_num` local names
-are its block parameters, rendered as `recv.method(args) { |a, b| ... }`. Block bodies are not
-inlined; the `{ ... }` is a faithful structural marker.
+The decompiler renders the root iseq (index 0) and recurses into child iseqs so method/class/module
+and block bodies are emitted inline as real, balanced, recompilable source (not `...` placeholders).
+`definemethod`/`definesmethod` emit `def name(params)` + body + `end`; `defineclass` emits
+`class`/`module`/`class << self`; a `send` with a block-iseq emits `recv.m(args) { |x| body }` (single
+statement) or `recv.m(args) do |x| ... end` (multi-statement). A method name that is itself a Ruby
+keyword keeps its explicit `self.` receiver (`self.class`, not bare `class`).
+
+## control-flow
+
+Branch operands are signed runtime-pc relative offsets: `target_pc = next_instr_pc + (offset as
+i32)`, mapped to an instruction index by the cumulative `1 + operand_count` pc model. Negative
+offsets (backward loop edges) must be read as signed — truncating to `u32::MAX` loses them. Forward
+`branchunless`/`branchif` regions structure into `if`/`unless` with `else` arms (jump- or
+leave-terminated then-blocks). The `dup; branch{unless,if,nil}; [pop;] rhs` idiom folds to
+`lhs && rhs` / `lhs || rhs` / `lhs&.m`. A forward `jump`-to-condition whose region ends in a backward
+`branch{if,unless}` to the loop body structures into `while`/`until ... end`.
 
 ## concatstrings
 
@@ -67,11 +90,21 @@ is therefore not statically recoverable; the constant cache is the only determin
 
 ## gaps
 
-- Register/name wall: YARV erases names that are not in the `local_table` (block-local temporaries,
-  some rescued exception slots). On the megafile ~66% of `getlocal`/`setlocal` operands resolve to a
-  real name; the rest stay `local{N}`.
+Honest ceilings on the remaining ~22% megafile opcode gap (all remaining output stays valid,
+recompilable Ruby — these constructs are dropped or approximated, never fabricated):
+
+- Register/name wall: YARV erases names absent from the `local_table` (block-local temporaries,
+  hidden positional params). They stay `local{N}` (arity preserved); structurally correct, name lost.
+- Exception regions: `rescue`/`ensure`/`retry` handler bodies are separate iseqs reached only through
+  the `catch_table` (a PC-range -> handler map), not the iseq tree, so they are not reconstructed
+  into `begin/rescue/ensure/end`. ~14 megafile handler iseqs recover 0%.
+- `case/when`: `opt_case_dispatch` + the chained `topn; ===; branchif` when-comparisons are not
+  folded back into `case ... when ... end`; they currently surface as approximate if/unless chains.
+- Compound assignment: `[]||=`/`[]&&=` and attribute-op-assign desugar to `dupn`/`topn`/`setn`/
+  `adjuststack`/`opt_aset` stack dances that are tracked for balance but not reassembled into `||=`.
+- Loops: only the `while`/`until` shape is structured; `for`, `loop`, `begin..end while`, and
+  `next`/`break`/`redo` with values are not.
 - IC type wall: receiver-class inline caches are cleared on dump, so `opt_send` receivers cannot be
   disambiguated by runtime type; only the constant-path cache survives.
-- Metaprogramming wall: `define_method`/`class_eval` bodies are separate iseqs reached through a
-  block; the surface is detected and rendered where the method name is a deterministic literal,
-  otherwise the dynamic name is left as the recovered expression.
+- Metaprogramming: `define_method`/`class_eval` surface with their block bodies; genuinely dynamic
+  (eval/binding-derived) names that YARV erased remain the recovered expression.

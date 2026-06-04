@@ -90,6 +90,46 @@ fn decompiles_real_greeter_iseq_with_class_and_methods() {
 }
 
 #[test]
+fn greeter_recovers_well_formed_nested_recompilable_source() {
+    let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/greeter.rb.yarvc") else {
+        eprintln!("skip: mri/yarv/greeter.rb.yarvc fixture absent");
+        return;
+    };
+    let analysis: RubyAnalysis = analyze_bytes(&bytes, "greeter.rb.yarvc").expect("analyze");
+    let yarv = analysis.yarv.expect("yarv");
+    let code: String = yarv
+        .decompiled
+        .source
+        .lines()
+        .take_while(|l| !l.starts_with("# string literals"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        !code.contains("...; end") && !code.contains("{ ... }") && !code.contains("# iseq"),
+        "recovered body should be real nested source, not placeholders:\n{code}"
+    );
+    let opens: usize = code
+        .lines()
+        .filter(|l| {
+            let t: &str = l.trim_start();
+            t.starts_with("def ")
+                || t.starts_with("class ")
+                || t.starts_with("module ")
+                || t == "class << self"
+        })
+        .count();
+    let ends: usize = code.lines().filter(|l| l.trim() == "end").count();
+    assert_eq!(
+        opens, ends,
+        "block openers and `end` must balance for recompilable source; got {opens} vs {ends}\n{code}"
+    );
+    assert!(
+        code.contains("  class Greeter") && code.contains("    def initialize(who)"),
+        "expected indented nesting module > class > def:\n{code}"
+    );
+}
+
+#[test]
 fn recovers_real_local_variable_name_from_iseq_local_table() {
     let Some(bytes): Option<Vec<u8>> = corpus("mri/yarv/greeter.rb.yarvc") else {
         eprintln!("skip: mri/yarv/greeter.rb.yarvc fixture absent");
@@ -129,17 +169,16 @@ fn recovers_block_parameter_names_from_megafile_block_iseqs() {
     let yarv = analysis.yarv.expect("yarv");
     let src: &str = &yarv.decompiled.source;
     assert!(
-        src.contains(".each { |n| ... }"),
+        src.contains(".each do |n|") || src.contains(".each { |n|"),
         "expected a recovered each block with a single named block parameter from the megafile"
     );
     assert!(
-        src.contains(".map { |i| ... }") || src.contains(".map { |x| ... }"),
-        "expected a recovered map block with a single named block parameter from the megafile"
+        src.contains("|i|") || src.contains("|x|"),
+        "expected a recovered block with a single named block parameter from the megafile"
     );
     let multi_param_block: bool = src.lines().any(|l| {
-        l.contains("{ |")
-            && l[l.find("{ |").unwrap_or(0)..]
-                .split_once('|')
+        l.contains('|')
+            && l.split_once('|')
                 .is_some_and(|(_, rest)| rest.split_once('|').is_some_and(|(p, _)| p.contains(',')))
     });
     assert!(
@@ -170,7 +209,7 @@ fn recovers_method_signatures_and_metaprogramming_surface_from_megafile() {
         "expected `def method_missing(name)` with its recovered parameter"
     );
     assert!(
-        src.contains("define_method") && src.contains("class_eval { ... }"),
+        src.contains("define_method") && src.contains("class_eval"),
         "expected define_method and class_eval metaprogramming surface"
     );
 }

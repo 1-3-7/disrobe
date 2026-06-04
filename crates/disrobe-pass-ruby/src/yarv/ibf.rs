@@ -528,7 +528,7 @@ fn resolve_operand(kind: TsKind, raw: u64, objects: &ObjectTable<'_>) -> YarvOpe
             |name| YarvOperand::Id(name.to_owned()),
         ),
         TsKind::Iseq => YarvOperand::IseqRef(ref_index),
-        TsKind::Offset => YarvOperand::Offset(ref_index),
+        TsKind::Offset => YarvOperand::Offset(raw as u32),
         _ => YarvOperand::Num(raw),
     }
 }

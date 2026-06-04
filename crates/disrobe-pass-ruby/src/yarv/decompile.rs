@@ -1,11 +1,12 @@
-//! Surface decompiler for the YARV stack machine, driven by the decoded IBF iseq stream.
+//! Recompile-oriented decompiler for the YARV stack machine, driven by the decoded IBF iseq stream.
 //!
-//! Runs a lightweight abstract stack over each iseq body: `putobject`/`putstring`/`putself`/
-//! `putnil`/`duparray` push values, `opt_send_without_block`/`send`/`opt_*` arithmetic fold the
-//! receiver and arguments into a `recv.method(args)` expression, `branchunless`/`branchif`
-//! surface as `if`/`unless` guards, `definemethod`/`defineclass` surface as `def`/`class`, and
-//! `leave` returns the stack top. Constructs that are genuinely ambiguous on the stream are
-//! rendered as faithful structured expressions rather than fabricated.
+//! Runs an abstract stack over each iseq body and emits nested, recompilable Ruby source: pushes for
+//! `putobject`/`putstring`/`putself`/`putnil`/literals, `recv.method(args)` for `send`/`opt_*`,
+//! recursion into child iseqs for `definemethod`/`defineclass`/block-bearing sends (so method, class,
+//! module, and block bodies are inlined rather than placeholdered), and structured control flow for
+//! forward `branchunless`/`branchif` (`if`/`unless`/`else`), the `dup; branch; pop` short-circuit
+//! idiom (`&&`/`||`/`&.`), and the backward-branch `while`/`until` shape. Constructs that YARV
+//! genuinely erases (see `INFORMATION.md` gaps) are dropped or approximated, never fabricated.
 
 use core::fmt::Write as _;
 
@@ -47,33 +48,28 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
         }
     }
 
-    let mut out: String = String::with_capacity(512);
-    out.push_str("# YARV IBF decompile (clean-room iseq opcode-body lifting)\n");
-
     let ctx: DecompileContext<'_> = DecompileContext::from_image(image);
 
-    let mut statement_count: u32 = 0;
-    let fidelity: Fidelity = if image.iseqs.iter().any(|b| !b.instructions.is_empty()) {
-        for body in &image.iseqs {
-            let label: &str = if body.index == 0 { "<main>" } else { "<iseq>" };
-            let stmts: Vec<String> = decompile_body(body, &ctx);
-            let _: core::result::Result<(), core::fmt::Error> = writeln!(
-                out,
-                "# iseq {} ({}): {} instruction(s)",
-                body.index,
-                label,
-                body.instructions.len()
-            );
+    let has_bodies: bool = image.iseqs.iter().any(|b| !b.instructions.is_empty());
+    let (mut out, statement_count, fidelity): (String, u32, Fidelity) = if has_bodies {
+        let root: Option<&YarvIseqBody> = ctx
+            .body(0)
+            .or_else(|| image.iseqs.iter().min_by_key(|b| b.index));
+        let mut body_src: String = String::with_capacity(1024);
+        let mut count: u32 = 0;
+        if let Some(root) = root {
+            let stmts: Vec<String> = render_iseq_statements(root, &ctx, 0);
             for stmt in &stmts {
-                out.push_str(stmt);
-                out.push('\n');
-                statement_count = statement_count.saturating_add(1);
+                body_src.push_str(stmt);
+                body_src.push('\n');
+                count = count.saturating_add(1);
             }
         }
-        Fidelity::StructuralOnly
+        (body_src, count, Fidelity::StructuralOnly)
     } else {
-        out.push_str("# (no iseq bodies decoded; reporting literal pool)\n");
-        Fidelity::LiteralPoolOnly
+        let mut s: String = String::with_capacity(128);
+        s.push_str("# (no iseq bodies decoded; reporting literal pool)\n");
+        (s, 0, Fidelity::LiteralPoolOnly)
     };
 
     push_section(&mut out, "string literals", &recovered_strings);
@@ -88,15 +84,430 @@ pub fn decompile_from_ibf(image: &IbfImage) -> YarvDecompiled {
     }
 }
 
+const MAX_NEST_DEPTH: u32 = 64;
+
+/// Per-branch resolved target instruction index for `branchunless`/`branchif`/`branchnil`/`jump`,
+/// computed from the runtime-pc model (`target_pc = next_instr_pc + signed_offset`, with offsets
+/// reinterpreted as signed so backward loop edges resolve). `None` when the target is out of range.
+fn resolve_branch_targets(body: &YarvIseqBody) -> Vec<Option<usize>> {
+    let mut rt_pc: Vec<u32> = Vec::with_capacity(body.instructions.len());
+    let mut pc: u32 = 0;
+    for instr in &body.instructions {
+        rt_pc.push(pc);
+        pc = pc.saturating_add(1 + instr.operands.len() as u32);
+    }
+    let mut targets: Vec<Option<usize>> = vec![None; body.instructions.len()];
+    for (idx, instr) in body.instructions.iter().enumerate() {
+        if !matches!(
+            instr.mnemonic.as_str(),
+            "branchunless" | "branchif" | "branchnil" | "jump"
+        ) {
+            continue;
+        }
+        let Some(off): Option<i64> = branch_offset(instr) else {
+            continue;
+        };
+        let next_pc: i64 = i64::from(rt_pc[idx]) + 1 + instr.operands.len() as i64;
+        let target_pc: i64 = next_pc + off;
+        if target_pc < 0 {
+            continue;
+        }
+        targets[idx] = rt_pc.iter().position(|&p| i64::from(p) == target_pc);
+    }
+    targets
+}
+
+fn branch_offset(instr: &YarvIbfInstruction) -> Option<i64> {
+    match instr.operands.first() {
+        Some(YarvOperand::Offset(o)) => Some(i64::from(*o as i32)),
+        Some(YarvOperand::Num(n)) => Some(i64::from(*n as i32)),
+        _ => None,
+    }
+}
+
+/// Recursively render an iseq body's statements as Ruby source lines, indented by `depth` levels.
+/// Structural opcodes (`definemethod`/`defineclass`/`defineclass`-as-module and block-bearing
+/// sends) recurse into their child iseq so method/class/block bodies are emitted inline; forward
+/// `branchunless`/`branchif` regions are structured into `if`/`unless`/`else`, yielding
+/// recompile-equivalent source rather than `...` placeholders.
+fn render_iseq_statements(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+) -> Vec<String> {
+    if depth > MAX_NEST_DEPTH {
+        return Vec::new();
+    }
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let mut stack: Vec<String> = Vec::with_capacity(32);
+    let mut stmts: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth,
+        0,
+        body.instructions.len(),
+        &targets,
+        &mut stack,
+        &mut stmts,
+    );
+    stmts
+}
+
+/// Render instructions `[lo, hi)` of `body`, structuring forward conditional branches into
+/// `if`/`unless`/`else` blocks. Non-branch instructions are dispatched to [`step`]; a clean forward
+/// `branchunless`/`branchif` whose target lies within `[lo, hi]` opens a structured region, with an
+/// optional `else` arm when the then-block ends in a forward `jump` past the branch target.
+#[allow(clippy::too_many_arguments)]
+fn render_region(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stack: &mut Vec<String>,
+    stmts: &mut Vec<String>,
+) {
+    let mut i: usize = lo;
+    while i < hi {
+        let instr: &YarvIbfInstruction = &body.instructions[i];
+        let m: &str = instr.mnemonic.as_str();
+        if let Some(next) = try_short_circuit(body, ctx, depth, i, hi, targets, stack) {
+            i = next;
+            continue;
+        }
+        if let Some(next) = try_loop(body, ctx, depth, i, hi, targets, stmts) {
+            i = next;
+            stack.clear();
+            continue;
+        }
+        if matches!(m, "branchunless" | "branchif")
+            && let Some(target) = targets[i]
+            && target <= hi
+            && target > i
+        {
+            let keyword: &str = if m == "branchunless" { "if" } else { "unless" };
+            let cond: String = pop(stack);
+            render_conditional(
+                body, ctx, depth, i, target, hi, keyword, &cond, targets, stmts,
+            );
+            i = region_end_after_conditional(body, target, hi, targets);
+            stack.clear();
+            continue;
+        }
+        step(instr, &body.local_table, ctx, depth, stack, stmts);
+        i += 1;
+    }
+}
+
+/// Recognize a `while`/`until` loop at instruction `i`: a forward `jump COND` to the loop condition,
+/// whose region `[COND, branch]` ends in a backward `branchif`/`branchunless` to the loop body
+/// (`body_start = i + 1`). Renders `while cond`/`until cond` with the body, returning the resume
+/// index (just past the backward branch) when matched, else `None`. The body's leading redo/next
+/// handler stubs (`putnil; pop; jump COND`) are skipped.
+#[allow(clippy::too_many_arguments)]
+fn try_loop(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    if body.instructions.get(i)?.mnemonic != "jump" {
+        return None;
+    }
+    let cond_start: usize = targets.get(i).copied().flatten()?;
+    if cond_start <= i || cond_start >= hi {
+        return None;
+    }
+    let branch_idx: usize = (cond_start..hi).find(|&k| {
+        matches!(
+            body.instructions[k].mnemonic.as_str(),
+            "branchif" | "branchunless"
+        ) && targets[k].is_some_and(|t| t > i && t <= cond_start)
+    })?;
+    let back_target: usize = targets[branch_idx]?;
+    let keyword: &str = if body.instructions[branch_idx].mnemonic == "branchif" {
+        "while"
+    } else {
+        "until"
+    };
+
+    let mut cond_stack: Vec<String> = Vec::with_capacity(8);
+    let mut cond_sink: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth,
+        cond_start,
+        branch_idx,
+        targets,
+        &mut cond_stack,
+        &mut cond_sink,
+    );
+    let cond: String = cond_stack.pop().unwrap_or_else(|| "true".to_owned());
+
+    let pad: String = indent(depth);
+    stmts.push(format!("{pad}{keyword} {cond}"));
+    let mut body_stack: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth + 1,
+        back_target,
+        cond_start,
+        targets,
+        &mut body_stack,
+        stmts,
+    );
+    flush_trailing(&mut body_stack, depth + 1, stmts);
+    stmts.push(format!("{pad}end"));
+    Some(branch_idx + 1)
+}
+
+/// Recognize a short-circuit `&&`/`||`/safe-navigation idiom at instruction `i`:
+/// `dup; branch{unless,if,nil} T; [pop;] <rhs in [.., T)>` folds the duplicated lhs and the rhs into
+/// a single expression (`lhs && rhs`, `lhs || rhs`, or `lhs&.method`). Returns the instruction index
+/// to resume at when matched, else `None`.
+#[allow(clippy::too_many_arguments)]
+fn try_short_circuit(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stack: &mut Vec<String>,
+) -> Option<usize> {
+    if body.instructions.get(i)?.mnemonic != "dup" {
+        return None;
+    }
+    let branch: &YarvIbfInstruction = body.instructions.get(i + 1)?;
+    let op: &str = match branch.mnemonic.as_str() {
+        "branchunless" => "&&",
+        "branchif" => "||",
+        "branchnil" => "&.",
+        _ => return None,
+    };
+    let target: usize = targets.get(i + 1).copied().flatten()?;
+    if target > hi || target <= i + 1 {
+        return None;
+    }
+    let lhs: String = pop(stack);
+    let mut rhs_lo: usize = i + 2;
+    if body
+        .instructions
+        .get(rhs_lo)
+        .is_some_and(|inst| inst.mnemonic == "pop")
+    {
+        rhs_lo += 1;
+    }
+    let mut rhs_stack: Vec<String> = vec![lhs.clone()];
+    let mut sink: Vec<String> = Vec::new();
+    render_region(
+        body,
+        ctx,
+        depth,
+        rhs_lo,
+        target,
+        targets,
+        &mut rhs_stack,
+        &mut sink,
+    );
+    let rhs: String = rhs_stack.pop().unwrap_or_default();
+    let folded: String = if op == "&." {
+        let method: &str = rhs.strip_prefix(&format!("{lhs}.")).unwrap_or(&rhs);
+        format!("{lhs}&.{method}")
+    } else if rhs == lhs || rhs.is_empty() {
+        lhs
+    } else {
+        format!("{lhs} {op} {rhs}")
+    };
+    push(stack, folded);
+    Some(target)
+}
+
+/// Render a structured `if cond`/`unless cond` (with optional `else`) for a branch at `branch_idx`
+/// whose false/true target is `target`. The then-block is `[branch_idx+1, then_end)`; when it ends
+/// in a forward `jump` to `else_end`, the else-block is `[target, else_end)`.
+#[allow(clippy::too_many_arguments)]
+fn render_conditional(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    branch_idx: usize,
+    target: usize,
+    hi: usize,
+    keyword: &str,
+    cond: &str,
+    targets: &[Option<usize>],
+    stmts: &mut Vec<String>,
+) {
+    let pad: String = indent(depth);
+    let then_last: usize = target.saturating_sub(1);
+    let then_ends_in_jump: bool = then_last > branch_idx
+        && body
+            .instructions
+            .get(then_last)
+            .is_some_and(|i| i.mnemonic == "jump")
+        && targets[then_last].is_some_and(|t| t > target && t <= hi);
+    let then_ends_in_leave: bool = then_last >= branch_idx
+        && body
+            .instructions
+            .get(then_last)
+            .is_some_and(|i| matches!(i.mnemonic.as_str(), "leave" | "throw"));
+
+    let (then_hi, else_arm): (usize, Option<(usize, usize)>) = if then_ends_in_jump {
+        let end: usize = targets[then_last].unwrap_or(target);
+        (then_last, Some((target, end)))
+    } else if then_ends_in_leave && target < hi {
+        (target, Some((target, hi)))
+    } else {
+        (target, None)
+    };
+
+    stmts.push(format!("{pad}{keyword} {cond}"));
+    let mut then_stack: Vec<String> = Vec::with_capacity(16);
+    render_region(
+        body,
+        ctx,
+        depth + 1,
+        branch_idx + 1,
+        then_hi,
+        targets,
+        &mut then_stack,
+        stmts,
+    );
+    flush_trailing(&mut then_stack, depth + 1, stmts);
+
+    if let Some((else_lo, else_hi)) = else_arm {
+        stmts.push(format!("{pad}else"));
+        let mut else_stack: Vec<String> = Vec::with_capacity(16);
+        render_region(
+            body,
+            ctx,
+            depth + 1,
+            else_lo,
+            else_hi,
+            targets,
+            &mut else_stack,
+            stmts,
+        );
+        flush_trailing(&mut else_stack, depth + 1, stmts);
+    }
+    stmts.push(format!("{pad}end"));
+}
+
+/// The first instruction index after a rendered conditional region, i.e. its merge point. When the
+/// then-block ends in a forward `jump`, the merge is the jump target; when it ends in `leave`/`throw`
+/// (both arms exit), the conditional consumed the rest of the enclosing region (`hi`).
+fn region_end_after_conditional(
+    body: &YarvIseqBody,
+    target: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> usize {
+    let then_last: usize = target.saturating_sub(1);
+    if body
+        .instructions
+        .get(then_last)
+        .is_some_and(|i| i.mnemonic == "jump")
+        && let Some(end) = targets[then_last]
+        && end > target
+        && end <= hi
+    {
+        end
+    } else if body
+        .instructions
+        .get(then_last)
+        .is_some_and(|i| matches!(i.mnemonic.as_str(), "leave" | "throw"))
+        && target < hi
+    {
+        hi
+    } else {
+        target
+    }
+}
+
+/// Emit any value left on a sub-region's stack as a trailing bare expression (the region's implicit
+/// result), so an `if`/`else` arm that yields a value reads as Ruby.
+fn flush_trailing(stack: &mut Vec<String>, depth: u32, stmts: &mut Vec<String>) {
+    if let Some(top) = stack.pop()
+        && !top.is_empty()
+        && top != "nil"
+    {
+        emit_stmt(stmts, depth, top);
+    }
+    stack.clear();
+}
+
+#[inline]
+fn indent(depth: u32) -> String {
+    "  ".repeat(depth as usize)
+}
+
+/// Render a nested body (method/class/module) bracketed by `header` and `end`, with the child
+/// iseq's statements indented one level deeper. The body is the referenced iseq, or an empty body
+/// (just `header ... end`) when the iseq is unavailable.
+fn render_nested(
+    header: String,
+    child: Option<&YarvIseqBody>,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    drop_trailing_value: bool,
+) -> Vec<String> {
+    let pad: String = indent(depth);
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("{pad}{header}"));
+    if let Some(child) = child {
+        let mut inner: Vec<String> = render_iseq_statements(child, ctx, depth + 1);
+        if drop_trailing_value {
+            drop_trailing_bare_value(&mut inner, depth + 1);
+        }
+        lines.extend(inner);
+    }
+    lines.push(format!("{pad}end"));
+    lines
+}
+
+/// Drop a class/module body's trailing bare-value line (the implicit `nil`/last-def-symbol that
+/// `defineclass` leaves on the stack), which is not part of the source.
+fn drop_trailing_bare_value(inner: &mut Vec<String>, inner_depth: u32) {
+    let pad: String = indent(inner_depth);
+    if let Some(last) = inner.last()
+        && let Some(trimmed) = last.strip_prefix(pad.as_str())
+        && is_bare_value_line(trimmed)
+    {
+        inner.pop();
+    }
+}
+
+/// A line that is a single bare literal/identifier with no side effect (e.g. `nil`, `:greet`,
+/// `42`), safe to drop as an implicit body result.
+fn is_bare_value_line(line: &str) -> bool {
+    let t: &str = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    t == "nil"
+        || t.starts_with(':')
+        || t.chars().all(|c| c.is_ascii_digit())
+        || (string_literal_body(t).is_some())
+}
+
 /// `VM_ENV_DATA_SIZE` in `vm_core.h`: the fixed environment slots a `getlocal`/`setlocal` operand
 /// is biased by before it indexes the local table.
 const VM_ENV_DATA_SIZE: u64 = 3;
 
 /// Cross-iseq decompile context: per-iseq block-parameter names (`param.lead_num` leading
-/// `local_table` entries) plus the object table, so a `send` block-iseq operand renders
+/// `local_table` entries), the iseq bodies indexed by table position (for recursive nesting of
+/// method/class/block bodies), and the object table, so a `send` block-iseq operand renders
 /// `recv.method(args) { |params| ... }` and an `opt_getconstant_path` cache resolves to `A::B::C`.
 struct DecompileContext<'a> {
-    block_params_by_index: Vec<Vec<&'a str>>,
+    bodies_by_index: Vec<Option<&'a YarvIseqBody>>,
     objects: &'a [crate::yarv::ibf::IbfObject],
 }
 
@@ -108,30 +519,23 @@ impl<'a> DecompileContext<'a> {
             .map(|b| b.index as usize)
             .max()
             .map_or(0, |m| m + 1);
-        let mut block_params_by_index: Vec<Vec<&'a str>> = vec![Vec::new(); max_index];
+        let mut bodies_by_index: Vec<Option<&'a YarvIseqBody>> = vec![None; max_index];
         for body in &image.iseqs {
-            let lead: usize = body.param_lead_num as usize;
-            let params: Vec<&'a str> = body
-                .local_table
-                .iter()
-                .take(lead)
-                .filter_map(Option::as_deref)
-                .collect();
-            if let Some(slot) = block_params_by_index.get_mut(body.index as usize) {
-                *slot = params;
+            if let Some(slot) = bodies_by_index.get_mut(body.index as usize) {
+                *slot = Some(body);
             }
         }
         Self {
-            block_params_by_index,
+            bodies_by_index,
             objects: &image.objects,
         }
     }
 
-    fn block_params(&self, iseq_index: u32) -> Option<&[&'a str]> {
-        self.block_params_by_index
+    fn body(&self, iseq_index: u32) -> Option<&'a YarvIseqBody> {
+        self.bodies_by_index
             .get(iseq_index as usize)
-            .map(Vec::as_slice)
-            .filter(|p| !p.is_empty())
+            .copied()
+            .flatten()
     }
 
     /// Resolve a constant-path cache array into `A::B::C`. The IBF array stores the path as a
@@ -154,15 +558,6 @@ impl<'a> DecompileContext<'a> {
     }
 }
 
-fn decompile_body(body: &YarvIseqBody, ctx: &DecompileContext<'_>) -> Vec<String> {
-    let mut stack: Vec<String> = Vec::with_capacity(32);
-    let mut stmts: Vec<String> = Vec::new();
-    for instr in &body.instructions {
-        step(instr, &body.local_table, ctx, &mut stack, &mut stmts);
-    }
-    stmts
-}
-
 /// Resolve a `getlocal`/`setlocal` operand to its source name via the body's `local_table`. YARV
 /// erases names to environment offsets; when the dump preserved the table (non-hidden locals) the
 /// slot index is `local_table_size - (operand - VM_ENV_DATA_SIZE) - 1` (`local_var_name` in
@@ -179,11 +574,18 @@ fn local_name(local_table: &[Option<String>], operand: u64) -> String {
     resolved.map_or_else(|| format!("local{operand}"), str::to_owned)
 }
 
-#[allow(clippy::match_same_arms)]
+/// Push a finished statement line at the current nesting `depth`.
+#[inline]
+fn emit_stmt(stmts: &mut Vec<String>, depth: u32, line: String) {
+    stmts.push(format!("{}{line}", indent(depth)));
+}
+
+#[allow(clippy::match_same_arms, clippy::too_many_lines)]
 fn step(
     instr: &YarvIbfInstruction,
     local_table: &[Option<String>],
     ctx: &DecompileContext<'_>,
+    depth: u32,
     stack: &mut Vec<String>,
     stmts: &mut Vec<String>,
 ) {
@@ -203,25 +605,38 @@ fn step(
         "getinstancevariable" => push(stack, ivar_name(instr, 0)),
         "getglobal" => push(stack, id_or_index(instr, 0)),
         "getconstant" => push(stack, id_or_index(instr, 0)),
-        "newarray" => {
+        "newarray" | "newarraykwsplat" => {
             let n: usize = operand_num(instr, 0) as usize;
             let elems: Vec<String> = pop_n(stack, n);
             push(stack, format!("[{}]", elems.join(", ")));
         }
         "newhash" => {
             let n: usize = operand_num(instr, 0) as usize;
-            let _ = pop_n(stack, n);
-            push(stack, "{...}".to_owned());
+            let flat: Vec<String> = pop_n(stack, n);
+            push(stack, render_hash(&flat));
         }
         "concatstrings" => {
             let n: usize = operand_num(instr, 0) as usize;
             let parts: Vec<String> = pop_n(stack, n);
             push(stack, render_interpolation(&parts));
         }
-        "opt_send_without_block" | "send" | "invokesuper" | "sendforward" => {
-            emit_send(instr, ctx, stack);
+        "concatarray" | "concattoarray" => {
+            let rhs: String = pop(stack);
+            let lhs: String = pop(stack);
+            push(stack, format!("{lhs} + {rhs}"));
         }
-        "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" => {
+        "splatarray" => {
+            let v: String = pop(stack);
+            push(stack, format!("*{v}"));
+        }
+        "opt_send_without_block" | "send" | "sendforward" => {
+            emit_send(instr, ctx, depth, stack, stmts);
+        }
+        "invokesuper" => emit_super(instr, stack),
+        "invokeblock" => emit_invokeblock(instr, stack),
+        "opt_newarray_send" => emit_unary_call(instr, stack),
+        "opt_str_freeze" | "opt_str_uminus" | "opt_nil_p" | "opt_size" | "opt_length"
+        | "opt_empty_p" | "opt_succ" | "opt_not" | "opt_regexpmatch2" => {
             emit_unary_call(instr, stack);
         }
         "objtostring" => {}
@@ -238,80 +653,85 @@ fn step(
         "opt_gt" => emit_binop(instr, stack, ">"),
         "opt_ge" => emit_binop(instr, stack, ">="),
         "opt_ltlt" => emit_binop(instr, stack, "<<"),
+        "opt_and" => emit_binop(instr, stack, "&"),
+        "opt_or" => emit_binop(instr, stack, "|"),
         "opt_aref" => {
             let idx: String = pop(stack);
             let recv: String = pop(stack);
             push(stack, format!("{recv}[{idx}]"));
         }
+        "opt_aset" => {
+            let val: String = pop(stack);
+            let idx: String = pop(stack);
+            let recv: String = pop(stack);
+            push(stack, format!("{recv}[{idx}] = {val}"));
+        }
         "setlocal" | "setlocal_WC_0" | "setlocal_WC_1" => {
             let v: String = pop(stack);
-            stmts.push(format!(
-                "{} = {v}",
-                local_name(local_table, operand_num(instr, 0))
-            ));
+            emit_stmt(
+                stmts,
+                depth,
+                format!("{} = {v}", local_name(local_table, operand_num(instr, 0))),
+            );
         }
         "setinstancevariable" => {
             let v: String = pop(stack);
-            stmts.push(format!("{} = {v}", ivar_name(instr, 0)));
+            emit_stmt(stmts, depth, format!("{} = {v}", ivar_name(instr, 0)));
         }
         "setglobal" => {
             let v: String = pop(stack);
-            stmts.push(format!("{} = {v}", id_or_index(instr, 0)));
+            emit_stmt(stmts, depth, format!("{} = {v}", id_or_index(instr, 0)));
         }
         "setconstant" => {
             let v: String = pop(stack);
             let name: String = id_or_index(instr, 0);
             let _ = pop(stack);
-            stmts.push(format!("{name} = {v}"));
+            emit_stmt(stmts, depth, format!("{name} = {v}"));
         }
         "definemethod" => {
             let name: String = id_or_index(instr, 0);
-            stmts.push(format!(
-                "def {name}{}; ...; end",
-                method_param_list(instr, ctx)
-            ));
+            let header: String = format!("def {name}{}", method_signature(instr, ctx));
+            let child: Option<&YarvIseqBody> = method_iseq(instr, ctx);
+            stmts.extend(render_nested(header, child, ctx, depth, false));
             push(stack, format!(":{name}"));
         }
         "definesmethod" => {
             let name: String = id_or_index(instr, 0);
-            stmts.push(format!(
-                "def self.{name}{}; ...; end",
-                method_param_list(instr, ctx)
-            ));
+            let header: String = format!("def self.{name}{}", method_signature(instr, ctx));
+            let child: Option<&YarvIseqBody> = method_iseq(instr, ctx);
+            let _ = pop(stack);
+            stmts.extend(render_nested(header, child, ctx, depth, false));
             push(stack, format!(":{name}"));
         }
         "defineclass" => {
             let name: String = id_or_index(instr, 0);
-            let keyword: &str = match operand_num(instr, 2) & 7 {
-                1 => "class <<",
-                2 => "module",
-                _ => "class",
+            let flags: u64 = operand_num(instr, 2);
+            let child: Option<&YarvIseqBody> = match instr.operands.get(1) {
+                Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.body(*index),
+                _ => None,
             };
-            stmts.push(format!("{keyword} {name}; ...; end"));
-            push(stack, name);
-        }
-        "branchunless" => {
-            let cond: String = pop(stack);
-            stmts.push(format!("if {cond}"));
-        }
-        "branchif" => {
-            let cond: String = pop(stack);
-            stmts.push(format!("unless {cond}"));
-        }
-        "branchnil" => {
-            let cond: String = pop(stack);
-            stmts.push(format!("{cond}&. ..."));
+            let _ = pop(stack);
+            let _ = pop(stack);
+            let header: String = match flags & 7 {
+                1 => "class << self".to_owned(),
+                2 => format!("module {name}"),
+                _ => format!("class {name}"),
+            };
+            stmts.extend(render_nested(header, child, ctx, depth, true));
+            push(stack, "nil".to_owned());
         }
         "leave" => {
-            if let Some(top) = stack.last() {
-                stmts.push(format!("return {top}"));
+            if let Some(top) = stack.pop()
+                && top != "nil"
+            {
+                emit_stmt(stmts, depth, top);
             }
         }
         "pop" => {
             if let Some(top) = stack.pop()
                 && is_effecting_call(&top)
             {
-                stmts.push(top);
+                emit_stmt(stmts, depth, top);
             }
         }
         "dup" => {
@@ -319,9 +739,75 @@ fn step(
                 push(stack, top);
             }
         }
-        "nop" | "putspecialobject" | "intern" | "tostring" => {}
+        "dupn" => {
+            let n: usize = operand_num(instr, 0) as usize;
+            let len: usize = stack.len();
+            if n <= len {
+                let slice: Vec<String> = stack[len - n..].to_vec();
+                for v in slice {
+                    push(stack, v);
+                }
+            }
+        }
+        "topn" => {
+            let n: usize = operand_num(instr, 0) as usize;
+            let len: usize = stack.len();
+            if n < len {
+                let v: String = stack[len - 1 - n].clone();
+                push(stack, v);
+            }
+        }
+        "setn" => {
+            let n: usize = operand_num(instr, 0) as usize;
+            let len: usize = stack.len();
+            if n < len
+                && let Some(top) = stack.last().cloned()
+            {
+                stack[len - 1 - n] = top;
+            }
+        }
+        "adjuststack" => {
+            let n: usize = operand_num(instr, 0) as usize;
+            let _ = pop_n(stack, n);
+        }
+        "opt_case_dispatch" => {
+            let _ = pop(stack);
+        }
+        "swap" => {
+            let len: usize = stack.len();
+            if len >= 2 {
+                stack.swap(len - 1, len - 2);
+            }
+        }
+        "nop" | "putspecialobject" | "intern" | "tostring" | "putchilledstring_dummy" => {}
         _ => {}
     }
+}
+
+/// Render a `newhash` from its flattened `[k0, v0, k1, v1, ...]` stack slice. Symbol keys collapse
+/// to the `name:` shorthand; other keys use the `=> ` rocket.
+fn render_hash(flat: &[String]) -> String {
+    if flat.is_empty() {
+        return "{}".to_owned();
+    }
+    let mut pairs: Vec<String> = Vec::with_capacity(flat.len() / 2);
+    for chunk in flat.chunks(2) {
+        match chunk {
+            [k, v] => {
+                if let Some(sym) = k.strip_prefix(':')
+                    && sym.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !sym.is_empty()
+                {
+                    pairs.push(format!("{sym}: {v}"));
+                } else {
+                    pairs.push(format!("{k} => {v}"));
+                }
+            }
+            [k] => pairs.push(format!("{k} => nil")),
+            _ => {}
+        }
+    }
+    format!("{{ {} }}", pairs.join(", "))
 }
 
 /// Collapse the YARV string-interpolation coercion idiom `dup; objtostring; anytostring`: the `dup`
@@ -381,18 +867,45 @@ fn string_literal_body(s: &str) -> Option<&str> {
     Some(inner)
 }
 
-/// Render a `definemethod`/`definesmethod` parameter list `(a, b)` from the method body iseq's lead
-/// parameters (operand #1 is its iseq ref). Yields an empty string when the method takes no named
-/// positional parameters, so the surface reads `def name; ...; end`.
-fn method_param_list(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> String {
-    let params: Option<&[&str]> = match instr.operands.get(1) {
-        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.block_params(*index),
+/// The method body iseq referenced by a `definemethod`/`definesmethod` (operand #1).
+fn method_iseq<'a>(
+    instr: &YarvIbfInstruction,
+    ctx: &DecompileContext<'a>,
+) -> Option<&'a YarvIseqBody> {
+    match instr.operands.get(1) {
+        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.body(*index),
         _ => None,
-    };
-    match params {
-        Some(names) if !names.is_empty() => format!("({})", names.join(", ")),
-        _ => String::new(),
     }
+}
+
+/// Render a `definemethod`/`definesmethod` signature `(a, b)` from the parameter ABI of the method
+/// body iseq. Empty when the method takes no parameters, so the surface reads `def name`.
+fn method_signature(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> String {
+    method_iseq(instr, ctx).map_or_else(String::new, render_param_signature)
+}
+
+/// Render a parameter list `(a, b)` from the leading `param.lead_num` `local_table` entries,
+/// preserving arity: an unnamed (hidden) positional slot reuses the same `local{N}` identifier the
+/// body's `getlocal`/`setlocal` references produce (`N` = its environment operand), so the parameter
+/// and its uses stay consistent and recompile-correct. Empty when there are no leading parameters.
+fn render_param_signature(body: &YarvIseqBody) -> String {
+    let lead: usize = body.param_lead_num as usize;
+    if lead == 0 {
+        return String::new();
+    }
+    let size: usize = body.local_table.len();
+    let params: Vec<String> = (0..lead)
+        .map(|idx| {
+            body.local_table
+                .get(idx)
+                .and_then(Option::as_deref)
+                .map_or_else(
+                    || format!("local{}", size - idx - 1 + VM_ENV_DATA_SIZE as usize),
+                    str::to_owned,
+                )
+        })
+        .collect();
+    format!("({})", params.join(", "))
 }
 
 /// Render an `opt_getconstant_path` operand: resolve the cache array into `A::B::C` when possible,
@@ -406,35 +919,133 @@ fn constant_path_value(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -
     operand_value(instr, 0)
 }
 
-fn emit_send(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>, stack: &mut Vec<String>) {
+fn emit_send(
+    instr: &YarvIbfInstruction,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    stack: &mut Vec<String>,
+    stmts: &mut Vec<String>,
+) {
     let (method, argc): (String, usize) = match instr.operands.first() {
         Some(YarvOperand::Call { method, argc }) => (method.clone(), *argc as usize),
         Some(YarvOperand::Id(name)) => (name.clone(), 0),
         _ => ("call".to_owned(), 0),
     };
-    let block: Option<String> = match instr.operands.get(1) {
-        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => {
-            Some(render_block(ctx.block_params(*index)))
-        }
+    let block_iseq: Option<&YarvIseqBody> = match instr.operands.get(1) {
+        Some(YarvOperand::IseqRef(index)) if *index != u32::MAX => ctx.body(*index),
         _ => None,
     };
     let args: Vec<String> = pop_n(stack, argc);
     let recv: String = pop(stack);
-    let mut call: String = render_method_call(&recv, &method, &args);
-    if let Some(block) = block {
-        call.push(' ');
-        call.push_str(&block);
+    let call: String = render_method_call(&recv, &method, &args);
+
+    match block_iseq {
+        Some(block) if depth <= MAX_NEST_DEPTH => {
+            let block_lines: Vec<String> = render_block_lines(block, ctx, depth);
+            if block_lines.len() <= 1 {
+                let inline: String = block_lines.first().map_or_else(
+                    || format!("{call} {{ }}"),
+                    |single| format!("{call} {single}"),
+                );
+                push(stack, inline);
+            } else {
+                emit_block_call(stmts, &call, &block_lines, depth);
+                push(stack, String::new());
+            }
+        }
+        _ => push(stack, call),
     }
-    push(stack, call);
 }
 
-/// Render a recovered block as `{ |a, b| ... }` from its parameter names, or `{ ... }` when the
-/// block has no named positional parameters. The caller guards against the sentinel `-1` block-iseq
-/// operand (`&block`/`&:sym` pass-through), which is not a literal block.
-fn render_block(params: Option<&[&str]>) -> String {
-    match params {
-        Some(names) if !names.is_empty() => format!("{{ |{}| ... }}", names.join(", ")),
-        _ => "{ ... }".to_owned(),
+/// Render a block as one line when its body is a single statement (`{ |x| body }`), else as the
+/// header line `recv... do |x|` followed by indented body lines and a closing `end`. Returns the
+/// lines; a single-element result is the inline form, multi-element is the `do...end` form.
+fn render_block_lines(block: &YarvIseqBody, ctx: &DecompileContext<'_>, depth: u32) -> Vec<String> {
+    let params: String = block_param_list(block);
+    let inner: Vec<String> = render_iseq_statements(block, ctx, 0);
+    let body_only: Vec<&str> = inner
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if body_only.len() <= 1 {
+        let body: &str = body_only.first().copied().unwrap_or("");
+        let one: String = if body.is_empty() {
+            format!("{{{params} }}")
+        } else {
+            format!("{{{params} {body} }}")
+        };
+        return vec![one];
+    }
+    let mut lines: Vec<String> = Vec::with_capacity(inner.len() + 2);
+    lines.push(format!("do{params}"));
+    for l in render_iseq_statements(block, ctx, depth + 1) {
+        lines.push(l);
+    }
+    lines
+}
+
+/// Append a multi-line `recv.method(args) do |x|` ... `end` block-call to `stmts`.
+fn emit_block_call(stmts: &mut Vec<String>, call: &str, block_lines: &[String], depth: u32) {
+    let pad: String = indent(depth);
+    if let Some(header) = block_lines.first() {
+        stmts.push(format!("{pad}{call} {header}"));
+    }
+    for line in &block_lines[1..] {
+        stmts.push(line.clone());
+    }
+    stmts.push(format!("{pad}end"));
+}
+
+/// `" |a, b|"` from a block iseq's lead parameters, or `""` when it takes no positional params.
+fn block_param_list(block: &YarvIseqBody) -> String {
+    let params: Vec<&str> = block
+        .local_table
+        .iter()
+        .take(block.param_lead_num as usize)
+        .filter_map(Option::as_deref)
+        .collect();
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!(" |{}|", params.join(", "))
+    }
+}
+
+/// An anonymous argument-forwarding marker that appears as a synthetic local name (`...`, `*`,
+/// `**`, `&`); these cannot be spliced as an ordinary receiver/argument and are handled specially.
+fn is_forward_marker(s: &str) -> bool {
+    matches!(s, "..." | "*" | "**" | "&") || s.starts_with("...")
+}
+
+/// `invokesuper` -> `super(args)`, or bare `super` (implicit forward) for zero args or when any
+/// argument is an anonymous-forwarding marker that cannot be named. The instruction also consumes a
+/// block operand which carries no source text here.
+fn emit_super(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
+    let argc: usize = match instr.operands.first() {
+        Some(YarvOperand::Call { argc, .. }) => *argc as usize,
+        _ => 0,
+    };
+    let args: Vec<String> = pop_n(stack, argc);
+    let _ = pop(stack);
+    if args.is_empty() || args.iter().any(|a| is_forward_marker(a) || a.is_empty()) {
+        push(stack, "super".to_owned());
+    } else {
+        push(stack, format!("super({})", args.join(", ")));
+    }
+}
+
+/// `invokeblock` -> `yield(args)` (or bare `yield`).
+fn emit_invokeblock(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
+    let argc: usize = match instr.operands.first() {
+        Some(YarvOperand::Call { argc, .. }) => *argc as usize,
+        _ => 0,
+    };
+    let args: Vec<String> = pop_n(stack, argc);
+    if args.is_empty() {
+        push(stack, "yield".to_owned());
+    } else {
+        push(stack, format!("yield({})", args.join(", ")));
     }
 }
 
@@ -447,16 +1058,44 @@ fn emit_unary_call(instr: &YarvIbfInstruction, stack: &mut Vec<String>) {
     push(stack, render_method_call(&recv, &method, &[]));
 }
 
+/// Ruby keywords that, when recovered as a method name on `self`, must keep the explicit `self.`
+/// receiver (`self.class`, not bare `class`) to stay valid source.
+const SELF_QUALIFIED_KEYWORDS: &[&str] = &[
+    "class", "begin", "end", "do", "then", "case", "while", "until", "if", "unless", "def",
+    "module", "return", "yield", "next", "break", "redo", "retry", "super", "self", "nil", "true",
+    "false", "and", "or", "not", "in", "for", "ensure", "rescue", "raise",
+];
+
 fn render_method_call(recv: &str, method: &str, args: &[String]) -> String {
-    let prefix: String = if recv == "self" {
+    let method: &str = sanitize_method(method);
+    let prefix: String = if (recv == "self" && !SELF_QUALIFIED_KEYWORDS.contains(&method))
+        || recv.is_empty()
+        || is_forward_marker(recv)
+    {
         String::new()
     } else {
         format!("{recv}.")
     };
-    if args.is_empty() {
+    let clean_args: Vec<&String> = args.iter().filter(|a| !a.is_empty()).collect();
+    if clean_args.is_empty() {
         format!("{prefix}{method}")
     } else {
-        format!("{prefix}{method}({})", args.join(", "))
+        let joined: String = clean_args
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>()
+            .join(", ");
+        format!("{prefix}{method}({joined})")
+    }
+}
+
+/// Map an unresolved/sentinel calldata method name to a valid identifier so the surface stays
+/// compilable; `(call)` (mid not recovered) becomes `__send__` of no further info, rendered as a
+/// neutral `call`.
+fn sanitize_method(method: &str) -> &str {
+    match method {
+        "(call)" | "" => "call",
+        other => other,
     }
 }
 
@@ -466,8 +1105,14 @@ fn emit_binop(_instr: &YarvIbfInstruction, stack: &mut Vec<String>, op: &str) {
     push(stack, format!("{lhs} {op} {rhs}"));
 }
 
+/// Whether a popped stack expression carries a side effect worth surfacing as a statement: a method
+/// call (`(`/`.`), an assignment (` = `, including `[]=`/attribute writers), or `yield`/`super`.
 fn is_effecting_call(expr: &str) -> bool {
-    expr.contains('(') || expr.contains('.')
+    expr.contains('(')
+        || expr.contains('.')
+        || expr.contains(" = ")
+        || expr.starts_with("yield")
+        || expr.starts_with("super")
 }
 
 #[inline]
@@ -574,8 +1219,15 @@ mod tests {
             recovered_literal_count: 0,
             recovered_instruction_count: 0,
         };
-        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
-        super::decompile_body(body, &ctx)
+        decompile_in_image(body, &image)
+    }
+
+    fn decompile_in_image(body: &YarvIseqBody, image: &IbfImage) -> Vec<String> {
+        let ctx: DecompileContext<'_> = DecompileContext::from_image(image);
+        super::render_iseq_statements(body, &ctx, 0)
+            .into_iter()
+            .map(|l| l.trim_start().to_owned())
+            .collect()
     }
 
     fn instr(mnemonic: &str, operands: Vec<YarvOperand>) -> YarvIbfInstruction {
@@ -585,6 +1237,163 @@ mod tests {
             mnemonic: mnemonic.to_owned(),
             operands,
         }
+    }
+
+    #[test]
+    fn short_circuit_and_folds_to_logical_and() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("a".to_owned()), Some("b".to_owned())],
+            param_lead_num: 2,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
+                instr("dup", vec![]),
+                instr("branchunless", vec![YarvOperand::Offset(3)]),
+                instr("pop", vec![]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["a && b".to_owned()], "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn short_circuit_or_folds_to_logical_or() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("a".to_owned()), Some("b".to_owned())],
+            param_lead_num: 2,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
+                instr("dup", vec![]),
+                instr("branchif", vec![YarvOperand::Offset(3)]),
+                instr("pop", vec![]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["a || b".to_owned()], "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn safe_navigation_folds_branchnil() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned())],
+            param_lead_num: 1,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("dup", vec![]),
+                instr("branchnil", vec![YarvOperand::Offset(2)]),
+                instr(
+                    "opt_size",
+                    vec![YarvOperand::Call {
+                        method: "size".to_owned(),
+                        argc: 0,
+                    }],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["x&.size".to_owned()], "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn backward_branch_structures_while_loop() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("n".to_owned()), Some("i".to_owned())],
+            param_lead_num: 1,
+            instructions: vec![
+                instr("putobject_INT2FIX_0_", vec![]),
+                instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("jump", vec![YarvOperand::Offset(7)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("putobject_INT2FIX_1_", vec![]),
+                instr(
+                    "opt_plus",
+                    vec![YarvOperand::Call {
+                        method: "+".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
+                instr(
+                    "opt_lt",
+                    vec![YarvOperand::Call {
+                        method: "<".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchif", vec![YarvOperand::Offset((-15_i32) as u32)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts.iter().any(|s| s == "while i < n") && stmts.iter().any(|s| s == "i = i + 1"),
+            "stmts: {stmts:?}"
+        );
+        assert!(stmts.iter().any(|s| s == "end"), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn forward_branch_structures_if_else() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned())],
+            param_lead_num: 1,
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("putobject_INT2FIX_0_", vec![]),
+                instr(
+                    "opt_gt",
+                    vec![YarvOperand::Call {
+                        method: ">".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchunless", vec![YarvOperand::Offset(3)]),
+                instr(
+                    "putstring",
+                    vec![YarvOperand::Literal("positive".to_owned())],
+                ),
+                instr("leave", vec![]),
+                instr(
+                    "putstring",
+                    vec![YarvOperand::Literal("negative".to_owned())],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(
+            stmts,
+            vec![
+                "if x > 0".to_owned(),
+                "\"positive\"".to_owned(),
+                "else".to_owned(),
+                "\"negative\"".to_owned(),
+                "end".to_owned(),
+            ],
+            "stmts: {stmts:?}"
+        );
     }
 
     #[test]
@@ -641,7 +1450,7 @@ mod tests {
         };
         let stmts: Vec<String> = decompile_body(&body);
         assert!(
-            stmts.iter().any(|s| s == "return \"hello, #{@who}!\""),
+            stmts.iter().any(|s| s == "\"hello, #{@who}!\""),
             "stmts: {stmts:?}"
         );
     }
@@ -721,10 +1530,7 @@ mod tests {
         };
         let stmts: Vec<String> = decompile_body(&body);
         assert!(stmts.iter().any(|s| s == "total = 0"), "stmts: {stmts:?}");
-        assert!(
-            stmts.iter().any(|s| s == "return total"),
-            "stmts: {stmts:?}"
-        );
+        assert!(stmts.iter().any(|s| s == "total"), "stmts: {stmts:?}");
     }
 
     #[test]
@@ -761,10 +1567,9 @@ mod tests {
             recovered_literal_count: 0,
             recovered_instruction_count: 0,
         };
-        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
-        let stmts: Vec<String> = super::decompile_body(&main, &ctx);
+        let stmts: Vec<String> = decompile_in_image(&main, &image);
         assert!(
-            stmts.iter().any(|s| s == "def initialize(who); ...; end"),
+            stmts.iter().any(|s| s == "def initialize(who)") && stmts.iter().any(|s| s == "end"),
             "stmts: {stmts:?}"
         );
     }
@@ -819,11 +1624,25 @@ mod tests {
     }
 
     #[test]
-    fn render_block_formats_named_and_anonymous_params() {
-        assert_eq!(render_block(Some(&["x", "y"])), "{ |x, y| ... }");
-        assert_eq!(render_block(Some(&["i"])), "{ |i| ... }");
-        assert_eq!(render_block(Some(&[])), "{ ... }");
-        assert_eq!(render_block(None), "{ ... }");
+    fn block_param_list_formats_named_params() {
+        let with_params: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned()), Some("y".to_owned())],
+            param_lead_num: 2,
+            instructions: Vec::new(),
+        };
+        assert_eq!(block_param_list(&with_params), " |x, y|");
+        let no_params: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            instructions: Vec::new(),
+        };
+        assert_eq!(block_param_list(&no_params), "");
     }
 
     #[test]
@@ -864,10 +1683,9 @@ mod tests {
             recovered_literal_count: 0,
             recovered_instruction_count: 0,
         };
-        let ctx: DecompileContext<'_> = DecompileContext::from_image(&image);
-        let stmts: Vec<String> = super::decompile_body(&main, &ctx);
+        let stmts: Vec<String> = decompile_in_image(&main, &image);
         assert!(
-            stmts.iter().any(|s| s.contains(".each { |n| ... }")),
+            stmts.iter().any(|s| s.contains(".each { |n| }")),
             "stmts: {stmts:?}"
         );
     }
@@ -897,7 +1715,7 @@ mod tests {
         };
         let stmts: Vec<String> = decompile_body(&main);
         assert!(
-            stmts.iter().any(|s| s == "return map"),
+            stmts.iter().any(|s| s == "map"),
             "no block should be rendered for sentinel iseq ref, stmts: {stmts:?}"
         );
         assert!(stmts.iter().all(|s| !s.contains('{')), "stmts: {stmts:?}");
