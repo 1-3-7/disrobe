@@ -12,6 +12,13 @@ pub const PAGE_BITS: u32 = 12;
 
 const PAGE_MASK: u64 = (PAGE_SIZE as u64) - 1;
 
+/// The null page is never lazily committed: an SEH-driven packer (PECompact
+/// 2.x) relies on a deliberate write to address 0 faulting to enter its
+/// decompressor via the SEH chain, and silently committing that page would mask
+/// the transfer. Kept to a single 4 KiB page so legitimate lazy scratch writes
+/// just above the null guard still commit on demand.
+const NULL_RESERVED_REGION: u64 = PAGE_SIZE as u64;
+
 /// Per-page permission bits. Packer stubs frequently allocate RWX so we keep
 /// the model coarse: each page either is or is not readable / writeable /
 /// executable.
@@ -57,6 +64,7 @@ pub struct Memory {
     pages: BTreeMap<u64, Page>,
     lazy_budget: Option<u32>,
     lazy_used: u32,
+    block_null_page: bool,
 }
 
 impl Memory {
@@ -81,10 +89,22 @@ impl Memory {
         self.lazy_budget = Some(max_pages);
     }
 
+    /// Refuse to lazily commit the null page so a deliberate write to address 0
+    /// faults instead of silently succeeding. SEH-driven packers (PECompact 2.x)
+    /// rely on that fault to enter their decompressor via the SEH chain; without
+    /// it the transfer is masked and the stub runs off into the marker data.
+    /// Enabled automatically by [`super::cpu::Cpu::enable_seh_dispatch`].
+    pub fn block_null_page(&mut self) {
+        self.block_null_page = true;
+    }
+
     fn lazy_commit(&mut self, addr: u64) -> bool {
         let Some(budget): Option<u32> = self.lazy_budget else {
             return false;
         };
+        if self.block_null_page && addr < NULL_RESERVED_REGION {
+            return false;
+        }
         let key: u64 = addr >> PAGE_BITS;
         if self.pages.contains_key(&key) {
             return true;

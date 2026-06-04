@@ -11,6 +11,7 @@ fn no_cache_flag_is_accepted_and_runs() {
     let src: PathBuf = temp_path("nocache-src", "bin");
     write_bytes(&src, b"hello no-cache\n");
     let out1: PathBuf = temp_path("nocache-env-1", "dr");
+    let _: std::io::Result<()> = std::fs::remove_file(&out1);
     let r1: Run = run_disrobe(&[
         "envelope",
         "create",
@@ -26,6 +27,7 @@ fn no_cache_flag_is_accepted_and_runs() {
     assert!(out1.exists(), "envelope file not written");
 
     let out2: PathBuf = temp_path("nocache-env-2", "dr");
+    let _: std::io::Result<()> = std::fs::remove_file(&out2);
     let r2: Run = run_disrobe(&[
         "--no-cache",
         "envelope",

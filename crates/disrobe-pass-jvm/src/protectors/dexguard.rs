@@ -32,6 +32,60 @@ pub fn peel(
     Ok(report)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CffAnalysis {
+    pub suspected_flattened_methods: usize,
+    pub dispatcher_switch_methods: usize,
+    pub methods_unflattened: usize,
+    pub notes: Vec<String>,
+}
+
+pub fn undo_cff(
+    dex_bytes: &[u8],
+    authorization: Option<DexGuardAuthorization>,
+) -> Result<CffAnalysis> {
+    if authorization.is_none() {
+        return Err(Error::DexGuardRequiresAuthorization);
+    }
+    if dex_bytes.len() < 8 || &dex_bytes[..4] != b"dex\n" {
+        return Err(Error::DexGuardNotDex);
+    }
+    let dex: crate::dex::DexFile = crate::dex::parse(dex_bytes)?;
+    let items: Vec<crate::dex::CodeItem> = crate::dex::parse_code_items(&dex, dex_bytes);
+    let mut suspected_flattened_methods: usize = 0;
+    let mut dispatcher_switch_methods: usize = 0;
+    for item in &items {
+        let mut packed_switch: usize = 0;
+        let mut sparse_switch: usize = 0;
+        let mut gotos: usize = 0;
+        for &unit in &item.insns {
+            match (unit & 0xFF) as u8 {
+                0x2B => packed_switch += 1,
+                0x2C => sparse_switch += 1,
+                0x28..=0x2A => gotos += 1,
+                _ => {}
+            }
+        }
+        let switches: usize = packed_switch + sparse_switch;
+        if switches >= 1 && gotos >= 6 {
+            suspected_flattened_methods += 1;
+            dispatcher_switch_methods += switches;
+        }
+    }
+    let notes: Vec<String> = vec![
+        "AUTH-GATED detect-only: DexGuard control-flow flattening is characterised structurally; \
+         a faithful un-flatten requires a real DexGuard-protected sample (enterprise-gated) to \
+         validate against - no synthetic CFG is fabricated."
+            .to_string(),
+    ];
+    Ok(CffAnalysis {
+        suspected_flattened_methods,
+        dispatcher_switch_methods,
+        methods_unflattened: 0,
+        notes,
+    })
+}
+
 #[must_use]
 pub fn scan_residual_encrypted_dex_strings(dex_bytes: &[u8]) -> usize {
     if dex_bytes.len() < 0x70 {

@@ -102,7 +102,7 @@ fn which_exists(name: &str) -> Option<PathBuf> {
 
 #[cfg(windows)]
 const fn possible_extensions() -> &'static [&'static str] {
-    &["", ".exe", ".bat", ".cmd"]
+    &[".exe", ".bat", ".cmd", ""]
 }
 
 #[cfg(not(windows))]

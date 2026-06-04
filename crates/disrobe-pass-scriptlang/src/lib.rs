@@ -1,0 +1,39 @@
+#![forbid(unsafe_code)]
+#![allow(
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::option_if_let_else,
+    clippy::single_match_else,
+    clippy::unreadable_literal,
+    clippy::match_same_arms,
+    clippy::map_unwrap_or,
+    clippy::missing_const_for_fn,
+    clippy::similar_names,
+    clippy::struct_field_names
+)]
+
+#[cfg(feature = "chain")]
+pub mod chain_detector;
+pub mod error;
+pub mod lang;
+pub mod pass;
+pub mod provenance_header;
+
+pub use error::{Error, Result};
+pub use lang::haxe::{HaxeFingerprint, HaxeTarget};
+pub use lang::perl::{PerlOp, PerlOpTree, PerlSub};
+pub use lang::r_rds::{RdsEncoding, RdsHeader, RdsObject};
+pub use lang::tcl::{StarkitContainer, StarkitEntry, StarkitFormat};
+pub use lang::{ScriptArtifact, ScriptLang, analyze, classify};
+pub use pass::{ScriptLangPass, ScriptLangReport};
+pub use provenance_header::{language_for, render_with_header, scriptlang_header};
+
+#[must_use]
+pub fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}

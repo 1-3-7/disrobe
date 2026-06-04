@@ -23,7 +23,7 @@ name = "self_refresh_check_only"
 path = "tests/self_update_check_only.rs"
 
 [features]
-default = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle"]
+default = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang"]
 
 # always-on core ecosystems (Python, native PE/ELF/Mach-O, container formats)
 py = []
@@ -46,6 +46,7 @@ flutter = ["dep:disrobe-pass-mobile"]
 go = ["dep:disrobe-pass-go"]
 shell = ["dep:disrobe-pass-shell"]
 pickle = ["dep:disrobe-pass-pickle"]
+scriptlang = ["dep:disrobe-pass-scriptlang"]
 
 chain = [
     "disrobe-core/chain",
@@ -73,6 +74,7 @@ chain = [
     "disrobe-pass-beam?/chain",
     "disrobe-pass-as3?/chain",
     "disrobe-pass-pickle?/chain",
+    "disrobe-pass-scriptlang?/chain",
 ]
 
 [dependencies]
@@ -102,6 +104,7 @@ disrobe-pass-go = { workspace = true, features = ["llm-metadata"], optional = tr
 disrobe-pass-beam = { workspace = true, optional = true }
 disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }
+disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
 disrobe-mcp = { workspace = true }
@@ -153,6 +156,7 @@ tonic-build = { workspace = true }
 protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
+disrobe-playground = { workspace = true, features = ["chain"] }
 insta = { workspace = true }
 insta-cmd = { workspace = true }
 serde_json = { workspace = true }

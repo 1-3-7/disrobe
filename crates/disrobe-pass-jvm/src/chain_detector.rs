@@ -13,8 +13,10 @@ use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
 use crate::classfile::{CLASS_MAGIC, ClassFile, JavaVersion, parse as parse_classfile};
-use crate::dex::{DEX_MAGIC_PREFIX, DexFile, DexVersion, parse as parse_dex};
-use crate::smali::{SmaliEmission, emit as emit_smali};
+use crate::dex::{
+    CodeItem, DEX_MAGIC_PREFIX, DexFile, DexVersion, parse as parse_dex, parse_code_items,
+};
+use crate::smali::{SmaliEmission, emit as emit_smali, emit_method_body};
 
 pub const PASS_ID: PassId = "jvm.classify";
 
@@ -131,6 +133,7 @@ pub struct JvmDexSummary {
     pub class_count: usize,
     pub string_count: usize,
     pub type_name_count: usize,
+    pub method_body_count: usize,
     pub smali_class_count: usize,
     pub smali_text: String,
     pub smali_lossy_notes: Vec<String>,
@@ -192,13 +195,20 @@ fn extract_dex(bytes: &[u8]) -> CoreResult<JvmExtract> {
     let smali: SmaliEmission = emit_smali(&dex).map_err(|e: crate::error::Error| {
         CoreError::PassFailure(format!("DR-JVM-0909: smali emit: {e}"))
     })?;
+    let code_items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let mut smali_text: String = smali.text;
+    for item in &code_items {
+        smali_text.push_str(&emit_method_body(item));
+        smali_text.push('\n');
+    }
     let summary: JvmDexSummary = JvmDexSummary {
         version: dex.header.version,
         class_count: dex.class_descriptors.len(),
         string_count: dex.strings.len(),
         type_name_count: dex.type_names.len(),
+        method_body_count: code_items.len(),
         smali_class_count: smali.class_count,
-        smali_text: smali.text,
+        smali_text,
         smali_lossy_notes: smali.lossy_notes,
     };
     Ok(JvmExtract {

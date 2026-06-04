@@ -186,6 +186,15 @@ runtime = "python 3.7.9 via C:/Users/-/AppData/Local/Programs/Python/Python37/py
 "recursive" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_recursive.py", sha256 = "34ae86fc7d24d414ef91f1c45090c76dbe51fef23184fc14d3988f5ce4fcfe51", bytes = 119 }
 "typing_generic" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_typing_generic.py", sha256 = "c81d43da030177cddc14f3428aec30cb56fd34a24e6d992a7666b1a532cbd6d0", bytes = 175 }
 
+[obfuscators.playground.metadata]
+tool_version = "billythegoat356/Berserker (.developer/wave2-py-tools/berserker)"
+runtime = "python 3.14"
+oracle = "differential-vs-source"
+note = "Minimal git-tracked differential fixture committed so the playground gate's differential-vs-source oracle evaluates a NON-EMPTY sample in a clean CI checkout (the broader .pyc/.beam obfuscator corpus is gitignored). The independent oracle is clean_greeting.py (never emitted by any pass); clean_greeting.berserker.py is its real Berserker-obfuscated form. Regenerate via .developer/gen_playground_differential.py."
+
+[obfuscators.playground.fixtures]
+"berserker_greeting" = { path = "corpus/python/obfuscators/playground/clean_greeting.berserker.py", sha256 = "89027b86cbe6d750b0bd6f5ee3d47b2da787cff514910886db918e5929f82b57", bytes = 7541, clean_source = "corpus/python/obfuscators/playground/clean_greeting.py", clean_sha256 = "35e41ea960ff24ec961d608415c85670c004f5af06a50636d36c7468a3d40c25" }
+
 [obfuscators.pyminifier.variants]
 "obfuscate" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate.py", sha256 = "3130d2436b1dc6d9f06cbcfd73cb934ba0803f722db7dcfbc6916621330ab4b4", bytes = 7842, flags = "--obfuscate" }
 "obfuscate_builtins" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_builtins.py", sha256 = "8fa9a9c7460abf96ee0e6093c30a726ed792bd13015c5038d73061dcb7bacb4f", bytes = 9585, flags = "--obfuscate-builtins" }

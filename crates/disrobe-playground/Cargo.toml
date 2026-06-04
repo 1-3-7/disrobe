@@ -1,0 +1,79 @@
+[package]
+name = "disrobe-playground"
+description = "Anti-gaming accuracy playground: manifest-pinned oracles, per-oracle-kind reporting, and a circular-test detector that makes faked or self-referential accuracy impossible."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["deobfuscator", "testing", "oracle", "anti-gaming", "reverse-engineering"]
+categories = ["development-tools::testing"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["chain"]
+chain = [
+    "disrobe-core/chain",
+    "disrobe-binfmt/chain",
+    "disrobe-pass-pyarmor/chain",
+    "disrobe-pass-native/chain",
+    "disrobe-pass-js-deob/chain",
+    "disrobe-pass-py-deob/chain",
+    "disrobe-pass-sourcedefender/chain",
+    "disrobe-pass-pyfreeze/chain",
+    "disrobe-pass-nuitka/chain",
+    "disrobe-pass-wasm-deob/chain",
+    "disrobe-pass-php/chain",
+    "disrobe-pass-ruby/chain",
+    "disrobe-pass-shell/chain",
+    "disrobe-pass-mobile/chain",
+    "disrobe-pass-lua/chain",
+    "disrobe-pass-swift-objc/chain",
+    "disrobe-pass-py-disasm/chain",
+    "disrobe-pass-py-decompile/chain",
+    "disrobe-pass-pyinstaller/chain",
+    "disrobe-pass-jvm/chain",
+    "disrobe-pass-dotnet/chain",
+    "disrobe-pass-go/chain",
+    "disrobe-pass-beam/chain",
+    "disrobe-pass-as3/chain",
+]
+
+[dependencies]
+disrobe-core = { workspace = true, features = ["chain"] }
+disrobe-binfmt = { workspace = true }
+disrobe-pass-pyarmor = { workspace = true }
+disrobe-pass-native = { workspace = true }
+disrobe-pass-js-deob = { workspace = true }
+disrobe-pass-py-deob = { workspace = true }
+disrobe-pass-sourcedefender = { workspace = true }
+disrobe-pass-pyfreeze = { workspace = true }
+disrobe-pass-nuitka = { workspace = true }
+disrobe-pass-wasm-deob = { workspace = true }
+disrobe-pass-php = { workspace = true }
+disrobe-pass-ruby = { workspace = true }
+disrobe-pass-shell = { workspace = true }
+disrobe-pass-mobile = { workspace = true }
+disrobe-pass-lua = { workspace = true }
+disrobe-pass-swift-objc = { workspace = true }
+disrobe-pass-py-disasm = { workspace = true }
+disrobe-pass-py-decompile = { workspace = true }
+disrobe-pass-pyinstaller = { workspace = true }
+disrobe-pass-jvm = { workspace = true }
+disrobe-pass-dotnet = { workspace = true }
+disrobe-pass-go = { workspace = true }
+disrobe-pass-beam = { workspace = true }
+disrobe-pass-as3 = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = "3"
