@@ -10,9 +10,25 @@ pub enum Severity {
     OvertlyMalicious,
 }
 
+/// How the verdict for a [`Finding`] was reached.
+///
+/// `SignatureCertain` findings come from the always-on fast path: a dangerous
+/// callable named outright. `PatternInferred` and `ContextDependent` findings
+/// come from the gadget-chain reconstruction gated behind [`AnalysisOptions::deep`]
+/// and reflect call chains resolved across getattr/attrgetter/partial wrappers
+/// and `__setstate__`/`__reduce__` triggers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceTier {
+    SignatureCertain,
+    PatternInferred,
+    ContextDependent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub severity: Severity,
+    pub confidence: ConfidenceTier,
     pub category: String,
     pub detail: String,
     pub offset: Option<usize>,
@@ -25,6 +41,17 @@ pub struct SafetyReport {
     pub imports: Vec<String>,
     pub reduce_count: usize,
     pub unused_memo_count: usize,
+}
+
+/// Tunables for [`analyze_with_options`].
+///
+/// The default leaves `deep` off so callers keep the fast signature-only path.
+/// `--deep-safety` flips `deep` on to enable gadget-chain reconstruction
+/// ([`gadget_chain_patterns`]).
+#[derive(Debug, Clone, Default)]
+pub struct AnalysisOptions {
+    pub policy: Policy,
+    pub deep: bool,
 }
 
 const OVERTLY_MALICIOUS: &[(&str, &str)] = &[
@@ -149,6 +176,29 @@ pub fn analyze(trace: &VmTrace) -> SafetyReport {
 
 #[must_use]
 pub fn analyze_with_policy(trace: &VmTrace, policy: &Policy) -> SafetyReport {
+    analyze_with_options(
+        trace,
+        &AnalysisOptions {
+            policy: policy.clone(),
+            deep: false,
+        },
+    )
+}
+
+/// Signature path plus gadget-chain reconstruction.
+#[must_use]
+pub fn analyze_deep(trace: &VmTrace) -> SafetyReport {
+    analyze_with_options(
+        trace,
+        &AnalysisOptions {
+            policy: Policy::default(),
+            deep: true,
+        },
+    )
+}
+
+#[must_use]
+pub fn analyze_with_options(trace: &VmTrace, opts: &AnalysisOptions) -> SafetyReport {
     let mut findings: Vec<Finding> = Vec::new();
     let mut imports: Vec<String> = Vec::new();
 
@@ -159,9 +209,10 @@ pub fn analyze_with_policy(trace: &VmTrace, policy: &Policy) -> SafetyReport {
             offset,
         } = gref;
         imports.push(format!("{module}.{name}"));
-        if let Some(sev) = policy.classify(module, name) {
+        if let Some(sev) = opts.policy.classify(module, name) {
             findings.push(Finding {
                 severity: sev,
+                confidence: ConfidenceTier::SignatureCertain,
                 category: if sev == Severity::OvertlyMalicious {
                     "policy.deny".to_string()
                 } else {
@@ -188,6 +239,7 @@ pub fn analyze_with_policy(trace: &VmTrace, policy: &Policy) -> SafetyReport {
     if reduce_under_dangerous {
         findings.push(Finding {
             severity: Severity::OvertlyMalicious,
+            confidence: ConfidenceTier::SignatureCertain,
             category: "reduce.dangerous_callable".to_string(),
             detail: format!(
                 "{} REDUCE/INST/OBJ invocations resolve a dangerous callable at unpickle time",
@@ -199,9 +251,14 @@ pub fn analyze_with_policy(trace: &VmTrace, policy: &Policy) -> SafetyReport {
 
     scan_value(&trace.result, &mut findings);
 
+    if opts.deep {
+        gadget_chain_patterns::scan(&trace.result, &mut findings);
+    }
+
     if !trace.unused_memos.is_empty() {
         findings.push(Finding {
             severity: Severity::Suspicious,
+            confidence: ConfidenceTier::SignatureCertain,
             category: "memo.unused".to_string(),
             detail: format!(
                 "{} memoized object(s) are never referenced - possible dead-stack injection or evasion",
@@ -230,6 +287,7 @@ fn classify_global(module: &str, name: &str, offset: usize, findings: &mut Vec<F
     if is_overtly_malicious(module, name) {
         findings.push(Finding {
             severity: Severity::OvertlyMalicious,
+            confidence: ConfidenceTier::SignatureCertain,
             category: "global.dangerous_callable".to_string(),
             detail: format!("imports {module}.{name} - code/command execution primitive"),
             offset: Some(offset),
@@ -239,6 +297,7 @@ fn classify_global(module: &str, name: &str, offset: usize, findings: &mut Vec<F
     if SUSPICIOUS_PAIRS.contains(&(module, name)) {
         findings.push(Finding {
             severity: Severity::Suspicious,
+            confidence: ConfidenceTier::SignatureCertain,
             category: "global.suspicious_callable".to_string(),
             detail: format!(
                 "imports {module}.{name} - attribute/network/dynamic-dispatch primitive"
@@ -250,6 +309,7 @@ fn classify_global(module: &str, name: &str, offset: usize, findings: &mut Vec<F
     if SUSPICIOUS_MODULES.contains(&module) {
         findings.push(Finding {
             severity: Severity::Suspicious,
+            confidence: ConfidenceTier::SignatureCertain,
             category: "global.suspicious_module".to_string(),
             detail: format!("imports from {module} - networking/serialization/system module"),
             offset: Some(offset),
@@ -270,6 +330,7 @@ fn scan_value(value: &PickleValue, findings: &mut Vec<Finding>) {
             {
                 findings.push(Finding {
                     severity: Severity::OvertlyMalicious,
+                    confidence: ConfidenceTier::SignatureCertain,
                     category: "reduce.payload".to_string(),
                     detail: format!(
                         "{module}.{name}() executed on load with args {}",
@@ -307,6 +368,374 @@ fn scan_value(value: &PickleValue, findings: &mut Vec<Finding>) {
     }
 }
 
+/// Control-flow / data-flow gadget-chain reconstruction over the resolved
+/// symbolic object graph.
+///
+/// The symbolic VM ([`crate::vm`]) already resolves memo back-references, so a
+/// chain split across `BINGET`/`MEMOIZE` loads is already reassembled into a
+/// single [`PickleValue`] tree by the time it reaches here. This module walks
+/// that tree, unwraps the indirection layers attackers use to hide the final
+/// callable (`getattr` / `operator.attrgetter` / `operator.methodcaller` /
+/// `functools.partial` / `builtins.apply`), and flags the reconstructed call
+/// chains that land on a code- or command-execution primitive.
+///
+/// Three call sites count as an invocation: a [`PickleValue::Reduce`] callable
+/// (`REDUCE`), a [`PickleValue::Object`] class (`INST` / `OBJ` / `NEWOBJ`), and
+/// the implicit `__setstate__` / `__dict__.update` triggered by an `Object` that
+/// carries `state` (`BUILD`). Each is the data-flow equivalent of a Python
+/// `Call` node, but with memo data-flow already threaded by the VM.
+///
+/// Clean-room: the gadget taxonomy (indirect getattr chains, attrgetter /
+/// methodcaller / partial wrappers, `__setstate__` triggers, eval/exec/compile
+/// invocation vs. mere import) is modelled after the public categories in
+/// Trail of Bits' `fickling` (LGPL-3.0, study-only) and public pickle-RCE
+/// gadget corpora; none of the reference source is reproduced. The graph walk,
+/// the [`ResolvedCallable`] descriptor, the unwrap rules, and the confidence
+/// tiering are an original Rust implementation over this crate's own VM graph.
+pub mod gadget_chain_patterns {
+    use super::{ConfidenceTier, Finding, OVERTLY_MALICIOUS, Severity, is_overtly_malicious};
+    use crate::vm::PickleValue;
+
+    const GETATTR_LIKE: &[(&str, &str)] = &[("builtins", "getattr"), ("__builtin__", "getattr")];
+
+    const ATTR_WRAPPERS: &[(&str, &str)] = &[
+        ("operator", "attrgetter"),
+        ("operator", "methodcaller"),
+        ("_operator", "attrgetter"),
+        ("_operator", "methodcaller"),
+    ];
+
+    const PARTIAL_LIKE: &[(&str, &str)] = &[
+        ("functools", "partial"),
+        ("__builtin__", "apply"),
+        ("builtins", "apply"),
+    ];
+
+    const IMPORT_LIKE: &[(&str, &str)] = &[
+        ("builtins", "__import__"),
+        ("__builtin__", "__import__"),
+        ("importlib", "import_module"),
+    ];
+
+    const EVAL_LIKE: &[(&str, &str)] = &[
+        ("builtins", "eval"),
+        ("builtins", "exec"),
+        ("builtins", "compile"),
+        ("builtins", "__import__"),
+        ("__builtin__", "eval"),
+        ("__builtin__", "exec"),
+        ("__builtin__", "compile"),
+        ("__builtin__", "__import__"),
+    ];
+
+    /// A callable resolved through any indirection wrappers that hid it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ResolvedCallable {
+        /// A `module.name` global reached directly or after unwrapping.
+        Named { module: String, name: String },
+        /// `getattr(obj, attr)` where `obj` resolved to a global named `base`.
+        Attr { base: String, attr: String },
+        /// A callable whose identity could not be statically resolved.
+        Opaque,
+    }
+
+    impl ResolvedCallable {
+        fn fqn(&self) -> Option<String> {
+            match self {
+                Self::Named { module, name } => Some(format!("{module}.{name}")),
+                Self::Attr { base, attr } => Some(format!("{base}.{attr}")),
+                Self::Opaque => None,
+            }
+        }
+    }
+
+    /// A resolved callable plus whether any indirection wrapper had to be peeled
+    /// to reach it. `via_wrapper` drives the confidence tier: a callable named
+    /// outright is signature-certain, one recovered through getattr / partial /
+    /// attrgetter / `__import__` is pattern-inferred.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Resolution {
+        callable: ResolvedCallable,
+        via_wrapper: bool,
+    }
+
+    impl Resolution {
+        fn direct(callable: ResolvedCallable) -> Self {
+            Self {
+                callable,
+                via_wrapper: false,
+            }
+        }
+
+        fn wrapped(callable: ResolvedCallable) -> Self {
+            Self {
+                callable,
+                via_wrapper: true,
+            }
+        }
+
+        const OPAQUE: Self = Self {
+            callable: ResolvedCallable::Opaque,
+            via_wrapper: false,
+        };
+    }
+
+    /// Walk the whole graph, flagging every invocation whose callable resolves
+    /// to a dangerous primitive through one or more indirection layers.
+    pub(super) fn scan(value: &PickleValue, findings: &mut Vec<Finding>) {
+        walk(value, findings, 0);
+    }
+
+    fn walk(value: &PickleValue, findings: &mut Vec<Finding>, depth: usize) {
+        if depth > 512 {
+            return;
+        }
+        match value {
+            PickleValue::Reduce { callable, args } => {
+                let resolved: Resolution = resolve_callable(callable, 0);
+                emit_invocation(&resolved, args, "reduce", findings);
+                walk(callable, findings, depth + 1);
+                walk(args, findings, depth + 1);
+            }
+            PickleValue::Object { cls, args, state } => {
+                let resolved: Resolution = resolve_callable(cls, 0);
+                emit_invocation(&resolved, args, "construct", findings);
+                if let Some(s) = state {
+                    emit_setstate(&resolved, s, findings);
+                    walk(s, findings, depth + 1);
+                }
+                walk(cls, findings, depth + 1);
+                walk(args, findings, depth + 1);
+            }
+            PickleValue::List(items)
+            | PickleValue::Tuple(items)
+            | PickleValue::Set(items)
+            | PickleValue::FrozenSet(items) => {
+                for it in items {
+                    walk(it, findings, depth + 1);
+                }
+            }
+            PickleValue::Dict(pairs) => {
+                for (k, v) in pairs {
+                    walk(k, findings, depth + 1);
+                    walk(v, findings, depth + 1);
+                }
+            }
+            PickleValue::PersId { id } => walk(id, findings, depth + 1),
+            _ => {}
+        }
+    }
+
+    /// Resolve a value in callable position to its underlying callable,
+    /// peeling off the indirection wrappers an attacker layers on to evade a
+    /// signature scanner.
+    fn resolve_callable(value: &PickleValue, depth: usize) -> Resolution {
+        if depth > 64 {
+            return Resolution::OPAQUE;
+        }
+        match value {
+            PickleValue::Global { module, name } => Resolution::direct(ResolvedCallable::Named {
+                module: module.clone(),
+                name: name.clone(),
+            }),
+            PickleValue::Reduce { callable, args } => {
+                resolve_reduce_callable(callable, args, depth)
+            }
+            PickleValue::Object { cls, .. } => resolve_callable(cls, depth + 1),
+            _ => Resolution::OPAQUE,
+        }
+    }
+
+    /// The callable of an outer invocation is itself the result of an inner
+    /// `Reduce`. Decode the common wrapper gadgets.
+    fn resolve_reduce_callable(
+        inner_callable: &PickleValue,
+        inner_args: &PickleValue,
+        depth: usize,
+    ) -> Resolution {
+        let wrapper: Resolution = resolve_callable(inner_callable, depth + 1);
+        let Some((wmod, wname)): Option<(String, String)> = named_pair(&wrapper.callable) else {
+            return Resolution::OPAQUE;
+        };
+        let positional: &[PickleValue] = tuple_items(inner_args);
+
+        if GETATTR_LIKE.contains(&(wmod.as_str(), wname.as_str())) {
+            return Resolution::wrapped(resolve_getattr(positional, depth));
+        }
+        if IMPORT_LIKE.contains(&(wmod.as_str(), wname.as_str())) {
+            if let Some(PickleValue::Str(module)) = positional.first() {
+                return Resolution::wrapped(ResolvedCallable::Named {
+                    module: module.clone(),
+                    name: String::new(),
+                });
+            }
+            return Resolution::OPAQUE;
+        }
+        if PARTIAL_LIKE.contains(&(wmod.as_str(), wname.as_str())) {
+            if let Some(first) = positional.first() {
+                return Resolution::wrapped(resolve_callable(first, depth + 1).callable);
+            }
+            return Resolution::OPAQUE;
+        }
+        if ATTR_WRAPPERS.contains(&(wmod.as_str(), wname.as_str())) {
+            if let Some(PickleValue::Str(attr)) = positional.first() {
+                return Resolution::wrapped(ResolvedCallable::Attr {
+                    base: "<attrgetter>".to_string(),
+                    attr: attr.clone(),
+                });
+            }
+            return Resolution::OPAQUE;
+        }
+        Resolution::OPAQUE
+    }
+
+    /// `getattr(obj, "attr")` where `obj` is itself a resolved callable/global.
+    fn resolve_getattr(positional: &[PickleValue], depth: usize) -> ResolvedCallable {
+        let (Some(obj), Some(PickleValue::Str(attr))): (
+            Option<&PickleValue>,
+            Option<&PickleValue>,
+        ) = (positional.first(), positional.get(1)) else {
+            return ResolvedCallable::Opaque;
+        };
+        match resolve_callable(obj, depth + 1).callable {
+            ResolvedCallable::Named { module, name } if name.is_empty() => {
+                ResolvedCallable::Named {
+                    module,
+                    name: attr.clone(),
+                }
+            }
+            ResolvedCallable::Named { module, name } => ResolvedCallable::Attr {
+                base: format!("{module}.{name}"),
+                attr: attr.clone(),
+            },
+            ResolvedCallable::Attr { base, attr: inner } => ResolvedCallable::Attr {
+                base: format!("{base}.{inner}"),
+                attr: attr.clone(),
+            },
+            ResolvedCallable::Opaque => ResolvedCallable::Opaque,
+        }
+    }
+
+    fn emit_invocation(
+        resolved: &Resolution,
+        args: &PickleValue,
+        site: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let Some((severity, tier, reason)): Option<(Severity, ConfidenceTier, &'static str)> =
+            classify_resolved(resolved)
+        else {
+            return;
+        };
+        let Some(fqn): Option<String> = resolved.callable.fqn() else {
+            return;
+        };
+        findings.push(Finding {
+            severity,
+            confidence: tier,
+            category: format!("gadget.{site}_chain"),
+            detail: format!(
+                "{fqn}(...) reached via gadget chain ({reason}); args {}",
+                crate::decompile::to_python(args)
+            ),
+            offset: None,
+        });
+    }
+
+    /// An `Object` carrying state runs `__setstate__` / `__dict__.update` on
+    /// load. If the class resolves to a dangerous callable, that BUILD trigger
+    /// runs code on load.
+    fn emit_setstate(cls: &Resolution, state: &PickleValue, findings: &mut Vec<Finding>) {
+        if let Some((severity, tier, _)) = classify_resolved(cls)
+            && let Some(fqn) = cls.callable.fqn()
+        {
+            findings.push(Finding {
+                severity,
+                confidence: tier,
+                category: "gadget.setstate_trigger".to_string(),
+                detail: format!(
+                    "{fqn}.__setstate__/__dict__.update runs on load with state {}",
+                    crate::decompile::to_python(state)
+                ),
+                offset: None,
+            });
+        }
+    }
+
+    /// Map a resolved callable to a severity + confidence tier. A wrapper-hidden
+    /// callable can never be signature-certain even when its identity is exact.
+    fn classify_resolved(
+        resolved: &Resolution,
+    ) -> Option<(Severity, ConfidenceTier, &'static str)> {
+        let (module, name): (&str, &str) = match &resolved.callable {
+            ResolvedCallable::Named { module, name } => (module.as_str(), name.as_str()),
+            ResolvedCallable::Attr { base, attr } => (base.as_str(), attr.as_str()),
+            ResolvedCallable::Opaque => return None,
+        };
+
+        if is_overtly_malicious(module, name) {
+            let direct: bool = !resolved.via_wrapper
+                && matches!(resolved.callable, ResolvedCallable::Named { .. })
+                && OVERTLY_MALICIOUS.contains(&(module, name));
+            let tier: ConfidenceTier = if direct {
+                ConfidenceTier::SignatureCertain
+            } else {
+                ConfidenceTier::PatternInferred
+            };
+            return Some((Severity::OvertlyMalicious, tier, "execution primitive"));
+        }
+        if EVAL_LIKE.contains(&(module, name)) {
+            let tier: ConfidenceTier = if resolved.via_wrapper {
+                ConfidenceTier::PatternInferred
+            } else {
+                ConfidenceTier::SignatureCertain
+            };
+            return Some((Severity::OvertlyMalicious, tier, "dynamic eval/exec/import"));
+        }
+        if let ResolvedCallable::Attr { base, attr } = &resolved.callable
+            && attr_resolves_to_danger(base, attr)
+        {
+            return Some((
+                Severity::OvertlyMalicious,
+                ConfidenceTier::PatternInferred,
+                "attribute chain to execution primitive",
+            ));
+        }
+        None
+    }
+
+    /// `getattr(os, "system")` resolves `base="os" attr="system"`; check the
+    /// reconstructed `module.name` against the danger list. Handles the case
+    /// where the base is itself a dotted module path.
+    fn attr_resolves_to_danger(base: &str, attr: &str) -> bool {
+        if is_overtly_malicious(base, attr) {
+            return true;
+        }
+        if let Some((module, name)) = base.rsplit_once('.')
+            && is_overtly_malicious(module, name)
+        {
+            return true;
+        }
+        OVERTLY_MALICIOUS
+            .iter()
+            .any(|(m, n): &(&str, &str)| *m == base && *n == attr)
+    }
+
+    fn named_pair(resolved: &ResolvedCallable) -> Option<(String, String)> {
+        match resolved {
+            ResolvedCallable::Named { module, name } => Some((module.clone(), name.clone())),
+            _ => None,
+        }
+    }
+
+    fn tuple_items(value: &PickleValue) -> &[PickleValue] {
+        match value {
+            PickleValue::Tuple(items) | PickleValue::List(items) => items,
+            _ => std::slice::from_ref(value),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -316,6 +745,27 @@ mod tests {
 
     fn report(bytes: &[u8]) -> SafetyReport {
         analyze(&execute(&disassemble(bytes).expect("disasm")).expect("vm"))
+    }
+
+    fn deep_report(bytes: &[u8]) -> SafetyReport {
+        analyze_deep(&execute(&disassemble(bytes).expect("disasm")).expect("vm"))
+    }
+
+    /// `SHORT_BINUNICODE`: `\x8c <len> <bytes>`.
+    fn su(s: &str) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![0x8c, s.len() as u8];
+        v.extend_from_slice(s.as_bytes());
+        v
+    }
+
+    /// `GLOBAL module \n name \n` via the proto-0 `c` opcode (`0x63`).
+    fn global(module: &str, name: &str) -> Vec<u8> {
+        let mut v: Vec<u8> = vec![0x63];
+        v.extend_from_slice(module.as_bytes());
+        v.push(b'\n');
+        v.extend_from_slice(name.as_bytes());
+        v.push(b'\n');
+        v
     }
 
     #[test]
@@ -347,6 +797,149 @@ mod tests {
         assert_eq!(
             analyze_with_policy(&trace, &pol).severity,
             Severity::OvertlyMalicious
+        );
+    }
+
+    /// Direct `os.system("id")` REDUCE must stay `SignatureCertain` on the fast
+    /// path; the deep path must not regress it.
+    #[test]
+    fn deep_keeps_direct_signature_tier() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("os", "system"));
+        bytes.extend(su("id"));
+        bytes.push(0x85);
+        bytes.push(0x52);
+        bytes.push(b'.');
+        let r: SafetyReport = deep_report(&bytes);
+        assert_eq!(r.severity, Severity::OvertlyMalicious);
+        assert!(
+            r.findings
+                .iter()
+                .any(|f| f.confidence == ConfidenceTier::SignatureCertain
+                    && f.severity == Severity::OvertlyMalicious)
+        );
+    }
+
+    /// Indirect `functools.partial(os.system, "id")()` - the dangerous callable
+    /// is hidden one layer behind a partial. Signature-only must miss the
+    /// invocation chain; deep must reconstruct it.
+    #[test]
+    fn deep_catches_partial_wrapped_os_system() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("functools", "partial"));
+        bytes.extend(global("os", "system"));
+        bytes.extend(su("id"));
+        bytes.push(0x86);
+        bytes.push(0x52);
+        bytes.push(0x29);
+        bytes.push(0x52);
+        bytes.push(b'.');
+        let deep: SafetyReport = deep_report(&bytes);
+        assert_eq!(deep.severity, Severity::OvertlyMalicious);
+        assert!(
+            deep.findings
+                .iter()
+                .any(|f| f.category.starts_with("gadget.")
+                    && f.confidence == ConfidenceTier::PatternInferred),
+            "deep must reconstruct partial-wrapped os.system, got {:?}",
+            deep.findings
+        );
+    }
+
+    /// `getattr(__import__("os"), "system")("id")` - the canonical evasion
+    /// chain that never names `os.system` as a single global.
+    #[test]
+    fn deep_catches_getattr_import_chain() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("builtins", "getattr"));
+        bytes.extend(global("builtins", "__import__"));
+        bytes.extend(su("os"));
+        bytes.push(0x85);
+        bytes.push(0x52);
+        bytes.extend(su("system"));
+        bytes.push(0x86);
+        bytes.push(0x52);
+        bytes.extend(su("id"));
+        bytes.push(0x85);
+        bytes.push(0x52);
+        bytes.push(b'.');
+        let deep: SafetyReport = deep_report(&bytes);
+        assert_eq!(deep.severity, Severity::OvertlyMalicious);
+        assert!(
+            deep.findings.iter().any(|f| f.detail.contains("os.system")
+                && f.confidence == ConfidenceTier::PatternInferred),
+            "deep must resolve getattr(__import__(os), system), got {:?}",
+            deep.findings
+        );
+    }
+
+    /// `builtins.eval("...")` reached as an invocation, not just an import.
+    #[test]
+    fn deep_flags_eval_invocation() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("builtins", "eval"));
+        bytes.extend(su("__import__('os').system('id')"));
+        bytes.push(0x85);
+        bytes.push(0x52);
+        bytes.push(b'.');
+        let deep: SafetyReport = deep_report(&bytes);
+        assert_eq!(deep.severity, Severity::OvertlyMalicious);
+        assert!(
+            deep.findings
+                .iter()
+                .any(|f| f.category.starts_with("gadget.") && f.detail.contains("eval"))
+        );
+    }
+
+    /// A benign object graph (a list of two ints) must produce no gadget
+    /// findings under the deep path - no false positive.
+    #[test]
+    fn deep_no_false_positive_on_benign_list() {
+        let r: SafetyReport = deep_report(b"\x80\x02](K\x01K\x02e.");
+        assert_ne!(r.severity, Severity::OvertlyMalicious);
+        assert!(!r.findings.iter().any(|f| f.category.starts_with("gadget.")));
+    }
+
+    /// Constructing a stdlib data class via NEWOBJ with no dangerous callable
+    /// must not be flagged - guards against over-eager construct-gadget firing.
+    #[test]
+    fn deep_no_false_positive_on_benign_newobj() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("collections", "OrderedDict"));
+        bytes.push(0x29);
+        bytes.push(0x81);
+        bytes.push(b'.');
+        let r: SafetyReport = deep_report(&bytes);
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.category.starts_with("gadget.")
+                    && f.severity == Severity::OvertlyMalicious),
+            "benign NEWOBJ must not raise a gadget finding, got {:?}",
+            r.findings
+        );
+    }
+
+    /// `__reduce__`/`__setstate__` BUILD trigger: an Object whose class is a
+    /// dangerous callable and which carries state runs code on load.
+    #[test]
+    fn deep_catches_setstate_build_trigger() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(global("os", "system"));
+        bytes.push(0x29);
+        bytes.push(0x81);
+        bytes.extend(su("payload"));
+        bytes.push(0x62);
+        bytes.push(b'.');
+        let deep: SafetyReport = deep_report(&bytes);
+        assert_eq!(deep.severity, Severity::OvertlyMalicious);
+        assert!(
+            deep.findings
+                .iter()
+                .any(|f| f.category == "gadget.setstate_trigger"
+                    || f.category == "gadget.construct_chain"),
+            "BUILD/setstate gadget must be flagged, got {:?}",
+            deep.findings
         );
     }
 }

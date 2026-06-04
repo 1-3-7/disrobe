@@ -36,7 +36,8 @@ pub use opcode::{ArgKind, Effect, OPCODES, OpInfo, lookup as lookup_opcode, max_
 pub use pass::{PickleLegacyPass, PicklePassReport};
 pub use polyglot::{ContainerKind, PolyglotReport, analyze as analyze_polyglot, looks_like_pickle};
 pub use safety::{
-    Finding, Policy, SafetyReport, Severity, analyze as analyze_safety, analyze_with_policy,
+    AnalysisOptions, ConfidenceTier, Finding, Policy, SafetyReport, Severity,
+    analyze as analyze_safety, analyze_deep, analyze_with_options, analyze_with_policy,
 };
 pub use vm::{GlobalRef, PickleValue, Session, VmTrace, execute};
 
