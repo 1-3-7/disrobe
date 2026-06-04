@@ -100,3 +100,40 @@ fn real_starkit_analyze_returns_tcl_artifact() {
         other => panic!("expected Tcl artifact, got {other:?}"),
     }
 }
+
+#[test]
+fn real_clean_starkit_is_not_flagged_obfuscated() {
+    let c: StarkitContainer = extract(HELLO_KIT).expect("extract");
+    assert!(
+        !c.obfuscation.obfuscated,
+        "the hello.kit demo source is ordinary tcl and must not be flagged: {:?}",
+        c.obfuscation
+    );
+}
+
+#[test]
+fn real_zip_starkit_extraction_is_byte_complete() {
+    let c: StarkitContainer = extract(HELLO_KIT).expect("extract");
+    assert_eq!(c.completeness.declared_entries, 2);
+    assert_eq!(
+        c.completeness.recovered_with_contents, 2,
+        "every zipvfs member's bytes are recovered in full"
+    );
+    assert!((c.completeness.ratio() - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn real_metakit_completeness_is_honest_about_filename_only_recovery() {
+    let c: StarkitContainer = extract(SDX_KIT).expect("extract sdx.kit");
+    assert_eq!(c.format, StarkitFormat::Metakit);
+    assert!(
+        c.completeness.declared_entries >= 40,
+        "the metakit directory lists dozens of members; got {}",
+        c.completeness.declared_entries
+    );
+    assert_eq!(
+        c.completeness.recovered_with_contents, 0,
+        "metakit recovery is filename-only (no byte payload), and the metric reports that honestly"
+    );
+    assert!(c.completeness.ratio() < 0.01);
+}

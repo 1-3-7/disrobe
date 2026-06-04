@@ -28,12 +28,68 @@ pub struct StarkitEntry {
     pub contents: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TclObfuscationKind {
+    IndirectCall,
+    DynamicProc,
+    Subst,
+}
+
+impl TclObfuscationKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::IndirectCall => "indirect-call",
+            Self::DynamicProc => "dynamic-proc",
+            Self::Subst => "subst-codegen",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TclObfuscationHit {
+    pub kind: TclObfuscationKind,
+    pub file: String,
+    pub marker: &'static str,
+    pub occurrences: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TclObfuscation {
+    pub obfuscated: bool,
+    pub indirect_call_hits: usize,
+    pub dynamic_proc_hits: usize,
+    pub subst_hits: usize,
+    pub hits: Vec<TclObfuscationHit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TclExtractionCompleteness {
+    pub declared_entries: usize,
+    pub recovered_with_contents: usize,
+    pub tcl_source_files: usize,
+}
+
+impl TclExtractionCompleteness {
+    /// Fraction of declared container members whose bytes were actually recovered (0.0..=1.0).
+    #[must_use]
+    pub fn ratio(&self) -> f64 {
+        if self.declared_entries == 0 {
+            return 1.0;
+        }
+        self.recovered_with_contents as f64 / self.declared_entries as f64
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StarkitContainer {
     pub format: StarkitFormat,
     pub has_starkit_header: bool,
     pub entries: Vec<StarkitEntry>,
     pub tcl_source_files: Vec<String>,
+    pub obfuscation: TclObfuscation,
+    pub completeness: TclExtractionCompleteness,
 }
 
 #[must_use]
@@ -99,11 +155,15 @@ fn extract_zip(bytes: &[u8], has_header: bool) -> Result<StarkitContainer> {
     }
     entries.sort_by(|a: &StarkitEntry, b: &StarkitEntry| a.path.cmp(&b.path));
     let tcl_source_files: Vec<String> = collect_tcl(&entries);
+    let obfuscation: TclObfuscation = analyze_obfuscation(&entries);
+    let completeness: TclExtractionCompleteness = measure_completeness(&entries, &tcl_source_files);
     Ok(StarkitContainer {
         format: StarkitFormat::ZipVfs,
         has_starkit_header: has_header,
         entries,
         tcl_source_files,
+        obfuscation,
+        completeness,
     })
 }
 
@@ -113,11 +173,15 @@ fn extract_metakit(bytes: &[u8], has_header: bool) -> Result<StarkitContainer> {
     }
     let entries: Vec<StarkitEntry> = scan_metakit_files(bytes);
     let tcl_source_files: Vec<String> = collect_tcl(&entries);
+    let obfuscation: TclObfuscation = analyze_obfuscation(&entries);
+    let completeness: TclExtractionCompleteness = measure_completeness(&entries, &tcl_source_files);
     Ok(StarkitContainer {
         format: StarkitFormat::Metakit,
         has_starkit_header: has_header,
         entries,
         tcl_source_files,
+        obfuscation,
+        completeness,
     })
 }
 
@@ -173,6 +237,124 @@ fn is_plausible_filename(name: &str) -> bool {
         && !name.ends_with('.')
         && known.iter().any(|ext: &&str| name.ends_with(ext))
         && name.bytes().all(is_filename_byte)
+}
+
+const INDIRECT_CALL_MARKERS: &[&str] = &[
+    "eval ",
+    "interp eval",
+    "namespace eval",
+    "namespace inscope",
+    "uplevel ",
+    "apply ",
+    "tailcall ",
+    "coroutine ",
+];
+
+const DYNAMIC_PROC_MARKERS: &[&str] = &["proc [", "proc $", "proc {*}", "rename ", "interp alias"];
+
+const SUBST_MARKERS: &[&str] = &[
+    "subst ",
+    "subst -",
+    "string map",
+    "regsub ",
+    "binary scan",
+    "binary format",
+    "encoding convertfrom",
+    "base64::decode",
+];
+
+const OBFUSCATION_THRESHOLD: usize = 3usize;
+
+fn analyze_obfuscation(entries: &[StarkitEntry]) -> TclObfuscation {
+    let mut hits: Vec<TclObfuscationHit> = Vec::new();
+    let mut indirect_call_hits: usize = 0usize;
+    let mut dynamic_proc_hits: usize = 0usize;
+    let mut subst_hits: usize = 0usize;
+
+    for entry in entries {
+        if !(entry.path.ends_with(".tcl") || entry.path.ends_with(".tm")) {
+            continue;
+        }
+        let Ok(text): core::result::Result<&str, _> = std::str::from_utf8(&entry.contents) else {
+            continue;
+        };
+        scan_markers(
+            text,
+            &entry.path,
+            INDIRECT_CALL_MARKERS,
+            TclObfuscationKind::IndirectCall,
+            &mut indirect_call_hits,
+            &mut hits,
+        );
+        scan_markers(
+            text,
+            &entry.path,
+            DYNAMIC_PROC_MARKERS,
+            TclObfuscationKind::DynamicProc,
+            &mut dynamic_proc_hits,
+            &mut hits,
+        );
+        scan_markers(
+            text,
+            &entry.path,
+            SUBST_MARKERS,
+            TclObfuscationKind::Subst,
+            &mut subst_hits,
+            &mut hits,
+        );
+    }
+
+    let total: usize = indirect_call_hits + dynamic_proc_hits + subst_hits;
+    let distinct_kinds: usize = usize::from(indirect_call_hits > 0)
+        + usize::from(dynamic_proc_hits > 0)
+        + usize::from(subst_hits > 0);
+    let obfuscated: bool = total >= OBFUSCATION_THRESHOLD && distinct_kinds >= 2;
+
+    TclObfuscation {
+        obfuscated,
+        indirect_call_hits,
+        dynamic_proc_hits,
+        subst_hits,
+        hits,
+    }
+}
+
+fn scan_markers(
+    text: &str,
+    file: &str,
+    markers: &[&'static str],
+    kind: TclObfuscationKind,
+    counter: &mut usize,
+    hits: &mut Vec<TclObfuscationHit>,
+) {
+    for marker in markers {
+        let occurrences: usize = text.matches(marker).count();
+        if occurrences > 0 {
+            *counter += occurrences;
+            hits.push(TclObfuscationHit {
+                kind,
+                file: file.to_owned(),
+                marker,
+                occurrences,
+            });
+        }
+    }
+}
+
+fn measure_completeness(
+    entries: &[StarkitEntry],
+    tcl_source_files: &[String],
+) -> TclExtractionCompleteness {
+    let declared_entries: usize = entries.len();
+    let recovered_with_contents: usize = entries
+        .iter()
+        .filter(|e: &&StarkitEntry| !e.contents.is_empty())
+        .count();
+    TclExtractionCompleteness {
+        declared_entries,
+        recovered_with_contents,
+        tcl_source_files: tcl_source_files.len(),
+    }
 }
 
 fn collect_tcl(entries: &[StarkitEntry]) -> Vec<String> {
@@ -304,5 +486,59 @@ mod tests {
         let c: StarkitContainer = extract(&kit).expect("extract metakit");
         assert_eq!(c.format, StarkitFormat::Metakit);
         assert!(c.tcl_source_files.iter().any(|p: &String| p == "main.tcl"));
+    }
+
+    const OBFUSCATED_TCL: &[u8] = b"\
+set cmd [binary format a* [base64::decode $payload]]\n\
+proc [lindex $names 0] {args} { eval $body }\n\
+namespace eval ::secret { uplevel 1 [subst -nocommands $code] }\n\
+interp eval slave [string map $rewrite $template]\n";
+
+    const CLEAN_TCL: &[u8] = b"\
+package require Tcl 8.6\n\
+proc greet {name} { return \"Hello, $name!\" }\n\
+puts [greet disrobe]\n";
+
+    #[test]
+    fn flags_obfuscated_tcl_with_multiple_idioms() {
+        let kit: Vec<u8> = build_zip_starkit(true, &[("app/loader.tcl", OBFUSCATED_TCL)]);
+        let c: StarkitContainer = extract(&kit).expect("extract");
+        assert!(
+            c.obfuscation.obfuscated,
+            "loader using eval+subst+dynamic-proc must be flagged: {:?}",
+            c.obfuscation
+        );
+        assert!(c.obfuscation.indirect_call_hits >= 1);
+        assert!(c.obfuscation.dynamic_proc_hits >= 1);
+        assert!(c.obfuscation.subst_hits >= 1);
+        assert!(
+            c.obfuscation
+                .hits
+                .iter()
+                .any(|h: &TclObfuscationHit| h.kind == TclObfuscationKind::IndirectCall)
+        );
+    }
+
+    #[test]
+    fn does_not_flag_clean_tcl() {
+        let kit: Vec<u8> = build_zip_starkit(true, &[("app/main.tcl", CLEAN_TCL)]);
+        let c: StarkitContainer = extract(&kit).expect("extract");
+        assert!(
+            !c.obfuscation.obfuscated,
+            "ordinary proc/puts source must not be flagged: {:?}",
+            c.obfuscation
+        );
+    }
+
+    #[test]
+    fn zip_extraction_is_complete() {
+        let kit: Vec<u8> = build_zip_starkit(
+            true,
+            &[("app/main.tcl", CLEAN_TCL), ("app/data.dat", b"\x00\x01")],
+        );
+        let c: StarkitContainer = extract(&kit).expect("extract");
+        assert_eq!(c.completeness.declared_entries, 2);
+        assert_eq!(c.completeness.recovered_with_contents, 2);
+        assert!((c.completeness.ratio() - 1.0).abs() < f64::EPSILON);
     }
 }

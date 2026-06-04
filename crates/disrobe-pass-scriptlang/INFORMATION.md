@@ -44,7 +44,15 @@ Verified non-circularly in `tests/real_r_closure.rs` against hand-encoded R wire
 
 ## tcl-obfuscation
 
-(reserved for tcl obfuscation-detection notes)
+`tcl.rs` `analyze_obfuscation()` scans every extracted `.tcl`/`.tm` member's UTF-8 source for three idiom families:
+- indirect-call: `eval`, `interp eval`, `namespace eval/inscope`, `uplevel`, `apply`, `tailcall`, `coroutine`.
+- dynamic-proc: `proc [`, `proc $`, `proc {*}`, `rename`, `interp alias` (proc name/body computed at runtime).
+- subst-codegen: `subst`, `string map`, `regsub`, `binary scan/format`, `encoding convertfrom`, `base64::decode`.
+`obfuscated` flips true only when total hits >= 3 AND at least two distinct families fire, so ordinary `proc`/`puts`/`expr` source is not flagged. Per-hit file + marker + count retained in `hits`.
+
+`measure_completeness()` reports `declared_entries`, `recovered_with_contents` (non-empty payload), `tcl_source_files`, and a `ratio()`. ZipVfs starkits recover bytes in full (ratio 1.0). Metakit/sdx.kit recovery is FILENAME-ONLY (the Metakit b-tree blob is not decompressed), so `recovered_with_contents` is 0 and the ratio is honest about it (~0.0) — flagged in `tests/real_tcl_starkit.rs::real_metakit_completeness_is_honest_about_filename_only_recovery`.
+
+Verified in tcl.rs unit tests (obfuscated multi-idiom loader flagged; clean source not) and against real hello.kit (clean, complete) / sdx.kit (Metakit, filename-only) fixtures.
 
 ## haxe-ceiling
 

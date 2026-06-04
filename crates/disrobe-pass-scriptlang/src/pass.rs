@@ -144,10 +144,15 @@ fn build_report(
         ScriptArtifact::Tcl(container) => {
             let names: Vec<String> = container.entries.iter().map(|e| e.path.clone()).collect();
             let detail: String = format!(
-                "starkit format={:?} entries={} tcl_files={}",
+                "starkit format={:?} entries={} tcl_files={} obfuscated={} obf_hits=(indirect={},dynproc={},subst={}) completeness={:.2}",
                 container.format,
                 container.entries.len(),
-                container.tcl_source_files.len()
+                container.tcl_source_files.len(),
+                container.obfuscation.obfuscated,
+                container.obfuscation.indirect_call_hits,
+                container.obfuscation.dynamic_proc_hits,
+                container.obfuscation.subst_hits,
+                container.completeness.ratio()
             );
             (names.len(), names, detail)
         }
