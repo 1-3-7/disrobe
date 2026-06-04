@@ -3559,6 +3559,29 @@ fn bare_except_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
 /// copy of a `try/except/finally` (combo). Returns `Some((start, end))` when such a region exists and
 /// is entered by direct fall-through (its first op is a real statement, not a jump/NOP/return), else
 /// `None`. Only fires 3.11+; pre-3.11 else is handled by the legacy else-join path.
+/// True when the modern (3.11+) `try/except` gap `[protected_end, handler_start)` is a construct-exit
+/// tail (`return X`) rather than a genuine `else:`. `CPython` lays the try's normal, no-early-exit
+/// success-path `return` in that gap, the same place an `else:` would sit; a real `else` enters by
+/// fall-through into a STATEMENT, whereas this gap leads directly with `RETURN_VALUE`/`RETURN_CONST`
+/// (so `try_else_split`'s fall-through gate already rejected it, leaving `normal_region` = `None`). The
+/// `extended_body_end` body recovery then sinks that return inside the `try`; this signals the caller to
+/// lift the body's trailing `return` out as the construct tail so it emits after the `try/except`.
+fn modern_try_construct_tail_present(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+) -> bool {
+    if protected_end >= region.handler_start {
+        return false;
+    }
+    first_significant(stream, protected_end, region.handler_start).is_some_and(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    })
+}
+
 fn try_else_split(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3790,7 +3813,11 @@ fn structure_try_except_family(
     let normal_region: Option<(usize, usize)> =
         try_else_split(stream, region, protected_end, except_region_end);
 
-    let body: Vec<Stmt> = if has_combo {
+    let lift_modern_tail: bool = normal_region.is_none()
+        && !has_combo
+        && modern_try_construct_tail_present(stream, region, protected_end);
+
+    let mut body: Vec<Stmt> = if has_combo {
         structure_finally_protected_body(
             code,
             stream,
@@ -3804,6 +3831,12 @@ fn structure_try_except_family(
     } else {
         structure_stmts(code, stream, region.try_start, extended_body_end)?
     };
+    let lifted_tail: Vec<Stmt> =
+        if lift_modern_tail && body.len() >= 2 && matches!(body.last(), Some(Stmt::Return(_))) {
+            body.pop().into_iter().collect()
+        } else {
+            Vec::new()
+        };
 
     let handlers: Vec<ExceptHandler> =
         parse_except_handlers(code, stream, region.handler_start, except_region_end)?;
@@ -3832,7 +3865,7 @@ fn structure_try_except_family(
                 (raw, Vec::new())
             }
         }
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), lifted_tail),
     };
     let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
         handlers
@@ -8296,10 +8329,12 @@ fn assert_msg_expr(
 }
 
 /// Recover a return-form ternary chain `return X if c0 else (Y if c1 else Z)` as a single
-/// `Stmt::Return(IfExp)` rather than an `if/return` cascade. On 3.13 the cascade form lowers each
-/// constant arm via the `RETURN_CONST` peephole (`LOAD_CONST; RETURN_VALUE` collapses to one op),
-/// while the ternary-expression form keeps `LOAD_CONST; RETURN_VALUE`; recovering the expression
-/// form makes the recompiled op-stream match the original. The region [lo..hi] must consist solely
+/// `Stmt::Return(IfExp)` rather than an `if/return` cascade. On 3.12-3.13 the cascade form lowers
+/// each constant arm via the `RETURN_CONST` peephole (`LOAD_CONST; RETURN_VALUE` collapses to one
+/// op), while the ternary-expression form keeps `LOAD_CONST; RETURN_VALUE`; recovering the
+/// expression form makes the recompiled op-stream match the original. 3.11 lacks `RETURN_CONST` and
+/// 3.14 reconverges (both forms fuse), so the gate is exactly 3.12-3.13. The region [lo..hi] must
+/// consist solely
 /// of `<test>; PopJumpIfFalse(else); <body expr>; Return; <else: nested return-ternary | expr Return>`
 /// arms - any emitted side-effect statement aborts the fold so plain `if cond: return` guards with
 /// real bodies are untouched.
@@ -10947,7 +10982,7 @@ fn structure_stmts(
         return Ok(stmts);
     }
 
-    if active_version().is_some_and(|v: PyVersion| v.major() == 3 && v.minor() == 13)
+    if active_version().is_some_and(|v: PyVersion| v.major() == 3 && (12..=13).contains(&v.minor()))
         && matches!(stream.ops.get(hi - 1), Some(CanonicalOp::Return))
         && let Some(stmts) = try_structure_return_ternary(code, stream, lo, hi, jump_idx, target)?
     {
