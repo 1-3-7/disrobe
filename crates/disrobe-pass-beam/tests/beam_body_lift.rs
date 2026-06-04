@@ -217,14 +217,12 @@ fn megafile_surface_recovery_contains_real_bodies_not_ok_stub() {
     let surface: ErlangSurface = recover_erlang(&megafile!()).expect("recover");
     assert!(surface.source.contains("-module(edge_cases)."));
     assert!(
-        surface.source.contains("is_tuple(X0)"),
-        "surface should contain lifted guard"
+        surface.source.contains("when is_binary(Bin)"),
+        "abstract-code surface should recover the original guard with variable names"
     );
     assert!(
-        surface
-            .source
-            .contains("<<X0/binary, X1/binary, X2/binary>>"),
-        "surface should contain lifted binary construction"
+        surface.source.contains("<<A/binary, B/binary, C/binary>>"),
+        "abstract-code surface should recover the original binary construction names"
     );
     let bare_ok_bodies: usize = surface.source.matches("->\n    ok.\n").count();
     let function_arrows: usize = surface.source.matches(") ->\n").count();

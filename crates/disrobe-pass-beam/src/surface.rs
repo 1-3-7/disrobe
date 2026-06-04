@@ -85,7 +85,11 @@ fn render_abstract_forms(module: &str, forms: &Term, core: &CoreModule) -> Strin
             Some("function") if tuple.len() >= 5 => {
                 let name: &str = tuple[2].as_atom().unwrap_or("?");
                 let arity: u32 = small_int(&tuple[3]).unwrap_or(0);
-                if let Some(f) = core
+                let clauses: Option<&[Term]> = tuple[4].as_list();
+                if let Some(clauses) = clauses.filter(|c: &&[Term]| !c.is_empty()) {
+                    out.push('\n');
+                    out.push_str(&crate::erlang_abstract::render_function(name, clauses));
+                } else if let Some(f) = core
                     .functions
                     .iter()
                     .find(|f: &&CoreFunction| f.name == name && f.arity == arity)

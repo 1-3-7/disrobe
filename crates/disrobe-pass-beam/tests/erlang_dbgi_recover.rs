@@ -120,3 +120,69 @@ fn erlang_megafile_recovers_abstract_surface() {
         "expected >=95% fn-head recovery, got {pct:.1}% ({recovered}/{total})"
     );
 }
+
+/// The abstract-form renderer must recover full bodies with original variable
+/// names, guards, records, comprehensions, and bit-syntax — the constructs that
+/// the register-named core-lift loses. Asserted against the original `.erl`.
+#[test]
+fn erlang_megafile_recovers_full_bodies() {
+    let beam: BeamFile = BeamFile::parse(&erlang_megafile()).unwrap();
+    let surface: ErlangSurface = recover_erlang(&beam).expect("recover");
+    let src: &str = &surface.source;
+
+    let expected_fragments: [&str; 12] = [
+        "[X * 2 || X <- List, X > 0, X rem 2 =:= 1]",
+        "guarded_dispatch(X) when is_integer(X), X > 1000 ->",
+        "<<A:8, B:16/big, C:32/little, Rest/binary>>",
+        "M1 = M0#{three => 3, four => 4}",
+        "State#state{count = C + N}",
+        "[{K, V} || {K, V} <- Pairs, is_atom(K), is_integer(V), V > 0]",
+        "[{X, Y} || X <- Xs, Y <- Ys, X =/= Y]",
+        "<< <<X:8>> || <<X:8>> <= Bin",
+        "fun(X) -> X + N end",
+        "after 1000 ->",
+        "io:format",
+        "999999999999999999999",
+    ];
+    let missing: Vec<&str> = expected_fragments
+        .iter()
+        .copied()
+        .filter(|f: &&str| !src.contains(f))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "missing recovered constructs {missing:?}\n--- recovered (lines 70-130) ---\n{}",
+        src.lines().skip(69).take(60).collect::<Vec<_>>().join("\n")
+    );
+
+    let original: String = std::fs::read_to_string(corpus("megafile/edge_cases.erl")).unwrap();
+    let orig: std::collections::BTreeSet<String> = sig_tokens(&original);
+    let rec: std::collections::BTreeSet<String> = sig_tokens(src);
+    let hit: usize = orig.iter().filter(|t: &&String| rec.contains(*t)).count();
+    let pct: f64 = (hit as f64) * 100.0 / (orig.len() as f64);
+    println!(
+        "erlang abstract-code token recovery: {hit}/{} = {pct:.1}%",
+        orig.len()
+    );
+    assert!(
+        pct >= 98.0,
+        "expected >=98% token recovery from abstract code, got {pct:.1}%"
+    );
+}
+
+fn sig_tokens(src: &str) -> std::collections::BTreeSet<String> {
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut cur: String = String::new();
+    for ch in src.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            out.insert(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.insert(cur);
+    }
+    out.retain(|t: &String| t.len() >= 2 && !t.chars().next().unwrap().is_ascii_digit());
+    out
+}

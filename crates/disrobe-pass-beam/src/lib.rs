@@ -31,6 +31,7 @@ pub mod dbgi;
 pub mod disasm;
 pub mod elixir;
 pub mod elixir_quoted;
+pub mod erlang_abstract;
 pub mod error;
 pub mod etf;
 pub mod ez;
