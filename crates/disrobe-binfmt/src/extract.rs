@@ -146,6 +146,13 @@ pub fn extract_to_with_quota(
             kind: "ext4",
             hint: "ext4 full extraction is not implemented in-tree; superblock parse only (use `debugfs` / mount loop on Linux for full filesystem walk)",
         }),
+        ContainerKind::Cpio => extract_cpio(bytes, out_dir, quota),
+        ContainerKind::Xz => extract_bare_xz(bytes, out_dir, quota),
+        ContainerKind::Vhd => extract_vhd_summary(bytes, out_dir),
+        ContainerKind::Vhdx => extract_vhdx_summary(bytes, out_dir),
+        ContainerKind::Wim => extract_wim_summary(bytes, out_dir),
+        ContainerKind::Gpt => extract_gpt_summary(bytes, out_dir),
+        ContainerKind::Mbr => extract_mbr_summary(bytes, out_dir),
         ContainerKind::None => Err(Error::UnsupportedContainer(kind.label())),
     }
 }
@@ -956,6 +963,175 @@ fn extract_asar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         integrity_violations: violations,
         quota: QuotaSummary::from(guard.report()),
     })
+}
+
+fn extract_cpio(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
+    let archive: crate::containers::CpioArchive = crate::containers::parse_cpio(bytes)?;
+    let mut guard: QuotaGuard = QuotaGuard::new(quota);
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(archive.entries.len());
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    let mut violations: Vec<String> = Vec::new();
+    for entry in &archive.entries {
+        let is_dir: bool = entry.mode & 0o170_000 == 0o040_000;
+        let is_regular: bool = entry.mode & 0o170_000 == 0o100_000;
+        let safe_name: String = match sanitize_entry_path(&entry.name) {
+            Ok(s) => s,
+            Err(e) => {
+                violations.push(format!("cpio-slip: {e}"));
+                continue;
+            }
+        };
+        let disk_path: PathBuf = out_dir.join(&safe_name);
+        if is_dir {
+            std::fs::create_dir_all(&disk_path)?;
+            continue;
+        }
+        if !is_regular {
+            continue;
+        }
+        let size: u64 = entry.file_size;
+        guard.admit_entry(&safe_name, size, size)?;
+        let data_end: usize = entry
+            .data_offset
+            .checked_add(size as usize)
+            .ok_or_else(|| Error::Tar("cpio entry data overflow".to_owned()))?;
+        let view: &[u8] = bytes
+            .get(entry.data_offset..data_end)
+            .ok_or_else(|| Error::Tar(format!("cpio entry `{}` out of bounds", entry.name)))?;
+        if let Some(parent) = disk_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&disk_path, view)?;
+        encoding.insert(safe_name.clone(), EntryCompression::Stored);
+        entries_out.push(ExtractedEntry {
+            name: safe_name,
+            disk_path: Some(disk_path),
+            uncompressed_size: size,
+            compressed_size: size,
+            compression: EntryCompression::Stored,
+            is_executable: entry.mode & 0o111 != 0,
+        });
+    }
+    Ok(ExtractionResult {
+        kind: ContainerKind::Cpio,
+        entries: entries_out,
+        encoding,
+        integrity_violations: violations,
+        quota: QuotaSummary::from(guard.report()),
+    })
+}
+
+fn extract_bare_xz(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    let cap: u64 = quota.max_total_uncompressed;
+    let mut guard: QuotaGuard = QuotaGuard::new(quota);
+    let payload: Vec<u8> = decompress_wrap_capped(bytes, CompressionWrap::Xz, cap, "stream.xz")?;
+    let uncompressed_size: u64 = payload.len() as u64;
+    let safe_name: String = sanitize_entry_path("stream.bin")?;
+    guard.admit_entry(&safe_name, uncompressed_size, bytes.len() as u64)?;
+    let disk_path: PathBuf = out_dir.join(&safe_name);
+    std::fs::write(&disk_path, &payload)?;
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    encoding.insert(safe_name.clone(), EntryCompression::Xz);
+    let entries: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        name: safe_name,
+        disk_path: Some(disk_path),
+        uncompressed_size,
+        compressed_size: bytes.len() as u64,
+        compression: EntryCompression::Xz,
+        is_executable: false,
+    }];
+    Ok(ExtractionResult {
+        kind: ContainerKind::Xz,
+        entries,
+        encoding,
+        integrity_violations: Vec::new(),
+        quota: QuotaSummary::from(guard.report()),
+    })
+}
+
+fn write_layout_summary(
+    kind: ContainerKind,
+    out_dir: &Path,
+    filename: &str,
+    json: &str,
+    hint: &'static str,
+) -> Result<ExtractionResult> {
+    std::fs::create_dir_all(out_dir)?;
+    let path: PathBuf = out_dir.join(filename);
+    std::fs::write(&path, json.as_bytes())?;
+    Err(Error::NoSource {
+        kind: kind.label(),
+        hint,
+    })
+}
+
+fn extract_vhd_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+    let image: crate::containers::vhd::VhdImage = crate::containers::vhd::parse_vhd(bytes)?;
+    let json: String =
+        serde_json::to_string_pretty(&image).unwrap_or_else(|_: serde_json::Error| String::new());
+    write_layout_summary(
+        ContainerKind::Vhd,
+        out_dir,
+        ".disrobe-vhd-layout.json",
+        &json,
+        "vhd footer + dynamic BAT parsed (see .disrobe-vhd-layout.json); contained filesystem walk requires partition/fs pass over the mapped sectors",
+    )
+}
+
+fn extract_vhdx_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+    let image: crate::containers::vhdx::VhdxImage = crate::containers::vhdx::parse_vhdx(bytes)?;
+    let json: String =
+        serde_json::to_string_pretty(&image).unwrap_or_else(|_: serde_json::Error| String::new());
+    write_layout_summary(
+        ContainerKind::Vhdx,
+        out_dir,
+        ".disrobe-vhdx-layout.json",
+        &json,
+        "vhdx header + region table + metadata + BAT parsed (see .disrobe-vhdx-layout.json); contained filesystem walk requires partition/fs pass over the mapped blocks",
+    )
+}
+
+fn extract_wim_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+    let archive: crate::containers::WimArchive = crate::containers::parse_wim(bytes)?;
+    let json: String =
+        serde_json::to_string_pretty(&archive).unwrap_or_else(|_: serde_json::Error| String::new());
+    write_layout_summary(
+        ContainerKind::Wim,
+        out_dir,
+        ".disrobe-wim-images.json",
+        &json,
+        "wim header + resource table + xml image list parsed (see .disrobe-wim-images.json); per-image file extraction requires the LZX/XPRESS/LZMS chunk decompressor (use `wimlib-imagex` for now)",
+    )
+}
+
+fn extract_gpt_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+    let table: crate::containers::GptTable = crate::containers::parse_gpt(bytes)?;
+    let json: String =
+        serde_json::to_string_pretty(&table).unwrap_or_else(|_: serde_json::Error| String::new());
+    write_layout_summary(
+        ContainerKind::Gpt,
+        out_dir,
+        ".disrobe-gpt-partitions.json",
+        &json,
+        "gpt header + partition entries parsed (see .disrobe-gpt-partitions.json); per-partition filesystem walk requires an fs pass over each partition LBA range",
+    )
+}
+
+fn extract_mbr_summary(bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
+    let table: crate::containers::MbrTable = crate::containers::parse_mbr(bytes)?;
+    let json: String =
+        serde_json::to_string_pretty(&table).unwrap_or_else(|_: serde_json::Error| String::new());
+    write_layout_summary(
+        ContainerKind::Mbr,
+        out_dir,
+        ".disrobe-mbr-partitions.json",
+        &json,
+        "mbr partition table parsed (see .disrobe-mbr-partitions.json); per-partition filesystem walk requires an fs pass over each partition LBA range",
+    )
 }
 
 #[cfg(test)]

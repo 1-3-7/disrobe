@@ -43,6 +43,13 @@ pub enum ContainerKind {
     Squashfs,
     Cramfs,
     Ext4,
+    Cpio,
+    Vhd,
+    Vhdx,
+    Wim,
+    Gpt,
+    Mbr,
+    Xz,
     None,
 }
 
@@ -88,6 +95,13 @@ impl ContainerKind {
             Self::Squashfs => "squashfs",
             Self::Cramfs => "cramfs",
             Self::Ext4 => "ext4",
+            Self::Cpio => "cpio",
+            Self::Vhd => "vhd",
+            Self::Vhdx => "vhdx",
+            Self::Wim => "wim",
+            Self::Gpt => "gpt",
+            Self::Mbr => "mbr",
+            Self::Xz => "xz",
             Self::None => "none",
         }
     }
@@ -132,6 +146,20 @@ const TAR_USTAR_OFFSET: usize = 257;
 const TAR_USTAR: &[u8; 5] = b"ustar";
 const ISO_PRIMARY_OFFSET: usize = 32_768 + 1;
 const ISO_PRIMARY_TAG: &[u8; 5] = b"CD001";
+const CPIO_NEWC_MAGIC: &[u8; 6] = b"070701";
+const CPIO_CRC_MAGIC: &[u8; 6] = b"070702";
+const CPIO_ODC_MAGIC: &[u8; 6] = b"070707";
+const CPIO_BIN_MAGIC_LE: &[u8; 2] = &[0xc7, 0x71];
+const CPIO_BIN_MAGIC_BE: &[u8; 2] = &[0x71, 0xc7];
+const WIM_MAGIC: &[u8; 8] = b"MSWIM\x00\x00\x00";
+const VHDX_MAGIC: &[u8; 8] = b"vhdxfile";
+const VHD_COOKIE: &[u8; 8] = b"conectix";
+const VHD_FOOTER_LEN: usize = 512;
+const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
+const GPT_HEADER_OFFSET: usize = 512;
+const MBR_SIGNATURE_OFFSET: usize = 510;
+const MBR_PARTITION_TABLE_OFFSET: usize = 446;
+const MBR_SIGNATURE: &[u8; 2] = &[0x55, 0xaa];
 
 #[must_use]
 pub fn detect_container(bytes: &[u8]) -> Option<ContainerKind> {
@@ -203,11 +231,12 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if bytes.starts_with(RPM_MAGIC) {
         return Some(ContainerKind::Rpm);
     }
-    if bytes.starts_with(XZ_MAGIC) && smells_like_tar_decompressed(bytes) {
-        return Some(ContainerKind::TarXz);
-    }
     if bytes.starts_with(XZ_MAGIC) {
-        return Some(ContainerKind::TarXz);
+        return Some(if smells_like_tar_decompressed(bytes) {
+            ContainerKind::TarXz
+        } else {
+            ContainerKind::Xz
+        });
     }
     if bytes.starts_with(ZSTD_MAGIC) {
         return Some(ContainerKind::TarZst);
@@ -221,6 +250,15 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if bytes.starts_with(PKG_XAR_MAGIC) {
         return Some(ContainerKind::Pkg);
     }
+    if bytes.starts_with(WIM_MAGIC) {
+        return Some(ContainerKind::Wim);
+    }
+    if bytes.starts_with(VHDX_MAGIC) {
+        return Some(ContainerKind::Vhdx);
+    }
+    if smells_like_cpio(bytes) {
+        return Some(ContainerKind::Cpio);
+    }
     if smells_like_asar(bytes) {
         return Some(ContainerKind::Asar);
     }
@@ -233,12 +271,21 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     if smells_like_dmg(bytes) {
         return Some(ContainerKind::Dmg);
     }
+    if smells_like_gpt(bytes) {
+        return Some(ContainerKind::Gpt);
+    }
+    if smells_like_mbr(bytes) {
+        return Some(ContainerKind::Mbr);
+    }
     None
 }
 
 fn detect_by_tail(bytes: &[u8]) -> Option<ContainerKind> {
     if find_eocd(bytes).is_some() {
         return Some(ContainerKind::Zip);
+    }
+    if smells_like_vhd(bytes) {
+        return Some(ContainerKind::Vhd);
     }
     None
 }
@@ -272,8 +319,19 @@ fn smells_like_tar(bytes: &[u8]) -> bool {
     &bytes[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + TAR_USTAR.len()] == TAR_USTAR
 }
 
-const fn smells_like_tar_decompressed(_bytes: &[u8]) -> bool {
-    false
+const XZ_TAR_PEEK_BYTES: usize = TAR_USTAR_OFFSET + TAR_USTAR.len();
+
+fn smells_like_tar_decompressed(bytes: &[u8]) -> bool {
+    use std::io::Read as _;
+
+    let limit: u64 = XZ_TAR_PEEK_BYTES as u64;
+    let mut head: Vec<u8> = Vec::with_capacity(XZ_TAR_PEEK_BYTES);
+    let decoder: liblzma::read::XzDecoder<&[u8]> = liblzma::read::XzDecoder::new(bytes);
+    if std::io::copy(&mut decoder.take(limit), &mut head).is_err() {
+        return false;
+    }
+    head.len() >= XZ_TAR_PEEK_BYTES
+        && &head[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + TAR_USTAR.len()] == TAR_USTAR
 }
 
 fn smells_like_iso(bytes: &[u8]) -> bool {
@@ -318,6 +376,51 @@ fn smells_like_asar(bytes: &[u8]) -> bool {
         return false;
     }
     bytes[header_off..header_end.min(header_off + 16)].contains(&b'{')
+}
+
+fn smells_like_cpio(bytes: &[u8]) -> bool {
+    if bytes.len() >= 6
+        && (bytes[..6] == *CPIO_NEWC_MAGIC
+            || bytes[..6] == *CPIO_CRC_MAGIC
+            || bytes[..6] == *CPIO_ODC_MAGIC)
+    {
+        return true;
+    }
+    bytes.len() >= 2 && (bytes[..2] == *CPIO_BIN_MAGIC_LE || bytes[..2] == *CPIO_BIN_MAGIC_BE)
+}
+
+fn smells_like_vhd(bytes: &[u8]) -> bool {
+    if bytes.len() >= 8 && &bytes[..8] == VHD_COOKIE {
+        return true;
+    }
+    if bytes.len() < VHD_FOOTER_LEN {
+        return false;
+    }
+    let footer_start: usize = bytes.len() - VHD_FOOTER_LEN;
+    &bytes[footer_start..footer_start + 8] == VHD_COOKIE
+}
+
+fn smells_like_gpt(bytes: &[u8]) -> bool {
+    let need: usize = GPT_HEADER_OFFSET + GPT_SIGNATURE.len();
+    if bytes.len() < need {
+        return false;
+    }
+    &bytes[GPT_HEADER_OFFSET..GPT_HEADER_OFFSET + GPT_SIGNATURE.len()] == GPT_SIGNATURE
+}
+
+fn smells_like_mbr(bytes: &[u8]) -> bool {
+    if bytes.len() < MBR_SIGNATURE_OFFSET + 2 {
+        return false;
+    }
+    if &bytes[MBR_SIGNATURE_OFFSET..MBR_SIGNATURE_OFFSET + 2] != MBR_SIGNATURE {
+        return false;
+    }
+    (0..4).any(|i: usize| {
+        let entry: usize = MBR_PARTITION_TABLE_OFFSET + i * 16;
+        let boot_flag: u8 = bytes[entry];
+        let part_type: u8 = bytes[entry + 4];
+        (boot_flag == 0x00 || boot_flag == 0x80) && part_type != 0x00
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,10 +568,37 @@ mod tests {
     }
 
     #[test]
-    fn detects_xz_as_tar_xz() {
+    fn undecompressable_xz_stub_is_bare_xz() {
         let mut bytes: Vec<u8> = XZ_MAGIC.to_vec();
         bytes.extend([0u8; 32]);
-        assert_eq!(detect_container(&bytes), Some(ContainerKind::TarXz));
+        assert_eq!(detect_container(&bytes), Some(ContainerKind::Xz));
+    }
+
+    fn xz_compress(payload: &[u8]) -> Vec<u8> {
+        use std::io::Read as _;
+        let mut out: Vec<u8> = Vec::new();
+        let mut encoder: liblzma::read::XzEncoder<&[u8]> =
+            liblzma::read::XzEncoder::new(payload, 1);
+        encoder.read_to_end(&mut out).expect("xz compress");
+        out
+    }
+
+    #[test]
+    fn xz_wrapping_tar_detects_tar_xz() {
+        let mut tar: Vec<u8> = vec![0u8; 1024];
+        tar[TAR_USTAR_OFFSET..TAR_USTAR_OFFSET + TAR_USTAR.len()].copy_from_slice(TAR_USTAR);
+        let compressed: Vec<u8> = xz_compress(&tar);
+        assert!(compressed.starts_with(XZ_MAGIC));
+        assert_eq!(detect_container(&compressed), Some(ContainerKind::TarXz));
+    }
+
+    #[test]
+    fn xz_wrapping_plain_payload_detects_bare_xz() {
+        let payload: Vec<u8> =
+            b"this is just a plain text file, not a tar archive at all".repeat(8);
+        let compressed: Vec<u8> = xz_compress(&payload);
+        assert!(compressed.starts_with(XZ_MAGIC));
+        assert_eq!(detect_container(&compressed), Some(ContainerKind::Xz));
     }
 
     #[test]
