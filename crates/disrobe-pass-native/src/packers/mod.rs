@@ -6,6 +6,13 @@ pub mod pe_sections;
 
 pub use pe_sections::{DataDirectory, PeImage, PeSection, parse_pe_image};
 
+pub mod section_recovery;
+
+pub use section_recovery::{
+    GranuleRecovery, SectionRecoveryReport, SectionRole, build_loaded_image,
+    section_recovery_report,
+};
+
 pub mod upx_cleanroom;
 
 pub use upx_cleanroom::{UpxMethod, UpxPackHeader, UpxUnpackOutput, unpack_upx};

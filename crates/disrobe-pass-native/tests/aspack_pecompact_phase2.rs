@@ -231,3 +231,56 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
         eprintln!("no aspack/pecompact fixtures present; recovery check skipped");
     }
 }
+
+/// The section-granule report must isolate the residual: `.text` (the
+/// decompiler-critical executable content) recovers byte-identically, and the
+/// report's content percentage agrees with the standalone `content_recovery_pct`
+/// field. The remaining mismatch is confined to loader-bound sections
+/// (`.rsrc` resource-data RVAs, the `.rdata` IAT slice), never `.text`.
+#[test]
+fn aspack_section_report_isolates_residual_to_non_text() {
+    use disrobe_pass_native::packers::section_recovery::{GranuleRecovery, SectionRole};
+    let cases: &[(&str, &str)] = &[
+        ("Clockres.packed.aspack.exe", "Clockres.original.exe"),
+        ("AccessEnum.packed.aspack.exe", "AccessEnum.original.exe"),
+    ];
+    let mut tested: usize = 0;
+    for (packed_n, orig_n) in cases {
+        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
+            (corpus("aspack", packed_n), corpus("aspack", orig_n))
+        else {
+            continue;
+        };
+        let out: AspackPhaseTwoOutput =
+            unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack");
+        let report = out.section_report.as_ref().expect("section report present");
+        let standalone: f64 = out.content_recovery_pct.unwrap_or(0.0);
+        assert!(
+            (report.content_recovery_pct() - standalone).abs() < 0.01,
+            "{packed_n}: report content {:.4}% must agree with standalone {standalone:.4}%",
+            report.content_recovery_pct(),
+        );
+        let text: &GranuleRecovery = report
+            .sections
+            .iter()
+            .find(|s: &&GranuleRecovery| s.name == ".text")
+            .expect(".text row present");
+        assert_eq!(text.role, SectionRole::Content);
+        assert!(
+            text.is_byte_identical(),
+            "{packed_n}: .text must recover byte-identically ({}/{} = {:.2}%)",
+            text.matching,
+            text.compared,
+            text.recovery_pct(),
+        );
+        let worst = report.mismatching_content_sections();
+        assert!(
+            !worst.iter().any(|s: &&GranuleRecovery| s.name == ".text"),
+            "{packed_n}: .text must never appear in the mismatch list",
+        );
+        tested += 1;
+    }
+    if tested == 0 {
+        eprintln!("no aspack fixtures present; section report check skipped");
+    }
+}

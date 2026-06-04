@@ -45,6 +45,9 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+use crate::packers::section_recovery::{
+    SectionRecoveryReport, build_loaded_image, section_recovery_report,
+};
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 const EMU_HEAP_BASE: u64 = 0x2000_0000;
@@ -78,6 +81,12 @@ pub struct PecompactPhaseTwoOutput {
     /// was supplied. Honest: measured, never rounded.
     pub content_recovery_pct: Option<f64>,
     pub whole_image_recovery_pct: Option<f64>,
+    /// Per-section recovery breakdown isolating which section carries the
+    /// residual. `None` when no original baseline was supplied. `.text`/`.data`
+    /// recover byte-identically; the residual concentrates in loader-bound
+    /// `.rsrc` resource RVAs, the `.rdata` IAT slice and `.reloc` (the stub
+    /// applies relocations rather than restoring the unbound fixup table).
+    pub section_report: Option<SectionRecoveryReport>,
 }
 
 /// Host shim servicing PECompact's bootstrap kernel32 imports.
@@ -245,14 +254,19 @@ pub fn unpack_pecompact_phase2_emulated(
         _ => None,
     };
 
-    let (content_pct, whole_pct): (Option<f64>, Option<f64>) = match original {
+    let (content_pct, whole_pct, report): (
+        Option<f64>,
+        Option<f64>,
+        Option<SectionRecoveryReport>,
+    ) = match original {
         Some(orig) => {
-            let baseline: Vec<u8> = build_original_baseline(orig, capacity as usize)?;
+            let baseline: Vec<u8> = build_loaded_image(orig, capacity as usize)?;
             let content: f64 = content_recovery_pct(orig, &recovered, &baseline)?;
             let whole: f64 = whole_image_recovery_pct(&recovered, &baseline);
-            (Some(content), Some(whole))
+            let report: SectionRecoveryReport = section_recovery_report(orig, &recovered, &[])?;
+            (Some(content), Some(whole), Some(report))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     Ok(PecompactPhaseTwoOutput {
@@ -266,6 +280,7 @@ pub fn unpack_pecompact_phase2_emulated(
         seh_dispatched,
         content_recovery_pct: content_pct,
         whole_image_recovery_pct: whole_pct,
+        section_report: report,
     })
 }
 
@@ -425,28 +440,6 @@ fn run_until_oep(
             other => return Ok(other),
         }
     }
-}
-
-fn build_original_baseline(original: &[u8], capacity: usize) -> Result<Vec<u8>> {
-    let img: PeImage = parse_pe_image(original)?;
-    let mut buf: Vec<u8> = vec![0u8; capacity];
-    let hdr: usize = 0x1000.min(original.len()).min(capacity);
-    buf[..hdr].copy_from_slice(&original[..hdr]);
-    for sec in &img.sections {
-        let dst: usize = sec.virtual_address as usize;
-        if dst >= capacity {
-            continue;
-        }
-        let raw_avail: usize =
-            (sec.raw_size as usize).min(original.len().saturating_sub(sec.raw_pointer as usize));
-        let copy: usize = raw_avail.min(sec.virtual_size as usize).min(capacity - dst);
-        if copy == 0 {
-            continue;
-        }
-        let src: usize = sec.raw_pointer as usize;
-        buf[dst..dst + copy].copy_from_slice(&original[src..src + copy]);
-    }
-    Ok(buf)
 }
 
 fn content_recovery_pct(original: &[u8], recovered: &[u8], baseline: &[u8]) -> Result<f64> {

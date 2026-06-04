@@ -46,6 +46,9 @@ use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+use crate::packers::section_recovery::{
+    SectionRecoveryReport, build_loaded_image, section_recovery_report,
+};
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 const EMU_HEAP_BASE: u64 = 0x2000_0000;
@@ -82,6 +85,12 @@ pub struct AspackPhaseTwoOutput {
     /// no original baseline was supplied. Honest: measured, never rounded.
     pub content_recovery_pct: Option<f64>,
     pub whole_image_recovery_pct: Option<f64>,
+    /// Per-section recovery breakdown isolating exactly which section carries the
+    /// residual. `None` when no original baseline was supplied. The `.text`/
+    /// `.data` content sections recover byte-identically; the residual lives in
+    /// loader-bound `.rsrc` resource-data RVAs and the `.rdata` IAT slice (both
+    /// bound-vs-unbound loader state, not a decoder defect).
+    pub section_report: Option<SectionRecoveryReport>,
 }
 
 /// Host shim servicing ASPack's bootstrap kernel32 imports.
@@ -262,14 +271,20 @@ pub fn unpack_aspack_phase2_emulated(
         _ => None,
     };
 
-    let (content_pct, whole_pct): (Option<f64>, Option<f64>) = match original {
+    let (content_pct, whole_pct, report): (
+        Option<f64>,
+        Option<f64>,
+        Option<SectionRecoveryReport>,
+    ) = match original {
         Some(orig) => {
-            let baseline: Vec<u8> = build_original_baseline(orig, capacity as usize)?;
+            let baseline: Vec<u8> = build_loaded_image(orig, capacity as usize)?;
             let content: f64 = content_recovery_pct(orig, &recovered, &baseline)?;
             let whole: f64 = whole_image_recovery_pct(&recovered, &baseline);
-            (Some(content), Some(whole))
+            let report: SectionRecoveryReport =
+                section_recovery_report(orig, &recovered, &[ASPACK_SECTION, ASPACK_ADATA_SECTION])?;
+            (Some(content), Some(whole), Some(report))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     Ok(AspackPhaseTwoOutput {
@@ -283,6 +298,7 @@ pub fn unpack_aspack_phase2_emulated(
         oep_estimate,
         content_recovery_pct: content_pct,
         whole_image_recovery_pct: whole_pct,
+        section_report: report,
     })
 }
 
@@ -443,32 +459,6 @@ fn run_until_oep(
             other => return Ok(other),
         }
     }
-}
-
-/// Build the original's loaded memory image: copy each section's raw body to its
-/// VA, exactly as the Windows loader maps a freshly-linked PE. This is the
-/// non-circular oracle - derived only from the independent original.exe, never
-/// from the packed sample or the recovered output.
-fn build_original_baseline(original: &[u8], capacity: usize) -> Result<Vec<u8>> {
-    let img: PeImage = parse_pe_image(original)?;
-    let mut buf: Vec<u8> = vec![0u8; capacity];
-    let hdr: usize = 0x1000.min(original.len()).min(capacity);
-    buf[..hdr].copy_from_slice(&original[..hdr]);
-    for sec in &img.sections {
-        let dst: usize = sec.virtual_address as usize;
-        if dst >= capacity {
-            continue;
-        }
-        let raw_avail: usize =
-            (sec.raw_size as usize).min(original.len().saturating_sub(sec.raw_pointer as usize));
-        let copy: usize = raw_avail.min(sec.virtual_size as usize).min(capacity - dst);
-        if copy == 0 {
-            continue;
-        }
-        let src: usize = sec.raw_pointer as usize;
-        buf[dst..dst + copy].copy_from_slice(&original[src..src + copy]);
-    }
-    Ok(buf)
 }
 
 fn content_recovery_pct(original: &[u8], recovered: &[u8], baseline: &[u8]) -> Result<f64> {
