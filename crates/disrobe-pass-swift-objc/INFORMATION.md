@@ -1,11 +1,12 @@
 | section | line | summary |
 |---------|-----:|---------|
-| references | 12 | clean-room study sources + licenses |
-| demangler | 22 | architecture of the Swift demangler node machine |
-| objc-metadata | 40 | deterministic `__objc_*` runtime-metadata extraction |
-| symbol-table | 52 | `LC_SYMTAB` reader feeding the demangler |
-| verification | 60 | non-circular measurement against real binaries |
-| measured | 70 | honest before/after numbers + remaining gaps |
+| references | 14 | clean-room study sources + licenses |
+| demangler | 24 | architecture of the Swift demangler node machine |
+| objc-metadata | 42 | deterministic `__objc_*` runtime-metadata extraction |
+| symbol-table | 54 | `LC_SYMTAB` reader feeding the demangler |
+| resilience | 62 | `.swiftinterface` reader for elided resilient names |
+| verification | 72 | non-circular measurement against real binaries |
+| measured | 82 | honest before/after numbers + remaining gaps |
 
 ## references
 
@@ -62,6 +63,23 @@ symbol counts) so consumers see the recovery at a glance without traversing the 
 nlist_32, bounded by the string-table size and a per-symbol length cap). `swift::class_dump`
 now feeds these symbols (filtered to Swift-mangled) into the demangler alongside the
 `__swift5_reflstr` strings, deduped — a real recovery improvement over reflstr-only.
+
+## resilience
+
+`swiftinterface.rs` is a clean-room reader for the textual `.swiftinterface` module-interface
+format (stable, documented, human-readable Swift-subset). It recovers declared property/field,
+method, and enum-case NAMES per type — exactly the names a *resilient* binary elides from
+`__swift5_fieldmd`. `merge_elided_field_names` overlays those names onto the binary's reflected
+types where the reflection slot is empty (matching by short type name), and appends any
+interface-only fields the binary dropped entirely.
+
+HONEST scope note: the BINARY `.swiftmodule` form is an LLVM-bitstream blob whose record schema
+is version-specific; a clean-room bitstream reader for it is NOT implemented because **no
+`.swiftmodule`/`.swiftinterface` fixture exists in the corpus** to validate against (shipping a
+synthetic-only bitstream parser would be unverifiable). The textual `.swiftinterface` path IS
+implemented and is validated against a spec-accurate synthetic interface built from the
+documented grammar (no real `.swiftinterface` is in-corpus either, so this path is
+synthetic-validated and labelled as such — it is real, parseable format, not invented).
 
 ## verification
 

@@ -14,6 +14,7 @@ pub mod plist_decode;
 pub mod provenance_header;
 pub mod swift;
 pub mod swift_reflect;
+pub mod swiftinterface;
 
 pub use error::{Error, Result};
 pub use fairplay::{FairPlayStatus, detect as detect_fairplay};
@@ -53,6 +54,11 @@ pub use swift::{
 pub use swift_reflect::{
     FieldDescriptorKind, SwiftField, SwiftTypeReflection,
     parse_field_descriptors as parse_swift_field_descriptors,
+};
+pub use swiftinterface::{
+    InterfaceCase, InterfaceDecl, InterfaceDeclKind, InterfaceMethod, InterfaceProperty,
+    ParsedInterface, looks_like_swiftinterface, merge_elided_field_names,
+    parse as parse_swiftinterface,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
