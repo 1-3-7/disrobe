@@ -9749,6 +9749,134 @@ fn else_jump_exits_to_shared_join(
     join >= hi && target < hi
 }
 
+/// True when a then-branch ending at `body_end` is the first arm of an `if/elif` (no trailing `else`)
+/// inside a loop. `CPython` lowers such an `if A: ... elif B: ...` so the first arm's normal exit is a
+/// `JUMP_BACKWARD` straight to the loop header (the implicit per-iteration continue), and the `elif`
+/// test occupies `[target, hi)`, itself exiting via its own back-edge. The generic structurer only
+/// opens an `else` on a FORWARD skip-jump, so without this the two arms flatten into sibling `if`s and
+/// the first arm loses its skip — the recompiled bytecode drops the `JUMP` that `CPython` emits to hop
+/// over the `elif` test. Recover it as a real `orelse` so the emitter renders `elif` and the skip
+/// regenerates. Gated to inside a loop frame whose header the first arm's back-edge targets, with a
+/// genuine forward conditional opening `[target, hi)`.
+fn elif_arm_continues_to_loop(
+    stream: &DecodedStream,
+    jump_idx: usize,
+    body_end: usize,
+    target: usize,
+    hi: usize,
+) -> Option<(usize, usize)> {
+    if target >= hi || body_end <= jump_idx + 1 {
+        return None;
+    }
+    let header: usize = loop_continue_target()?;
+    let back: usize = (jump_idx + 1..body_end)
+        .rev()
+        .find(|&k: &usize| is_back_edge(&stream.ops[k]))?;
+    if (back + 1..body_end).any(|k: usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) | CanonicalOp::Push(_)
+        )
+    }) {
+        return None;
+    }
+    let lands_on_header: bool = resolve_jump_target(stream, back, &stream.ops[back])
+        .is_some_and(|t: usize| t <= header);
+    if !lands_on_header {
+        return None;
+    }
+    let elif_lo: usize = first_significant(stream, back + 1, hi).unwrap_or(target);
+    let elif_jump: usize = (elif_lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    })?;
+    let valid: bool = resolve_jump_target(stream, elif_jump, &stream.ops[elif_jump])
+        .is_some_and(|t: usize| t > elif_jump && t <= hi);
+    if !valid {
+        return None;
+    }
+    let orelse_at: usize = (back + 1).min(body_end);
+    Some((back, orelse_at))
+}
+
+/// Structure the `orelse` region of an `if/elif` (no trailing `else`) inside a loop, where each `elif`
+/// arm is lowered by `CPython` as `<cond> POP_JUMP_IF_{TRUE,FALSE} <arm-body>` with the false path
+/// falling into a `JUMP_BACKWARD` to the loop header (the implicit per-iteration continue) and the arm
+/// body laid out after that back-edge. The generic forward-if structurer treats the conditional's
+/// jump target as the JOIN and so loses both the body and the continue, flushing the test as a bare
+/// expression statement. This recovers the arm as `if <cond>: <body>` (recursing into the body and any
+/// deeper `elif`), which the emitter renders as `elif` and which recompiles to the same skip/continue
+/// layout. Falls back to the generic structurer when the region is not a recognizable arm.
+fn structure_elif_chain_arm(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Vec<Stmt>> {
+    let Some(cond_at): Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+    }) else {
+        return structure_stmts(code, stream, lo, hi);
+    };
+    let Some(jump_target): Option<usize> =
+        resolve_jump_target(stream, cond_at, &stream.ops[cond_at])
+            .filter(|t: &usize| *t > cond_at && *t <= hi)
+    else {
+        return structure_stmts(code, stream, lo, hi);
+    };
+    let header: usize = match loop_continue_target() {
+        Some(h) => h,
+        None => return structure_stmts(code, stream, lo, hi),
+    };
+    let lands_on_header = |idx: usize| -> bool {
+        is_back_edge(&stream.ops[idx])
+            && resolve_jump_target(stream, idx, &stream.ops[idx])
+                .is_some_and(|t: usize| t <= header)
+    };
+    let jump_skips_arm: bool = matches!(
+        stream.ops[cond_at],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    );
+    let (arm_body_start, arm_end, next_arm_start): (usize, usize, usize) = if jump_skips_arm {
+        let arm_back: usize = (cond_at + 1..jump_target)
+            .rev()
+            .find(|&k: &usize| lands_on_header(k))
+            .unwrap_or(jump_target);
+        (cond_at + 1, arm_back, jump_target)
+    } else {
+        let pre_continue: bool = (cond_at + 1..jump_target).any(|k: usize| lands_on_header(k));
+        if !pre_continue {
+            return structure_stmts(code, stream, lo, hi);
+        }
+        let arm_back: Option<usize> = (jump_target..hi).find(|&k: &usize| lands_on_header(k));
+        arm_back.map_or((jump_target, hi, hi), |b: usize| {
+            (jump_target, b, first_significant(stream, b + 1, hi).unwrap_or(hi))
+        })
+    };
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..cond_at])?;
+    let raw_test: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
+        value: ConstValue::True,
+        line: None,
+    });
+    let test: Expr = none_jump_test(stream, cond_at, raw_test.clone()).unwrap_or(raw_test);
+    let body: Vec<Stmt> = structure_stmts(code, stream, arm_body_start, arm_end)?;
+    let deeper: Vec<Stmt> = if next_arm_start < hi {
+        structure_elif_chain_arm(code, stream, next_arm_start, hi)?
+    } else {
+        Vec::new()
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(body),
+        orelse: deeper,
+        line: None,
+    });
+    Ok(out)
+}
+
 fn structure_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -9869,6 +9997,7 @@ fn structure_stmts(
     let mut join: usize = target;
     let mut orelse_start: Option<usize> = None;
     let mut else_via_jump: bool = false;
+    let mut else_via_continue: bool = false;
     if body_end > jump_idx + 1 {
         let last: usize = body_end - 1;
         if let CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) = stream.ops[last]
@@ -9880,6 +10009,16 @@ fn structure_stmts(
             orelse_start = Some(target);
             else_via_jump = true;
         }
+    }
+    let mut elif_body_end: usize = body_end;
+    if orelse_start.is_none()
+        && let Some((back, orelse_at)) =
+            elif_arm_continues_to_loop(stream, jump_idx, body_end, target, hi)
+    {
+        join = hi;
+        orelse_start = Some(orelse_at);
+        elif_body_end = back;
+        else_via_continue = true;
     }
     if orelse_start.is_none()
         && target < hi
@@ -9893,17 +10032,24 @@ fn structure_stmts(
     }
     let body_real_end: usize = if else_via_jump {
         body_end.saturating_sub(1)
+    } else if else_via_continue {
+        elif_body_end
     } else {
         body_end
     };
     let fallthrough: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_real_end)?;
-    let fallthrough: Vec<Stmt> =
-        rewrite_jump_to_break_continue(stream, fallthrough, jump_idx + 1, body_real_end);
+    let fallthrough: Vec<Stmt> = if else_via_continue {
+        fallthrough
+    } else {
+        rewrite_jump_to_break_continue(stream, fallthrough, jump_idx + 1, body_real_end)
+    };
     let jumped: Vec<Stmt> = match orelse_start {
+        Some(s) if else_via_continue => structure_elif_chain_arm(code, stream, s, join)?,
         Some(s) => structure_stmts(code, stream, s, join)?,
         None => Vec::new(),
     };
     let jumped: Vec<Stmt> = match orelse_start {
+        Some(_) if else_via_continue => jumped,
         Some(s) => rewrite_jump_to_break_continue(stream, jumped, s, join),
         None => jumped,
     };

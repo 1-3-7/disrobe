@@ -640,7 +640,7 @@ fn roundtrip_metric_edge_cases_bands() {
 
 /// Honest floor on the monolithic `edge_cases` corpus (one `CodeDiff` anywhere fails the whole
 /// module, so this rises slowly). Ratchet UP per commit as recovery improves; never down.
-const WHOLE_MODULE_FLOOR_PCT: f64 = 4.0;
+const WHOLE_MODULE_FLOOR_PCT: f64 = 6.0;
 
 const TSTRING_SNIPPET: &str = "x = 1\nw = 4\n\n\ndef f():\n    return t\"{x!r:>{w}} done\"\n";
 
