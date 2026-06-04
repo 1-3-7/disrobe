@@ -14897,6 +14897,15 @@ fn unwrap_evaluator_expr(parent: &CodeObject, marker: &Expr) -> Option<Expr> {
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
     let ops: Vec<CanonicalOp> = decode_stream(nested, opmap.as_ref(), &nested_version);
+    if let Some(unpack) = starred_default_unpack_index(&ops) {
+        let (_stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(nested, &ops[..unpack]).ok()?;
+        let inner: Expr = residual.into_iter().next_back()?;
+        return Some(Expr::Starred {
+            value: Box::new(inner),
+            ctx: ExprCtx::Load,
+        });
+    }
     let (stmts, residual): (Vec<Stmt>, Vec<Expr>) = build_linear_stmts_sim(nested, &ops).ok()?;
     stmts
         .into_iter()
@@ -14906,6 +14915,25 @@ fn unwrap_evaluator_expr(parent: &CodeObject, marker: &Expr) -> Option<Expr> {
             _ => None,
         })
         .or_else(|| residual.into_iter().next_back())
+}
+
+/// Index of the closing `UNPACK_SEQUENCE 1` of a PEP 696 starred default evaluator (`*Ts = *tuple[int,
+/// ...]`), whose code object is `<expr>; UNPACK_SEQUENCE 1; RETURN_VALUE`. That trailing single-element
+/// unpack is the starred-default marker, not a real destructuring; recovering the value from the ops
+/// BEFORE it and re-emitting a leading `*` round-trips the default. Returns `None` when the evaluator is
+/// an ordinary (non-starred) default, so the value sim handles it normally.
+fn starred_default_unpack_index(ops: &[CanonicalOp]) -> Option<usize> {
+    let ret: usize = ops
+        .iter()
+        .rposition(|op: &CanonicalOp| matches!(op, CanonicalOp::Return | CanonicalOp::ReturnConst(_)))
+        .unwrap_or(ops.len());
+    let unpack: usize = (0..ret).rev().find(|&k: &usize| {
+        !matches!(
+            ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    })?;
+    matches!(ops[unpack], CanonicalOp::UnpackSequence(1)).then_some(unpack)
 }
 
 /// On 3.14 annotations are deferred into a `__annotate__` code object attached via
