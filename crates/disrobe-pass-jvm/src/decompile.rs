@@ -1111,7 +1111,34 @@ fn lift_one(
             stack.pop();
             LiftResult::ControlFlow("// monitorexit".to_string())
         }
+        0xC5 => multi_new_array(cf, insn, stack),
         _ => LiftResult::Unhandled,
+    }
+}
+
+fn multi_new_array(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
+    let Operands::MultiANewArray { index, dimensions } = &insn.operands else {
+        return LiftResult::Unhandled;
+    };
+    let raw: String = bytecode::resolve_ref(cf, *index).unwrap_or_else(|| "Object".to_string());
+    let element: JavaType = strip_array_dims(&raw);
+    let sizes: Vec<Expr> = (0..*dimensions).map(|_| pop_expr(stack)).collect();
+    let mut rendered: String = format!("new {}", element.render());
+    for size in sizes.iter().rev() {
+        let _ = write!(rendered, "[{}]", size.render());
+    }
+    push(stack, Expr::Opaque(rendered))
+}
+
+fn strip_array_dims(internal: &str) -> JavaType {
+    match descriptor::parse_field(internal) {
+        Some(mut ty) => {
+            while let JavaType::Array(inner) = ty {
+                ty = *inner;
+            }
+            ty
+        }
+        None => JavaType::Object(internal.to_string()),
     }
 }
 
