@@ -64,6 +64,26 @@ struct Emitter<'a> {
     param_local_slots: u16,
     max_locals: u16,
     bailed: bool,
+    cfg: Option<CfgEmit>,
+}
+
+/// Branch-mode emission state attached to the [`Emitter`] when lowering a body
+/// with control flow. Holds the recorded JVM offset of every Dalvik PC, the
+/// pending branch fixups, and the analysis-derived block-entry register types
+/// that seed each basic block and the synthesized verification frames.
+struct CfgEmit {
+    cur_pc: u32,
+    block_leaders: BTreeSet<u32>,
+    jvm_offset_of_pc: BTreeMap<u32, usize>,
+    fixups: Vec<BranchFixup>,
+    block_entry_slots: BTreeMap<u32, BTreeMap<u16, Slot>>,
+    frame_types: BTreeMap<u32, BTreeMap<u16, crate::dalvik_typestate::RegType>>,
+}
+
+struct BranchFixup {
+    insn_offset: usize,
+    operand_offset: usize,
+    target_pc: u32,
 }
 
 #[must_use]
@@ -130,6 +150,7 @@ pub(crate) fn emit_method_code(
         param_local_slots,
         max_locals,
         bailed: false,
+        cfg: None,
     };
     emitter.seed_parameter_types(&parsed, is_static);
     for insn in &insns {
@@ -148,6 +169,181 @@ pub(crate) fn emit_method_code(
         attributes: Vec::new(),
         attribute_count: 0,
     })
+}
+
+const MAX_BRANCH_INSNS: usize = 2048;
+
+#[inline]
+const fn regtype_to_slot(ty: &crate::dalvik_typestate::RegType) -> Slot {
+    use crate::dalvik_typestate::RegType;
+    match ty {
+        RegType::Long => Slot::Long,
+        RegType::Float => Slot::Float,
+        RegType::Double => Slot::Double,
+        RegType::Ref(_) => Slot::Ref,
+        RegType::Int | RegType::ZeroOrNull | RegType::Top => Slot::Int,
+    }
+}
+
+/// CFG-aware lowering for bodies containing `if`/`goto` control flow. Runs the
+/// type-state analysis to a fixpoint, emits each instruction with branch fixups
+/// (loads keep the operand stack empty across every edge), then synthesizes a
+/// `StackMapTable` from the same per-block-entry register states the emission
+/// used. Returns `None` (fall back to the verifiable stub) for any construct
+/// outside the supported subset or when a frame cannot be soundly typed.
+#[must_use]
+pub(crate) fn emit_branch_method_code(
+    dex: &DexFile,
+    cp: &mut ConstantPool,
+    item: &CodeItem,
+    is_static: bool,
+) -> Option<EmittedCode> {
+    if item.insns.is_empty() || item.insns.len() > MAX_BRANCH_INSNS || !item.tries.is_empty() {
+        return None;
+    }
+    if item.method_name == "<init>" || is_synthetic_class(&item.class) {
+        return None;
+    }
+    let insns: Vec<DalvikInsn> = decode_method(&item.insns);
+    if insns.is_empty() {
+        return None;
+    }
+    let has_branch: bool = insns
+        .iter()
+        .any(|i: &DalvikInsn| i.is_conditional_branch() || i.is_unconditional_goto());
+    if !has_branch {
+        return None;
+    }
+    if insns
+        .iter()
+        .any(|i: &DalvikInsn| i.is_switch() || matches!(i.op, 0x0D | 0x24 | 0x25 | 0x26 | 0x22))
+    {
+        return None;
+    }
+    let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
+    if insns
+        .iter()
+        .any(|i: &DalvikInsn| i.branch_target_pc() == Some(entry_pc))
+    {
+        return None;
+    }
+    let parsed: MethodDescriptor = descriptor::parse_method(&item.method_descriptor)?;
+    if has_width_conflict(dex, &insns, &parsed, item, is_static) {
+        return None;
+    }
+
+    let states: crate::dalvik_typestate::TypeStates = crate::dalvik_typestate::analyze(
+        dex,
+        &insns,
+        &parsed,
+        item.registers_size,
+        item.ins_size,
+        is_static,
+        &item.class,
+    )?;
+
+    let block_leaders: BTreeSet<u32> = collect_leaders(&insns);
+    let pc_to_idx: BTreeMap<u32, usize> =
+        insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
+
+    let mut block_entry_slots: BTreeMap<u32, BTreeMap<u16, Slot>> = BTreeMap::new();
+    let mut frame_types: BTreeMap<u32, BTreeMap<u16, crate::dalvik_typestate::RegType>> =
+        BTreeMap::new();
+    for &leader in &block_leaders {
+        let &idx: &usize = pc_to_idx.get(&leader)?;
+        if !states.reached[idx] {
+            continue;
+        }
+        let st: &crate::dalvik_typestate::RegState = &states.entry_state[idx];
+        let slots: BTreeMap<u16, Slot> = st.iter().map(|(&r, t)| (r, regtype_to_slot(t))).collect();
+        block_entry_slots.insert(leader, slots);
+        frame_types.insert(leader, st.clone());
+    }
+
+    let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
+    let param_local_slots: u16 = u16::from(!is_static)
+        + parsed
+            .params
+            .iter()
+            .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
+            .sum::<u16>();
+    let max_locals: u16 = first_param_reg
+        .saturating_add(param_local_slots)
+        .saturating_add(2)
+        .max(param_local_slots)
+        .max(1);
+    let const_kind: BTreeMap<u16, Slot> = infer_const_kinds(dex, &insns, &parsed);
+
+    let mut emitter: Emitter<'_> = Emitter {
+        dex,
+        cp,
+        code: Vec::with_capacity(insns.len() * 3),
+        reg_type: BTreeMap::new(),
+        const_kind,
+        const_zero: BTreeSet::new(),
+        pending_new: BTreeMap::new(),
+        pending_result: None,
+        cur_stack: 0,
+        max_stack: 0,
+        registers_size: item.registers_size,
+        first_param_reg,
+        param_local_slots,
+        max_locals,
+        bailed: false,
+        cfg: Some(CfgEmit {
+            cur_pc: 0,
+            block_leaders,
+            jvm_offset_of_pc: BTreeMap::new(),
+            fixups: Vec::new(),
+            block_entry_slots,
+            frame_types,
+        }),
+    };
+    emitter.seed_parameter_types(&parsed, is_static);
+    for insn in &insns {
+        if emitter.bailed || emitter.code.len() > MAX_CODE_BYTES {
+            return None;
+        }
+        emitter.translate(insn, &parsed);
+    }
+    if emitter.bailed || !emitter.pending_new.is_empty() {
+        return None;
+    }
+    emitter.resolve_branches()?;
+    let attr: Vec<u8> = emitter.build_stack_map_table(first_param_reg, param_local_slots)?;
+    let (attributes, attribute_count): (Vec<u8>, u16) = if attr.is_empty() {
+        (Vec::new(), 0)
+    } else {
+        (attr, 1)
+    };
+
+    Some(EmittedCode {
+        bytes: emitter.code,
+        max_stack: emitter.max_stack.max(2) as u16,
+        max_locals: emitter.max_locals,
+        attributes,
+        attribute_count,
+    })
+}
+
+/// Block leaders are the method entry plus every branch target and every
+/// fallthrough successor of a conditional branch.
+fn collect_leaders(insns: &[DalvikInsn]) -> BTreeSet<u32> {
+    let mut leaders: BTreeSet<u32> = BTreeSet::new();
+    if let Some(first) = insns.first() {
+        leaders.insert(first.pc);
+    }
+    for (i, insn) in insns.iter().enumerate() {
+        if let Some(t) = insn.branch_target_pc() {
+            leaders.insert(t);
+        }
+        if (insn.is_conditional_branch() || insn.is_unconditional_goto())
+            && let Some(next) = insns.get(i + 1)
+        {
+            leaders.insert(next.pc);
+        }
+    }
+    leaders
 }
 
 impl Emitter<'_> {
@@ -189,6 +385,243 @@ impl Emitter<'_> {
 
     fn set_reg(&mut self, reg: u16, slot: Slot) {
         self.reg_type.insert(reg, slot);
+    }
+
+    /// Per-instruction bookkeeping in branch mode: records the JVM offset where
+    /// this Dalvik PC starts, and at a basic-block leader reseeds the register
+    /// type map from the analysis's block-entry state so loads at the start of
+    /// the block use exactly the types the synthesized frame declares.
+    fn enter_cfg_instruction(&mut self, insn: &DalvikInsn) {
+        let off: usize = self.code.len();
+        let Some(cfg): Option<&mut CfgEmit> = self.cfg.as_mut() else {
+            return;
+        };
+        cfg.cur_pc = insn.pc;
+        cfg.jvm_offset_of_pc.insert(insn.pc, off);
+        if cfg.block_leaders.contains(&insn.pc) {
+            if let Some(slots) = cfg.block_entry_slots.get(&insn.pc) {
+                self.reg_type = slots.clone();
+            } else {
+                self.bail();
+                return;
+            }
+            self.const_zero.clear();
+            self.pending_result = None;
+            self.cur_stack = 0;
+        }
+    }
+
+    /// Lowers a Dalvik `goto`/`if-*` to the matching JVM branch. Operands are
+    /// loaded first so the operand stack returns to empty across the edge, and a
+    /// fixup records the 2-byte target offset to patch once all PCs are known.
+    fn emit_branch(&mut self, insn: &DalvikInsn) {
+        let Some(target_pc): Option<u32> = insn.branch_target_pc() else {
+            self.bail();
+            return;
+        };
+        let op: u8 = insn.op;
+        if matches!(op, 0x28..=0x2A) {
+            self.emit_jump(0xA7, target_pc);
+            return;
+        }
+        if matches!(op, 0x32..=0x37) {
+            let (Some(&a), Some(&b)): (Option<&u16>, Option<&u16>) =
+                (insn.regs.first(), insn.regs.get(1))
+            else {
+                self.bail();
+                return;
+            };
+            let a_ref: bool = matches!(self.reg_slot(a), Slot::Ref);
+            let b_ref: bool = matches!(self.reg_slot(b), Slot::Ref);
+            if a_ref || b_ref {
+                if !matches!(op, 0x32 | 0x33) {
+                    self.bail();
+                    return;
+                }
+                self.emit_ref_arg(a);
+                self.emit_ref_arg(b);
+                self.adjust_stack(-2);
+                self.emit_jump(if op == 0x32 { 0xA5 } else { 0xA6 }, target_pc);
+            } else {
+                self.emit_load(a);
+                self.emit_load(b);
+                self.adjust_stack(-2);
+                self.emit_jump(0x9F + (op - 0x32), target_pc);
+            }
+            return;
+        }
+        if matches!(op, 0x38..=0x3D) {
+            let Some(&a): Option<&u16> = insn.regs.first() else {
+                self.bail();
+                return;
+            };
+            let a_ref: bool =
+                matches!(self.reg_slot(a), Slot::Ref) && !self.const_zero.contains(&a);
+            if a_ref {
+                if !matches!(op, 0x38 | 0x39) {
+                    self.bail();
+                    return;
+                }
+                self.emit_load(a);
+                self.adjust_stack(-1);
+                self.emit_jump(if op == 0x38 { 0xC6 } else { 0xC7 }, target_pc);
+            } else {
+                self.emit_load(a);
+                self.adjust_stack(-1);
+                self.emit_jump(0x99 + (op - 0x38), target_pc);
+            }
+            return;
+        }
+        self.bail();
+    }
+
+    fn emit_jump(&mut self, jvm_op: u8, target_pc: u32) {
+        let insn_offset: usize = self.code.len();
+        self.push(jvm_op);
+        let operand_offset: usize = self.code.len();
+        self.push_u16(0);
+        if let Some(cfg) = self.cfg.as_mut() {
+            cfg.fixups.push(BranchFixup {
+                insn_offset,
+                operand_offset,
+                target_pc,
+            });
+        }
+    }
+
+    /// Patches every recorded branch operand to the `i16` delta from its
+    /// instruction to the resolved target. Returns `None` when a target PC has
+    /// no emitted JVM offset or the delta overflows `i16`.
+    fn resolve_branches(&mut self) -> Option<()> {
+        let fixups: Vec<(usize, usize, u32)> = self
+            .cfg
+            .as_ref()?
+            .fixups
+            .iter()
+            .map(|f: &BranchFixup| (f.insn_offset, f.operand_offset, f.target_pc))
+            .collect();
+        let offsets: BTreeMap<u32, usize> = self.cfg.as_ref()?.jvm_offset_of_pc.clone();
+        for (insn_offset, operand_offset, target_pc) in fixups {
+            let &target_off: &usize = offsets.get(&target_pc)?;
+            let delta: isize = target_off as isize - insn_offset as isize;
+            let delta16: i16 = i16::try_from(delta).ok()?;
+            let bytes: [u8; 2] = delta16.to_be_bytes();
+            *self.code.get_mut(operand_offset)? = bytes[0];
+            *self.code.get_mut(operand_offset + 1)? = bytes[1];
+        }
+        Some(())
+    }
+
+    /// Synthesizes the `StackMapTable` from the analysis's per-block-entry
+    /// register states. Since the lowering keeps the operand stack empty at
+    /// every boundary, each branch target gets a `full_frame` describing only
+    /// its local-variable types, ordered by JVM offset with the spec's
+    /// `offset_delta` encoding. A `Long`/`Double` local fills one frame entry
+    /// but reserves the following slot.
+    fn build_stack_map_table(
+        &mut self,
+        first_param_reg: u16,
+        param_local_slots: u16,
+    ) -> Option<Vec<u8>> {
+        let cfg: &CfgEmit = self.cfg.as_ref()?;
+        let registers_size: u16 = self.registers_size;
+        let to_local = |reg: u16| -> u16 {
+            if reg >= first_param_reg {
+                reg - first_param_reg
+            } else {
+                param_local_slots.saturating_add(reg)
+            }
+        };
+
+        let branch_target_pcs: BTreeSet<u32> = cfg
+            .fixups
+            .iter()
+            .map(|f: &BranchFixup| f.target_pc)
+            .collect();
+        let mut frames: Vec<(usize, Vec<crate::dalvik_typestate::RegType>)> = Vec::new();
+        for (&pc, regs) in &cfg.frame_types {
+            if !branch_target_pcs.contains(&pc) {
+                continue;
+            }
+            let &offset: &usize = cfg.jvm_offset_of_pc.get(&pc)?;
+            let mut by_slot: BTreeMap<u16, crate::dalvik_typestate::RegType> = BTreeMap::new();
+            for (&reg, ty) in regs {
+                if reg >= registers_size {
+                    continue;
+                }
+                if matches!(ty, crate::dalvik_typestate::RegType::Top) {
+                    continue;
+                }
+                by_slot.insert(to_local(reg), ty.clone());
+            }
+            let max_slot: u16 = by_slot
+                .keys()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .max(param_local_slots.saturating_sub(1));
+            let mut locals: Vec<crate::dalvik_typestate::RegType> = Vec::new();
+            let mut slot: u16 = 0;
+            while slot <= max_slot {
+                let ty: crate::dalvik_typestate::RegType = by_slot
+                    .get(&slot)
+                    .cloned()
+                    .unwrap_or(crate::dalvik_typestate::RegType::Top);
+                let wide: bool = ty.is_wide();
+                locals.push(ty);
+                slot += if wide { 2 } else { 1 };
+            }
+            frames.push((offset, locals));
+        }
+        frames.sort_by_key(|(off, _)| *off);
+        if frames.is_empty() {
+            return Some(Vec::new());
+        }
+
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(&(frames.len() as u16).to_be_bytes());
+        let mut prev: Option<usize> = None;
+        for (offset, locals) in &frames {
+            let delta: usize = match prev {
+                None => *offset,
+                Some(p) => offset.checked_sub(p)?.checked_sub(1)?,
+            };
+            body.push(255);
+            body.extend_from_slice(&u16::try_from(delta).ok()?.to_be_bytes());
+            body.extend_from_slice(&u16::try_from(locals.len()).ok()?.to_be_bytes());
+            for ty in locals {
+                self.append_verification_type(&mut body, ty);
+            }
+            body.extend_from_slice(&0u16.to_be_bytes());
+            prev = Some(*offset);
+        }
+
+        let name_idx: u16 = self.cp.utf8("StackMapTable");
+        let mut attr: Vec<u8> = Vec::with_capacity(body.len() + 6);
+        attr.extend_from_slice(&name_idx.to_be_bytes());
+        attr.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        attr.extend_from_slice(&body);
+        Some(attr)
+    }
+
+    fn append_verification_type(
+        &mut self,
+        out: &mut Vec<u8>,
+        ty: &crate::dalvik_typestate::RegType,
+    ) {
+        use crate::dalvik_typestate::RegType;
+        match ty {
+            RegType::Top => out.push(0),
+            RegType::Int | RegType::ZeroOrNull => out.push(1),
+            RegType::Float => out.push(2),
+            RegType::Double => out.push(3),
+            RegType::Long => out.push(4),
+            RegType::Ref(name) => {
+                let idx: u16 = self.cp.class_const(name);
+                out.push(7);
+                out.extend_from_slice(&idx.to_be_bytes());
+            }
+        }
     }
 
     const fn local_index(&mut self, reg: u16) -> Option<u16> {
@@ -291,6 +724,16 @@ impl Emitter<'_> {
     #[allow(clippy::too_many_lines)]
     fn translate(&mut self, insn: &DalvikInsn, parsed: &MethodDescriptor) {
         let op: u8 = insn.op;
+        if self.cfg.is_some() {
+            self.enter_cfg_instruction(insn);
+            if self.bailed {
+                return;
+            }
+            if matches!(op, 0x28..=0x2A | 0x32..=0x3D) {
+                self.emit_branch(insn);
+                return;
+            }
+        }
         if !matches!(op, 0x0A..=0x0C) {
             self.discard_pending_result();
         }

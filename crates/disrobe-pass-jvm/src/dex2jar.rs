@@ -13,7 +13,7 @@ use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dalvik_to_jvm::{EmittedCode, emit_method_code};
+use crate::dalvik_to_jvm::{EmittedCode, emit_branch_method_code, emit_method_code};
 use crate::dex::{CodeItem, DexFile, parse_code_items};
 use crate::error::{Error, Result};
 
@@ -67,11 +67,12 @@ pub struct Dex2JarResult {
     /// `Code` attribute (vs. the `UnsupportedOperationException` stub). Class
     /// shape, signatures, and field/interface tables recover at ~100%; method
     /// *bodies* are fundamentally lossy (Dalvik erases names, generics, lambda
-    /// desugaring, and the original register/branch layout), so this counts the
-    /// branchless subset — straight-line arithmetic/field/array/invoke bodies
-    /// plus `new-instance`/`<init>` allocations fused to `new; dup; ...;
-    /// invokespecial` — that reproduces verified bytecode without stack-map
-    /// synthesis. Branch/loop/switch/try bodies keep the verifiable stub.
+    /// desugaring), so this counts the subset the register->stack lowering can
+    /// reproduce as verified bytecode: straight-line arithmetic/field/array/
+    /// invoke bodies, `new-instance`/`<init>` allocations fused to `new; dup;
+    /// ...; invokespecial`, and `if`/`goto` control flow whose `StackMapTable`
+    /// frames the type-state analysis synthesizes. Switch/try bodies and lambda
+    /// desugaring keep the verifiable stub.
     pub bodies_recovered: usize,
 }
 
@@ -310,7 +311,7 @@ impl ConstantPool {
         idx
     }
 
-    fn utf8(&mut self, s: &str) -> u16 {
+    pub(crate) fn utf8(&mut self, s: &str) -> u16 {
         if let Some(i) = self.utf8.get(s) {
             return *i;
         }
@@ -495,10 +496,12 @@ fn stub_code(cp: &mut ConstantPool) -> (Vec<u8>, u16) {
     (code, 2)
 }
 
-/// Lowers a Dalvik method body to a verifiable JVM `Code` attribute when the
-/// body fits the branchless subset (getters, setters, field and array access,
+/// Lowers a Dalvik method body to a verifiable JVM `Code` attribute. Tries the
+/// straight-line lowering first (getters, setters, field and array access,
 /// arithmetic, casts, single-result invokes, scalar returns, and
-/// `new-instance`/`<init>` allocations fused to the canonical stack idiom).
+/// `new-instance`/`<init>` allocations fused to the canonical stack idiom);
+/// then the type-state CFG lowering for `if`/`goto` bodies with a synthesized
+/// `StackMapTable`.
 ///
 /// Signatures and high-level control-flow structure recover at ~100%, but
 /// recovered *bodies* hit a hard lossy ceiling (~60-75%): Dalvik erases local
@@ -523,7 +526,8 @@ fn build_real_or_stub_body(
 ) -> BuiltBody {
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     if let Some(item) = code_item {
-        let emitted: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static);
+        let emitted: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static)
+            .or_else(|| emit_branch_method_code(dex, cp, item, is_static));
         if let Some(emitted) = emitted {
             return BuiltBody {
                 code: emitted.bytes,

@@ -379,13 +379,14 @@ fn translated_classes_pass_jvm_verifier() {
     let body_pct: f64 = result.bodies_recovered as f64 * 100.0 / result.method_total as f64;
     eprintln!(
         "real bodies recovered: {}/{} ({body_pct:.1}% of all methods); the rest \
-         (constructors, branches, loops, switches, try/catch, synthetic lambdas) keep \
+         (switch/try bodies, synthetic lambdas, type-conflicting registers) keep \
          the verifiable stub",
         result.bodies_recovered, result.method_total
     );
     assert!(
-        result.bodies_recovered >= 60,
-        "expected a substantial number of recovered straight-line bodies, got {}",
+        result.bodies_recovered >= 120,
+        "expected the straight-line plus type-state CFG lowering to recover most \
+         eligible bodies, got {}",
         result.bodies_recovered
     );
 }
