@@ -6,12 +6,12 @@
 //! required - this is the always-available fallback when ILSpy/dnSpy are absent. Metadata tokens
 //! resolve to real member names through any [`TokenNamer`] (e.g. [`crate::model::Resolver`]).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cil::{ExceptionClause, ExceptionClauseKind, Instruction, MethodBody, OperandValue};
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
 use crate::model::Resolver;
 
 /// Target pseudo-source language for structural decompilation.
@@ -293,23 +293,10 @@ fn escape(s: &str) -> String {
 
 #[derive(Debug, Clone)]
 enum Stmt {
-    Assign {
-        target: String,
-        value: String,
-    },
+    Assign { target: String, value: String },
     Expr(String),
     Return(Option<String>),
-    Branch {
-        cond: Option<String>,
-        target: u32,
-        negate: bool,
-    },
-    Switch {
-        selector: String,
-        targets: Vec<u32>,
-    },
     Throw(Option<String>),
-    Label(u32),
     Comment(String),
 }
 
@@ -319,7 +306,6 @@ struct Lifter<'a, N: TokenNamer> {
     stack: Vec<Expr>,
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
-    branches: u32,
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
@@ -330,7 +316,6 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             stack: Vec::new(),
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
-            branches: 0,
         }
     }
 
@@ -442,26 +427,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
-    fn cond_branch(&mut self, ins: &Instruction, negate: bool) {
-        let cond: Expr = self.pop();
-        self.stmts.push(Stmt::Branch {
-            cond: Some(cond.render(self.lang)),
-            target: abs_target(ins),
-            negate,
-        });
-        self.branches += 1;
-    }
-
-    fn cond_branch_cmp(&mut self, ins: &Instruction, op: &'static str) {
+    /// Pop two operands and render `a op b` as the condition of a comparison-branch, without
+    /// emitting a goto. Used by the block lifter to feed structured `if`/`while` headers.
+    fn cmp_cond(&mut self, op: &'static str, lang: TargetLang) -> String {
         let b: Expr = self.pop();
         let a: Expr = self.pop();
-        let cond: Expr = Expr::Binary(op, Box::new(a), Box::new(b));
-        self.stmts.push(Stmt::Branch {
-            cond: Some(cond.render(self.lang)),
-            target: abs_target(ins),
-            negate: false,
-        });
-        self.branches += 1;
+        Expr::Binary(op, Box::new(a), Box::new(b)).render(lang)
     }
 
     #[allow(clippy::too_many_lines, clippy::match_same_arms)]
@@ -550,7 +521,48 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let ty: String = short(&self.token_name(ins));
                 self.push(Expr::IsInst(ty, Box::new(e)));
             }
-            "box" | "unbox.any" | "unbox" => {}
+            "box" | "unbox.any" | "unbox" | "readonly." | "volatile." | "tail."
+            | "constrained." | "no." => {}
+            "ldobj" => {
+                let addr: Expr = self.pop();
+                self.push(Expr::Deref(Box::new(addr)));
+            }
+            "stobj" | "cpobj" => {
+                let val: Expr = self.pop();
+                let addr: Expr = self.pop();
+                self.stmts.push(Stmt::Assign {
+                    target: format!("*{}", paren(&addr, self.lang)),
+                    value: val.render(self.lang),
+                });
+            }
+            "initobj" => {
+                let addr: Expr = self.pop();
+                let ty: String = short(&self.token_name(ins));
+                self.stmts.push(Stmt::Assign {
+                    target: format!("*{}", paren(&addr, self.lang)),
+                    value: format!("default({ty})"),
+                });
+            }
+            "ldtoken" => self.push(Expr::Raw(format!(
+                "typeof({})",
+                short(&self.token_name(ins))
+            ))),
+            "ldftn" | "ldvirtftn" => {
+                self.push(Expr::Raw(short(&self.token_name(ins))));
+            }
+            "sizeof" => {
+                self.push(Expr::Raw(format!(
+                    "sizeof({})",
+                    short(&self.token_name(ins))
+                )));
+            }
+            "localloc" => {
+                let size: Expr = self.pop();
+                self.push(Expr::Raw(format!(
+                    "stackalloc byte[{}]",
+                    size.render(self.lang)
+                )));
+            }
             "ldfld" => {
                 let obj: Expr = self.pop();
                 let fld: String = short(&self.token_name(ins));
@@ -662,40 +674,20 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     value: val.render(self.lang),
                 });
             }
-            "br" | "br.s" => {
-                self.stmts.push(Stmt::Branch {
-                    cond: None,
-                    target: abs_target(ins),
-                    negate: false,
-                });
-                self.branches += 1;
-            }
-            "brtrue" | "brtrue.s" => self.cond_branch(ins, false),
-            "brfalse" | "brfalse.s" => self.cond_branch(ins, true),
-            "beq" | "beq.s" => self.cond_branch_cmp(ins, "=="),
-            "bne.un" | "bne.un.s" => self.cond_branch_cmp(ins, "!="),
-            "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => self.cond_branch_cmp(ins, ">"),
-            "bge" | "bge.s" | "bge.un" | "bge.un.s" => self.cond_branch_cmp(ins, ">="),
-            "blt" | "blt.s" | "blt.un" | "blt.un.s" => self.cond_branch_cmp(ins, "<"),
-            "ble" | "ble.s" | "ble.un" | "ble.un.s" => self.cond_branch_cmp(ins, "<="),
-            "switch" => {
-                if let OperandValue::Switch(ref rels) = ins.operand {
-                    let selector: Expr = self.pop();
-                    let targets: Vec<u32> = rels
-                        .iter()
-                        .map(|r: &i32| (i64::from(ins.offset) + i64::from(*r)) as u32)
-                        .collect();
-                    self.stmts.push(Stmt::Switch {
-                        selector: selector.render(self.lang),
-                        targets,
-                    });
-                    self.branches += 1;
-                }
-            }
-            "leave" | "leave.s" => {
-                self.stmts
-                    .push(Stmt::Comment(format!("leave IL_{:04X}", abs_target(ins))));
+            "br" | "br.s" | "leave" | "leave.s" => {
                 self.stack.clear();
+            }
+            "brtrue" | "brtrue.s" | "brfalse" | "brfalse.s" => {
+                let _: Expr = self.pop();
+            }
+            "beq" | "beq.s" | "bne.un" | "bne.un.s" | "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s"
+            | "bge" | "bge.s" | "bge.un" | "bge.un.s" | "blt" | "blt.s" | "blt.un" | "blt.un.s"
+            | "ble" | "ble.s" | "ble.un" | "ble.un.s" => {
+                let _: Expr = self.pop();
+                let _: Expr = self.pop();
+            }
+            "switch" => {
+                let _: Expr = self.pop();
             }
             "endfinally" | "endfilter" => self.stack.clear(),
             other => self.stmts.push(Stmt::Comment(format!(
@@ -703,6 +695,92 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 render_operand(&ins.operand)
             ))),
         }
+    }
+}
+
+/// A linear, label-free statement: the structured-emitter form of a lifted instruction. Control
+/// flow (branches, loops, conditionals) is reconstructed separately by [`crate::structure_emit`]
+/// from the CFG, so the per-block lifter only ever yields these.
+#[derive(Debug, Clone)]
+pub(crate) enum LinearStmt {
+    Assign { target: String, value: String },
+    Expr(String),
+    Return(Option<String>),
+    Throw(Option<String>),
+    Comment(String),
+}
+
+/// One basic block lifted to linear statements plus, if the block ends in a conditional branch, the
+/// rendered condition under which the *taken* edge is followed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BlockCode {
+    pub stmts: Vec<LinearStmt>,
+    pub condition: Option<String>,
+    pub switch_selector: Option<String>,
+    pub locals_used: BTreeSet<u32>,
+}
+
+/// Lift one basic block's instruction range `[first, last]` to linear statements. The block's
+/// terminator condition (for `Cond`/`Switch`) is returned out-of-band so the structurer can place
+/// it in a real `if`/`switch` header. The evaluation stack is assumed empty at the block boundary
+/// (the standard well-formed-CIL invariant).
+pub(crate) fn lift_block<N: TokenNamer>(
+    namer: &N,
+    lang: TargetLang,
+    instrs: &[Instruction],
+    first: usize,
+    last: usize,
+) -> BlockCode {
+    let mut lifter: Lifter<'_, N> = Lifter::new(namer, lang);
+    let mut condition: Option<String> = None;
+    let mut switch_selector: Option<String> = None;
+    for ins in &instrs[first..=last] {
+        match ins.flow {
+            FlowControl::CondBranch => match ins.name.as_str() {
+                "brtrue" | "brtrue.s" => condition = Some(lifter.pop().render(lang)),
+                "brfalse" | "brfalse.s" => {
+                    let c: Expr = lifter.pop();
+                    condition = Some(Expr::Unary("!", Box::new(c)).render(lang));
+                }
+                "beq" | "beq.s" => condition = Some(lifter.cmp_cond("==", lang)),
+                "bne.un" | "bne.un.s" => condition = Some(lifter.cmp_cond("!=", lang)),
+                "bgt" | "bgt.s" | "bgt.un" | "bgt.un.s" => {
+                    condition = Some(lifter.cmp_cond(">", lang));
+                }
+                "bge" | "bge.s" | "bge.un" | "bge.un.s" => {
+                    condition = Some(lifter.cmp_cond(">=", lang));
+                }
+                "blt" | "blt.s" | "blt.un" | "blt.un.s" => {
+                    condition = Some(lifter.cmp_cond("<", lang));
+                }
+                "ble" | "ble.s" | "ble.un" | "ble.un.s" => {
+                    condition = Some(lifter.cmp_cond("<=", lang));
+                }
+                "switch" => switch_selector = Some(lifter.pop().render(lang)),
+                _ => lifter.lift_one(ins),
+            },
+            FlowControl::Branch
+                if matches!(ins.name.as_str(), "br" | "br.s" | "leave" | "leave.s") => {}
+            FlowControl::Return if matches!(ins.name.as_str(), "endfinally" | "endfilter") => {}
+            _ => lifter.lift_one(ins),
+        }
+    }
+    let stmts: Vec<LinearStmt> = lifter.stmts.into_iter().map(stmt_to_linear).collect();
+    BlockCode {
+        stmts,
+        condition,
+        switch_selector,
+        locals_used: lifter.locals_used,
+    }
+}
+
+fn stmt_to_linear(s: Stmt) -> LinearStmt {
+    match s {
+        Stmt::Assign { target, value } => LinearStmt::Assign { target, value },
+        Stmt::Expr(e) => LinearStmt::Expr(e),
+        Stmt::Return(v) => LinearStmt::Return(v),
+        Stmt::Throw(v) => LinearStmt::Throw(v),
+        Stmt::Comment(c) => LinearStmt::Comment(c),
     }
 }
 
@@ -743,34 +821,13 @@ fn normalize_branches(body: &MethodBody) -> MethodBody {
     patched
 }
 
-#[inline]
-fn abs_target(ins: &Instruction) -> u32 {
-    match ins.operand {
-        OperandValue::BrTarget(rel) => (i64::from(ins.offset) + i64::from(rel)) as u32,
-        _ => ins.offset,
-    }
-}
-
-fn collect_branch_targets(body: &MethodBody) -> BTreeSet<u32> {
-    let mut targets: BTreeSet<u32> = BTreeSet::new();
-    for ins in &body.instructions {
-        match &ins.operand {
-            OperandValue::BrTarget(_) => {
-                targets.insert(abs_target(ins));
-            }
-            OperandValue::Switch(rels) => {
-                for r in rels {
-                    targets.insert((i64::from(ins.offset) + i64::from(*r)) as u32);
-                }
-            }
-            _ => {}
-        }
-    }
-    for clause in &body.exception_clauses {
-        targets.insert(clause.try_offset);
-        targets.insert(clause.handler_offset);
-    }
-    targets
+/// Public wrapper over branch normalization for [`crate::cfg`] consumers and tests.
+///
+/// Rewrites every branch/switch operand to be relative to the instruction's own start, so
+/// `start + rel` yields the absolute target offset.
+#[must_use]
+pub fn normalize_branches_pub(body: &MethodBody) -> MethodBody {
+    normalize_branches(body)
 }
 
 /// Decompile a method body to structured pseudo-C# using a token namer.
@@ -783,8 +840,11 @@ pub fn decompile_method<N: TokenNamer>(
     decompile_method_in(signature, body, namer, TargetLang::CSharp)
 }
 
-/// Decompile a method body to structured pseudo-source in the requested [`TargetLang`]. F# renders
-/// unstructured CIL jumps as comments (it has no `goto`); C# and VB.NET render real labeled jumps.
+/// Decompile a method body to structured pseudo-source in the requested [`TargetLang`].
+///
+/// Recovers a basic-block CFG, computes dominance + natural loops, and emits structured
+/// `while`/`if`-`else`/`switch`/`try` via [`crate::structure_emit`]. Residual irreducible edges fall
+/// back to labeled `goto` (commented out in F#, which has no `goto`).
 #[must_use]
 pub fn decompile_method_in<N: TokenNamer>(
     signature: &str,
@@ -793,27 +853,21 @@ pub fn decompile_method_in<N: TokenNamer>(
     lang: TargetLang,
 ) -> StructuredMethod {
     let normalized: MethodBody = normalize_branches(body);
-    let branch_targets: BTreeSet<u32> = collect_branch_targets(&normalized);
+    let recovered: crate::structure_emit::StructuredOutput =
+        crate::structure_emit::structure_method(&normalized, namer, lang);
 
-    let mut lifter: Lifter<'_, N> = Lifter::new(namer, lang);
-    for ins in &normalized.instructions {
-        if branch_targets.contains(&ins.offset) {
-            lifter.stmts.push(Stmt::Label(ins.offset));
-        }
-        lifter.lift_one(ins);
-    }
-
-    let mut text: String = String::with_capacity(256);
-    write_prologue(&mut text, signature, &lifter.locals_used, lang);
-    render_eh_aware(&mut text, &lifter.stmts, &normalized, lang);
+    let mut text: String = String::with_capacity(recovered.body.len() + 128);
+    write_prologue(&mut text, signature, &recovered.locals_used, lang);
+    text.push_str(&recovered.body);
     write_epilogue(&mut text, signature, lang);
 
+    let statement_count: u32 = u32::try_from(recovered.body.lines().count()).unwrap_or(u32::MAX);
     StructuredMethod {
         signature: signature.to_owned(),
         body: text,
-        statement_count: u32::try_from(lifter.stmts.len()).unwrap_or(u32::MAX),
-        recovered_locals: u32::try_from(lifter.locals_used.len()).unwrap_or(u32::MAX),
-        recovered_branches: lifter.branches,
+        statement_count,
+        recovered_locals: u32::try_from(recovered.locals_used.len()).unwrap_or(u32::MAX),
+        recovered_branches: recovered.residual_gotos,
     }
 }
 
@@ -869,220 +923,6 @@ fn vb_body_terminator(signature: &str) -> &'static str {
         "End Function"
     } else {
         "End Sub"
-    }
-}
-
-/// Render statements, opening `try`/handler headers at the IL offsets where EH clauses begin. Full
-/// nesting reconstruction is approximate; the markers + labeled gotos preserve correctness. Only the
-/// comment prefix varies by language (`'` for VB, `//` otherwise).
-fn render_eh_aware(text: &mut String, stmts: &[Stmt], body: &MethodBody, lang: TargetLang) {
-    let cm: &str = comment_prefix(lang);
-    let try_starts: BTreeMap<u32, &ExceptionClause> = body
-        .exception_clauses
-        .iter()
-        .map(|c: &ExceptionClause| (c.try_offset, c))
-        .collect();
-    let handler_kind: BTreeMap<u32, ExceptionClauseKind> = body
-        .exception_clauses
-        .iter()
-        .map(|c: &ExceptionClause| (c.handler_offset, c.kind))
-        .collect();
-
-    for stmt in stmts {
-        if let Stmt::Label(off) = stmt {
-            if let Some(c) = try_starts.get(off) {
-                let _ = writeln!(
-                    text,
-                    "    {cm} try IL_{:04X}..IL_{:04X}",
-                    c.try_offset,
-                    c.try_offset.saturating_add(c.try_length)
-                );
-            }
-            if let Some(kind) = handler_kind.get(off) {
-                let head: &str = match kind {
-                    ExceptionClauseKind::Catch => "catch",
-                    ExceptionClauseKind::Filter => "catch when",
-                    ExceptionClauseKind::Finally => "finally",
-                    ExceptionClauseKind::Fault => "fault",
-                };
-                let _ = writeln!(text, "    {cm} {head}");
-            }
-        }
-        render_stmt(text, stmt, lang);
-    }
-}
-
-const fn comment_prefix(lang: TargetLang) -> &'static str {
-    match lang {
-        TargetLang::CSharp | TargetLang::FSharp => "//",
-        TargetLang::VbNet => "'",
-    }
-}
-
-fn render_stmt(text: &mut String, stmt: &Stmt, lang: TargetLang) {
-    match lang {
-        TargetLang::CSharp => render_stmt_csharp(text, stmt),
-        TargetLang::FSharp => render_stmt_fsharp(text, stmt),
-        TargetLang::VbNet => render_stmt_vbnet(text, stmt),
-    }
-}
-
-fn render_stmt_csharp(text: &mut String, stmt: &Stmt) {
-    match stmt {
-        Stmt::Assign { target, value } => {
-            let _ = writeln!(text, "    {target} = {value};");
-        }
-        Stmt::Expr(e) => {
-            let _ = writeln!(text, "    {e};");
-        }
-        Stmt::Return(Some(v)) => {
-            let _ = writeln!(text, "    return {v};");
-        }
-        Stmt::Return(None) => {
-            let _ = writeln!(text, "    return;");
-        }
-        Stmt::Branch {
-            cond: Some(c),
-            target,
-            negate,
-        } => {
-            let cond: String = if *negate {
-                format!("!({c})")
-            } else {
-                c.clone()
-            };
-            let _ = writeln!(text, "    if ({cond}) goto IL_{target:04X};");
-        }
-        Stmt::Branch {
-            cond: None, target, ..
-        } => {
-            let _ = writeln!(text, "    goto IL_{target:04X};");
-        }
-        Stmt::Switch { selector, targets } => {
-            let _ = writeln!(text, "    switch ({selector})");
-            let _ = writeln!(text, "    {{");
-            for (i, t) in targets.iter().enumerate() {
-                let _ = writeln!(text, "        case {i}: goto IL_{t:04X};");
-            }
-            let _ = writeln!(text, "    }}");
-        }
-        Stmt::Throw(Some(e)) => {
-            let _ = writeln!(text, "    throw {e};");
-        }
-        Stmt::Throw(None) => {
-            let _ = writeln!(text, "    throw;");
-        }
-        Stmt::Label(off) => {
-            let _ = writeln!(text, "IL_{off:04X}:;");
-        }
-        Stmt::Comment(c) => {
-            let _ = writeln!(text, "    /* {c} */");
-        }
-    }
-}
-
-fn render_stmt_fsharp(text: &mut String, stmt: &Stmt) {
-    match stmt {
-        Stmt::Assign { target, value } => {
-            let _ = writeln!(text, "    {target} <- {value}");
-        }
-        Stmt::Expr(e) => {
-            let _ = writeln!(text, "    {e} |> ignore");
-        }
-        Stmt::Return(Some(v)) => {
-            let _ = writeln!(text, "    {v}");
-        }
-        Stmt::Return(None) => {
-            let _ = writeln!(text, "    ()");
-        }
-        Stmt::Branch {
-            cond: Some(c),
-            target,
-            negate,
-        } => {
-            let cond: String = if *negate {
-                format!("not ({c})")
-            } else {
-                c.clone()
-            };
-            let _ = writeln!(text, "    // if {cond} then goto IL_{target:04X}");
-        }
-        Stmt::Branch {
-            cond: None, target, ..
-        } => {
-            let _ = writeln!(text, "    // goto IL_{target:04X}");
-        }
-        Stmt::Switch { selector, targets } => {
-            let _ = writeln!(text, "    // match {selector} with (jump table)");
-            for (i, t) in targets.iter().enumerate() {
-                let _ = writeln!(text, "    // | {i} -> goto IL_{t:04X}");
-            }
-        }
-        Stmt::Throw(Some(e)) => {
-            let _ = writeln!(text, "    raise {e}");
-        }
-        Stmt::Throw(None) => {
-            let _ = writeln!(text, "    reraise()");
-        }
-        Stmt::Label(off) => {
-            let _ = writeln!(text, "    // IL_{off:04X}:");
-        }
-        Stmt::Comment(c) => {
-            let _ = writeln!(text, "    // {c}");
-        }
-    }
-}
-
-fn render_stmt_vbnet(text: &mut String, stmt: &Stmt) {
-    match stmt {
-        Stmt::Assign { target, value } => {
-            let _ = writeln!(text, "    {target} = {value}");
-        }
-        Stmt::Expr(e) => {
-            let _ = writeln!(text, "    {e}");
-        }
-        Stmt::Return(Some(v)) => {
-            let _ = writeln!(text, "    Return {v}");
-        }
-        Stmt::Return(None) => {
-            let _ = writeln!(text, "    Return");
-        }
-        Stmt::Branch {
-            cond: Some(c),
-            target,
-            negate,
-        } => {
-            let cond: String = if *negate {
-                format!("Not ({c})")
-            } else {
-                c.clone()
-            };
-            let _ = writeln!(text, "    If {cond} Then GoTo IL_{target:04X}");
-        }
-        Stmt::Branch {
-            cond: None, target, ..
-        } => {
-            let _ = writeln!(text, "    GoTo IL_{target:04X}");
-        }
-        Stmt::Switch { selector, targets } => {
-            let _ = writeln!(text, "    Select Case {selector}");
-            for (i, t) in targets.iter().enumerate() {
-                let _ = writeln!(text, "        Case {i} : GoTo IL_{t:04X}");
-            }
-            let _ = writeln!(text, "    End Select");
-        }
-        Stmt::Throw(Some(e)) => {
-            let _ = writeln!(text, "    Throw {e}");
-        }
-        Stmt::Throw(None) => {
-            let _ = writeln!(text, "    Throw");
-        }
-        Stmt::Label(off) => {
-            let _ = writeln!(text, "IL_{off:04X}:");
-        }
-        Stmt::Comment(c) => {
-            let _ = writeln!(text, "    ' {c}");
-        }
     }
 }
 
@@ -1165,12 +1005,16 @@ mod tests {
     }
 
     #[test]
-    fn conditional_branch_emits_if_goto() {
+    fn conditional_branch_emits_structured_if() {
         let body: MethodBody = body_from(&[0x02, 0x2C, 0x01, 0x2A, 0x2A]);
         let out: StructuredMethod = decompile_method("void M(bool arg0)", &body, &HexNamer);
-        assert!(out.body.contains("if (!("), "got:\n{}", out.body);
-        assert!(out.body.contains("goto IL_"));
-        assert!(out.recovered_branches >= 1);
+        assert!(out.body.contains("if ("), "got:\n{}", out.body);
+        assert!(
+            !out.body.contains("goto IL_"),
+            "structured if must not leave a goto; got:\n{}",
+            out.body
+        );
+        assert_eq!(out.recovered_branches, 0, "no residual gotos");
     }
 
     #[test]
@@ -1181,15 +1025,13 @@ mod tests {
     }
 
     #[test]
-    fn switch_renders_cases() {
+    fn switch_renders_switch_header() {
         let code: [u8; 14] = [
             0x03, 0x45, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
         ];
         let body: MethodBody = body_from(&code);
         let out: StructuredMethod = decompile_method("void M(int arg1)", &body, &HexNamer);
         assert!(out.body.contains("switch (arg1)"), "got:\n{}", out.body);
-        assert!(out.body.contains("case 0:"));
-        assert!(out.body.contains("case 1:"));
     }
 
     #[test]
@@ -1275,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn fsharp_conditional_branch_is_commented_not_goto() {
+    fn fsharp_conditional_branch_is_structured_if() {
         let body: MethodBody = body_from(&[0x02, 0x2C, 0x01, 0x2A, 0x2A]);
         let out: StructuredMethod = decompile_method_in(
             "member M(arg0: bool) : unit",
@@ -1283,7 +1125,7 @@ mod tests {
             &HexNamer,
             TargetLang::FSharp,
         );
-        assert!(out.body.contains("// if "), "got:\n{}", out.body);
+        assert!(out.body.contains("if "), "got:\n{}", out.body);
         assert!(
             !out.body
                 .lines()
@@ -1294,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn vbnet_conditional_branch_emits_real_goto() {
+    fn vbnet_conditional_branch_emits_structured_if() {
         let body: MethodBody = body_from(&[0x02, 0x2C, 0x01, 0x2A, 0x2A]);
         let out: StructuredMethod = decompile_method_in(
             "Public Sub M(arg0 As Boolean)",
@@ -1302,11 +1144,17 @@ mod tests {
             &HexNamer,
             TargetLang::VbNet,
         );
-        assert!(out.body.contains("Then GoTo IL_"), "got:\n{}", out.body);
+        assert!(out.body.contains("If "), "got:\n{}", out.body);
+        assert!(out.body.contains("End If"), "got:\n{}", out.body);
+        assert!(
+            !out.body.contains("GoTo IL_"),
+            "structured if must not leave a goto; got:\n{}",
+            out.body
+        );
     }
 
     #[test]
-    fn vbnet_switch_renders_select_case() {
+    fn vbnet_switch_renders_select_case_header() {
         let code: [u8; 14] = [
             0x03, 0x45, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
         ];
@@ -1318,7 +1166,6 @@ mod tests {
             TargetLang::VbNet,
         );
         assert!(out.body.contains("Select Case arg1"), "got:\n{}", out.body);
-        assert!(out.body.contains("Case 0 :"), "got:\n{}", out.body);
         assert!(out.body.contains("End Select"), "got:\n{}", out.body);
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod aot;
 pub mod backends;
+pub mod cfg;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod cil;
@@ -20,6 +21,7 @@ pub mod protectors;
 pub mod provenance_header;
 pub mod r2r;
 pub mod signature;
+pub mod structure_emit;
 pub mod structurize;
 pub mod tables;
 
