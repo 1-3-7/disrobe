@@ -1,9 +1,11 @@
 | section | line | summary |
 |---------|-----:|---------|
-| clean-room provenance | 12 | which ILSpy algorithms were studied and reimplemented from understanding |
-| cfg + structurer | 22 | basic-block CFG, dominance, natural loops, structured emission |
-| state-machine reversal | 33 | async/iterator detection + MoveNext idiom folding |
-| metrics | 44 | how the before/after structuring rate is measured |
+| clean-room provenance | 10 | which ILSpy algorithms were studied and reimplemented from understanding |
+| cfg + structurer | 29 | basic-block CFG, dominance, natural loops, structured emission |
+| state-machine reversal | 38 | async/iterator detection + MoveNext idiom folding |
+| token resolution | 48 | MethodSpec/TypeSpec generic name resolution + arity strip |
+| compiler-pattern recovery | 59 | cached-delegate folding, record detection, member annotation |
+| metrics | 68 | how the before/after structuring rate is measured |
 
 ## clean-room provenance
 
@@ -42,6 +44,26 @@ and survives obfuscation. `state_machine_reverse.rs` folds the lowering idioms i
 `expr.GetAwaiter()` -> `await expr`, `builder.SetResult(x)` -> `return x`, hoisted `<name>5__N` fields
 -> locals, and strips `<>1__state` resume plumbing. Full state-dispatch CFG re-weaving is not yet
 done; the await/yield points are surfaced over the still-structural resume skeleton.
+
+## token resolution
+
+`model.rs::resolve_token` resolves the generic-instantiation tables that earlier produced
+placeholders. `MethodSpec` (0x2B, parsed in `tables.rs`) resolves through its `MethodDefOrRef` coded
+index to the open generic method name (`ConfigureAwait`, `Capture`, `Enumerable.Select`, ...).
+`TypeSpec` (0x1B) parses its signature blob via `signature::parse_type_spec_sig`, renders it, and
+substitutes the embedded `TypeDef`/`TypeRef` token placeholders, so generic instances render as
+`Dictionary<string, int>` etc. `strip_generic_arity` drops the CLI `` `N `` arity suffix. Note: the
+`MethodSpec` *arg-count* is intentionally not resolved - doing so regressed async-EH stack accounting
+without improving LINQ chains (which underflow upstream either way); only the *name* is resolved.
+
+## compiler-pattern recovery
+
+`closure_reverse.rs` strips the Roslyn cached-delegate caching guard
+(`if (!(<>9__N_M)) { <>9__N_M = new D(<>9, <Method>b__N_M); }`) and rewrites cached-delegate
+references to the bare lambda method name. `records.rs` detects `record` types via the synthesized
+`get_EqualityContract` property and classifies their compiler-generated members; `decompile.rs`
+annotates record/state-machine/closure types in method headers so generated boilerplate is
+distinguishable from source.
 
 ## metrics
 

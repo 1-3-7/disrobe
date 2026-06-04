@@ -352,8 +352,12 @@ impl Resolver {
             TableId::MemberRef => self
                 .member_ref_name(rid)
                 .unwrap_or_else(|| format!("MemberRef[{rid}]")),
-            TableId::TypeSpec => format!("TypeSpec[{rid}]"),
-            TableId::MethodSpec => format!("MethodSpec[{rid}]"),
+            TableId::TypeSpec => self
+                .type_spec_name(rid)
+                .unwrap_or_else(|| format!("TypeSpec[{rid}]")),
+            TableId::MethodSpec => self
+                .method_spec_name(rid)
+                .unwrap_or_else(|| format!("MethodSpec[{rid}]")),
             _ => format!("{table:?}[{rid}]"),
         }
     }
@@ -405,6 +409,48 @@ impl Resolver {
     }
 
     #[must_use]
+    fn method_spec_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.method_specs.get(rid.checked_sub(1)? as usize)?;
+        let method: RowRef = row.method?;
+        Some(self.row_ref_name(method))
+    }
+
+    /// Resolve a `TypeSpec` to a readable type name (e.g. `List<int>`, `Circle[]`) by parsing its
+    /// signature blob and substituting the embedded `TypeDef`/`TypeRef` token placeholders with their
+    /// resolved names.
+    #[must_use]
+    fn type_spec_name(&self, rid: u32) -> Option<String> {
+        let row = self.tables.type_specs.get(rid.checked_sub(1)? as usize)?;
+        let blob: &[u8] = self.blob(row.signature)?;
+        let sig: crate::signature::TypeSig = crate::signature::parse_type_spec_sig(blob).ok()?;
+        Some(self.substitute_type_tokens(&sig.render()))
+    }
+
+    /// Replace every `type(0xNNNNNNNN)` placeholder in a rendered type string with the resolved name
+    /// of that token.
+    #[must_use]
+    fn substitute_type_tokens(&self, rendered: &str) -> String {
+        let mut out: String = String::with_capacity(rendered.len());
+        let mut rest: &str = rendered;
+        while let Some(pos) = rest.find("type(0x") {
+            out.push_str(&rest[..pos]);
+            let after: &str = &rest[pos + "type(0x".len()..];
+            if let Some(end) = after.find(')')
+                && end == 8
+                && let Ok(token) = u32::from_str_radix(&after[..8], 16)
+            {
+                out.push_str(&self.resolve_token(token));
+                rest = &after[end + 1..];
+            } else {
+                out.push_str("type(0x");
+                rest = after;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[must_use]
     fn row_ref_name(&self, r: RowRef) -> String {
         let token: u32 = (u32::from(r.table.index()) << 24) | r.row;
         self.resolve_token(token)
@@ -430,6 +476,7 @@ impl Resolver {
 
     #[must_use]
     fn qualify(ns: String, name: String) -> String {
+        let name: String = strip_generic_arity(&name);
         if ns.is_empty() {
             name
         } else {
@@ -606,6 +653,16 @@ impl Resolver {
             }
         }
         out
+    }
+}
+
+/// Strip the CLI generic-arity suffix (`` `N ``) from a type name (`` List`1 `` -> `List`), which is
+/// metadata bookkeeping that never appears in C# source.
+#[must_use]
+fn strip_generic_arity(name: &str) -> String {
+    match name.split_once('`') {
+        Some((base, rest)) if rest.bytes().all(|b: u8| b.is_ascii_digit()) => base.to_owned(),
+        _ => name.to_owned(),
     }
 }
 

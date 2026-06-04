@@ -51,6 +51,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     for ty in &model.types {
         let state_machine: Option<crate::state_machine::StateMachine> =
             crate::state_machine::classify(ty);
+        let is_record: bool = crate::records::is_record_type(ty);
         for m in &ty.methods {
             decompile_one(
                 &pe,
@@ -59,6 +60,7 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
                 ty,
                 m,
                 state_machine.as_ref(),
+                is_record,
                 lang,
                 &mut methods,
                 &mut bodyless,
@@ -84,6 +86,7 @@ fn decompile_one(
     ty: &TypeModel,
     m: &MethodModel,
     state_machine: Option<&crate::state_machine::StateMachine>,
+    is_record: bool,
     lang: TargetLang,
     methods: &mut Vec<StructuredMethod>,
     bodyless: &mut u32,
@@ -116,6 +119,10 @@ fn decompile_one(
                     }
                     None => "",
                 }
+            } else if is_record && crate::records::is_synthesized_record_member(m) {
+                " [record - compiler-synthesized member]"
+            } else if is_record {
+                " [record]"
             } else {
                 ""
             };
@@ -143,6 +150,11 @@ fn decompile_one(
                 let (reversed, _points): (String, u32) =
                     crate::state_machine_reverse::reverse_move_next(&structured.body, sm);
                 structured.body = reversed;
+            }
+            if lang == TargetLang::CSharp {
+                let (cleaned, _folded): (String, u32) =
+                    crate::closure_reverse::fold_cached_delegates(&structured.body);
+                structured.body = cleaned;
             }
             methods.push(structured);
         }

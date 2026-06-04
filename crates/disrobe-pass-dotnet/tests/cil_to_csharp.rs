@@ -118,3 +118,27 @@ fn native_decompile_confused_assembly_does_not_panic() {
         "accounts for every method even under obfuscation; got {asm:?}"
     );
 }
+
+#[test]
+fn resolves_generic_typespec_names_in_body() {
+    let bytes: Vec<u8> = load("tests/fixtures/GenVerify.dll");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile generics");
+    let joined: String = asm
+        .methods
+        .iter()
+        .map(|m| m.body.as_str())
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        joined.contains("Dictionary<string, int>"),
+        "generic instance resolves to a real name (not TypeSpec[N]); got:\n{joined}"
+    );
+    assert!(
+        !joined.contains("TypeSpec["),
+        "no unresolved TypeSpec placeholders remain; got:\n{joined}"
+    );
+    assert!(
+        !joined.contains("`2"),
+        "generic arity suffix stripped; got:\n{joined}"
+    );
+}

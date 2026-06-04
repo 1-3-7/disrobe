@@ -289,6 +289,7 @@ pub struct Tables {
     pub custom_attributes: Vec<CustomAttributeRow>,
     pub module_refs: Vec<ModuleRefRow>,
     pub type_specs: Vec<TypeSpecRow>,
+    pub method_specs: Vec<MethodSpecRow>,
     pub assembly: Option<AssemblyRow>,
     pub assembly_refs: Vec<AssemblyRefRow>,
     pub standalone_sigs: Vec<StandAloneSigRow>,
@@ -369,6 +370,14 @@ pub struct ModuleRefRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeSpecRow {
     pub signature: u32,
+}
+
+/// A `MethodSpec` row (§II.22.29): the instantiation of a generic method. `method` points at the
+/// open generic method (`MethodDef` or `MemberRef`); `instantiation` is the generic-argument blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodSpecRow {
+    pub method: Option<RowRef>,
+    pub instantiation: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,6 +830,18 @@ fn decode_table(
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width);
                 let signature: u32 = c.index(sz.heap.blob)?;
                 out.type_specs.push(TypeSpecRow { signature });
+            }
+        }
+        TableId::MethodSpec => {
+            out.method_specs.reserve(count as usize);
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width);
+                let method: Option<RowRef> = coded(&mut c, CodedIndex::MethodDefOrRef)?;
+                let instantiation: u32 = c.index(sz.heap.blob)?;
+                out.method_specs.push(MethodSpecRow {
+                    method,
+                    instantiation,
+                });
             }
         }
         TableId::StandAloneSig => {

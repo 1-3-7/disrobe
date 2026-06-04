@@ -479,6 +479,16 @@ pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
     r.type_sig()
 }
 
+/// Parse a `TypeSpec` signature blob (§II.23.2.14): a bare `Type` with no leading calling
+/// convention, encoding a generic instantiation, array, pointer, or `Var`/`MVar`.
+///
+/// # Errors
+/// Returns an error if the blob is truncated or encodes a malformed element type.
+pub fn parse_type_spec_sig(blob: &[u8]) -> Result<TypeSig> {
+    let mut r: SigReader<'_> = SigReader::new(blob);
+    r.type_sig()
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
