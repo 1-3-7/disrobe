@@ -4458,6 +4458,20 @@ fn structure_async_with(
     }
     let search_end: usize = region.region_end.max(region.try_end);
     let body_end: usize = with_body_end(stream, body_start, search_end);
+    if let Some(ret) = async_with_stashed_return(code, stream, body_start, body_end)? {
+        return Ok(Some((
+            Stmt::With {
+                items: vec![WithItem {
+                    context_expr,
+                    optional_vars,
+                }],
+                body: vec![ret],
+                is_async: true,
+                line: None,
+            },
+            Vec::new(),
+        )));
+    }
     let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
     let trailing: Option<Stmt> = async_with_trailing_return(code, stream, body_end, search_end)?;
     let post_with: Vec<Stmt> = if trailing.is_some() {
@@ -4480,6 +4494,39 @@ fn structure_async_with(
         },
         post_with,
     )))
+}
+
+/// Recover a `return <expr>` that is the entire body of an `async with` whose return value `CPython`
+/// computes BEFORE the awaited `__aexit__` and stashes below the exit args with `SWAP 2`
+/// (`async with timeout(): return int(await work)`). `with_body_end` stops at the `__aexit__` None-triple,
+/// so the body region is `<value-expr>; SWAP 2` — a bare residual value the statement structurer drops,
+/// leaving an empty `pass` body and a value-less trailing return. Detect the closing `SWAP 2`, rebuild
+/// the value from the ops before it, and emit `return <value>` as the with body. `None` when the body
+/// does not end in that stash shape (an ordinary body whose statements/return are recovered normally).
+fn async_with_stashed_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Result<Option<Stmt>> {
+    let Some(swap): Option<usize> = (body_start..body_end)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return Ok(None);
+    };
+    if !matches!(stream.ops[swap], CanonicalOp::Swap(2)) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[body_start..swap])?;
+    if !head.is_empty() {
+        return Ok(None);
+    }
+    let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    Ok(Some(Stmt::Return(Some(value))))
 }
 
 /// Structure the statements that follow an `async with` on its NORMAL (no-exception) exit: the code
