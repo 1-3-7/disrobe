@@ -4404,7 +4404,13 @@ fn structure_async_with(
     let search_end: usize = region.region_end.max(region.try_end);
     let body_end: usize = with_body_end(stream, body_start, search_end);
     let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
-    if let Some(ret) = async_with_trailing_return(code, stream, body_end, search_end)? {
+    let trailing: Option<Stmt> = async_with_trailing_return(code, stream, body_end, search_end)?;
+    let post_with: Vec<Stmt> = if trailing.is_some() {
+        Vec::new()
+    } else {
+        async_with_post_tail(code, stream, body_end, region.handler_start)?
+    };
+    if let Some(ret) = trailing {
         body.push(ret);
     }
     Ok(Some((
@@ -4417,8 +4423,30 @@ fn structure_async_with(
             is_async: true,
             line: None,
         },
-        Vec::new(),
+        post_with,
     )))
+}
+
+/// Structure the statements that follow an `async with` on its NORMAL (no-exception) exit: the code
+/// past the awaited `__aexit__(None, None, None)` cleanup up to the cold exception handler. The async
+/// `with` exception region spans the whole construct, so its `region_end` engulfs this post-`with` tail
+/// (a `for`/`return`/etc.); without lifting it out the tail is silently consumed and dropped. Cut at the
+/// handler entry (`PUSH_EXC_INFO` / `WITH_EXCEPT_START` cold path) and structure `[cleanup_end, handler)`
+/// as ordinary statements. Empty when no real statement follows the cleanup.
+fn async_with_post_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    handler_start: usize,
+) -> Result<Vec<Stmt>> {
+    let Some(tail_start): Option<usize> = async_with_cleanup_end(stream, body_end, handler_start)
+    else {
+        return Ok(Vec::new());
+    };
+    if tail_start >= handler_start || !slice_has_real_stmt(stream, tail_start, handler_start) {
+        return Ok(Vec::new());
+    }
+    structure_stmts(code, stream, tail_start, handler_start)
 }
 
 /// Skip the normal-exit `__aexit__(None, None, None)` cleanup an async `with` emits after its body:
@@ -4491,7 +4519,18 @@ fn async_with_exit_guarded_by_branch(stream: &DecodedStream, ret_start: usize, h
     }) else {
         return false;
     };
-    (ret_start..ret_idx).any(|k: usize| is_forward_cond_jump(&stream.ops[k]))
+    (ret_start..ret_idx).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::ForIter(_)
+                    | CanonicalOp::GetAnext
+                    | CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::JumpBackward(_)
+            )
+    })
 }
 
 /// Recover a `return EXPR` statement: find the `RETURN_VALUE`/`RETURN_CONST` in `[ret_start, hi)` and
