@@ -103,15 +103,31 @@ fn decompile_one(
     }
     match parse_method_body(&image[off..]) {
         Ok(body) => {
+            let provenance: &str = if crate::state_machine::is_closure_display_type(ty) {
+                " [compiler-generated closure]"
+            } else if state_machine.is_some() {
+                match state_machine.map(|s: &crate::state_machine::StateMachine| s.kind) {
+                    Some(crate::state_machine::StateMachineKind::Async) => " [async state machine]",
+                    Some(crate::state_machine::StateMachineKind::Iterator) => {
+                        " [iterator state machine]"
+                    }
+                    Some(crate::state_machine::StateMachineKind::AsyncIterator) => {
+                        " [async iterator state machine]"
+                    }
+                    None => "",
+                }
+            } else {
+                ""
+            };
             let header_sig: String = match lang {
                 TargetLang::CSharp => {
-                    format!("// {}\n{}", ty.full_name, m.csharp_signature())
+                    format!("// {}{provenance}\n{}", ty.full_name, m.csharp_signature())
                 }
                 TargetLang::FSharp => {
-                    format!("// {}\n{}", ty.full_name, m.fsharp_signature())
+                    format!("// {}{provenance}\n{}", ty.full_name, m.fsharp_signature())
                 }
                 TargetLang::VbNet => {
-                    format!("' {}\n{}", ty.full_name, m.vbnet_signature())
+                    format!("' {}{provenance}\n{}", ty.full_name, m.vbnet_signature())
                 }
             };
             let namer: MethodNamer<'_> = MethodNamer {

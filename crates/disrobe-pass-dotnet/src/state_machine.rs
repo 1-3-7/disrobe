@@ -104,6 +104,19 @@ pub fn is_move_next(m: &MethodModel) -> bool {
     short_name(&m.name) == "MoveNext"
 }
 
+/// Whether a type is a Roslyn closure / cached-delegate holder (`<>c`, `<>c__DisplayClassN_M`).
+///
+/// Their members are pure compiler plumbing and add only noise to decompiled output. The `<>c` name
+/// shape is the stable Roslyn convention; obfuscators that rename these are handled elsewhere.
+#[must_use]
+pub fn is_closure_display_type(ty: &TypeModel) -> bool {
+    let short: &str = short_name(&ty.name);
+    short == "<>c"
+        || short.starts_with("<>c__DisplayClass")
+        || short.starts_with("<>c_")
+        || (short.starts_with("<>c") && short.len() > 3)
+}
+
 /// Whether a method is a compiler-generated state-machine helper that should be hidden from output.
 ///
 /// Covers the explicit interface stubs: `SetStateMachine`, `IEnumerator.Reset`, the `get_Current`

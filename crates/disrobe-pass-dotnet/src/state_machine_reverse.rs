@@ -40,11 +40,57 @@ pub fn reverse_move_next(body: &str, sm: &StateMachine) -> (String, u32) {
 fn rename_hoisted_fields(line: &str, sm: &StateMachine) -> String {
     let mut out: String = line.to_owned();
     out = replace_captured_this(&out);
+    out = replace_param_fields(&out);
     out = replace_hoisted_locals(&out);
     if let Some(current) = &sm.current_field {
         out = out.replace(&format!("this.{current}"), "/*current*/");
     }
     out
+}
+
+/// Replace parameter-backing fields `this.<>N__name` -> `name` (Roslyn stores the original method
+/// parameters in `<>3__name` fields inside the state machine).
+fn replace_param_fields(line: &str) -> String {
+    let mut out: String = String::with_capacity(line.len());
+    let mut rest: &str = line;
+    while let Some(pos) = rest.find("this.<>") {
+        out.push_str(&rest[..pos]);
+        let after: &str = &rest[pos + "this.<>".len()..];
+        if let Some((name, consumed)) = parse_param_field(after) {
+            out.push_str(&name);
+            rest = &after[consumed..];
+        } else {
+            out.push_str("this.<>");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Parse a `N__name` parameter-field suffix (after the `this.<>` prefix), returning the bare `name`
+/// and bytes consumed. Rejects the structural `1__state`/`2__current`/`4__this`/`t__builder` markers
+/// so only real parameter names are rewritten.
+fn parse_param_field(s: &str) -> Option<(String, usize)> {
+    let digits: usize = s.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let after_digits: &str = &s[digits..];
+    let underscores: usize = after_digits.bytes().take_while(|&b: &u8| b == b'_').count();
+    if underscores < 2 {
+        return None;
+    }
+    let name_part: &str = &after_digits[underscores..];
+    let name_len: usize = name_part
+        .bytes()
+        .take_while(|&b: &u8| b == b'_' || b.is_ascii_alphanumeric())
+        .count();
+    let name: &str = &name_part[..name_len];
+    if name.is_empty() || matches!(name, "state" | "current" | "this" | "builder") {
+        return None;
+    }
+    Some((name.to_owned(), digits + underscores + name_len))
 }
 
 fn replace_captured_this(line: &str) -> String {
@@ -318,5 +364,22 @@ mod tests {
         let body: &str = "    local5 = this.<>4__this._repository;\n";
         let (out, _): (String, u32) = reverse_move_next(body, &async_sm());
         assert!(out.contains("this._repository"), "got:\n{out}");
+    }
+
+    #[test]
+    fn param_backing_field_renamed() {
+        let body: &str = "    i = this.<>3__from;\n";
+        let (out, _): (String, u32) = reverse_move_next(body, &iterator_sm());
+        assert!(out.contains("i = from;"), "got:\n{out}");
+    }
+
+    #[test]
+    fn param_rename_keeps_state_field_intact() {
+        let body: &str = "    local0 = this.<>1__state == 0;\n";
+        let (out, _): (String, u32) = reverse_move_next(body, &iterator_sm());
+        assert!(
+            out.contains("this.<>1__state"),
+            "state field must not be renamed to a param:\n{out}"
+        );
     }
 }
