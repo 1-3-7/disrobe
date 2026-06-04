@@ -1,14 +1,17 @@
 | section | line | summary |
 |---------|-----:|---------|
-| references | 16 | study-only upstream sources + licenses used for clean-room |
-| recompile-oracle | 28 | non-circular recompile-equivalence harness + measured % |
-| ibf-body-layout | 40 | verified small_value positions in the iseq body header |
-| local-table | 52 | how local names are recovered and the env-offset mapping |
-| nesting | 60 | recursive method/class/module/block body emission |
-| control-flow | 68 | branch-offset model; if/else, &&/||/&., while/until |
-| concatstrings | 80 | string-interpolation boundary heuristic |
-| constant-path | 88 | resolving opt_getconstant_path caches to A::B::C |
-| gaps | 96 | honest ceilings (register names, exceptions, case/when, compound-assign) |
+| references | 18 | study-only upstream sources + licenses used for clean-room |
+| recompile-oracle | 30 | non-circular recompile-equivalence harness + measured % |
+| ibf-body-layout | 42 | verified small_value positions in the iseq body header |
+| local-table | 54 | how local names are recovered and the env-offset mapping |
+| nesting | 62 | recursive method/class/module/block body emission |
+| control-flow | 70 | branch-offset model; if/else, &&/||/&., while/until |
+| concatstrings | 82 | string-interpolation boundary heuristic |
+| constant-path | 90 | resolving opt_getconstant_path caches to A::B::C |
+| exceptions | 98 | catch_table -> begin/rescue/ensure reconstruction |
+| case-when | 108 | dispatch + no-dispatch case/when, fixnum/regexp literals |
+| compound-assignment | 118 | ||=/&&= folding |
+| gaps | 126 | honest ceilings (pattern matching, []||=, register names) |
 
 ## references
 
@@ -32,8 +35,10 @@ Recovery fidelity is measured non-circularly: the recovered `.rb` is recompiled 
 `ruby --dump=insns` / `RubyVM::InstructionSequence.compile` and its opcode multiset is diffed against
 the opcodes of the fixture's own committed original `.rb` (never re-emitted through our own builder).
 The `recover` example prints recovered source for a `.yarvc`. Measured opcode-multiset equivalence on
-the 3.4.9 corpus: hello 100% (4/4), greeter 94% (75/79), megafile 78% (whole-file recompiles;
-15443/19673). The megafile is a 1677-LOC every-feature stress file; 329/446 methods recover >=70%.
+the 3.4.9 corpus: hello 100% (4/4), greeter 94% (75/79), megafile 79% (whole-file recompiles;
+15690/19673). The megafile is a 1677-LOC every-feature stress file; 357/446 methods recover >=70%,
+only 3 fully missing. Focused per-feature fixtures recompile near-exactly: case/when 97%, rescue 91%,
+op-assign 97%.
 
 ## ibf-body-layout
 
@@ -88,22 +93,48 @@ resolver is strict: a non-symbol element aborts resolution and falls back to `ob
 fabricated. Runtime IC *type* state (receiver class for `opt_send`) is reset on `to_binary` dump and
 is therefore not statically recoverable; the constant cache is the only deterministic IC win.
 
+## exceptions
+
+The `catch_table` is decoded (`ibf_dump_catch_table`: six `small_value`s per entry —
+`iseq_index`/`type`/`start`/`end`/`cont`/`sp`; type is `INT2FIX(n)` so `>> 1` gives RESCUE=1,
+ENSURE=2, RETRY=3, BREAK=4, REDO=5, NEXT=6). A RESCUE/ENSURE entry's protected runtime-pc range maps
+to instruction indices and wraps in `begin`/`rescue [Class => var]`/`ensure`/`end`; the handler iseq
+is decompiled as a `getlocal $!; const; checkmatch; branchunless; [getlocal $!; setlocal var]; <body>;
+leave` rescue ladder. The `=> var` binding lives in the parent frame (`setlocal_WC_1`) so it is often
+a hidden slot and renders as a bare `rescue Class`.
+
+## case-when
+
+Two forms fold to `case subject; when V; ...; else; ...; end`: (a) literal whens emit
+`dup; opt_case_dispatch <hash>, ELSE` then a `<value>; topn 1; ===; branchif WHEN` ladder; (b)
+non-literal whens (class/range/regex/lambda) emit the bare `topn/===/branchif` ladder with no jump
+table. Fixnum objects decode to their numeric value (`(raw >> 1)`, new bare `NumLiteral` operand) and
+Regexp objects to `/source/` (source-string post-pass, slashes escaped). `case/in` pattern matching is
+NOT folded (see gaps).
+
+## compound-assignment
+
+The `getivar/getlocal; [dup;] branch{if,unless} T; [pop;] <value>; [dup;] set<same target>` idiom
+folds to `target ||= value` / `target &&= value`. `n += 1` already round-trips as `n = n + 1`
+(identical opcodes). The `[]||=` hash/array form (`dupn 2; opt_aref; ...; opt_aset`) is not yet
+reassembled.
+
 ## gaps
 
-Honest ceilings on the remaining ~22% megafile opcode gap (all remaining output stays valid,
+Honest ceilings on the remaining ~21% megafile opcode gap (all remaining output stays valid,
 recompilable Ruby — these constructs are dropped or approximated, never fabricated):
 
 - Register/name wall: YARV erases names absent from the `local_table` (block-local temporaries,
-  hidden positional params). They stay `local{N}` (arity preserved); structurally correct, name lost.
-- Exception regions: `rescue`/`ensure`/`retry` handler bodies are separate iseqs reached only through
-  the `catch_table` (a PC-range -> handler map), not the iseq tree, so they are not reconstructed
-  into `begin/rescue/ensure/end`. ~14 megafile handler iseqs recover 0%.
-- `case/when`: `opt_case_dispatch` + the chained `topn; ===; branchif` when-comparisons are not
-  folded back into `case ... when ... end`; they currently surface as approximate if/unless chains.
-- Compound assignment: `[]||=`/`[]&&=` and attribute-op-assign desugar to `dupn`/`topn`/`setn`/
-  `adjuststack`/`opt_aset` stack dances that are tracked for balance but not reassembled into `||=`.
-- Loops: only the `while`/`until` shape is structured; `for`, `loop`, `begin..end while`, and
-  `next`/`break`/`redo` with values are not.
+  hidden positional params, rescue `=> e` in the parent frame). They stay `local{N}`/bare (arity and
+  structure preserved); name lost. This is genuine bytecode erasure, not a decoder limitation.
+- Pattern matching (`case/in`): the dominant remaining gap. Array/find/hash deconstruction
+  (`checkmatch`/`deconstruct`/`deconstruct_keys`), type patterns, guards (`in X => n if ...`), and
+  alternatives desugar to large `checktype`/`getlocal`/branch ladders that are not reassembled into
+  `case ... in ... end`. The `<module:Patterns>` (560 op) / `classify` (273 op) methods drive it.
+- `[]||=` compound: hash/array-index conditional assignment (`dupn`/`opt_aref`/`opt_aset` dance) is
+  tracked for stack balance but not reassembled.
+- Loops: only `while`/`until` structure; `for`, `loop`, `begin..end while`, and value-carrying
+  `next`/`break`/`redo` are not.
 - IC type wall: receiver-class inline caches are cleared on dump, so `opt_send` receivers cannot be
   disambiguated by runtime type; only the constant-path cache survives.
 - Metaprogramming: `define_method`/`class_eval` surface with their block bodies; genuinely dynamic

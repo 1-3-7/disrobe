@@ -12,7 +12,10 @@ use core::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::yarv::ibf::{IbfImage, IbfObjectKind, YarvIbfInstruction, YarvIseqBody, YarvOperand};
+use crate::yarv::ibf::{
+    CatchType, IbfImage, IbfObjectKind, YarvCatchEntry, YarvIbfInstruction, YarvIseqBody,
+    YarvOperand,
+};
 
 const MAX_STACK: usize = 8192;
 const MAX_EXPR_LEN: usize = 8192;
@@ -125,11 +128,29 @@ fn branch_offset(instr: &YarvIbfInstruction) -> Option<i64> {
     }
 }
 
+/// Runtime pc of each instruction (cumulative `1 + operand_count`), for mapping catch-table pcs and
+/// branch targets onto instruction indices.
+fn runtime_pcs(body: &YarvIseqBody) -> Vec<u32> {
+    let mut rt_pc: Vec<u32> = Vec::with_capacity(body.instructions.len());
+    let mut pc: u32 = 0;
+    for instr in &body.instructions {
+        rt_pc.push(pc);
+        pc = pc.saturating_add(1 + instr.operands.len() as u32);
+    }
+    rt_pc
+}
+
+/// Smallest instruction index whose runtime pc is `>= pc`, used to clamp a catch-table pc range to
+/// instruction boundaries.
+fn index_at_pc(rt_pc: &[u32], pc: u32) -> usize {
+    rt_pc.iter().position(|&p| p >= pc).unwrap_or(rt_pc.len())
+}
+
 /// Recursively render an iseq body's statements as Ruby source lines, indented by `depth` levels.
 /// Structural opcodes (`definemethod`/`defineclass`/`defineclass`-as-module and block-bearing
 /// sends) recurse into their child iseq so method/class/block bodies are emitted inline; forward
-/// `branchunless`/`branchif` regions are structured into `if`/`unless`/`else`, yielding
-/// recompile-equivalent source rather than `...` placeholders.
+/// `branchunless`/`branchif` regions are structured into `if`/`unless`/`else`; `catch_table`
+/// rescue/ensure regions are structured into `begin`/`rescue`/`ensure`/`end`.
 fn render_iseq_statements(
     body: &YarvIseqBody,
     ctx: &DecompileContext<'_>,
@@ -137,6 +158,9 @@ fn render_iseq_statements(
 ) -> Vec<String> {
     if depth > MAX_NEST_DEPTH {
         return Vec::new();
+    }
+    if let Some(lines) = try_render_exception_region(body, ctx, depth) {
+        return lines;
     }
     let targets: Vec<Option<usize>> = resolve_branch_targets(body);
     let mut stack: Vec<String> = Vec::with_capacity(32);
@@ -151,6 +175,227 @@ fn render_iseq_statements(
         &mut stack,
         &mut stmts,
     );
+    stmts
+}
+
+/// When this body has a top-level `rescue`/`ensure` catch entry whose protected range spans the body
+/// before its trailing return, wrap that range in `begin`/`rescue`/`ensure`/`end`, splicing in the
+/// decompiled rescue and ensure handler iseqs. Returns `None` when there is no rescue/ensure entry
+/// to structure (so the caller renders linearly).
+fn try_render_exception_region(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+) -> Option<Vec<String>> {
+    let rescue: Option<&YarvCatchEntry> = body
+        .catch_entries
+        .iter()
+        .find(|e| e.catch_type == CatchType::Rescue && e.handler_iseq.is_some());
+    let ensure: Option<&YarvCatchEntry> = body
+        .catch_entries
+        .iter()
+        .find(|e| e.catch_type == CatchType::Ensure && e.handler_iseq.is_some());
+    if rescue.is_none() && ensure.is_none() {
+        return None;
+    }
+
+    let rt_pc: Vec<u32> = runtime_pcs(body);
+    let entry: &YarvCatchEntry = rescue.or(ensure)?;
+    let start: usize = index_at_pc(&rt_pc, entry.start_pc);
+    let end: usize = index_at_pc(&rt_pc, entry.end_pc);
+    if start >= end || end > body.instructions.len() {
+        return None;
+    }
+
+    let pad: String = indent(depth);
+    let targets: Vec<Option<usize>> = resolve_branch_targets(body);
+    let mut lines: Vec<String> = Vec::new();
+
+    let prefix: Vec<String> = render_slice(body, ctx, depth, 0, start, &targets);
+    lines.extend(prefix);
+
+    lines.push(format!("{pad}begin"));
+    let protected: Vec<String> = render_slice(body, ctx, depth + 1, start, end, &targets);
+    lines.extend(protected);
+
+    if let Some(handler_idx) = rescue.and_then(|e| e.handler_iseq)
+        && let Some(handler) = ctx.body(handler_idx)
+    {
+        lines.extend(render_rescue_handler(handler, ctx, depth));
+    }
+    if let Some(handler_idx) = ensure.and_then(|e| e.handler_iseq)
+        && let Some(handler) = ctx.body(handler_idx)
+    {
+        lines.push(format!("{pad}ensure"));
+        lines.extend(render_iseq_statements(handler, ctx, depth + 1));
+    }
+    lines.push(format!("{pad}end"));
+
+    let suffix: Vec<String> =
+        render_slice(body, ctx, depth, end, body.instructions.len(), &targets);
+    lines.extend(suffix);
+    Some(lines)
+}
+
+/// Decompile a `rescue in ...` handler iseq into one or more `rescue [Class => var]` clauses with
+/// their bodies, at `depth`. The handler's shape is a ladder of
+/// `getlocal $!; opt_getconstant_path Class; checkmatch; branchunless NEXT; [getlocal $!; setlocal
+/// var;] <body>; leave` clauses, ending in a `getlocal $!; throw` re-raise. Clauses whose class test
+/// is absent render as a bare `rescue`.
+fn render_rescue_handler(
+    handler: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+) -> Vec<String> {
+    let pad: String = indent(depth);
+    let targets: Vec<Option<usize>> = resolve_branch_targets(handler);
+    let mut lines: Vec<String> = Vec::new();
+    let mut i: usize = 0;
+    let n: usize = handler.instructions.len();
+    let mut produced: bool = false;
+
+    while i < n {
+        let m: &str = handler.instructions[i].mnemonic.as_str();
+        if m == "throw" {
+            break;
+        }
+        let (classes, var, body_lo, body_hi): (Vec<String>, Option<String>, usize, usize) =
+            match parse_rescue_clause(handler, ctx, i, &targets) {
+                Some(clause) => clause,
+                None => break,
+            };
+        let header: String = render_rescue_header(&classes, var.as_deref());
+        lines.push(format!("{pad}{header}"));
+        let body: Vec<String> = render_slice(handler, ctx, depth + 1, body_lo, body_hi, &targets);
+        lines.extend(body);
+        produced = true;
+        i = next_clause_start(handler, body_hi);
+    }
+
+    if !produced {
+        lines.push(format!("{pad}rescue"));
+        lines.extend(render_slice(handler, ctx, depth + 1, 0, n, &targets));
+    }
+    lines
+}
+
+/// Parse one rescue clause starting at `i`: returns its matched class names, the `=> var` binding,
+/// and the `[body_lo, body_hi)` instruction range of the clause body.
+fn parse_rescue_clause(
+    handler: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    i: usize,
+    targets: &[Option<usize>],
+) -> Option<(Vec<String>, Option<String>, usize, usize)> {
+    let mut k: usize = i;
+    let mut classes: Vec<String> = Vec::new();
+    let mut branch_target: Option<usize> = None;
+
+    while k + 3 < handler.instructions.len() {
+        if handler.instructions[k].mnemonic != "getlocal_WC_0" {
+            break;
+        }
+        let class_instr: &YarvIbfInstruction = &handler.instructions[k + 1];
+        let class_name: Option<String> = match class_instr.mnemonic.as_str() {
+            "opt_getconstant_path" => Some(constant_path_value(class_instr, ctx)),
+            "getconstant" => Some(id_or_index(class_instr, 0)),
+            _ => None,
+        };
+        if handler.instructions.get(k + 2).map(|x| x.mnemonic.as_str()) != Some("checkmatch") {
+            break;
+        }
+        if handler.instructions.get(k + 3).map(|x| x.mnemonic.as_str()) != Some("branchunless") {
+            break;
+        }
+        if let Some(name) = class_name {
+            classes.push(name);
+        }
+        branch_target = targets.get(k + 3).copied().flatten();
+        k += 4;
+        if handler.instructions.get(k).map(|x| x.mnemonic.as_str()) == Some("getlocal_WC_0")
+            && handler.instructions.get(k + 1).is_some_and(|x| {
+                x.mnemonic == "opt_getconstant_path" || x.mnemonic == "getconstant"
+            })
+        {
+            continue;
+        }
+        break;
+    }
+
+    let next_clause: usize = branch_target?;
+    let binds_var: bool = handler
+        .instructions
+        .get(k)
+        .is_some_and(|x| x.mnemonic == "getlocal_WC_0")
+        && handler
+            .instructions
+            .get(k + 1)
+            .is_some_and(|x| x.mnemonic.starts_with("setlocal"));
+    let (var, body_lo): (Option<String>, usize) = if binds_var {
+        let name: String = local_name(
+            &handler.local_table,
+            operand_num(&handler.instructions[k + 1], 0),
+        );
+        (Some(name), k + 2)
+    } else {
+        (None, k)
+    };
+    let body_hi: usize = (body_lo..next_clause)
+        .find(|&j| handler.instructions[j].mnemonic == "leave")
+        .map_or(next_clause, |leave| leave);
+    Some((classes, var, body_lo, body_hi))
+}
+
+/// The instruction index where the next rescue clause begins after a clause body ending at
+/// `body_hi`: skip the clause's `leave`.
+fn next_clause_start(handler: &YarvIseqBody, body_hi: usize) -> usize {
+    if handler
+        .instructions
+        .get(body_hi)
+        .is_some_and(|x| x.mnemonic == "leave")
+    {
+        body_hi + 1
+    } else {
+        body_hi
+    }
+}
+
+fn render_rescue_header(classes: &[String], var: Option<&str>) -> String {
+    let class_part: String = if classes.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", classes.join(", "))
+    };
+    match var {
+        Some(v) if is_valid_rescue_var(v) => format!("rescue{class_part} => {v}"),
+        _ => format!("rescue{class_part}"),
+    }
+}
+
+/// Whether a recovered rescue-binding name is a usable local identifier (not the implicit `$!`
+/// error global, a synthetic `local{N}`, or a hidden slot).
+fn is_valid_rescue_var(v: &str) -> bool {
+    !v.is_empty()
+        && !v.starts_with("local")
+        && !v.starts_with('$')
+        && v.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+}
+
+/// Render an instruction sub-range `[lo, hi)` with a fresh stack, returning its statement lines.
+fn render_slice(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    lo: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+) -> Vec<String> {
+    let mut stack: Vec<String> = Vec::with_capacity(16);
+    let mut stmts: Vec<String> = Vec::new();
+    render_region(body, ctx, depth, lo, hi, targets, &mut stack, &mut stmts);
+    flush_trailing(&mut stack, depth, &mut stmts);
     stmts
 }
 
@@ -177,6 +422,11 @@ fn render_region(
             i = next;
             continue;
         }
+        if let Some(next) = try_case_when(body, ctx, depth, i, hi, targets, stack, stmts) {
+            i = next;
+            stack.clear();
+            continue;
+        }
         if let Some(next) = try_loop(body, ctx, depth, i, hi, targets, stmts) {
             i = next;
             stack.clear();
@@ -198,6 +448,167 @@ fn render_region(
         }
         step(instr, &body.local_table, ctx, depth, stack, stmts);
         i += 1;
+    }
+}
+
+/// Recognize a `case`/`when` ladder at instruction `i`: `dup; opt_case_dispatch <hash>, ELSE`
+/// followed by a chain of `<value>; topn 1; === ; branchif WHEN_BODY` comparisons, then the `else`
+/// body and the per-`when` bodies (each `pop; <body>; leave`). Renders `case subject; when V; ...;
+/// else; ...; end`, returning the resume index when matched, else `None`.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn try_case_when(
+    body: &YarvIseqBody,
+    ctx: &DecompileContext<'_>,
+    depth: u32,
+    i: usize,
+    hi: usize,
+    targets: &[Option<usize>],
+    stack: &[String],
+    stmts: &mut Vec<String>,
+) -> Option<usize> {
+    let subject: String = stack.last().cloned()?;
+    let has_dispatch: bool = body
+        .instructions
+        .get(i)
+        .is_some_and(|x| x.mnemonic == "dup")
+        && body
+            .instructions
+            .get(i + 1)
+            .is_some_and(|x| x.mnemonic == "opt_case_dispatch");
+    let ladder_start: usize = if has_dispatch {
+        i + 2
+    } else if begins_when_comparison(body, i, hi) {
+        i
+    } else {
+        return None;
+    };
+
+    let mut clauses: Vec<(Vec<String>, usize)> = Vec::new();
+    let mut k: usize = ladder_start;
+    let mut first_body: Option<usize> = None;
+    while k < hi {
+        let mut value_stack: Vec<String> = Vec::new();
+        let mut sink: Vec<String> = Vec::new();
+        let mut j: usize = k;
+        while j < hi && !matches!(body.instructions[j].mnemonic.as_str(), "topn" | "pop") {
+            step(
+                &body.instructions[j],
+                &body.local_table,
+                ctx,
+                depth,
+                &mut value_stack,
+                &mut sink,
+            );
+            j += 1;
+        }
+        if body.instructions.get(j).map(|x| x.mnemonic.as_str()) != Some("topn") {
+            break;
+        }
+        let cmp: usize = j + 1;
+        if body
+            .instructions
+            .get(cmp)
+            .is_none_or(|x| !is_send(x.mnemonic.as_str()))
+            || body.instructions.get(cmp + 1).map(|x| x.mnemonic.as_str()) != Some("branchif")
+        {
+            break;
+        }
+        let when_body: usize = targets.get(cmp + 1).copied().flatten()?;
+        if when_body > hi || when_body <= i {
+            break;
+        }
+        first_body.get_or_insert(when_body);
+        let value: String = value_stack.pop().unwrap_or_default();
+        clauses.push((vec![value], when_body));
+        k = cmp + 2;
+    }
+    if clauses.len() < 2 && !has_dispatch {
+        return None;
+    }
+    if clauses.is_empty() {
+        return None;
+    }
+
+    let else_lo: usize = k;
+    let else_hi: usize = first_body.unwrap_or(hi).min(hi);
+    if else_lo >= else_hi {
+        return None;
+    }
+
+    let mut bodies: Vec<(usize, usize)> = Vec::with_capacity(clauses.len());
+    let mut last_end: usize = else_hi;
+    for (_, start) in &clauses {
+        let body_lo: usize = skip_leading_pop(body, *start);
+        let body_hi: usize = (body_lo..hi)
+            .find(|&x| body.instructions[x].mnemonic == "leave")
+            .map_or(hi, |leave| leave);
+        last_end = last_end.max(body_hi + 1);
+        bodies.push((body_lo, body_hi));
+    }
+
+    let pad: String = indent(depth);
+    stmts.push(format!("{pad}case {subject}"));
+    for (idx, (values, _)) in clauses.iter().enumerate() {
+        stmts.push(format!("{pad}when {}", values.join(", ")));
+        let (blo, bhi): (usize, usize) = bodies[idx];
+        stmts.extend(render_slice(body, ctx, depth + 1, blo, bhi, targets));
+    }
+    let else_body_lo: usize = skip_leading_pop(body, else_lo);
+    let else_body_hi: usize = (else_body_lo..else_hi)
+        .find(|&x| body.instructions[x].mnemonic == "leave")
+        .map_or(else_hi, |leave| leave);
+    if else_body_lo < else_body_hi {
+        stmts.push(format!("{pad}else"));
+        stmts.extend(render_slice(
+            body,
+            ctx,
+            depth + 1,
+            else_body_lo,
+            else_body_hi,
+            targets,
+        ));
+    }
+    stmts.push(format!("{pad}end"));
+    Some(last_end.min(hi))
+}
+
+#[inline]
+fn is_send(m: &str) -> bool {
+    m.starts_with("opt_send") || m == "send"
+}
+
+/// Whether `[i, hi)` begins a no-dispatch `when` comparison group `<value>; topn N; ===; branchif`
+/// (a `case` whose `when` values are non-literal so no `opt_case_dispatch` jump-table was emitted).
+fn begins_when_comparison(body: &YarvIseqBody, i: usize, hi: usize) -> bool {
+    let topn: Option<usize> = (i..hi)
+        .take(8)
+        .find(|&j| body.instructions[j].mnemonic == "topn");
+    let Some(t) = topn else {
+        return false;
+    };
+    body.instructions
+        .get(t + 1)
+        .is_some_and(|x| is_send(x.mnemonic.as_str()))
+        && body
+            .instructions
+            .get(t + 2)
+            .is_some_and(|x| x.mnemonic == "branchif")
+        && matches!(
+            body.instructions.get(t + 1).and_then(|x| x.operands.first()),
+            Some(YarvOperand::Call { method, .. }) if method == "==="
+        )
+}
+
+/// Skip a leading `pop` (the `case`/`when` body's discard of the dispatched subject copy).
+fn skip_leading_pop(body: &YarvIseqBody, idx: usize) -> usize {
+    if body
+        .instructions
+        .get(idx)
+        .is_some_and(|x| x.mnemonic == "pop")
+    {
+        idx + 1
+    } else {
+        idx
     }
 }
 
@@ -305,6 +716,14 @@ fn try_short_circuit(
     {
         rhs_lo += 1;
     }
+
+    if op != "&."
+        && let Some(folded) = try_compound_assign(body, op, &lhs, rhs_lo, target)
+    {
+        push(stack, folded);
+        return Some(target);
+    }
+
     let mut rhs_stack: Vec<String> = vec![lhs.clone()];
     let mut sink: Vec<String> = Vec::new();
     render_region(
@@ -328,6 +747,62 @@ fn try_short_circuit(
     };
     push(stack, folded);
     Some(target)
+}
+
+/// Recognize a compound conditional assignment `target ||= value` / `target &&= value`: the rhs
+/// region `[rhs_lo, target_pc)` ends in a `setinstancevariable`/`setlocal`/`setglobal` of the same
+/// `lhs` target, preceded by the value expression. Returns the folded `lhs ||= value` source.
+fn try_compound_assign(
+    body: &YarvIseqBody,
+    op: &str,
+    lhs: &str,
+    rhs_lo: usize,
+    target: usize,
+) -> Option<String> {
+    let set_idx: usize = (rhs_lo..target).find(|&j| {
+        matches!(
+            body.instructions[j].mnemonic.as_str(),
+            "setinstancevariable" | "setlocal" | "setlocal_WC_0" | "setlocal_WC_1" | "setglobal"
+        )
+    })?;
+    let set_instr: &YarvIbfInstruction = &body.instructions[set_idx];
+    let set_target: String = match set_instr.mnemonic.as_str() {
+        "setinstancevariable" => ivar_name(set_instr, 0),
+        "setglobal" => id_or_index(set_instr, 0),
+        _ => local_name(&body.local_table, operand_num(set_instr, 0)),
+    };
+    if set_target != lhs {
+        return None;
+    }
+    let value: String = compound_value(body, rhs_lo, set_idx)?;
+    let assign_op: &str = if op == "||" { "||=" } else { "&&=" };
+    Some(format!("{lhs} {assign_op} {value}"))
+}
+
+/// The single value expression pushed in `[lo, set_idx)` of a compound assignment, ignoring the
+/// intervening `pop`/`dup` housekeeping. `None` when no clean single value is found.
+fn compound_value(body: &YarvIseqBody, lo: usize, set_idx: usize) -> Option<String> {
+    let mut value_stack: Vec<String> = Vec::new();
+    let mut sink: Vec<String> = Vec::new();
+    let ctx: DecompileContext<'static> = DecompileContext {
+        bodies_by_index: Vec::new(),
+        objects: &[],
+    };
+    for j in lo..set_idx {
+        let m: &str = body.instructions[j].mnemonic.as_str();
+        if matches!(m, "dup" | "pop") {
+            continue;
+        }
+        step(
+            &body.instructions[j],
+            &body.local_table,
+            &ctx,
+            0,
+            &mut value_stack,
+            &mut sink,
+        );
+    }
+    value_stack.pop().filter(|v| !v.is_empty())
 }
 
 /// Render a structured `if cond`/`unless cond` (with optional `else`) for a branch at `branch_idx`
@@ -909,14 +1384,15 @@ fn render_param_signature(body: &YarvIseqBody) -> String {
 }
 
 /// Render an `opt_getconstant_path` operand: resolve the cache array into `A::B::C` when possible,
-/// otherwise fall back to the generic operand rendering (`obj[N]`).
+/// a bare `Id`/`Literal` operand into the constant name, else fall back to `obj[N]`.
 fn constant_path_value(instr: &YarvIbfInstruction, ctx: &DecompileContext<'_>) -> String {
-    if let Some(YarvOperand::ObjectRef(index)) = instr.operands.first()
-        && let Some(path) = ctx.constant_path(*index)
-    {
-        return path;
+    match instr.operands.first() {
+        Some(YarvOperand::ObjectRef(index)) => ctx
+            .constant_path(*index)
+            .unwrap_or_else(|| operand_value(instr, 0)),
+        Some(YarvOperand::Id(name) | YarvOperand::Literal(name)) => name.clone(),
+        _ => operand_value(instr, 0),
     }
-    operand_value(instr, 0)
 }
 
 fn emit_send(
@@ -1146,6 +1622,7 @@ fn pop_n(stack: &mut Vec<String>, n: usize) -> Vec<String> {
 fn operand_value(instr: &YarvIbfInstruction, idx: usize) -> String {
     match instr.operands.get(idx) {
         Some(YarvOperand::Literal(s)) => format!("{s:?}"),
+        Some(YarvOperand::NumLiteral(s)) => s.clone(),
         Some(YarvOperand::Id(s)) => format!(":{s}"),
         Some(YarvOperand::ObjectRef(i)) => format!("obj[{i}]"),
         Some(YarvOperand::IseqRef(i)) => format!("iseq[{i}]"),
@@ -1197,7 +1674,8 @@ fn push_section(out: &mut String, title: &str, items: &[String]) {
 mod tests {
     use super::*;
     use crate::yarv::ibf::{
-        IbfObject, IbfObjectKind, YarvIbfInstruction, YarvIseqBody, YarvOperand,
+        CatchType, IbfObject, IbfObjectKind, YarvCatchEntry, YarvIbfInstruction, YarvIseqBody,
+        YarvOperand,
     };
 
     fn obj(index: u32, kind: IbfObjectKind, literal: Option<&str>) -> IbfObject {
@@ -1240,6 +1718,221 @@ mod tests {
     }
 
     #[test]
+    fn catch_table_rescue_wraps_protected_range_in_begin_rescue_end() {
+        let parent: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("a".to_owned()), Some("b".to_owned())],
+            param_lead_num: 2,
+            catch_entries: vec![YarvCatchEntry {
+                catch_type: CatchType::Rescue,
+                start_pc: 0,
+                end_pc: 5,
+                cont_pc: 6,
+                handler_iseq: Some(1),
+            }],
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr(
+                    "opt_div",
+                    vec![YarvOperand::Call {
+                        method: "/".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("nop", vec![]),
+                instr("leave", vec![]),
+            ],
+        };
+        let handler: YarvIseqBody = YarvIseqBody {
+            index: 1,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("$!".to_owned())],
+            param_lead_num: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr(
+                    "opt_getconstant_path",
+                    vec![YarvOperand::Id("ZeroDivisionError".to_owned())],
+                ),
+                instr("checkmatch", vec![YarvOperand::Num(3)]),
+                instr("branchunless", vec![YarvOperand::Offset(6)]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("setlocal_WC_1", vec![YarvOperand::Num(3)]),
+                instr("putobject_INT2FIX_0_", vec![]),
+                instr("leave", vec![]),
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("throw", vec![YarvOperand::Num(0)]),
+            ],
+        };
+        let image: IbfImage = IbfImage {
+            iseq_offsets: Vec::new(),
+            objects: Vec::new(),
+            iseqs: vec![parent.clone(), handler],
+            recovered_literal_count: 0,
+            recovered_instruction_count: 0,
+        };
+        let stmts: Vec<String> = decompile_in_image(&parent, &image);
+        assert!(stmts.iter().any(|s| s == "begin"), "stmts: {stmts:?}");
+        assert!(
+            stmts.iter().any(|s| s == "rescue ZeroDivisionError"),
+            "stmts: {stmts:?}"
+        );
+        assert!(stmts.iter().any(|s| s == "end"), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "a / b"), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn ivar_or_assign_folds_to_compound_assignment() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr(
+                    "getinstancevariable",
+                    vec![YarvOperand::Id("@count".to_owned())],
+                ),
+                instr("dup", vec![]),
+                instr("branchif", vec![YarvOperand::Offset(5)]),
+                instr("pop", vec![]),
+                instr("putobject_INT2FIX_0_", vec![]),
+                instr("dup", vec![]),
+                instr(
+                    "setinstancevariable",
+                    vec![YarvOperand::Id("@count".to_owned())],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts.iter().any(|s| s == "@count ||= 0"),
+            "stmts: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn no_dispatch_case_when_folds_class_comparisons() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned())],
+            param_lead_num: 1,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr(
+                    "opt_getconstant_path",
+                    vec![YarvOperand::Id("Integer".to_owned())],
+                ),
+                instr("topn", vec![YarvOperand::Num(1)]),
+                instr(
+                    "opt_send_without_block",
+                    vec![YarvOperand::Call {
+                        method: "===".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchif", vec![YarvOperand::Offset(12)]),
+                instr(
+                    "opt_getconstant_path",
+                    vec![YarvOperand::Id("String".to_owned())],
+                ),
+                instr("topn", vec![YarvOperand::Num(1)]),
+                instr(
+                    "opt_send_without_block",
+                    vec![YarvOperand::Call {
+                        method: "===".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchif", vec![YarvOperand::Offset(8)]),
+                instr("pop", vec![]),
+                instr("putobject", vec![YarvOperand::Id("other".to_owned())]),
+                instr("leave", vec![]),
+                instr("pop", vec![]),
+                instr("putobject", vec![YarvOperand::Id("int".to_owned())]),
+                instr("leave", vec![]),
+                instr("pop", vec![]),
+                instr("putobject", vec![YarvOperand::Id("str".to_owned())]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(stmts.iter().any(|s| s == "case x"), "stmts: {stmts:?}");
+        assert!(
+            stmts.iter().any(|s| s == "when Integer"),
+            "stmts: {stmts:?}"
+        );
+        assert!(stmts.iter().any(|s| s == "when String"), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn case_dispatch_folds_to_case_when_else() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: vec![Some("x".to_owned())],
+            param_lead_num: 1,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
+                instr("dup", vec![]),
+                instr(
+                    "opt_case_dispatch",
+                    vec![YarvOperand::Num(0), YarvOperand::Offset(15)],
+                ),
+                instr("putobject_INT2FIX_1_", vec![]),
+                instr("topn", vec![YarvOperand::Num(1)]),
+                instr(
+                    "opt_send_without_block",
+                    vec![YarvOperand::Call {
+                        method: "===".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchif", vec![YarvOperand::Offset(12)]),
+                instr("putobject", vec![YarvOperand::NumLiteral("2".to_owned())]),
+                instr("topn", vec![YarvOperand::Num(1)]),
+                instr(
+                    "opt_send_without_block",
+                    vec![YarvOperand::Call {
+                        method: "===".to_owned(),
+                        argc: 1,
+                    }],
+                ),
+                instr("branchif", vec![YarvOperand::Offset(8)]),
+                instr("pop", vec![]),
+                instr("putstring", vec![YarvOperand::Literal("many".to_owned())]),
+                instr("leave", vec![]),
+                instr("pop", vec![]),
+                instr("putstring", vec![YarvOperand::Literal("one".to_owned())]),
+                instr("leave", vec![]),
+                instr("pop", vec![]),
+                instr("putstring", vec![YarvOperand::Literal("two".to_owned())]),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(stmts.iter().any(|s| s == "case x"), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "when 1"), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "when 2"), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "else"), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "\"one\""), "stmts: {stmts:?}");
+        assert!(stmts.iter().any(|s| s == "\"many\""), "stmts: {stmts:?}");
+    }
+
+    #[test]
     fn short_circuit_and_folds_to_logical_and() {
         let body: YarvIseqBody = YarvIseqBody {
             index: 0,
@@ -1247,6 +1940,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("a".to_owned()), Some("b".to_owned())],
             param_lead_num: 2,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
                 instr("dup", vec![]),
@@ -1268,6 +1962,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("a".to_owned()), Some("b".to_owned())],
             param_lead_num: 2,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(4)]),
                 instr("dup", vec![]),
@@ -1289,6 +1984,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("x".to_owned())],
             param_lead_num: 1,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("dup", vec![]),
@@ -1315,6 +2011,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("n".to_owned()), Some("i".to_owned())],
             param_lead_num: 1,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("putobject_INT2FIX_0_", vec![]),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -1359,6 +2056,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("x".to_owned())],
             param_lead_num: 1,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr("putobject_INT2FIX_0_", vec![]),
@@ -1425,6 +2123,7 @@ mod tests {
             iseq_size: 7,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr(
                     "putobject",
@@ -1481,6 +2180,7 @@ mod tests {
             iseq_size: 4,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -1521,6 +2221,7 @@ mod tests {
             iseq_size: 4,
             local_table: vec![Some("total".to_owned())],
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(0)]),
                 instr("setlocal_WC_0", vec![YarvOperand::Num(3)]),
@@ -1541,6 +2242,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("who".to_owned())],
             param_lead_num: 1,
+            catch_entries: Vec::new(),
             instructions: Vec::new(),
         };
         let main: YarvIseqBody = YarvIseqBody {
@@ -1549,6 +2251,7 @@ mod tests {
             iseq_size: 2,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr(
                     "definemethod",
@@ -1631,6 +2334,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("x".to_owned()), Some("y".to_owned())],
             param_lead_num: 2,
+            catch_entries: Vec::new(),
             instructions: Vec::new(),
         };
         assert_eq!(block_param_list(&with_params), " |x, y|");
@@ -1640,6 +2344,7 @@ mod tests {
             iseq_size: 0,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: Vec::new(),
         };
         assert_eq!(block_param_list(&no_params), "");
@@ -1653,6 +2358,7 @@ mod tests {
             iseq_size: 0,
             local_table: vec![Some("n".to_owned())],
             param_lead_num: 1,
+            catch_entries: Vec::new(),
             instructions: Vec::new(),
         };
         let main: YarvIseqBody = YarvIseqBody {
@@ -1661,6 +2367,7 @@ mod tests {
             iseq_size: 3,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("getlocal_WC_0", vec![YarvOperand::Num(3)]),
                 instr(
@@ -1698,6 +2405,7 @@ mod tests {
             iseq_size: 3,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("putself", vec![]),
                 instr(
@@ -1729,6 +2437,7 @@ mod tests {
             iseq_size: 4,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 instr("putobject", vec![YarvOperand::Num(1)]),
                 instr("putobject", vec![YarvOperand::Num(2)]),

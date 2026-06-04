@@ -69,8 +69,10 @@ pub struct YarvIbfInstruction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
 pub enum YarvOperand {
-    /// A resolved literal (string/symbol) recovered from the object table.
+    /// A resolved string literal recovered from the object table (rendered quoted).
     Literal(String),
+    /// A resolved numeric literal (Fixnum/Float) recovered from the object table (rendered bare).
+    NumLiteral(String),
     /// An object-table index whose object carried no recoverable literal.
     ObjectRef(u32),
     /// A nested iseq-table index.
@@ -94,6 +96,32 @@ struct CallEntry {
     argc: u32,
 }
 
+/// The handler kind of a `catch_table` entry (`enum rb_catch_type`, dumped as `INT2FIX(n)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatchType {
+    Rescue,
+    Ensure,
+    Retry,
+    Break,
+    Redo,
+    Next,
+    Unknown,
+}
+
+/// One decoded `catch_table` entry.
+///
+/// Holds the protected runtime-pc range `[start, end)`, the continuation pc `cont`, and the handler
+/// iseq index. `start`/`end`/`cont` are runtime pcs (the same model the branch resolver uses).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct YarvCatchEntry {
+    pub catch_type: CatchType,
+    pub start_pc: u32,
+    pub end_pc: u32,
+    pub cont_pc: u32,
+    pub handler_iseq: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct YarvIseqBody {
     pub index: u32,
@@ -106,6 +134,8 @@ pub struct YarvIseqBody {
     /// Number of leading required positional parameters (`param.lead_num`); the block/method
     /// parameter names are the first `param_lead_num` entries of `local_table`.
     pub param_lead_num: u32,
+    /// Decoded `catch_table` entries (rescue/ensure/retry/break/redo/next protected regions).
+    pub catch_entries: Vec<YarvCatchEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,6 +212,12 @@ const fn classify_tag(tag: u8) -> IbfObjectKind {
     }
 }
 
+/// Decode a special-const `Fixnum` whose dumped `small_value` is the raw `VALUE` `(n << 1) | 1`.
+#[inline]
+const fn fixnum_value(raw: u64) -> i64 {
+    (raw as i64) >> 1
+}
+
 fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
     let off: usize = offset as usize;
     let tag: u8 = bytes.get(off).copied().unwrap_or(0);
@@ -218,6 +254,17 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
                 }
             }
         }
+        IbfObjectKind::Fixnum => {
+            if let Some((raw, _)) = read_small_value(bytes, after_tag) {
+                literal = Some(fixnum_value(raw).to_string());
+            }
+        }
+        IbfObjectKind::Regexp => {
+            let src_pos: usize = after_tag.saturating_add(1);
+            if let Some((src_index, _)) = read_small_value(bytes, src_pos) {
+                elements.push(u32::try_from(src_index).unwrap_or(u32::MAX));
+            }
+        }
         _ => {}
     }
     IbfObject {
@@ -228,6 +275,48 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
         element_count,
         elements,
     }
+}
+
+/// Resolve each `Regexp` object's literal `/source/` from its dumped source-string object index
+/// (stored in `elements[0]`), in a post-pass once all string objects are decoded.
+fn resolve_regexp_literals(objects: &mut [IbfObject], recovered: &mut u32) {
+    let sources: Vec<Option<String>> = objects
+        .iter()
+        .map(|o| {
+            if o.kind == IbfObjectKind::Regexp {
+                o.elements
+                    .first()
+                    .and_then(|&src| objects.get(src as usize))
+                    .filter(|s| s.kind == IbfObjectKind::String)
+                    .and_then(|s| s.literal.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (obj, src) in objects.iter_mut().zip(sources) {
+        if let Some(src) = src
+            && obj.literal.is_none()
+            && !src.contains(['\n', '\r'])
+        {
+            obj.literal = Some(format!("/{}/", escape_regexp_slashes(&src)));
+            *recovered = recovered.saturating_add(1);
+        }
+    }
+}
+
+/// Escape unescaped `/` delimiters in a regexp source so it round-trips as a `/.../` literal.
+fn escape_regexp_slashes(src: &str) -> String {
+    let mut out: String = String::with_capacity(src.len() + 4);
+    let mut prev_backslash: bool = false;
+    for ch in src.chars() {
+        if ch == '/' && !prev_backslash {
+            out.push('\\');
+        }
+        out.push(ch);
+        prev_backslash = ch == '\\' && !prev_backslash;
+    }
+    out
 }
 
 struct ObjectTable<'a> {
@@ -241,6 +330,20 @@ impl ObjectTable<'_> {
             .and_then(|i| self.objects.get(i))
             .and_then(|o| o.literal.as_deref())
     }
+
+    /// The object's recovered literal together with whether it should render bare (unquoted): a
+    /// numeric Fixnum/Float, or a Regexp whose literal already carries its `/.../` delimiters.
+    fn typed_literal(&self, index: u64) -> Option<(&str, bool)> {
+        let obj: &IbfObject = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.objects.get(i))?;
+        let lit: &str = obj.literal.as_deref()?;
+        let bare: bool = matches!(
+            obj.kind,
+            IbfObjectKind::Fixnum | IbfObjectKind::Float | IbfObjectKind::Regexp
+        );
+        Some((lit, bare))
+    }
 }
 
 /// 0-indexed positions of the `small_values` within an iseq body header, calibrated against the
@@ -253,6 +356,8 @@ impl ObjectTable<'_> {
 /// ...new("world").greet` => three call sites with `ci_size` 3), confirmed by tracing every
 /// `read_small_value` of the body header against the shipped 3.4.9 dump.
 const BODY_READ_PARAM_LEAD_NUM: usize = 6;
+const BODY_READ_CATCH_TABLE_SIZE: usize = 27;
+const BODY_READ_CATCH_TABLE_OFFSET: usize = 28;
 const BODY_READ_LOCAL_TABLE_OFFSET: usize = 26;
 const BODY_READ_CI_ENTRIES_OFFSET: usize = 32;
 const BODY_READ_LOCAL_TABLE_SIZE: usize = 35;
@@ -260,6 +365,7 @@ const BODY_READ_CI_SIZE: usize = 40;
 const BODY_HEADER_READS: usize = 41;
 const IBF_MAX_CI_ENTRIES: usize = 1_048_576;
 const IBF_MAX_LOCALS: usize = 65_536;
+const IBF_MAX_CATCH_ENTRIES: usize = 65_536;
 
 struct BodyHeader {
     iseq_size: usize,
@@ -270,6 +376,8 @@ struct BodyHeader {
     local_table_size: usize,
     ci_entries_offset: Option<usize>,
     ci_size: usize,
+    catch_table_offset: Option<usize>,
+    catch_table_size: usize,
 }
 
 fn parse_body_header(
@@ -286,6 +394,8 @@ fn parse_body_header(
     let mut local_table_size: usize = 0;
     let mut ci_entries_offset: Option<usize> = None;
     let mut ci_size: usize = 0;
+    let mut catch_table_offset: Option<usize> = None;
+    let mut catch_table_size: usize = 0;
     let reads: usize = if ci_layout_known {
         BODY_HEADER_READS
     } else {
@@ -306,6 +416,13 @@ fn parse_body_header(
             BODY_READ_LOCAL_TABLE_OFFSET => {
                 let rel: usize = usize::try_from(raw).ok()?;
                 local_table_offset = body_offset.checked_sub(rel);
+            }
+            BODY_READ_CATCH_TABLE_SIZE => {
+                catch_table_size = usize::try_from(raw).ok()?.min(IBF_MAX_CATCH_ENTRIES);
+            }
+            BODY_READ_CATCH_TABLE_OFFSET => {
+                let rel: usize = usize::try_from(raw).ok()?;
+                catch_table_offset = body_offset.checked_sub(rel);
             }
             BODY_READ_CI_ENTRIES_OFFSET => {
                 let rel: usize = usize::try_from(raw).ok()?;
@@ -328,6 +445,8 @@ fn parse_body_header(
         local_table_size,
         ci_entries_offset,
         ci_size,
+        catch_table_offset,
+        catch_table_size,
     })
 }
 
@@ -401,6 +520,58 @@ fn parse_ci_entries(
     entries
 }
 
+/// Map an `INT2FIX(n)`-encoded catch type (`(n << 1) | 1`) to [`CatchType`].
+const fn classify_catch_type(raw: u64) -> CatchType {
+    match raw >> 1 {
+        1 => CatchType::Rescue,
+        2 => CatchType::Ensure,
+        3 => CatchType::Retry,
+        4 => CatchType::Break,
+        5 => CatchType::Redo,
+        6 => CatchType::Next,
+        _ => CatchType::Unknown,
+    }
+}
+
+/// Parse a body's `catch_table`: `count` entries of six `small_value`s each
+/// (`iseq_index`, `type`, `start`, `end`, `cont`, `sp`), per `ibf_dump_catch_table`. The handler
+/// iseq index `0` (a `NULL` handler for retry/redo/next/break-while) maps to `None`.
+fn parse_catch_table(bytes: &[u8], offset: usize, count: usize) -> Vec<YarvCatchEntry> {
+    let mut entries: Vec<YarvCatchEntry> = Vec::with_capacity(count.min(4096));
+    let mut pos: usize = offset;
+    for _ in 0..count {
+        let Some((iseq_index, p1)) = read_small_value(bytes, pos) else {
+            break;
+        };
+        let Some((ty, p2)) = read_small_value(bytes, p1) else {
+            break;
+        };
+        let Some((start, p3)) = read_small_value(bytes, p2) else {
+            break;
+        };
+        let Some((end, p4)) = read_small_value(bytes, p3) else {
+            break;
+        };
+        let Some((cont, p5)) = read_small_value(bytes, p4) else {
+            break;
+        };
+        let Some((_sp, p6)) = read_small_value(bytes, p5) else {
+            break;
+        };
+        let handler_iseq: Option<u32> = (iseq_index != 0 && iseq_index != u64::MAX)
+            .then(|| u32::try_from(iseq_index).unwrap_or(u32::MAX));
+        entries.push(YarvCatchEntry {
+            catch_type: classify_catch_type(ty),
+            start_pc: u32::try_from(start).unwrap_or(u32::MAX),
+            end_pc: u32::try_from(end).unwrap_or(u32::MAX),
+            cont_pc: u32::try_from(cont).unwrap_or(u32::MAX),
+            handler_iseq,
+        });
+        pos = p6;
+    }
+    entries
+}
+
 #[allow(clippy::too_many_lines)]
 fn decode_iseq_body(
     bytes: &[u8],
@@ -427,6 +598,13 @@ fn decode_iseq_body(
         _ => Vec::new(),
     };
 
+    let catch_entries: Vec<YarvCatchEntry> = match header.catch_table_offset {
+        Some(ct_off) if ct_off <= bytes.len() && header.catch_table_size > 0 => {
+            parse_catch_table(bytes, ct_off, header.catch_table_size)
+        }
+        _ => Vec::new(),
+    };
+
     let bytecode_end: usize = header
         .bytecode_offset
         .checked_add(header.bytecode_size)?
@@ -439,6 +617,7 @@ fn decode_iseq_body(
             instructions: Vec::new(),
             local_table,
             param_lead_num: header.param_lead_num,
+            catch_entries,
         });
     }
 
@@ -513,15 +692,22 @@ fn decode_iseq_body(
         instructions,
         local_table,
         param_lead_num: header.param_lead_num,
+        catch_entries,
     })
 }
 
 fn resolve_operand(kind: TsKind, raw: u64, objects: &ObjectTable<'_>) -> YarvOperand {
     let ref_index: u32 = u32::try_from(raw).unwrap_or(u32::MAX);
     match kind {
-        TsKind::Value | TsKind::CdHash | TsKind::Ic => objects.literal(raw).map_or_else(
+        TsKind::Value | TsKind::CdHash | TsKind::Ic => objects.typed_literal(raw).map_or_else(
             || YarvOperand::ObjectRef(ref_index),
-            |lit| YarvOperand::Literal(lit.to_owned()),
+            |(lit, numeric)| {
+                if numeric {
+                    YarvOperand::NumLiteral(lit.to_owned())
+                } else {
+                    YarvOperand::Literal(lit.to_owned())
+                }
+            },
         ),
         TsKind::Id => objects.literal(raw).map_or_else(
             || YarvOperand::ObjectRef(ref_index),
@@ -589,6 +775,8 @@ pub(crate) fn parse_image(
         }
         objects.push(obj);
     }
+
+    resolve_regexp_literals(&mut objects, &mut recovered_literal_count);
 
     let mut iseqs: Vec<YarvIseqBody> = Vec::new();
     let mut recovered_instruction_count: u32 = 0;
@@ -694,6 +882,80 @@ mod tests {
         let bytes: [u8; 4] = 0u32.to_le_bytes();
         let names: Vec<Option<String>> = parse_local_table(&bytes, &table, 0, 1);
         assert_eq!(names, vec![None]);
+    }
+
+    #[test]
+    fn catch_table_decodes_rescue_entry() {
+        let int2fix_rescue: u64 = (1 << 1) | 1;
+        let fields: [u64; 6] = [2, int2fix_rescue, 0, 6, 7, 0];
+        let mut bytes: Vec<u8> = Vec::new();
+        for f in fields {
+            bytes.extend_from_slice(&dump_small_value(f));
+        }
+        let entries: Vec<YarvCatchEntry> = parse_catch_table(&bytes, 0, 1);
+        assert_eq!(entries.len(), 1);
+        let entry: &YarvCatchEntry = &entries[0];
+        assert_eq!(entry.catch_type, CatchType::Rescue);
+        assert_eq!(entry.start_pc, 0);
+        assert_eq!(entry.end_pc, 6);
+        assert_eq!(entry.cont_pc, 7);
+        assert_eq!(entry.handler_iseq, Some(2));
+    }
+
+    #[test]
+    fn regexp_escapes_inner_slashes() {
+        assert_eq!(escape_regexp_slashes("^/api/v"), "^\\/api\\/v");
+        assert_eq!(escape_regexp_slashes("a\\/b"), "a\\/b");
+        assert_eq!(escape_regexp_slashes("plain"), "plain");
+    }
+
+    #[test]
+    fn regexp_literal_resolves_from_source_string() {
+        let mut objects: Vec<IbfObject> = vec![
+            IbfObject {
+                index: 0,
+                offset: 0,
+                kind: IbfObjectKind::Regexp,
+                literal: None,
+                element_count: None,
+                elements: vec![1],
+            },
+            IbfObject {
+                index: 1,
+                offset: 0,
+                kind: IbfObjectKind::String,
+                literal: Some("\\Aregex".to_owned()),
+                element_count: None,
+                elements: Vec::new(),
+            },
+        ];
+        let mut recovered: u32 = 0;
+        resolve_regexp_literals(&mut objects, &mut recovered);
+        assert_eq!(objects[0].literal.as_deref(), Some("/\\Aregex/"));
+        assert_eq!(recovered, 1);
+    }
+
+    #[test]
+    fn fixnum_object_decodes_to_numeric_literal() {
+        let mut bytes: Vec<u8> = vec![0x00; 4];
+        bytes.push(0x35);
+        bytes.extend_from_slice(&dump_small_value((2 << 1) | 1));
+        let obj: IbfObject = decode_object(&bytes, 0, 4);
+        assert_eq!(obj.kind, IbfObjectKind::Fixnum);
+        assert_eq!(obj.literal.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn catch_table_null_handler_is_none() {
+        let int2fix_retry: u64 = (3 << 1) | 1;
+        let fields: [u64; 6] = [0, int2fix_retry, 6, 7, 0, 0];
+        let mut bytes: Vec<u8> = Vec::new();
+        for f in fields {
+            bytes.extend_from_slice(&dump_small_value(f));
+        }
+        let entries: Vec<YarvCatchEntry> = parse_catch_table(&bytes, 0, 1);
+        assert_eq!(entries[0].catch_type, CatchType::Retry);
+        assert_eq!(entries[0].handler_iseq, None);
     }
 
     #[test]

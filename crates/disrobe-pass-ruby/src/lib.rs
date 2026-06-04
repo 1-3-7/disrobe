@@ -38,7 +38,8 @@ pub use yarv::YarvAnalysis;
 pub use yarv::decompile::{Fidelity, YarvDecompiled};
 pub use yarv::disasm::{YarvDisasm, YarvInstruction, disassemble_body, render_image_disasm};
 pub use yarv::ibf::{
-    IbfImage, IbfObject, IbfObjectKind, YarvIbfInstruction, YarvIseqBody, YarvOperand,
+    CatchType, IbfImage, IbfObject, IbfObjectKind, YarvCatchEntry, YarvIbfInstruction,
+    YarvIseqBody, YarvOperand,
 };
 pub use yarv::opcodes::{OpcodeSpec, TsKind, YarvVersion, opcode_count, opcode_spec};
 pub use yarv::reader::YarvBinaryHeader;

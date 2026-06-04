@@ -87,6 +87,7 @@ fn push_instruction(out: &mut String, instr: &YarvIbfInstruction) {
 fn render_operand(op: &YarvOperand) -> String {
     match op {
         YarvOperand::Literal(s) => format!("{s:?}"),
+        YarvOperand::NumLiteral(s) => s.clone(),
         YarvOperand::Id(s) => format!(":{s}"),
         YarvOperand::ObjectRef(i) => format!("obj[{i}]"),
         YarvOperand::IseqRef(i) => format!("iseq[{i}]"),
@@ -110,6 +111,7 @@ mod tests {
             iseq_size: 3,
             local_table: Vec::new(),
             param_lead_num: 0,
+            catch_entries: Vec::new(),
             instructions: vec![
                 YarvIbfInstruction {
                     pc: 0,
