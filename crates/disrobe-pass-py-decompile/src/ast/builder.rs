@@ -58,11 +58,10 @@ impl AstBuilder for DefaultAstBuilder {
         };
         let stripped: Vec<Stmt> =
             strip_module_implicit_return(strip_module_docstring_stmt(raw_body, code));
-        let body: Vec<Stmt> = prepend_global_decls(
-            code,
-            &stream.ops,
-            thread_module_annotations(postprocess_body(stripped, BodyKind::Module)),
-        );
+        let mut postprocessed: Vec<Stmt> = postprocess_body(stripped, BodyKind::Module);
+        strip_module_scope_implicit_returns(&mut postprocessed);
+        let body: Vec<Stmt> =
+            prepend_global_decls(code, &stream.ops, thread_module_annotations(postprocessed));
         Ok(AstModule {
             docstring: module_docstring,
             body,
@@ -913,6 +912,58 @@ fn strip_trailing_implicit_return(body: &mut Vec<Stmt>) {
 fn strip_module_implicit_return(mut body: Vec<Stmt>) -> Vec<Stmt> {
     strip_trailing_implicit_return(&mut body);
     body
+}
+
+/// Recursively strips leaked trailing implicit `return None` from every module-scope
+/// control-flow branch body, descending into try/except/else/finally, if/elif/else,
+/// with, for/while, and match cases, but never into nested function/class bodies where a
+/// trailing return is legitimate. A module has no valid `return`, so this is bytecode-equivalent.
+fn strip_module_scope_implicit_returns(body: &mut Vec<Stmt>) {
+    while body.last().is_some_and(is_implicit_none_return) {
+        body.pop();
+    }
+    for stmt in body.iter_mut() {
+        strip_module_scope_in_stmt(stmt);
+    }
+}
+
+fn strip_module_scope_in_stmt(stmt: &mut Stmt) {
+    match stmt {
+        Stmt::If { body, orelse, .. }
+        | Stmt::For { body, orelse, .. }
+        | Stmt::While { body, orelse, .. } => {
+            strip_module_scope_implicit_returns(body);
+            strip_module_scope_implicit_returns(orelse);
+        }
+        Stmt::With { body, .. } => strip_module_scope_implicit_returns(body),
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }
+        | Stmt::TryStar {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        } => {
+            strip_module_scope_implicit_returns(body);
+            for handler in handlers.iter_mut() {
+                strip_module_scope_implicit_returns(&mut handler.body);
+            }
+            strip_module_scope_implicit_returns(orelse);
+            strip_module_scope_implicit_returns(finalbody);
+        }
+        Stmt::Match { cases, .. } => {
+            for case in cases.iter_mut() {
+                strip_module_scope_implicit_returns(&mut case.body);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn strip_module_docstring_stmt(mut body: Vec<Stmt>, code: &CodeObject) -> Vec<Stmt> {
