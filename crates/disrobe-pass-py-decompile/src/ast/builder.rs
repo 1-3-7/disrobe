@@ -49,6 +49,7 @@ impl AstBuilder for DefaultAstBuilder {
             && (frame_tree.root.children.is_empty()
                 || legacy_loop_module_route(version, &frame_tree.root)
                 || module_loop_flatten_route(&frame_tree.root)
+                || module_exc_route(&frame_tree.root)
                 || module_inline_comp_route(&stream, &frame_tree.root));
         let raw_body: Vec<Stmt> = if route_via_sim {
             structure_stmts(code, &stream, 0, stream.ops.len())?
@@ -92,6 +93,16 @@ fn module_loop_flatten_route(root: &Frame) -> bool {
         matches!(
             c.kind,
             FrameKind::ForLoop | FrameKind::AsyncForLoop | FrameKind::WhileLoop
+        )
+    })
+}
+
+/// Whether a module with module-scope `try`/`with` frames should be routed through the SIM structurer.
+fn module_exc_route(root: &Frame) -> bool {
+    root.children.iter().any(|c: &Frame| {
+        matches!(
+            c.kind,
+            FrameKind::Try | FrameKind::With | FrameKind::AsyncWith | FrameKind::ExceptGroup
         )
     })
 }
