@@ -48,7 +48,8 @@ impl AstBuilder for DefaultAstBuilder {
         let route_via_sim: bool = matches!(frame_tree.root.kind, FrameKind::Module)
             && (frame_tree.root.children.is_empty()
                 || legacy_loop_module_route(version, &frame_tree.root)
-                || module_loop_flatten_route(&frame_tree.root));
+                || module_loop_flatten_route(&frame_tree.root)
+                || module_inline_comp_route(&stream, &frame_tree.root));
         let raw_body: Vec<Stmt> = if route_via_sim {
             structure_stmts(code, &stream, 0, stream.ops.len())?
         } else {
@@ -93,6 +94,12 @@ fn module_loop_flatten_route(root: &Frame) -> bool {
             FrameKind::ForLoop | FrameKind::AsyncForLoop | FrameKind::WhileLoop
         )
     })
+}
+
+/// Whether a module carries a PEP 709 inlined comprehension that must be re-folded by the SIM structurer.
+fn module_inline_comp_route(stream: &DecodedStream, root: &Frame) -> bool {
+    matches!(root.kind, FrameKind::Module)
+        && detect_inline_comprehension(stream, 0, stream.ops.len()).is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11575,6 +11582,7 @@ fn consume_inline_comp_result(
     hi: usize,
     pre_residual: Vec<Expr>,
 ) -> Result<Vec<Stmt>> {
+    let hi: usize = trim_trailing_comp_cleanup(stream, end_for, hi);
     let is_restore_noise = |op: &CanonicalOp| -> bool {
         matches!(
             op,
