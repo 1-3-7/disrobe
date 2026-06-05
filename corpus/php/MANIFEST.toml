@@ -1,0 +1,102 @@
+schema = "disrobe-corpus-v1"
+category = "php"
+target_crate = "disrobe-pass-php"
+fetched_utc = "2026-05-25T17:02:00Z"
+notes = """
+PHP corpus generated on Windows 11 with PHP 8.3.31 (NTS / Zend Engine v4.3.31).
+Three tiers:
+  baseline/hello.php - smoke fixture for token-stream + signature tests.
+  megafile/edge_cases.php - PHP 8.x megafile: strict_types, enums, readonly
+    classes, union/intersection types, never/nullable, match expression, nullsafe
+    operator, constructor property promotion, traits, interfaces, generators with
+    yield from, fibers, WeakMap, first-class callable, named args, attributes
+    (Route, Cached), throw expressions, anonymous classes, all magic methods,
+    namespaces, group use. PHP-8 features make this incompatible with naneau
+    obfuscator (PhpParser v1 limit).
+  megafile/pre80_edge_cases.php - PHP 5.4/7-compat variant for the obfuscator
+    pipeline. Classes, traits-substitute, switch/case fall-through, closures
+    in array_map/filter/reduce, try/catch with multiple handlers, regex,
+    json round-trip, sort/usort, magic methods.
+  better-php-obfuscator/edge_cases.obf.php - real output of naneau/php-obfuscator
+    0.0.5 (variable-name scrambling) over pre80_edge_cases.php.
+  phar/{hello.phar, edge_cases.phar} - real PHP-built Phar archives (PHP CLI
+    `Phar::buildFromDirectory` + `createDefaultStub`).
+TOOL-GENUINE-WALL: ionCube, SourceGuardian, Zend Guard - these ship encrypted
+  Zend opcode arrays; the decryption key lives inside the licensed native loader
+  (.so/.dll), NOT in the PHP envelope, so source is NOT recoverable without that
+  runtime key. `crates/disrobe-pass-php/src/protectors/{ioncube,sourceguardian,
+  zend_guard}.rs` are HONEST DETECT-ONLY: they recognize the real era/version
+  markers, locate the structural ciphertext boundary, scrape printable envelope
+  strings for triage, and report a documented `wall_reason`. They NEVER fabricate
+  recovered source. `tests/{ioncube,sourceguardian,zend_guard}_detect.rs`,
+  `tests/{ioncube,sourceguardian,zend_guard}_decode.rs`, and
+  `tests/{ioncube,sourceguardian,zend_guard}_synthetic_envelope_detect.rs` assert
+  detect-only / structural-only behavior (family/era/marker, auth gate, no
+  recovered source). The public CLI decode path uses the auth-gated `encoder`
+  module returning `DecodeOutcome::StructuralOnly`.
+  (A prior revision shipped a homemade RC4/XOR-keystream "decode" with circular
+  self-encode/decode round-trip tests over `megafile/edge_cases.php`; that was a
+  fake capability - real ionCube/SG/ZendGuard use no such public scheme - and has
+  been removed.)
+DZOA-CONTAINER-HONESTY: `decompile.rs` parses + walks a Zend op_array only via
+  disrobe's OWN canonical container (magic `DZOA`), verified solely against
+  hand-built `DZOA` bytes. This is NOT a real-world ionCube/SG/ZendGuard op_array
+  decompiler: real commercial encoders return `DecodeOutcome::StructuralOnly`
+  (their op_arrays are encrypted with a runtime loader key). No non-circular
+  oracle over real encoder op_arrays exists, so no real-world op_array decompile
+  is claimed.
+TOOL-DEAD-DOCUMENT: bcompiler (EOL ~PHP 5.3) - fixtures remain synthesized + documented.
+TOOL-CAPTURE-MANUAL: FOPO web obfuscator (online, CAPTCHA-protected) - fixture
+  remains in-test synth via `build_fopo`.
+"""
+
+[[sample]]
+name = "baseline/hello.php"
+source_tool = "manual"
+size_bytes = 30
+sha256 = "aba065912cadefc0c17e7cbe40066924e72ead6be3973a66ca42ac6ec93abc6c"
+notes = "Single-statement baseline."
+
+[[sample]]
+name = "megafile/edge_cases.php"
+source_tool = "manual (PHP 8.3 megafile)"
+size_bytes = 21660
+sha256 = "f13ec2612c7ca75137aa3341ef562eaab8817f6ac566581a916e5fdf3c752d92"
+notes = "PHP 8.x feature catalogue."
+
+[[sample]]
+name = "megafile/pre80_edge_cases.php"
+source_tool = "manual (PHP 5.4/7-compat for obfuscator chain)"
+size_bytes = 9032
+sha256 = "4fceb49157c44ca059154f6f8613840b025d3551e4c27d8e08f645fd0b55cfb1"
+notes = "Pre-PHP-8 subset suitable for naneau/php-obfuscator (uses nikic/php-parser v1)."
+
+[[sample]]
+name = "better-php-obfuscator/edge_cases.obf.php"
+source_tool = "naneau/php-obfuscator 0.0.5 (variable-name scramble)"
+source_file = "megafile/pre80_edge_cases.php"
+size_bytes = 8229
+sha256 = "0463a55e9be27b3a20fde894bd2e75da9c7c570fa3d334864143d21c76c3ec2f"
+notes = "Real obfuscator output, retains identifiers but scrambles all local variables to sp<hex>."
+
+[[sample]]
+name = "better-php-obfuscator/hello.obf.php"
+source_tool = "naneau/php-obfuscator 0.0.5"
+source_file = "baseline/hello.php"
+size_bytes = 26
+sha256 = "378e4ec5318eb289a16dbc8cec7218f74c698cbe2a73c4f695bc90c02d5edd79"
+notes = "Trivial baseline obfuscated (no variables to scramble)."
+
+[[sample]]
+name = "phar/hello.phar"
+source_tool = "PHP CLI Phar::buildFromDirectory + createDefaultStub"
+size_bytes = 6883
+sha256 = "81f8aefaf06a4f856f38c1bf62a0408c0fc98aa2cc8abf1497166de11c562ee6"
+notes = "Phar of {index.php, helper.php}."
+
+[[sample]]
+name = "phar/edge_cases.phar"
+source_tool = "PHP CLI Phar::buildFromDirectory + createDefaultStub"
+size_bytes = 36542
+sha256 = "52bb8454a02e41261597dad1d7c42eef733cdb0bbf47752b887d989b8305c997"
+notes = "Phar bundling {edge_cases.php (PHP-8 megafile), pre80_edge_cases.php, hello.php} with hello.php as entry stub."

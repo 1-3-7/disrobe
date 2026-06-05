@@ -1,0 +1,45 @@
+[package]
+name = "disrobe-pass-pyinstaller"
+description = "PyInstaller CArchive + PYZ extractor for the disrobe deobfuscation suite. Ports pyinstxtractor-ng's algorithm to Rust, covering PyInstaller 2.x through 6.x (incl. AES-128-CTR encrypted archives where applicable) with deterministic `.pyc` reconstruction across all CPython versions."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["pyinstaller", "decompile", "extractor", "python", "reverse-engineering"]
+categories.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-binfmt = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+aes = { workspace = true }
+ctr = { workspace = true }
+flate2 = { workspace = true }
+memmap2 = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+bytes = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "cookie_find"
+harness = false

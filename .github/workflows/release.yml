@@ -1,0 +1,224 @@
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+            archive: tar.zst
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+            archive: tar.zst
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+            archive: tar.zst
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+            archive: tar.zst
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+            archive: tar.zst
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            archive: zip
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: compute release tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "REL_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "REL_TAG=latest" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: build (native)
+        if: matrix.cross == false
+        shell: bash
+        run: cargo build --release --bin disrobe --target ${{ matrix.target }}
+
+      - name: build (cross)
+        if: matrix.cross == true
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --bin disrobe
+          strip: true
+
+      - name: strip (unix native)
+        if: matrix.cross == false && runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/disrobe"
+          if [ -f "$BIN" ]; then strip "$BIN" || true; fi
+
+      - name: stage artifact (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="disrobe-${REL_TAG}-${{ matrix.target }}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${{ matrix.target }}/release/disrobe" "dist/${STAGE}/"
+          cp README.md LICENSE-APACHE LICENSE-MIT NOTICE SECURITY.md CHANGELOG.md "dist/${STAGE}/" 2>/dev/null || true
+          cd dist
+          tar --zstd -cf "${STAGE}.tar.zst" "${STAGE}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${STAGE}.tar.zst" > "${STAGE}.tar.zst.sha256"
+          else
+            shasum -a 256 "${STAGE}.tar.zst" > "${STAGE}.tar.zst.sha256"
+          fi
+
+      - name: stage artifact (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "disrobe-$env:REL_TAG-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/disrobe.exe" "dist/$stage/"
+          foreach ($f in @("README.md","LICENSE-APACHE","LICENSE-MIT","NOTICE","SECURITY.md","CHANGELOG.md")) {
+            if (Test-Path $f) { Copy-Item $f "dist/$stage/" }
+          }
+          Push-Location dist
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "$stage.zip").Hash.ToLower()
+          "$hash  $stage.zip" | Set-Content -Encoding ascii "$stage.zip.sha256"
+          Pop-Location
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="disrobe-${REL_TAG}-${{ matrix.target }}"
+          cd dist
+          cosign sign-blob --yes \
+            --bundle "${STAGE}.tar.zst.cosign.bundle" \
+            "${STAGE}.tar.zst"
+
+      - name: cosign sign (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "disrobe-$env:REL_TAG-${{ matrix.target }}"
+          Push-Location dist
+          cosign sign-blob --yes --bundle "$stage.zip.cosign.bundle" "$stage.zip"
+          Pop-Location
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/disrobe-*.tar.zst
+            dist/disrobe-*.zip
+            dist/disrobe-*.sha256
+            dist/disrobe-*.cosign.bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v6
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: aggregate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          : > SHA256SUMS
+          for f in *.sha256; do
+            [ -f "$f" ] || continue
+            cat "$f" >> SHA256SUMS
+          done
+          ls -la
+
+      - name: compute release metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            { echo "REL_TAG=${GITHUB_REF_NAME}"; echo "REL_NAME=${GITHUB_REF_NAME}"; } >> "$GITHUB_ENV"
+          else
+            { echo "REL_TAG=latest"; echo "REL_NAME=disrobe latest (${GITHUB_SHA:0:7})"; } >> "$GITHUB_ENV"
+          fi
+
+      - name: delete previous rolling release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.REL_TAG }}
+          name: ${{ env.REL_NAME }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/disrobe-*.tar.zst
+            dist/disrobe-*.zip
+            dist/disrobe-*.cosign.bundle
+            dist/SHA256SUMS

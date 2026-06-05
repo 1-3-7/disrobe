@@ -1,0 +1,82 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "theme/**"
+      - "book.toml"
+      - "README.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.4.40"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: ${{ env.MDBOOK_VERSION }}
+
+      - name: Build book
+        run: mdbook build
+
+      - name: Index with Pagefind
+        run: npx -y pagefind --site docs/book
+
+      - name: Assemble Pages site with /latest/ doc root
+        run: |
+          set -euo pipefail
+          rm -rf site
+          mkdir -p site/latest
+          cp -a docs/book/. site/latest/
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta http-equiv="refresh" content="0; url=./latest/" />
+              <link rel="canonical" href="./latest/" />
+              <title>disrobe documentation</title>
+            </head>
+            <body>
+              <p>Redirecting to the <a href="./latest/">latest disrobe documentation</a>.</p>
+            </body>
+          </html>
+          HTML
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

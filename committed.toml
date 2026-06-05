@@ -1,0 +1,24 @@
+[committed]
+style = "conventional"
+
+allowed_types = [
+    "feat",
+    "fix",
+    "refactor",
+    "perf",
+    "test",
+    "docs",
+    "chore",
+    "build",
+    "ci",
+    "revert",
+]
+
+subject_capitalization = "lower"
+
+subject_punctuation = false
+
+line_length = 72
+
+ignore_merge_commits = true
+ignore_fixup_commits = true

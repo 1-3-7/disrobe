@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "disrobe-pytrace"
+version = "0.9.0"
+description = "sys.settrace capturer for PyArmor v6/v7 user-code bytecode. Companion to the disrobe deobfuscator suite. The C-level PyEval_EvalCode intercept that closes the settrace gap is provided by disrobe-pyarmor-cextract."
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "disrobe_pytrace"
+strip = true

@@ -1,0 +1,41 @@
+[package]
+name = "disrobe-pass-php"
+description = "PHP ecosystem deobfuscation: token-stream + phar archive extract, FOPO, base64-gzinflate-eval chain peel, BCompiler bytecode, ionCube/SourceGuardian/Zend Guard detect-and-decode."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["php", "ioncube", "sourceguardian", "zend-guard", "phar"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+memchr = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+cipher = { version = "0.4", features = ["block-padding"] }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+flate2 = { workspace = true }
+base64 = { workspace = true }

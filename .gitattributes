@@ -1,0 +1,37 @@
+assets/graphs/*.svg text eol=lf
+crates/disrobe-pass-go/tests/fixtures/embedsrc/assets/* text eol=lf
+crates/disrobe-pass-go/tests/fixtures/**/*.go text eol=lf
+docs/**/*.md text eol=lf
+docs/errors/*.md text eol=lf
+docs/decisions/*.md text eol=lf
+docs/legal/*.md text eol=lf
+theme/*.hbs text eol=lf
+.github/**/*.yml text eol=lf
+*.jsc binary
+*.pkl binary
+*.luac binary
+*.beam binary
+*.ez binary
+*.pye binary
+*.class binary
+*.rds binary
+*.kit binary
+*.swf binary
+*.hl binary
+*.apk binary
+*.dex binary
+*.idsig binary
+crates/disrobe-pass-scriptlang/tests/fixtures/** -text
+crates/disrobe-pass-scriptlang/tests/fixtures/*.js binary
+crates/disrobe-pass-scriptlang/tests/fixtures/*.hx binary
+corpus/mobile/macho-mac/SwiftHello.original binary
+corpus/mobile/macho-mac/SwiftHello.obfuscated binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.original binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.obfuscated binary
+corpus/native/zig/hello.zig.elf binary
+corpus/native/nim/hello.nim.elf binary
+corpus/native/crystal/hello.cr.exe binary
+corpus/python/obfuscators/playground/*.py text eol=lf
+
+*.rs text eol=lf
+*.toml text eol=lf

@@ -1,0 +1,33 @@
+[book]
+title = "disrobe"
+description = "Deterministic multi-language deobfuscator and decompiler suite, in a single Rust binary."
+authors = ["1-3-7"]
+language = "en"
+src = "docs/src"
+
+[build]
+build-dir = "docs/book"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/1-3-7/disrobe"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/1-3-7/disrobe/edit/main/{path}"
+site-url = "/disrobe/latest/"
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.fold]
+enable = true
+level = 1

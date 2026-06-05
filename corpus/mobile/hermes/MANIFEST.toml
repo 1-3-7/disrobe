@@ -1,0 +1,31 @@
+schema = "disrobe-corpus-v1"
+category = "mobile.hermes"
+target_crate = "disrobe-pass-mobile"
+fetched_utc = "2026-05-26T00:00:00Z"
+notes = """
+Hermes bytecode bundles (React Native). Source APKs in corpus/mobile/apk/inbox/.
+Magic: 0x1f19_03c1_03bc_1fc6 (little-endian first 8 bytes: c6 1f bc 03 c1 03 19 1f).
+"""
+
+[[sample]]
+name = "discord/index.android.bundle"
+source_apk = "corpus/mobile/apk/inbox/discord.apkm"
+source_url = "https://www.apkmirror.com/apk/discord-inc/discord/ (user-supplied download)"
+upstream_repo = "https://github.com/discord (closed-source app, fixture for runtime detection only)"
+license = "proprietary (Discord Inc. - corpus use: bytecode-format identification per fair use, no redistribution)"
+size_bytes = 66978165
+sha256 = "75f377c1ef1c5b7896fe94d748ae23bd555482021fa409d78f3d2afa1b51d2ed"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode from production Discord Android. Header parses cleanly (version 96).
+Full-module parse exposes depyo-fate signal: DR-MOB-0009 string-storage OOB at offset 11141143
+(reader treats file as smaller than actual bundle). See .developer/wave-c-mobile-signals-2026-05-25.md.
+"""
+
+[[sample]]
+name = "discord/index.android.bundle.patch"
+source_apk = "corpus/mobile/apk/inbox/discord.apkm"
+license = "proprietary"
+size_bytes = 66978221
+sha256 = "a424dd6d6086bbf2ac56132eec4572751263f3b6911e0db4c4fbeebc12c26d2b"
+notes = "Mercurial-style binary diff (MBSDIFF43 magic) for hot-update delivery, not Hermes bytecode."

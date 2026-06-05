@@ -1,0 +1,1 @@
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand VwByAGkAdABlAC0ASABvAHMAdAAgACIAaABlAGwAbABvACAAdwBvAHIAbABkACIA

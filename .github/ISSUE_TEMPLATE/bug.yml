@@ -1,0 +1,57 @@
+name: Bug report
+description: Something crashed, produced wrong output, or behaved unexpectedly.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the issue is a security vulnerability, use the private advisory instead: https://github.com/1-3-7/disrobe/security/advisories/new
+
+  - type: input
+    id: version
+    attributes:
+      label: disrobe version
+      placeholder: 'disrobe --version output'
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      description: The exact command line, with any sensitive paths replaced.
+      placeholder: 'disrobe auto ./target.pyz --emit source --out ./out'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include full error output and error codes (DR-*).
+    validations:
+      required: true
+
+  - type: input
+    id: sample_hash
+    attributes:
+      label: Input sample hash (SHA-256 or BLAKE3)
+      description: Hash of the input file. If you can share the file, attach it. If not, just the hash is helpful.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true

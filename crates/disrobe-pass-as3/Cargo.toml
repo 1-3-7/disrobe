@@ -1,0 +1,33 @@
+[package]
+name = "disrobe-pass-as3"
+description = "AS3 / Flash SWF deobfuscation: JPEXS-FFDec-semantic port, ABC bytecode decompile, obfuscated SWF heuristic recovery."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["as3", "flash", "swf", "abc", "decompile"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+liblzma = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }

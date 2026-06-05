@@ -1,0 +1,226 @@
+#![allow(dead_code, unused_variables, unused_mut, unused_assignments, unused_labels, unused_parens, unreachable_code, clippy::all)]
+//! disrobe wasm lift target=rust
+//! Self-contained WebAssembly numeric + memory runtime for the lifted functions below.
+//! Divide/remainder by zero and signed-overflow are made total (return 0) to keep the
+//! artifact panic-free; float->int truncation saturates (Rust `as`), matching trunc_sat.
+
+use std::cell::RefCell;
+
+thread_local! {
+    static WASM_MEMORY: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 64 * 1024]);
+    static WASM_GLOBALS: RefCell<Vec<i64>> = RefCell::new(vec![0i64; 64]);
+}
+
+#[inline] fn wasm_i32_add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }
+#[inline] fn wasm_i32_sub(a: i32, b: i32) -> i32 { a.wrapping_sub(b) }
+#[inline] fn wasm_i32_mul(a: i32, b: i32) -> i32 { a.wrapping_mul(b) }
+#[inline] fn wasm_i32_div_s(a: i32, b: i32) -> i32 { if b == 0 { 0 } else { a.wrapping_div(b) } }
+#[inline] fn wasm_i32_div_u(a: i32, b: i32) -> i32 { if b == 0 { 0 } else { ((a as u32) / (b as u32)) as i32 } }
+#[inline] fn wasm_i32_rem_s(a: i32, b: i32) -> i32 { if b == 0 { 0 } else { a.wrapping_rem(b) } }
+#[inline] fn wasm_i32_rem_u(a: i32, b: i32) -> i32 { if b == 0 { 0 } else { ((a as u32) % (b as u32)) as i32 } }
+#[inline] fn wasm_i32_and(a: i32, b: i32) -> i32 { a & b }
+#[inline] fn wasm_i32_or(a: i32, b: i32) -> i32 { a | b }
+#[inline] fn wasm_i32_xor(a: i32, b: i32) -> i32 { a ^ b }
+#[inline] fn wasm_i32_shl(a: i32, b: i32) -> i32 { a.wrapping_shl(b as u32) }
+#[inline] fn wasm_i32_shr_s(a: i32, b: i32) -> i32 { a.wrapping_shr(b as u32) }
+#[inline] fn wasm_i32_shr_u(a: i32, b: i32) -> i32 { ((a as u32).wrapping_shr(b as u32)) as i32 }
+#[inline] fn wasm_i32_rotl(a: i32, b: i32) -> i32 { (a as u32).rotate_left((b as u32) & 31) as i32 }
+#[inline] fn wasm_i32_rotr(a: i32, b: i32) -> i32 { (a as u32).rotate_right((b as u32) & 31) as i32 }
+#[inline] fn wasm_i32_eq(a: i32, b: i32) -> i32 { (a == b) as i32 }
+#[inline] fn wasm_i32_ne(a: i32, b: i32) -> i32 { (a != b) as i32 }
+#[inline] fn wasm_i32_lt_s(a: i32, b: i32) -> i32 { (a < b) as i32 }
+#[inline] fn wasm_i32_lt_u(a: i32, b: i32) -> i32 { ((a as u32) < (b as u32)) as i32 }
+#[inline] fn wasm_i32_gt_s(a: i32, b: i32) -> i32 { (a > b) as i32 }
+#[inline] fn wasm_i32_gt_u(a: i32, b: i32) -> i32 { ((a as u32) > (b as u32)) as i32 }
+#[inline] fn wasm_i32_le_s(a: i32, b: i32) -> i32 { (a <= b) as i32 }
+#[inline] fn wasm_i32_le_u(a: i32, b: i32) -> i32 { ((a as u32) <= (b as u32)) as i32 }
+#[inline] fn wasm_i32_ge_s(a: i32, b: i32) -> i32 { (a >= b) as i32 }
+#[inline] fn wasm_i32_ge_u(a: i32, b: i32) -> i32 { ((a as u32) >= (b as u32)) as i32 }
+
+#[inline] fn wasm_i64_add(a: i64, b: i64) -> i64 { a.wrapping_add(b) }
+#[inline] fn wasm_i64_sub(a: i64, b: i64) -> i64 { a.wrapping_sub(b) }
+#[inline] fn wasm_i64_mul(a: i64, b: i64) -> i64 { a.wrapping_mul(b) }
+#[inline] fn wasm_i64_div_s(a: i64, b: i64) -> i64 { if b == 0 { 0 } else { a.wrapping_div(b) } }
+#[inline] fn wasm_i64_div_u(a: i64, b: i64) -> i64 { if b == 0 { 0 } else { ((a as u64) / (b as u64)) as i64 } }
+#[inline] fn wasm_i64_rem_s(a: i64, b: i64) -> i64 { if b == 0 { 0 } else { a.wrapping_rem(b) } }
+#[inline] fn wasm_i64_rem_u(a: i64, b: i64) -> i64 { if b == 0 { 0 } else { ((a as u64) % (b as u64)) as i64 } }
+#[inline] fn wasm_i64_and(a: i64, b: i64) -> i64 { a & b }
+#[inline] fn wasm_i64_or(a: i64, b: i64) -> i64 { a | b }
+#[inline] fn wasm_i64_xor(a: i64, b: i64) -> i64 { a ^ b }
+#[inline] fn wasm_i64_shl(a: i64, b: i64) -> i64 { a.wrapping_shl(b as u32) }
+#[inline] fn wasm_i64_shr_s(a: i64, b: i64) -> i64 { a.wrapping_shr(b as u32) }
+#[inline] fn wasm_i64_shr_u(a: i64, b: i64) -> i64 { ((a as u64).wrapping_shr(b as u32)) as i64 }
+#[inline] fn wasm_i64_rotl(a: i64, b: i64) -> i64 { (a as u64).rotate_left((b as u32) & 63) as i64 }
+#[inline] fn wasm_i64_rotr(a: i64, b: i64) -> i64 { (a as u64).rotate_right((b as u32) & 63) as i64 }
+#[inline] fn wasm_i64_eq(a: i64, b: i64) -> i32 { (a == b) as i32 }
+#[inline] fn wasm_i64_ne(a: i64, b: i64) -> i32 { (a != b) as i32 }
+#[inline] fn wasm_i64_lt_s(a: i64, b: i64) -> i32 { (a < b) as i32 }
+#[inline] fn wasm_i64_lt_u(a: i64, b: i64) -> i32 { ((a as u64) < (b as u64)) as i32 }
+#[inline] fn wasm_i64_gt_s(a: i64, b: i64) -> i32 { (a > b) as i32 }
+#[inline] fn wasm_i64_gt_u(a: i64, b: i64) -> i32 { ((a as u64) > (b as u64)) as i32 }
+#[inline] fn wasm_i64_le_s(a: i64, b: i64) -> i32 { (a <= b) as i32 }
+#[inline] fn wasm_i64_le_u(a: i64, b: i64) -> i32 { ((a as u64) <= (b as u64)) as i32 }
+#[inline] fn wasm_i64_ge_s(a: i64, b: i64) -> i32 { (a >= b) as i32 }
+#[inline] fn wasm_i64_ge_u(a: i64, b: i64) -> i32 { ((a as u64) >= (b as u64)) as i32 }
+
+#[inline] fn wasm_f32_add(a: f32, b: f32) -> f32 { a + b }
+#[inline] fn wasm_f32_sub(a: f32, b: f32) -> f32 { a - b }
+#[inline] fn wasm_f32_mul(a: f32, b: f32) -> f32 { a * b }
+#[inline] fn wasm_f32_div(a: f32, b: f32) -> f32 { a / b }
+#[inline] fn wasm_f32_min(a: f32, b: f32) -> f32 { a.min(b) }
+#[inline] fn wasm_f32_max(a: f32, b: f32) -> f32 { a.max(b) }
+#[inline] fn wasm_f32_copysign(a: f32, b: f32) -> f32 { a.copysign(b) }
+#[inline] fn wasm_f32_eq(a: f32, b: f32) -> i32 { (a == b) as i32 }
+#[inline] fn wasm_f32_ne(a: f32, b: f32) -> i32 { (a != b) as i32 }
+#[inline] fn wasm_f32_lt(a: f32, b: f32) -> i32 { (a < b) as i32 }
+#[inline] fn wasm_f32_gt(a: f32, b: f32) -> i32 { (a > b) as i32 }
+#[inline] fn wasm_f32_le(a: f32, b: f32) -> i32 { (a <= b) as i32 }
+#[inline] fn wasm_f32_ge(a: f32, b: f32) -> i32 { (a >= b) as i32 }
+
+#[inline] fn wasm_f64_add(a: f64, b: f64) -> f64 { a + b }
+#[inline] fn wasm_f64_sub(a: f64, b: f64) -> f64 { a - b }
+#[inline] fn wasm_f64_mul(a: f64, b: f64) -> f64 { a * b }
+#[inline] fn wasm_f64_div(a: f64, b: f64) -> f64 { a / b }
+#[inline] fn wasm_f64_min(a: f64, b: f64) -> f64 { a.min(b) }
+#[inline] fn wasm_f64_max(a: f64, b: f64) -> f64 { a.max(b) }
+#[inline] fn wasm_f64_copysign(a: f64, b: f64) -> f64 { a.copysign(b) }
+#[inline] fn wasm_f64_eq(a: f64, b: f64) -> i32 { (a == b) as i32 }
+#[inline] fn wasm_f64_ne(a: f64, b: f64) -> i32 { (a != b) as i32 }
+#[inline] fn wasm_f64_lt(a: f64, b: f64) -> i32 { (a < b) as i32 }
+#[inline] fn wasm_f64_gt(a: f64, b: f64) -> i32 { (a > b) as i32 }
+#[inline] fn wasm_f64_le(a: f64, b: f64) -> i32 { (a <= b) as i32 }
+#[inline] fn wasm_f64_ge(a: f64, b: f64) -> i32 { (a >= b) as i32 }
+
+#[inline] fn wasm_i32_eqz(a: i32) -> i32 { (a == 0) as i32 }
+#[inline] fn wasm_i64_eqz(a: i64) -> i32 { (a == 0) as i32 }
+#[inline] fn wasm_i32_clz(a: i32) -> i32 { a.leading_zeros() as i32 }
+#[inline] fn wasm_i32_ctz(a: i32) -> i32 { a.trailing_zeros() as i32 }
+#[inline] fn wasm_i32_popcnt(a: i32) -> i32 { a.count_ones() as i32 }
+#[inline] fn wasm_i64_clz(a: i64) -> i64 { a.leading_zeros() as i64 }
+#[inline] fn wasm_i64_ctz(a: i64) -> i64 { a.trailing_zeros() as i64 }
+#[inline] fn wasm_i64_popcnt(a: i64) -> i64 { a.count_ones() as i64 }
+
+#[inline] fn wasm_f32_abs(a: f32) -> f32 { a.abs() }
+#[inline] fn wasm_f32_neg(a: f32) -> f32 { -a }
+#[inline] fn wasm_f32_ceil(a: f32) -> f32 { a.ceil() }
+#[inline] fn wasm_f32_floor(a: f32) -> f32 { a.floor() }
+#[inline] fn wasm_f32_trunc(a: f32) -> f32 { a.trunc() }
+#[inline] fn wasm_f32_nearest(a: f32) -> f32 { a.round_ties_even() }
+#[inline] fn wasm_f32_sqrt(a: f32) -> f32 { a.sqrt() }
+#[inline] fn wasm_f64_abs(a: f64) -> f64 { a.abs() }
+#[inline] fn wasm_f64_neg(a: f64) -> f64 { -a }
+#[inline] fn wasm_f64_ceil(a: f64) -> f64 { a.ceil() }
+#[inline] fn wasm_f64_floor(a: f64) -> f64 { a.floor() }
+#[inline] fn wasm_f64_trunc(a: f64) -> f64 { a.trunc() }
+#[inline] fn wasm_f64_nearest(a: f64) -> f64 { a.round_ties_even() }
+#[inline] fn wasm_f64_sqrt(a: f64) -> f64 { a.sqrt() }
+
+#[inline] fn wasm_i32_wrap_i64(a: i64) -> i32 { a as i32 }
+#[inline] fn wasm_i64_extend_i32_s(a: i32) -> i64 { a as i64 }
+#[inline] fn wasm_i64_extend_i32_u(a: i32) -> i64 { (a as u32) as i64 }
+#[inline] fn wasm_i32_extend8_s(a: i32) -> i32 { (a as i8) as i32 }
+#[inline] fn wasm_i32_extend16_s(a: i32) -> i32 { (a as i16) as i32 }
+#[inline] fn wasm_i64_extend8_s(a: i64) -> i64 { (a as i8) as i64 }
+#[inline] fn wasm_i64_extend16_s(a: i64) -> i64 { (a as i16) as i64 }
+#[inline] fn wasm_i64_extend32_s(a: i64) -> i64 { (a as i32) as i64 }
+#[inline] fn wasm_i32_trunc_f32_s(a: f32) -> i32 { a as i32 }
+#[inline] fn wasm_i32_trunc_f32_u(a: f32) -> i32 { (a as u32) as i32 }
+#[inline] fn wasm_i32_trunc_f64_s(a: f64) -> i32 { a as i32 }
+#[inline] fn wasm_i32_trunc_f64_u(a: f64) -> i32 { (a as u32) as i32 }
+#[inline] fn wasm_i64_trunc_f32_s(a: f32) -> i64 { a as i64 }
+#[inline] fn wasm_i64_trunc_f32_u(a: f32) -> i64 { (a as u64) as i64 }
+#[inline] fn wasm_i64_trunc_f64_s(a: f64) -> i64 { a as i64 }
+#[inline] fn wasm_i64_trunc_f64_u(a: f64) -> i64 { (a as u64) as i64 }
+#[inline] fn wasm_f32_convert_i32_s(a: i32) -> f32 { a as f32 }
+#[inline] fn wasm_f32_convert_i32_u(a: i32) -> f32 { (a as u32) as f32 }
+#[inline] fn wasm_f32_convert_i64_s(a: i64) -> f32 { a as f32 }
+#[inline] fn wasm_f32_convert_i64_u(a: i64) -> f32 { (a as u64) as f32 }
+#[inline] fn wasm_f64_convert_i32_s(a: i32) -> f64 { a as f64 }
+#[inline] fn wasm_f64_convert_i32_u(a: i32) -> f64 { (a as u32) as f64 }
+#[inline] fn wasm_f64_convert_i64_s(a: i64) -> f64 { a as f64 }
+#[inline] fn wasm_f64_convert_i64_u(a: i64) -> f64 { (a as u64) as f64 }
+#[inline] fn wasm_f32_demote_f64(a: f64) -> f32 { a as f32 }
+#[inline] fn wasm_f64_promote_f32(a: f32) -> f64 { a as f64 }
+#[inline] fn wasm_i32_reinterpret_f32(a: f32) -> i32 { a.to_bits() as i32 }
+#[inline] fn wasm_i64_reinterpret_f64(a: f64) -> i64 { a.to_bits() as i64 }
+#[inline] fn wasm_f32_reinterpret_i32(a: i32) -> f32 { f32::from_bits(a as u32) }
+#[inline] fn wasm_f64_reinterpret_i64(a: i64) -> f64 { f64::from_bits(a as u64) }
+
+#[inline]
+fn wasm_mem_addr(addr: i32, offset: u64) -> usize {
+    (addr as u32 as u64).wrapping_add(offset) as usize
+}
+
+fn wasm_load_i32(addr: i32, offset: u64) -> i32 {
+    WASM_MEMORY.with(|m| {
+        let m = m.borrow();
+        let a = wasm_mem_addr(addr, offset);
+        let mut b = [0u8; 4];
+        if a + 4 <= m.len() { b.copy_from_slice(&m[a..a + 4]); }
+        i32::from_le_bytes(b)
+    })
+}
+fn wasm_load_i64(addr: i32, offset: u64) -> i64 {
+    WASM_MEMORY.with(|m| {
+        let m = m.borrow();
+        let a = wasm_mem_addr(addr, offset);
+        let mut b = [0u8; 8];
+        if a + 8 <= m.len() { b.copy_from_slice(&m[a..a + 8]); }
+        i64::from_le_bytes(b)
+    })
+}
+fn wasm_load_f32(addr: i32, offset: u64) -> f32 { f32::from_bits(wasm_load_i32(addr, offset) as u32) }
+fn wasm_load_f64(addr: i32, offset: u64) -> f64 { f64::from_bits(wasm_load_i64(addr, offset) as u64) }
+fn wasm_load_i32_8u(addr: i32, offset: u64) -> i32 {
+    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr(addr, offset); *m.get(a).unwrap_or(&0) as i32 })
+}
+fn wasm_load_i32_8s(addr: i32, offset: u64) -> i32 { (wasm_load_i32_8u(addr, offset) as i8) as i32 }
+fn wasm_load_i32_16u(addr: i32, offset: u64) -> i32 {
+    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr(addr, offset); let mut b = [0u8; 2]; if a + 2 <= m.len() { b.copy_from_slice(&m[a..a + 2]); } u16::from_le_bytes(b) as i32 })
+}
+fn wasm_load_i32_16s(addr: i32, offset: u64) -> i32 { (wasm_load_i32_16u(addr, offset) as i16) as i32 }
+fn wasm_load_i64_8u(addr: i32, offset: u64) -> i64 { wasm_load_i32_8u(addr, offset) as u32 as i64 }
+fn wasm_load_i64_8s(addr: i32, offset: u64) -> i64 { (wasm_load_i32_8u(addr, offset) as i8) as i64 }
+fn wasm_load_i64_16u(addr: i32, offset: u64) -> i64 { wasm_load_i32_16u(addr, offset) as u32 as i64 }
+fn wasm_load_i64_16s(addr: i32, offset: u64) -> i64 { (wasm_load_i32_16u(addr, offset) as i16) as i64 }
+fn wasm_load_i64_32u(addr: i32, offset: u64) -> i64 { wasm_load_i32(addr, offset) as u32 as i64 }
+fn wasm_load_i64_32s(addr: i32, offset: u64) -> i64 { wasm_load_i32(addr, offset) as i64 }
+
+fn wasm_store_i32(addr: i32, offset: u64, val: i32) {
+    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 4 <= m.len() { m[a..a + 4].copy_from_slice(&val.to_le_bytes()); } });
+}
+fn wasm_store_i64(addr: i32, offset: u64, val: i64) {
+    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 8 <= m.len() { m[a..a + 8].copy_from_slice(&val.to_le_bytes()); } });
+}
+fn wasm_store_f32(addr: i32, offset: u64, val: f32) { wasm_store_i32(addr, offset, val.to_bits() as i32); }
+fn wasm_store_f64(addr: i32, offset: u64, val: f64) { wasm_store_i64(addr, offset, val.to_bits() as i64); }
+fn wasm_store_i32_8(addr: i32, offset: u64, val: i32) {
+    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a < m.len() { m[a] = val as u8; } });
+}
+fn wasm_store_i32_16(addr: i32, offset: u64, val: i32) {
+    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 2 <= m.len() { m[a..a + 2].copy_from_slice(&(val as u16).to_le_bytes()); } });
+}
+fn wasm_store_i64_8(addr: i32, offset: u64, val: i64) { wasm_store_i32_8(addr, offset, val as i32); }
+fn wasm_store_i64_16(addr: i32, offset: u64, val: i64) { wasm_store_i32_16(addr, offset, val as i32); }
+fn wasm_store_i64_32(addr: i32, offset: u64, val: i64) { wasm_store_i32(addr, offset, val as i32); }
+
+fn wasm_global_get(index: u32) -> i64 {
+    WASM_GLOBALS.with(|g| g.borrow().get(index as usize).copied().unwrap_or(0))
+}
+fn wasm_global_set(index: u32, val: i64) {
+    WASM_GLOBALS.with(|g| { let mut g = g.borrow_mut(); if let Some(slot) = g.get_mut(index as usize) { *slot = val; } });
+}
+fn wasm_memory_size() -> i32 {
+    WASM_MEMORY.with(|m| (m.borrow().len() / (64 * 1024)) as i32)
+}
+fn wasm_memory_grow(delta: i32) -> i32 {
+    WASM_MEMORY.with(|m| {
+        let mut m = m.borrow_mut();
+        let prev = (m.len() / (64 * 1024)) as i32;
+        if delta > 0 {
+            let new_len = m.len() + (delta as usize) * 64 * 1024;
+            m.resize(new_len, 0u8);
+        }
+        prev
+    })
+}

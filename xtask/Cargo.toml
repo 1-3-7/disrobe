@@ -1,0 +1,33 @@
+[package]
+name = "xtask"
+description = "Repository automation tasks (release packaging, schema generation, binding stub emission, fixture baking) for the disrobe workspace."
+version = "0.0.0"
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-playground = { workspace = true, features = ["chain"] }
+clap = { workspace = true, features = ["derive"] }
+eyre = { workspace = true }
+camino = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+blake3 = { workspace = true }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
