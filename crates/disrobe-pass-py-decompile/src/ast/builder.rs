@@ -2597,14 +2597,65 @@ fn is_async_for_poll_guard(stream: &DecodedStream, try_start: usize) -> bool {
     matches!(stream.ops.get(probe), Some(CanonicalOp::GetAnext))
 }
 
+/// Grows `hi` so a structuring window never ends inside a 3.11+ exception handler. A handler is a
+/// contiguous, fully nested unit per the exception table, so a window that opens before a handler
+/// (`PushExcInfo`) but closes before that handler's cold-cleanup `RERAISE` is a boundary defect;
+/// the window is extended to include the whole handler so its body and type are recovered intact.
+fn extend_window_over_split_handler(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    if stream.exception_table.is_empty() {
+        return hi;
+    }
+    let mut end: usize = hi;
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+                continue;
+            };
+            if handler_start < lo
+                || handler_start >= end
+                || !matches!(
+                    stream.ops.get(handler_start),
+                    Some(CanonicalOp::PushExcInfo)
+                )
+            {
+                continue;
+            }
+            let cold_end: Option<usize> = stream
+                .exception_table
+                .iter()
+                .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.start == entry.target)
+                .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                    stream.index_for_offset(e.target)
+                })
+                .max();
+            if let Some(cold) = cold_end {
+                let needed: usize = (handler_join(stream, cold, stream.ops.len())).max(cold + 1);
+                if needed > end {
+                    end = needed;
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    end.min(stream.ops.len())
+}
+
 fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRegion> {
     if stream.exception_table.is_empty() {
         return None;
     }
     let mut best: Option<TryRegion> = None;
     for entry in &stream.exception_table {
-        let try_start: usize = stream.index_for_offset(entry.start)?;
-        let handler_start: usize = stream.index_for_offset(entry.target)?;
+        let Some(try_start): Option<usize> = stream.index_for_offset(entry.start) else {
+            continue;
+        };
+        let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
         if !(lo..hi).contains(&try_start) || handler_start >= hi {
             continue;
         }
@@ -3551,6 +3602,86 @@ fn strip_shared_exit_return(
         .collect()
 }
 
+/// Op index of the `POP_EXCEPT` that closes the primary handler, derived from the exception table
+/// row whose protected span opens at the handler. `None` when no such row exists.
+fn handler_pop_except_idx(stream: &DecodedStream, handler_start: usize) -> Option<usize> {
+    let handler_off: u32 = *stream.offsets.get(handler_start)?;
+    let entry: &crate::bytecode::flow::ExceptionTableEntry = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.start == handler_off)
+        .min_by_key(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.end())?;
+    let pop: usize = stream.index_for_offset(entry.end())?;
+    matches!(stream.ops.get(pop), Some(CanonicalOp::PopExcept)).then_some(pop)
+}
+
+/// Significant ops of `[lo, hi)`, dropping `CACHE`/`NOP`/`EXTENDED_ARG` padding.
+fn significant_ops(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<&CanonicalOp> {
+    (lo..hi)
+        .map(|k: usize| &stream.ops[k])
+        .filter(|op: &&CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .collect()
+}
+
+/// Whether the op spans `[a_lo, a_hi)` and `[b_lo, b_hi)` are structurally identical, ignoring
+/// `CACHE`/`NOP`/`EXTENDED_ARG` padding on either side.
+fn op_spans_match(
+    stream: &DecodedStream,
+    a_lo: usize,
+    a_hi: usize,
+    b_lo: usize,
+    b_hi: usize,
+) -> bool {
+    let lhs: Vec<&CanonicalOp> = significant_ops(stream, a_lo, a_hi);
+    let rhs: Vec<&CanonicalOp> = significant_ops(stream, b_lo, b_hi);
+    !lhs.is_empty() && lhs == rhs
+}
+
+/// The op index at which the no-exception continuation begins inside the gap
+/// `[gap_start, handler_start)`, identified as the maximal gap suffix that is byte-identical to the
+/// handler's post-`POP_EXCEPT` continuation copy. Returns `handler_start` when no continuation
+/// duplication is present (a pure `else:` or empty gap).
+fn modern_continuation_start(
+    stream: &DecodedStream,
+    gap_start: usize,
+    handler_start: usize,
+    tail_lo: usize,
+    tail_hi: usize,
+) -> usize {
+    if gap_start >= handler_start || tail_lo >= tail_hi {
+        return handler_start;
+    }
+    let mut best: usize = handler_start;
+    for cont_start in (gap_start..handler_start).rev() {
+        if op_spans_match(stream, cont_start, handler_start, tail_lo, tail_hi) {
+            best = cont_start;
+        }
+    }
+    best
+}
+
+/// End of the handler's post-`POP_EXCEPT` continuation copy: stops at the first hard
+/// control-flow boundary (`RERAISE`/`COPY`/`SWAP`/`PUSH_EXC_INFO`) that opens the cold cleanup.
+fn handler_continuation_tail_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi {
+        match stream.ops[k] {
+            CanonicalOp::Reraise(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::PopExcept => break,
+            _ => k += 1,
+        }
+    }
+    k
+}
+
 fn structure_try_except_family(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3587,6 +3718,18 @@ fn structure_try_except_family(
         let (stmt, consumed): (Stmt, usize) =
             structure_pre311_try_except(code, stream, region, extended_body_end, hi)?;
         return Ok((stmt, consumed, Vec::new()));
+    }
+
+    if !has_combo
+        && let Some(result) = structure_modern_try_with_continuation(
+            code,
+            stream,
+            region,
+            protected_end,
+            except_region_end,
+        )?
+    {
+        return Ok(result);
     }
 
     let normal_region: Option<(usize, usize)> =
@@ -3668,13 +3811,79 @@ fn structure_try_except_family(
     ))
 }
 
+/// Structures a 3.11+ `try/except[/else]` whose no-exception continuation `CPython` duplicates onto
+/// both the fall-through and post-`POP_EXCEPT` exits. Honors the exception table's handler bound so
+/// the handler body stops at its `POP_EXCEPT`, lifts the shared continuation to the enclosing scope
+/// once, and emits a genuine `else:` only for the non-duplicated gap prefix.
+fn structure_modern_try_with_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
+    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, region.handler_start)
+    else {
+        return Ok(None);
+    };
+    let tail_start: usize =
+        first_significant(stream, pop_except + 1, except_region_end).unwrap_or(except_region_end);
+    let tail_end: usize = handler_continuation_tail_end(stream, tail_start, except_region_end);
+    if tail_start >= tail_end || !slice_has_real_stmt(stream, tail_start, tail_end) {
+        return Ok(None);
+    }
+    let cont_start: usize = modern_continuation_start(
+        stream,
+        protected_end,
+        region.handler_start,
+        tail_start,
+        tail_end,
+    );
+    if cont_start >= region.handler_start {
+        return Ok(None);
+    }
+
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, protected_end)?;
+
+    let else_end: usize = trim_try_body_jump(stream, protected_end, cont_start);
+    let orelse: Vec<Stmt> = if protected_end < else_end
+        && first_significant(stream, protected_end, else_end)
+            .is_some_and(|k: usize| else_entry_is_fallthrough(&stream.ops[k]))
+    {
+        structure_stmts(code, stream, protected_end, else_end)?
+    } else {
+        Vec::new()
+    };
+
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, pop_except + 1)?;
+
+    let mut continuation: Vec<Stmt> =
+        structure_stmts(code, stream, cont_start, region.handler_start)?;
+    while continuation.last().is_some_and(is_implicit_none_return) {
+        continuation.pop();
+    }
+
+    Ok(Some((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse,
+            finalbody: Vec::new(),
+            line: None,
+        },
+        except_region_end,
+        continuation,
+    )))
+}
+
 /// Splits off the construct-exit tail inlined after the per-exit finally copy, truncating `raw`.
 fn split_construct_tail_after_finally(raw: &mut Vec<Stmt>, finalbody: &[Stmt]) -> Vec<Stmt> {
-    if finalbody.is_empty() {
+    if finalbody.is_empty() || finalbody.len() > raw.len() {
         return Vec::new();
     }
     let mut copy_at: Option<usize> = None;
-    let limit: usize = raw.len().saturating_sub(finalbody.len());
+    let limit: usize = raw.len() - finalbody.len();
     for start in (0..=limit).rev() {
         let window_matches: bool = raw[start..start + finalbody.len()]
             .iter()
@@ -10562,7 +10771,7 @@ fn structure_stmts(
     lo: usize,
     hi: usize,
 ) -> Result<Vec<Stmt>> {
-    let hi: usize = hi.min(stream.ops.len());
+    let hi: usize = extend_window_over_split_handler(stream, lo, hi.min(stream.ops.len()));
     if lo >= hi {
         return Ok(Vec::new());
     }
