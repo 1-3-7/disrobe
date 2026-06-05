@@ -2947,7 +2947,7 @@ fn with_setup_start(stream: &DecodedStream, try_start: usize, lo: usize) -> usiz
     }
     if i > lo && matches!(stream.ops.get(i - 1), Some(CanonicalOp::BeforeWith)) {
         let mut j: usize = i - 1;
-        while j > lo && !is_value_boundary(&stream.ops[j - 1]) {
+        while j > lo && !is_value_boundary_at(stream, j - 1) {
             j -= 1;
         }
         return j;
@@ -2975,7 +2975,7 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
     match stream.ops.get(before) {
         Some(CanonicalOp::BeforeAsyncWith) => {
             let mut j: usize = before;
-            while j > lo && !is_value_boundary(&stream.ops[j - 1]) {
+            while j > lo && !is_value_boundary_at(stream, j - 1) {
                 j -= 1;
             }
             Some(j)
@@ -2985,7 +2985,7 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
                 .is_some_and(|s: usize| matches!(stream.ops[s], CanonicalOp::LoadSpecial(_))) =>
         {
             let mut j: usize = before;
-            while j > lo && !is_value_boundary(&stream.ops[j - 1]) {
+            while j > lo && !is_value_boundary_at(stream, j - 1) {
                 j -= 1;
             }
             Some(j)
@@ -3011,7 +3011,7 @@ fn modern_with_prologue_start(stream: &DecodedStream, store_at: usize, lo: usize
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Copy(1)))?;
     let mut j: usize = copy;
-    while j > lo && !is_value_boundary(&stream.ops[j - 1]) {
+    while j > lo && !is_value_boundary_at(stream, j - 1) {
         j -= 1;
     }
     Some(j)
@@ -3041,6 +3041,38 @@ fn is_value_boundary(op: &CanonicalOp) -> bool {
             | CanonicalOp::ReturnConst(_)
             | CanonicalOp::BeforeWith
     )
+}
+
+/// Context-aware value boundary: a `PopJumpIf*` that is an in-expression short-circuit `and`/`or`
+/// operator, and the `POP_TOP` cleanup that follows such a jump, are not boundaries, since the
+/// surrounding expression continues across them.
+fn is_value_boundary_at(stream: &DecodedStream, idx: usize) -> bool {
+    match stream.ops[idx] {
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_)
+            if is_value_form_shortcircuit(&stream.ops, idx) =>
+        {
+            false
+        }
+        CanonicalOp::Pop if is_shortcircuit_cleanup_pop(stream, idx) => false,
+        _ => is_value_boundary(&stream.ops[idx]),
+    }
+}
+
+/// Whether the `POP_TOP` at `idx` is the short-circuit cleanup popping the duplicated guard of a
+/// value-form `and`/`or` (the `COPY 1; TO_BOOL; POP_JUMP_IF_*; [NOT_TAKEN]; POP_TOP` idiom).
+fn is_shortcircuit_cleanup_pop(stream: &DecodedStream, idx: usize) -> bool {
+    let mut j: usize = idx;
+    while j > 0 {
+        j -= 1;
+        match stream.ops[j] {
+            CanonicalOp::Nop | CanonicalOp::Cache => {}
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_) => {
+                return is_value_form_shortcircuit(&stream.ops, j);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn handler_join(stream: &DecodedStream, handler_start: usize, hi: usize) -> usize {
@@ -3297,8 +3329,9 @@ fn structure_try(
         let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
         (with_stmt, region.region_end, with_tail)
     } else {
-        let extended_end: usize =
-            extend_try_body(code, stream, region.try_end, region.handler_start);
+        let sc_end: usize =
+            extend_end_past_shortcircuit_stmt(stream, region.try_end, region.handler_start);
+        let extended_end: usize = extend_try_body(code, stream, sc_end, region.handler_start);
         let body_real_end: usize = trim_try_body_jump(stream, region.try_start, extended_end);
         let is_star: bool = (region.handler_start..region.region_end)
             .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckEgMatch));
@@ -3504,6 +3537,9 @@ fn try_else_split(
         return None;
     }
     let else_start: usize = protected_end;
+    if protected_end_splits_shortcircuit(stream, protected_end) {
+        return None;
+    }
     let else_end: usize = trim_trailing_comp_cleanup(stream, else_start, region.handler_start);
     if else_start >= else_end {
         return None;
@@ -3514,6 +3550,19 @@ fn try_else_split(
         return None;
     }
     Some((else_start, else_end))
+}
+
+/// Whether `protected_end` falls on the merge of an in-expression value-form short-circuit, i.e. the
+/// exception-table protected region was cut at a basic-block boundary created by an `and`/`or` that is
+/// still part of the trailing try-body statement. Such a boundary is not a real `try/else` split.
+fn protected_end_splits_shortcircuit(stream: &DecodedStream, protected_end: usize) -> bool {
+    let Some(prev): Option<usize> = protected_end.checked_sub(1) else {
+        return false;
+    };
+    matches!(
+        stream.ops.get(prev),
+        Some(CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_))
+    ) && is_value_form_shortcircuit(&stream.ops, prev)
 }
 
 /// Trims the dead inline-comp reraise-cleanup tail a 3.12+ comprehension leaves past `protected_end`.
@@ -3758,12 +3807,14 @@ fn structure_try_except_family(
         .as_ref()
         .map_or(0, |c: &ComboFinally| c.inline_copy_len);
     let has_combo: bool = combo.is_some();
-    let protected_end: usize = extend_protected_end_over_comp(
+    let comp_end: usize = extend_protected_end_over_comp(
         stream,
         region.try_start,
         region.protected_end,
         region.handler_start,
     );
+    let protected_end: usize =
+        extend_end_past_shortcircuit_stmt(stream, comp_end, region.handler_start);
 
     if stream.is_pre_311() && !has_combo {
         let (stmt, consumed): (Stmt, usize) =
@@ -5296,6 +5347,36 @@ fn is_const_none(code: &CodeObject, slot: crate::bytecode::opcode::ConstIndex) -
             ..
         })
     )
+}
+
+/// Extends a protected-region end that the exception table cut at an in-expression value-form
+/// short-circuit (`and`/`or`) boundary forward to the terminator of the statement the short-circuit
+/// belongs to, so the trailing try-body statement is not mistaken for a `try/else` split.
+fn extend_end_past_shortcircuit_stmt(stream: &DecodedStream, end: usize, hi: usize) -> usize {
+    let mut end: usize = end;
+    while protected_end_splits_shortcircuit(stream, end) {
+        let Some(terminator): Option<usize> = (end..hi).find(|&k: &usize| match stream.ops[k] {
+            CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_) => true,
+            CanonicalOp::Pop => !is_shortcircuit_cleanup_pop(stream, k),
+            _ => false,
+        }) else {
+            return end;
+        };
+        let next: usize = (terminator + 1).min(hi);
+        if next <= end {
+            return end;
+        }
+        end = next;
+    }
+    end
 }
 
 fn trim_try_body_jump(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
@@ -12493,7 +12574,10 @@ fn build_linear_stmts_sim_seed(
         }
         if boolop.is_some()
             && !is_value_boolop_shortcircuit(ops, idx)
-            && sim.stack.len() > boolop_base_depth
+            && sim.stack.len() == boolop_base_depth + 1
+            && !sim
+                .peek_clone()
+                .is_some_and(|e: Expr| is_call_assembly_marker(&e))
         {
             flush_boolop(&mut sim, &mut boolop);
         }
@@ -14587,6 +14671,13 @@ fn recover_chain_target(
 
 fn is_null_marker(expr: &Expr) -> bool {
     matches!(expr, Expr::Name { id, .. } if id == DR_NULL_MARKER)
+}
+
+/// Whether `expr` is a transient call-assembly sentinel (a `NULL`/`__build_class__` marker still on
+/// the stack), signalling that a call is mid-assembly and the value above the boolop base is not yet
+/// a completed short-circuit operand.
+fn is_call_assembly_marker(expr: &Expr) -> bool {
+    is_null_marker(expr) || is_build_class_marker(expr)
 }
 
 fn is_assertion_error_marker(expr: &Expr) -> bool {
