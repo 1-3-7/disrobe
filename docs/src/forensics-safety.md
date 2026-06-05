@@ -29,7 +29,7 @@ Because **disrobe** parses adversarial binary input all day, the parsing surface
 
 - **Pure-Rust, `unsafe` forbidden workspace-wide.** The only opt-outs are the two pyo3 C-interop crates (`disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`), gated behind explicit features. Any panic or abort on adversarial input that is not a clean `Result::Err` is a bug.
 - **Resource-exhaustion guards.** Zip-bombs, decompression bombs, container-recursion bombs, and malformed-length-field bombs are defused by the shared quota machinery in `crates/disrobe-binfmt/src/quota.rs` (per-entry cap, aggregate cap, recursion-depth cap).
-- **Path-traversal guards.** zip-slip and equivalents are sanitized on every one of the 26 container formats.
+- **Path-traversal guards.** zip-slip and equivalents are sanitized on every container extraction path.
 - **Envelope decoder hardening.** The `.dr` decoder is fuzzed; read-past-end, integer overflow, and BLAKE3-mismatch acceptance are all in scope.
 - **Chain safety.** Depth cap (default 8) and content-hash cycle detection stop a malicious input from making a chain recurse forever.
 

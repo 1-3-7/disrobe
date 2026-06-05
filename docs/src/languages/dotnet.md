@@ -1,6 +1,6 @@
 # .NET / CIL
 
-**disrobe** parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, reverses 20+ obfuscators, and handles ReadyToRun and Native AOT images.
+**disrobe** parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, detects 19 obfuscators and reverses 16 (3 detect-only), and handles ReadyToRun and Native AOT images.
 
 ## Decompiling
 

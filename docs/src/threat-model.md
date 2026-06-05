@@ -36,7 +36,7 @@ There are four boundaries. Boundary 1 (sample bytes) and Boundary 2 (envelope by
 | Memory-corruption via the parser | Pure-Rust, `#![forbid(unsafe_code)]` workspace-wide; the only opt-out is the two pyo3 C-interop crates, gated behind explicit features and never on the default path. | workspace lint config |
 | Panic / abort on adversarial input | Any non-`Result::Err` failure on hostile bytes is a bug. Decoders return errors, they do not unwrap. | every `disrobe-pass-*` decoder |
 | Decompression and zip bombs | Per-entry cap, aggregate cap, and an observed-ratio ceiling in the shared quota machinery. | `crates/disrobe-binfmt/src/quota.rs` |
-| Path traversal (zip-slip and kin) | Every one of the 26 container formats routes through `sanitize_entry_path` and siblings before any write. | `crates/disrobe-binfmt/src/quota.rs` |
+| Path traversal (zip-slip and kin) | Every container extraction path routes through `sanitize_entry_path` and siblings before any write. | `crates/disrobe-binfmt/src/quota.rs` |
 | Container-recursion bombs | Recursion-depth cap plus content-hash cycle detection in the chain runner (default depth 8). | chain runner |
 | Malformed-length-field bombs | Length fields are validated against remaining buffer length before allocation; no length field is trusted to size an allocation. | binfmt + envelope decoder |
 

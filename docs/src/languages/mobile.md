@@ -19,7 +19,7 @@ disrobe hermes disasm index.android.bundle --out disasm/    # per-function summa
 disrobe hermes info index.android.bundle                    # version, function/string/identifier counts
 ```
 
-`lift` handles Hermes bytecode versions v60-v96. It is validated in CI against a live 66 MiB Discord bundle (re-downloaded fresh each run): 122,633 functions, zero errors.
+`lift` handles Hermes bytecode versions v60-v96. It is validated locally against a non-redistributable 66 MiB production bundle (the test is ignored in CI): 122,633 functions lifted with no parse or lift failures.
 
 ## Flutter
 

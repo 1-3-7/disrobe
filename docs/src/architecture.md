@@ -22,7 +22,7 @@ The workspace splits into a small set of shared cores and one crate per ecosyste
 |---|---|
 | `disrobe-core` | Shared types: error codes (`DR-<DOMAIN>-<NNNN>`), progress, confidence tiers, secret/credential scanning, cyclomatic metrics. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot + postcard cold + BLAKE3 root), transcoders, capability descriptors. |
-| `disrobe-binfmt` | Container and archive layer (26 formats) with shared zip-slip and decompression-bomb quota machinery. |
+| `disrobe-binfmt` | Container and archive layer (45 formats detected, 26 extracted in-tree) with shared zip-slip and decompression-bomb quota machinery. |
 | `disrobe-llm-metadata` | The `--llm` sidecar: 18 categories, 4 packs, `AGENTS.md` / `SKILL.md` brief generation. |
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |
 | `disrobe-py-marshal` | CPython marshal reader: code objects across 1.0-3.15. |

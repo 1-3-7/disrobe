@@ -14,7 +14,7 @@ Include a description and impact, a minimal reproducer (input bytes, command lin
 
 - **Memory safety in the parsing surface.** Any panic/abort on adversarial input that is not a clean `Result::Err`; any heap corruption is high severity.
 - **Resource exhaustion.** Zip-bombs, decompression bombs, recursion bombs, malformed-length-field bombs - bypasses of the `crates/disrobe-binfmt/src/quota.rs` quotas.
-- **Path traversal.** zip-slip and equivalents on any of the 26 container formats.
+- **Path traversal.** zip-slip and equivalents on every container extraction path.
 - **Server input handling.** `disrobe serve` (HTTP/gRPC/LSP/MCP) accepts `bytes_b64` only; any way to make it read a file via a client-controlled string is high severity.
 - **Subprocess invocation.** Command injection or argument smuggling in backend invocation.
 - **`.dr` envelope handling.** Read-past-end, integer overflow, or BLAKE3-mismatch acceptance.

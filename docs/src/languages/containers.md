@@ -1,6 +1,6 @@
 # Containers and archives
 
-Before **disrobe** can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer handles 26 archive and installer formats with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
+Before **disrobe** can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects 45 archive and installer formats, fully extracting 26 in-tree (the rest external-tool or metadata-only), with auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards.
 
 ## Supported formats
 
