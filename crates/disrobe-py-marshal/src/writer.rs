@@ -166,6 +166,13 @@ impl Writer {
                 self.write_code_object(co)?;
             }
 
+            Object::Slice { lower, upper, step } => {
+                self.push_tag(b':');
+                self.write_object(lower)?;
+                self.write_object(upper)?;
+                self.write_object(step)?;
+            }
+
             Object::Ref(idx) => {
                 self.push_tag(b'r');
                 self.push_u32(*idx);

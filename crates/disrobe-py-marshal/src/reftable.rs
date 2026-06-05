@@ -59,6 +59,7 @@ pub enum RefKind {
     Dict,
     FrozenDict,
     Code,
+    Slice,
     Ref,
     Unknown,
 }
@@ -90,6 +91,7 @@ impl RefKind {
             b'{' => Self::Dict,
             b'}' => Self::FrozenDict,
             b'c' => Self::Code,
+            b':' => Self::Slice,
             b'r' => Self::Ref,
             _ => Self::Unknown,
         }

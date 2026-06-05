@@ -17805,6 +17805,11 @@ fn object_to_const(obj: &Object) -> ConstValue {
         Object::FrozenSet(items) => {
             ConstValue::Frozenset(items.iter().map(object_to_const).collect())
         }
+        Object::Slice { lower, upper, step } => ConstValue::Slice {
+            lower: Box::new(object_to_const(lower)),
+            upper: Box::new(object_to_const(upper)),
+            step: Box::new(object_to_const(step)),
+        },
         Object::None
         | Object::StopIteration
         | Object::Dict(_)

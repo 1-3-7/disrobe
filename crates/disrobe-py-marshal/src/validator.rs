@@ -93,6 +93,22 @@ fn objects_semantically_equal(a: &Object, b: &Object) -> bool {
             })
         }
         (Object::Code(a), Object::Code(b)) => a == b,
+        (
+            Object::Slice {
+                lower: l1,
+                upper: u1,
+                step: s1,
+            },
+            Object::Slice {
+                lower: l2,
+                upper: u2,
+                step: s2,
+            },
+        ) => {
+            objects_semantically_equal(l1, l2)
+                && objects_semantically_equal(u1, u2)
+                && objects_semantically_equal(s1, s2)
+        }
         (Object::Ref(a), Object::Ref(b)) => a == b,
         (Object::String { value: v1, .. }, Object::ShortAscii { value: v2, .. })
         | (Object::ShortAscii { value: v1, .. }, Object::String { value: v2, .. }) => v1 == v2,

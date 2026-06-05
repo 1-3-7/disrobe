@@ -73,12 +73,20 @@ pub enum ConstValue {
     Int(i128),
     BigInt(BigUint),
     Float(f64),
-    Complex { real: f64, imag: f64 },
+    Complex {
+        real: f64,
+        imag: f64,
+    },
     Str(String),
     Unicode(String),
     Bytes(Vec<u8>),
     Tuple(Vec<ConstValue>),
     Frozenset(Vec<ConstValue>),
+    Slice {
+        lower: Box<ConstValue>,
+        upper: Box<ConstValue>,
+        step: Box<ConstValue>,
+    },
     Code(CodeRef),
 }
 

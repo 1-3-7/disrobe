@@ -175,6 +175,12 @@ pub fn render_const(value: &ConstValue) -> String {
                 .join(", ");
             format!("frozenset({{{inner}}})")
         }
+        ConstValue::Slice { lower, upper, step } => format!(
+            "slice({}, {}, {})",
+            render_const(lower),
+            render_const(upper),
+            render_const(step)
+        ),
         ConstValue::Code(c) => format!("<code {}>", c.qualname),
     }
 }

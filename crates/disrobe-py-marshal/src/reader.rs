@@ -233,7 +233,11 @@ impl<'a> Reader<'a> {
                 let lower: Object = self.read_object(depth + 1)?;
                 let upper: Object = self.read_object(depth + 1)?;
                 let stride: Object = self.read_object(depth + 1)?;
-                Ok(Object::Tuple(vec![lower, upper, stride]))
+                Ok(Object::Slice {
+                    lower: Box::new(lower),
+                    upper: Box::new(upper),
+                    step: Box::new(stride),
+                })
             }
             b'c' | b'C' => Ok(Object::Code(Box::new(self.read_code_object(depth + 1)?))),
             b'r' => self.decode_back_ref(ref_override),
@@ -649,6 +653,7 @@ fn object_preview(obj: &Object) -> String {
         }
         Object::Dict(d) | Object::FrozenDict(d) => format!("len={}", d.len()),
         Object::Code(co) => code_preview(co),
+        Object::Slice { .. } => "slice".to_owned(),
         Object::Ref(idx) => idx.to_string(),
         Object::None
         | Object::True

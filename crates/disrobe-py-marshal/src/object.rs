@@ -12,11 +12,23 @@ pub enum Object {
     Int64(i64),
     Long(BigInt),
     Float(f64),
-    Complex { real: f64, imag: f64 },
+    Complex {
+        real: f64,
+        imag: f64,
+    },
     Bytes(Vec<u8>),
-    String { value: String, interned: bool },
-    Unicode { value: String, interned: bool },
-    ShortAscii { value: String, interned: bool },
+    String {
+        value: String,
+        interned: bool,
+    },
+    Unicode {
+        value: String,
+        interned: bool,
+    },
+    ShortAscii {
+        value: String,
+        interned: bool,
+    },
     Tuple(Vec<Self>),
     List(Vec<Self>),
     Dict(IndexMap<Self, Self>),
@@ -24,6 +36,11 @@ pub enum Object {
     FrozenSet(Vec<Self>),
     FrozenDict(IndexMap<Self, Self>),
     Code(Box<CodeObject>),
+    Slice {
+        lower: Box<Self>,
+        upper: Box<Self>,
+        step: Box<Self>,
+    },
     Ref(u32),
     Null,
 }

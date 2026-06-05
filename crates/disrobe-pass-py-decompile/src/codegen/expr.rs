@@ -368,6 +368,14 @@ fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> Strin
                 .collect();
             format!("frozenset({{{}}})", parts.join(", "))
         }
+        ConstValue::Slice { lower, upper, step } => {
+            format!(
+                "slice({}, {}, {})",
+                emit_const(em, lower, version),
+                emit_const(em, upper, version),
+                emit_const(em, step, version)
+            )
+        }
         ConstValue::Code(code_ref) => format!("<code object {}>", code_ref.qualname),
     }
 }
@@ -768,6 +776,10 @@ pub fn is_simultaneous_tuple_assign(targets: &[Expr], value: &Expr) -> bool {
 #[must_use]
 fn emit_subscript_slice(em: &DefaultEmitter, slice: &Expr, version: &PyVersion) -> String {
     match slice {
+        Expr::Constant {
+            value: ConstValue::Slice { lower, upper, step },
+            ..
+        } => emit_const_slice(em, lower, upper, step, version),
         Expr::Tuple { elts, .. } => {
             let parts: Vec<String> = elts
                 .iter()
@@ -781,11 +793,45 @@ fn emit_subscript_slice(em: &DefaultEmitter, slice: &Expr, version: &PyVersion) 
         } if items.len() >= 2 => {
             let parts: Vec<String> = items
                 .iter()
-                .map(|c: &ConstValue| emit_const(em, c, version))
+                .map(|c: &ConstValue| emit_const_subscript_elem(em, c, version))
                 .collect();
             parts.join(", ")
         }
         _ => emit_expr(em, slice, version, Precedence::Lowest),
+    }
+}
+
+#[must_use]
+fn emit_const_subscript_elem(em: &DefaultEmitter, c: &ConstValue, version: &PyVersion) -> String {
+    match c {
+        ConstValue::Slice { lower, upper, step } => {
+            emit_const_slice(em, lower, upper, step, version)
+        }
+        other => emit_const(em, other, version),
+    }
+}
+
+#[must_use]
+fn emit_const_slice(
+    em: &DefaultEmitter,
+    lower: &ConstValue,
+    upper: &ConstValue,
+    step: &ConstValue,
+    version: &PyVersion,
+) -> String {
+    let l: String = const_slice_bound(em, lower, version);
+    let u: String = const_slice_bound(em, upper, version);
+    match step {
+        ConstValue::None => format!("{l}:{u}"),
+        s => format!("{l}:{u}:{}", emit_const(em, s, version)),
+    }
+}
+
+#[must_use]
+fn const_slice_bound(em: &DefaultEmitter, bound: &ConstValue, version: &PyVersion) -> String {
+    match bound {
+        ConstValue::None => String::new(),
+        other => emit_const(em, other, version),
     }
 }
 
