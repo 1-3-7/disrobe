@@ -15589,6 +15589,28 @@ fn build_linear_stmts_sim_seed(
                     });
                     continue;
                 }
+                if let Some(trailing_idx) = three_target_sfsf_tail(ops, idx, &sim) {
+                    let t1: Expr = store_target_at(code, &ops[trailing_idx], trailing_idx)?;
+                    let t2: Expr = local_target(code, *b, idx)?;
+                    let t3: Expr = local_target(code, *a, idx)?;
+                    let v3: Expr = sim.pop_or_synth(code, idx);
+                    let v2: Expr = sim.pop_or_synth(code, idx);
+                    let v1: Expr = sim.pop_or_synth(code, idx);
+                    out.push(Stmt::Assign {
+                        targets: vec![Expr::Tuple {
+                            elts: vec![t1, t2, t3],
+                            ctx: ExprCtx::Store,
+                        }],
+                        value: Expr::Tuple {
+                            elts: vec![v1, v2, v3],
+                            ctx: ExprCtx::Load,
+                        },
+                        type_comment: None,
+                        line: None,
+                    });
+                    skip_next = trailing_idx - idx;
+                    continue;
+                }
                 let v_b: Expr = sim.pop_or_synth(code, idx);
                 let v_a: Expr = sim.pop_or_synth(code, idx);
                 let target_a: Expr = local_target(code, *a, idx)?;
@@ -16078,6 +16100,10 @@ impl StackSim {
 
     fn push(&mut self, e: Expr) {
         self.stack.push(e);
+    }
+
+    fn len(&self) -> usize {
+        self.stack.len()
     }
 
     fn try_pop(&mut self) -> Option<Expr> {
@@ -19519,6 +19545,65 @@ fn local_target(code: &CodeObject, idx: u32, offset: usize) -> Result<Expr> {
         ctx: ExprCtx::Store,
         line: None,
     })
+}
+
+/// Builds the store target for a single `STORE_FAST`/`STORE_NAME`/`STORE_GLOBAL`, erroring on any other op.
+fn store_target_at(code: &CodeObject, op: &CanonicalOp, offset: usize) -> Result<Expr> {
+    match op {
+        CanonicalOp::StoreFast(slot) => local_target(code, *slot, offset),
+        CanonicalOp::StoreName(slot) | CanonicalOp::StoreGlobal(slot) => Ok(Expr::Name {
+            id: name_at(&code.names, *slot, offset, "name")?,
+            ctx: ExprCtx::Store,
+            line: None,
+        }),
+        other => Err(DecompileError::AstDesync {
+            offset,
+            reason: format!("expected a single store op, found {other:?}"),
+        }),
+    }
+}
+
+/// Detects the 3.13+ three-target `a, b, c = x, y, z` tail: a `STORE_FAST_STORE_FAST` that is the
+/// first store of its run, has >= 3 sim-stack values, and is immediately followed by exactly one
+/// single store. Returns the trailing single store's op index when matched. The stack-depth >= 3
+/// guard is the discriminator that keeps `a, b = x, y` then `c = z` two separate statements.
+fn three_target_sfsf_tail(ops: &[CanonicalOp], idx: usize, sim: &StackSim) -> Option<usize> {
+    if !active_version().is_some_and(|v: PyVersion| v.major() == 3 && v.minor() >= 13) {
+        return None;
+    }
+    if sim.len() < 3 {
+        return None;
+    }
+    let is_filler = |op: &CanonicalOp| {
+        matches!(
+            op,
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    };
+    let prev_is_store: bool = (0..idx)
+        .rev()
+        .find(|&k: &usize| !is_filler(&ops[k]))
+        .is_some_and(|k: usize| {
+            matches!(
+                ops[k],
+                CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::StoreFastStoreFast(_, _)
+                    | CanonicalOp::StoreFastLoadFast(_, _)
+                    | CanonicalOp::UnpackSequence(_)
+                    | CanonicalOp::UnpackEx(_)
+            )
+        });
+    if prev_is_store {
+        return None;
+    }
+    let trailing_idx: usize = ((idx + 1)..ops.len()).find(|&k: &usize| !is_filler(&ops[k]))?;
+    matches!(
+        ops[trailing_idx],
+        CanonicalOp::StoreFast(_) | CanonicalOp::StoreName(_) | CanonicalOp::StoreGlobal(_)
+    )
+    .then_some(trailing_idx)
 }
 
 fn name_at(pool: &[Object], idx: u32, offset: usize, kind: &'static str) -> Result<String> {
