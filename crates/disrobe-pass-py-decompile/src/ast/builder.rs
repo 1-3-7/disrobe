@@ -8090,8 +8090,10 @@ fn build_region_as_single_expr(
             }
         }
     }
+    let region: &[CanonicalOp] = &stream.ops[lo..hi];
+    let merges: Vec<usize> = collect_value_boolop_merges(stream, lo, hi);
     let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..hi])?;
+        with_boolop_merges(region, merges, || build_linear_stmts_sim(code, region))?;
     if !stmts.is_empty() || residual.len() != 1 {
         return Ok(None);
     }
@@ -8249,6 +8251,120 @@ fn split_boolop_operands(stream: &DecodedStream, lo: usize, hi: usize) -> Option
         sc_idx: hi,
     });
     Some(operands)
+}
+
+/// Slice-local (relative to `lo`) op indices at which value-form short-circuit `and`/`or` operators
+/// in the region `[lo..hi)` merge — the offset-resolved short-circuit jump targets that bound each
+/// boolean operand's right-hand side. The linear builder uses these to group a multi-op right-hand
+/// side (f-string, call, subscript) as a single operand instead of flushing the boolop the moment a
+/// transient stack-depth coincidence occurs. Only forward jumps landing inside `[lo..hi)` are kept.
+fn collect_value_boolop_merges(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {
+    let mut merges: Vec<usize> = Vec::new();
+    for i in lo..hi {
+        if value_boolop_at(&stream.ops, i).is_none() {
+            continue;
+        }
+        let jump: usize = match stream.ops[i] {
+            CanonicalOp::Copy(1) => match skip_to_bool_jump(&stream.ops, i + 1) {
+                Some(j) => j,
+                None => continue,
+            },
+            CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalse(_) => i,
+            _ => continue,
+        };
+        let Some(target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
+        else {
+            continue;
+        };
+        if target > i && target <= hi && rhs_is_multi_op(&stream.ops, i, target) {
+            merges.push(target - lo);
+        }
+    }
+    merges.sort_unstable();
+    merges.dedup();
+    merges
+}
+
+/// Whether the right-hand operand region of the value-form short-circuit at `sc`, running up to its
+/// merge target `target`, is a *multi-op* expression — one that grows the stack beyond its single
+/// produced value (f-string `BUILD_STRING`, call, subscript) before collapsing back. Only such a
+/// region needs the control-flow merge bound; a single-push right-hand side is already grouped
+/// correctly by the transient-depth flush, and a region whose ops include a control-flow boundary or
+/// an interleaved chained-comparison short-circuit (which `net_stack_effect` cannot model) is left
+/// unbounded so the existing logic handles it.
+fn rhs_is_multi_op(ops: &[CanonicalOp], sc: usize, target: usize) -> bool {
+    let skip: usize = boolop_shortcircuit_skip(ops, sc);
+    let Some(rhs_start): Option<usize> = first_significant_after(ops, sc + skip + 1) else {
+        return false;
+    };
+    let mut depth: i32 = 0;
+    let mut grew_past_one: bool = false;
+    let Some(region): Option<&[CanonicalOp]> = ops.get(rhs_start..target) else {
+        return false;
+    };
+    for op in region {
+        let Some(effect): Option<i32> = net_stack_effect(op) else {
+            return false;
+        };
+        depth += effect;
+        if depth > 1 {
+            grew_past_one = true;
+        }
+    }
+    grew_past_one && depth == 1
+}
+
+/// Net stack height change of a value-expression op, mirroring the simulator's pop/push counts, or
+/// `None` for a statement boundary or control-flow op (including chained-comparison short-circuit
+/// machinery) that the right-hand-side measurement cannot model and must bail on.
+fn net_stack_effect(op: &CanonicalOp) -> Option<i32> {
+    Some(match op {
+        CanonicalOp::Cache
+        | CanonicalOp::Nop
+        | CanonicalOp::ExtendedArg(_)
+        | CanonicalOp::Resume(_)
+        | CanonicalOp::LoadAttr(_)
+        | CanonicalOp::LoadSpecial(_)
+        | CanonicalOp::UnaryOp(_)
+        | CanonicalOp::ToBool
+        | CanonicalOp::FormatSimple
+        | CanonicalOp::ConvertValue(_)
+        | CanonicalOp::GetIter
+        | CanonicalOp::GetAwaitable
+        | CanonicalOp::ImportFrom(_) => 0,
+        CanonicalOp::LoadConst(_)
+        | CanonicalOp::LoadSmallInt(_)
+        | CanonicalOp::LoadCommonConst(_)
+        | CanonicalOp::LoadName(_)
+        | CanonicalOp::LoadFast(_)
+        | CanonicalOp::LoadFastAndClear(_)
+        | CanonicalOp::LoadGlobal(_)
+        | CanonicalOp::LoadBuildClass
+        | CanonicalOp::LoadAssertionError
+        | CanonicalOp::Push(_) => 1,
+        CanonicalOp::LoadFastLoadFast(_, _) => 2,
+        CanonicalOp::LoadSubscr
+        | CanonicalOp::BinaryOp(_)
+        | CanonicalOp::Compare(_)
+        | CanonicalOp::BinarySlice
+        | CanonicalOp::FormatValue(_)
+        | CanonicalOp::FormatWithSpec
+        | CanonicalOp::ImportName(_) => -1,
+        CanonicalOp::CallFunction(argc) | CanonicalOp::CallFunctionKw(argc) => {
+            -i32::from(*argc) - 1
+        }
+        CanonicalOp::BuildList(n)
+        | CanonicalOp::BuildTuple(n)
+        | CanonicalOp::BuildSet(n)
+        | CanonicalOp::BuildString(n) => 1 - i32::try_from(*n).unwrap_or(i32::MAX),
+        CanonicalOp::BuildMap(n) => 1 - 2 * i32::try_from(*n).unwrap_or(i32::MAX / 2),
+        CanonicalOp::BuildConstKeyMap(n) => -i32::try_from(*n).unwrap_or(i32::MAX),
+        CanonicalOp::BuildSlice(n) => 1 - i32::from(*n),
+        _ => return None,
+    })
 }
 
 /// A resolved short-circuit operand carrying its recovered value expression, the boolean operator
@@ -11882,7 +11998,9 @@ fn structure_stmts(
         .map(|c: &CompoundIf| c.last_jump)
         .or(first_cond);
     let Some(jump_idx): Option<usize> = cond_at else {
-        return build_linear_stmts(code, &stream.ops[lo..hi]);
+        let region: &[CanonicalOp] = &stream.ops[lo..hi];
+        let merges: Vec<usize> = collect_value_boolop_merges(stream, lo, hi);
+        return with_boolop_merges(region, merges, || build_linear_stmts(code, region));
     };
     let target: usize = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
         .filter(|t: &usize| *t > jump_idx && *t <= hi)
@@ -13587,6 +13705,7 @@ fn build_linear_stmts_sim_seed(
         std::collections::BTreeMap::new();
     let mut boolop: Option<(crate::ast::node::BoolOpKind, Vec<Expr>)> = None;
     let mut boolop_base_depth: usize = 0;
+    let mut boolop_merge_idx: usize = 0;
     let mut skip_next: usize = 0;
     let mut print_acc: Option<(Option<Expr>, Vec<Expr>)> = None;
     for (idx, op) in ops.iter().enumerate() {
@@ -13605,6 +13724,7 @@ fn build_linear_stmts_sim_seed(
             continue;
         }
         if boolop.is_some()
+            && idx >= boolop_merge_idx
             && !is_value_boolop_shortcircuit(ops, idx)
             && sim.stack.len() == boolop_base_depth + 1
             && !sim
@@ -13625,6 +13745,7 @@ fn build_linear_stmts_sim_seed(
                     boolop = Some((kind, vec![restart]));
                 }
             }
+            boolop_merge_idx = boolop_merge_after(ops, idx);
             skip_next = boolop_shortcircuit_skip(ops, idx);
             continue;
         }
@@ -18633,6 +18754,60 @@ thread_local! {
     static LOOP_FRAMES: std::cell::RefCell<Vec<LoopFrame>> =
         const { std::cell::RefCell::new(Vec::new()) };
     static FUTURE_ANNOTATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static BOOLOP_MERGES: std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Identity of the exact op slice a set of value-form short-circuit merge indices applies to: its
+/// start pointer and length. Both must match so the indices never leak into a recursive sub-slice
+/// that merely shares the same start address but spans a different region.
+type BoolopSliceKey = (*const CanonicalOp, usize);
+
+#[inline]
+fn boolop_slice_key(ops: &[CanonicalOp]) -> BoolopSliceKey {
+    (ops.as_ptr(), ops.len())
+}
+
+/// Runs `f` with the given slice-local value-form short-circuit merge indices in scope, keyed to the
+/// exact `ops` slice so they apply only to the top-level linear build of that slice and never leak
+/// into recursive sub-slice builds. The merge indices are the offset-resolved short-circuit jump
+/// targets, letting [`build_linear_stmts_sim_seed`] bound each value-form boolop by control flow.
+fn with_boolop_merges<T>(ops: &[CanonicalOp], merges: Vec<usize>, f: impl FnOnce() -> T) -> T {
+    let key: BoolopSliceKey = boolop_slice_key(ops);
+    let prev: Option<(BoolopSliceKey, Vec<usize>)> = BOOLOP_MERGES.with(
+        |slot: &std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>>| {
+            slot.borrow_mut().replace((key, merges))
+        },
+    );
+    let result: T = f();
+    BOOLOP_MERGES.with(
+        |slot: &std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>>| {
+            *slot.borrow_mut() = prev;
+        },
+    );
+    result
+}
+
+/// The active value-form short-circuit merge index strictly greater than `idx` for the slice `ops`,
+/// or `0` (no bound, preserving the transient-depth flush) when none is registered for this slice.
+fn boolop_merge_after(ops: &[CanonicalOp], idx: usize) -> usize {
+    let key: BoolopSliceKey = boolop_slice_key(ops);
+    BOOLOP_MERGES.with(
+        |slot: &std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>>| {
+            let guard: std::cell::Ref<'_, Option<(BoolopSliceKey, Vec<usize>)>> = slot.borrow();
+            let Some((stored_key, merges)): &Option<(BoolopSliceKey, Vec<usize>)> = &guard else {
+                return 0;
+            };
+            if *stored_key != key {
+                return 0;
+            }
+            merges
+                .iter()
+                .copied()
+                .find(|&m: &usize| m > idx)
+                .unwrap_or(0)
+        },
+    )
 }
 
 /// `co_flags` bit set when a module compiled under `from __future__ import annotations` (PEP 563).
