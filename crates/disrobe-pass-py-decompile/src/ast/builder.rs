@@ -4005,8 +4005,12 @@ fn structure_try_except_family(
         region.protected_end,
         region.handler_start,
     );
-    let protected_end: usize =
-        extend_end_past_shortcircuit_stmt(stream, comp_end, region.handler_start);
+    let sc_end: usize = extend_end_past_shortcircuit_stmt(stream, comp_end, region.handler_start);
+    let protected_end: usize = if stream.is_pre_311() || has_combo {
+        sc_end
+    } else {
+        protected_body_end_with_return(stream, region.try_start, sc_end, region.handler_start)
+    };
 
     if stream.is_pre_311() && !has_combo {
         let (stmt, consumed): (Stmt, usize) =
@@ -5664,6 +5668,72 @@ fn extend_end_past_shortcircuit_stmt(stream: &DecodedStream, end: usize, hi: usi
         end = next;
     }
     end
+}
+
+/// Whether the op at `idx` leaves a value on the evaluation stack as an expression result, i.e. it is
+/// neither a statement terminator (`STORE_*`/`POP_TOP`) nor a control-flow / exception op. Used to tell
+/// whether a protected try-body's last significant op feeds a trailing `RETURN_VALUE` that the exception
+/// table excluded from the protected range.
+fn op_leaves_value(op: &CanonicalOp) -> bool {
+    !matches!(
+        op,
+        CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::Pop
+            | CanonicalOp::DiscardTop
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+    )
+}
+
+/// Includes a trailing protected-body `return <expr>` that the 3.11+ exception table left just past
+/// `protected_end`. A `return X` inside a `try` protects the value-computation of `X` but not the
+/// `RETURN_VALUE` itself, so the protected range ends on the value-form `RETURN_VALUE`, leaving the
+/// computed value on the stack with no consuming return when the body is sliced `[try_start, protected_end)`
+/// (recompiling to an implicit `None`). When the protected body's last significant op leaves that value and
+/// the next significant op is the value-form `RETURN_VALUE`, the body is widened to include it so the
+/// `return X` is recovered. Keyed purely on the protected-region terminator structure, never on names or
+/// shapes; returns `protected_end` unchanged when the idiom is absent.
+fn protected_body_end_with_return(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    if protected_end >= handler_start {
+        return protected_end;
+    }
+    let Some(ret): Option<usize> = first_significant(stream, protected_end, handler_start) else {
+        return protected_end;
+    };
+    if !matches!(stream.ops.get(ret), Some(CanonicalOp::Return)) {
+        return protected_end;
+    }
+    let leaves_value: bool = last_significant_back(stream, try_start, protected_end)
+        .is_some_and(|k: usize| op_leaves_value(&stream.ops[k]));
+    if leaves_value { ret + 1 } else { protected_end }
 }
 
 fn trim_try_body_jump(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
