@@ -7628,9 +7628,60 @@ fn recover_while_test(code: &CodeObject, stream: &DecodedStream, region: &LoopRe
             .unwrap_or(region.header);
         (region.header, last)
     };
+    if !has_bottom_test
+        && let Some(test) = recover_while_compound_test(code, stream, expr_start, last_cond, region)
+    {
+        return test;
+    }
     let conjuncts: Vec<WhileConjunct> =
         collect_while_conjuncts(stream, expr_start, last_cond, region.header, region.exit);
     fold_while_conjuncts(code, stream, &conjuncts)
+}
+
+/// Recovers a top-test `while A or/and B ...:` condition as a precedence-correct `BoolOp` by folding
+/// its short-circuit cond-jump operands against the loop body and `exit` sinks, or `None` when the
+/// test is a single operand or not a clean `or`/`and` chain.
+fn recover_while_compound_test(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    expr_start: usize,
+    last_cond: usize,
+    region: &LoopRegion,
+) -> Option<Expr> {
+    let jumps: Vec<usize> = (expr_start..=last_cond)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        .collect();
+    if jumps.len() < 2 {
+        return None;
+    }
+    let body: usize = first_significant(stream, last_cond + 1, region.back_edge)?;
+    let exit: usize = region.exit;
+    let mut operands: Vec<CondOperand> = Vec::with_capacity(jumps.len());
+    let mut value_lo: usize = expr_start;
+    for &jump in &jumps {
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[value_lo..jump]).ok()?;
+        if !stmts.is_empty() {
+            return None;
+        }
+        let value: Expr = residual.into_iter().next_back()?;
+        let is_jump_if_true: bool = matches!(
+            stream.ops[jump],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        );
+        let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])
+            .filter(|t: &usize| *t == body || *t == exit || (*t > jump && *t < body))?;
+        operands.push(CondOperand {
+            expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
+            is_jump_if_true,
+            target,
+            value_lo,
+        });
+        value_lo = first_significant(stream, jump + 1, last_cond + 1).unwrap_or(jump + 1);
+    }
+    parse_cond_range(&operands, body, exit)
 }
 
 /// Index of the value-form ternary's then-branch skip jump, scanning back past any padding before `target`.
@@ -8238,7 +8289,7 @@ fn try_structure_compound_assert(
         return Ok(None);
     }
     let mut head: Vec<Stmt> = Vec::new();
-    let mut operands: Vec<Expr> = Vec::new();
+    let mut operands: Vec<CondOperand> = Vec::new();
     let mut value_lo: usize = lo;
     for (n, &jump) in jump_indices.iter().enumerate() {
         let target: usize = match resolve_jump_target(stream, jump, &stream.ops[jump]) {
@@ -8249,8 +8300,10 @@ fn try_structure_compound_assert(
             stream.ops[jump],
             CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
         );
-        let conjunct_ok: bool =
-            (jumps_false && target <= raise_idx) || (!jumps_false && target >= pass_target);
+        let intermediate: bool = target > jump && target < raise_idx;
+        let conjunct_ok: bool = (jumps_false && target <= raise_idx)
+            || (!jumps_false && target >= pass_target)
+            || intermediate;
         if !conjunct_ok {
             return Ok(None);
         }
@@ -8264,20 +8317,16 @@ fn try_structure_compound_assert(
         } else if !stmts.is_empty() {
             return Ok(None);
         }
-        let value: Expr = none_jump_test(stream, jump, value.clone()).unwrap_or(value);
-        operands.push(value);
-        value_lo = jump + 1;
+        operands.push(CondOperand {
+            expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
+            is_jump_if_true: !jumps_false,
+            target,
+            value_lo,
+        });
+        value_lo = first_significant(stream, jump + 1, raise_idx).unwrap_or(jump + 1);
     }
-    let test: Expr = if operands.len() == 1 {
-        operands.into_iter().next().unwrap_or(Expr::Constant {
-            value: ConstValue::True,
-            line: None,
-        })
-    } else {
-        Expr::BoolOp {
-            op: crate::ast::node::BoolOpKind::And,
-            values: operands,
-        }
+    let Some(test): Option<Expr> = parse_cond_range(&operands, pass_target, raise_idx) else {
+        return Ok(None);
     };
     let mut out: Vec<Stmt> = head;
     out.push(Stmt::Assert {
@@ -8287,6 +8336,279 @@ fn try_structure_compound_assert(
     });
     out.extend(structure_stmts(code, stream, pass_target, hi)?);
     Ok(Some(out))
+}
+
+/// One short-circuit conjunct of a statement-form `if`/`while` boolean condition: its recovered
+/// value expression, the polarity of its conditional jump, and the op index that jump targets.
+#[derive(Debug, Clone)]
+struct CondOperand {
+    expr: Expr,
+    is_jump_if_true: bool,
+    target: usize,
+    value_lo: usize,
+}
+
+/// A recovered compound `if` guard: the statements preceding the condition, the folded `BoolOp`
+/// test, and the final conditional jump whose `exit` target the downstream structurer reuses.
+#[derive(Debug)]
+struct CompoundIf {
+    head: Vec<Stmt>,
+    test: Expr,
+    last_jump: usize,
+}
+
+/// Detects and folds a statement-form `if <A or/and B ...>:` whose multi-operand short-circuit
+/// condition the naive single-jump structurer would otherwise mis-split, returning the folded test
+/// and the final jump so the shared then/else/tail logic can structure the branches.
+fn try_recover_compound_if(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<CompoundIf>> {
+    let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+    }) else {
+        return Ok(None);
+    };
+    let Some((jumps, body, exit)): Option<(Vec<usize>, usize, usize)> =
+        collect_if_cond_jumps(stream, first_jump, hi)
+    else {
+        return Ok(None);
+    };
+    let Some(&last_jump): Option<&usize> = jumps.last().filter(|_| jumps.len() >= 2) else {
+        return Ok(None);
+    };
+    let Some(last_target): Option<usize> =
+        resolve_jump_target(stream, last_jump, &stream.ops[last_jump])
+    else {
+        return Ok(None);
+    };
+    if last_target != exit && last_target != body {
+        return Ok(None);
+    }
+    let mut operands: Vec<CondOperand> = Vec::with_capacity(jumps.len());
+    let head_end: usize = first_jump_value_lo(stream, lo, first_jump);
+    let mut value_lo: usize = head_end;
+    for (n, &jump) in jumps.iter().enumerate() {
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[value_lo..jump])?;
+        let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        if n != 0 && !stmts.is_empty() {
+            return Ok(None);
+        }
+        let is_jump_if_true: bool = matches!(
+            stream.ops[jump],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        );
+        let Some(target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
+            .filter(|t: &usize| *t == body || *t == exit || (*t > jump && *t < body))
+        else {
+            return Ok(None);
+        };
+        operands.push(CondOperand {
+            expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
+            is_jump_if_true,
+            target,
+            value_lo,
+        });
+        value_lo = first_significant(stream, jump + 1, hi).unwrap_or(jump + 1);
+    }
+    let (head, _): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..head_end])?;
+    let Some(test): Option<Expr> = parse_cond_range(&operands, body, exit) else {
+        return Ok(None);
+    };
+    Ok(Some(CompoundIf {
+        head,
+        test,
+        last_jump,
+    }))
+}
+
+/// The op index at which the first boolean operand's evaluation begins, skipping any leading head
+/// statements between `lo` and `first_jump` that complete before the condition.
+fn first_jump_value_lo(stream: &DecodedStream, lo: usize, first_jump: usize) -> usize {
+    let mut start: usize = lo;
+    for k in lo..first_jump {
+        if is_statement_boundary_op(&stream.ops[k]) {
+            start = k + 1;
+        }
+    }
+    start
+}
+
+/// Whether `op` is a store/side-effecting op that terminates a preceding head statement, used to
+/// separate leading statements from the first boolean operand's evaluation.
+fn is_statement_boundary_op(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+    )
+}
+
+/// Collects the contiguous run of conditional jumps forming a single compound `if` guard, returning
+/// the jump indices, the body fall-through index, and the shared `exit` (else/after) index.
+fn collect_if_cond_jumps(
+    stream: &DecodedStream,
+    first_jump: usize,
+    hi: usize,
+) -> Option<(Vec<usize>, usize, usize)> {
+    let mut jumps: Vec<usize> = Vec::new();
+    let mut targets: Vec<usize> = Vec::new();
+    let mut cursor: usize = first_jump;
+    loop {
+        if !is_forward_cond_jump(&stream.ops[cursor])
+            || is_chain_cond_jump(&stream.ops, cursor)
+            || is_value_form_shortcircuit(&stream.ops, cursor)
+        {
+            return None;
+        }
+        let target: usize = resolve_jump_target(stream, cursor, &stream.ops[cursor])
+            .filter(|t: &usize| *t > cursor && *t <= hi)?;
+        jumps.push(cursor);
+        targets.push(target);
+        let next_op: usize = first_significant(stream, cursor + 1, hi)?;
+        let next_jump: Option<usize> = scan_to_cond_jump(stream, next_op, target);
+        let continues: bool = next_jump
+            .is_some_and(|j: usize| j < target && !region_has_statement(stream, next_op, j));
+        match next_jump {
+            Some(j) if continues => cursor = j,
+            _ => {
+                let body: usize = next_op;
+                let exit: usize = *targets.iter().max()?;
+                if exit <= body || jumps.iter().any(|&j: &usize| j >= body) {
+                    return None;
+                }
+                return Some((jumps, body, exit));
+            }
+        }
+    }
+}
+
+/// Whether the operand-candidate region `[lo, hi)` contains a completed statement (a store or a
+/// discarded expression result), marking the end of the condition and the start of the body.
+fn region_has_statement(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        is_statement_boundary_op(&stream.ops[k]) || matches!(stream.ops[k], CanonicalOp::Pop)
+    })
+}
+
+/// Scans forward from `from` to the next conditional jump strictly before `limit`, skipping operand
+/// evaluation and padding, or `None` when a non-foldable op intervenes.
+fn scan_to_cond_jump(stream: &DecodedStream, from: usize, limit: usize) -> Option<usize> {
+    let mut i: usize = from;
+    while i < limit {
+        if is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+        {
+            return Some(i);
+        }
+        if matches!(
+            stream.ops[i],
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+        ) {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Recursive-descent reconstruction over `operands[..]` whose overall true/false sinks are
+/// `true_sink`/`false_sink`, splitting sub-groups at operands that jump to an intermediate target
+/// and negating operands whose jump polarity is inverted relative to the sink they short-circuit to.
+fn parse_cond_range(operands: &[CondOperand], true_sink: usize, false_sink: usize) -> Option<Expr> {
+    use crate::ast::node::BoolOpKind;
+    if operands.is_empty() {
+        return None;
+    }
+    let first: &CondOperand = &operands[0];
+    if operands.len() == 1 {
+        return Some(terminal_operand(first, true_sink, false_sink));
+    }
+    let intermediate: bool = first.target != true_sink && first.target != false_sink;
+    if intermediate {
+        let split: usize =
+            (1..operands.len()).find(|&k: &usize| operands[k].value_lo == first.target)?;
+        let (sub_true, sub_false): (usize, usize) = if first.is_jump_if_true {
+            (first.target, false_sink)
+        } else {
+            (true_sink, first.target)
+        };
+        let head: Expr = parse_cond_range(&operands[..split], sub_true, sub_false)?;
+        let rest: Expr = parse_cond_range(&operands[split..], true_sink, false_sink)?;
+        let op: BoolOpKind = if first.is_jump_if_true {
+            BoolOpKind::And
+        } else {
+            BoolOpKind::Or
+        };
+        return Some(merge_boolop(op, head, rest));
+    }
+    let to_true: bool = first.target == true_sink;
+    let op: BoolOpKind = if to_true {
+        BoolOpKind::Or
+    } else {
+        BoolOpKind::And
+    };
+    let negated: bool = first.is_jump_if_true != to_true;
+    let value: Expr = maybe_not(first.expr.clone(), negated);
+    let rest: Expr = parse_cond_range(&operands[1..], true_sink, false_sink)?;
+    Some(merge_boolop(op, value, rest))
+}
+
+/// The recovered expression for the final fall-through operand, negated when its jump short-circuits
+/// to the `false_sink` on a true outcome (a `not`-wrapped trailing conjunct).
+fn terminal_operand(operand: &CondOperand, true_sink: usize, false_sink: usize) -> Expr {
+    let negated: bool = if operand.target == false_sink {
+        operand.is_jump_if_true
+    } else if operand.target == true_sink {
+        !operand.is_jump_if_true
+    } else {
+        false
+    };
+    maybe_not(operand.expr.clone(), negated)
+}
+
+/// Wraps `expr` in a `not` unary when `negated`, otherwise returns it unchanged.
+fn maybe_not(expr: Expr, negated: bool) -> Expr {
+    if negated {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(expr),
+        }
+    } else {
+        expr
+    }
+}
+
+/// Combines `head` with `rest` under `op`, flattening a same-operator right spine into one `BoolOp`.
+fn merge_boolop(op: crate::ast::node::BoolOpKind, head: Expr, rest: Expr) -> Expr {
+    let mut values: Vec<Expr> = vec![head];
+    match rest {
+        Expr::BoolOp {
+            op: inner_op,
+            values: inner,
+        } if inner_op == op => values.extend(inner),
+        other => values.push(other),
+    }
+    Expr::BoolOp { op, values }
 }
 
 /// Resolves the `RAISE_VARARGS` closing an assert's failure path, returning `(raise_op_index, has_message)` or `None`.
@@ -11386,19 +11708,39 @@ fn structure_stmts(
     if let Some(stmts) = try_structure_compound_assert(code, stream, lo, hi)? {
         return Ok(stmts);
     }
-    let mut cond_at: Option<usize> = None;
-    for i in lo..hi {
-        if is_forward_cond_jump(&stream.ops[i])
+    let first_cond: Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)
             && !is_value_form_shortcircuit(&stream.ops, i)
-            && let Some(t) = resolve_jump_target(stream, i, &stream.ops[i])
-            && t > i
-            && t <= hi
+            && resolve_jump_target(stream, i, &stream.ops[i])
+                .is_some_and(|t: usize| t > i && t <= hi)
+    });
+    if let Some(first) = first_cond {
+        let first_target: usize = resolve_jump_target(stream, first, &stream.ops[first])
+            .filter(|t: &usize| *t > first && *t <= hi)
+            .unwrap_or(hi);
+        if let Some(stmts) = structure_guarded_continue(code, stream, lo, hi, first, first_target)?
         {
-            cond_at = Some(i);
-            break;
+            return Ok(stmts);
+        }
+        if let Some(stmts) = try_structure_ternary_expr(code, stream, lo, hi, first, first_target)?
+        {
+            return Ok(stmts);
+        }
+        if active_version()
+            .is_some_and(|v: PyVersion| v.major() == 3 && (12..=13).contains(&v.minor()))
+            && matches!(stream.ops.get(hi - 1), Some(CanonicalOp::Return))
+            && let Some(stmts) =
+                try_structure_return_ternary(code, stream, lo, hi, first, first_target)?
+        {
+            return Ok(stmts);
         }
     }
+    let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
+    let cond_at: Option<usize> = compound
+        .as_ref()
+        .map(|c: &CompoundIf| c.last_jump)
+        .or(first_cond);
     let Some(jump_idx): Option<usize> = cond_at else {
         return build_linear_stmts(code, &stream.ops[lo..hi]);
     };
@@ -11406,32 +11748,28 @@ fn structure_stmts(
         .filter(|t: &usize| *t > jump_idx && *t <= hi)
         .unwrap_or(hi);
 
-    if let Some(stmts) = structure_guarded_continue(code, stream, lo, hi, jump_idx, target)? {
-        return Ok(stmts);
-    }
-
-    if let Some(stmts) = try_structure_ternary_expr(code, stream, lo, hi, jump_idx, target)? {
-        return Ok(stmts);
-    }
-
-    if active_version().is_some_and(|v: PyVersion| v.major() == 3 && (12..=13).contains(&v.minor()))
-        && matches!(stream.ops.get(hi - 1), Some(CanonicalOp::Return))
-        && let Some(stmts) = try_structure_return_ternary(code, stream, lo, hi, jump_idx, target)?
-    {
-        return Ok(stmts);
-    }
-
-    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
-    let raw_test: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
-        value: ConstValue::True,
-        line: None,
-    });
-    let negate: bool = matches!(
-        stream.ops[jump_idx],
-        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
-    );
-    let test: Expr = none_jump_test(stream, jump_idx, raw_test.clone()).unwrap_or(raw_test);
+    let is_compound: bool = compound.is_some();
+    let (head, raw_test): (Vec<Stmt>, Expr) = if let Some(c) = compound {
+        (c.head, c.test)
+    } else {
+        let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
+        let raw: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
+            value: ConstValue::True,
+            line: None,
+        });
+        (head, raw)
+    };
+    let negate: bool = is_compound
+        || matches!(
+            stream.ops[jump_idx],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        );
+    let test: Expr = if is_compound {
+        raw_test
+    } else {
+        none_jump_test(stream, jump_idx, raw_test.clone()).unwrap_or(raw_test)
+    };
 
     let body_end: usize = target;
     let mut join: usize = target;
