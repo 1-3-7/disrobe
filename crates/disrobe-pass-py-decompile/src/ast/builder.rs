@@ -12251,23 +12251,34 @@ fn structure_elif_chain_arm(
         stream.ops[cond_at],
         CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
     );
-    let (arm_body_start, arm_end, next_arm_start): (usize, usize, usize) = if jump_skips_arm {
-        let arm_back: usize = (cond_at + 1..jump_target)
+    let (arm_body_start, arm_end, next_arm_start, sibling_tail_start): (
+        usize,
+        usize,
+        usize,
+        Option<usize>,
+    ) = if jump_skips_arm {
+        let arm_back: Option<usize> = (cond_at + 1..jump_target)
             .rev()
-            .find(|&k: &usize| lands_on_header(k))
-            .unwrap_or(jump_target);
-        (cond_at + 1, arm_back, jump_target)
+            .find(|&k: &usize| lands_on_header(k));
+        match arm_back {
+            Some(back) => (cond_at + 1, back, jump_target, None),
+            None if arm_terminates(stream, cond_at + 1, jump_target) => {
+                (cond_at + 1, jump_target, jump_target, None)
+            }
+            None => (cond_at + 1, jump_target, hi, Some(jump_target)),
+        }
     } else {
         let pre_continue: bool = (cond_at + 1..jump_target).any(|k: usize| lands_on_header(k));
         if !pre_continue {
             return structure_stmts(code, stream, lo, hi);
         }
         let arm_back: Option<usize> = (jump_target..hi).find(|&k: &usize| lands_on_header(k));
-        arm_back.map_or((jump_target, hi, hi), |b: usize| {
+        arm_back.map_or((jump_target, hi, hi, None), |b: usize| {
             (
                 jump_target,
                 b,
                 first_significant(stream, b + 1, hi).unwrap_or(hi),
+                None,
             )
         })
     };
@@ -12291,7 +12302,18 @@ fn structure_elif_chain_arm(
         orelse: deeper,
         line: None,
     });
+    if let Some(tail_start) = sibling_tail_start {
+        out.extend(structure_stmts(code, stream, tail_start, hi)?);
+    }
     Ok(out)
+}
+
+/// Whether the arm body `[lo, hi)` terminates its control flow — by a trailing forward jump over the
+/// following region, or by ending in a hard terminator (`return`/`raise`). A non-terminating arm falls
+/// through into `[hi, ..)`, so that trailing region is a sibling statement, not the arm's `else`.
+fn arm_terminates(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    then_terminating_jump(stream, lo, hi).is_some()
+        || region_ends_in_hard_terminator(stream, lo, hi)
 }
 
 /// The index of a then-branch's terminating forward jump within `[then_lo, body_end)`, allowing
@@ -12480,6 +12502,9 @@ fn structure_stmts(
         return structure_loop(code, stream, lo, hi, &loop_region);
     }
     if let Some(stmts) = structure_backward_continue_guard(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = structure_compound_continue_guard(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     if matches!(stream.ops.get(hi - 1), Some(CanonicalOp::Return))
@@ -13937,6 +13962,67 @@ fn structure_backward_continue_guard(
         line: None,
     });
     out.extend(structure_stmts(code, stream, body_end, hi)?);
+    Ok(Some(out))
+}
+
+/// Whether `[lo, hi)`, after trimming structural padding, is exactly one loop back-edge whose target
+/// lands at or before `header` — the funnel a short-circuit continue-guard chain branches into.
+fn region_is_only_continue_back_edge(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    header: usize,
+) -> bool {
+    let Some(edge): Option<usize> = first_significant(stream, lo, hi) else {
+        return false;
+    };
+    if !is_back_edge(&stream.ops[edge]) {
+        return false;
+    }
+    if first_significant(stream, edge + 1, hi).is_some() {
+        return false;
+    }
+    resolve_jump_target(stream, edge, &stream.ops[edge]).is_some_and(|t: usize| t <= header)
+}
+
+/// Recovers a loop-body `if <A or/and B ...>: continue` whose multi-operand short-circuit condition
+/// funnels through one or more intermediate cond-jumps into a single backward continue-edge. The naive
+/// single-jump structurer misses it (an `or`/`and` chain interposes cond-jumps between the first jump
+/// and the back-edge), and the compound-`if` classifier instead mis-emits `if <chain>: pass else: …`,
+/// swallowing the loop-body continuation into a spurious `else`.
+///
+/// The recovered compound test polarity already holds `test ⟹ then-region`, and the then-region trims
+/// to exactly the continue back-edge, so the chain emits directly as `if <chain>: continue` with the
+/// remaining `[body, hi)` structured as the loop-body continuation rather than an `else` arm.
+fn structure_compound_continue_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let Some(compound): Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)? else {
+        return Ok(None);
+    };
+    let Some(body_target): Option<usize> =
+        resolve_jump_target(stream, compound.last_jump, &stream.ops[compound.last_jump])
+            .filter(|t: &usize| *t > compound.last_jump && *t <= hi)
+    else {
+        return Ok(None);
+    };
+    if !region_is_only_continue_back_edge(stream, compound.last_jump + 1, body_target, header) {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = compound.head;
+    out.push(Stmt::If {
+        test: compound.test,
+        body: vec![Stmt::Continue],
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, body_target, hi)?);
     Ok(Some(out))
 }
 
