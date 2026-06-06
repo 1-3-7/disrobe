@@ -14260,15 +14260,21 @@ fn build_linear_stmts_sim_seed(
                     ctx: ExprCtx::Load,
                 });
             }
-            CanonicalOp::LoadSuperAttr(i) => {
-                let _self_obj: Expr = sim.pop_or_synth(code, idx);
-                let _class: Expr = sim.pop_or_synth(code, idx);
+            CanonicalOp::LoadSuperAttr { name, two_arg } => {
+                let self_obj: Expr = sim.pop_or_synth(code, idx);
+                let class_expr: Expr = sim.pop_or_synth(code, idx);
                 let super_callable: Expr = sim.pop_call_target(code, idx).0;
-                let attr: String = name_at_either(code, *i).unwrap_or_else(|_| format!("attr_{i}"));
+                let attr: String =
+                    name_at_either(code, *name).unwrap_or_else(|_| format!("attr_{name}"));
+                let args: Vec<Expr> = if *two_arg {
+                    vec![class_expr, self_obj]
+                } else {
+                    Vec::new()
+                };
                 sim.push(Expr::Attribute {
                     value: Box::new(Expr::Call {
                         func: Box::new(super_callable),
-                        args: Vec::new(),
+                        args,
                         keywords: Vec::new(),
                     }),
                     attr,

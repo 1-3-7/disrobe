@@ -196,7 +196,13 @@ pub enum CanonicalOp {
     CallFunctionVarKwLegacy(u32),
     CallFunctionEx(bool),
     KwNames(ConstIndex),
-    LoadSuperAttr(NameIndex),
+    /// `LOAD_SUPER_ATTR`: `name` is the attribute being fetched on the super object; `two_arg` is
+    /// set when the explicit two-argument `super(class, instance)` form was used (oparg bit 1),
+    /// distinguishing it from the implicit zero-argument `super()`.
+    LoadSuperAttr {
+        name: NameIndex,
+        two_arg: bool,
+    },
     DeleteFast(LocalIndex),
     DeleteName(NameIndex),
     DeleteAttr(NameIndex),
@@ -451,7 +457,10 @@ fn decode_by_name(
         "LOAD_FAST_BORROW_LOAD_FAST_BORROW" => CanonicalOp::LoadFastLoadFast(arg >> 4, arg & 0xF),
         "LOAD_FROM_DICT_OR_DEREF" => CanonicalOp::LoadFromDictOrDeref(arg | DEREF_BIT),
         "LOAD_FROM_DICT_OR_GLOBALS" => CanonicalOp::LoadFromDictOrGlobals(arg),
-        "LOAD_SUPER_ATTR" => CanonicalOp::LoadSuperAttr(arg >> 2),
+        "LOAD_SUPER_ATTR" => CanonicalOp::LoadSuperAttr {
+            name: arg >> 2,
+            two_arg: (arg & 2) != 0,
+        },
         "LOAD_SPECIAL" => CanonicalOp::LoadSpecial(arg),
         "NOP" | "STOP_CODE" | "NOT_TAKEN" => CanonicalOp::Nop,
         "POP_TOP" => CanonicalOp::Pop,
