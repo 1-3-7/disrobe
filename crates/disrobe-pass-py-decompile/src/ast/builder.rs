@@ -6312,20 +6312,13 @@ fn leading_guard_if_encloses_loop(
     hi: usize,
     region: &LoopRegion,
 ) -> bool {
-    if stream.version.major() >= 3 {
-        return false;
-    }
-    let Some(guard): Option<usize> = (lo..region.header).find(|&k: &usize| {
-        is_forward_cond_jump(&stream.ops[k])
-            && !is_chain_cond_jump(&stream.ops, k)
-            && !is_value_form_shortcircuit(&stream.ops, k)
-    }) else {
-        return false;
-    };
-    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
-        return false;
-    };
-    target > region.back_edge && target <= hi
+    (lo..region.header).any(|guard: usize| {
+        is_forward_cond_jump(&stream.ops[guard])
+            && !is_chain_cond_jump(&stream.ops, guard)
+            && !is_value_form_shortcircuit(&stream.ops, guard)
+            && resolve_jump_target(stream, guard, &stream.ops[guard])
+                .is_some_and(|t: usize| t > region.header && t > region.exit && t <= hi)
+    })
 }
 
 /// Ranges `[clear_idx, end_for)` of every top-level inline comprehension in `[lo, hi)`.
@@ -6350,6 +6343,20 @@ fn in_any_envelope(envelopes: &[(usize, usize)], idx: usize) -> bool {
     envelopes
         .iter()
         .any(|&(start, end): &(usize, usize)| idx >= start && idx < end)
+}
+
+/// The highest-indexed unconditional back-edge in `[lo, hi)` jumping to `header`, coalescing
+/// a loop's multiple `continue`-style back-edges into one region spanning to the last of them.
+fn max_back_edge_to_header(stream: &DecodedStream, header: usize, lo: usize, hi: usize) -> usize {
+    (lo..hi.min(stream.ops.len()))
+        .rev()
+        .find(|&k: &usize| {
+            is_back_edge(&stream.ops[k])
+                && !is_async_send_back_edge(stream, k)
+                && !is_async_cleanup_throw_back_edge(stream, k)
+                && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+        })
+        .unwrap_or(header)
 }
 
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
@@ -6426,19 +6433,24 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
                 continue;
             }
             let header: usize = t;
-            let conds: Vec<usize> = (header..j)
+            let back_edge: usize = max_back_edge_to_header(stream, header, lo, hi);
+            if back_edge != j {
+                continue;
+            }
+            let conds: Vec<usize> = (header..back_edge)
                 .filter(|&k: &usize| {
                     is_forward_cond_jump(&stream.ops[k])
                         && !is_chain_cond_jump(&stream.ops, k)
                         && resolve_jump_target(stream, k, &stream.ops[k])
-                            .is_some_and(|tt: usize| tt > j)
+                            .is_some_and(|tt: usize| tt > back_edge)
                 })
                 .collect();
             let bottom_cond: Option<usize> = conds
                 .last()
                 .copied()
-                .filter(|&c: &usize| is_bottom_test(stream, c, j));
-            let region: LoopRegion = while_region(stream, header, j, hi, &conds, bottom_cond);
+                .filter(|&c: &usize| is_bottom_test(stream, c, back_edge));
+            let region: LoopRegion =
+                while_region(stream, header, back_edge, hi, &conds, bottom_cond);
             if best.is_none_or(|b: LoopRegion| header < b.header) {
                 best = Some(region);
             }
@@ -10897,6 +10909,52 @@ fn structure_elif_chain_arm(
     Ok(out)
 }
 
+/// The index of a then-branch's terminating forward jump within `[then_lo, body_end)`, allowing
+/// trailing else-prologue stack-setup (`PUSH_NULL`/`NOP`/`CACHE`) that the decoder colocates with
+/// the jump target's offset to fall after it.
+fn then_terminating_jump(stream: &DecodedStream, then_lo: usize, body_end: usize) -> Option<usize> {
+    let mut k: usize = body_end;
+    while k > then_lo {
+        k -= 1;
+        match &stream.ops[k] {
+            CanonicalOp::Push(_)
+            | CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) => return Some(k),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The index of a then-branch's terminating loop back-edge within `[then_lo, body_end)` when the
+/// branch re-enters the enclosing loop (a fall-through `else:` whose then-arm ends in `continue`).
+fn then_continues_to_loop(
+    stream: &DecodedStream,
+    then_lo: usize,
+    body_end: usize,
+) -> Option<usize> {
+    let header: usize = loop_continue_target()?;
+    let mut k: usize = body_end;
+    while k > then_lo {
+        k -= 1;
+        match &stream.ops[k] {
+            CanonicalOp::Push(_)
+            | CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_) => {}
+            op if is_back_edge(op) => {
+                return resolve_jump_target(stream, k, op)
+                    .filter(|t: &usize| *t <= header)
+                    .map(|_| k);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn structure_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -11026,19 +11084,18 @@ fn structure_stmts(
     let body_end: usize = target;
     let mut join: usize = target;
     let mut orelse_start: Option<usize> = None;
-    let mut else_via_jump: bool = false;
+    let mut then_jump_at: Option<usize> = None;
     let mut else_via_continue: bool = false;
-    if body_end > jump_idx + 1 {
-        let last: usize = body_end - 1;
-        if let CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) = stream.ops[last]
-            && let Some(j) = resolve_jump_target(stream, last, &stream.ops[last])
-            && j > target
-            && (j <= hi || else_jump_exits_to_shared_join(stream, last, target, hi))
-        {
-            join = j.min(hi);
-            orelse_start = Some(target);
-            else_via_jump = true;
-        }
+    if body_end > jump_idx + 1
+        && let Some(last) = then_terminating_jump(stream, jump_idx + 1, body_end)
+        && let CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) = stream.ops[last]
+        && let Some(j) = resolve_jump_target(stream, last, &stream.ops[last])
+        && j > target
+        && (j <= hi || else_jump_exits_to_shared_join(stream, last, target, hi))
+    {
+        join = j.min(hi);
+        orelse_start = Some(last + 1);
+        then_jump_at = Some(last);
     }
     let mut elif_body_end: usize = body_end;
     if orelse_start.is_none()
@@ -11051,6 +11108,15 @@ fn structure_stmts(
         else_via_continue = true;
     }
     if orelse_start.is_none()
+        && then_jump_at.is_none()
+        && target < hi
+        && let Some(back) = then_continues_to_loop(stream, jump_idx + 1, target)
+    {
+        join = hi;
+        orelse_start = Some(target);
+        then_jump_at = Some(back);
+    }
+    if orelse_start.is_none()
         && target < hi
         && region_ends_in_hard_terminator(stream, jump_idx + 1, body_end)
         && let Some(epilogue_start) = dead_none_epilogue_start(code, stream, lo, hi)
@@ -11060,13 +11126,11 @@ fn structure_stmts(
         join = hi;
         orelse_start = Some(target);
     }
-    let body_real_end: usize = if else_via_jump {
-        body_end.saturating_sub(1)
-    } else if else_via_continue {
+    let body_real_end: usize = then_jump_at.unwrap_or(if else_via_continue {
         elif_body_end
     } else {
         body_end
-    };
+    });
     let fallthrough: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_real_end)?;
     let fallthrough: Vec<Stmt> = if else_via_continue {
         fallthrough
