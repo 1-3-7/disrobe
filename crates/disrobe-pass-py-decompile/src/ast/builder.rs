@@ -15594,14 +15594,14 @@ fn build_linear_stmts_sim_seed(
                 let target_a: Expr = local_target(code, *a, idx)?;
                 let target_b: Expr = local_target(code, *b, idx)?;
                 out.push(Stmt::Assign {
-                    targets: vec![target_a],
-                    value: v_a,
-                    type_comment: None,
-                    line: None,
-                });
-                out.push(Stmt::Assign {
-                    targets: vec![target_b],
-                    value: v_b,
+                    targets: vec![Expr::Tuple {
+                        elts: vec![target_b, target_a],
+                        ctx: ExprCtx::Store,
+                    }],
+                    value: Expr::Tuple {
+                        elts: vec![v_a, v_b],
+                        ctx: ExprCtx::Load,
+                    },
                     type_comment: None,
                     line: None,
                 });
