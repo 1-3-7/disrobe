@@ -1391,6 +1391,64 @@ fn none_jump_test(stream: &DecodedStream, jump_idx: usize, val: Expr) -> Option<
     })
 }
 
+/// Logically negates a recovered test, peeling a `not` and flipping a `x is/is not None` compare in
+/// place rather than wrapping it, so that an inverted None-fused jump stays a clean identity compare.
+fn negate_cond_expr(expr: Expr) -> Expr {
+    match expr {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand,
+        } => *operand,
+        Expr::Compare {
+            left,
+            ops,
+            comparators,
+        } if matches!(ops.as_slice(), [CmpOp::Is | CmpOp::IsNot])
+            && matches!(
+                comparators.as_slice(),
+                [Expr::Constant {
+                    value: ConstValue::None,
+                    ..
+                }]
+            ) =>
+        {
+            let flipped: CmpOp = if ops[0] == CmpOp::Is {
+                CmpOp::IsNot
+            } else {
+                CmpOp::Is
+            };
+            Expr::Compare {
+                left,
+                ops: vec![flipped],
+                comparators,
+            }
+        }
+        other => Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(other),
+        },
+    }
+}
+
+/// Recovers the test that holds when control *falls through* (does not take) the conditional jump at
+/// `jump_idx`, routing 3.9+ `POP_JUMP_IF_NONE`/`POP_JUMP_IF_NOT_NONE` through their identity compare and
+/// otherwise polarizing a plain truthiness operand by the jump's `IF_FALSE`/`IF_TRUE` sense.
+fn fallthrough_cond_test(stream: &DecodedStream, jump_idx: usize, raw: Expr) -> Expr {
+    if let Some(test) = none_jump_test(stream, jump_idx, raw.clone()) {
+        return test;
+    }
+    if matches!(
+        stream.ops[jump_idx],
+        CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+    ) {
+        raw
+    } else {
+        negate_cond_expr(raw)
+    }
+}
+
 fn collect_pre_311_opcode_indices(
     code: &CodeObject,
     opmap: &dyn OpcodeMap,
@@ -7702,6 +7760,9 @@ struct WhileConjunct {
     start: usize,
     cond_idx: usize,
     negate: bool,
+    /// Whether this conjunct's cond-jump re-enters the loop (vs. exits it), so the in-loop test holds
+    /// when the jump is *taken* rather than on fall-through; used to polarize a `None`-fused operand.
+    reentry: bool,
 }
 
 /// Reconstructs a compound `while A and B and ...:` test from its short-circuit cond-jump chain.
@@ -7718,14 +7779,22 @@ fn fold_while_conjuncts(
             value: ConstValue::True,
             line: None,
         });
-        values.push(if c.negate {
-            Expr::UnaryOp {
-                op: crate::bytecode::opcode::UnaryOp::Not,
-                operand: Box::new(operand),
-            }
+        if let Some(none_test) = none_jump_test(stream, c.cond_idx, operand.clone()) {
+            values.push(if c.reentry {
+                negate_cond_expr(none_test)
+            } else {
+                none_test
+            });
         } else {
-            operand
-        });
+            values.push(if c.negate {
+                Expr::UnaryOp {
+                    op: crate::bytecode::opcode::UnaryOp::Not,
+                    operand: Box::new(operand),
+                }
+            } else {
+                operand
+            });
+        }
     }
     match values.len() {
         0 => Expr::Constant {
@@ -7767,10 +7836,13 @@ fn collect_while_conjuncts(
             )
         ) && !is_chain_cond_jump(&stream.ops, k);
         if is_cond {
+            let target: Option<usize> = resolve_jump_target(stream, k, &stream.ops[k]);
+            let reentry: bool = target.is_some_and(|t: usize| t <= header || t < exit && t < k);
             conjuncts.push(WhileConjunct {
                 start,
                 cond_idx: k,
                 negate: while_conjunct_negation(stream, k, header, exit),
+                reentry,
             });
             start = k + 1;
         }
@@ -7962,6 +8034,14 @@ fn try_structure_ternary_expr(
     } else {
         (else_expr, body_expr)
     };
+    let test_raw: Expr = match (
+        last_test_jump == jump_idx,
+        none_jump_test(stream, last_test_jump, test_raw.clone()),
+    ) {
+        (true, Some(none_test)) if negate => none_test,
+        (true, Some(none_test)) => negate_cond_expr(none_test),
+        _ => test_raw,
+    };
     let if_exp: Expr = Expr::IfExp {
         test: Box::new(test_raw),
         body: Box::new(then_expr),
@@ -8103,16 +8183,10 @@ fn build_ternary_test_expr(
     Ok(Some((head_stmts, below_stack, test)))
 }
 
-/// Whether an `and`-chain conjunct's operand reads as `not a`, from its jump polarity to the shared else target.
+/// Polarizes an `and`-chain conjunct's operand for the then-path, i.e. the condition under which the
+/// conjunct's cond-jump to the shared else target is *not* taken, reconstructing any `None`-fused compare.
 fn negate_operand(stream: &DecodedStream, jump_idx: usize, _target: usize, operand: Expr) -> Expr {
-    if matches!(stream.ops[jump_idx], CanonicalOp::PopJumpIfTrue(_)) {
-        Expr::UnaryOp {
-            op: crate::bytecode::opcode::UnaryOp::Not,
-            operand: Box::new(operand),
-        }
-    } else {
-        operand
-    }
+    fallthrough_cond_test(stream, jump_idx, operand)
 }
 
 /// Builds a region `[lo..hi)` as a single value-form expression, or `None` if it emits any statement.
@@ -13497,18 +13571,7 @@ fn structure_backward_continue_guard(
     let Some(test): Option<Expr> = residual.into_iter().next_back() else {
         return Ok(None);
     };
-    let keep_when_true: bool = matches!(
-        stream.ops[jump_idx],
-        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseBackward(_)
-    );
-    let test: Expr = if keep_when_true {
-        test
-    } else {
-        Expr::UnaryOp {
-            op: crate::bytecode::opcode::UnaryOp::Not,
-            operand: Box::new(test),
-        }
-    };
+    let test: Expr = fallthrough_cond_test(stream, jump_idx, test);
     let body_end: usize = trim_body_back_edge(stream, jump_idx + 1, hi);
     let body: Vec<Stmt> = structure_stmts(code, stream, jump_idx + 1, body_end)?;
     let mut out: Vec<Stmt> = head;
@@ -13556,18 +13619,7 @@ fn structure_guarded_continue(
     });
     let body_end: usize = trim_body_back_edge(stream, target, hi);
     let rest: Vec<Stmt> = structure_stmts(code, stream, target, body_end)?;
-    let continues_when_true: bool = matches!(
-        stream.ops[jump_idx],
-        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseBackward(_)
-    );
-    let guard_test: Expr = if continues_when_true {
-        test
-    } else {
-        Expr::UnaryOp {
-            op: crate::bytecode::opcode::UnaryOp::Not,
-            operand: Box::new(test),
-        }
-    };
+    let guard_test: Expr = fallthrough_cond_test(stream, jump_idx, test);
     let mut out: Vec<Stmt> = head;
     if loop_continue_target().is_some() {
         out.push(Stmt::If {
@@ -13578,25 +13630,8 @@ fn structure_guarded_continue(
         });
         out.extend(rest);
     } else {
-        let inverted_test: Expr = if continues_when_true {
-            Expr::UnaryOp {
-                op: crate::bytecode::opcode::UnaryOp::Not,
-                operand: Box::new(guard_test),
-            }
-        } else {
-            match guard_test {
-                Expr::UnaryOp {
-                    op: crate::bytecode::opcode::UnaryOp::Not,
-                    operand,
-                } => *operand,
-                other => Expr::UnaryOp {
-                    op: crate::bytecode::opcode::UnaryOp::Not,
-                    operand: Box::new(other),
-                },
-            }
-        };
         out.push(Stmt::If {
-            test: inverted_test,
+            test: negate_cond_expr(guard_test),
             body: non_empty(rest),
             orelse: Vec::new(),
             line: None,
