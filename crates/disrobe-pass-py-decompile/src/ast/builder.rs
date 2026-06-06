@@ -7010,7 +7010,9 @@ fn find_infinite_while(stream: &DecodedStream, lo: usize, hi: usize) -> Option<L
             Some(s) => s,
             None => continue,
         };
-        if block_start >= body_label || !block_exits_loop(stream, block_start, body_label) {
+        if block_start >= body_label
+            || !block_exits_loop(stream, block_start, body_label, back_edge, hi)
+        {
             continue;
         }
         let exit: usize = infinite_break_exit(stream, block_start, body_label, back_edge, hi);
@@ -7055,20 +7057,25 @@ fn infinite_break_exit(
     lo
 }
 
-/// Whether the straight-line block `[lo, hi)` exits the loop by returning, raising, or jumping out.
-fn block_exits_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
-    let last: usize = (lo..hi)
-        .rev()
-        .find(|&k: &usize| {
-            !matches!(
-                stream.ops[k],
-                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
-            )
-        })
-        .unwrap_or(lo);
-    matches!(
-        stream.ops.get(last),
-        Some(
+/// Whether the straight-line block `[lo, hi)` is a genuine `while True:` inline break-exit. A real
+/// `break` either jumps forward out of the loop (`JumpForward`/`JumpAbsolute` whose resolved target
+/// lands strictly past `back_edge` and within `cap`) or, when the post-loop tail is a bare `return`,
+/// is peephole-folded so the cold block reproduces that tail directly (`Return`/`ReturnConst`). A
+/// `break` is NEVER folded into a `Raise`/`Reraise`: a block whose terminating control-flow op raises
+/// is an ordinary in-body `if cond: raise ...`, not the loop's exit, so it is rejected and inline-exit
+/// detection falls through to whole-suite structuring (which renders it correctly inside the loop
+/// body). The block's terminal is the last *control-flow-terminating* op, scanned past trailing data
+/// ops (e.g. a spurious `Push` NULL-slot the wordcode decoder leaves after `ReturnConst`).
+fn block_exits_loop(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    back_edge: usize,
+    cap: usize,
+) -> bool {
+    let terminal: Option<usize> = (lo..hi).rev().find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
             CanonicalOp::Return
                 | CanonicalOp::ReturnConst(_)
                 | CanonicalOp::Raise(_)
@@ -7076,7 +7083,15 @@ fn block_exits_loop(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
                 | CanonicalOp::JumpForward(_)
                 | CanonicalOp::JumpAbsolute(_)
         )
-    )
+    });
+    terminal.is_some_and(|idx: usize| match &stream.ops[idx] {
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_) => true,
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) => {
+            resolve_jump_target(stream, idx, &stream.ops[idx])
+                .is_some_and(|t: usize| t > back_edge && t <= cap)
+        }
+        _ => false,
+    })
 }
 
 /// Whether a leading `if cond:` guard physically encloses the loop `find_loop` selected.
@@ -7604,6 +7619,15 @@ fn infinite_exit_block(stream: &DecodedStream, region: &LoopRegion) -> Option<(u
         .filter(|t: &usize| *t > first_cond && *t < region.back_edge)?;
     let block_start: usize = first_significant(stream, first_cond + 1, body_label)?;
     if block_start >= body_label {
+        return None;
+    }
+    if !block_exits_loop(
+        stream,
+        block_start,
+        body_label,
+        region.back_edge,
+        stream.ops.len(),
+    ) {
         return None;
     }
     Some((block_start, body_label))
