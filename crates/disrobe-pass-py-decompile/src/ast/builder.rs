@@ -14480,7 +14480,7 @@ fn build_linear_stmts_sim_seed(
             CanonicalOp::LoadSuperAttr { name, two_arg } => {
                 let self_obj: Expr = sim.pop_or_synth(code, idx);
                 let class_expr: Expr = sim.pop_or_synth(code, idx);
-                let super_callable: Expr = sim.pop_call_target(code, idx).0;
+                let super_callable: Expr = sim.pop_or_synth(code, idx);
                 let attr: String =
                     name_at_either(code, *name).unwrap_or_else(|_| format!("attr_{name}"));
                 let args: Vec<Expr> = if *two_arg {
