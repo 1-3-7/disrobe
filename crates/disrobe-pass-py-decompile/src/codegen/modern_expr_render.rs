@@ -168,12 +168,16 @@ pub fn render_const(value: &ConstValue) -> String {
             }
         }
         ConstValue::Frozenset(elts) => {
-            let inner: String = elts
-                .iter()
-                .map(render_const)
-                .collect::<Vec<String>>()
-                .join(", ");
-            format!("frozenset({{{inner}}})")
+            if elts.is_empty() {
+                "frozenset()".to_owned()
+            } else {
+                let inner: String = elts
+                    .iter()
+                    .map(render_const)
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                format!("{{{inner}}}")
+            }
         }
         ConstValue::Slice { lower, upper, step } => format!(
             "slice({}, {}, {})",

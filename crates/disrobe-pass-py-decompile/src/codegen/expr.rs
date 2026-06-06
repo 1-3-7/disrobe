@@ -366,7 +366,11 @@ fn emit_const(em: &DefaultEmitter, v: &ConstValue, version: &PyVersion) -> Strin
                 .iter()
                 .map(|c: &ConstValue| emit_const(em, c, version))
                 .collect();
-            format!("frozenset({{{}}})", parts.join(", "))
+            if parts.is_empty() {
+                "frozenset()".to_owned()
+            } else {
+                format!("{{{}}}", parts.join(", "))
+            }
         }
         ConstValue::Slice { lower, upper, step } => {
             format!(
