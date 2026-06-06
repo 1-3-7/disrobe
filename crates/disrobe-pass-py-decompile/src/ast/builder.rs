@@ -12150,20 +12150,27 @@ fn structure_legacy_with(
     Ok(Some((out, hi)))
 }
 
-/// Whether a pre-3.x then-branch's trailing skip-jump exits the region to a shared outer join, leaving a real else.
+/// Whether a then-branch's trailing skip-jump exits the region to a shared outer join, leaving a real else.
+///
+/// Holds when the then-arm's forward jump lands at or beyond the window end `hi` (a shared outer join such as
+/// the enclosing function tail) while the else-arm start `target` sits strictly inside the window, so a genuine
+/// local else region `[last + 1, hi)` exists. The jump must not be a loop `break`/`continue` (landing on the
+/// active loop's exit or header), which would be loop control flow rather than a true else. Applies to all versions.
 fn else_jump_exits_to_shared_join(
     stream: &DecodedStream,
     last: usize,
     target: usize,
     hi: usize,
 ) -> bool {
-    if stream.version.major() >= 3 {
-        return false;
-    }
     let Some(join): Option<usize> = resolve_jump_target(stream, last, &stream.ops[last]) else {
         return false;
     };
-    join >= hi && target < hi
+    if join < hi || target >= hi {
+        return false;
+    }
+    let is_loop_control: bool = loop_break_target().is_some_and(|exit: usize| join >= exit)
+        || loop_continue_target().is_some_and(|header: usize| join <= header);
+    !is_loop_control
 }
 
 /// Whether a then-branch is the first `if/elif` arm inside a loop whose exit back-edges to the header.
