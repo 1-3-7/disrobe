@@ -8996,11 +8996,16 @@ fn try_recover_compound_if(
 }
 
 /// The op index at which the first boolean operand's evaluation begins, skipping any leading head
-/// statements between `lo` and `first_jump` that complete before the condition.
+/// statements between `lo` and `first_jump` that complete before the condition. A `POP_TOP` that is
+/// not short-circuit cleanup terminates an expression statement, so it bounds the head exactly as a
+/// store does; omitting it silently dropped the statement immediately preceding a compound `if`.
 fn first_jump_value_lo(stream: &DecodedStream, lo: usize, first_jump: usize) -> usize {
     let mut start: usize = lo;
     for k in lo..first_jump {
-        if is_statement_boundary_op(&stream.ops[k]) {
+        let is_boundary: bool = is_statement_boundary_op(&stream.ops[k])
+            || (matches!(stream.ops[k], CanonicalOp::Pop)
+                && !is_shortcircuit_cleanup_pop(stream, k));
+        if is_boundary {
             start = k + 1;
         }
     }
