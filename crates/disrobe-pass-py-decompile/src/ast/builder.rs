@@ -5681,6 +5681,82 @@ fn trim_try_body_jump(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     end
 }
 
+/// Whether an `except` clause's last exit is the 3.11+ `return <expr>` idiom: the value is computed,
+/// stashed below the live exception with `SWAP(2)`, `POP_EXCEPT` pops the exception, and the clause's
+/// terminal `RETURN_VALUE` (which lands at the handler region boundary) returns the stashed value. When
+/// present the boundary `RETURN_VALUE` belongs to this handler; the caller widens the handler body to
+/// include it so the trailing `SWAP(2); POP_EXCEPT; RETURN_VALUE` is recovered as a real `return`
+/// instead of being trimmed as cleanup, which would leave a body that recompiles to an implicit `None`.
+fn handler_tail_returns_through_pop_except(
+    stream: &DecodedStream,
+    body_start: usize,
+    next_handler: usize,
+) -> bool {
+    if next_handler <= body_start || next_handler >= stream.ops.len() {
+        return false;
+    }
+    if !matches!(stream.ops.get(next_handler), Some(CanonicalOp::Return)) {
+        return false;
+    }
+    let mut k: usize = next_handler;
+    while k > body_start
+        && matches!(
+            stream.ops.get(k - 1),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        k -= 1;
+    }
+    if k == body_start || !matches!(stream.ops.get(k - 1), Some(CanonicalOp::PopExcept)) {
+        return false;
+    }
+    k -= 1;
+    while k > body_start
+        && matches!(
+            stream.ops.get(k - 1),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        k -= 1;
+    }
+    k > body_start && matches!(stream.ops.get(k - 1), Some(CanonicalOp::Swap(2)))
+}
+
+/// Handler-body end for the `return <expr>`-through-`POP_EXCEPT` idiom: the body spans up to and
+/// including the boundary `RETURN_VALUE` so the simulator can fold the `SWAP(2); POP_EXCEPT; RETURN`
+/// tail (and any inner returns sharing the same shape) into real `return` statements.
+fn handler_return_idiom_body_end(stream: &DecodedStream, next_handler: usize) -> usize {
+    (next_handler + 1).min(stream.ops.len())
+}
+
+/// End index (exclusive) of a bare `except:` body that exits with the `return <expr>`-through-`POP_EXCEPT`
+/// idiom. A bare handler's body break sits at the first `POP_EXCEPT`, before the cold-cleanup chain; when
+/// that `POP_EXCEPT` is `SWAP(2); POP_EXCEPT; RETURN_VALUE`, the `RETURN_VALUE` is the clause's real
+/// `return` rather than cold cleanup, so the body is widened to include it. Returns `None` when the bare
+/// handler does not exit through this idiom, leaving the default cleanup-trim path in place.
+fn bare_handler_return_idiom_end(
+    stream: &DecodedStream,
+    bare_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let hi: usize = region_end.min(stream.ops.len());
+    let pop_except: usize =
+        (bare_start..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))?;
+    if pop_except <= bare_start
+        || !matches!(stream.ops.get(pop_except - 1), Some(CanonicalOp::Swap(2)))
+    {
+        return None;
+    }
+    let mut ret: usize = pop_except + 1;
+    while matches!(
+        stream.ops.get(ret),
+        Some(CanonicalOp::Cache | CanonicalOp::Nop)
+    ) {
+        ret += 1;
+    }
+    matches!(stream.ops.get(ret), Some(CanonicalOp::Return)).then_some(ret + 1)
+}
+
 fn parse_except_handlers(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -5729,7 +5805,12 @@ fn parse_except_handlers(
                 } else {
                     clause_start
                 };
-            let bare_end: usize = bare_except_body_end(stream, bare_start, region_end);
+            let bare_is_function_scope: bool =
+                (code.flags & PY_CO_FLAG_FUNCTION_SCOPE) == PY_CO_FLAG_FUNCTION_SCOPE;
+            let bare_end: usize = bare_is_function_scope
+                .then(|| bare_handler_return_idiom_end(stream, bare_start, region_end))
+                .flatten()
+                .unwrap_or_else(|| bare_except_body_end(stream, bare_start, region_end));
             let bare_body: Vec<Stmt> = structure_stmts(code, stream, bare_start, bare_end)?;
             handlers.push(ExceptHandler {
                 typ: None,
@@ -5770,13 +5851,22 @@ fn parse_except_handlers(
             }
             _ => {}
         }
-        let raw_body_end: usize = if name.is_some() {
+        let is_function_scope: bool =
+            (code.flags & PY_CO_FLAG_FUNCTION_SCOPE) == PY_CO_FLAG_FUNCTION_SCOPE;
+        let is_return_idiom: bool = is_function_scope
+            && handler_tail_returns_through_pop_except(stream, body_start, next_handler);
+        let raw_body_end: usize = if is_return_idiom {
+            handler_return_idiom_body_end(stream, next_handler)
+        } else if name.is_some() {
             handler_body_end_at_pop_except(stream, body_start, next_handler)
         } else {
             handler_body_end(stream, body_start, next_handler)
         };
-        let body_end: usize =
-            extend_over_nested_cold_handler(stream, body_start, raw_body_end, region_end);
+        let body_end: usize = if is_return_idiom {
+            raw_body_end
+        } else {
+            extend_over_nested_cold_handler(stream, body_start, raw_body_end, region_end)
+        };
         let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
         if let Some(bound) = name.as_deref() {
             strip_named_exc_cleanup(&mut handler_body, bound);
