@@ -1219,7 +1219,7 @@ fn decode_stream_with_offsets(
     let lines: Vec<Option<u32>> = decode_lines_for_offsets(code, version, &offsets);
     let none_jump_kind: std::collections::BTreeMap<usize, NoneJumpKind> =
         collect_none_jump_kinds(code, opmap, version, &offsets);
-    DecodedStream {
+    let mut stream: DecodedStream = DecodedStream {
         ops,
         offsets,
         lines,
@@ -1233,6 +1233,56 @@ fn decode_stream_with_offsets(
         setup_loop_end,
         none_jump_kind,
         version: version.clone(),
+    };
+    normalize_open_coded_idioms(code, &mut stream);
+    stream
+}
+
+/// Collapses every 3.14 open-coded `tuple`/`all`/`any` generator idiom in `stream.ops` into the
+/// equivalent jumpless `builtin(<genexpr>)` call sequence, padding with `NOP` to preserve op count,
+/// offsets, and external jump targets. Normalizing here lets every downstream structurer (statement,
+/// `if`/`while`/`assert`/ternary tests, call arguments, `match` guards) recover the call uniformly.
+fn normalize_open_coded_idioms(code: &CodeObject, stream: &mut DecodedStream) {
+    let mut rewrites: Vec<(usize, Vec<CanonicalOp>, usize)> = Vec::new();
+    let mut cursor: usize = 0;
+    while cursor < stream.ops.len() {
+        let Some((builtin, fallback_start)): Option<(&'static str, usize)> =
+            detect_open_coded_any_all_guard(code, stream, cursor, stream.ops.len())
+        else {
+            cursor += 1;
+            continue;
+        };
+        let idiom: OpenCodedAnyAll = OpenCodedAnyAll {
+            builtin,
+            fallback_start,
+        };
+        let Ok(Some((_, terminal_call))): Result<Option<(Expr, usize)>> =
+            recover_open_coded_call(code, stream, &idiom, stream.ops.len())
+        else {
+            cursor += 1;
+            continue;
+        };
+        if terminal_call <= cursor || fallback_start <= cursor {
+            cursor += 1;
+            continue;
+        }
+        let mut replacement: Vec<CanonicalOp> = Vec::with_capacity(terminal_call - cursor + 1);
+        replacement.push(stream.ops[cursor].clone());
+        replacement.extend_from_slice(&stream.ops[fallback_start..=terminal_call]);
+        let span: usize = terminal_call - cursor + 1;
+        if replacement.len() > span {
+            cursor = terminal_call + 1;
+            continue;
+        }
+        rewrites.push((cursor, replacement, span));
+        cursor = terminal_call + 1;
+    }
+    for (start, replacement, span) in rewrites {
+        let replacement_len: usize = replacement.len();
+        stream.ops[start..start + replacement_len].clone_from_slice(&replacement);
+        for slot in &mut stream.ops[start + replacement_len..start + span] {
+            *slot = CanonicalOp::Nop;
+        }
     }
 }
 
@@ -12365,6 +12415,102 @@ fn try_structure_inline_comprehension(
     )?;
     out.extend(tail_stmts);
     Ok(Some(out))
+}
+
+/// The recognized prologue of a 3.14 open-coded `tuple`/`all`/`any` generator idiom: the builtin name
+/// and the resolved real-call fallback start.
+#[derive(Debug, Clone, Copy)]
+struct OpenCodedAnyAll {
+    builtin: &'static str,
+    fallback_start: usize,
+}
+
+/// The `LOAD_COMMON_CONSTANT` slot pairing the open-coded builtin: 3.14 inlines `tuple` (slot 2),
+/// `all` (slot 3), and `any` (slot 4) generator calls behind an identity guard.
+fn open_coded_builtin_for(name: &str, slot: u8) -> Option<&'static str> {
+    match (name, slot) {
+        ("tuple", 2) => Some("tuple"),
+        ("all", 3) => Some("all"),
+        ("any", 4) => Some("any"),
+        _ => None,
+    }
+}
+
+/// Recognizes the 3.14+ open-coded `any(genexpr)`/`all(genexpr)` guard prologue at `idx`:
+/// `LOAD_GLOBAL {any|all}; COPY 1; LOAD_COMMON_CONSTANT {4|3}; IS_OP is; POP_JUMP_IF_FALSE L_fb`,
+/// returning the builtin name and the resolved fallback target.
+fn detect_open_coded_any_all_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    idx: usize,
+    hi: usize,
+) -> Option<(&'static str, usize)> {
+    let slot: u32 = match stream.ops[idx] {
+        CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => slot,
+        _ => return None,
+    };
+    let name: String = name_at_either(code, slot).ok()?;
+    let copy_idx: usize = first_significant(stream, idx + 1, hi)?;
+    if !matches!(stream.ops[copy_idx], CanonicalOp::Copy(1)) {
+        return None;
+    }
+    let const_idx: usize = first_significant(stream, copy_idx + 1, hi)?;
+    let CanonicalOp::LoadCommonConst(common_slot): CanonicalOp = stream.ops[const_idx] else {
+        return None;
+    };
+    let builtin: &'static str = open_coded_builtin_for(name.as_str(), common_slot)?;
+    let is_idx: usize = first_significant(stream, const_idx + 1, hi)?;
+    if !matches!(stream.ops[is_idx], CanonicalOp::Compare(CmpOp::Is)) {
+        return None;
+    }
+    let jump_idx: usize = first_significant(stream, is_idx + 1, hi)?;
+    if !matches!(
+        stream.ops[jump_idx],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    ) {
+        return None;
+    }
+    let fallback: usize = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
+        .filter(|t: &usize| *t > jump_idx && *t <= hi)?;
+    Some((builtin, fallback))
+}
+
+/// Reconstructs the builtin call by replaying the fallback region with the guard-consumed builtin
+/// seeded onto the stack, returning the recovered `Expr::Call` and the terminal `CALL` op index.
+/// Each candidate terminal builtin `CALL` is tried in order; the first whose replay yields exactly
+/// `builtin(<arg>)` is the genuine fallback boundary (robust to iterables that themselves call).
+fn recover_open_coded_call(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    idiom: &OpenCodedAnyAll,
+    hi: usize,
+) -> Result<Option<(Expr, usize)>> {
+    let seed_name = || -> Expr {
+        Expr::Name {
+            id: idiom.builtin.to_owned(),
+            ctx: ExprCtx::Load,
+            line: None,
+        }
+    };
+    for cand in (idiom.fallback_start..hi)
+        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(1)))
+    {
+        let (_, residual): (Vec<Stmt>, Vec<Expr>) = build_linear_stmts_sim_seed(
+            code,
+            &stream.ops[idiom.fallback_start..=cand],
+            vec![seed_name()],
+        )?;
+        if residual.len() == 1
+            && let Some(Expr::Call { func, .. }) = residual.last()
+            && matches!(func.as_ref(), Expr::Name { id, .. } if id == idiom.builtin)
+        {
+            return Ok(Some((
+                residual.into_iter().next_back().unwrap_or_else(seed_name),
+                cand,
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether a pre-3.0 in-frame list-comprehension accumulator opens at `idx`, returning its `FOR_ITER` and end.
