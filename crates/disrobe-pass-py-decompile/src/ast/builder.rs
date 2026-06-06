@@ -2695,6 +2695,73 @@ fn extend_window_over_split_handler(stream: &DecodedStream, lo: usize, hi: usize
     end.min(stream.ops.len())
 }
 
+/// Protected-body end of a 3.11+ `try` whose hot body `CPython` split into several exception-table
+/// rows sharing one handler. A non-protected `return`/`raise` inside the body opens a gap between two
+/// rows that both target the handler; the rows are merged so the recovered try-body spans the whole
+/// hot region. Merging stops before the handler offset so cold-cleanup rows are never absorbed.
+fn merged_protected_end(stream: &DecodedStream, start: u32, end: u32, target: u32) -> u32 {
+    let _ = start;
+    let mut body_end: u32 = end;
+    while let Some(next) = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            e.target == target && e.start >= body_end && e.start < target
+        })
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start)
+        .min()
+    {
+        if !gap_is_protected_body_join(stream, body_end, next) {
+            break;
+        }
+        let extended: u32 = stream
+            .exception_table
+            .iter()
+            .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+                e.target == target && e.start == next
+            })
+            .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.end())
+            .max()
+            .unwrap_or(body_end);
+        if extended <= body_end {
+            break;
+        }
+        body_end = extended;
+    }
+    body_end
+}
+
+/// Whether the gap `[lo_off, hi_off)` between two protected rows of one try is a non-raising tail
+/// (`return`/`raise`/jump and padding) belonging to the protected body rather than separate code.
+fn gap_is_protected_body_join(stream: &DecodedStream, lo_off: u32, hi_off: u32) -> bool {
+    let Some(lo): Option<usize> = stream.index_for_offset_ceil(lo_off) else {
+        return false;
+    };
+    let Some(hi): Option<usize> = stream.index_for_offset_ceil(hi_off) else {
+        return false;
+    };
+    if lo >= hi {
+        return true;
+    }
+    (lo..hi).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+                | CanonicalOp::Reraise(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
 fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRegion> {
     if stream.exception_table.is_empty() {
         return None;
@@ -2740,12 +2807,17 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
         } else {
             try_start
         };
+        let body_end_off: u32 = if is_modern && !is_with {
+            merged_protected_end(stream, entry.start, entry.end(), entry.target)
+        } else {
+            entry.end()
+        };
         let protected_end: usize = stream
-            .index_for_offset_ceil(entry.end())
+            .index_for_offset_ceil(body_end_off)
             .unwrap_or(handler_start)
             .min(handler_start);
         let try_end: usize = stream
-            .index_for_offset(entry.end())
+            .index_for_offset(body_end_off)
             .unwrap_or(handler_start);
         let region_end: usize = if is_pre311_handler {
             pre311_handler_region_end(stream, handler_start, hi)
@@ -2810,12 +2882,14 @@ fn find_protected_try_with_outer_handler(
         ) {
             continue;
         }
+        let body_end_off: u32 =
+            merged_protected_end(stream, entry.start, entry.end(), entry.target);
         let protected_end: usize = stream
-            .index_for_offset_ceil(entry.end())
+            .index_for_offset_ceil(body_end_off)
             .unwrap_or(handler_start)
             .min(handler_start);
         let try_end: usize = stream
-            .index_for_offset(entry.end())
+            .index_for_offset(body_end_off)
             .unwrap_or(handler_start)
             .min(handler_start);
         let region_end: usize = handler_join(stream, handler_start, outer_hi).min(outer_hi);
@@ -3087,6 +3161,69 @@ fn handler_join(stream: &DecodedStream, handler_start: usize, hi: usize) -> usiz
     (last_reraise + 1).min(hi)
 }
 
+/// End of a 3.11+ handler region following the exception-table cleanup chain rooted at the handler.
+/// A handler's protected rows chain to cold-cleanup targets that lie within the handler; the region
+/// grows transitively over rows of the handler's own nesting depth so a post-handler continuation,
+/// reached only by a forward jump and never as an exception-table target, is excluded. Returns `None`
+/// when offsets do not resolve or the chain reaches no further than the last `RERAISE` anyway.
+fn handler_chain_end(stream: &DecodedStream, handler_start: usize, hi: usize) -> Option<usize> {
+    let handler_off: u32 = stream.offsets.get(handler_start).copied()?;
+    let handler_depth: u8 = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.depth)
+        .max()
+        .map(|d: u8| d.saturating_add(1))?;
+    let mut region_end_off: u32 = handler_off;
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            if entry.start < handler_off
+                || entry.start > region_end_off
+                || entry.depth < handler_depth
+            {
+                continue;
+            }
+            let reach: u32 = entry.end().max(entry.target);
+            if reach > region_end_off {
+                region_end_off = reach;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let from: usize = stream.index_for_offset_ceil(region_end_off)?;
+    Some(handler_cold_cleanup_end(stream, from, hi).clamp(handler_start + 1, hi))
+}
+
+/// Extends past a trailing `COPY/POP_EXCEPT/RERAISE` or bare `RERAISE` cold-cleanup tail beginning at
+/// `from`, yielding the first op index after the handler region's terminal `RERAISE`.
+fn handler_cold_cleanup_end(stream: &DecodedStream, from: usize, hi: usize) -> usize {
+    let mut k: usize = from;
+    let mut last: usize = from;
+    while k < hi {
+        match stream.ops[k] {
+            CanonicalOp::Reraise(_) => {
+                last = k;
+                break;
+            }
+            CanonicalOp::Copy(_)
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {
+                k += 1;
+            }
+            _ => break,
+        }
+    }
+    (last + 1).max(from).min(hi)
+}
+
 /// Body end of a PEP 654 `except*` whose protected body is itself an `async with`.
 fn except_star_body_end(stream: &DecodedStream, region: &TryRegion, truncated_end: usize) -> usize {
     let has_nested_with: bool = (region.try_start..region.handler_start)
@@ -3277,15 +3414,17 @@ fn try_structure_guarded_try(
     };
     let mut if_body: Vec<Stmt> = vec![try_stmt];
     if_body.extend(structure_stmts(code, stream, body_end, false_target)?);
+
     let orelse_end: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
     let orelse: Vec<Stmt> = structure_stmts(code, stream, false_target, orelse_end)?;
+    let tail_start: usize = region.region_end;
     let mut out: Vec<Stmt> = vec![Stmt::If {
         test,
         body: non_empty(if_body),
         orelse,
         line: None,
     }];
-    out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+    out.extend(structure_stmts(code, stream, tail_start, hi)?);
     Ok(Some(out))
 }
 
@@ -3834,6 +3973,18 @@ fn structure_try_except_family(
         return Ok(result);
     }
 
+    if !has_combo
+        && let Some(result) = structure_modern_try_with_forward_continuation(
+            code,
+            stream,
+            region,
+            protected_end,
+            extended_body_end,
+        )?
+    {
+        return Ok(result);
+    }
+
     let normal_region: Option<(usize, usize)> =
         try_else_split(stream, region, protected_end, except_region_end);
 
@@ -3976,6 +4127,89 @@ fn structure_modern_try_with_continuation(
         },
         except_region_end,
         continuation,
+    )))
+}
+
+/// Whether any op in `[lo, hi)` is a backward jump to at or before `target_floor`, marking the
+/// region as part of an enclosing loop where post-handler forward-continuation lifting is unsafe.
+fn has_back_edge_into(stream: &DecodedStream, lo: usize, hi: usize, target_floor: usize) -> bool {
+    (lo..hi.min(stream.ops.len())).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t <= target_floor)
+    })
+}
+
+/// Structures a 3.11+ `try/except` whose handler exits by `POP_EXCEPT; JUMP_FORWARD` to a
+/// continuation emitted after the handler's cold cleanup. The global handler-region bound follows the
+/// last `RERAISE` and so swallows that continuation; this honours the exception-table cleanup chain to
+/// end the consumed region at the handler's own cold cleanup, leaving the jump target for the
+/// enclosing scope rather than dropping it for a spurious trailing `return`/const.
+fn structure_modern_try_with_forward_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    extended_body_end: usize,
+) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
+    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, region.handler_start)
+    else {
+        return Ok(None);
+    };
+    let after_pop: usize =
+        first_significant(stream, pop_except + 1, region.region_end).unwrap_or(region.region_end);
+    if !matches!(stream.ops.get(after_pop), Some(CanonicalOp::JumpForward(_))) {
+        return Ok(None);
+    }
+    let Some(jump_target): Option<usize> =
+        resolve_jump_target(stream, after_pop, &stream.ops[after_pop])
+            .filter(|t: &usize| *t > after_pop)
+    else {
+        return Ok(None);
+    };
+    let Some(chain_end): Option<usize> =
+        handler_chain_end(stream, region.handler_start, region.region_end)
+    else {
+        return Ok(None);
+    };
+    if jump_target < chain_end
+        || jump_target >= region.region_end
+        || chain_end >= region.region_end
+        || !slice_has_real_stmt(stream, jump_target, region.region_end)
+        || has_back_edge_into(
+            stream,
+            region.handler_start,
+            region.region_end,
+            region.try_start,
+        )
+        || (region.handler_start + 1..chain_end)
+            .any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+        || (region.try_start..protected_end)
+            .any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+    {
+        return Ok(None);
+    }
+
+    if try_else_split(stream, region, protected_end, chain_end).is_some() {
+        return Ok(None);
+    }
+    let body_end: usize = trim_try_body_jump(stream, region.try_start, extended_body_end);
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, chain_end)?;
+
+    Ok(Some((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        },
+        chain_end,
+        Vec::new(),
     )))
 }
 
@@ -5486,11 +5720,13 @@ fn parse_except_handlers(
             }
             _ => {}
         }
-        let body_end: usize = if name.is_some() {
+        let raw_body_end: usize = if name.is_some() {
             handler_body_end_at_pop_except(stream, body_start, next_handler)
         } else {
             handler_body_end(stream, body_start, next_handler)
         };
+        let body_end: usize =
+            extend_over_nested_cold_handler(stream, body_start, raw_body_end, region_end);
         let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
         if let Some(bound) = name.as_deref() {
             strip_named_exc_cleanup(&mut handler_body, bound);
@@ -5866,6 +6102,51 @@ fn is_bound_clear_stmt(stmt: &Stmt, bound: &str) -> bool {
             .all(|e: &Expr| matches!(e, Expr::Name { id, .. } if id == bound)),
         _ => false,
     }
+}
+
+/// Extends a handler-body end to cover a `try/except` nested in the handler whose 3.11+ cold handler
+/// is emitted past the body's `POP_EXCEPT`. The protected body sits in `[body_start, body_end)` while
+/// its handler is cold-placed at `>= body_end`; the end grows transitively over each such handler's
+/// region so nested `try`s inside an `except` clause are recovered with their handlers intact.
+fn extend_over_nested_cold_handler(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+    limit: usize,
+) -> usize {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return body_end;
+    }
+    let Some(start_off): Option<u32> = stream.offsets.get(body_start).copied() else {
+        return body_end;
+    };
+    let mut end: usize = body_end;
+    while let Some(end_off) = stream.offsets.get(end).copied() {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            if entry.start < start_off || entry.start >= end_off {
+                continue;
+            }
+            let Some(handler_idx): Option<usize> = stream.index_for_offset(entry.target) else {
+                continue;
+            };
+            if handler_idx < end
+                || handler_idx >= limit
+                || !matches!(stream.ops.get(handler_idx), Some(CanonicalOp::PushExcInfo))
+            {
+                continue;
+            }
+            let nested_end: usize = handler_join(stream, handler_idx, limit);
+            if nested_end > end {
+                end = nested_end;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    end.min(limit)
 }
 
 fn handler_body_end_at_pop_except(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
