@@ -12832,10 +12832,7 @@ fn rewrite_jump_to_break_continue(
     if is_peephole_break_return(stream, &body, lo, hi) {
         return vec![Stmt::Break];
     }
-    if body
-        .iter()
-        .any(|s: &Stmt| !matches!(s, Stmt::Pass | Stmt::Expr(_)))
-    {
+    if body.iter().any(|s: &Stmt| !matches!(s, Stmt::Pass)) {
         return body;
     }
     let last: Option<usize> = (lo..hi).rev().find(|&k: &usize| {
