@@ -3036,6 +3036,104 @@ fn find_protected_try_with_outer_handler(
     best
 }
 
+/// Whether `byte_off` is the handler `target` of some exception-table row — the entry point of an
+/// `except`/`finally` handler rather than an interior cold-cleanup landing pad.
+fn is_handler_target(stream: &DecodedStream, byte_off: u32) -> bool {
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| e.target == byte_off)
+}
+
+/// Whether `[lo, hi)` is pure value-pushing setup for the statement that opens at `hi` — `PUSH_NULL`,
+/// `LOAD_*`, padding — with no statement-completing op. The 3.11+ exception table's protected `start`
+/// can begin one op into a call statement (after the `PUSH_NULL`/receiver load); this confirms that the
+/// window's leading ops belong to the protected statement, so anchoring the body before `try_start` is
+/// sound and no earlier complete statement is being absorbed.
+fn leading_ops_are_stmt_setup(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Push(_)
+                | CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadFast(_)
+                | CanonicalOp::LoadFastLoadFast(_, _)
+                | CanonicalOp::LoadName(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
+/// Recovers a 3.11+ `try/except` whose protected body opens at the start of `[lo, hi)` but whose handler
+/// is cold-placed at or beyond `hi`, physically separated from its body by an earlier sibling's handler.
+/// The window holding this body closes before the handler, so [`find_try_region`] cannot see it; the
+/// handler is instead resolved directly from the exception table and spliced in. The body recurses over
+/// `[try_start, protected_end)`, the handler is parsed at its own cold offset, and any further leading
+/// statements between the body and `hi` recurse normally — the cold handler is consumed by reference,
+/// never dragged through a recursion window that would mis-structure the intervening sibling handler. A
+/// duplicated shared-exit `return` copied into the handler by `CPython` is stripped to match source.
+fn try_structure_cold_sibling_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> =
+        find_protected_try_with_outer_handler(stream, lo, hi, stream.ops.len())
+    else {
+        return Ok(None);
+    };
+    let Some(body_start): Option<usize> = first_significant(stream, lo, hi) else {
+        return Ok(None);
+    };
+    let intervening_sibling_handler: bool = (hi..region.handler_start).any(|k: usize| {
+        matches!(stream.ops.get(k), Some(CanonicalOp::PushExcInfo))
+            && stream
+                .offsets
+                .get(k)
+                .copied()
+                .is_some_and(|off: u32| is_handler_target(stream, off))
+    });
+    if region.is_with
+        || region.is_finally
+        || body_start > region.try_start
+        || !leading_ops_are_stmt_setup(stream, body_start, region.try_start)
+        || region.handler_start < hi
+        || region.protected_end <= region.try_start
+        || region.protected_end >= hi
+        || !intervening_sibling_handler
+    {
+        return Ok(None);
+    }
+    let region_end: usize = handler_join(stream, region.handler_start, stream.ops.len());
+    let body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.protected_end)?;
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, region_end)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let tail: Vec<Stmt> = structure_stmts(code, stream, region.protected_end, hi)?;
+    let handlers: Vec<ExceptHandler> = match tail.last() {
+        Some(last) => strip_shared_exit_return(handlers, std::slice::from_ref(last)),
+        None => handlers,
+    };
+    let mut out: Vec<Stmt> = vec![Stmt::Try {
+        body: non_empty(body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    }];
+    out.extend(tail);
+    Ok(Some(out))
+}
+
 fn is_pre311_except_or_finally_handler(
     stream: &DecodedStream,
     handler_start: usize,
@@ -12353,6 +12451,11 @@ fn structure_stmts(
         return structure_loop(code, stream, lo, hi, &loop_region);
     }
     if let Some(stmts) = try_structure_guarded_try(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
+    if find_try_region(stream, lo, hi).is_none()
+        && let Some(stmts) = try_structure_cold_sibling_try(code, stream, lo, hi)?
+    {
         return Ok(stmts);
     }
     if let Some(try_region) = find_try_region(stream, lo, hi)
