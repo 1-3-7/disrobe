@@ -15607,8 +15607,34 @@ fn build_linear_stmts_sim_seed(
                 });
             }
             CanonicalOp::MapAdd => {
-                let _value: Expr = sim.pop_or_synth(code, idx);
-                let _key: Expr = sim.pop_or_synth(code, idx);
+                let pre38_order: bool =
+                    active_version().is_some_and(|v: PyVersion| v.major() == 3 && v.minor() < 8);
+                let top: Expr = sim.pop_or_synth(code, idx);
+                let below: Expr = sim.pop_or_synth(code, idx);
+                let (key, value): (Expr, Expr) = if pre38_order {
+                    (top, below)
+                } else {
+                    (below, top)
+                };
+                match sim.try_pop() {
+                    Some(Expr::Dict {
+                        mut keys,
+                        mut values,
+                    }) => {
+                        keys.push(Some(key));
+                        values.push(value);
+                        sim.push(Expr::Dict { keys, values });
+                    }
+                    Some(other) => {
+                        sim.push(other);
+                        sim.push(value);
+                        sim.push(key);
+                    }
+                    None => {
+                        sim.push(value);
+                        sim.push(key);
+                    }
+                }
             }
             CanonicalOp::UnpackSequence(n) => {
                 let source: Expr = sim.pop_or_synth(code, idx);
@@ -18043,8 +18069,19 @@ fn merge_extend(base: Option<Expr>, addition: Expr, is_mapping: bool) -> Expr {
             mut keys,
             mut values,
         } if is_mapping => {
-            keys.push(None);
-            values.push(addition);
+            match addition {
+                Expr::Dict {
+                    keys: add_keys,
+                    values: add_values,
+                } if add_keys.iter().all(Option::is_some) => {
+                    keys.extend(add_keys);
+                    values.extend(add_values);
+                }
+                other => {
+                    keys.push(None);
+                    values.push(other);
+                }
+            }
             Expr::Dict { keys, values }
         }
         other => other,
