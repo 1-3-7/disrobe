@@ -16907,11 +16907,64 @@ fn is_type_params_setup_assign(s: &Stmt) -> bool {
 }
 
 fn strip_class_implicit(mut body: Vec<Stmt>) -> Vec<Stmt> {
+    strip_class_scope_leaked(&mut body);
+    body
+}
+
+/// Strips compiler-synthesized class-body epilogue (`__static_attributes__`/`__classdictcell__`
+/// setup assigns and the implicit `return None`) from a class-body statement list and every
+/// nested control-flow branch within it. `CPython` duplicates this epilogue into each arm of a
+/// class-level `if`/`else`/`try`/`for`/`while`/`match`, so the top-level pass alone leaves a
+/// `'return' outside function` leak inside those arms. The descent never enters nested
+/// function/class bodies, where a trailing `return` is legitimate. Bytecode-equivalent: a class
+/// body has no valid `return` and never assigns these `dunder` names in user source.
+fn strip_class_scope_leaked(body: &mut Vec<Stmt>) {
     body.retain(|s: &Stmt| !is_class_setup_assign(s));
-    if body.last().is_some_and(is_class_implicit_return) {
+    while body.last().is_some_and(is_class_implicit_return) {
         body.pop();
     }
-    body
+    for stmt in body.iter_mut() {
+        strip_class_scope_in_stmt(stmt);
+    }
+}
+
+fn strip_class_scope_in_stmt(stmt: &mut Stmt) {
+    match stmt {
+        Stmt::If { body, orelse, .. }
+        | Stmt::For { body, orelse, .. }
+        | Stmt::While { body, orelse, .. } => {
+            strip_class_scope_leaked(body);
+            strip_class_scope_leaked(orelse);
+        }
+        Stmt::With { body, .. } => strip_class_scope_leaked(body),
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }
+        | Stmt::TryStar {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        } => {
+            strip_class_scope_leaked(body);
+            for handler in handlers.iter_mut() {
+                strip_class_scope_leaked(&mut handler.body);
+            }
+            strip_class_scope_leaked(orelse);
+            strip_class_scope_leaked(finalbody);
+        }
+        Stmt::Match { cases, .. } => {
+            for case in cases.iter_mut() {
+                strip_class_scope_leaked(&mut case.body);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn is_class_implicit_return(s: &Stmt) -> bool {
