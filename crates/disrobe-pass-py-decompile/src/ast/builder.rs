@@ -15909,6 +15909,24 @@ fn build_linear_stmts_sim_seed(
                         sim.push(type_alias_marker_call(&name, value));
                     }
                 }
+                5 => {
+                    let operand: Expr = sim.pop_or_synth(code, idx);
+                    sim.push(Expr::UnaryOp {
+                        op: crate::bytecode::opcode::UnaryOp::Positive,
+                        operand: Box::new(operand),
+                    });
+                }
+                6 => {
+                    let value: Expr = sim.pop_or_synth(code, idx);
+                    let elts: Vec<Expr> = match value {
+                        Expr::List { elts, .. } => elts,
+                        other => vec![other],
+                    };
+                    sim.push(Expr::Tuple {
+                        elts,
+                        ctx: ExprCtx::Load,
+                    });
+                }
                 _ => {}
             },
             CanonicalOp::CallIntrinsic2(intrinsic) => match intrinsic {

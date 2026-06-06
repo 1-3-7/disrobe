@@ -396,6 +396,7 @@ pub fn shared_method_form_load_attr(version: &PyVersion, raw: u8, arg: u32) -> b
     match name {
         "LOAD_METHOD" => true,
         "LOAD_ATTR" if (maj, min) >= (3, 12) => (arg & 1) == 1,
+        "LOAD_SUPER_ATTR" => (arg & 1) == 1,
         _ => false,
     }
 }
