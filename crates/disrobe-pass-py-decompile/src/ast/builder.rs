@@ -9082,13 +9082,16 @@ fn try_structure_compound_assert(
     let raw_pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
     let pass_target: usize =
         skip_chain_assert_dup_raise(stream, lo, raise_idx, raw_pass_target, hi);
+    if !assert_marker_is_guarded(stream, lo, raise_idx, raw_pass_target) {
+        return structure_const_false_assert(code, stream, lo, hi, raise_idx, pass_target, msg);
+    }
     let jump_indices: Vec<usize> = (lo..raise_idx)
         .filter(|&k: &usize| {
             is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
         })
         .collect();
     if jump_indices.is_empty() {
-        return Ok(None);
+        return structure_const_false_assert(code, stream, lo, hi, raise_idx, pass_target, msg);
     }
     let mut head: Vec<Stmt> = Vec::new();
     let mut operands: Vec<CondOperand> = Vec::new();
@@ -9135,6 +9138,42 @@ fn try_structure_compound_assert(
     let mut out: Vec<Stmt> = head;
     out.push(Stmt::Assert {
         test,
+        msg,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, pass_target, hi)?);
+    Ok(Some(out))
+}
+
+/// Recovers an `assert False, <msg>` whose constant-false condition `CPython` folded to an
+/// unconditional `LOAD_ASSERTION_ERROR`/`LOAD_COMMON_CONSTANT 0` + `RAISE_VARARGS` with no guard
+/// jump. The dedicated `AssertionError` push (never a `LOAD_GLOBAL`) is the version-independent proof
+/// this is a real `assert` rather than a user `raise AssertionError(...)`; without it the region is
+/// left to the generic raise structurer. Any falsy literal (`False`, `0`) lowers to this exact
+/// stream, so `False` is the bytecode-equivalent canonical recovery.
+fn structure_const_false_assert(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    raise_idx: usize,
+    pass_target: usize,
+    msg: Option<Expr>,
+) -> Result<Option<Vec<Stmt>>> {
+    if !is_dedicated_assertion_marker(&stream.ops[raise_idx]) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..raise_idx])?;
+    if !residual.is_empty() {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::Assert {
+        test: Expr::Constant {
+            value: ConstValue::False,
+            line: None,
+        },
         msg,
         line: None,
     });
@@ -9420,20 +9459,40 @@ fn merge_boolop(op: crate::ast::node::BoolOpKind, head: Expr, rest: Expr) -> Exp
     Expr::BoolOp { op, values }
 }
 
+/// Whether the `AssertionError` push at `marker_idx` is guarded by its own short-circuit condition,
+/// the hallmark of a runtime `assert <test>`: some forward conditional jump in `[lo, marker_idx)`
+/// skips the raise by branching to `pass_target` (the op past the failure block). A constant-false
+/// condition (`assert False`) is folded by `CPython` to an unconditional raise with no such guard;
+/// any conditional jumps present belong to an enclosing `if`/`elif` whose taken target lands inside
+/// the failure block rather than past it.
+fn assert_marker_is_guarded(
+    stream: &DecodedStream,
+    lo: usize,
+    marker_idx: usize,
+    pass_target: usize,
+) -> bool {
+    (lo..marker_idx).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= pass_target)
+    })
+}
+
 /// Resolves the `RAISE_VARARGS` closing an assert's failure path, returning `(raise_op_index, has_message)` or `None`.
+/// A messageless assert raises the bare `AssertionError` push directly; a `assert <test>, <msg>`
+/// constructs `AssertionError(<msg>)` first, so a `CALL` sits between the marker and the raise. The
+/// message expression may itself contain calls, so presence is decided by the raise it precedes, not
+/// by the first `CALL` after the marker.
 fn assert_raise_after(
     stream: &DecodedStream,
     raise_idx: usize,
     hi: usize,
 ) -> Option<(usize, bool)> {
-    let next: usize = first_significant(stream, raise_idx + 1, hi)?;
-    if matches!(stream.ops[next], CanonicalOp::Raise(_)) {
-        return Some((next, false));
-    }
-    let call: usize = (raise_idx + 1..hi)
-        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
-    let raise: usize = first_significant(stream, call + 1, hi)?;
-    matches!(stream.ops[raise], CanonicalOp::Raise(_)).then_some((raise, true))
+    let raise: usize =
+        (raise_idx + 1..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Raise(_)))?;
+    let has_message: bool = (raise_idx + 1..raise)
+        .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)));
+    Some((raise, has_message))
 }
 
 /// Recovers the optional message expression of an `assert <test>, <msg>`, or `None` for a messageless assert.
@@ -9448,6 +9507,7 @@ fn assert_msg_expr(
         return Ok(None);
     }
     let call: usize = match (raise_idx + 1..raise_op)
+        .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))
     {
         Some(c) => c,
@@ -18038,8 +18098,55 @@ fn is_type_params_setup_assign(s: &Stmt) -> bool {
 }
 
 fn strip_class_implicit(mut body: Vec<Stmt>) -> Vec<Stmt> {
+    strip_class_prologue(&mut body);
     strip_class_scope_leaked(&mut body);
     body
+}
+
+/// Removes the compiler-synthesized `__module__ = __name__` / `__qualname__ = <str>` prologue that
+/// `CPython` emits at the very head of every class body, leaving any user-written `__module__` /
+/// `__qualname__` assignment (which appears later in the body with a different RHS) intact. Only the
+/// leading `__module__ = __name__` and its immediately-following `__qualname__ = <str const>` are
+/// auto-prologue; this runs once on the top-level class body (never on nested control-flow arms,
+/// which `CPython` does not seed with the prologue).
+fn strip_class_prologue(body: &mut Vec<Stmt>) {
+    if matches!(body.first(), Some(s) if is_auto_module_prologue_assign(s)) {
+        body.remove(0);
+    }
+    if matches!(body.first(), Some(s) if is_auto_qualname_prologue_assign(s)) {
+        body.remove(0);
+    }
+}
+
+/// Whether `s` is the auto-prologue `__module__ = __name__` (a `Name` load of `__name__` as RHS),
+/// as opposed to a user-written `__module__ = <const>` which carries a different right-hand side.
+fn is_auto_module_prologue_assign(s: &Stmt) -> bool {
+    let Stmt::Assign { targets, value, .. } = s else {
+        return false;
+    };
+    let [Expr::Name { id, .. }] = targets.as_slice() else {
+        return false;
+    };
+    id == "__module__" && matches!(value, Expr::Name { id: rhs, .. } if rhs == "__name__")
+}
+
+/// Whether `s` is the auto-prologue `__qualname__ = <str const>`, as opposed to a user-written
+/// `__qualname__` bound to a non-string-constant expression.
+fn is_auto_qualname_prologue_assign(s: &Stmt) -> bool {
+    let Stmt::Assign { targets, value, .. } = s else {
+        return false;
+    };
+    let [Expr::Name { id, .. }] = targets.as_slice() else {
+        return false;
+    };
+    id == "__qualname__"
+        && matches!(
+            value,
+            Expr::Constant {
+                value: ConstValue::Str(_),
+                ..
+            }
+        )
 }
 
 /// Strips compiler-synthesized class-body epilogue (`__static_attributes__`/`__classdictcell__`
@@ -18124,9 +18231,7 @@ fn is_class_setup_assign(s: &Stmt) -> bool {
     };
     matches!(
         id.as_str(),
-        "__module__"
-            | "__qualname__"
-            | "__doc__"
+        "__doc__"
             | "__firstlineno__"
             | "__static_attributes__"
             | "__classcell__"
