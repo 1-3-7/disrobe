@@ -6212,6 +6212,8 @@ fn parse_except_handlers(
         if let Some(bound) = name.as_deref() {
             strip_named_exc_cleanup(&mut handler_body, bound);
         }
+        let handler_body: Vec<Stmt> =
+            append_handler_loop_jump(stream, handler_body, body_start, body_end);
         handlers.push(ExceptHandler {
             typ: exc_type,
             name,
@@ -6986,6 +6988,9 @@ fn find_infinite_while(stream: &DecodedStream, lo: usize, hi: usize) -> Option<L
         let Some(back_edge): Option<usize> = back_edge else {
             continue;
         };
+        if loop_frame_has_header(header) {
+            continue;
+        }
         if has_loop_entry_gate(stream, lo, header) {
             continue;
         }
@@ -7128,6 +7133,48 @@ fn max_back_edge_to_header(stream: &DecodedStream, header: usize, lo: usize, hi:
         .unwrap_or(header)
 }
 
+/// End (exclusive) of an infinite `while True:` body whose try/except handlers are cold-placed after
+/// the body's back-edge. Seeds the span at `first_back_edge` — preserving the conventional body
+/// extent so a handler-free loop is unchanged — then iterates to a fixpoint, absorbing the handler
+/// region (via [`handler_join`], one past its terminal `RERAISE`) of every exception-table entry
+/// whose try-start lies inside the span yet whose handler lands beyond it. A handler can itself hold
+/// a `continue` back-edge, but [`handler_join`] already spans to its cold-cleanup tail, so growth
+/// only ever comes from newly-enclosed handlers until none remains. Strictly bounded by `hi`.
+fn infinite_while_body_end(
+    stream: &DecodedStream,
+    header: usize,
+    first_back_edge: usize,
+    hi: usize,
+) -> usize {
+    let cap: usize = hi.min(stream.ops.len());
+    let mut end: usize = first_back_edge.min(cap);
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            let Some(try_start): Option<usize> = stream.index_for_offset(entry.start) else {
+                continue;
+            };
+            let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+                continue;
+            };
+            if try_start < header || try_start >= end || handler_start < end || handler_start >= cap
+            {
+                continue;
+            }
+            let handler_end: usize =
+                handler_join(stream, handler_start, cap).max(handler_start + 1);
+            if handler_end > end {
+                end = handler_end;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    end
+}
+
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -7244,15 +7291,22 @@ fn loop_enclosed_by_guard(stream: &DecodedStream, lo: usize, region: &LoopRegion
 
 /// Whether a pre-3.11 `try` region sits inside a loop body in `[lo, hi)`.
 fn try_enclosed_by_loop(stream: &DecodedStream, lo: usize, hi: usize, region: &TryRegion) -> bool {
-    if !stream.is_pre_311() {
-        return false;
-    }
     let Some(loop_region): Option<LoopRegion> = find_loop(stream, lo, hi) else {
         return false;
     };
-    loop_region.header < region.try_start
-        && loop_region.back_edge > region.handler_start
-        && loop_region.back_edge <= hi
+    if stream.is_pre_311() {
+        return loop_region.header < region.try_start
+            && loop_region.back_edge > region.handler_start
+            && loop_region.back_edge <= hi;
+    }
+    if !loop_region.infinite {
+        return false;
+    }
+    let body_end: usize =
+        infinite_while_body_end(stream, loop_region.header, loop_region.back_edge, hi);
+    loop_region.header <= region.try_start
+        && region.try_start < body_end
+        && region.handler_start < body_end
 }
 
 /// Whether the pre-3.8 `async for` `loop_region` sits inside a real `try:` in `[lo, hi)`.
@@ -7528,7 +7582,7 @@ fn structure_loop(
     let mut out: Vec<Stmt> = head;
     out.push(loop_stmt);
     let tail_start: usize = if region.infinite {
-        skip_loop_epilogue(stream, region.exit.min(hi), hi)
+        skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
         loop_tail_start(stream, region, hi)
     };
@@ -7561,14 +7615,15 @@ fn structure_infinite_while_body(
     stream: &DecodedStream,
     region: &LoopRegion,
 ) -> Result<Vec<Stmt>> {
+    let body_end: usize = infinite_body_end(stream, region);
+    let body_entry: usize = infinite_body_entry(stream, region, body_end);
     let Some((_, body_label)): Option<(usize, usize)> = infinite_exit_block(stream, region) else {
-        return structure_stmts(code, stream, region.body_start, region.back_edge);
+        return structure_stmts(code, stream, body_entry, body_end);
     };
-    let first_cond: usize = (region.header..region.back_edge)
-        .find(|&k: &usize| {
-            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
-        })
-        .unwrap_or(region.header);
+    let first_cond: usize = infinite_first_cond(stream, region);
+    if inline_exit_splits_try(stream, region, first_cond, body_end) {
+        return structure_stmts(code, stream, body_entry, body_end);
+    }
     let (head, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[region.header..first_cond])?;
     let test: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
@@ -7585,7 +7640,6 @@ fn structure_infinite_while_body(
     } else {
         test
     };
-    let body_end: usize = infinite_body_end(stream, region);
     let mut out: Vec<Stmt> = head;
     out.push(Stmt::If {
         test: break_test,
@@ -7597,10 +7651,73 @@ fn structure_infinite_while_body(
     Ok(out)
 }
 
-/// The end of an infinite-loop body, extended past the back-edge to absorb a guarded trailing `return`/`raise`.
+/// Entry op of an infinite loop's body for whole-suite re-structuring: the first significant op
+/// strictly after the `while True:` loop-top (always a back-edge-target `NOP`/cleanup, never a
+/// statement). Starting strictly past the header keeps every back-edge target outside the window so
+/// the loop the active frame already owns cannot be re-detected, which would recurse without bound.
+fn infinite_body_entry(stream: &DecodedStream, region: &LoopRegion, body_end: usize) -> usize {
+    first_significant(stream, region.header + 1, body_end).unwrap_or(region.body_start)
+}
+
+/// The first forward conditional jump of an infinite loop's body — the inline break/continue test
+/// split point — or the header when the body has none.
+fn infinite_first_cond(stream: &DecodedStream, region: &LoopRegion) -> usize {
+    (region.header..region.back_edge)
+        .find(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        .unwrap_or(region.header)
+}
+
+/// Start of the post-loop tail of an infinite `while True:`. Normally the cold break-landing block
+/// (`region.exit`); when the body was instead structured as a whole suite because an in-loop
+/// try/except straddled the inline-exit split (see [`inline_exit_splits_try`]), the whole
+/// `[body_start, body_end)` window — including that break block — is already consumed, so the tail
+/// resumes at `body_end` to avoid re-processing the spliced handler region.
+fn infinite_tail_start(stream: &DecodedStream, region: &LoopRegion) -> usize {
+    let body_end: usize = infinite_body_end(stream, region);
+    let first_cond: usize = infinite_first_cond(stream, region);
+    if inline_exit_splits_try(stream, region, first_cond, body_end) {
+        body_end
+    } else {
+        region.exit
+    }
+}
+
+/// Whether the inline break-test split at `first_cond` would slice through a `try:` body. The
+/// inline-exit form linearizes `[header, first_cond)` and cannot represent a protected region, so a
+/// try whose body starts at or before `first_cond` (with its cold handler landing inside the loop
+/// body span) must instead be structured as a whole-body suite via [`structure_stmts`].
+fn inline_exit_splits_try(
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    first_cond: usize,
+    body_end: usize,
+) -> bool {
+    stream
+        .exception_table
+        .iter()
+        .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(handler_start)): (Option<usize>, Option<usize>) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= region.header
+                && try_start <= first_cond
+                && handler_start > first_cond
+                && handler_start < body_end
+        })
+}
+
+/// The end of an infinite-loop body, extended past the back-edge to absorb a guarded trailing
+/// `return`/`raise` and any cold-placed in-loop exception handler region (see
+/// [`infinite_while_body_end`]).
 fn infinite_body_end(stream: &DecodedStream, region: &LoopRegion) -> usize {
-    let mut end: usize = region.back_edge;
     let len: usize = stream.ops.len();
+    let mut end: usize =
+        infinite_while_body_end(stream, region.header, region.back_edge, len).max(region.back_edge);
     loop {
         let guard_target: Option<usize> = (region.body_start..end)
             .filter(|&k: &usize| {
@@ -7678,7 +7795,7 @@ fn loop_shared_exit_return(
     hi: usize,
 ) -> Option<Expr> {
     let tail_start: usize = if region.infinite {
-        skip_loop_epilogue(stream, region.exit.min(hi), hi)
+        skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
         loop_tail_start(stream, region, hi)
     };
@@ -12852,6 +12969,62 @@ fn append_pre311_break_loop(
     let mut out: Vec<Stmt> = body.to_vec();
     out.push(Stmt::Break);
     Some(out)
+}
+
+/// Restores a `break`/`continue` that an `except` handler ends with but whose materializing
+/// `JUMP_BACKWARD` (to the enclosing loop header) or `JUMP_FORWARD` (to the loop exit) the linear
+/// builder discards as plain control flow. A bare handler collapses to the single jump statement;
+/// a handler that does work first appends the jump. No-op when no loop frame is active, when the
+/// trailing op is not such a jump, or when the body already terminates in a transfer of control.
+fn append_handler_loop_jump(
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    lo: usize,
+    hi: usize,
+) -> Vec<Stmt> {
+    let Some(jump): Option<Stmt> = trailing_loop_jump_stmt(stream, lo, hi) else {
+        return body;
+    };
+    if matches!(
+        body.last(),
+        Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+    ) {
+        return body;
+    }
+    if body.iter().all(|s: &Stmt| matches!(s, Stmt::Pass)) {
+        return vec![jump];
+    }
+    let mut out: Vec<Stmt> = body;
+    out.push(jump);
+    out
+}
+
+/// The `break`/`continue` a region ending at `[lo, hi)` resolves to via the active loop frame, when
+/// its last significant op is a `JUMP_FORWARD`/`JUMP_BACKWARD` reaching the loop exit or header.
+fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
+    let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    })?;
+    if !matches!(
+        stream.ops[last_idx],
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return None;
+    }
+    let target: usize = resolve_jump_target(stream, last_idx, &stream.ops[last_idx])?;
+    if loop_continue_target().is_some_and(|header: usize| target == header) {
+        return Some(Stmt::Continue);
+    }
+    if loop_break_target().is_some_and(|exit: usize| target >= exit && target > last_idx) {
+        return Some(Stmt::Break);
+    }
+    None
 }
 
 fn rewrite_jump_to_break_continue(
@@ -19782,6 +19955,16 @@ fn loop_break_target() -> Option<usize> {
 fn loop_continue_target() -> Option<usize> {
     LOOP_FRAMES
         .with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| slot.borrow().last().map(|f| f.header))
+}
+
+/// Whether any enclosing loop frame already owns `header`. Guards [`find_infinite_while`] against
+/// re-detecting the loop it is currently structuring when its widened body window (extended over a
+/// cold in-loop exception handler) still contains the back-edges targeting that header, which would
+/// otherwise recurse without shrinking.
+fn loop_frame_has_header(header: usize) -> bool {
+    LOOP_FRAMES.with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| {
+        slot.borrow().iter().any(|f: &LoopFrame| f.header == header)
+    })
 }
 
 fn loop_exit_return() -> Option<Expr> {
