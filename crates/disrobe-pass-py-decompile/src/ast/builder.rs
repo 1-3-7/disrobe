@@ -2267,7 +2267,9 @@ fn collect_class_bases(code: &CodeObject, ops: &[CanonicalOp], frame: &Frame) ->
     let mut bases: Vec<Expr> = Vec::new();
     for op in body_ops {
         match op {
-            CanonicalOp::LoadName(i) | CanonicalOp::LoadGlobal(i) => {
+            CanonicalOp::LoadName(i)
+            | CanonicalOp::LoadGlobal(i)
+            | CanonicalOp::LoadFromDictOrGlobals(i) => {
                 if let Ok(id) = name_at(&code.names, *i, 0, "name")
                     && id != "__build_class__"
                     && id != code_name(code)
@@ -2292,7 +2294,10 @@ fn collect_with_items(code: &CodeObject, ops: &[CanonicalOp], frame: &Frame) -> 
     let mut pending_ctx: Option<Expr> = None;
     for op in body_ops {
         match op {
-            CanonicalOp::LoadName(i) | CanonicalOp::LoadGlobal(i) | CanonicalOp::LoadFast(i) => {
+            CanonicalOp::LoadName(i)
+            | CanonicalOp::LoadGlobal(i)
+            | CanonicalOp::LoadFromDictOrGlobals(i)
+            | CanonicalOp::LoadFast(i) => {
                 if let Ok(id) = name_at_either(code, *i) {
                     pending_ctx = Some(Expr::Name {
                         id,
@@ -2396,7 +2401,10 @@ fn extract_for_header(code: &CodeObject, ops: &[CanonicalOp]) -> (Expr, Expr) {
     let mut target: Option<Expr> = None;
     for op in ops {
         match op {
-            CanonicalOp::LoadName(i) | CanonicalOp::LoadGlobal(i) | CanonicalOp::LoadFast(i)
+            CanonicalOp::LoadName(i)
+            | CanonicalOp::LoadGlobal(i)
+            | CanonicalOp::LoadFromDictOrGlobals(i)
+            | CanonicalOp::LoadFast(i)
                 if iter.is_none() =>
             {
                 if let Ok(id) = name_at_either(code, *i) {
@@ -2435,7 +2443,10 @@ fn extract_for_header(code: &CodeObject, ops: &[CanonicalOp]) -> (Expr, Expr) {
 fn extract_loop_test(code: &CodeObject, ops: &[CanonicalOp]) -> Option<Expr> {
     for op in ops {
         match op {
-            CanonicalOp::LoadName(i) | CanonicalOp::LoadGlobal(i) | CanonicalOp::LoadFast(i) => {
+            CanonicalOp::LoadName(i)
+            | CanonicalOp::LoadGlobal(i)
+            | CanonicalOp::LoadFromDictOrGlobals(i)
+            | CanonicalOp::LoadFast(i) => {
                 let id: String = name_at_either(code, *i).ok()?;
                 return Some(Expr::Name {
                     id,
@@ -6726,12 +6737,19 @@ fn legacy_async_for_handler(
         matches!(stream.ops[k], CanonicalOp::Dup)
             && matches!(
                 significant_after(stream, k + 1, hi),
-                Some((_, CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_)))
+                Some((
+                    _,
+                    CanonicalOp::LoadGlobal(_)
+                        | CanonicalOp::LoadName(_)
+                        | CanonicalOp::LoadFromDictOrGlobals(_),
+                ))
             )
     })?;
     let (global_idx, _): (usize, &CanonicalOp) = significant_after(stream, dup + 1, hi)?;
     let name_arg: u32 = match stream.ops[global_idx] {
-        CanonicalOp::LoadGlobal(i) | CanonicalOp::LoadName(i) => i,
+        CanonicalOp::LoadGlobal(i)
+        | CanonicalOp::LoadName(i)
+        | CanonicalOp::LoadFromDictOrGlobals(i) => i,
         _ => return None,
     };
     if name_at(&code.names, name_arg, global_idx, "name")
@@ -8558,7 +8576,8 @@ fn net_stack_effect(op: &CanonicalOp) -> Option<i32> {
         | CanonicalOp::ConvertValue(_)
         | CanonicalOp::GetIter
         | CanonicalOp::GetAwaitable
-        | CanonicalOp::ImportFrom(_) => 0,
+        | CanonicalOp::ImportFrom(_)
+        | CanonicalOp::LoadFromDictOrGlobals(_) => 0,
         CanonicalOp::LoadConst(_)
         | CanonicalOp::LoadSmallInt(_)
         | CanonicalOp::LoadCommonConst(_)
@@ -8736,7 +8755,9 @@ fn build_shortcircuit_stack_expr(
 fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
     match op {
         CanonicalOp::LoadAssertionError | CanonicalOp::LoadCommonConst(0) => true,
-        CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => {
+        CanonicalOp::LoadGlobal(slot)
+        | CanonicalOp::LoadName(slot)
+        | CanonicalOp::LoadFromDictOrGlobals(slot) => {
             name_at_either(code, *slot).is_ok_and(|n: String| n == "AssertionError")
         }
         _ => false,
@@ -9340,6 +9361,7 @@ fn dup_leads_match_test(stream: &DecodedStream, from: usize, hi: usize) -> bool 
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
             | CanonicalOp::LoadAttr(_)) => {
                 comparand = Some(load);
                 k += 1;
@@ -10153,7 +10175,9 @@ fn classify_simple_pattern(
         CanonicalOp::MatchMapping => {
             classify_mapping_pattern(code, stream, first, fail_target, region_end)
         }
-        CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_) => {
+        CanonicalOp::LoadGlobal(_)
+        | CanonicalOp::LoadName(_)
+        | CanonicalOp::LoadFromDictOrGlobals(_) => {
             classify_dotted_value_pattern(code, stream, first, fail_target, region_end)
                 .unwrap_or_else(|| {
                     classify_class_pattern(code, stream, first, fail_target, region_end)
@@ -10310,14 +10334,18 @@ fn recover_one_sequence_element(
             if first_significant(stream, k + 1, scan_end).is_some_and(|n: usize| {
                 matches!(
                     stream.ops[n],
-                    CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_)
+                    CanonicalOp::LoadGlobal(_)
+                        | CanonicalOp::LoadName(_)
+                        | CanonicalOp::LoadFromDictOrGlobals(_)
                 ) && element_is_class_pattern(stream, n, scan_end)
             }) =>
         {
             let cls_head: usize = first_significant(stream, k + 1, scan_end)?;
             recover_class_sequence_element(code, stream, k, cls_head, scan_end)
         }
-        CanonicalOp::LoadGlobal(_) | CanonicalOp::LoadName(_)
+        CanonicalOp::LoadGlobal(_)
+        | CanonicalOp::LoadName(_)
+        | CanonicalOp::LoadFromDictOrGlobals(_)
             if element_is_class_pattern(stream, k, scan_end) =>
         {
             recover_class_sequence_element(code, stream, k, k, scan_end)
@@ -10947,7 +10975,9 @@ fn classify_dotted_value_pattern(
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let base_id: String = match &stream.ops[head] {
         CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot).ok()?,
-        CanonicalOp::LoadName(slot) => name_at(&code.names, *slot, head, "name").ok()?,
+        CanonicalOp::LoadName(slot) | CanonicalOp::LoadFromDictOrGlobals(slot) => {
+            name_at(&code.names, *slot, head, "name").ok()?
+        }
         _ => return None,
     };
     let mut expr: Expr = Expr::Name {
@@ -10989,7 +11019,9 @@ fn classify_class_pattern(
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let cls_name: Result<String> = match &stream.ops[head] {
         CanonicalOp::LoadGlobal(slot) => name_at_either(code, *slot),
-        CanonicalOp::LoadName(slot) => name_at(&code.names, *slot, head, "name"),
+        CanonicalOp::LoadName(slot) | CanonicalOp::LoadFromDictOrGlobals(slot) => {
+            name_at(&code.names, *slot, head, "name")
+        }
         _ => Err(DecompileError::AstDesync {
             offset: head,
             reason: "match-class head is not a class load".to_owned(),
@@ -11428,6 +11460,7 @@ fn is_dup_value_arm_with_cleanup(stream: &DecodedStream, idx: usize, hi: usize) 
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
             | CanonicalOp::LoadAttr(_)) => {
                 comparand = Some(load);
                 k += 1;
@@ -13022,7 +13055,9 @@ fn detect_open_coded_any_all_guard(
     hi: usize,
 ) -> Option<(&'static str, usize)> {
     let slot: u32 = match stream.ops[idx] {
-        CanonicalOp::LoadGlobal(slot) | CanonicalOp::LoadName(slot) => slot,
+        CanonicalOp::LoadGlobal(slot)
+        | CanonicalOp::LoadName(slot)
+        | CanonicalOp::LoadFromDictOrGlobals(slot) => slot,
         _ => return None,
     };
     let name: String = name_at_either(code, slot).ok()?;
@@ -13555,6 +13590,7 @@ fn inline_comp_consumer_boundary(
             CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
             | CanonicalOp::LoadConst(_)
             | CanonicalOp::LoadCommonConst(_)
             | CanonicalOp::LoadAttr(_)
@@ -13930,6 +13966,7 @@ fn is_chain_region_filler(ops: &[CanonicalOp], idx: usize, guard: usize) -> bool
                 | CanonicalOp::LoadFastLoadFast(..)
                 | CanonicalOp::LoadName(_)
                 | CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadFromDictOrGlobals(_)
                 | CanonicalOp::LoadConst(_)
                 | CanonicalOp::LoadSmallInt(_)
                 | CanonicalOp::PopJumpIfFalse(_)
@@ -13948,6 +13985,7 @@ fn preceded_by_dup_rot(ops: &[CanonicalOp], idx: usize) -> bool {
             CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
             | CanonicalOp::LoadConst(_)
             | CanonicalOp::LoadSmallInt(_)
                 if !(seen_swap && seen_dup) => {}
@@ -14043,6 +14081,7 @@ fn try_swap_simultaneous_assign(
             CanonicalOp::LoadFast(_)
                 | CanonicalOp::LoadName(_)
                 | CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadFromDictOrGlobals(_)
                 | CanonicalOp::LoadFastLoadFast(_, _)
                 | CanonicalOp::StoreFast(_)
                 | CanonicalOp::StoreName(_)
@@ -14193,6 +14232,10 @@ fn build_linear_stmts_sim_seed(
             CanonicalOp::LoadFromDictOrDeref(i) => {
                 let _mapping: Expr = sim.pop_or_synth(code, idx);
                 sim.push(load_local(code, *i, idx)?);
+            }
+            CanonicalOp::LoadFromDictOrGlobals(i) => {
+                let _mapping: Expr = sim.pop_or_synth(code, idx);
+                sim.push(load_name(code, *i, idx)?);
             }
             CanonicalOp::LoadAttr(i) => {
                 let value: Expr = sim.pop_or_synth(code, idx);
@@ -17294,6 +17337,12 @@ fn generic_inner_function_meta(wrapper: &CodeObject, inner_idx: u32) -> Option<F
                     sim.push(e);
                 }
             }
+            CanonicalOp::LoadFromDictOrGlobals(i) => {
+                let _mapping: Expr = sim.pop_or_synth(wrapper, idx);
+                if let Ok(e) = load_name(wrapper, *i, idx) {
+                    sim.push(e);
+                }
+            }
             CanonicalOp::LoadFast(i) | CanonicalOp::LoadFastAndClear(i) => {
                 if let Ok(e) = load_local(wrapper, *i, idx) {
                     sim.push(e);
@@ -18748,6 +18797,12 @@ fn extract_comprehension_parts(
             }),
             CanonicalOp::LoadCommonConst(slot) => sim.push(load_common_constant(*slot)),
             CanonicalOp::LoadName(i) | CanonicalOp::LoadGlobal(i) => {
+                if let Ok(e) = load_name(nested, *i, idx) {
+                    sim.push(e);
+                }
+            }
+            CanonicalOp::LoadFromDictOrGlobals(i) => {
+                let _mapping: Expr = sim.pop_or_synth(nested, idx);
                 if let Ok(e) = load_name(nested, *i, idx) {
                     sim.push(e);
                 }
