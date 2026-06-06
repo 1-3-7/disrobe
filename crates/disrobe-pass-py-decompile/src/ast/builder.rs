@@ -8141,6 +8141,18 @@ fn is_subject_dup(op: &CanonicalOp) -> bool {
     matches!(op, CanonicalOp::Dup | CanonicalOp::Copy(1))
 }
 
+/// Whether `op` binds a `match` capture, including the 3.13+ fused store variants. A capture-binding arm
+/// (`case n if ...`) marks a real `match` head regardless of the subsequent guard comparison.
+fn is_capture_store(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::StoreFastLoadFast(_, _)
+    )
+}
+
 fn is_match_fail_jump(op: &CanonicalOp) -> bool {
     matches!(
         op,
@@ -8156,29 +8168,43 @@ fn is_arm_gate(stream: &DecodedStream, idx: usize, fail_target: usize) -> bool {
 }
 
 /// Whether a `Dup`/`Copy 1` at `from` opens a match arm by feeding a refutable test ending in `PopJumpIf*`.
+/// A bare value-pattern compare (no capture store between the dup and the compare) must be `==`/literal-`is`
+/// (`is_match_value_compare`), so identity self-tests (`tuple is tuple`) never read as a head; a capture-bound
+/// arm (`case n if n < 0:`) stores first, after which any guard comparison is legitimate.
 fn dup_leads_match_test(stream: &DecodedStream, from: usize, hi: usize) -> bool {
     let mut k: usize = from;
+    let mut comparand: Option<&CanonicalOp> = None;
+    let mut saw_capture_store: bool = false;
     while k < hi {
         match &stream.ops[k] {
             CanonicalOp::Cache
             | CanonicalOp::Nop
             | CanonicalOp::ExtendedArg(_)
-            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::Dup
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::GetLen => k += 1,
+            op if is_capture_store(op) => {
+                saw_capture_store = true;
+                k += 1;
+            }
+            load @ (CanonicalOp::LoadConst(_)
             | CanonicalOp::LoadSmallInt(_)
             | CanonicalOp::LoadCommonConst(_)
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
-            | CanonicalOp::LoadAttr(_)
-            | CanonicalOp::StoreFast(_)
-            | CanonicalOp::StoreName(_)
-            | CanonicalOp::Dup
-            | CanonicalOp::Copy(_)
-            | CanonicalOp::GetLen => k += 1,
-            CanonicalOp::Compare(_)
-            | CanonicalOp::MatchSequence
-            | CanonicalOp::MatchMapping
-            | CanonicalOp::MatchClass(_) => {
+            | CanonicalOp::LoadAttr(_)) => {
+                comparand = Some(load);
+                k += 1;
+            }
+            CanonicalOp::Compare(op) => {
+                if !saw_capture_store && !is_match_value_compare(*op, comparand) {
+                    return false;
+                }
+                return first_significant(stream, k + 1, hi)
+                    .is_some_and(|n: usize| is_match_fail_jump(&stream.ops[n]));
+            }
+            CanonicalOp::MatchSequence | CanonicalOp::MatchMapping | CanonicalOp::MatchClass(_) => {
                 return first_significant(stream, k + 1, hi)
                     .is_some_and(|n: usize| is_match_fail_jump(&stream.ops[n]));
             }
@@ -8252,6 +8278,13 @@ fn match_subject_split(stream: &DecodedStream, lo: usize, hi: usize) -> Option<u
                     | CanonicalOp::PopJumpIfFalse(_)
             )
     })
+}
+
+/// Whether `[lo, split)` (the prospective subject expression) is straight-line: a real `match` subject
+/// computes without an escaping conditional jump. An intervening `PopJumpIf*` marks a preceding `if`
+/// guard, so the region must be structured as `if`/`elif` with the `match` recovered by recursion.
+fn subject_region_is_straight_line(stream: &DecodedStream, lo: usize, split: usize) -> bool {
+    !(lo..split).any(|k: usize| is_match_fail_jump(&stream.ops[k]))
 }
 
 #[derive(Debug)]
@@ -10200,33 +10233,66 @@ fn is_genuine_match_region(stream: &DecodedStream, subject_split: usize, hi: usi
     (subject_split..hi).any(|k: usize| is_dup_value_arm_with_cleanup(stream, k, hi))
 }
 
-/// Whether a subject `Dup` at `idx` feeds a `Compare` fail gate whose success fall-through is the subject-cleanup.
+/// Whether a comparand load is a literal pattern constant (`case 0:`/`case "x":`), not a name or builtin
+/// reference. A genuine `match` value arm tests the subject against an inline literal; an `x is x` /
+/// `x is _sentinel` identity guard loads a name, global, attribute, or common builtin instead.
+fn is_pattern_literal_load(op: &CanonicalOp) -> bool {
+    matches!(op, CanonicalOp::LoadConst(_) | CanonicalOp::LoadSmallInt(_))
+}
+
+/// Whether a `match` value arm legitimately compares with `op`: equality value patterns (`case 0:`)
+/// use `==`; singleton patterns (`case True:`/`case None:`) use `is` against a literal constant.
+/// `is`/`is not` against a name or builtin is an `if x is y:` guard, never a `match` arm.
+fn is_match_value_compare(op: CmpOp, comparand: Option<&CanonicalOp>) -> bool {
+    match op {
+        CmpOp::Eq => true,
+        CmpOp::Is | CmpOp::IsNot => comparand.is_some_and(is_pattern_literal_load),
+        _ => false,
+    }
+}
+
+/// Whether a subject `Dup` at `idx` feeds a value-pattern `Compare` fail gate whose success fall-through
+/// is the subject-cleanup. Identity guards (`tuple is tuple`, `x is _sentinel`) share this stack shape but
+/// compare a name (not a literal) without first storing a capture, so the comparand kind plus the
+/// presence of a capture store discriminate the false positive from a real value or capture-guard arm.
 fn is_dup_value_arm_with_cleanup(stream: &DecodedStream, idx: usize, hi: usize) -> bool {
     if !is_subject_dup(&stream.ops[idx]) {
         return false;
     }
     let mut k: usize = idx + 1;
-    let mut saw_compare: bool = false;
+    let mut comparand: Option<&CanonicalOp> = None;
+    let mut saw_capture_store: bool = false;
+    let mut saw_arm_compare: bool = false;
     while k < hi {
         match &stream.ops[k] {
             CanonicalOp::Cache
             | CanonicalOp::Nop
             | CanonicalOp::ExtendedArg(_)
-            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::Dup
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::ToBool => k += 1,
+            op if is_capture_store(op) => {
+                saw_capture_store = true;
+                k += 1;
+            }
+            load @ (CanonicalOp::LoadConst(_)
             | CanonicalOp::LoadSmallInt(_)
             | CanonicalOp::LoadCommonConst(_)
             | CanonicalOp::LoadName(_)
             | CanonicalOp::LoadFast(_)
             | CanonicalOp::LoadGlobal(_)
-            | CanonicalOp::LoadAttr(_)
-            | CanonicalOp::Dup
-            | CanonicalOp::Copy(_)
-            | CanonicalOp::ToBool => k += 1,
-            CanonicalOp::Compare(_) => {
-                saw_compare = true;
+            | CanonicalOp::LoadAttr(_)) => {
+                comparand = Some(load);
                 k += 1;
             }
-            op if saw_compare && is_match_fail_jump(op) => {
+            CanonicalOp::Compare(op) => {
+                if !saw_capture_store && !is_match_value_compare(*op, comparand) {
+                    return false;
+                }
+                saw_arm_compare = true;
+                k += 1;
+            }
+            op if saw_arm_compare && is_match_fail_jump(op) => {
                 return matches!(
                     first_significant(stream, k + 1, hi).map(|n: usize| &stream.ops[n]),
                     Some(CanonicalOp::Pop | CanonicalOp::JumpForward(_))
@@ -10330,6 +10396,11 @@ fn structure_match(
         return Ok(None);
     };
     if subject_split <= lo {
+        return Ok(None);
+    }
+    if let Some(head) = match_head_index(stream, lo, hi)
+        && !subject_region_is_straight_line(stream, lo, head)
+    {
         return Ok(None);
     }
     let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
