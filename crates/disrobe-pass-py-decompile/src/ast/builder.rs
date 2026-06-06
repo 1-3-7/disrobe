@@ -1121,6 +1121,7 @@ enum NoneJumpKind {
 struct DecodedStream {
     ops: Vec<CanonicalOp>,
     offsets: Vec<u32>,
+    code_len: u32,
     lines: Vec<Option<u32>>,
     wordcode: bool,
     instr_unit_jumps: bool,
@@ -1223,6 +1224,7 @@ fn decode_stream_with_offsets(
     let mut stream: DecodedStream = DecodedStream {
         ops,
         offsets,
+        code_len: u32::try_from(code.code.len()).unwrap_or(u32::MAX),
         lines,
         wordcode,
         instr_unit_jumps,
@@ -2569,9 +2571,8 @@ fn name_at_either(code: &CodeObject, idx: u32) -> Result<String> {
     clippy::match_same_arms
 )]
 fn resolve_jump_target(stream: &DecodedStream, idx: usize, op: &CanonicalOp) -> Option<usize> {
-    let here: u32 = *stream.offsets.get(idx)?;
-    let step: u32 = if stream.wordcode { 2 } else { 1 };
-    let next: u32 = stream.offsets.get(idx + 1).copied().unwrap_or(here + step);
+    stream.offsets.get(idx)?;
+    let next: u32 = stream.offsets.get(idx + 1).copied().unwrap_or(stream.code_len);
     let jump_unit: u32 = if stream.instr_unit_jumps { 2 } else { 1 };
     let target_byte: u32 = match op {
         CanonicalOp::PopJumpIfFalseRel(a) | CanonicalOp::PopJumpIfTrueRel(a) => {
