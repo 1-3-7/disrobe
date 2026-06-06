@@ -3781,8 +3781,8 @@ fn try_else_split(
     region: &TryRegion,
     protected_end: usize,
     except_region_end: usize,
+    has_combo: bool,
 ) -> Option<(usize, usize)> {
-    let _ = except_region_end;
     if stream.is_pre_311() {
         return None;
     }
@@ -3799,7 +3799,68 @@ fn try_else_split(
     if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
         return None;
     }
+    if !has_combo
+        && handler_normal_exit_reaches(stream, region, except_region_end, else_start, else_end)
+    {
+        return None;
+    }
     Some((else_start, else_end))
+}
+
+/// The post-handler continuation span `[start, end)` of a plain `try/except` that `try_else_split`
+/// rejects as a phantom `else`: a fall-through region between the protected body and the handler that
+/// the handler's normal exit jumps into. It belongs at the enclosing scope, not inside the `try`.
+fn try_continuation_split(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() || protected_end_splits_shortcircuit(stream, protected_end) {
+        return None;
+    }
+    let start: usize = protected_end;
+    let end: usize = trim_trailing_comp_cleanup(stream, start, region.handler_start);
+    if start >= end {
+        return None;
+    }
+    let first_idx: usize = (start..end)
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if !else_entry_is_fallthrough(&stream.ops[first_idx])
+        || !handler_normal_exit_reaches(stream, region, except_region_end, start, end)
+    {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Whether any except handler's normal (non-`RERAISE`) exit reaches into the candidate `else` span
+/// `[else_start, else_end)`. A genuine `try/except/else` has its `else` block reachable only from the
+/// try-body success path: each handler exits by jumping *over* the `else` to the common continuation.
+/// A plain `try/except` followed by more statements instead has its handler exit reach those statements
+/// directly — either by a `JUMP` whose target lands inside the span (e.g. a bare `pass` handler's
+/// `POP_EXCEPT; JUMP_BACKWARD` back to the continuation start) or by falling through to `else_start`.
+/// Such a region is unconditional continuation, not an `else`, so this returns `true` to veto the split.
+fn handler_normal_exit_reaches(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+    else_start: usize,
+    else_end: usize,
+) -> bool {
+    let scan_end: usize = except_region_end.min(stream.ops.len());
+    (region.handler_start..scan_end)
+        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))
+        .filter_map(|pop: usize| first_significant(stream, pop + 1, scan_end))
+        .any(|exit: usize| match &stream.ops[exit] {
+            CanonicalOp::Reraise(_) => false,
+            CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_) => resolve_jump_target(stream, exit, &stream.ops[exit])
+                .is_some_and(|target: usize| (else_start..else_end).contains(&target)),
+            _ => exit < else_end,
+        })
 }
 
 /// Whether `protected_end` falls on the merge of an in-expression value-form short-circuit, i.e. the
@@ -4101,9 +4162,16 @@ fn structure_try_except_family(
     }
 
     let normal_region: Option<(usize, usize)> =
-        try_else_split(stream, region, protected_end, except_region_end);
+        try_else_split(stream, region, protected_end, except_region_end, has_combo);
+
+    let continuation_region: Option<(usize, usize)> = if has_combo || normal_region.is_some() {
+        None
+    } else {
+        try_continuation_split(stream, region, protected_end, except_region_end)
+    };
 
     let lift_modern_tail: bool = normal_region.is_none()
+        && continuation_region.is_none()
         && !has_combo
         && modern_try_construct_tail_present(stream, region, protected_end);
 
@@ -4116,7 +4184,7 @@ fn structure_try_except_family(
             region.handler_start,
             inline_copy_len,
         )?
-    } else if normal_region.is_some() {
+    } else if normal_region.is_some() || continuation_region.is_some() {
         structure_stmts(code, stream, region.try_start, protected_end)?
     } else {
         structure_stmts(code, stream, region.try_start, extended_body_end)?
@@ -4155,7 +4223,16 @@ fn structure_try_except_family(
                 (raw, Vec::new())
             }
         }
-        None => (Vec::new(), lifted_tail),
+        None => match continuation_region {
+            Some((s, e)) => {
+                let mut tail: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
+                while tail.last().is_some_and(is_implicit_none_return) {
+                    tail.pop();
+                }
+                (Vec::new(), tail)
+            }
+            None => (Vec::new(), lifted_tail),
+        },
     };
     let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
         handlers
@@ -4307,7 +4384,7 @@ fn structure_modern_try_with_forward_continuation(
         return Ok(None);
     }
 
-    if try_else_split(stream, region, protected_end, chain_end).is_some() {
+    if try_else_split(stream, region, protected_end, chain_end, true).is_some() {
         return Ok(None);
     }
     let body_end: usize = trim_try_body_jump(stream, region.try_start, extended_body_end);
