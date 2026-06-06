@@ -8743,6 +8743,25 @@ fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
     }
 }
 
+/// Whether `op` is the compiler-only `AssertionError` push (`LOAD_ASSERTION_ERROR` / 3.14
+/// `LOAD_COMMON_CONSTANT 0`). Unlike [`is_assertion_error_load`] this excludes a `LOAD_GLOBAL
+/// AssertionError`, the form a user-written `raise AssertionError(...)` emits; only the dedicated
+/// opcode is the version-independent proof that a region is a real `assert` statement.
+fn is_dedicated_assertion_marker(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::LoadAssertionError | CanonicalOp::LoadCommonConst(0)
+    )
+}
+
+/// Whether the active target version emits a dedicated `assert`-only opcode for the `AssertionError`
+/// push (`LOAD_ASSERTION_ERROR`, added in 3.9; superseded by `LOAD_COMMON_CONSTANT` in 3.14). On
+/// these versions a `LOAD_GLOBAL AssertionError` is unambiguously a user-written `raise`, never an
+/// `assert`; on earlier versions both lower to `LOAD_GLOBAL` and roundtrip equivalently either way.
+fn version_has_dedicated_assertion_opcode() -> bool {
+    active_version().is_some_and(|v: PyVersion| v.major() == 3 && v.minor() >= 9)
+}
+
 /// Reassembles an `assert <test>[, <msg>]` from its short-circuit lowering, or `None` if the region is not an assert.
 /// Advances an assert's `pass_target` past the dead duplicate raise block at a branch-test chain's
 /// shared landing pad. A `assert a<b<c, msg` compiles two copies of the `AssertionError` raise (one
@@ -8796,6 +8815,10 @@ fn try_structure_compound_assert(
         Some((r, m)) => (r, assert_msg_expr(code, stream, raise_idx, r, m)?),
         None => return Ok(None),
     };
+    let dedicated_marker: bool = is_dedicated_assertion_marker(&stream.ops[raise_idx]);
+    if !dedicated_marker && version_has_dedicated_assertion_opcode() {
+        return Ok(None);
+    }
     let raw_pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
     let pass_target: usize =
         skip_chain_assert_dup_raise(stream, lo, raise_idx, raw_pass_target, hi);
@@ -8820,8 +8843,10 @@ fn try_structure_compound_assert(
             CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
         );
         let intermediate: bool = target > jump && target < raise_idx;
+        let negated_skip_to_pass: bool = jumps_false && target >= pass_target && dedicated_marker;
         let conjunct_ok: bool = (jumps_false && target <= raise_idx)
             || (!jumps_false && target >= pass_target)
+            || negated_skip_to_pass
             || intermediate;
         if !conjunct_ok {
             return Ok(None);
