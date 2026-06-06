@@ -8245,19 +8245,19 @@ fn try_structure_ternary_expr(
     else {
         return Ok(None);
     };
+    let none_jump: bool = stream.none_jump_kind.contains_key(&last_test_jump);
     let negate: bool = matches!(stream.ops[last_test_jump], CanonicalOp::PopJumpIfFalse(_));
-    let (then_expr, otherwise_expr): (Expr, Expr) = if negate {
-        (body_expr, else_expr)
+    let (then_expr, otherwise_expr, test_raw): (Expr, Expr, Expr) = if none_jump {
+        let fallthrough_test: Expr = if last_test_jump == jump_idx {
+            fallthrough_cond_test(stream, last_test_jump, test_raw)
+        } else {
+            test_raw
+        };
+        (body_expr, else_expr, fallthrough_test)
+    } else if negate {
+        (body_expr, else_expr, test_raw)
     } else {
-        (else_expr, body_expr)
-    };
-    let test_raw: Expr = match (
-        last_test_jump == jump_idx,
-        none_jump_test(stream, last_test_jump, test_raw.clone()),
-    ) {
-        (true, Some(none_test)) if negate => none_test,
-        (true, Some(none_test)) => negate_cond_expr(none_test),
-        _ => test_raw,
+        (else_expr, body_expr, test_raw)
     };
     let if_exp: Expr = Expr::IfExp {
         test: Box::new(test_raw),
