@@ -1009,17 +1009,42 @@ fn emit_formatted_value(
     version: &PyVersion,
 ) -> String {
     let inner: String = emit_expr(em, value, version, Precedence::Lowest);
-    let conv: &str = match conversion {
-        crate::ast::node::FormatConversion::Str => "!s",
-        crate::ast::node::FormatConversion::Repr => "!r",
-        crate::ast::node::FormatConversion::Ascii => "!a",
-        crate::ast::node::FormatConversion::None => "",
-    };
+    let conv: &str = conversion_suffix(conversion);
     let spec: String = match format_spec {
         Some(s) => format!(":{}", emit_format_spec(em, s, version)),
         None => String::new(),
     };
     format!("f\"{{{inner}{conv}{spec}}}\"")
+}
+
+/// Suffix for an f-string conversion flag (`!s`/`!r`/`!a`; empty for none).
+#[must_use]
+const fn conversion_suffix(conversion: crate::ast::node::FormatConversion) -> &'static str {
+    match conversion {
+        crate::ast::node::FormatConversion::Str => "!s",
+        crate::ast::node::FormatConversion::Repr => "!r",
+        crate::ast::node::FormatConversion::Ascii => "!a",
+        crate::ast::node::FormatConversion::None => "",
+    }
+}
+
+/// Renders a single replacement field `{value<!conv><:nested-spec>}` (no `f"..."` wrapper).
+fn push_replacement_field(
+    out: &mut String,
+    em: &DefaultEmitter,
+    value: &Expr,
+    conversion: crate::ast::node::FormatConversion,
+    format_spec: Option<&Expr>,
+    version: &PyVersion,
+) {
+    out.push('{');
+    out.push_str(&emit_expr(em, value, version, Precedence::Lowest));
+    out.push_str(conversion_suffix(conversion));
+    if let Some(nested) = format_spec {
+        out.push(':');
+        out.push_str(&emit_format_spec(em, nested, version));
+    }
+    out.push('}');
 }
 
 #[must_use]
@@ -1029,6 +1054,23 @@ fn emit_format_spec(em: &DefaultEmitter, spec: &Expr, version: &PyVersion) -> St
             value: ConstValue::Str(s),
             ..
         } => s.clone(),
+        Expr::FormattedValue {
+            value,
+            conversion,
+            format_spec,
+            ..
+        } => {
+            let mut out: String = String::new();
+            push_replacement_field(
+                &mut out,
+                em,
+                value,
+                *conversion,
+                format_spec.as_deref(),
+                version,
+            );
+            out
+        }
         Expr::JoinedStr { values, .. } => {
             let mut out: String = String::new();
             for v in values {
@@ -1042,21 +1084,14 @@ fn emit_format_spec(em: &DefaultEmitter, spec: &Expr, version: &PyVersion) -> St
                         conversion,
                         format_spec,
                         ..
-                    } => {
-                        out.push('{');
-                        out.push_str(&emit_expr(em, value, version, Precedence::Lowest));
-                        match conversion {
-                            crate::ast::node::FormatConversion::Str => out.push_str("!s"),
-                            crate::ast::node::FormatConversion::Repr => out.push_str("!r"),
-                            crate::ast::node::FormatConversion::Ascii => out.push_str("!a"),
-                            crate::ast::node::FormatConversion::None => {}
-                        }
-                        if let Some(nested) = format_spec.as_deref() {
-                            out.push(':');
-                            out.push_str(&emit_format_spec(em, nested, version));
-                        }
-                        out.push('}');
-                    }
+                    } => push_replacement_field(
+                        &mut out,
+                        em,
+                        value,
+                        *conversion,
+                        format_spec.as_deref(),
+                        version,
+                    ),
                     other => out.push_str(&emit_expr(em, other, version, Precedence::Lowest)),
                 }
             }
