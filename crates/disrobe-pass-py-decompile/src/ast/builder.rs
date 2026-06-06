@@ -2572,7 +2572,11 @@ fn name_at_either(code: &CodeObject, idx: u32) -> Result<String> {
 )]
 fn resolve_jump_target(stream: &DecodedStream, idx: usize, op: &CanonicalOp) -> Option<usize> {
     stream.offsets.get(idx)?;
-    let next: u32 = stream.offsets.get(idx + 1).copied().unwrap_or(stream.code_len);
+    let next: u32 = stream
+        .offsets
+        .get(idx + 1)
+        .copied()
+        .unwrap_or(stream.code_len);
     let jump_unit: u32 = if stream.instr_unit_jumps { 2 } else { 1 };
     let target_byte: u32 = match op {
         CanonicalOp::PopJumpIfFalseRel(a) | CanonicalOp::PopJumpIfTrueRel(a) => {
@@ -7191,6 +7195,92 @@ fn infinite_while_body_end(
     end
 }
 
+/// End (exclusive) of a 3.11+ `for` body whose in-loop `try/except` handlers are cold-placed past
+/// `END_FOR`. Mirrors [`infinite_while_body_end`]: starts at the `FOR_ITER` exit boundary and grows
+/// by fixpoint, absorbing each exception row whose try-start lies in `[body_start, end)` and whose
+/// `PUSH_EXC_INFO` handler is cold beyond `end`, extending over that handler's full cleanup chain via
+/// [`handler_chain_end`]. Returns `raw_exit` unchanged (no absorption) for pre-3.11 streams, when no
+/// cold handler exists, or when a real `for ... else:` body sits between `END_FOR` and the first cold
+/// handler (its non-epilogue ops would otherwise be swallowed into the loop body).
+fn for_body_end_absorbing_cold_handlers(
+    stream: &DecodedStream,
+    body_start: usize,
+    raw_exit: usize,
+    hi: usize,
+) -> usize {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return raw_exit;
+    }
+    let cap: usize = hi.min(stream.ops.len());
+    let start: usize = raw_exit.min(cap);
+    let first_cold: Option<usize> = stream
+        .exception_table
+        .iter()
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let hs: usize = stream.index_for_offset(e.target)?;
+            if ts < body_start
+                || ts >= start
+                || hs < start
+                || hs >= cap
+                || !matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
+            {
+                return None;
+            }
+            Some(hs)
+        })
+        .min();
+    let Some(first_cold): Option<usize> = first_cold else {
+        return raw_exit;
+    };
+    let pure_epilogue: bool = (start..first_cold).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Pop
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Return
+        )
+    });
+    if !pure_epilogue {
+        return raw_exit;
+    }
+    let mut end: usize = start;
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            let (Some(ts), Some(hs)): (Option<usize>, Option<usize>) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset(entry.target),
+            ) else {
+                continue;
+            };
+            if ts < body_start
+                || ts >= end
+                || hs < end
+                || hs >= cap
+                || !matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
+            {
+                continue;
+            }
+            let absorbed_end: usize = handler_chain_end(stream, hs, cap)
+                .unwrap_or_else(|| handler_join(stream, hs, cap).max(hs + 1));
+            if absorbed_end > end {
+                end = absorbed_end;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    end
+}
+
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -7220,13 +7310,16 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
                 .unwrap_or_else(|| raw_exit.min(hi).saturating_sub(1).max(i + 1));
             let exit_via_foriter: usize = raw_exit.min(hi).max((back_edge + 1).min(hi));
             let body_start: usize = (i + 1).min(hi);
+            let absorbed_end: usize =
+                for_body_end_absorbing_cold_handlers(stream, body_start, raw_exit, hi);
+            let body_end: usize = exit_via_foriter.max(absorbed_end);
             let region: LoopRegion = LoopRegion {
                 kind: LoopKind::For,
                 header: i,
                 body_start,
-                body_end: exit_via_foriter,
+                body_end,
                 back_edge,
-                exit: exit_via_foriter,
+                exit: body_end,
                 infinite: false,
             };
             return Some(region);
@@ -7316,7 +7409,10 @@ fn try_enclosed_by_loop(stream: &DecodedStream, lo: usize, hi: usize, region: &T
             && loop_region.back_edge <= hi;
     }
     if !loop_region.infinite {
-        return false;
+        return matches!(loop_region.kind, LoopKind::For)
+            && loop_region.header <= region.try_start
+            && region.try_start < loop_region.body_end
+            && region.handler_start < loop_region.body_end;
     }
     let body_end: usize =
         infinite_while_body_end(stream, loop_region.header, loop_region.back_edge, hi);
