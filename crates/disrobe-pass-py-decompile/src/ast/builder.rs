@@ -52,6 +52,7 @@ impl AstBuilder for DefaultAstBuilder {
                 || module_exc_route(&frame_tree.root)
                 || module_inline_comp_route(&stream, &frame_tree.root));
         let raw_body: Vec<Stmt> = if route_via_sim {
+            let _depth_scope: StructureDepthScope = StructureDepthScope::enter();
             structure_stmts(code, &stream, 0, stream.ops.len())?
         } else {
             build_frame(code, &frame_tree.root, &stream.ops)?
@@ -12418,6 +12419,7 @@ fn structure_stmts(
     lo: usize,
     hi: usize,
 ) -> Result<Vec<Stmt>> {
+    let _depth_guard: StructureDepthGuard = enter_structure_depth()?;
     let hi: usize = extend_window_over_split_handler(stream, lo, hi.min(stream.ops.len()));
     if lo >= hi {
         return Ok(Vec::new());
@@ -18582,8 +18584,29 @@ fn build_nested_function_def(
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
     let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
-    let body_raw: Vec<Stmt> =
-        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_default();
+    let is_async: bool = is_async_default
+        || (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
+    let args: Arguments = function_args_from_code(nested);
+    let structured: Result<Vec<Stmt>> = {
+        let _depth_scope: StructureDepthScope = StructureDepthScope::enter();
+        structure_stmts(nested, &stream, 0, stream.ops.len())
+    };
+    let body_raw: Vec<Stmt> = match structured {
+        Ok(body) => body,
+        Err(err) => {
+            return Some(Stmt::FunctionDef {
+                name: target_name,
+                type_params: Vec::new(),
+                args,
+                body: vec![Stmt::Pass],
+                decorators: Vec::new(),
+                returns: None,
+                is_async,
+                docstring: Some(format!("decompile-error: {err}")),
+                line: None,
+            });
+        }
+    };
     let stripped: Vec<Stmt> =
         strip_module_implicit_return(strip_module_docstring_stmt(body_raw, nested));
     let processed: Vec<Stmt> = prepend_nonlocal_decls(
@@ -18600,9 +18623,6 @@ fn build_nested_function_def(
     } else {
         processed
     };
-    let is_async: bool = is_async_default
-        || (nested.flags & (PY_CO_FLAG_COROUTINE | PY_CO_FLAG_ASYNC_GENERATOR)) != 0;
-    let args: Arguments = function_args_from_code(nested);
     Some(Stmt::FunctionDef {
         name: target_name,
         type_params: Vec::new(),
@@ -19522,6 +19542,67 @@ thread_local! {
     static FUTURE_ANNOTATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static BOOLOP_MERGES: std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>> =
         const { std::cell::RefCell::new(None) };
+    static STRUCTURE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Maximum nesting depth of the [`structure_stmts`] region recursion before it bails with
+/// [`DecompileError::StructuringDepthExceeded`]. The structurer recurses through `structure_stmts`
+/// for every nested region (`if`/`try`/`with`/loop/`match` arm), and a mis-recovered region can
+/// produce a non-shrinking window that recurses without bound, exhausting the OS thread stack (an
+/// uncatchable abort). This converts that runaway into a catchable `Err`, isolated per code object
+/// by [`build_nested_function_def`]. The bound is far above any legitimate real-world source nesting
+/// (real control flow rarely nests past a few dozen levels) yet well below the frame budget of the
+/// dedicated large-stack worker thread the structurer runs on (see `build_real_source`).
+const STRUCTURE_DEPTH_LIMIT: usize = 600;
+
+/// RAII guard that increments the thread-local [`STRUCTURE_DEPTH`] on construction and decrements it
+/// on drop, so the depth is restored on every exit path (including the `?` early-return out of
+/// [`structure_stmts`]). [`enter_structure_depth`] returns `Err` instead of constructing the guard
+/// once the limit is reached, short-circuiting the runaway recursion before it overflows the stack.
+#[derive(Debug)]
+struct StructureDepthGuard;
+
+impl Drop for StructureDepthGuard {
+    fn drop(&mut self) {
+        STRUCTURE_DEPTH
+            .with(|slot: &std::cell::Cell<usize>| slot.set(slot.get().saturating_sub(1)));
+    }
+}
+
+fn enter_structure_depth() -> Result<StructureDepthGuard> {
+    STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| {
+        let next: usize = slot.get() + 1;
+        if next > STRUCTURE_DEPTH_LIMIT {
+            return Err(DecompileError::StructuringDepthExceeded {
+                limit: STRUCTURE_DEPTH_LIMIT,
+            });
+        }
+        slot.set(next);
+        Ok(StructureDepthGuard)
+    })
+}
+
+/// RAII guard that zeroes the thread-local [`STRUCTURE_DEPTH`] for the duration of one nested code
+/// object's structuring and restores the enclosing value on drop. Each nested function/method/class
+/// begins its own logical region recursion, so its depth must be measured from zero rather than
+/// inheriting the parent's frame budget; this keeps the depth guard a per-code-object protection and
+/// stops a legitimately deep enclosing module from prematurely tripping the limit for inner objects.
+#[derive(Debug)]
+struct StructureDepthScope {
+    restore: usize,
+}
+
+impl StructureDepthScope {
+    fn enter() -> Self {
+        let restore: usize = STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.replace(0));
+        Self { restore }
+    }
+}
+
+impl Drop for StructureDepthScope {
+    fn drop(&mut self) {
+        STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.set(self.restore));
+    }
 }
 
 /// Identity of the exact op slice a set of value-form short-circuit merge indices applies to: its

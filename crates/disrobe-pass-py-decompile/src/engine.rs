@@ -69,6 +69,13 @@ pub fn decompile_pyc(bytes: &[u8]) -> Result<NativeDecompile> {
     }
 }
 
+/// Stack size of the worker thread the AST structurer runs on. The region structurer recurses
+/// through `structure_stmts` for every nested control-flow region, with large per-frame locals; on
+/// the default 8 MiB main-thread stack a pathological (mis-recovered, non-shrinking) region can
+/// abort the process before the builder's catchable depth guard fires. Running it on a generous
+/// stack guarantees the depth guard (a recoverable `Err`) is always what bounds the recursion.
+const STRUCTURE_STACK_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn build_real_source(
     code: &CodeObject,
     decompile_version: &DecompileVersion,
@@ -76,8 +83,20 @@ pub fn build_real_source(
 ) -> Result<String> {
     let started: Instant = Instant::now();
     let frame_tree: FrameTree = builder_for(marshal_version).build(code, marshal_version)?;
-    let module: AstModule =
-        DefaultAstBuilder::new().build_module(code, &frame_tree, decompile_version)?;
+    let module: AstModule = std::thread::scope(|scope: &std::thread::Scope<'_, '_>| {
+        std::thread::Builder::new()
+            .stack_size(STRUCTURE_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                DefaultAstBuilder::new().build_module(code, &frame_tree, decompile_version)
+            })
+            .map_err(DecompileError::Io)?
+            .join()
+            .map_err(
+                |_panic: Box<dyn std::any::Any + Send>| DecompileError::Emit {
+                    reason: "ast structurer worker thread panicked".to_owned(),
+                },
+            )?
+    })?;
     let pipeline: EmitPipeline = EmitPipeline {
         emitter: Box::new(DefaultEmitter::new()),
         formatter_enabled: false,

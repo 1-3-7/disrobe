@@ -38,6 +38,10 @@ pub enum DecompileError {
     #[diagnostic(code("DR-PYDEC-0007"))]
     AstDesync { offset: usize, reason: String },
 
+    #[error("structuring recursion depth limit {limit} exceeded (runaway region nesting)")]
+    #[diagnostic(code("DR-PYDEC-0012"))]
+    StructuringDepthExceeded { limit: usize },
+
     #[error("codegen failure: {reason}")]
     #[diagnostic(code("DR-PYDEC-0008"))]
     Codegen { reason: String },
