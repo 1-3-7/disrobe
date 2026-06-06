@@ -2559,6 +2559,9 @@ fn resolve_fused_extended_arg_target(stream: &DecodedStream, target_byte: u32) -
 #[allow(clippy::trivially_copy_pass_by_ref)]
 /// Whether a conditional jump is a value-form short-circuit (boolop machinery, not control flow).
 fn is_value_form_shortcircuit(ops: &[CanonicalOp], idx: usize) -> bool {
+    if is_chain_compare_jump(ops, idx) {
+        return false;
+    }
     match ops[idx] {
         CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_) => true,
         CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfFalse(_) => {
@@ -8520,6 +8523,43 @@ fn is_assertion_error_load(code: &CodeObject, op: &CanonicalOp) -> bool {
 }
 
 /// Reassembles an `assert <test>[, <msg>]` from its short-circuit lowering, or `None` if the region is not an assert.
+/// Advances an assert's `pass_target` past the dead duplicate raise block at a branch-test chain's
+/// shared landing pad. A `assert a<b<c, msg` compiles two copies of the `AssertionError` raise (one
+/// per false-exit); the pad copy is reached only through the chain's `POP_TOP` cleanup and is
+/// unreachable once the first copy structures, so structuring it would emit a stray `raise`.
+fn skip_chain_assert_dup_raise(
+    stream: &DecodedStream,
+    lo: usize,
+    raise_idx: usize,
+    raw_pass_target: usize,
+    hi: usize,
+) -> usize {
+    if !(lo..raise_idx).any(|k: usize| is_modern_test_chain_link_jump(&stream.ops, k)) {
+        return raw_pass_target;
+    }
+    let Some(final_jump): Option<usize> = (lo..raise_idx).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return raw_pass_target;
+    };
+    let Some(final_target): Option<usize> =
+        resolve_jump_target(stream, final_jump, &stream.ops[final_jump])
+            .filter(|t: &usize| *t > raw_pass_target && *t <= hi)
+    else {
+        return raw_pass_target;
+    };
+    let Some(cleanup): Option<usize> =
+        chain_landing_pad_cleanup_len(stream, raw_pass_target, final_target)
+    else {
+        return raw_pass_target;
+    };
+    if region_ends_in_hard_terminator(stream, raw_pass_target + cleanup, final_target) {
+        final_target
+    } else {
+        raw_pass_target
+    }
+}
+
 fn try_structure_compound_assert(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -8535,7 +8575,9 @@ fn try_structure_compound_assert(
         Some((r, m)) => (r, assert_msg_expr(code, stream, raise_idx, r, m)?),
         None => return Ok(None),
     };
-    let pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
+    let raw_pass_target: usize = first_significant(stream, raise_op + 1, hi).unwrap_or(hi);
+    let pass_target: usize =
+        skip_chain_assert_dup_raise(stream, lo, raise_idx, raw_pass_target, hi);
     let jump_indices: Vec<usize> = (lo..raise_idx)
         .filter(|&k: &usize| {
             is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
@@ -11885,6 +11927,79 @@ fn then_continues_to_loop(
     None
 }
 
+/// Length of the chain cleanup group (`POP_TOP`, plus surrounding `CACHE`/`NOP`) at the start of a
+/// branch-test chain's shared landing pad, used to skip it when materializing the else-arm.
+fn chain_landing_pad_cleanup_len(stream: &DecodedStream, pad: usize, hi: usize) -> Option<usize> {
+    let mut k: usize = pad;
+    while k < hi && matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop) {
+        k += 1;
+    }
+    if k < hi && matches!(stream.ops[k], CanonicalOp::Pop) {
+        Some(k + 1 - pad)
+    } else {
+        None
+    }
+}
+
+/// Recovers an `if`/`while`/`assert a<b<c:` whose terminating jump at `guard` follows a branch-test
+/// chained comparison. The compiler clips the then-body at the chain's shared landing pad (the
+/// `POP_TOP` cleanup of the duplicated middle operand) and emits a *separate* false-arm there in
+/// addition to the terminating jump's own target, so the generic if-builder must instead bound the
+/// then-body at that pad and treat the pad's cleanup as discardable.
+fn try_structure_modern_test_chain_if(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    guard: usize,
+    final_target: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(pad): Option<usize> = modern_test_chain_then_end(stream, guard, hi) else {
+        return Ok(None);
+    };
+    if pad <= guard + 1 || pad >= final_target {
+        return Ok(None);
+    }
+    let Some(cleanup): Option<usize> = chain_landing_pad_cleanup_len(stream, pad, hi) else {
+        return Ok(None);
+    };
+    let then_lo: usize = guard + 1;
+    if !matches!(
+        stream.ops[guard],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    ) || then_terminating_jump(stream, then_lo, pad).is_some()
+        || !region_ends_in_hard_terminator(stream, then_lo, pad)
+    {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let raw_test: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
+        value: ConstValue::True,
+        line: None,
+    });
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+
+    let else_lo: usize = pad + cleanup;
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, then_lo, pad)?;
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: if then_body.is_empty() {
+            vec![Stmt::Pass]
+        } else {
+            then_body
+        },
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, else_lo, final_target)?);
+    if !region_ends_in_hard_terminator(stream, else_lo, final_target) {
+        out.extend(structure_stmts(code, stream, final_target, hi)?);
+    }
+    Ok(Some(out))
+}
+
 fn structure_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -12005,6 +12120,13 @@ fn structure_stmts(
     let target: usize = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
         .filter(|t: &usize| *t > jump_idx && *t <= hi)
         .unwrap_or(hi);
+
+    if compound.is_none()
+        && let Some(stmts) =
+            try_structure_modern_test_chain_if(code, stream, lo, hi, jump_idx, target)?
+    {
+        return Ok(stmts);
+    }
 
     let is_compound: bool = compound.is_some();
     let (head, raw_test): (Vec<Stmt>, Expr) = if let Some(c) = compound {
@@ -13444,11 +13566,19 @@ fn is_chain_sentinel(expr: &Expr) -> bool {
     matches!(expr, Expr::Name { id, .. } if id == DR_CHAIN_SENTINEL)
 }
 
+/// Classification of a chained-comparison intermediate link, keyed on the version-independent
+/// `SWAP 2; COPY 2` operand-duplication that prefixes every link's `Compare` (a plain comparison
+/// never copies its operands).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainLink {
     None,
+    /// Pre-3.11 link finished by `JUMP_IF_FALSE_OR_POP` / `JUMP_IF_TRUE_OR_POP`.
     Legacy,
+    /// 3.11+ value-form link: `Compare; COPY 1; [TO_BOOL]; POP_JUMP_IF_*` (result feeds a value).
     Modern,
+    /// 3.11+ branch-test link: `Compare(bool(..)); POP_JUMP_IF_*` directly, no `COPY 1`
+    /// (the `if`/`while`/`assert a<b<c` form, where the comparison only drives control flow).
+    ModernTest,
 }
 
 fn classify_chain_link(ops: &[CanonicalOp], idx: usize) -> ChainLink {
@@ -13480,6 +13610,9 @@ fn classify_chain_link(ops: &[CanonicalOp], idx: usize) -> ChainLink {
             }
             _ => ChainLink::None,
         },
+        Some(CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_)) => {
+            ChainLink::ModernTest
+        }
         _ => ChainLink::None,
     }
 }
@@ -13500,7 +13633,12 @@ fn is_chain_cond_jump(ops: &[CanonicalOp], idx: usize) -> bool {
             _ => break,
         }
     }
-    compare_idx.is_some_and(|cmp: usize| classify_chain_link(ops, cmp) == ChainLink::Modern)
+    compare_idx.is_some_and(|cmp: usize| {
+        matches!(
+            classify_chain_link(ops, cmp),
+            ChainLink::Modern | ChainLink::ModernTest
+        )
+    })
 }
 
 /// Whether the jump at `idx` is the chained-comparison jump following a chain-link Compare.
@@ -13521,6 +13659,75 @@ fn is_chain_compare_jump(ops: &[CanonicalOp], idx: usize) -> bool {
         }
     }
     compare_idx.is_some_and(|cmp: usize| classify_chain_link(ops, cmp) != ChainLink::None)
+}
+
+/// Whether the jump at `idx` is the intermediate `POP_JUMP_IF_*` of a branch-test chained
+/// comparison (`if`/`while`/`assert a<b<c`). Every such intermediate jump shares one cleanup
+/// landing pad; its target bounds the then-body and starts the (cleanup-prefixed) else-arm.
+fn is_modern_test_chain_link_jump(ops: &[CanonicalOp], idx: usize) -> bool {
+    let mut compare_idx: Option<usize> = None;
+    for back in (0..idx).rev() {
+        match &ops[back] {
+            CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::ToBool => {}
+            CanonicalOp::Compare(_) => {
+                compare_idx = Some(back);
+                break;
+            }
+            _ => break,
+        }
+    }
+    compare_idx.is_some_and(|cmp: usize| classify_chain_link(ops, cmp) == ChainLink::ModernTest)
+}
+
+/// The shared cleanup-pad target of a branch-test chain whose terminating jump is `guard`, found
+/// by scanning back over the chain's contiguous body for an intermediate `ModernTest` link jump
+/// (whose final compare feeds `guard` directly). `None` for plain comparisons and for value-form
+/// (`Modern`) chains, which carry a `COPY 1` sentinel cleaned up by a different idiom.
+fn modern_test_chain_then_end(stream: &DecodedStream, guard: usize, hi: usize) -> Option<usize> {
+    if !matches!(
+        stream.ops[guard],
+        CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+    ) {
+        return None;
+    }
+    let link_jump: usize = (0..guard)
+        .rev()
+        .take_while(|&k: &usize| is_chain_region_filler(&stream.ops, k, guard + 1))
+        .find(|&k: &usize| is_modern_test_chain_link_jump(&stream.ops, k))?;
+    resolve_jump_target(stream, link_jump, &stream.ops[link_jump])
+        .filter(|t: &usize| *t > guard && *t <= hi)
+}
+
+/// Whether the op at `idx` lies within the linear chain body between an intermediate link jump and
+/// the terminating `guard` jump (loads, the per-link `SWAP/COPY` dup, comparisons, and fillers).
+fn is_chain_region_filler(ops: &[CanonicalOp], idx: usize, guard: usize) -> bool {
+    idx < guard
+        && matches!(
+            ops[idx],
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::ToBool
+                | CanonicalOp::Swap(_)
+                | CanonicalOp::RotN(_)
+                | CanonicalOp::Copy(_)
+                | CanonicalOp::Dup
+                | CanonicalOp::Compare(_)
+                | CanonicalOp::LoadFast(_)
+                | CanonicalOp::LoadFastLoadFast(..)
+                | CanonicalOp::LoadName(_)
+                | CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfTrue(_)
+        )
 }
 
 fn preceded_by_dup_rot(ops: &[CanonicalOp], idx: usize) -> bool {
