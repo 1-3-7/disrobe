@@ -12596,12 +12596,14 @@ fn structure_stmts(
         orelse_start = Some(target);
         then_jump_at = Some(back);
     }
+    let then_arm_is_fallthrough: bool = negate || stream.none_jump_kind.contains_key(&jump_idx);
     if orelse_start.is_none()
+        && then_arm_is_fallthrough
         && target < hi
         && region_ends_in_hard_terminator(stream, jump_idx + 1, body_end)
-        && let Some(epilogue_start) = dead_none_epilogue_start(code, stream, lo, hi)
-        && target < epilogue_start
-        && region_ends_in_hard_terminator(stream, target, epilogue_start)
+        && let Some(else_end) =
+            hard_terminator_else_end(code, stream, lo, hi, jump_idx, body_end, target)
+        && target < else_end
     {
         join = hi;
         orelse_start = Some(target);
@@ -13811,6 +13813,84 @@ fn dead_none_epilogue_start(
         _ => return None,
     };
     region_ends_in_hard_terminator(stream, lo, epilogue_start).then_some(epilogue_start)
+}
+
+/// End of the recovered `else` arm of an `if` whose then-arm ends in a hard terminator, or `None`
+/// when no `else` should be recovered.
+///
+/// Pre-3.12 keeps the historical shape: an `else` exists only when a dead `return None` epilogue trails
+/// a both-arms-terminating `if/else`, bounding the arm before that epilogue.
+///
+/// 3.12+ elides the merge jump of a both-arms-diverging `if/else` and instead duplicates the shared
+/// merge tail (e.g. `LOAD_FAST x; RETURN_VALUE`, or the implicit `return None`) into both branches.
+/// The false-target arm `[target, hi)` is then a genuine `else` precisely when it ends in a hard
+/// terminator and shares that duplicated tail with the then-arm; a guard-style early `return`/`raise`
+/// (whose fall-through is the real continuation, not an `else`) ends in a *different* terminator and is
+/// rejected so its body stays a sibling.
+fn hard_terminator_else_end(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    jump_idx: usize,
+    body_end: usize,
+    target: usize,
+) -> Option<usize> {
+    if active_version().is_some_and(|v: PyVersion| (v.major(), v.minor()) >= (3, 12)) {
+        return (region_ends_in_hard_terminator(stream, target, hi)
+            && shares_duplicated_tail(code, stream, jump_idx + 1, body_end, target, hi))
+        .then_some(hi);
+    }
+    dead_none_epilogue_start(code, stream, lo, hi).filter(|&epilogue_start: &usize| {
+        region_ends_in_hard_terminator(stream, target, epilogue_start)
+    })
+}
+
+/// Whether the then-arm `[then_lo, then_hi)` and the else-arm `[else_lo, else_hi)` end in an identical
+/// run of significant ops that constitutes a genuine merge tail `CPython` 3.12+ duplicates into both
+/// branches when it omits the forward merge jump.
+///
+/// The shared suffix must compute and return (or raise) a *concrete duplicated value*: a bare shared
+/// `RETURN_VALUE` is not distinctive (every `return <expr>` ends in one), and a shared implicit
+/// `return None` epilogue is indistinguishable from the natural fall-through of unrelated sibling
+/// guards, so both are rejected — only a duplicated `LOAD_<value>; RETURN_VALUE` / duplicated `raise`,
+/// or a duplicated `RETURN_CONST` of a non-`None` constant, marks the both-arms-diverging `if/else`.
+fn shares_duplicated_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    then_lo: usize,
+    then_hi: usize,
+    else_lo: usize,
+    else_hi: usize,
+) -> bool {
+    let then_tail: Vec<usize> = significant_indices_back(stream, then_lo, then_hi);
+    let else_tail: Vec<usize> = significant_indices_back(stream, else_lo, else_hi);
+    let mut matched: Vec<&CanonicalOp> = Vec::new();
+    for (a, b) in then_tail.iter().zip(else_tail.iter()) {
+        if stream.ops[*a] != stream.ops[*b] {
+            break;
+        }
+        matched.push(&stream.ops[*a]);
+    }
+    match matched.as_slice() {
+        [op @ CanonicalOp::ReturnConst(_), ..] => !loads_none(code, op),
+        [CanonicalOp::Raise(_) | CanonicalOp::Reraise(_), _, ..] => true,
+        [CanonicalOp::Return, value, ..] => !loads_none(code, value),
+        _ => false,
+    }
+}
+
+/// Indices of significant ops in `[lo, hi)` in reverse order, skipping `Cache`/`Nop`/`ExtendedArg` padding.
+fn significant_indices_back(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {
+    (lo..hi)
+        .rev()
+        .filter(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .collect()
 }
 
 /// Recovers a pre-3.11 loop-body `if cond:` whose false branch back-jumps to the loop's continue point.
@@ -16884,34 +16964,47 @@ fn is_conditional_annotations_membership(s: &Stmt) -> bool {
 }
 
 /// Extract ordered `(name, annotation)` pairs from a recovered `__annotate_func__` body whose
-/// statements are `__classdict__["name"] = annotation` subscript assigns.
+/// statements are `__classdict__["name"] = annotation` subscript assigns. The 3.14 PEP 649 preamble
+/// guards the dict-build behind an `if format > VALUE_NOT_SUPPORTED: raise NotImplementedError`, whose
+/// real annotation assigns land in the recovered `else` arm, so this descends through `if` branches
+/// collecting every class-annotation subscript-store in order.
 fn class_annotation_pairs(fn_body: &[Stmt]) -> Vec<(String, Expr)> {
     let mut pairs: Vec<(String, Expr)> = Vec::new();
-    for stmt in fn_body {
-        let Stmt::Assign { targets, value, .. }: &Stmt = stmt else {
-            continue;
-        };
-        let [
-            Expr::Subscript {
-                value: base, slice, ..
-            },
-        ]: &[Expr] = targets.as_slice()
-        else {
-            continue;
-        };
-        if !is_class_annotation_base(base.as_ref()) {
-            continue;
-        }
-        let Expr::Constant {
-            value: ConstValue::Str(name),
-            ..
-        }: &Expr = slice.as_ref()
-        else {
-            continue;
-        };
-        pairs.push((name.clone(), unstringify_annotation(value.clone())));
-    }
+    collect_class_annotation_pairs(fn_body, &mut pairs);
     pairs
+}
+
+fn collect_class_annotation_pairs(stmts: &[Stmt], pairs: &mut Vec<(String, Expr)>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::If { body, orelse, .. } => {
+                collect_class_annotation_pairs(body, pairs);
+                collect_class_annotation_pairs(orelse, pairs);
+            }
+            Stmt::Assign { targets, value, .. } => {
+                let [
+                    Expr::Subscript {
+                        value: base, slice, ..
+                    },
+                ]: &[Expr] = targets.as_slice()
+                else {
+                    continue;
+                };
+                if !is_class_annotation_base(base.as_ref()) {
+                    continue;
+                }
+                let Expr::Constant {
+                    value: ConstValue::Str(name),
+                    ..
+                }: &Expr = slice.as_ref()
+                else {
+                    continue;
+                };
+                pairs.push((name.clone(), unstringify_annotation(value.clone())));
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Whether an expression is the subscript base a deferred `__annotate__` body assigns each annotation into.
