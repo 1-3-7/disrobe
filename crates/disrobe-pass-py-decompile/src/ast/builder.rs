@@ -4068,6 +4068,13 @@ fn op_spans_match(
 /// `[gap_start, handler_start)`, identified as the maximal gap suffix that is byte-identical to the
 /// handler's post-`POP_EXCEPT` continuation copy. Returns `handler_start` when no continuation
 /// duplication is present (a pure `else:` or empty gap).
+///
+/// A genuine duplicated continuation copies the handler's whole tail starting at a statement
+/// boundary, so `cont_start` either equals `gap_start` or follows a value-neutral op
+/// (`STORE_*`/`POP_TOP`/jump). A candidate that begins in the middle of a value computation — its
+/// preceding significant op still leaves a value on the stack — is the trailing `return X` of the
+/// fall-through path whose bare `RETURN_VALUE` merely coincides with the handler tail's, never a real
+/// duplicate; rejecting it keeps that `return X` instead of collapsing it to an implicit `return None`.
 fn modern_continuation_start(
     stream: &DecodedStream,
     gap_start: usize,
@@ -4080,11 +4087,27 @@ fn modern_continuation_start(
     }
     let mut best: usize = handler_start;
     for cont_start in (gap_start..handler_start).rev() {
+        if !starts_at_statement_boundary(stream, gap_start, cont_start) {
+            continue;
+        }
         if op_spans_match(stream, cont_start, handler_start, tail_lo, tail_hi) {
             best = cont_start;
         }
     }
     best
+}
+
+/// Whether `cont_start` opens a statement within the gap `[gap_start, handler_start)`: it is either
+/// the gap's own start or immediately follows a significant op that leaves nothing on the evaluation
+/// stack. Used to forbid a continuation match from splitting a `<value-load…>; RETURN_VALUE` pair.
+fn starts_at_statement_boundary(
+    stream: &DecodedStream,
+    gap_start: usize,
+    cont_start: usize,
+) -> bool {
+    cont_start == gap_start
+        || last_significant_back(stream, gap_start, cont_start)
+            .is_none_or(|k: usize| !op_leaves_value(&stream.ops[k]))
 }
 
 /// End of the handler's post-`POP_EXCEPT` continuation copy: stops at the first hard
