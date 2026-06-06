@@ -12754,6 +12754,48 @@ fn collect_unpack_targets(
                 targets.push(local_target(code, *b, i).ok()?);
                 consumed += 2;
             }
+            CanonicalOp::UnpackSequence(0) => {
+                targets.push(Expr::Tuple {
+                    elts: Vec::new(),
+                    ctx: ExprCtx::Store,
+                });
+                consumed += 1;
+            }
+            CanonicalOp::UnpackSequence(m) => {
+                let (inner, skip): (Vec<Expr>, usize) =
+                    collect_unpack_targets(code, ops, i + 1, *m as usize)?;
+                targets.push(Expr::Tuple {
+                    elts: inner,
+                    ctx: ExprCtx::Store,
+                });
+                consumed += 1;
+                i = i + 1 + skip;
+                continue;
+            }
+            CanonicalOp::UnpackEx(arg) => {
+                let before: usize = (arg & 0xFF) as usize;
+                let after: usize = (arg >> 8) as usize;
+                let total: usize = before + after + 1;
+                let (mut inner, skip): (Vec<Expr>, usize) =
+                    collect_unpack_targets(code, ops, i + 1, total)?;
+                if before < inner.len() {
+                    let starred: Expr = inner.remove(before);
+                    inner.insert(
+                        before,
+                        Expr::Starred {
+                            value: Box::new(starred),
+                            ctx: ExprCtx::Store,
+                        },
+                    );
+                }
+                targets.push(Expr::Tuple {
+                    elts: inner,
+                    ctx: ExprCtx::Store,
+                });
+                consumed += 1;
+                i = i + 1 + skip;
+                continue;
+            }
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             _ => {
                 let group_end: usize = chain_group_end(ops, i)?;
