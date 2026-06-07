@@ -3685,16 +3685,34 @@ fn try_structure_guarded_try(
     let mut if_body: Vec<Stmt> = vec![try_stmt];
     if_body.extend(structure_stmts(code, stream, body_end, false_target)?);
 
-    let orelse_end: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
-    let orelse: Vec<Stmt> = structure_stmts(code, stream, false_target, orelse_end)?;
-    let tail_start: usize = region.region_end;
+    let continuation_end: usize =
+        trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+    let trailing_is_continuation: bool = handler_normal_exit_backjumps_to(
+        stream,
+        region.handler_start,
+        region.region_end,
+        false_target,
+    );
+    let orelse: Vec<Stmt> = if trailing_is_continuation {
+        Vec::new()
+    } else {
+        structure_stmts(code, stream, false_target, continuation_end)?
+    };
     let mut out: Vec<Stmt> = vec![Stmt::If {
         test,
         body: non_empty(if_body),
         orelse,
         line: None,
     }];
-    out.extend(structure_stmts(code, stream, tail_start, hi)?);
+    if trailing_is_continuation {
+        out.extend(structure_stmts(
+            code,
+            stream,
+            false_target,
+            continuation_end,
+        )?);
+    }
+    out.extend(structure_stmts(code, stream, region.region_end, hi)?);
     Ok(Some(out))
 }
 
@@ -4253,6 +4271,38 @@ fn handler_pop_except_idx(
         }
     }
     None
+}
+
+/// Whether the handler chain rooted at `handler_start` exits its normal (non-reraising) path via
+/// `POP_EXCEPT; JUMP_BACKWARD_NO_INTERRUPT -> target`. This is the signature `CPython` lays for a
+/// try/except whose normal continuation is the shared point `target`: rather than duplicating the
+/// trailing statements, the cold handler back-jumps to rejoin the mainline at `target`. It is the
+/// discriminator that separates a spurious `else:` (handler rejoins the post-`if` continuation) from
+/// a genuine `else:` (handler back-jumps to the post-construct join, not the guard's false target).
+fn handler_normal_exit_backjumps_to(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+    target: usize,
+) -> bool {
+    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, handler_start, region_end)
+    else {
+        return false;
+    };
+    let Some(next): Option<usize> =
+        (pop_except + 1..region_end.min(stream.ops.len())).find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    else {
+        return false;
+    };
+    if !matches!(stream.ops[next], CanonicalOp::JumpBackwardNoInterrupt(_)) {
+        return false;
+    }
+    resolve_jump_target(stream, next, &stream.ops[next]).is_some_and(|t: usize| t == target)
 }
 
 /// Significant ops of `[lo, hi)`, dropping `CACHE`/`NOP`/`EXTENDED_ARG` padding.
