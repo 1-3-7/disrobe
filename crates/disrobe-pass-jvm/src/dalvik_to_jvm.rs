@@ -1239,6 +1239,7 @@ impl Emitter<'_> {
             0x23 => self.new_array(regs, insn),
             0x24 | 0x25 => self.filled_new_array(insn),
             0x27 => self.throw(regs),
+            0x2D..=0x31 => self.cmp(op, regs),
             0x44..=0x4A => self.array_get(op, regs),
             0x4B..=0x51 => self.array_put(op, regs),
             0x52..=0x58 => self.instance_get(regs, insn),
@@ -1539,6 +1540,34 @@ impl Emitter<'_> {
         }
         self.push(0xBF);
         self.adjust_stack(-1);
+    }
+
+    /// Lowers `cmpl/cmpg-float`, `cmpl/cmpg-double` and `cmp-long` to the matching JVM comparison, preserving
+    /// Dalvik NaN ordering (cmpl maps to the `-1`-on-NaN `fcmpl`/`dcmpl`, cmpg to the `+1`-on-NaN `fcmpg`/`dcmpg`).
+    fn cmp(&mut self, op: u8, regs: &[u16]) {
+        let (Some(&dest), Some(&lhs), Some(&rhs)): (Option<&u16>, Option<&u16>, Option<&u16>) =
+            (regs.first(), regs.get(1), regs.get(2))
+        else {
+            return;
+        };
+        let (operand, opcode): (Slot, u8) = match op {
+            0x2D => (Slot::Float, 0x95),
+            0x2E => (Slot::Float, 0x96),
+            0x2F => (Slot::Double, 0x97),
+            0x30 => (Slot::Double, 0x98),
+            0x31 => (Slot::Long, 0x94),
+            _ => {
+                self.bail();
+                return;
+            }
+        };
+        self.set_reg(lhs, operand);
+        self.set_reg(rhs, operand);
+        self.emit_load(lhs);
+        self.emit_load(rhs);
+        self.push(opcode);
+        self.adjust_stack(-2 * operand.width() + 1);
+        self.emit_store(dest, Slot::Int);
     }
 
     fn array_get(&mut self, op: u8, regs: &[u16]) {
