@@ -61,6 +61,7 @@ struct Emitter<'a> {
     const_kind: BTreeMap<u16, Slot>,
     reg_array_elem: BTreeMap<u16, Slot>,
     param_array_elem: BTreeMap<u16, Slot>,
+    poisoned_regs: BTreeSet<u16>,
     const_zero: BTreeSet<u16>,
     pending_new: BTreeMap<u16, String>,
     pending_result: Option<Slot>,
@@ -169,6 +170,7 @@ pub(crate) fn emit_method_code(
         const_kind,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
         pending_result: None,
@@ -339,6 +341,7 @@ pub(crate) fn emit_branch_method_code(
         const_kind,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
         pending_result: None,
@@ -683,6 +686,17 @@ impl Emitter<'_> {
                 self.bail();
                 return;
             }
+            self.poisoned_regs = cfg.frame_types.get(&insn.pc).map_or_else(
+                BTreeSet::new,
+                |ft: &BTreeMap<u16, crate::dalvik_typestate::RegType>| {
+                    ft.iter()
+                        .filter(|(_, t): &(&u16, &crate::dalvik_typestate::RegType)| {
+                            matches!(t, crate::dalvik_typestate::RegType::Top)
+                        })
+                        .map(|(&r, _): (&u16, &crate::dalvik_typestate::RegType)| r)
+                        .collect()
+                },
+            );
             self.reg_array_elem = self.param_array_elem.clone();
             self.const_zero.clear();
             self.pending_result = None;
@@ -1119,6 +1133,10 @@ impl Emitter<'_> {
     }
 
     fn emit_load(&mut self, reg: u16) {
+        if self.poisoned_regs.contains(&reg) {
+            self.bail();
+            return;
+        }
         if self.pending_new.contains_key(&reg) {
             self.bail();
             return;
@@ -1163,6 +1181,7 @@ impl Emitter<'_> {
         self.adjust_stack(-slot.width());
         self.set_reg(reg, slot);
         self.const_zero.remove(&reg);
+        self.poisoned_regs.remove(&reg);
     }
 
     fn emit_local_op(&mut self, index: u16, fast_base: u8, slow_family: u8) {
