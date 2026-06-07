@@ -15040,7 +15040,8 @@ fn structure_guarded_continue(
         return Ok(None);
     }
     let after_skip: usize = first_significant(stream, skip_idx + 1, hi).unwrap_or(hi);
-    if after_skip != target && target != hi {
+    let join_norm: usize = first_significant(stream, target, hi).unwrap_or(hi);
+    if after_skip != join_norm && target != hi {
         return Ok(None);
     }
     let (head, residual): (Vec<Stmt>, Vec<Expr>) =
