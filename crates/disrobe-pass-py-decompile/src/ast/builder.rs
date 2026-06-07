@@ -3610,11 +3610,13 @@ fn try_structure_guarded_try(
     let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
         return Ok(None);
     };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
     let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
-    let test: Expr = if matches!(
-        stream.ops[guard],
-        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
-    ) {
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
         test
     } else {
         Expr::UnaryOp {
