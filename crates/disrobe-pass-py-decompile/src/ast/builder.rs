@@ -4187,17 +4187,30 @@ fn strip_shared_exit_return(
         .collect()
 }
 
-/// Op index of the `POP_EXCEPT` that closes the primary handler, derived from the exception table
-/// row whose protected span opens at the handler. `None` when no such row exists.
-fn handler_pop_except_idx(stream: &DecodedStream, handler_start: usize) -> Option<usize> {
-    let handler_off: u32 = *stream.offsets.get(handler_start)?;
-    let entry: &crate::bytecode::flow::ExceptionTableEntry = stream
-        .exception_table
-        .iter()
-        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.start == handler_off)
-        .min_by_key(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.end())?;
-    let pop: usize = stream.index_for_offset(entry.end())?;
-    matches!(stream.ops.get(pop), Some(CanonicalOp::PopExcept)).then_some(pop)
+/// Index of the handler chain's fall-through `POP_EXCEPT`, found by a depth-0 forward scan from
+/// `handler_start` bounded by `region_end`. Mirrors [`handler_body_end_at_pop_except`]: nested
+/// `PUSH_EXC_INFO`/`POP_EXCEPT` pairs (an inner `try` inside the handler body) cancel out, and a
+/// leading `raise`-only clause that has no `POP_EXCEPT` is walked past to the first clause that
+/// actually falls through. Unlike the exception-table-end lookup it replaces, this lands on the
+/// genuine `POP_EXCEPT` for a named handler, whose table entries end at the handler *body* start
+/// (after the `LOAD_GLOBAL`/`CHECK_EXC_MATCH` preamble), not at the `POP_EXCEPT` itself.
+fn handler_pop_except_idx(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let hi: usize = region_end.min(stream.ops.len());
+    let scan_start: usize = handler_body_first(stream, handler_start);
+    let mut depth: u32 = 0;
+    for k in scan_start..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => return Some(k),
+            CanonicalOp::PopExcept => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Significant ops of `[lo, hi)`, dropping `CACHE`/`NOP`/`EXTENDED_ARG` padding.
@@ -4273,12 +4286,24 @@ fn starts_at_statement_boundary(
             .is_none_or(|k: usize| !op_leaves_value(&stream.ops[k]))
 }
 
-/// End of the handler's post-`POP_EXCEPT` continuation copy: stops at the first hard
-/// control-flow boundary (`RERAISE`/`COPY`/`SWAP`/`PUSH_EXC_INFO`) that opens the cold cleanup.
+/// End of the handler's post-`POP_EXCEPT` continuation copy. For a named handler the cold `del NAME`
+/// cleanup (`LOAD_CONST None; STORE_FAST name; DELETE_FAST name`) is duplicated *after* the
+/// continuation's terminating `RETURN`/`RAISE` and before the `RERAISE`, over-extending the span past
+/// the genuine continuation; when a terminator is immediately followed by that cleanup signature the
+/// span is cut right after the terminator. A bare terminator with no trailing `del` cleanup belongs to
+/// an except *clause's own* `return`/`raise` (e.g. `except X: return`), not a duplicated continuation,
+/// so it is walked through to the first cold-cleanup boundary
+/// (`RERAISE`/`COPY`/`SWAP`/`PUSH_EXC_INFO`/`POP_EXCEPT`) exactly as before, leaving such clauses to
+/// the ordinary try/except family path.
 fn handler_continuation_tail_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     let mut k: usize = lo;
     while k < hi {
         match stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_)
+                if skip_handler_name_cleanup(stream, k + 1, hi) > k + 1 =>
+            {
+                return k + 1;
+            }
             CanonicalOp::Reraise(_)
             | CanonicalOp::Copy(_)
             | CanonicalOp::Swap(_)
@@ -4288,6 +4313,28 @@ fn handler_continuation_tail_end(stream: &DecodedStream, lo: usize, hi: usize) -
         }
     }
     k
+}
+
+/// Whether the continuation copy `[lo, hi)` is a bare implicit `return None` (`LOAD_CONST None;
+/// RETURN_VALUE` or `RETURN_CONST None`). Such a copy is the duplicate-prone tail every function ends
+/// with: an `except` clause's own `return` and the enclosing scope's implicit final `return None`
+/// share this byte sequence without being a genuine duplicated trailing statement, so it must not seed
+/// a continuation lift. A continuation returning a real value (`return name`/`return expr`) or
+/// performing an assignment is genuine and not rejected here.
+fn tail_is_implicit_none_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> bool {
+    let ops: Vec<&CanonicalOp> = significant_ops(stream, lo, hi);
+    match ops.as_slice() {
+        [CanonicalOp::ReturnConst(idx)] => {
+            matches!(code.consts.get(*idx as usize), Some(Object::None))
+        }
+        [load, CanonicalOp::Return] => loads_none(code, load),
+        _ => false,
+    }
 }
 
 fn structure_try_except_family(
@@ -4464,14 +4511,21 @@ fn structure_modern_try_with_continuation(
     protected_end: usize,
     except_region_end: usize,
 ) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
-    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, region.handler_start)
+    let Some(pop_except): Option<usize> =
+        handler_pop_except_idx(stream, region.handler_start, except_region_end)
     else {
         return Ok(None);
     };
-    let tail_start: usize =
-        first_significant(stream, pop_except + 1, except_region_end).unwrap_or(except_region_end);
+    let tail_start: usize = skip_handler_name_cleanup(
+        stream,
+        first_significant(stream, pop_except + 1, except_region_end).unwrap_or(except_region_end),
+        except_region_end,
+    );
     let tail_end: usize = handler_continuation_tail_end(stream, tail_start, except_region_end);
-    if tail_start >= tail_end || !slice_has_real_stmt(stream, tail_start, tail_end) {
+    if tail_start >= tail_end
+        || !slice_has_real_stmt(stream, tail_start, tail_end)
+        || tail_is_implicit_none_return(code, stream, tail_start, tail_end)
+    {
         return Ok(None);
     }
     let cont_start: usize = modern_continuation_start(
@@ -4543,7 +4597,8 @@ fn structure_modern_try_with_forward_continuation(
     protected_end: usize,
     extended_body_end: usize,
 ) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
-    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, region.handler_start)
+    let Some(pop_except): Option<usize> =
+        handler_pop_except_idx(stream, region.handler_start, region.region_end)
     else {
         return Ok(None);
     };
