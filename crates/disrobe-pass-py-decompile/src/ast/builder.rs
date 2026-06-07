@@ -21172,6 +21172,16 @@ fn extract_comprehension_parts(
                     right: Box::new(right),
                 });
             }
+            CanonicalOp::UnaryOp(op_kind) => {
+                let operand: Expr = sim.try_pop().unwrap_or(Expr::Constant {
+                    value: ConstValue::None,
+                    line: None,
+                });
+                sim.push(Expr::UnaryOp {
+                    op: *op_kind,
+                    operand: Box::new(operand),
+                });
+            }
             CanonicalOp::MakeFunction(_) | CanonicalOp::MakeFunctionLegacy(_) => {
                 let top: Option<Expr> = sim.try_pop();
                 match top {
