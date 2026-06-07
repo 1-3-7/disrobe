@@ -15441,6 +15441,8 @@ fn try_swap_simultaneous_assign(
                 | CanonicalOp::StoreName(_)
                 | CanonicalOp::StoreGlobal(_)
                 | CanonicalOp::StoreFastLoadFast(_, _)
+                | CanonicalOp::UnpackSequence(_)
+                | CanonicalOp::UnpackEx(_)
         )
     ) {
         return None;
@@ -15493,7 +15495,10 @@ fn is_single_target_store_assign(stmt: &Stmt) -> bool {
             if targets.len() == 1
                 && matches!(
                     targets[0],
-                    Expr::Subscript { .. } | Expr::Attribute { .. } | Expr::Name { .. }
+                    Expr::Subscript { .. }
+                        | Expr::Attribute { .. }
+                        | Expr::Name { .. }
+                        | Expr::Tuple { .. }
                 )
                 && !matches!(value, Expr::NamedExpr { .. })
     )
