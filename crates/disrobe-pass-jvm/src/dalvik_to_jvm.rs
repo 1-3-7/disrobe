@@ -2125,6 +2125,30 @@ fn is_synthetic_class(descriptor: &str) -> bool {
         .is_some_and(|seg: &str| !seg.is_empty() && seg.bytes().all(|b: u8| b.is_ascii_digit()))
 }
 
+/// Single source of truth for which `const`-defined registers are wide-doubles vs narrow-floats, shared
+/// with `dalvik_typestate` so the `StackMapTable` frame and the emitted const opcode agree by construction.
+pub(crate) fn const_wide_double_and_float_regs(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    parsed: &MethodDescriptor,
+) -> (BTreeSet<u16>, BTreeSet<u16>) {
+    let kinds: BTreeMap<u16, Slot> = infer_const_kinds(dex, insns, parsed);
+    let mut doubles: BTreeSet<u16> = BTreeSet::new();
+    let mut floats: BTreeSet<u16> = BTreeSet::new();
+    for (&reg, slot) in &kinds {
+        match slot {
+            Slot::Double => {
+                doubles.insert(reg);
+            }
+            Slot::Float => {
+                floats.insert(reg);
+            }
+            _ => {}
+        }
+    }
+    (doubles, floats)
+}
+
 /// Records, for each `const`-defined register, the floating slot a later typed opcode reads it in.
 fn infer_const_kinds(
     dex: &DexFile,

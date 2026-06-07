@@ -169,77 +169,6 @@ fn precompute_move_results(dex: &DexFile, insns: &[DalvikInsn]) -> BTreeMap<u32,
     out
 }
 
-/// Classifies each `const-wide`-defined register as `Double` by scanning for a later double-typed consumer.
-fn wide_const_doubles(dex: &DexFile, insns: &[DalvikInsn]) -> BTreeSet<u16> {
-    let mut defs: BTreeSet<u16> = BTreeSet::new();
-    let mut doubles: BTreeSet<u16> = BTreeSet::new();
-    let mark = |reg: u16, defs: &BTreeSet<u16>, doubles: &mut BTreeSet<u16>| {
-        if defs.contains(&reg) {
-            doubles.insert(reg);
-        }
-    };
-    for insn in insns {
-        let op: u8 = insn.op;
-        let r: &[u16] = &insn.regs;
-        match op {
-            0x16..=0x19 => {
-                if let Some(&d) = r.first() {
-                    defs.insert(d);
-                }
-            }
-            0xAB..=0xAF => {
-                for &reg in r.iter().skip(1) {
-                    mark(reg, &defs, &mut doubles);
-                }
-            }
-            0xCB..=0xCF => {
-                for &reg in r {
-                    mark(reg, &defs, &mut doubles);
-                }
-            }
-            0x2F | 0x30 => {
-                for &reg in r.iter().skip(1) {
-                    mark(reg, &defs, &mut doubles);
-                }
-            }
-            0x10 if matches!(insn.op, 0x10) => {}
-            0x6E..=0x72 | 0x74..=0x78 => {
-                mark_invoke_double_args(dex, insn, &defs, &mut doubles);
-            }
-            _ => {}
-        }
-    }
-    doubles
-}
-
-fn mark_invoke_double_args(
-    dex: &DexFile,
-    insn: &DalvikInsn,
-    defs: &BTreeSet<u16>,
-    doubles: &mut BTreeSet<u16>,
-) {
-    let Some(m): Option<&MethodId> = method_id(dex, insn.index) else {
-        return;
-    };
-    let is_static: bool = matches!(insn.op, 0x71 | 0x77);
-    let mut it: std::slice::Iter<'_, u16> = insn.regs.iter();
-    if !is_static {
-        let _ = it.next();
-    }
-    for param in &m.proto.parameters {
-        let two: bool = matches!(param.as_bytes().first(), Some(b'J' | b'D'));
-        if let Some(&reg) = it.next()
-            && param == "D"
-            && defs.contains(&reg)
-        {
-            doubles.insert(reg);
-        }
-        if two {
-            let _ = it.next();
-        }
-    }
-}
-
 /// Non-fall-through control-flow edges the analysis must model: switch targets and exception-handler edges.
 pub(crate) struct CfgEdges<'a> {
     pub(crate) switch_targets: &'a BTreeMap<u32, Vec<u32>>,
@@ -264,7 +193,8 @@ pub(crate) fn analyze(
     let n: usize = insns.len();
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
-    let wide_doubles: BTreeSet<u16> = wide_const_doubles(dex, insns);
+    let (wide_doubles, narrow_floats): (BTreeSet<u16>, BTreeSet<u16>) =
+        crate::dalvik_to_jvm::const_wide_double_and_float_regs(dex, insns, parsed);
 
     let mut entry: RegState = RegState::new();
     let mut cursor: u16 = registers_size.saturating_sub(ins_size);
@@ -322,6 +252,7 @@ pub(crate) fn analyze(
             &mut out,
             &move_result_type,
             &wide_doubles,
+            &narrow_floats,
             move_exception_type,
         )?;
 
@@ -378,6 +309,7 @@ fn transfer(
     regs: &mut RegState,
     move_result_type: &BTreeMap<u32, RegType>,
     wide_doubles: &BTreeSet<u16>,
+    narrow_floats: &BTreeSet<u16>,
     move_exception_type: &BTreeMap<u32, String>,
 ) -> Option<()> {
     let op: u8 = insn.op;
@@ -429,17 +361,27 @@ fn transfer(
         0x0F..=0x11 => {}
         0x12..=0x13 => {
             let lit: i64 = insn.literal.unwrap_or(0);
+            let is_float: bool = r.first().is_some_and(|d: &u16| narrow_floats.contains(d));
             set(
                 regs,
                 r.first().copied(),
-                if lit == 0 {
+                if is_float {
+                    RegType::Float
+                } else if lit == 0 {
                     RegType::ZeroOrNull
                 } else {
                     RegType::Int
                 },
             );
         }
-        0x14 | 0x15 => set(regs, r.first().copied(), RegType::Int),
+        0x14 | 0x15 => {
+            let is_float: bool = r.first().is_some_and(|d: &u16| narrow_floats.contains(d));
+            set(
+                regs,
+                r.first().copied(),
+                if is_float { RegType::Float } else { RegType::Int },
+            );
+        }
         0x16..=0x19 => {
             let is_double: bool = r.first().is_some_and(|d| wide_doubles.contains(d));
             set(

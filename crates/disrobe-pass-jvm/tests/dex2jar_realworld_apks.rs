@@ -223,7 +223,7 @@ fn realworld_apk_translated_classes_verify() {
 /// subset). Absolute counts jitter by ~+/-15 across runs (JVM class-load ordering), but the rate is
 /// stable at ~9.5%; gate on the rate with margin and drive it toward 0 as the branch-mode lifter's
 /// stackmap/register-type soundness bugs are fixed.
-const MAX_VERIFY_FAIL_RATE_PCT: f64 = 9.5;
+const MAX_VERIFY_FAIL_RATE_PCT: f64 = 9.0;
 
 fn parse_metric(stdout: &str, key: &str) -> usize {
     stdout
