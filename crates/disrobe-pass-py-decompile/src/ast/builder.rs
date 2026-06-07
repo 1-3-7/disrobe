@@ -2890,6 +2890,96 @@ fn gap_is_protected_body_join(stream: &DecodedStream, lo_off: u32, hi_off: u32) 
     })
 }
 
+/// Protected-body end of a 3.11+ `with` whose body `CPython` split into several exception-table rows
+/// sharing one `WITH_EXCEPT_START` handler. An internal early-exit (`return`/`break`/`continue`/`raise`)
+/// inside the body opens a gap between two rows that both target the with-handler; the gap is the
+/// inline `__exit__(None, None, None)` cleanup followed by the early-exit terminator. The rows are
+/// merged so the recovered with-body spans the whole hot region. Merging stops at any gap that is NOT
+/// such an early-exit cleanup — in particular an inner-`with` SETUP gap (`COPY`/`LOAD_SPECIAL`/`SWAP`/
+/// `CALL`), which keeps `with_multi`/`with_nested` from absorbing the inner cleanup chain.
+fn with_protected_body_end(stream: &DecodedStream, start: u32, end: u32, target: u32) -> u32 {
+    let _ = start;
+    let mut body_end: u32 = end;
+    while let Some(next) = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            e.target == target && e.start >= body_end && e.start < target
+        })
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start)
+        .min()
+    {
+        if !gap_is_with_early_exit(stream, body_end, next) {
+            break;
+        }
+        let extended: u32 = stream
+            .exception_table
+            .iter()
+            .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+                e.target == target && e.start == next
+            })
+            .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.end())
+            .max()
+            .unwrap_or(body_end);
+        if extended <= body_end {
+            break;
+        }
+        body_end = extended;
+    }
+    body_end
+}
+
+/// Whether the gap `[lo_off, hi_off)` between two with-protected rows is an inline early-exit cleanup:
+/// one implicit `__exit__(None, None, None)` block followed only by an early-exit terminator
+/// (`return`/`break`/`continue`/`raise` and padding). An inner-`with` SETUP gap fails `skip_with_cleanup_block`
+/// and is rejected, so nested/multi-item `with`s are never merged across their inner cleanup chain.
+fn gap_is_with_early_exit(stream: &DecodedStream, lo_off: u32, hi_off: u32) -> bool {
+    let Some(lo): Option<usize> = stream.index_for_offset_ceil(lo_off) else {
+        return false;
+    };
+    let Some(hi): Option<usize> = stream.index_for_offset_ceil(hi_off) else {
+        return false;
+    };
+    if lo >= hi {
+        return false;
+    }
+    let Some(after_cleanup): Option<usize> = skip_with_cleanup_block(stream, lo, hi) else {
+        return false;
+    };
+    (after_cleanup..hi).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+                | CanonicalOp::Reraise(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
+/// Whether a `with`'s body whose handler escapes the search window `hi` nonetheless terminates its
+/// `__exit__(None, None, None)` cleanup INSIDE `[try_start, hi)` — i.e. the whole body fits the window
+/// and only the cold handler lies beyond. Required before selecting such an escaping-handler `with`:
+/// a `with` whose body itself overruns `hi` (e.g. a deeply nested one re-encountered on a body
+/// sub-range) has no terminal cleanup in range and is rejected, preventing re-entrant structuring.
+fn with_terminal_cleanup_within(stream: &DecodedStream, try_start: usize, hi: usize) -> bool {
+    (try_start..hi).any(|i: usize| {
+        is_none_const_push(&stream.ops[i])
+            && is_exit_none_triple(stream, i, hi)
+            && with_cleanup_tail_is_pure(stream, i, hi)
+    })
+}
+
 fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRegion> {
     if stream.exception_table.is_empty() {
         return None;
@@ -2902,7 +2992,20 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
         let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
             continue;
         };
-        if !(lo..hi).contains(&try_start) || handler_start >= hi {
+        let is_modern: bool = matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        );
+        let is_with: bool = is_modern
+            && matches!(
+                stream.ops.get(handler_start + 1),
+                Some(CanonicalOp::WithExceptStart)
+            );
+        let with_handler_escapes: bool = is_with
+            && handler_start >= hi
+            && with_setup_start(stream, try_start, lo) < try_start
+            && with_terminal_cleanup_within(stream, try_start, hi);
+        if !(lo..hi).contains(&try_start) || (handler_start >= hi && !with_handler_escapes) {
             continue;
         }
         if matches!(
@@ -2914,21 +3017,12 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
         if is_async_for_poll_guard(stream, try_start) {
             continue;
         }
-        let is_modern: bool = matches!(
-            stream.ops.get(handler_start),
-            Some(CanonicalOp::PushExcInfo)
-        );
         let is_pre311_handler: bool = !is_modern
             && stream.is_pre_311()
             && is_pre311_except_or_finally_handler(stream, handler_start, hi);
         if !is_modern && !is_pre311_handler {
             continue;
         }
-        let is_with: bool = is_modern
-            && matches!(
-                stream.ops.get(handler_start + 1),
-                Some(CanonicalOp::WithExceptStart)
-            );
         let setup_start: usize = if is_with {
             let raw: usize = with_setup_start(stream, try_start, lo);
             clamp_with_setup_to_enclosing_except_star(stream, raw, try_start, hi)
@@ -2937,17 +3031,23 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
         };
         let body_end_off: u32 = if is_modern && !is_with {
             merged_protected_end(stream, entry.start, entry.end(), entry.target)
+        } else if is_with {
+            with_protected_body_end(stream, entry.start, entry.end(), entry.target)
         } else {
             entry.end()
         };
+        let body_bound: usize = handler_start.min(hi);
         let protected_end: usize = stream
             .index_for_offset_ceil(body_end_off)
-            .unwrap_or(handler_start)
-            .min(handler_start);
+            .unwrap_or(body_bound)
+            .min(body_bound);
         let try_end: usize = stream
             .index_for_offset(body_end_off)
-            .unwrap_or(handler_start);
-        let region_end: usize = if is_pre311_handler {
+            .unwrap_or(body_bound)
+            .min(body_bound);
+        let region_end: usize = if with_handler_escapes {
+            hi
+        } else if is_pre311_handler {
             pre311_handler_region_end(stream, handler_start, hi)
         } else {
             handler_join(stream, handler_start, hi)
@@ -2962,8 +3062,8 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
         let candidate: TryRegion = TryRegion {
             try_start: setup_start,
             protected_end,
-            try_end: try_end.min(handler_start),
-            handler_start,
+            try_end,
+            handler_start: handler_start.min(hi),
             region_end: region_end.min(hi),
             is_with,
             is_finally,
@@ -5064,6 +5164,12 @@ fn is_pure_finally_handler_shape(
         return false;
     }
     i += 1;
+    if matches!(
+        first_significant(stream, i, region_end).map(|k: usize| &stream.ops[k]),
+        Some(CanonicalOp::WithExceptStart)
+    ) {
+        return false;
+    }
     if matches!(stream.ops.get(i), Some(CanonicalOp::Pop)) {
         return false;
     }
@@ -5861,8 +5967,9 @@ fn structure_with(
     }
     let search_end: usize = region.region_end.max(region.try_end);
     let body_end: usize = with_body_end(stream, body_start, search_end);
-    let body: Vec<Stmt> = structure_with_body(code, stream, body_start, body_end, search_end)?;
-    Ok((assemble_with_chain(chain, body), Vec::new()))
+    let (body, tail): (Vec<Stmt>, Vec<Stmt>) =
+        structure_with_body(code, stream, body_start, body_end, search_end)?;
+    Ok((assemble_with_chain(chain, body), tail))
 }
 
 /// Recovers the enclosing `try ... except` of a `with` that constitutes the entire `try` body.
@@ -5881,7 +5988,7 @@ fn with_enclosing_try_region(
     region: &TryRegion,
     hi: usize,
 ) -> Option<TryRegion> {
-    if !region.is_with || stream.is_pre_311() {
+    if !region.is_with || stream.is_pre_311() || region.handler_start >= hi {
         return None;
     }
     let with_cleanup_end: usize = handler_chain_end(stream, region.handler_start, hi)?;
@@ -5925,14 +6032,18 @@ fn assemble_with_chain(chain: Vec<WithChainEntry>, body: Vec<Stmt>) -> Stmt {
     inner_body.into_iter().next().unwrap_or(Stmt::Pass)
 }
 
-/// Structures a with-body, recovering the 3.11+ `Swap(2)`-stashed trailing-return idiom.
+/// Structures a with-body, recovering the 3.11+ `Swap(2)`-stashed trailing-return idiom. Returns
+/// `(body, tail)`: `tail` carries a residual `return` that the `__exit__` cleanup proves belongs AFTER
+/// the `with` (a multi-statement body whose last statement precedes the terminal cleanup), which the
+/// caller emits at enclosing scope. A value-return `with` (`with cm: return expr`) keeps its return in
+/// `body` with an empty `tail`.
 fn structure_with_body(
     code: &CodeObject,
     stream: &DecodedStream,
     body_start: usize,
     body_end: usize,
     region_end: usize,
-) -> Result<Vec<Stmt>> {
+) -> Result<(Vec<Stmt>, Vec<Stmt>)> {
     let mut trim_end: usize = body_end;
     while trim_end > body_start
         && matches!(
@@ -5944,22 +6055,115 @@ fn structure_with_body(
     }
     let swap_present: bool = trim_end < body_end;
     let trailing_return: bool = is_with_trailing_return(stream, body_end, region_end);
-    if swap_present && trailing_return {
+    let has_internal_control_flow: bool =
+        with_body_has_internal_control_flow(stream, body_start, trim_end);
+    if swap_present && trailing_return && !has_internal_control_flow {
         let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
             build_linear_stmts_sim(code, &stream.ops[body_start..trim_end])?;
         let mut out: Vec<Stmt> = stmts;
         if let Some(value) = residual.into_iter().next_back() {
             out.push(Stmt::Return(Some(value)));
         }
-        return Ok(out);
+        return Ok((out, Vec::new()));
     }
-    let mut out: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
-    if !swap_present
-        && let Some(ret) = with_post_cleanup_return(code, stream, body_end, region_end)?
+    let body: Vec<Stmt> = if has_internal_control_flow
+        && let Some(folded) = elide_inline_with_exits(stream, body_start, body_end)
     {
-        out.push(ret);
+        structure_stmts(code, &folded, body_start, body_end)?
+    } else {
+        structure_stmts(code, stream, body_start, body_end)?
+    };
+    let residual_return: Option<Stmt> = if swap_present {
+        None
+    } else {
+        with_post_cleanup_return(code, stream, body_end, region_end)?
+    };
+    match residual_return {
+        Some(ret) => Ok((body, vec![ret])),
+        None => Ok((body, Vec::new())),
     }
-    Ok(out)
+}
+
+/// Produces a body-local copy of `stream` with each internal early-exit `__exit__(None, None, None)`
+/// cleanup (`SWAP; SWAP; None; None; None; CALL; POP` preceding a `return`/`break`/`continue`/`raise`)
+/// in `[body_start, body_end)` replaced by `Nop`. The stashed return value (`LOAD` before the `SWAP`s)
+/// and the terminator survive, so the recovered statement is the bare `return <value>`/`break`/etc.,
+/// with no synthetic `X(None, None, None)` artifact. Returns `None` when no inline cleanup is found
+/// (so the caller keeps the cheaper non-clone path). Op count and byte offsets are preserved (`Nop` is
+/// length-stable) so jump targets and `index_for_offset` stay valid.
+fn elide_inline_with_exits(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Option<DecodedStream> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = body_start;
+    while i < body_end {
+        if matches!(stream.ops[i], CanonicalOp::Swap(_) | CanonicalOp::RotN(_))
+            && let Some(after) = skip_with_cleanup_block(stream, i, body_end)
+            && first_significant(stream, after, body_end).is_some_and(|t: usize| {
+                matches!(
+                    stream.ops[t],
+                    CanonicalOp::Return
+                        | CanonicalOp::ReturnConst(_)
+                        | CanonicalOp::Raise(_)
+                        | CanonicalOp::JumpForward(_)
+                        | CanonicalOp::JumpAbsolute(_)
+                        | CanonicalOp::JumpBackward(_)
+                        | CanonicalOp::JumpBackwardNoInterrupt(_)
+                )
+            })
+        {
+            spans.push((i, after));
+            i = after;
+        } else {
+            i += 1;
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut ops: Vec<CanonicalOp> = stream.ops.clone();
+    for (lo, hi) in spans {
+        for op in &mut ops[lo..hi] {
+            *op = CanonicalOp::Nop;
+        }
+    }
+    Some(DecodedStream {
+        ops,
+        offsets: stream.offsets.clone(),
+        code_len: stream.code_len,
+        lines: stream.lines.clone(),
+        wordcode: stream.wordcode,
+        instr_unit_jumps: stream.instr_unit_jumps,
+        relative_cond_jumps: stream.relative_cond_jumps,
+        exception_table: stream.exception_table.clone(),
+        pre311_end_finally_idx: stream.pre311_end_finally_idx.clone(),
+        pre311_pop_block_idx: stream.pre311_pop_block_idx.clone(),
+        pre311_break_loop_idx: stream.pre311_break_loop_idx.clone(),
+        setup_loop_end: stream.setup_loop_end.clone(),
+        none_jump_kind: stream.none_jump_kind.clone(),
+        version: stream.version.clone(),
+    })
+}
+
+/// Whether the with-body interior `[body_start, body_end)` has internal control flow — a forward
+/// conditional jump or an interior `return` (an early-exit) — which the `Swap`-stash trailing-return
+/// fast path would silently linearize away. Such bodies route through `structure_stmts` instead.
+/// A plain `with cm: return expr` (the multi/nested/`as` swap-stash idiom) has neither and keeps the
+/// byte-exact fast path.
+fn with_body_has_internal_control_flow(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> bool {
+    (body_start..body_end).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+    })
 }
 
 /// Recovers a `with cm: return <value>` whose return is re-materialized after the `__exit__` cleanup.
@@ -6052,14 +6256,65 @@ fn skip_with_cleanup_block(
     Some(i + 1)
 }
 
-/// The with-body ends where the innermost implicit `__exit__(None, None, None)` cleanup begins.
+/// The with-body ends at the TERMINAL implicit `__exit__(None, None, None)` cleanup. A body with an
+/// internal early-exit (`return`/`break`/`continue` inside the `with`) emits an inline `__exit__`
+/// cleanup before each such exit; truncating at the FIRST one drops the rest of the body. The real
+/// end is the first cleanup triple whose tail up to `hi` is itself only further cleanup and
+/// early-exit terminators — i.e. the last real-body statement precedes it.
 fn with_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    for i in lo..hi {
+        if is_none_const_push(&stream.ops[i])
+            && is_exit_none_triple(stream, i, hi)
+            && with_cleanup_tail_is_pure(stream, i, hi)
+        {
+            return i;
+        }
+    }
     for i in lo..hi {
         if is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, hi) {
             return i;
         }
     }
     hi
+}
+
+/// Whether `[triple_start, hi)` is the with-body's TERMINAL cleanup: one or more implicit `__exit__`
+/// cleanup blocks plus only early-exit terminators (`return`/`break`/`continue`/`raise`) and padding,
+/// with no further real body statement after the cleanup. The scan stops at the with-handler
+/// (`PUSH_EXC_INFO`/`WITH_EXCEPT_START`) so the handler's own cold cleanup never counts against a
+/// genuine terminal triple.
+fn with_cleanup_tail_is_pure(stream: &DecodedStream, triple_start: usize, hi: usize) -> bool {
+    let mut i: usize = triple_start;
+    while let Some(next) = skip_with_cleanup_block(stream, i, hi) {
+        i = next;
+    }
+    (i..hi)
+        .take_while(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+            )
+        })
+        .all(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::LoadConst(_)
+                    | CanonicalOp::LoadSmallInt(_)
+                    | CanonicalOp::LoadCommonConst(_)
+                    | CanonicalOp::LoadFast(_)
+                    | CanonicalOp::Cache
+                    | CanonicalOp::Nop
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        })
 }
 
 /// Whether `op` is a `None` push feeding the implicit `__exit__(None, None, None)` cleanup.
