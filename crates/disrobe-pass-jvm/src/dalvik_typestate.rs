@@ -482,15 +482,10 @@ fn transfer(
         0x2B | 0x2C => {}
         0x2D..=0x31 => set(regs, r.first().copied(), RegType::Int),
         0x32..=0x3D => {}
-        0x44 => set(
-            regs,
-            r.first().copied(),
-            RegType::Ref("java/lang/Object".to_string()),
-        ),
-        0x45 => set(regs, r.first().copied(), RegType::Long),
-        0x46 => set(regs, r.first().copied(), RegType::Float),
-        0x47 => set(regs, r.first().copied(), RegType::Double),
-        0x48..=0x4A => set(regs, r.first().copied(), RegType::Int),
+        0x44..=0x4A => {
+            let result: RegType = aget_result_type(regs, r.get(1).copied(), op);
+            set(regs, r.first().copied(), result);
+        }
         0x4B..=0x51 => {}
         0x52..=0x58 => {
             let t: RegType = field_type(dex, insn.index)?;
@@ -517,6 +512,41 @@ fn transfer(
     }
     let _ = parsed;
     Some(())
+}
+
+/// Result [`RegType`] of an `aget*` (0x44-0x4A), derived from the array register's element descriptor so
+/// the `StackMapTable` frame agrees with the typed JVM array-load the emitter picks (`iaload`/`faload`/
+/// `laload`/`daload`/`aaload`/`baload`/`caload`/`saload`). Falls back to the width-correct primitive when
+/// the array's element type is not known at this point.
+fn aget_result_type(regs: &RegState, array_reg: Option<u16>, op: u8) -> RegType {
+    let elem: Option<&str> = array_reg.and_then(|a: u16| regs.get(&a)).and_then(|t: &RegType| {
+        match t {
+            RegType::Ref(desc) => desc.strip_prefix('['),
+            _ => None,
+        }
+    });
+    let elem_first: Option<u8> = elem.and_then(|e: &str| e.bytes().next());
+    match op {
+        0x44 => {
+            if elem_first == Some(b'F') {
+                RegType::Float
+            } else {
+                RegType::Int
+            }
+        }
+        0x45 => {
+            if elem_first == Some(b'D') {
+                RegType::Double
+            } else {
+                RegType::Long
+            }
+        }
+        0x46 => match elem {
+            Some(desc) => RegType::from_descriptor(desc),
+            None => RegType::Ref("java/lang/Object".to_string()),
+        },
+        _ => RegType::Int,
+    }
 }
 
 const fn numeric_cast_result(op: u8) -> RegType {

@@ -198,11 +198,23 @@ fn realworld_apk_translated_classes_verify() {
         methods >= 1000,
         "expected the JVM to actually verify a real subset of recovered bodies, got {methods}"
     );
-    let fail_rate_pct: f64 = verify_failures as f64 * 100.0 / methods.max(1) as f64;
-    eprintln!("real-world verify failure rate: {fail_rate_pct:.2}% ({verify_failures}/{methods})");
+    // Catch-type-not-Throwable failures are a harness artifact, not a lifter defect: the emitted
+    // exception_table carries the real Dalvik catch descriptor (always a genuine Throwable subclass),
+    // but the verifier helper stubs missing framework exceptions as Object-derived interfaces, so the
+    // verifier rejects them. Exclude them from the gated lifter rate; report both.
+    let catch_stub_failures: usize = stdout
+        .lines()
+        .filter(|l: &&str| l.contains("is not a subclass of Throwable"))
+        .count();
+    let lifter_failures: usize = verify_failures.saturating_sub(catch_stub_failures);
+    let fail_rate_pct: f64 = lifter_failures as f64 * 100.0 / methods.max(1) as f64;
+    eprintln!(
+        "real-world verify failures: total={verify_failures} catch-stub-artifacts={catch_stub_failures} \
+         lifter={lifter_failures} rate={fail_rate_pct:.2}% of {methods} verified"
+    );
     assert!(
         fail_rate_pct <= MAX_VERIFY_FAIL_RATE_PCT,
-        "real-world JVM verify failure rate {fail_rate_pct:.2}% exceeded ceiling \
+        "real-world lifter JVM verify failure rate {fail_rate_pct:.2}% exceeded ceiling \
          {MAX_VERIFY_FAIL_RATE_PCT}%; the branch-mode lifter regressed"
     );
 }
@@ -211,7 +223,7 @@ fn realworld_apk_translated_classes_verify() {
 /// subset). Absolute counts jitter by ~+/-15 across runs (JVM class-load ordering), but the rate is
 /// stable at ~9.5%; gate on the rate with margin and drive it toward 0 as the branch-mode lifter's
 /// stackmap/register-type soundness bugs are fixed.
-const MAX_VERIFY_FAIL_RATE_PCT: f64 = 12.0;
+const MAX_VERIFY_FAIL_RATE_PCT: f64 = 9.5;
 
 fn parse_metric(stdout: &str, key: &str) -> usize {
     stdout
