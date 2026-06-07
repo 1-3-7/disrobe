@@ -439,6 +439,23 @@ fn prune_after_first_terminator(body: Vec<Stmt>) -> Vec<Stmt> {
     out
 }
 
+/// Removes the spurious trailing bare `raise` that a sync generator's compiler-generated cold
+/// `StopIteration` epilogue (`CALL_INTRINSIC_1 INTRINSIC_STOPITERATION_ERROR; RERAISE`) leaves at
+/// the outermost body level. Operates on the top-level statement list only (never recursive) so
+/// legitimate bare re-raises nested inside `except` handlers are preserved.
+fn strip_generator_stopiteration_raise(body: &mut Vec<Stmt>) {
+    if matches!(
+        body.last(),
+        Some(Stmt::Raise {
+            exc: None,
+            cause: None,
+            ..
+        })
+    ) {
+        body.pop();
+    }
+}
+
 fn merge_annotations(body: Vec<Stmt>) -> Vec<Stmt> {
     let mut out: Vec<Stmt> = Vec::with_capacity(body.len());
     for stmt in body {
@@ -2168,6 +2185,7 @@ fn build_children_or_body(
 
 const PY_CO_FLAG_VARARGS: i32 = 0x0004;
 const PY_CO_FLAG_VARKEYWORDS: i32 = 0x0008;
+const PY_CO_FLAG_GENERATOR: i32 = 0x0020;
 const PY_CO_FLAG_COROUTINE: i32 = 0x0080;
 const PY_CO_FLAG_ASYNC_GENERATOR: i32 = 0x0200;
 
@@ -20007,14 +20025,16 @@ fn build_nested_function_def(
     };
     let stripped: Vec<Stmt> =
         strip_module_implicit_return(strip_module_docstring_stmt(body_raw, nested));
+    let mut fn_body: Vec<Stmt> = postprocess_body(stripped, BodyKind::Function);
+    if (nested.flags & PY_CO_FLAG_GENERATOR) != 0
+        && (nested.flags & PY_CO_FLAG_ASYNC_GENERATOR) == 0
+    {
+        strip_generator_stopiteration_raise(&mut fn_body);
+    }
     let processed: Vec<Stmt> = prepend_nonlocal_decls(
         nested,
         &stream.ops,
-        prepend_global_decls(
-            nested,
-            &stream.ops,
-            postprocess_body(stripped, BodyKind::Function),
-        ),
+        prepend_global_decls(nested, &stream.ops, fn_body),
     );
     let final_body: Vec<Stmt> = if processed.is_empty() {
         vec![Stmt::Pass]
