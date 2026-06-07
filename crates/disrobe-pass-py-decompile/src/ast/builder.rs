@@ -20609,6 +20609,63 @@ fn extract_comprehension_parts(
                     line: None,
                 });
             }
+            CanonicalOp::BuildTuple(n) => {
+                let elts: Vec<Expr> = sim.pop_n(*n as usize);
+                sim.push(Expr::Tuple {
+                    elts,
+                    ctx: ExprCtx::Load,
+                });
+            }
+            CanonicalOp::BuildList(n) | CanonicalOp::BuildSet(n) => {
+                let elts: Vec<Expr> = sim.pop_n(*n as usize);
+                let pushed: Expr = if matches!(op, CanonicalOp::BuildSet(_)) {
+                    Expr::Set(elts)
+                } else {
+                    Expr::List {
+                        elts,
+                        ctx: ExprCtx::Load,
+                    }
+                };
+                sim.push(pushed);
+            }
+            CanonicalOp::BuildMap(n) => {
+                let presize_hint: bool =
+                    active_version().is_some_and(|v: PyVersion| (v.major(), v.minor()) < (3, 5));
+                let pair_count: usize = if presize_hint { 0 } else { *n as usize };
+                let pairs: Vec<Expr> = sim.pop_n(pair_count.saturating_mul(2));
+                let mut keys: Vec<Option<Expr>> = Vec::with_capacity(pairs.len() / 2);
+                let mut values: Vec<Expr> = Vec::with_capacity(pairs.len() / 2);
+                let mut pair_iter: std::vec::IntoIter<Expr> = pairs.into_iter();
+                while let (Some(k), Some(v)) = (pair_iter.next(), pair_iter.next()) {
+                    keys.push(Some(k));
+                    values.push(v);
+                }
+                sim.push(Expr::Dict { keys, values });
+            }
+            CanonicalOp::BuildConstKeyMap(n) => {
+                let key_tuple: Expr = sim.pop_or_synth(nested, idx);
+                let key_exprs: Vec<Expr> = match key_tuple {
+                    Expr::Tuple { elts, .. } => elts,
+                    Expr::Constant {
+                        value: ConstValue::Tuple(parts),
+                        line,
+                    } => parts
+                        .into_iter()
+                        .map(|c: ConstValue| Expr::Constant { value: c, line })
+                        .collect(),
+                    other => vec![other],
+                };
+                let count: usize = *n as usize;
+                let values: Vec<Expr> = sim.pop_n(count);
+                let mut keys: Vec<Option<Expr>> = Vec::with_capacity(values.len());
+                for k in key_exprs.into_iter().take(count) {
+                    keys.push(Some(k));
+                }
+                while keys.len() < values.len() {
+                    keys.push(None);
+                }
+                sim.push(Expr::Dict { keys, values });
+            }
             CanonicalOp::FormatValue(flags) => {
                 let has_spec: bool = (flags & 0x04) != 0;
                 let format_spec: Option<Box<Expr>> = if has_spec {
