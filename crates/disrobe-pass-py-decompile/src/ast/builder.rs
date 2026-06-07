@@ -19874,26 +19874,49 @@ fn call_ex_args(args_iter: Expr) -> Vec<Expr> {
 }
 
 fn call_ex_kwargs(kwargs: Expr) -> Vec<crate::ast::node::Keyword> {
-    match kwargs {
-        Expr::Dict { keys, values } => keys
-            .into_iter()
-            .zip(values)
-            .map(|(key, value): (Option<Expr>, Expr)| {
-                let arg: Option<String> = match key {
-                    Some(Expr::Constant {
-                        value: ConstValue::Str(s),
-                        ..
-                    }) => Some(s),
-                    _ => None,
-                };
-                crate::ast::node::Keyword { arg, value }
-            })
-            .collect(),
-        other => vec![crate::ast::node::Keyword {
+    let Expr::Dict { keys, values } = kwargs else {
+        return vec![crate::ast::node::Keyword {
             arg: None,
-            value: other,
-        }],
+            value: kwargs,
+        }];
+    };
+    let mut out: Vec<crate::ast::node::Keyword> = Vec::with_capacity(keys.len());
+    let mut display: Vec<(Option<Expr>, Expr)> = Vec::new();
+    let flush_display = |display: &mut Vec<(Option<Expr>, Expr)>,
+                         out: &mut Vec<crate::ast::node::Keyword>| {
+        if display.is_empty() {
+            return;
+        }
+        let (dk, dv): (Vec<Option<Expr>>, Vec<Expr>) = std::mem::take(display).into_iter().unzip();
+        out.push(crate::ast::node::Keyword {
+            arg: None,
+            value: Expr::Dict {
+                keys: dk,
+                values: dv,
+            },
+        });
+    };
+    for (key, value) in keys.into_iter().zip(values) {
+        match key {
+            Some(Expr::Constant {
+                value: ConstValue::Str(s),
+                ..
+            }) => {
+                flush_display(&mut display, &mut out);
+                out.push(crate::ast::node::Keyword {
+                    arg: Some(s),
+                    value,
+                });
+            }
+            None => {
+                flush_display(&mut display, &mut out);
+                out.push(crate::ast::node::Keyword { arg: None, value });
+            }
+            Some(other) => display.push((Some(other), value)),
+        }
     }
+    flush_display(&mut display, &mut out);
+    out
 }
 
 fn starred(expr: Expr) -> Expr {
