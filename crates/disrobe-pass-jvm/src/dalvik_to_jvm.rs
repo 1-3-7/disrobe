@@ -229,7 +229,7 @@ pub(crate) fn emit_branch_method_code(
     if item.insns.is_empty() || item.insns.len() > MAX_BRANCH_INSNS {
         return None;
     }
-    if item.method_name == "<init>" || is_synthetic_class(&item.class) {
+    if is_synthetic_class(&item.class) {
         return None;
     }
     let insns: Vec<DalvikInsn> = decode_method(&item.insns);
@@ -240,6 +240,11 @@ pub(crate) fn emit_branch_method_code(
         i.is_conditional_branch() || i.is_unconditional_goto() || i.is_switch()
     }) || !item.tries.is_empty();
     if !has_branch {
+        return None;
+    }
+    if item.method_name == "<init>"
+        && !init_this_call_dominates_branches(dex, item, &insns)
+    {
         return None;
     }
     if insns.iter().any(|i: &DalvikInsn| matches!(i.op, 0x26)) {
@@ -616,6 +621,61 @@ fn new_instance_pairs_are_block_local(insns: &[DalvikInsn]) -> bool {
         }
     }
     true
+}
+
+/// True when a branch-mode `<init>` can be lifted with `this` initialized at every stack-map frame:
+/// the receiver-this `invoke-direct ...<init>` lies in the straight-line entry prefix, dominating every
+/// block leader, so no frame ever needs the `uninitializedThis` verification type the lifter cannot yet emit.
+fn init_this_call_dominates_branches(
+    dex: &DexFile,
+    item: &CodeItem,
+    insns: &[DalvikInsn],
+) -> bool {
+    let this_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
+    let mut leaders: BTreeSet<u32> = collect_leaders(insns);
+    for t in &item.tries {
+        leaders.insert(t.start_addr);
+        leaders.insert(t.start_addr + u32::from(t.insn_count));
+        for (_ty, hpc) in &t.handlers {
+            leaders.insert(*hpc);
+        }
+        if let Some(hpc) = t.catch_all {
+            leaders.insert(hpc);
+        }
+    }
+    let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
+    let min_non_entry_leader: u32 = leaders
+        .iter()
+        .copied()
+        .filter(|&pc: &u32| pc != entry_pc)
+        .min()
+        .unwrap_or(u32::MAX);
+
+    let mut init_calls_on_this: usize = 0;
+    let mut dominating_init: bool = false;
+    for insn in insns {
+        if !matches!(insn.op, 0x70 | 0x76) {
+            continue;
+        }
+        let Some(&recv): Option<&u16> = insn.regs.first() else {
+            continue;
+        };
+        if recv != this_reg {
+            continue;
+        }
+        let is_init: bool = insn
+            .index
+            .and_then(|i: u32| dex.method_ids.get(i as usize))
+            .is_some_and(|m: &MethodId| m.name == "<init>");
+        if !is_init {
+            continue;
+        }
+        init_calls_on_this += 1;
+        if insn.pc < min_non_entry_leader {
+            dominating_init = true;
+        }
+    }
+    init_calls_on_this == 1 && dominating_init
 }
 
 impl Emitter<'_> {

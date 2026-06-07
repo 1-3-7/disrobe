@@ -30,17 +30,17 @@ struct RealApk {
 const REAL_APKS: &[RealApk] = &[
     RealApk {
         file: "transmissionic-ionic.apk",
-        min_bodies_pct: 85.0,
+        min_bodies_pct: 86.0,
         min_method_total: 20_000,
     },
     RealApk {
         file: "rustdesk-flutter.apk",
-        min_bodies_pct: 86.5,
+        min_bodies_pct: 88.0,
         min_method_total: 20_000,
     },
     RealApk {
         file: "enrecipes-nativescript.apk",
-        min_bodies_pct: 82.5,
+        min_bodies_pct: 83.5,
         min_method_total: 20_000,
     },
 ];
