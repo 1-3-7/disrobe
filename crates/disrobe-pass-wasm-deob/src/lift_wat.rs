@@ -33,6 +33,8 @@ pub(crate) fn lift_function_body_wat(body: &FunctionBody<'_>, sig: &FunctionSig)
 /// Module header sized to a function's feature requirements.
 fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String {
     let mut out: String = String::from("(module\n");
+    emit_gc_type_decls(&mut out, reqs);
+    emit_tag_decls(&mut out, reqs);
     let mut seen: Vec<u32> = Vec::new();
     let mut sorted: Vec<(u32, ValType)> = globals_used.to_vec();
     sorted.sort_by_key(|(idx, _)| *idx);
@@ -41,7 +43,7 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
             continue;
         }
         seen.push(idx);
-        let t: &str = val_type_str(ty);
+        let t: String = val_type_str(ty);
         let _ = writeln!(out, "  (global $g{idx} (mut {t}) ({t}.const 0))");
     }
     if reqs.shared_memory {
@@ -60,6 +62,41 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
         let _ = writeln!(out, "  (elem $e{seg} funcref)");
     }
     out
+}
+
+/// Synthesizes the `(type ...)` decls every gc / function-ref operator references.
+fn emit_gc_type_decls(out: &mut String, reqs: &FeatureReqs) {
+    for (idx, field_count) in &reqs.struct_types {
+        let _ = write!(out, "  (type $t{idx} (struct");
+        for _ in 0..(*field_count).max(1) {
+            out.push_str(" (field (mut i32))");
+        }
+        out.push_str("))\n");
+    }
+    for idx in &reqs.array_types {
+        let _ = writeln!(out, "  (type $t{idx} (array (mut i32)))");
+    }
+    for (idx, (params, results)) in &reqs.func_types {
+        let _ = write!(out, "  (type $t{idx} (func");
+        for ty in params {
+            let _ = write!(out, " (param {})", val_type_str(*ty));
+        }
+        for ty in results {
+            let _ = write!(out, " (result {})", val_type_str(*ty));
+        }
+        out.push_str("))\n");
+    }
+}
+
+/// Synthesizes the `(tag ...)` decls every `throw` / `try_table` catch references.
+fn emit_tag_decls(out: &mut String, reqs: &FeatureReqs) {
+    for (idx, params) in &reqs.tags {
+        let _ = write!(out, "  (tag $tag{idx} (param");
+        for ty in params {
+            let _ = write!(out, " {}", val_type_str(*ty));
+        }
+        out.push_str("))\n");
+    }
 }
 
 /// Declares `ref.func` target functions plus an `(elem declare ...)`.
@@ -89,7 +126,7 @@ pub fn wat_module_header(globals_used: &[(u32, ValType)]) -> String {
             continue;
         }
         seen.push(idx);
-        let t: &str = val_type_str(ty);
+        let t: String = val_type_str(ty);
         let _ = writeln!(out, "  (global $g{idx} (mut {t}) ({t}.const 0))");
     }
     out.push_str("  (memory 1)\n");
@@ -115,6 +152,10 @@ struct FeatureReqs {
     funcref_table: bool,
     externref_table: bool,
     ref_func_indices: std::collections::BTreeSet<u32>,
+    tags: std::collections::BTreeMap<u32, Vec<ValType>>,
+    struct_types: std::collections::BTreeMap<u32, u32>,
+    array_types: std::collections::BTreeSet<u32>,
+    func_types: std::collections::BTreeMap<u32, (Vec<ValType>, Vec<ValType>)>,
 }
 
 impl FeatureReqs {
@@ -125,6 +166,17 @@ impl FeatureReqs {
         self.data_segments.extend(&other.data_segments);
         self.elem_segments.extend(&other.elem_segments);
         self.ref_func_indices.extend(&other.ref_func_indices);
+        for (idx, params) in &other.tags {
+            self.tags.entry(*idx).or_insert_with(|| params.clone());
+        }
+        for (idx, fields) in &other.struct_types {
+            let entry: &mut u32 = self.struct_types.entry(*idx).or_default();
+            *entry = (*entry).max(*fields);
+        }
+        self.array_types.extend(&other.array_types);
+        for (idx, sig) in &other.func_types {
+            self.func_types.entry(*idx).or_insert_with(|| sig.clone());
+        }
     }
 }
 
@@ -749,22 +801,67 @@ const fn block_result_suffix(blockty: BlockType) -> &'static str {
     }
 }
 
-const fn val_type_str(ty: ValType) -> &'static str {
+fn val_type_str(ty: ValType) -> String {
     match ty {
-        ValType::I64 => "i64",
-        ValType::F32 => "f32",
-        ValType::F64 => "f64",
-        ValType::V128 => "v128",
-        ValType::I32 => "i32",
+        ValType::I64 => "i64".to_owned(),
+        ValType::F32 => "f32".to_owned(),
+        ValType::F64 => "f64".to_owned(),
+        ValType::V128 => "v128".to_owned(),
+        ValType::I32 => "i32".to_owned(),
         ValType::Ref(r) => ref_type_str(r),
     }
 }
 
-const fn ref_type_str(r: wasmparser::RefType) -> &'static str {
-    if r.is_extern_ref() {
-        "externref"
-    } else {
-        "funcref"
+fn ref_type_str(r: wasmparser::RefType) -> String {
+    use wasmparser::HeapType;
+    match r.heap_type() {
+        HeapType::Concrete(idx) => idx.as_module_index().map_or_else(
+            || "anyref".to_owned(),
+            |i| {
+                if r.is_nullable() {
+                    format!("(ref null $t{i})")
+                } else {
+                    format!("(ref $t{i})")
+                }
+            },
+        ),
+        HeapType::Exact(idx) => idx.as_module_index().map_or_else(
+            || "anyref".to_owned(),
+            |i| {
+                if r.is_nullable() {
+                    format!("(ref null $t{i})")
+                } else {
+                    format!("(ref $t{i})")
+                }
+            },
+        ),
+        HeapType::Abstract { ty, .. } => abstract_ref_keyword(ty, r.is_nullable()).to_owned(),
+    }
+}
+
+const fn abstract_ref_keyword(ty: wasmparser::AbstractHeapType, nullable: bool) -> &'static str {
+    use wasmparser::AbstractHeapType;
+    match ty {
+        AbstractHeapType::Any => "anyref",
+        AbstractHeapType::Eq => "eqref",
+        AbstractHeapType::Struct => "structref",
+        AbstractHeapType::Array => "arrayref",
+        AbstractHeapType::I31 => "i31ref",
+        AbstractHeapType::Func => "funcref",
+        AbstractHeapType::Extern => "externref",
+        AbstractHeapType::None => "nullref",
+        AbstractHeapType::NoFunc => "nullfuncref",
+        AbstractHeapType::NoExtern => "nullexternref",
+        AbstractHeapType::Exn => "exnref",
+        AbstractHeapType::NoExn => "nullexnref",
+        AbstractHeapType::Cont => {
+            if nullable {
+                "(ref null cont)"
+            } else {
+                "(ref cont)"
+            }
+        }
+        AbstractHeapType::NoCont => "nullcontref",
     }
 }
 
