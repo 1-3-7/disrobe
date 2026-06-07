@@ -74,7 +74,11 @@ fn emit_gc_type_decls(out: &mut String, reqs: &FeatureReqs) {
         out.push_str("))\n");
     }
     for idx in &reqs.array_types {
-        let _ = writeln!(out, "  (type $t{idx} (array (mut i32)))");
+        let elem: String = reqs
+            .array_elem_types
+            .get(idx)
+            .map_or_else(|| "i32".to_owned(), |ty| val_type_str(*ty));
+        let _ = writeln!(out, "  (type $t{idx} (array (mut {elem})))");
     }
     for (idx, (params, results)) in &reqs.func_types {
         let _ = write!(out, "  (type $t{idx} (func");
@@ -85,6 +89,9 @@ fn emit_gc_type_decls(out: &mut String, reqs: &FeatureReqs) {
             let _ = write!(out, " (result {})", val_type_str(*ty));
         }
         out.push_str("))\n");
+    }
+    for (idx, func_type_index) in &reqs.cont_types {
+        let _ = writeln!(out, "  (type $t{idx} (cont $t{func_type_index}))");
     }
 }
 
@@ -105,7 +112,16 @@ fn emit_ref_func_targets(out: &mut String, reqs: &FeatureReqs) {
         return;
     }
     for idx in &reqs.ref_func_indices {
-        if let Some((t, (_, results))) = reqs.func_types.iter().next() {
+        if let Some(type_index) = reqs.cont_func_targets.get(idx) {
+            let empty: (Vec<ValType>, Vec<ValType>) = (Vec::new(), Vec::new());
+            let (_, results): &(Vec<ValType>, Vec<ValType>) =
+                reqs.func_types.get(type_index).unwrap_or(&empty);
+            let _ = write!(out, "  (func $rf{idx} (type $t{type_index})");
+            for ty in results {
+                let _ = write!(out, " ({}.const 0)", val_type_str(*ty));
+            }
+            out.push_str(")\n");
+        } else if let Some((t, (_, results))) = reqs.func_types.iter().next() {
             let _ = write!(out, "  (func $rf{idx} (type $t{t})");
             for ty in results {
                 let _ = write!(out, " ({}.const 0)", val_type_str(*ty));
@@ -163,7 +179,10 @@ struct FeatureReqs {
     tags: std::collections::BTreeMap<u32, Vec<ValType>>,
     struct_types: std::collections::BTreeMap<u32, u32>,
     array_types: std::collections::BTreeSet<u32>,
+    array_elem_types: std::collections::BTreeMap<u32, ValType>,
     func_types: std::collections::BTreeMap<u32, (Vec<ValType>, Vec<ValType>)>,
+    cont_types: std::collections::BTreeMap<u32, u32>,
+    cont_func_targets: std::collections::BTreeMap<u32, u32>,
 }
 
 impl FeatureReqs {
@@ -182,8 +201,17 @@ impl FeatureReqs {
             *entry = (*entry).max(*fields);
         }
         self.array_types.extend(&other.array_types);
+        for (idx, elem) in &other.array_elem_types {
+            self.array_elem_types.entry(*idx).or_insert(*elem);
+        }
         for (idx, sig) in &other.func_types {
             self.func_types.entry(*idx).or_insert_with(|| sig.clone());
+        }
+        for (idx, func_idx) in &other.cont_types {
+            self.cont_types.entry(*idx).or_insert(*func_idx);
+        }
+        for (idx, type_idx) in &other.cont_func_targets {
+            self.cont_func_targets.entry(*idx).or_insert(*type_idx);
         }
     }
 
@@ -191,6 +219,19 @@ impl FeatureReqs {
         self.func_types
             .entry(idx)
             .or_insert_with(|| (vec![ValType::I32], vec![ValType::I32]));
+    }
+
+    fn record_cont_type(&mut self, cont_type_index: u32) -> u32 {
+        let func_type_index: u32 = cont_type_index
+            .checked_sub(1)
+            .unwrap_or(cont_type_index + 1);
+        self.func_types
+            .entry(func_type_index)
+            .or_insert_with(|| (Vec::new(), Vec::new()));
+        self.cont_types
+            .entry(cont_type_index)
+            .or_insert(func_type_index);
+        func_type_index
     }
 }
 
@@ -328,8 +369,11 @@ fn render_operators(
     let mut local_types: Vec<ValType> = sig.params.clone();
     local_types.extend(read_local_decls(body).unwrap_or_default());
     prescan_struct_arities(&ops, reqs);
+    prescan_array_elem_types(&ops, &local_types, reqs);
     prescan_tag_arities(&ops, &local_types, reqs);
     prescan_catch_tags(&ops, sig, reqs);
+    prescan_cont_func_targets(&ops, reqs);
+    prescan_signature_ref_types(sig, reqs);
     let op_count: usize = ops.len();
     let mut depth: usize = 2;
     for (i, op) in ops.iter().enumerate() {
@@ -404,6 +448,70 @@ fn prescan_struct_arities(ops: &[Operator<'_>], reqs: &mut FeatureReqs) {
     }
 }
 
+/// Links each `ref.func` feeding a `cont.new` to that continuation's underlying
+/// func type, so the synthesized `$rf` target's signature matches the `(cont ...)`.
+fn prescan_cont_func_targets(ops: &[Operator<'_>], reqs: &mut FeatureReqs) {
+    for (i, op) in ops.iter().enumerate() {
+        let Operator::ContNew { cont_type_index } = op else {
+            continue;
+        };
+        let func_type_index: u32 = cont_type_index
+            .checked_sub(1)
+            .unwrap_or(cont_type_index + 1);
+        let mut cursor: usize = i;
+        while cursor > 0 {
+            cursor -= 1;
+            if let Operator::RefFunc { function_index } = ops[cursor] {
+                reqs.cont_func_targets
+                    .entry(function_index)
+                    .or_insert(func_type_index);
+                break;
+            }
+            if !produces_one_value(&ops[cursor]) {
+                break;
+            }
+        }
+    }
+}
+
+/// Records concrete reference types named only in a function's signature so the
+/// synthesized prelude declares them (a bare `(ref $tN)` param has no body op).
+fn prescan_signature_ref_types(sig: &FunctionSig, reqs: &mut FeatureReqs) {
+    for ty in sig.params.iter().chain(sig.results.iter()) {
+        let ValType::Ref(r) = ty else {
+            continue;
+        };
+        if let wasmparser::HeapType::Concrete(idx) = r.heap_type() {
+            if let Some(i) = idx.as_module_index() {
+                if !reqs.array_types.contains(&i) && !reqs.func_types.contains_key(&i) {
+                    reqs.struct_types.entry(i).or_insert(1);
+                }
+            }
+        }
+    }
+}
+
+/// Infers each `array.new` element type from the value pushed just below the count,
+/// so a synthesized `(array ...)` element matches the `array.new` operand.
+fn prescan_array_elem_types(ops: &[Operator<'_>], local_types: &[ValType], reqs: &mut FeatureReqs) {
+    for (i, op) in ops.iter().enumerate() {
+        let (idx, elem_offset): (u32, usize) = match op {
+            Operator::ArrayNew { array_type_index } => (*array_type_index, 2),
+            Operator::ArrayNewFixed {
+                array_type_index, ..
+            } => (*array_type_index, 1),
+            _ => continue,
+        };
+        reqs.array_types.insert(idx);
+        let Some(cursor): Option<usize> = i.checked_sub(elem_offset) else {
+            continue;
+        };
+        if let Some(ty) = value_type_of(&ops[cursor], local_types) {
+            reqs.array_elem_types.entry(idx).or_insert(ty);
+        }
+    }
+}
+
 /// Infers each thrown tag's parameter types from the value stack preceding every `throw`.
 fn prescan_tag_arities(ops: &[Operator<'_>], local_types: &[ValType], reqs: &mut FeatureReqs) {
     for (i, op) in ops.iter().enumerate() {
@@ -420,9 +528,9 @@ fn prescan_catch_tags(ops: &[Operator<'_>], sig: &FunctionSig, reqs: &mut Featur
     let mut frames: Vec<Vec<ValType>> = vec![sig.results.clone()];
     for op in ops {
         match op {
-            Operator::Block { blockty }
-            | Operator::Loop { blockty }
-            | Operator::If { blockty } => frames.push(block_result_types(*blockty)),
+            Operator::Block { blockty } | Operator::Loop { blockty } | Operator::If { blockty } => {
+                frames.push(block_result_types(*blockty));
+            }
             Operator::TryTable { try_table } => {
                 for catch in &try_table.catches {
                     if let Catch::One { tag, label } | Catch::OneRef { tag, label } = catch {
@@ -560,6 +668,9 @@ fn render_op(
         return Rendered::Translated(Some(line));
     }
     if let Some(line) = render_exception_op(op, blocks_emitted) {
+        return Rendered::Translated(Some(line));
+    }
+    if let Some(line) = render_stack_switching_op(op, reqs) {
         return Rendered::Translated(Some(line));
     }
     let line: String = match op {
@@ -996,6 +1107,76 @@ fn render_exception_op(op: &Operator<'_>, blocks_emitted: &mut usize) -> Option<
         }
         _ => return None,
     })
+}
+
+/// Re-prints stack-switching (typed continuation) operators, synthesizing the
+/// referenced `(cont ...)` / `(func ...)` types and tags the body needs to validate.
+fn render_stack_switching_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String> {
+    Some(match op {
+        Operator::ContNew { cont_type_index } => {
+            reqs.record_cont_type(*cont_type_index);
+            format!("cont.new $t{cont_type_index}")
+        }
+        Operator::ContBind {
+            argument_index,
+            result_index,
+        } => {
+            reqs.record_cont_type(*argument_index);
+            reqs.record_cont_type(*result_index);
+            format!("cont.bind $t{argument_index} $t{result_index}")
+        }
+        Operator::Suspend { tag_index } => {
+            reqs.tags.entry(*tag_index).or_default();
+            format!("suspend $tag{tag_index}")
+        }
+        Operator::Resume {
+            cont_type_index,
+            resume_table,
+        } => {
+            reqs.record_cont_type(*cont_type_index);
+            let mut s: String = format!("resume $t{cont_type_index}");
+            for handle in &resume_table.handlers {
+                let _ = write!(s, " {}", resume_handle_clause(handle, reqs));
+            }
+            s
+        }
+        Operator::ResumeThrow {
+            cont_type_index,
+            tag_index,
+            resume_table,
+        } => {
+            reqs.record_cont_type(*cont_type_index);
+            reqs.tags.entry(*tag_index).or_default();
+            let mut s: String = format!("resume_throw $t{cont_type_index} $tag{tag_index}");
+            for handle in &resume_table.handlers {
+                let _ = write!(s, " {}", resume_handle_clause(handle, reqs));
+            }
+            s
+        }
+        Operator::Switch {
+            cont_type_index,
+            tag_index,
+        } => {
+            reqs.record_cont_type(*cont_type_index);
+            reqs.tags.entry(*tag_index).or_default();
+            format!("switch $t{cont_type_index} $tag{tag_index}")
+        }
+        _ => return None,
+    })
+}
+
+/// Renders one `resume` / `resume_throw` handler clause, recording its tag.
+fn resume_handle_clause(handle: &wasmparser::Handle, reqs: &mut FeatureReqs) -> String {
+    match handle {
+        wasmparser::Handle::OnLabel { tag, label } => {
+            reqs.tags.entry(*tag).or_default();
+            format!("(on $tag{tag} {label})")
+        }
+        wasmparser::Handle::OnSwitch { tag } => {
+            reqs.tags.entry(*tag).or_default();
+            format!("(on $tag{tag} switch)")
+        }
+    }
 }
 
 /// Renders one `try_table` catch clause to its textual form.

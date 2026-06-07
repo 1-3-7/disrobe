@@ -81,6 +81,12 @@ const fn explicit_mnemonic(op: &Operator<'_>) -> Option<&'static str> {
         Operator::Throw { .. } => "throw",
         Operator::ThrowRef => "throw_ref",
         Operator::TryTable { .. } => "try_table",
+        Operator::ContNew { .. } => "cont.new",
+        Operator::ContBind { .. } => "cont.bind",
+        Operator::Suspend { .. } => "suspend",
+        Operator::Resume { .. } => "resume",
+        Operator::ResumeThrow { .. } => "resume_throw",
+        Operator::Switch { .. } => "switch",
         _ => return None,
     })
 }
