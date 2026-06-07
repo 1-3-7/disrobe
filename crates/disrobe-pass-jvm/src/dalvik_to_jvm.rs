@@ -85,6 +85,11 @@ struct CfgEmit {
     switch_payloads: BTreeMap<u32, crate::dalvik::SwitchPayload>,
     block_entry_slots: BTreeMap<u32, BTreeMap<u16, Slot>>,
     frame_types: BTreeMap<u32, BTreeMap<u16, crate::dalvik_typestate::RegType>>,
+    /// Per-storing-instruction analyzer post-state slot map: the register slot the type-state
+    /// analysis assigns at the start of the next instruction. The single source of truth the
+    /// emitter consults to pick a store opcode so the bytecode effect agrees with the
+    /// `StackMapTable` frame the analyzer produced downstream.
+    pc_post_slot: BTreeMap<u32, BTreeMap<u16, Slot>>,
     tries: Vec<TryRegion>,
     /// Handler-entry Dalvik PC -> the caught throwable's internal class name.
     handler_stack: BTreeMap<u32, String>,
@@ -322,6 +327,23 @@ pub(crate) fn emit_branch_method_code(
         frame_types.insert(leader, st.clone());
     }
 
+    let mut pc_post_slot: BTreeMap<u32, BTreeMap<u16, Slot>> = BTreeMap::new();
+    for (i, insn) in insns.iter().enumerate() {
+        if !states.reached[i] {
+            continue;
+        }
+        let Some(next): Option<&DalvikInsn> = insns.get(i + 1) else {
+            continue;
+        };
+        let next_state: &crate::dalvik_typestate::RegState = &states.entry_state[i + 1];
+        let slots: BTreeMap<u16, Slot> = next_state
+            .iter()
+            .map(|(&r, t)| (r, regtype_to_slot(t)))
+            .collect();
+        let _ = next;
+        pc_post_slot.insert(insn.pc, slots);
+    }
+
     let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
     let param_local_slots: u16 = u16::from(!is_static)
         + parsed
@@ -364,6 +386,7 @@ pub(crate) fn emit_branch_method_code(
             switch_payloads,
             block_entry_slots,
             frame_types,
+            pc_post_slot,
             tries,
             handler_stack,
         }),
@@ -824,6 +847,15 @@ impl Emitter<'_> {
 
     fn set_reg(&mut self, reg: u16, slot: Slot) {
         self.reg_type.insert(reg, slot);
+    }
+
+    /// The slot the type-state analyzer assigns `reg` immediately after the instruction at `cur_pc`
+    /// (its post-state), or `None` when no analysis is threaded (linear mode) or the register is
+    /// undefined there. This is the single source of truth the emitter aligns its store opcode to so
+    /// the emitted bytecode effect matches the `StackMapTable` frame produced from the same analysis.
+    fn analyzer_post_slot(&self, reg: u16) -> Option<Slot> {
+        let cfg: &CfgEmit = self.cfg.as_ref()?;
+        cfg.pc_post_slot.get(&cfg.cur_pc)?.get(&reg).copied()
     }
 
     /// Per-instruction bookkeeping in branch mode: records the JVM offset and reseeds register types at block leaders.
@@ -1536,6 +1568,11 @@ impl Emitter<'_> {
             let idx: u16 = self.cp.float_bits(bits as u32);
             self.emit_ldc(idx);
             self.emit_store(dest, Slot::Float);
+        } else if bits == 0 && matches!(self.analyzer_post_slot(dest), Some(Slot::Ref)) {
+            self.push(0x01);
+            self.adjust_stack(1);
+            self.emit_store(dest, Slot::Ref);
+            self.const_zero.insert(dest);
         } else {
             self.push_int_const(bits);
             self.emit_store(dest, Slot::Int);
