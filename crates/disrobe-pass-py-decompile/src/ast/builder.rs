@@ -3691,8 +3691,28 @@ fn structure_try(
 ) -> Result<Vec<Stmt>> {
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
     let (stmt, consumed_end, gap_succ): (Stmt, usize, Vec<Stmt>) = if region.is_with {
-        let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
-        (with_stmt, region.region_end, with_tail)
+        if let Some(enclosing) = with_enclosing_try_region(stream, region, hi) {
+            let enclosing: TryRegion = enclosing;
+            let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+            let mut try_body: Vec<Stmt> = vec![with_stmt];
+            try_body.extend(with_tail);
+            let handlers: Vec<ExceptHandler> =
+                parse_except_handlers(code, stream, enclosing.handler_start, enclosing.region_end)?;
+            (
+                Stmt::Try {
+                    body: non_empty(try_body),
+                    handlers,
+                    orelse: Vec::new(),
+                    finalbody: Vec::new(),
+                    line: None,
+                },
+                enclosing.region_end,
+                Vec::new(),
+            )
+        } else {
+            let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+            (with_stmt, region.region_end, with_tail)
+        }
     } else {
         let sc_end: usize =
             extend_end_past_shortcircuit_stmt(stream, region.try_end, region.handler_start);
@@ -5694,6 +5714,41 @@ fn structure_with(
     let body_end: usize = with_body_end(stream, body_start, search_end);
     let body: Vec<Stmt> = structure_with_body(code, stream, body_start, body_end, search_end)?;
     Ok((assemble_with_chain(chain, body), Vec::new()))
+}
+
+/// Recovers the enclosing `try ... except` of a `with` that constitutes the entire `try` body.
+///
+/// When a `with` region wins `find_try_region` selection (its setup-prologue `try_start` is strictly
+/// smaller than the enclosing exception row's), the `with`'s `region_end` over-absorbs the enclosing
+/// handler via `handler_join` scanning to the function's last `RERAISE`, silently dropping the outer
+/// `except`. This locates that real handler by exception-table geometry: the `with`'s true cleanup
+/// end (`handler_chain_end`), an enclosing `except`/`finally` row whose handler sits at or past that
+/// end, whose protected body opens inside the `with` body, and whose target op is `PushExcInfo` not
+/// immediately followed by `WithExceptStart` (a real handler, not another `with` cleanup). Returns
+/// `None` for freestanding `with`s and `try` bodies that merely contain a `with` among other
+/// statements (those take the non-`with` candidate path and never reach the `is_with` branch).
+fn with_enclosing_try_region(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> Option<TryRegion> {
+    if !region.is_with || stream.is_pre_311() {
+        return None;
+    }
+    let with_cleanup_end: usize = handler_chain_end(stream, region.handler_start, hi)?;
+    let enclosing: TryRegion =
+        find_protected_try_with_outer_handler(stream, region.try_start, with_cleanup_end, hi)?;
+    let body_starts_in_with: bool =
+        (region.try_start..region.protected_end).contains(&enclosing.try_start);
+    let handler_after_with: bool = enclosing.handler_start >= with_cleanup_end;
+    let real_except: bool = matches!(
+        stream.ops.get(enclosing.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) && !matches!(
+        stream.ops.get(enclosing.handler_start + 1),
+        Some(CanonicalOp::WithExceptStart)
+    );
+    (body_starts_in_with && handler_after_with && real_except).then_some(enclosing)
 }
 
 /// Assembles the recovered `with`-setup chain into multi-item or nested `with` statements by line.
