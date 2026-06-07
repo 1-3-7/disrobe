@@ -123,7 +123,7 @@ pub(crate) fn emit_method_code(
     if item.insns.is_empty() || item.insns.len() > MAX_METHOD_INSNS {
         return None;
     }
-    if item.method_name == "<init>" || is_synthetic_class(&item.class) {
+    if is_synthetic_class(&item.class) {
         return None;
     }
     if !item.tries.is_empty() {
