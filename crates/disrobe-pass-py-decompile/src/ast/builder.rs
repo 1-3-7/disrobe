@@ -14877,6 +14877,44 @@ fn extract_inline_comp_parts(
 }
 
 /// Collects `n` consecutive `STORE_*` targets consuming an `UNPACK_*`, returning `(targets, skip)`.
+/// Splits the fused store/load superinstructions (`STORE_FAST_STORE_FAST`, `STORE_FAST_LOAD_FAST`,
+/// `LOAD_FAST_LOAD_FAST`) into their two primitive ops over the contiguous unpack-target region so a
+/// fused store may straddle a nested-tuple group boundary (`for (a, b, c), d in xs`), returning the
+/// expanded ops and a per-expanded-index map back to source op indices for `skip` accounting.
+fn expand_fused_target_ops(ops: &[CanonicalOp], start: usize) -> (Vec<CanonicalOp>, Vec<usize>) {
+    let mut expanded: Vec<CanonicalOp> = Vec::with_capacity(ops.len() - start);
+    let mut map: Vec<usize> = Vec::with_capacity(ops.len() - start);
+    for (offset, op) in ops[start..].iter().enumerate() {
+        let src: usize = start + offset;
+        match op {
+            CanonicalOp::StoreFastStoreFast(a, b) => {
+                expanded.push(CanonicalOp::StoreFast(*a));
+                map.push(src);
+                expanded.push(CanonicalOp::StoreFast(*b));
+                map.push(src);
+            }
+            CanonicalOp::StoreFastLoadFast(a, b) => {
+                expanded.push(CanonicalOp::StoreFast(*a));
+                map.push(src);
+                expanded.push(CanonicalOp::LoadFast(*b));
+                map.push(src);
+            }
+            CanonicalOp::LoadFastLoadFast(a, b) => {
+                expanded.push(CanonicalOp::LoadFast(*a));
+                map.push(src);
+                expanded.push(CanonicalOp::LoadFast(*b));
+                map.push(src);
+            }
+            other => {
+                expanded.push(other.clone());
+                map.push(src);
+            }
+        }
+    }
+    map.push(ops.len());
+    (expanded, map)
+}
+
 fn collect_unpack_targets(
     code: &CodeObject,
     ops: &[CanonicalOp],
@@ -14886,6 +14924,19 @@ fn collect_unpack_targets(
     if n == 0 {
         return None;
     }
+    let (expanded, map): (Vec<CanonicalOp>, Vec<usize>) = expand_fused_target_ops(ops, start);
+    let (targets, exp_consumed): (Vec<Expr>, usize) =
+        collect_unpack_targets_expanded(code, &expanded, 0, n)?;
+    let src_after: usize = *map.get(exp_consumed)?;
+    Some((targets, src_after - start))
+}
+
+fn collect_unpack_targets_expanded(
+    code: &CodeObject,
+    ops: &[CanonicalOp],
+    start: usize,
+    n: usize,
+) -> Option<(Vec<Expr>, usize)> {
     let mut targets: Vec<Expr> = Vec::with_capacity(n);
     let mut i: usize = start;
     let mut consumed: usize = 0;
@@ -14904,24 +14955,9 @@ fn collect_unpack_targets(
                 });
                 consumed += 1;
             }
-            CanonicalOp::StoreFastStoreFast(a, b) => {
-                targets.push(local_target(code, *a, i).ok()?);
-                if consumed + 1 >= n {
-                    return None;
-                }
-                targets.push(local_target(code, *b, i).ok()?);
-                consumed += 2;
-            }
-            CanonicalOp::StoreFastLoadFast(store_slot, load_slot) => {
-                targets.push(local_target(code, *store_slot, i).ok()?);
-                consumed += 1;
-                if consumed >= n {
-                    return None;
-                }
-                let mut chain: Vec<CanonicalOp> = vec![CanonicalOp::LoadFast(*load_slot)];
-                let group_end: usize = chain_group_end(ops, i + 1)?;
-                chain.extend_from_slice(&ops[i + 1..group_end]);
-                targets.push(recover_chain_target(code, &chain, 0, chain.len())?);
+            CanonicalOp::StoreAttr(_) | CanonicalOp::StoreSubscr | CanonicalOp::StoreSlice => {
+                let group_end: usize = chain_group_end(ops, i)?;
+                targets.push(recover_chain_target(code, ops, i, group_end)?);
                 consumed += 1;
                 i = group_end;
                 continue;
@@ -14935,7 +14971,7 @@ fn collect_unpack_targets(
             }
             CanonicalOp::UnpackSequence(m) => {
                 let (inner, skip): (Vec<Expr>, usize) =
-                    collect_unpack_targets(code, ops, i + 1, *m as usize)?;
+                    collect_unpack_targets_expanded(code, ops, i + 1, *m as usize)?;
                 targets.push(Expr::Tuple {
                     elts: inner,
                     ctx: ExprCtx::Store,
@@ -14949,7 +14985,7 @@ fn collect_unpack_targets(
                 let after: usize = (arg >> 8) as usize;
                 let total: usize = before + after + 1;
                 let (mut inner, skip): (Vec<Expr>, usize) =
-                    collect_unpack_targets(code, ops, i + 1, total)?;
+                    collect_unpack_targets_expanded(code, ops, i + 1, total)?;
                 if before < inner.len() {
                     let starred: Expr = inner.remove(before);
                     inner.insert(
