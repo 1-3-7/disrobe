@@ -5,7 +5,7 @@ use crate::ast::node::{
     FormatConversion, MatchCase, Pattern, Stmt, TStrItem, WithItem,
 };
 use crate::bytecode::opcode::{
-    CanonicalOp, CmpOp, OpcodeMap, deref_local_payload, is_deref_local, map_for,
+    CanonicalOp, CmpOp, OpcodeMap, UnaryOp, deref_local_payload, is_deref_local, map_for,
 };
 use crate::bytecode::version::PyVersion;
 use crate::error::{DecompileError, Result};
@@ -9894,12 +9894,13 @@ fn build_shortcircuit_stack_expr(
     lo: usize,
     hi: usize,
 ) -> Result<Option<Expr>> {
-    let Some(operands): Option<Vec<BoolOperand>> = split_boolop_operands(stream, lo, hi) else {
+    let Some(mut operands): Option<Vec<BoolOperand>> = split_boolop_operands(stream, lo, hi) else {
         return Ok(None);
     };
     if operands.len() < 2 {
         return Ok(None);
     }
+    let outer_coercions: Vec<UnaryOp> = peel_outer_boolop_coercions(stream, &mut operands, hi);
     let mut resolved: Vec<ResolvedOperand> = Vec::with_capacity(operands.len());
     for o in &operands {
         let Some(expr): Option<Expr> =
@@ -9915,7 +9916,65 @@ fn build_shortcircuit_stack_expr(
             value_lo: o.value_lo,
         });
     }
-    Ok(fold_shortcircuit_operands(resolved))
+    let Some(folded): Option<Expr> = fold_shortcircuit_operands(resolved) else {
+        return Ok(None);
+    };
+    Ok(Some(apply_outer_coercions(folded, outer_coercions)))
+}
+
+/// Peels the boolean-coercion run (`TO_BOOL` / `UNARY_NOT`) that the compiler emits *at the chain's
+/// shared merge target* — these operate on the whole short-circuit result, not the terminal operand.
+/// The merge target is every non-terminal operand's common short-circuit landing pad; coercions at or
+/// past it (e.g. the `TO_BOOL; UNARY_NOT` of `not (a and b and c)`) are stripped from the terminal
+/// operand's region and returned bottom-to-top, leaving a `not b` that precedes the merge (as in
+/// `a and not b`) correctly inside its operand. Returns the coercions to re-apply, outermost last.
+fn peel_outer_boolop_coercions(
+    stream: &DecodedStream,
+    operands: &mut [BoolOperand],
+    hi: usize,
+) -> Vec<UnaryOp> {
+    let Some((terminal, leading)): Option<(&mut BoolOperand, &mut [BoolOperand])> =
+        operands.split_last_mut()
+    else {
+        return Vec::new();
+    };
+    let Some(merge_point): Option<usize> = leading.iter().map(|o: &BoolOperand| o.target).max()
+    else {
+        return Vec::new();
+    };
+    if merge_point <= terminal.value_lo || merge_point >= hi {
+        return Vec::new();
+    }
+    let all_coercions: bool = (merge_point..hi).all(|i: usize| {
+        matches!(
+            stream.ops[i],
+            CanonicalOp::ToBool
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::UnaryOp(UnaryOp::Not)
+        )
+    });
+    if !all_coercions {
+        return Vec::new();
+    }
+    let coercions: Vec<UnaryOp> = (merge_point..hi)
+        .filter_map(|i: usize| match stream.ops[i] {
+            CanonicalOp::UnaryOp(op @ UnaryOp::Not) => Some(op),
+            _ => None,
+        })
+        .collect();
+    terminal.value_hi = merge_point;
+    coercions
+}
+
+/// Wraps `expr` in each peeled outer unary coercion, innermost first.
+fn apply_outer_coercions(expr: Expr, coercions: Vec<UnaryOp>) -> Expr {
+    coercions
+        .into_iter()
+        .fold(expr, |acc: Expr, op: UnaryOp| Expr::UnaryOp {
+            op,
+            operand: Box::new(acc),
+        })
 }
 
 /// Whether `op` pushes the `AssertionError` raised by a failed `assert`, across all version lowerings.
@@ -10233,8 +10292,11 @@ fn try_recover_compound_if(
         });
         value_lo = first_significant(stream, jump + 1, hi).unwrap_or(jump + 1);
     }
-    let (head, _): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..head_end])?;
+    let head_region: &[CanonicalOp] = &stream.ops[lo..head_end];
+    let head_merges: Vec<usize> = collect_value_boolop_merges(stream, lo, head_end);
+    let (head, _): (Vec<Stmt>, Vec<Expr>) = with_boolop_merges(head_region, head_merges, || {
+        build_linear_stmts_sim(code, head_region)
+    })?;
     let Some(test): Option<Expr> = parse_cond_range(&operands, body, exit) else {
         return Ok(None);
     };
@@ -13749,8 +13811,12 @@ fn structure_stmts(
     let (head, raw_test): (Vec<Stmt>, Expr) = if let Some(c) = compound {
         (c.head, c.test)
     } else {
+        let head_region: &[CanonicalOp] = &stream.ops[lo..jump_idx];
+        let head_merges: Vec<usize> = collect_value_boolop_merges(stream, lo, jump_idx);
         let (head, residual): (Vec<Stmt>, Vec<Expr>) =
-            build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
+            with_boolop_merges(head_region, head_merges, || {
+                build_linear_stmts_sim(code, head_region)
+            })?;
         let raw: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
             value: ConstValue::True,
             line: None,
