@@ -7478,8 +7478,25 @@ fn has_loop_entry_gate(stream: &DecodedStream, lo: usize, header: usize) -> bool
         && resolve_jump_target(stream, prev, &stream.ops[prev]).is_some_and(|t: usize| t > header)
 }
 
-fn find_infinite_while(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
+/// Detects a `while True:` region. With `allow_inline_break`, the leading op may be an inline
+/// conditional `break` whose cold block jumps out of the loop (the established no-`for` form); this
+/// form is suppressed when the enclosing range contains a `for` because its straight-line break-block
+/// model mis-segments a nested `for`. Independently of that flag, a header whose only exits are
+/// internal `return`/`raise` — no jump of any kind leaves the loop past its unconditional back-edge —
+/// is structured as a plain whole-suite `while True:` body via [`structure_infinite_while_body`].
+fn find_infinite_while(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    allow_inline_break: bool,
+) -> Option<LoopRegion> {
     for header in lo..hi {
+        if matches!(
+            stream.ops[header],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        ) {
+            continue;
+        }
         let back_edge: Option<usize> = (header + 1..hi).find(|&j: &usize| {
             is_back_edge(&stream.ops[j])
                 && !is_async_send_back_edge(stream, j)
@@ -7495,39 +7512,82 @@ fn find_infinite_while(stream: &DecodedStream, lo: usize, hi: usize) -> Option<L
         if has_loop_entry_gate(stream, lo, header) {
             continue;
         }
-        let first_cond: Option<usize> = (header..back_edge).find(|&k: &usize| {
-            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
-        });
-        let Some(first_cond): Option<usize> = first_cond else {
-            continue;
-        };
-        let Some(body_label): Option<usize> =
-            resolve_jump_target(stream, first_cond, &stream.ops[first_cond])
-                .filter(|t: &usize| *t > first_cond && *t < back_edge)
-        else {
-            continue;
-        };
-        let block_start: usize = match first_significant(stream, first_cond + 1, body_label) {
-            Some(s) => s,
-            None => continue,
-        };
-        if block_start >= body_label
-            || !block_exits_loop(stream, block_start, body_label, back_edge, hi)
+        if allow_inline_break
+            && let Some(exit) = infinite_inline_break_exit(stream, header, back_edge, hi)
         {
+            return Some(LoopRegion {
+                kind: LoopKind::While,
+                header,
+                body_start: header,
+                body_end: back_edge,
+                back_edge,
+                exit,
+                infinite: true,
+            });
+        }
+        if loop_has_jump_exit(stream, header, back_edge, hi) {
             continue;
         }
-        let exit: usize = infinite_break_exit(stream, block_start, body_label, back_edge, hi);
         return Some(LoopRegion {
             kind: LoopKind::While,
             header,
             body_start: header,
             body_end: back_edge,
             back_edge,
-            exit,
+            exit: (back_edge + 1).min(hi),
             infinite: true,
         });
     }
     None
+}
+
+/// The post-loop landing of a `while True:` whose leading op is an inline conditional `break` test
+/// (a forward cond-jump skipping a cold block that jumps out of / returns from the loop), or `None`
+/// when the header carries no such inline break — in which case the loop exits only via internal
+/// `return`/`raise` and is structured as a plain whole-suite `while True:` body instead.
+fn infinite_inline_break_exit(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+    hi: usize,
+) -> Option<usize> {
+    let first_cond: usize = (header..back_edge).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    })?;
+    let body_label: usize = resolve_jump_target(stream, first_cond, &stream.ops[first_cond])
+        .filter(|t: &usize| *t > first_cond && *t < back_edge)?;
+    let block_start: usize = first_significant(stream, first_cond + 1, body_label)?;
+    if block_start >= body_label
+        || !block_exits_loop(stream, block_start, body_label, back_edge, hi)
+    {
+        return None;
+    }
+    Some(infinite_break_exit(
+        stream,
+        block_start,
+        body_label,
+        back_edge,
+        hi,
+    ))
+}
+
+/// Whether the loop body `[header, back_edge)` carries any jump that exits the loop normally — a
+/// top/bottom `while cond:` test (forward cond-jump) or an inline `break` (forward cond- or
+/// unconditional jump) whose resolved target lands at or past the unconditional back-edge. Its
+/// absence is the defining mark of a `while True:` whose only exits are internal `return`/`raise`,
+/// which the whole-suite fallback structures correctly. Nested-loop-internal jumps target strictly
+/// inside the body and are excluded; chained short-circuit operands are skipped.
+fn loop_has_jump_exit(stream: &DecodedStream, header: usize, back_edge: usize, hi: usize) -> bool {
+    (header..back_edge).any(|k: usize| {
+        let exits: bool = match &stream.ops[k] {
+            op if is_forward_cond_jump(op) => !is_chain_cond_jump(&stream.ops, k),
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) => true,
+            _ => false,
+        };
+        exits
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= back_edge && t <= hi)
+    })
 }
 
 /// The post-loop landing of a `while True:` break.
@@ -7792,9 +7852,7 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
     }
-    if !has_for_iter(stream, lo, hi)
-        && let Some(region) = find_infinite_while(stream, lo, hi)
-    {
+    if let Some(region) = find_infinite_while(stream, lo, hi, !has_for_iter(stream, lo, hi)) {
         return Some(region);
     }
     let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, hi);
