@@ -9291,6 +9291,26 @@ fn skip_chain_assert_dup_raise(
     }
 }
 
+/// Whether the `assert` whose guard jumps are `jump_indices` is itself the then-body of an enclosing
+/// `if`, rather than a bare (possibly compound) `assert`. A genuine `assert <cond>[, msg]` lowers so
+/// every short-circuit guard lands at the failure block or at `pass_target` (the op directly past the
+/// raise) — never beyond it, because `pass_target` *is* where execution resumes. A forward guard that
+/// instead targets strictly past `pass_target` into a still-pending region (`target < hi`) is the
+/// enclosing `if`'s exit-to-continuation jump; folding it into the assert would glue an unrelated
+/// operand and silently drop the continuation. Deferring lets the generic compound-`if` structurer
+/// recover `if <cond>: assert ...; <continuation>` correctly.
+fn assert_enclosed_by_if(
+    stream: &DecodedStream,
+    jump_indices: &[usize],
+    pass_target: usize,
+    hi: usize,
+) -> bool {
+    jump_indices.iter().any(|&jump: &usize| {
+        resolve_jump_target(stream, jump, &stream.ops[jump])
+            .is_some_and(|target: usize| target > pass_target && target < hi)
+    })
+}
+
 fn try_structure_compound_assert(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -9323,6 +9343,9 @@ fn try_structure_compound_assert(
         .collect();
     if jump_indices.is_empty() {
         return structure_const_false_assert(code, stream, lo, hi, raise_idx, pass_target, msg);
+    }
+    if assert_enclosed_by_if(stream, &jump_indices, pass_target, hi) {
+        return Ok(None);
     }
     let mut head: Vec<Stmt> = Vec::new();
     let mut operands: Vec<CondOperand> = Vec::new();
@@ -9566,6 +9589,7 @@ fn collect_if_cond_jumps(
 ) -> Option<(Vec<usize>, usize, usize)> {
     let mut jumps: Vec<usize> = Vec::new();
     let mut targets: Vec<usize> = Vec::new();
+    let mut body_targets: Vec<usize> = Vec::new();
     let mut cursor: usize = first_jump;
     loop {
         if !is_forward_cond_jump(&stream.ops[cursor])
@@ -9576,9 +9600,28 @@ fn collect_if_cond_jumps(
         }
         let target: usize = resolve_jump_target(stream, cursor, &stream.ops[cursor])
             .filter(|t: &usize| *t > cursor && *t <= hi)?;
+        let jumps_if_true: bool = matches!(
+            stream.ops[cursor],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        );
         jumps.push(cursor);
         targets.push(target);
+        if jumps_if_true {
+            body_targets.push(target);
+        }
         let next_op: usize = first_significant(stream, cursor + 1, hi)?;
+        let next_entry: usize = body_entry_index(stream, next_op, hi);
+        if body_targets
+            .iter()
+            .any(|&t: &usize| t == next_op || t == next_entry)
+        {
+            let body: usize = next_op;
+            let exit: usize = *targets.iter().filter(|&&t: &&usize| t != body).max()?;
+            if exit <= body || jumps.iter().any(|&j: &usize| j >= body) {
+                return None;
+            }
+            return Some((jumps, body, exit));
+        }
         let next_jump: Option<usize> = scan_to_cond_jump(stream, next_op, target);
         let continues: bool = next_jump
             .is_some_and(|j: usize| j < target && !region_has_statement(stream, next_op, j));
