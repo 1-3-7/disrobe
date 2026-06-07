@@ -19252,23 +19252,26 @@ fn extract_generic_class(
     target_name: &str,
     type_params: Vec<crate::ast::node::TypeParam>,
 ) -> Option<Stmt> {
+    let explicit_bases: Vec<Expr> = collect_generic_class_bases(wrapper);
+    let mut args: Vec<Expr> = vec![
+        Expr::Name {
+            id: format!("{DR_CODE_CONST_PREFIX}{inner_idx}__"),
+            ctx: ExprCtx::Load,
+            line: None,
+        },
+        Expr::Constant {
+            value: ConstValue::Str(target_name.to_owned()),
+            line: None,
+        },
+    ];
+    args.extend(explicit_bases);
     let build_class_value: Expr = Expr::Call {
         func: Box::new(Expr::Name {
             id: DR_BUILD_CLASS_MARKER.to_owned(),
             ctx: ExprCtx::Load,
             line: None,
         }),
-        args: vec![
-            Expr::Name {
-                id: format!("{DR_CODE_CONST_PREFIX}{inner_idx}__"),
-                ctx: ExprCtx::Load,
-                line: None,
-            },
-            Expr::Constant {
-                value: ConstValue::Str(target_name.to_owned()),
-                line: None,
-            },
-        ],
+        args,
         keywords: Vec::new(),
     };
     let mut class_def: Stmt = try_build_class_def(wrapper, &build_class_value, target_name)?;
@@ -19285,6 +19288,111 @@ fn extract_generic_class(
         }
     }
     Some(class_def)
+}
+
+/// Recovers the explicit base classes of a PEP-695 generic class from its `<generic parameters of>`
+/// wrapper. The wrapper appends a compiler-synthesized `.generic_base` (`Generic[*type_params]`) after
+/// the source-level bases in the `__build_class__` call (`bases..., .generic_base`), so a bare
+/// `class Foo[T]:` and `class Foo[T](Bar):` differ only by these prefix loads. This simulates the
+/// wrapper stream up to the build-class `CALL` and returns every base operand except the trailing
+/// synthesized `.generic_base`, preserving source order.
+fn collect_generic_class_bases(wrapper: &CodeObject) -> Vec<Expr> {
+    let nested_version: PyVersion = pick_nested_version(wrapper);
+    let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
+    let ops: Vec<CanonicalOp> = decode_stream(wrapper, opmap.as_ref(), &nested_version);
+    let Some(subscript_idx): Option<usize> = ops
+        .iter()
+        .position(|op: &CanonicalOp| matches!(op, CanonicalOp::CallIntrinsic1(10)))
+    else {
+        return Vec::new();
+    };
+    let mut sim: StackSim = StackSim::new();
+    for (idx, op) in ops.iter().enumerate().skip(subscript_idx + 1) {
+        match op {
+            CanonicalOp::LoadConst(i) => {
+                if let Ok(e) = load_const(wrapper, *i, idx) {
+                    sim.push(e);
+                }
+            }
+            CanonicalOp::LoadSmallInt(v) => sim.push(Expr::Constant {
+                value: ConstValue::Int(i128::from(*v)),
+                line: None,
+            }),
+            CanonicalOp::LoadName(i)
+            | CanonicalOp::LoadGlobal(i)
+            | CanonicalOp::LoadFromDictOrGlobals(i) => {
+                if let Ok(e) = load_name(wrapper, *i, idx) {
+                    sim.push(e);
+                }
+            }
+            CanonicalOp::LoadFast(i)
+            | CanonicalOp::LoadFastAndClear(i)
+            | CanonicalOp::LoadFromDictOrDeref(i) => {
+                if let Ok(e) = load_local(wrapper, *i, idx) {
+                    sim.push(e);
+                }
+            }
+            CanonicalOp::LoadFastLoadFast(a, b) => {
+                if let (Ok(ea), Ok(eb)) =
+                    (load_local(wrapper, *a, idx), load_local(wrapper, *b, idx))
+                {
+                    sim.push(ea);
+                    sim.push(eb);
+                }
+            }
+            CanonicalOp::StoreFastLoadFast(_, b) => {
+                let _ = sim.try_pop();
+                if let Ok(e) = load_local(wrapper, *b, idx) {
+                    sim.push(e);
+                }
+            }
+            CanonicalOp::LoadAttr(i) => {
+                let value: Expr = sim.pop_or_synth(wrapper, idx);
+                if let Ok(attr) = name_at(&wrapper.names, *i, idx, "name") {
+                    sim.push(Expr::Attribute {
+                        value: Box::new(value),
+                        attr,
+                        ctx: ExprCtx::Load,
+                    });
+                }
+            }
+            CanonicalOp::LoadSubscr => {
+                let slice: Expr = sim.pop_or_synth(wrapper, idx);
+                let value: Expr = sim.pop_or_synth(wrapper, idx);
+                sim.push(Expr::Subscript {
+                    value: Box::new(value),
+                    slice: Box::new(slice),
+                    ctx: ExprCtx::Load,
+                });
+            }
+            CanonicalOp::BuildTuple(n) => {
+                let elts: Vec<Expr> = sim.pop_n(*n as usize);
+                sim.push(Expr::Tuple {
+                    elts,
+                    ctx: ExprCtx::Load,
+                });
+            }
+            CanonicalOp::Copy(n) => {
+                if let Some(v) = sim.peek_at(usize::from(*n)) {
+                    sim.push(v);
+                }
+            }
+            CanonicalOp::Swap(n) => sim.swap(usize::from(*n)),
+            CanonicalOp::StoreFast(_) => {
+                let _ = sim.try_pop();
+            }
+            CanonicalOp::CallFunction(_) => {
+                let mut bases: Vec<Expr> = sim.stack.clone();
+                if matches!(bases.last(), Some(Expr::Name { id, .. }) if id == ".generic_base") {
+                    bases.pop();
+                }
+                return bases;
+            }
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => break,
+            _ => {}
+        }
+    }
+    Vec::new()
 }
 
 /// `__type_params__ = .type_params` (and the `.type_params` deref binding) are compiler-synthesized
