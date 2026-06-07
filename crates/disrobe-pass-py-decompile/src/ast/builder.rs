@@ -18618,24 +18618,30 @@ fn is_class_implicit_return(s: &Stmt) -> bool {
 }
 
 fn is_class_setup_assign(s: &Stmt) -> bool {
-    let Stmt::Assign { targets, .. } = s else {
+    let Stmt::Assign { targets, value, .. }: &Stmt = s else {
         return false;
     };
-    let [Expr::Name { id, .. }] = targets.as_slice() else {
+    let [Expr::Name { id, .. }]: &[Expr] = targets.as_slice() else {
         return false;
     };
-    matches!(
-        id.as_str(),
-        "__doc__"
-            | "__firstlineno__"
-            | "__static_attributes__"
-            | "__classcell__"
-            | "__class__"
-            | "__classdict__"
-            | "__classdictcell__"
-            | "__type_params__"
-            | ".type_params"
-    )
+    match id.as_str() {
+        "__doc__" => matches!(
+            value,
+            Expr::Constant {
+                value: ConstValue::Str(_),
+                ..
+            }
+        ),
+        "__firstlineno__"
+        | "__static_attributes__"
+        | "__classcell__"
+        | "__class__"
+        | "__classdict__"
+        | "__classdictcell__"
+        | "__type_params__"
+        | ".type_params" => true,
+        _ => false,
+    }
 }
 
 fn update_last_import_from_asname(out: &mut [Stmt], attr: &str, asname: &str) {
