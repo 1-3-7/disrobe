@@ -59,6 +59,8 @@ struct Emitter<'a> {
     code: Vec<u8>,
     reg_type: BTreeMap<u16, Slot>,
     const_kind: BTreeMap<u16, Slot>,
+    reg_array_elem: BTreeMap<u16, Slot>,
+    param_array_elem: BTreeMap<u16, Slot>,
     const_zero: BTreeSet<u16>,
     pending_new: BTreeMap<u16, String>,
     pending_result: Option<Slot>,
@@ -165,6 +167,8 @@ pub(crate) fn emit_method_code(
         code: Vec::with_capacity(insns.len() * 3),
         reg_type: BTreeMap::new(),
         const_kind,
+        reg_array_elem: BTreeMap::new(),
+        param_array_elem: BTreeMap::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
         pending_result: None,
@@ -333,6 +337,8 @@ pub(crate) fn emit_branch_method_code(
         code: Vec::with_capacity(insns.len() * 3),
         reg_type: BTreeMap::new(),
         const_kind,
+        reg_array_elem: BTreeMap::new(),
+        param_array_elem: BTreeMap::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
         pending_result: None,
@@ -619,6 +625,10 @@ impl Emitter<'_> {
         for ty in &parsed.params {
             let slot: Slot = Slot::from_java(ty);
             self.reg_type.insert(cursor, slot);
+            if let Some(elem) = array_elem_slot_jt(ty) {
+                self.reg_array_elem.insert(cursor, elem);
+                self.param_array_elem.insert(cursor, elem);
+            }
             cursor = cursor.saturating_add(if slot.category_two() { 2 } else { 1 });
         }
     }
@@ -673,6 +683,7 @@ impl Emitter<'_> {
                 self.bail();
                 return;
             }
+            self.reg_array_elem = self.param_array_elem.clone();
             self.const_zero.clear();
             self.pending_result = None;
             self.cur_stack = 0;
@@ -1252,6 +1263,14 @@ impl Emitter<'_> {
         let slot: Slot = self.reg_slot(src);
         self.emit_load(src);
         self.emit_store(dest, slot);
+        match self.reg_array_elem.get(&src).copied() {
+            Some(elem) => {
+                self.reg_array_elem.insert(dest, elem);
+            }
+            None => {
+                self.reg_array_elem.remove(&dest);
+            }
+        }
     }
 
     fn move_result(&mut self, regs: &[u16], default: Slot) {
@@ -1394,6 +1413,7 @@ impl Emitter<'_> {
         self.push(0xC0);
         self.push_u16(idx);
         self.emit_store(reg, Slot::Ref);
+        self.note_array_elem(reg, &ty);
     }
 
     fn instance_of(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -1457,6 +1477,7 @@ impl Emitter<'_> {
             }
         }
         self.emit_store(dest, Slot::Ref);
+        self.note_array_elem(dest, &ty);
     }
 
     /// Lowers `filled-new-array {vA..vN}, [T` (and its `/range` form) to the JVM array-construction idiom.
@@ -1526,7 +1547,24 @@ impl Emitter<'_> {
         else {
             return;
         };
+        let elem: Option<Slot> = self.reg_array_elem.get(&array).copied();
         let (opcode, slot): (u8, Slot) = match op {
+            0x44 => match elem {
+                Some(Slot::Int) => (0x2E, Slot::Int),
+                Some(Slot::Float) => (0x30, Slot::Float),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
+            0x45 => match elem {
+                Some(Slot::Long) => (0x2F, Slot::Long),
+                Some(Slot::Double) => (0x31, Slot::Double),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
             0x46 => (0x32, Slot::Ref),
             0x47 | 0x48 => (0x33, Slot::Int),
             0x49 => (0x34, Slot::Int),
@@ -1550,7 +1588,24 @@ impl Emitter<'_> {
         else {
             return;
         };
+        let elem: Option<Slot> = self.reg_array_elem.get(&array).copied();
         let (opcode, slot): (u8, Slot) = match op {
+            0x4B => match elem {
+                Some(Slot::Int) => (0x4F, Slot::Int),
+                Some(Slot::Float) => (0x51, Slot::Float),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
+            0x4C => match elem {
+                Some(Slot::Long) => (0x50, Slot::Long),
+                Some(Slot::Double) => (0x52, Slot::Double),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
             0x4D => (0x53, Slot::Ref),
             0x4E | 0x4F => (0x54, Slot::Int),
             0x50 => (0x55, Slot::Int),
@@ -1567,6 +1622,19 @@ impl Emitter<'_> {
         self.emit_load(value);
         self.push(opcode);
         self.adjust_stack(-2 - slot.width());
+    }
+
+    /// Records (or clears) the primitive element [`Slot`] of a register known to hold an array, so the
+    /// ambiguous wide/narrow `aget`/`aput` opcodes can pick the correct typed JVM array op instead of bailing.
+    fn note_array_elem(&mut self, reg: u16, array_descriptor: &str) {
+        match array_descriptor.strip_prefix('[').and_then(array_elem_slot) {
+            Some(elem) => {
+                self.reg_array_elem.insert(reg, elem);
+            }
+            None => {
+                self.reg_array_elem.remove(&reg);
+            }
+        }
     }
 
     fn instance_get(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -1587,6 +1655,7 @@ impl Emitter<'_> {
         self.push_u16(idx);
         self.adjust_stack(-1 + slot.width());
         self.emit_store(dest, slot);
+        self.note_array_elem(dest, &ftype);
     }
 
     fn instance_put(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -1625,6 +1694,7 @@ impl Emitter<'_> {
         self.push_u16(idx);
         self.adjust_stack(slot.width());
         self.emit_store(dest, slot);
+        self.note_array_elem(dest, &ftype);
     }
 
     fn static_put(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -2348,6 +2418,30 @@ const fn arith_lit_op(op: u8) -> u8 {
         0xE2 => 0x7C,
         _ => 0x60,
     }
+}
+
+const fn array_elem_slot(element_descriptor: &str) -> Option<Slot> {
+    match element_descriptor.as_bytes().first() {
+        Some(b'I') => Some(Slot::Int),
+        Some(b'F') => Some(Slot::Float),
+        Some(b'J') => Some(Slot::Long),
+        Some(b'D') => Some(Slot::Double),
+        Some(b'B' | b'Z' | b'C' | b'S') => Some(Slot::Int),
+        _ => None,
+    }
+}
+
+fn array_elem_slot_jt(ty: &JavaType) -> Option<Slot> {
+    let JavaType::Array(inner): &JavaType = ty else {
+        return None;
+    };
+    Some(match inner.as_ref() {
+        JavaType::Long => Slot::Long,
+        JavaType::Float => Slot::Float,
+        JavaType::Double => Slot::Double,
+        JavaType::Object(_) | JavaType::Array(_) => return None,
+        _ => Slot::Int,
+    })
 }
 
 const fn field_slot(descriptor: &str) -> Slot {
