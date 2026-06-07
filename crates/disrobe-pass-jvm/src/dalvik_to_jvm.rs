@@ -1996,6 +1996,9 @@ impl Emitter<'_> {
             return;
         };
         let literal: i32 = insn.literal.unwrap_or(0) as i32;
+        if matches!(op, 0xD0 | 0xD8) && dest == src && self.try_emit_iinc(dest, literal) {
+            return;
+        }
         let reverse: bool = matches!(op, 0xD1 | 0xD9);
         let opcode: u8 = arith_lit_op(op);
         self.set_reg(src, Slot::Int);
@@ -2009,6 +2012,37 @@ impl Emitter<'_> {
         self.push(opcode);
         self.adjust_stack(-1);
         self.emit_store(dest, Slot::Int);
+    }
+
+    /// Emits `iinc` (or `wide iinc`) for an in-place int increment, matching the javac idiom for `i += c` / `i++`.
+    /// Only fires when the register is already an int local and the index/delta fit, so it never introduces a
+    /// verify failure; otherwise the caller falls back to the explicit `iload; const; iadd; istore` lowering.
+    fn try_emit_iinc(&mut self, reg: u16, delta: i32) -> bool {
+        if !matches!(self.reg_slot(reg), Slot::Int) {
+            return false;
+        }
+        let Some(index): Option<u16> = self.local_index(reg) else {
+            return false;
+        };
+        match (u8::try_from(index), i8::try_from(delta)) {
+            (Ok(idx), Ok(c)) => {
+                self.push(0x84);
+                self.push(idx);
+                self.push(c as u8);
+            }
+            _ => {
+                let Ok(c): Result<i16, _> = i16::try_from(delta) else {
+                    return false;
+                };
+                self.push(0xC4);
+                self.push(0x84);
+                self.push_u16(index);
+                self.push_u16(c as u16);
+            }
+        }
+        self.set_reg(reg, Slot::Int);
+        self.const_zero.remove(&reg);
+        true
     }
 
     fn push_int_const(&mut self, value: i32) {
