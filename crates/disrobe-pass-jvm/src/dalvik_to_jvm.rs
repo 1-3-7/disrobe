@@ -213,7 +213,7 @@ const fn regtype_to_slot(ty: &crate::dalvik_typestate::RegType) -> Slot {
         RegType::Long => Slot::Long,
         RegType::Float => Slot::Float,
         RegType::Double => Slot::Double,
-        RegType::Ref(_) => Slot::Ref,
+        RegType::Ref(_) | RegType::UninitializedThis => Slot::Ref,
         RegType::Int | RegType::ZeroOrNull | RegType::Top => Slot::Int,
     }
 }
@@ -242,9 +242,7 @@ pub(crate) fn emit_branch_method_code(
     if !has_branch {
         return None;
     }
-    if item.method_name == "<init>"
-        && !init_this_call_dominates_branches(dex, item, &insns)
-    {
+    if item.method_name == "<init>" && !init_this_call_is_trackable(dex, item, &insns) {
         return None;
     }
     if insns.iter().any(|i: &DalvikInsn| matches!(i.op, 0x26)) {
@@ -286,16 +284,16 @@ pub(crate) fn emit_branch_method_code(
         handler_edges: &handler_edges,
         move_exception_type: &move_exception_type,
     };
-    let states: crate::dalvik_typestate::TypeStates = crate::dalvik_typestate::analyze(
-        dex,
-        &insns,
-        &parsed,
-        item.registers_size,
-        item.ins_size,
+    let is_init_ctor: bool = item.method_name == "<init>" && !is_static;
+    let shape: crate::dalvik_typestate::MethodShape<'_> = crate::dalvik_typestate::MethodShape {
+        registers_size: item.registers_size,
+        ins_size: item.ins_size,
         is_static,
-        &item.class,
-        &edges,
-    )?;
+        is_init_ctor,
+        class_internal: &item.class,
+    };
+    let states: crate::dalvik_typestate::TypeStates =
+        crate::dalvik_typestate::analyze(dex, &insns, &parsed, &shape, &edges)?;
 
     let mut block_leaders: BTreeSet<u32> = collect_leaders_with_switch(&insns, &switch_targets);
     for tr in &tries {
@@ -623,15 +621,39 @@ fn new_instance_pairs_are_block_local(insns: &[DalvikInsn]) -> bool {
     true
 }
 
-/// True when a branch-mode `<init>` can be lifted with `this` initialized at every stack-map frame:
-/// the receiver-this `invoke-direct ...<init>` lies in the straight-line entry prefix, dominating every
-/// block leader, so no frame ever needs the `uninitializedThis` verification type the lifter cannot yet emit.
-fn init_this_call_dominates_branches(
-    dex: &DexFile,
-    item: &CodeItem,
-    insns: &[DalvikInsn],
-) -> bool {
-    let this_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
+/// Identifies the single receiver-`this` `invoke-direct ...<init>` of a constructor body, returning its
+/// PC when there is exactly one (the unambiguous initialization point) and `None` otherwise.
+fn sole_init_call_on_this(dex: &DexFile, this_reg: u16, insns: &[DalvikInsn]) -> Option<u32> {
+    let mut found: Option<u32> = None;
+    for insn in insns {
+        if !matches!(insn.op, 0x70 | 0x76) {
+            continue;
+        }
+        let Some(&recv): Option<&u16> = insn.regs.first() else {
+            continue;
+        };
+        if recv != this_reg {
+            continue;
+        }
+        let is_init: bool = insn
+            .index
+            .and_then(|i: u32| dex.method_ids.get(i as usize))
+            .is_some_and(|m: &MethodId| m.name == "<init>");
+        if !is_init {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(insn.pc);
+    }
+    found
+}
+
+/// True when the sole receiver-`this` `<init>` call lies in the straight-line entry prefix and so
+/// dominates every block leader: every stack-map frame already sees an initialized `this`, the
+/// pre-existing safe shape that needs no `uninitializedThis` frame type.
+fn init_call_dominates_leaders(item: &CodeItem, insns: &[DalvikInsn], init_pc: u32) -> bool {
     let mut leaders: BTreeSet<u32> = collect_leaders(insns);
     for t in &item.tries {
         leaders.insert(t.start_addr);
@@ -650,32 +672,113 @@ fn init_this_call_dominates_branches(
         .filter(|&pc: &u32| pc != entry_pc)
         .min()
         .unwrap_or(u32::MAX);
+    init_pc < min_non_entry_leader
+}
 
-    let mut init_calls_on_this: usize = 0;
-    let mut dominating_init: bool = false;
-    for insn in insns {
-        if !matches!(insn.op, 0x70 | 0x76) {
-            continue;
+/// True when a branch-mode `<init>`'s `uninitializedThis` slot can be soundly modeled and the JVM
+/// verifier's initialize-before-use invariant (JVMS §4.10.1.4) holds: there is exactly one super/this
+/// `<init>` call on `this`, and either (a) that call dominates every block leader (the pre-existing safe
+/// shape) or (b) no control-flow path from method entry reaches a `return`, a `throw` of `this`, or any
+/// use of `this` (field access, array/aget, invoke receiver, move) WITHOUT first passing through that
+/// init call. Where the init call is not pre-dominating the type-state still poisons any join that
+/// merges initialized and uninitialized `this` (forcing a stub), so this gate only needs to forbid the
+/// genuinely unverifiable shape of using `this` while still uninitialized.
+fn init_this_call_is_trackable(dex: &DexFile, item: &CodeItem, insns: &[DalvikInsn]) -> bool {
+    let this_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
+    let Some(init_pc): Option<u32> = sole_init_call_on_this(dex, this_reg, insns) else {
+        return false;
+    };
+    if init_call_dominates_leaders(item, insns, init_pc) {
+        return true;
+    }
+
+    let pc_to_idx: BTreeMap<u32, usize> =
+        insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
+    let switch_targets: BTreeMap<u32, Vec<u32>> = parse_switch_payloads(insns, &item.insns)
+        .map(|p: BTreeMap<u32, crate::dalvik::SwitchPayload>| switch_target_map(insns, &p))
+        .unwrap_or_default();
+    let mut handler_pcs: BTreeSet<u32> = BTreeSet::new();
+    for t in &item.tries {
+        for (_ty, hpc) in &t.handlers {
+            handler_pcs.insert(*hpc);
         }
-        let Some(&recv): Option<&u16> = insn.regs.first() else {
-            continue;
-        };
-        if recv != this_reg {
-            continue;
-        }
-        let is_init: bool = insn
-            .index
-            .and_then(|i: u32| dex.method_ids.get(i as usize))
-            .is_some_and(|m: &MethodId| m.name == "<init>");
-        if !is_init {
-            continue;
-        }
-        init_calls_on_this += 1;
-        if insn.pc < min_non_entry_leader {
-            dominating_init = true;
+        if let Some(hpc) = t.catch_all {
+            handler_pcs.insert(hpc);
         }
     }
-    init_calls_on_this == 1 && dominating_init
+
+    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor);
+    let first_param_reg: u16 = this_reg;
+    let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
+    let mut reachable_pre_init: BTreeSet<u32> = BTreeSet::new();
+    let mut work: Vec<u32> = vec![entry_pc];
+    while let Some(pc) = work.pop() {
+        if pc == init_pc || !reachable_pre_init.insert(pc) {
+            continue;
+        }
+        let Some(&idx): Option<&usize> = pc_to_idx.get(&pc) else {
+            return false;
+        };
+        let insn: &DalvikInsn = &insns[idx];
+        if uses_register_before_init(insn, this_reg) {
+            return false;
+        }
+        if let Some(p) = parsed.as_ref() {
+            let (def, _cat, _uses): (Option<u16>, Cat, Vec<(u16, Cat)>) =
+                register_effects(dex, insn, p);
+            if let Some(d) = def
+                && d >= first_param_reg
+                && d < item.registers_size
+            {
+                return false;
+            }
+        }
+        if let Some(t) = insn.branch_target_pc() {
+            work.push(t);
+        }
+        if insn.is_switch()
+            && let Some(targets) = switch_targets.get(&pc)
+        {
+            work.extend(targets.iter().copied());
+        }
+        if !insn.is_unconditional_goto()
+            && !insn.is_return()
+            && !insn.is_throw()
+            && let Some(next) = insns.get(idx + 1)
+        {
+            work.push(next.pc);
+        }
+    }
+
+    if reachable_pre_init.iter().any(|pc: &u32| handler_pcs.contains(pc)) {
+        return false;
+    }
+    !reachable_pre_init.is_empty()
+}
+
+/// True when `insn` reaches a point the JVM verifier forbids while `this` is still `uninitializedThis`
+/// (JVMS §4.10.1.4): any `return` (a constructor must run super/this `<init>` before returning), or any
+/// instruction that reads or escapes `this` (field access, array/element op, move, or invoke receiver).
+/// A pre-init `throw` is verifier-legal and is only rejected when it throws `this` itself.
+fn uses_register_before_init(insn: &DalvikInsn, this_reg: u16) -> bool {
+    if insn.is_return() {
+        return true;
+    }
+    let names_this: bool = insn.regs.contains(&this_reg);
+    if insn.is_throw() {
+        return names_this;
+    }
+    match insn.op {
+        0x01..=0x09
+        | 0x1F
+        | 0x20
+        | 0x21
+        | 0x44..=0x51
+        | 0x52..=0x6D
+        | 0x6E..=0x72
+        | 0x74..=0x78 => names_this,
+        _ => false,
+    }
 }
 
 impl Emitter<'_> {
@@ -1167,6 +1270,7 @@ impl Emitter<'_> {
             RegType::Float => out.push(2),
             RegType::Double => out.push(3),
             RegType::Long => out.push(4),
+            RegType::UninitializedThis => out.push(6),
             RegType::Ref(name) => {
                 let idx: u16 = self.cp.class_const(name);
                 out.push(7);

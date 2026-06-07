@@ -18,6 +18,10 @@ pub(crate) enum RegType {
     Double,
     ZeroOrNull,
     Ref(String),
+    /// JVM `uninitializedThis` (verification tag 6): the receiver `this` of an `<init>` before its
+    /// own super/this constructor call has run. It must transition to `Ref(class)` at that call and
+    /// be initialized on every path before any return, field access, or use as an argument.
+    UninitializedThis,
 }
 
 impl RegType {
@@ -176,17 +180,25 @@ pub(crate) struct CfgEdges<'a> {
     pub(crate) move_exception_type: &'a BTreeMap<u32, String>,
 }
 
+/// Scalar shape of the method under analysis: its register layout and whether `this` enters as
+/// `uninitializedThis` (a non-static `<init>`).
+pub(crate) struct MethodShape<'a> {
+    pub(crate) registers_size: u16,
+    pub(crate) ins_size: u16,
+    pub(crate) is_static: bool,
+    pub(crate) is_init_ctor: bool,
+    pub(crate) class_internal: &'a str,
+}
+
 /// Runs the forward type-state fixpoint over a single method.
 pub(crate) fn analyze(
     dex: &DexFile,
     insns: &[DalvikInsn],
     parsed: &MethodDescriptor,
-    registers_size: u16,
-    ins_size: u16,
-    is_static: bool,
-    class_internal: &str,
+    shape: &MethodShape<'_>,
     edges: &CfgEdges<'_>,
 ) -> Option<TypeStates> {
+    let class_internal: &str = shape.class_internal;
     let switch_targets: &BTreeMap<u32, Vec<u32>> = edges.switch_targets;
     let handler_edges: &BTreeMap<u32, Vec<u32>> = edges.handler_edges;
     let move_exception_type: &BTreeMap<u32, String> = edges.move_exception_type;
@@ -197,9 +209,15 @@ pub(crate) fn analyze(
         crate::dalvik_to_jvm::const_wide_double_and_float_regs(dex, insns, parsed);
 
     let mut entry: RegState = RegState::new();
-    let mut cursor: u16 = registers_size.saturating_sub(ins_size);
-    if !is_static {
-        entry.insert(cursor, RegType::Ref(strip_object(class_internal)));
+    let this_reg: u16 = shape.registers_size.saturating_sub(shape.ins_size);
+    let mut cursor: u16 = this_reg;
+    if !shape.is_static {
+        let this_ty: RegType = if shape.is_init_ctor {
+            RegType::UninitializedThis
+        } else {
+            RegType::Ref(strip_object(class_internal))
+        };
+        entry.insert(cursor, this_ty);
         cursor = cursor.saturating_add(1);
     }
     for ty in &parsed.params {
@@ -210,6 +228,13 @@ pub(crate) fn analyze(
     }
 
     let move_result_type: BTreeMap<u32, RegType> = precompute_move_results(dex, insns);
+    let tctx: TransferCtx<'_> = TransferCtx {
+        move_result_type: &move_result_type,
+        wide_doubles: &wide_doubles,
+        narrow_floats: &narrow_floats,
+        move_exception_type,
+        class_internal,
+    };
 
     let mut state_in: Vec<Option<RegState>> = vec![None; n];
     let mut reached: Vec<bool> = vec![false; n];
@@ -245,16 +270,7 @@ pub(crate) fn analyze(
         }
 
         let mut out: RegState = cur;
-        transfer(
-            dex,
-            insn,
-            parsed,
-            &mut out,
-            &move_result_type,
-            &wide_doubles,
-            &narrow_floats,
-            move_exception_type,
-        )?;
+        transfer(dex, insn, parsed, &mut out, &tctx)?;
 
         let mut succs: Vec<u32> = Vec::new();
         if let Some(t) = insn.branch_target_pc() {
@@ -300,6 +316,16 @@ pub(crate) fn analyze(
     })
 }
 
+/// Precomputed per-method lookups the transfer function consults, plus the enclosing class so a
+/// receiver `<init>` can retype `uninitializedThis` to `Ref(class)`.
+struct TransferCtx<'a> {
+    move_result_type: &'a BTreeMap<u32, RegType>,
+    wide_doubles: &'a BTreeSet<u16>,
+    narrow_floats: &'a BTreeSet<u16>,
+    move_exception_type: &'a BTreeMap<u32, String>,
+    class_internal: &'a str,
+}
+
 /// Updates the register state for one instruction, returning `None` on any unsupported opcode.
 #[allow(clippy::too_many_lines)]
 fn transfer(
@@ -307,11 +333,13 @@ fn transfer(
     insn: &DalvikInsn,
     parsed: &MethodDescriptor,
     regs: &mut RegState,
-    move_result_type: &BTreeMap<u32, RegType>,
-    wide_doubles: &BTreeSet<u16>,
-    narrow_floats: &BTreeSet<u16>,
-    move_exception_type: &BTreeMap<u32, String>,
+    ctx: &TransferCtx<'_>,
 ) -> Option<()> {
+    let move_result_type: &BTreeMap<u32, RegType> = ctx.move_result_type;
+    let wide_doubles: &BTreeSet<u16> = ctx.wide_doubles;
+    let narrow_floats: &BTreeSet<u16> = ctx.narrow_floats;
+    let move_exception_type: &BTreeMap<u32, String> = ctx.move_exception_type;
+    let class_internal: &str = ctx.class_internal;
     let op: u8 = insn.op;
     let r: &[u16] = &insn.regs;
 
@@ -439,7 +467,16 @@ fn transfer(
             set(regs, r.first().copied(), t);
         }
         0x67..=0x6D => {}
-        0x6E..=0x72 | 0x74..=0x78 => {}
+        0x70 | 0x76 => {
+            let is_init: bool = method_id(dex, insn.index).is_some_and(|m| m.name == "<init>");
+            if is_init
+                && let Some(&recv) = r.first()
+                && regs.get(&recv) == Some(&RegType::UninitializedThis)
+            {
+                regs.insert(recv, RegType::Ref(strip_object(class_internal)));
+            }
+        }
+        0x6E | 0x6F | 0x71 | 0x72 | 0x74 | 0x75 | 0x77 | 0x78 => {}
         0x7B..=0x80 => {
             if let (Some(&d), Some(&s)) = (r.first(), r.get(1)) {
                 let t: RegType = regs.get(&s).cloned().unwrap_or(RegType::Int);
