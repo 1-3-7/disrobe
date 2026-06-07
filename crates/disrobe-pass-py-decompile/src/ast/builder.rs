@@ -9431,6 +9431,25 @@ struct CompoundIf {
     last_jump: usize,
 }
 
+/// The first significant op index at/after `from`, skipping the canonicalizer's leading run of
+/// `PUSH NULL` call markers and `NOP`/`CACHE`/`EXTENDED_ARG` padding. An `or`-chain's body-entering
+/// `POP_JUMP_IF_TRUE` lands past the body's leading NULL marker, whereas the fall-through body start
+/// lands on it; normalizing both through this collapses that one-marker offset.
+fn body_entry_index(stream: &DecodedStream, from: usize, hi: usize) -> usize {
+    let bound: usize = hi.min(stream.ops.len());
+    (from..bound)
+        .find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Push(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .unwrap_or(from)
+}
+
 /// Detects and folds a statement-form `if <A or/and B ...>:` whose multi-operand short-circuit
 /// condition the naive single-jump structurer would otherwise mis-split, returning the folded test
 /// and the final jump so the shared then/else/tail logic can structure the branches.
@@ -9465,6 +9484,7 @@ fn try_recover_compound_if(
     }
     let mut operands: Vec<CondOperand> = Vec::with_capacity(jumps.len());
     let head_end: usize = first_jump_value_lo(stream, lo, first_jump);
+    let body_entry: usize = body_entry_index(stream, body, hi);
     let mut value_lo: usize = head_end;
     for (n, &jump) in jumps.iter().enumerate() {
         let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
@@ -9480,6 +9500,7 @@ fn try_recover_compound_if(
             CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
         );
         let Some(target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
+            .map(|t: usize| if t == body_entry { body } else { t })
             .filter(|t: &usize| *t == body || *t == exit || (*t > jump && *t < body))
         else {
             return Ok(None);
