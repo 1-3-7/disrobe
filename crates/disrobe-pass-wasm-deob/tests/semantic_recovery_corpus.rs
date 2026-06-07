@@ -207,8 +207,8 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
          nothing is stubbed"
     );
     assert!(
-        tally.fully_recovered >= 58,
-        "the genuinely-recovered baseline must not regress below 58 functions (76.3% semantic); \
+        tally.fully_recovered >= 60,
+        "the genuinely-recovered baseline must not regress below 60 functions (78.9% semantic); \
          ratchet this up as more op families are lowered, got {}",
         tally.fully_recovered
     );

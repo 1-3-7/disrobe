@@ -56,6 +56,11 @@ const fn explicit_mnemonic(op: &Operator<'_>) -> Option<&'static str> {
         Operator::RefNull { .. } => "ref.null",
         Operator::RefIsNull => "ref.is_null",
         Operator::RefFunc { .. } => "ref.func",
+        Operator::RefAsNonNull => "ref.as_non_null",
+        Operator::CallRef { .. } => "call_ref",
+        Operator::ReturnCallRef { .. } => "return_call_ref",
+        Operator::AnyConvertExtern => "any.convert_extern",
+        Operator::ExternConvertAny => "extern.convert_any",
         _ => return None,
     })
 }

@@ -105,7 +105,15 @@ fn emit_ref_func_targets(out: &mut String, reqs: &FeatureReqs) {
         return;
     }
     for idx in &reqs.ref_func_indices {
-        let _ = writeln!(out, "  (func $rf{idx})");
+        if let Some((t, (_, results))) = reqs.func_types.iter().next() {
+            let _ = write!(out, "  (func $rf{idx} (type $t{t})");
+            for ty in results {
+                let _ = write!(out, " ({}.const 0)", val_type_str(*ty));
+            }
+            out.push_str(")\n");
+        } else {
+            let _ = writeln!(out, "  (func $rf{idx})");
+        }
     }
     out.push_str("  (elem declare func");
     for idx in &reqs.ref_func_indices {
@@ -177,6 +185,12 @@ impl FeatureReqs {
         for (idx, sig) in &other.func_types {
             self.func_types.entry(*idx).or_insert_with(|| sig.clone());
         }
+    }
+
+    fn record_func_type(&mut self, idx: u32) {
+        self.func_types
+            .entry(idx)
+            .or_insert_with(|| (vec![ValType::I32], vec![ValType::I32]));
     }
 }
 
@@ -382,6 +396,9 @@ fn render_op(
         return Rendered::Translated(Some(line));
     }
     if let Some(line) = render_ref_op(op, reqs) {
+        return Rendered::Translated(Some(line));
+    }
+    if let Some(line) = render_gc_op(op, has_calls, reqs) {
         return Rendered::Translated(Some(line));
     }
     let line: String = match op {
@@ -735,6 +752,26 @@ fn render_ref_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String> {
         Operator::RefFunc { function_index } => {
             reqs.ref_func_indices.insert(*function_index);
             format!("ref.func $rf{function_index}")
+        }
+        _ => return None,
+    })
+}
+
+/// Re-prints garbage-collection and typed-function-reference operators.
+fn render_gc_op(op: &Operator<'_>, has_calls: &mut bool, reqs: &mut FeatureReqs) -> Option<String> {
+    Some(match op {
+        Operator::AnyConvertExtern => "any.convert_extern".to_owned(),
+        Operator::ExternConvertAny => "extern.convert_any".to_owned(),
+        Operator::RefAsNonNull => "ref.as_non_null".to_owned(),
+        Operator::CallRef { type_index } => {
+            *has_calls = true;
+            reqs.record_func_type(*type_index);
+            format!("call_ref $t{type_index}")
+        }
+        Operator::ReturnCallRef { type_index } => {
+            *has_calls = true;
+            reqs.record_func_type(*type_index);
+            format!("return_call_ref $t{type_index}")
         }
         _ => return None,
     })
