@@ -7375,6 +7375,17 @@ fn for_body_end_absorbing_cold_handlers(
     end
 }
 
+/// Whether an earlier `while`-style back-edge in `[lo, before)` targets a header below `before`.
+fn has_earlier_while_back_edge(stream: &DecodedStream, lo: usize, before: usize) -> bool {
+    (lo..before.min(stream.ops.len())).any(|j: usize| {
+        (is_back_edge(&stream.ops[j])
+            || is_cond_back_edge(&stream.ops[j])
+            || is_cond_jump_with_backward_target(stream, j))
+            && resolve_jump_target(stream, j, &stream.ops[j])
+                .is_some_and(|t: usize| t >= lo && t < before)
+    })
+}
+
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -7416,6 +7427,11 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
                 exit: body_end,
                 infinite: false,
             };
+            if loop_enclosed_by_guard(stream, lo, &region)
+                && has_earlier_while_back_edge(stream, lo, i)
+            {
+                continue;
+            }
             return Some(region);
         }
     }
