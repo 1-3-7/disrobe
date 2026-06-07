@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use wasmparser::{BlockType, FunctionBody, Operator, ValType};
+use wasmparser::{BlockType, Catch, FunctionBody, Operator, ValType};
 
 use crate::lift::{LiftCoverage, LiftResult, LiftTarget};
 use crate::op_names::operator_mnemonic;
@@ -325,7 +325,11 @@ fn render_operators(
     for op in reader {
         ops.push(op.map_err(|_| ())?);
     }
+    let mut local_types: Vec<ValType> = sig.params.clone();
+    local_types.extend(read_local_decls(body).unwrap_or_default());
     prescan_struct_arities(&ops, reqs);
+    prescan_tag_arities(&ops, &local_types, reqs);
+    prescan_catch_tags(&ops, sig, reqs);
     let op_count: usize = ops.len();
     let mut depth: usize = 2;
     for (i, op) in ops.iter().enumerate() {
@@ -352,7 +356,11 @@ fn render_operators(
         }
         if matches!(
             op,
-            Operator::Block { .. } | Operator::Loop { .. } | Operator::If { .. } | Operator::Else
+            Operator::Block { .. }
+                | Operator::Loop { .. }
+                | Operator::If { .. }
+                | Operator::Else
+                | Operator::TryTable { .. }
         ) {
             depth += 1;
         }
@@ -393,6 +401,88 @@ fn prescan_struct_arities(ops: &[Operator<'_>], reqs: &mut FeatureReqs) {
             }
             _ => {}
         }
+    }
+}
+
+/// Infers each thrown tag's parameter types from the value stack preceding every `throw`.
+fn prescan_tag_arities(ops: &[Operator<'_>], local_types: &[ValType], reqs: &mut FeatureReqs) {
+    for (i, op) in ops.iter().enumerate() {
+        let Operator::Throw { tag_index } = op else {
+            continue;
+        };
+        let params: Vec<ValType> = preceding_value_types(ops, i, local_types);
+        reqs.tags.entry(*tag_index).or_insert(params);
+    }
+}
+
+/// Infers tags caught (but not thrown) in this function from each catch target block's results.
+fn prescan_catch_tags(ops: &[Operator<'_>], sig: &FunctionSig, reqs: &mut FeatureReqs) {
+    let mut frames: Vec<Vec<ValType>> = vec![sig.results.clone()];
+    for op in ops {
+        match op {
+            Operator::Block { blockty }
+            | Operator::Loop { blockty }
+            | Operator::If { blockty } => frames.push(block_result_types(*blockty)),
+            Operator::TryTable { try_table } => {
+                for catch in &try_table.catches {
+                    if let Catch::One { tag, label } | Catch::OneRef { tag, label } = catch {
+                        let from_top: usize = *label as usize;
+                        let resolved: Vec<ValType> = frames
+                            .len()
+                            .checked_sub(from_top + 1)
+                            .and_then(|idx| frames.get(idx))
+                            .cloned()
+                            .unwrap_or_default();
+                        reqs.tags.entry(*tag).or_insert(resolved);
+                    }
+                }
+                frames.push(block_result_types(try_table.ty));
+            }
+            Operator::End => {
+                frames.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Result value types a block type produces.
+fn block_result_types(blockty: BlockType) -> Vec<ValType> {
+    match blockty {
+        BlockType::Empty | BlockType::FuncType(_) => Vec::new(),
+        BlockType::Type(t) => vec![t],
+    }
+}
+
+/// Resolves the contiguous run of value-producing ops just before `idx` into their `ValType`s.
+fn preceding_value_types(
+    ops: &[Operator<'_>],
+    idx: usize,
+    local_types: &[ValType],
+) -> Vec<ValType> {
+    let mut types: Vec<ValType> = Vec::new();
+    let mut cursor: usize = idx;
+    while cursor > 0 {
+        cursor -= 1;
+        match value_type_of(&ops[cursor], local_types) {
+            Some(ty) => types.push(ty),
+            None => break,
+        }
+    }
+    types.reverse();
+    types
+}
+
+/// Static result type of a single-result value-producing operator, if statically known.
+fn value_type_of(op: &Operator<'_>, local_types: &[ValType]) -> Option<ValType> {
+    match op {
+        Operator::I32Const { .. } => Some(ValType::I32),
+        Operator::I64Const { .. } => Some(ValType::I64),
+        Operator::F32Const { .. } => Some(ValType::F32),
+        Operator::F64Const { .. } => Some(ValType::F64),
+        Operator::V128Const { .. } => Some(ValType::V128),
+        Operator::LocalGet { local_index } => local_types.get(*local_index as usize).copied(),
+        _ => None,
     }
 }
 
@@ -467,6 +557,9 @@ fn render_op(
         return Rendered::Translated(Some(line));
     }
     if let Some(line) = render_gc_op(op, has_calls, reqs) {
+        return Rendered::Translated(Some(line));
+    }
+    if let Some(line) = render_exception_op(op, blocks_emitted) {
         return Rendered::Translated(Some(line));
     }
     let line: String = match op {
@@ -886,6 +979,33 @@ fn render_gc_op(op: &Operator<'_>, has_calls: &mut bool, reqs: &mut FeatureReqs)
         Operator::I31GetU => "i31.get_u".to_owned(),
         _ => return None,
     })
+}
+
+/// Re-prints exception-handling operators; tag arities are inferred in the pre-scan pass.
+fn render_exception_op(op: &Operator<'_>, blocks_emitted: &mut usize) -> Option<String> {
+    Some(match op {
+        Operator::Throw { tag_index } => format!("throw $tag{tag_index}"),
+        Operator::ThrowRef => "throw_ref".to_owned(),
+        Operator::TryTable { try_table } => {
+            *blocks_emitted += 1;
+            let mut s: String = format!("try_table{}", block_result_suffix(try_table.ty));
+            for catch in &try_table.catches {
+                let _ = write!(s, " {}", catch_clause(catch));
+            }
+            s
+        }
+        _ => return None,
+    })
+}
+
+/// Renders one `try_table` catch clause to its textual form.
+fn catch_clause(catch: &Catch) -> String {
+    match catch {
+        Catch::One { tag, label } => format!("(catch $tag{tag} {label})"),
+        Catch::OneRef { tag, label } => format!("(catch_ref $tag{tag} {label})"),
+        Catch::All { label } => format!("(catch_all {label})"),
+        Catch::AllRef { label } => format!("(catch_all_ref {label})"),
+    }
 }
 
 const fn abstract_heap_keyword(ty: wasmparser::AbstractHeapType) -> &'static str {

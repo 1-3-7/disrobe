@@ -78,6 +78,9 @@ const fn explicit_mnemonic(op: &Operator<'_>) -> Option<&'static str> {
         Operator::RefI31 => "ref.i31",
         Operator::I31GetS => "i31.get_s",
         Operator::I31GetU => "i31.get_u",
+        Operator::Throw { .. } => "throw",
+        Operator::ThrowRef => "throw_ref",
+        Operator::TryTable { .. } => "try_table",
         _ => return None,
     })
 }
