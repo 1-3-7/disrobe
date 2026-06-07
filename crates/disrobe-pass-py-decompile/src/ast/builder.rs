@@ -14225,6 +14225,27 @@ fn inline_filter_keeps_when_true(stream: &DecodedStream, cond_idx: usize) -> boo
     }
 }
 
+/// Whether the 3.12+ in-frame comprehension teardown in `[end_for, consumer)` discards the built
+/// collection with an explicit `POP_TOP` (a bare-expression-statement comp) rather than leaving it
+/// live for a downstream consumer.
+///
+/// The teardown opens with the two structural pops `END_FOR; POP_ITER` (both normalized to
+/// [`CanonicalOp::Pop`]); a *third* `Pop` reached before any `SWAP`/`STORE_FAST` loop-var restore is
+/// the result-discard. A `SWAP`-led restore (`SWAP; STORE_FAST loopvar`) keeps the collection on top
+/// for the consumer and is therefore not a discard.
+fn inframe_comp_result_discarded(stream: &DecodedStream, end_for: usize, consumer: usize) -> bool {
+    let mut structural_pops_seen: u8 = 0u8;
+    for op in &stream.ops[end_for..consumer] {
+        match op {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Pop if structural_pops_seen < 2 => structural_pops_seen += 1,
+            CanonicalOp::Pop => return true,
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn consume_inline_comp_result(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -14251,6 +14272,7 @@ fn consume_inline_comp_result(
         }
         j
     };
+    let result_discarded: bool = inframe_comp_result_discarded(stream, end_for, consumer);
     if pre_residual.is_empty() {
         match stream.ops.get(consumer) {
             Some(CanonicalOp::Return | CanonicalOp::ReturnConst(_)) => {
@@ -14292,7 +14314,12 @@ fn consume_inline_comp_result(
                 )?);
                 return Ok(out);
             }
-            _ => return Ok(vec![Stmt::Expr(result)]),
+            _ if result_discarded => {
+                let mut out: Vec<Stmt> = vec![Stmt::Expr(result)];
+                out.extend(structure_stmts(code, stream, consumer, hi)?);
+                return Ok(out);
+            }
+            _ => {}
         }
     }
     let mut seed: Vec<Expr> = pre_residual;
