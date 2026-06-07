@@ -3891,6 +3891,36 @@ fn modern_try_construct_tail_present(
     })
 }
 
+/// Whether the candidate `else`-span between the protected body and the handler is in fact a
+/// sequential SIBLING `try` rather than a genuine `else:`. `CPython` 3.11+ lays sibling top-level
+/// tries as contiguous protected bodies followed by contiguous cold handlers, so the second
+/// sibling's protected row starts inside `[protected_end, handler_start)` while its handler escapes
+/// PAST the first try's handler. A genuine `else:` containing a nested `try` keeps that nested
+/// handler BEFORE `handler_start`, so no entry escapes and the span is preserved as a real `else`.
+///
+/// The two `start` bounds are load-bearing: the lower bound excludes the outer entry `E0` (whose
+/// `target == handler_start`) and the upper bound excludes the outer handler's own cold-cleanup
+/// rows (whose `start >= handler_start`). Omitting either is the cycle-48 over-fire that vetoed
+/// genuine `try/except/else`.
+fn else_span_is_sequential_sibling(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+) -> bool {
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(region.handler_start) else {
+        return false;
+    };
+    let Some(&span_lo): Option<&u32> = stream.offsets.get(protected_end) else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            e.start >= span_lo && e.start < handler_off && e.target >= handler_off
+        })
+}
+
 fn try_else_split(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3912,6 +3942,9 @@ fn try_else_split(
     let first_idx: usize = (else_start..else_end)
         .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
     if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
+        return None;
+    }
+    if !has_combo && else_span_is_sequential_sibling(stream, region, else_start) {
         return None;
     }
     if !has_combo
@@ -3941,9 +3974,13 @@ fn try_continuation_split(
     }
     let first_idx: usize = (start..end)
         .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
-    if !else_entry_is_fallthrough(&stream.ops[first_idx])
-        || !handler_normal_exit_reaches(stream, region, except_region_end, start, end)
-    {
+    if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
+        return None;
+    }
+    let handler_reaches: bool =
+        handler_normal_exit_reaches(stream, region, except_region_end, start, end);
+    let sibling: bool = else_span_is_sequential_sibling(stream, region, start);
+    if !handler_reaches && !sibling {
         return None;
     }
     Some((start, end))
