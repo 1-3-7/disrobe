@@ -14912,6 +14912,20 @@ fn collect_unpack_targets(
                 targets.push(local_target(code, *b, i).ok()?);
                 consumed += 2;
             }
+            CanonicalOp::StoreFastLoadFast(store_slot, load_slot) => {
+                targets.push(local_target(code, *store_slot, i).ok()?);
+                consumed += 1;
+                if consumed >= n {
+                    return None;
+                }
+                let mut chain: Vec<CanonicalOp> = vec![CanonicalOp::LoadFast(*load_slot)];
+                let group_end: usize = chain_group_end(ops, i + 1)?;
+                chain.extend_from_slice(&ops[i + 1..group_end]);
+                targets.push(recover_chain_target(code, &chain, 0, chain.len())?);
+                consumed += 1;
+                i = group_end;
+                continue;
+            }
             CanonicalOp::UnpackSequence(0) => {
                 targets.push(Expr::Tuple {
                     elts: Vec::new(),
