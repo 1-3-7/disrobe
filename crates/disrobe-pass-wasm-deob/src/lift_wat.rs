@@ -325,6 +325,7 @@ fn render_operators(
     for op in reader {
         ops.push(op.map_err(|_| ())?);
     }
+    prescan_struct_arities(&ops, reqs);
     let op_count: usize = ops.len();
     let mut depth: usize = 2;
     for (i, op) in ops.iter().enumerate() {
@@ -357,6 +358,73 @@ fn render_operators(
         }
     }
     Ok(())
+}
+
+/// Infers struct field counts so the synthesized `(struct ...)` decl matches every accessor.
+fn prescan_struct_arities(ops: &[Operator<'_>], reqs: &mut FeatureReqs) {
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            Operator::StructNew { struct_type_index } => {
+                let arity: u32 = preceding_value_run(ops, i);
+                let entry: &mut u32 = reqs.struct_types.entry(*struct_type_index).or_default();
+                *entry = (*entry).max(arity.max(1));
+            }
+            Operator::StructNewDefault { struct_type_index } => {
+                reqs.struct_types.entry(*struct_type_index).or_insert(1);
+            }
+            Operator::StructGet {
+                struct_type_index,
+                field_index,
+            }
+            | Operator::StructGetS {
+                struct_type_index,
+                field_index,
+            }
+            | Operator::StructGetU {
+                struct_type_index,
+                field_index,
+            }
+            | Operator::StructSet {
+                struct_type_index,
+                field_index,
+            } => {
+                let entry: &mut u32 = reqs.struct_types.entry(*struct_type_index).or_default();
+                *entry = (*entry).max(field_index.saturating_add(1));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Counts the contiguous run of single-result value-producing ops ending just before `idx`.
+fn preceding_value_run(ops: &[Operator<'_>], idx: usize) -> u32 {
+    let mut count: u32 = 0;
+    let mut cursor: usize = idx;
+    while cursor > 0 {
+        cursor -= 1;
+        if produces_one_value(&ops[cursor]) {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count
+}
+
+const fn produces_one_value(op: &Operator<'_>) -> bool {
+    matches!(
+        op,
+        Operator::I32Const { .. }
+            | Operator::I64Const { .. }
+            | Operator::F32Const { .. }
+            | Operator::F64Const { .. }
+            | Operator::V128Const { .. }
+            | Operator::LocalGet { .. }
+            | Operator::GlobalGet { .. }
+            | Operator::RefNull { .. }
+            | Operator::RefFunc { .. }
+            | Operator::RefI31
+    )
 }
 
 /// Outcome of re-printing one operator: translated (with optional text) or untranslated.
@@ -773,6 +841,49 @@ fn render_gc_op(op: &Operator<'_>, has_calls: &mut bool, reqs: &mut FeatureReqs)
             reqs.record_func_type(*type_index);
             format!("return_call_ref $t{type_index}")
         }
+        Operator::StructNew { struct_type_index } => format!("struct.new $t{struct_type_index}"),
+        Operator::StructNewDefault { struct_type_index } => {
+            format!("struct.new_default $t{struct_type_index}")
+        }
+        Operator::StructGet {
+            struct_type_index,
+            field_index,
+        } => format!("struct.get $t{struct_type_index} {field_index}"),
+        Operator::StructGetS {
+            struct_type_index,
+            field_index,
+        } => format!("struct.get_s $t{struct_type_index} {field_index}"),
+        Operator::StructGetU {
+            struct_type_index,
+            field_index,
+        } => format!("struct.get_u $t{struct_type_index} {field_index}"),
+        Operator::StructSet {
+            struct_type_index,
+            field_index,
+        } => format!("struct.set $t{struct_type_index} {field_index}"),
+        Operator::ArrayNew { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.new $t{array_type_index}")
+        }
+        Operator::ArrayNewDefault { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.new_default $t{array_type_index}")
+        }
+        Operator::ArrayNewFixed {
+            array_type_index,
+            array_size,
+        } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.new_fixed $t{array_type_index} {array_size}")
+        }
+        Operator::ArrayGet { array_type_index } => format!("array.get $t{array_type_index}"),
+        Operator::ArrayGetS { array_type_index } => format!("array.get_s $t{array_type_index}"),
+        Operator::ArrayGetU { array_type_index } => format!("array.get_u $t{array_type_index}"),
+        Operator::ArraySet { array_type_index } => format!("array.set $t{array_type_index}"),
+        Operator::ArrayLen => "array.len".to_owned(),
+        Operator::RefI31 => "ref.i31".to_owned(),
+        Operator::I31GetS => "i31.get_s".to_owned(),
+        Operator::I31GetU => "i31.get_u".to_owned(),
         _ => return None,
     })
 }

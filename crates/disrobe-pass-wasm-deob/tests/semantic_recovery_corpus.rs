@@ -207,8 +207,8 @@ fn corpus_recovery_requires_full_op_coverage_not_just_parseability() {
          nothing is stubbed"
     );
     assert!(
-        tally.fully_recovered >= 60,
-        "the genuinely-recovered baseline must not regress below 60 functions (78.9% semantic); \
+        tally.fully_recovered >= 68,
+        "the genuinely-recovered baseline must not regress below 68 functions (89.5% semantic); \
          ratchet this up as more op families are lowered, got {}",
         tally.fully_recovered
     );
@@ -262,10 +262,9 @@ fn recovered_bodies_are_non_trivial() {
 fn parseable_but_stubbed_function_is_not_recovered() {
     let wat: &str = r"
         (module
-          (func $gc (param i32) (result i32)
-            local.get 0
-            ref.i31
-            drop
+          (tag $t)
+          (func $sw (param i32) (result i32)
+            suspend $t
             local.get 0))
     ";
     let bytes: Vec<u8> = wat::parse_str(wat).expect("wat");
@@ -288,8 +287,8 @@ fn parseable_but_stubbed_function_is_not_recovered() {
             .coverage
             .untranslated
             .iter()
-            .any(|m| m.to_lowercase().contains("i31") || m.contains("RefI31")),
-        "the gc op must be recorded as untranslated, got {:?}",
+            .any(|m| m.to_lowercase().contains("suspend") || m.contains("Suspend")),
+        "the stack-switching op must be recorded as untranslated, got {:?}",
         lifted.coverage.untranslated
     );
 }
