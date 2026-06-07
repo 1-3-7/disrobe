@@ -13459,6 +13459,7 @@ fn structure_elif_chain_arm(
     });
     let test: Expr = none_jump_test(stream, cond_at, raw_test.clone()).unwrap_or(raw_test);
     let body: Vec<Stmt> = structure_stmts(code, stream, arm_body_start, arm_end)?;
+    let body: Vec<Stmt> = rewrite_jump_to_break_continue(stream, body, arm_body_start, arm_end);
     let deeper: Vec<Stmt> = if next_arm_start < hi {
         structure_elif_chain_arm(code, stream, next_arm_start, hi)?
     } else {
