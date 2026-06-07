@@ -3063,9 +3063,7 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
             .index_for_offset(body_end_off)
             .unwrap_or(body_bound)
             .min(body_bound);
-        let region_end: usize = if with_handler_escapes {
-            hi
-        } else if is_pre311_handler {
+        let finally_probe_end: usize = if is_pre311_handler {
             pre311_handler_region_end(stream, handler_start, hi)
         } else {
             handler_join(stream, handler_start, hi)
@@ -3074,9 +3072,23 @@ fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRe
             && is_pure_finally_handler_shape(
                 stream,
                 handler_start,
-                region_end.min(hi),
+                finally_probe_end.min(hi),
                 is_pre311_handler,
             );
+        let region_end: usize = if with_handler_escapes {
+            hi
+        } else if is_pre311_handler {
+            finally_probe_end
+        } else if !is_with && !is_finally {
+            let join_end: usize = finally_probe_end;
+            handler_region_end_named(stream, handler_start, hi)
+                .filter(|&chain_end: &usize| {
+                    !sibling_handler_between(stream, handler_start, chain_end, join_end)
+                })
+                .unwrap_or(join_end)
+        } else {
+            finally_probe_end
+        };
         let candidate: TryRegion = TryRegion {
             try_start: setup_start,
             protected_end,
@@ -3583,6 +3595,48 @@ fn handler_chain_end(stream: &DecodedStream, handler_start: usize, hi: usize) ->
     }
     let from: usize = stream.index_for_offset_ceil(region_end_off)?;
     Some(handler_cold_cleanup_end(stream, from, hi).clamp(handler_start + 1, hi))
+}
+
+/// Own-handler region end for a plain `except` handler, depth-scoped via [`handler_chain_end`] but
+/// extended over a flat named handler's `del NAME` cold cleanup (`LOAD_CONST None; STORE_*; DELETE_*`)
+/// that precedes the terminal `RERAISE`. The depth filter of [`handler_chain_end`] does not capture
+/// that cleanup for a depth-0 named handler, so the raw chain end would strand `del v; raise` ops for
+/// the enclosing scope to mis-parse; this walks them into the region. Returns `None` when the chain
+/// end does not resolve, leaving the caller on its [`handler_join`] fallback.
+fn handler_region_end_named(stream: &DecodedStream, handler_start: usize, hi: usize) -> Option<usize> {
+    let chain_end: usize = handler_chain_end(stream, handler_start, hi)?;
+    let after_cleanup: usize = skip_handler_name_cleanup(stream, chain_end, hi);
+    if after_cleanup == chain_end {
+        return Some(chain_end);
+    }
+    Some(handler_cold_cleanup_end(stream, after_cleanup, hi).max(chain_end))
+}
+
+/// Whether an INTERLEAVED sibling exception-table entry forces the wide [`handler_join`] region end:
+/// its handler (`target`) lands in `[chain_end, join_end)` — the span a chain-scoped region end would
+/// exclude — AND its protected body opens BEFORE our own handler (`start < own handler offset`). That
+/// is the 3.11+ contiguous-bodies-then-contiguous-handlers seq-sibling layout, whose downstream
+/// family/cold-sibling structuring relies on the wide bound; shrinking to the chain end there strands
+/// the sibling handler ops for the enclosing scope to re-parse. A sibling whose body opens AT or AFTER
+/// our handler is a genuine TRAILING sibling that the shrink correctly leaves to the enclosing scope.
+fn sibling_handler_between(
+    stream: &DecodedStream,
+    handler_start: usize,
+    chain_end: usize,
+    join_end: usize,
+) -> bool {
+    let own_off: u32 = match stream.offsets.get(handler_start) {
+        Some(&o) => o,
+        None => return false,
+    };
+    stream.exception_table.iter().any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+        if e.target == own_off || e.start >= own_off {
+            return false;
+        }
+        stream
+            .index_for_offset(e.target)
+            .is_some_and(|t: usize| (chain_end..join_end).contains(&t))
+    })
 }
 
 /// Extends past a trailing `COPY/POP_EXCEPT/RERAISE` or bare `RERAISE` cold-cleanup tail beginning at
