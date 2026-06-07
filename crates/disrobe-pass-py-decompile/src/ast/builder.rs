@@ -3073,14 +3073,48 @@ fn leading_ops_are_stmt_setup(stream: &DecodedStream, lo: usize, hi: usize) -> b
     })
 }
 
-/// Recovers a 3.11+ `try/except` whose protected body opens at the start of `[lo, hi)` but whose handler
-/// is cold-placed at or beyond `hi`, physically separated from its body by an earlier sibling's handler.
+/// The statement boundary at which a cold sibling `try`'s protected body genuinely begins. The 3.11+
+/// exception table's protected `start` (`try_start`) can open one op into a call statement, after the
+/// statement's own `PUSH_NULL`/receiver loads; those leading value-setup ops belong to the cold `try`,
+/// not to any preceding statement. Walking backward from `try_start` while `[k, try_start)` stays pure
+/// value setup ([`leading_ops_are_stmt_setup`]) finds the lowest such `k >= lo` that also sits on a
+/// statement boundary — `lo` itself, or immediately after a value-boundary op ([`is_value_boundary_at`]),
+/// skipping padding. The returned index is the cut point: `[lo, head_end)` holds complete intervening
+/// statements, `[head_end, try_start)` holds only the cold `try`'s setup, so structuring the head never
+/// splits the cold `try`'s first statement.
+fn stmt_boundary_at_or_before(stream: &DecodedStream, lo: usize, try_start: usize) -> usize {
+    let mut head_end: usize = try_start;
+    let mut k: usize = try_start;
+    while k > lo && leading_ops_are_stmt_setup(stream, k - 1, try_start) {
+        k -= 1;
+        let mut prev: usize = k;
+        while prev > lo
+            && matches!(
+                stream.ops[prev - 1],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        {
+            prev -= 1;
+        }
+        if prev == lo || is_value_boundary_at(stream, prev - 1) {
+            head_end = k;
+        }
+    }
+    head_end
+}
+
+/// Recovers a 3.11+ `try/except` whose protected body lies within `[lo, hi)` but whose handler is
+/// cold-placed at or beyond `hi`, physically separated from its body by an earlier sibling's handler.
 /// The window holding this body closes before the handler, so [`find_try_region`] cannot see it; the
-/// handler is instead resolved directly from the exception table and spliced in. The body recurses over
-/// `[try_start, protected_end)`, the handler is parsed at its own cold offset, and any further leading
-/// statements between the body and `hi` recurse normally — the cold handler is consumed by reference,
-/// never dragged through a recursion window that would mis-structure the intervening sibling handler. A
-/// duplicated shared-exit `return` copied into the handler by `CPython` is stripped to match source.
+/// handler is instead resolved directly from the exception table and spliced in. Any complete statements
+/// preceding the cold `try` in the window (an intervening statement between two sequential sibling tries)
+/// are structured as a `head` via recursion, with [`stmt_boundary_at_or_before`] placing the cut so the
+/// cold `try`'s own leading value-setup is never absorbed into the preceding statement. The body recurses
+/// over `[try_start, protected_end)`, the handler is parsed at its own cold offset, and any further
+/// statements between the body and `hi` recurse as the tail — each sequential sibling peeled one at a
+/// time, the cold handler consumed by reference rather than dragged through a recursion window that would
+/// mis-structure the intervening sibling handler. A duplicated shared-exit `return` copied into the
+/// handler by `CPython` is stripped to match source.
 fn try_structure_cold_sibling_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3098,6 +3132,7 @@ fn try_structure_cold_sibling_try(
     let Some(body_start): Option<usize> = first_significant(stream, lo, hi) else {
         return Ok(None);
     };
+    let head_end: usize = stmt_boundary_at_or_before(stream, body_start, region.try_start);
     let intervening_sibling_handler: bool = (hi..region.handler_start).any(|k: usize| {
         matches!(stream.ops.get(k), Some(CanonicalOp::PushExcInfo))
             && stream
@@ -3108,8 +3143,9 @@ fn try_structure_cold_sibling_try(
     });
     if region.is_with
         || region.is_finally
-        || body_start > region.try_start
-        || !leading_ops_are_stmt_setup(stream, body_start, region.try_start)
+        || head_end > region.try_start
+        || head_end < body_start
+        || !leading_ops_are_stmt_setup(stream, head_end, region.try_start)
         || region.handler_start < hi
         || region.protected_end <= region.try_start
         || region.protected_end >= hi
@@ -3118,7 +3154,12 @@ fn try_structure_cold_sibling_try(
         return Ok(None);
     }
     let region_end: usize = handler_join(stream, region.handler_start, stream.ops.len());
-    let body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.protected_end)?;
+    let head: Vec<Stmt> = if head_end > body_start {
+        structure_stmts(code, stream, body_start, head_end)?
+    } else {
+        Vec::new()
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, region.protected_end)?;
     let handlers: Vec<ExceptHandler> =
         parse_except_handlers(code, stream, region.handler_start, region_end)?;
     if handlers.is_empty() {
@@ -3129,13 +3170,14 @@ fn try_structure_cold_sibling_try(
         Some(last) => strip_shared_exit_return(handlers, std::slice::from_ref(last)),
         None => handlers,
     };
-    let mut out: Vec<Stmt> = vec![Stmt::Try {
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::Try {
         body: non_empty(body),
         handlers,
         orelse: Vec::new(),
         finalbody: Vec::new(),
         line: None,
-    }];
+    });
     out.extend(tail);
     Ok(Some(out))
 }
