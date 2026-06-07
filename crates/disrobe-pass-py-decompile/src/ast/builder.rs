@@ -3816,6 +3816,101 @@ fn try_structure_guarded_try(
     Ok(Some(out))
 }
 
+/// Recovers `if <cond>: ... else: try/except ...` where the `else:` arm's body is a `try` whose cold
+/// handler sits physically after the if/else continuation. The leading guard's false-target lands on
+/// the try's body start and the then-arm closes with a `JUMP_FORWARD` over the try; the generic
+/// try/except path runs first and would otherwise demote the try to a sibling, dropping the `else:`.
+/// The two-sided discriminator from a genuine sequential sibling-try is the then-arm's terminating
+/// forward jump (present only when an `else:` block exists), keyed via `then_terminating_jump`.
+fn try_structure_else_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(guard): Option<usize> = (lo..hi).find(|&k: &usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if (lo..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return Ok(None);
+    }
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, else_start)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .filter(|t: &usize| *t > else_start && *t <= hi)
+    else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, else_start, hi) else {
+        return Ok(None);
+    };
+    if region.is_with
+        || region.is_finally
+        || region.try_start < else_start
+        || region.try_start >= join
+        || region.handler_start < join
+        || region.protected_end > join + 1
+    {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
+    let mut else_pack: Vec<Stmt> = structure_try(code, stream, else_start, hi, &region)?;
+    if else_pack.is_empty() {
+        return Ok(None);
+    }
+    let cont_tail: Vec<Stmt> = else_pack.split_off(1);
+    let orelse: Vec<Stmt> = else_pack;
+    if !matches!(orelse.first(), Some(Stmt::Try { .. })) {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse,
+        line: None,
+    });
+    out.extend(cont_tail);
+    Ok(Some(out))
+}
+
 /// Whether a `try` `region` sits wholly inside a leading `if`/`while` guard's true-body.
 fn try_enclosed_by_leading_guard(
     stream: &DecodedStream,
@@ -13419,6 +13514,9 @@ fn structure_stmts(
     if find_try_region(stream, lo, hi).is_none()
         && let Some(stmts) = try_structure_cold_sibling_try(code, stream, lo, hi)?
     {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_else_try(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     if let Some(try_region) = find_try_region(stream, lo, hi)
