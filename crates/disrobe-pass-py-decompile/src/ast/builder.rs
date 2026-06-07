@@ -13784,6 +13784,31 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
     None
 }
 
+/// The `break` a region ending at `[lo, hi)` resolves to when its last significant op is a forward
+/// `JUMP_FORWARD`/`JUMP_ABSOLUTE` reaching the active loop frame's exit. Break-only by design: unlike
+/// [`trailing_loop_jump_stmt`] it never matches a back-edge nor returns [`Stmt::Continue`], so it can
+/// be appended to a non-empty arm body without mistaking the loop's natural body-tail back-edge for a
+/// `continue`. Yields `None` when no loop frame is active, when the trailing op is not a forward jump,
+/// or when the jump does not land at or past the loop exit.
+fn trailing_loop_break_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
+    let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    })?;
+    if !matches!(
+        stream.ops[last_idx],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) {
+        return None;
+    }
+    let target: usize = resolve_jump_target(stream, last_idx, &stream.ops[last_idx])?;
+    loop_break_target()
+        .filter(|&exit: &usize| target >= exit && target > last_idx)
+        .map(|_: usize| Stmt::Break)
+}
+
 fn rewrite_jump_to_break_continue(
     stream: &DecodedStream,
     body: Vec<Stmt>,
@@ -13797,6 +13822,15 @@ fn rewrite_jump_to_break_continue(
         return vec![Stmt::Break];
     }
     if body.iter().any(|s: &Stmt| !matches!(s, Stmt::Pass)) {
+        if !matches!(
+            body.last(),
+            Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+        ) && let Some(brk) = trailing_loop_break_stmt(stream, lo, hi)
+        {
+            let mut out: Vec<Stmt> = body;
+            out.push(brk);
+            return out;
+        }
         return body;
     }
     let last: Option<usize> = (lo..hi).rev().find(|&k: &usize| {
@@ -15017,6 +15051,7 @@ fn structure_guarded_continue(
     });
     let body_end: usize = trim_body_back_edge(stream, target, hi);
     let rest: Vec<Stmt> = structure_stmts(code, stream, target, body_end)?;
+    let rest: Vec<Stmt> = rewrite_jump_to_break_continue(stream, rest, target, body_end);
     let guard_test: Expr = fallthrough_cond_test(stream, jump_idx, test);
     let mut out: Vec<Stmt> = head;
     if loop_continue_target().is_some() {
