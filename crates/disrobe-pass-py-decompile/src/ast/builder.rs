@@ -8044,6 +8044,40 @@ fn has_earlier_while_back_edge(stream: &DecodedStream, lo: usize, before: usize)
     })
 }
 
+/// Whether the `for` `region` is nested inside an enclosing TOP-TESTED `while COND:` whose back-edge
+/// lands AFTER the loop. The outer header sits before the `for` (inside `[lo, region.header)`); its
+/// unconditional back-edge sits past the `for`'s own back-edge yet within `[region.back_edge, hi)`, so
+/// the `for`'s extent is strictly contained in `[outer_header, outer_back_edge)`. The header must also
+/// carry a top-test: a forward cond-jump in `[outer_header, region.header)` exiting past the outer
+/// back-edge (the `while COND:` entry test, e.g. the `TO_BOOL; POP_JUMP_IF_FALSE` of `while line := f():`).
+/// That top-test requirement is the discriminator that EXCLUDES a `while True:` (whose only exits are
+/// `break`/`return`, never a header cond-jump) — a `while True:` body holding a `for` is structured
+/// correctly by returning the `for` and recursing, so it must NOT be skipped here. Without this check
+/// the inner `for` is mis-selected as the window's top-level loop and the outer walrus header degrades
+/// to an `if`; mirror of [`has_earlier_while_back_edge`].
+fn for_enclosed_by_later_while_back_edge(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &LoopRegion,
+) -> bool {
+    (region.back_edge + 1..hi.min(stream.ops.len())).any(|j: usize| {
+        is_back_edge(&stream.ops[j])
+            && !is_async_send_back_edge(stream, j)
+            && !is_async_cleanup_throw_back_edge(stream, j)
+            && resolve_jump_target(stream, j, &stream.ops[j]).is_some_and(|outer_header: usize| {
+                outer_header >= lo
+                    && outer_header < region.header
+                    && (outer_header..region.header).any(|k: usize| {
+                        is_forward_cond_jump(&stream.ops[k])
+                            && !is_chain_cond_jump(&stream.ops, k)
+                            && resolve_jump_target(stream, k, &stream.ops[k])
+                                .is_some_and(|t: usize| t > j)
+                    })
+            })
+    })
+}
+
 fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
@@ -8084,7 +8118,8 @@ fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion>
                 infinite: false,
             };
             if loop_enclosed_by_guard(stream, lo, &region)
-                && has_earlier_while_back_edge(stream, lo, i)
+                && (has_earlier_while_back_edge(stream, lo, i)
+                    || for_enclosed_by_later_while_back_edge(stream, lo, hi, &region))
             {
                 continue;
             }
