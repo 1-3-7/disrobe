@@ -7846,13 +7846,128 @@ fn infinite_while_body_end(
     end
 }
 
+/// Whether `handler_offset`'s exception region also covers code before the loop header, i.e. the
+/// handler belongs to a `try` ENCLOSING the loop rather than an in-loop `try`. `CPython` splits one
+/// outer-`try` into several exception rows around the loop body; the inner rows have a try-start
+/// inside the loop, but a sibling row of the same handler target begins at/before `body_start`
+/// (the `FOR_ITER` successor). Absorbing such a handler into the loop body is wrong, so both
+/// filters in [`for_body_end_absorbing_cold_handlers`] reject it.
+fn handler_encloses_loop(stream: &DecodedStream, handler_offset: u32, body_start: usize) -> bool {
+    stream
+        .exception_table
+        .iter()
+        .any(|sibling: &crate::bytecode::flow::ExceptionTableEntry| {
+            sibling.target == handler_offset
+                && stream
+                    .index_for_offset(sibling.start)
+                    .is_some_and(|sibling_ts: usize| sibling_ts < body_start)
+        })
+}
+
+/// Index of the lowest cold-placed `PUSH_EXC_INFO` handler whose protected `try` lies inside the
+/// `for` body `[body_start, raw_exit)` and whose handler is laid out at/after the loop's normal exit
+/// (`[raw_exit, cap)`), excluding handlers of a `try` ENCLOSING the loop. `None` when none qualifies.
+fn first_cold_for_handler(
+    stream: &DecodedStream,
+    body_start: usize,
+    raw_exit: usize,
+    cap: usize,
+) -> Option<usize> {
+    stream
+        .exception_table
+        .iter()
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let hs: usize = stream.index_for_offset(e.target)?;
+            if ts < body_start
+                || ts >= raw_exit
+                || hs < raw_exit
+                || hs >= cap
+                || !matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
+                || handler_encloses_loop(stream, e.target, body_start)
+            {
+                return None;
+            }
+            Some(hs)
+        })
+        .min()
+}
+
+/// The real-statement span `[stmt_start, first_cold)` of an *impure* loop-exit epilogue: the ops
+/// between the `for` loop's normal exit (`raw_exit`, an `END_FOR`/`POP_ITER` pair decoded to `Pop`)
+/// and the first cold-placed in-loop handler, once leading `Pop`/`Nop`/`Cache`/`ExtendedArg`
+/// scaffolding is skipped. `None` when there is no qualifying cold handler or the epilogue is pure
+/// (only scaffolding — the existing pure path already places its implicit `return None` correctly).
+/// When `Some`, [`structure_loop`] lifts the matching trailing statements out of the `for` body and
+/// re-emits them as the post-loop tail, since the contiguous body span necessarily swallowed them.
+fn for_cold_handler_exit_epilogue(
+    stream: &DecodedStream,
+    body_start: usize,
+    raw_exit: usize,
+    hi: usize,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return None;
+    }
+    let cap: usize = hi.min(stream.ops.len());
+    let start: usize = raw_exit.min(cap);
+    let first_cold: usize = first_cold_for_handler(stream, body_start, start, cap)?;
+    let stmt_start: usize = (start..first_cold).find(|&k: &usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Pop | CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+        )
+    })?;
+    (stmt_start < first_cold).then_some((stmt_start, first_cold))
+}
+
+/// Lifts an absorbed *impure* loop-exit epilogue (see [`for_cold_handler_exit_epilogue`]) out of the
+/// just-structured `for` body and returns it as the post-loop tail. The contiguous body span
+/// `[body_start, body_end)` had to extend past the epilogue to bring the cold handler back inside the
+/// loop, which swallowed the loop's normal-exit statements (e.g. a trailing `return X`) into the body.
+/// Those statements are structured independently from `[stmt_start, first_cold)` and removed from the
+/// tail of `body` when they match it exactly; on any mismatch the body is left untouched and an empty
+/// tail returned, preserving prior behavior. Returns an empty `Vec` when there is no impure epilogue.
+fn lift_cold_handler_exit_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+    body: &mut Vec<Stmt>,
+) -> Result<Vec<Stmt>> {
+    let raw_exit: Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|t: &usize| *t > region.header);
+    let Some(raw_exit): Option<usize> = raw_exit else {
+        return Ok(Vec::new());
+    };
+    let Some((stmt_start, first_cold)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(Vec::new());
+    };
+    let tail: Vec<Stmt> = structure_stmts(code, stream, stmt_start, first_cold)?;
+    if tail.is_empty() || tail.len() > body.len() {
+        return Ok(Vec::new());
+    }
+    let split: usize = body.len() - tail.len();
+    if body[split..] != tail[..] {
+        return Ok(Vec::new());
+    }
+    body.truncate(split);
+    Ok(tail)
+}
+
 /// End (exclusive) of a 3.11+ `for` body whose in-loop `try/except` handlers are cold-placed past
 /// `END_FOR`. Mirrors [`infinite_while_body_end`]: starts at the `FOR_ITER` exit boundary and grows
 /// by fixpoint, absorbing each exception row whose try-start lies in `[body_start, end)` and whose
 /// `PUSH_EXC_INFO` handler is cold beyond `end`, extending over that handler's full cleanup chain via
-/// [`handler_chain_end`]. Returns `raw_exit` unchanged (no absorption) for pre-3.11 streams, when no
-/// cold handler exists, or when a real `for ... else:` body sits between `END_FOR` and the first cold
-/// handler (its non-epilogue ops would otherwise be swallowed into the loop body).
+/// [`handler_chain_end`]. The boundary is grown even when an impure loop-exit epilogue (`POP_ITER`
+/// plus a trailing `return X`/real statement) sits between `END_FOR` and the first cold handler,
+/// because that epilogue is the loop's normal-exit tail, not a `for ... else:` body; [`structure_loop`]
+/// lifts it back out via [`for_cold_handler_exit_epilogue`]. Handlers of a `try` ENCLOSING the loop
+/// are excluded via [`handler_encloses_loop`]. Returns `raw_exit` unchanged (no absorption) for
+/// pre-3.11 streams or when no cold handler exists.
 fn for_body_end_absorbing_cold_handlers(
     stream: &DecodedStream,
     body_start: usize,
@@ -7864,40 +7979,7 @@ fn for_body_end_absorbing_cold_handlers(
     }
     let cap: usize = hi.min(stream.ops.len());
     let start: usize = raw_exit.min(cap);
-    let first_cold: Option<usize> = stream
-        .exception_table
-        .iter()
-        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
-            let ts: usize = stream.index_for_offset(e.start)?;
-            let hs: usize = stream.index_for_offset(e.target)?;
-            if ts < body_start
-                || ts >= start
-                || hs < start
-                || hs >= cap
-                || !matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
-            {
-                return None;
-            }
-            Some(hs)
-        })
-        .min();
-    let Some(first_cold): Option<usize> = first_cold else {
-        return raw_exit;
-    };
-    let pure_epilogue: bool = (start..first_cold).all(|k: usize| {
-        matches!(
-            stream.ops[k],
-            CanonicalOp::Pop
-                | CanonicalOp::Nop
-                | CanonicalOp::Cache
-                | CanonicalOp::ExtendedArg(_)
-                | CanonicalOp::LoadConst(_)
-                | CanonicalOp::LoadCommonConst(_)
-                | CanonicalOp::ReturnConst(_)
-                | CanonicalOp::Return
-        )
-    });
-    if !pure_epilogue {
+    if first_cold_for_handler(stream, body_start, start, cap).is_none() {
         return raw_exit;
     }
     let mut end: usize = start;
@@ -7915,6 +7997,7 @@ fn for_body_end_absorbing_cold_handlers(
                 || hs < end
                 || hs >= cap
                 || !matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
+                || handler_encloses_loop(stream, entry.target, body_start)
             {
                 continue;
             }
@@ -8286,6 +8369,7 @@ fn structure_loop(
         exit: region.exit,
         exit_return,
     });
+    let mut cold_handler_exit_tail: Vec<Stmt> = Vec::new();
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let loop_stmt: Stmt = match region.kind {
             LoopKind::For => {
@@ -8301,7 +8385,11 @@ fn structure_loop(
                             region.body_start,
                         )
                     });
-                let body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.body_end)?;
+                let mut body: Vec<Stmt> =
+                    structure_stmts(code, stream, body_start, region.body_end)?;
+                let lifted_tail: Vec<Stmt> =
+                    lift_cold_handler_exit_epilogue(code, stream, region, body_start, &mut body)?;
+                cold_handler_exit_tail = lifted_tail;
                 let orelse: Vec<Stmt> = loop_orelse(code, stream, region, hi)?;
                 Stmt::For {
                     target,
@@ -8358,6 +8446,7 @@ fn structure_loop(
     let loop_stmt: Stmt = result?;
     let mut out: Vec<Stmt> = head;
     out.push(loop_stmt);
+    out.extend(cold_handler_exit_tail);
     let tail_start: usize = if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
