@@ -7702,6 +7702,9 @@ fn find_infinite_while(
         if loop_has_jump_exit(stream, header, back_edge, hi) {
             continue;
         }
+        if back_edge_reenters_for_iter(stream, header, back_edge) {
+            continue;
+        }
         return Some(LoopRegion {
             kind: LoopKind::While,
             header,
@@ -7713,6 +7716,28 @@ fn find_infinite_while(
         });
     }
     None
+}
+
+/// Whether `back_edge` is a `for`-loop's own back-edge rather than a `while True:` back-edge: its
+/// unconditional jump re-enters the loop at a controlling `FOR_ITER`/`ForLoopLegacy` inside
+/// `(header, back_edge)` without first rebuilding the iterator, the hallmark of a bare `for`
+/// (re-entry reuses the iterator left on the stack). The re-entry target must sit between any
+/// preceding `GET_ITER` and the loop op: a genuine `while True:` wrapping a `for` re-enters above
+/// the iterator's `GET_ITER` so the iterator is rebuilt each pass, and that `GET_ITER` falling in
+/// `[target, for_iter)` is what tells the two apart.
+fn back_edge_reenters_for_iter(stream: &DecodedStream, header: usize, back_edge: usize) -> bool {
+    let Some(target): Option<usize> =
+        resolve_jump_target(stream, back_edge, &stream.ops[back_edge])
+    else {
+        return false;
+    };
+    (header..back_edge).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        ) && target <= k
+            && !(target..k).any(|g: usize| matches!(stream.ops[g], CanonicalOp::GetIter))
+    })
 }
 
 /// The post-loop landing of a `while True:` whose leading op is an inline conditional `break` test
