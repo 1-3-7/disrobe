@@ -2802,6 +2802,10 @@ fn extend_window_over_split_handler(stream: &DecodedStream, lo: usize, hi: usize
     if stream.exception_table.is_empty() {
         return hi;
     }
+    let cap: usize = structure_hi_cap();
+    if cap != 0 && hi >= cap {
+        return hi;
+    }
     let mut end: usize = hi;
     loop {
         let mut grew: bool = false;
@@ -2838,7 +2842,8 @@ fn extend_window_over_split_handler(stream: &DecodedStream, lo: usize, hi: usize
             break;
         }
     }
-    end.min(stream.ops.len())
+    let bounded: usize = if cap != 0 { end.min(cap) } else { end };
+    bounded.min(stream.ops.len())
 }
 
 /// Protected-body end of a 3.11+ `try` whose hot body `CPython` split into several exception-table
@@ -4062,7 +4067,10 @@ fn structure_try(
             (stmt, region.region_end, tail)
         } else if is_star {
             let star_body_end: usize = except_star_body_end(stream, region, body_real_end);
-            let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, star_body_end)?;
+            let body: Vec<Stmt> = {
+                let _hi_cap: StructureHiCapGuard = StructureHiCapGuard::enter(star_body_end);
+                structure_stmts(code, stream, region.try_start, star_body_end)?
+            };
             let handlers: Vec<ExceptHandler> =
                 parse_except_star_handlers(code, stream, region.handler_start, region.region_end)?;
             let inline_epilogue: Option<(usize, usize)> =
@@ -21397,6 +21405,44 @@ thread_local! {
     static BOOLOP_MERGES: std::cell::RefCell<Option<(BoolopSliceKey, Vec<usize>)>> =
         const { std::cell::RefCell::new(None) };
     static STRUCTURE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STRUCTURE_HI_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Upper bound past which [`extend_window_over_split_handler`] must never grow a structuring window,
+/// or `0` when no cap is active. Set (via [`StructureHiCapGuard`]) around the body recursion of an
+/// `except*` group: the body span ends exactly at the group's `handler_start`, but a nested
+/// `async with` cleanup row inside the body chains its cold handler to the *outer* group's
+/// `region_end`, so an uncapped extension would re-grow the body window over the whole group and
+/// re-detect the identical `except*` region, recursing without bound. Capping the extension at the
+/// body end keeps the recursion strictly shrinking. The cap is the minimum of any enclosing cap.
+fn structure_hi_cap() -> usize {
+    STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| slot.get())
+}
+
+/// RAII guard that tightens [`STRUCTURE_HI_CAP`] to `min(existing, cap)` for the duration of one
+/// recursion and restores the prior cap on drop, so nested `except*` bodies compose their caps and
+/// the bound is lifted again for the group's handlers and successor.
+#[derive(Debug)]
+struct StructureHiCapGuard {
+    restore: usize,
+}
+
+impl StructureHiCapGuard {
+    fn enter(cap: usize) -> Self {
+        let restore: usize = STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| {
+            let prev: usize = slot.get();
+            let next: usize = if prev == 0 { cap } else { prev.min(cap) };
+            slot.set(next);
+            prev
+        });
+        Self { restore }
+    }
+}
+
+impl Drop for StructureHiCapGuard {
+    fn drop(&mut self) {
+        STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| slot.set(self.restore));
+    }
 }
 
 /// Maximum nesting depth of the [`structure_stmts`] region recursion before it bails with
