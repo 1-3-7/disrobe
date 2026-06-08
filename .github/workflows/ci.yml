@@ -129,7 +129,7 @@ jobs:
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
