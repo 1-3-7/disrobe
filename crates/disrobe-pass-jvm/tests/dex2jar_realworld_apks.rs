@@ -187,7 +187,11 @@ fn realworld_apk_translated_classes_verify() {
     eprintln!(
         "REALWORLD VERIFY transmissionic: classes_linked_ok={linked} verify_failures={verify_failures} methods_verified={methods}"
     );
-    for line in stdout.lines().filter(|l: &&str| l.starts_with("VERIFY ")).take(20) {
+    for line in stdout
+        .lines()
+        .filter(|l: &&str| l.starts_with("VERIFY "))
+        .take(20)
+    {
         eprintln!("{line}");
     }
     assert!(
@@ -235,7 +239,11 @@ fn parse_metric(stdout: &str, key: &str) -> usize {
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".bat"] } else { &[""] };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".bat"]
+    } else {
+        &[""]
+    };
     for dir in std::env::split_paths(&path_var) {
         for ext in exts {
             let candidate: PathBuf = dir.join(format!("{name}{ext}"));

@@ -3603,7 +3603,11 @@ fn handler_chain_end(stream: &DecodedStream, handler_start: usize, hi: usize) ->
 /// that cleanup for a depth-0 named handler, so the raw chain end would strand `del v; raise` ops for
 /// the enclosing scope to mis-parse; this walks them into the region. Returns `None` when the chain
 /// end does not resolve, leaving the caller on its [`handler_join`] fallback.
-fn handler_region_end_named(stream: &DecodedStream, handler_start: usize, hi: usize) -> Option<usize> {
+fn handler_region_end_named(
+    stream: &DecodedStream,
+    handler_start: usize,
+    hi: usize,
+) -> Option<usize> {
     let chain_end: usize = handler_chain_end(stream, handler_start, hi)?;
     let after_cleanup: usize = skip_handler_name_cleanup(stream, chain_end, hi);
     if after_cleanup == chain_end {
@@ -3629,14 +3633,17 @@ fn sibling_handler_between(
         Some(&o) => o,
         None => return false,
     };
-    stream.exception_table.iter().any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
-        if e.target == own_off || e.start >= own_off {
-            return false;
-        }
-        stream
-            .index_for_offset(e.target)
-            .is_some_and(|t: usize| (chain_end..join_end).contains(&t))
-    })
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            if e.target == own_off || e.start >= own_off {
+                return false;
+            }
+            stream
+                .index_for_offset(e.target)
+                .is_some_and(|t: usize| (chain_end..join_end).contains(&t))
+        })
 }
 
 /// Extends past a trailing `COPY/POP_EXCEPT/RERAISE` or bare `RERAISE` cold-cleanup tail beginning at

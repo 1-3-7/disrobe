@@ -407,7 +407,11 @@ fn transfer(
             set(
                 regs,
                 r.first().copied(),
-                if is_float { RegType::Float } else { RegType::Int },
+                if is_float {
+                    RegType::Float
+                } else {
+                    RegType::Int
+                },
             );
         }
         0x16..=0x19 => {
@@ -498,12 +502,12 @@ fn transfer(
 /// `laload`/`daload`/`aaload`/`baload`/`caload`/`saload`). Falls back to the width-correct primitive when
 /// the array's element type is not known at this point.
 fn aget_result_type(regs: &RegState, array_reg: Option<u16>, op: u8) -> RegType {
-    let elem: Option<&str> = array_reg.and_then(|a: u16| regs.get(&a)).and_then(|t: &RegType| {
-        match t {
+    let elem: Option<&str> = array_reg
+        .and_then(|a: u16| regs.get(&a))
+        .and_then(|t: &RegType| match t {
             RegType::Ref(desc) => desc.strip_prefix('['),
             _ => None,
-        }
-    });
+        });
     let elem_first: Option<u8> = elem.and_then(|e: &str| e.bytes().next());
     match op {
         0x44 => {

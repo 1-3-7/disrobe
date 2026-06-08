@@ -1,4 +1,9 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::print_stdout)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stdout
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

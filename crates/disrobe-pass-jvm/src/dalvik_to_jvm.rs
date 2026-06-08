@@ -773,7 +773,10 @@ fn init_this_call_is_trackable(dex: &DexFile, item: &CodeItem, insns: &[DalvikIn
         }
     }
 
-    if reachable_pre_init.iter().any(|pc: &u32| handler_pcs.contains(pc)) {
+    if reachable_pre_init
+        .iter()
+        .any(|pc: &u32| handler_pcs.contains(pc))
+    {
         return false;
     }
     !reachable_pre_init.is_empty()
