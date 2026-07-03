@@ -9,6 +9,7 @@ import {
   type DragEvent,
   type ReactElement,
 } from "react";
+import { AboutView } from "@/components/AboutView";
 import { ModePicker } from "@/components/ModePicker";
 import { ResultBoundary } from "@/components/ResultBoundary";
 import { Sidebar } from "@/components/Sidebar";
@@ -25,7 +26,7 @@ import {
   modeByEntry,
   modeById,
 } from "@/lib/modes";
-import { resolveSample } from "@/lib/samples";
+import { resolveSample, type Sample } from "@/lib/samples";
 import { usePersistentBoolean } from "@/lib/utils";
 import { preload, run } from "@/wasm/disrobe";
 import type { ErrorResult, Outcome } from "@/wasm/types";
@@ -133,12 +134,12 @@ function reducer(state: WorkbenchState, action: Action): WorkbenchState {
   }
 }
 
-async function loadModeSample(mode: Mode): Promise<LoadedInput> {
-  const bytes: Uint8Array = await resolveSample(mode.sample);
-  if (mode.sample.source.kind === "text") {
-    return { bytes, name: mode.sample.label, text: mode.sample.source.text, binary: false };
+async function loadSample(sample: Sample): Promise<LoadedInput> {
+  const bytes: Uint8Array = await resolveSample(sample);
+  if (sample.source.kind === "text") {
+    return { bytes, name: sample.label, text: sample.source.text, binary: false };
   }
-  return { bytes, name: mode.sample.label, text: "", binary: true };
+  return { bytes, name: sample.label, text: "", binary: true };
 }
 
 function activeEcosystemId(modeId: string): string {
@@ -193,7 +194,7 @@ function App(): ReactElement {
     if (mode.entry === null) {
       dispatch({
         type: "run_error",
-        message: `${mode.label} analyzes native binaries and runs in the disrobe CLI, not the in-browser playground.`,
+        message: `${mode.label} is a reference page, not a runnable pass.`,
       });
       return;
     }
@@ -228,8 +229,12 @@ function App(): ReactElement {
       return;
     }
     dispatch({ type: "select_mode", modeId: id });
+    if (mode.reference || mode.entry === null || mode.sample === undefined) {
+      return;
+    }
+    const sample: Sample = mode.sample;
     try {
-      const loaded: LoadedInput = await loadModeSample(mode);
+      const loaded: LoadedInput = await loadSample(sample);
       dispatch({ type: "load_sample", input: loaded });
       await executeBytes(mode, loaded.binary ? loaded.bytes : encoder.encode(loaded.text));
     } catch (cause: unknown) {
@@ -326,9 +331,8 @@ function App(): ReactElement {
       <header className="shrink-0 border-b border-hairline bg-canvas px-4 py-3 md:px-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-4">
-            <span className="flex items-baseline gap-1 font-mono text-[17px] font-bold tracking-tight text-ink">
+            <span className="font-mono text-[17px] font-bold tracking-tight text-ink">
               disrobe
-              <span aria-hidden="true" className="text-accent">.</span>
             </span>
             <div className="hidden items-center gap-1.5 sm:flex">
               <StatusChip label={ecosystemId} tone="muted" />
@@ -377,7 +381,12 @@ function App(): ReactElement {
             <ModePicker activeMode={activeMode} activeModeId={state.modeId} onSelect={chooseMode} />
           </div>
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(360px,480px)_minmax(0,1fr)]">
+          {activeMode.reference ? (
+            <div className="panel-scroll min-h-0 flex-1 overflow-auto">
+              <AboutView />
+            </div>
+          ) : (
+            <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(360px,480px)_minmax(0,1fr)]">
             <section
               className="flex min-h-0 flex-col border-b border-hairline xl:border-b-0 xl:border-r"
               onDragOver={onDragOver}
@@ -534,7 +543,7 @@ function App(): ReactElement {
                 ) : null}
 
                 {state.run.status === "done" ? (
-                  <div className="m-auto w-full rounded-sm border border-hairline bg-surface p-3">
+                  <div className="w-full rounded-sm border border-hairline bg-surface p-3">
                     <ResultBoundary>
                       <Suspense fallback={<EditorFallback />}>
                         <ResultView data={state.run.data} mode={activeMode} onJumpToEntry={jumpToEntry} />
@@ -559,7 +568,8 @@ function App(): ReactElement {
                 }
               />
             </section>
-          </div>
+            </div>
+          )}
         </main>
       </div>
     </div>

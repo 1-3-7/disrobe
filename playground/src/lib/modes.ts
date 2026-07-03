@@ -8,7 +8,6 @@ import {
   inlineSample,
   IOC_SAMPLE,
   PHP_EVAL_SAMPLE,
-  PYARMOR_WRAPPER_SAMPLE,
   RUBY_SOURCE_SAMPLE,
   type Sample,
   SECRETS_SAMPLE,
@@ -63,9 +62,9 @@ export interface Mode {
   readonly entry: EntryName | null;
   readonly inputKind: "bytes" | "text";
   readonly render: RenderKind;
-  readonly sample: Sample;
+  readonly sample?: Sample;
   readonly inputLanguage: EditorLanguage;
-  readonly nativeOnly?: boolean;
+  readonly reference?: boolean;
 }
 
 export interface Ecosystem {
@@ -184,28 +183,6 @@ export const ECOSYSTEMS: readonly Ecosystem[] = [
         render: "python",
         sample: fileSample("hello.pyc", "CPython 3.12 bytecode", "hello.pyc"),
         inputLanguage: "text",
-      },
-      {
-        id: "pyarmor-detect",
-        label: "PyArmor Detect",
-        blurb: "Native binary only: identify the PyArmor version and protection mode with the disrobe CLI.",
-        entry: null,
-        inputKind: "text",
-        render: "pyarmor",
-        sample: inlineSample("pyarmor bootstrap", "runtime wrapper stub", PYARMOR_WRAPPER_SAMPLE),
-        inputLanguage: "python",
-        nativeOnly: true,
-      },
-      {
-        id: "pyarmor-classify",
-        label: "PyArmor Classify",
-        blurb: "Native binary only: classify the script mode and static recovery disposition with the disrobe CLI.",
-        entry: null,
-        inputKind: "text",
-        render: "pyarmor",
-        sample: inlineSample("pyarmor bootstrap", "runtime wrapper stub", PYARMOR_WRAPPER_SAMPLE),
-        inputLanguage: "python",
-        nativeOnly: true,
       },
     ],
   },
@@ -558,23 +535,6 @@ export const ECOSYSTEMS: readonly Ecosystem[] = [
     ],
   },
   {
-    id: "swift-objc",
-    label: "iOS / Swift",
-    modes: [
-      {
-        id: "swift-objc-analyze",
-        label: "Class Dump",
-        blurb: "Native binary only: walk a Mach-O / IPA and dump Swift + Objective-C class metadata with the disrobe CLI.",
-        entry: null,
-        inputKind: "bytes",
-        render: "swift-objc",
-        sample: fileSample("ios_macho.bin", "arm64 Mach-O slice", "ios_macho.bin"),
-        inputLanguage: "text",
-        nativeOnly: true,
-      },
-    ],
-  },
-  {
     id: "mobile",
     label: "Mobile",
     modes: [
@@ -587,6 +547,22 @@ export const ECOSYSTEMS: readonly Ecosystem[] = [
         render: "mobile",
         sample: fileSample("android_app.apk", "Android DEX APK", "android_app.apk"),
         inputLanguage: "text",
+      },
+    ],
+  },
+  {
+    id: "reference",
+    label: "Reference",
+    modes: [
+      {
+        id: "about",
+        label: "About / CLI",
+        blurb: "What disrobe is, how the CLI works, and what runs only outside the browser.",
+        entry: null,
+        inputKind: "text",
+        render: "json",
+        inputLanguage: "text",
+        reference: true,
       },
     ],
   },
