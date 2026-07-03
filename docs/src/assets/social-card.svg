@@ -29,9 +29,9 @@
   <rect x="0.5" y="0.5" width="1279" height="639" fill="none" stroke="#262626"/>
 
   <g>
-    <circle cx="72" cy="40" r="5.5" fill="none" stroke="#333333" stroke-width="1.5"/>
-    <circle cx="90" cy="40" r="5.5" fill="none" stroke="#333333" stroke-width="1.5"/>
-    <circle cx="108" cy="40" r="5.5" fill="none" stroke="#333333" stroke-width="1.5"/>
+    <circle cx="72" cy="40" r="5.5" fill="#d08c8c" opacity="0.85"/>
+    <circle cx="90" cy="40" r="5.5" fill="#c9a98e" opacity="0.85"/>
+    <circle cx="108" cy="40" r="5.5" fill="#8fb3d9" opacity="0.85"/>
   </g>
   <text x="1208" y="45" font-size="15" fill="#828282" text-anchor="end" letter-spacing="0.4">LatencyLLC ~ <tspan fill="#8fb3d9">github.com/1-3-7/disrobe</tspan></text>
 

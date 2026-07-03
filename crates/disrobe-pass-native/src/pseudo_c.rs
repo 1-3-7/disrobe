@@ -681,6 +681,120 @@ pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Optio
         .map(|recovery: LeafRecovery| recovery.params.len())
 }
 
+const CALL_RESOLUTION_DEPTH: usize = 16;
+
+/// Integer arity of a callee, resolving nested outgoing calls bottom-up so a forwarder is not over-counted.
+pub fn resolved_int_arity_in_object(
+    object: &[u8],
+    callee_code: &[u8],
+    callee_base: u64,
+    abi: Abi,
+) -> Option<usize> {
+    resolved_int_arity(
+        callee_code,
+        callee_base,
+        abi,
+        &|target: u64| callee_code_by_target(object, target),
+        CALL_RESOLUTION_DEPTH,
+    )
+}
+
+fn resolved_int_arity(
+    callee_code: &[u8],
+    callee_base: u64,
+    abi: Abi,
+    resolve_callee: &dyn Fn(u64) -> Option<(Vec<u8>, u64)>,
+    depth: usize,
+) -> Option<usize> {
+    let probe: LeafRecovery = recover_leaf_function_abi(callee_code, callee_base, abi).ok()?;
+    if probe.call_targets.is_empty() || depth == 0 {
+        return Some(probe.params.len());
+    }
+    let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
+    let mut seen: Vec<u64> = Vec::new();
+    for target in probe.call_targets {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        let Some((nested_code, nested_base)): Option<(Vec<u8>, u64)> = resolve_callee(target)
+        else {
+            continue;
+        };
+        let Some(arg_count): Option<usize> =
+            resolved_int_arity(&nested_code, nested_base, abi, resolve_callee, depth - 1)
+        else {
+            continue;
+        };
+        resolved.push(ResolvedCall {
+            target,
+            name: None,
+            arg_count,
+        });
+    }
+    recover_leaf_function_with_calls(callee_code, callee_base, abi, &resolved)
+        .ok()
+        .map(|recovery: LeafRecovery| recovery.params.len())
+}
+
+fn callee_code_by_target(object: &[u8], target: u64) -> Option<(Vec<u8>, u64)> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    let file: object::File<'_> = object::File::parse(object).ok()?;
+    if let Some(sym) = file.symbols().find(|s: &object::Symbol<'_, '_>| {
+        s.address() == target
+            && s.kind() == object::SymbolKind::Text
+            && s.name().is_ok_and(|n: &str| !n.is_empty())
+    }) {
+        return symbol_code(&file, &sym);
+    }
+    for section in file.sections() {
+        let base: u64 = section.address();
+        for (offset, reloc) in section.relocations() {
+            if base.checked_add(offset)?.checked_add(4)? != target {
+                continue;
+            }
+            let object::RelocationTarget::Symbol(idx) = reloc.target() else {
+                continue;
+            };
+            let sym: object::Symbol<'_, '_> = file.symbol_by_index(idx).ok()?;
+            return symbol_code(&file, &sym);
+        }
+    }
+    None
+}
+
+fn symbol_code(file: &object::File<'_>, sym: &object::Symbol<'_, '_>) -> Option<(Vec<u8>, u64)> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    let object::SymbolSection::Section(section_index) = sym.section() else {
+        return None;
+    };
+    let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
+    let data: &[u8] = section.data().ok()?;
+    let sym_addr: u64 = sym.address();
+    let start: usize = usize::try_from(sym_addr.saturating_sub(section.address())).ok()?;
+    let size: usize = usize::try_from(sym.size()).ok()?;
+    let end: usize = if size == 0 {
+        file.symbols()
+            .filter(|s: &object::Symbol<'_, '_>| {
+                matches!(s.section(), object::SymbolSection::Section(idx) if idx == section_index)
+                    && s.address() > sym_addr
+                    && s.kind() == object::SymbolKind::Text
+                    && s.name().is_ok_and(|n: &str| !n.is_empty())
+            })
+            .filter_map(|s: object::Symbol<'_, '_>| {
+                usize::try_from(s.address().saturating_sub(section.address())).ok()
+            })
+            .min()
+            .unwrap_or(data.len())
+            .min(data.len())
+    } else {
+        start.saturating_add(size).min(data.len())
+    };
+    Some((data.get(start..end)?.to_vec(), sym_addr))
+}
+
 fn recover_leaf_function_calls_impl(
     machine_code: &[u8],
     base: u64,

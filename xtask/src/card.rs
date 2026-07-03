@@ -158,7 +158,13 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let recovery_path: PathBuf = root.join("xtask").join("data").join("recovery.json");
     let verif_path: PathBuf = root.join("xtask").join("data").join("verification.json");
-    let svg_path: PathBuf = root.join("docs").join("assets").join("social-card.svg");
+    let targets: [PathBuf; 2] = [
+        root.join("docs").join("assets").join("social-card.svg"),
+        root.join("docs")
+            .join("src")
+            .join("assets")
+            .join("social-card.svg"),
+    ];
 
     let recovery_raw: String = read_text_bounded(&recovery_path, MAX_DATA_JSON_BYTES)
         .wrap_err_with(|| format!("reading {}", recovery_path.display()))?;
@@ -174,28 +180,31 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let svg: String = render(&stats);
 
     if check {
-        match read_bytes_bounded(&svg_path, MAX_SVG_BYTES) {
-            Ok(on_disk) if on_disk == svg.as_bytes() => {
-                println!(
-                    "xtask card --check: {} matches regeneration",
-                    svg_path.display()
-                );
-                Ok(())
+        for path in &targets {
+            match read_bytes_bounded(path, MAX_SVG_BYTES) {
+                Ok(on_disk) if on_disk == svg.as_bytes() => {
+                    println!(
+                        "xtask card --check: {} matches regeneration",
+                        path.display()
+                    );
+                }
+                Ok(_) => bail!(
+                    "committed social card is stale; run `cargo run -p xtask -- card`:\n  {} differs from regenerated output",
+                    path.display()
+                ),
+                Err(err) => bail!("{} unreadable: {err}", path.display()),
             }
-            Ok(_) => bail!(
-                "committed social card is stale; run `cargo run -p xtask -- card`:\n  {} differs from regenerated output",
-                svg_path.display()
-            ),
-            Err(err) => bail!("{} unreadable: {err}", svg_path.display()),
         }
     } else {
-        fs::create_dir_all(svg_path.parent().unwrap_or(root))
-            .wrap_err_with(|| format!("creating parent of {}", svg_path.display()))?;
-        fs::write(&svg_path, svg.as_bytes())
-            .wrap_err_with(|| format!("writing {}", svg_path.display()))?;
-        println!("xtask card: wrote {}", svg_path.display());
-        Ok(())
+        for path in &targets {
+            fs::create_dir_all(path.parent().unwrap_or(root))
+                .wrap_err_with(|| format!("creating parent of {}", path.display()))?;
+            fs::write(path, svg.as_bytes())
+                .wrap_err_with(|| format!("writing {}", path.display()))?;
+            println!("xtask card: wrote {}", path.display());
+        }
     }
+    Ok(())
 }
 
 fn collect_stats(recovery: &RecoveryDoc, verif: &VerificationDoc) -> Result<CardStats> {
