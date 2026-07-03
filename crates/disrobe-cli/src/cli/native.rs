@@ -100,11 +100,199 @@ fn run_capped(mut command: Command, timeout: Duration) -> miette::Result<CappedR
     })
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum DecompileBackend {
+    #[default]
+    Native,
+    Ghidra,
+}
+
 pub(crate) fn decompile(
     input: PathBuf,
     out: Option<PathBuf>,
     emit: Vec<String>,
+    backend: DecompileBackend,
 ) -> miette::Result<()> {
+    match backend {
+        DecompileBackend::Native => decompile_native(input, out),
+        DecompileBackend::Ghidra => decompile_ghidra(input, out, emit),
+    }
+}
+
+fn decompile_native(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    use disrobe_pass_native::{PseudoAbi, recover_leaf_function_abi};
+    use std::fmt::Write as _;
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0160: cannot read input: {e}"))?;
+    let module: disrobe_query::Module = load_native_module(&input, &bytes)?;
+    let obj: object::File<'_> = object::File::parse(bytes.as_slice())
+        .map_err(|e| miette::miette!("DR-NATIVE-0161: cannot parse native object: {e}"))?;
+    if obj.architecture() != object::Architecture::X86_64 {
+        return Err(miette::miette!(
+            "DR-NATIVE-0162: the in-tree decompiler currently supports x86-64 only (got {:?}); use --backend ghidra for other architectures",
+            obj.architecture()
+        ));
+    }
+    let abi: PseudoAbi = if matches!(
+        obj.format(),
+        object::BinaryFormat::Pe | object::BinaryFormat::Coff
+    ) {
+        PseudoAbi::MsX64
+    } else {
+        PseudoAbi::SysV
+    };
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native")
+        .to_owned();
+    let out_dir: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-native-decompiled")));
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| miette::miette!("DR-NATIVE-0163: cannot create out dir: {e}"))?;
+
+    let mut includes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut bodies: String = String::new();
+    let mut recovered: Vec<serde_json::Value> = Vec::new();
+    let mut unrecovered: Vec<serde_json::Value> = Vec::new();
+
+    for f in module.functions() {
+        let Some(code): Option<Vec<u8>> = bytes_for_va_range(&obj, f.address, f.end) else {
+            unrecovered.push(serde_json::json!({
+                "name": f.name, "address": f.address, "reason": "no mapped code bytes for the function range"
+            }));
+            continue;
+        };
+        match recover_leaf_function_abi(&code, f.address, abi) {
+            Ok(rec) => {
+                for line in rec.source.lines() {
+                    if line.trim_start().starts_with("#include") {
+                        includes.insert(line.trim().to_owned());
+                    }
+                }
+                let cname: String = unique_c_name(&f.name, f.address, &mut seen);
+                let renamed: String = rec
+                    .source
+                    .lines()
+                    .filter(|l: &&str| !l.trim_start().starts_with("#include"))
+                    .collect::<Vec<&str>>()
+                    .join("\n")
+                    .replace("recovered(", &format!("{cname}("));
+                let _ = writeln!(
+                    bodies,
+                    "/* {} @ {:#x} */\n{}\n",
+                    f.name,
+                    f.address,
+                    renamed.trim()
+                );
+                recovered.push(serde_json::json!({
+                    "name": f.name, "address": f.address, "emitted_as": cname
+                }));
+            }
+            Err(e) => unrecovered.push(serde_json::json!({
+                "name": f.name, "address": f.address, "reason": e.to_string()
+            })),
+        }
+    }
+
+    let mut c_source: String = String::new();
+    for inc in &includes {
+        c_source.push_str(inc);
+        c_source.push('\n');
+    }
+    if !includes.is_empty() {
+        c_source.push('\n');
+    }
+    c_source.push_str(&bodies);
+
+    let c_path: PathBuf = out_dir.join(format!("{stem}.c"));
+    std::fs::write(&c_path, c_source.as_bytes())
+        .map_err(|e| miette::miette!("DR-NATIVE-0164: cannot write C output: {e}"))?;
+
+    let total: usize = module.functions().len();
+    let manifest: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.native.decompile/v1",
+        "backend": "native-in-tree-x86_64",
+        "input": input.display().to_string(),
+        "abi": format!("{abi:?}"),
+        "functions_total": total,
+        "functions_recovered": recovered.len(),
+        "functions_unrecovered": unrecovered.len(),
+        "c_source": c_path.display().to_string(),
+        "recovered": recovered,
+        "unrecovered": unrecovered,
+    });
+    std::fs::write(
+        out_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| miette::miette!("DR-NATIVE-0165: serialize manifest: {e}"))?,
+    )
+    .map_err(|e| miette::miette!("DR-NATIVE-0166: cannot write manifest: {e}"))?;
+
+    println!(
+        "native decompile (in-tree x86-64 -> C): recovered {}/{} function(s) -> {}",
+        recovered.len(),
+        total,
+        c_path.display()
+    );
+    Ok(())
+}
+
+fn bytes_for_va_range(obj: &object::File<'_>, start_va: u64, end_va: u64) -> Option<Vec<u8>> {
+    let len: usize = usize::try_from(end_va.checked_sub(start_va)?).ok()?;
+    if len == 0 {
+        return None;
+    }
+    for section in obj.sections() {
+        let addr: u64 = section.address();
+        let sec_end: u64 = addr.checked_add(section.size())?;
+        if start_va >= addr && start_va < sec_end {
+            let data: &[u8] = section.data().ok()?;
+            let off: usize = usize::try_from(start_va - addr).ok()?;
+            if off >= data.len() {
+                return None;
+            }
+            let take: usize = off.saturating_add(len).min(data.len());
+            return Some(data[off..take].to_vec());
+        }
+    }
+    None
+}
+
+fn unique_c_name(raw: &str, va: u64, seen: &mut std::collections::BTreeSet<String>) -> String {
+    let sanitized: String = raw
+        .chars()
+        .map(|c: char| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let base: String = if sanitized.is_empty()
+        || sanitized
+            .chars()
+            .next()
+            .is_some_and(|c: char| c.is_ascii_digit())
+    {
+        format!("sub_{va:x}")
+    } else {
+        sanitized
+    };
+    let candidate: String = if seen.contains(&base) {
+        format!("{base}_{va:x}")
+    } else {
+        base
+    };
+    seen.insert(candidate.clone());
+    candidate
+}
+
+fn decompile_ghidra(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
     let resolved: Option<PathBuf> = locate_ghidra_headless();
     let Some(ghidra): Option<PathBuf> = resolved else {
         return Err(miette::miette!(
@@ -2259,6 +2447,78 @@ mod tests {
             "native/packers/kkrunchy/hello.packed.kkrunchy.exe",
             "kkrunchy-unpack-test.bin",
         );
+    }
+
+    fn find_c_compiler() -> Option<String> {
+        for c in ["clang", "gcc", "cc"] {
+            if std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o: std::process::Output| o.status.success())
+            {
+                return Some(c.to_owned());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn native_backend_decompiles_leaf_functions_to_c() {
+        if !cfg!(target_arch = "x86_64") {
+            eprintln!("skip: in-tree native decompiler is x86-64 only; host is not x86-64");
+            return;
+        }
+        let Some(compiler): Option<String> = find_c_compiler() else {
+            eprintln!("skip: no C compiler (clang/gcc/cc) on PATH");
+            return;
+        };
+        let dir: PathBuf = std::env::temp_dir().join("disrobe-native-decompile-oracle");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mk test dir");
+        let c_src: PathBuf = dir.join("battery.c");
+        std::fs::write(
+            &c_src,
+            b"long long f_add(long long a, long long b){ return a + b; }\nlong long f_sub(long long a, long long b){ return a - b; }\nint main(int argc, char **argv){ (void)argv; return (int)(f_add(argc, 1) + f_sub(argc, 2)); }\n",
+        )
+        .expect("write battery.c");
+        let obj: PathBuf = dir.join("battery.o");
+        let compile: std::process::Output = std::process::Command::new(&compiler)
+            .args(["-c", "-O1"])
+            .arg(&c_src)
+            .arg("-o")
+            .arg(&obj)
+            .output()
+            .expect("invoke compiler");
+        if !compile.status.success() {
+            eprintln!(
+                "skip: object compile failed: {}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+            return;
+        }
+        let out_dir: PathBuf = dir.join("out");
+        decompile_native(obj, Some(out_dir.clone())).expect("native decompile ok");
+        let manifest_text: String =
+            std::fs::read_to_string(out_dir.join("manifest.json")).expect("read manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("parse manifest");
+        let total: u64 = manifest["functions_total"].as_u64().unwrap_or(0);
+        if total == 0 {
+            eprintln!("skip: no functions discovered in the object on this platform");
+            return;
+        }
+        let recovered: u64 = manifest["functions_recovered"].as_u64().unwrap_or(0);
+        assert!(
+            recovered >= 1,
+            "in-tree native backend must recover at least one leaf function to C; manifest: {manifest_text}"
+        );
+        let c_out: String =
+            std::fs::read_to_string(out_dir.join("battery.c")).expect("read recovered c");
+        assert!(
+            c_out.contains("return"),
+            "recovered C must contain function bodies; got: {c_out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

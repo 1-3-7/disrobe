@@ -1084,7 +1084,9 @@ enum GuardCmd {
 
 #[derive(Subcommand, Debug)]
 enum NativeCmd {
-    #[command(about = "decompile a PE / ELF / Mach-O binary via Ghidra-headless")]
+    #[command(
+        about = "decompile a PE / ELF / Mach-O binary to C (in-tree x86-64 engine by default; --backend ghidra for external ghidra-headless)"
+    )]
     Decompile {
         #[arg(help = "input native binary")]
         input: PathBuf,
@@ -1096,8 +1098,15 @@ enum NativeCmd {
         out: Option<PathBuf>,
         #[arg(
             long,
+            value_enum,
+            default_value_t,
+            help = "decompiler backend: native (in-tree x86-64 -> C, no external dependency) or ghidra (external ghidra-headless)"
+        )]
+        backend: native::DecompileBackend,
+        #[arg(
+            long,
             value_delimiter = ',',
-            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+            help = "ghidra backend only: comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
         emit: Vec<String>,
     },
@@ -1566,7 +1575,12 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "wasm")]
         Cmd::Wasm { action } => wasm::run(action),
         Cmd::Native { action } => match action {
-            NativeCmd::Decompile { input, out, emit } => native::decompile(input, out, emit),
+            NativeCmd::Decompile {
+                input,
+                out,
+                backend,
+                emit,
+            } => native::decompile(input, out, emit, backend),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),
