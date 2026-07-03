@@ -4,7 +4,8 @@
     clippy::panic,
     clippy::print_stdout,
     clippy::print_stderr,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::literal_string_with_formatting_args
 )]
 
 //! Recompile-equivalence coverage for decompilation edge cases drawn from the documented bug
@@ -390,5 +391,82 @@ fn ternary_inside_boolean_test_assigned() {
     assert_recompiles(
         "edge_ternary_in_bool_assign",
         "def f(a, b, x, y):\n    z = x if a or b else y\n    return z\n",
+    );
+}
+
+#[test]
+fn fstring_single_part_no_buildstring() {
+    assert_recompiles(
+        "edge_fstring_single_part",
+        "def f(x):\n    return f\"{x}\"\n",
+    );
+}
+
+#[test]
+fn fstring_plain_multi_part() {
+    assert_recompiles(
+        "edge_fstring_plain_multi",
+        "def f(name, count):\n    return f\"{name}: {count}\"\n",
+    );
+}
+
+#[test]
+fn fstring_repr_conversion_single() {
+    assert_recompiles(
+        "edge_fstring_conv_repr",
+        "def f(x):\n    return f\"{x!r}\"\n",
+    );
+}
+
+#[test]
+fn fstring_all_conversions_single_level() {
+    assert_recompiles(
+        "edge_fstring_all_conv",
+        "def f(a, b, c):\n    return f\"{a!s}-{b!r}-{c!a}\"\n",
+    );
+}
+
+#[test]
+fn fstring_constant_format_spec() {
+    assert_recompiles(
+        "edge_fstring_const_spec",
+        "def f(x):\n    return f\"{x:.2f}\"\n",
+    );
+}
+
+#[test]
+fn fstring_conversion_and_nested_spec() {
+    assert_recompiles(
+        "edge_fstring_conv_nested_spec",
+        "def f(x, w):\n    return f\"{x!r:>{w}}\"\n",
+    );
+}
+
+#[test]
+fn fstring_debug_self_documenting() {
+    assert_recompiles("edge_fstring_debug_eq", "def f(x):\n    return f\"{x=}\"\n");
+}
+
+#[test]
+fn fstring_nested_computed_spec() {
+    assert_recompiles(
+        "edge_fstring_nested_spec",
+        "def f(x, w, p):\n    return f\"{x:{w}.{p}f}\"\n",
+    );
+}
+
+#[test]
+fn fstring_adjacent_fields_no_literal() {
+    assert_recompiles(
+        "edge_fstring_adjacent",
+        "def f(a, b):\n    return f\"{a}{b}\"\n",
+    );
+}
+
+#[test]
+fn fstring_nested_fstring_in_field() {
+    assert_recompiles(
+        "edge_fstring_nested_in_field",
+        "def f(x):\n    return f\"{f'{x}'}\"\n",
     );
 }

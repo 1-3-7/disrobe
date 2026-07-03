@@ -1281,8 +1281,10 @@ pub(super) fn build_linear_stmts_sim_seed(
                 let value: Expr = sim.pop_or_synth(code, idx);
                 match value {
                     Expr::FormattedValue {
-                        format_spec: None, ..
-                    } => sim.push(value),
+                        conversion,
+                        format_spec: None,
+                        ..
+                    } if conversion != FormatConversion::None => sim.push(value),
                     other => sim.push(Expr::FormattedValue {
                         value: Box::new(other),
                         conversion: FormatConversion::None,
@@ -1300,7 +1302,7 @@ pub(super) fn build_linear_stmts_sim_seed(
                         conversion,
                         format_spec: None,
                         line,
-                    } => sim.push(Expr::FormattedValue {
+                    } if conversion != FormatConversion::None => sim.push(Expr::FormattedValue {
                         value: inner,
                         conversion,
                         format_spec: Some(Box::new(spec)),

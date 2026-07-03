@@ -279,7 +279,7 @@ This section names the supported surface and its residual. Measured scores live 
 |---|---|
 | Bytecode decompile | In-house Rust decompiler for CPython 1.0-3.15, recompile-verified where the interpreter oracle is available. Recovers `match`, walrus, f/t-strings (PEP 750), exception groups, PEP 695/696/709, plus legacy 1.0-3.7 bytecode. |
 | Freezers | Recover: PyInstaller 2.x-6.20+, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` (in-house AES-256-CTR + BLAKE2b decrypt). Partial: Nuitka (byte-exact unpack, names/signatures/constants lossless, native bodies lossy). |
-| PyArmor | Recover: v6-v9-pro static unpack (default, super, no-wrap). Detect-only: v3-v5 RSA-wrapped-key tier (runtime-key wall); BCC native body (native wall). |
+| PyArmor | Recover: v6-v9-pro static unpack (default, super, no-wrap); BCC native body carved and lifted to pseudo-C via the in-house x86-64 decompiler (leaf functions today, whole-function in progress). Detect-only: v3-v5 RSA-wrapped-key tier (runtime-key wall). |
 | Source obfuscators (18) | Recover to source via an AST evaluator: Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, PyObfuscator, ObfuXtreme, Manglify, Oxyry, pyminifier, Xindex, Patchwork, and the online-obfuscator family. Partial: python-obfuscator (PyPI), pyobfus, Pypacker. Remote-fetched or runtime-eval payload segments are flagged as absent-data walls. |
 | Pickle | Recover: static disasm + symbolic-VM trace + safety grading + polyglot and ML-model detection. Never unpickles. |
 
@@ -538,8 +538,8 @@ Recovery is bounded by what the compiler or protector left in the artifact. `dis
 
 - Native VM devirtualization for VMProtect, Themida, Enigma, and comparable virtualizing protectors is detect + carve only: the handler stream is assembled at run time from a per-machine key absent from the file.
 - Runtime-only keys block full decrypt where the key was never written into the artifact: PyArmor v3-v5, ionCube, SourceGuardian, modern Zend Guard, ILProtector, and MaxToCode derive their key in a native loader or live process, and AEAD/RSA/env-derived keys are not present statically.
-- PyArmor BCC and super mode lower the body into native code, so the protected body is a native wall (the surrounding metadata still recovers).
-- Nuitka, Nim, Zig, and Crystal compile to native machine code, so recovered bodies are skeleton-to-partial (Nuitka) or symbols-and-demangling-only (the rest); no source body survives compilation.
+- PyArmor BCC and super mode lower the body into native machine code. That machine code is present in the artifact (not absent), so it is not a wall: disrobe carves it and lifts it to pseudo-C with its in-house x86-64 decompiler (`native decompile --backend native`), leaf functions today and whole-function lifting in progress. The surrounding metadata recovers fully.
+- Nuitka, Nim, Zig, and Crystal compile to native machine code, so the original high-level source does not survive compilation; disrobe recovers symbols, types, and demangled names, and the native bodies are recoverable to pseudo-C / pseudo-Rust with the same in-house decompiler (leaf-strong today, whole-function in progress). Nuitka additionally reconstructs bodies from the higher form (generated module C or the constants blob) whenever the build ships it.
 - One-way name hashing erases identifiers: garble name-hashing is `base64(hmac-sha256(name, seed))` with the seed absent in `-trimpath` builds, so names are canonicalized, not restored, while structure, types, and control flow recover regardless.
 
 Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting.
