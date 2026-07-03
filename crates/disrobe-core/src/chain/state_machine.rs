@@ -672,7 +672,7 @@ fn encode_branch_id(mut n: u64) -> String {
         n -= 1;
     }
     buf.reverse();
-    String::from_utf8(buf).map_or_else(|_| "a".to_string(), std::convert::identity)
+    String::from_utf8(buf).unwrap_or_else(|_| "a".to_string())
 }
 
 fn blake3_of(bytes: &[u8]) -> [u8; 32] {

@@ -145,7 +145,10 @@ fn function_boundary_recall_graded_against_dill() {
         walled
     );
 
-    assert!(denominator >= 8, "the .dill must declare the sample procedures");
+    assert!(
+        denominator >= 8,
+        "the .dill must declare the sample procedures"
+    );
     assert!(
         numerator >= 4,
         "at least the non-inlined procedures (fibonacciStep, main, WarehouseLedger methods) must lift, got {numerator}"
@@ -178,7 +181,10 @@ fn fibonacci_step_is_self_recursive_static_edge() {
         fib.source_conditional_estimate,
         fib.elided_checks,
     );
-    eprintln!("--- fibonacciStep pseudo-Dart ---\n{}", fib.to_pseudo_dart());
+    eprintln!(
+        "--- fibonacciStep pseudo-Dart ---\n{}",
+        fib.to_pseudo_dart()
+    );
 
     assert!(
         self_edges >= 1,
@@ -230,7 +236,10 @@ fn call_graph_edges_carry_dill_names() {
         report.runtime_stub_calls,
         report.self_recursive_functions,
     );
-    eprintln!("  named static edges landing on .dill-declared app procedures: {:?}", edges_into_app);
+    eprintln!(
+        "  named static edges landing on .dill-declared app procedures: {:?}",
+        edges_into_app
+    );
 
     assert!(
         report.named_static_call_edges > 0,

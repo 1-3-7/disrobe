@@ -133,11 +133,7 @@ impl DartLiftedFunction {
             .unwrap_or_else(|| format!("sub_{:#010x}", self.offset));
         let _ = writeln!(out, "{label}({params}) {{");
         if self.has_loop_back_edge {
-            let _ = writeln!(
-                out,
-                "  loop over {} basic blocks",
-                self.basic_block_count
-            );
+            let _ = writeln!(out, "  loop over {} basic blocks", self.basic_block_count);
         }
         for call in &self.calls {
             match call.kind {
@@ -370,13 +366,10 @@ pub fn lift_functions(
 }
 
 #[must_use]
-fn lift_one(
-    func: &Arm64Function,
-    index: &SymbolIndex,
-    abi_resolved: bool,
-) -> DartLiftedFunction {
+fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> DartLiftedFunction {
     let (start, end): (u64, u64) = func_range(func);
-    let (basic_block_count, has_loop_back_edge): (usize, bool) = control_flow_shape(func, start, end);
+    let (basic_block_count, has_loop_back_edge): (usize, bool) =
+        control_flow_shape(func, start, end);
     let conditional_branch_count: usize = func
         .instructions
         .iter()
@@ -410,8 +403,8 @@ fn lift_one(
         }
     }
 
-    let source_conditional_estimate: usize = conditional_branch_count
-        .saturating_sub(count_conditional_guards(&elided_checks));
+    let source_conditional_estimate: usize =
+        conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
     DartLiftedFunction {
         offset: func.entry_offset,
@@ -510,8 +503,7 @@ fn classify_direct_call(
     end: u64,
 ) -> DartCallSite {
     let target: Option<u64> = insn.branch_target;
-    let is_self_recursive: bool =
-        target.is_some_and(|t: u64| t >= start && t < end);
+    let is_self_recursive: bool = target.is_some_and(|t: u64| t >= start && t < end);
     let (kind, target_name): (DartCallKind, Option<String>) = match target {
         Some(t) => match index.resolve(t) {
             Some(name) => (DartCallKind::Static, Some(name.to_owned())),
@@ -975,7 +967,8 @@ mod tests {
     fn resolves_direct_static_call_to_symbol_name() {
         let bytes: Vec<u8> = words(&[bl(0x100, 0x200), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
-        let index: SymbolIndex = SymbolIndex::build(&[symbol(0x200, 0x40, "WarehouseLedger.mostValuable")]);
+        let index: SymbolIndex =
+            SymbolIndex::build(&[symbol(0x200, 0x40, "WarehouseLedger.mostValuable")]);
         let lifted: DartLiftedFunction = lift_one(&func, &index, true);
         assert_eq!(lifted.calls.len(), 1);
         assert_eq!(lifted.calls[0].kind, DartCallKind::Static);
@@ -988,11 +981,15 @@ mod tests {
     #[test]
     fn detects_self_recursion() {
         let bytes: Vec<u8> = words(&[ldr_pool(0, 8), bl(0x104, 0x100), ret()]);
-        let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), Some("fib".to_owned()));
+        let func: Arm64Function =
+            disassemble_function(&bytes, 0x100, 0, bytes.len(), Some("fib".to_owned()));
         let index: SymbolIndex = SymbolIndex::build(&[symbol(0x100, 0x0c, "fib")]);
         let lifted: DartLiftedFunction = lift_one(&func, &index, true);
         assert!(
-            lifted.calls.iter().any(|c: &DartCallSite| c.is_self_recursive),
+            lifted
+                .calls
+                .iter()
+                .any(|c: &DartCallSite| c.is_self_recursive),
             "a bl back into the function's own range is self-recursion, calls={:?}",
             lifted.calls
         );
@@ -1044,7 +1041,13 @@ mod tests {
 
     #[test]
     fn elides_null_check_but_keeps_real_branch() {
-        let bytes: Vec<u8> = words(&[cmp_reg(3, NULL_REG as u32), bcc(u32::from(COND_EQ)), cmp_reg(3, 4), bcc(12), ret()]);
+        let bytes: Vec<u8> = words(&[
+            cmp_reg(3, NULL_REG as u32),
+            bcc(u32::from(COND_EQ)),
+            cmp_reg(3, 4),
+            bcc(12),
+            ret(),
+        ]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
         let lifted: DartLiftedFunction = lift_one(&func, &index, true);
@@ -1070,7 +1073,9 @@ mod tests {
         let index: SymbolIndex = SymbolIndex::build(&[]);
         let lifted: DartLiftedFunction = lift_one(&func, &index, false);
         assert!(
-            lifted.calls.is_empty() && lifted.elided_checks.is_empty() && lifted.pool_refs.is_empty(),
+            lifted.calls.is_empty()
+                && lifted.elided_checks.is_empty()
+                && lifted.pool_refs.is_empty(),
             "an unpinned version must not guess ABI roles"
         );
         assert!(
@@ -1082,7 +1087,12 @@ mod tests {
     #[test]
     fn report_aggregates_and_flags_walls() {
         let bytes: Vec<u8> = words(&[bl(0x100, 0x100), ret()]);
-        let disasm: Arm64Disassembly = super::super::disasm::disassemble_functions(&bytes, 0x100, &[0], &[Some("fib".to_owned())]);
+        let disasm: Arm64Disassembly = super::super::disasm::disassemble_functions(
+            &bytes,
+            0x100,
+            &[0],
+            &[Some("fib".to_owned())],
+        );
         let report: AotLiftReport = lift_functions(
             super::super::cid_table::DART_3_12_VERSION_HASH,
             &disasm,
@@ -1091,7 +1101,10 @@ mod tests {
         assert!(report.abi_resolved);
         assert!(report.self_recursive_functions >= 1);
         assert!(
-            report.notes.iter().any(|n: &String| n.contains("Precompiler::DropFields")),
+            report
+                .notes
+                .iter()
+                .any(|n: &String| n.contains("Precompiler::DropFields")),
             "the field-name wall must be stated honestly"
         );
     }

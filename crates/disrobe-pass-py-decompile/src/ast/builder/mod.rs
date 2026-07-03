@@ -482,9 +482,10 @@ fn normalize_open_coded_idioms(code: &CodeObject, stream: &mut DecodedStream) {
             cursor = terminal_call + 1;
             continue;
         }
-        if let (Some(&span_lo), Some(&span_hi)) =
-            (stream.offsets.get(cursor), stream.next_offsets.get(terminal_call))
-        {
+        if let (Some(&span_lo), Some(&span_hi)) = (
+            stream.offsets.get(cursor),
+            stream.next_offsets.get(terminal_call),
+        ) {
             idiom_offset_spans.push((span_lo, span_hi));
         }
         rewrites.push((cursor, replacement, span));
@@ -500,7 +501,10 @@ fn normalize_open_coded_idioms(code: &CodeObject, stream: &mut DecodedStream) {
     coalesce_open_coded_exc_fragments(stream, &idiom_offset_spans);
 }
 
-fn coalesce_open_coded_exc_fragments(stream: &mut DecodedStream, idiom_offset_spans: &[(u32, u32)]) {
+fn coalesce_open_coded_exc_fragments(
+    stream: &mut DecodedStream,
+    idiom_offset_spans: &[(u32, u32)],
+) {
     if stream.exception_table.len() < 2 || idiom_offset_spans.is_empty() {
         return;
     }
@@ -511,11 +515,11 @@ fn coalesce_open_coded_exc_fragments(stream: &mut DecodedStream, idiom_offset_sp
     };
     let original: Vec<crate::bytecode::flow::ExceptionTableEntry> = stream.exception_table.clone();
     let gap_holds_nested = |target: u32, gap_lo: u32, gap_hi: u32| -> bool {
-        original.iter().any(
-            |e: &crate::bytecode::flow::ExceptionTableEntry| {
+        original
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
                 e.target != target && e.start < gap_hi && e.end() > gap_lo
-            },
-        )
+            })
     };
     let mut entries: Vec<crate::bytecode::flow::ExceptionTableEntry> = original.clone();
     entries.sort_by_key(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start);
@@ -523,13 +527,15 @@ fn coalesce_open_coded_exc_fragments(stream: &mut DecodedStream, idiom_offset_sp
         Vec::with_capacity(entries.len());
     for entry in entries {
         if let Some(last) = merged.last_mut() {
-            let same_handler: bool =
-                last.target == entry.target && last.depth == entry.depth && last.lasti == entry.lasti;
+            let same_handler: bool = last.target == entry.target
+                && last.depth == entry.depth
+                && last.lasti == entry.lasti;
             let ordered: bool = entry.start >= last.end();
             if same_handler
                 && ordered
                 && !gap_holds_nested(entry.target, last.end(), entry.start)
-                && (touches_idiom(last.start, last.end()) || touches_idiom(entry.start, entry.end()))
+                && (touches_idiom(last.start, last.end())
+                    || touches_idiom(entry.start, entry.end()))
             {
                 last.length = entry.end().saturating_sub(last.start);
                 continue;

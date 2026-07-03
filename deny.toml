@@ -11,6 +11,8 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained; disrobe uses it only for non-cryptographic hashing in deterministic chain registries; migration to rustc-hash is scheduled for v0.10" },
     { id = "RUSTSEC-2026-0186", reason = "memmap2 unsound unchecked pointer offset; disrobe memory-maps input files read-only for parsing and never exposes the unchecked-offset API to attacker-controlled arithmetic; no upstream fix released yet" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-runtime DoS reached only transitively through plist's XML property-list reader; plist 1.9.0 is the latest release and pins quick-xml ^0.39.2, below the fixed 0.41.0, so no upstream-installable fix exists; disrobe parses plists in a bounded, killable CLI pass" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader unbounded namespace allocation reached only transitively through plist's XML property-list reader; same plist ^0.39.2 pin blocks the fixed quick-xml 0.41.0; bounded killable CLI parse, no attacker-persistent process" },
 ]
 unmaintained = "workspace"
 yanked = "deny"

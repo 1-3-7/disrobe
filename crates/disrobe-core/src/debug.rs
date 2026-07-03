@@ -39,8 +39,7 @@ struct EnvSpec {
 fn env_spec() -> &'static EnvSpec {
     static SPEC: OnceLock<EnvSpec> = OnceLock::new();
     SPEC.get_or_init(|| {
-        let spec: String =
-            std::env::var("DISROBE_DEBUG").map_or_else(|_| String::new(), std::convert::identity);
+        let spec: String = std::env::var("DISROBE_DEBUG").unwrap_or_default();
         let json: bool = std::env::var("DISROBE_DEBUG_FORMAT")
             .is_ok_and(|v: String| v.eq_ignore_ascii_case("json"));
         let color: bool = resolve_color();
