@@ -141,6 +141,7 @@ disrobe dotnet decompile App.dll --out src/            # in-house CIL to C#/F#/V
 disrobe native unpack packed.exe --out unpacked.bin    # UPX/ASPack/PECompact/Yoda's and more
 disrobe native devirt vmprotected.exe --out devirt/    # recover a bytecode-VM protector's handler table + lift to pseudo-code
 disrobe native disasm stripped.bin --emit cfg-dot      # function discovery + per-function CFG
+disrobe native decompile app.exe --backend native      # in-tree x86-64 -> C pseudo-code, per-function, graded vs gcc/clang
 disrobe query packed.exe "calls-to recv"               # queryable IR over stripped code
 disrobe query packed.exe string-decoders               # decoder-shaped functions (loop + xor/add)
 disrobe capabilities packed.exe                        # MITRE ATT&CK + MBC tags with per-instruction evidence

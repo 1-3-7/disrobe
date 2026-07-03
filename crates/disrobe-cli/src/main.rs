@@ -576,7 +576,9 @@ enum Cmd {
         #[command(subcommand)]
         action: WasmCmd,
     },
-    #[command(about = "native PE / ELF / Mach-O symbol dump & Ghidra-headless decompile")]
+    #[command(
+        about = "native PE / ELF / Mach-O: in-tree x86-64 -> C decompile, symbol dump, unpack, disassemble, Ghidra-headless"
+    )]
     Native {
         #[command(subcommand)]
         action: NativeCmd,
@@ -1841,7 +1843,7 @@ fn print_passes() -> miette::Result<()> {
     println!(
         "  capabilities  match a binary against built-in capability rules (and / or / not / N-of, scoped) with evidence addresses + ATT&CK / MBC tags"
     );
-    println!("  native        Ghidra-headless decompile / object-crate symbol dump");
+    println!("  native        in-tree x86-64 -> C decompile, symbol dump, unpack, Ghidra-headless");
     println!(
         "  jvm           classfile / .jar / .dex / .apk decompile via CFR / Vineflower / Procyon / JADX"
     );
