@@ -11198,3 +11198,148 @@ fn struct_return_oracle_has_teeth_corrupting_a_field_store_diverges() {
         "struct-return oracle teeth confirmed: the faithful sret lift matches, corrupting a field store offset diverges"
     );
 }
+
+const DIAMOND_BATTERY: &[Case] = &[
+    Case {
+        name: "dm_absdiff",
+        arity: 2,
+        c_source: "long long dm_absdiff(long long a, long long b){ long long r; if (a > b) { r = a - b; } else { r = b - a; } return r; }",
+    },
+    Case {
+        name: "dm_scale",
+        arity: 2,
+        c_source: "long long dm_scale(long long a, long long b){ long long r; if (a > b) { r = a * 3; } else { r = b * 5; } return r ^ 7; }",
+    },
+    Case {
+        name: "dm_bitsel",
+        arity: 2,
+        c_source: "long long dm_bitsel(long long a, long long b){ long long r; if ((a & 1) != 0) { r = a | b; } else { r = a & b; } return r; }",
+    },
+    Case {
+        name: "dm_branch3",
+        arity: 3,
+        c_source: "long long dm_branch3(long long a, long long b, long long c){ long long r; if (a > 0) { r = b + c; } else { r = b - c; } return r * 2; }",
+    },
+    Case {
+        name: "dm_negsel",
+        arity: 2,
+        c_source: "long long dm_negsel(long long a, long long b){ long long r; if (a < 0) { r = 0 - a; } else { r = a + b; } return r; }",
+    },
+    Case {
+        name: "dm_eqpick",
+        arity: 2,
+        c_source: "long long dm_eqpick(long long a, long long b){ long long r; if (a == b) { r = a * a; } else { r = a - b; } return r + 1; }",
+    },
+];
+
+fn diamond_recovered_has_else(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool {
+    let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
+        return false;
+    };
+    recover_leaf_function_abi(&code, base, abi)
+        .is_ok_and(|r: LeafRecovery| r.source.contains("} else {"))
+}
+
+#[test]
+fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!(
+            "skipping if-else diamond oracle: gcc (needed to suppress if-conversion) not on PATH"
+        );
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let battery_c: PathBuf = dir.join("diamond_battery.c");
+    std::fs::write(&battery_c, battery_source(DIAMOND_BATTERY).as_bytes())
+        .expect("write diamond_battery.c");
+    let battery_o: PathBuf = dir.join("diamond_battery.o");
+    let compile_battery: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for diamond battery");
+    assert!(
+        compile_battery.status.success(),
+        "diamond battery compile failed: {}",
+        String::from_utf8_lossy(&compile_battery.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read diamond_battery.o");
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+    let mut diamond_count: usize = 0;
+
+    for case in DIAMOND_BATTERY {
+        if diamond_recovered_has_else(&object_bytes, case.name, HOST_ABI) {
+            diamond_count += 1;
+        }
+        let Some(lifted): Option<Lifted> = process_case(case, &object_bytes, HOST_ABI) else {
+            continue;
+        };
+        recovered_decls.push_str(&lifted.decls);
+        driver_body.push_str(&lifted.driver_snippet);
+        lifted_count += 1;
+    }
+
+    if lifted_count == 0 {
+        eprintln!(
+            "skipping if-else diamond behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
+            DIAMOND_BATTERY.len()
+        );
+        return;
+    }
+    assert!(
+        diamond_count >= 1,
+        "the if-else diamond oracle has no teeth: none of the {lifted_count} recovered cases emitted a two-armed `else` region, so the diamond structuring path was never exercised"
+    );
+
+    let driver: String = build_driver(&recovered_decls, &driver_body);
+    let driver_c: PathBuf = dir.join("diamond_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write diamond_driver.c");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "diamond_harness.exe"
+    } else {
+        "diamond_harness"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke gcc to link diamond harness");
+    assert!(
+        link.status.success(),
+        "diamond harness link failed: {}\n--- diamond_driver.c ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run diamond harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK"),
+        "if-else diamond behavioral differential FAILED ({lifted_count} cases, {diamond_count} diamonds): {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "if-else diamond behavioral differential PASSED for {lifted_count} leaf functions ({diamond_count} two-armed diamonds, MS x64 ABI)"
+    );
+}

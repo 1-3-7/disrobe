@@ -2539,7 +2539,8 @@ mod tests {
             return;
         }
         let out_dir: PathBuf = dir.join("out");
-        decompile_native(obj, Some(out_dir.clone()), DecompileLang::C).expect("native decompile ok");
+        decompile_native(obj, Some(out_dir.clone()), DecompileLang::C)
+            .expect("native decompile ok");
         let manifest_text: String =
             std::fs::read_to_string(out_dir.join("manifest.json")).expect("read manifest");
         let manifest: serde_json::Value =

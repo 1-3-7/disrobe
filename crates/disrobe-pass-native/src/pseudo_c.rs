@@ -6487,7 +6487,35 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
                 rs_emit_block(out, body, depth + 1)?;
                 let _ = writeln!(out, "{indent}}}");
             }
-            Node::Switch { .. } => return None,
+            Node::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                let key: String = rs_signed_operand(&reg_var(disc.reg), disc.width);
+                let _ = writeln!(out, "{indent}match {key} {{");
+                for (idx, case) in cases.iter().enumerate() {
+                    let _ = writeln!(out, "{indent}    {}i64 => {{", case.value);
+                    let mut cursor: usize = idx;
+                    loop {
+                        let arm: &SwitchCase = &cases[cursor];
+                        rs_emit_block(out, &arm.body, depth + 2)?;
+                        if !arm.fallthrough {
+                            break;
+                        }
+                        cursor += 1;
+                        if cursor >= cases.len() {
+                            rs_emit_block(out, default, depth + 2)?;
+                            break;
+                        }
+                    }
+                    let _ = writeln!(out, "{indent}    }}");
+                }
+                let _ = writeln!(out, "{indent}    _ => {{");
+                rs_emit_block(out, default, depth + 2)?;
+                let _ = writeln!(out, "{indent}    }}");
+                let _ = writeln!(out, "{indent}}}");
+            }
             Node::CondSnapshot { var, cond, flags } => {
                 let cond_text: String = rs_cond_expr(*cond, flags)?;
                 let _ = writeln!(

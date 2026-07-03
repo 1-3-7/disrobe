@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_native::{
-    LeafRecovery, PseudoAbi, ResolvedCall, callee_int_arity, recover_leaf_function_abi,
-    recover_leaf_function_with_calls,
+    Arch, JumpTable, LeafRecovery, PseudoAbi, ResolvedCall, callee_int_arity, disassemble,
+    recover_leaf_function_abi, recover_leaf_function_switch_abi, recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -401,7 +401,7 @@ fn parse_results(stdout: &str) -> BTreeMap<(String, u64), u64> {
     map
 }
 
-fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]]) {
+fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]], rust_token: Option<&str>) {
     if !cfg!(windows) {
         eprintln!(
             "skipping host-native rust oracle class ({tag}) on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the x86-64 ground-truth object requires the windows host"
@@ -451,15 +451,41 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]]) {
         return;
     }
 
-    let c_driver: String = build_c_driver(&prepared, inputs);
+    if let Some(token) = rust_token {
+        let carriers: usize = prepared
+            .iter()
+            .filter(|p: &&Prepared| p.rust.contains(token))
+            .count();
+        assert!(
+            carriers >= 1,
+            "the {tag} rust oracle has no teeth: not one recovered function emitted a `{token}`, so the class was never graded"
+        );
+    }
+
+    run_differential(
+        tag, &prepared, inputs, &compiler, &rustc_bin, &dir, &battery_o,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_differential(
+    tag: &str,
+    prepared: &[Prepared],
+    inputs: &[[i64; 3]],
+    compiler: &str,
+    rustc_bin: &str,
+    dir: &std::path::Path,
+    battery_o: &std::path::Path,
+) {
+    let c_driver: String = build_c_driver(prepared, inputs);
     let c_driver_path: PathBuf = dir.join(format!("{tag}_ground.c"));
     std::fs::write(&c_driver_path, c_driver.as_bytes()).expect("write c driver");
     let c_exe: PathBuf = dir.join(format!("{tag}_ground.exe"));
-    let c_link: std::process::Output = Command::new(&compiler)
+    let c_link: std::process::Output = Command::new(compiler)
         .args(["-O1", "-o"])
         .arg(&c_exe)
         .arg(&c_driver_path)
-        .arg(&battery_o)
+        .arg(battery_o)
         .output()
         .expect("link c ground-truth");
     assert!(
@@ -472,11 +498,11 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]]) {
     let golden: BTreeMap<(String, u64), u64> =
         parse_results(&String::from_utf8_lossy(&c_run.stdout));
 
-    let rust_driver: String = build_rust_driver(&prepared, inputs);
+    let rust_driver: String = build_rust_driver(prepared, inputs);
     let rust_driver_path: PathBuf = dir.join(format!("{tag}_recovered.rs"));
     std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write rust driver");
     let rust_exe: PathBuf = dir.join(format!("{tag}_recovered.exe"));
-    let rust_build: std::process::Output = Command::new(&rustc_bin)
+    let rust_build: std::process::Output = Command::new(rustc_bin)
         .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
         .arg(&rust_exe)
         .arg(&rust_driver_path)
@@ -524,12 +550,141 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]]) {
 
 #[test]
 fn arith_leaf_functions_recompile_to_rust_equivalence() {
-    run_battery("arith", ARITH_BATTERY, ARITH_INPUTS);
+    run_battery("arith", ARITH_BATTERY, ARITH_INPUTS, None);
 }
 
 #[test]
 fn division_leaf_functions_recompile_to_rust_equivalence() {
-    run_battery("div", DIV_BATTERY, DIV_INPUTS);
+    run_battery("div", DIV_BATTERY, DIV_INPUTS, None);
+}
+
+const WIDTH_EXT_BATTERY: &[Case] = &[
+    Case {
+        name: "x_zext16",
+        arity: 1,
+        c_source: "long long x_zext16(long long a){ return (long long)(unsigned short)a + 1; }",
+    },
+    Case {
+        name: "x_sext8",
+        arity: 1,
+        c_source: "long long x_sext8(long long a){ return (long long)(signed char)a * 3; }",
+    },
+    Case {
+        name: "x_uchar",
+        arity: 1,
+        c_source: "long long x_uchar(long long a){ return (long long)(unsigned char)a ^ 0x5a; }",
+    },
+    Case {
+        name: "x_short2",
+        arity: 2,
+        c_source: "long long x_short2(long long a, long long b){ return (long long)(short)a + (long long)(short)b; }",
+    },
+    Case {
+        name: "x_cdqe",
+        arity: 2,
+        c_source: "long long x_cdqe(long long a, long long b){ int s = (int)a + (int)b; return (long long)s + 100; }",
+    },
+    Case {
+        name: "x_sxd",
+        arity: 1,
+        c_source: "long long x_sxd(long long a){ return (long long)(int)a; }",
+    },
+    Case {
+        name: "x_zxmix",
+        arity: 2,
+        c_source: "long long x_zxmix(long long a, long long b){ unsigned char x = (unsigned char)a; unsigned short y = (unsigned short)b; return (long long)x + (long long)y; }",
+    },
+];
+
+const SETCC_BATTERY: &[Case] = &[
+    Case {
+        name: "sc_lt",
+        arity: 2,
+        c_source: "long long sc_lt(long long a, long long b){ return a < b; }",
+    },
+    Case {
+        name: "sc_ge",
+        arity: 2,
+        c_source: "long long sc_ge(long long a, long long b){ return a >= b; }",
+    },
+    Case {
+        name: "sc_eq",
+        arity: 2,
+        c_source: "long long sc_eq(long long a, long long b){ return a == b; }",
+    },
+    Case {
+        name: "sc_ult",
+        arity: 2,
+        c_source: "long long sc_ult(unsigned long long a, unsigned long long b){ return a < b; }",
+    },
+    Case {
+        name: "sc_sum",
+        arity: 3,
+        c_source: "long long sc_sum(long long a, long long b, long long c){ return (a > b) + (b > c) + (a > c); }",
+    },
+];
+
+const MINMAX_BATTERY: &[Case] = &[
+    Case {
+        name: "mm_max",
+        arity: 2,
+        c_source: "long long mm_max(long long a, long long b){ return a > b ? a : b; }",
+    },
+    Case {
+        name: "mm_min",
+        arity: 2,
+        c_source: "long long mm_min(long long a, long long b){ return a < b ? a : b; }",
+    },
+    Case {
+        name: "mm_umax",
+        arity: 2,
+        c_source: "unsigned long long mm_umax(unsigned long long a, unsigned long long b){ return a > b ? a : b; }",
+    },
+    Case {
+        name: "mm_umin",
+        arity: 2,
+        c_source: "unsigned long long mm_umin(unsigned long long a, unsigned long long b){ return a < b ? a : b; }",
+    },
+    Case {
+        name: "mm_abs",
+        arity: 1,
+        c_source: "long long mm_abs(long long a){ return a < 0 ? -a : a; }",
+    },
+    Case {
+        name: "mm_clampsel",
+        arity: 3,
+        c_source: "long long mm_clampsel(long long a, long long b, long long c){ long long m = a > b ? a : b; return m < c ? m : c; }",
+    },
+];
+
+#[test]
+fn width_extension_leaf_functions_recompile_to_rust_equivalence() {
+    run_battery("wx", WIDTH_EXT_BATTERY, ARITH_INPUTS, Some(" as u8"));
+}
+
+#[test]
+fn width_extension_rust_oracle_also_grades_signed_casts() {
+    run_battery(
+        "wxs",
+        &WIDTH_EXT_BATTERY[1..2],
+        ARITH_INPUTS,
+        Some(" as i8"),
+    );
+}
+
+#[test]
+fn setcc_boolean_leaf_functions_recompile_to_rust_equivalence() {
+    run_battery(
+        "setcc",
+        SETCC_BATTERY,
+        ARITH_INPUTS,
+        Some("0xffffffffffffff00u64"),
+    );
+}
+
+#[test]
+fn branchless_minmax_leaf_functions_recompile_to_rust_equivalence() {
+    run_battery("minmax", MINMAX_BATTERY, ARITH_INPUTS, Some("= if "));
 }
 
 fn gcc() -> Option<String> {
@@ -892,5 +1047,571 @@ fn call_leaf_functions_recompile_to_rust_equivalence() {
         "rust call recompile-equivalence PASSED for {} caller/helper pairs across {} input vectors",
         prepared.len(),
         CALL_INPUTS.len()
+    );
+}
+
+const CF_MB_BATTERY: &[Case] = &[
+    Case {
+        name: "rc_cap",
+        arity: 2,
+        c_source: "long long rc_cap(long long a, long long b){ long long r = a + b; if (a > b) r += 10; return r; }",
+    },
+    Case {
+        name: "rc_absdiff",
+        arity: 2,
+        c_source: "long long rc_absdiff(long long a, long long b){ long long r; if (a > b) { r = a - b; } else { r = b - a; } return r; }",
+    },
+    Case {
+        name: "rc_sel3",
+        arity: 3,
+        c_source: "long long rc_sel3(long long a, long long b, long long c){ long long r; if (a > 0) { r = b + c; } else { r = b - c; } return r * 2; }",
+    },
+    Case {
+        name: "rc_sign",
+        arity: 1,
+        c_source: "long long rc_sign(long long a){ if (a > 0) return 1; if (a < 0) return -1; return 0; }",
+    },
+    Case {
+        name: "rc_clamp",
+        arity: 3,
+        c_source: "long long rc_clamp(long long a, long long lo, long long hi){ long long r = a; if (r < lo) r = lo; if (r > hi) r = hi; return r; }",
+    },
+];
+
+const LOOP_MB_BATTERY: &[Case] = &[
+    Case {
+        name: "rl_sum",
+        arity: 1,
+        c_source: "long long rl_sum(long long n){ long long s = 0; long long i = 0; do { i++; s += i; } while (i != n); return s; }",
+    },
+    Case {
+        name: "rl_mul",
+        arity: 2,
+        c_source: "long long rl_mul(long long a, long long n){ long long r = 0; long long i = 0; do { r += a; i++; } while (i != n); return r; }",
+    },
+    Case {
+        name: "rl_fact",
+        arity: 1,
+        c_source: "long long rl_fact(long long n){ long long r = 1; long long i = 1; do { r *= i; i++; } while (i != n + 1); return r; }",
+    },
+    Case {
+        name: "rl_pow2",
+        arity: 1,
+        c_source: "long long rl_pow2(long long k){ long long r = 1; long long i = 0; do { r += r; i++; } while (i != k); return r; }",
+    },
+    Case {
+        name: "rl_count",
+        arity: 1,
+        c_source: "long long rl_count(long long n){ long long c = 0; long long i = n; do { c++; i--; } while (i != 0); return c; }",
+    },
+    Case {
+        name: "rl_acc",
+        arity: 2,
+        c_source: "long long rl_acc(long long a, long long n){ long long r = a; long long i = 0; do { r += a; i++; } while (i != n); return r; }",
+    },
+    Case {
+        name: "rl_gauss",
+        arity: 2,
+        c_source: "long long rl_gauss(long long a, long long n){ long long r = 0; long long i = 0; do { r += a + i; i++; } while (i != n); return r; }",
+    },
+    Case {
+        name: "rl_popcount",
+        arity: 1,
+        c_source: "long long rl_popcount(unsigned long long x){ long long c = 0; do { c += (long long)(x & 1); x >>= 1; } while (x != 0); return c; }",
+    },
+];
+
+const LOOP_MB_INPUTS: &[[i64; 3]] = &[
+    [1, 1, 0],
+    [2, 2, 0],
+    [3, 1, 0],
+    [4, 3, 0],
+    [5, 2, 0],
+    [6, 4, 0],
+    [7, 7, 0],
+    [8, 3, 0],
+    [10, 5, 0],
+    [12, 6, 0],
+    [16, 4, 0],
+    [20, 7, 0],
+];
+
+fn recovered_c_source(object_bytes: &[u8], name: &str) -> Option<String> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
+    recover_leaf_function_abi(&code, base, HOST_ABI)
+        .ok()
+        .map(|r: LeafRecovery| r.source)
+}
+
+fn run_bounded_output(exe: &std::path::Path, secs: u64) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    use wait_timeout::ChildExt as _;
+
+    let mut child: std::process::Child = Command::new(exe)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bounded harness");
+    if child
+        .wait_timeout(std::time::Duration::from_secs(secs))
+        .expect("wait_timeout")
+        .is_some()
+    {
+        Some(child.wait_with_output().expect("collect harness output"))
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+}
+
+fn run_multiblock_battery(
+    tag: &str,
+    battery: &[Case],
+    inputs: &[[i64; 3]],
+    c_structure_token: &str,
+    rust_structure_token: Option<&str>,
+) {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native rust multi-block oracle ({tag}) on non-windows: the x86-64 ground-truth object requires the windows host"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!(
+            "skipping {tag}: gcc (needed to suppress if-conversion into a real branch CFG) not on PATH"
+        );
+        return;
+    };
+    let Some(rustc_bin): Option<String> = rustc() else {
+        eprintln!("skipping {tag}: rustc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let mut battery_src: String = String::new();
+    for case in battery {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join(format!("{tag}_battery.c"));
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write multi-block battery.c");
+    let battery_o: PathBuf = dir.join(format!("{tag}_battery.o"));
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for multi-block battery");
+    assert!(
+        compile.status.success(),
+        "{tag} battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read multi-block battery.o");
+
+    let prepared: Vec<Prepared> = battery
+        .iter()
+        .filter_map(|case: &Case| prepare(case, &object_bytes, HOST_ABI))
+        .collect();
+    if prepared.is_empty() {
+        eprintln!(
+            "skipping {tag} rust multi-block differential: this build lowered none of the {} cases into the pure-safe rust class",
+            battery.len()
+        );
+        return;
+    }
+
+    let structured_ir: usize = battery
+        .iter()
+        .filter(|case: &&Case| {
+            recovered_c_source(&object_bytes, case.name)
+                .is_some_and(|src: String| src.contains(c_structure_token))
+        })
+        .count();
+    assert!(
+        structured_ir >= 1,
+        "the {tag} rust multi-block oracle has no teeth: not one recovered function carried a `{c_structure_token}` region, so the multi-block structurer was never exercised"
+    );
+    if let Some(rust_token) = rust_structure_token {
+        let structured_rust: usize = prepared
+            .iter()
+            .filter(|p: &&Prepared| p.rust.contains(rust_token))
+            .count();
+        assert!(
+            structured_rust >= 1,
+            "the {tag} rust backend never emitted a `{rust_token}`: the multi-block rust path is not being graded"
+        );
+    }
+
+    let c_driver: String = build_c_driver(&prepared, inputs);
+    let c_driver_path: PathBuf = dir.join(format!("{tag}_ground.c"));
+    std::fs::write(&c_driver_path, c_driver.as_bytes()).expect("write c driver");
+    let c_exe: PathBuf = dir.join(format!("{tag}_ground.exe"));
+    let c_link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&c_exe)
+        .arg(&c_driver_path)
+        .arg(&battery_o)
+        .output()
+        .expect("link c ground-truth");
+    assert!(
+        c_link.status.success(),
+        "{tag} c ground-truth link failed: {}\n--- driver ---\n{c_driver}",
+        String::from_utf8_lossy(&c_link.stderr)
+    );
+    let c_out: std::process::Output = run_bounded_output(&c_exe, 30)
+        .unwrap_or_else(|| panic!("{tag} c ground-truth did not terminate within the watchdog"));
+    assert!(c_out.status.success(), "{tag} c ground-truth run failed");
+    let golden: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&c_out.stdout));
+
+    let rust_driver: String = build_rust_driver(&prepared, inputs);
+    let rust_driver_path: PathBuf = dir.join(format!("{tag}_recovered.rs"));
+    std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write rust driver");
+    let rust_exe: PathBuf = dir.join(format!("{tag}_recovered.exe"));
+    let rust_build: std::process::Output = Command::new(&rustc_bin)
+        .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
+        .arg(&rust_exe)
+        .arg(&rust_driver_path)
+        .output()
+        .expect("invoke rustc for recovered rust");
+    assert!(
+        rust_build.status.success(),
+        "{tag} recovered rust compile failed: {}\n--- recovered.rs ---\n{rust_driver}",
+        String::from_utf8_lossy(&rust_build.stderr)
+    );
+    let rust_out: std::process::Output = run_bounded_output(&rust_exe, 30).unwrap_or_else(|| {
+        panic!(
+            "{tag} recovered rust did not terminate within the watchdog; a recovered loop is non-terminating"
+        )
+    });
+    assert!(
+        rust_out.status.success(),
+        "{tag} recovered rust run failed (overflow-checks caught a non-wrapping op or a poison divide): {}",
+        String::from_utf8_lossy(&rust_out.stderr)
+    );
+    let got: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&rust_out.stdout));
+
+    assert!(!golden.is_empty(), "{tag} produced no comparable results");
+    assert_eq!(
+        golden.len(),
+        got.len(),
+        "{tag} result-count mismatch: c ground truth {} vs rust {}",
+        golden.len(),
+        got.len()
+    );
+    for (key, want) in &golden {
+        let have: u64 = *got
+            .get(key)
+            .unwrap_or_else(|| panic!("{tag} rust missing result for {key:?}"));
+        assert_eq!(
+            *want, have,
+            "{tag} multi-block behavioral differential MISMATCH for {key:?}: c={want} rust={have}"
+        );
+    }
+    println!(
+        "{tag} rust multi-block recompile-equivalence PASSED for {} functions ({structured_ir} structured) across {} input vectors",
+        prepared.len(),
+        inputs.len()
+    );
+}
+
+#[test]
+fn control_flow_leaf_functions_recompile_to_rust_equivalence() {
+    run_multiblock_battery("cf", CF_MB_BATTERY, ARITH_INPUTS, "if (", None);
+}
+
+#[test]
+fn natural_loop_leaf_functions_recompile_to_rust_equivalence() {
+    run_multiblock_battery(
+        "loop",
+        LOOP_MB_BATTERY,
+        LOOP_MB_INPUTS,
+        "do {",
+        Some("loop {"),
+    );
+}
+
+const SWITCH_BATTERY: &[Case] = &[
+    Case {
+        name: "sw_ops",
+        arity: 3,
+        c_source: "long long sw_ops(long long x, long long a, long long b){ long long r; switch (x) { case 0: r = a + b; break; case 1: r = a - b; break; case 2: r = a * b; break; case 3: r = a ^ b; break; case 4: r = a | b; break; case 5: r = a & b; break; default: r = -1; break; } return r; }",
+    },
+    Case {
+        name: "sw_addk",
+        arity: 2,
+        c_source: "long long sw_addk(long long x, long long a){ long long r; switch (x) { case 0: r = a + 1; break; case 1: r = a + 2; break; case 2: r = a + 4; break; case 3: r = a + 8; break; case 4: r = a + 16; break; case 5: r = a + 32; break; case 6: r = a + 64; break; case 7: r = a + 128; break; default: r = 0; break; } return r; }",
+    },
+    Case {
+        name: "sw_scale",
+        arity: 2,
+        c_source: "long long sw_scale(long long x, long long a){ long long r; switch (x) { case 0: r = a; break; case 1: r = a * 2; break; case 2: r = a * 3; break; case 3: r = a * 5; break; case 4: r = a * 7; break; default: r = a * 11; break; } return r; }",
+    },
+    Case {
+        name: "sw_ft",
+        arity: 2,
+        c_source: "long long sw_ft(long long x, long long a){ long long r = 0; switch (x) { case 0: r += a; case 1: r += a * 2; break; case 2: r += a * 3; case 3: r += a * 5; break; case 4: r += a * 7; break; default: r = -1; break; } return r; }",
+    },
+    Case {
+        name: "sw_mix",
+        arity: 3,
+        c_source: "long long sw_mix(long long x, long long a, long long b){ long long r; switch (x) { case 0: r = a + b + 1; break; case 1: r = a - b - 1; break; case 2: r = (a ^ b) + 3; break; case 3: r = (a | b) - 5; break; case 4: r = (a & b) * 2; break; default: r = a * b; break; } return r; }",
+    },
+];
+
+const SWITCH_AB_PAIRS: &[[i64; 2]] = &[
+    [0, 0],
+    [1, 1],
+    [-1, 1],
+    [7, 3],
+    [-7, 3],
+    [7, -3],
+    [3, 5],
+    [123456, -654321],
+    [2147483647, 1],
+    [-2147483648, -1],
+    [42, 42],
+    [100, 200],
+];
+
+fn switch_cmp_bound(insns: &[disrobe_pass_native::DisasmInsn], lea_addr: u64) -> Option<u64> {
+    let mut bound: Option<u64> = None;
+    for insn in insns {
+        if insn.address >= lea_addr {
+            break;
+        }
+        if insn.mnemonic == "cmp"
+            && let Some((_, rhs)) = insn.operands.split_once(',')
+        {
+            let t: &str = rhs.trim().trim_end_matches('h');
+            bound = t
+                .parse::<u64>()
+                .ok()
+                .or_else(|| u64::from_str_radix(t, 16).ok());
+        }
+    }
+    bound
+}
+
+fn resolve_switch_tables(object_bytes: &[u8], code: &[u8], base: u64) -> Option<Vec<JumpTable>> {
+    let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
+    let insns: Vec<disrobe_pass_native::DisasmInsn> = disassemble(Arch::X86_64, base, code).ok()?;
+    let text: object::Section<'_, '_> = file.section_by_name(".text")?;
+    let rodata: object::Section<'_, '_> = file
+        .section_by_name(".rodata")
+        .or_else(|| file.section_by_name(".rdata"))?;
+    let ro_addr: u64 = rodata.address();
+    let ro_data: &[u8] = rodata.data().ok()?;
+    let mut out: Vec<JumpTable> = Vec::new();
+
+    for insn in &insns {
+        if insn.mnemonic != "lea" || !insn.operands.contains("[rel ") {
+            continue;
+        }
+        let va_str: &str = insn
+            .operands
+            .split("[rel ")
+            .nth(1)?
+            .trim_end_matches(']')
+            .trim_end_matches('h');
+        let table_va: u64 = u64::from_str_radix(va_str, 16).ok()?;
+        let bound: u64 = switch_cmp_bound(&insns, insn.address)?;
+        let n: usize = usize::try_from(bound).ok()?.checked_add(1)?;
+
+        let disp_off: u64 = insn.address + insn.bytes.len() as u64 - 4;
+        let mut table_ro_off: Option<u64> = None;
+        for (off, reloc) in text.relocations() {
+            if off != disp_off {
+                continue;
+            }
+            let object::RelocationTarget::Symbol(si) = reloc.target() else {
+                continue;
+            };
+            let sym: object::Symbol<'_, '_> = file.symbol_by_index(si).ok()?;
+            let raw_addend: i64 = if reloc.has_implicit_addend() {
+                let slot: usize = usize::try_from(off - text.address()).ok()?;
+                let bytes: [u8; 4] = text.data().ok()?.get(slot..slot + 4)?.try_into().ok()?;
+                i64::from(i32::from_le_bytes(bytes)) + reloc.addend()
+            } else {
+                reloc.addend()
+            };
+            let target: i64 = sym.address() as i64 + raw_addend + 4;
+            table_ro_off = Some((target - ro_addr as i64) as u64);
+        }
+        let table_ro_off: u64 = table_ro_off?;
+
+        let mut slots: BTreeMap<u64, i32> = BTreeMap::new();
+        for (off, reloc) in rodata.relocations() {
+            let ro_slot: u64 = off - ro_addr;
+            if ro_slot < table_ro_off || ro_slot >= table_ro_off + (n as u64) * 4 {
+                continue;
+            }
+            let object::RelocationTarget::Symbol(si) = reloc.target() else {
+                continue;
+            };
+            let sym: object::Symbol<'_, '_> = file.symbol_by_index(si).ok()?;
+            let effective: i64 = if reloc.has_implicit_addend() {
+                let slot: usize = usize::try_from(ro_slot).ok()?;
+                let bytes: [u8; 4] = ro_data.get(slot..slot + 4)?.try_into().ok()?;
+                i64::from(i32::from_le_bytes(bytes)) + reloc.addend()
+            } else {
+                reloc.addend()
+            };
+            let case_off: i64 =
+                sym.address() as i64 + effective - (ro_slot as i64 - table_ro_off as i64);
+            let entry: i32 = i32::try_from(case_off - table_va as i64).ok()?;
+            slots.insert(ro_slot, entry);
+        }
+        if slots.len() != n {
+            continue;
+        }
+        out.push(JumpTable {
+            table_va,
+            entries: slots.into_values().collect(),
+        });
+    }
+    Some(out)
+}
+
+fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
+    let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
+    if tables.is_empty() {
+        eprintln!("skip {}: no jump table resolved this build", case.name);
+        return None;
+    }
+    let rec: LeafRecovery = match recover_leaf_function_switch_abi(&code, base, HOST_ABI, &tables) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skip {}: not in dense-switch class ({e})", case.name);
+            return None;
+        }
+    };
+    if !rec.lifted_switch {
+        return None;
+    }
+    let params: usize = rec.params.len();
+    if params > 3 {
+        eprintln!("skip {}: arity {params} beyond driver support", case.name);
+        return None;
+    }
+    let Some(rust): Option<String> = rec.rust_source else {
+        eprintln!(
+            "skip {}: dense switch but not pure-safe rust-emittable (frame/mem/fp)",
+            case.name
+        );
+        return None;
+    };
+    let renamed: String = rust.replacen(
+        "pub fn recovered(",
+        &format!("pub fn rec_{}(", case.name),
+        1,
+    );
+    Some(Prepared {
+        name: case.name.to_owned(),
+        arity: case.arity,
+        params,
+        rw_bits: rec.return_width_bits,
+        rust: renamed,
+    })
+}
+
+#[test]
+fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native rust switch oracle on non-windows: the x86-64 ground-truth object requires the windows host"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!(
+            "skipping rust switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
+        );
+        return;
+    };
+    let Some(rustc_bin): Option<String> = rustc() else {
+        eprintln!("skipping rust switch oracle: rustc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let mut battery_src: String = String::new();
+    for case in SWITCH_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("rustswitch_battery.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write rustswitch_battery.c");
+    let battery_o: PathBuf = dir.join("rustswitch_battery.o");
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for switch battery");
+    assert!(
+        compile.status.success(),
+        "switch battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read rustswitch_battery.o");
+
+    let prepared: Vec<Prepared> = SWITCH_BATTERY
+        .iter()
+        .filter_map(|case: &Case| prepare_switch(case, &object_bytes))
+        .collect();
+    if prepared.is_empty() {
+        eprintln!(
+            "skipping rust switch differential: this gcc build reconstructed none of the {} cases into a dense-switch pure-safe rust function",
+            SWITCH_BATTERY.len()
+        );
+        return;
+    }
+
+    let match_carriers: usize = prepared
+        .iter()
+        .filter(|p: &&Prepared| p.rust.contains("match "))
+        .count();
+    assert!(
+        match_carriers >= 1,
+        "the rust switch oracle has no teeth: not one recovered dense switch emitted a `match`, so the jump-table-to-match path was never graded"
+    );
+
+    let mut switch_inputs: Vec<[i64; 3]> = Vec::new();
+    for disc in -2i64..=8 {
+        for pair in SWITCH_AB_PAIRS {
+            switch_inputs.push([disc, pair[0], pair[1]]);
+        }
+    }
+
+    run_differential(
+        "rustswitch",
+        &prepared,
+        &switch_inputs,
+        &builder,
+        &rustc_bin,
+        &dir,
+        &battery_o,
     );
 }
