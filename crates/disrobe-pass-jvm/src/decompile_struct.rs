@@ -1803,8 +1803,9 @@ fn invoke_member(cf: &ClassFile, ins: &Instruction) -> Option<(String, String)> 
 }
 
 fn is_hashcode_invoke(cf: &ClassFile, ins: &Instruction) -> bool {
-    invoke_member(cf, ins)
-        .is_some_and(|(member, desc): (String, String)| member.ends_with(".hashCode") && desc == "()I")
+    invoke_member(cf, ins).is_some_and(|(member, desc): (String, String)| {
+        member.ends_with(".hashCode") && desc == "()I"
+    })
 }
 
 fn is_equals_invoke(cf: &ClassFile, ins: &Instruction) -> bool {
@@ -1984,7 +1985,10 @@ fn detect_string_switch(
     if idx_to_literal.is_empty() {
         return None;
     }
-    if !idx_keys.iter().all(|k: &i32| idx_to_literal.contains_key(k)) {
+    if !idx_keys
+        .iter()
+        .all(|k: &i32| idx_to_literal.contains_key(k))
+    {
         return None;
     }
     Some(StringSwitchTable {

@@ -3895,7 +3895,10 @@ fn switch_key_ints(key: &SwitchKey) -> Vec<i32> {
 }
 
 fn body_completes_normally(body_text: &str) -> bool {
-    let Some(line): Option<&str> = body_text.lines().rev().find(|l: &&str| !l.trim().is_empty())
+    let Some(line): Option<&str> = body_text
+        .lines()
+        .rev()
+        .find(|l: &&str| !l.trim().is_empty())
     else {
         return true;
     };
@@ -4146,11 +4149,13 @@ fn assertion_error_detail(ctx: &RenderCtx<'_>, throw_bid: BlockId) -> Option<Ass
     let new_pos: usize = slice
         .iter()
         .position(|ins: &Instruction| is_new_assertion_error(ctx.cf, ins))?;
-    let (init_pos, arity): (usize, usize) = slice.iter().enumerate().find_map(
-        |(i, ins): (usize, &Instruction)| {
-            assertion_error_init_arity(ctx.cf, ins).map(|a: usize| (i, a))
-        },
-    )?;
+    let (init_pos, arity): (usize, usize) =
+        slice
+            .iter()
+            .enumerate()
+            .find_map(|(i, ins): (usize, &Instruction)| {
+                assertion_error_init_arity(ctx.cf, ins).map(|a: usize| (i, a))
+            })?;
     if arity == 0 {
         return Some(AssertThrow::NoDetail);
     }
@@ -4208,44 +4213,47 @@ fn try_render_assert(
         return false;
     }
     let (start, end): (usize, usize) = block_insn_range(ctx, head);
-    let Some([guard, branch]): Option<&[Instruction; 2]> =
-        ctx.insns.get(start..end).and_then(|s: &[Instruction]| s.try_into().ok())
+    let Some([guard, branch]): Option<&[Instruction; 2]> = ctx
+        .insns
+        .get(start..end)
+        .and_then(|s: &[Instruction]| s.try_into().ok())
     else {
         return false;
     };
     if !is_assertions_disabled_getstatic(ctx.cf, guard) || !matches!(branch.opcode, 0x99 | 0x9A) {
         return false;
     }
-    let (cond_head, throw_region, rest_region): (BlockId, &Region, Option<&Region>) = match then_body
-    {
-        Region::IfThenElse {
-            head,
-            then_body,
-            else_body,
-            ..
-        } => {
-            if region_is_assertion_throw(ctx, then_body).is_some() {
-                (*head, then_body.as_ref(), Some(else_body.as_ref()))
-            } else if region_is_assertion_throw(ctx, else_body).is_some() {
-                (*head, else_body.as_ref(), Some(then_body.as_ref()))
-            } else {
-                return false;
+    let (cond_head, throw_region, rest_region): (BlockId, &Region, Option<&Region>) =
+        match then_body {
+            Region::IfThenElse {
+                head,
+                then_body,
+                else_body,
+                ..
+            } => {
+                if region_is_assertion_throw(ctx, then_body).is_some() {
+                    (*head, then_body.as_ref(), Some(else_body.as_ref()))
+                } else if region_is_assertion_throw(ctx, else_body).is_some() {
+                    (*head, else_body.as_ref(), Some(then_body.as_ref()))
+                } else {
+                    return false;
+                }
             }
-        }
-        Region::IfThen {
-            head, then_body, ..
-        } if region_is_assertion_throw(ctx, then_body).is_some() => {
-            (*head, then_body.as_ref(), None)
-        }
-        _ => return false,
-    };
+            Region::IfThen {
+                head, then_body, ..
+            } if region_is_assertion_throw(ctx, then_body).is_some() => {
+                (*head, then_body.as_ref(), None)
+            }
+            _ => return false,
+        };
     let Some(throw_bid): Option<BlockId> = region_is_assertion_throw(ctx, throw_region) else {
         return false;
     };
     let Some(detail): Option<AssertThrow> = assertion_error_detail(ctx, throw_bid) else {
         return false;
     };
-    let Some(condition): Option<String> = assert_condition_via_cfg(ctx, cond_head, throw_bid) else {
+    let Some(condition): Option<String> = assert_condition_via_cfg(ctx, cond_head, throw_bid)
+    else {
         return false;
     };
     let _ = join;
@@ -5642,14 +5650,16 @@ fn with_enum_metadata<T>(
     switchmaps: BTreeMap<String, BTreeMap<i32, String>>,
     body: impl FnOnce() -> T,
 ) -> T {
-    let prev_constants: BTreeMap<String, Vec<String>> =
-        ENUM_CONSTANTS.with(|slot: &RefCell<BTreeMap<String, Vec<String>>>| slot.replace(constants));
+    let prev_constants: BTreeMap<String, Vec<String>> = ENUM_CONSTANTS
+        .with(|slot: &RefCell<BTreeMap<String, Vec<String>>>| slot.replace(constants));
     let prev_switchmaps: BTreeMap<String, BTreeMap<i32, String>> = SWITCHMAP_INVERSE
         .with(|slot: &RefCell<BTreeMap<String, BTreeMap<i32, String>>>| slot.replace(switchmaps));
     let result: T = body();
-    ENUM_CONSTANTS.with(|slot: &RefCell<BTreeMap<String, Vec<String>>>| slot.replace(prev_constants));
-    SWITCHMAP_INVERSE
-        .with(|slot: &RefCell<BTreeMap<String, BTreeMap<i32, String>>>| slot.replace(prev_switchmaps));
+    ENUM_CONSTANTS
+        .with(|slot: &RefCell<BTreeMap<String, Vec<String>>>| slot.replace(prev_constants));
+    SWITCHMAP_INVERSE.with(|slot: &RefCell<BTreeMap<String, BTreeMap<i32, String>>>| {
+        slot.replace(prev_switchmaps)
+    });
     result
 }
 
@@ -5679,7 +5689,8 @@ fn enum_constant_order(cf: &ClassFile) -> Vec<String> {
 fn switchmap_inversions(cf: &ClassFile) -> BTreeMap<String, BTreeMap<i32, String>> {
     let mut out: BTreeMap<String, BTreeMap<i32, String>> = BTreeMap::new();
     let Some(clinit): Option<&MethodInfo> = cf.methods.iter().find(|m: &&MethodInfo| {
-        cf.utf8_at(m.name_index).is_ok_and(|n: &str| n == "<clinit>")
+        cf.utf8_at(m.name_index)
+            .is_ok_and(|n: &str| n == "<clinit>")
     }) else {
         return out;
     };
@@ -5717,7 +5728,9 @@ fn switchmap_field_ref(cf: &ClassFile, insn: &Instruction) -> Option<String> {
     };
     let reference: String = bytecode::resolve_ref(cf, *idx)?;
     let (owner_name, _desc): (&str, &str) = reference.rsplit_once(':')?;
-    owner_name.contains("$SwitchMap$").then(|| owner_name.to_string())
+    owner_name
+        .contains("$SwitchMap$")
+        .then(|| owner_name.to_string())
 }
 
 fn enum_const_getstatic_name(cf: &ClassFile, insn: &Instruction) -> Option<String> {
@@ -5742,7 +5755,9 @@ fn is_ordinal_invoke(cf: &ClassFile, insn: &Instruction) -> bool {
     };
     bytecode::resolve_ref(cf, *idx).is_some_and(|r: String| {
         r.rsplit_once(':')
-            .is_some_and(|(member, desc): (&str, &str)| member.ends_with(".ordinal") && desc == "()I")
+            .is_some_and(|(member, desc): (&str, &str)| {
+                member.ends_with(".ordinal") && desc == "()I"
+            })
     })
 }
 
@@ -7261,7 +7276,9 @@ pub fn decompile_class_with_inners(
         }
     }
     let mut d: DecompiledClass = with_enum_metadata(enum_constants, switchmaps, || {
-        with_record_arities(record_arities, || with_anon_inners(anon, || decompile_class(cf)))
+        with_record_arities(record_arities, || {
+            with_anon_inners(anon, || decompile_class(cf))
+        })
     });
     let inner_stubs: String = build_inner_class_stubs(cf, inners);
     if !inner_stubs.is_empty()

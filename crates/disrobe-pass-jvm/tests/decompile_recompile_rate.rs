@@ -655,7 +655,12 @@ fn report_gapcases_family_recovery() {
         );
     }
 
-    let leaked: &[&str] = &[".ordinal()", ".hashCode()", "$SwitchMap", "$assertionsDisabled"];
+    let leaked: &[&str] = &[
+        ".ordinal()",
+        ".hashCode()",
+        "$SwitchMap",
+        "$assertionsDisabled",
+    ];
     for token in leaked {
         assert!(
             !src.contains(token),
