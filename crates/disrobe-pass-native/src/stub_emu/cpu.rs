@@ -580,10 +580,9 @@ impl Cpu {
     }
 
     fn effective_addr(&self, insn: &Instruction, operand: u32) -> Result<u64> {
-        let base: u64 = if insn.memory_base() != Register::None {
-            self.read_reg(insn.memory_base())?
-        } else {
-            0
+        let base: u64 = match insn.memory_base() {
+            Register::None | Register::RIP | Register::EIP => 0,
+            other => self.read_reg(other)?,
         };
         let index_reg: Register = insn.memory_index();
         let index_val: u64 = if index_reg != Register::None {
@@ -2512,6 +2511,25 @@ mod tests {
             cpu.mem.read_lossy(BUF, 8),
             vec![0xAB; 8],
             "all 8 bytes must be filled when RCX is small",
+        );
+    }
+
+    #[test]
+    fn rip_relative_load_resolves_absolute_target() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits64);
+        cpu.mem
+            .map(0x1000, 0x1000, Perm::RWX)
+            .expect("test map within ceiling");
+        let prog: [u8; 8] = [0x0F, 0xB6, 0x05, 0xF9, 0x00, 0x00, 0x00, 0xCC];
+        cpu.mem.write_unchecked(0x1000, &prog);
+        cpu.mem.write_unchecked(0x1100, &[0x41]);
+        cpu.regs.rip = 0x1000;
+        let mut host: NoopHost = NoopHost;
+        let _exit: ExitReason = cpu.run(&mut host, 50).unwrap();
+        assert_eq!(
+            cpu.regs.read_sized(Reg::Rax, 32),
+            0x41,
+            "movzx eax, byte [rip+0xf9] must resolve to the absolute rip-relative target 0x1100"
         );
     }
 

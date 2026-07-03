@@ -12,7 +12,7 @@
     clippy::struct_excessive_bools
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use object::{Object as _, ObjectSection as _, SectionKind};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ const PER_CANDIDATE_STEP_CAP: u64 = 200_000;
 const MAX_BUFFERS_PER_CANDIDATE: usize = 24;
 const MIN_RECOVERED_LEN: usize = 4;
 const MAX_DECODE_SPAN: u64 = 64 * 1024;
+const MAX_HARVEST_PER_RUN: usize = 512;
+const MAX_STRING_LEN: usize = 4096;
 
 const EMU_STACK_BASE: u64 = 0x1000_0000;
 const EMU_STACK_SIZE: u64 = 0x0010_0000;
@@ -106,14 +108,15 @@ fn emulate_string_decoders_inner(bytes: &[u8]) -> Result<Vec<EmulatedString>> {
         return Ok(Vec::new());
     }
 
+    let static_set: BTreeSet<String> = static_strings(&sections);
+
     let mut out: Vec<EmulatedString> = Vec::new();
-    let mut seen: std::collections::BTreeSet<(u64, u64, String)> =
-        std::collections::BTreeSet::new();
+    let mut seen: BTreeSet<(u64, u64, String)> = BTreeSet::new();
     for candidate in candidates.iter().take(MAX_CANDIDATES) {
         for &(buf_addr, buf_len) in buffers.iter().take(MAX_BUFFERS_PER_CANDIDATE) {
             let span: u64 = (buf_len as u64).min(MAX_DECODE_SPAN);
             let attempts: Vec<EmulatedString> =
-                run_candidate(&sections, mode, candidate, buf_addr, span);
+                run_candidate(&sections, mode, candidate, buf_addr, span, &static_set);
             for hit in attempts {
                 let key: (u64, u64, String) = (
                     hit.decoder_address,
@@ -141,10 +144,11 @@ fn run_candidate(
     candidate: &DecoderCandidate,
     buf_addr: u64,
     span: u64,
+    static_set: &BTreeSet<String>,
 ) -> Vec<EmulatedString> {
     let mut out: Vec<EmulatedString> = Vec::new();
     for convention in argument_conventions(mode) {
-        let Ok((recovered, exit)): Result<(Vec<u8>, ExitReason)> = emulate_once(
+        let Ok((harvested, exit)): Result<(Vec<(u64, String)>, ExitReason)> = emulate_once(
             sections,
             mode,
             candidate.address,
@@ -154,13 +158,17 @@ fn run_candidate(
         ) else {
             continue;
         };
-        for value in extract_printable(&recovered) {
+        let exit_label: String = format!("{exit:?}");
+        for (output_address, value) in harvested {
+            if static_set.contains(&value) {
+                continue;
+            }
             out.push(EmulatedString {
                 value,
                 decoder_address: candidate.address,
                 source_buffer_address: buf_addr,
-                output_address: EMU_OUTPUT_BASE,
-                exit: format!("{exit:?}"),
+                output_address,
+                exit: exit_label.clone(),
             });
         }
     }
@@ -196,7 +204,7 @@ fn emulate_once(
     buf_addr: u64,
     span: u64,
     convention: ArgConvention,
-) -> Result<(Vec<u8>, ExitReason)> {
+) -> Result<(Vec<(u64, String)>, ExitReason)> {
     let mut cpu: Cpu = Cpu::new(mode);
     for section in sections {
         let perm: Perm = if section.executable {
@@ -225,10 +233,11 @@ fn emulate_once(
     seed_arguments(&mut cpu, mode, convention, buf_addr, output_addr, span, sp)?;
     cpu.regs.rip = entry;
 
+    cpu.mem.enable_write_log();
     let exit: ExitReason = cpu.run(&mut DecoderHost, PER_CANDIDATE_STEP_CAP)?;
 
-    let recovered: Vec<u8> = cpu.mem.read_lossy(output_addr, span as usize);
-    Ok((recovered, exit))
+    let harvested: Vec<(u64, String)> = harvest_write_log(cpu.mem.write_log());
+    Ok((harvested, exit))
 }
 
 fn seed_arguments(
@@ -275,30 +284,112 @@ fn seed_arguments(
     Ok(())
 }
 
-fn extract_printable(bytes: &[u8]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut run: Vec<u8> = Vec::with_capacity(64);
-    for &b in bytes {
-        if is_printable_ascii(b) {
-            run.push(b);
-            continue;
+fn harvest_write_log(log: &[(u64, u8)]) -> Vec<(u64, String)> {
+    let mut shadow: BTreeMap<u64, u8> = BTreeMap::new();
+    let mut out: Vec<(u64, String)> = Vec::new();
+    for &(addr, value) in log {
+        if out.len() >= MAX_HARVEST_PER_RUN {
+            return out;
         }
-        flush_run(&run, &mut out);
-        run.clear();
+        if let Some(&old) = shadow.get(&addr)
+            && old != value
+            && is_printable_ascii(old)
+        {
+            seal_run(&mut shadow, addr, &mut out);
+        }
+        shadow.insert(addr, value);
     }
-    flush_run(&run, &mut out);
+    flush_shadow(&shadow, &mut out);
     out
 }
 
-fn flush_run(run: &[u8], out: &mut Vec<String>) {
-    if run.len() < MIN_RECOVERED_LEN {
+fn seal_run(shadow: &mut BTreeMap<u64, u8>, addr: u64, out: &mut Vec<(u64, String)>) {
+    let mut start: u64 = addr;
+    while let Some(&b) = shadow.get(&start.wrapping_sub(1)) {
+        if !is_printable_ascii(b) {
+            break;
+        }
+        start = start.wrapping_sub(1);
+    }
+    let mut end: u64 = addr;
+    while let Some(&b) = shadow.get(&end) {
+        if !is_printable_ascii(b) {
+            break;
+        }
+        end = end.wrapping_add(1);
+    }
+    let mut bytes: Vec<u8> = Vec::with_capacity((end - start) as usize);
+    let mut cursor: u64 = start;
+    while cursor < end {
+        if let Some(&b) = shadow.get(&cursor) {
+            bytes.push(b);
+        }
+        shadow.remove(&cursor);
+        cursor = cursor.wrapping_add(1);
+    }
+    push_candidate(start, &bytes, out);
+}
+
+fn flush_shadow(shadow: &BTreeMap<u64, u8>, out: &mut Vec<(u64, String)>) {
+    let mut cur: Option<(u64, u64, Vec<u8>)> = None;
+    for (&addr, &value) in shadow {
+        let printable: bool = is_printable_ascii(value);
+        if let Some((_, next, bytes)) = cur.as_mut()
+            && printable
+            && *next == addr
+        {
+            bytes.push(value);
+            *next = addr.wrapping_add(1);
+            continue;
+        }
+        if let Some((start, _, bytes)) = cur.take() {
+            push_candidate(start, &bytes, out);
+        }
+        if printable {
+            cur = Some((addr, addr.wrapping_add(1), vec![value]));
+        }
+    }
+    if let Some((start, _, bytes)) = cur.take() {
+        push_candidate(start, &bytes, out);
+    }
+}
+
+fn push_candidate(start: u64, bytes: &[u8], out: &mut Vec<(u64, String)>) {
+    if out.len() >= MAX_HARVEST_PER_RUN
+        || bytes.len() < MIN_RECOVERED_LEN
+        || bytes.len() > MAX_STRING_LEN
+        || !run_looks_textual(bytes)
+    {
         return;
     }
-    if !run_looks_textual(run) {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        out.push((start, s.to_owned()));
+    }
+}
+
+fn static_strings(sections: &[LoadedSection]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for section in sections {
+        let mut run: Vec<u8> = Vec::with_capacity(64);
+        for &b in &section.bytes {
+            if is_printable_ascii(b) {
+                run.push(b);
+                continue;
+            }
+            insert_static_run(&run, &mut out);
+            run.clear();
+        }
+        insert_static_run(&run, &mut out);
+    }
+    out
+}
+
+fn insert_static_run(run: &[u8], out: &mut BTreeSet<String>) {
+    if run.len() < MIN_RECOVERED_LEN || run.len() > MAX_STRING_LEN {
         return;
     }
     if let Ok(s) = std::str::from_utf8(run) {
-        out.push(s.to_owned());
+        out.insert(s.to_owned());
     }
 }
 

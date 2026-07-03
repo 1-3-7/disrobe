@@ -4,6 +4,8 @@ use crate::error::{Error, Result};
 
 pub const PAGE_SIZE: usize = 0x1000;
 
+pub const MAX_WRITE_LOG_ENTRIES: usize = 1 << 19;
+
 pub const PAGE_BITS: u32 = 12;
 
 const PAGE_MASK: u64 = (PAGE_SIZE as u64) - 1;
@@ -56,6 +58,8 @@ pub struct Memory {
     lazy_budget: Option<u32>,
     lazy_used: u32,
     block_null_page: bool,
+    write_log: Option<Vec<(u64, u8)>>,
+    write_log_truncated: bool,
 }
 
 impl Memory {
@@ -70,6 +74,21 @@ impl Memory {
 
     pub fn block_null_page(&mut self) {
         self.block_null_page = true;
+    }
+
+    pub fn enable_write_log(&mut self) {
+        self.write_log = Some(Vec::new());
+        self.write_log_truncated = false;
+    }
+
+    #[must_use]
+    pub fn write_log(&self) -> &[(u64, u8)] {
+        self.write_log.as_deref().unwrap_or(&[])
+    }
+
+    #[must_use]
+    pub fn write_log_truncated(&self) -> bool {
+        self.write_log_truncated
     }
 
     fn lazy_commit(&mut self, addr: u64) -> bool {
@@ -175,16 +194,24 @@ impl Memory {
                 "emu: write to unmapped 0x{addr:016x}"
             )));
         }
-        let page: &mut Page = self
-            .pages
-            .get_mut(&key)
-            .ok_or_else(|| Error::GoblinParse(format!("emu: write to unmapped 0x{addr:016x}")))?;
-        if !page.perm.write {
-            return Err(Error::GoblinParse(format!(
-                "emu: write perm denied at 0x{addr:016x}"
-            )));
+        {
+            let page: &mut Page = self.pages.get_mut(&key).ok_or_else(|| {
+                Error::GoblinParse(format!("emu: write to unmapped 0x{addr:016x}"))
+            })?;
+            if !page.perm.write {
+                return Err(Error::GoblinParse(format!(
+                    "emu: write perm denied at 0x{addr:016x}"
+                )));
+            }
+            page.data[off] = value;
         }
-        page.data[off] = value;
+        if let Some(log) = self.write_log.as_mut() {
+            if log.len() < MAX_WRITE_LOG_ENTRIES {
+                log.push((addr, value));
+            } else {
+                self.write_log_truncated = true;
+            }
+        }
         Ok(())
     }
 
@@ -334,6 +361,32 @@ mod tests {
     fn unmapped_write_without_lazy_still_faults() {
         let mut m: Memory = Memory::new();
         assert!(m.write_u8(0x4000, 1).is_err());
+    }
+
+    #[test]
+    fn write_log_is_opt_in_ordered_and_decomposes_wide_stores() {
+        let mut m: Memory = Memory::new();
+        m.map(0x1000, 0x1000, Perm::RW).expect("map within ceiling");
+        m.write_unchecked(0x1000, &[9, 9, 9, 9]);
+        assert!(
+            m.write_log().is_empty(),
+            "logging is opt-in: writes before enable_write_log are not recorded"
+        );
+        m.enable_write_log();
+        m.write_u8(0x1000, 0xAA).unwrap();
+        m.write_u32(0x1004, 0x4433_2211).unwrap();
+        assert_eq!(
+            m.write_log(),
+            &[
+                (0x1000, 0xAA),
+                (0x1004, 0x11),
+                (0x1005, 0x22),
+                (0x1006, 0x33),
+                (0x1007, 0x44),
+            ],
+            "a wide store decomposes into ordered per-byte log entries little-endian"
+        );
+        assert!(!m.write_log_truncated());
     }
 
     #[test]
