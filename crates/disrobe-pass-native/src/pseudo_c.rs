@@ -130,6 +130,41 @@ impl FpWidth {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundMode {
+    Nearest,
+    Floor,
+    Ceil,
+    Trunc,
+}
+
+impl RoundMode {
+    const fn from_imm8(imm: i64) -> Option<Self> {
+        if imm & 0x4 != 0 {
+            return None;
+        }
+        Some(match imm & 0x3 {
+            0 => Self::Nearest,
+            1 => Self::Floor,
+            2 => Self::Ceil,
+            _ => Self::Trunc,
+        })
+    }
+
+    const fn c_builtin(self, width: FpWidth) -> &'static str {
+        match (self, width) {
+            (Self::Nearest, FpWidth::F64) => "__builtin_rint",
+            (Self::Floor, FpWidth::F64) => "__builtin_floor",
+            (Self::Ceil, FpWidth::F64) => "__builtin_ceil",
+            (Self::Trunc, FpWidth::F64) => "__builtin_trunc",
+            (Self::Nearest, FpWidth::F32) => "__builtin_rintf",
+            (Self::Floor, FpWidth::F32) => "__builtin_floorf",
+            (Self::Ceil, FpWidth::F32) => "__builtin_ceilf",
+            (Self::Trunc, FpWidth::F32) => "__builtin_truncf",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpOp {
     Add,
     Sub,
@@ -486,6 +521,12 @@ enum Stmt {
         dest: Xmm,
         src: FpOperand,
         width: FpWidth,
+    },
+    FpRound {
+        dest: Xmm,
+        src: FpOperand,
+        width: FpWidth,
+        mode: RoundMode,
     },
     GprToXmm {
         dest: Xmm,
@@ -937,6 +978,7 @@ pub fn recover_leaf_function_const_abi(
             | Stmt::FpConvert { .. }
             | Stmt::FpMinMax { .. }
             | Stmt::FpSqrt { .. }
+            | Stmt::FpRound { .. }
             | Stmt::GprToXmm { .. }
             | Stmt::XmmToGpr { .. } => {
                 flags = None;
@@ -1837,6 +1879,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
         | Stmt::FpSqrt { .. }
+        | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. } => {}
@@ -3215,6 +3258,12 @@ fn scan_fp_stmt(stmt: &Stmt, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec<(X
             scan_fp_operand(src, *width, written, acc);
             written.insert(*dest, true);
         }
+        Stmt::FpRound {
+            dest, src, width, ..
+        } => {
+            scan_fp_operand(src, *width, written, acc);
+            written.insert(*dest, true);
+        }
         Stmt::GprToXmm { dest, .. } => {
             written.insert(*dest, true);
         }
@@ -3455,6 +3504,11 @@ fn scan_stmt_params(
                 read_addr(mem, written, acc, note);
             }
         }
+        Stmt::FpRound { src, .. } => {
+            if let FpOperand::Mem(mem) = src {
+                read_addr(mem, written, acc, note);
+            }
+        }
         Stmt::GprToXmm { src, .. } => {
             note(src.reg, written, acc);
         }
@@ -3629,9 +3683,9 @@ fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {
         Stmt::IntToFp { dest, width, .. } => Some((*dest, *width)),
         Stmt::FpConvert { dest, to, .. } => Some((*dest, *to)),
         Stmt::FpMinMax { dest, width, .. } => Some((*dest, *width)),
-        Stmt::FpSqrt { dest, width, .. } | Stmt::GprToXmm { dest, width, .. } => {
-            Some((*dest, *width))
-        }
+        Stmt::FpSqrt { dest, width, .. }
+        | Stmt::FpRound { dest, width, .. }
+        | Stmt::GprToXmm { dest, width, .. } => Some((*dest, *width)),
         _ => None,
     }
 }
@@ -3658,6 +3712,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::FpConvert { .. }
         | Stmt::FpMinMax { .. }
         | Stmt::FpSqrt { .. }
+        | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. } => false,
@@ -3813,8 +3868,6 @@ const REJECTED_SSE: &[&str] = &[
     "cvtpd2dq",
     "cvtps2pd",
     "cvtpd2ps",
-    "roundsd",
-    "roundss",
     "blendpd",
     "blendps",
     "movmskpd",
@@ -4037,6 +4090,41 @@ fn lift_fp(
             })?;
             let src: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
             Ok(Some(Stmt::FpSqrt { dest, src, width }))
+        }
+        "roundsd" | "roundss" => {
+            let width: FpWidth = if mnemonic == "roundsd" {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            let (dest_tok, rest): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let (src_tok, imm_tok): (&str, &str) = rest.split_once(',').ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "`{mnemonic}` requires an imm8 rounding-control operand"
+                ))
+            })?;
+            let dest: Xmm = parse_xmm(dest_tok.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register"))
+            })?;
+            let src: FpOperand = parse_fp_operand(src_tok.trim(), width, site, consts)?;
+            let imm: i64 = parse_imm(imm_tok.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "`{mnemonic}` imm8 rounding control is not an integer literal"
+                ))
+            })?;
+            let mode: RoundMode = RoundMode::from_imm8(imm).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "`{mnemonic}` imm8 {imm:#x} defers to the MXCSR rounding mode; the runtime rounding direction is not statically recoverable"
+                ))
+            })?;
+            Ok(Some(Stmt::FpRound {
+                dest,
+                src,
+                width,
+                mode,
+            }))
         }
         "movq" | "movd" => {
             let width: FpWidth = if mnemonic == "movq" {
@@ -4672,6 +4760,7 @@ impl FrameScan {
             Stmt::FpBin { rhs, .. } => self.note_fp(rhs, slots, misuse),
             Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpSqrt { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpMinMax { rhs, .. } => self.note_fp(rhs, slots, misuse),
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
             Stmt::FpConvert { .. }
@@ -4906,7 +4995,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
                 mem_regs(mem, acc);
             }
         }
-        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } => {
+        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
             if let FpOperand::Mem(mem) = src {
                 mem_regs(mem, acc);
             }
@@ -5364,6 +5453,11 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         push_addr(mem, acc);
                     }
                 }
+                Stmt::FpRound { src, .. } => {
+                    if let FpOperand::Mem(mem) = src {
+                        push_addr(mem, acc);
+                    }
+                }
                 Stmt::GprToXmm { src, .. } => push(src.reg, acc),
                 Stmt::XmmToGpr { dest, .. } => push(dest.reg, acc),
                 Stmt::FpConvert { .. } => {}
@@ -5445,6 +5539,10 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                     push_operand(rhs, acc);
                 }
                 Stmt::FpSqrt { dest, src, .. } => {
+                    push(*dest, acc);
+                    push_operand(src, acc);
+                }
+                Stmt::FpRound { dest, src, .. } => {
                     push(*dest, acc);
                     push_operand(src, acc);
                 }
@@ -5839,6 +5937,21 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str, abi: Abi) {
                 FpWidth::F64 => format!("__builtin_sqrt({value})"),
                 FpWidth::F32 => format!("__builtin_sqrtf({value})"),
             };
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&call, *width)
+            );
+        }
+        Stmt::FpRound {
+            dest,
+            src,
+            width,
+            mode,
+        } => {
+            let value: String = fp_load(src, *width);
+            let call: String = format!("{}({value})", mode.c_builtin(*width));
             let _ = writeln!(
                 out,
                 "{indent}{} = {};",

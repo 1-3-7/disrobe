@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_native::{
-    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType as ScalarType,
-    disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
-    recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
+    Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
+    PseudoScalarType as ScalarType, disassemble, recover_leaf_function_abi,
+    recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
+    recover_leaf_function_switch_const_abi,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -7242,6 +7243,457 @@ fn sysv_scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
     );
     println!(
         "SysV scalar sqrt behavioral differential PASSED for {lifted_count} leaf functions (SysV ABI)"
+    );
+}
+
+const ROUND_BATTERY: &[FpCase] = &[
+    FpCase {
+        name: "rd_floor",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rd_floor(double a){ return __builtin_floor(a); }",
+    },
+    FpCase {
+        name: "rd_ceil",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rd_ceil(double a){ return __builtin_ceil(a); }",
+    },
+    FpCase {
+        name: "rd_trunc",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rd_trunc(double a){ return __builtin_trunc(a); }",
+    },
+    FpCase {
+        name: "rd_near",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double rd_near(double a){ return __builtin_roundeven(a); }",
+    },
+    FpCase {
+        name: "rs_floor",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float rs_floor(float a){ return __builtin_floorf(a); }",
+    },
+    FpCase {
+        name: "rs_ceil",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float rs_ceil(float a){ return __builtin_ceilf(a); }",
+    },
+    FpCase {
+        name: "rs_trunc",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float rs_trunc(float a){ return __builtin_truncf(a); }",
+    },
+    FpCase {
+        name: "rs_near",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float rs_near(float a){ return __builtin_roundevenf(a); }",
+    },
+];
+
+fn round_expectations(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "rd_floor" => ("__builtin_floor", "roundsd"),
+        "rd_ceil" => ("__builtin_ceil", "roundsd"),
+        "rd_trunc" => ("__builtin_trunc", "roundsd"),
+        "rd_near" => ("__builtin_rint", "roundsd"),
+        "rs_floor" => ("__builtin_floorf", "roundss"),
+        "rs_ceil" => ("__builtin_ceilf", "roundss"),
+        "rs_trunc" => ("__builtin_truncf", "roundss"),
+        "rs_near" => ("__builtin_rintf", "roundss"),
+        other => panic!("no round expectation registered for `{other}`"),
+    }
+}
+
+fn function_has_mnemonic(object_bytes: &[u8], name: &str, mnemonic: &str) -> bool {
+    let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
+        return false;
+    };
+    let Ok(insns): Result<Vec<DisasmInsn>, _> = disassemble(Arch::X86_64, base, &code) else {
+        return false;
+    };
+    insns
+        .iter()
+        .any(|insn: &DisasmInsn| insn.mnemonic == mnemonic)
+}
+
+#[test]
+fn round_lift_emits_expected_builtin_for_each_mode() {
+    let base: u64 = 0x1000;
+    let cases: &[(&str, [u8; 7], &str)] = &[
+        (
+            "floor",
+            [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x09, 0xc3],
+            "__builtin_floor",
+        ),
+        (
+            "ceil",
+            [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0a, 0xc3],
+            "__builtin_ceil",
+        ),
+        (
+            "trunc",
+            [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x0b, 0xc3],
+            "__builtin_trunc",
+        ),
+        (
+            "nearest",
+            [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x08, 0xc3],
+            "__builtin_rint",
+        ),
+        (
+            "floorf",
+            [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x09, 0xc3],
+            "__builtin_floorf",
+        ),
+        (
+            "ceilf",
+            [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0a, 0xc3],
+            "__builtin_ceilf",
+        ),
+        (
+            "truncf",
+            [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0b, 0xc3],
+            "__builtin_truncf",
+        ),
+        (
+            "nearestf",
+            [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x08, 0xc3],
+            "__builtin_rintf",
+        ),
+    ];
+    for (tag, bytes, want) in cases {
+        let recovery: LeafRecovery = match recover_leaf_function_abi(bytes, base, PseudoAbi::SysV) {
+            Ok(r) => r,
+            Err(e) => panic!("round `{tag}` must lift into the scalar float leaf class: {e}"),
+        };
+        assert!(
+            recovery.source.contains(*want),
+            "round `{tag}` must lower to `{want}`; recovered source:\n{}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn round_lift_rejects_mxcsr_deferred_rounding() {
+    let base: u64 = 0x1000;
+    let deferred: &[(&str, [u8; 7])] = &[
+        ("roundsd_mxcsr", [0x66, 0x0f, 0x3a, 0x0b, 0xc0, 0x04, 0xc3]),
+        (
+            "roundss_mxcsr_suppressed",
+            [0x66, 0x0f, 0x3a, 0x0a, 0xc0, 0x0c, 0xc3],
+        ),
+    ];
+    for (tag, bytes) in deferred {
+        let outcome: Result<LeafRecovery, disrobe_pass_native::Error> =
+            recover_leaf_function_abi(bytes, base, PseudoAbi::SysV);
+        assert!(
+            outcome.is_err(),
+            "round `{tag}` deferring to MXCSR must sound-reject rather than guess a rounding direction"
+        );
+    }
+}
+
+#[test]
+fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = clang() else {
+        eprintln!("skipping scalar round oracle: clang not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let battery_c: PathBuf = dir.join("round_battery.c");
+    std::fs::write(&battery_c, fp_battery_source(ROUND_BATTERY).as_bytes())
+        .expect("write round_battery.c");
+    let battery_o: PathBuf = dir.join("round_battery.o");
+    let compile_battery: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-msse4.1",
+            "-fno-math-errno",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke clang for scalar round battery");
+    assert!(
+        compile_battery.status.success(),
+        "scalar round battery compile failed: {}",
+        String::from_utf8_lossy(&compile_battery.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read round_battery.o");
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+
+    for case in ROUND_BATTERY {
+        let (builtin, mnemonic): (&str, &str) = round_expectations(case.name);
+        if !function_has_mnemonic(&object_bytes, case.name, mnemonic) {
+            eprintln!(
+                "skip {}: this clang build did not emit a scalar {mnemonic} (SSE4.1 rounding unavailable)",
+                case.name
+            );
+            continue;
+        }
+        let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
+            fp_lift(case, &object_bytes, HOST_ABI)
+        else {
+            continue;
+        };
+        assert!(
+            recovery.source.contains(builtin),
+            "a lifted round case must carry the {builtin} intrinsic: {}",
+            recovery.source
+        );
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&fp_extern_decl(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&fp_driver_snippet(case, &recovered_name));
+        lifted_count += 1;
+    }
+
+    if lifted_count < 2 {
+        eprintln!(
+            "skipping scalar round behavioral differential: this compiler build lowered only {lifted_count} of {} cases into a bare scalar round leaf",
+            ROUND_BATTERY.len()
+        );
+        return;
+    }
+
+    let driver: String = build_fp_sqrt_driver(&recovered_decls, &driver_body);
+    let driver_c: PathBuf = dir.join("round_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write round_driver.c");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "round_harness.exe"
+    } else {
+        "round_harness"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-msse4.1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke clang to link round harness");
+    assert!(
+        link.status.success(),
+        "round harness link failed: {}\n--- round_driver.c ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run round harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK"),
+        "scalar round behavioral differential FAILED ({lifted_count} cases): {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "scalar round behavioral differential PASSED for {lifted_count} leaf functions (host ABI)"
+    );
+}
+
+#[test]
+fn scalar_round_oracle_has_teeth_dropping_the_round_diverges() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = clang() else {
+        eprintln!("skipping scalar round teeth check: clang not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let probe: &FpCase = &ROUND_BATTERY[0];
+    let (builtin, mnemonic): (&str, &str) = round_expectations(probe.name);
+    let battery_c: PathBuf = dir.join("round_teeth_battery.c");
+    std::fs::write(&battery_c, probe.c_source.as_bytes()).expect("write round_teeth_battery.c");
+    let battery_o: PathBuf = dir.join("round_teeth_battery.o");
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-msse4.1",
+            "-fno-math-errno",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke clang for round teeth battery");
+    assert!(
+        compile.status.success(),
+        "round teeth battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read round_teeth_battery.o");
+
+    if !function_has_mnemonic(&object_bytes, probe.name, mnemonic) {
+        eprintln!("skipping round teeth check: this clang build did not emit a scalar {mnemonic}");
+        return;
+    }
+    let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
+        fp_lift(probe, &object_bytes, HOST_ABI)
+    else {
+        eprintln!("skipping round teeth check: probe did not lift into a bare round leaf");
+        return;
+    };
+    let intact: String = format!("{builtin}(fp_d_from_bits(x_xmm0))");
+    let sabotaged: String = renamed.replacen(&intact, "fp_d_from_bits(x_xmm0)", 1);
+    assert_ne!(
+        sabotaged, renamed,
+        "the round intrinsic must be present to be dropped"
+    );
+
+    let mut decls: String = String::new();
+    decls.push_str(&sabotaged);
+    decls.push('\n');
+    decls.push_str(&fp_extern_decl(probe));
+    decls.push('\n');
+    let driver_body: String = fp_driver_snippet(probe, &recovered_name);
+    let driver: String = build_fp_sqrt_driver(&decls, &driver_body);
+    let driver_c: PathBuf = dir.join("round_teeth_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write round_teeth_driver.c");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "round_teeth_harness.exe"
+    } else {
+        "round_teeth_harness"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-msse4.1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke clang to link round teeth harness");
+    assert!(
+        link.status.success(),
+        "round teeth harness link failed: {}\n--- round_teeth_driver.c ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run round teeth harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        stdout.contains("MISMATCH") || !run.status.success(),
+        "dropping the round must diverge on the input battery; instead the harness reported: {stdout}"
+    );
+    println!("scalar round oracle teeth confirmed: dropping the round diverges");
+}
+
+fn link_and_run_round_sysv(
+    tag: &str,
+    driver: &str,
+    host_object: &[u8],
+    watchdog_secs: u64,
+) -> String {
+    let host_cc: String = cc().expect("host cc present when linking sysv round harness");
+    let dir: PathBuf = scratch_dir();
+    let host_o: PathBuf = dir.join(format!("{tag}_sysv_round_link_host.o"));
+    std::fs::write(&host_o, host_object).expect("write sysv round host object for link");
+    let driver_c: PathBuf = dir.join(format!("{tag}_sysv_round_driver.c"));
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write sysv round driver");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        format!("{tag}_sysv_round_harness.exe")
+    } else {
+        format!("{tag}_sysv_round_harness")
+    });
+    let link: std::process::Output = Command::new(&host_cc)
+        .args(["-O1", "-msse4.1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&host_o)
+        .output()
+        .expect("invoke host cc to link sysv round harness");
+    assert!(
+        link.status.success(),
+        "{tag} sysv round harness link failed: {}\n--- {tag} sysv round driver ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let BoundedRun::Exited(out): BoundedRun = run_bounded(&harness_exe, watchdog_secs) else {
+        panic!("{tag} sysv round harness did not terminate within the watchdog window");
+    };
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn sysv_scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
+    let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross_extra(
+        "round",
+        &fp_battery_source(ROUND_BATTERY),
+        &["-msse4.1", "-fno-math-errno"],
+    ) else {
+        return;
+    };
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+
+    for case in ROUND_BATTERY {
+        let (builtin, mnemonic): (&str, &str) = round_expectations(case.name);
+        if !function_has_mnemonic(&objs.sysv_object, case.name, mnemonic) {
+            eprintln!(
+                "skip {}: the SysV clang build did not emit a scalar {mnemonic}",
+                case.name
+            );
+            continue;
+        }
+        let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
+            fp_lift(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            continue;
+        };
+        assert!(
+            recovery.source.contains(builtin),
+            "a lifted round case must carry the {builtin} intrinsic: {}",
+            recovery.source
+        );
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&fp_extern_decl(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&fp_driver_snippet(case, &recovered_name));
+        lifted_count += 1;
+    }
+
+    assert!(
+        lifted_count >= 2,
+        "SysV scalar round lifter must handle at least 2 of the {} cases, only lifted {lifted_count}",
+        ROUND_BATTERY.len()
+    );
+
+    let driver: String = build_fp_sqrt_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_round_sysv("round", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK"),
+        "SysV scalar round behavioral differential FAILED ({lifted_count} cases): {stdout}"
+    );
+    println!(
+        "SysV scalar round behavioral differential PASSED for {lifted_count} leaf functions (SysV ABI)"
     );
 }
 

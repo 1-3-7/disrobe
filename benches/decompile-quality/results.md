@@ -4,7 +4,7 @@ Measured recovery by ecosystem
 
 disrobe's own measured numbers; sources cited per value in this file
 
-Every value below is produced by a committed test gate or a local measurement harness. The source field cites the exact file:line that asserts or computes it. Numbers that could not be sourced from a gate are omitted by design.
+Every value here is produced by a committed test gate or a local measurement harness. The source field cites the exact file:line that asserts or computes it. Numbers that could not be sourced from a gate are omitted by design.
 
 Every figure below is read verbatim from `xtask/data/recovery.json`, the same committed source the recovery SVG renders. This benchmark does not recompute or round any number; it surfaces the measured value and its gate so the README can link a single honest table. Regenerate with `cargo run -p disrobe-bench-native-unpack`.
 
