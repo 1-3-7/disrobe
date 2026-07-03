@@ -246,9 +246,6 @@ impl Terminal {
         }
         *line = chars.into_iter().collect();
         self.cur_col += 1;
-        if self.cur_col >= self.cols {
-            self.cur_col = self.cols - 1;
-        }
     }
 
     fn apply(&mut self, event: &CastEvent) {
@@ -280,6 +277,9 @@ impl Terminal {
                 }
                 c if (c as u32) < 0x20 => {}
                 c => {
+                    if self.cur_col >= self.cols {
+                        self.newline(event.time);
+                    }
                     self.put(c);
                     dirty.push(self.cur_line);
                 }
