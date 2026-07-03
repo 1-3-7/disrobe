@@ -67,8 +67,7 @@ impl KeySet {
     }
 }
 
-/// Computes the exponential backoff for `attempt` (0-based), honoring a server
-/// `Retry-After` hint when present, clamped to `max`.
+/// Computes the exponential backoff for `attempt` (0-based), honoring a server `Retry-After` hint when present, clamped to `max`.
 #[must_use]
 pub fn backoff_for(
     attempt: u32,
@@ -180,7 +179,6 @@ async fn harvest_one(
 }
 
 /// Resolves the latest Common Crawl index id so harvests do not pin a stale collection.
-/// Best-effort: on any failure the provider keeps its built-in default.
 async fn resolve_commoncrawl_index(fetcher: &dyn Fetcher) -> Option<String> {
     let request: Request =
         Request::get(providers::url_archive::CommonCrawl::collinfo_url().to_owned());
@@ -189,8 +187,6 @@ async fn resolve_commoncrawl_index(fetcher: &dyn Fetcher) -> Option<String> {
 }
 
 /// Harvests every requested source for each target with no API keys (anonymous access only).
-///
-/// Equivalent to [`harvest_with_keys`] with an empty [`KeySet`].
 pub async fn harvest(
     fetcher: Arc<dyn Fetcher>,
     targets: &[String],
@@ -209,13 +205,7 @@ struct ProviderAccumulator {
     note: Option<String>,
 }
 
-/// Harvests every requested source for each target, authenticating with `keys` where a service
-/// supports or requires an API key.
-///
-/// Fans out across providers and targets, paces each host with a token-bucket limiter so distinct
-/// hosts run fully concurrent, skips a key-required source that has no key, records a typed
-/// per-provider status, then merges, filters, de-duplicates and (optionally) extracts indicators
-/// into a single [`ProwlReport`]. A 401/403 from one provider skips it and continues the rest.
+/// Harvests every requested source for each target, authenticating with `keys` where a service supports or requires an API key.
 pub async fn harvest_with_keys(
     fetcher: Arc<dyn Fetcher>,
     targets: &[String],

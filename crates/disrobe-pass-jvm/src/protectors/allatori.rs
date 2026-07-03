@@ -89,21 +89,7 @@ pub fn peel(cf: &ClassFile, _class_name: &str, _default_method: &str) -> Protect
     finish_allatori(cf, report)
 }
 
-/// Recovers Allatori-encrypted string literals by running the class's own
-/// injected decrypt method against every encrypted constant, not only the
-/// constants reached by a recognizable static call site.
-///
-/// Allatori injects, into each class that owns encrypted strings, a private
-/// `String -> String` decryptor that folds two byte-sized keys from a
-/// per-class-random constant arithmetic prologue, then walks the ciphertext
-/// from its last code unit toward the first, alternating the two folded keys
-/// as it XOR-masks each unit into a fresh char array and wraps the array in a
-/// new `String`. The keys are internal to the method body, so the cleartext is
-/// reproduced by executing that method end to end. This complements the
-/// call-site evaluator: a literal whose load or call site is hidden by
-/// control-flow obfuscation, aliased through `ldc_w`, or otherwise not matched
-/// structurally is still decrypted here, because every encrypted constant in
-/// the pool is fed to the recovered decryptor directly.
+/// Recovers Allatori-encrypted string literals by running the class's own injected decrypt method against every encrypted constant, not only the constants reached by a recognizable static call site.
 fn recover_via_char_array_scheme(cf: &ClassFile, report: &mut ProtectorPeelReport) -> usize {
     let methods: Vec<DecryptMethod> = char_array_decrypt_methods(cf);
     if methods.is_empty() {
@@ -169,11 +155,7 @@ fn char_array_decrypt_methods(cf: &ClassFile) -> Vec<DecryptMethod> {
         .collect()
 }
 
-/// Reports whether a method body carries the Allatori char-array decrypt shape:
-/// it allocates a `char[]` (`newarray char`), reads source units through
-/// `String.charAt`, walks the source index downward (an `iinc` with a negative
-/// delta), XOR-masks each unit (`ixor`) into the array (`castore`), and finally
-/// wraps the array with `new String(char[])`.
+/// Reports whether a method body carries the Allatori char-array decrypt shape.
 #[must_use]
 fn method_has_char_array_xor_shape(cf: &ClassFile, method_index: usize) -> bool {
     let Some(method): Option<&MethodInfo> = cf.methods.get(method_index) else {

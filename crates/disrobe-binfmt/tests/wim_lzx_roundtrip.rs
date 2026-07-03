@@ -1,10 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 //! Symmetry check for disrobe's own LZX chunk compressor against its own decoder.
-//! This is a circular round-trip by construction: it proves the encoder and decoder
-//! agree, not that the decoder matches Microsoft's WIM-LZX. The non-circular decoder
-//! oracle is `real_wim_files.rs::wim_lzx_per_file_streams_decode_byte_exact`, which
-//! decodes a wimlib-produced `files_lzx.wim` against captured ground truth.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

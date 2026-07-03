@@ -1,8 +1,4 @@
 //! Lifts a flat-`BytecodeArray` [`Disassembly`] to a JS surface.
-//!
-//! Its input comes from [`super::flat_bytecode_disasm::disassemble`]. For a real `.jsc`,
-//! [`super::code_serializer::parse_code_serializer_graph`] recovers the inline bytecode of each
-//! serialized `BytecodeArray` and that disassembly flows through here.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

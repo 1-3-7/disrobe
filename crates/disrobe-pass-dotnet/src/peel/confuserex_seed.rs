@@ -1,12 +1,4 @@
-//! Recovery of the ConfuserEx Constants/Resources xorshift key seed by evaluating the
-//! bootstrap method's seed-initialisation expression with the CIL emulator.
-//!
-//! ConfuserEx fills a 16-word key array by running an xorshift over a 32-bit state that is
-//! seeded once before the expansion loop. With the constants/resources protection alone the
-//! seed lands as a single `ldc.i4`, but when control-flow protection also runs the seed can be
-//! emitted as a folded expression (for example `ldc A; ldc B; xor`). A literal scan only sees the
-//! individual immediates and misses the folded value, so the seed-defining run is executed through
-//! the emulator and the produced 32-bit value is added to the candidate set.
+//! Recovery of the ConfuserEx Constants/Resources xorshift key seed by evaluating the bootstrap method's seed-initialisation expression with the CIL emulator.
 
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::cil_emulator::{StubInput, StubOutput, emulate_stub};

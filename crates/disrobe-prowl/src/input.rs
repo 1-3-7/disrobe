@@ -4,8 +4,7 @@ use serde_json::Value;
 
 use crate::filter::host_of;
 
-/// Normalizes a raw target line into a bare host. URLs are reduced to their host; bare
-/// domains pass through. Empty / comment lines yield `None`.
+/// Normalizes a raw target line into a bare host.
 #[must_use]
 pub fn normalize_target(raw: &str) -> Option<String> {
     let line: &str = raw.trim();
@@ -27,8 +26,7 @@ pub fn normalize_target(raw: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
-/// Parses one-target-per-line text (a `--targets-file` or stdin), de-duplicating while
-/// preserving first-seen order.
+/// Parses one-target-per-line text (a `--targets-file` or stdin), de-duplicating while preserving first-seen order.
 #[must_use]
 pub fn parse_target_lines(text: &str) -> Vec<String> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -44,11 +42,7 @@ fn finding_is_url_or_ip(category: Option<&str>) -> bool {
     matches!(category, Some("url" | "ipv4" | "ipv6" | "domain"))
 }
 
-/// Reads targets from a disrobe recon report (`disrobe.recon/v0`) or an indicator report
-/// (`disrobe.ioc/v0`), pulling the URL / domain / IP indicators so a recon sweep can feed
-/// a follow-up harvest.
-///
-/// Recognizes either schema by its `findings`/`indicators` array shape.
+/// Reads targets from a disrobe recon report (`disrobe.recon/v0`) or an indicator report (`disrobe.ioc/v0`), pulling the URL / domain / IP indicators so a recon sweep can feed a follow-up harvest.
 #[must_use]
 pub fn targets_from_disrobe_report(json: &str) -> Vec<String> {
     let Ok(value): Result<Value, _> = serde_json::from_str(json) else {

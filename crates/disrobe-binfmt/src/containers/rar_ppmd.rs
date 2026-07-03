@@ -1237,13 +1237,6 @@ fn copy_string(out: &mut Vec<u8>, length: u32, distance: u32, want: usize) -> Re
 }
 
 /// Decode a rar 2.9/3.x ppmd (variant H, the `Ppmd7` model) compressed member body.
-///
-/// `packed` is the member's compressed stream beginning at the byte-aligned
-/// ppmd block start. The rar 2.9/3.x format signals a ppmd block by setting the
-/// top bit of that first byte, which is also the model-init max-order byte; the
-/// model-init sequence (reset flag, suballocator size, escape char) follows the
-/// unrar decode-init order. Symbols are decoded through the carryless range coder,
-/// with the ppmd escape byte dispatching the in-stream lz and rle matches.
 pub fn unpack3_ppmd(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
     if unpacked_size > cap {
         return Err(Error::Decompression(format!(

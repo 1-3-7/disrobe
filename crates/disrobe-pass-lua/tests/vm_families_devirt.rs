@@ -8,19 +8,7 @@
     clippy::cast_possible_wrap
 )]
 
-//! Scope, stated honestly: every payload here is encoded in disrobe's OWN reference VM container
-//! (the `DVM1`/builder `DPB1` format defined in `vm_devirt`), NOT in any named obfuscator's real
-//! wire format. These tests prove that when a family marker routes a `VMPAYLOAD=` blob into the
-//! reference container, disrobe round-trips that container back to runnable Lua: the devirtualizer
-//! reconstructs the opcode permutation and xor key by emulating the bootstrap program (no circular
-//! grading), and `assert_executes_like_original` runs the recovered Lua under a real `lua`
-//! interpreter and compares stdout to the known original. The external oracle is the Lua runtime.
-//!
-//! What these tests do NOT prove: real-sample devirtualization of any named Lua VM obfuscator
-//! family. The upstream tools are dead-upstream or paid and no captured real sample is on hand, so
-//! the named families' real bytecode formats are unverified here. A family marker only selects the
-//! reference-container path; defeating the real product is unproven. The genuinely runtime-keyed
-//! Luraph sample stays an honest info-theoretic wall (`luraph_real_runtime_key_is_honest_wall`).
+//! Scope: every payload uses disrobe's own reference VM container (`DVM1`/`DPB1`), not any named obfuscator's real wire format.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

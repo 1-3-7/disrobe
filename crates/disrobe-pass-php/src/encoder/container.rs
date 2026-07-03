@@ -250,13 +250,6 @@ fn body_after_marker_line(
 }
 
 /// Reverses the statically-present ionCube transport into the opcode stream.
-///
-/// Parses the `//00XX` marker line, then the base64-encoded container body. The decoded body
-/// carries a fixed [`CONTAINER_HEADER_LEN`]-byte header (magic, loader version, flags, declared
-/// opcode-stream length) followed by an optional zlib layer over the opcode stream. The header and
-/// transport are recovered in full; the residual is the opcode stream, which is a Zend `op_array`
-/// when the build emitted one without the loader-held symmetric key and is the proprietary
-/// encrypted VM body otherwise.
 pub fn reverse_ioncube_container(
     envelope: &[u8],
     marker_offset: usize,
@@ -319,12 +312,6 @@ pub fn reverse_ioncube_container(
 }
 
 /// Reverses the statically-present `SourceGuardian` transport into the opcode stream.
-///
-/// Modern builds carry the encrypted container in the `sg_load('<base64>')` argument; legacy builds
-/// carry it as a base64 body after the `//SGV` banner line. Either way the decoded body has the
-/// fixed header followed by an optional zlib layer over the opcode stream. The residual is a Zend
-/// `op_array` when no loader-held session key was applied and the proprietary encrypted VM body
-/// otherwise.
 pub fn reverse_sourceguardian_container(envelope: &[u8]) -> Result<ContainerSurface> {
     const FAMILY: &str = "SourceGuardian";
     let decoded: Vec<u8> = if let Some(call_at) = memmem::find(envelope, b"sg_load('") {
@@ -469,11 +456,6 @@ fn build_container_body(
 }
 
 /// Builds an ionCube-shaped envelope around `opcode_stream`.
-///
-/// Uses the exact framing [`reverse_ioncube_container`] parses: the `//00XX` marker line, then
-/// base64 of the fixed header plus the opcode stream (zlib-compressed first when `zlib` is set).
-/// This documents the container layout and drives the recovery oracle; it does not encrypt, so it
-/// is not a real encoder.
 pub fn build_ioncube_container(
     marker_line: &[u8],
     version: u32,
@@ -498,9 +480,6 @@ pub fn build_ioncube_container(
 }
 
 /// Builds a `SourceGuardian`-shaped `sg_load('<base64>')` envelope around `opcode_stream`.
-///
-/// Uses the exact framing [`reverse_sourceguardian_container`] parses. Documents the layout and
-/// drives the oracle; it does not encrypt and is not a real encoder.
 pub fn build_sourceguardian_container(
     version: u32,
     flags: u32,
@@ -546,10 +525,6 @@ fn zlib_compress(family: &'static str, data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Builds a Zend Guard `@Zend;` envelope whose opcode stream is XOR-obfuscated by a `ZOBF` key.
-///
-/// The length-prefixed key is carried inline in the header, the layout [`surface_zend_guard`] and
-/// [`crate::scan_key`] de-obfuscate. The free Zend Optimizer applies this transform without a
-/// license, so it is statically reversible; this documents the layout and drives the oracle.
 pub fn build_zend_guard_obfuscated(
     version: u8,
     key: &[u8],
@@ -579,13 +554,7 @@ pub fn build_zend_guard_obfuscated(
 
 pub const SYNTHETIC_TRANSPORT_FRAME_MAGIC: [u8; 4] = *b"ICF1";
 
-/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `ionCube`-shaped
-/// envelope built around the disrobe-internal [`SYNTHETIC_TRANSPORT_FRAME_MAGIC`].
-///
-/// This is a transport-layer demonstration only: real `ionCube` output carries no `ICF1`
-/// frame magic, so on a real sample this returns [`Error::ContainerBadFraming`] and the
-/// caller walls to [`crate::DecodeOutcome::StructuralOnly`]. It never reconstructs source
-/// (`source_reconstructed` is always `false`); the residual is proprietary VM opcodes.
+/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `ionCube`-shaped envelope built around the disrobe-internal [`SYNTHETIC_TRANSPORT_FRAME_MAGIC`].
 pub fn synthetic_transport_surface_ioncube(
     envelope: &[u8],
     marker_offset: usize,
@@ -667,14 +636,7 @@ pub fn synthetic_transport_surface_ioncube(
     })
 }
 
-/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `SourceGuardian`-shaped
-/// `sg_load('<base64>')` envelope.
-///
-/// This is a transport-layer demonstration only: a real `sg_load` argument is the proprietary
-/// `SourceGuardian` encrypted blob, not base64-of-zlib plaintext, so the residual here is still
-/// ciphertext. It never reconstructs source (`source_reconstructed` is always `false`), and the
-/// real [`crate::sourceguardian_encoder::decode`] path does not route through it (it walls to
-/// [`crate::DecodeOutcome::StructuralOnly`]).
+/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `SourceGuardian`-shaped `sg_load('<base64>')` envelope.
 pub fn synthetic_transport_surface_sourceguardian(envelope: &[u8]) -> Result<ContainerSurface> {
     const FAMILY: &str = "SourceGuardian";
     const NEEDLE: &[u8] = b"sg_load('";

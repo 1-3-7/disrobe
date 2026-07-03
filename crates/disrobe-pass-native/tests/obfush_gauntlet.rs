@@ -1,9 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real obfus.h gauntlet. `sample.obfush.exe` is a real C program compiled with the actual
-//! obfus.h macro library (via TCC, its documented target compiler). These are the
-//! authoritative non-circular gate for obfus.h detection: disrobe must recognize the real
-//! `.obfh` signature section on the obfuscated build and NOT on the clean baseline. No
-//! self-authored fixture stands in for the real bytes.
+//! Real obfus.h gauntlet.
 
 use disrobe_pass_native::{ObfuscatorFamily, ObfuscatorHit, detect_obfuscators};
 

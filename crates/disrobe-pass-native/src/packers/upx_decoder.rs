@@ -74,20 +74,7 @@ impl UpxPackHeader {
         })
     }
 
-    /// Locate the `PackHeader` when UPX-Patcher-class tampering has stripped the `UPX!` magic,
-    /// renamed the `UPX0`/`UPX1` sections, and perturbed the version/format bytes.
-    ///
-    /// The version byte is purely advisory for decompression: only the method id, `u_len`,
-    /// `c_len`, and `u_adler` drive the unpacker, so a tampered version must not gate detection.
-    /// On a real input several windows can pass a length-only sanity screen by coincidence (a
-    /// random 32-byte run carrying a valid method id and a `c_len <= u_len <= file` pair), and on
-    /// the rg fixture the lone version-plausible window is one such false positive sitting ahead of
-    /// the true header. The only field a scrambler cannot fake without breaking the stub's own
-    /// self-extraction is the compressed payload itself, so every length-consistent candidate is
-    /// confirmed by actually decompressing it and matching the recovered image against the header's
-    /// own `u_adler`. Version-plausible windows are screened first because the genuine header is
-    /// usually one, which keeps the clean-file cost to a single verification. The verification
-    /// count is bounded so a hostile input cannot drive an unbounded sequence of decompressions.
+    /// Locate the `PackHeader` when UPX-Patcher-class tampering has stripped the `UPX!` magic, renamed the `UPX0`/`UPX1` sections, and perturbed the version/format bytes.
     fn locate_structural(packed: &[u8]) -> Option<Self> {
         if packed.len() < PACK_HEADER_LEN {
             return None;

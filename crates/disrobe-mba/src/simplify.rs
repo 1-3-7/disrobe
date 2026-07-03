@@ -389,16 +389,7 @@ fn synthesize_bitwise_unary(expr: &Expr, width: Width) -> Expr {
     universal_bitwise_form(id_mask, not_mask, one_mask, mask)
 }
 
-/// The canonical minimal form of a single-variable bitwise function of `v0` at
-/// `width`. Every output bit is `0`, `1`, `v0`, or `~v0`; the four masks name
-/// which bits do what. The value equals `((v0 ^ not_mask) & keep_mask) | one_mask`
-/// with `keep_mask = id_mask | not_mask`: XOR flips the `not` bits, the AND keeps
-/// only the input-dependent bits (dropping the `one`/`zero` positions), and the OR
-/// sets the constant-one bits. Zero-bits fall out because they are absent from every
-/// mask. Each factor collapses when its mask is trivial, so pure `~`, `&`, `|`, and
-/// `^` shapes reduce to the obvious two-node forms. The result is width-independent
-/// by construction, so the caller's exact oracle (exhaustive on narrow widths, the
-/// bit-blast verifier on wide ones) can prove it before it is emitted.
+/// The canonical minimal form of a single-variable bitwise function of `v0` at `width`.
 fn universal_bitwise_form(id_mask: u64, not_mask: u64, one_mask: u64, mask: u64) -> Expr {
     let keep_mask: u64 = id_mask | not_mask;
     if keep_mask == 0 {

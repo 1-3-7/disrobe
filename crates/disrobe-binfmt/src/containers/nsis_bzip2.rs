@@ -499,21 +499,11 @@ fn push_run(out: &mut Vec<u8>, byte: u8, count: i32, cap: usize) -> Result<()> {
 }
 
 /// Decompress an NSIS modified-bzip2 stream to at most `cap` bytes.
-///
-/// NSIS ships a documented bzip2 variant whose stream framing omits the standard
-/// `BZh` header, the per-block magic, the block randomisation bit, and the block
-/// and stream CRCs: each block begins with a single `0x31` tag (or `0x17` for
-/// end of stream) followed directly by the 24-bit `origPtr`. The Burrows-Wheeler
-/// inverse, MTF, RLE2 and Huffman stages are byte-identical to standard bzip2.
 pub fn decompress(input: &[u8], cap: u64) -> Result<Vec<u8>> {
     Ok(decompress_counting(input, cap)?.0)
 }
 
 /// Like [`decompress`] but also returns the number of input bytes consumed.
-///
-/// The count runs up to and including the byte holding the stream-end tag. NSIS
-/// byte-aligns each stream, so this is the offset at which a following stream
-/// (the first file payload in non-solid archives) begins.
 pub fn decompress_counting(input: &[u8], cap: u64) -> Result<(Vec<u8>, usize)> {
     let cap_usize: usize =
         usize::try_from(cap.min(u64::from(u32::MAX) * 4)).map_or(usize::MAX, |value: usize| value);

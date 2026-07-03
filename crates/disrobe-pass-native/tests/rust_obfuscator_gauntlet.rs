@@ -1,9 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real rust-obfuscator gauntlet. `sample.obfuscated.exe` is a real Rust program obfuscated
-//! by the actual rust-obfuscator tool (cryptify string encryption + control-flow) and compiled
-//! to native. These are the authoritative non-circular gate for cryptify/rust-obfuscator
-//! detection: disrobe must recognize the cryptify decrypt signature on the obfuscated build
-//! and NOT on the clean baseline. No self-authored fixture stands in for the real bytes.
+//! Real rust-obfuscator gauntlet.
 
 use disrobe_pass_native::{ObfuscatorFamily, ObfuscatorHit, detect_obfuscators};
 

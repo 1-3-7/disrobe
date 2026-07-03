@@ -50,9 +50,7 @@ pub struct ChainConfig {
     pub max_parallel_branches: u32,
     pub capture_stage_bytes: bool,
     pub persist_children: bool,
-    /// When true, extracted children are handed to the run sink as produced and NOT retained
-    /// in `ChainPlan.extracted`, so a large carved payload is streamed to disk instead of
-    /// buffered in memory until the chain finishes.
+    /// When true, extracted children are handed to the run sink as produced and NOT retained in `ChainPlan.extracted`.
     pub stream_extracted: bool,
 }
 
@@ -122,9 +120,7 @@ impl ChainPlan {
 }
 
 pub trait PassRunner {
-    /// Run the picked pass over `bytes`, taking ownership so the runner can move the buffer into the
-    /// pass `Artifact` rather than copying it. For a multi-hundred-MB seed this avoids a full extra
-    /// resident copy per pass; the driver does not read the input bytes after this call.
+    /// Run the picked pass over `bytes`, taking ownership so the runner can move the buffer into the pass `Artifact` rather than copying it.
     fn run(
         &self,
         pick: &DetectorPick,

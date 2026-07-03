@@ -8,22 +8,7 @@
     clippy::doc_markdown
 )]
 
-//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real
-//! CPython 3.10 interpreter.
-//!
-//! Companion to `arbitrary_recompile_gate.rs` (3.14), `arbitrary_recompile_gate_312.rs` (3.12), and
-//! `arbitrary_recompile_gate_315.rs` (3.15). The harness is reused verbatim; only the interpreter is
-//! different. 3.10 is the weakest supported band because pre-3.11 exception handling is structured
-//! from SETUP_FINALLY block ops rather than a zero-cost exception table: the handler region of a
-//! module-scope try/except must terminate at that construct's own re-raise, not the last re-raise in
-//! the whole module, or every continuation statement (and the classes and functions defined after the
-//! try) is dropped. disrobe bounds the pre-3.11 handler region to the owning construct, recovering the
-//! continuation that a whole-module scan loses. This gate locks the recovery so a regression cannot
-//! return silently.
-//!
-//! The oracle is non-circular: the harness grades disrobe's recovered source against a real CPython
-//! 3.10 recompile of that source, never against disrobe's own re-emission. Absent a 3.10 interpreter
-//! the gate is skipped explicitly (it cannot measure), never passed silently.
+//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real CPython 3.10 interpreter.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -31,17 +16,7 @@ use std::process::{Command, Stdio};
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-/// Floor enforced in CI. The measured per-code-object recompile-equivalence on the pinned corpus
-/// under CPython 3.10.20 is 92.74% (5062 of 5458 code objects across 161 of the 200 pinned modules;
-/// 39 pinned 3.14 modules are absent from the 3.10 Lib). Recovering the pre-3.11 subscript augmented
-/// assignment (DUP_TOP_TWO was collapsed to a single-value dup, mangling the store target), the
-/// pre-3.11 ROT-run simultaneous tuple assignment, classifying an unconditional back-edge whose
-/// last in-loop conditional is a bottom test as a genuine `while COND:` (keeping the body's own
-/// leading operand load instead of dropping it to a synthesized `None`), and recovering a `while True:`
-/// that wraps a `try` whose only exits are inner breaks (instead of dropping the loop) lifted the
-/// measured value over the prior 91.96%. The floor sits below the measured value so a real regression
-/// trips it while normal interpreter-patch jitter does not. Raise it only with a measured run behind
-/// the change; never lower it to mask a regression.
+/// Floor enforced in CI.
 const OBJECT_PCT_FLOOR: f64 = 90.0;
 
 #[derive(Debug)]

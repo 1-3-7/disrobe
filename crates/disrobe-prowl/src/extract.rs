@@ -84,9 +84,6 @@ fn push_network_iocs(text: &str, source: Source, out: &mut Vec<Ioc>) {
 }
 
 /// Derives structured indicators from the URL hosts of a harvest plus extra text blobs.
-///
-/// URL hosts become subdomains/domains; `texts` are scanned for IPs, emails, hashes
-/// (`md5`/`sha1`/`sha256`) and ASNs.
 #[must_use]
 pub fn extract_iocs(urls: &[HarvestedUrl], texts: &[(Source, String)]) -> Vec<Ioc> {
     let mut out: Vec<Ioc> = Vec::new();

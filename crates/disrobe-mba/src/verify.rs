@@ -250,13 +250,7 @@ impl Bdd {
         }
     }
 
-    /// A `Mem(addr, width)` read is an uninterpreted term: each distinct
-    /// `(addr, width)` pair (compared structurally via the address's rendered
-    /// form) maps to one fresh, opaque per-bit variable vector that is reused
-    /// across the lhs and rhs blasts of a single equivalence query. The blaster
-    /// never reasons about what the address resolves to, so two reads are
-    /// provable-equal only when their addresses are structurally identical;
-    /// distinct reads stay independent and can never be falsely proven equal.
+    /// A `Mem(addr, width)` read modeled as an uninterpreted term keyed structurally by its `(addr, width)` pair.
     fn mem_opaque_bits(&mut self, key: (String, Width), bits: usize) -> Option<Vec<NodeId>> {
         if let Some(existing) = self.mem_vars.get(&key) {
             return Some(existing.clone());

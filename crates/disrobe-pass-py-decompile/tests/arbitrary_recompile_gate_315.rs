@@ -8,19 +8,7 @@
     clippy::doc_markdown
 )]
 
-//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real
-//! CPython 3.15 interpreter.
-//!
-//! Companion to `arbitrary_recompile_gate.rs` (which pins 3.14). The harness is reused verbatim;
-//! only the interpreter is different. 3.15 (3.15.0b1) introduced the PEP 810 lazy-import oparg
-//! encoding, where `IMPORT_NAME`'s oparg packs the `co_names` index in `arg >> 2` with two low flag
-//! bits. Before the decoder learned that shift, every module that imports anything desynced and
-//! fell back to a disasm listing, collapsing 3.15 to ~46% per-code-object equivalence. This gate
-//! locks the recovery so that regression cannot return silently.
-//!
-//! The oracle is non-circular: the harness grades disrobe's recovered source against a real CPython
-//! 3.15 recompile of that source, never against disrobe's own re-emission. Absent a 3.15
-//! interpreter the gate is skipped explicitly (it cannot measure), never passed silently.
+//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real CPython 3.15 interpreter.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,14 +16,7 @@ use std::process::{Command, Stdio};
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-/// Floor enforced in CI. The measured per-code-object recompile-equivalence on the pinned corpus
-/// under CPython 3.15.0b1 is 93.86% (6074 of 6471 code objects across 199 of the 200 pinned
-/// modules; one module is absent from the 3.15 Lib). The cross-version simultaneous tuple-swap
-/// recovery lifted this from the prior 93.66%, and recovering a `while True:` that wraps a `try`
-/// whose only exits are inner breaks (instead of dropping the loop) added the most recent object.
-/// The floor sits below the measured value so a real regression trips it while normal interpreter-beta
-/// jitter does not. Raise it only with a measured run behind the change; never lower it to mask a
-/// regression.
+/// Floor enforced in CI.
 const OBJECT_PCT_FLOOR: f64 = 90.0;
 
 #[derive(Debug)]

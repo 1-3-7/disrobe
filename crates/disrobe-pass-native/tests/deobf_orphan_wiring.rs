@@ -1,10 +1,4 @@
-//! Reachability gate for the three native anti-obfuscation defeats that the section audit
-//! found published but unwired: register copy-propagation + dead-store elimination, MBA
-//! simplification of opaque-predicate expressions, and correlated-branch dead-path proof.
-//! Each is now driven by `analyze_deobf_report`, the exact entry the production `NativePass`
-//! and the chain-driven `deobf.json` child both call, so a populated field here means the
-//! capability reaches the user surface. Correctness of each defeat is graded by its own
-//! crate unit tests against an independent oracle; this test only proves the wiring.
+//! Reachability gate proving the three native anti-obfuscation defeats (copy-propagation + dead-store elimination, MBA opaque-predicate simplification, correlated-branch dead-path proof) are wired to the production entry point.
 
 #![allow(
     clippy::expect_used,

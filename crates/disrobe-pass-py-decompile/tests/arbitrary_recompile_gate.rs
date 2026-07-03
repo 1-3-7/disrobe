@@ -9,16 +9,6 @@
 )]
 
 //! Per-code-object recompile-equivalence gate over a pinned CPython 3.14 stdlib corpus.
-//!
-//! This is the committed home of the flagship Python recovery number. The measurement itself
-//! lives in `tests/harness/py_arbitrary_measure.py`; this test drives it: it resolves a real
-//! CPython 3.14 interpreter, locates the built `disrobe` binary, runs the harness over the pinned
-//! 200-module corpus, parses the JSON it prints, and asserts a hard floor on the per-code-object
-//! recompile-equivalence percentage.
-//!
-//! The oracle is non-circular: the harness grades disrobe's recovered source against a real
-//! CPython recompile of that source, never against disrobe's own re-emission. Absent a 3.14
-//! interpreter the gate is skipped explicitly (it cannot measure), never passed silently.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,15 +16,7 @@ use std::process::{Command, Stdio};
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-/// Floor enforced in CI. The measured per-code-object recompile-equivalence on the pinned 3.14
-/// corpus is 94.42% (5935 of 6286 code objects on CPython 3.14.5), lifted from 94.18% by the
-/// simultaneous tuple-swap recovery that folds the SWAP/ROT reordering run into a single tuple
-/// assignment, then by one more object from negating a jump-if-true `not` guard whose fall-through arm
-/// continues to the loop head, and by recovering a `while True:` that wraps a `try` whose only exits
-/// are inner breaks instead of dropping the loop (see the 3.12 gate for the full description; both
-/// fixes are cross-version). The floor sits below the measured value so a real regression trips it
-/// while normal interpreter-patch jitter does not. Raise it only with a measured run behind the
-/// change; never lower it to mask a regression.
+/// Floor enforced in CI.
 const OBJECT_PCT_FLOOR: f64 = 90.0;
 
 #[derive(Debug)]

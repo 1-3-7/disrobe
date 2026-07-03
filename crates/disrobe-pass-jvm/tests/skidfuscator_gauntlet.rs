@@ -1,10 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real Skidfuscator 2.0.11 gauntlet. `Sample-skid.class` is a real class obfuscated by
-//! the actual Skidfuscator tool (GEN3 integer obfuscation: an XOR-seed local from which
-//! every real constant is recomputed via `ldc K; iload seed; ixor; i2b`). These tests are
-//! the authoritative non-circular gate for the `const_fold` pass: they assert the encoded
-//! `n > 10` / `n * 2` semantics fold back to literals on real obfuscator bytes, never on a
-//! self-authored fixture.
+//! Real Skidfuscator 2.0.11 gauntlet.
 
 use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
 

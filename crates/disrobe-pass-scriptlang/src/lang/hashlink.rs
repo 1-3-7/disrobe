@@ -693,11 +693,6 @@ impl<'a> Reader<'a> {
 }
 
 /// Parse a `HashLink` `.hl` bytecode image into its full structured form.
-///
-/// Reaching `Ok` with `bytes_consumed == total_len` means every section, type,
-/// register, and opcode decoded with correct stream alignment end to end.
-/// A single wrong opcode arg-count or misordered section desyncs the reader and
-/// surfaces as an [`HlError`] rather than a fabricated value.
 pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
     if data.len() < 4 || &data[0..3] != HL_MAGIC {
         return Err(HlError::BadMagic);

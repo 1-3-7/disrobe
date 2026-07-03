@@ -1,11 +1,4 @@
 //! OLLVM deobfuscation tests.
-//!
-//! The authoritative non-circular gate is the `real_ollvm_*` set: it runs disrobe against
-//! function bytes emitted by a real ollvm-16 compiler (`corpus/native/ollvm/*.bin`). The
-//! `*_self_authored_*` tests assemble idealized shapes with iced-x86 and exercise the
-//! linear-cmp-chain / clean-register-sequence path some non-OLLVM tools also emit; they are
-//! NOT a substitute for the real-bytes gate (they once masked a capability gap by being
-//! shaped to disrobe's own model) and must never be the only coverage for a recovery claim.
 
 #![allow(
     clippy::expect_used,

@@ -305,19 +305,7 @@ impl Packer {
         )
     }
 
-    /// `DotNetPatcher` and `NetCryptor` are CLR-layer families. Native packer recovery should not
-    /// claim them as a body-erasure wall; the PE still carries managed metadata and IL-shaped
-    /// recovery surfaces, so routing belongs to the .NET pass.
-    ///
-    /// `AsProtect`, `Morphine`, `NPack`, `NeoLite`, `PolyCryptor`, and `WarzoneCrypter` are
-    /// `StubEvalPending`: the stub emulator is built and validated byte-exact against
-    /// spec-constructed stubs, including a per-seed polymorphic decrypt stub (register-permuted,
-    /// junk-interleaved, `push oep; ret` transfer) that the emulator recovers byte-exact across
-    /// every permutation. Recovery on a real captured packed sample is still unproven: the
-    /// `AsProtect` 32-bit trial has been pulled from the vendor and `Morphine` is a rootkit-toolkit
-    /// crypter that is not run here, so neither yields a vendor sample (acquisition recorded in the
-    /// packer corpus manifest). The catalog therefore advertises `Partial` rather than a `Full`
-    /// recovery claim with no real-sample evidence.
+    /// The native unpacker-catalog recovery status advertised for this packer family.
     #[must_use]
     pub const fn unpacker_status(self) -> UnpackerStatus {
         match self {
@@ -788,12 +776,7 @@ pub fn detect(bytes: &[u8]) -> Vec<Detection> {
     found.into_values().collect()
 }
 
-/// Detect UPX by its `PackHeader` structure when the `UPX!` marker is corrupted and the
-/// `UPX0`/`UPX1` section names are renamed.
-///
-/// The `PackHeader` carries a known method id, self-consistent compressed/uncompressed lengths,
-/// and a plausible version; a 32-byte window matching all of those is the structural signal a
-/// scrambler cannot remove without breaking the packed stub's own ability to self-extract.
+/// Detect UPX by its `PackHeader` structure when the `UPX!` marker is corrupted and the `UPX0`/`UPX1` section names are renamed.
 fn detect_upx_structural(bytes: &[u8]) -> Option<Detection> {
     let header: UpxPackHeader = UpxPackHeader::locate_and_parse(bytes).ok()?;
     Some(Detection {

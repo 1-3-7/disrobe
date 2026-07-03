@@ -326,11 +326,6 @@ const LIBRARY_PATH_MARKERS: &[&str] = &[
 ];
 
 /// Whether a recovered `co_filename` is the user's own source rather than a bundled library.
-///
-/// Nuitka preserves each module's original `co_filename`. Application modules carry a
-/// project-relative path (`sample_app\core.py`, `__main__.py`); stdlib and site-packages modules
-/// carry a library path (`.../site-packages/...`, `.../lib/python3.x/...`) or an absolute system
-/// path. A bare relative path with no library marker and no drive/root prefix is the app.
 #[must_use]
 pub fn filename_is_app_source(filename: &str) -> bool {
     if filename.is_empty() {
@@ -350,13 +345,6 @@ pub fn filename_is_app_source(filename: &str) -> bool {
 }
 
 /// Classify a module, using its recovered `co_filename` to refine the App/ThirdParty boundary.
-///
-/// Nuitka stores a package-relative `co_filename` (`numpy\_core.py`, `sample_app\core.py`) with the
-/// install prefix stripped, so the path alone cannot separate the user's app from a bundled
-/// library. The filename does reliably mark stdlib/frozen/absolute-system modules as not-app. The
-/// app-vs-third-party decision then runs through the name-based [`classify`] (entry-stem-matched
-/// `app_packages` plus the stdlib and known-third-party tables). The entry module (`__main__`,
-/// whose `co_filename` is `__main__.py` and whose name is in no library table) resolves to App.
 #[must_use]
 pub fn classify_with_filename(
     module_name: &str,
@@ -471,12 +459,6 @@ const KNOWN_THIRD_PARTY_TOP: &[&str] = &[
 ];
 
 /// The user's own top-level packages.
-///
-/// The application entry module is named after the build target, so `big_app.exe` carries a
-/// `big_app` package; bundled libraries (numpy, torch) are not the app. When `entry_stem` is
-/// known (the dedicated CLI path), the stem-matching package wins. When it is absent (the chain
-/// path sees only bytes), the application is inferred as any compiled top-level package that is
-/// neither stdlib nor a well-known third-party library.
 #[must_use]
 pub fn infer_app_packages(entry_stem: Option<&str>, module_names: &[String]) -> Vec<String> {
     let stem: Option<String> = entry_stem.map(|s: &str| s.to_ascii_lowercase());

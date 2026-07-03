@@ -190,15 +190,7 @@ fn decode_folder(bytes: &[u8], folder: Folder, header: &Header) -> Result<Vec<u8
     Ok(out)
 }
 
-/// Extract files from a cabinet whose folders use the LZMS compression type
-/// (`typeCompress & 0x0f == 5`).
-///
-/// The `cab` crate rejects this type outright, so the cabinet structure is
-/// parsed in-tree and each LZMS `CFDATA` block is routed through our LZMS
-/// decoder. Each block holds one independently-compressed LZMS chunk whose
-/// uncompressed length is the block's `cbUncomp` field. The round trip is
-/// validated against cabinets emitted by [`build_lzms_cab`], which compresses
-/// with our in-tree LZMS encoder.
+/// Extract files from a cabinet whose folders use the LZMS compression type (`typeCompress & 0x0f == 5`).
 pub fn extract_cab_lzms(bytes: &[u8], cap: u64) -> Result<Vec<CabLzmsFile>> {
     let (header, folders, _): (Header, Vec<Folder>, usize) = parse_header_and_folders(bytes)?;
     let files: Vec<File> = parse_files(bytes, &header)?;
@@ -249,14 +241,7 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-/// Build a spec-conformant LZMS-compressed cabinet holding `files` in a single
-/// folder, each chunk compressed with the in-tree LZMS encoder.
-///
-/// The folder's logical stream is the concatenation of every file's bytes. It
-/// is split into `CFDATA` blocks of at most 32768 uncompressed bytes; each block
-/// is one independently LZMS-compressed chunk, falling back to a stored block
-/// (`cbUncomp == 0`) when compression would not shrink it. This is the inverse
-/// of [`extract_cab_lzms`] and is used to validate that path by round trip.
+/// Build a spec-conformant LZMS-compressed cabinet holding `files` in a single folder, each chunk compressed with the in-tree LZMS encoder.
 #[must_use]
 pub fn build_lzms_cab(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut folder_stream: Vec<u8> = Vec::new();

@@ -78,14 +78,6 @@ impl From<Object> for ConstValue {
 }
 
 /// Collapse every NaN payload to one representative bit pattern.
-///
-/// All NaNs are one value under Python float semantics, but IEEE-754 leaves the
-/// NaN produced by `inf * 0` sign- and payload-defined, so x86 SSE (`0xfff8...`,
-/// sign set) and ARM (`0x7ff8...`, sign clear) fold the same source to different
-/// bits. Comparing raw `to_bits()` would flag a byte-perfect NaN recovery as a
-/// diff purely because the recompiling host is a different architecture, so NaNs
-/// are canonicalized while finite floats and the two signed infinities keep their
-/// exact bits (there the sign is semantically load-bearing).
 #[must_use]
 fn canonical_float_bits(f: f64) -> u64 {
     if f.is_nan() {

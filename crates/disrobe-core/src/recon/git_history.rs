@@ -57,14 +57,7 @@ struct CommitMeta {
     time_unix: i64,
 }
 
-/// Scans every reachable commit's added or changed blobs for the same secret,
-/// endpoint, and IOC signals as the working-tree scanner, attributing each
-/// finding to the commit SHA, author, and in-repo path.
-///
-/// A working-tree walk only sees the current checkout; this walks history, so a
-/// secret that was committed and later deleted is still surfaced. Each blob is
-/// read once per `(commit, oid)` pair under a per-blob and total-count budget so
-/// a pathological repository cannot exhaust memory.
+/// Scans every reachable commit's added or changed blobs for the same secret, endpoint, and IOC signals as the working-tree scanner, attributing each finding to the commit SHA, author, and in-repo path.
 pub fn report_git(
     repo_path: &Path,
     opts: &GitHistoryOptions,

@@ -1,13 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Vendor firmware decryptor / carver oracle.
-//!
-//! Real vendor firmware is consent-gated, so the decryptor cases below are
-//! SPEC-CONSTRUCTED (documented-key) validation: a known inner plaintext that
-//! carries a real inner-format magic is encrypted with the documented
-//! key/IV/algorithm, wrapped in the documented header, and the handler must
-//! recover the exact inner bytes. Real-sample validation is pending
-//! firmware-sourcing consent. The carve-only cases spec-construct the
-//! container and assert byte-exact member carves plus CRC verification.
 
 use std::path::PathBuf;
 

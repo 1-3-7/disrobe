@@ -830,10 +830,6 @@ fn base32_decode_rfc4648(s: &str) -> Option<Vec<u8>> {
 }
 
 /// Offline structural verification of a candidate secret.
-///
-/// No network is used: the check decodes the token's own embedded structure (AWS
-/// account-id base32 payload, JWT base64url header) or applies a format
-/// constraint, returning the confidence that the value is a real credential.
 #[must_use]
 pub fn validate(kind: SecretKind, value: &str) -> Confidence {
     if is_allowlisted(value) {

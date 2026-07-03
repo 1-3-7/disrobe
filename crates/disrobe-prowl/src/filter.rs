@@ -78,8 +78,6 @@ fn target_scopes_url(host: &str, targets: &[String], subs: bool) -> bool {
 }
 
 /// Applies the URL filters, scopes each URL to one of `targets`, and de-duplicates.
-/// `targets` may be empty (no host scoping, e.g. threat-feed harvests that legitimately
-/// return off-target malware URLs).
 #[must_use]
 pub fn apply_url_filters(
     urls: Vec<HarvestedUrl>,
@@ -161,8 +159,7 @@ pub fn apply_url_filters(
     out
 }
 
-/// De-duplicates indicators (by `kind`+`value`), keeps the first-seen source, applies any
-/// requested `ioc_kinds` allow-list, and sorts for stable output.
+/// De-duplicates indicators (by `kind`+`value`), keeps the first-seen source, applies any requested `ioc_kinds` allow-list, and sorts for stable output.
 #[must_use]
 pub fn apply_ioc_filters(iocs: Vec<Ioc>, filter: &Filter) -> Vec<Ioc> {
     let allow: BTreeSet<IocKind> = filter.ioc_kinds.iter().copied().collect();

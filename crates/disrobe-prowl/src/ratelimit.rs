@@ -26,8 +26,7 @@ impl Default for RateConfig {
     }
 }
 
-/// Per-host token-bucket limiter. Independent hosts never block one another, so a wide fan-out
-/// across distinct services runs fully concurrent while each individual host stays polite.
+/// Per-host token-bucket limiter.
 #[derive(Debug, Clone)]
 pub struct HostRateLimiter {
     config: RateConfig,
@@ -60,7 +59,6 @@ impl HostRateLimiter {
     }
 
     /// Blocks until a token is available for `host`, refilling at the configured per-host rate.
-    /// A `per_host_rps <= 0` disables limiting (returns immediately).
     pub async fn acquire(&self, host: &str) {
         if self.config.per_host_rps <= 0.0 {
             return;

@@ -143,19 +143,6 @@ fn scan_keywords(haystack: &[u8], counts: &mut BTreeMap<String, u32>) {
 }
 
 /// Peels one XOR layer from a cryptic-bytes wasm miner.
-///
-/// The obfuscator encrypts the miner payload that lives in the module's data
-/// segments and decrypts it at runtime inside an in-module XOR loop keyed by a
-/// single byte. The module header, type/function/code structure, and section
-/// framing are never encrypted, so peeling XORs only the data-segment payload
-/// bytes (the genuinely encrypted region) and leaves the rest of the module
-/// untouched, re-emitting valid wasm rather than mutating the raw byte stream.
-///
-/// The recovered module is checked with [`wasmparser::validate`]. If detection
-/// did not fire, no key was recovered, or the decrypted module fails to
-/// validate, the function reports honest non-recovery (`peeled_layer_bytes`
-/// is `0` and `cleaned_bytes` is the unmodified input) instead of emitting a
-/// corrupt blob.
 pub fn peel_xor_layer(input: &[u8]) -> Result<CrypticBytesPeel> {
     let detection: CrypticBytesDetection = detect(input)?;
     if !detection.matched || detection.xor_keys.is_empty() {

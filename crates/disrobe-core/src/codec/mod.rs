@@ -1,15 +1,4 @@
 //! Shared encoding, framing, and cipher recovery primitives reusable by every pass.
-//!
-//! Submodules supply individual decoders; this module supplies the [`DecodeError`]
-//! all of them share, the [`Scheme`] enumeration, a single-scheme [`decode`] entry
-//! point, and an oracle-gated [`blind_cascade`] that tries every scheme and keeps
-//! only results that independently validate.
-//!
-//! Every decoder is bounded against its worst-case expansion, and the cascade
-//! accepts a candidate only when it passes a non-trivial validator (nested magic,
-//! a Python `marshal`/`pyc` header, or a high printable ratio with real words),
-//! never on byte output alone, so a decompression bomb or a coincidentally
-//! decodable blob is rejected.
 
 pub mod alphabets;
 pub mod cipher;
@@ -202,10 +191,6 @@ fn nested_magic(bytes: &[u8]) -> bool {
 }
 
 /// Reports whether `bytes` begins with a known nested-container or executable magic.
-///
-/// Callers peeling encoding layers use this to advance a decode whose output is a
-/// further container (a PE/ELF, an archive, a compressed stream) even when the bytes
-/// themselves are not printable text.
 #[must_use]
 pub fn nested_container_magic(bytes: &[u8]) -> bool {
     nested_magic(bytes) || bytes.starts_with(b"BZh") || bytes.starts_with(b"ustar")
@@ -271,10 +256,6 @@ const WORDS: &[&str] = &[
 ];
 
 /// Try every text-and-frame [`Scheme`] over `input` and return each validated decode.
-///
-/// Pure binary radices that decode any printable string are only emitted when their
-/// output trips a structural validator, so the cascade does not flood callers with
-/// low-confidence guesses.
 #[must_use]
 pub fn blind_cascade(input: &[u8]) -> Vec<CascadeHit> {
     if input.len() < MIN_CASCADE_INPUT || input.len() > (1 << 24) {
@@ -304,11 +285,6 @@ pub fn blind_cascade(input: &[u8]) -> Vec<CascadeHit> {
 }
 
 /// Outcome of attempting codec/crypto recovery over a blob.
-///
-/// A blob that decodes through the blind cascade yields [`CascadeRecovery::Decoded`].
-/// A blob that is structurally AEAD/RSA-wrapped with no key present yields
-/// [`CascadeRecovery::Walled`] carrying the typed [`crypto_wall::CryptoWall`], rather
-/// than an empty result that hides the reason recovery stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CascadeRecovery {
     Decoded(Vec<CascadeHit>),
@@ -317,11 +293,6 @@ pub enum CascadeRecovery {
 }
 
 /// Run the blind decode cascade, falling back to a structured crypto wall.
-///
-/// The cascade runs first so a plaintext or statically decodable blob always
-/// recovers. Only when nothing decodes and the blob carries a self-describing
-/// AEAD/RSA framing whose key is runtime-only is a [`crypto_wall::CryptoWall`]
-/// returned, so the caller learns precisely why the bytes could not be recovered.
 #[must_use]
 pub fn cascade_or_wall(input: &[u8]) -> CascadeRecovery {
     let hits: Vec<CascadeHit> = blind_cascade(input);

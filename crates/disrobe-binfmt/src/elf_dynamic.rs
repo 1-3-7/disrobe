@@ -177,12 +177,6 @@ fn read_cstr(bytes: &[u8], off: usize) -> Option<String> {
 }
 
 /// Parse the `PT_DYNAMIC` segment of an ELF image and surface its linkage metadata.
-///
-/// Returns `None` when the input is not a class/endianness-consistent ELF or carries no
-/// dynamic segment (a statically linked or relocatable object). Every offset, count, and
-/// string-table index is bounds-checked against the file length and capped before any
-/// allocation, so a crafted header that declares an enormous table or an out-of-range
-/// `DT_STRTAB` cannot drive an over-read or an unbounded allocation.
 #[must_use]
 pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
     let class: ElfClass = detect_class(bytes)?;

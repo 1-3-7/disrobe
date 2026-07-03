@@ -10,12 +10,6 @@
 )]
 
 //! Spec-construct oracle for the emulated packer unpackers.
-//!
-//! Builds genuinely packed PE32 images whose original sections are compressed or
-//! encrypted and recovered only by executing a real x86 unpack stub. The unpacker
-//! under test emulates that stub blind; this generator never shares its
-//! compressor/encryptor state with the unpacker, so the round-trip is a
-//! non-circular byte-recovery oracle.
 
 const SEC_TABLE_OFFSET: usize = 0x80 + 4 + 20 + 0xE0;
 const FILE_ALIGN: u32 = 0x200;
@@ -47,11 +41,7 @@ pub enum StubKind {
         key0: u8,
         key_step: u8,
     },
-    /// A polymorphic stream-decrypt stub: the pointer/counter register pair is selected from a
-    /// seed, junk identity sequences are interleaved between real operations, and control reaches
-    /// the original entry point via `push oep; ret` instead of a direct `jmp`. This mirrors the
-    /// per-build mutation documented for the real ASProtect/Morphine decryptors and proves the
-    /// stub emulator recovers byte-exact across stub shape variation, not just one fixed layout.
+    /// A polymorphic stream-decrypt stub with seed-selected registers and a `push oep; ret` transfer to the original entry point.
     StreamDecryptPoly {
         key0: u8,
         key_step: u8,

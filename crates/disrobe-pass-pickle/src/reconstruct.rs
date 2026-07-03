@@ -10,12 +10,6 @@ const MAX_CYCLE_TARGETS: usize = 4_096;
 include!("compat_pickle.rs");
 
 /// Translate a legacy Python-2 `(module, name)` global to its Python-3 name.
-///
-/// Protocols 0-2 emit Python-2 module/symbol names (`__builtin__`, `copy_reg`,
-/// `exceptions.*`); the `CPython` unpickler rewrites them through `_compat_pickle`
-/// with `fix_imports=True` on load, so a faithful re-executable reconstruction
-/// applies the same mapping. Name mappings take precedence over module ones,
-/// matching `Unpickler.find_class`.
 fn map_global(module: &str, name: &str) -> (String, String) {
     if let Some(&(_, _, new_module, new_name)) = NAME_MAPPING
         .iter()
@@ -33,14 +27,6 @@ fn map_global(module: &str, name: &str) -> (String, String) {
 }
 
 /// A re-executable `Python` reconstruction of a pickle object graph.
-///
-/// `program` is a self-contained module that binds `result`. It is graded by
-/// re-running it in `CPython` and comparing `result` against the interpreter's
-/// own unpickle. `reexecutable` is `false` when a node is only resolvable at
-/// runtime (extension registry codes, out-of-band buffers, persistent ids) or
-/// the graph carries a shape the emitter cannot render faithfully; every such
-/// node is recorded in `unsupported` so the oracle excludes it with a reason
-/// rather than scoring a guess.
 #[derive(Debug, Clone)]
 pub struct Reconstruction {
     pub program: String,

@@ -12,9 +12,7 @@ const XOR_MIN_DICT_HITS: usize = 2;
 const XOR_MIN_RUN_LEN: usize = 6;
 const MAX_DECODE_RECURSE_LEN: usize = 1 << 16;
 
-/// Longest prefix of `text` no longer than `max_bytes` that ends on a UTF-8
-/// character boundary, so windowing large or adversarial inputs cannot panic on
-/// a mid-codepoint slice.
+/// Longest prefix of `text` no longer than `max_bytes` that ends on a UTF-8 character boundary, so windowing large or adversarial inputs cannot panic on a mid-codepoint slice.
 #[must_use]
 pub fn head(text: &str, max_bytes: usize) -> &str {
     let mut end: usize = text.len().min(max_bytes);

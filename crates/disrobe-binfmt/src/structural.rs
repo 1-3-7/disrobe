@@ -1,13 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// A format identified by self-consistent internal structure rather than by a magic byte,
-/// marker string, or section name.
-///
-/// Each variant is only produced after the validator parses far enough into the file to be
-/// confident the layout is genuine, so a zeroed or flipped magic that an adversary uses to
-/// defeat a signature scanner does not defeat detection here. Every accessor below is fully
-/// bounds-checked: the input is treated as deliberately malformed and never indexed without a
-/// prior length test.
+/// A format identified by self-consistent internal structure rather than by a magic byte, marker string, or section name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StructuralFormat {
@@ -140,11 +133,6 @@ fn read_u16(bytes: &[u8], off: usize, little: bool) -> Option<u16> {
 }
 
 /// Identify a binary by structural self-consistency, ignoring its magic bytes entirely.
-///
-/// This is the fallback an adversary cannot scramble: it parses the header tables far enough
-/// to confirm they refer to one another consistently. Returns `None` when no structure
-/// validates, keeping false positives low. The PE check runs last because its anchor
-/// (`e_lfanew` -> `PE\0\0`) is the most permissive.
 #[must_use]
 pub fn identify_by_structure(bytes: &[u8]) -> Option<StructuralFormat> {
     if validate_elf(bytes) {
@@ -175,19 +163,12 @@ pub fn identify_by_structure(bytes: &[u8]) -> Option<StructuralFormat> {
 }
 
 /// Structurally validate a PE image, ignoring whether the DOS `MZ` is intact.
-///
-/// Anchor: `e_lfanew` at 0x3C points to `PE\0\0`, followed by a COFF header whose machine is a
-/// known type and whose optional-header magic is PE32 or PE32+, and a section table that fits
-/// the file. A flipped or zeroed `MZ` does not change any of that.
 #[must_use]
 pub fn validate_pe(bytes: &[u8]) -> bool {
     locate_pe_header(bytes).is_some()
 }
 
 /// Locate the offset of the `PE\0\0` signature when the structure is self-consistent.
-///
-/// First trusts `e_lfanew`; if that does not resolve (the field itself can be corrupted),
-/// scans for a `PE\0\0` whose following COFF + optional header validate.
 #[must_use]
 pub fn locate_pe_header(bytes: &[u8]) -> Option<usize> {
     if let Some(e_lfanew) = read_u32_le(bytes, DOS_E_LFANEW_OFFSET)
@@ -254,10 +235,6 @@ fn pe_header_is_valid(bytes: &[u8], pe_off: usize) -> bool {
 }
 
 /// Structurally validate an ELF image, ignoring whether `\x7fELF` is intact.
-///
-/// Anchor: byte 4 selects 32/64-bit, byte 5 selects endianness, and the program/section header
-/// table offsets, entry sizes, and counts are self-consistent against the declared entry sizes
-/// and the file length. A zeroed `e_ident` magic does not move any of those fields.
 #[must_use]
 pub fn validate_elf(bytes: &[u8]) -> bool {
     if bytes.len() < ELF_HEADER_MIN {
@@ -372,11 +349,6 @@ fn elf_tables(bytes: &[u8], is_64: bool, little: bool) -> Option<ElfTables> {
 }
 
 /// Structurally validate a single-arch Mach-O, ignoring whether the magic is intact.
-///
-/// Anchor: any of the four single-arch magics (recognized in either byte order from a fixed
-/// position), followed by a load-command stream whose `ncmds` / `sizeofcmds` describe a run of
-/// `cmdsize`-delimited commands that fits the file. A scrambled magic still leaves the
-/// load-command stream walkable.
 #[must_use]
 pub fn validate_macho(bytes: &[u8]) -> bool {
     if bytes.len() < MACHO_HEADER_MIN {
@@ -444,10 +416,6 @@ fn macho_header_walk(bytes: &[u8], little: bool, is_64: bool) -> bool {
 }
 
 /// Structurally validate a fat (universal) Mach-O, ignoring whether the magic is intact.
-///
-/// Anchor: a big-endian `nfat_arch` whose arch records (offset/size pairs) all fit the file.
-/// The fat magic collides with the Java class magic, so this is only accepted when the arch
-/// table genuinely validates.
 #[must_use]
 pub fn validate_macho_fat(bytes: &[u8]) -> bool {
     let Some(nfat): Option<u32> = read_u32_be(bytes, 4) else {
@@ -480,10 +448,6 @@ pub fn validate_macho_fat(bytes: &[u8]) -> bool {
 }
 
 /// Structurally validate a wasm module, ignoring whether `\0asm` is intact.
-///
-/// Anchor: a version word of 1, then a section id/size LEB128 stream where every section id is
-/// in range and every declared section length lands exactly on the next section boundary,
-/// terminating precisely at end of file.
 #[must_use]
 pub fn validate_wasm(bytes: &[u8]) -> bool {
     if bytes.len() < 8 {
@@ -545,10 +509,6 @@ fn read_uleb128(bytes: &[u8], off: usize) -> Option<(u64, usize)> {
 }
 
 /// Structurally validate a DEX file, ignoring whether `dex\n0XX\0` is intact.
-///
-/// Anchor: `header_size == 0x70`, an endian tag in one of the two legal byte orders, and the
-/// string / type / proto / method / class section sizes and offsets self-consistent against
-/// the declared `file_size` and the actual byte length. A zeroed magic leaves all of that.
 #[must_use]
 pub fn validate_dex(bytes: &[u8]) -> bool {
     if bytes.len() < DEX_HEADER_MIN {
@@ -599,11 +559,6 @@ pub fn validate_dex(bytes: &[u8]) -> bool {
 }
 
 /// Structurally validate a Java class file, ignoring whether `0xCAFEBABE` is intact.
-///
-/// Anchor: a major version in the JVM-known range, a non-zero constant-pool count, and a
-/// constant-pool walk whose entries each carry a known tag and whose variable-width entries
-/// (Utf8 length, long/double double-slot) stay in bounds. A scrambled magic does not move the
-/// constant pool.
 #[must_use]
 pub fn validate_java_class(bytes: &[u8]) -> bool {
     if bytes.len() < CLASS_MIN {
@@ -657,11 +612,6 @@ pub fn validate_java_class(bytes: &[u8]) -> bool {
 }
 
 /// Structurally validate a ZIP archive, ignoring whether a `PK\x03\x04` is intact.
-///
-/// Anchor: the End-of-Central-Directory record (located by its signature, the format's
-/// authoritative trailer), whose central-directory offset and size land inside the file and
-/// point at a record carrying the central-directory-header signature. A scrambled first local
-/// header does not move the EOCD or the central directory it anchors.
 #[must_use]
 pub fn validate_zip(bytes: &[u8]) -> bool {
     locate_zip_central_directory(bytes).is_some()

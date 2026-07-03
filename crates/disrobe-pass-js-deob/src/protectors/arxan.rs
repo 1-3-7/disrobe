@@ -1,14 +1,4 @@
 //! Digital.ai Arxan family detection and static guard-marker stripping.
-//!
-//! Scope, stated honestly: this DETECTS the Arxan/Digital.ai family from its self-identifying
-//! banners, guard symbols, and runtime tokens, and (with authorization) STRIPS those static guard
-//! markers. It is NOT recovery of Arxan-protected business logic, and it is validated only against
-//! synthetic fixtures shaped like the documented guard constructs; no captured real Arxan sample is
-//! on hand, so there is no real-sample oracle.
-//!
-//! TODO(lead): `LegalStance::AmberDetectOnly::stance_doc()` points at
-//! `docs/legal/digital-ai-arxan-stance.md`, which does not exist yet. The lead owns `docs/`; the
-//! pointer stays so the public output keeps a stable reference once the stance doc is written.
 
 use core::ops::Range;
 use std::collections::BTreeSet;

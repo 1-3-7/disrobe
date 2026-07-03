@@ -455,19 +455,7 @@ fn compress_block(
     writer.into_bytes()
 }
 
-/// Compress a raw byte buffer into a single LZX-compressed WIM chunk decodable by
-/// the in-tree LZX chunk decoder.
-///
-/// The output is a spec-conformant WIMGAPI LZX stream: the documented E8
-/// call-translation pre-filter, then a single verbatim or aligned-offset block
-/// carrying a precode-coded main and length tree over a greedy hash-chain LZ77
-/// parse. It emits only literals and explicit matches (never the recent-offset
-/// reuse slots), which keeps the stream valid while letting the decoder's
-/// recent-offset machine track along. It exists to validate the LZX decoder by
-/// round-trip and to author byte-faithful LZX-compressed WIM resources.
-///
-/// # Errors
-/// Returns an error if `data` exceeds a single default LZX block.
+/// Compress a raw byte buffer into a single LZX-compressed WIM chunk decodable by the in-tree LZX chunk decoder.
 pub fn lzx_compress_chunk(data: &[u8], aligned: bool) -> Result<Vec<u8>> {
     if data.len() > LZX_DEFAULT_BLOCK_SIZE {
         return Err(Error::Decompression(
@@ -493,13 +481,7 @@ pub fn lzx_compress_chunk(data: &[u8], aligned: bool) -> Result<Vec<u8>> {
     Ok(compress_block(&tokens, data.len(), window_size, block_type))
 }
 
-/// Concatenate per-chunk LZX streams and the WIM non-solid chunk-offset table
-/// into a single compressed resource body.
-///
-/// Produces the documented WIM layout for a resource larger than one chunk:
-/// `num_chunks - 1` cumulative 32-bit offsets to the start of each chunk after
-/// the first, followed by the per-chunk compressed payloads. The result is
-/// accepted byte-for-byte by `decompress_wim_resource`.
+/// Concatenate per-chunk LZX streams and the WIM non-solid chunk-offset table into a single compressed resource body.
 #[must_use]
 pub fn lzx_build_resource_body(chunks: &[Vec<u8>]) -> Vec<u8> {
     let mut offsets: Vec<u8> = Vec::new();

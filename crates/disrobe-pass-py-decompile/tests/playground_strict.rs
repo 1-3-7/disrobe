@@ -454,12 +454,7 @@ fn strict_corpus_file_present() {
     assert!(exists, "edge_cases.py corpus file missing at {path}");
 }
 
-/// Per-code-object recompile-equivalence floor for the edge-cases corpus, enforced in CI when a
-/// CPython 3.14 interpreter is present. The measured value on CPython 3.14.5 is 94.18% (259 of 275
-/// code objects). The grader is the project's jump-polarity-aware `semantic_equiv` comparator run
-/// per code object against a real CPython recompile of disrobe's recovered source, never against
-/// disrobe's own re-emission. The floor sits below the measured value so a real regression trips it
-/// while interpreter-patch jitter does not; raise it only behind a measured run.
+/// Per-code-object recompile-equivalence floor for the edge-cases corpus, enforced in CI when a CPython 3.14 interpreter is present.
 const CORPUS_OBJECT_PCT_FLOOR: f64 = 91.0;
 
 #[test]

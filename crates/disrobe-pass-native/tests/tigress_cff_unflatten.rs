@@ -1,11 +1,4 @@
 //! Tigress CFF deobfuscation tests.
-//!
-//! `unflatten_tigress` shares the OLLVM CFF engine (see `ollvm_passes.rs`), so the real
-//! ollvm-16 gauntlet (`real_ollvm_cff_*`) is the authoritative non-circular gate for the
-//! shared recovery logic. The `*_self_authored_*` test here assembles an idealized
-//! register-state dispatch with iced-x86 and is NOT proof against real Tigress output -
-//! a real Tigress-compiled fixture is still pending (see `real_tigress_sample_unflatten`).
-//! Never treat the self-authored shape as the sole evidence of Tigress recovery.
 
 #![allow(
     clippy::expect_used,

@@ -6,12 +6,7 @@
     clippy::doc_markdown,
     unused_must_use
 )]
-//! ArmDot-specific devirtualization is acquisition-gated: ArmDot is a paid commercial protector
-//! and no real ArmDot sample is on hand, so its native VM wire format is unverified here. These
-//! tests cover only detection (the published watermark vector), the authorization gate, the
-//! detect-only native/VM path, and the shared managed-VM lifter routing exercised against an
-//! EazVM-shaped stream. Appending the ArmDot watermark onto an EazVM image proves the route reaches
-//! the shared lifter, not that ArmDot's own VM is defeated.
+//! ArmDot-specific devirtualization is acquisition-gated: ArmDot is a paid commercial protector and no real ArmDot sample is on hand, so its native VM wire format is unverified here.
 
 mod common;
 

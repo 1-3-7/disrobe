@@ -5,36 +5,12 @@ use std::collections::BTreeMap;
 pub const OPARRAY_MAGIC: &[u8; 4] = b"DZOA";
 
 /// Container schema version stamped by the emitter on fresh dumps.
-///
-/// Schema `v1` normalizes the `zend_dump_op_array` textual output of the whole
-/// PHP 7.0 through 8.4 (Zend Engine 3.0 through 4.4) generation: fixed 21-byte
-/// op records (`opcode`, three operand-type bytes, then `op1`/`op2`/`result`/
-/// `extended_value`/`lineno` as little-endian `u32`) and the literal kinds
-/// null/bool/long/double/string/array. None of those record shapes change across
-/// that engine range, so one schema covers every version in it.
-///
-/// Schema `v2` appends a compiled-variable name table to each body, right after
-/// `num_args`: a `u32` slot count then, per slot, an optional length-prefixed
-/// UTF-8 name (`zend_op_array.vars[]`). The dump already carries those names as
-/// the `CVn($name)` annotation; v2 retains them so the lifter prints the source
-/// variables (`$total`) instead of synthetic slot ids (`$v3`). A `v1` body omits
-/// the table and lifts with slot ids, so the two schemas differ only by that one
-/// trailing block.
 pub const OPARRAY_VERSION: u8 = 2;
 
 /// Oldest container schema this parser decodes.
-///
-/// The op-record and literal layout has not changed since the schema was
-/// introduced, so the lower bound is `v1`; a `v1` body simply carries no
-/// compiled-variable name table.
 pub const OPARRAY_MIN_VERSION: u8 = 1;
 
 /// Newest container schema this parser decodes.
-///
-/// A future engine that reorders or adds `op_array` fields (or changes the
-/// literal/opcode encoding) would bump the emitter past this, and the parser
-/// would then name the exact unhandled version rather than accept a layout it
-/// cannot read.
 pub const OPARRAY_MAX_VERSION: u8 = 2;
 
 const SANE_OP_CAP: u32 = 4_000_000;
@@ -206,11 +182,6 @@ pub struct OpArray {
     pub ops: Vec<Op>,
     pub children: Vec<Self>,
     /// Source names of compiled variables, indexed by `Cv` slot.
-    ///
-    /// Populated from the `CVn($name)` annotation a schema-`v2` dump retains
-    /// (`zend_op_array.vars[]`); a slot is `None` when the dump named no source
-    /// variable for it. A `v1` body leaves this empty and the lifter falls back
-    /// to synthetic slot ids.
     pub var_names: Vec<Option<String>>,
 }
 

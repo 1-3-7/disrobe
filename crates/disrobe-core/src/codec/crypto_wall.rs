@@ -1,17 +1,4 @@
 //! Structural classification of encrypted blobs whose key lives only at runtime.
-//!
-//! When a blob is identifiable as authenticated encryption (AES-GCM,
-//! ChaCha20-Poly1305) or as RSA-wrapped key material (PKCS#1 v1.5, OAEP) and no
-//! decryption key is present in the artifact, recovery is information-theoretically
-//! blocked. Rather than silently returning nothing, [`classify`] emits a typed
-//! [`CryptoWall`] carrying the algorithm kind, the byte offset of the framing, the
-//! structural evidence, and the runtime-key-absent verdict.
-//!
-//! Classification is anchored on self-describing container framings whose header
-//! literally declares the algorithm (JWE compact/JSON serialization, the `age`
-//! file header, PKCS#8 `EncryptedPrivateKeyInfo`, PEM encrypted-key markers, the
-//! Fernet token layout) so a high-entropy plaintext or static-key blob is never
-//! mistaken for a runtime-key wall.
 
 use serde::{Deserialize, Serialize};
 
@@ -109,11 +96,7 @@ impl CryptoWall {
     }
 }
 
-/// Scan `data` for the first self-describing encrypted framing and, when one is
-/// present, return the structured [`CryptoWall`].
-///
-/// Returns `None` when the buffer carries no AEAD/RSA framing, so a plaintext or
-/// otherwise-recoverable blob is left to the ordinary decode path.
+/// Scan `data` for the first self-describing encrypted framing and, when one is present, return the structured [`CryptoWall`].
 #[must_use]
 pub fn classify(data: &[u8]) -> Option<CryptoWall> {
     let window: &[u8] = &data[..data.len().min(MAX_SCAN)];

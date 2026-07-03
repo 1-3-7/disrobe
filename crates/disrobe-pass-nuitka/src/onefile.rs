@@ -115,12 +115,7 @@ pub struct StreamedPayload {
     pub entry_count: usize,
 }
 
-/// Walk a Nuitka onefile payload and hand each entry to `sink` as a borrowed slice of the decoded
-/// stream, never collecting an owned `data: Vec<u8>` per entry.
-///
-/// The decoded stream is held once (callers writing each entry to disk in `sink` keep peak memory
-/// at roughly the stream plus the input image, not the doubled copy `extract_onefile` builds). The
-/// `sink` returning `Err` aborts the walk with that error.
+/// Walk a Nuitka onefile payload and hand each entry to `sink` as a borrowed slice of the decoded stream, never collecting an owned `data: Vec<u8>` per entry.
 pub fn extract_onefile_streaming(
     image: &[u8],
     payload_offset: usize,

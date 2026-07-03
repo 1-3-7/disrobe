@@ -71,9 +71,7 @@ impl PassRegistry {
         out
     }
 
-    /// Detectors ordered so the cheap, format-defining wrapper/packer identifiers run before the
-    /// generic, full-image scanners. A High-confidence, specific match short-circuits the rest in
-    /// `run_all`, so a large binary is not re-scanned by every pass (the auto-on-756MB hang).
+    /// Detectors ordered so the cheap, format-defining wrapper/packer identifiers run before the generic, full-image scanners.
     fn iter_passes_priority(&self) -> impl Iterator<Item = &'static dyn Pass> + '_ {
         const FIRST: [&str; 6] = [
             "nuitka.extract",

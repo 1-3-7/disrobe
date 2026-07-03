@@ -30,13 +30,7 @@ fn header(module_name: &str, text_len: usize, bits: u32) -> String {
     )
 }
 
-/// Disassemble the compiled image's `.text` straight to `out_path`, streaming one instruction at a
-/// time through a `BufWriter`.
-///
-/// The full assembly is never held in memory and the instruction list is never materialized, so
-/// peak memory stays flat regardless of `.text` size (a multi-hundred-MB `.text` that previously
-/// exhausted memory in the in-memory builder now costs a fixed buffer). Returns the recovered
-/// stats, or `None` for non-x86 images or an empty `.text`.
+/// Disassemble the compiled image's `.text` straight to `out_path`, streaming one instruction at a time through a `BufWriter`.
 pub fn disassemble_module_to_file(
     module_name: &str,
     image: &[u8],
@@ -108,11 +102,7 @@ pub fn disassemble_module_to_file(
     })
 }
 
-/// Stream the bounded disassembly into an in-memory buffer, for the chain (which hands child bytes
-/// to the driver to write).
-///
-/// The output is capped by [`StreamDisasmLimits`], so the buffer is bounded regardless of `.text`
-/// size; the instruction list is still never materialized. Returns `(stats, asm_bytes)`.
+/// Stream the bounded disassembly into an in-memory buffer, for the chain (which hands child bytes to the driver to write).
 #[must_use]
 pub fn disassemble_module_to_vec(
     module_name: &str,
@@ -151,9 +141,6 @@ pub fn disassemble_module_to_vec(
 }
 
 /// Recover the same bounded stats as [`disassemble_module_to_file`] without writing a file.
-///
-/// Streams the decode into a discarding sink, for callers that need only the counts (the JSON
-/// summary), so no assembly text is retained anywhere.
 #[must_use]
 pub fn disassemble_module_stats(module_name: &str, image: &[u8]) -> Option<NativeDisasm> {
     let (address, bits, text): (u64, u32, &[u8]) = text_section_window(image)?;

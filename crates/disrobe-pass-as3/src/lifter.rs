@@ -3623,10 +3623,6 @@ fn lift_raw(
 }
 
 /// Lift a method body to flat goto-form statements with no restructuring.
-///
-/// The result preserves every `Label`, `Jump`, `If`, and `Switch` exactly as
-/// the original branch graph emitted them, giving the ground-truth control-flow
-/// graph that [`lift_body`]'s structured output must stay equivalent to.
 pub fn lift_body_raw(
     abc: &AbcFile,
     body: &MethodBody,

@@ -31,11 +31,6 @@ const YC2_MARKER: &[u8] = b"yC2.0";
 const APLIB_MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// One section the Yoda's stub aPLib-decompresses to its load RVA.
-///
-/// The descriptor records the compressed source RVA in the packed file and the
-/// destination RVA in the loaded image. The table is appended to the `.yC0`
-/// stub body right after the executable stub bytes, terminated by an all-zero
-/// record, exactly as the stub itself reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct YodasSectionDescriptor {
     pub dest_rva: u32,
@@ -45,10 +40,6 @@ pub struct YodasSectionDescriptor {
 }
 
 /// The delta prologue that opens every Yoda's stub.
-///
-/// `pushad; call $+5; pop ebp; sub ebp, <delta>` leaves `ebp` holding the
-/// load-time base of the stub. This is the documented Yoda's entry shape and
-/// matches the low-confidence Yoda's Crypter EP signature in the detector.
 pub const YODAS_DELTA_PROLOGUE: [u8; 9] = [0x60, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x5D, 0x81, 0xED];
 
 pub const DESCRIPTOR_TABLE_TAG: [u8; 4] = *b"yCDT";
@@ -63,8 +54,7 @@ const STEP_CAP_YC: u64 = 200_000_000;
 
 const STUB_LOADER_REBUILT: &[&[u8]] = &[b".reloc", b".idata"];
 
-/// Whether the original entry point was reached and content was decompressed in
-/// memory, or the stub stalled before transferring control.
+/// Whether the original entry point was reached and content was decompressed in memory, or the stub stalled before transferring control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YodasStubProgress {
     ReachedOriginalEntry { oep_rva: u32 },

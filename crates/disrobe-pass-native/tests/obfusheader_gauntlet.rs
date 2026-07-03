@@ -1,8 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real obfusheader.h gauntlet. `sample.obfuscated.exe` is a real C++ program obfuscated by the
-//! actual ac3ss0r/obfusheader.h header (OBF compile-time string encryption) and compiled to a
-//! STRIPPED native PE. The strip-surviving pointer-shuffle constant is the non-circular gate for
-//! obfusheader.h detection: disrobe must recognize it on the obfuscated build and NOT on clean.
+//! Real obfusheader.h gauntlet.
 
 use disrobe_pass_native::{ObfuscatorFamily, ObfuscatorHit, detect_obfuscators};
 

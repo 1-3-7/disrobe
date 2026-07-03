@@ -1,9 +1,4 @@
-//! Radix-alphabet decoders: base58 (bitcoin + ripple), base62, base45 (RFC 9285),
-//! base91 (basE91), and base92.
-//!
-//! Every decoder is allocation-bounded against the worst-case expansion of its
-//! radix and rejects out-of-alphabet bytes, so adversarial input cannot trigger a
-//! pathological allocation.
+//! Radix-alphabet decoders: base58 (bitcoin + ripple), base62, base45 (RFC 9285), base91 (basE91), and base92.
 
 use super::{DecodeError, bytes_to_string};
 

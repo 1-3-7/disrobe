@@ -72,10 +72,6 @@ impl Yield {
 }
 
 /// A single OSINT data source.
-///
-/// `seed_requests` are issued first; if a source paginates, it returns the next page's
-/// request from `next_request` until that yields `None` or the page budget is exhausted.
-/// Parsing is pure so it can be graded offline against fixtures.
 #[async_trait]
 pub trait Provider: Send + Sync + std::fmt::Debug {
     fn source(&self) -> Source;

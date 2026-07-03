@@ -8,17 +8,7 @@
     clippy::literal_string_with_formatting_args
 )]
 
-//! Recompile-equivalence coverage for decompilation edge cases drawn from the documented bug
-//! histories of other Python decompilers (depyo issue tracker, uncompyle6/decompyle3 hard cases):
-//! mixed boolean precedence, empty-body try/except and except* groups, lambda bodies that are
-//! inlined comprehensions, exception chaining, match-statement guards with captures, walrus in
-//! comprehensions and generator expressions, positional-only parameters, dict-merge operators,
-//! conditional imports, dead code after return, and nested f-string quote flips.
-//!
-//! Each case compiles a self-authored program with the real interpreter, decompiles the resulting
-//! bytecode, recompiles the recovered source with the same interpreter, and asserts per-construct
-//! bytecode-equivalence. The grader is the shared `band` harness; the interpreter recompile is the
-//! authority, never disrobe's own re-emission.
+//! Recompile-equivalence coverage for Python decompilation edge cases drawn from other decompilers' documented bug histories.
 
 mod common;
 

@@ -1,11 +1,4 @@
 //! Framed transport codecs.
-//!
-//! Adobe `ASCII85` (`<~ ~>` framing with `z`/`y` specials), `ZeroMQ` Z85, uuencode
-//! (`begin`/`end` with a per-line length char and a 32 offset), xxencode, and yEnc
-//! (`=ybegin`/`=yend`, 42 offset, `0x3D` escape).
-//!
-//! Each decoder bounds its output against the input length and rejects malformed
-//! framing rather than guessing.
 
 use super::{DecodeError, bytes_to_string};
 
@@ -41,8 +34,7 @@ const fn invert85(alphabet: &[u8; 85]) -> [i16; 256] {
     table
 }
 
-/// Decode an Adobe ASCII85 stream. Optional `<~`/`~>` framing is stripped, the `z`
-/// all-zero and `y` all-space shortcuts are honored, and whitespace is ignored.
+/// Decode an Adobe ASCII85 stream.
 pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_FRAMED_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -170,14 +162,12 @@ pub fn z85_encode(input: &[u8]) -> Result<String, DecodeError> {
     Ok(bytes_to_string(out))
 }
 
-/// Decode a uuencoded stream framed by `begin <mode> <name>` and `end`. Each data
-/// line begins with a length character (`byte - 32`) followed by 4:3 groups.
+/// Decode a uuencoded stream framed by `begin <mode> <name>` and `end`.
 pub fn uudecode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     decode_uu_family(input, b"begin", UU_OFFSET, true)
 }
 
-/// Decode an xxencoded stream framed by `begin`/`end`. The alphabet is positional
-/// rather than offset-based.
+/// Decode an xxencoded stream framed by `begin`/`end`.
 pub fn xxdecode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     decode_uu_family(input, b"begin", 0, false)
 }
@@ -325,8 +315,7 @@ fn encode_uu_family(input: &[u8], name: &str, offset: u8, offset_based: bool) ->
     bytes_to_string(out)
 }
 
-/// Decode a yEnc stream. Recognizes `=ybegin`/`=yend` headers, applies the 42
-/// offset, and undoes the `0x3D` critical-byte escape (`escaped - 64 - 42`).
+/// Decode a yEnc stream.
 pub fn yenc_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_FRAMED_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -369,8 +358,7 @@ pub fn yenc_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Encode bytes as a single-part yEnc stream named `name`. The result is binary, not
-/// text, because yEnc emits bytes across the full `0..=255` range.
+/// Encode bytes as a single-part yEnc stream named `name`.
 #[must_use]
 pub fn yenc_encode(input: &[u8], name: &str) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 2 + 64);

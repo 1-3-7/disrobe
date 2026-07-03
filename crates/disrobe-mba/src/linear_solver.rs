@@ -23,13 +23,7 @@ const MAX_SUBSET_SEARCH_VARS: u32 = 5;
 
 const MAX_SUBSET_COMBOS: usize = 60_000;
 
-/// Recover the simplest linear-MBA form of `expr`, or `None` when the expression
-/// is not a linear MBA over the variable set or exceeds [`MAX_SOLVER_VARS`].
-///
-/// The candidate is returned only when its truth-table column matches `expr`'s
-/// column mod 2^n, so it is already proven equivalent over the modeled width by
-/// [`columns_equal_mod_width`]. Callers may emit it directly with a column-identity
-/// verification tag.
+/// Recover the simplest linear-MBA form of `expr`, or `None` when the expression is not a linear MBA over the variable set or exceeds [`MAX_SOLVER_VARS`].
 #[must_use]
 pub fn solve_linear_mba(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_SOLVER_VARS {
@@ -72,11 +66,6 @@ pub fn solve_linear_mba(expr: &Expr, width: Width, var_count: u32) -> Option<Exp
 }
 
 /// Exact equivalence test for two truth-table columns of linear MBAs over Z/2^n.
-///
-/// Returns `true` when every row of the difference is `0 (mod 2^n)`. By the per-bit
-/// decomposition this is necessary and sufficient for word-level equality at width
-/// `n` for all inputs, so a `true` verdict is a proof, not a sample, but only for
-/// column-faithful expressions (see [`is_column_faithful`]); callers must gate on it.
 #[must_use]
 pub fn columns_equal_mod_width(left: &[i128], right: &[i128], width: Width) -> bool {
     if left.len() != right.len() {
@@ -89,19 +78,6 @@ pub fn columns_equal_mod_width(left: &[i128], right: &[i128], width: Width) -> b
 }
 
 /// Whether the per-bit reconstruction is faithful for `expr` at `width`.
-///
-/// Faithfulness means `value(E)(x⃗) = Σ_j 2^j · column(E, x⃗[j])` holds at the width,
-/// which is the precondition that makes a truth-table column-identity a genuine proof
-/// of equivalence over Z/2^n.
-///
-/// The decomposition is faithful for variables, the bitwise operators `~`/`&`/`|`/`^`,
-/// the linear operators `+`/`-`/unary `-`, multiplication by a constant coefficient,
-/// and constant shifts. It breaks for an integer constant used as a value rather than
-/// a coefficient (a literal `c` reconstructs to `c·(2^n - 1) ≡ -c`, not `c`), so a
-/// value-position constant is permitted only when it is `0` or the full width mask.
-/// Anything outside this grammar (memory, ite, slice, compose, symbolic mul, variable
-/// shift, partial-width mask constants) is rejected so the column proof never fires on
-/// an expression it cannot faithfully model.
 #[must_use]
 pub fn is_column_faithful(expr: &Expr, width: Width) -> bool {
     faithful_value(expr, width)
@@ -153,8 +129,7 @@ fn faithful_bitwise(expr: &Expr, width: Width) -> bool {
     }
 }
 
-/// Compute the integer truth-table column of a linear-MBA `expr` over `var_count`
-/// boolean variables. Row `r` assigns bit `i` of `r` to variable `i`.
+/// Compute the integer truth-table column of a linear-MBA `expr` over `var_count` boolean variables.
 #[must_use]
 pub fn truth_column(expr: &Expr, var_count: u32, rows: usize) -> Vec<i128> {
     let mut column: Vec<i128> = vec![0; rows];

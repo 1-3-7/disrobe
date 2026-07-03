@@ -25,13 +25,6 @@ pub const MAX_BITWISE_SYNTH_VARS: u32 = 4;
 const BFS_TABLE_BUDGET: usize = 1usize << 14;
 
 /// Recover a minimal partial-mask bitwise form of `expr` at `width`.
-///
-/// Returns `None` when `expr` is not a pure bitwise function, when it has more than
-/// [`MAX_BITWISE_SYNTH_VARS`] variables, or when per-truth-table synthesis exceeds its
-/// bounded search budget.
-///
-/// The candidate is a proposal only. Callers must prove equivalence with a non-circular
-/// oracle before emitting it; nothing here trusts the synthesis on confidence alone.
 #[must_use]
 pub fn synthesize_bitwise_masked(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_BITWISE_SYNTH_VARS || !is_pure_bitwise(expr) {

@@ -1,9 +1,4 @@
-//! Non-circular calling-convention / arg-count / return-value oracle. C sources with declared
-//! prototypes are compiled by a real on-box clang into stripped object files; the compiler's ABI
-//! lowering is the independent ground truth. Each function's raw machine code is carved out of the
-//! object (no DWARF, no symbol table fed to the analyzer beyond locating the bytes) and handed to
-//! the liveness-based inferer, then graded against the known source prototype. When clang is not on
-//! PATH the legs that cannot be built are skipped honestly rather than faked green.
+//! Non-circular calling-convention / arg-count / return-value oracle.
 
 #![allow(
     clippy::expect_used,

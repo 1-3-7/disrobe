@@ -1441,12 +1441,6 @@ fn lz_copy(out: &mut [u8], pos: usize, offset: u32, length: u32) -> Result<()> {
 }
 
 /// Decompress a raw LZMS-compressed chunk to its known uncompressed size.
-///
-/// The format and algorithm follow the publicly documented LZMS codec used by
-/// the Windows 8 compression API (`COMPRESS_ALGORITHM_LZMS | COMPRESS_RAW`) and
-/// in WIM/CAB containers: an LZ77 backend with binary range-coded item-type
-/// decisions read forwards and adaptive-Huffman symbols read backwards, with an
-/// x86 absolute-to-relative call/jump post-filter.
 pub fn lzms_decompress(input: &[u8], out_size: usize) -> Result<Vec<u8>> {
     if input.len() & 1 != 0 || input.len() < 4 {
         return Err(Error::Decompression(
@@ -1971,17 +1965,7 @@ fn enc_find_match(data: &[u8], pos: usize, head: &[i32], prev: &[i32]) -> Option
     }
 }
 
-/// Compress a raw byte buffer into a single LZMS chunk decodable by
-/// [`lzms_decompress`].
-///
-/// This is the inverse of the in-tree decoder: a greedy LZ77 parse over a
-/// hash-chain match finder, the same forward binary range coder and backward
-/// adaptive-Huffman bitstream the decoder reads, and the encode-direction x86
-/// call/jump pre-filter. It emits only literals and explicit LZ matches (no
-/// repeat or delta items), which keeps the output a valid LZMS stream while
-/// avoiding the recent-offset state machine. It is used to author
-/// spec-conformant LZMS payloads (for example LZMS-compressed cabinets) and to
-/// validate the decoder by round-trip.
+/// Compress a raw byte buffer into a single LZMS chunk decodable by [`lzms_decompress`].
 pub fn lzms_compress(input: &[u8]) -> Vec<u8> {
     let out_size: usize = input.len();
     if out_size == 0 {

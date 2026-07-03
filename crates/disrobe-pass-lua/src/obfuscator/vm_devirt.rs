@@ -1053,13 +1053,6 @@ fn hex_nibble(c: u8) -> Option<u8> {
 }
 
 /// Lift a `VMPAYLOAD=` blob encoded in disrobe's own `DVM1` reference container back to Lua.
-///
-/// `tag` names the family whose marker routed here, but recovery is proven only for the reference
-/// container, not for any named obfuscator's real wire format. Real-sample devirtualization of the
-/// named Lua VM families is unproven: no captured real sample is on hand and the products are
-/// dead-upstream or paid. `fully_recovered` is graded by handler/opcode coverage of the lifted
-/// container and, in tests, by re-executing the recovered Lua under a real interpreter, never by
-/// the in-test encoder.
 pub fn devirt_to_peel(src: &[u8], text: &str, payload: &[u8], tag: &str) -> Result<PeelResult> {
     dbg_kv("devirt_to_peel.tag", || tag.to_owned());
     let Ok(dv): Result<Devirtualized> = devirtualize(payload, text) else {

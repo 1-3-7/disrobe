@@ -1,5 +1,4 @@
-//! Web escaping codecs: percent/URL encoding, HTML numeric and named entity
-//! decoding, and Punycode (`xn--`) label decoding per RFC 3492.
+//! Web escaping codecs: percent/URL encoding, HTML numeric and named entity decoding, and Punycode (`xn--`) label decoding per RFC 3492.
 
 use super::{DecodeError, bytes_to_string};
 
@@ -60,8 +59,7 @@ pub fn percent_encode(input: &[u8]) -> String {
     bytes_to_string(out)
 }
 
-/// Decode HTML numeric (`&#NN;`, `&#xHH;`) and the common named entities into a
-/// UTF-8 string.
+/// Decode HTML numeric (`&#NN;`, `&#xHH;`) and the common named entities into a UTF-8 string.
 pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -178,8 +176,7 @@ pub fn punycode_decode_label(input: &str) -> Result<String, DecodeError> {
     Ok(output.into_iter().collect())
 }
 
-/// Decode a full Punycode domain label that may carry the `xn--` ACE prefix. Labels
-/// without the prefix are returned verbatim.
+/// Decode a full Punycode domain label that may carry the `xn--` ACE prefix.
 pub fn punycode_decode(input: &str) -> Result<String, DecodeError> {
     input
         .strip_prefix("xn--")

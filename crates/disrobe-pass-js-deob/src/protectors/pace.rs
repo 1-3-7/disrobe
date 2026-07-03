@@ -1,14 +1,4 @@
 //! PACE JS / Fusion family detection and static guard-marker stripping.
-//!
-//! Scope, stated honestly: this DETECTS the PACE family from its self-identifying banner and
-//! runtime tokens, and (with authorization) STRIPS the family's static guard markers. It is NOT
-//! recovery of PACE's protected business logic, and it is validated only against synthetic fixtures
-//! shaped like the documented guards; no captured real PACE sample is on hand, so there is no
-//! real-sample oracle behind the strip.
-//!
-//! TODO(lead): `STANCE_DOC` points at `docs/legal/pace-js-stance.md`, which does not exist yet. The
-//! lead owns `docs/`; this constant stays so the public output keeps a stable pointer once the
-//! stance doc is written.
 
 use core::ops::Range;
 use std::collections::BTreeSet;

@@ -85,18 +85,6 @@ enum RftEdit {
 }
 
 /// Neutralize the `PyArmor` 9.x / Python 3.11+ RFT wrap-mode armor in place.
-///
-/// `PyArmor` wraps every recovered code object in a runtime guard: a prologue that
-/// calls `__pyarmor_enter_NNNNN__` and stores `__assert_armored__`, and a
-/// `try/finally` epilogue that calls `__pyarmor_exit_NNNNN__`. The mix-str option
-/// additionally rewrites string literals into `__pyarmor_assert_NNNNN__(b'<ct>')`
-/// decode calls. None of these bear on the recovered logic, but they reference
-/// string constants as callables, so a re-marshalled `.pyc` raises
-/// `TypeError: 'str' object is not callable` under real `CPython`. Each armor span
-/// is overwritten with `NOP` words of identical length, preserving every jump
-/// target, the exception table, and `co_stacksize`; the mix-str decode call is
-/// collapsed to a bare load of the already-decrypted string constant. Returns the
-/// number of code objects whose armor was neutralized.
 pub(crate) fn strip_rft_wrap(co: &mut CodeObject, py: PyVersion) -> usize {
     let Some(ops): Option<RftOpcodes> = RftOpcodes::for_version(py) else {
         return 0;

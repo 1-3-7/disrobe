@@ -1,9 +1,4 @@
-//! Register copy-propagation + dead-store elimination, a D-810 / Hex-Rays-microcode-class
-//! peephole disrobe previously lacked. The authoritative non-circular gate lives in the lib
-//! unit tests, which grade the cleaned block against the production `stub_emu` x86 interpreter.
-//! This integration layer re-checks the published API with a second, independent mini
-//! interpreter so a green means the rewrite preserved observable semantics, not that the tool
-//! agreed with its own symbolic model.
+//! Register copy-propagation + dead-store elimination, a D-810 / Hex-Rays-microcode-class peephole disrobe previously lacked.
 
 #![allow(
     clippy::expect_used,

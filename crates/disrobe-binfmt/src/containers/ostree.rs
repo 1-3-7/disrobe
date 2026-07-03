@@ -53,9 +53,6 @@ pub struct OstreeRepoLayout {
 }
 
 /// Abstraction over a source of raw `OSTree` objects keyed by `(checksum, extension)`.
-///
-/// Implemented by both the on-disk repository ([`DiskStore`]) and the in-memory
-/// object table that a single-file static-delta bundle reconstructs into.
 pub trait ObjectSource {
     fn read_object(&self, checksum: &str, extension: &str) -> Result<Vec<u8>>;
 }

@@ -17,13 +17,6 @@ pub struct GoTypeRef {
 }
 
 /// One entry of a named type's method set, from the type's `abi.UncommonType`.
-///
-/// The Go compiler emits an `abi.UncommonType` -> `[]abi.Method` array for
-/// every defined type that declares methods. `func_va` is the absolute virtual
-/// address of the normal-call method body (`Method.Tfn`, a text-relative
-/// offset resolved against the moduledata text base); it is the cross-reference
-/// key that ties the method to its pclntab function without trusting any
-/// re-emitted name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GoMethod {
     pub name: Option<String>,
@@ -159,18 +152,7 @@ fn extract_typemeta_versioned(
     }
 }
 
-/// Cross-reference every reconstructed method against the pclntab function
-/// table by exact entry-VA match, filling `linker_name`.
-///
-/// This is the non-circular tie: a method's `Tfn` text offset must land on a
-/// function the pclntab already knows by name, so the recovered method set is
-/// verified against ground truth the compiler emitted independently.
-///
-/// `text_va` is the moduledata's absolute text base. A method's `func_va` is
-/// `text_va + Tfn` (absolute), while pclntab function entries may be stored
-/// either absolute (ELF, where the pclntab header carries the real text VA) or
-/// text-relative (PE builds whose header `text_start` is zero). Both coordinate
-/// spaces are indexed so the exact-VA join lands regardless of container.
+/// Cross-reference every reconstructed method against the pclntab function table by exact entry-VA match, filling `linker_name`.
 pub fn link_method_functions(meta: &mut GoTypeMeta, funcs: &[(u64, &str)], text_va: u64) {
     if funcs.is_empty() {
         return;

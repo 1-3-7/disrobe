@@ -339,13 +339,6 @@ const MAX_FOLD_TOKENS: usize = 4096;
 const NUMERIC_EXPR_BUDGET: usize = 1 << 24;
 
 /// Fold Prometheus `NumbersToExpressions` arithmetic wrappers back to plain numeric literals.
-///
-/// Prometheus rewrites every numeric literal as a nested integer/float arithmetic expression
-/// (`971750703%4206713`, `-587718+3566757`, `(-833342- ... )`). The rewrite is a pure
-/// constant-expression transform with Lua arithmetic semantics (floor-modulo, float division and
-/// power), so it is statically and exactly reversible by evaluating each maximal arithmetic span.
-/// Identifiers, calls, indexing, and string literals are left untouched; only spans composed
-/// entirely of numeric literals and `+ - * / % ^ ( )` are folded.
 #[derive(Debug, Clone)]
 struct FoldedSpan {
     start: usize,

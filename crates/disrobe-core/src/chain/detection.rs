@@ -89,9 +89,6 @@ pub struct ChildHandle {
 }
 
 /// Hint sentinel marking a child the pass has fully handled.
-///
-/// The driver writes such a child to disk but does NOT re-feed it into the chain, so
-/// already-recovered outputs and carved native files do not trigger unrelated passes.
 pub const TERMINAL_HINT: &str = "disrobe.terminal";
 
 impl ChildHandle {

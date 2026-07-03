@@ -30,11 +30,6 @@ impl Default for StreamDisasmLimits {
 }
 
 /// Disassemble an x86/x86-64 `.text` slice straight to `sink`, one instruction at a time.
-///
-/// No in-memory instruction list or assembly string is ever built: a single reusable
-/// [`Instruction`] and a single reusable line buffer are kept across the loop, so peak memory is
-/// independent of `.text` size. Decoding stops at the first of the three limits in `limits`; the
-/// returned [`StreamDisasmStats`] reports whether truncation occurred.
 pub fn stream_disasm_x86(
     sink: &mut dyn Write,
     text: &[u8],
@@ -107,10 +102,6 @@ pub struct RipRef {
 const MAX_RIP_REFS: usize = 200_000;
 
 /// Stream-scan an x86-64 `.text` slice for rip-relative `lea`/`mov` references.
-///
-/// Each result carries the target absolute address plus the start of the enclosing function
-/// (tracked by the same ret/jmp boundary heuristic the listing uses). No instruction list is built
-/// and the result Vec is capped, so a multi-hundred-MB `.text` stays bounded. 64-bit images only.
 #[must_use]
 pub fn scan_rip_relative_refs(text: &[u8], base: u64, max_text_bytes: usize) -> Vec<RipRef> {
     let decode_len: usize = text.len().min(max_text_bytes);

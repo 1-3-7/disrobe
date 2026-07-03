@@ -1,14 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! amice gauntlet. amice (fuqiuluo/amice) is a Rust reimplementation of the OLLVM passes that runs
-//! as an LLVM plugin (string encryption, control-flow flattening, bogus control flow, MBA). It is a
-//! from-source LLVM-version-pinned plugin, not installable on this box, so these fixtures are
-//! spec-constructed ELF objects carrying amice's source-verified output artifacts: the
-//! `__amice__decrypt_strings_<rand>__` / `simd_xor_cipher_<rand>` / `simd_xor_decrypt_stub`
-//! decryptor symbols amice emits, and a `.rodata` string encrypted with amice's default XOR key
-//! `0xAA` (`amice/src/aotu/string_encryption/xor.rs`: `*byte ^= 0xAA`). The clean baseline is the same
-//! object without the amice transform. Detection is graded obf-vs-clean (no false-positive on
-//! clean); string recovery is graded against the clean original plaintext, never against amice's
-//! own output.
+//! amice gauntlet.
 
 use disrobe_pass_native::{
     ObfuscatorFamily, ObfuscatorHit, XorStringHit, detect_obfuscators, recover_amice_xor_strings,

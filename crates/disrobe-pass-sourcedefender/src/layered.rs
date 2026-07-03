@@ -120,10 +120,6 @@ impl LayeredRecovery {
 }
 
 /// Classify a `.pye` container by body shape, not marker text.
-///
-/// The `BEGIN PYE FILE` markers are shared by two engines: the v16 modern build frames its
-/// body as uppercase hex over an aes-256-gcm runtime-key wall, while v15 transitional builds
-/// keep the recoverable aes-256-ctr basename-key scheme under an rfc1924/ascii85 armored body.
 #[must_use]
 pub fn classify_container(input: &[u8]) -> Option<ContainerVariant> {
     let text: &str = core::str::from_utf8(input).ok()?;

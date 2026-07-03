@@ -8,21 +8,7 @@
     clippy::doc_markdown
 )]
 
-//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real
-//! CPython 3.12 interpreter.
-//!
-//! Companion to `arbitrary_recompile_gate.rs` (3.14) and `arbitrary_recompile_gate_315.rs` (3.15).
-//! The harness is reused verbatim; only the interpreter is different. 3.12 is the weakest stable
-//! band because its compiler picks an inlined-comprehension filter jump polarity from the physical
-//! source layout (`POP_JUMP_IF_FALSE` fall-through when the `if` clause sits on a later line than
-//! the element, `POP_JUMP_IF_TRUE` when they share a line); 3.13+ always emit the `POP_JUMP_IF_TRUE`
-//! form. disrobe reproduces the 3.12 fall-through form by rendering such filters on their own line,
-//! recovering the bytecode parity that single-line rendering loses. This gate locks the recovery so
-//! that regression cannot return silently.
-//!
-//! The oracle is non-circular: the harness grades disrobe's recovered source against a real CPython
-//! 3.12 recompile of that source, never against disrobe's own re-emission. Absent a 3.12 interpreter
-//! the gate is skipped explicitly (it cannot measure), never passed silently.
+//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real CPython 3.12 interpreter.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,33 +16,7 @@ use std::process::{Command, Stdio};
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-/// Floor enforced in CI. The measured per-code-object recompile-equivalence on the pinned corpus
-/// under CPython 3.12 is 92.51% (5235 of 5659 code objects across 177 of the 200 pinned modules;
-/// 23 pinned 3.14 modules are absent from the 3.12 Lib). A `JUMP_BACKWARD` that lives inside a
-/// post-3.11 `PUSH_EXC_INFO` handler cold-block and re-loops an outer construct (its protected try
-/// body begins before the candidate header) is the handler's success-path continue of that
-/// enclosing for-loop, not the back-edge of a fresh infinite `while`; `find_infinite_while` now
-/// rejects it (`back_edge_inside_exc_handler_cold_block`) so the real for-loop is no longer split
-/// and the try body no longer duplicated. The guard is scoped to the outer-try case so a genuine
-/// `while True:` whose own body holds a `try` is untouched (3.10/3.11/3.14/3.15 unchanged, 3.12 +2,
-/// 3.13 +1, zero regressions across all bands). A loop-body `if COND: <try>` whose guard
-/// jump-if-true targets the try and whose fall-through is the loop back-edge is now recovered as the
-/// positive `if COND:` wrapping the try instead of an inverted `if not COND: continue` prelude, so an
-/// `in`/`is` guard keeps its `CONTAINS_OP`/`IS_OP` jump polarity; the same positive form now also
-/// covers a jump-if-true `if COND:` whose only fall-through is a bare continue back-edge. A
-/// `while True:` loop whose body wraps a `try` (or a `for`) and whose only exits are inner breaks is
-/// recovered as the infinite loop
-/// instead of being dropped: `find_infinite_while` accepts an unconditional back-edge with no
-/// controlling top/bottom test past the back-edge, and `strip_trailing_implicit_return` no longer
-/// recurses into an infinite-while body (a trailing `return None` there is a `break`, not the
-/// function's implicit return). This is the `while 1: try: ... except: break` `except_flow` shape.
-/// The earlier gain came from negating a jump-if-true guard whose fall-through arm carries the true
-/// body and continues to the loop head so `if not COND: ... elif/else: ...` recovers with the right
-/// jump polarity. Both fixes are cross-version (3.10 through 3.15 each gained the same one or two
-/// objects, so neither is version-gated). The floor sits below the measured value so a real
-/// regression trips it while normal interpreter-patch jitter does not; it counts only the modules
-/// present in the running interpreter's Lib and skips entirely when no 3.12 is installed. Raise it
-/// only with a measured run behind the change; never lower it to mask a regression.
+/// Floor enforced in CI.
 const OBJECT_PCT_FLOOR: f64 = 91.0;
 
 #[derive(Debug)]

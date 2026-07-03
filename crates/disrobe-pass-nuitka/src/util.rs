@@ -37,9 +37,7 @@ pub(crate) fn pe_overlay_offset(image: &[u8]) -> Option<usize> {
 const SCN_CNT_INITIALIZED_DATA: u32 = 0x0000_0040;
 const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
-/// File-offset ranges of the initialized, non-executable PE sections (.rdata/.data) where
-/// the Nuitka constants blob, the `.bytecode` stream, and the loader table live. Returns
-/// `None` when the input is not a parseable PE so callers can fall back to the whole image.
+/// File-offset ranges of the initialized, non-executable PE sections (.rdata/.data) where the Nuitka constants blob, the `.bytecode` stream, and the loader table live.
 pub(crate) fn pe_data_section_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>> {
     if image.len() < 0x40 || &image[0..2] != b"MZ" {
         return None;

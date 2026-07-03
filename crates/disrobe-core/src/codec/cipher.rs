@@ -1,13 +1,8 @@
 //! Block and stream ciphers common in obfuscation runtimes.
-//!
-//! The TEA family (`TEA`, `XTEA`, `XXTEA`) is keyed on the `0x9E3779B9`
-//! golden-ratio delta, and the `Salsa20` and `ChaCha20` stream ciphers are keyed
-//! on the `expand 32-byte k` sigma constant.
 
 use super::DecodeError;
 
 /// The TEA-family round constant, the 32-bit fractional part of the golden ratio.
-/// Its presence in a binary is a strong `TEA`/`XTEA`/`XXTEA` fingerprint.
 pub const TEA_DELTA: u32 = 0x9e37_79b9;
 
 const TEA_ROUNDS: u32 = 32;
@@ -103,8 +98,7 @@ const fn xxtea_mx(sum: u32, y: u32, z: u32, p: u32, e: u32, key: &[u32; 4]) -> u
         ^ (sum ^ y).wrapping_add(key[((p & 3) ^ e) as usize] ^ z)
 }
 
-/// Decrypt an `XXTEA` block of `v.len()` little-endian words in place. The slice must
-/// hold at least two words.
+/// Decrypt an `XXTEA` block of `v.len()` little-endian words in place.
 #[allow(clippy::many_single_char_names)]
 pub fn xxtea_decrypt(v: &mut [u32], key: &[u8; 16]) -> Result<(), DecodeError> {
     let n: usize = v.len();
@@ -177,8 +171,7 @@ fn words_to_le(words: &[u32]) -> Vec<u8> {
     out
 }
 
-/// Decrypt a `TEA`/`XTEA` byte buffer in ECB fashion. The length must be a multiple of
-/// eight; trailing zero padding is left intact.
+/// Decrypt a `TEA`/`XTEA` byte buffer in ECB fashion.
 pub fn tea_family_decrypt_bytes(
     data: &[u8],
     key: &[u8; 16],
@@ -206,8 +199,7 @@ pub fn tea_family_decrypt_bytes(
     Ok(out)
 }
 
-/// Decrypt an `XXTEA` byte buffer. The length must be a multiple of four and span at
-/// least two words.
+/// Decrypt an `XXTEA` byte buffer.
 pub fn xxtea_decrypt_bytes(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, DecodeError> {
     if data.len() > MAX_CIPHER_INPUT {
         return Err(DecodeError::TooLarge { len: data.len() });
@@ -348,8 +340,7 @@ fn salsa20_state(key: &[u8; 32], nonce: [u8; 8], counter: u64) -> [u32; 16] {
     state
 }
 
-/// Apply the `ChaCha20` keystream to `data`, decrypting (or encrypting; the operation
-/// is symmetric) in place against the 256-bit key, 96-bit nonce, and block counter.
+/// Apply the `ChaCha20` keystream to `data`, decrypting (or encrypting; the operation is symmetric) in place against the 256-bit key, 96-bit nonce, and block counter.
 #[must_use]
 pub fn chacha20_apply(data: &[u8], key: &[u8; 32], nonce: &[u8; 12], counter: u32) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(data.len());
@@ -363,8 +354,7 @@ pub fn chacha20_apply(data: &[u8], key: &[u8; 32], nonce: &[u8; 12], counter: u3
     out
 }
 
-/// Apply the `Salsa20` keystream to `data` against the 256-bit key, 64-bit nonce, and
-/// block counter.
+/// Apply the `Salsa20` keystream to `data` against the 256-bit key, 64-bit nonce, and block counter.
 #[must_use]
 pub fn salsa20_apply(data: &[u8], key: &[u8; 32], nonce: [u8; 8], counter: u64) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(data.len());
@@ -378,8 +368,7 @@ pub fn salsa20_apply(data: &[u8], key: &[u8; 32], nonce: [u8; 8], counter: u64) 
     out
 }
 
-/// Locate the `expand 32-byte k` sigma constant in a buffer, a strong fingerprint of
-/// an embedded `Salsa20` or `ChaCha20` keystream generator.
+/// Locate the `expand 32-byte k` sigma constant in a buffer, a strong fingerprint of an embedded `Salsa20` or `ChaCha20` keystream generator.
 #[must_use]
 pub fn find_salsa_sigma(haystack: &[u8]) -> Option<usize> {
     haystack

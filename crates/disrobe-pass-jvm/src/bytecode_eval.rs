@@ -1102,18 +1102,7 @@ fn descriptor_arg_slots(desc: &str) -> usize {
     slots
 }
 
-/// Evaluate a Stringer flow-mode decryptor's own `()J` self-tamper fold over an EMPTY
-/// input stream and return the resulting SipHash-2-4 value (`abs(fold(seed, seed, []))`).
-///
-/// This is the value the fold produces when the reflective `getResourceAsStream` /
-/// `ZipInputStream` walk reads nothing, e.g. when the class is loaded outside its
-/// originating jar. It is NOT the genuine decrypt key word: under the real JVM the walk
-/// enumerates the enclosing jar's ZIP directory (every sibling entry's name and size, in
-/// central-directory order) and folds those bytes, so the runtime value differs. On the
-/// bundled real sample the empty fold is `2_202_906_307_356_721_367` while the genuine
-/// `ube.tms.uh.B()` returns `1_738_644_257_434_835_613` when run from the full 305 KB jar.
-/// The jar directory is absent from the committed few-class artifact, so this empty-input
-/// fold is the recoverable decoy, not the key that decrypts the constants.
+/// Evaluate a Stringer flow-mode decryptor's own `()J` self-tamper fold over an EMPTY input stream and return the resulting SipHash-2-4 value (`abs(fold(seed, seed, []))`).
 #[must_use]
 pub fn recover_reflective_self_hash_empty_fold(cf: &ClassFile) -> Option<i64> {
     let key_method: usize = (0..cf.methods.len()).find(|&idx: &usize| {

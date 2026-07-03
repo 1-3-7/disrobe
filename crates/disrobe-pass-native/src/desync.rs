@@ -18,14 +18,6 @@ pub struct VmwareBackdoorHit {
 }
 
 /// Scan a decoded x86 code window for the hypervisor backdoor handshake.
-///
-/// The signal is `mov eax, 0x564D5868` (the `VMXh` magic) directly followed by `in (e)ax, dx`
-/// against the `0x5658` backdoor port. The two-instruction pair is a near-zero-false-positive
-/// anti-analysis signal: the magic constant never appears as an immediate in normal code, and
-/// pairing it with the privileged port-in guards against an incidental constant match.
-///
-/// The pair is matched on the linear instruction stream (decoder over `bytes` at `base`) so a
-/// junk byte cannot wedge a false `in` between the magic load and the port read.
 #[must_use]
 pub fn scan_vmware_backdoor(bitness: Bitness, base: u64, bytes: &[u8]) -> Vec<VmwareBackdoorHit> {
     let mut hits: Vec<VmwareBackdoorHit> = Vec::new();

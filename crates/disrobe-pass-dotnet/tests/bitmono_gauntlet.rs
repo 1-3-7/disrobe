@@ -4,12 +4,7 @@
     clippy::panic,
     clippy::missing_panics_doc
 )]
-//! Real `BitMono` 0.41.1 gauntlet. `GauntletBitMono.bitmono.dll` is a real .NET 8 assembly
-//! obfuscated by the actual `BitMono` CLI with `--preset Maximum` (17 protections incl.
-//! `AntiILdasm`, `BitDotNet`, `BitTimeDateStamp`). These are the authoritative non-circular
-//! gate for `BitMono` support: they assert structural detection + parse-tolerance on the real
-//! anti-static-tooling header corruption, with the clean pre-obfuscation baseline as a
-//! negative control. No self-authored fixture stands in for the real bytes.
+//! Real `BitMono` 0.41.1 gauntlet.
 
 use std::path::PathBuf;
 

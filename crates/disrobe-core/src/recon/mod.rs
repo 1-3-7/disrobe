@@ -122,8 +122,7 @@ pub struct CustomPattern {
 }
 
 impl CustomPattern {
-    /// Compiles a user-supplied pattern with a bounded regex size so a pathological
-    /// custom rule cannot exhaust memory.
+    /// Compiles a user-supplied pattern with a bounded regex size so a pathological custom rule cannot exhaust memory.
     pub fn compile(name: &str, pattern: &str) -> Result<Self, ReconError> {
         let regex: Regex = RegexBuilder::new(pattern)
             .size_limit(REGEX_SIZE_LIMIT)
@@ -1032,9 +1031,6 @@ fn extract_utf16le_ascii_strings(bytes: &[u8]) -> String {
 }
 
 /// Scans a single byte blob, returning the findings plus whether it was valid UTF-8.
-///
-/// Encoding-safe: non-UTF8 input is decoded lossily and never panics, fixing the
-/// class of crash that killed cp1252-decoding scanners on Windows.
 #[must_use]
 pub fn scan_bytes(
     bytes: &[u8],
@@ -1289,12 +1285,7 @@ fn codec_peel_token(
     }
 }
 
-/// Peels every static [`codec::Scheme`] off each printable run in `bytes`, rescanning
-/// each decode for indicators and recursing into further encoding layers.
-///
-/// A decode only advances when its output is a nested container or clears a printable
-/// ratio, so opaque or coincidentally decodable bytes do not flood the report. Depth,
-/// per-run length, and cumulative decoded size are all bounded against a decode bomb.
+/// Peels every static [`codec::Scheme`] off each printable run in `bytes`, rescanning each decode for indicators and recursing into further encoding layers.
 fn codec_cascade_findings(
     bytes: &[u8],
     uri: Option<&str>,
@@ -1330,9 +1321,7 @@ fn codec_cascade_findings(
     out
 }
 
-/// Scans one blob through the full detector set: direct scan, embedded base64
-/// decode (depth-capped), every static codec layer (depth-capped), and any sniffed
-/// container (zip / tar / gz / bz2 / xz), each bounded by the same decode-bomb budget.
+/// Scans one blob through the full detector set, each layer bounded by the decode-bomb budget.
 fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<ReconFinding>, bool) {
     let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_bytes(bytes, uri, config);
     findings.extend(base64_decode_findings(bytes, uri, config, 0));
@@ -1348,8 +1337,7 @@ fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<Reco
     (findings, valid_utf8)
 }
 
-/// Routes a blob to the matching container extractor by magic bytes, regardless
-/// of file extension. Returns findings from inside the container.
+/// Routes a blob to the matching container extractor by magic bytes, regardless of file extension.
 fn scan_container(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> Vec<ReconFinding> {
     if is_zip_container(bytes) {
         return scan_zip_bytes(bytes, uri, config);
@@ -1391,11 +1379,7 @@ fn is_zip_container(bytes: &[u8]) -> bool {
     bytes.starts_with(&ZIP_LOCAL_HEADER) || bytes.starts_with(&ZIP_EMPTY_HEADER)
 }
 
-/// Scans the entries of a ZIP/APK container, attributing each finding to a
-/// `outer!inner` path so the report names the file inside the archive.
-///
-/// Each entry is read under a per-entry and total-bytes budget so a zip bomb
-/// cannot exhaust memory, and the entry count is capped.
+/// Scans the entries of a ZIP/APK container, attributing each finding to a `outer!inner` path so the report names the file inside the archive.
 #[must_use]
 pub fn scan_zip_bytes(
     bytes: &[u8],
@@ -1542,8 +1526,7 @@ pub fn scan_xz_bytes(bytes: &[u8], outer: Option<&str>, config: &ReconConfig) ->
     scan_decompressed(plain, outer, "unxz", config)
 }
 
-/// Walks a tar archive under the zip-bomb budget, scanning each regular file and
-/// attributing findings to `outer!inner` paths.
+/// Walks a tar archive under the zip-bomb budget, scanning each regular file and attributing findings to `outer!inner` paths.
 #[must_use]
 pub fn scan_tar_bytes(
     bytes: &[u8],
@@ -1662,9 +1645,6 @@ fn read_scan_file(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Recursively scans a directory tree, or a single file.
-///
-/// Each file is read as raw bytes and decoded lossily, so a non-UTF8 file is
-/// scanned, never crashed on. Symlinks are skipped to avoid traversal loops.
 pub fn report_tree(root: &Path, config: &ReconConfig) -> Result<ReconReport, ReconError> {
     let meta: std::fs::Metadata = std::fs::metadata(root).map_err(|e| ReconError::Io {
         path: root.display().to_string(),
@@ -1730,8 +1710,6 @@ pub fn categories(report: &ReconReport) -> BTreeSet<ReconCategory> {
 }
 
 /// Stable identity of a finding for baseline allow-listing: path, category, rule, value.
-/// Deliberately excludes line/column/offset so unrelated edits that shift a known
-/// finding do not break the baseline.
 #[must_use]
 pub fn fingerprint(finding: &ReconFinding) -> String {
     format!(

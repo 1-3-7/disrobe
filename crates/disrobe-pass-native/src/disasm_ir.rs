@@ -25,11 +25,6 @@ use crate::desync::{
 use crate::error::{Error, Result};
 
 /// Hard ceiling on the executable bytes decoded per call to [`build_disasm_payload`].
-///
-/// A compiled Nuitka standalone (or a bundled native lib analysed per-entry) can carry hundreds of
-/// MB of `.text`; decoding all of it materializes tens of millions of heavy [`DisasmInstruction`]
-/// values and exhausts memory. Callers that need the full listing should use the streaming
-/// [`crate::stream_disasm`] path; this in-memory builder stays bounded.
 pub const MAX_DECODE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Hard ceiling on the number of [`DisasmInstruction`] values held in one payload.
@@ -290,10 +285,6 @@ fn read_only_windows(bytes: &[u8]) -> Vec<ReadOnlyWindow<'_>> {
 }
 
 /// The largest `.text` section as a zero-copy borrow of `bytes`, with its virtual address and bits.
-///
-/// Returns `None` for non-x86 images or when no `.text` is present. This is the bounded streaming
-/// entry point: the caller decodes the slice incrementally and never materializes an instruction
-/// list, so a multi-hundred-MB `.text` costs no extra heap here.
 #[must_use]
 pub fn text_section_window(bytes: &[u8]) -> Option<(u64, u32, &[u8])> {
     let native: NativeFile = parse_native(bytes).ok()?;

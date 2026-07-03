@@ -337,13 +337,7 @@ fn find_infinite_while(
     None
 }
 
-/// A `JUMP_BACKWARD` that lives inside a `PUSH_EXC_INFO` handler cold-block and re-loops an *outer*
-/// construct (its protected try body begins before the candidate header) is the handler's
-/// success-path continue of that enclosing loop, not the back-edge of a fresh infinite `while`.
-/// Post-3.11 lays such cold handlers physically after the protected body, so a naive back-edge scan
-/// otherwise mistakes the handler continue for a loop header, splitting the real for-loop and
-/// duplicating the try body. Guarded to the outer-try case so a genuine `while True:` whose own body
-/// holds a `try` (protected region begins inside the loop) is left untouched.
+/// Whether a `JUMP_BACKWARD` inside a `PUSH_EXC_INFO` handler cold-block re-loops an outer construct (a handler success-path continue) rather than opening a fresh infinite `while`.
 fn back_edge_inside_exc_handler_cold_block(
     stream: &DecodedStream,
     header: usize,
@@ -432,13 +426,7 @@ fn loop_has_jump_exit(stream: &DecodedStream, header: usize, back_edge: usize, h
     })
 }
 
-/// A `while True:` whose body wraps a try or a for-loop and whose only exits are inner breaks
-/// (jumps to the single loop-exit label at/after the back-edge, or exit-returns) is still an
-/// infinite loop, even though `loop_has_jump_exit` flags those break jumps. The controlling test
-/// of a genuine `while COND:` sits at the top or bottom of the loop and jumps strictly past the
-/// back-edge; a break-guard instead skips into the loop or lands on the back-edge itself. This
-/// rescues the `while 1: try: ... except ...: break` shape (the dominant 3.12 `except_flow`
-/// cluster) that would otherwise drop the enclosing loop and mislower its breaks to returns.
+/// Whether a `while True:` wrapping a try or for-loop whose only exits are inner breaks is still an infinite loop.
 fn infinite_while_only_break_exits(
     stream: &DecodedStream,
     header: usize,

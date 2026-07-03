@@ -25,14 +25,6 @@ const MAX_WIDE_SCAN_BYTES: usize = 256 * 1024 * 1024;
 const MAX_TABLE_HEADER_HINTS: usize = 64;
 
 /// Constant-table value encodings tried per chunk.
-///
-/// `ModernVarint` is graded byte-for-byte against the real Nuitka corpus exe
-/// in [`tests::recovers_real_standalone_modules_and_functions`]. The two
-/// `LegacyFixed*` widths are reconstructed from the historical Nuitka C-long
-/// serializer shape and are NOT verified against a real legacy Nuitka artifact:
-/// no pre-varint Nuitka binary is in the corpus, so their tests prove only that
-/// disrobe's own encoder and decoder agree (round-trip). Treat legacy recovery
-/// as acquisition-gated until a real legacy sample lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkValueLayout {
     ModernVarint,
@@ -1013,9 +1005,7 @@ mod tests {
         image
     }
 
-    /// Round-trip only: the chunk is emitted by disrobe's own `legacy_*` helpers,
-    /// so this proves the fixed32 decoder agrees with disrobe's encoder, NOT that
-    /// the grammar matches a real legacy Nuitka byte layout (acquisition-gated).
+    /// Round-trip only: the chunk is emitted by disrobe's own `legacy_*` helpers, so this proves the fixed32 decoder agrees with disrobe's encoder, NOT that the grammar matches a real legacy Nuitka byte layout (acquisition-gated).
     #[test]
     fn legacy_fixed32_roundtrips_disrobes_own_encoding() {
         let mut values: Vec<u8> = legacy_text("alpha");
@@ -1039,9 +1029,7 @@ mod tests {
         assert_eq!(module.value_count, 2);
     }
 
-    /// Round-trip only: same caveat as the fixed32 case. This grades disrobe's
-    /// fixed64 decoder against disrobe's own emitted bytes, not a real legacy
-    /// Nuitka artifact (acquisition-gated).
+    /// Round-trip only: same caveat as the fixed32 case.
     #[test]
     fn legacy_fixed64_roundtrips_disrobes_own_encoding() {
         let mut values: Vec<u8> = legacy_text("wide");

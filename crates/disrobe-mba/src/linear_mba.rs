@@ -3,12 +3,6 @@ use crate::expr::{BinOp, Expr, UnOp, Width};
 const MAX_BASIS_VARS: u32 = 3;
 
 /// Recover the simplest linear-MBA form of `expr` over the multi-variable bitwise basis.
-///
-/// Solves the integer coefficient vector of `expr` over single, pair, and triple
-/// combinations of the bitwise basis functions (`x`, `~x`, `x & y`, `x | y`, `x ^ y`,
-/// `~(x & y)`, `x & ~y`, the all-ones constant, and so on), returning the candidate with
-/// the fewest nodes whose truth table reproduces `expr` exactly. The candidate is a
-/// proposal only; callers must prove equivalence (exhaustive or SMT) before emitting it.
 #[must_use]
 pub fn synthesize_linear_basis(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_BASIS_VARS {

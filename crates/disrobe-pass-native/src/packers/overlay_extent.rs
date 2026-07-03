@@ -57,10 +57,6 @@ const RAR4_TYPE_ENDARC: u8 = 0x7b;
 const RAR4_MAX_BLOCKS: usize = 1_000_000;
 
 /// Computes the exact byte length of an appended archive starting at `window[0]`.
-///
-/// Parses each format's own framing to its true end so trailing padding after the
-/// archive can be split off. Returns `None` when the format is recognized but its
-/// extent cannot be derived statically, in which case callers keep the whole window.
 #[must_use]
 pub fn archive_true_extent(window: &[u8], archive: ArchiveKind) -> Option<usize> {
     let extent: usize = match archive {

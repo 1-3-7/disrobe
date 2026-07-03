@@ -1,9 +1,4 @@
 //! Disassembler for a flat V8 Ignition `BytecodeArray` (a contiguous opcode stream).
-//!
-//! A real `.jsc` payload is a `CodeSerializer` object graph, not a flat `BytecodeArray`.
-//! [`super::code_serializer::parse_code_serializer_graph`] walks that graph, extracts each
-//! `BytecodeArray`'s inline bytecode, and feeds the bytes here for the node-24 / v8-13.6 stream.
-//! The [`encode_instruction`] -> [`disassemble`] round trip drives opcode-table coverage.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
