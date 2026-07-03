@@ -14,8 +14,9 @@ use std::process::Command;
 use disrobe_pass_native::{
     Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
     PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
-    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
-    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
+    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_in_object,
+    recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
+    recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -11752,5 +11753,290 @@ fn cmov_select_idioms_recompile_to_behavioral_equivalence() {
     println!(
         "host cmov/abs/min/max differential PASSED for {} idioms (MS x64, adversarial + exhaustive 8/16-bit)",
         SEL_BATTERY.len()
+    );
+}
+
+const OBJ_SWITCH_BATTERY: &[Case] = &[
+    Case {
+        name: "osw_bias",
+        arity: 2,
+        c_source: "long long osw_bias(long long k, long long a){ switch(k){ case 100: return a*3+1; case 101: return a*7-2; case 102: return a^0x5a; case 103: return a<<3; case 104: return a-99; case 105: return a*a; case 106: return ~a; case 107: return a+12345; case 108: return a*a-a; case 109: return (a>>1)+3; default: return -1; } }",
+    },
+    Case {
+        name: "osw_dup",
+        arity: 2,
+        c_source: "long long osw_dup(long long k, long long a){ switch(k){ case 0: return a+7; case 1: return a+7; case 2: return a+7; case 3: return a*a; case 4: return a<<2; case 5: return a<<2; case 6: return a-13; case 7: return a^0x33; default: return -1; } }",
+    },
+    Case {
+        name: "osw_wide",
+        arity: 1,
+        c_source: "long long osw_wide(long long k){ switch(k){ case 0: return 10; case 1: return 21; case 2: return 32; case 3: return 43; case 4: return 54; case 5: return 65; case 6: return 76; case 7: return 87; default: return -1; } }",
+    },
+];
+
+const OBJ_SWITCH_DISCS: &str =
+    "-1000,-3,-1,0,1,2,3,4,5,6,7,8,9,50,98,99,100,101,102,103,104,105,106,107,108,109,110,200,1000";
+const OBJ_SWITCH_AVALS: &str =
+    "0,1,-1,2,-2,7,-7,123456,-654321,2147483647,-2147483648,0x7fffffffffffffffLL";
+
+fn object_switch_lift(
+    case: &Case,
+    object_bytes: &[u8],
+    abi: PseudoAbi,
+) -> Option<(LeafRecovery, String)> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
+    let recovery: LeafRecovery =
+        match recover_leaf_function_in_object(object_bytes, &code, base, abi, &[]) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skip {}: not recovered from object ({e})", case.name);
+                return None;
+            }
+        };
+    if !recovery.lifted_switch {
+        eprintln!(
+            "skip {}: this build did not lower into a dense jump table",
+            case.name
+        );
+        return None;
+    }
+    let recovered_name: String = format!("rec_{}", case.name);
+    let renamed: String = recovery
+        .source
+        .replacen(
+            "uint64_t recovered(",
+            &format!("uint64_t {recovered_name}("),
+            1,
+        )
+        .lines()
+        .filter(|l: &&str| !l.starts_with("#include"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    Some((recovery, renamed))
+}
+
+fn object_switch_snippet(case: &Case, recovery: &LeafRecovery) -> String {
+    let recovered_name: String = format!("rec_{}", case.name);
+    let return_mask: String = if recovery.return_width_bits >= 64 {
+        "0xFFFFFFFFFFFFFFFFULL".to_owned()
+    } else {
+        format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
+    };
+    let orig_args: String = match case.arity {
+        1 => "k".to_owned(),
+        _ => "k, a".to_owned(),
+    };
+    let rec_args: String = (0..recovery.params.len())
+        .map(|i: usize| if i == 0 { "(uint64_t)k" } else { "(uint64_t)a" }.to_owned())
+        .collect::<Vec<String>>()
+        .join(", ");
+    let name: &str = case.name;
+    let mut snippet: String = String::new();
+    let _ = write!(
+        snippet,
+        "    for (size_t di = 0; di < n_discs; di++) {{\n\
+         \x20       long long k = discs[di];\n\
+         \x20       for (size_t ai = 0; ai < n_avals; ai++) {{\n\
+         \x20           long long a = avals[ai];\n\
+         \x20           unsigned long long want = (unsigned long long){name}({orig_args}) & {return_mask};\n\
+         \x20           unsigned long long got = (unsigned long long){recovered_name}({rec_args}) & {return_mask};\n\
+         \x20           if (want != got) {{ printf(\"MISMATCH {name} k=%lld a=%lld want=%llu got=%llu\\n\", k, a, want, got); return 1; }}\n\
+         \x20       }}\n\
+         \x20   }}\n",
+    );
+    snippet
+}
+
+fn object_switch_extern(case: &Case) -> String {
+    let sig: String = match case.arity {
+        1 => "long long".to_owned(),
+        _ => "long long, long long".to_owned(),
+    };
+    format!("extern long long {}({sig});", case.name)
+}
+
+fn build_object_switch_driver(recovered_decls: &str, driver_body: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{recovered_decls}\n\
+         int main(void) {{\n\
+         \x20   long long discs[] = {{ {OBJ_SWITCH_DISCS} }};\n\
+         \x20   long long avals[] = {{ {OBJ_SWITCH_AVALS} }};\n\
+         \x20   size_t n_discs = sizeof(discs)/sizeof(discs[0]);\n\
+         \x20   size_t n_avals = sizeof(avals)/sizeof(avals[0]);\n\
+         {driver_body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+fn object_switch_has_stacked_case(source: &str) -> bool {
+    source.lines().any(|line: &str| {
+        let trimmed: &str = line.trim();
+        trimmed.starts_with("case ") && trimmed.ends_with(':')
+    })
+}
+
+#[test]
+fn object_dense_switch_recovers_bias_and_duplicates_hostabi() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv clang cross is the cross-platform guard"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!(
+            "skipping object-switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
+        );
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let mut battery_src: String = String::new();
+    for case in OBJ_SWITCH_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("obj_switch_battery.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write obj_switch_battery.c");
+    let battery_o: PathBuf = dir.join("obj_switch_battery.o");
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for object-switch battery");
+    assert!(
+        compile.status.success(),
+        "object-switch battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read obj_switch_battery.o");
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+    let mut saw_bias: bool = false;
+    let mut saw_collapse: bool = false;
+    for case in OBJ_SWITCH_BATTERY {
+        let Some((recovery, renamed)): Option<(LeafRecovery, String)> =
+            object_switch_lift(case, &object_bytes, HOST_ABI)
+        else {
+            continue;
+        };
+        if case.name == "osw_bias" {
+            assert!(
+                recovery.source.contains("case 100:"),
+                "biased switch must carry the source case value, not a zero-based index: {}",
+                recovery.source
+            );
+            saw_bias = true;
+        }
+        if case.name == "osw_dup" && object_switch_has_stacked_case(&recovery.source) {
+            saw_collapse = true;
+        }
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&object_switch_extern(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&object_switch_snippet(case, &recovery));
+        lifted_count += 1;
+    }
+    assert!(
+        lifted_count >= 2,
+        "object-switch oracle must recover at least 2 of the {} battery functions, recovered {lifted_count}",
+        OBJ_SWITCH_BATTERY.len()
+    );
+    assert!(
+        saw_bias,
+        "the biased switch osw_bias must be recovered with faithful case labels"
+    );
+    assert!(
+        saw_collapse,
+        "duplicate jump-table targets must collapse into stacked multi-value case labels"
+    );
+
+    let driver: String = build_object_switch_driver(&recovered_decls, &driver_body);
+    let driver_c: PathBuf = dir.join("obj_switch_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write obj_switch_driver.c");
+    let exe: PathBuf = dir.join(if cfg!(windows) {
+        "obj_switch_harness.exe"
+    } else {
+        "obj_switch_harness"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke gcc to link object-switch harness");
+    assert!(
+        link.status.success(),
+        "object-switch harness link failed: {}\n--- driver ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let BoundedRun::Exited(out): BoundedRun = run_bounded(&exe, 30) else {
+        panic!("object-switch harness did not terminate within the watchdog window");
+    };
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "object-switch behavioral differential FAILED ({lifted_count} cases): {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    println!(
+        "object-switch differential PASSED for {lifted_count} functions (MS x64, full-domain sweep incl MIN-1/MAX+1, bias + duplicate-target collapse)"
+    );
+}
+
+#[test]
+fn sysv_object_dense_switch_recovers_bias_and_duplicates() {
+    let mut battery_src: String = String::new();
+    for case in OBJ_SWITCH_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross("obj_switch", &battery_src)
+    else {
+        return;
+    };
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+    for case in OBJ_SWITCH_BATTERY {
+        let Some((recovery, renamed)): Option<(LeafRecovery, String)> =
+            object_switch_lift(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            continue;
+        };
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&object_switch_extern(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&object_switch_snippet(case, &recovery));
+        lifted_count += 1;
+    }
+    assert!(
+        lifted_count >= 1,
+        "sysv object-switch oracle recovered no dense jump-table functions of {}",
+        OBJ_SWITCH_BATTERY.len()
+    );
+    let driver: String = build_object_switch_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("obj_switch", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "sysv object-switch behavioral differential FAILED ({lifted_count} cases): {stdout}"
+    );
+    println!(
+        "sysv object-switch differential PASSED for {lifted_count} functions (SysV, full-domain sweep incl MIN-1/MAX+1)"
     );
 }

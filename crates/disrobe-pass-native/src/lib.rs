@@ -236,9 +236,10 @@ pub use provenance_header::{
 pub use pseudo_c::{
     Abi as PseudoAbi, FpConstant, JumpTable, LeafRecovery, Reg as PseudoReg, ResolvedCall,
     ScalarType as PseudoScalarType, SretReturn, callee_int_arity, recover_leaf_function,
-    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_rust_abi,
-    recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
-    recover_leaf_function_with_calls, resolved_int_arity_in_object,
+    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_in_object,
+    recover_leaf_function_rust_abi, recover_leaf_function_switch_abi,
+    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
+    resolved_int_arity_in_object,
 };
 pub use rust_recovery::{
     AuditableCrate, AuditableSbom, DemangleScheme, DemangledSymbol, EnumDiscriminant,

@@ -1948,6 +1948,7 @@ name = "disrobe-core"
 version = "0.10.4"
 dependencies = [
  "aes",
+ "aho-corasick",
  "base64",
  "blake3",
  "bzip2-rs",

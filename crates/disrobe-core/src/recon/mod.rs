@@ -11,9 +11,13 @@ pub mod git_history;
 pub mod interop;
 pub mod ioc;
 pub mod malware_config;
+#[cfg(feature = "redact")]
+pub mod redact;
 pub mod secret_scan;
 
 use self::ioc::IocKind;
+#[cfg(feature = "redact")]
+pub use self::redact::Redactor;
 use self::secret_scan::Severity;
 
 pub const RECON_SCHEMA: &str = "disrobe.recon/v0";

@@ -603,7 +603,7 @@ enum Node {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchCase {
-    value: i64,
+    values: Vec<i64>,
     body: Block,
     fallthrough: bool,
 }
@@ -683,6 +683,24 @@ pub fn recover_leaf_function_with_calls(
     recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls)
 }
 
+/// Recover a leaf function, resolving a dense-switch jump table from the object's relocatable data.
+pub fn recover_leaf_function_in_object(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    match recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls) {
+        Ok(recovery) => Ok(recovery),
+        Err(straight_err) => recover_switch_in_object(object, machine_code, base, abi, calls)
+            .map_err(|switch_err: Error| match &switch_err {
+                Error::LlvmIr(message) if message.contains("dispatch prologue") => straight_err,
+                _ => switch_err,
+            }),
+    }
+}
+
 pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Option<usize> {
     recover_leaf_function_abi(callee_code, callee_base, abi)
         .ok()
@@ -698,23 +716,18 @@ pub fn resolved_int_arity_in_object(
     callee_base: u64,
     abi: Abi,
 ) -> Option<usize> {
-    resolved_int_arity(
-        callee_code,
-        callee_base,
-        abi,
-        &|target: u64| callee_code_by_target(object, target),
-        CALL_RESOLUTION_DEPTH,
-    )
+    resolved_int_arity(object, callee_code, callee_base, abi, CALL_RESOLUTION_DEPTH)
 }
 
 fn resolved_int_arity(
+    object: &[u8],
     callee_code: &[u8],
     callee_base: u64,
     abi: Abi,
-    resolve_callee: &dyn Fn(u64) -> Option<(Vec<u8>, u64)>,
     depth: usize,
 ) -> Option<usize> {
-    let probe: LeafRecovery = recover_leaf_function_abi(callee_code, callee_base, abi).ok()?;
+    let probe: LeafRecovery =
+        recover_leaf_function_in_object(object, callee_code, callee_base, abi, &[]).ok()?;
     if probe.call_targets.is_empty() || depth == 0 {
         return Some(probe.params.len());
     }
@@ -725,12 +738,13 @@ fn resolved_int_arity(
             continue;
         }
         seen.push(target);
-        let Some((nested_code, nested_base)): Option<(Vec<u8>, u64)> = resolve_callee(target)
+        let Some((nested_code, nested_base)): Option<(Vec<u8>, u64)> =
+            callee_code_by_target(object, target)
         else {
             continue;
         };
         let Some(arg_count): Option<usize> =
-            resolved_int_arity(&nested_code, nested_base, abi, resolve_callee, depth - 1)
+            resolved_int_arity(object, &nested_code, nested_base, abi, depth - 1)
         else {
             continue;
         };
@@ -740,7 +754,7 @@ fn resolved_int_arity(
             arg_count,
         });
     }
-    recover_leaf_function_with_calls(callee_code, callee_base, abi, &resolved)
+    recover_leaf_function_in_object(object, callee_code, callee_base, abi, &resolved)
         .ok()
         .map(|recovery: LeafRecovery| recovery.params.len())
 }
@@ -1334,21 +1348,28 @@ pub fn recover_leaf_function_switch_const_abi(
             .ok_or_else(|| Error::LlvmIr("jump-table target out of range".to_owned()))?;
         case_targets.push(target);
     }
+    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, consts, &[])
+}
 
-    let mut leaders: Vec<u64> = case_targets.clone();
+/// Reconstruct a dense-switch leaf from an already-resolved list of case-target addresses.
+fn build_switch_recovery(
+    insns: &[DisasmInsn],
+    by_addr: &BTreeMap<u64, usize>,
+    abi: Abi,
+    dispatch: &SwitchDispatch,
+    case_targets: &[u64],
+    consts: &[FpConstant],
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    let mut leaders: Vec<u64> = case_targets.to_vec();
     leaders.push(dispatch.default_addr);
     leaders.sort_unstable();
     leaders.dedup();
 
-    let preamble: Vec<Stmt> = lift_stmt_range(&insns, 0, dispatch.first_index, consts)?;
     let inter: Vec<Stmt> =
-        lift_stmt_range(&insns, dispatch.inter_start, dispatch.inter_end, consts)?;
+        lift_stmt_range(insns, dispatch.inter_start, dispatch.inter_end, consts)?;
 
     let mut return_width: Width = Width::W64;
-    for stmt in preamble.iter().chain(inter.iter()) {
-        update_return_width(stmt, &mut return_width);
-    }
-
     let mut bodies: BTreeMap<u64, SwitchBody> = BTreeMap::new();
     let mut pending: Vec<u64> = leaders.clone();
     while let Some(addr) = pending.pop() {
@@ -1356,7 +1377,7 @@ pub fn recover_leaf_function_switch_const_abi(
             continue;
         }
         let (stmts, term, fp_end): (Vec<Stmt>, BodyTerm, Option<FpWidth>) =
-            lift_switch_body(&insns, &by_addr, addr, &leaders, &mut return_width, consts)?;
+            lift_switch_body(insns, by_addr, addr, &leaders, &mut return_width, consts)?;
         if let BodyTerm::Tail(tail) = term {
             pending.push(tail);
         }
@@ -1370,22 +1391,61 @@ pub fn recover_leaf_function_switch_const_abi(
         );
     }
 
+    let disc_used: bool = std::iter::once(&inter)
+        .chain(bodies.values().map(|body: &SwitchBody| &body.stmts))
+        .any(|stmts: &Vec<Stmt>| {
+            stmts.iter().any(|stmt: &Stmt| {
+                let mut regs: Vec<Reg> = Vec::new();
+                stmt_value_reads(stmt, &mut regs);
+                regs.contains(&dispatch.disc.reg)
+            })
+        });
+    let (case_base, first_index): (i64, usize) = match dispatch.bias {
+        Some((base, sub_index)) if !disc_used => (base, sub_index),
+        _ => (0, dispatch.first_index),
+    };
+
+    let preamble: Vec<Stmt> = lift_stmt_range(insns, 0, first_index, consts)?;
+    for stmt in preamble.iter().chain(inter.iter()) {
+        update_return_width(stmt, &mut return_width);
+    }
+
+    let default_addr: u64 = dispatch.default_addr;
+    let textual_next =
+        |index: usize| -> u64 { case_targets.get(index + 1).copied().unwrap_or(default_addr) };
+    let fallthrough_for = |addr: u64| -> Option<u64> {
+        case_targets
+            .iter()
+            .position(|&t: &u64| t == addr)
+            .map(|index: usize| textual_next(index))
+    };
+    let mut int_width: Option<Width> = None;
+    for &target in case_targets {
+        if let Some(width) = chain_terminal_int_width(&bodies, target, fallthrough_for) {
+            int_width = Some(int_width.map_or(width, |cur: Width| cur.max(width)));
+        }
+    }
+    if let Some(width) = chain_terminal_int_width(&bodies, default_addr, |_: u64| None) {
+        int_width = Some(int_width.map_or(width, |cur: Width| cur.max(width)));
+    }
+    let return_width: Width = int_width.unwrap_or(return_width);
+
     let ret: FnReturn = infer_switch_return(
-        &case_targets,
+        case_targets,
         dispatch.default_addr,
         &bodies,
         &leaders,
         return_width,
     )?;
 
-    let mut cases: Vec<SwitchCase> = Vec::with_capacity(expected);
-    for (value, &target) in case_targets.iter().enumerate() {
+    let mut cases: Vec<SwitchCase> = Vec::with_capacity(case_targets.len());
+    for (index, &target) in case_targets.iter().enumerate() {
         let SwitchBody { stmts, term, .. } = bodies
             .get(&target)
             .ok_or_else(|| Error::LlvmIr("case body not lifted".to_owned()))?;
         let mut body: Block = stmts.iter().cloned().map(Node::Stmt).collect();
         let textual_next: u64 = case_targets
-            .get(value + 1)
+            .get(index + 1)
             .copied()
             .unwrap_or(dispatch.default_addr);
         let fallthrough: bool = match term {
@@ -1404,12 +1464,21 @@ pub fn recover_leaf_function_switch_const_abi(
                 true
             }
         };
-        cases.push(SwitchCase {
-            value: i64::try_from(value)
-                .map_err(|_| Error::LlvmIr("case index overflow".to_owned()))?,
-            body,
-            fallthrough,
-        });
+        let offset: i64 =
+            i64::try_from(index).map_err(|_| Error::LlvmIr("case index overflow".to_owned()))?;
+        let value: i64 = case_base
+            .checked_add(offset)
+            .ok_or_else(|| Error::LlvmIr("case value overflow".to_owned()))?;
+        match cases.last_mut() {
+            Some(prev) if !prev.fallthrough && !fallthrough && prev.body == body => {
+                prev.values.push(value);
+            }
+            _ => cases.push(SwitchCase {
+                values: vec![value],
+                body,
+                fallthrough,
+            }),
+        }
     }
 
     let SwitchBody {
@@ -1438,6 +1507,12 @@ pub fn recover_leaf_function_switch_const_abi(
         default: default_body,
     });
 
+    if !calls.is_empty() {
+        let call_map: BTreeMap<u64, &ResolvedCall> =
+            calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
+        annotate_calls_block(&mut body, &call_map, abi);
+    }
+
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
     let params: Vec<Reg> = infer_params(&body, abi);
@@ -1451,7 +1526,7 @@ pub fn recover_leaf_function_switch_const_abi(
         FnReturn::Int(_) => None,
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
     };
-    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(&insns))?;
+    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns))?;
     let source: String = emit_c(&body, &signature, frame_plan.as_ref(), None);
     let rust_source: Option<String> = emit_rust(&body, &signature, frame_plan.as_ref(), None);
     Ok(LeafRecovery {
@@ -1469,12 +1544,224 @@ pub fn recover_leaf_function_switch_const_abi(
     })
 }
 
+fn recover_switch_in_object(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let by_addr: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &DisasmInsn)| (insn.address, i))
+        .collect();
+    let Some(dispatch): Option<SwitchDispatch> = detect_switch_dispatch(&insns) else {
+        return Err(Error::LlvmIr(
+            "no dense jump-table dispatch prologue in leaf".to_owned(),
+        ));
+    };
+    let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
+    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+}
+
+/// The addend a relocation contributes: implicit in-field value plus its addend, or the explicit addend.
+fn reloc_effective_addend(
+    reloc: &object::Relocation,
+    section_data: &[u8],
+    slot: u64,
+    width: u8,
+) -> Result<i64> {
+    if !reloc.has_implicit_addend() {
+        return Ok(reloc.addend());
+    }
+    let start: usize =
+        usize::try_from(slot).map_err(|_| Error::LlvmIr("relocation slot overflow".to_owned()))?;
+    let stored: i64 = match width {
+        8 => {
+            let bytes: [u8; 8] = section_data
+                .get(start..start + 8)
+                .and_then(|b: &[u8]| b.try_into().ok())
+                .ok_or_else(|| Error::LlvmIr("jump-table slot out of range".to_owned()))?;
+            i64::from_le_bytes(bytes)
+        }
+        _ => {
+            let bytes: [u8; 4] = section_data
+                .get(start..start + 4)
+                .and_then(|b: &[u8]| b.try_into().ok())
+                .ok_or_else(|| Error::LlvmIr("jump-table slot out of range".to_owned()))?;
+            i64::from(i32::from_le_bytes(bytes))
+        }
+    };
+    Ok(stored.wrapping_add(reloc.addend()))
+}
+
+/// Resolve the section and in-section offset a switch `lea`'s rip-relative displacement points at.
+fn resolve_lea_table<'data>(
+    file: &object::File<'data>,
+    code_section: &object::Section<'data, '_>,
+    disp_field_va: u64,
+) -> Result<(object::SectionIndex, u64)> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
+
+    let code_data: &[u8] = code_section
+        .data()
+        .map_err(|e: object::Error| Error::LlvmIr(format!("code section data unavailable: {e}")))?;
+    for (off, reloc) in code_section.relocations() {
+        if off != disp_field_va {
+            continue;
+        }
+        let RelocationTarget::Symbol(index) = reloc.target() else {
+            continue;
+        };
+        let sym: object::Symbol<'data, '_> = file
+            .symbol_by_index(index)
+            .map_err(|e: object::Error| Error::LlvmIr(format!("switch lea symbol missing: {e}")))?;
+        let slot: u64 = off.saturating_sub(code_section.address());
+        let effective: i64 = reloc_effective_addend(&reloc, code_data, slot, 4)?;
+        let target_va: i64 = (sym.address() as i64)
+            .checked_add(effective)
+            .and_then(|v: i64| v.checked_add(4))
+            .ok_or_else(|| Error::LlvmIr("switch table address overflow".to_owned()))?;
+        let object::SymbolSection::Section(section_index) = sym.section() else {
+            return Err(Error::LlvmIr(
+                "switch table symbol is not section-relative".to_owned(),
+            ));
+        };
+        let table_section: object::Section<'data, '_> = file
+            .section_by_index(section_index)
+            .map_err(|e: object::Error| Error::LlvmIr(format!("table section missing: {e}")))?;
+        let table_off: u64 = u64::try_from(target_va - table_section.address() as i64)
+            .map_err(|_| Error::LlvmIr("switch table offset negative".to_owned()))?;
+        return Ok((section_index, table_off));
+    }
+    Err(Error::LlvmIr(
+        "switch lea has no relocation naming the jump table".to_owned(),
+    ))
+}
+
+/// Decode dense-switch case targets from the object's jump table via one relocation-aware reader.
+fn object_switch_case_targets(
+    object: &[u8],
+    base: u64,
+    insns: &[DisasmInsn],
+    dispatch: &SwitchDispatch,
+) -> Result<Vec<u64>> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
+
+    let file: object::File<'_> = object::File::parse(object)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for jump table: {e}")))?;
+    let count: usize = (dispatch.bound as usize)
+        .checked_add(1)
+        .ok_or_else(|| Error::LlvmIr("jump-table bound overflow".to_owned()))?;
+    let width: u64 = u64::from(dispatch.entry_width);
+
+    let lea: &DisasmInsn = insns
+        .get(dispatch.inter_end)
+        .ok_or_else(|| Error::LlvmIr("switch lea index out of range".to_owned()))?;
+    let disp_field_va: u64 = (lea.address)
+        .checked_add(lea.bytes.len() as u64)
+        .and_then(|end: u64| end.checked_sub(4))
+        .ok_or_else(|| Error::LlvmIr("switch lea has no displacement field".to_owned()))?;
+
+    let code_section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            let end: u64 = start.saturating_add(section.size());
+            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
+        })
+        .ok_or_else(|| Error::LlvmIr("switch code section not located".to_owned()))?;
+
+    let (table_index, table_off): (object::SectionIndex, u64) =
+        resolve_lea_table(&file, &code_section, disp_field_va)?;
+    let table_section: object::Section<'_, '_> = file
+        .section_by_index(table_index)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("table section missing: {e}")))?;
+    let table_data: &[u8] = table_section
+        .data()
+        .map_err(|e: object::Error| Error::LlvmIr(format!("table data unavailable: {e}")))?;
+    let table_addr: u64 = table_section.address();
+    let table_va: u64 = table_addr.saturating_add(table_off);
+    let span: u64 = width
+        .checked_mul(count as u64)
+        .ok_or_else(|| Error::LlvmIr("jump-table span overflow".to_owned()))?;
+
+    let mut slot_relocs: BTreeMap<u64, object::Relocation> = BTreeMap::new();
+    for (off, reloc) in table_section.relocations() {
+        let slot: u64 = off.saturating_sub(table_addr);
+        if slot < table_off || slot >= table_off + span || (slot - table_off) % width != 0 {
+            continue;
+        }
+        slot_relocs.insert(slot, reloc);
+    }
+
+    let mut case_targets: Vec<u64> = Vec::with_capacity(count);
+    for index in 0..count {
+        let slot: u64 = table_off + width * index as u64;
+        if let Some(reloc) = slot_relocs.get(&slot) {
+            let RelocationTarget::Symbol(sym_index) = reloc.target() else {
+                return Err(Error::LlvmIr(
+                    "jump-table entry relocation is not symbol-relative".to_owned(),
+                ));
+            };
+            let sym: object::Symbol<'_, '_> = file
+                .symbol_by_index(sym_index)
+                .map_err(|e| Error::LlvmIr(format!("jump-table entry symbol missing: {e}")))?;
+            let effective: i64 =
+                reloc_effective_addend(reloc, table_data, slot, dispatch.entry_width)?;
+            let intra_table: i64 = i64::try_from(slot - table_off)
+                .map_err(|_| Error::LlvmIr("jump-table offset overflow".to_owned()))?;
+            let case_off: i64 = (sym.address() as i64)
+                .checked_add(effective)
+                .and_then(|v: i64| v.checked_sub(intra_table))
+                .ok_or_else(|| Error::LlvmIr("jump-table entry overflow".to_owned()))?;
+            let target: u64 = u64::try_from(case_off)
+                .map_err(|_| Error::LlvmIr("jump-table entry target negative".to_owned()))?;
+            case_targets.push(target);
+        } else if slot_relocs.is_empty() {
+            let start: usize = usize::try_from(slot)
+                .map_err(|_| Error::LlvmIr("jump-table slot overflow".to_owned()))?;
+            let raw: i64 = match dispatch.entry_width {
+                8 => table_data
+                    .get(start..start + 8)
+                    .and_then(|b: &[u8]| b.try_into().ok())
+                    .map(i64::from_le_bytes)
+                    .ok_or_else(|| Error::LlvmIr("jump-table slot out of range".to_owned()))?,
+                _ => table_data
+                    .get(start..start + 4)
+                    .and_then(|b: &[u8]| b.try_into().ok())
+                    .map(|b: [u8; 4]| i64::from(i32::from_le_bytes(b)))
+                    .ok_or_else(|| Error::LlvmIr("jump-table slot out of range".to_owned()))?,
+            };
+            let target: u64 = table_va
+                .checked_add_signed(raw)
+                .ok_or_else(|| Error::LlvmIr("jump-table entry out of range".to_owned()))?;
+            case_targets.push(target);
+        } else {
+            return Err(Error::LlvmIr(
+                "jump table is partially relocated; cannot resolve every entry".to_owned(),
+            ));
+        }
+    }
+    Ok(case_targets)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SwitchDispatch {
     disc: RegRef,
     bound: u64,
     default_addr: u64,
     table_va: u64,
+    bias: Option<(i64, usize)>,
+    entry_width: u8,
     first_index: usize,
     inter_start: usize,
     inter_end: usize,
@@ -1549,11 +1836,16 @@ fn detect_switch_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch> {
         if !is_indirect_jmp(jmp, off_reg) {
             continue;
         }
+        let bias: Option<(i64, usize)> = cmp_idx.checked_sub(1).and_then(|prev: usize| {
+            parse_case_bias(&insns[prev], disc.reg).map(|b: i64| (b, prev))
+        });
         return Some(SwitchDispatch {
             disc,
             bound: effective_bound,
             default_addr,
             table_va,
+            bias,
+            entry_width: 4,
             first_index: cmp_idx,
             inter_start,
             inter_end,
@@ -1573,6 +1865,20 @@ fn parse_cmp_bound(insn: &DisasmInsn) -> Option<(RegRef, u64)> {
         return None;
     }
     Some((disc, bound as u64))
+}
+
+/// Recover the discriminant bias (`sub k, base`) so cases carry their source values, not table indices.
+fn parse_case_bias(insn: &DisasmInsn, disc: Reg) -> Option<i64> {
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    if parse_reg(lhs.trim())?.reg != disc {
+        return None;
+    }
+    let imm: i64 = parse_imm(rhs.trim())?;
+    match insn.mnemonic.as_str() {
+        "sub" if imm > 0 => Some(imm),
+        "add" if imm < 0 => Some(-imm),
+        _ => None,
+    }
 }
 
 fn parse_lea_rip(insn: &DisasmInsn) -> Option<(Reg, u64)> {
@@ -1956,6 +2262,67 @@ fn chain_terminal_fp(
                         state = fp_return_after(state, stmt);
                     }
                     return Ok(state);
+                }
+            }
+            BodyTerm::FellInto(next_addr) => addr = *next_addr,
+        }
+    }
+}
+
+/// The width a statement writes to rax, if any; the return type must hold the widest write per path.
+fn rax_write_width(stmt: &Stmt) -> Option<Width> {
+    match stmt {
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. }
+        | Stmt::SetCc { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
+        Stmt::WideMul { .. } | Stmt::Call { .. } => Some(Width::W64),
+        Stmt::Divide { divisor, .. } => Some(divisor.width),
+        _ => None,
+    }
+}
+
+/// The terminal rax-write width along a switch body chain, used to size an integer switch's return.
+fn chain_terminal_int_width(
+    bodies: &BTreeMap<u64, SwitchBody>,
+    start: u64,
+    fallthrough_next: impl Fn(u64) -> Option<u64>,
+) -> Option<Width> {
+    let mut width: Option<Width> = None;
+    let mut addr: u64 = start;
+    let mut visited: Vec<u64> = Vec::new();
+    loop {
+        if visited.contains(&addr) {
+            return width;
+        }
+        visited.push(addr);
+        let SwitchBody { stmts, term, .. } = bodies.get(&addr)?;
+        for stmt in stmts {
+            if let Some(w) = rax_write_width(stmt) {
+                width = Some(w);
+            }
+        }
+        match term {
+            BodyTerm::Ret => return width,
+            BodyTerm::Tail(tail_addr) => {
+                if let Some(next) = fallthrough_next(addr)
+                    && *tail_addr == next
+                {
+                    addr = next;
+                } else {
+                    if let Some(tail) = bodies.get(tail_addr) {
+                        for stmt in &tail.stmts {
+                            if let Some(w) = rax_write_width(stmt) {
+                                width = Some(w);
+                            }
+                        }
+                    }
+                    return width;
                 }
             }
             BodyTerm::FellInto(next_addr) => addr = *next_addr,
@@ -6003,7 +6370,14 @@ fn emit_block(out: &mut String, body: &Block, depth: usize) {
                 let key: String = source_expr(&Source::Reg(*disc), disc.width);
                 let _ = writeln!(out, "{indent}switch ({key}) {{");
                 for case in cases {
-                    let _ = writeln!(out, "{indent}    case {}: {{", case.value);
+                    for (offset, value) in case.values.iter().enumerate() {
+                        let opener: &str = if offset + 1 == case.values.len() {
+                            " {"
+                        } else {
+                            ""
+                        };
+                        let _ = writeln!(out, "{indent}    case {value}:{opener}");
+                    }
                     emit_block(out, &case.body, depth + 2);
                     if !case.fallthrough {
                         let _ = writeln!(out, "{indent}        break;");
@@ -6744,7 +7118,13 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
                 let key: String = rs_signed_operand(&reg_var(disc.reg), disc.width);
                 let _ = writeln!(out, "{indent}match {key} {{");
                 for (idx, case) in cases.iter().enumerate() {
-                    let _ = writeln!(out, "{indent}    {}i64 => {{", case.value);
+                    let pattern: String = case
+                        .values
+                        .iter()
+                        .map(|value: &i64| format!("{value}i64"))
+                        .collect::<Vec<String>>()
+                        .join(" | ");
+                    let _ = writeln!(out, "{indent}    {pattern} => {{");
                     let mut cursor: usize = idx;
                     loop {
                         let arm: &SwitchCase = &cases[cursor];

@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_native::{
-    LeafRecovery, PseudoAbi, ResolvedCall, recover_leaf_function_abi,
-    recover_leaf_function_with_calls, resolved_int_arity_in_object,
+    LeafRecovery, PseudoAbi, ResolvedCall, recover_leaf_function_in_object,
+    resolved_int_arity_in_object,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -383,26 +383,27 @@ fn recover_program(
             eprintln!("skip {}: {fname} symbol not located", program.name);
             return None;
         };
-        let probe: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("sound-reject {}: {fname} not in class ({e})", program.name);
-                return None;
-            }
-        };
+        let probe: LeafRecovery =
+            match recover_leaf_function_in_object(object, &code, base, abi, &[]) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("sound-reject {}: {fname} not in class ({e})", program.name);
+                    return None;
+                }
+            };
         let resolved: Vec<ResolvedCall> =
             resolve_recovered_calls(object, fname, &probe.call_targets, program, abi)?;
-        let rec: LeafRecovery = match recover_leaf_function_with_calls(&code, base, abi, &resolved)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!(
-                    "sound-reject {}: {fname} not in call class ({e})",
-                    program.name
-                );
-                return None;
-            }
-        };
+        let rec: LeafRecovery =
+            match recover_leaf_function_in_object(object, &code, base, abi, &resolved) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!(
+                        "sound-reject {}: {fname} not in call class ({e})",
+                        program.name
+                    );
+                    return None;
+                }
+            };
         tu.push_str(&rename_recovered(&rec.source, &format!("rec_{fname}")));
         tu.push('\n');
         if fname == program.entry {

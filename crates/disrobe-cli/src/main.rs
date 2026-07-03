@@ -322,6 +322,17 @@ enum Cmd {
             help = "scan the full git commit history at PATH (finds secrets in deleted/rewritten blobs a working-tree walk misses)"
         )]
         git: bool,
+        #[arg(
+            long,
+            help = "replace every detected secret with a non-reversible sentinel in every output format"
+        )]
+        redact: bool,
+        #[arg(
+            long,
+            value_name = "KEY",
+            help = "derive redaction sentinels from this key so they are stable across runs (default: per-run random salt); implies --redact"
+        )]
+        redact_key: Option<String>,
     },
     #[command(
         about = "harvest URLs and IoCs for a target from public web archives and threat-intel feeds (Wayback, Common Crawl, OTX, urlscan, crt.sh, URLhaus, ThreatFox, VirusTotal) with async fan-out, per-host rate limiting, backoff, API-key auth, filtering & dedup; `prowl keyring set|get|rm|list <provider>` manages stored keys"
@@ -1486,6 +1497,8 @@ fn main() -> miette::Result<()> {
             emit_baseline,
             entropy,
             git,
+            redact,
+            redact_key,
         } => frisk::run(
             path,
             format,
@@ -1495,6 +1508,8 @@ fn main() -> miette::Result<()> {
             emit_baseline,
             entropy,
             git,
+            redact,
+            redact_key,
             fmt,
         ),
         Cmd::Prowl {

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use disrobe_core::recon::git_history::{self, GitFinding, GitHistoryOptions, GitHistoryReport};
+use disrobe_core::recon::redact::Redactor;
 use disrobe_core::recon::{
     self, CustomPattern, ReconConfig, ReconFinding, ReconReport, fingerprint,
 };
@@ -153,6 +154,7 @@ fn run_git(
     format: FriskFormat,
     config: ReconConfig,
     fmt: OutputFormat,
+    redactor: Option<Redactor>,
 ) -> miette::Result<()> {
     let opts: GitHistoryOptions = GitHistoryOptions {
         recon: config,
@@ -160,12 +162,16 @@ fn run_git(
     };
     let label: String = path.display().to_string();
     let spinner: StageSpinner = StageSpinner::start(&label, "scanning git history for secrets");
-    let report: GitHistoryReport =
+    let mut report: GitHistoryReport =
         git_history::report_git(&path, &opts).map_err(|e| miette::miette!("DR-FRISK-0070: {e}"))?;
     spinner.finish(&format!(
         "{} finding(s), {} commit(s) scanned",
         report.total, report.commits_scanned
     ));
+
+    if let Some(redactor) = &redactor {
+        redactor.redact_git_report(&mut report);
+    }
 
     let effective: FriskFormat = if fmt.is_machine() {
         if matches!(fmt, OutputFormat::Sarif) {
@@ -259,8 +265,22 @@ pub(crate) fn run(
     emit_baseline: bool,
     entropy: bool,
     git: bool,
+    redact: bool,
+    redact_key: Option<String>,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
+    let redact: bool = redact || redact_key.is_some();
+    if emit_baseline && redact {
+        return Err(miette::miette!(
+            "DR-FRISK-0080: --emit-baseline cannot be combined with --redact: a baseline must record raw values to match findings on a later scan"
+        ));
+    }
+    let redactor: Option<Redactor> = redact.then(|| {
+        redact_key
+            .as_deref()
+            .map_or_else(Redactor::with_random_key, Redactor::with_key)
+    });
+
     let custom: Vec<CustomPattern> = match pattern_file {
         Some(p) => load_patterns(&p)?,
         None => Vec::new(),
@@ -276,7 +296,7 @@ pub(crate) fn run(
     };
 
     if git {
-        return run_git(path, format, config, fmt);
+        return run_git(path, format, config, fmt, redactor);
     }
 
     let label: String = path.display().to_string();
@@ -305,6 +325,10 @@ pub(crate) fn run(
             .map_err(|e| miette::miette!("DR-FRISK-0052: baseline serialize: {e}"))?;
         println!("{s}");
         return Ok(());
+    }
+
+    if let Some(redactor) = &redactor {
+        redactor.redact_report(&mut report);
     }
 
     let effective: FriskFormat = if fmt.is_machine() {

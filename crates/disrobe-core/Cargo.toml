@@ -18,6 +18,7 @@ workspace = true
 default = []
 chain = ["dep:blake3"]
 cache = ["dep:blake3"]
+redact = ["dep:blake3", "dep:aho-corasick"]
 
 [dependencies]
 miette = { workspace = true }
@@ -28,6 +29,7 @@ tracing = { workspace = true }
 once_cell = { workspace = true }
 memchr = { workspace = true }
 regex = { workspace = true }
+aho-corasick = { version = "1.1", optional = true }
 base64 = { workspace = true }
 camino = { workspace = true }
 rand = { workspace = true }

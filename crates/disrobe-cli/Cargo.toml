@@ -76,7 +76,7 @@ chain = [
 ]
 
 [dependencies]
-disrobe-core = { workspace = true, features = ["chain", "cache"] }
+disrobe-core = { workspace = true, features = ["chain", "cache", "redact"] }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-capabilities = { workspace = true }
