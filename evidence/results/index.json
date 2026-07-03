@@ -257,7 +257,7 @@
       "floor": 78.0,
       "floor_holds": true,
       "id": "py-legacy-recompile",
-      "measured": "79.60%",
+      "measured": "78.50%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test legacy_recompile"
     },

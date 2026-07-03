@@ -13,9 +13,9 @@ use std::process::Command;
 
 use disrobe_pass_native::{
     Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
-    PseudoScalarType as ScalarType, disassemble, recover_leaf_function_abi,
-    recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
-    recover_leaf_function_switch_const_abi,
+    PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
+    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
+    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -2300,7 +2300,7 @@ fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, Strin
                     return None;
                 }
             };
-        let callee_name: String = format!("callee_{target:x}");
+        let callee_name: String = format!("sub_{target:x}");
         let callee_renamed: String = rename_recovered(&callee.source, &callee_name);
         let callee_padded: String = pad_callee_signature(&callee_renamed, &callee_name, full_arity);
         decls.push_str(&callee_padded);
@@ -2490,16 +2490,16 @@ fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
         );
         return;
     };
-    if !decls.contains("callee_") {
+    if !decls.contains("sub_") {
         eprintln!(
             "skipping call teeth check: this compiler build did not reconstruct a helper call to neutralize"
         );
         return;
     }
 
-    let Some(callee_open): Option<usize> = decls.find("r_rax = callee_") else {
+    let Some(callee_open): Option<usize> = decls.find("r_rax = sub_") else {
         eprintln!(
-            "skipping call teeth check: this compiler build did not lower the helper call into the r_rax = callee_ idiom this check corrupts"
+            "skipping call teeth check: this compiler build did not lower the helper call into the r_rax = sub_ idiom this check corrupts"
         );
         return;
     };
@@ -2550,6 +2550,203 @@ fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
     );
     println!(
         "call oracle teeth confirmed: dropping the helper call diverges from the original (MISMATCH observed)"
+    );
+}
+
+fn resolve_calls(
+    object_bytes: &[u8],
+    caller: &str,
+    targets: &[u64],
+    abi: PseudoAbi,
+) -> Option<Vec<ResolvedCall>> {
+    let mut out: Vec<ResolvedCall> = Vec::new();
+    let mut seen: Vec<u64> = Vec::new();
+    for &target in targets {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        let (code, base, name): (Vec<u8>, u64, String) = function_code_at(object_bytes, target)
+            .or_else(|| {
+                let resolved: String = elf_call_callee_for_target(object_bytes, caller, target)?;
+                let (code, base): (Vec<u8>, u64) = function_code(object_bytes, &resolved)?;
+                Some((code, base, resolved))
+            })?;
+        let arg_count: usize = callee_int_arity(&code, base, abi)?;
+        out.push(ResolvedCall {
+            target,
+            name: Some(name),
+            arg_count,
+        });
+    }
+    Some(out)
+}
+
+fn lift_precise_call_case(
+    case: &CallCase,
+    object_bytes: &[u8],
+    abi: PseudoAbi,
+) -> Option<(String, String)> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.caller)?;
+    let base_rec: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skip {}: caller not in call leaf class ({e})", case.caller);
+            return None;
+        }
+    };
+    if base_rec.call_targets.is_empty() {
+        eprintln!("skip {}: no call lifted", case.caller);
+        return None;
+    }
+    let resolved: Vec<ResolvedCall> =
+        resolve_calls(object_bytes, case.caller, &base_rec.call_targets, abi)?;
+    let rec: LeafRecovery = recover_leaf_function_with_calls(&code, base, abi, &resolved).ok()?;
+    if rec.params.len() > 3 {
+        eprintln!(
+            "skip {}: recovered arity beyond 3-input driver",
+            case.caller
+        );
+        return None;
+    }
+    let recovered_name: String = format!("rec_{}", case.caller);
+    let renamed: String = rename_recovered(&rec.source, &recovered_name);
+    let mut decls: String = String::new();
+    decls.push_str(&renamed);
+    decls.push('\n');
+    let _ = writeln!(
+        decls,
+        "extern long long {}({});",
+        case.caller,
+        vec!["long long"; case.arity].join(", ")
+    );
+
+    let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
+    let rec_args: Vec<String> = (0..rec.params.len())
+        .map(|i: usize| format!("(uint64_t)in[{i}]"))
+        .collect();
+    let mut snippet: String = String::new();
+    let _ = write!(
+        snippet,
+        "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+         \x20       long long in[3] = {{ inputs[k][0], inputs[k][1], inputs[k][2] }};\n\
+         \x20       unsigned long long want = (unsigned long long){}({});\n\
+         \x20       unsigned long long got = {recovered_name}({});\n\
+         \x20       if (want != got) {{ printf(\"MISMATCH {} in=%lld,%lld,%lld want=%llu got=%llu\\n\", in[0], in[1], in[2], want, got); return 1; }}\n\
+         \x20   }}\n",
+        case.caller,
+        args.join(", "),
+        rec_args.join(", "),
+        case.caller,
+    );
+    Some((decls, snippet))
+}
+
+#[test]
+fn precise_call_recovery_recompiles_against_real_helpers() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!("skipping precise call oracle: gcc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let mut battery_src: String = String::new();
+    for case in CALL_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("precise_call_battery.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write precise_call_battery.c");
+    let battery_o: PathBuf = dir.join("precise_call_battery.o");
+    let compile_battery: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-optimize-sibling-calls",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for precise call battery");
+    assert!(
+        compile_battery.status.success(),
+        "precise call battery compile failed: {}",
+        String::from_utf8_lossy(&compile_battery.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read precise_call_battery.o");
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+
+    for case in CALL_BATTERY {
+        let Some((decls, snippet)): Option<(String, String)> =
+            lift_precise_call_case(case, &object_bytes, HOST_ABI)
+        else {
+            continue;
+        };
+        recovered_decls.push_str(&decls);
+        driver_body.push_str(&snippet);
+        lifted_count += 1;
+    }
+
+    if lifted_count == 0 {
+        eprintln!(
+            "skipping precise call differential: this compiler build reconstructed none of the {} caller/helper pairs",
+            CALL_BATTERY.len()
+        );
+        return;
+    }
+    assert!(
+        recovered_decls.contains("extern uint64_t h_sq(uint64_t);")
+            && recovered_decls.contains("r_rax = h_sq("),
+        "the callee must be named from its symbol and declared with its recovered single-argument arity: {recovered_decls}"
+    );
+    assert!(
+        !recovered_decls.contains("sub_"),
+        "every same-object helper resolves to a symbol, so no synthetic sub_<va> name should remain: {recovered_decls}"
+    );
+
+    let driver: String = build_call_driver(&recovered_decls, &driver_body);
+    let driver_c: PathBuf = dir.join("precise_call_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write precise_call_driver.c");
+
+    let harness_exe: PathBuf = dir.join("precise_call_harness.exe");
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke gcc to link precise call harness");
+    assert!(
+        link.status.success(),
+        "precise call harness link failed: {}\n--- precise_call_driver.c ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run precise call harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK"),
+        "precise call differential FAILED ({lifted_count} cases): {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "precise call recovery (symbol-named, callee-arity args) recompiled against the REAL helpers PASSED for {lifted_count} caller/helper pairs (MS x64 ABI)"
     );
 }
 
@@ -4908,7 +5105,7 @@ fn sysv_lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, 
                     return None;
                 }
             };
-        let callee_name: String = format!("callee_{target:x}");
+        let callee_name: String = format!("sub_{target:x}");
         let callee_renamed: String = rename_recovered(&callee.source, &callee_name);
         let callee_padded: String = pad_callee_signature(&callee_renamed, &callee_name, full_arity);
         decls.push_str(&callee_padded);
@@ -4986,6 +5183,58 @@ fn sysv_same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
     );
     println!(
         "SysV same-object-call behavioral differential PASSED for {lifted_count} caller/helper pairs (SysV ABI)"
+    );
+}
+
+#[test]
+fn sysv_precise_call_recovery_recompiles_against_real_helpers() {
+    let mut battery_src: String = String::new();
+    for case in CALL_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross("pcall", &battery_src) else {
+        return;
+    };
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+
+    for case in CALL_BATTERY {
+        let Some((decls, snippet)): Option<(String, String)> =
+            lift_precise_call_case(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            continue;
+        };
+        recovered_decls.push_str(&decls);
+        driver_body.push_str(&snippet);
+        lifted_count += 1;
+    }
+
+    assert!(
+        lifted_count >= 5,
+        "SysV precise call lifter must reconstruct at least 5 of the {} caller/helper pairs, only lifted {lifted_count}",
+        CALL_BATTERY.len()
+    );
+    assert!(
+        recovered_decls.contains("extern uint64_t h_sq(uint64_t);")
+            && recovered_decls.contains("r_rax = h_sq("),
+        "the callee must be named from its relocation symbol with its recovered single-argument arity: {recovered_decls}"
+    );
+    assert!(
+        !recovered_decls.contains("sub_"),
+        "every same-object helper resolves via relocation, so no synthetic sub_<va> name should remain: {recovered_decls}"
+    );
+
+    let driver: String = build_call_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("pcall", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK"),
+        "SysV precise call differential FAILED ({lifted_count} cases): {stdout}"
+    );
+    println!(
+        "SysV precise call recovery (relocation-named, callee-arity args) recompiled against the REAL helpers PASSED for {lifted_count} caller/helper pairs (SysV ABI)"
     );
 }
 

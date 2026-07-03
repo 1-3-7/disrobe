@@ -29,9 +29,9 @@
       "bars": [
         {
           "label": "proven-correct",
-          "value": 79.6,
-          "detail": "CI floor 152 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
-          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:33 (PROVEN_CORRECT_FLOOR 152, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present"
+          "value": 78.5,
+          "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
+          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present"
         }
       ]
     },

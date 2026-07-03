@@ -552,6 +552,8 @@ enum Stmt {
     },
     Call {
         target: u64,
+        args: Vec<Reg>,
+        name: Option<String>,
     },
 }
 
@@ -640,6 +642,13 @@ pub struct JumpTable {
     pub entries: Vec<i32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCall {
+    pub target: u64,
+    pub name: Option<String>,
+    pub arg_count: usize,
+}
+
 pub fn recover_leaf_function(machine_code: &[u8], base: u64) -> Result<LeafRecovery> {
     recover_leaf_function_abi(machine_code, base, Abi::MsX64)
 }
@@ -653,6 +662,31 @@ pub fn recover_leaf_function_const_abi(
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
+) -> Result<LeafRecovery> {
+    recover_leaf_function_calls_impl(machine_code, base, abi, consts, &[])
+}
+
+pub fn recover_leaf_function_with_calls(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls)
+}
+
+pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Option<usize> {
+    recover_leaf_function_abi(callee_code, callee_base, abi)
+        .ok()
+        .map(|recovery: LeafRecovery| recovery.params.len())
+}
+
+fn recover_leaf_function_calls_impl(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    consts: &[FpConstant],
+    calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -769,7 +803,11 @@ pub fn recover_leaf_function_const_abi(
             flags = None;
             items.push(Item {
                 address: insn.address,
-                kind: ItemKind::Stmt(Stmt::Call { target }),
+                kind: ItemKind::Stmt(Stmt::Call {
+                    target,
+                    args: abi.arg_order().to_vec(),
+                    name: None,
+                }),
             });
             continue;
         }
@@ -997,7 +1035,12 @@ pub fn recover_leaf_function_const_abi(
         ));
     }
 
-    let structured: Structured = structure_items(&items)?;
+    let mut structured: Structured = structure_items(&items)?;
+    if !calls.is_empty() {
+        let call_map: BTreeMap<u64, &ResolvedCall> =
+            calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
+        annotate_calls_block(&mut structured.body, &call_map, abi);
+    }
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
     let sret_plan: Option<SretPlan> = fp_return
@@ -1021,7 +1064,6 @@ pub fn recover_leaf_function_const_abi(
     let source: String = emit_c(
         &structured.body,
         &signature,
-        abi,
         frame_plan.as_ref(),
         sret_plan.as_ref(),
     );
@@ -1059,7 +1101,7 @@ pub fn recover_leaf_function_rust_abi(machine_code: &[u8], base: u64, abi: Abi) 
     recovery.rust_source.ok_or_else(|| {
         Error::LlvmIr(
             "recovered leaf is not in the pure-safe rust-emittable class (float, memory access, \
-             stack frame, struct return, switch, or call)"
+             stack frame, struct return, or switch)"
                 .to_owned(),
         )
     })
@@ -1275,7 +1317,7 @@ pub fn recover_leaf_function_switch_const_abi(
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
     };
     let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(&insns))?;
-    let source: String = emit_c(&body, &signature, abi, frame_plan.as_ref(), None);
+    let source: String = emit_c(&body, &signature, frame_plan.as_ref(), None);
     let rust_source: Option<String> = emit_rust(&body, &signature, frame_plan.as_ref(), None);
     Ok(LeafRecovery {
         source,
@@ -1907,10 +1949,45 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
     }
 }
 
+fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, abi: Abi) {
+    for node in body.iter_mut() {
+        match node {
+            Node::Stmt(Stmt::Call { target, args, name }) => {
+                if let Some(resolved) = map.get(target) {
+                    let count: usize = resolved.arg_count.min(abi.arg_order().len());
+                    *args = abi.arg_order()[..count].to_vec();
+                    name.clone_from(&resolved.name);
+                }
+            }
+            Node::Stmt(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                annotate_calls_block(then_body, map, abi);
+                if let Some(else_b) = else_body {
+                    annotate_calls_block(else_b, map, abi);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => {
+                annotate_calls_block(body, map, abi);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases.iter_mut() {
+                    annotate_calls_block(&mut case.body, map, abi);
+                }
+                annotate_calls_block(default, map, abi);
+            }
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+        }
+    }
+}
+
 fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
     for node in body {
         match node {
-            Node::Stmt(Stmt::Call { target }) => acc.push(*target),
+            Node::Stmt(Stmt::Call { target, .. }) => acc.push(*target),
             Node::Stmt(_) => {}
             Node::If {
                 then_body,
@@ -3490,9 +3567,9 @@ fn scan_stmt_params(
             written.insert(Reg::Rdi, true);
             written.insert(Reg::Rcx, true);
         }
-        Stmt::Call { .. } => {
-            for reg in [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9] {
-                note(reg, written, acc);
+        Stmt::Call { args, .. } => {
+            for reg in args {
+                note(*reg, written, acc);
             }
             written.insert(Reg::Rax, true);
         }
@@ -4590,22 +4667,52 @@ fn deref_expr(mem: &MemRef) -> String {
     format!("(*({ty}*)(uintptr_t)({addr}))")
 }
 
-fn call_name(target: u64) -> String {
-    format!("callee_{target:x}")
+fn call_display_name(target: u64, name: Option<&str>) -> String {
+    name.map_or_else(|| format!("sub_{target:x}"), str::to_owned)
 }
 
-fn abi_arg_sig(abi: Abi) -> String {
-    vec!["uint64_t"; abi.arg_order().len()].join(", ")
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallDecl {
+    display_name: String,
+    arg_count: usize,
 }
 
-fn call_expr(target: u64, abi: Abi) -> String {
-    let args: String = abi
-        .arg_order()
-        .iter()
-        .map(|r: &Reg| reg_var(*r))
-        .collect::<Vec<String>>()
-        .join(", ");
-    format!("{}({args})", call_name(target))
+fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
+    for node in body {
+        match node {
+            Node::Stmt(Stmt::Call { target, args, name }) => {
+                let display_name: String = call_display_name(*target, name.as_deref());
+                if !acc
+                    .iter()
+                    .any(|d: &CallDecl| d.display_name == display_name)
+                {
+                    acc.push(CallDecl {
+                        display_name,
+                        arg_count: args.len(),
+                    });
+                }
+            }
+            Node::Stmt(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_call_decls(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_call_decls(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => collect_call_decls(body, acc),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_call_decls(&case.body, acc);
+                }
+                collect_call_decls(default, acc);
+            }
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+        }
+    }
 }
 
 fn source_expr(src: &Source, width: Width) -> String {
@@ -5032,9 +5139,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             acc.push(Reg::Rax);
             acc.push(Reg::Rcx);
         }
-        Stmt::Call { .. } => {
-            acc.extend_from_slice(&[Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9]);
-        }
+        Stmt::Call { args, .. } => acc.extend_from_slice(args),
     }
 }
 
@@ -5164,7 +5269,6 @@ fn detect_sret(body: &Block, abi: Abi) -> Option<SretPlan> {
 fn emit_c(
     body: &Block,
     signature: &FnSignature,
-    abi: Abi,
     frame: Option<&FramePlan>,
     sret: Option<&SretPlan>,
 ) -> String {
@@ -5180,17 +5284,15 @@ fn emit_c(
     } else if block_string_ops_present(body) {
         let _ = writeln!(out, "#include <string.h>");
     }
-    let mut targets: Vec<u64> = Vec::new();
-    collect_call_targets(body, &mut targets);
-    targets.sort_unstable();
-    targets.dedup();
-    for target in &targets {
-        let _ = writeln!(
-            out,
-            "extern uint64_t {}({});",
-            call_name(*target),
-            abi_arg_sig(abi)
-        );
+    let mut call_decls: Vec<CallDecl> = Vec::new();
+    collect_call_decls(body, &mut call_decls);
+    for decl in &call_decls {
+        let params: String = if decl.arg_count == 0 {
+            "void".to_owned()
+        } else {
+            vec!["uint64_t"; decl.arg_count].join(", ")
+        };
+        let _ = writeln!(out, "extern uint64_t {}({params});", decl.display_name);
     }
 
     let param_types: Vec<ScalarType> = signature.ordered_param_types();
@@ -5291,7 +5393,7 @@ fn emit_c(
         let _ = writeln!(out, "    uint64_t {} = 0;", loop_cond_var(*var));
     }
 
-    emit_block(&mut out, body, 1, abi);
+    emit_block(&mut out, body, 1);
 
     if sret.is_some() {
         let _ = writeln!(out, "    return __sret;");
@@ -5482,7 +5584,12 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 Stmt::GprToXmm { src, .. } => push(src.reg, acc),
                 Stmt::XmmToGpr { dest, .. } => push(dest.reg, acc),
                 Stmt::FpConvert { .. } => {}
-                Stmt::Call { .. } => push(Reg::Rax, acc),
+                Stmt::Call { args, .. } => {
+                    for reg in args {
+                        push(*reg, acc);
+                    }
+                    push(Reg::Rax, acc);
+                }
             },
             Node::If {
                 flags,
@@ -5615,11 +5722,11 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
     }
 }
 
-fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
+fn emit_block(out: &mut String, body: &Block, depth: usize) {
     let indent: String = "    ".repeat(depth);
     for node in body {
         match node {
-            Node::Stmt(stmt) => emit_stmt(out, stmt, &indent, abi),
+            Node::Stmt(stmt) => emit_stmt(out, stmt, &indent),
             Node::If {
                 cond,
                 flags,
@@ -5628,10 +5735,10 @@ fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
             } => {
                 let cond_text: String = cond_expr(*cond, flags);
                 let _ = writeln!(out, "{indent}if ({cond_text}) {{");
-                emit_block(out, then_body, depth + 1, abi);
+                emit_block(out, then_body, depth + 1);
                 if let Some(else_b) = else_body {
                     let _ = writeln!(out, "{indent}}} else {{");
-                    emit_block(out, else_b, depth + 1, abi);
+                    emit_block(out, else_b, depth + 1);
                 }
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -5641,12 +5748,12 @@ fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
                     LoopCond::Snapshot { var } => loop_cond_var(*var),
                 };
                 let _ = writeln!(out, "{indent}do {{");
-                emit_block(out, body, depth + 1, abi);
+                emit_block(out, body, depth + 1);
                 let _ = writeln!(out, "{indent}}} while ({cond_text});");
             }
             Node::While { body } => {
                 let _ = writeln!(out, "{indent}while (1) {{");
-                emit_block(out, body, depth + 1, abi);
+                emit_block(out, body, depth + 1);
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::Switch {
@@ -5658,14 +5765,14 @@ fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
                 let _ = writeln!(out, "{indent}switch ({key}) {{");
                 for case in cases {
                     let _ = writeln!(out, "{indent}    case {}: {{", case.value);
-                    emit_block(out, &case.body, depth + 2, abi);
+                    emit_block(out, &case.body, depth + 2);
                     if !case.fallthrough {
                         let _ = writeln!(out, "{indent}        break;");
                     }
                     let _ = writeln!(out, "{indent}    }}");
                 }
                 let _ = writeln!(out, "{indent}    default: {{");
-                emit_block(out, default, depth + 2, abi);
+                emit_block(out, default, depth + 2);
                 let _ = writeln!(out, "{indent}        break;");
                 let _ = writeln!(out, "{indent}    }}");
                 let _ = writeln!(out, "{indent}}}");
@@ -5684,7 +5791,7 @@ fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
     }
 }
 
-fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str, abi: Abi) {
+fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
     match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = source_expr(src, dest.width);
@@ -5852,12 +5959,17 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str, abi: Abi) {
             let _ = writeln!(out, "{indent}    {count} = 0;");
             let _ = writeln!(out, "{indent}}}");
         }
-        Stmt::Call { target } => {
+        Stmt::Call { target, args, name } => {
+            let arg_list: String = args
+                .iter()
+                .map(|r: &Reg| reg_var(*r))
+                .collect::<Vec<String>>()
+                .join(", ");
             let _ = writeln!(
                 out,
-                "{indent}{} = {};",
+                "{indent}{} = {}({arg_list});",
                 reg_var(Reg::Rax),
-                call_expr(*target, abi)
+                call_display_name(*target, name.as_deref())
             );
         }
         Stmt::FpBin {
@@ -6286,6 +6398,19 @@ fn emit_rust(
     }
 
     let mut out: String = String::new();
+    let mut call_decls: Vec<CallDecl> = Vec::new();
+    collect_call_decls(body, &mut call_decls);
+    if !call_decls.is_empty() {
+        let _ = writeln!(out, "extern \"C\" {{");
+        for decl in &call_decls {
+            let params: String = (0..decl.arg_count)
+                .map(|i: usize| format!("a{i}: u64"))
+                .collect::<Vec<String>>()
+                .join(", ");
+            let _ = writeln!(out, "    fn {}({params}) -> u64;", decl.display_name);
+        }
+        let _ = writeln!(out, "}}");
+    }
     let params_sig: String = (0..signature.int.len())
         .map(|i: usize| format!("a{i}: u64"))
         .collect::<Vec<String>>()
@@ -6481,9 +6606,21 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             };
             let _ = writeln!(out, "{indent}{dst} = {body};");
         }
+        Stmt::Call { target, args, name } => {
+            let arg_list: String = args
+                .iter()
+                .map(|r: &Reg| reg_var(*r))
+                .collect::<Vec<String>>()
+                .join(", ");
+            let _ = writeln!(
+                out,
+                "{indent}{} = unsafe {{ {}({arg_list}) }};",
+                reg_var(Reg::Rax),
+                call_display_name(*target, name.as_deref())
+            );
+        }
         Stmt::Store { .. }
         | Stmt::MemRmw { .. }
-        | Stmt::Call { .. }
         | Stmt::FpBin { .. }
         | Stmt::FpMov { .. }
         | Stmt::FpStore { .. }
@@ -7173,20 +7310,106 @@ mod tests {
         let rec: LeafRecovery = recover_leaf_function(&code, 0x8).expect("call recover");
         assert_eq!(rec.call_targets, vec![0x0]);
         assert!(
-            rec.source.contains("extern uint64_t callee_0("),
-            "the helper must be forward-declared with the full ABI arg list: {}",
+            rec.source.contains("extern uint64_t sub_0("),
+            "the helper must be forward-declared with a synthetic sub_<va> name: {}",
             rec.source
         );
         assert!(
             rec.source
-                .contains("r_rax = callee_0(r_rcx, r_rdx, r_r8, r_r9);"),
-            "the call must pass the ABI argument registers positionally: {}",
+                .contains("r_rax = sub_0(r_rcx, r_rdx, r_r8, r_r9);"),
+            "with no callee facts the call soundly over-approximates all ABI argument registers: {}",
             rec.source
         );
         assert!(
             !rec.source.contains("rsp"),
             "the stack-frame adjust must be skipped, not emitted: {}",
             rec.source
+        );
+    }
+
+    #[test]
+    fn resolved_call_uses_symbol_name_and_callee_arity() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let calls: [ResolvedCall; 1] = [ResolvedCall {
+            target: 0x0,
+            name: Some("helper".to_owned()),
+            arg_count: 1,
+        }];
+        let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
+            .expect("resolved call recover");
+        assert!(
+            rec.source.contains("extern uint64_t helper(uint64_t);"),
+            "a resolved single-argument callee must be declared by symbol name with one arg: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rax = helper(r_rcx);"),
+            "the call must pass exactly the callee's live-in argument prefix: {}",
+            rec.source
+        );
+        assert_eq!(
+            rec.params,
+            vec![Reg::Rcx],
+            "the forwarded first argument register must be recovered as the caller's sole parameter"
+        );
+    }
+
+    #[test]
+    fn resolved_zero_arg_call_declares_void() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let calls: [ResolvedCall; 1] = [ResolvedCall {
+            target: 0x0,
+            name: None,
+            arg_count: 0,
+        }];
+        let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
+            .expect("resolved zero-arg call recover");
+        assert!(
+            rec.source.contains("extern uint64_t sub_0(void);"),
+            "a resolved zero-argument callee must be declared (void): {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rax = sub_0();"),
+            "a zero-argument call must be emitted with no operands: {}",
+            rec.source
+        );
+        assert!(
+            rec.params.is_empty(),
+            "a caller that sets no argument registers has no parameters: {:?}",
+            rec.params
+        );
+    }
+
+    #[test]
+    fn resolved_call_emits_rust_extern_and_unsafe_call() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let calls: [ResolvedCall; 1] = [ResolvedCall {
+            target: 0x0,
+            name: Some("helper".to_owned()),
+            arg_count: 1,
+        }];
+        let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
+            .expect("resolved call recover");
+        let rust: String = rec
+            .rust_source
+            .expect("a frameless integer call caller must be rust-emittable");
+        assert!(
+            rust.contains("extern \"C\" {") && rust.contains("fn helper(a0: u64) -> u64;"),
+            "rust output must forward-declare the callee as extern \"C\": {rust}"
+        );
+        assert!(
+            rust.contains("r_rax = unsafe { helper(r_rcx) };"),
+            "rust output must emit the call inside an unsafe block: {rust}"
         );
     }
 
