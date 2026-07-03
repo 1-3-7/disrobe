@@ -107,19 +107,47 @@ pub(crate) enum DecompileBackend {
     Ghidra,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum DecompileLang {
+    #[default]
+    C,
+    Rust,
+}
+
+impl DecompileLang {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Rust => "rs",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Rust => "Rust",
+        }
+    }
+}
+
 pub(crate) fn decompile(
     input: PathBuf,
     out: Option<PathBuf>,
     emit: Vec<String>,
     backend: DecompileBackend,
+    format: DecompileLang,
 ) -> miette::Result<()> {
     match backend {
-        DecompileBackend::Native => decompile_native(input, out),
+        DecompileBackend::Native => decompile_native(input, out, format),
         DecompileBackend::Ghidra => decompile_ghidra(input, out, emit),
     }
 }
 
-fn decompile_native(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn decompile_native(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    format: DecompileLang,
+) -> miette::Result<()> {
     use disrobe_pass_native::{PseudoAbi, recover_leaf_function_abi};
     use std::fmt::Write as _;
 
@@ -168,26 +196,36 @@ fn decompile_native(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> 
         };
         match recover_leaf_function_abi(&code, f.address, abi) {
             Ok(rec) => {
-                for line in rec.source.lines() {
-                    if line.trim_start().starts_with("#include") {
-                        includes.insert(line.trim().to_owned());
+                let selected: Option<&str> = match format {
+                    DecompileLang::C => Some(rec.source.as_str()),
+                    DecompileLang::Rust => rec.rust_source.as_deref(),
+                };
+                let Some(src): Option<&str> = selected else {
+                    unrecovered.push(serde_json::json!({
+                        "name": f.name, "address": f.address,
+                        "reason": "not in the pure-safe Rust-emittable leaf class (float, memory access, stack frame, struct return, switch, or call)"
+                    }));
+                    continue;
+                };
+                if matches!(format, DecompileLang::C) {
+                    for line in src.lines() {
+                        if line.trim_start().starts_with("#include") {
+                            includes.insert(line.trim().to_owned());
+                        }
                     }
                 }
                 let cname: String = unique_c_name(&f.name, f.address, &mut seen);
-                let renamed: String = rec
-                    .source
+                let renamed: String = src
                     .lines()
                     .filter(|l: &&str| !l.trim_start().starts_with("#include"))
                     .collect::<Vec<&str>>()
                     .join("\n")
                     .replace("recovered(", &format!("{cname}("));
-                let _ = writeln!(
-                    bodies,
-                    "/* {} @ {:#x} */\n{}\n",
-                    f.name,
-                    f.address,
-                    renamed.trim()
-                );
+                let comment: String = match format {
+                    DecompileLang::C => format!("/* {} @ {:#x} */", f.name, f.address),
+                    DecompileLang::Rust => format!("// {} @ {:#x}", f.name, f.address),
+                };
+                let _ = writeln!(bodies, "{comment}\n{}\n", renamed.trim());
                 recovered.push(serde_json::json!({
                     "name": f.name, "address": f.address, "emitted_as": cname
                 }));
@@ -198,30 +236,33 @@ fn decompile_native(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> 
         }
     }
 
-    let mut c_source: String = String::new();
-    for inc in &includes {
-        c_source.push_str(inc);
-        c_source.push('\n');
+    let mut source_text: String = String::new();
+    if matches!(format, DecompileLang::C) {
+        for inc in &includes {
+            source_text.push_str(inc);
+            source_text.push('\n');
+        }
+        if !includes.is_empty() {
+            source_text.push('\n');
+        }
     }
-    if !includes.is_empty() {
-        c_source.push('\n');
-    }
-    c_source.push_str(&bodies);
+    source_text.push_str(&bodies);
 
-    let c_path: PathBuf = out_dir.join(format!("{stem}.c"));
-    std::fs::write(&c_path, c_source.as_bytes())
-        .map_err(|e| miette::miette!("DR-NATIVE-0164: cannot write C output: {e}"))?;
+    let src_path: PathBuf = out_dir.join(format!("{stem}.{}", format.extension()));
+    std::fs::write(&src_path, source_text.as_bytes())
+        .map_err(|e| miette::miette!("DR-NATIVE-0164: cannot write decompiled output: {e}"))?;
 
     let total: usize = module.functions().len();
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.native.decompile/v1",
         "backend": "native-in-tree-x86_64",
+        "language": format.label(),
         "input": input.display().to_string(),
         "abi": format!("{abi:?}"),
         "functions_total": total,
         "functions_recovered": recovered.len(),
         "functions_unrecovered": unrecovered.len(),
-        "c_source": c_path.display().to_string(),
+        "source": src_path.display().to_string(),
         "recovered": recovered,
         "unrecovered": unrecovered,
     });
@@ -233,10 +274,11 @@ fn decompile_native(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> 
     .map_err(|e| miette::miette!("DR-NATIVE-0166: cannot write manifest: {e}"))?;
 
     println!(
-        "native decompile (in-tree x86-64 -> C): recovered {}/{} function(s) -> {}",
+        "native decompile (in-tree x86-64 -> {}): recovered {}/{} function(s) -> {}",
+        format.label(),
         recovered.len(),
         total,
-        c_path.display()
+        src_path.display()
     );
     Ok(())
 }

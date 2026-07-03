@@ -1107,6 +1107,13 @@ enum NativeCmd {
         backend: native::DecompileBackend,
         #[arg(
             long,
+            value_enum,
+            default_value_t,
+            help = "native backend output language: c (default) or rust (behavior-preserving pseudo-Rust for the pure-safe integer leaf class)"
+        )]
+        format: native::DecompileLang,
+        #[arg(
+            long,
             value_delimiter = ',',
             help = "ghidra backend only: comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
@@ -1581,8 +1588,9 @@ fn main() -> miette::Result<()> {
                 input,
                 out,
                 backend,
+                format,
                 emit,
-            } => native::decompile(input, out, emit, backend),
+            } => native::decompile(input, out, emit, backend, format),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),

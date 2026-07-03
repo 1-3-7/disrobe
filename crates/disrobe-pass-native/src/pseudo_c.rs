@@ -622,6 +622,7 @@ pub struct SretReturn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeafRecovery {
     pub source: String,
+    pub rust_source: Option<String>,
     pub return_width_bits: u32,
     pub params: Vec<Reg>,
     pub fp_params: Vec<ScalarType>,
@@ -1024,6 +1025,12 @@ pub fn recover_leaf_function_const_abi(
         frame_plan.as_ref(),
         sret_plan.as_ref(),
     );
+    let rust_source: Option<String> = emit_rust(
+        &structured.body,
+        &signature,
+        frame_plan.as_ref(),
+        sret_plan.as_ref(),
+    );
     let sret: Option<SretReturn> = sret_plan.as_ref().map(|plan: &SretPlan| SretReturn {
         field_widths: plan
             .fields
@@ -1034,6 +1041,7 @@ pub fn recover_leaf_function_const_abi(
     });
     Ok(LeafRecovery {
         source,
+        rust_source,
         return_width_bits: return_width.bits(),
         params,
         fp_params,
@@ -1043,6 +1051,17 @@ pub fn recover_leaf_function_const_abi(
         lifted_switch: false,
         call_targets,
         sret,
+    })
+}
+
+pub fn recover_leaf_function_rust_abi(machine_code: &[u8], base: u64, abi: Abi) -> Result<String> {
+    let recovery: LeafRecovery = recover_leaf_function_abi(machine_code, base, abi)?;
+    recovery.rust_source.ok_or_else(|| {
+        Error::LlvmIr(
+            "recovered leaf is not in the pure-safe rust-emittable class (float, memory access, \
+             stack frame, struct return, switch, or call)"
+                .to_owned(),
+        )
     })
 }
 
@@ -1257,8 +1276,10 @@ pub fn recover_leaf_function_switch_const_abi(
     };
     let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(&insns))?;
     let source: String = emit_c(&body, &signature, abi, frame_plan.as_ref(), None);
+    let rust_source: Option<String> = emit_rust(&body, &signature, frame_plan.as_ref(), None);
     Ok(LeafRecovery {
         source,
+        rust_source,
         return_width_bits: return_width.bits(),
         params,
         fp_params: signature.ordered_param_types(),
@@ -6220,6 +6241,490 @@ fn sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
     let a: String = unsigned_operand(lhs, width);
     let b: String = unsigned_operand(rhs, width);
     format!("(int{}_t)({a} - {b})", width.bits())
+}
+
+const fn rs_int_ty(width: Width) -> &'static str {
+    match width {
+        Width::W8 => "i8",
+        Width::W16 => "i16",
+        Width::W32 => "i32",
+        Width::W64 => "i64",
+    }
+}
+
+const fn rs_uint_ty(width: Width) -> &'static str {
+    match width {
+        Width::W8 => "u8",
+        Width::W16 => "u16",
+        Width::W32 => "u32",
+        Width::W64 => "u64",
+    }
+}
+
+fn emit_rust(
+    body: &Block,
+    signature: &FnSignature,
+    frame: Option<&FramePlan>,
+    sret: Option<&SretPlan>,
+) -> Option<String> {
+    if frame.is_some() || sret.is_some() {
+        return None;
+    }
+    if !signature.fp.is_empty() {
+        return None;
+    }
+    let FnReturn::Int(return_width): FnReturn = signature.ret else {
+        return None;
+    };
+    let mut xmm_probe: Vec<Xmm> = Vec::new();
+    collect_block_xmm(body, &mut xmm_probe);
+    if !xmm_probe.is_empty() {
+        return None;
+    }
+    if block_string_ops_present(body) {
+        return None;
+    }
+
+    let mut out: String = String::new();
+    let params_sig: String = (0..signature.int.len())
+        .map(|i: usize| format!("a{i}: u64"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let _ = writeln!(
+        out,
+        "#[allow(unused_mut, unused_variables, unused_assignments, unused_parens, dead_code)]"
+    );
+    let _ = writeln!(out, "pub fn recovered({params_sig}) -> u64 {{");
+
+    let mut declared_gp: Vec<Reg> = Vec::new();
+    for (i, reg) in signature.int.iter().enumerate() {
+        let _ = writeln!(out, "    let mut {}: u64 = a{i};", reg_var(*reg));
+        declared_gp.push(*reg);
+    }
+    let mut touched_gp: Vec<Reg> = Vec::new();
+    collect_block_regs(body, &mut touched_gp);
+    if !touched_gp.contains(&Reg::Rax) {
+        touched_gp.push(Reg::Rax);
+    }
+    for reg in &touched_gp {
+        if !declared_gp.contains(reg) {
+            let _ = writeln!(out, "    let mut {}: u64 = 0;", reg_var(*reg));
+            declared_gp.push(*reg);
+        }
+    }
+    let mut snapshot_vars: Vec<u32> = Vec::new();
+    collect_snapshot_vars(body, &mut snapshot_vars);
+    for var in &snapshot_vars {
+        let _ = writeln!(out, "    let mut {}: u64 = 0;", loop_cond_var(*var));
+    }
+
+    rs_emit_block(&mut out, body, 1)?;
+
+    let ret_body: String = rs_width_mask(return_width, &reg_var(Reg::Rax));
+    let _ = writeln!(out, "    {ret_body}");
+    let _ = writeln!(out, "}}");
+    Some(out)
+}
+
+fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
+    let indent: String = "    ".repeat(depth);
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent)?,
+            Node::If {
+                cond,
+                flags,
+                then_body,
+                else_body,
+            } => {
+                let cond_text: String = rs_cond_expr(*cond, flags)?;
+                let _ = writeln!(out, "{indent}if {cond_text} {{");
+                rs_emit_block(out, then_body, depth + 1)?;
+                if let Some(else_b) = else_body {
+                    let _ = writeln!(out, "{indent}}} else {{");
+                    rs_emit_block(out, else_b, depth + 1)?;
+                }
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::DoWhile { body, cond } => {
+                let cond_text: String = match cond {
+                    LoopCond::Direct { cond, flags } => rs_cond_expr(*cond, flags)?,
+                    LoopCond::Snapshot { var } => format!("{} != 0", loop_cond_var(*var)),
+                };
+                let inner: String = "    ".repeat(depth + 1);
+                let _ = writeln!(out, "{indent}loop {{");
+                rs_emit_block(out, body, depth + 1)?;
+                let _ = writeln!(out, "{inner}if !({cond_text}) {{ break; }}");
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::While { body } => {
+                let _ = writeln!(out, "{indent}loop {{");
+                rs_emit_block(out, body, depth + 1)?;
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::Switch { .. } => return None,
+            Node::CondSnapshot { var, cond, flags } => {
+                let cond_text: String = rs_cond_expr(*cond, flags)?;
+                let _ = writeln!(
+                    out,
+                    "{indent}{} = ({cond_text}) as u64;",
+                    loop_cond_var(*var)
+                );
+            }
+            Node::Break => {
+                let _ = writeln!(out, "{indent}break;");
+            }
+            Node::Continue => {
+                let _ = writeln!(out, "{indent}continue;");
+            }
+        }
+    }
+    Some(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
+    match stmt {
+        Stmt::Assign { dest, src } => {
+            let body: String = rs_source_expr(src, dest.width)?;
+            let masked: String = rs_width_mask(dest.width, &body);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::BinAssign { dest, op, src } => {
+            let rhs: String = rs_source_expr(src, dest.width)?;
+            let body: String = rs_bin_expr(*op, &reg_var(dest.reg), &rhs, dest.width);
+            let masked: String = rs_width_mask(dest.width, &body);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::UnAssign { dest, op } => {
+            let body: String = match op {
+                UnOp::Neg => format!("({}).wrapping_neg()", reg_var(dest.reg)),
+                UnOp::Not => format!("(!{})", reg_var(dest.reg)),
+            };
+            let masked: String = rs_width_mask(dest.width, &body);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::Cond {
+            dest,
+            src,
+            kind,
+            flags,
+        } => {
+            let cond: String = rs_cond_expr(*kind, flags)?;
+            let chosen: String = rs_source_expr(src, dest.width)?;
+            let masked_chosen: String = rs_width_mask(dest.width, &chosen);
+            let kept: String = reg_var(dest.reg);
+            let _ = writeln!(
+                out,
+                "{indent}{} = if {cond} {{ {masked_chosen} }} else {{ {kept} }};",
+                reg_var(dest.reg)
+            );
+        }
+        Stmt::SetCc { dest, kind, flags } => {
+            let cond: String = rs_cond_expr(*kind, flags)?;
+            let var: String = reg_var(dest.reg);
+            let _ = writeln!(
+                out,
+                "{indent}{var} = ({var} & 0xffffffffffffff00u64) | (({cond}) as u64);"
+            );
+        }
+        Stmt::Extend { dest, src, signed } => {
+            let (raw, src_width): (String, Width) = match src {
+                ExtSource::Reg(r) => (reg_var(r.reg), r.width),
+                ExtSource::Mem(_) => return None,
+            };
+            let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
+            let masked: String = rs_width_mask(dest.width, &body);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::MulImm { dest, src, imm } => {
+            let operand: String = match src {
+                ExtSource::Reg(r) => reg_var(r.reg),
+                ExtSource::Mem(_) => return None,
+            };
+            let body: String = format!("({operand}).wrapping_mul(({imm}i64) as u64)");
+            let masked: String = rs_width_mask(dest.width, &body);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::WideMul { src } => {
+            let rax: String = reg_var(Reg::Rax);
+            let rdx: String = reg_var(Reg::Rdx);
+            let factor: String = reg_var(src.reg);
+            let _ = writeln!(out, "{indent}{{");
+            let _ = writeln!(
+                out,
+                "{indent}    let wide_prod: u128 = ({rax} as u128) * ({factor} as u128);"
+            );
+            let _ = writeln!(out, "{indent}    {rax} = wide_prod as u64;");
+            let _ = writeln!(out, "{indent}    {rdx} = (wide_prod >> 64) as u64;");
+            let _ = writeln!(out, "{indent}}}");
+        }
+        Stmt::Divide { divisor, signed } => rs_emit_divide(out, *divisor, *signed, indent),
+        Stmt::DoubleShift {
+            dest,
+            src,
+            amount,
+            left,
+        } => {
+            let dst: String = reg_var(dest.reg);
+            let other: String = reg_var(src.reg);
+            let amount32: u32 = u32::from(*amount);
+            let complement: u32 = 64 - amount32;
+            let body: String = if *left {
+                format!(
+                    "({dst}.wrapping_shl({amount32}u32)) | ({other}.wrapping_shr({complement}u32))"
+                )
+            } else {
+                format!(
+                    "({dst}.wrapping_shr({amount32}u32)) | ({other}.wrapping_shl({complement}u32))"
+                )
+            };
+            let _ = writeln!(out, "{indent}{dst} = {body};");
+        }
+        Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::Call { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::FpRound { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. } => return None,
+    }
+    Some(())
+}
+
+fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str) {
+    let rax: String = reg_var(Reg::Rax);
+    let rdx: String = reg_var(Reg::Rdx);
+    let div: String = reg_var(divisor.reg);
+    let width: Width = divisor.width;
+    let _ = writeln!(out, "{indent}{{");
+    if signed {
+        let ity: &str = rs_int_ty(width);
+        let uty: &str = rs_uint_ty(width);
+        let _ = writeln!(out, "{indent}    let div_lhs: {ity} = {rax} as {ity};");
+        let _ = writeln!(out, "{indent}    let div_rhs: {ity} = {div} as {ity};");
+        let _ = writeln!(
+            out,
+            "{indent}    {rax} = (div_lhs / div_rhs) as {uty} as u64;"
+        );
+        let _ = writeln!(
+            out,
+            "{indent}    {rdx} = (div_lhs % div_rhs) as {uty} as u64;"
+        );
+    } else {
+        let uty: &str = rs_uint_ty(width);
+        let _ = writeln!(out, "{indent}    let div_lhs: {uty} = {rax} as {uty};");
+        let _ = writeln!(out, "{indent}    let div_rhs: {uty} = {div} as {uty};");
+        let _ = writeln!(out, "{indent}    {rax} = (div_lhs / div_rhs) as u64;");
+        let _ = writeln!(out, "{indent}    {rdx} = (div_lhs % div_rhs) as u64;");
+    }
+    let _ = writeln!(out, "{indent}}}");
+}
+
+fn rs_addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(b) = base {
+        parts.push(reg_var(b));
+    }
+    if let Some((i, scale)) = index {
+        parts.push(format!("({}.wrapping_mul({scale}u64))", reg_var(i)));
+    }
+    if disp != 0 || parts.is_empty() {
+        parts.push(format!("(({disp}i64) as u64)"));
+    }
+    parts
+        .into_iter()
+        .reduce(|acc: String, part: String| format!("{acc}.wrapping_add({part})"))
+        .unwrap_or_else(|| "0u64".to_owned())
+}
+
+fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
+    match src {
+        Source::Reg(r) => {
+            if r.width == width || width == Width::W64 {
+                Some(reg_var(r.reg))
+            } else {
+                let mask: u128 = (1u128 << r.width.bits()) - 1;
+                Some(format!("({} & 0x{mask:x}u64)", reg_var(r.reg)))
+            }
+        }
+        Source::Imm(value) => Some(format!("(({value}i64) as u64)")),
+        Source::Lea { base, index, disp } => Some(rs_addr_expr(*base, *index, *disp)),
+        Source::Mem(_) => None,
+    }
+}
+
+fn rs_width_mask(width: Width, body: &str) -> String {
+    match width {
+        Width::W64 => body.to_owned(),
+        other => format!("(({body}) & 0x{:x}u64)", (1u128 << other.bits()) - 1),
+    }
+}
+
+fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
+    let bits: u32 = width.bits();
+    let shift_mask: u32 = bits - 1;
+    match op {
+        BinOp::Add => format!("({lhs}).wrapping_add({rhs})"),
+        BinOp::Sub => format!("({lhs}).wrapping_sub({rhs})"),
+        BinOp::Imul => format!("({lhs}).wrapping_mul({rhs})"),
+        BinOp::And => format!("(({lhs}) & ({rhs}))"),
+        BinOp::Or => format!("(({lhs}) | ({rhs}))"),
+        BinOp::Xor => format!("(({lhs}) ^ ({rhs}))"),
+        BinOp::Shl => format!("({lhs}).wrapping_shl((({rhs}) & {shift_mask}u64) as u32)"),
+        BinOp::Shr => {
+            let mask: u128 = (1u128 << bits) - 1;
+            format!("(({lhs}) & 0x{mask:x}u64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32)")
+        }
+        BinOp::Sar => {
+            let ity: &str = rs_int_ty(width);
+            format!(
+                "(((({lhs}) as {ity}) as i64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32) as u64)"
+            )
+        }
+    }
+}
+
+fn rs_extend_expr(raw: &str, src_width: Width, dst_width: Width, signed: bool) -> String {
+    let src_mask: u128 = (1u128 << src_width.bits()) - 1;
+    let narrowed: String = format!("(({raw}) & 0x{src_mask:x}u64)");
+    if signed {
+        format!(
+            "({narrowed} as {si} as {di} as {du} as u64)",
+            si = rs_int_ty(src_width),
+            di = rs_int_ty(dst_width),
+            du = rs_uint_ty(dst_width)
+        )
+    } else {
+        format!(
+            "({narrowed} as {su} as {du} as u64)",
+            su = rs_uint_ty(src_width),
+            du = rs_uint_ty(dst_width)
+        )
+    }
+}
+
+fn rs_signed_operand(expr: &str, width: Width) -> String {
+    format!("((({expr}) as {ity}) as i64)", ity = rs_int_ty(width))
+}
+
+fn rs_unsigned_operand(expr: &str, width: Width) -> String {
+    match width {
+        Width::W64 => format!("({expr})"),
+        other => {
+            let mask: u128 = (1u128 << other.bits()) - 1;
+            format!("(({expr}) & 0x{mask:x}u64)")
+        }
+    }
+}
+
+fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    if kind.is_unsigned_order() {
+        let a: String = rs_unsigned_operand(lhs_expr, width);
+        let b: String = rs_unsigned_operand(rhs_expr, width);
+        let op: &str = match kind {
+            CondKind::A => ">",
+            CondKind::Ae => ">=",
+            CondKind::B => "<",
+            CondKind::Be => "<=",
+            _ => unreachable!(),
+        };
+        format!("{a} {op} {b}")
+    } else if kind.is_signed_order() {
+        let a: String = rs_signed_operand(lhs_expr, width);
+        let b: String = rs_signed_operand(rhs_expr, width);
+        let op: &str = match kind {
+            CondKind::G => ">",
+            CondKind::Ge => ">=",
+            CondKind::L => "<",
+            CondKind::Le => "<=",
+            _ => unreachable!(),
+        };
+        format!("{a} {op} {b}")
+    } else {
+        let a: String = rs_signed_operand(lhs_expr, width);
+        let b: String = rs_signed_operand(rhs_expr, width);
+        match kind {
+            CondKind::E => format!("{a} == {b}"),
+            CondKind::Ne => format!("{a} != {b}"),
+            CondKind::S => {
+                let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
+                format!("{diff} < 0")
+            }
+            CondKind::Ns => {
+                let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
+                format!("{diff} >= 0")
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
+    let a: String = rs_unsigned_operand(lhs, width);
+    let b: String = rs_unsigned_operand(rhs, width);
+    format!("(({a}).wrapping_sub({b}) as {ity})", ity = rs_int_ty(width))
+}
+
+fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
+    match flags {
+        Flags::Cmp { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: String = reg_var(lhs.reg);
+            let rhs_expr: String = rs_source_expr(rhs, width)?;
+            Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
+        }
+        Flags::CmpMem { .. } => None,
+        Flags::TestImm { operand, mask } => {
+            let width: Width = operand.width;
+            let maskval: u64 = (*mask as u64) & ((1u128 << width.bits()) - 1) as u64;
+            let masked: String = format!(
+                "({} & 0x{maskval:x}u64)",
+                rs_unsigned_operand(&reg_var(operand.reg), width)
+            );
+            match kind {
+                CondKind::E => Some(format!("{masked} == 0")),
+                CondKind::Ne => Some(format!("{masked} != 0")),
+                _ => None,
+            }
+        }
+        Flags::Test { operand } => {
+            let width: Width = operand.width;
+            let var: String = rs_signed_operand(&reg_var(operand.reg), width);
+            let expr: String = match kind {
+                CondKind::E | CondKind::Be => format!("{var} == 0"),
+                CondKind::Ne | CondKind::A => format!("{var} != 0"),
+                CondKind::G => format!("{var} > 0"),
+                CondKind::Ge | CondKind::Ns => format!("{var} >= 0"),
+                CondKind::L | CondKind::S => format!("{var} < 0"),
+                CondKind::Le => format!("{var} <= 0"),
+                CondKind::Ae => "true".to_owned(),
+                CondKind::B => "false".to_owned(),
+            };
+            Some(expr)
+        }
+        Flags::Sign { result } => {
+            let width: Width = result.width;
+            let var: String = rs_signed_operand(&reg_var(result.reg), width);
+            match kind {
+                CondKind::S => Some(format!("{var} < 0")),
+                CondKind::Ns => Some(format!("{var} >= 0")),
+                CondKind::E => Some(format!("{var} == 0")),
+                CondKind::Ne => Some(format!("{var} != 0")),
+                _ => None,
+            }
+        }
+        Flags::FpCmp { .. } => None,
+    }
 }
 
 #[cfg(test)]
