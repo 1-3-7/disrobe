@@ -11343,3 +11343,414 @@ fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
         "if-else diamond behavioral differential PASSED for {lifted_count} leaf functions ({diamond_count} two-armed diamonds, MS x64 ABI)"
     );
 }
+
+struct SelCase {
+    name: &'static str,
+    arity: usize,
+    expect_sel_cc: bool,
+    c_source: &'static str,
+}
+
+const SEL_BATTERY: &[SelCase] = &[
+    SelCase {
+        name: "s_absdiff64",
+        arity: 2,
+        expect_sel_cc: true,
+        c_source: "long long s_absdiff64(long long a, long long b){ long long d = a - b; if (d < 0) d = -d; return d; }",
+    },
+    SelCase {
+        name: "s_absdiff32",
+        arity: 2,
+        expect_sel_cc: true,
+        c_source: "int s_absdiff32(int a, int b){ int d = a - b; if (d < 0) d = -d; return d; }",
+    },
+    SelCase {
+        name: "s_absdiff16",
+        arity: 2,
+        expect_sel_cc: true,
+        c_source: "int s_absdiff16(short a, short b){ int d = (int)a - (int)b; if (d < 0) d = -d; return d; }",
+    },
+    SelCase {
+        name: "s_absdiff8",
+        arity: 2,
+        expect_sel_cc: true,
+        c_source: "signed char s_absdiff8(signed char a, signed char b){ int d = (int)a - (int)b; if (d < 0) d = -d; return (signed char)d; }",
+    },
+    SelCase {
+        name: "s_abs64",
+        arity: 1,
+        expect_sel_cc: false,
+        c_source: "long long s_abs64(long long x){ return x < 0 ? -x : x; }",
+    },
+    SelCase {
+        name: "s_abs16",
+        arity: 1,
+        expect_sel_cc: false,
+        c_source: "short s_abs16(short x){ int v = x; return (short)(v < 0 ? -v : v); }",
+    },
+    SelCase {
+        name: "s_max64",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "long long s_max64(long long a, long long b){ return a > b ? a : b; }",
+    },
+    SelCase {
+        name: "s_min64",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "long long s_min64(long long a, long long b){ return a < b ? a : b; }",
+    },
+    SelCase {
+        name: "s_max8",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "signed char s_max8(signed char a, signed char b){ return a > b ? a : b; }",
+    },
+    SelCase {
+        name: "s_umax32",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "unsigned s_umax32(unsigned a, unsigned b){ return a > b ? a : b; }",
+    },
+    SelCase {
+        name: "s_selnz",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "long long s_selnz(long long a, long long b){ return a != 0 ? a : b; }",
+    },
+    SelCase {
+        name: "s_nearmiss",
+        arity: 2,
+        expect_sel_cc: false,
+        c_source: "long long s_nearmiss(long long a, long long b){ long long d = a - b; return (a >= b) ? a : d; }",
+    },
+];
+
+const SEL_HARNESS_TAIL: &str = r#"
+extern long long s_absdiff64(long long, long long);
+extern int s_absdiff32(int, int);
+extern int s_absdiff16(short, short);
+extern signed char s_absdiff8(signed char, signed char);
+extern long long s_abs64(long long);
+extern short s_abs16(short);
+extern long long s_max64(long long, long long);
+extern long long s_min64(long long, long long);
+extern signed char s_max8(signed char, signed char);
+extern unsigned s_umax32(unsigned, unsigned);
+extern long long s_selnz(long long, long long);
+extern long long s_nearmiss(long long, long long);
+
+static const long long A64[] = {
+    0, 1, -1, 2, -2, 7, -7, 3, -3, 5, -5, 50, -50, 100, -100,
+    123456789, -123456789, 1000000, -1000000,
+    9223372036854775807LL, (-9223372036854775807LL - 1LL),
+    4294967296LL, -4294967296LL, 65536, -65536
+};
+static const long long A32[] = {
+    0, 1, -1, 2, -2, 7, -7, 100, -100,
+    2147483647LL, (-2147483647LL - 1LL), 1073741824LL, -1073741824LL,
+    65535, -65536, 305419896LL, -559038737LL
+};
+#define NA64 (sizeof(A64) / sizeof(A64[0]))
+#define NA32 (sizeof(A32) / sizeof(A32[0]))
+
+static int mism(const char *n, long long a, long long b, unsigned long long w, unsigned long long g) {
+    printf("MISMATCH %s a=%lld b=%lld want=%llu got=%llu\n", n, a, b, w, g);
+    return 1;
+}
+
+static int check_s_absdiff64(void) {
+    for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
+        long long a = A64[i], b = A64[j], d;
+        if (__builtin_sub_overflow(a, b, &d)) continue;
+        if (d == LLONG_MIN) continue;
+        unsigned long long w = (unsigned long long)s_absdiff64(a, b);
+        unsigned long long g = rec_s_absdiff64((uint64_t)a, (uint64_t)b);
+        if (w != g) return mism("s_absdiff64", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_absdiff32(void) {
+    for (size_t i = 0; i < NA32; i++) for (size_t j = 0; j < NA32; j++) {
+        int a = (int)A32[i], b = (int)A32[j], d;
+        if (__builtin_sub_overflow(a, b, &d)) continue;
+        if (d == INT_MIN) continue;
+        unsigned long long w = (unsigned long long)(unsigned)s_absdiff32(a, b);
+        unsigned long long g = rec_s_absdiff32((uint64_t)(long long)a, (uint64_t)(long long)b) & 0xffffffffULL;
+        if (w != g) return mism("s_absdiff32", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_absdiff16(void) {
+    static const short BS[] = { -32768, -1, 0, 1, 32767, 12345 };
+    for (int ia = -32768; ia <= 32767; ia++) for (size_t k = 0; k < 6; k++) {
+        short a = (short)ia, b = BS[k];
+        unsigned long long w = (unsigned long long)(unsigned)s_absdiff16(a, b);
+        unsigned long long g = rec_s_absdiff16((uint64_t)(long long)a, (uint64_t)(long long)b) & 0xffffffffULL;
+        if (w != g) return mism("s_absdiff16", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_absdiff8(void) {
+    for (int ia = -128; ia < 128; ia++) for (int ib = -128; ib < 128; ib++) {
+        signed char a = (signed char)ia, b = (signed char)ib;
+        unsigned long long w = (unsigned long long)(unsigned char)s_absdiff8(a, b);
+        unsigned long long g = rec_s_absdiff8((uint64_t)(long long)a, (uint64_t)(long long)b) & 0xffULL;
+        if (w != g) return mism("s_absdiff8", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_abs64(void) {
+    for (size_t i = 0; i < NA64; i++) {
+        long long x = A64[i];
+        unsigned long long w = (unsigned long long)s_abs64(x);
+        unsigned long long g = rec_s_abs64((uint64_t)x);
+        if (w != g) return mism("s_abs64", x, 0, w, g);
+    }
+    return 0;
+}
+static int check_s_abs16(void) {
+    for (int ix = -32768; ix <= 32767; ix++) {
+        short x = (short)ix;
+        unsigned long long w = (unsigned long long)(unsigned short)s_abs16(x);
+        unsigned long long g = rec_s_abs16((uint64_t)(long long)x) & 0xffffULL;
+        if (w != g) return mism("s_abs16", x, 0, w, g);
+    }
+    return 0;
+}
+static int check_s_max64(void) {
+    for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
+        long long a = A64[i], b = A64[j];
+        unsigned long long w = (unsigned long long)s_max64(a, b);
+        unsigned long long g = rec_s_max64((uint64_t)a, (uint64_t)b);
+        if (w != g) return mism("s_max64", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_min64(void) {
+    for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
+        long long a = A64[i], b = A64[j];
+        unsigned long long w = (unsigned long long)s_min64(a, b);
+        unsigned long long g = rec_s_min64((uint64_t)a, (uint64_t)b);
+        if (w != g) return mism("s_min64", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_max8(void) {
+    for (int ia = -128; ia < 128; ia++) for (int ib = -128; ib < 128; ib++) {
+        signed char a = (signed char)ia, b = (signed char)ib;
+        unsigned long long w = (unsigned long long)(unsigned char)s_max8(a, b);
+        unsigned long long g = rec_s_max8((uint64_t)(long long)a, (uint64_t)(long long)b) & 0xffULL;
+        if (w != g) return mism("s_max8", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_umax32(void) {
+    for (size_t i = 0; i < NA32; i++) for (size_t j = 0; j < NA32; j++) {
+        unsigned a = (unsigned)A32[i], b = (unsigned)A32[j];
+        unsigned long long w = (unsigned long long)s_umax32(a, b);
+        unsigned long long g = rec_s_umax32((uint64_t)a, (uint64_t)b) & 0xffffffffULL;
+        if (w != g) return mism("s_umax32", (long long)a, (long long)b, w, g);
+    }
+    return 0;
+}
+static int check_s_selnz(void) {
+    for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
+        long long a = A64[i], b = A64[j];
+        unsigned long long w = (unsigned long long)s_selnz(a, b);
+        unsigned long long g = rec_s_selnz((uint64_t)a, (uint64_t)b);
+        if (w != g) return mism("s_selnz", a, b, w, g);
+    }
+    return 0;
+}
+static int check_s_nearmiss(void) {
+    for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
+        long long a = A64[i], b = A64[j], d;
+        if (__builtin_sub_overflow(a, b, &d)) continue;
+        unsigned long long w = (unsigned long long)s_nearmiss(a, b);
+        unsigned long long g = rec_s_nearmiss((uint64_t)a, (uint64_t)b);
+        if (w != g) return mism("s_nearmiss", a, b, w, g);
+    }
+    return 0;
+}
+
+int main(void) {
+    if (check_s_absdiff64()) return 1;
+    if (check_s_absdiff32()) return 1;
+    if (check_s_absdiff16()) return 1;
+    if (check_s_absdiff8()) return 1;
+    if (check_s_abs64()) return 1;
+    if (check_s_abs16()) return 1;
+    if (check_s_max64()) return 1;
+    if (check_s_min64()) return 1;
+    if (check_s_max8()) return 1;
+    if (check_s_umax32()) return 1;
+    if (check_s_selnz()) return 1;
+    if (check_s_nearmiss()) return 1;
+    printf("OK\n");
+    return 0;
+}
+"#;
+
+fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) -> String {
+    let mut decls: String = String::new();
+    for case in SEL_BATTERY {
+        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name)
+        else {
+            panic!("sel case {} symbol not located", case.name);
+        };
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, abi)
+            .unwrap_or_else(|e| panic!("sel case {} not in leaf class: {e}", case.name));
+        assert_eq!(
+            recovery.params.len(),
+            case.arity,
+            "sel case {} inferred arity {} != {}",
+            case.name,
+            recovery.params.len(),
+            case.arity
+        );
+        assert!(
+            recovery.source.contains(") ? ("),
+            "sel case {} recovered without a select ternary (cmov path did not fire):\n{}",
+            case.name,
+            recovery.source
+        );
+        if case.name == "s_nearmiss" {
+            assert!(
+                !recovery.source.contains("sel_cc_"),
+                "near-miss {} must not trigger the ordering-cmov snapshot repair (value-identity guard):\n{}",
+                case.name,
+                recovery.source
+            );
+        }
+        if clang_flavor && case.expect_sel_cc {
+            assert!(
+                recovery.source.contains("sel_cc_"),
+                "sel case {} lowered by clang to ordering cmov must recover via the snapshot repair:\n{}",
+                case.name,
+                recovery.source
+            );
+        }
+        let renamed: String = recovery
+            .source
+            .replacen(
+                "uint64_t recovered(",
+                &format!("uint64_t rec_{}(", case.name),
+                1,
+            )
+            .lines()
+            .filter(|l: &&str| !l.starts_with("#include"))
+            .collect::<Vec<&str>>()
+            .join("\n");
+        decls.push_str(&renamed);
+        decls.push('\n');
+    }
+    decls
+}
+
+fn sel_driver(recovered_decls: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <limits.h>\n{recovered_decls}\n{SEL_HARNESS_TAIL}"
+    )
+}
+
+#[test]
+fn sysv_cmov_select_idioms_recompile_to_behavioral_equivalence() {
+    let Some(_host_cc): Option<String> = cc() else {
+        eprintln!("skipping: no C compiler on PATH");
+        return;
+    };
+    let Some(_clang): Option<String> = clang() else {
+        eprintln!("skipping sysv cmov idioms: clang (needed for SysV cross object) not on PATH");
+        return;
+    };
+    let mut battery_src: String = String::new();
+    for case in SEL_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let Some(objects): Option<SysvCrossObjects> = compile_sysv_cross("selcmov", &battery_src)
+    else {
+        return;
+    };
+    let decls: String = sel_recovered_decls(&objects.sysv_object, PseudoAbi::SysV, true);
+    let driver: String = sel_driver(&decls);
+    let stdout: String = link_and_run_sysv("selcmov", &driver, &objects.host_object, 30);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "sysv cmov/abs/min/max behavioral differential FAILED: {stdout}"
+    );
+    println!(
+        "sysv cmov/abs/min/max differential PASSED for {} idioms (adversarial + exhaustive 8/16-bit)",
+        SEL_BATTERY.len()
+    );
+}
+
+#[test]
+fn cmov_select_idioms_recompile_to_behavioral_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native cmov oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv clang cross guard is the cross-platform proof"
+        );
+        return;
+    }
+    let Some(compiler): Option<String> = cc() else {
+        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let mut battery_src: String = String::new();
+    for case in SEL_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("selcmov_host.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write selcmov_host.c");
+    let battery_o: PathBuf = dir.join("selcmov_host.o");
+    let compiled: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-fno-stack-protector", "-c", "-o"])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke cc for cmov battery");
+    assert!(
+        compiled.status.success(),
+        "cmov battery compile failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read selcmov_host.o");
+    let decls: String = sel_recovered_decls(&object_bytes, HOST_ABI, false);
+    let driver: String = sel_driver(&decls);
+    let driver_c: PathBuf = dir.join("selcmov_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write selcmov_driver.c");
+    let exe: PathBuf = dir.join(if cfg!(windows) {
+        "selcmov.exe"
+    } else {
+        "selcmov"
+    });
+    let link: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&exe)
+        .arg(&driver_c)
+        .arg(&battery_o)
+        .output()
+        .expect("invoke cc to link cmov harness");
+    assert!(
+        link.status.success(),
+        "cmov harness link failed: {}\n--- driver ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let BoundedRun::Exited(out): BoundedRun = run_bounded(&exe, 30) else {
+        panic!("cmov harness did not terminate within the watchdog window");
+    };
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "host cmov/abs/min/max behavioral differential FAILED: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    println!(
+        "host cmov/abs/min/max differential PASSED for {} idioms (MS x64, adversarial + exhaustive 8/16-bit)",
+        SEL_BATTERY.len()
+    );
+}

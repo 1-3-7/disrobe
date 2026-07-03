@@ -397,6 +397,9 @@ enum Flags {
         rhs: FpOperand,
         width: FpWidth,
     },
+    Snapshot {
+        var: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -554,6 +557,11 @@ enum Stmt {
         target: u64,
         args: Vec<Reg>,
         name: Option<String>,
+    },
+    FlagSnapshot {
+        var: u32,
+        kind: CondKind,
+        flags: Flags,
     },
 }
 
@@ -812,6 +820,7 @@ fn recover_leaf_function_calls_impl(
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<Flags> = None;
+    let mut next_sel: u32 = 0;
     let mut dividend_high: Option<DividendHigh> = None;
     let mut fp_return: Option<FpWidth> = None;
     let mut saw_ret: bool = false;
@@ -992,12 +1001,18 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            if !condition_is_sound(kind, &live_flags) {
+            let used_flags: Flags = if condition_is_sound(kind, &live_flags) {
+                live_flags
+            } else if let Some(repaired) =
+                snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
+            {
+                repaired
+            } else {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
                     insn.mnemonic, insn.address
                 )));
-            }
+            };
             let (lhs, rhs): (&str, &str) = insn
                 .operands
                 .split_once(',')
@@ -1017,7 +1032,7 @@ fn recover_leaf_function_calls_impl(
                     dest,
                     src,
                     kind,
-                    flags: live_flags,
+                    flags: used_flags,
                 }),
             });
             continue;
@@ -1040,12 +1055,18 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            if !condition_is_sound(kind, &live_flags) {
+            let used_flags: Flags = if condition_is_sound(kind, &live_flags) {
+                live_flags
+            } else if let Some(repaired) =
+                snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
+            {
+                repaired
+            } else {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
                     insn.mnemonic, insn.address
                 )));
-            }
+            };
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
                 fp_return = None;
@@ -1055,7 +1076,7 @@ fn recover_leaf_function_calls_impl(
                 kind: ItemKind::Stmt(Stmt::SetCc {
                     dest,
                     kind,
-                    flags: live_flags,
+                    flags: used_flags,
                 }),
             });
             continue;
@@ -1136,7 +1157,7 @@ fn recover_leaf_function_calls_impl(
             | Stmt::XmmToGpr { .. } => {
                 flags = None;
             }
-            Stmt::Call { .. } => {}
+            Stmt::Call { .. } | Stmt::FlagSnapshot { .. } => {}
         }
         items.push(Item {
             address: insn.address,
@@ -2059,7 +2080,8 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
-        | Stmt::BlockFill { .. } => {}
+        | Stmt::BlockFill { .. }
+        | Stmt::FlagSnapshot { .. } => {}
     }
 }
 
@@ -2375,6 +2397,7 @@ fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
             }
             regs
         }
+        Flags::Snapshot { .. } => Vec::new(),
     }
 }
 
@@ -3353,6 +3376,57 @@ fn lift_flag_setter(mnemonic: &str, operands: &str) -> Option<Flags> {
     }
 }
 
+fn snapshot_repair(
+    items: &mut Vec<Item>,
+    kind: CondKind,
+    live_flags: &Flags,
+    next_sel: &mut u32,
+) -> Option<Flags> {
+    if !(kind.is_signed_order() || kind.is_unsigned_order()) {
+        return None;
+    }
+    let &Flags::Sign { result } = live_flags else {
+        return None;
+    };
+    let producer: usize = items.iter().rposition(|it: &Item| {
+        matches!(
+            &it.kind,
+            ItemKind::Stmt(Stmt::BinAssign { dest, .. }) if dest.reg == result.reg
+        ) || matches!(
+            &it.kind,
+            ItemKind::Stmt(Stmt::UnAssign { dest, op: UnOp::Neg }) if dest.reg == result.reg
+        )
+    })?;
+    let (cmp_lhs, cmp_rhs, addr): (RegRef, Source, u64) = {
+        let ItemKind::Stmt(Stmt::BinAssign {
+            dest,
+            op: BinOp::Sub,
+            src,
+        }) = &items[producer].kind
+        else {
+            return None;
+        };
+        (*dest, src.clone(), items[producer].address)
+    };
+    let var: u32 = *next_sel;
+    *next_sel += 1;
+    items.insert(
+        producer,
+        Item {
+            address: addr,
+            kind: ItemKind::Stmt(Stmt::FlagSnapshot {
+                var,
+                kind,
+                flags: Flags::Cmp {
+                    lhs: cmp_lhs,
+                    rhs: cmp_rhs,
+                },
+            }),
+        },
+    );
+    Some(Flags::Snapshot { var })
+}
+
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
     match flags {
         Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
@@ -3361,6 +3435,7 @@ fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
         Flags::FpCmp { .. } => {
             kind.is_unsigned_order() || matches!(kind, CondKind::E | CondKind::Ne)
         }
+        Flags::Snapshot { .. } => true,
     }
 }
 
@@ -3728,6 +3803,9 @@ fn scan_stmt_params(
             written.insert(dest.reg, true);
         }
         Stmt::FpConvert { .. } => {}
+        Stmt::FlagSnapshot { flags, .. } => {
+            read_flags(flags, written, acc, note);
+        }
     }
 }
 
@@ -3755,6 +3833,7 @@ fn read_flags(
                 read_addr(mem, written, acc, note);
             }
         }
+        Flags::Snapshot { .. } => {}
     }
 }
 
@@ -3927,7 +4006,8 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::FpRound { .. }
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
-        | Stmt::BlockFill { .. } => false,
+        | Stmt::BlockFill { .. }
+        | Stmt::FlagSnapshot { .. } => false,
     }
 }
 
@@ -4715,6 +4795,40 @@ fn loop_cond_var(var: u32) -> String {
     format!("loop_cond_{var}")
 }
 
+fn sel_var(var: u32) -> String {
+    format!("sel_cc_{var}")
+}
+
+fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
+    for node in body {
+        match node {
+            Node::Stmt(Stmt::FlagSnapshot { var, .. }) => {
+                if !acc.contains(var) {
+                    acc.push(*var);
+                }
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_sel_vars(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_sel_vars(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => collect_sel_vars(body, acc),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_sel_vars(&case.body, acc);
+                }
+                collect_sel_vars(default, acc);
+            }
+            Node::Stmt(_) | Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+        }
+    }
+}
+
 fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
     for node in body {
         match node {
@@ -4944,6 +5058,7 @@ impl FrameScan {
             }
             Flags::Sign { result } => self.note_reg(result.reg, misuse),
             Flags::FpCmp { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Flags::Snapshot { .. } => {}
         }
     }
 
@@ -5005,6 +5120,7 @@ impl FrameScan {
             Stmt::FpRound { src, .. } => self.note_fp(src, slots, misuse),
             Stmt::FpMinMax { rhs, .. } => self.note_fp(rhs, slots, misuse),
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
+            Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
             | Stmt::BlockFill { .. }
@@ -5254,6 +5370,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             acc.push(Reg::Rcx);
         }
         Stmt::Call { args, .. } => acc.extend_from_slice(args),
+        Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
 }
 
@@ -5506,6 +5623,11 @@ fn emit_c(
     for var in &snapshot_vars {
         let _ = writeln!(out, "    uint64_t {} = 0;", loop_cond_var(*var));
     }
+    let mut sel_vars: Vec<u32> = Vec::new();
+    collect_sel_vars(body, &mut sel_vars);
+    for var in &sel_vars {
+        let _ = writeln!(out, "    uint64_t {} = 0;", sel_var(*var));
+    }
 
     emit_block(&mut out, body, 1);
 
@@ -5599,6 +5721,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 push_addr(mem, acc);
             }
         }
+        Flags::Snapshot { .. } => {}
     };
     for node in body {
         match node {
@@ -5698,6 +5821,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 Stmt::GprToXmm { src, .. } => push(src.reg, acc),
                 Stmt::XmmToGpr { dest, .. } => push(dest.reg, acc),
                 Stmt::FpConvert { .. } => {}
+                Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
                     for reg in args {
                         push(*reg, acc);
@@ -5803,6 +5927,7 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 | Stmt::DoubleShift { .. }
                 | Stmt::BlockMove { .. }
                 | Stmt::BlockFill { .. }
+                | Stmt::FlagSnapshot { .. }
                 | Stmt::Call { .. } => {}
             },
             Node::If {
@@ -5950,6 +6075,10 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
                 out,
                 "{indent}{var} = ({var} & 0xffffffffffffff00ULL) | (uint64_t)(({cond}) ? 1 : 0);"
             );
+        }
+        Stmt::FlagSnapshot { var, kind, flags } => {
+            let cond: String = cond_expr(*kind, flags);
+            let _ = writeln!(out, "{indent}{} = ({cond});", sel_var(*var));
         }
         Stmt::Store { addr, src } => {
             let target: String = deref_expr(addr);
@@ -6460,6 +6589,7 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
             };
             format!("({a}) {op} ({b})")
         }
+        Flags::Snapshot { var } => format!("{} != 0", sel_var(*var)),
     }
 }
 
@@ -6555,6 +6685,11 @@ fn emit_rust(
     collect_snapshot_vars(body, &mut snapshot_vars);
     for var in &snapshot_vars {
         let _ = writeln!(out, "    let mut {}: u64 = 0;", loop_cond_var(*var));
+    }
+    let mut sel_vars: Vec<u32> = Vec::new();
+    collect_sel_vars(body, &mut sel_vars);
+    for var in &sel_vars {
+        let _ = writeln!(out, "    let mut {}: u64 = 0;", sel_var(*var));
     }
 
     rs_emit_block(&mut out, body, 1)?;
@@ -6694,6 +6829,10 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
                 out,
                 "{indent}{var} = ({var} & 0xffffffffffffff00u64) | (({cond}) as u64);"
             );
+        }
+        Stmt::FlagSnapshot { var, kind, flags } => {
+            let cond: String = rs_cond_expr(*kind, flags)?;
+            let _ = writeln!(out, "{indent}{} = ({cond}) as u64;", sel_var(*var));
         }
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
@@ -7003,6 +7142,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
             }
         }
         Flags::FpCmp { .. } => None,
+        Flags::Snapshot { var } => Some(format!("{} != 0", sel_var(*var))),
     }
 }
 

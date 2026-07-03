@@ -5,11 +5,63 @@ use disrobe_nir::{
     basic_blocks, def_use,
 };
 
-use crate::config::TaintConfig;
+use crate::callgraph::scc_bottom_up;
+use crate::config::{ResolvedSinkPolicy, TaintConfig};
 use crate::report::{TaintFinding, TaintReport, TaintStep};
+use crate::summary::{
+    Arena, FeatureSet, FunctionSummary, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
+};
 
-type OriginMap = BTreeMap<u64, LiveTaint>;
-type ValueMap = BTreeMap<ValueId, OriginMap>;
+const ARG_REGISTERS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+const RETURN_REGISTER: &str = "rax";
+const MAX_PATH_STEPS: usize = 128;
+
+type Summaries = BTreeMap<u64, FunctionSummary>;
+type FactMap = BTreeMap<FactKey, Fact>;
+type FactSig = Vec<(FactKey, u64, u64)>;
+type ValueSig = Vec<(PathId, FactSig)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum FactKey {
+    Formal(u16),
+    Source(u64),
+}
+
+#[derive(Debug, Clone)]
+struct Fact {
+    key: FactKey,
+    kinds: KindSet,
+    features: FeatureSet,
+    origin_symbol: String,
+    origin_site: u64,
+    path: Vec<TaintStep>,
+}
+
+impl Fact {
+    const fn is_concrete(&self) -> bool {
+        matches!(self.key, FactKey::Source(_))
+    }
+
+    const fn formal_index(&self) -> Option<u16> {
+        match self.key {
+            FactKey::Formal(index) => Some(index),
+            FactKey::Source(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalkMode {
+    Summarize,
+    Collect,
+}
+
+#[derive(Debug, Default)]
+struct Outputs {
+    summary: FunctionSummary,
+    findings: Vec<TaintFinding>,
+    truncated: bool,
+}
 
 struct ResolvedModule<'a> {
     module: &'a NirModule,
@@ -57,22 +109,26 @@ impl<'a> ResolvedModule<'a> {
         }
     }
 
-    fn external_callee(&self, instr: &NirInstr) -> Option<String> {
-        match &instr.op {
-            NirOp::ExternCall { .. } | NirOp::Call { target: Some(_) }
-                if self.callee_internal(instr).is_none() =>
-            {
-                self.callee_symbol(instr)
-            }
-            _ => None,
+    fn external_symbol(&self, instr: &NirInstr) -> Option<String> {
+        if self.callee_internal(instr).is_some() {
+            return None;
         }
+        self.callee_symbol(instr)
+    }
+
+    fn function_name(&self, addr: u64) -> Option<&str> {
+        self.function_at
+            .get(&addr)
+            .and_then(|idx: &usize| self.module.functions.get(*idx))
+            .map(|f: &NirFunction| f.name.as_str())
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct Interproc {
-    source_returning: BTreeSet<u64>,
-    sink_reaching: BTreeSet<u64>,
+struct Ctx<'a> {
+    resolved: &'a ResolvedModule<'a>,
+    config: &'a TaintConfig,
+    summaries: &'a Summaries,
+    function: &'a NirFunction,
 }
 
 #[must_use]
@@ -81,102 +137,170 @@ pub fn analyze(module: &NirModule, config: &TaintConfig) -> TaintReport {
         return TaintReport::empty();
     }
     let resolved: ResolvedModule<'_> = ResolvedModule::new(module);
-    let mut interproc: Interproc = Interproc::default();
-    for _iteration in 0..interproc_iteration_cap(resolved.module.functions.len()) {
-        let next: Interproc = propagate_interproc(&resolved, config, &interproc);
-        if next.source_returning == interproc.source_returning
-            && next.sink_reaching == interproc.sink_reaching
-        {
-            return collect_findings(&resolved, config, &interproc);
-        }
-        interproc = next;
+    let mut arena: Arena = Arena::default();
+    let mut summaries: Summaries = Summaries::new();
+
+    let order: Vec<Vec<usize>> = scc_bottom_up(&call_adjacency(&resolved));
+    for component in &order {
+        solve_component(&resolved, config, &mut arena, &mut summaries, component);
     }
-    collect_findings(&resolved, config, &interproc)
-}
 
-const fn interproc_iteration_cap(functions: usize) -> usize {
-    functions.saturating_mul(2).saturating_add(1)
-}
-
-fn propagate_interproc(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    current: &Interproc,
-) -> Interproc {
-    let mut next: Interproc = current.clone();
-    for function in &resolved.module.functions {
-        let intrinsic: FunctionTaint =
-            analyze_function(resolved, config, current, function, false, false);
-        if intrinsic.taint_returns {
-            next.source_returning.insert(function.address);
-        }
-        if intrinsic.reaches_sink {
-            next.sink_reaching.insert(function.address);
-        }
-        let forwarded: FunctionTaint =
-            analyze_function(resolved, config, current, function, true, false);
-        if forwarded.reaches_sink {
-            next.sink_reaching.insert(function.address);
-        }
-    }
-    next
-}
-
-fn collect_findings(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    interproc: &Interproc,
-) -> TaintReport {
     let mut findings: Vec<TaintFinding> = Vec::new();
     let mut truncated: bool = false;
     for function in &resolved.module.functions {
-        let summary: FunctionTaint =
-            analyze_function(resolved, config, interproc, function, false, true);
-        findings.extend(summary.findings);
-        truncated = truncated || summary.truncated;
+        let ctx: Ctx<'_> = Ctx {
+            resolved: &resolved,
+            config,
+            summaries: &summaries,
+            function,
+        };
+        let out: Outputs = walk_function(&ctx, &mut arena, WalkMode::Collect);
+        findings.extend(out.findings);
+        truncated = truncated || out.truncated;
     }
+
     findings.sort_by(|a: &TaintFinding, b: &TaintFinding| {
         a.function
             .cmp(&b.function)
+            .then(a.source_symbol.cmp(&b.source_symbol))
             .then(a.source_site.cmp(&b.source_site))
+            .then(a.sink_symbol.cmp(&b.sink_symbol))
             .then(a.sink_site.cmp(&b.sink_site))
     });
-    findings.dedup();
+    findings.dedup_by(|a: &mut TaintFinding, b: &mut TaintFinding| {
+        a.function == b.function
+            && a.source_symbol == b.source_symbol
+            && a.source_site == b.source_site
+            && a.sink_symbol == b.sink_symbol
+            && a.sink_site == b.sink_site
+    });
     TaintReport::new_with_truncated(findings, truncated)
 }
 
-#[derive(Debug, Default)]
-struct FunctionTaint {
-    taint_returns: bool,
-    reaches_sink: bool,
-    truncated: bool,
-    findings: Vec<TaintFinding>,
+fn call_adjacency(resolved: &ResolvedModule<'_>) -> Vec<Vec<usize>> {
+    resolved
+        .module
+        .functions
+        .iter()
+        .map(|function: &NirFunction| {
+            let mut callees: BTreeSet<usize> = BTreeSet::new();
+            for instr in &function.instructions {
+                if let Some(addr) = resolved.callee_internal(instr)
+                    && let Some(idx) = resolved.function_at.get(&addr)
+                {
+                    callees.insert(*idx);
+                }
+            }
+            callees.into_iter().collect()
+        })
+        .collect()
 }
 
-#[derive(Debug, Clone)]
-struct LiveTaint {
-    origin_site: u64,
-    origin_symbol: String,
-    path: Vec<TaintStep>,
+fn solve_component(
+    resolved: &ResolvedModule<'_>,
+    config: &TaintConfig,
+    arena: &mut Arena,
+    summaries: &mut Summaries,
+    component: &[usize],
+) {
+    let mut members: Vec<usize> = component.to_vec();
+    members.sort_by_key(|idx: &usize| {
+        resolved
+            .module
+            .functions
+            .get(*idx)
+            .map_or(u64::MAX, |f: &NirFunction| f.address)
+    });
+    loop {
+        let mut changed: bool = false;
+        for idx in &members {
+            let Some(function): Option<&NirFunction> = resolved.module.functions.get(*idx) else {
+                continue;
+            };
+            let ctx: Ctx<'_> = Ctx {
+                resolved,
+                config,
+                summaries,
+                function,
+            };
+            let out: Outputs = walk_function(&ctx, arena, WalkMode::Summarize);
+            let key: SummaryKey = out.summary.semantic_key();
+            let differs: bool = summaries
+                .get(&function.address)
+                .is_none_or(|existing: &FunctionSummary| existing.semantic_key() != key);
+            if differs {
+                summaries.insert(function.address, out.summary);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct BlockState {
+    values: BTreeMap<PathId, FactMap>,
+    flag: FactMap,
+}
+
+impl BlockState {
+    fn visit_key(&self) -> StateKey {
+        let values: ValueSig = self
+            .values
+            .iter()
+            .map(|(loc, facts): (&PathId, &FactMap)| (*loc, fact_signature(facts)))
+            .collect();
+        StateKey {
+            values,
+            flag: fact_signature(&self.flag),
+        }
+    }
+
+    fn merge(&mut self, incoming: &Self) {
+        for (loc, facts) in &incoming.values {
+            let target: &mut FactMap = self.values.entry(*loc).or_default();
+            for fact in facts.values() {
+                merge_fact(target, fact.clone());
+            }
+        }
+        for fact in incoming.flag.values() {
+            merge_fact(&mut self.flag, fact.clone());
+        }
+    }
+}
+
+fn fact_signature(facts: &FactMap) -> FactSig {
+    facts
+        .values()
+        .map(|fact: &Fact| (fact.key, fact.kinds.bits(), fact.features.bits()))
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct StateKey {
-    flag: Vec<u64>,
-    values: Vec<(ValueId, Vec<u64>)>,
+    values: ValueSig,
+    flag: FactSig,
 }
 
-fn analyze_function(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    interproc: &Interproc,
-    function: &NirFunction,
-    entry_tainted: bool,
-    record: bool,
-) -> FunctionTaint {
-    let blocks: Vec<NirBlock> = basic_blocks(function);
+fn merge_fact(map: &mut FactMap, fact: Fact) {
+    match map.get_mut(&fact.key) {
+        Some(existing) => {
+            existing.kinds.insert(fact.kinds);
+            existing.features = existing.features.intersect(fact.features);
+        }
+        None => {
+            map.insert(fact.key, fact);
+        }
+    }
+}
+
+fn walk_function(ctx: &Ctx<'_>, arena: &mut Arena, mode: WalkMode) -> Outputs {
+    let mut out: Outputs = Outputs::default();
+    let blocks: Vec<NirBlock> = basic_blocks(ctx.function);
     if blocks.is_empty() {
-        return FunctionTaint::default();
+        return out;
     }
     let index_of: BTreeMap<u64, usize> = blocks
         .iter()
@@ -185,263 +309,488 @@ fn analyze_function(
         .collect();
 
     let mut entry_state: Vec<BlockState> = vec![BlockState::default(); blocks.len()];
-    if entry_tainted {
-        let seed: LiveTaint = LiveTaint {
-            origin_site: function.address,
-            origin_symbol: function.name.clone(),
-            path: vec![TaintStep {
-                address: function.address,
-                symbol: function.name.clone(),
-                kind: "parameter".to_owned(),
-            }],
-        };
-        entry_state[0].insert_flag(seed.clone());
-        entry_state[0].insert_value(ValueId::register(PARAMETER_REGISTER), seed);
-    }
-    let mut summary: FunctionTaint = FunctionTaint::default();
-    let mut worklist: VecDeque<usize> = VecDeque::new();
-    worklist.push_back(0);
-    let mut visited_with: BTreeSet<(usize, StateKey)> = BTreeSet::new();
-    let max_states: usize = config.max_states_per_function();
+    seed_formals(ctx, arena, &mut entry_state[0]);
+
+    let mut worklist: VecDeque<usize> = VecDeque::from([0usize]);
+    let mut visited: BTreeSet<(usize, StateKey)> = BTreeSet::new();
+    let max_states: usize = ctx.config.max_states_per_function();
 
     while let Some(block_idx) = worklist.pop_front() {
-        let block: &NirBlock = &blocks[block_idx];
-        let incoming: BlockState = entry_state[block_idx].clone();
-        if visited_with.len() >= max_states {
-            summary.truncated = true;
+        if visited.len() >= max_states {
+            out.truncated = true;
             break;
         }
-        if !visited_with.insert(incoming.visit_key(block_idx)) {
+        let incoming: BlockState = entry_state[block_idx].clone();
+        if !visited.insert((block_idx, incoming.visit_key())) {
             continue;
         }
-        let outcome: BlockOutcome = walk_block(
-            resolved,
-            config,
-            interproc,
-            function,
-            block,
-            incoming,
-            record,
-            &mut summary,
-        );
-        if outcome.taint_returns {
-            summary.taint_returns = true;
-        }
-        let exit: BlockState = outcome.exit;
-        for succ in &block.successors {
+        let exit: BlockState = walk_block(ctx, arena, mode, &blocks[block_idx], incoming, &mut out);
+        for succ in &blocks[block_idx].successors {
             let Some(succ_idx): Option<&usize> = index_of.get(succ) else {
-                summary.truncated = true;
+                out.truncated = true;
                 continue;
             };
-            let before: StateKey = entry_state[*succ_idx].key();
+            let before: StateKey = entry_state[*succ_idx].visit_key();
             entry_state[*succ_idx].merge(&exit);
-            let after: StateKey = entry_state[*succ_idx].key();
-            let unseen: bool = !visited_with.contains(&(*succ_idx, after.clone()));
-            if after != before || unseen {
+            let after: StateKey = entry_state[*succ_idx].visit_key();
+            if after != before || !visited.contains(&(*succ_idx, after)) {
                 worklist.push_back(*succ_idx);
             }
         }
     }
-    summary
+    out
 }
 
-const PARAMETER_REGISTER: &str = "rdi";
-const RETURN_REGISTER: &str = "rax";
-
-#[derive(Debug, Clone, Default)]
-struct BlockState {
-    flag: OriginMap,
-    values: ValueMap,
+fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
+    for (index, register) in ARG_REGISTERS.iter().enumerate() {
+        let arg: u16 = index as u16;
+        let fact: Fact = formal_fact(ctx.function, arg);
+        let loc: PathId = reg_loc(arena, register);
+        state.values.entry(loc).or_default().insert(fact.key, fact);
+    }
+    let flag_fact: Fact = formal_fact(ctx.function, 0);
+    state.flag.insert(flag_fact.key, flag_fact);
 }
 
-impl BlockState {
-    fn key(&self) -> StateKey {
-        StateKey {
-            flag: self.flag.keys().copied().collect(),
-            values: self
-                .values
-                .iter()
-                .map(|(value, taints): (&ValueId, &OriginMap)| {
-                    (value.clone(), taints.keys().copied().collect())
-                })
-                .collect(),
-        }
-    }
-
-    fn visit_key(&self, block_idx: usize) -> (usize, StateKey) {
-        (block_idx, self.key())
-    }
-
-    fn merge(&mut self, incoming: &Self) {
-        for (origin_site, taint) in &incoming.flag {
-            self.flag
-                .entry(*origin_site)
-                .or_insert_with(|| taint.clone());
-        }
-        for (value, taints) in &incoming.values {
-            let merged: &mut OriginMap = self.values.entry(value.clone()).or_default();
-            for (origin_site, taint) in taints {
-                merged.entry(*origin_site).or_insert_with(|| taint.clone());
-            }
-        }
-    }
-
-    fn insert_flag(&mut self, taint: LiveTaint) {
-        self.flag.insert(taint.origin_site, taint);
-    }
-
-    fn insert_value(&mut self, value: ValueId, taint: LiveTaint) {
-        self.values
-            .entry(value)
-            .or_default()
-            .insert(taint.origin_site, taint);
+fn formal_fact(function: &NirFunction, arg: u16) -> Fact {
+    Fact {
+        key: FactKey::Formal(arg),
+        kinds: KindSet::EMPTY,
+        features: FeatureSet::EMPTY,
+        origin_symbol: function.name.clone(),
+        origin_site: function.address,
+        path: vec![step(function.address, &function.name, "parameter")],
     }
 }
 
-struct BlockOutcome {
-    exit: BlockState,
-    taint_returns: bool,
-}
-
-#[allow(clippy::too_many_arguments)]
 fn walk_block(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    interproc: &Interproc,
-    function: &NirFunction,
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    mode: WalkMode,
     block: &NirBlock,
     incoming: BlockState,
-    record: bool,
-    summary: &mut FunctionTaint,
-) -> BlockOutcome {
+    out: &mut Outputs,
+) -> BlockState {
     let mut state: BlockState = incoming;
-    let mut taint_returns: bool = false;
     for instr in &block.instructions {
-        let is_source: bool = call_is_source(resolved, config, interproc, instr);
-        let is_sink: bool = call_is_sink(resolved, config, interproc, instr);
-        let symbol: Option<String> = resolved.callee_symbol(instr);
         let defuse: DefUse = def_use(instr);
-
-        if is_sink {
-            let mut reached: BTreeMap<u64, &LiveTaint> = BTreeMap::new();
-            for value in &defuse.uses {
-                if let Some(taints) = state.values.get(value) {
-                    for (origin_site, taint) in taints {
-                        reached.entry(*origin_site).or_insert(taint);
-                    }
-                }
-            }
-            if reached.is_empty() && defuse.uses.is_empty() {
-                for (origin_site, taint) in &state.flag {
-                    reached.entry(*origin_site).or_insert(taint);
-                }
-            }
-            if !reached.is_empty() {
-                summary.reaches_sink = true;
-                if record {
-                    let sink_symbol: String = symbol.clone().unwrap_or_else(|| "<sink>".to_owned());
-                    for current in reached.values() {
-                        let mut path: Vec<TaintStep> = current.path.clone();
-                        path.push(TaintStep {
-                            address: instr.address,
-                            symbol: sink_symbol.clone(),
-                            kind: "sink".to_owned(),
-                        });
-                        summary.findings.push(TaintFinding {
-                            function: function.name.clone(),
-                            function_address: function.address,
-                            source_site: current.origin_site,
-                            source_symbol: current.origin_symbol.clone(),
-                            sink_site: instr.address,
-                            sink_symbol: sink_symbol.clone(),
-                            path,
-                        });
-                    }
-                }
-            }
-        }
-
-        if is_source {
-            let origin_symbol: String = symbol.unwrap_or_else(|| "<source>".to_owned());
-            let origin: LiveTaint = LiveTaint {
-                origin_site: instr.address,
-                origin_symbol: origin_symbol.clone(),
-                path: vec![TaintStep {
-                    address: instr.address,
-                    symbol: origin_symbol,
-                    kind: "source".to_owned(),
-                }],
-            };
-            state.insert_flag(origin.clone());
-            for def in &defuse.defs {
-                state.insert_value(def.clone(), origin.clone());
-            }
+        if let Some(callee) = ctx.resolved.callee_internal(instr) {
+            instantiate_callee(ctx, arena, mode, instr, callee, &mut state, out);
+        } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
+            dispatch_external(ctx, arena, mode, instr, &symbol, &defuse, &mut state, out);
         } else {
-            propagate_values(&mut state, instr, &defuse, record);
-            if propagates(instr) && record {
-                for current in state.flag.values_mut() {
-                    current.path.push(TaintStep {
-                        address: instr.address,
-                        symbol: instr.mnemonic.clone(),
-                        kind: "propagate".to_owned(),
-                    });
-                }
-            }
+            propagate(arena, instr, &defuse, &mut state);
         }
-
-        if matches!(instr.op, NirOp::Return)
-            && (!state.flag.is_empty()
-                || defuse.uses.iter().any(|value: &ValueId| {
-                    state
-                        .values
-                        .get(value)
-                        .is_some_and(|taints: &OriginMap| !taints.is_empty())
-                }))
-        {
-            taint_returns = true;
+        if mode == WalkMode::Summarize && matches!(instr.op, NirOp::Return) {
+            extract_outputs(arena, instr, &state, &mut out.summary);
         }
         if severs_wasm_stack_value(instr) {
             state.flag.clear();
-            state.values.remove(&ValueId::register(RETURN_REGISTER));
+            let rax: PathId = reg_loc(arena, RETURN_REGISTER);
+            state.values.remove(&rax);
         }
     }
-    BlockOutcome {
-        exit: state,
-        taint_returns,
+    state
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_external(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    mode: WalkMode,
+    instr: &NirInstr,
+    symbol: &str,
+    defuse: &DefUse,
+    state: &mut BlockState,
+    out: &mut Outputs,
+) {
+    if let Some(kind) = ctx.config.source_kind(symbol) {
+        apply_source(arena, instr, symbol, kind, defuse, state);
+    } else if let Some(policy) = ctx.config.sink_policy(symbol) {
+        apply_sink(ctx, arena, mode, instr, symbol, &policy, defuse, state, out);
+    } else if let Some(feature) = ctx.config.sanitizer_feature(symbol) {
+        apply_sanitizer(arena, instr, symbol, feature, defuse, state);
+    } else {
+        propagate(arena, instr, defuse, state);
     }
 }
 
-fn propagate_values(state: &mut BlockState, instr: &NirInstr, defuse: &DefUse, record: bool) {
-    if defuse.defs.is_empty() {
-        return;
+fn apply_source(
+    arena: &mut Arena,
+    instr: &NirInstr,
+    symbol: &str,
+    kind: KindSet,
+    defuse: &DefUse,
+    state: &mut BlockState,
+) {
+    let fact: Fact = Fact {
+        key: FactKey::Source(instr.address),
+        kinds: kind,
+        features: FeatureSet::EMPTY,
+        origin_symbol: symbol.to_owned(),
+        origin_site: instr.address,
+        path: vec![step(instr.address, symbol, "source")],
+    };
+    for def in &defuse.defs {
+        let loc: PathId = arena.location(def);
+        let mut map: FactMap = FactMap::new();
+        map.insert(fact.key, fact.clone());
+        state.values.insert(loc, map);
     }
-    let mut tainting_uses: OriginMap = OriginMap::new();
-    for value in &defuse.uses {
-        if let Some(taints) = state.values.get(value) {
-            for (origin_site, taint) in taints {
-                tainting_uses
-                    .entry(*origin_site)
-                    .or_insert_with(|| taint.clone());
+    state.flag.insert(fact.key, fact);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_sink(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    mode: WalkMode,
+    instr: &NirInstr,
+    symbol: &str,
+    policy: &ResolvedSinkPolicy,
+    defuse: &DefUse,
+    state: &mut BlockState,
+    out: &mut Outputs,
+) {
+    for (fact, via_flag) in gather_reaching(arena, defuse, state) {
+        if fact.is_concrete() {
+            if mode == WalkMode::Collect
+                && fact.kinds.intersects(policy.sensitive)
+                && !fact.features.intersects(policy.suppress)
+            {
+                let mut path: Vec<TaintStep> = fact.path.clone();
+                append_step(&mut path, step(instr.address, symbol, "sink"));
+                push_finding(out, ctx.function, &fact, symbol, instr.address, path);
             }
-        }
-    }
-    if tainting_uses.is_empty() {
-        for def in &defuse.defs {
-            state.values.remove(def);
-        }
-        return;
-    }
-    if record {
-        for taint in tainting_uses.values_mut() {
-            taint.path.push(TaintStep {
-                address: instr.address,
-                symbol: instr.mnemonic.clone(),
-                kind: "propagate".to_owned(),
+        } else if let (WalkMode::Summarize, Some(arg)) = (mode, fact.formal_index()) {
+            let mut path: Vec<TaintStep> = fact.path.clone();
+            append_step(&mut path, step(instr.address, symbol, "sink"));
+            out.summary.add_frame(SinkFrame {
+                in_arg: arg,
+                via_flag,
+                sink_symbol: symbol.to_owned(),
+                sink_site: instr.address,
+                sink_kinds: policy.sensitive,
+                suppress: policy.suppress,
+                accumulated: fact.features,
+                path,
             });
         }
     }
     for def in &defuse.defs {
-        state.values.insert(def.clone(), tainting_uses.clone());
+        let loc: PathId = arena.location(def);
+        state.values.remove(&loc);
+    }
+}
+
+fn apply_sanitizer(
+    arena: &mut Arena,
+    instr: &NirInstr,
+    symbol: &str,
+    feature: FeatureSet,
+    defuse: &DefUse,
+    state: &mut BlockState,
+) {
+    let incoming: Vec<(Fact, bool)> = gather_reaching(arena, defuse, state);
+    let mut produced: FactMap = FactMap::new();
+    for (mut fact, _via_flag) in incoming {
+        fact.features.insert(feature);
+        append_step(&mut fact.path, step(instr.address, symbol, "sanitize"));
+        produced.insert(fact.key, fact);
+    }
+    for def in &defuse.defs {
+        let loc: PathId = arena.location(def);
+        if produced.is_empty() {
+            state.values.remove(&loc);
+        } else {
+            state.values.insert(loc, produced.clone());
+        }
+    }
+    for fact in produced.into_values() {
+        state.flag.insert(fact.key, fact);
+    }
+}
+
+fn gather_reaching(arena: &mut Arena, defuse: &DefUse, state: &BlockState) -> Vec<(Fact, bool)> {
+    let mut reached: Vec<(Fact, bool)> = Vec::new();
+    for value in &defuse.uses {
+        let loc: PathId = arena.location(value);
+        if let Some(map) = state.values.get(&loc) {
+            for fact in map.values() {
+                reached.push((fact.clone(), false));
+            }
+        }
+    }
+    if reached.is_empty() && defuse.uses.is_empty() {
+        for fact in state.flag.values() {
+            reached.push((fact.clone(), true));
+        }
+    }
+    reached
+}
+
+fn instantiate_callee(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    mode: WalkMode,
+    instr: &NirInstr,
+    callee: u64,
+    state: &mut BlockState,
+    out: &mut Outputs,
+) {
+    let callee_name: String = ctx
+        .resolved
+        .function_name(callee)
+        .unwrap_or("<callee>")
+        .to_owned();
+    let arg_locs: Vec<PathId> = ARG_REGISTERS
+        .iter()
+        .map(|register: &&str| reg_loc(arena, register))
+        .collect();
+    let arg_facts: Vec<FactMap> = arg_locs
+        .iter()
+        .map(|loc: &PathId| state.values.get(loc).cloned().unwrap_or_default())
+        .collect();
+    let flag_facts: FactMap = state.flag.clone();
+    let rax: PathId = reg_loc(arena, RETURN_REGISTER);
+    state.values.remove(&rax);
+
+    let Some(summary): Option<&FunctionSummary> = ctx.summaries.get(&callee) else {
+        return;
+    };
+    let summary: FunctionSummary = summary.clone();
+
+    for (port, generation) in &summary.generations {
+        let Some(loc): Option<PathId> = out_port_location(&arg_locs, rax, *port) else {
+            continue;
+        };
+        let fact: Fact = Fact {
+            key: FactKey::Source(instr.address),
+            kinds: generation.kinds,
+            features: generation.features,
+            origin_symbol: callee_name.clone(),
+            origin_site: instr.address,
+            path: vec![step(instr.address, &callee_name, "source")],
+        };
+        let mut map: FactMap = FactMap::new();
+        map.insert(fact.key, fact.clone());
+        state.values.insert(loc, map);
+        if matches!(port, OutPort::Return) {
+            state.flag.insert(fact.key, fact);
+        }
+    }
+
+    for (in_arg, outs) in &summary.propagations {
+        let Some(sources): Option<&FactMap> = arg_facts.get(*in_arg as usize) else {
+            continue;
+        };
+        for (port, propagation) in outs {
+            let Some(loc): Option<PathId> = out_port_location(&arg_locs, rax, *port) else {
+                continue;
+            };
+            for source_fact in sources.values() {
+                let mut fact: Fact = source_fact.clone();
+                fact.kinds.insert(propagation.kinds);
+                fact.features.insert(propagation.features);
+                append_step(
+                    &mut fact.path,
+                    step(instr.address, &callee_name, "propagate"),
+                );
+                let carrier: Fact = fact.clone();
+                merge_fact(state.values.entry(loc).or_default(), fact);
+                if matches!(port, OutPort::Return) {
+                    merge_fact(&mut state.flag, carrier);
+                }
+            }
+        }
+    }
+
+    for frame in &summary.frames {
+        instantiate_frame(
+            ctx,
+            mode,
+            instr,
+            &callee_name,
+            frame,
+            &arg_facts,
+            &flag_facts,
+            out,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn instantiate_frame(
+    ctx: &Ctx<'_>,
+    mode: WalkMode,
+    instr: &NirInstr,
+    callee_name: &str,
+    frame: &SinkFrame,
+    arg_facts: &[FactMap],
+    flag_facts: &FactMap,
+    out: &mut Outputs,
+) {
+    let empty: FactMap = FactMap::new();
+    let candidates: &FactMap = if frame.via_flag {
+        flag_facts
+    } else {
+        arg_facts.get(frame.in_arg as usize).unwrap_or(&empty)
+    };
+    for cf in candidates.values() {
+        let effective: FeatureSet = cf.features.union(frame.accumulated);
+        if cf.is_concrete() {
+            if mode == WalkMode::Collect
+                && cf.kinds.intersects(frame.sink_kinds)
+                && !effective.intersects(frame.suppress)
+            {
+                let mut path: Vec<TaintStep> = cf.path.clone();
+                append_step(&mut path, step(instr.address, callee_name, "sink"));
+                for hop in &frame.path {
+                    append_step(&mut path, hop.clone());
+                }
+                push_finding(out, ctx.function, cf, callee_name, instr.address, path);
+            }
+        } else if let (WalkMode::Summarize, Some(arg)) = (mode, cf.formal_index()) {
+            let mut path: Vec<TaintStep> = cf.path.clone();
+            append_step(&mut path, step(instr.address, callee_name, "sink"));
+            for hop in &frame.path {
+                append_step(&mut path, hop.clone());
+            }
+            out.summary.add_frame(SinkFrame {
+                in_arg: arg,
+                via_flag: frame.via_flag,
+                sink_symbol: callee_name.to_owned(),
+                sink_site: instr.address,
+                sink_kinds: frame.sink_kinds,
+                suppress: frame.suppress,
+                accumulated: effective,
+                path,
+            });
+        }
+    }
+}
+
+fn out_port_location(arg_locs: &[PathId], rax: PathId, port: OutPort) -> Option<PathId> {
+    match port {
+        OutPort::Return => Some(rax),
+        OutPort::Argument(index) => arg_locs.get(index as usize).copied(),
+    }
+}
+
+fn extract_outputs(
+    arena: &mut Arena,
+    instr: &NirInstr,
+    state: &BlockState,
+    summary: &mut FunctionSummary,
+) {
+    let rax: PathId = reg_loc(arena, RETURN_REGISTER);
+    if let Some(map) = state.values.get(&rax) {
+        for fact in map.values() {
+            record_output(summary, OutPort::Return, fact, instr);
+        }
+    }
+    for fact in state.flag.values() {
+        if fact.is_concrete() {
+            record_output(summary, OutPort::Return, fact, instr);
+        }
+    }
+    for (index, register) in ARG_REGISTERS.iter().enumerate() {
+        let loc: PathId = reg_loc(arena, register);
+        let Some(map): Option<&FactMap> = state.values.get(&loc) else {
+            continue;
+        };
+        for fact in map.values() {
+            if fact.formal_index() == Some(index as u16) {
+                continue;
+            }
+            record_output(summary, OutPort::Argument(index as u16), fact, instr);
+        }
+    }
+}
+
+fn record_output(summary: &mut FunctionSummary, port: OutPort, fact: &Fact, instr: &NirInstr) {
+    let mut path: Vec<TaintStep> = fact.path.clone();
+    append_step(&mut path, step(instr.address, &instr.mnemonic, "return"));
+    if fact.is_concrete() {
+        summary.add_generation(port, fact.kinds, fact.features, &path);
+    } else if let Some(arg) = fact.formal_index() {
+        summary.add_propagation(arg, port, fact.kinds, fact.features, &path);
+    }
+}
+
+fn propagate(arena: &mut Arena, instr: &NirInstr, defuse: &DefUse, state: &mut BlockState) {
+    if !defuse.defs.is_empty() {
+        let mut tainting: FactMap = FactMap::new();
+        for value in &defuse.uses {
+            let loc: PathId = arena.location(value);
+            if let Some(map) = state.values.get(&loc) {
+                for fact in map.values() {
+                    merge_fact(&mut tainting, fact.clone());
+                }
+            }
+        }
+        if tainting.is_empty() {
+            for def in &defuse.defs {
+                let loc: PathId = arena.location(def);
+                state.values.remove(&loc);
+            }
+        } else {
+            for fact in tainting.values_mut() {
+                append_step(
+                    &mut fact.path,
+                    step(instr.address, &instr.mnemonic, "propagate"),
+                );
+            }
+            for def in &defuse.defs {
+                let loc: PathId = arena.location(def);
+                state.values.insert(loc, tainting.clone());
+            }
+        }
+    }
+    if propagates(instr) {
+        for fact in state.flag.values_mut() {
+            append_step(
+                &mut fact.path,
+                step(instr.address, &instr.mnemonic, "propagate"),
+            );
+        }
+    }
+}
+
+fn push_finding(
+    out: &mut Outputs,
+    function: &NirFunction,
+    source: &Fact,
+    sink_symbol: &str,
+    sink_site: u64,
+    path: Vec<TaintStep>,
+) {
+    out.findings.push(TaintFinding {
+        function: function.name.clone(),
+        function_address: function.address,
+        source_site: source.origin_site,
+        source_symbol: source.origin_symbol.clone(),
+        sink_site,
+        sink_symbol: sink_symbol.to_owned(),
+        path,
+    });
+}
+
+fn reg_loc(arena: &mut Arena, register: &str) -> PathId {
+    arena.location(&ValueId::register(register))
+}
+
+fn step(address: u64, symbol: &str, kind: &str) -> TaintStep {
+    TaintStep {
+        address,
+        symbol: symbol.to_owned(),
+        kind: kind.to_owned(),
+    }
+}
+
+fn append_step(path: &mut Vec<TaintStep>, entry: TaintStep) {
+    if path.len() < MAX_PATH_STEPS {
+        path.push(entry);
     }
 }
 
@@ -453,69 +802,9 @@ fn severs_wasm_stack_value(instr: &NirInstr) -> bool {
         )
 }
 
-fn call_is_source(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    interproc: &Interproc,
-    instr: &NirInstr,
-) -> bool {
-    if let Some(symbol) = resolved.external_callee(instr)
-        && config.is_source(&symbol)
-    {
-        return true;
-    }
-    resolved
-        .callee_internal(instr)
-        .is_some_and(|addr: u64| interproc.source_returning.contains(&addr))
-}
-
-fn call_is_sink(
-    resolved: &ResolvedModule<'_>,
-    config: &TaintConfig,
-    interproc: &Interproc,
-    instr: &NirInstr,
-) -> bool {
-    if let Some(symbol) = resolved.external_callee(instr)
-        && config.is_sink(&symbol)
-    {
-        return true;
-    }
-    resolved
-        .callee_internal(instr)
-        .is_some_and(|addr: u64| interproc.sink_reaching.contains(&addr))
-}
-
 const fn propagates(instr: &NirInstr) -> bool {
     matches!(
         instr.op,
         NirOp::BinOp { .. } | NirOp::Load | NirOp::Store | NirOp::Phi
     )
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    fn taint(origin_site: u64) -> LiveTaint {
-        LiveTaint {
-            origin_site,
-            origin_symbol: format!("source_{origin_site}"),
-            path: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn state_key_preserves_distinct_origin_sets() {
-        let mut left: BlockState = BlockState::default();
-        left.insert_value(ValueId::register("a"), taint(1));
-        left.insert_value(ValueId::register("b"), taint(2));
-
-        let mut right: BlockState = BlockState::default();
-        right.insert_value(ValueId::register("a"), taint(3));
-        right.insert_value(ValueId::register("b"), taint(0));
-
-        assert_ne!(left.key(), right.key());
-        assert_ne!(left.visit_key(4), right.visit_key(4));
-    }
 }
