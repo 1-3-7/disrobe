@@ -30,6 +30,7 @@ const MAX_CANDIDATES: usize = 64;
 const PER_CANDIDATE_STEP_CAP: u64 = 200_000;
 const MAX_BUFFERS_PER_CANDIDATE: usize = 24;
 const MIN_RECOVERED_LEN: usize = 4;
+const MIN_WIDE_CHARS: usize = 4;
 const MAX_DECODE_SPAN: u64 = 64 * 1024;
 const MAX_HARVEST_PER_RUN: usize = 512;
 const MAX_STRING_LEN: usize = 4096;
@@ -284,9 +285,22 @@ fn seed_arguments(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct Harvest {
+    start: u64,
+    span: u64,
+    value: String,
+}
+
 fn harvest_write_log(log: &[(u64, u8)]) -> Vec<(u64, String)> {
+    let ascii: Vec<Harvest> = harvest_ascii(log);
+    let wide: Vec<Harvest> = harvest_utf16(log);
+    merge_harvests(ascii, wide)
+}
+
+fn harvest_ascii(log: &[(u64, u8)]) -> Vec<Harvest> {
     let mut shadow: BTreeMap<u64, u8> = BTreeMap::new();
-    let mut out: Vec<(u64, String)> = Vec::new();
+    let mut out: Vec<Harvest> = Vec::new();
     for &(addr, value) in log {
         if out.len() >= MAX_HARVEST_PER_RUN {
             return out;
@@ -303,7 +317,7 @@ fn harvest_write_log(log: &[(u64, u8)]) -> Vec<(u64, String)> {
     out
 }
 
-fn seal_run(shadow: &mut BTreeMap<u64, u8>, addr: u64, out: &mut Vec<(u64, String)>) {
+fn seal_run(shadow: &mut BTreeMap<u64, u8>, addr: u64, out: &mut Vec<Harvest>) {
     let mut start: u64 = addr;
     while let Some(&b) = shadow.get(&start.wrapping_sub(1)) {
         if !is_printable_ascii(b) {
@@ -330,7 +344,7 @@ fn seal_run(shadow: &mut BTreeMap<u64, u8>, addr: u64, out: &mut Vec<(u64, Strin
     push_candidate(start, &bytes, out);
 }
 
-fn flush_shadow(shadow: &BTreeMap<u64, u8>, out: &mut Vec<(u64, String)>) {
+fn flush_shadow(shadow: &BTreeMap<u64, u8>, out: &mut Vec<Harvest>) {
     let mut cur: Option<(u64, u64, Vec<u8>)> = None;
     for (&addr, &value) in shadow {
         let printable: bool = is_printable_ascii(value);
@@ -354,7 +368,7 @@ fn flush_shadow(shadow: &BTreeMap<u64, u8>, out: &mut Vec<(u64, String)>) {
     }
 }
 
-fn push_candidate(start: u64, bytes: &[u8], out: &mut Vec<(u64, String)>) {
+fn push_candidate(start: u64, bytes: &[u8], out: &mut Vec<Harvest>) {
     if out.len() >= MAX_HARVEST_PER_RUN
         || bytes.len() < MIN_RECOVERED_LEN
         || bytes.len() > MAX_STRING_LEN
@@ -363,8 +377,174 @@ fn push_candidate(start: u64, bytes: &[u8], out: &mut Vec<(u64, String)>) {
         return;
     }
     if let Ok(s) = std::str::from_utf8(bytes) {
-        out.push((start, s.to_owned()));
+        out.push(Harvest {
+            start,
+            span: bytes.len() as u64,
+            value: s.to_owned(),
+        });
     }
+}
+
+fn harvest_utf16(log: &[(u64, u8)]) -> Vec<Harvest> {
+    let mut shadow: BTreeMap<u64, u8> = BTreeMap::new();
+    let mut out: Vec<Harvest> = Vec::new();
+    for &(addr, value) in log {
+        if out.len() >= MAX_HARVEST_PER_RUN {
+            return out;
+        }
+        if let Some(&old) = shadow.get(&addr)
+            && old != value
+        {
+            seal_wide_run(&mut shadow, addr, &mut out);
+        }
+        shadow.insert(addr, value);
+    }
+    flush_wide(&shadow, &mut out);
+    out
+}
+
+fn wide_cell(shadow: &BTreeMap<u64, u8>, low: u64) -> bool {
+    shadow.get(&low).copied().is_some_and(is_printable_ascii)
+        && shadow.get(&low.wrapping_add(1)).copied() == Some(0)
+}
+
+fn wide_low_anchor(shadow: &BTreeMap<u64, u8>, addr: u64) -> Option<u64> {
+    if wide_cell(shadow, addr) {
+        return Some(addr);
+    }
+    let prev: u64 = addr.checked_sub(1)?;
+    wide_cell(shadow, prev).then_some(prev)
+}
+
+fn seal_wide_run(shadow: &mut BTreeMap<u64, u8>, addr: u64, out: &mut Vec<Harvest>) {
+    let Some(low): Option<u64> = wide_low_anchor(shadow, addr) else {
+        return;
+    };
+    let mut start: u64 = low;
+    while let Some(prev) = start.checked_sub(2) {
+        if wide_cell(shadow, prev) {
+            start = prev;
+        } else {
+            break;
+        }
+    }
+    let mut end: u64 = low;
+    while wide_cell(shadow, end) {
+        end = end.wrapping_add(2);
+    }
+    let mut chars: Vec<u8> = Vec::with_capacity(((end - start) / 2) as usize);
+    let mut cursor: u64 = start;
+    while cursor < end {
+        if let Some(&b) = shadow.get(&cursor) {
+            chars.push(b);
+        }
+        shadow.remove(&cursor);
+        shadow.remove(&cursor.wrapping_add(1));
+        cursor = cursor.wrapping_add(2);
+    }
+    push_wide_candidate(start, &chars, out);
+}
+
+fn flush_wide(shadow: &BTreeMap<u64, u8>, out: &mut Vec<Harvest>) {
+    for (base, bytes) in contiguous_segments(shadow) {
+        scan_wide_segment(base, &bytes, out);
+    }
+}
+
+fn contiguous_segments(shadow: &BTreeMap<u64, u8>) -> Vec<(u64, Vec<u8>)> {
+    let mut segs: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut cur: Option<(u64, u64, Vec<u8>)> = None;
+    for (&addr, &b) in shadow {
+        if let Some((_, next, bytes)) = cur.as_mut()
+            && *next == addr
+        {
+            bytes.push(b);
+            *next = addr.wrapping_add(1);
+            continue;
+        }
+        if let Some((start, _, bytes)) = cur.take() {
+            segs.push((start, bytes));
+        }
+        cur = Some((addr, addr.wrapping_add(1), vec![b]));
+    }
+    if let Some((start, _, bytes)) = cur.take() {
+        segs.push((start, bytes));
+    }
+    segs
+}
+
+fn scan_wide_segment(base: u64, region: &[u8], out: &mut Vec<Harvest>) {
+    let mut i: usize = 0;
+    while i + 1 < region.len() {
+        if out.len() >= MAX_HARVEST_PER_RUN {
+            return;
+        }
+        if is_printable_ascii(region[i]) && region[i + 1] == 0 {
+            let mut chars: Vec<u8> = Vec::new();
+            let mut j: usize = i;
+            while j + 1 < region.len() && is_printable_ascii(region[j]) && region[j + 1] == 0 {
+                chars.push(region[j]);
+                j += 2;
+            }
+            push_wide_candidate(base.wrapping_add(i as u64), &chars, out);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn push_wide_candidate(start: u64, chars: &[u8], out: &mut Vec<Harvest>) {
+    if out.len() >= MAX_HARVEST_PER_RUN
+        || chars.len() < MIN_WIDE_CHARS
+        || chars.len() > MAX_STRING_LEN
+        || !run_looks_textual(chars)
+    {
+        return;
+    }
+    if let Ok(s) = std::str::from_utf8(chars) {
+        out.push(Harvest {
+            start,
+            span: (chars.len() as u64) * 2,
+            value: s.to_owned(),
+        });
+    }
+}
+
+fn spans_overlap(a: &Harvest, b: &Harvest) -> bool {
+    a.start < b.start.saturating_add(b.span) && b.start < a.start.saturating_add(a.span)
+}
+
+fn merge_harvests(ascii: Vec<Harvest>, wide: Vec<Harvest>) -> Vec<(u64, String)> {
+    let mut kept_ascii: Vec<Harvest> = ascii;
+    let ascii_values: BTreeSet<String> = kept_ascii
+        .iter()
+        .map(|h: &Harvest| h.value.clone())
+        .collect();
+    let mut kept_wide: Vec<Harvest> = Vec::new();
+    for cand in wide {
+        if kept_ascii.len() + kept_wide.len() >= MAX_HARVEST_PER_RUN {
+            break;
+        }
+        if ascii_values.contains(&cand.value) {
+            continue;
+        }
+        let dominated: bool = kept_ascii
+            .iter()
+            .any(|a: &Harvest| spans_overlap(a, &cand) && a.span >= cand.span);
+        if dominated {
+            continue;
+        }
+        kept_ascii.retain(|a: &Harvest| !(spans_overlap(a, &cand) && a.span < cand.span));
+        kept_wide.push(cand);
+    }
+    let mut merged: Vec<Harvest> = kept_ascii;
+    merged.extend(kept_wide);
+    merged.sort_by(|a: &Harvest, b: &Harvest| a.start.cmp(&b.start).then(a.value.cmp(&b.value)));
+    merged
+        .into_iter()
+        .map(|h: Harvest| (h.start, h.value))
+        .collect()
 }
 
 fn static_strings(sections: &[LoadedSection]) -> BTreeSet<String> {
@@ -380,8 +560,27 @@ fn static_strings(sections: &[LoadedSection]) -> BTreeSet<String> {
             run.clear();
         }
         insert_static_run(&run, &mut out);
+        insert_static_wide_runs(&section.bytes, &mut out);
     }
     out
+}
+
+fn insert_static_wide_runs(bytes: &[u8], out: &mut BTreeSet<String>) {
+    let mut i: usize = 0;
+    while i + 1 < bytes.len() {
+        if is_printable_ascii(bytes[i]) && bytes[i + 1] == 0 {
+            let mut chars: Vec<u8> = Vec::new();
+            let mut j: usize = i;
+            while j + 1 < bytes.len() && is_printable_ascii(bytes[j]) && bytes[j + 1] == 0 {
+                chars.push(bytes[j]);
+                j += 2;
+            }
+            insert_static_run(&chars, out);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 fn insert_static_run(run: &[u8], out: &mut BTreeSet<String>) {
@@ -1047,6 +1246,165 @@ mod tests {
         assert!(
             recovered.is_empty(),
             "a flat nop/ret body must not be mistaken for a decoder: {recovered:?}"
+        );
+    }
+
+    fn wide_bytes(s: &str) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(s.len() * 2);
+        for b in s.bytes() {
+            out.push(b);
+            out.push(0);
+        }
+        out
+    }
+
+    fn log_from(base: u64, bytes: &[u8]) -> Vec<(u64, u8)> {
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(i, b): (usize, &u8)| (base.wrapping_add(i as u64), *b))
+            .collect()
+    }
+
+    #[test]
+    fn utf16_recovered_at_even_alignment() {
+        let log: Vec<(u64, u8)> = log_from(0x2000_0000, &wide_bytes("alphaBETAgamma"));
+        let harvested: Vec<(u64, String)> = harvest_write_log(&log);
+        assert!(
+            harvested
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "alphaBETAgamma"),
+            "even-aligned UTF-16LE run must be recovered: {harvested:?}"
+        );
+    }
+
+    #[test]
+    fn utf16_recovered_at_odd_alignment() {
+        let mut region: Vec<u8> = vec![b'Z'];
+        region.extend(wide_bytes("realWIDEstr0"));
+        let log: Vec<(u64, u8)> = log_from(0x2000_0000, &region);
+        let harvested: Vec<(u64, String)> = harvest_write_log(&log);
+        assert!(
+            harvested
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "realWIDEstr0"),
+            "a UTF-16LE run beginning at an odd offset must be recovered: {harvested:?}"
+        );
+    }
+
+    #[test]
+    fn utf16_transient_and_surviving_both_recovered() {
+        let mut log: Vec<(u64, u8)> = log_from(0x3000_0000, &wide_bytes("firsttransient"));
+        log.extend(log_from(0x3000_0000, &wide_bytes("secondsurvivor")));
+        let harvested: Vec<(u64, String)> = harvest_write_log(&log);
+        assert!(
+            harvested
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "firsttransient"),
+            "an overwritten (transient) wide string must survive via the write-log: {harvested:?}"
+        );
+        assert!(
+            harvested
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "secondsurvivor"),
+            "the surviving wide string must be recovered: {harvested:?}"
+        );
+    }
+
+    #[test]
+    fn ascii_run_is_not_misread_as_utf16() {
+        let log: Vec<(u64, u8)> = log_from(0x4000_0000, b"plainasciihere");
+        let harvested: Vec<(u64, String)> = harvest_write_log(&log);
+        assert!(
+            harvested
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "plainasciihere"),
+            "the ASCII run must be recovered by the ascii path: {harvested:?}"
+        );
+        let misread: String = "plainasciihere".chars().step_by(2).collect();
+        assert!(
+            !harvested.iter().any(|(_, v): &(u64, String)| *v == misread),
+            "ASCII data must not be misread as UTF-16 ({misread:?}): {harvested:?}"
+        );
+    }
+
+    #[test]
+    fn utf16_run_below_minimum_is_rejected() {
+        let log: Vec<(u64, u8)> = log_from(0x5000_0000, &wide_bytes("ab"));
+        let harvested: Vec<(u64, String)> = harvest_write_log(&log);
+        assert!(
+            !harvested.iter().any(|(_, v): &(u64, String)| v == "ab"),
+            "a run shorter than the {MIN_WIDE_CHARS}-char floor must be rejected: {harvested:?}"
+        );
+    }
+
+    #[test]
+    fn merge_prefers_longer_wide_on_overlap() {
+        let ascii: Vec<Harvest> = vec![Harvest {
+            start: 0x1000,
+            span: 4,
+            value: "shrt".to_owned(),
+        }];
+        let wide: Vec<Harvest> = vec![Harvest {
+            start: 0x1000,
+            span: 16,
+            value: "longerwidevalue".to_owned(),
+        }];
+        let merged: Vec<(u64, String)> = merge_harvests(ascii, wide);
+        assert!(
+            merged
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "longerwidevalue"),
+            "the longer/higher-confidence interpretation must win: {merged:?}"
+        );
+        assert!(
+            !merged.iter().any(|(_, v): &(u64, String)| v == "shrt"),
+            "the shorter overlapping interpretation must be dropped: {merged:?}"
+        );
+    }
+
+    #[test]
+    fn merge_prefers_longer_ascii_over_shorter_wide() {
+        let ascii: Vec<Harvest> = vec![Harvest {
+            start: 0x1000,
+            span: 20,
+            value: "longasciistring12345".to_owned(),
+        }];
+        let wide: Vec<Harvest> = vec![Harvest {
+            start: 0x1000,
+            span: 8,
+            value: "wide".to_owned(),
+        }];
+        let merged: Vec<(u64, String)> = merge_harvests(ascii, wide);
+        assert!(
+            merged
+                .iter()
+                .any(|(_, v): &(u64, String)| v == "longasciistring12345"),
+            "the longer ascii interpretation must win over a shorter overlapping wide: {merged:?}"
+        );
+        assert!(
+            !merged.iter().any(|(_, v): &(u64, String)| v == "wide"),
+            "the dominated shorter wide must be dropped: {merged:?}"
+        );
+    }
+
+    #[test]
+    fn merge_keeps_disjoint_candidates() {
+        let ascii: Vec<Harvest> = vec![Harvest {
+            start: 0x1000,
+            span: 4,
+            value: "asci".to_owned(),
+        }];
+        let wide: Vec<Harvest> = vec![Harvest {
+            start: 0x2000,
+            span: 8,
+            value: "wide".to_owned(),
+        }];
+        let merged: Vec<(u64, String)> = merge_harvests(ascii, wide);
+        assert_eq!(
+            merged.len(),
+            2,
+            "disjoint ascii and wide candidates must both survive: {merged:?}"
         );
     }
 

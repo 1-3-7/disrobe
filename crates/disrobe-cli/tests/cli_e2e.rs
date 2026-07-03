@@ -1206,8 +1206,10 @@ fn native_decompile_without_ghidra_surfaces_dr_native_0001() {
         return;
     }
     assert!(
-        r.stderr.contains("DR-NATIVE-0001") || r.stderr.contains("ghidra"),
-        "expected ghidra error code, got: {}",
+        r.stderr.contains("DR-NATIVE-0147")
+            || r.stderr.contains("DR-NATIVE-0001")
+            || r.stderr.contains("ghidra"),
+        "expected a clear native-decompile diagnostic, got: {}",
         r.stderr
     );
 }

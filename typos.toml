@@ -98,6 +98,8 @@ Lok = "Lok"
 Iy = "Iy"
 SICE = "SICE"
 Vai = "Vai"
+fpr = "fpr"
+tpr = "tpr"
 
 [default.extend-identifiers]
 handler_vas = "handler_vas"

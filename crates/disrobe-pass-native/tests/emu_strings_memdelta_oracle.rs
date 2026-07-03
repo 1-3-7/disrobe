@@ -19,6 +19,7 @@ const BLOCK1: &str = "transient0temp0block0one0";
 const BLOCK2: &str = "surviving0final0block0two";
 const COPY_SRC: &str = "benign0static0copysource0CCCC";
 const GEN_FILL: &str = "01234567890123456789012345678901";
+const WIDE_PLAINTEXT: &str = "wide0secret0url0payload0token0DDDD";
 
 fn has_tool(cmd: &str) -> bool {
     Command::new(cmd)
@@ -45,6 +46,18 @@ fn c_array(name: &str, plain: &str) -> String {
     )
 }
 
+fn c_array_wide(name: &str, plain: &str) -> String {
+    let mut bytes: Vec<String> = Vec::with_capacity(plain.len() * 2);
+    for b in plain.bytes() {
+        bytes.push(format!("0x{:02x}", b ^ KEY));
+        bytes.push(format!("0x{KEY:02x}"));
+    }
+    format!(
+        "static const unsigned char {name}[] = {{ {} }};\n",
+        bytes.join(", ")
+    )
+}
+
 fn corpus_source() -> String {
     let mut src: String = String::new();
     src.push_str("#include <stddef.h>\n");
@@ -53,11 +66,16 @@ fn corpus_source() -> String {
     src.push_str(&c_array("ENC_DEC", PLAINTEXT_DEC));
     src.push_str(&c_array("ENC_B1", BLOCK1));
     src.push_str(&c_array("ENC_B2", BLOCK2));
+    src.push_str(&c_array_wide("ENC_WIDE", WIDE_PLAINTEXT));
     src.push_str("static const unsigned char XKEY = 0x5a;\n");
     let _ = writeln!(src, "static const char COPY_SRC[] = \"{COPY_SRC}\";");
     src.push_str(
         "API void dec(char *out){ for(unsigned i=0;i<(unsigned)sizeof(ENC_DEC);i++) \
          out[i]=(char)((unsigned char)ENC_DEC[i]^XKEY); }\n",
+    );
+    src.push_str(
+        "API void dec_wide(char *out){ for(unsigned i=0;i<(unsigned)sizeof(ENC_WIDE);i++) \
+         out[i]=(char)((unsigned char)ENC_WIDE[i]^XKEY); }\n",
     );
     src.push_str(
         "API int dec_transient(char *tmp){ int acc=0; \
@@ -113,6 +131,31 @@ fn assert_recovery(image: &[u8], tag: &str) {
     assert!(
         block1.decoder_address != 0,
         "{tag}: recovered string must carry its decoder call-site address"
+    );
+
+    let wide_hit: Option<&EmulatedString> = recovered
+        .iter()
+        .find(|s: &&EmulatedString| s.value == WIDE_PLAINTEXT);
+    assert!(
+        wide_hit.is_some(),
+        "{tag}: UTF-16LE decoder plaintext {WIDE_PLAINTEXT:?} not recovered from written memory; \
+         the plaintext is laid out as printable/0x00 cells so the ASCII path CANNOT produce it \
+         (no run reaches the {MIN_LEN}-byte floor), proving the wide extractor is doing the work. \
+         harvested {got:?}",
+        MIN_LEN = 4
+    );
+    assert!(
+        wide_hit.is_some_and(|s: &EmulatedString| s.decoder_address != 0),
+        "{tag}: the recovered UTF-16 string must carry its decoder call-site address"
+    );
+
+    let wide_misread: String = PLAINTEXT_DEC.chars().step_by(2).collect();
+    assert!(
+        !recovered
+            .iter()
+            .any(|s: &EmulatedString| s.value == wide_misread),
+        "{tag}: an ASCII-only decoder must NOT be misread as UTF-16 (the every-other-char artifact \
+         {wide_misread:?} must be absent). harvested {got:?}"
     );
 
     assert!(
