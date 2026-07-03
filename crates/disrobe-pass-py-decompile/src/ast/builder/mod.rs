@@ -67,7 +67,7 @@ impl AstBuilder for DefaultAstBuilder {
                 || module_exc_route(&frame_tree.root)
                 || module_inline_comp_route(&stream, &frame_tree.root));
         let raw_body: Vec<Stmt> = if route_via_sim {
-            let _depth_scope: StructureDepthScope = StructureDepthScope::enter();
+            let _code_scope: NestedCodeScope = NestedCodeScope::enter();
             let region_end: usize = module_reachable_end(&stream);
             structure_stmts(code, &stream, 0, region_end)?
         } else {
@@ -816,16 +816,16 @@ fn collect_setup_loop_ends_wordcode(
     let bytes: &[u8] = &code.code;
     let mut byte_ends: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
     let mut cursor: usize = 0;
-    let mut extended: u32 = 0;
+    let mut extended: u64 = 0;
     while cursor + 1 < bytes.len() {
         let raw: u8 = bytes[cursor];
         let arg_byte: u8 = bytes[cursor + 1];
         if is_extended_arg(opmap, raw) {
-            extended = (extended | u32::from(arg_byte)) << 8;
+            extended = accumulate_extended_arg(extended, arg_byte);
             cursor += 2;
             continue;
         }
-        let arg: u32 = extended | u32::from(arg_byte);
+        let arg: u32 = finalize_extended_arg(extended, arg_byte);
         extended = 0;
         if opmap.opname(raw) == "SETUP_LOOP" {
             let after: u32 = u32::try_from(cursor + 2).unwrap_or(u32::MAX);
@@ -854,16 +854,16 @@ fn synthesize_pre_311_exception_table(
     let mut entries: Vec<crate::bytecode::flow::ExceptionTableEntry> = Vec::new();
     let mut cursor: usize = 0;
     if wordcode {
-        let mut extended: u32 = 0;
+        let mut extended: u64 = 0;
         while cursor + 1 < bytes.len() {
             let raw: u8 = bytes[cursor];
             let arg_byte: u8 = bytes[cursor + 1];
             if is_extended_arg(opmap, raw) {
-                extended = (extended | u32::from(arg_byte)) << 8;
+                extended = accumulate_extended_arg(extended, arg_byte);
                 cursor += WIDE_STEP;
                 continue;
             }
-            let arg: u32 = extended | u32::from(arg_byte);
+            let arg: u32 = finalize_extended_arg(extended, arg_byte);
             extended = 0;
             let name: &str = opmap.opname(raw);
             if matches!(name, "SETUP_FINALLY" | "SETUP_EXCEPT") {
@@ -929,16 +929,16 @@ fn decode_wordcode_with_offsets(
 ) {
     let bytes: &[u8] = &code.code;
     let mut cursor: usize = 0;
-    let mut extended: u32 = 0;
+    let mut extended: u64 = 0;
     while cursor + 1 < bytes.len() {
         let raw: u8 = bytes[cursor];
         let arg_byte: u8 = bytes[cursor + 1];
         if is_extended_arg(opmap, raw) {
-            extended = (extended | u32::from(arg_byte)) << 8;
+            extended = accumulate_extended_arg(extended, arg_byte);
             cursor += WIDE_STEP;
             continue;
         }
-        let arg: u32 = extended | u32::from(arg_byte);
+        let arg: u32 = finalize_extended_arg(extended, arg_byte);
         extended = 0;
         let here: u32 = u32::try_from(cursor).unwrap_or(u32::MAX);
         let entry_start: usize = ops.len();
@@ -1002,6 +1002,16 @@ fn is_extended_arg(opmap: &dyn OpcodeMap, raw: u8) -> bool {
     opmap.opname(raw) == "EXTENDED_ARG"
 }
 
+fn accumulate_extended_arg(extended: u64, arg_byte: u8) -> u64 {
+    (extended | u64::from(arg_byte))
+        .checked_shl(8)
+        .unwrap_or(u64::MAX)
+}
+
+fn finalize_extended_arg(extended: u64, arg_byte: u8) -> u32 {
+    u32::try_from(extended | u64::from(arg_byte)).unwrap_or(u32::MAX)
+}
+
 fn decode_wordcode(
     code: &CodeObject,
     opmap: &dyn OpcodeMap,
@@ -1010,16 +1020,16 @@ fn decode_wordcode(
 ) {
     let bytes: &[u8] = &code.code;
     let mut cursor: usize = 0;
-    let mut extended: u32 = 0;
+    let mut extended: u64 = 0;
     while cursor + 1 < bytes.len() {
         let raw: u8 = bytes[cursor];
         let arg_byte: u8 = bytes[cursor + 1];
         if is_extended_arg(opmap, raw) {
-            extended = (extended | u32::from(arg_byte)) << 8;
+            extended = accumulate_extended_arg(extended, arg_byte);
             cursor += WIDE_STEP;
             continue;
         }
-        let arg: u32 = extended | u32::from(arg_byte);
+        let arg: u32 = finalize_extended_arg(extended, arg_byte);
         extended = 0;
         if crate::bytecode::opcode::shared_pushes_self_slot(version, raw, arg) {
             out.push(CanonicalOp::Push(0));
@@ -1177,20 +1187,44 @@ pub(super) fn enter_codeobj_depth() -> Result<CodeObjDepthGuard> {
 }
 
 #[derive(Debug)]
-struct StructureDepthScope {
-    restore: usize,
+struct NestedCodeScope {
+    depth: usize,
+    hi_cap: usize,
+    frames: Vec<LoopFrame>,
+    active: Vec<(usize, usize)>,
 }
 
-impl StructureDepthScope {
+impl NestedCodeScope {
     fn enter() -> Self {
-        let restore: usize = STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.replace(0));
-        Self { restore }
+        let depth: usize = STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.replace(0));
+        let hi_cap: usize = STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| slot.replace(0));
+        let frames: Vec<LoopFrame> =
+            LOOP_FRAMES.with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| {
+                std::mem::take(&mut *slot.borrow_mut())
+            });
+        let active: Vec<(usize, usize)> =
+            STRUCTURE_ACTIVE.with(|slot: &std::cell::RefCell<Vec<(usize, usize)>>| {
+                std::mem::take(&mut *slot.borrow_mut())
+            });
+        Self {
+            depth,
+            hi_cap,
+            frames,
+            active,
+        }
     }
 }
 
-impl Drop for StructureDepthScope {
+impl Drop for NestedCodeScope {
     fn drop(&mut self) {
-        STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.set(self.restore));
+        STRUCTURE_DEPTH.with(|slot: &std::cell::Cell<usize>| slot.set(self.depth));
+        STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| slot.set(self.hi_cap));
+        LOOP_FRAMES.with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| {
+            *slot.borrow_mut() = std::mem::take(&mut self.frames);
+        });
+        STRUCTURE_ACTIVE.with(|slot: &std::cell::RefCell<Vec<(usize, usize)>>| {
+            *slot.borrow_mut() = std::mem::take(&mut self.active);
+        });
     }
 }
 

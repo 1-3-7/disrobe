@@ -1560,12 +1560,17 @@ pub(super) fn structure_stmts(
     hi: usize,
 ) -> Result<Vec<Stmt>> {
     let _depth_guard: StructureDepthGuard = enter_structure_depth()?;
-    let hi: usize = extend_window_over_split_handler(stream, lo, hi.min(stream.ops.len()));
+    let len: usize = stream.ops.len();
+    if lo > len || hi > len {
+        return Err(crate::error::DecompileError::BlockOutOfRange { lo, hi, len });
+    }
+    let hi: usize = extend_window_over_split_handler(stream, lo, hi);
     if lo >= hi {
         return Ok(Vec::new());
     }
     let Some(_active_guard): Option<ActiveRegionGuard> = enter_active_region(lo, hi) else {
-        return Ok(build_linear_stmts(code, &stream.ops[lo..hi]).unwrap_or_default());
+        let block: &[CanonicalOp] = stream.ops.get(lo..hi).unwrap_or_default();
+        return Ok(build_linear_stmts(code, block).unwrap_or_default());
     };
     if let Some(stmts) = try_structure_inline_comprehension(code, stream, lo, hi)? {
         return Ok(stmts);
@@ -2051,15 +2056,19 @@ pub(super) fn append_handler_loop_jump(
     out
 }
 
+#[deny(clippy::indexing_slicing)]
 fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
     let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
-        !matches!(
-            stream.ops[k],
-            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
-        )
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
     })?;
+    let last_op: &CanonicalOp = stream.ops.get(last_idx)?;
     if !matches!(
-        stream.ops[last_idx],
+        last_op,
         CanonicalOp::JumpForward(_)
             | CanonicalOp::JumpAbsolute(_)
             | CanonicalOp::JumpBackward(_)
@@ -2067,7 +2076,7 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
     ) {
         return None;
     }
-    let target: usize = resolve_jump_target(stream, last_idx, &stream.ops[last_idx])?;
+    let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
     if loop_continue_target().is_some_and(|header: usize| target == header) {
         return Some(Stmt::Continue);
     }
@@ -2077,67 +2086,81 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
     None
 }
 
+#[deny(clippy::indexing_slicing)]
 fn trailing_loop_break_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
     let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
-        !matches!(
-            stream.ops[k],
-            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
-        )
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
     })?;
+    let last_op: &CanonicalOp = stream.ops.get(last_idx)?;
     if !matches!(
-        stream.ops[last_idx],
+        last_op,
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
         return None;
     }
-    let target: usize = resolve_jump_target(stream, last_idx, &stream.ops[last_idx])?;
+    let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
     loop_break_target()
         .filter(|&exit: &usize| target >= exit && target > last_idx)
         .map(|_: usize| Stmt::Break)
 }
 
+#[deny(clippy::indexing_slicing)]
 fn significant_run(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {
     (lo..hi)
         .filter(|&k: &usize| {
-            !matches!(
-                stream.ops[k],
-                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
-            )
+            stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+                !matches!(
+                    op,
+                    CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+                )
+            })
         })
         .collect()
 }
 
+#[deny(clippy::indexing_slicing)]
 fn is_straightline_terminator_tail(stream: &DecodedStream, idxs: &[usize]) -> bool {
-    if idxs.is_empty() {
+    let Some(&last): Option<&usize> = idxs.last() else {
         return false;
-    }
-    let last: usize = idxs[idxs.len() - 1];
+    };
     if !matches!(
-        stream.ops[last],
-        CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_)
+        stream.ops.get(last),
+        Some(CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_))
     ) {
         return false;
     }
     idxs.iter().all(|&k: &usize| {
-        !is_back_edge(&stream.ops[k])
-            && !is_forward_cond_jump(&stream.ops[k])
-            && !matches!(
-                stream.ops[k],
-                CanonicalOp::JumpForward(_)
-                    | CanonicalOp::JumpAbsolute(_)
-                    | CanonicalOp::JumpBackward(_)
-                    | CanonicalOp::JumpBackwardNoInterrupt(_)
-            )
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !is_back_edge(op)
+                && !is_forward_cond_jump(op)
+                && !matches!(
+                    op,
+                    CanonicalOp::JumpForward(_)
+                        | CanonicalOp::JumpAbsolute(_)
+                        | CanonicalOp::JumpBackward(_)
+                        | CanonicalOp::JumpBackwardNoInterrupt(_)
+                )
+        })
     })
 }
 
+#[deny(clippy::indexing_slicing)]
 fn ops_equal_run(stream: &DecodedStream, a: &[usize], b: &[usize]) -> bool {
     a.len() == b.len()
-        && a.iter()
-            .zip(b.iter())
-            .all(|(&x, &y): (&usize, &usize)| stream.ops[x] == stream.ops[y])
+        && a.iter().zip(b.iter()).all(|(&x, &y): (&usize, &usize)| {
+            matches!(
+                (stream.ops.get(x), stream.ops.get(y)),
+                (Some(px), Some(py)) if px == py
+            )
+        })
 }
 
+#[deny(clippy::indexing_slicing)]
 fn rewrite_inlined_break_tail(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2158,7 +2181,7 @@ fn rewrite_inlined_break_tail(
         return None;
     }
     let pop_at: usize = (lo..hi).rev().find(|&p: &usize| {
-        matches!(stream.ops[p], CanonicalOp::Pop)
+        matches!(stream.ops.get(p), Some(CanonicalOp::Pop))
             && !is_shortcircuit_cleanup_pop(stream, p)
             && ops_equal_run(stream, &significant_run(stream, p + 1, hi), &tail_idxs)
     })?;
@@ -2177,6 +2200,7 @@ fn rewrite_inlined_break_tail(
     Some(out)
 }
 
+#[deny(clippy::indexing_slicing)]
 fn rewrite_jump_to_break_continue(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2206,16 +2230,21 @@ fn rewrite_jump_to_break_continue(
         return body;
     }
     let last: Option<usize> = (lo..hi).rev().find(|&k: &usize| {
-        !matches!(
-            stream.ops[k],
-            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
-        )
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
     });
     let Some(last_idx): Option<usize> = last else {
         return body;
     };
+    let Some(last_op): Option<&CanonicalOp> = stream.ops.get(last_idx) else {
+        return body;
+    };
     if !matches!(
-        stream.ops[last_idx],
+        last_op,
         CanonicalOp::JumpForward(_)
             | CanonicalOp::JumpAbsolute(_)
             | CanonicalOp::JumpBackward(_)
@@ -2223,8 +2252,7 @@ fn rewrite_jump_to_break_continue(
     ) {
         return body;
     }
-    let Some(target): Option<usize> = resolve_jump_target(stream, last_idx, &stream.ops[last_idx])
-    else {
+    let Some(target): Option<usize> = resolve_jump_target(stream, last_idx, last_op) else {
         return body;
     };
     let break_at: Option<usize> = loop_break_target();
@@ -4164,4 +4192,93 @@ fn trim_body_back_edge(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
         end -= 1;
     }
     end.max(lo)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod block_range_repro {
+    use super::super::{DecodedStream, LoopFrame, pop_loop_frame, push_loop_frame};
+    use super::{rewrite_jump_to_break_continue, significant_run, structure_stmts};
+    use crate::bytecode::opcode::CanonicalOp;
+    use crate::bytecode::version::PyVersion;
+    use crate::error::DecompileError;
+    use disrobe_py_marshal::{CodeEra, CodeObject};
+
+    fn stream_with_ops(n: usize) -> DecodedStream {
+        let ops: Vec<CanonicalOp> = vec![CanonicalOp::Nop; n];
+        let offsets: Vec<u32> = (0..n).map(|i: usize| (i as u32) * 2).collect();
+        let next_offsets: Vec<u32> = (0..n).map(|i: usize| (i as u32 + 1) * 2).collect();
+        DecodedStream {
+            ops,
+            offsets,
+            next_offsets,
+            code_len: (n as u32) * 2,
+            lines: vec![None; n],
+            wordcode: true,
+            instr_unit_jumps: true,
+            relative_cond_jumps: true,
+            exception_table: Vec::new(),
+            pre311_end_finally_idx: std::collections::BTreeSet::new(),
+            pre311_pop_block_idx: std::collections::BTreeSet::new(),
+            pre311_break_loop_idx: std::collections::BTreeSet::new(),
+            setup_loop_end: std::collections::BTreeMap::new(),
+            none_jump_kind: std::collections::BTreeMap::new(),
+            version: PyVersion::V3_12,
+        }
+    }
+
+    #[test]
+    fn significant_run_ignores_out_of_range_block() {
+        let stream: DecodedStream = stream_with_ops(34);
+        let run: Vec<usize> = significant_run(&stream, 162, 200);
+        assert!(
+            run.is_empty(),
+            "out-of-range block must yield no significant ops, not panic"
+        );
+    }
+
+    #[test]
+    fn structure_stmts_rejects_out_of_range_block() {
+        let stream: DecodedStream = stream_with_ops(34);
+        let code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        let result: crate::error::Result<Vec<crate::ast::node::Stmt>> =
+            structure_stmts(&code, &stream, 0, 162);
+        assert!(
+            matches!(
+                result,
+                Err(DecompileError::BlockOutOfRange {
+                    lo: 0,
+                    hi: 162,
+                    len: 34
+                })
+            ),
+            "expected typed BlockOutOfRange, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stale_loop_frame_tail_range_does_not_panic() {
+        let stream: DecodedStream = stream_with_ops(34);
+        let code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        push_loop_frame(LoopFrame {
+            header: 0,
+            exit: 34,
+            exit_return: None,
+            exit_tail_range: Some((162, 200)),
+        });
+        let body: Vec<crate::ast::node::Stmt> = vec![crate::ast::node::Stmt::Pass];
+        let out: Vec<crate::ast::node::Stmt> =
+            rewrite_jump_to_break_continue(&code, &stream, body, 0, stream.ops.len());
+        pop_loop_frame();
+        assert_eq!(
+            out.len(),
+            1,
+            "a foreign loop-frame tail range must be declined, leaving the body intact"
+        );
+    }
 }

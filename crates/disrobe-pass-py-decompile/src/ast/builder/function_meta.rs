@@ -14,7 +14,7 @@ use super::stmts::{
 };
 use super::try_with::is_forward_cond_jump;
 use super::{
-    CodeObjDepthGuard, DecodedStream, StructureDepthScope, class_docstring, decode_stream,
+    CodeObjDepthGuard, DecodedStream, NestedCodeScope, class_docstring, decode_stream,
     decode_stream_with_offsets, enter_codeobj_depth, extract_docstring, future_annotations_active,
     pick_nested_version,
 };
@@ -304,8 +304,10 @@ pub(super) fn try_build_class_def(
     let nested_version: PyVersion = pick_nested_version(nested);
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
     let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), &nested_version);
-    let body_raw: Vec<Stmt> =
-        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_default();
+    let body_raw: Vec<Stmt> = {
+        let _code_scope: NestedCodeScope = NestedCodeScope::enter();
+        structure_stmts(nested, &stream, 0, stream.ops.len()).unwrap_or_default()
+    };
     let stripped: Vec<Stmt> = strip_class_implicit(strip_module_implicit_return(
         strip_module_docstring_stmt(body_raw, nested),
     ));
@@ -2065,7 +2067,7 @@ pub(super) fn build_nested_function_def(
         }
     };
     let structured: Result<Vec<Stmt>> = {
-        let _depth_scope: StructureDepthScope = StructureDepthScope::enter();
+        let _code_scope: NestedCodeScope = NestedCodeScope::enter();
         structure_stmts(nested, &stream, 0, stream.ops.len())
     };
     let body_raw: Vec<Stmt> = match structured {
@@ -2179,7 +2181,7 @@ fn lambda_body_has_inlined_comprehension(ops: &[CanonicalOp]) -> bool {
 fn lambda_structured_body(nested: &CodeObject, nested_version: &PyVersion) -> Option<Expr> {
     let opmap: Box<dyn OpcodeMap> = map_for(nested_version.clone());
     let stream: DecodedStream = decode_stream_with_offsets(nested, opmap.as_ref(), nested_version);
-    let _depth_scope: StructureDepthScope = StructureDepthScope::enter();
+    let _code_scope: NestedCodeScope = NestedCodeScope::enter();
     let stmts: Vec<Stmt> = structure_stmts(nested, &stream, 0, stream.ops.len()).ok()?;
     stmts.into_iter().rev().find_map(|s: Stmt| match s {
         Stmt::Return(Some(e)) | Stmt::Expr(e) => Some(e),
