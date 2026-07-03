@@ -1,0 +1,473 @@
+#![allow(clippy::needless_pass_by_value)]
+use std::ffi::OsStr;
+use std::path::PathBuf;
+
+use clap::Subcommand;
+
+use disrobe_pass_mobile::{
+    Arm64Disassembly, DartAotDecompile, DartKernelDecompile, DartSnapshotHeader,
+    FlutterObfuscationMap, LibAppLayout, decompile_dart_aot, decompile_dart_kernel,
+    disassemble_libapp_so, is_dart_kernel, parse_dart_snapshot, parse_flutter_obfuscation_map,
+    parse_libapp_so,
+};
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum FlutterCmd {
+    #[command(
+        about = "dump the Dart snapshot symbol layout from a Flutter libapp.so / libflutter.so"
+    )]
+    Dump {
+        #[arg(help = "input Flutter libapp.so / libflutter.so")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the layout JSON (default: ./out/<stem>-flutter.json)"
+        )]
+        out: Option<PathBuf>,
+    },
+    #[command(
+        about = "best-effort decompile of a Dart AOT snapshot (header + class table estimate + readable strings)"
+    )]
+    Decompile {
+        #[arg(help = "input Dart AOT snapshot blob")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the decompile JSON (default: ./out/<stem>-dart-aot.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
+        )]
+        emit: Vec<String>,
+    },
+    #[command(
+        about = "parse a Dart kernel (.dill / kernel_blob.bin) and recover classes, methods, fields, and byte-exact Dart source bodies"
+    )]
+    Kernel {
+        #[arg(help = "input Dart kernel (.dill / kernel_blob.bin)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the kernel JSON (default: ./out/<stem>-dart-kernel.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "accepted for compatibility; the recovered Dart source is always written next to the JSON as <stem>.recovered.dart"
+        )]
+        emit_source: bool,
+    },
+    #[command(
+        about = "disassemble the ARM64 (AArch64) Dart AOT function bodies from a libapp.so into readable instructions with recovered control flow"
+    )]
+    Disasm {
+        #[arg(help = "input Flutter libapp.so (ARM64 AOT)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the disassembly JSON (default: ./out/<stem>-arm64-disasm.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(long, help = "also write a flat text listing as <stem>.arm64.txt")]
+        emit_listing: bool,
+    },
+    #[command(
+        about = "parse a Flutter obfuscation_map.json into a typed lookup (original ↔ obfuscated)"
+    )]
+    Map {
+        #[arg(help = "input obfuscation_map.json")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the typed map JSON (default: ./out/<stem>-obfmap.json)"
+        )]
+        out: Option<PathBuf>,
+    },
+}
+
+pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
+    match action {
+        FlutterCmd::Dump { input, out } => dump(input, out),
+        FlutterCmd::Decompile { input, out, emit } => decompile(input, out, emit),
+        FlutterCmd::Kernel {
+            input,
+            out,
+            emit_source,
+        } => kernel(input, out, emit_source),
+        FlutterCmd::Disasm {
+            input,
+            out,
+            emit_listing,
+        } => disasm(input, out, emit_listing),
+        FlutterCmd::Map { input, out } => map(input, out),
+    }
+}
+
+fn kernel(input: PathBuf, out: Option<PathBuf>, _emit_source: bool) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0780: cannot read input: {e}"))?;
+    if !is_dart_kernel(&bytes) {
+        return Err(miette::miette!(
+            "DR-CLI-0781: input is not a Dart kernel (expected magic 0x90abcdef)"
+        ));
+    }
+    let dec: DartKernelDecompile = decompile_dart_kernel(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0782: dart kernel parse: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dart-kernel")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dart-kernel.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0783: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&dec.kernel)
+        .map_err(|e| miette::miette!("DR-CLI-0784: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0785: cannot write output: {e}"))?;
+    let src_path: PathBuf = out_path.with_extension("recovered.dart");
+    std::fs::write(&src_path, dec.recovered_source.as_bytes())
+        .map_err(|e| miette::miette!("DR-CLI-0786: cannot write source: {e}"))?;
+    let classes: usize = dec.kernel.class_count;
+    println!("flutter kernel: OK");
+    println!("  input:        {}", input.display());
+    println!("  format ver:   {}", dec.kernel.format_version);
+    println!("  libraries:    {}", dec.kernel.libraries.len());
+    println!("  classes:      {classes}");
+    println!("  procedures:   {}", dec.kernel.procedure_count);
+    println!("  fields:       {}", dec.kernel.field_count);
+    println!(
+        "  bodies:       {} recovered (byte-exact Dart source from the kernel source table)",
+        dec.kernel.bodies_recovered
+    );
+    println!("  strings:      {}", dec.kernel.string_count);
+    println!("  wrote:        {}", out_path.display());
+    println!("  dart source:  {}", src_path.display());
+    Ok(())
+}
+
+fn disasm(input: PathBuf, out: Option<PathBuf>, emit_listing: bool) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0790: cannot read input: {e}"))?;
+    let disassembly: Arm64Disassembly = disassemble_libapp_so(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0791: arm64 disassemble: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("libapp")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-arm64-disasm.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0792: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&disassembly)
+        .map_err(|e| miette::miette!("DR-CLI-0793: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0794: cannot write output: {e}"))?;
+    if emit_listing {
+        let listing_path: PathBuf = out_path.with_extension("arm64.txt");
+        let mut listing: String = String::new();
+        for func in &disassembly.functions {
+            listing.push_str(&func.to_listing());
+            listing.push('\n');
+        }
+        std::fs::write(&listing_path, listing.as_bytes())
+            .map_err(|e| miette::miette!("DR-CLI-0795: cannot write listing: {e}"))?;
+    }
+    println!("flutter disasm: OK");
+    println!("  input:        {}", input.display());
+    println!("  functions:    {}", disassembly.function_count);
+    println!("  instructions: {}", disassembly.total_instructions);
+    println!(
+        "  note:         exact Dart source is not byte-recoverable from optimized ARM64; use `flutter kernel` on a .dill for source bodies"
+    );
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0750: cannot read input: {e}"))?;
+    let layout: LibAppLayout =
+        parse_libapp_so(&bytes).map_err(|e| miette::miette!("DR-CLI-0751: libapp parse: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("flutter-dump")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-flutter.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0752: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&layout)
+        .map_err(|e| miette::miette!("DR-CLI-0753: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0754: cannot write output: {e}"))?;
+    println!("flutter dump: OK");
+    println!("  input:        {}", input.display());
+    println!("  sections:     {}", layout.section_names.len());
+    println!(
+        "  vm data:      {}",
+        layout
+            .vm_snapshot_data
+            .as_ref()
+            .map_or("<missing>", |s: &disrobe_pass_mobile::SnapshotSection| s
+                .symbol
+                .as_str())
+    );
+    println!(
+        "  vm instr:     {}",
+        layout
+            .vm_snapshot_instructions
+            .as_ref()
+            .map_or("<missing>", |s| s.symbol.as_str())
+    );
+    println!(
+        "  isolate data: {}",
+        layout
+            .isolate_snapshot_data
+            .as_ref()
+            .map_or("<missing>", |s| s.symbol.as_str())
+    );
+    println!(
+        "  isolate inst: {}",
+        layout
+            .isolate_snapshot_instructions
+            .as_ref()
+            .map_or("<missing>", |s| s.symbol.as_str())
+    );
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0760: cannot read input: {e}"))?;
+    let header: DartSnapshotHeader = parse_dart_snapshot(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0761: dart snapshot parse: {e}"))?;
+    let dec: DartAotDecompile = decompile_dart_aot(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0762: dart aot decompile: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dart-aot")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dart-aot.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0763: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&dec)
+        .map_err(|e| miette::miette!("DR-CLI-0764: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0765: cannot write output: {e}"))?;
+    let stub_dir: &std::path::Path = out_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    crate::cli::emit::apply_not_applicable_stubs(
+        &emit,
+        stub_dir,
+        &stem,
+        "flutter-decompile",
+        "not implemented for the flutter pass in this build",
+    )?;
+    println!("flutter decompile: OK");
+    println!("  input:        {}", input.display());
+    println!("  magic:        0x{:08x}", header.magic);
+    println!("  length:       {}", header.length);
+    println!("  features:     {}", header.features);
+    println!(
+        "  class table:  {} (estimate)",
+        dec.class_table_entry_estimate
+    );
+    println!("  object pool:  {} (estimate)", dec.object_pool_estimate);
+    println!("  readable str: {}", dec.readable_strings.len());
+    println!("  classes:      {}", dec.structure.classes.len());
+    println!(
+        "  methods:      {} attributed + {} unattributed",
+        dec.structure
+            .classes
+            .iter()
+            .map(|c: &disrobe_pass_mobile::DartClassEntry| c.methods.len())
+            .sum::<usize>(),
+        dec.structure.unattributed_methods.len()
+    );
+    println!("  functions:    {}", dec.structure.functions.len());
+    println!("  libraries:    {}", dec.structure.library_uris.len());
+    println!(
+        "  clusters:     {} declared, version-keyed bodies not deserialised ({:?})",
+        dec.structure.framing.num_clusters, dec.structure.framing.status
+    );
+    println!(
+        "  fields/sigs:  not statically recoverable (version-keyed object clusters absent from artifact)"
+    );
+    if let Some(recovery) = dec.structure.libapp_recovery.as_ref() {
+        println!(
+            "  cid table:    {} (Dart {}, {:?})",
+            recovery.cid_table.predefined_count,
+            recovery.cid_table.dart_sdk,
+            recovery.cid_table_match
+        );
+        println!(
+            "  string pool:  {} strings ({} classes, {} get/set/init selectors, {} libraries)",
+            recovery.string_pool.total_strings,
+            recovery.string_pool.class_names.len(),
+            recovery.recovered_selector_count,
+            recovery.string_pool.library_uris.len()
+        );
+        println!(
+            "  object pool:  {} slots over {} load sites, {} dispatch slots before blr",
+            recovery.object_pool.distinct_slots,
+            recovery.object_pool.total_load_sites,
+            recovery.object_pool.distinct_dispatch_slots
+        );
+    }
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn map(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0770: cannot read input: {e}"))?;
+    let parsed: FlutterObfuscationMap = parse_flutter_obfuscation_map(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0771: obfuscation map parse: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("flutter-obfmap")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-obfmap.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0772: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&parsed)
+        .map_err(|e| miette::miette!("DR-CLI-0773: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0774: cannot write output: {e}"))?;
+    println!("flutter map: OK");
+    println!("  input:        {}", input.display());
+    println!("  entries:      {}", parsed.entries);
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::cast_possible_truncation,
+    clippy::unwrap_used
+)]
+mod tests {
+    use super::*;
+
+    fn encode_uint(value: u64) -> Vec<u8> {
+        if value < 0x80 {
+            vec![u8::try_from(value).unwrap_or(0)]
+        } else if value < 0x4000 {
+            vec![0x80 | ((value >> 8) as u8), (value & 0xff) as u8]
+        } else {
+            vec![
+                0xc0 | ((value >> 24) as u8),
+                ((value >> 16) & 0xff) as u8,
+                ((value >> 8) & 0xff) as u8,
+                (value & 0xff) as u8,
+            ]
+        }
+    }
+
+    fn byte_list(data: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = encode_uint(data.len() as u64);
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn be_u32(value: u32) -> [u8; 4] {
+        value.to_be_bytes()
+    }
+
+    fn build_minimal_dart_kernel(uri: &str, dart_src: &str) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&be_u32(0x90ab_cdef));
+        buf.extend_from_slice(&be_u32(130));
+
+        let source_table_offset: usize = buf.len();
+        let mut source_table: Vec<u8> = Vec::new();
+        source_table.extend_from_slice(&be_u32(1));
+        source_table.extend_from_slice(&byte_list(uri.as_bytes()));
+        source_table.extend_from_slice(&byte_list(dart_src.as_bytes()));
+        source_table.extend_from_slice(&encode_uint(0));
+        source_table.extend_from_slice(&byte_list(&[]));
+        source_table.extend_from_slice(&encode_uint(0));
+        buf.extend_from_slice(&source_table);
+
+        let string_table_offset: usize = buf.len();
+        buf.extend_from_slice(&encode_uint(0));
+
+        let mut fixed: Vec<u8> = Vec::new();
+        fixed.extend_from_slice(&be_u32(u32::try_from(source_table_offset).unwrap()));
+        for _ in 1..6 {
+            fixed.extend_from_slice(&be_u32(0));
+        }
+        fixed.extend_from_slice(&be_u32(u32::try_from(string_table_offset).unwrap()));
+        fixed.extend_from_slice(&be_u32(0));
+        buf.extend_from_slice(&fixed);
+
+        buf.extend_from_slice(&be_u32(0));
+        buf.extend_from_slice(&be_u32(0));
+        buf.extend_from_slice(&be_u32(0));
+        buf.extend_from_slice(&be_u32(u32::try_from(buf.len() + 4).unwrap()));
+        buf
+    }
+
+    #[test]
+    fn kernel_default_emits_byte_exact_dart_source() {
+        let dart_src: &str = "class Greeter {\n  String hello() => 'hi';\n}\n";
+        let kernel_bytes: Vec<u8> = build_minimal_dart_kernel("file:///lib/main.dart", dart_src);
+        assert!(
+            is_dart_kernel(&kernel_bytes),
+            "fixture must parse as a kernel"
+        );
+
+        let scratch: PathBuf = std::env::current_dir()
+            .expect("cwd")
+            .join("tmp")
+            .join("flutter-kernel-test");
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("mk scratch");
+        let in_path: PathBuf = scratch.join("kernel_blob.bin");
+        std::fs::write(&in_path, &kernel_bytes).expect("write kernel");
+        let out_path: PathBuf = scratch.join("out.json");
+
+        kernel(in_path, Some(out_path.clone()), false).expect("kernel ok");
+
+        let dart_path: PathBuf = out_path.with_extension("recovered.dart");
+        assert!(
+            dart_path.is_file(),
+            "recovered .dart must be written by default without --emit-source"
+        );
+        let recovered: String = std::fs::read_to_string(&dart_path).expect("read dart");
+        assert!(
+            recovered.contains("class Greeter") && recovered.contains("String hello()"),
+            "recovered dart must be the byte-exact source from the kernel source table: {recovered}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}

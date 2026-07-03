@@ -1,0 +1,4 @@
+notes file inside docs subdirectory
+squashfs v4 lzo compressor id is 3
+the quick brown fox jumps over the lazy dog
+0123456789

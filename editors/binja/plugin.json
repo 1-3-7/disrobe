@@ -1,0 +1,40 @@
+{
+  "pluginmetadataversion": 2,
+  "name": "disrobe",
+  "type": [
+    "helper",
+    "binaryview"
+  ],
+  "api": [
+    "python3"
+  ],
+  "description": "Deobfuscate, decompile, and unpack almost anything by driving the disrobe CLI from inside Binary Ninja.",
+  "longdescription": "Registers Binary Ninja plugin commands under the `disrobe` menu that run disrobe subcommands on the open file and print the recovered output to the Binary Ninja log. Drives the real disrobe binary; no placeholder bodies.",
+  "license": {
+    "name": "Elastic-2.0",
+    "text": "Elastic License 2.0. See the disrobe repository LICENSE for terms."
+  },
+  "platforms": [
+    "Linux",
+    "Darwin",
+    "Windows"
+  ],
+  "installinstructions": {
+    "Linux": "Copy this directory into ~/.binaryninja/plugins/disrobe and restart Binary Ninja.",
+    "Darwin": "Copy this directory into ~/Library/Application Support/Binary Ninja/plugins/disrobe and restart Binary Ninja.",
+    "Windows": "Copy this directory into %APPDATA%\\Binary Ninja\\plugins\\disrobe and restart Binary Ninja."
+  },
+  "dependencies": {},
+  "version": "0.1.0",
+  "author": "disrobe",
+  "minimumbinaryninjaversion": 3000,
+  "menupath": [
+    "disrobe \\ Auto: run full deobfuscation pipeline",
+    "disrobe \\ Detect: identify obfuscator / packer",
+    "disrobe \\ Strings: extract and deobfuscate strings",
+    "disrobe \\ IOC: extract indicators of compromise",
+    "disrobe \\ Behavior: summarize binary capabilities (MITRE)",
+    "disrobe \\ Identify: compiler / packer / protector fingerprint",
+    "disrobe \\ Scan: leak credentials scanner"
+  ]
+}

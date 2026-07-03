@@ -1,0 +1,8 @@
+{
+  "kind": "turbopack",
+  "entry": "turbopack-root",
+  "module_ids": ["./app/page.tsx", "./components/button.tsx"],
+  "imports_contains": ["./app/page.tsx", "./components/button.tsx"],
+  "dynamic_imports_contains": ["./chunks/lazy.js"],
+  "sourcemap_url_keys": ["turbopack-root"]
+}

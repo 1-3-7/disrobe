@@ -1,0 +1,12 @@
+{
+  "include": [
+    "tests"
+  ],
+  "extraPaths": [
+    "../../bindings/python"
+  ],
+  "typeCheckingMode": "strict",
+  "reportMissingModuleSource": false,
+  "reportUnusedFunction": false,
+  "pythonVersion": "3.14"
+}

@@ -1,0 +1,120 @@
+{
+  "schema": "disrobe.usage-inference.fixture/v1",
+  "description": "Hand-labeled type-inference ground truth. Each case lists the deterministic usage observations a variable exhibits and the type a human reverser would assign from that evidence alone. Genuinely-ambiguous evidence is labeled `unknown`: a wrong confident type is worse than Unknown.",
+  "cases": [
+    {
+      "var": "message",
+      "observations": ["string_concat", "string_concat"],
+      "expected": "string",
+      "rationale": "repeated string concatenation only makes sense on a string"
+    },
+    {
+      "var": "template",
+      "observations": ["string_format"],
+      "expected": "string",
+      "rationale": "used as a format string"
+    },
+    {
+      "var": "key_lookup",
+      "observations": ["string_index_by_name"],
+      "expected": "string",
+      "rationale": "indexed by a name key implies a string-keyed value"
+    },
+    {
+      "var": "loop_counter",
+      "observations": ["integer_arith", "integer_arith", "ordered_comparison"],
+      "expected": "int",
+      "rationale": "incremented and compared by ordering: an integer"
+    },
+    {
+      "var": "permission_mask",
+      "observations": ["bitwise_arith", "shift_arith"],
+      "expected": "int",
+      "rationale": "bit masking and shifting are integer operations"
+    },
+    {
+      "var": "average",
+      "observations": ["float_division", "float_arith"],
+      "expected": "float",
+      "rationale": "floating-point division yields a float"
+    },
+    {
+      "var": "tree_node",
+      "observations": ["field_access", "field_access"],
+      "expected": "struct*",
+      "rationale": "field dereference implies a pointer to a struct"
+    },
+    {
+      "var": "byte_buffer",
+      "observations": ["array_index", "array_index"],
+      "expected": "unknown[]",
+      "rationale": "indexed by integer offset: an array of unknown element type"
+    },
+    {
+      "var": "raw_ptr",
+      "observations": ["pointer_deref", "pointer_arith"],
+      "expected": "void*",
+      "rationale": "dereferenced and offset but no field shape: an untyped pointer"
+    },
+    {
+      "var": "callback",
+      "observations": ["called_as_function"],
+      "expected": "fn",
+      "rationale": "invoked as a callable"
+    },
+    {
+      "var": "is_ready",
+      "observations": ["boolean_logic", "boolean_logic"],
+      "expected": "bool",
+      "rationale": "combined with logical operators only"
+    },
+    {
+      "var": "opaque_handle",
+      "observations": [],
+      "expected": "unknown",
+      "rationale": "no usage evidence at all"
+    },
+    {
+      "var": "compared_value",
+      "observations": ["ordered_comparison"],
+      "expected": "unknown",
+      "rationale": "ordering comparison alone fits int, float, or string"
+    },
+    {
+      "var": "equality_operand",
+      "observations": ["equality_comparison"],
+      "expected": "unknown",
+      "rationale": "equality alone pins nothing about the underlying type"
+    },
+    {
+      "var": "length_target",
+      "observations": ["length_query"],
+      "expected": "unknown",
+      "rationale": "length applies to both strings and arrays"
+    },
+    {
+      "var": "conflicted_str_int",
+      "observations": ["string_concat", "integer_arith"],
+      "expected": "unknown",
+      "rationale": "concatenated as string and added as integer: contradictory"
+    },
+    {
+      "var": "conflicted_int_float",
+      "observations": ["integer_arith", "float_arith"],
+      "expected": "unknown",
+      "rationale": "integer and floating arithmetic on the same value contradict"
+    },
+    {
+      "var": "conflicted_field_arith",
+      "observations": ["field_access", "integer_arith"],
+      "expected": "unknown",
+      "rationale": "struct field access and integer arithmetic contradict"
+    },
+    {
+      "var": "walk_cursor",
+      "observations": ["field_access", "pointer_arith"],
+      "expected": "struct*",
+      "rationale": "field access plus pointer arithmetic is a consistent struct pointer walk"
+    }
+  ]
+}

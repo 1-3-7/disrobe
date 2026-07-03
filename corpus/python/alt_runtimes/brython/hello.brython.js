@@ -1,0 +1,1 @@
+__BRYTHON__.loadBrythonPackage({"$timestamp": 1781737437497, "hellopkg": [".py", "def greet(name):\n return \"hi from brython, \"+name\n \n \nclass Greeter:\n def __init__(self,prefix):\n  self.prefix=prefix\n  \n def say(self,name):\n  return self.prefix+\": \"+greet(name)\n", [], 1]})

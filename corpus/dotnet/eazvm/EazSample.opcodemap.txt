@@ -1,0 +1,55 @@
+resource_key=1878242889
+position_key=336077329
+op add 2029111812
+op beq.s 797507120
+op bge.s 197328421
+op bgt.s 1191503855
+op ble.s 1518500332
+op blt.s 593268753
+op br.s 1812545124
+op brfalse.s 1438286611
+op brtrue.s 1332912012
+op call 327239740
+op div 381954183
+op dup 1905018680
+op ldarg.0 379578679
+op ldarg.1 968686922
+op ldarg.2 916111272
+op ldarg.3 1931800508
+op ldarg.s 1303843594
+op ldc.i4 1551673847
+op ldc.i4.0 1589294449
+op ldc.i4.1 1586060290
+op ldc.i4.2 805062964
+op ldc.i4.3 659885332
+op ldc.i4.4 613960757
+op ldc.i4.5 2118184728
+op ldc.i4.6 596776358
+op ldc.i4.7 1288557633
+op ldc.i4.8 665831381
+op ldc.i4.m1 1040156924
+op ldc.i4.s 177933071
+op ldloc.0 533693640
+op ldloc.1 297069969
+op ldloc.2 1369656348
+op ldloc.3 699384303
+op ldloc.s 1446546265
+op ldnull 212696009
+op ldstr 2102767360
+op mul 1558839523
+op nop 4090561
+op pop 1604169728
+op rem 1157939693
+op ret 750478628
+op starg.s 1132975529
+op stloc.0 119107223
+op stloc.1 1765254857
+op stloc.2 372942651
+op stloc.3 1074966439
+op stloc.s 1033376509
+op sub 1684772228
+method Add pos=0 pstr=&J5Zi'bqN$ params=2 locals=0 ret=i4
+method Classify pos=50 pstr=&J5Zi'bqN2 params=1 locals=0 ret=i4
+method Max3 pos=136 pstr=&J5Zi'bqOW params=3 locals=1 ret=i4
+method Poly pos=244 pstr=&J5Zi'bqPF params=1 locals=0 ret=i4
+method SumTo pos=314 pstr=&J5Zi'bqK9 params=1 locals=2 ret=i4

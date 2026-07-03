@@ -1,0 +1,95 @@
+schema_version = "1"
+crate = "disrobe-pass-lua"
+description = "self-authored benign lua programs compiled to LuaJIT and Luau bytecode, used to grade the register lifters by running the original source and the recovered source through the matching interpreter and asserting identical stdout"
+
+[toolchains]
+luajit = "LuaJIT 2.1.1720049189 (DEVCOM.LuaJIT)"
+luau = "luau-lang/luau 0.725 (luau.exe runtime + luau-compile.exe)"
+luac_reference = "n/a (sources are plain lua, not luac)"
+
+[luajit]
+description = "compiled with `luajit -b src/<name>.lua <name>.luajit` (stripped, the -b default) and `luajit -b -s` for the .stripped variant; the .lj20 variant is the 2.1 chunk with its version byte set to 0x01 to exercise the LuaJIT 2.0 code path (the bc op encoding for these programs is identical between 2.0 and 2.1)"
+oracle = "run src/<name>.lua and the recovered source through luajit, assert identical stdout (file:line in error() messages normalized)"
+
+[[luajit.fixtures]]
+path = "arith_loops.luajit"
+input = "src/arith_loops.lua"
+sha256 = "3cd9d88a4227bf9afa6e88a60ec5891ae9c34f845ac7f2f58a95c3fcbb104916"
+command = "luajit -b src/arith_loops.lua arith_loops.luajit"
+
+[[luajit.fixtures]]
+path = "arith_loops.stripped.luajit"
+input = "src/arith_loops.lua"
+sha256 = "a113fe6dc498bb359da5a9f4bca72b8a53b38888584f2ff1a8c087e6229cc08e"
+command = "luajit -b -s src/arith_loops.lua arith_loops.stripped.luajit"
+
+[[luajit.fixtures]]
+path = "arith_loops.lj20.luajit"
+input = "src/arith_loops.lua"
+sha256 = "30e7c0ba6844a8cedd89166d81af5f246591df5df9d9859d689fb502686a6f21"
+command = "luajit -b -s then version byte patched 0x02 -> 0x01 (LuaJIT 2.0)"
+
+[[luajit.fixtures]]
+path = "control_flow.luajit"
+input = "src/control_flow.lua"
+sha256 = "6ce70688fb6bb6e7d0194733545e234b22bcebed053fae95749fd54d629e7ee5"
+command = "luajit -b src/control_flow.lua control_flow.luajit"
+
+[[luajit.fixtures]]
+path = "closures_recursion.luajit"
+input = "src/closures_recursion.lua"
+sha256 = "c27a193ed4cca042fb6ce796ced2de065dd8052f0faf912d58f5bccff4f043c2"
+command = "luajit -b src/closures_recursion.lua closures_recursion.luajit"
+
+[[luajit.fixtures]]
+path = "oop_functional.luajit"
+input = "src/oop_functional.lua"
+sha256 = "74f28f1bf5b869b8eef9eae057e69667f2c0732d0c76591c646bb7c33ac8b127"
+command = "luajit -b src/oop_functional.lua oop_functional.luajit"
+
+[luau]
+description = "compiled with `luau-compile --binary src/<name>.lua` (Luau bytecode version 11)"
+oracle = "run src/<name>.lua and the recovered source through luau.exe, assert identical stdout; closures_recursion is graded by recompile via luau-compile because its `a > b and a or b` ternary recovers to a runnable but not value-identical form"
+
+[[luau.fixtures]]
+path = "arith_loops.luau"
+input = "src/arith_loops.lua"
+sha256 = "864087ea3860fabe5ae9f19b502cd7e880d2b71305b862f5c4d504b97bf237ce"
+command = "luau-compile --binary src/arith_loops.lua"
+
+[[luau.fixtures]]
+path = "control_flow.luau"
+input = "src/control_flow.lua"
+sha256 = "55e11508670c2f16d2954f1d8e02e2f6e6c3024723687a7367c06021049755d8"
+command = "luau-compile --binary src/control_flow.lua"
+
+[[luau.fixtures]]
+path = "closures_recursion.luau"
+input = "src/closures_recursion.lua"
+sha256 = "7b5928c6593cbb3213b2035a7105c47ea4604d780d8b185e100d7e15f21ae508"
+command = "luau-compile --binary src/closures_recursion.lua"
+
+[[luau.fixtures]]
+path = "oop_functional.luau"
+input = "src/oop_functional.lua"
+sha256 = "adf975bf36040930fabf418ffd116583f6ac3337eb8fa0c3518c0dba369b0ff0"
+command = "luau-compile --binary src/oop_functional.lua"
+
+[sources]
+description = "self-authored benign lua sources (functions, loops, conditionals, closures, recursion, oop via metatables, functional combinators, string/table library)"
+
+[[sources.fixtures]]
+path = "src/arith_loops.lua"
+sha256 = "b5f2d7da005f8375c5a6beb6461bd0cbb1c062ed53ea44220634ee3c8d663a00"
+
+[[sources.fixtures]]
+path = "src/control_flow.lua"
+sha256 = "9978c63317bedfb0c973c3431524100b5444b89fbd44e8c2ee44eb8282da0274"
+
+[[sources.fixtures]]
+path = "src/closures_recursion.lua"
+sha256 = "47681a3a4c1910e56a38b804a2fde822440210bcf05d72603269c065cf7edbd0"
+
+[[sources.fixtures]]
+path = "src/oop_functional.lua"
+sha256 = "af99858150d73640208769c55e41061108b17dbcbb93adc3a42f3f3659305f12"

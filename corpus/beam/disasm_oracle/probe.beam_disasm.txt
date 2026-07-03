@@ -1,0 +1,106 @@
+module probe
+function add 2 2
+{label,1}
+{line,[{location,line,4}]}
+{func_info,{atom,probe},{atom,add},2}
+{label,2}
+{gc_bif,'+',{f,0},2,[{x,0},{x,1}],{x,0}}
+return
+function fac 1 4
+{label,3}
+{line,[{location,line,6}]}
+{func_info,{atom,probe},{atom,fac},1}
+{label,4}
+{test,is_eq_exact,{f,5},[{x,0},{integer,0}]}
+{move,{integer,1},{x,0}}
+return
+{label,5}
+{test,is_lt,{f,3},[{integer,0},{x,0}]}
+{line,[{location,line,7}]}
+{gc_bif,'-',{f,0},1,[{x,0},{integer,1}],{x,1}}
+{allocate,1,2}
+{move,{x,0},{y,0}}
+{move,{x,1},{x,0}}
+{call,1,{probe,fac,1}}
+{gc_bif,'*',{f,0},1,[{y,0},{x,0}],{x,0}}
+{deallocate,1}
+return
+function greet 1 7
+{label,6}
+{line,[{location,line,9}]}
+{func_info,{atom,probe},{atom,greet},1}
+{label,7}
+{move,{x,0},{x,1}}
+{move,{literal,[104,101,108,108,111,32]},{x,0}}
+{call_ext_only,2,{extfunc,erlang,'++',2}}
+function classify 1 9
+{label,8}
+{line,[{location,line,11}]}
+{func_info,{atom,probe},{atom,classify},1}
+{label,9}
+{test,is_integer,{f,10},[{x,0}]}
+{move,{atom,integer},{x,0}}
+return
+{label,10}
+{test,is_atom,{f,11},[{x,0}]}
+{move,{atom,atom},{x,0}}
+return
+{label,11}
+{move,{atom,other},{x,0}}
+return
+function sumlist 1 13
+{label,12}
+{line,[{location,line,15}]}
+{func_info,{atom,probe},{atom,sumlist},1}
+{label,13}
+{test_heap,{alloc,[{words,0},{floats,0},{funs,1}]},1}
+{make_fun3,{probe,'-sumlist/1-fun-0-',2},0,22910417,{x,1},{list,[]}}
+{move,{x,0},{x,2}}
+{move,{x,1},{x,0}}
+{move,{integer,0},{x,1}}
+{call_ext_only,3,{extfunc,lists,foldl,3}}
+function mapkv 1 15
+{label,14}
+{line,[{location,line,17}]}
+{func_info,{atom,probe},{atom,mapkv},1}
+{label,15}
+{test,is_map,{f,17},[{x,0}]}
+{get_map_elements,{f,16},{x,0},{list,[{atom,key},{x,0}]}}
+return
+{label,16}
+{move,{atom,default},{x,0}}
+return
+{label,17}
+{test_heap,3,1}
+{put_tuple2,{x,0},{list,[{atom,badmap},{x,0}]}}
+{line,[]}
+{call_ext_only,1,{extfunc,erlang,error,1}}
+function tup 0 19
+{label,18}
+{line,[{location,line,19}]}
+{func_info,{atom,probe},{atom,tup},0}
+{label,19}
+{move,{literal,{ok,42,[115,116,114]}},{x,0}}
+return
+function module_info 0 21
+{label,20}
+{line,[]}
+{func_info,{atom,probe},{atom,module_info},0}
+{label,21}
+{move,{atom,probe},{x,0}}
+{call_ext_only,1,{extfunc,erlang,get_module_info,1}}
+function module_info 1 23
+{label,22}
+{line,[]}
+{func_info,{atom,probe},{atom,module_info},1}
+{label,23}
+{move,{x,0},{x,1}}
+{move,{atom,probe},{x,0}}
+{call_ext_only,2,{extfunc,erlang,get_module_info,2}}
+function '-sumlist/1-fun-0-' 2 25
+{label,24}
+{line,[{location,line,15}]}
+{func_info,{atom,probe},{atom,'-sumlist/1-fun-0-'},2}
+{label,25}
+{gc_bif,'+',{f,0},2,[{x,0},{x,1}],{x,0}}
+return

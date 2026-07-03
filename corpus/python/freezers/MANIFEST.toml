@@ -1,0 +1,139 @@
+schema_version = 1
+generated_at = "2026-05-25"
+source_app = "hello"
+source_app_description = "Wraps corpus/python/decompile/playground/edge_cases_3_6..3_12.py (6-band chain, ~4181 LOC). hello/__init__.py eagerly imports each band; main() invokes edge_cases_3_12.exercise()."
+python_runtime = "CPython 3.12.10"
+host_platform = "win_amd64"
+
+[shiv]
+file = "shiv/hello.pyz"
+sha256 = "4ff1a2f007680451fdd6a941bc392600447ddc714582b843c3ac69a0b7c4cd79"
+size = 83343
+tool = "shiv"
+tool_version = "1.0.8"
+generation_command = "shiv -c hello -o hello.pyz hello-0.1.0-py3-none-any.whl --no-deps"
+regen_env_var = "DISROBE_SHIV_REGEN"
+extracted_dir = "shiv/extracted/"
+
+[pex]
+file = "pex/hello.pex"
+sha256 = "5818bb776234972b0a2a273415eb303673136b62ca19c4cb722b6b2531dd79f2"
+size = 923554
+tool = "pex"
+tool_version = "2.95.3"
+generation_command = "pex --python python3.12 --entry-point hello:main -o hello.pex hello-0.1.0-py3-none-any.whl"
+regen_env_var = "DISROBE_PEX_REGEN"
+extracted_dir = "pex/extracted/"
+
+[py2exe]
+file = "py2exe/hello.exe"
+sha256 = "9459248e8c44a66dc37142e239c0cb31fc71822e05b985b1dddbf85d533829bd"
+size = 40960
+tool = "py2exe"
+tool_version = "0.14.0.0"
+generation_command = "python setup.py py2exe  (bundle_files=3, optimize=0, compressed=true; companion library.zip in extracted/)"
+regen_env_var = "DISROBE_PY2EXE_REGEN"
+host_platform = "win_amd64"
+extracted_dir = "py2exe/extracted/"
+notes = "py2exe is Windows-only. Python 3.12+ rejects bundle_files<3, so library.zip ships as a sibling and the .exe loads it."
+
+[cxfreeze]
+file = "cxfreeze/hello.exe"
+sha256 = "bd5a7d2980fb566f68a5ecb85cf8b6472ad095ce7818ac5a9c94ce1e4d574442"
+size = 17920
+tool = "cx_Freeze"
+tool_version = "8.6.4"
+generation_command = "cxfreeze --script hello.py --target-name hello --target-dir build"
+regen_env_var = "DISROBE_CXFREEZE_REGEN"
+extracted_dir = "cxfreeze/extracted/"
+notes = "cx_Freeze emits the stub binary plus a sibling lib/ directory containing python312.dll, library.zip, and compiled .pyc resources."
+
+[briefcase]
+file = "briefcase/hello.exe"
+sha256 = "1b515eda4ec1efb56b096c45b0a61c11682f5f397c11d5e6f1338ef62bd96327"
+size = 134656
+tool = "briefcase"
+tool_version = "0.4.2"
+generation_command = "briefcase new --no-input -Q bootstrap=Console ...; briefcase create windows; briefcase update windows; briefcase build windows; briefcase package windows --adhoc-sign"
+regen_env_var = "DISROBE_BRIEFCASE_REGEN"
+extracted_dir = "briefcase/extracted/"
+secondary_file = "briefcase/hello.msi"
+secondary_sha256 = "d28c2db2f9fc92430c1ab7453d0294863e8286b300b550188d9f3c3bfd18ce9f"
+secondary_size = 10076160
+notes = "Sibling layout under extracted/ matches briefcase windows runtime: app/ + app_packages/ + python-stdlib (via embedded python). Detector probes for app_packages|python-stdlib|briefcase.toml siblings."
+
+[pyoxidizer]
+file = "pyoxidizer/hello.exe"
+sha256 = ""
+size = 0
+tool = "pyoxidizer"
+tool_version = "0.24.0"
+generation_command = "DISROBE_PYOXIDIZER_REGEN=1 cargo test -p disrobe-pass-pyfreeze --test pyoxidizer_real_binary"
+regen_env_var = "DISROBE_PYOXIDIZER_REGEN"
+extracted_dir = "pyoxidizer/extracted/"
+status = "real-existing-gated-on-tool"
+parser = "exact-python-packed-resources-v3"
+notes = """Real-fixture-gated via existing pyoxidizer_real_binary.rs test. Binary lives under target/test-fixtures/pyoxidizer-built/<hash>/ instead of corpus/ because pyoxidizer build is multi-minute and the binary embeds a Python distribution.
+
+NB (2026-05-25): cargo install pyoxidizer fails on Rust 1.95 + Windows SDK 10 due to libgit2-sys 0.14 missing __imp_OpenProcessToken / __imp_CheckTokenMembership / 13 other advapi32 symbols. pyoxidizer 0.24.0 is unmaintained. Test correctly graceful-skips when binary is absent.
+
+NB (2026-06-13): the index parse is now the exact python-packed-resources v3 format (header blob_section_count u8 + blob_index_length/resources_count/resources_index_length u32 LE, blob index walk for per-field section offsets, resources index walk resolving every Name/InMemorySource/InMemoryBytecode payload out of its blob section with None/Null interior-padding handling), not the prior name-scan approximation. extract_modules() yields each module's exact marshalled bytecode; the extractor prepends the version-matched pyc header so the recovered modules are loadable .pyc files for the decompiler. Because pyoxidizer will not build on this box, the non-circular oracle is packed_resources_v3_roundtrip_recovers_exact_modules: it compiles authored multi-module source to real CPython 3.12 marshal.dumps(compile(...)) bytecode, serializes a spec-conformant v3 blob with an in-test writer independent of disrobe's reader, carves and parses it through disrobe, asserts byte-exact recovery of every module's bytecode, and confirms the reconstructed 3.12 pyc loads through disrobe-py-marshal::read_pyc into a real code object. Falls back to synthetic marshalled-shaped payloads (still byte-exact recovery) only if py -3.12 is absent, logged honestly."""
+
+[zipapp]
+file = "zipapp/hello.pyz"
+sha256 = "d1a7891afe1b0a47494df8ed5b2a41c632d8116fe97c25f5cab1325cb2d9dd42"
+size = 150068
+tool = "stdlib.zipapp"
+tool_version = "cpython-3.12.10"
+generation_command = "python -m zipapp <stage-dir> -o hello.pyz   (stage-dir contains hello/ + top-level edge_cases_3_*.py + __main__.py)"
+regen_env_var = "DISROBE_ZIPAPP_REGEN"
+extracted_dir = "zipapp/extracted/"
+
+[pyinstaller]
+file = "pyinstaller/gauntlet/hello.exe"
+sha256 = "40ccd5e08029519c5d1b3dfb87c5f2fbb570a558b0e1cf01c572c2c98f64ee95"
+size = 8039621
+tool = "pyinstaller"
+tool_version = "6.20.0"
+python_runtime = "CPython 3.12.10"
+generation_command = "py -3.12 -m PyInstaller --onefile --noupx --noconfirm --clean --name disrobe_hello_pyinst --exclude-module tkinter --exclude-module unittest --exclude-module test --exclude-module pydoc --exclude-module email --exclude-module http --exclude-module xml --exclude-module pdb --exclude-module doctest gauntlet/hello.py"
+source = "pyinstaller/gauntlet/hello.py"
+status = "real-committed"
+notes = """Genuine `pyinstaller --onefile` Windows binary (v2.1 PKG cookie, python312.dll, no UPX). The application script lives as a CArchive 's' entry; the PYZ ('z' PYZ.pyz) carries the bundled stdlib slice as raw marshalled code objects (no per-module pyc header, reconstructed at runtime by pyimod02_importers). Gated by pyinstaller_gauntlet.rs: detects the cookie, carves the script entry back to a 3.12 pyc and recovers 11/11 clean-source identifiers plus the string and numeric constants, and marshal-loads 82/82 PYZ module bodies into code objects through disrobe-py-marshal. The non-circular oracle is the committed clean gauntlet/hello.py."""
+
+[cxfreeze_synthetic]
+provenance = "synthetic"
+files = [
+    "cxfreeze/extracted/hello.exe",
+    "cxfreeze/extracted/library.zip",
+]
+generator = "crates/disrobe-pass-pyfreeze/tests/fixtures/gen_freezer_fixtures.py"
+spec = "cx_Freeze sibling layout: binary in dir + sibling library.zip containing per-band .pyc files compiled via CPython 3.14 marshal"
+non_circularity = "generator emits bytes per the documented cx_Freeze format; src/cxfreeze/layout.rs::probe and src/cxfreeze/library_zip are independent of the generator; assertions grade against format-expected outcomes (the six edge_cases bands extract, library_zip_path is Some)"
+
+[pex_synthetic]
+provenance = "synthetic"
+files = [
+    "pex/hello.pex",
+]
+generator = "crates/disrobe-pass-pyfreeze/tests/fixtures/gen_freezer_fixtures.py"
+spec = "PEX zip format: shebang line + trailing PKZIP with PEX-INFO JSON entry (entry_point=hello:main) and six .py source members under .deps/ path"
+non_circularity = "generator emits bytes per the documented PEX format; src/pex/mod.rs detect_and_extract and src/pex/pex_info.rs parse are independent of the generator; assertions grade against format-expected outcomes (PEX-INFO entry_point starts with hello, six edge_cases bands extracted)"
+
+[py2exe_synthetic]
+provenance = "synthetic"
+files = [
+    "py2exe/hello.exe",
+    "py2exe/extracted/library.zip",
+]
+generator = "crates/disrobe-pass-pyfreeze/tests/fixtures/gen_freezer_fixtures.py"
+spec = "py2exe PE format: MZ+PE header, PYTHONSCRIPT literal for detection, then PY2EXE_MAGIC_TAG (0x78563412) blob with optimize/unbuffered/blob_count u32s + NUL-terminated zip_archive_name cstring + raw marshal.dumps(compile(...)) of edge_cases_3_6 as marshalled_code; sibling library.zip contains six per-band .pyc files compiled via CPython 3.14"
+non_circularity = "generator emits bytes per src/py2exe/scriptinfo.rs spec and the unit test in src/py2exe/pe.rs; src/py2exe/pe.rs::extract_pythonscript_resource and src/py2exe/scriptinfo.rs::parse are independent of the generator; assertions grade against format-expected outcomes (marshalled_code non-empty real bytecode, embedded_pyc_path written, six bands in library.zip)"
+notes = "py2exe 0.14 (bundle_files=3) ships its full module set in the sibling library.zip, not inside the PYTHONSCRIPT resource. real_py2exe_library_zip.rs proves py2exe/extracted/hello.exe (stub sitting next to a bare library.zip) classifies as py2exe via PYTHONSCRIPT (not cx_Freeze, which requires lib/library.zip or frozen_application_license.txt), extracts all six bands plus __pythonscript__, and that every bundled band pyc marshal-loads into a code object through disrobe-py-marshal."
+
+[bbfreeze_runtime_assembled]
+provenance = "real-interpreter-assembled-at-test-time"
+files = []
+generator = "crates/disrobe-pass-pyfreeze/tests/real_bbfreeze.rs"
+spec = "bbfreeze dist layout (schmir/bbfreeze): stub launcher .exe + sibling library.zip of top-level .pyc modules + a versioned pythonNN.dll (Windows) / libpythonX.Y.so (unix) runtime + optional py.exe launcher; no frozen_application_license.txt and no lib/ subdir (which is how it is told apart from cx_Freeze)."
+non_circularity = "the .pyc members are real CPython compile()+marshal.dumps() output (the test shells out to the on-box interpreter), the module sources are authored clean Python, and src/bbfreeze/{layout,mod}.rs detection+extraction are independent of the test assembler. Asserts detect_bytes -> Bbfreeze, every module extracts, each pyc marshal-loads into a code object via disrobe-py-marshal, __main__.pyc is the primary module, and the full extract() pipeline recovers the module set (with app_logic source content graded when the decompiler recovers directly). Graceful-skips if no python interpreter is present."

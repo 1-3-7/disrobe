@@ -1,0 +1,7 @@
+{
+  "obf_checksum.stringconceal.js": "alpha=102433287:medium|forensic=254542682:medium|deobfuscate=453182598:medium|z=8061051:small\n",
+  "obf_tokenizer.rgf.js": "12 + 30 - 2 => NUM(12),OP(+),NUM(30),OP(-),NUM(2) = 40\n4 * 5 + 100 => NUM(4),OP(*),NUM(5),OP(+),NUM(100) = 120\n9 / 3 => NUM(9),OP(/),NUM(3) = 3\n",
+  "obf_statesum.spec.js": "43:220,13:200,34:214,88:250\n",
+  "obf_statesum.real.js": "43:220,13:200,34:214,88:250\n",
+  "obf_stringcompression.real.js": "lz=forensic marker lzstring|FORENSIC MARKER LZSTRING|803897\n"
+}

@@ -1,0 +1,21 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe lifts every function of a real hermesc-built HBC v96 bundle with correct names and source-matching bodies at zero fallback ops.",
+  "competitors": [],
+  "detail": "self-authored sample.js compiled with the real hermesc (HBC v96); all 8 functions lift with correct names and source-matching bodies at 0 fallback ops; CI-gated",
+  "disrobe_leads": null,
+  "ecosystem": "hermes",
+  "floor": 100.0,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)",
+  "id": "hermes-opcoverage",
+  "measured": "100.00%",
+  "oracle": {
+    "external": "self-authored sample.js compiled by the real hermesc; every function lifts at 0 fallback ops with source-matching bodies",
+    "kind": "recovery-import",
+    "note": "Floor equals measured (100%) because the gate asserts total_fallback_ops == 0, a hard ceiling rather than a cherry-picked figure: any regression drops below 100% and trips."
+  },
+  "oracle_strength": "strong",
+  "reproduce": "cargo test -p disrobe-pass-mobile --test real_hermes_sample",
+  "title": "React Native Hermes HBC v96 op-coverage"
+}

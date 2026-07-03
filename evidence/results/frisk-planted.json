@@ -1,0 +1,21 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe frisk detects every planted (non-secret) IOC category - endpoints, manifest findings, URLs, IPv4, email, .onion - on the committed planted ground-truth tree.",
+  "competitors": [],
+  "detail": "deliberately planted findings (endpoint, manifest, URL, IPv4, email, .onion) committed under corpus/recon/planted - the ground truth",
+  "disrobe_leads": null,
+  "ecosystem": "secrets",
+  "floor": 100.0,
+  "floor_holds": true,
+  "gate_source": "cargo test -p disrobe-core --test frisk_gauntlet (gate frisk-planted-recall, harvested by cargo run -p disrobe-bench-head-to-head)",
+  "id": "frisk-planted",
+  "measured": "6/6 (100.0%)",
+  "oracle": {
+    "external": "deliberately planted findings committed under corpus/recon/planted - the ground truth the frisk_gauntlet test asserts",
+    "kind": "gate-test-harvest",
+    "note": "Recall against a committed planted ground truth (strong for recall). The secret-provider recall over the same tree is the frisk-apkleaks head-to-head; this row covers the non-secret IOC categories."
+  },
+  "oracle_strength": "strong",
+  "reproduce": "cargo test -p disrobe-core --test frisk_gauntlet  (harvested by cargo run -p disrobe-bench-head-to-head)",
+  "title": "frisk recon category recall on the committed planted tree"
+}

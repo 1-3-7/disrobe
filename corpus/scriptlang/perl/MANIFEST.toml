@@ -1,0 +1,37 @@
+schema_version = 1
+crate = "disrobe-pass-scriptlang"
+generated = "2026-06-14"
+toolchain = "Strawberry Perl 5.8.9.5 (perl 5.8.9, MSWin32-x86-multi-thread), B::Bytecode + ByteLoader 0.06 from the perl 5.8.9 core"
+purpose = "Real Perl ByteLoader 0.06 bytecode produced by the perl 5.8.9 core B::Bytecode backend, used to validate the in-tree perl_bytecode decoder byte-exact against the opcode stream the official B::Disassembler recovers from the same file. The bytecode compiler (perlcc / ByteLoader / B::Bytecode) was removed from the perl core in 5.10.0, so 5.8.9 is the last core line that ships a producer. Self-authored benign script (two subs greet/add and two prints)."
+
+[provenance]
+producer = "perl 5.8.9 B::Bytecode (lib/B/Bytecode.pm + lib/B/Assembler.pm + lib/B/Asmdata.pm), ByteLoader 0.06 (lib/ByteLoader.pm + lib/auto/ByteLoader/ByteLoader.dll)"
+source_script = "hello.pl"
+build = [
+    "perl hello.pl                                  # prints 'Hello, disrobe!' then 'sum=42'",
+    "perl -MO=Bytecode,-H,-ohello.plc hello.pl      # -H emits the loadable shebang + 'use ByteLoader 0.06;' prefix",
+    "perl hello.plc                                  # round-trips: ByteLoader executes it to the same output",
+]
+shebang_note = "The committed hello.plc shebang line was rewritten from the build machine's absolute perl path to /usr/bin/perl. The shebang is cosmetic: ByteLoader keys off the PLBC magic that follows, and the rewritten file still executes to identical output. The bytes from the PLBC magic onward are exactly what B::Bytecode emitted."
+validation = "perl 5.8.9 B::Disassembler (the official inverse of B::Assembler) recovers 671 instructions ending in ret from this file. disrobe's decoder must reproduce that opcode name stream and the embedded PV/name constants, checked in tests/real_perl_bytecode.rs against the committed hello.disasm.txt."
+
+[format]
+magic = "PLBC (0x43424c50), little-endian"
+header_fields = "magic:u32, archname:asciiz, byteloader_version:asciiz, ivsize:u32, ptrsize:u32"
+archname = "MSWin32-x86-multi-thread"
+byteloader_version = "0.06"
+ivsize = 4
+ptrsize = 4
+intsize = 4
+longsize = 4
+byteorder = "1234 (little-endian)"
+
+[[fixture]]
+path = "hello.plc"
+sha256 = "601ebffc106934d783af992289ff58791aa895408fc80bfaedba1894238b749d"
+role = "real ByteLoader 0.06 bytecode with loadable -H header (shebang + use ByteLoader 0.06; then the PLBC stream); 671 instructions, runs to 'Hello, disrobe!' / 'sum=42'"
+
+[[fixture]]
+path = "hello.pl"
+sha256 = "914a44e8bc3a41e126ece4e51ffcf5d056d6f53b8bb7a79f4bb1efaef55b098f"
+role = "self-authored benign source script the bytecode was compiled from"

@@ -1,0 +1,32 @@
+[package]
+name = "disrobe-py-marshal"
+description = "CPython `marshal` codec and `.pyc` file encoder/decoder spanning Python 2.7 through 3.14, used by the disrobe decompilation suite for PyArmor, PyInstaller, and direct `.pyc` analysis."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["python", "marshal", "pyc", "bytecode", "cpython"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+miette = { workspace = true }
+tracing = { workspace = true }
+indexmap = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+proptest = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "pyc_roundtrip"
+harness = false

@@ -1,0 +1,31 @@
+[package]
+name = "disrobe-llm-metadata"
+description = "Versioned LLM metadata envelope, per-pass emitter trait, selection/builder, and category/pack model for the `disrobe --llm` bundle (`disrobe.metadata.llm.v1`)."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ciborium = { workspace = true }
+rmp-serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+jsonschema = "0.28"
+ciborium = { workspace = true }
+rmp-serde = { workspace = true }

@@ -1,0 +1,17 @@
+id = "dalvik-realapk-coverage"
+ecosystem = "android"
+title = "Dalvik body-lowering coverage on real FOSS APKs"
+claim = "disrobe lowers a Dalvik method body (rather than a throw-stub) for the large majority of methods on real FOSS APKs."
+oracle_strength = "coverage-self-reported"
+ci = false
+
+[oracle]
+kind = "recovery-import"
+external = "none external: this counts methods for which the lifter returned a body vs a throw-stub (self-reported coverage, NOT verifier-attested)"
+reproduce = "cargo test -p disrobe-pass-jvm --test dex2jar_realworld_apks (local-only: the APKs are gitignored)"
+note = "This is a coverage number, not a correctness number. It is graded against nothing external (disrobe asserting it produced output). The verifier-attested correctness number is the dalvik-verifier descriptor. Phase 2 upgrades this to a verifier-attested or dex2jar-differential number on SHA-pinned FOSS APKs before it earns a competitor column."
+
+[source]
+recovery_group = "Dalvik recovered bodies (committed dex corpus, real JVM verifier)"
+recovery_bar = "body-lowering (real apks, local)"
+floor = 88.0

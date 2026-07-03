@@ -1,0 +1,275 @@
+name: disrobe
+description: Download the disrobe release binary, deobfuscate/decompile a path or glob, and upload the SARIF to GitHub code scanning.
+author: 1-3-7
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  path:
+    description: File, directory, or glob to analyze. Passed verbatim to the disrobe command.
+    required: true
+  command:
+    description: disrobe subcommand to run (for example `auto`, `scan`, `behavior`).
+    required: false
+    default: auto
+  args:
+    description: Extra arguments appended after the command and before the path (for example `--max-depth 12`).
+    required: false
+    default: ""
+  version:
+    description: disrobe release tag to download (for example `v0.10.0` or `latest`). Defaults to this action's own ref, then `latest`.
+    required: false
+    default: ""
+  fail-on:
+    description: Fail the step when the chain verdict is at or above this threshold. One of `never`, `incomplete`, `failed`, `any`.
+    required: false
+    default: never
+  sarif-file:
+    description: Path the action writes the aggregated SARIF to.
+    required: false
+    default: disrobe.sarif
+  out-dir:
+    description: Directory disrobe writes its recovered artifacts into.
+    required: false
+    default: disrobe-out
+  upload-sarif:
+    description: Upload the SARIF to GitHub code scanning via github/codeql-action/upload-sarif.
+    required: false
+    default: "true"
+  upload-artifact:
+    description: Upload the recovered-artifact directory as a workflow artifact.
+    required: false
+    default: "true"
+  token:
+    description: GitHub token used to download the release asset (defaults to the workflow token).
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  sarif:
+    description: Path to the SARIF file the action produced.
+    value: ${{ steps.run.outputs.sarif }}
+  summary:
+    description: One-line human-readable summary of the run.
+    value: ${{ steps.run.outputs.summary }}
+  verdict:
+    description: Worst chain verdict observed across analyzed inputs.
+    value: ${{ steps.run.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - name: resolve disrobe release and target
+      id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+
+        version="${INPUT_VERSION:-}"
+        if [ -z "${version}" ]; then
+          version="${ACTION_REF:-}"
+        fi
+        case "${version}" in
+          ""|main|master|HEAD) version="latest" ;;
+        esac
+
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        case "${os}" in
+          Linux)
+            case "${arch}" in
+              x86_64|amd64) target="x86_64-unknown-linux-gnu" ;;
+              aarch64|arm64) target="aarch64-unknown-linux-gnu" ;;
+              *) echo "::error::unsupported Linux arch ${arch}"; exit 1 ;;
+            esac
+            archive="tar.zst"; bin="disrobe" ;;
+          Darwin)
+            case "${arch}" in
+              x86_64|amd64) target="x86_64-apple-darwin" ;;
+              arm64|aarch64) target="aarch64-apple-darwin" ;;
+              *) echo "::error::unsupported macOS arch ${arch}"; exit 1 ;;
+            esac
+            archive="tar.zst"; bin="disrobe" ;;
+          MINGW*|MSYS*|CYGWIN*|Windows_NT)
+            case "${arch}" in
+              x86_64|amd64) target="x86_64-pc-windows-msvc" ;;
+              aarch64|arm64) target="aarch64-pc-windows-msvc" ;;
+              *) echo "::error::unsupported Windows arch ${arch}"; exit 1 ;;
+            esac
+            archive="zip"; bin="disrobe.exe" ;;
+          *) echo "::error::unsupported OS ${os}"; exit 1 ;;
+        esac
+
+        asset="disrobe-${version}-${target}.${archive}"
+        {
+          echo "version=${version}"
+          echo "target=${target}"
+          echo "archive=${archive}"
+          echo "asset=${asset}"
+          echo "bin=${bin}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: download and verify disrobe
+      id: download
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REL_VERSION: ${{ steps.resolve.outputs.version }}
+        REL_ASSET: ${{ steps.resolve.outputs.asset }}
+        REL_ARCHIVE: ${{ steps.resolve.outputs.archive }}
+        REL_BIN: ${{ steps.resolve.outputs.bin }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        workdir="${RUNNER_TEMP}/disrobe-dl"
+        mkdir -p "${workdir}"
+        cd "${workdir}"
+
+        gh release download "${REL_VERSION}" \
+          --repo "${REPO}" \
+          --pattern "${REL_ASSET}" \
+          --pattern "SHA256SUMS" \
+          --clobber
+
+        if [ ! -f "${REL_ASSET}" ]; then
+          echo "::error::release ${REL_VERSION} has no asset ${REL_ASSET}"
+          exit 1
+        fi
+        if [ ! -f "SHA256SUMS" ]; then
+          echo "::error::release ${REL_VERSION} has no SHA256SUMS manifest"
+          exit 1
+        fi
+
+        expected="$(awk -v f="${REL_ASSET}" '$2 == f || $2 == "*"f {print $1; exit}' SHA256SUMS)"
+        if [ -z "${expected}" ]; then
+          echo "::error::${REL_ASSET} not listed in SHA256SUMS"
+          exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "${REL_ASSET}" | awk '{print $1}')"
+        else
+          actual="$(shasum -a 256 "${REL_ASSET}" | awk '{print $1}')"
+        fi
+        if [ "${expected}" != "${actual}" ]; then
+          echo "::error::checksum mismatch for ${REL_ASSET}: expected ${expected}, got ${actual}"
+          exit 1
+        fi
+        echo "verified ${REL_ASSET} (sha256 ${actual})"
+
+        extract="${workdir}/extract"
+        mkdir -p "${extract}"
+        if [ "${REL_ARCHIVE}" = "zip" ]; then
+          unzip -q -o "${REL_ASSET}" -d "${extract}"
+        else
+          tar --zstd -xf "${REL_ASSET}" -C "${extract}"
+        fi
+
+        found="$(find "${extract}" -type f -name "${REL_BIN}" -print -quit)"
+        if [ -z "${found}" ]; then
+          echo "::error::${REL_BIN} not found in ${REL_ASSET}"
+          exit 1
+        fi
+        chmod +x "${found}" || true
+        bindir="$(dirname "${found}")"
+        echo "${bindir}" >> "$GITHUB_PATH"
+        echo "bin-path=${found}" >> "$GITHUB_OUTPUT"
+
+    - name: run disrobe
+      id: run
+      shell: bash
+      env:
+        DR_COMMAND: ${{ inputs.command }}
+        DR_ARGS: ${{ inputs.args }}
+        DR_PATH: ${{ inputs.path }}
+        DR_OUT: ${{ inputs.out-dir }}
+        DR_SARIF: ${{ inputs.sarif-file }}
+        DR_FAIL_ON: ${{ inputs.fail-on }}
+        DR_BIN: ${{ steps.download.outputs.bin-path }}
+      run: |
+        set -euo pipefail
+
+        case "${DR_FAIL_ON}" in
+          never|incomplete|failed|any) : ;;
+          *) echo "::error::fail-on must be one of never, incomplete, failed, any"; exit 1 ;;
+        esac
+
+        mkdir -p "${DR_OUT}"
+
+        declare -a extra=()
+        if [ -n "${DR_ARGS}" ]; then
+          read -r -a extra <<< "${DR_ARGS}"
+        fi
+
+        status=0
+        "${DR_BIN}" "${DR_COMMAND}" "${DR_PATH}" \
+          "${extra[@]}" \
+          --sarif \
+          --out "${DR_OUT}" > "${DR_SARIF}" 2> disrobe.log || status=$?
+
+        if [ ! -s "${DR_SARIF}" ] || ! head -c 1 "${DR_SARIF}" | grep -q '{'; then
+          printf '%s\n' '{"$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"disrobe","rules":[]}},"results":[]}]}' > "${DR_SARIF}"
+        fi
+
+        echo "sarif=${DR_SARIF}" >> "$GITHUB_OUTPUT"
+
+        results=0
+        if [ -s "${DR_SARIF}" ] && command -v python3 >/dev/null 2>&1; then
+          results="$(DR_SARIF="${DR_SARIF}" python3 -c 'import json,os,sys; d=json.load(open(os.environ["DR_SARIF"],encoding="utf-8")); print(sum(len(r.get("results",[])) for r in d.get("runs",[])))' 2>/dev/null || echo 0)"
+        fi
+
+        verdict="ok"
+        if [ "${status}" -ne 0 ]; then
+          verdict="failed"
+        elif [ "${results}" -gt 0 ]; then
+          verdict="incomplete"
+        fi
+        echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+
+        summary="disrobe ${DR_COMMAND} on ${DR_PATH}: verdict=${verdict}, sarif-results=${results}"
+        echo "summary=${summary}" >> "$GITHUB_OUTPUT"
+        {
+          echo "### disrobe"
+          echo ""
+          echo "- command: \`${DR_COMMAND}\`"
+          echo "- path: \`${DR_PATH}\`"
+          echo "- verdict: \`${verdict}\`"
+          echo "- SARIF results: \`${results}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        rank() {
+          case "$1" in
+            never) echo 0 ;;
+            ok) echo 0 ;;
+            incomplete) echo 1 ;;
+            failed) echo 2 ;;
+            any) echo 1 ;;
+            *) echo 0 ;;
+          esac
+        }
+        threshold="$(rank "${DR_FAIL_ON}")"
+        observed="$(rank "${verdict}")"
+        if [ "${DR_FAIL_ON}" != "never" ] && [ "${observed}" -ge "${threshold}" ] && [ "${observed}" -gt 0 ]; then
+          echo "::error::disrobe verdict ${verdict} meets fail-on threshold ${DR_FAIL_ON}"
+          exit 1
+        fi
+        exit 0
+
+    - name: upload sarif to code scanning
+      if: ${{ inputs.upload-sarif == 'true' && always() }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.run.outputs.sarif }}
+        category: disrobe
+
+    - name: upload recovered artifacts
+      if: ${{ inputs.upload-artifact == 'true' && always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: disrobe-artifacts
+        path: ${{ inputs.out-dir }}
+        if-no-files-found: ignore

@@ -1,0 +1,21 @@
+{
+  "ci_attested": false,
+  "claim": "disrobe lowers a Dalvik method body (rather than a throw-stub) for the large majority of methods on real FOSS APKs.",
+  "competitors": [],
+  "detail": "transmissionic 92.5 / enrecipes 90.7 / rustdesk 89.0; counts methods the lifter returned a body for vs a throw-stub (self-reported, NOT verifier-attested); the apks are gitignored, so this gate does not run in CI; the committed-corpus bar above is the verifier-attested number",
+  "disrobe_leads": null,
+  "ecosystem": "android",
+  "floor": 88.0,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs:33 (min_bodies_pct 92.3, self-reported bodies_recovered); measured 92.5 per commit 121ba38; verifier attestation is the committed-corpus bar above",
+  "id": "dalvik-realapk-coverage",
+  "measured": "92.50%",
+  "oracle": {
+    "external": "none external: this counts methods for which the lifter returned a body vs a throw-stub (self-reported coverage, NOT verifier-attested)",
+    "kind": "recovery-import",
+    "note": "This is a coverage number, not a correctness number. It is graded against nothing external (disrobe asserting it produced output). The verifier-attested correctness number is the dalvik-verifier descriptor. Phase 2 upgrades this to a verifier-attested or dex2jar-differential number on SHA-pinned FOSS APKs before it earns a competitor column."
+  },
+  "oracle_strength": "coverage-self-reported",
+  "reproduce": "cargo test -p disrobe-pass-jvm --test dex2jar_realworld_apks (local-only: the APKs are gitignored)",
+  "title": "Dalvik body-lowering coverage on real FOSS APKs"
+}

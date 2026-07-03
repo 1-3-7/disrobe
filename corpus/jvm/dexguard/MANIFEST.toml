@@ -1,0 +1,35 @@
+schema_version = 1
+crate = "disrobe-pass-jvm"
+sample = "DexGuardReflectStrings"
+technique = "reflection-invoked static string decryption (DexGuard behavior)"
+license = "in-house benign sample, authored for disrobe"
+
+[build]
+source = "DexGuardReflectStrings.java"
+dex = "DexGuardReflectStrings.dex"
+dex_bytes = 1332
+dex_sha256 = "528e63d82d793d87fc4905b20af0ef953c2de54554cb65031507954af2900591"
+key = "0x66"
+command = "cargo run -p disrobe-pass-jvm --bin gen_dexguard_corpus"
+assembler = "disrobe-pass-jvm in-tree dex_builder (dex 035), not commercial DexGuard"
+note = """
+Commercial DexGuard is paid Guardsquare software whose protected output is unsafe to 
+produce on a non-sandboxed box, so this is a self-authored benign sample that exhibits the 
+same technique: an encrypted String[] held in a static field, a decrypt(int) routine that 
+XORs each char against an embedded key, and call sites that fetch strings through 
+java.lang.reflect.Method.invoke rather than a direct call. The .class/.dex toolchain (javac 
++ d8) is not installed on this box and agents do not install or download tooling, so the dex 
+is assembled byte-for-byte by the project's own dex_builder and parses cleanly through the 
+project's own dex reader (adler32 + sha-1 verified). disrobe statically evaluates the 
+decrypt routine over the table and recovers the plaintext below; recovery is graded against 
+this authored plaintext list, not against disrobe's own output.
+"""
+
+plaintext = [
+  { index = 0, plaintext = "https://api.example.com/v1/auth" },
+  { index = 1, plaintext = "X-Api-Key" },
+  { index = 2, plaintext = "decryptToken" },
+  { index = 3, plaintext = "SELECT * FROM secrets WHERE id = ?" },
+  { index = 4, plaintext = "AES/CBC/PKCS5Padding" },
+  { index = 5, plaintext = "com.disrobe.sample.Secret" },
+]

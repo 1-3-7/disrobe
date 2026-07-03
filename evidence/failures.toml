@@ -1,0 +1,98 @@
+schema = "disrobe.evidence.failures/v1"
+note = "Honest catalog of what disrobe does NOT recover, and why. Two kinds: information-theoretic walls (the bytes were never written into the artifact, so no static tool can recover them) and named hard cases (a structural limit disrobe reports rather than fabricating past). Real failures raise credibility; this list is committed, surfaced in the README, and counted by the harness rather than authored. The full wall audit lives in the project ledger; this is the public-facing subset with the most-cited examples."
+
+[[wall]]
+id = "vmprotect-themida-native-vm"
+ecosystem = "native"
+kind = "information-theoretic"
+title = "VMProtect / Themida / Enigma native-VM devirtualization"
+detail = "The original x86 is deleted and replaced by per-build, per-machine VM bytecode whose handler stream is assembled at run time from a key absent from the file. disrobe detects and carves the VM region but does not synthesize the original instructions, because they are not present in any form. This is the one sanctioned native deferral."
+location = "crates/disrobe-pass-native (packers/mod.rs), crates/disrobe-core/src/anti_analysis.rs"
+
+[[wall]]
+id = "themida-dotnet-oreans-vm"
+ecosystem = "dotnet"
+kind = "information-theoretic"
+title = "Themida-.NET / Oreans native-VM CIL destruction"
+detail = "The CIL is destroyed and replaced by per-build native-VM bytecode materialized to RWX only at run time. No co-present higher form of the method exists in the assembly."
+location = "crates/disrobe-pass-dotnet/src/peel/themida_dotnet.rs"
+
+[[wall]]
+id = "runtime-only-keys"
+ecosystem = "cross-ecosystem"
+kind = "information-theoretic"
+title = "Runtime-only decryption keys"
+detail = "PyArmor v3-v5, ionCube, SourceGuardian, modern Zend Guard, ILProtector, MaxToCode, and AEAD/RSA/env-derived keys derive their key in a native loader or live process; the key is never written into the artifact. The ciphertext and surrounding metadata recover; the plaintext body does not, because the key has no static preimage."
+location = "crates/disrobe-core/src/codec/crypto_wall.rs, crates/disrobe-pass-php/src/encoder, crates/disrobe-pass-dotnet/src/peel/ilprotector.rs"
+
+[[wall]]
+id = "pyarmor-bcc-super-native"
+ecosystem = "python"
+kind = "information-theoretic"
+title = "PyArmor BCC and super mode native lowering"
+detail = "BCC and super mode lower the protected body into native code, so the body is a native wall (the surrounding metadata still recovers). This is a shared native wall for every static tool."
+location = "crates/disrobe-pass-pyarmor"
+
+[[wall]]
+id = "native-compiled-source-erasure"
+ecosystem = "python-nativelang"
+kind = "information-theoretic"
+title = "Nuitka / Nim / Zig / Crystal source erasure under -O2/-O3"
+detail = "These compile Python or their own source to native machine code; -O2/-O3 dead-code elimination, constant folding, and inlining erase ~25-30% of the source structure before native emit. Recovered bodies are skeleton-to-partial (Nuitka) or symbols-and-demangling-only (the rest); no source body survives compilation."
+location = "crates/disrobe-pass-nuitka, crates/disrobe-pass-nativelang"
+
+[[wall]]
+id = "one-way-name-hashing"
+ecosystem = "go-cross"
+kind = "information-theoretic"
+title = "One-way name hashing (seedless garble, integrity digests)"
+detail = "garble name-hashing is base64(hmac-sha256(name, seed)) with the seed absent in -trimpath builds; JsConfuser integrity hashes are one-way digests. Names are canonicalized, not restored, while structure, types, and control flow recover regardless."
+location = "crates/disrobe-pass-go/src/garble.rs, crates/disrobe-pass-js-deob"
+
+[[wall]]
+id = "stripped-identifier-names"
+ecosystem = "cross-ecosystem"
+kind = "information-theoretic"
+title = "Compiler-stripped local identifier names"
+detail = ".class, .dex, CIL, AVM2, and stripped-Dbgi BEAM erase local variable names, generics, comments, and exact formatting at compile time. Bodies, control flow, and types recover; the original local names do not, because they are not in the artifact (synthetic names are emitted)."
+location = "crates/disrobe-pass-jvm, crates/disrobe-pass-as3/src/lifter.rs, crates/disrobe-pass-beam/src/surface.rs"
+
+[[wall]]
+id = "fairplay-drm"
+ecosystem = "swift"
+kind = "information-theoretic"
+title = "FairPlay-encrypted __TEXT"
+detail = "The __TEXT region key is wrapped to a device hardware / Apple-ID key and unwrapped in the secure enclave; no key or cleartext is in the IPA."
+location = "crates/disrobe-pass-swift-objc/src/fairplay.rs"
+
+[[hard_case]]
+id = "dexguard-v9-opaque-predicates"
+ecosystem = "android"
+kind = "named-hard-case"
+title = "DexGuard v9 opaque predicates"
+detail = "disrobe folds opaque conditionals and prunes dispatcher blocks where the predicate is statically decidable; predicates seeded by a runtime value (seeded Random / SecureRandom or a cross-class static computed in another <clinit>) over-wall today. The fold count is reported per method; the residual is the runtime-seeded subset."
+location = "crates/disrobe-pass-jvm/src/protectors/dexguard.rs, dalvik_strdec.rs"
+
+[[hard_case]]
+id = "kotlin-coroutine-metadata"
+ecosystem = "android"
+kind = "named-hard-case"
+title = "Kotlin coroutine / continuation metadata edge"
+detail = "Continuation-passing state machines reconstruct, but suspend-point metadata and synthetic continuation locals can leave a structurally faithful but not name-faithful body. The bodies verify clean under -Xverify:all; the limitation is fidelity of the recovered suspend-machine shape, not correctness."
+location = "crates/disrobe-pass-jvm/src/decompile_struct.rs (handler_continuation)"
+
+[[hard_case]]
+id = "py314-adaptive-bytecode"
+ecosystem = "python"
+kind = "named-hard-case"
+title = "CPython 3.14 adaptive / specialized bytecode"
+detail = "3.11+ emits adaptive (specialized) opcodes and quickened forms. disrobe demotes specialized opcodes back to their canonical form before decompiling; the residual is the small set of specialized or instrumented opcodes with no clean canonical demotion, which read as the per-code-object misses in the stdlib recompile gate."
+location = "crates/disrobe-pass-py-decompile/src/bytecode/opcode/mod.rs (demote_specialized)"
+
+[[hard_case]]
+id = "irreducible-exception-cfg"
+ecosystem = "jvm"
+kind = "named-hard-case"
+title = "Irreducible exception-edge CFG reconstruction"
+detail = "A control-flow graph made irreducible by exception edges that cross loop boundaries cannot always be re-expressed as structured Java/Kotlin; disrobe emits a flat labeled fallback marked as irreducible rather than a wrong structured form. The method is still lifted; the limit is structured re-expression, reported honestly per method (fully_lifted = !had_irreducible)."
+location = "crates/disrobe-pass-jvm/src/decompile.rs, dalvik_decompile.rs"

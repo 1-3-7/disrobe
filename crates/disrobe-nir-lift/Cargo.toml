@@ -1,0 +1,34 @@
+[package]
+name = "disrobe-nir-lift"
+description = "Lifters that lower each pass's public recovered IR (wasm SSA/CFG, JVM and Dalvik bytecode CFG, .NET CIL method bodies, recovered Python AST) into the architecture-neutral normalized IR (the Mir rung), so the queryable-IR layer can run identical symbol / call / xref / capability / decoder queries across every front end."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-nir = { workspace = true }
+disrobe-pass-as3 = { workspace = true }
+disrobe-pass-wasm-deob = { workspace = true }
+disrobe-pass-jvm = { workspace = true }
+disrobe-pass-dotnet = { workspace = true }
+disrobe-pass-ruby = { workspace = true }
+disrobe-pass-lua = { workspace = true }
+disrobe-pass-beam = { workspace = true }
+disrobe-pass-py-decompile = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+wasmparser = { workspace = true }
+
+[dev-dependencies]
+disrobe-query = { workspace = true }
+wat = "1"

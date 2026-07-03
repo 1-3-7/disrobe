@@ -1,0 +1,30 @@
+id = "hermes-opcoverage"
+ecosystem = "hermes"
+title = "React Native Hermes HBC v96 op-coverage"
+claim = "disrobe lifts every function of a real hermesc-built HBC v96 bundle with correct names and source-matching bodies at zero fallback ops."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "self-authored sample.js compiled by the real hermesc; every function lifts at 0 fallback ops with source-matching bodies"
+reproduce = "cargo test -p disrobe-pass-mobile --test real_hermes_sample"
+note = "Floor equals measured (100%) because the gate asserts total_fallback_ops == 0, a hard ceiling rather than a cherry-picked figure: any regression drops below 100% and trips."
+
+[correctness_oracle]
+kind = "behavioral-differential"
+external = "the recovered JS of each function is run through the boa_engine JS interpreter (a real JS engine) on concrete inputs and compared output-for-output against the original sample.js function in the same engine; recovered bodies are also parse-gated by the oxc parser"
+reproduce = "cargo test -p disrobe-pass-mobile --test real_hermes_correctness"
+measured = "5 of 8 functions (add, greet, Counter, increment, label) reproduce original behavior exactly; sumRange (loop value-threading) and main (call-frame argument modeling) do not yet, global is a structural shell"
+note = "This is decompile-CORRECTNESS, measured against a real JS engine, NOT op-coverage. A deliberately-wrong body (subtract instead of add) is proven to FAIL the differential, so the number cannot be inflated by op-coverage. Floor 55.0 sits a margin below the measured 62.5."
+
+[source]
+recovery_group = "React Native Hermes (committed hermesc-built HBC v96 sample: op-coverage, CI-gated)"
+recovery_bar = "op-coverage"
+floor = 100.0
+
+[correctness_source]
+recovery_group = "React Native Hermes (committed hermesc-built HBC v96 sample: behavioral decompile-correctness via the boa JS engine, CI-gated)"
+recovery_bar = "decompile-correctness"
+measured = 62.5
+floor = 55.0

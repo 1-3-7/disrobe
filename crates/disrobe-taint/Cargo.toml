@@ -1,0 +1,24 @@
+[package]
+name = "disrobe-taint"
+description = "Source-to-sink taint propagation over the architecture-neutral normalized IR (the Mir rung): an intra-function forward dataflow along each function's control-flow graph, lifted to a cross-function fixpoint over the call graph, so a value produced by a declared source extern-call is tracked until it reaches a declared sink extern-call across every front end the lifters feed it."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-nir = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+disrobe-nir-lift = { workspace = true }
+disrobe-query = { workspace = true }
+wat = "1"

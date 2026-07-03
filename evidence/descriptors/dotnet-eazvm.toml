@@ -1,0 +1,15 @@
+id = "dotnet-eazvm"
+ecosystem = "dotnet"
+title = ".NET Eazfuscator VM devirtualization"
+claim = "disrobe devirtualizes every method in a real Eazfuscator-VM-protected assembly back to CIL, graded against an independently compiled clean DLL by ordered instruction compare, and the recovered CIL re-injects to byte-identical stdout."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "independently compiled clean DLL (ordered CIL compare: opcode and operand, branch targets resolved to instruction index) + byte-identical stdout on reinjection"
+reproduce = "cargo test -p disrobe-pass-dotnet --test real_eazvm"
+
+[source]
+recovery_group = "Detection and extraction breadth (counts, not percentages)"
+recovery_bar = ".NET protectors"

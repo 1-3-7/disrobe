@@ -1,0 +1,50 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+//! Real Skidfuscator 2.0.11 gauntlet. `Sample-skid.class` is a real class obfuscated by
+//! the actual Skidfuscator tool (GEN3 integer obfuscation: an XOR-seed local from which
+//! every real constant is recomputed via `ldc K; iload seed; ixor; i2b`). These tests are
+//! the authoritative non-circular gate for the `const_fold` pass: they assert the encoded
+//! `n > 10` / `n * 2` semantics fold back to literals on real obfuscator bytes, never on a
+//! self-authored fixture.
+
+use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
+
+const SKID_CLASS: &[u8] =
+    include_bytes!("../../../corpus/jvm/obfuscators/skidfuscator/Sample-skid.class");
+
+fn classify_then_branch(body: &str) -> String {
+    let classify: &str = body
+        .split("classify")
+        .nth(1)
+        .expect("classify method present in decompiled output");
+    classify
+        .split("else")
+        .next()
+        .unwrap_or(classify)
+        .to_string()
+}
+
+#[test]
+fn real_skidfuscator_integer_obfuscation_folds_to_literals() {
+    let class: DecompiledClass = decompile_classfile_bytes(SKID_CLASS).expect("decompile");
+    let then: String = classify_then_branch(&class.source);
+    assert!(
+        then.contains("= 10"),
+        "the real Skidfuscator XOR-seed encoded `n > 10` threshold must fold back to the literal 10; \
+         before the constant-fold pass it rendered as `(449603618 ^ var11)`: {then}"
+    );
+    assert!(
+        then.contains("* var") && then.contains("= 2"),
+        "the encoded `n * 2` factor must fold back to the literal 2 (used in the multiply): {then}"
+    );
+}
+
+#[test]
+fn real_skidfuscator_raw_xor_seed_constants_do_not_survive_in_the_recovered_branch() {
+    let class: DecompiledClass = decompile_classfile_bytes(SKID_CLASS).expect("decompile");
+    let then: String = classify_then_branch(&class.source);
+    assert!(
+        !then.contains("449603618") && !then.contains("2096576427"),
+        "the XOR-seed encoding constants must be folded out of the recovered then-branch, \
+         not left raw: {then}"
+    );
+}

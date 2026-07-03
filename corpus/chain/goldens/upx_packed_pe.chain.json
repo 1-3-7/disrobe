@@ -1,0 +1,83 @@
+{
+  "final_format": null,
+  "input": {
+    "blake3": "3eadc04bb5ace0881d0c26132b19efdad0de852db74f8e69e37552f9bfaed552",
+    "detected": [
+      "upx"
+    ],
+    "path": "synthetic://packed.upx.exe",
+    "size": 1944
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "3eadc04bb5ace0881d0c26132b19efdad0de852db74f8e69e37552f9bfaed552",
+      "input_size": 1944,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [
+        {
+          "band": "high",
+          "chosen": true,
+          "confidence": 0.9599999785423279,
+          "explain": "packer=upx note=UPX section/magic marker",
+          "family": "packer-archive",
+          "format_tag": "upx",
+          "markers": [
+            "packer-section-magic"
+          ],
+          "pass_id": "native.packer-unpack",
+          "specificity": 20
+        }
+      ],
+      "duration_ms": 0,
+      "error": "DR-CORE-0003: pass returned an unwrapped error: DR-NAT-0917: native.packer-unpack: upx unpack failed",
+      "format_tag_in": "upx",
+      "id": 1,
+      "input_blake3": "3eadc04bb5ace0881d0c26132b19efdad0de852db74f8e69e37552f9bfaed552",
+      "input_size": 1944,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": 0,
+      "pass": "native.packer-unpack",
+      "verdict": "error"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 1,
+    "layers": 1,
+    "max_branch_depth": 1,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "error"
+}

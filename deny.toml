@@ -1,0 +1,141 @@
+[graph]
+all-features = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = [
+    { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained; disrobe uses it only for non-cryptographic hashing in deterministic chain registries; migration to rustc-hash is scheduled for v0.10" },
+    { id = "RUSTSEC-2026-0186", reason = "memmap2 unsound unchecked pointer offset; disrobe memory-maps input files read-only for parsing and never exposes the unchecked-offset API to attacker-controlled arithmetic; no upstream fix released yet" },
+]
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Elastic-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = [
+    { allow = ["bzip2-1.0.6"], crate = "libbz2-rs-sys" },
+]
+
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = [
+    { crate = "openssl", reason = "use rustls instead" },
+    { crate = "openssl-sys", reason = "use rustls instead" },
+    { crate = "sevenz-rust", reason = "abandoned; use sevenz-rust2" },
+    { crate = "xz2", reason = "abandoned; use liblzma" },
+    { crate = "serde_yaml", reason = "archived; use serde_yaml_ng" },
+    { crate = "criterion", reason = "lead-maintainer AWOL; use divan" },
+]
+skip = [
+    { crate = "bitflags@1.3.2", reason = "transitive; modern direct deps use bitflags 2" },
+    { crate = "heck@0.4.1", reason = "transitive via the ntfs crate's strum_macros 0.24; our direct deps use heck 0.5" },
+    { crate = "syn@1.0.109", reason = "transitive proc-macro chains still on syn 1" },
+    { crate = "thiserror@1.0.69", reason = "transitive; our direct dep is thiserror 2" },
+    { crate = "thiserror-impl@1.0.69", reason = "proc-macro half of thiserror 1 straddle" },
+    { crate = "indexmap@1.9.3", reason = "transitive; our direct dep is indexmap 2" },
+    { crate = "hashbrown", reason = "five transitive majors (0.12..0.17) via std-backports & icu" },
+    { crate = "itertools", reason = "0.13 vs 0.14 split across object / ruff toolchains" },
+    { crate = "unicode-width", reason = "0.1 vs 0.2 via clap / textwrap toolchains" },
+    { crate = "winnow", reason = "0.7 vs 1.0 via toml_edit vs other parsers" },
+    { crate = "foldhash", reason = "0.1 vs 0.2 via hashbrown majors" },
+    { crate = "rand", reason = "0.8 / 0.9 / 0.10 via crypto (rsa) vs general consumers" },
+    { crate = "rand_core", reason = "matched majors of the rand straddle" },
+    { crate = "rand_chacha", reason = "matched majors of the rand straddle" },
+    { crate = "getrandom", reason = "0.2 / 0.3 / 0.4 via the rand straddle & wasm shims" },
+    { crate = "constant_time_eq", reason = "0.3 vs 0.4 via blake3 vs crypto deps" },
+    { crate = "cpufeatures", reason = "0.2 vs 0.3 via sha2 vs other digest deps" },
+    { crate = "block-buffer", reason = "0.10 vs 0.12 via the RustCrypto digest trait-crate generation straddle" },
+    { crate = "cipher", reason = "0.4 vs 0.5 via the RustCrypto cipher trait-crate generation straddle" },
+    { crate = "crypto-common", reason = "0.1 vs 0.2 via the RustCrypto trait-crate generation straddle" },
+    { crate = "inout", reason = "0.1 vs 0.2 via the RustCrypto cipher trait-crate generation straddle" },
+    { crate = "mio", reason = "0.8 legacy transitive async vs 1.x modern tokio stack" },
+    { crate = "yaxpeax-arch", reason = "0.2 vs 0.3 across the yaxpeax disassembler crate family" },
+    { crate = "toml", reason = "0.8 vs 0.9 via utoipa / config consumers" },
+    { crate = "toml_edit", reason = "matched majors of the toml straddle" },
+    { crate = "toml_datetime", reason = "0.7 vs 1.1 via the toml straddle" },
+    { crate = "serde_spanned", reason = "matched majors of the toml straddle" },
+    { crate = "gimli", reason = "0.26 vs 0.32 via object vs older backtrace chain" },
+    { crate = "cpp_demangle", reason = "0.4 vs 0.5 via object vs symbolic demanglers" },
+    { crate = "fallible-iterator", reason = "0.2 vs 0.3 via gimli majors" },
+    { crate = "scroll", reason = "0.11 vs 0.13 via goblin vs other binary parsers" },
+    { crate = "cfb", reason = "0.10 vs 0.14 via msi vs ole container readers" },
+    { crate = "wasmparser", reason = "0.240 vs 0.250 via wasm-tools sub-crate pins" },
+    { crate = "wasm-encoder", reason = "matched majors of the wasmparser straddle" },
+    { crate = "wasmprinter", reason = "matched majors of the wasmparser straddle" },
+    { crate = "wit-bindgen", reason = "component-model tooling straddle" },
+    { crate = "wit-parser", reason = "component-model tooling straddle" },
+    { crate = "anstream", reason = "0.6 vs 1.0 via clap vs other terminal renderers" },
+    { crate = "anstyle-parse", reason = "matched majors of the anstream straddle" },
+    { crate = "compact_str", reason = "0.8 vs 0.9 via ruff vs other consumers" },
+    { crate = "socket2", reason = "0.5 vs 0.6 via tokio vs hyper transitive pins" },
+    { crate = "icu_collections", reason = "transitive ICU split via idna majors" },
+    { crate = "icu_normalizer", reason = "transitive ICU split via idna majors" },
+    { crate = "icu_normalizer_data", reason = "transitive ICU split via idna majors" },
+    { crate = "icu_properties", reason = "transitive ICU split via idna majors" },
+    { crate = "icu_properties_data", reason = "transitive ICU split via idna majors" },
+    { crate = "icu_provider", reason = "transitive ICU split via idna majors" },
+    { crate = "tinystr", reason = "transitive ICU split via idna majors" },
+    { crate = "litemap", reason = "transitive ICU split via idna majors" },
+    { crate = "writeable", reason = "transitive ICU split via idna majors" },
+    { crate = "yoke", reason = "transitive ICU split via idna majors" },
+    { crate = "yoke-derive", reason = "transitive ICU split via idna majors" },
+    { crate = "zerovec", reason = "transitive ICU split via idna majors" },
+    { crate = "zerovec-derive", reason = "transitive ICU split via idna majors" },
+    { crate = "windows-sys", reason = "four binding generations via tokio / mio / fs deps" },
+    { crate = "windows-targets", reason = "matched generations of the windows-sys straddle" },
+    { crate = "windows_aarch64_gnullvm", reason = "windows-targets generation straddle" },
+    { crate = "windows_aarch64_msvc", reason = "windows-targets generation straddle" },
+    { crate = "windows_i686_gnu", reason = "windows-targets generation straddle" },
+    { crate = "windows_i686_gnullvm", reason = "windows-targets generation straddle" },
+    { crate = "windows_i686_msvc", reason = "windows-targets generation straddle" },
+    { crate = "windows_x86_64_gnu", reason = "windows-targets generation straddle" },
+    { crate = "windows_x86_64_gnullvm", reason = "windows-targets generation straddle" },
+    { crate = "windows_x86_64_msvc", reason = "windows-targets generation straddle" },
+    { crate = "windows", reason = "umbrella-crate generation straddle, dev-only via the rmcp child-process transport in the mcp round-trip test" },
+    { crate = "windows-core", reason = "matched generations of the windows umbrella straddle" },
+    { crate = "windows-implement", reason = "matched generations of the windows umbrella straddle" },
+    { crate = "windows-interface", reason = "matched generations of the windows umbrella straddle" },
+    { crate = "windows-result", reason = "matched generations of the windows umbrella straddle" },
+    { crate = "r-efi", reason = "1.x vs 5.x via getrandom uefi backend majors" },
+    { crate = "heapless", reason = "0.7 via postcard vs 0.8 via gix's faster-hex git-history scanner dep" },
+    { crate = "hash32", reason = "matched majors of the heapless straddle (0.2 vs 0.3)" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/astral-sh/ruff"]

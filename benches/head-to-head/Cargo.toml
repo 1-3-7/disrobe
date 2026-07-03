@@ -1,0 +1,31 @@
+[package]
+name = "disrobe-bench-head-to-head"
+description = "Reproducible head-to-head benchmark: runs disrobe and the leading competing tool (JADX, CFR, apkleaks) on byte-identical inputs, grades both sides by the same external oracle, and emits committed measured results with honest losses."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-bench-head-to-head"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-pass-jvm = { workspace = true }
+disrobe-pass-pickle = { workspace = true }
+disrobe-pass-swift-objc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = { workspace = true }
+regex = { workspace = true }
+walkdir = { workspace = true }
+zip = { workspace = true }

@@ -1,0 +1,269 @@
+@import "tailwindcss";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+@theme {
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-inset: var(--c-inset);
+  --color-hairline: var(--c-hairline);
+  --color-hairline-strong: var(--c-hairline-strong);
+
+  --color-ink: var(--c-ink);
+  --color-ink-muted: var(--c-ink-muted);
+  --color-ink-faint: var(--c-ink-faint);
+
+  --color-accent: var(--c-accent);
+  --color-accent-dim: var(--c-accent-dim);
+  --color-warn: var(--c-warn);
+  --color-danger: var(--c-danger);
+  --color-yellow: var(--c-yellow);
+  --color-cyan: var(--c-cyan);
+  --color-blue: var(--c-blue);
+  --color-purple: var(--c-purple);
+
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Consolas,
+    monospace;
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+}
+
+:root[data-theme="midnight"] {
+  --c-canvas: #0a0d16;
+  --c-surface: #10141f;
+  --c-inset: #0d111b;
+  --c-hairline: #1e2433;
+  --c-hairline-strong: #2a3243;
+
+  --c-ink: #c8d0e8;
+  --c-ink-muted: #8b93ad;
+  --c-ink-faint: #76809a;
+
+  --c-accent: #86a8f0;
+  --c-accent-dim: #3a4d74;
+  --c-warn: #e0af7e;
+  --c-danger: #e08c8c;
+  --c-yellow: #e0af7e;
+  --c-cyan: #7fb8d9;
+  --c-blue: #86a8f0;
+  --c-purple: #b79cd6;
+
+  --syntax-keyword: #86a8f0;
+  --syntax-string: #9fbfa0;
+  --syntax-number: #e0af7e;
+  --syntax-function: #7fb8d9;
+  --syntax-type: #b79cd6;
+  --syntax-comment: #76809a;
+  --syntax-operator: #8b93ad;
+  --syntax-variable: #c8d0e8;
+  --syntax-meta: #c79bb6;
+
+  --dot-color: color-mix(in srgb, #9db0e0 6%, transparent);
+  --grain-opacity: 0.07;
+}
+
+:root,
+:root[data-theme="zinc"] {
+  --c-canvas: #0a0a0a;
+  --c-surface: #161616;
+  --c-inset: #101010;
+  --c-hairline: #262626;
+  --c-hairline-strong: #333333;
+
+  --c-ink: #ededed;
+  --c-ink-muted: #a1a1a1;
+  --c-ink-faint: #828282;
+
+  --c-accent: #8fb3d9;
+  --c-accent-dim: #3a4a5c;
+  --c-warn: #c9a98e;
+  --c-danger: #d08c8c;
+  --c-yellow: #cfc9a8;
+  --c-cyan: #9cc2c4;
+  --c-blue: #92b4d6;
+  --c-purple: #bba9c4;
+
+  --syntax-keyword: #8fb3d9;
+  --syntax-string: #a9c2a6;
+  --syntax-number: #c2b79a;
+  --syntax-function: #a8c3e0;
+  --syntax-type: #bfb2ce;
+  --syntax-comment: #828282;
+  --syntax-operator: #a1a1a1;
+  --syntax-variable: #ededed;
+  --syntax-meta: #c2a8a0;
+
+  --dot-color: color-mix(in srgb, #ffffff 4%, transparent);
+  --grain-opacity: 0.07;
+}
+
+:root[data-theme="slate"] {
+  --c-canvas: #100f0d;
+  --c-surface: #1a1815;
+  --c-inset: #14120f;
+  --c-hairline: #2a2722;
+  --c-hairline-strong: #39352e;
+
+  --c-ink: #e4e0d8;
+  --c-ink-muted: #a8a298;
+  --c-ink-faint: #8d877c;
+
+  --c-accent: #9ec5a8;
+  --c-accent-dim: #4a6552;
+  --c-warn: #d2b07e;
+  --c-danger: #d99090;
+  --c-yellow: #cfc6a0;
+  --c-cyan: #94c2b6;
+  --c-blue: #9bb6cc;
+  --c-purple: #bda9c0;
+
+  --syntax-keyword: #9ec5a8;
+  --syntax-string: #c6bd96;
+  --syntax-number: #c9a98e;
+  --syntax-function: #9bb6cc;
+  --syntax-type: #bda9c0;
+  --syntax-comment: #8d877c;
+  --syntax-operator: #a8a298;
+  --syntax-variable: #e4e0d8;
+  --syntax-meta: #d0a78f;
+
+  --dot-color: color-mix(in srgb, #c9bfa8 5%, transparent);
+  --grain-opacity: 0.07;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  :root[data-theme] * {
+    transition:
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      outline-color 150ms ease;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition:
+      background-color 150ms ease,
+      color 150ms ease;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image: radial-gradient(circle at 1px 1px, var(--dot-color) 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    opacity: var(--grain-opacity);
+    mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 180px 180px;
+  }
+
+  #root {
+    position: relative;
+    z-index: 2;
+    height: 100%;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+    color: var(--color-ink);
+  }
+
+  *:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+    outline-offset: 1px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-hairline);
+    border: 2px solid var(--color-canvas);
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-hairline-strong);
+  }
+}
+
+@layer components {
+  .panel-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-hairline) transparent;
+  }
+
+  .cm-host {
+    min-height: 220px;
+    max-height: 460px;
+  }
+
+  .cm-host[data-fill="true"] {
+    flex: 1 1 0%;
+    min-height: 220px;
+    max-height: none;
+  }
+
+  .cm-host .cm-editor {
+    height: 100%;
+  }
+
+  .cm-host .cm-scroller {
+    overflow: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  body::after {
+    display: none;
+  }
+}

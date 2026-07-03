@@ -1,0 +1,28 @@
+[package]
+name = "disrobe-mba"
+description = "Bounded symbolic anti-analysis primitives for the disrobe suite: a mixed-boolean-arithmetic (MBA) simplifier and a symbolic opaque-predicate prover over fixed-width bitvectors, verified by exhaustive bitvector equivalence on narrow widths."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["mba", "opaque-predicate", "deobfuscation", "bitvector", "simplifier"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["smt-verify"]
+smt-verify = []
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,87 @@
+schema_version = 1
+crate = "disrobe-binfmt"
+generated = "2026-06-14"
+toolchain = "wimlib (github.com/ebiggers/wimlib, GPLv3/LGPL) LZMS compressor compiled with clang 22 (x86_64-pc-windows-msvc)"
+purpose = "Real LZMS-compressed payloads produced by wimlib's own LZMS encoder, used to validate the in-tree LZMS decoder and WIM chunk-table path byte-exact. Self-authored benign content (English pander text plus deterministic PRNG bytes)."
+
+[provenance]
+encoder = "wimlib's lzms_compressor_ops (src/lzms_compress.c + lzms_common.c + compress_common.c + lcpit_matchfinder.c + divsufsort.c)"
+build = [
+    "git clone --depth 1 https://github.com/ebiggers/wimlib",
+    "clang -O2 -D_CRT_SECURE_NO_WARNINGS -I include -I . disrobe_lzms_emit.c src/lzms_compress.c src/lzms_common.c src/compress_common.c src/lcpit_matchfinder.c src/divsufsort.c -o disrobe_lzms_emit.exe",
+    "disrobe_lzms_emit wim <file_size> 50 <out.wim>   # emits the .wim and its .expected plaintext sidecar",
+    "disrobe_lzms_emit raw <size> <level> <out.bin>   # emits a 16-byte header (DRLZMS01 || u32 uncompressed_len || u32 compressed_len) then compressed then plaintext",
+]
+oracle = "wimlib's LZMS encoder is the independent producer; disrobe's decoder must reproduce the exact plaintext (sidecar / embedded original). The chunk-table offsets follow the documented WIM non-solid layout (num_chunks-1 cumulative offsets, 32768-byte chunks)."
+
+[[fixture]]
+path = "lzms_multichunk.wim"
+sha256 = "3c74507efffce868edecb551c430c7c3f5709cf5cbdd902a8976313548792510"
+role = "real WIM, LZMS main compression, 100000-byte boot-metadata resource across 4 chunks; exercises decompress_wim_resource chunk-table routing and extract_to on-disk write"
+expected = "lzms_multichunk.wim.expected"
+
+[[fixture]]
+path = "lzms_multichunk.wim.expected"
+sha256 = "514a9c55e1fcbbcb4c3c3149d1b77efeea9d7770103b7e6742b23c19ccca7c2b"
+role = "byte-exact plaintext of the multichunk WIM resource"
+
+[[fixture]]
+path = "lzms_singlechunk.wim"
+sha256 = "eb9835c73a1f1452df1beccf68dc02002ced9d77936273ef3e51f282d1affcd9"
+role = "real WIM, LZMS main compression, 8000-byte single-chunk boot-metadata resource"
+expected = "lzms_singlechunk.wim.expected"
+
+[[fixture]]
+path = "lzms_singlechunk.wim.expected"
+sha256 = "c8f36273d1f965ef1401c1461d135356e9bdff42c53fcf1e10cc904bd61b6557"
+role = "byte-exact plaintext of the singlechunk WIM resource"
+
+[[fixture]]
+path = "lzms_raw_40k_l50.bin"
+sha256 = "453c34b5f1c5e41726384df5b84a0332add9ba4d2e6994bedf13f1b6e2c12807"
+role = "raw single-chunk LZMS stream, 40000 bytes at level 50; header + compressed + original"
+
+[[fixture]]
+path = "lzms_raw_4k_l25.bin"
+sha256 = "28b6a211545629de3e51437f48b8bbb5237d6352ba26cb1002746a72152b6f86"
+role = "raw single-chunk LZMS stream, 4096 bytes at level 25; header + compressed + original"
+
+[per_file_capture]
+toolchain = "wimlib-imagex 1.14.4 (github.com/ebiggers/wimlib, GPLv3/LGPL), official windows-x86_64 binary"
+build = [
+    "make a directory holding hello.txt, readme.md, large.txt (90000 bytes of repeated ascii so the stream compresses across 3 chunks), and sub/nested.bin",
+    "wimlib-imagex capture <dir> files_xpress.wim disrobe-x --compress=fast      # XPRESS main compression",
+    "wimlib-imagex capture <dir> files_lzx.wim    disrobe-l --compress=maximum   # LZX main compression",
+]
+purpose = "Real non-solid WIM images with a populated blob lookup table and a compressed metadata dentry tree, used to validate the in-tree per-file image-stream walk (lookup table + dentry recursion) and byte-exact resource decode end to end through extract_to. The metadata resource is compressed (exercises the XPRESS-Huffman and LZX chunk codecs on the dentry tree) and large.txt is a compressed multi-chunk data stream; the small files are stored verbatim as wimlib emits them."
+oracle = "the captured source files under files_expected/ are the independent ground truth; the in-tree decoder must reproduce each inner file byte-for-byte. Self-authored benign content."
+
+[[fixture]]
+path = "files_xpress.wim"
+sha256 = "cbb4c5500f0c0168685a4e33121f2c373c8d363207e36e849aac685d2dfc6905"
+role = "real XPRESS-compressed WIM image; compressed dentry-tree metadata plus a compressed 3-chunk large.txt data stream and three stored small files"
+
+[[fixture]]
+path = "files_lzx.wim"
+sha256 = "8b7913bdeec0c6be11bee1d47366ea5f1e3d727644f0a99284a0701107770f36"
+role = "real LZX-compressed WIM image; same tree as files_xpress.wim, LZX main compression"
+
+[[fixture]]
+path = "files_expected/hello.txt"
+sha256 = "e8027d6b2b22a26a23a0f237ccc836c2f1e946d66d24f3ceb931d48debc762ac"
+role = "byte-exact source of the WIM root file hello.txt"
+
+[[fixture]]
+path = "files_expected/readme.md"
+sha256 = "334a6882c3c93d92084443ca6faebb3b2b2fdb8a4e56114d2c6192ada2837aa7"
+role = "byte-exact source of the WIM root file readme.md"
+
+[[fixture]]
+path = "files_expected/large.txt"
+sha256 = "9d06cf6f06bb443f9d68b585be0e11b1b6886a1893ce123db578218033a9ea39"
+role = "byte-exact source of the WIM multi-chunk compressed file large.txt (90000 bytes)"
+
+[[fixture]]
+path = "files_expected/sub/nested.bin"
+sha256 = "3d6a6b717055ad2163b67874f0135631365cd26c9ee34c87274d7f27fd568c64"
+role = "byte-exact source of the WIM nested file sub/nested.bin"

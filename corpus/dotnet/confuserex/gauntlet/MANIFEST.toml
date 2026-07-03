@@ -1,0 +1,48 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-06-17"
+toolchain = "mkaring/ConfuserEx v1.6.0 (Confuser.CLI.exe)"
+note = "self-authored .NET 4.8 console sample obfuscated with rename + constants + ctrl flow; constants and rename protections graded against known plaintext strings"
+
+[provenance]
+compiler = "dotnet SDK 9.0.314, TargetFramework=net48, -optimize+"
+obfuscator = "mkaring/ConfuserEx v1.6.0 Confuser.CLI.exe with gauntlet.crproj: rename + constants + ctrl flow protections, preset=none"
+transform = "constants: string constants encrypted into LZMA-compressed pool, xorshift-derived per-build key, field-RVA blob; ctrl flow: switch-dispatcher flattening; rename: ConfuserEx-style identifiers (unprintable / _NNN)"
+verified = "disrobe detects ConfuserEx watermark, locates and decrypts the constants blob (xorshift seed recovered by literal + emulation scan), recovers DISROBE_GAUNTLET_API_KEY_7749 + DISROBE_SECRET_TOKEN_ALPHA + gauntlet-build-v1 from the encrypted pool; ConfuserEx-style renamed identifiers confirmed in #Strings heap"
+
+[[fixture]]
+name = "GauntletSample.cs"
+path = "GauntletSample.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source: Fnv1a, Gcd, Collatz, TextProcessor, StringVault with known string constants; real loops and if-chains"
+
+[[fixture]]
+name = "GauntletSample.clean.exe"
+path = "GauntletSample.clean.exe"
+kind = "managed-pe-exe"
+provenance = "real"
+source = "GauntletSample.cs"
+description = "unobfuscated baseline (net48, -optimize+); known string constants are present as plaintext in the #US heap"
+
+[[fixture]]
+name = "GauntletSample.confuserex2.exe"
+path = "GauntletSample.confuserex2.exe"
+kind = "confuserex2-constants-ctrlflow-rename-pe-exe"
+provenance = "real"
+description = "the clean exe after ConfuserEx2 v1.6.0 with rename + constants + ctrl flow; known strings are absent in plaintext; the constants blob is encrypted with a per-build xorshift key seeded by the injected IL bootstrap"
+
+[[fixture]]
+name = "gauntlet.crproj"
+path = "gauntlet.crproj"
+kind = "confuserex-project"
+provenance = "real"
+description = "the exact ConfuserEx2 project used: preset none, rename + constants + ctrl flow protections"
+
+[recovered_strings]
+DISROBE_GAUNTLET_API_KEY_7749 = "recovered from constants pool after xorshift seed recovery"
+DISROBE_SECRET_TOKEN_ALPHA = "recovered from constants pool after xorshift seed recovery"
+"gauntlet-build-v1" = "recovered from constants pool after xorshift seed recovery"
+
+[walled]
+note = "Anti-tamper and full control-flow reconstruction are walled: anti-tamper's decryption key is derived at runtime from an in-memory image hash (not present statically). Control-flow deflattening is a separate pass (cff_deflatten) already proven on CffSample/CffPred fixtures. Structure recovery and rename reversal require de4dot delegation (plan_execution -> DelegatedToDe4dot)."

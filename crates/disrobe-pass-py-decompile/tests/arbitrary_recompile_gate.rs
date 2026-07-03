@@ -1,0 +1,301 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::too_many_lines,
+    clippy::doc_markdown
+)]
+
+//! Per-code-object recompile-equivalence gate over a pinned CPython 3.14 stdlib corpus.
+//!
+//! This is the committed home of the flagship Python recovery number. The measurement itself
+//! lives in `tests/harness/py_arbitrary_measure.py`; this test drives it: it resolves a real
+//! CPython 3.14 interpreter, locates the built `disrobe` binary, runs the harness over the pinned
+//! 200-module corpus, parses the JSON it prints, and asserts a hard floor on the per-code-object
+//! recompile-equivalence percentage.
+//!
+//! The oracle is non-circular: the harness grades disrobe's recovered source against a real
+//! CPython recompile of that source, never against disrobe's own re-emission. Absent a 3.14
+//! interpreter the gate is skipped explicitly (it cannot measure), never passed silently.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
+const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
+
+/// Floor enforced in CI. The measured per-code-object recompile-equivalence on the pinned 3.14
+/// corpus is 94.42% (5935 of 6286 code objects on CPython 3.14.5), lifted from 94.18% by the
+/// simultaneous tuple-swap recovery that folds the SWAP/ROT reordering run into a single tuple
+/// assignment, then by one more object from negating a jump-if-true `not` guard whose fall-through arm
+/// continues to the loop head, and by recovering a `while True:` that wraps a `try` whose only exits
+/// are inner breaks instead of dropping the loop (see the 3.12 gate for the full description; both
+/// fixes are cross-version). The floor sits below the measured value so a real regression trips it
+/// while normal interpreter-patch jitter does not. Raise it only with a measured run behind the
+/// change; never lower it to mask a regression.
+const OBJECT_PCT_FLOOR: f64 = 90.0;
+
+#[derive(Debug)]
+struct Measurement {
+    modules: u64,
+    code_objects: u64,
+    objects_ok: u64,
+    object_pct: f64,
+    module_pct: f64,
+    sibling_collisions: u64,
+    missing_from_lib: u64,
+}
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn workspace_target() -> PathBuf {
+    manifest_dir().join("../../target")
+}
+
+#[must_use]
+fn find_disrobe() -> Option<PathBuf> {
+    let exe: &str = if cfg!(windows) {
+        "disrobe.exe"
+    } else {
+        "disrobe"
+    };
+    let target: PathBuf = workspace_target();
+    for profile in ["release", "debug"] {
+        let candidate: PathBuf = target.join(profile).join(exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[must_use]
+fn interpreter_hidden(alias: &str) -> bool {
+    std::env::var("DISROBE_TEST_HIDE_PY").is_ok_and(|hidden: String| {
+        hidden
+            .split(',')
+            .map(str::trim)
+            .any(|entry: &str| entry == alias)
+    })
+}
+
+#[must_use]
+fn find_python_314() -> Option<PathBuf> {
+    if interpreter_hidden("3.14") {
+        return None;
+    }
+    if let Some(output) = Command::new("uv")
+        .args(["python", "find", "3.14"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        && output.status.success()
+    {
+        let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let path: PathBuf = PathBuf::from(raw);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let candidates: [PathBuf; 3] = [
+        PathBuf::from("C:/Python314/python.exe"),
+        PathBuf::from("/usr/bin/python3.14"),
+        PathBuf::from("/usr/local/bin/python3.14"),
+    ];
+    candidates.into_iter().find(|p: &PathBuf| p.is_file())
+}
+
+fn interpreter_version(python: &Path) -> Option<(u8, u8)> {
+    let output: std::process::Output = Command::new(python)
+        .args([
+            "-c",
+            "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let (maj, min): (&str, &str) = raw.split_once('.')?;
+    Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?))
+}
+
+fn interpreter_stdlib(python: &Path) -> Option<PathBuf> {
+    let output: std::process::Output = Command::new(python)
+        .args(["-c", "import sysconfig;print(sysconfig.get_path('stdlib'))"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let path: PathBuf = PathBuf::from(raw);
+    if path.is_dir() { Some(path) } else { None }
+}
+
+fn json_scalar<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
+    let needle: String = format!("\"{key}\"");
+    let after_key: &str = line
+        .find(&needle)
+        .map(|i| &line[i + needle.len()..])
+        .ok_or_else(|| format!("missing field {key} in {line}"))?;
+    let after_colon: &str = after_key
+        .find(':')
+        .map(|i| after_key[i + 1..].trim_start())
+        .ok_or_else(|| format!("malformed field {key} in {line}"))?;
+    let end: usize = after_colon
+        .find([',', '}'])
+        .ok_or_else(|| format!("unterminated field {key} in {line}"))?;
+    Ok(after_colon[..end].trim().trim_matches('"'))
+}
+
+fn parse_measurement(stdout: &str) -> Result<Measurement, String> {
+    let line: &str = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| format!("no JSON object on harness stdout:\n{stdout}"))?;
+    let get_u64 = |key: &str| -> Result<u64, String> {
+        json_scalar(line, key)?
+            .parse::<u64>()
+            .map_err(|e| format!("field {key} is not u64: {e} in {line}"))
+    };
+    let get_f64 = |key: &str| -> Result<f64, String> {
+        json_scalar(line, key)?
+            .parse::<f64>()
+            .map_err(|e| format!("field {key} is not f64: {e} in {line}"))
+    };
+    Ok(Measurement {
+        modules: get_u64("modules")?,
+        code_objects: get_u64("code_objects")?,
+        objects_ok: get_u64("objects_ok")?,
+        object_pct: get_f64("object_pct")?,
+        module_pct: get_f64("module_pct")?,
+        sibling_collisions: get_u64("sibling_collisions")?,
+        missing_from_lib: get_u64("missing_from_lib")?,
+    })
+}
+
+#[test]
+fn arbitrary_recompile_equivalence_gate() {
+    let Some(disrobe): Option<PathBuf> = find_disrobe() else {
+        panic!(
+            "disrobe binary not found under {}/(release|debug); build it first \
+             (cargo build --release -p disrobe-cli --bin disrobe) - the recompile-equivalence \
+             gate measures the real CLI, it cannot run without it",
+            workspace_target().display()
+        );
+    };
+
+    let Some(python): Option<PathBuf> = find_python_314() else {
+        eprintln!(
+            "skip: no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). \
+             The pinned corpus is 3.14-specific, so per-code-object recompile-equivalence cannot be \
+             measured here; floor {OBJECT_PCT_FLOOR} not enforced this run. Install one with \
+             `uv python install 3.14`."
+        );
+        return;
+    };
+
+    let Some((maj, min)): Option<(u8, u8)> = interpreter_version(&python) else {
+        panic!(
+            "could not read version of interpreter at {}",
+            python.display()
+        );
+    };
+    assert_eq!(
+        (maj, min),
+        (3, 14),
+        "resolved interpreter at {} is {maj}.{min}, not 3.14; the pinned corpus is 3.14-specific",
+        python.display()
+    );
+
+    let Some(lib): Option<PathBuf> = interpreter_stdlib(&python) else {
+        panic!(
+            "could not resolve the stdlib Lib directory of {}",
+            python.display()
+        );
+    };
+
+    let harness: PathBuf = manifest_dir().join(HARNESS);
+    let modules: PathBuf = manifest_dir().join(PINNED_MODULES);
+    assert!(
+        harness.is_file(),
+        "harness missing at {}",
+        harness.display()
+    );
+    assert!(
+        modules.is_file(),
+        "pinned module list missing at {}",
+        modules.display()
+    );
+
+    let output: std::process::Output = Command::new(&python)
+        .arg(&harness)
+        .arg("--disrobe")
+        .arg(&disrobe)
+        .arg("--lib")
+        .arg(&lib)
+        .arg("--modules")
+        .arg(&modules)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn recompile-equivalence harness");
+
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    println!("=== ARBITRARY RECOMPILE-EQUIVALENCE HARNESS ===");
+    println!("interpreter : {} ({maj}.{min})", python.display());
+    println!("lib         : {}", lib.display());
+    println!("disrobe     : {}", disrobe.display());
+    println!("--- harness taxonomy (stderr) ---\n{stderr}");
+
+    assert!(
+        output.status.success(),
+        "harness exited {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
+    );
+
+    let m: Measurement = parse_measurement(&stdout).expect("parse harness measurement");
+    println!(
+        "measured: {}/{} code objects ({:.2}%) across {} modules; whole-module exact {:.2}%; \
+         sibling-count collisions {}; pinned modules absent from this Lib {}",
+        m.objects_ok,
+        m.code_objects,
+        m.object_pct,
+        m.modules,
+        m.module_pct,
+        m.sibling_collisions,
+        m.missing_from_lib
+    );
+
+    assert!(
+        m.modules >= 180,
+        "only {} of the 200 pinned modules were measured ({} absent from this Lib); the corpus has \
+         drifted too far to be representative - refresh the pin against the current 3.14 stdlib",
+        m.modules,
+        m.missing_from_lib
+    );
+    assert!(
+        m.code_objects >= 5000,
+        "only {} code objects measured; expected ~6000+ from the pinned corpus, the sample is too \
+         thin to gate on",
+        m.code_objects
+    );
+    assert!(
+        m.object_pct >= OBJECT_PCT_FLOOR,
+        "per-code-object recompile-equivalence regressed: {:.2}% < floor {OBJECT_PCT_FLOOR}% \
+         ({}/{} objects on {} modules)",
+        m.object_pct,
+        m.objects_ok,
+        m.code_objects,
+        m.modules
+    );
+}

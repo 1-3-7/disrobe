@@ -1,0 +1,206 @@
+schema_version = 1
+crate = "disrobe-pass-jvm"
+generated = "2026-05-25"
+toolchain = "Eclipse Temurin JDK 25.0.3+9-LTS, Kotlin 2.1.20, ProGuard 7.9.1, R8 9.1.31 (Google Maven), Android cmdline-tools 13114758"
+
+[[megafile]]
+path = "megafile/EdgeCases.java"
+language = "java"
+target = "Java 25"
+lines = 1431
+covers = [
+    "records", "sealed-interfaces", "pattern-matching-switch", "deconstruction-patterns",
+    "text-blocks", "virtual-threads", "ffm-arena", "var-keyword", "lambdas", "method-refs",
+    "generics-bounded-wildcards", "multi-catch", "try-with-resources", "varargs", "SafeVarargs",
+    "enums-with-abstract-methods", "annotations-repeatable", "nested-classes", "anonymous-classes",
+    "static-initializers", "instance-initializers", "interface-default-methods", "interface-static-methods",
+    "interface-private-methods", "recursive-bounded-types", "concurrent-utils", "completable-future",
+    "executors-virtual", "stream-collectors", "intstream"
+]
+
+[[megafile]]
+path = "megafile/EdgeCases.kt"
+language = "kotlin"
+target = "Kotlin 2.1, JVM 17 target"
+lines = 838
+covers = [
+    "coroutines-runBlocking", "coroutines-async-await", "coroutines-launch", "withContext",
+    "flow-emit-collect", "flow-fold", "data-classes", "sealed-interfaces", "sealed-classes",
+    "data-objects", "value-classes-JvmInline", "smart-casts", "when-expressions",
+    "destructuring-declarations", "extension-functions", "extension-properties",
+    "top-level-functions", "companion-objects", "operator-overloading", "infix-functions",
+    "varargs-spread", "labels", "non-local-return", "inline-fun", "reified-type-params",
+    "elvis-operator", "safe-call", "let-apply-also-with-run", "lazy-properties",
+    "custom-property-accessors", "comparable-impl", "object-singleton", "annotation-classes",
+    "generics-variance", "iterators", "function-types", "high-order-functions", "closures",
+    "kotlin-metadata-annotation"
+]
+
+[[megafile]]
+path = "megafile/EdgeCases-baseline.jar"
+language = "java"
+sha = "computed-by-test-runner"
+bytes = 41187
+notes = "real javac --release 25 output; runs cleanly via `java -jar` (~120 lines of stdout, terminates with `DONE`)."
+
+[[megafile]]
+path = "megafile/EdgeCasesKt.jar"
+language = "kotlin"
+sha = "computed-by-test-runner"
+bytes = 102539
+notes = "real kotlinc 2.1.20 output bundled w/ kotlinx-coroutines-core-jvm 1.10.2 at runtime; smoke-runs to `KT-DONE`."
+
+[[megafile]]
+path = "zkmshape/StaticTableCrypt.java"
+language = "java"
+target = "Java 25"
+notes = "in-house benign self-contained static-table string-decrypt (Zelix/Stringer recoverable shape); javac Temurin 25.0.3, runs under the real JVM printing the two ground-truth plaintexts. The committed StaticTableCrypt.class is the recovery oracle for the bytecode evaluator (getstatic + <clinit> static key table). See zkmshape/MANIFEST.txt."
+
+[[evalshapes]]
+path = "evalshapes/"
+language = "java"
+target = "Java 25"
+toolchain = "Eclipse Temurin JDK 25.0.3+9-LTS (javac)"
+fixtures = [
+    "evalshapes/LongAccumCrypt.class (long rolling-accumulator keystream: lstore/lload wide+_n, lmul/ladd/lxor/lushr, ldc2_w, l2i, lreturn helper)",
+    "evalshapes/InstanceFieldKeyed.class (instance decrypt keyed on this.base set in <init>: getfield/putfield, Object.<init>, receiver construction)",
+    "evalshapes/SwitchDispatch.class (per-position key via switch(i % 4): tableswitch dispatch)",
+    "evalshapes/*.java (in-house sources; the recovery oracle)",
+]
+notes = "Benign authored-in-house decryptor shapes that exercise class bytecode evaluator coverage the prior evaluator bailed on (long-typed local stores/loads, long arithmetic and lreturn, getfield/putfield with receiver construction running <init>, and tableswitch dispatch), each of which walled otherwise-recoverable constants. The constrained evaluator (bytecode_eval.rs) now runs each class's own decrypt body end to end under the step cap and recovers the plaintext, graded against the JVM-printed ground truth in tests/eval_shapes_real.rs. See evalshapes/MANIFEST.txt for build command, sha256, and the plaintext list. A runtime-only key remains an honest RuntimeKeyUnavailable wall."
+
+[[protector]]
+name = "proguard"
+status = "REAL-FIXTURE"
+version = "7.9.1"
+fixtures = [
+    "proguard/Hello-baseline.jar",
+    "proguard/Hello-baseline.class",
+    "proguard/Hello-obf.jar",
+    "proguard/mapping.txt",
+    "proguard/EdgeCases-pg.jar",
+    "proguard/EdgeCases-mapping.txt",
+    "proguard/EdgeCasesKt-pg.jar",
+    "proguard/EdgeCasesKt-mapping.txt",
+]
+notes = "Hello-obf runs cleanly; EdgeCases-pg has runtime NPE due to aggressive optimization pruning enum constants array (Direction.getEnumConstants()) - fixture intentionally retained as worst-case obfuscator output for the deobfuscator to handle. EdgeCasesKt-pg keeps kotlin.Metadata and functional-interface implementers."
+
+[[protector]]
+name = "r8"
+status = "REAL-FIXTURE"
+version = "9.1.31"
+fixtures = [
+    "r8/Hello-baseline.jar",
+    "r8/Hello-r8.jar",
+    "r8/mapping.txt",
+    "r8/EdgeCases-r8.jar",
+    "r8/EdgeCases-mapping.txt",
+    "r8/EdgeCasesKt-r8.jar",
+    "r8/EdgeCasesKt-mapping.txt",
+]
+notes = "R8 9.1.31 from Google Maven (cmdline-tools shipped 8.9.27 which can't read Java 25 class file v69). Library resolved via android-34.jar stub. EdgeCases-r8 runs cleanly via `java -cp Hello-r8.jar Hello` (no manifest entry); mapping contains R8-specific residualsignature comments."
+
+[[protector]]
+name = "dex"
+status = "REAL-FIXTURE"
+version = "d8 9.1.31"
+fixtures = [
+    "dex/Hello.dex",
+    "dex/EdgeCases.dex",
+    "dex/EdgeCasesKt.dex",
+]
+notes = "Hello.dex = dex 035 (1660B), EdgeCases.dex = dex 035 (62KB), EdgeCasesKt.dex = dex 039 (87KB, --min-api 33 required to allow space in `function with spaces in name`)."
+
+[[protector]]
+name = "zelix-klassmaster"
+status = "REAL-RECOVERY"
+license = "proprietary (Zelix Pty Ltd)"
+fixtures = [
+    "zkmshape/StaticTableCrypt.class (in-house benign, javac; self-contained static-table decrypt)",
+    "zkmshape/StaticTableCrypt.java (in-house source; the recovery oracle)",
+    "r8/EdgeCases-r8.jar (real-fixture CFF un-flatten regression)",
+]
+notes = "String recovery at `crates/disrobe-pass-jvm/src/protectors/zelix.rs` routes through the constrained bytecode evaluator (`bytecode_eval.rs`), which runs the class's OWN decrypt method against the ciphertext (schedule-agnostic, no invented cipher). The evaluator runs <clinit> and reads getstatic, so a self-contained static-table decrypt is recovered against the in-house JVM-verified plaintext; only genuinely runtime-state keys (System.getProperty/env/live stack hash, cross-class runtime tables) hit the honest RuntimeKeyUnavailable wall. The prior synthetic per-class XOR keystream graded itself circularly and was retired. CFF un-flattening at `protectors/unflatten.rs` drives the real `sccp::simplify_flattened_cfg` engine (detect switch-on-state dispatcher, resolve each block's real successor, rebuild straight-line control flow over the exception-table-aware CFG) and validates the result by re-structuring it through the project's own `Structurer` with zero residual switch regions and full reducibility, on the real r8 jar."
+
+[[protector]]
+name = "allatori"
+status = "REAL-RECOVERY"
+license = "proprietary (Allatori, allatori.com)"
+fixtures = [
+    "callerkeyed/CallerKeyed.class (in-house benign, javac; caller/stack-trace-keyed decrypt, the Allatori string-encryptor shape)",
+    "callerkeyed/CallerKeyed.java (in-house source; the recovery oracle)",
+    "callerkeyed/EnvKeyed.class (in-house benign; runtime-key wall control)",
+]
+notes = "String recovery at `crates/disrobe-pass-jvm/src/protectors/allatori.rs` routes through the constrained bytecode evaluator (`bytecode_eval.rs`), which runs the class's OWN decrypt method against the ciphertext (schedule-agnostic, no invented cipher). Allatori's string encryptor keys on the calling method's identity read at run time from new Throwable().getStackTrace()[1]; the evaluator resolves the caller from the static call graph, supplies a synthetic StackTraceElement frame, and runs the real decrypt body (including any intra-class key helper) to recover the plaintext, graded against the in-house JVM-verified plaintext in `tests/caller_keyed_real.rs`. Only genuinely runtime-state keys (System.getProperty/env/clock, live cross-class tables) hit the honest RuntimeKeyUnavailable wall (callerkeyed/EnvKeyed). Watermark field/string strip is retained. The prior synthetic String.hashCode-derived XOR keystream graded itself circularly (disrobe-invented cipher re-encrypted against its own output) and was retired."
+
+[[protector]]
+name = "stringer"
+status = "REAL-RECOVERY + REAL-FIXTURE-WALL"
+license = "proprietary (Licel)"
+fixtures = [
+    "stringer/StringerClassic.class (in-house benign, javac; classic non-flow per-class-keyed static decrypt, recovered end-to-end)",
+    "stringer/StringerClassic.java (in-house source; the recovery oracle)",
+    "stringer/Digi.class (real Licel Stringer obfuscated caller, CC0 from huzpsb/JavaObfuscatorTest)",
+    "stringer/Handler.class (real Stringer caller, uh.T(Object,int) call shape)",
+    "stringer/uh.class (real stack-trace-keyed decryptor body)",
+    "zkmshape/StaticTableCrypt.class (in-house benign; the recoverable self-contained variant)",
+]
+notes = "String recovery at `crates/disrobe-pass-jvm/src/protectors/stringer.rs` routes through the constrained bytecode evaluator (`bytecode_eval.rs`) which runs the class's own decrypt body; the prior synthetic FNV-1a/LCG cipher graded itself circularly and was retired. The classic non-flow mode (StringerClassic) folds a single key int from the class name once in <clinit>, read back through getstatic, then applies an index-rotated feedback XOR in a private static String->String decrypt; the evaluator runs <clinit> to populate the key, executes the real decrypt against each constant, and recovers the plaintext, graded against the in-house JVM-verified plaintext in `tests/stringer_classic_real.rs`. The committed real Stringer sample (Digi/Handler/uh) instead keys each string on the live Thread.currentThread().getStackTrace() caller hash XOR a lazily-built cross-class global Object[] table seeded at run time (Rijndael S-box keystream, BigInteger[] state on a background Thread) with one AES key word masked by a self-integrity checksum over its own reflectively-read class bytes; that key is information-theoretically absent from the static artifact, so peel stays detect-only with a concrete runtime-key reason and fabricates nothing (one of the genuine A-walls). The self-contained static-table variant (zkmshape) is also recovered end-to-end. Obtaining a live commercial-Stringer sample whose default profile keys statically is commercial-corpus-blocked (Licel gates eval downloads): a sourcing gap, stated honestly, not a fake wall."
+
+[[protector]]
+name = "dasho"
+status = "REAL-RECOVERY"
+license = "proprietary (PreEmptive)"
+fixtures = [
+    "dasho/DashOStrings.class (in-house benign, javac; per-class-key static decrypt, the documented DashO string-encryption shape)",
+    "dasho/DashOStrings.java (in-house source; the recovery oracle)",
+    "dasho/DashOReflect.class (in-house benign; reflection-hidden member names as encrypted constants)",
+    "dasho/DashOReflect.java (in-house source; the reflection recovery oracle)",
+]
+notes = "String recovery at `crates/disrobe-pass-jvm/src/protectors/dasho.rs` routes through the constrained bytecode evaluator (`bytecode_eval.rs`), which runs the class's OWN decrypt method against the ciphertext (schedule-agnostic, no invented cipher). Per PreEmptive's documentation, DashO string encryption uses a per-class key derived from class metadata, baked into an auto-generated static decrypt method that decrypts lazily; the evaluator runs <clinit> to populate the per-class key, then executes the real decrypt body and recovers the plaintext, graded against the in-house JVM-verified plaintext in `tests/real_dasho.rs`. DashO reflection hiding (Class.forName/getMethod/invoke targets stored as encrypted constants) is handled by decrypting those constants through the same method and surfacing the resolved class/method/field names from the constant pool. A DashO build that keys on runtime-only state stays an honest RuntimeKeyUnavailable wall (same shape as callerkeyed/EnvKeyed). The prior synthetic class-name-derived XOR keystream graded itself circularly and was retired. Sourcing note: these are in-house benign fixtures reproducing the DashO shape; a real commercial DashO sample is corpus-blocked (paid PreEmptive product), a stated sourcing gap, not a fake wall. See dasho/MANIFEST.txt."
+
+[[protector]]
+name = "dexguard"
+status = "REAL-RECOVERY"
+license = "proprietary (Guardsquare)"
+fixtures = [
+    "dexguard/DexGuardReflectStrings.dex (in-house benign; encrypted String[] + reflection-invoked decrypt, the DexGuard string-encryption shape)",
+    "dexguard/DexGuardReflectStrings.java (in-house source; the recovery oracle)",
+    "dexguard/MANIFEST.toml (build command, dex_builder version, sha256, ground-truth plaintext list)",
+    "dex/EdgeCases.dex (clean baseline; used to verify residual-encrypted-string ratio is low for non-DexGuard input)",
+]
+notes = "String recovery at `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` runs a constrained dalvik register machine over the dex's OWN decrypt routine: it executes the class `<clinit>` to rebuild the encrypted `String[]` static table, then runs the `decrypt(int)` body per table index (sget-object the table, aget the element, per-char XOR against the embedded key, String.valueOf the result), recovering the plaintext with no invented cipher. The reflective call sites (Class.getDeclaredMethod(\"decrypt\", int.class) + Method.invoke) are matched and resolved to the concrete decrypt target. `protectors/dexguard.rs::peel` wraps this behind explicit authorization and surfaces the recovered strings; the dalvik engine also runs unconditionally on the `disrobe jvm decompile <dex>` path (manifest fields reflection_strings_recovered / reflection_string_recovery). Recovery is graded against the authored plaintext list in `tests/dexguard_reflection_strings.rs`, an external ground truth, not against disrobe's own output. A DexGuard build whose decrypt key is runtime-only (System.getProperty/env/clock/SecureRandom) is reported as RuntimeKeyUnavailable and left opaque. Sourcing note: commercial DexGuard is paid Guardsquare software whose protected output is unsafe to produce on a non-sandboxed box, and the javac+d8 toolchain is not installed (agents do not install or download tooling), so this is a self-authored benign sample that exhibits the same reflection-string-decryption technique; the dex is assembled byte-for-byte by the project's own dex_builder (dex 035, adler32 + sha-1 valid) and parses through the project's own dex reader. CFF un-flattening for DexGuard switch-on-state dispatchers is handled separately at `dalvik_dexguard.rs`."
+
+[[protector]]
+name = "yguard"
+status = "REAL-RECOVERY"
+license = "MIT (yWorks GmbH)"
+version = "5.0.0"
+fixtures = [
+    "obfuscators/yguard/gauntlet/Calculator.java (in-house source; the clean original and recovery oracle)",
+    "obfuscators/yguard/Calculator-clean.jar (javac Temurin 25 --release 17; the ground-truth jar)",
+    "obfuscators/yguard/Calculator-obf.jar (real yGuard 5.0.0 rename output; the gauntlet target)",
+    "obfuscators/yguard/renamelog.xml (yGuard rename log; external grading aid only, never fed to disrobe)",
+]
+notes = "Real yGuard 5.0.0 (com.yworks:yguard from Maven Central, sha256 510f3bfe...) run as its Ant ObfuscatorTask with asm 9.9.1 over the clean Calculator-clean.jar, naming-scheme=small, mainclass exposed. yGuard renames classes/methods/fields (inner Ledger -> _A; fields -> A/B/C/D; methods -> single letters with signature-disambiguated overloads) and keeps the exposed entrypoint; it does NOT encrypt string literals. The gauntlet (tests/yguard_gauntlet.rs, 7 tests) measures recovery against the CLEAN ORIGINAL, never the tool's own output: all 9 clean string literals survive verbatim (set-equal diff against clean), both classes + all members decompile, the renamed identifiers canonicalize through heuristic_recover. Honest residual: yGuard discards the original-name map with no recoverable oracle in the artifact, so identifier names canonicalize (not restore to banner/accumulate/fibonacci/...); only the exposed Calculator/main keep original names. The prior DEFER claim that building needed a ~250MB gradle toolchain was wrong: yGuard is a small Ant task jar (379KB) plus asm (126KB) plus Ant (10MB)."
+
+[[protector]]
+name = "jbco"
+status = "DEAD-DOCUMENT"
+upstream = "https://www.sable.mcgill.ca/JBCO/"
+last_release = "2010"
+fixtures = []
+notes = "Confirmed via web check: project page exists but last research paper from 2010. McGill Sable group repo (https://github.com/Sable) has no JBCO repository. Project is archived/dead; detection retains heuristic-only path. Replace `unreachable!()` with `panic!('DEAD-DOCUMENT: JBCO upstream archived since 2010, see corpus/jvm/MANIFEST.toml')` in test stub."
+
+[[protector]]
+name = "skidsuite2"
+status = "DEAD-DOCUMENT"
+upstream = "https://github.com/Col-E/SkidSuite2"
+fixtures = []
+notes = "Col-E/SkidSuite2 last commit 2017; readme self-marks as deprecated, superseded by Recaf (https://github.com/Col-E/Recaf). Detection retains string-marker heuristic; no obfuscator-output fixture obtainable."
+
+[[protector]]
+name = "groovy-decompile"
+status = "DEFER-PENDING-BACKEND"
+fixtures = []
+notes = "needs cfr / vineflower backend; deferred to a follow-up sprint that integrates backend detection."

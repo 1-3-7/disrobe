@@ -1,0 +1,39 @@
+[package]
+name = "disrobe-pass-swift-objc"
+description = "iOS Swift + Objective-C recovery: IPA extract, Mach-O fat walker, Swift class-dump (dsdump semantics), ObjC __objc_classlist + __objc_methlist, Swift demangle, FairPlay detection."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["swift", "objc", "ios", "macho", "decompile"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-nir = { workspace = true }
+disrobe-pass-native = { workspace = true }
+blake3 = { workspace = true }
+object = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+plist = { workspace = true }
+zip = { workspace = true }
+memchr = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+disrobe-binfmt = { workspace = true }
+insta = { workspace = true }

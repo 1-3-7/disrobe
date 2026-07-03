@@ -1,0 +1,36 @@
+[package]
+name = "disrobe-pass-lua"
+description = "Lua + LuaJIT + Roblox Luau bytecode readers + decompilers + obfuscator reversers: Prometheus, MoonSec V1/V2/V3, Ironbrew2, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["lua", "luajit", "luau", "roblox", "deobfuscation"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+flate2 = { workspace = true }
+brotli-decompressor = "5.0.0"
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }
+disrobe-binfmt = { workspace = true }
+tempfile = "3"

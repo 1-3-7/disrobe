@@ -1,0 +1,23 @@
+[package]
+name = "disrobe-semdiff"
+description = "Semantic cross-artifact diff over the architecture-neutral normalized IR (the Mir rung): functions are matched by name and fingerprinted by a relocation-invariant signature (op sequence with call targets normalized to callee symbol name, plus the relative control-flow edge set), so two builds of the same source diff to nothing while a single changed function is reported and no other."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-nir = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+disrobe-nir-lift = { workspace = true }
+wat = "1"

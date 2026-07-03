@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="482" viewBox="0 0 920 482" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="920" height="482" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="919" height="481" rx="9.5" fill="none" stroke="#262626"/>
+  <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">How recovery is proven</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">every number is graded by an independent oracle, never the tool reading its own output</text>
+  <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="92.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600" letter-spacing="0.5">ecosystem</text>
+  <text x="200.00" y="92.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600" letter-spacing="0.5">independent oracle</text>
+  <text x="470.00" y="92.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600" letter-spacing="0.5">result</text>
+  <text x="892.00" y="92.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="end" font-weight="600" letter-spacing="0.5">gate</text>
+  <line x1="28.00" y1="106.00" x2="892.00" y2="106.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="130.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Python</text>
+  <text x="200.00" y="130.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recompile to equivalent bytecode</text>
+  <text x="470.00" y="130.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">94.18% of 6286 objects</text>
+  <rect x="860.00" y="117.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="130.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="146.00" x2="892.00" y2="146.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="170.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">JVM classfile</text>
+  <text x="200.00" y="170.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recompile under real javac</text>
+  <text x="470.00" y="170.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">131 / 131 methods clean</text>
+  <rect x="860.00" y="157.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="170.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="186.00" x2="892.00" y2="186.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="210.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Android DEX</text>
+  <text x="200.00" y="210.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">real JVM verifier, -Xverify:all</text>
+  <text x="470.00" y="210.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">102 / 103 classes clean</text>
+  <rect x="860.00" y="197.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="210.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="226.00" x2="892.00" y2="226.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="250.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">WebAssembly</text>
+  <text x="200.00" y="250.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">execution differential under wasmtime</text>
+  <text x="470.00" y="250.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">50 / 50 numeric fns equal</text>
+  <rect x="860.00" y="237.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="250.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="266.00" x2="892.00" y2="266.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="290.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Lua</text>
+  <text x="200.00" y="290.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">re-run recovered output under real Lua</text>
+  <text x="470.00" y="290.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">IronBrew2 2.7.0 equal</text>
+  <rect x="860.00" y="277.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="290.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="306.00" x2="892.00" y2="306.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="330.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Ruby YARV</text>
+  <text x="200.00" y="330.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recompile under MRI, opcode multiset</text>
+  <text x="470.00" y="330.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">100% / 98% on corpus</text>
+  <rect x="860.00" y="317.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="330.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="346.00" x2="892.00" y2="346.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="370.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">.NET Eazfuscator VM</text>
+  <text x="200.00" y="370.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">re-inject CIL, byte-identical stdout</text>
+  <text x="470.00" y="370.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">57 / 57 instructions</text>
+  <rect x="860.00" y="357.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="370.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="386.00" x2="892.00" y2="386.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="410.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Native UPX</text>
+  <text x="200.00" y="410.00" font-size="11.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">byte-identity vs committed original</text>
+  <text x="470.00" y="410.00" font-size="11.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500">.text byte-identical</text>
+  <rect x="860.00" y="397.00" width="32.00" height="18.00" rx="4.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="876.00" y="410.00" font-size="9.5" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">CI</text>
+  <line x1="28.00" y1="426.00" x2="892.00" y2="426.00" stroke="#333333" stroke-width="1"/>
+  <line x1="28.00" y1="438.00" x2="892.00" y2="438.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="450.00" font-size="10" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Each oracle can reject a wrong answer: a compiler, a verifier, a runtime, or a byte compare. A green number that the tool could not have faked is the only kind reported.</text>
+</svg>

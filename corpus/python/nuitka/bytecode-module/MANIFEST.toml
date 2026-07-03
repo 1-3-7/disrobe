@@ -1,0 +1,52 @@
+schema_version = 1
+generated_at = "2026-06-14"
+tool = "Nuitka"
+tool_version = "4.1.1"
+python_runtime = "CPython 3.14.5"
+host_platform = "win_amd64"
+c_backend = "MSVC cl 14.5"
+source_app = "packaging"
+source_app_description = """
+Self-authored package compiled with `python -m nuitka --module app.py \
+--include-module=packaging`. Nuitka demotes `packaging` to bytecode (the name is in \
+its unworthy_namespaces set), so the module's marshalled code object lands in \
+app.build/__bytecode.const instead of being compiled to C. The table holds exactly \
+one module, keeping the fixture small.
+"""
+
+[ground_truth]
+file = "packaging.src.py"
+sha256 = "cc5df8beb847e51c504cc8aa2eeb768929822dd52c89003e230703392287bec3"
+bytes = 354
+note = "original self-authored source; recompiling it reproduces the recovered code object"
+
+[bytecode_table]
+file = "app.build/__bytecode.const"
+sha256 = "68ec425333c9e6eb67a65b61625c888a9318066070bceeada455f502b26b4d95"
+bytes = 923
+format = "pickle protocol 5 stream wrapping nuitka.Serialization.BlobData; the BlobData state dict carries data=marshal.dumps(code) and name=\"bytecode of module 'packaging'\""
+frozen_modules = ["packaging"]
+co_filename_normalized = "packaging.py"
+normalization = """
+The marshalled co_filename originally held the absolute build path. It was rewritten \
+to packaging.py (parent and nested code objects) by re-marshalling through CPython and \
+splicing the result back into Nuitka's original pickle frame, adjusting the FRAME \
+length prefix. co_code, names, consts, and structure are byte-identical to Nuitka's \
+output; only the filename string changed, so the fixture carries no host-specific path.
+"""
+
+[manifest_file]
+file = "app.build/blobs/__constant.txt"
+sha256 = "24c4a051093e44803748e31b70ed5c15e367ce2add56f9d466730c175bf9ac75"
+bytes = 333
+note = "data-composer manifest, verbatim from the build; input_size 977 reflects Nuitka's original __bytecode.const before the co_filename normalization"
+
+[module_const]
+file = "app.build/module.app.const"
+sha256 = "7980575fdb360341736233f69c9b0ddb61dea59158c054d1f6dea10961bf1601"
+bytes = 244
+
+[global_const]
+file = "app.build/__constants.const"
+sha256 = "ef91f7ac62aa281916388d09a2edbc0f8d377acb453f31edd66ceffeab81362d"
+bytes = 2185

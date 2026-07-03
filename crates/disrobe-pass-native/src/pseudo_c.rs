@@ -1,0 +1,7477 @@
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use crate::arch::{Arch, DisasmInsn, disassemble};
+use crate::error::{Error, Result};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Reg {
+    Rax,
+    Rbx,
+    Rcx,
+    Rdx,
+    Rsi,
+    Rdi,
+    Rbp,
+    Rsp,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
+}
+
+impl Reg {
+    const fn canonical_c_name(self) -> &'static str {
+        match self {
+            Self::Rax => "rax",
+            Self::Rbx => "rbx",
+            Self::Rcx => "rcx",
+            Self::Rdx => "rdx",
+            Self::Rsi => "rsi",
+            Self::Rdi => "rdi",
+            Self::Rbp => "rbp",
+            Self::Rsp => "rsp",
+            Self::R8 => "r8",
+            Self::R9 => "r9",
+            Self::R10 => "r10",
+            Self::R11 => "r11",
+            Self::R12 => "r12",
+            Self::R13 => "r13",
+            Self::R14 => "r14",
+            Self::R15 => "r15",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Width {
+    W8,
+    W16,
+    W32,
+    W64,
+}
+
+impl Width {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::W8 => 8,
+            Self::W16 => 16,
+            Self::W32 => 32,
+            Self::W64 => 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Xmm {
+    Xmm0,
+    Xmm1,
+    Xmm2,
+    Xmm3,
+    Xmm4,
+    Xmm5,
+    Xmm6,
+    Xmm7,
+    Xmm8,
+    Xmm9,
+    Xmm10,
+    Xmm11,
+    Xmm12,
+    Xmm13,
+    Xmm14,
+    Xmm15,
+}
+
+impl Xmm {
+    const fn index(self) -> u8 {
+        self as u8
+    }
+}
+
+fn parse_xmm(token: &str) -> Option<Xmm> {
+    Some(match token.trim() {
+        "xmm0" => Xmm::Xmm0,
+        "xmm1" => Xmm::Xmm1,
+        "xmm2" => Xmm::Xmm2,
+        "xmm3" => Xmm::Xmm3,
+        "xmm4" => Xmm::Xmm4,
+        "xmm5" => Xmm::Xmm5,
+        "xmm6" => Xmm::Xmm6,
+        "xmm7" => Xmm::Xmm7,
+        "xmm8" => Xmm::Xmm8,
+        "xmm9" => Xmm::Xmm9,
+        "xmm10" => Xmm::Xmm10,
+        "xmm11" => Xmm::Xmm11,
+        "xmm12" => Xmm::Xmm12,
+        "xmm13" => Xmm::Xmm13,
+        "xmm14" => Xmm::Xmm14,
+        "xmm15" => Xmm::Xmm15,
+        _ => return None,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpWidth {
+    F32,
+    F64,
+}
+
+impl FpWidth {
+    const fn c_type(self) -> &'static str {
+        match self {
+            Self::F32 => "float",
+            Self::F64 => "double",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl FpOp {
+    const fn c_operator(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpOperand {
+    Xmm(Xmm),
+    Mem(MemRef),
+    Const { bits: u64, width: FpWidth },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FpConstant {
+    pub site: u64,
+    pub bits: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RegRef {
+    reg: Reg,
+    width: Width,
+}
+
+fn parse_reg(token: &str) -> Option<RegRef> {
+    let name: &str = token.trim();
+    let (reg, width): (Reg, Width) = match name {
+        "rax" => (Reg::Rax, Width::W64),
+        "eax" => (Reg::Rax, Width::W32),
+        "ax" => (Reg::Rax, Width::W16),
+        "al" => (Reg::Rax, Width::W8),
+        "rbx" => (Reg::Rbx, Width::W64),
+        "ebx" => (Reg::Rbx, Width::W32),
+        "bx" => (Reg::Rbx, Width::W16),
+        "bl" => (Reg::Rbx, Width::W8),
+        "rcx" => (Reg::Rcx, Width::W64),
+        "ecx" => (Reg::Rcx, Width::W32),
+        "cx" => (Reg::Rcx, Width::W16),
+        "cl" => (Reg::Rcx, Width::W8),
+        "rdx" => (Reg::Rdx, Width::W64),
+        "edx" => (Reg::Rdx, Width::W32),
+        "dx" => (Reg::Rdx, Width::W16),
+        "dl" => (Reg::Rdx, Width::W8),
+        "rsi" => (Reg::Rsi, Width::W64),
+        "esi" => (Reg::Rsi, Width::W32),
+        "si" => (Reg::Rsi, Width::W16),
+        "sil" => (Reg::Rsi, Width::W8),
+        "rdi" => (Reg::Rdi, Width::W64),
+        "edi" => (Reg::Rdi, Width::W32),
+        "di" => (Reg::Rdi, Width::W16),
+        "dil" => (Reg::Rdi, Width::W8),
+        "rbp" => (Reg::Rbp, Width::W64),
+        "ebp" => (Reg::Rbp, Width::W32),
+        "rsp" => (Reg::Rsp, Width::W64),
+        "esp" => (Reg::Rsp, Width::W32),
+        "r8" => (Reg::R8, Width::W64),
+        "r8d" => (Reg::R8, Width::W32),
+        "r8w" => (Reg::R8, Width::W16),
+        "r8b" => (Reg::R8, Width::W8),
+        "r9" => (Reg::R9, Width::W64),
+        "r9d" => (Reg::R9, Width::W32),
+        "r9w" => (Reg::R9, Width::W16),
+        "r9b" => (Reg::R9, Width::W8),
+        "r10" => (Reg::R10, Width::W64),
+        "r10d" => (Reg::R10, Width::W32),
+        "r11" => (Reg::R11, Width::W64),
+        "r11d" => (Reg::R11, Width::W32),
+        "r12" => (Reg::R12, Width::W64),
+        "r12d" => (Reg::R12, Width::W32),
+        "r13" => (Reg::R13, Width::W64),
+        "r13d" => (Reg::R13, Width::W32),
+        "r14" => (Reg::R14, Width::W64),
+        "r14d" => (Reg::R14, Width::W32),
+        "r15" => (Reg::R15, Width::W64),
+        "r15d" => (Reg::R15, Width::W32),
+        _ => return None,
+    };
+    Some(RegRef { reg, width })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abi {
+    MsX64,
+    SysV,
+}
+
+impl Abi {
+    const fn arg_order(self) -> &'static [Reg] {
+        match self {
+            Self::MsX64 => &[Reg::Rcx, Reg::Rdx, Reg::R8, Reg::R9],
+            Self::SysV => &[Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinOp {
+    Add,
+    Sub,
+    Imul,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+    Sar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemRmwOp {
+    Bin { op: BinOp, src: Source },
+    Un(UnOp),
+}
+
+impl MemRmwOp {
+    const fn source(&self) -> Option<&Source> {
+        match self {
+            Self::Bin { src, .. } => Some(src),
+            Self::Un(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondKind {
+    E,
+    Ne,
+    G,
+    Ge,
+    L,
+    Le,
+    A,
+    Ae,
+    B,
+    Be,
+    S,
+    Ns,
+}
+
+impl CondKind {
+    fn parse(suffix: &str) -> Option<Self> {
+        match suffix {
+            "e" | "z" => Some(Self::E),
+            "ne" | "nz" => Some(Self::Ne),
+            "g" | "nle" => Some(Self::G),
+            "ge" | "nl" => Some(Self::Ge),
+            "l" | "nge" => Some(Self::L),
+            "le" | "ng" => Some(Self::Le),
+            "a" | "nbe" => Some(Self::A),
+            "ae" | "nb" | "nc" => Some(Self::Ae),
+            "b" | "nae" | "c" => Some(Self::B),
+            "be" | "na" => Some(Self::Be),
+            "s" => Some(Self::S),
+            "ns" => Some(Self::Ns),
+            _ => None,
+        }
+    }
+
+    const fn is_signed_order(self) -> bool {
+        matches!(self, Self::G | Self::Ge | Self::L | Self::Le)
+    }
+
+    const fn is_unsigned_order(self) -> bool {
+        matches!(self, Self::A | Self::Ae | Self::B | Self::Be)
+    }
+
+    const fn sign_zero_only(self) -> bool {
+        matches!(self, Self::S | Self::Ns | Self::E | Self::Ne)
+    }
+
+    const fn negate(self) -> Self {
+        match self {
+            Self::E => Self::Ne,
+            Self::Ne => Self::E,
+            Self::G => Self::Le,
+            Self::Ge => Self::L,
+            Self::L => Self::Ge,
+            Self::Le => Self::G,
+            Self::A => Self::Be,
+            Self::Ae => Self::B,
+            Self::B => Self::Ae,
+            Self::Be => Self::A,
+            Self::S => Self::Ns,
+            Self::Ns => Self::S,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Flags {
+    Cmp {
+        lhs: RegRef,
+        rhs: Source,
+    },
+    CmpMem {
+        lhs: MemRef,
+        rhs: RegRef,
+    },
+    Test {
+        operand: RegRef,
+    },
+    TestImm {
+        operand: RegRef,
+        mask: i64,
+    },
+    Sign {
+        result: RegRef,
+    },
+    FpCmp {
+        lhs: Xmm,
+        rhs: FpOperand,
+        width: FpWidth,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DividendHigh {
+    SignExtended { width: Width },
+    Zeroed,
+}
+
+type AddrTerms = (Option<Reg>, Option<(Reg, u8)>, i64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemRef {
+    base: Option<Reg>,
+    index: Option<(Reg, u8)>,
+    disp: i64,
+    width: Width,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    Reg(RegRef),
+    Imm(i64),
+    Lea {
+        base: Option<Reg>,
+        index: Option<(Reg, u8)>,
+        disp: i64,
+    },
+    Mem(MemRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stmt {
+    Assign {
+        dest: RegRef,
+        src: Source,
+    },
+    BinAssign {
+        dest: RegRef,
+        op: BinOp,
+        src: Source,
+    },
+    UnAssign {
+        dest: RegRef,
+        op: UnOp,
+    },
+    Cond {
+        dest: RegRef,
+        src: Source,
+        kind: CondKind,
+        flags: Flags,
+    },
+    SetCc {
+        dest: RegRef,
+        kind: CondKind,
+        flags: Flags,
+    },
+    Store {
+        addr: MemRef,
+        src: Source,
+    },
+    MemRmw {
+        addr: MemRef,
+        op: MemRmwOp,
+    },
+    Extend {
+        dest: RegRef,
+        src: ExtSource,
+        signed: bool,
+    },
+    MulImm {
+        dest: RegRef,
+        src: ExtSource,
+        imm: i64,
+    },
+    WideMul {
+        src: RegRef,
+    },
+    Divide {
+        divisor: RegRef,
+        signed: bool,
+    },
+    FpBin {
+        dest: Xmm,
+        rhs: FpOperand,
+        op: FpOp,
+        width: FpWidth,
+    },
+    FpMov {
+        dest: Xmm,
+        src: FpOperand,
+        width: FpWidth,
+    },
+    FpStore {
+        addr: MemRef,
+        src: Xmm,
+        width: FpWidth,
+    },
+    IntToFp {
+        dest: Xmm,
+        src: RegRef,
+        signed: bool,
+        width: FpWidth,
+    },
+    FpToInt {
+        dest: RegRef,
+        src: Xmm,
+        width: FpWidth,
+    },
+    FpConvert {
+        dest: Xmm,
+        src: Xmm,
+        from: FpWidth,
+        to: FpWidth,
+    },
+    FpMinMax {
+        dest: Xmm,
+        rhs: FpOperand,
+        is_max: bool,
+        width: FpWidth,
+    },
+    FpSqrt {
+        dest: Xmm,
+        src: FpOperand,
+        width: FpWidth,
+    },
+    GprToXmm {
+        dest: Xmm,
+        src: RegRef,
+        width: FpWidth,
+    },
+    XmmToGpr {
+        dest: RegRef,
+        src: Xmm,
+        width: FpWidth,
+    },
+    DoubleShift {
+        dest: RegRef,
+        src: RegRef,
+        amount: u8,
+        left: bool,
+    },
+    BlockMove {
+        elem: Width,
+    },
+    BlockFill {
+        elem: Width,
+    },
+    Call {
+        target: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtSource {
+    Reg(RegRef),
+    Mem(MemRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Node {
+    Stmt(Stmt),
+    If {
+        cond: CondKind,
+        flags: Flags,
+        then_body: Block,
+        else_body: Option<Block>,
+    },
+    DoWhile {
+        body: Block,
+        cond: LoopCond,
+    },
+    While {
+        body: Block,
+    },
+    CondSnapshot {
+        var: u32,
+        cond: CondKind,
+        flags: Flags,
+    },
+    Switch {
+        disc: RegRef,
+        cases: Vec<SwitchCase>,
+        default: Block,
+    },
+    Break,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitchCase {
+    value: i64,
+    body: Block,
+    fallthrough: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoopCond {
+    Direct { cond: CondKind, flags: Flags },
+    Snapshot { var: u32 },
+}
+
+type Block = Vec<Node>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarType {
+    Int,
+    Double,
+    Float,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SretReturn {
+    pub field_widths: Vec<u32>,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeafRecovery {
+    pub source: String,
+    pub return_width_bits: u32,
+    pub params: Vec<Reg>,
+    pub fp_params: Vec<ScalarType>,
+    pub returns_fp: Option<ScalarType>,
+    pub lifted_split_return: bool,
+    pub lifted_loop: bool,
+    pub lifted_switch: bool,
+    pub call_targets: Vec<u64>,
+    pub sret: Option<SretReturn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpTable {
+    pub table_va: u64,
+    pub entries: Vec<i32>,
+}
+
+pub fn recover_leaf_function(machine_code: &[u8], base: u64) -> Result<LeafRecovery> {
+    recover_leaf_function_abi(machine_code, base, Abi::MsX64)
+}
+
+pub fn recover_leaf_function_abi(machine_code: &[u8], base: u64, abi: Abi) -> Result<LeafRecovery> {
+    recover_leaf_function_const_abi(machine_code, base, abi, &[])
+}
+
+pub fn recover_leaf_function_const_abi(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    consts: &[FpConstant],
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let mut items: Vec<Item> = Vec::new();
+    let mut return_width: Width = Width::W64;
+    let mut flags: Option<Flags> = None;
+    let mut dividend_high: Option<DividendHigh> = None;
+    let mut fp_return: Option<FpWidth> = None;
+    let mut saw_ret: bool = false;
+    let mut max_branch_target: u64 = 0;
+    let mut df_backward: bool = false;
+    for insn in &insns {
+        if insn.mnemonic == "nop" || insn.mnemonic == "endbr64" {
+            continue;
+        }
+        if insn.mnemonic == "cld" {
+            df_backward = false;
+            continue;
+        }
+        if insn.mnemonic == "std" {
+            df_backward = true;
+            continue;
+        }
+        if insn.mnemonic == "rep" {
+            let stmt: Stmt = lift_rep_string(&insn.operands, df_backward).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported string idiom `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?;
+            flags = None;
+            dividend_high = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(stmt),
+            });
+            continue;
+        }
+        if matches!(insn.mnemonic.as_str(), "repe" | "repz" | "repne" | "repnz") {
+            return Err(Error::LlvmIr(format!(
+                "string compare/scan `{} {}` at {:#x} is not a block copy or fill",
+                insn.mnemonic, insn.operands, insn.address
+            )));
+        }
+        if is_bare_string_op(&insn.mnemonic) {
+            return Err(Error::LlvmIr(format!(
+                "unbounded single string op `{}` at {:#x} has no rep count and is not the RDI/RSI/RCX block idiom",
+                insn.mnemonic, insn.address
+            )));
+        }
+        if is_frame_management(&insn.mnemonic, &insn.operands) {
+            continue;
+        }
+        if let Some(fp_flags) =
+            lift_fp_compare(&insn.mnemonic, &insn.operands, insn.address, consts)?
+        {
+            flags = Some(fp_flags);
+            continue;
+        }
+        if let Some(fp_stmt) = lift_fp(&insn.mnemonic, &insn.operands, insn.address, consts)? {
+            if let Some((dest, width)) = fp_stmt_result_xmm(&fp_stmt)
+                && dest == Xmm::Xmm0
+            {
+                fp_return = Some(width);
+            }
+            if let Stmt::FpToInt { dest, .. } | Stmt::XmmToGpr { dest, .. } = &fp_stmt
+                && dest.reg == Reg::Rax
+            {
+                return_width = dest.width;
+                fp_return = None;
+            }
+            flags = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(fp_stmt),
+            });
+            continue;
+        }
+        if let Some(high) = lift_dividend_extend(&insn.mnemonic, &insn.operands) {
+            dividend_high = Some(high);
+            continue;
+        }
+        if let Some(divisor) = parse_divide_operand(&insn.mnemonic, &insn.operands) {
+            let signed: bool = insn.mnemonic == "idiv";
+            let high: DividendHigh = dividend_high.take().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "division at {:#x} without a tracked high-half dividend setup",
+                    insn.address
+                ))
+            })?;
+            if !dividend_high_matches(high, signed, divisor.width) {
+                return Err(Error::LlvmIr(format!(
+                    "division at {:#x} has a high-half dividend inconsistent with a width-fitting `{}`",
+                    insn.address, insn.mnemonic
+                )));
+            }
+            flags = None;
+            return_width = divisor.width;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Divide { divisor, signed }),
+            });
+            continue;
+        }
+        if insn.mnemonic == "call"
+            && let Some(target) = parse_branch_target(&insn.operands)
+        {
+            return_width = Width::W64;
+            flags = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Call { target }),
+            });
+            continue;
+        }
+        if insn.mnemonic == "ret" {
+            saw_ret = true;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Ret,
+            });
+            if max_branch_target > insn.address {
+                continue;
+            }
+            break;
+        }
+        if let Some(target) = parse_branch_target(&insn.operands)
+            && let Some(cond_suffix) = insn.mnemonic.strip_prefix('j')
+        {
+            max_branch_target = max_branch_target.max(target);
+            if cond_suffix == "mp" {
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Jmp { target },
+                });
+                continue;
+            }
+            let kind: CondKind = CondKind::parse(cond_suffix).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported branch `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?;
+            let live_flags: Flags = flags.clone().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "branch without preceding flags at {:#x}",
+                    insn.address
+                ))
+            })?;
+            if !condition_is_sound(kind, &live_flags) {
+                return Err(Error::LlvmIr(format!(
+                    "branch condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            }
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Branch {
+                    kind,
+                    flags: live_flags,
+                    target,
+                },
+            });
+            continue;
+        }
+        if let Some(new_flags) = lift_flag_setter(&insn.mnemonic, &insn.operands) {
+            flags = Some(new_flags);
+            continue;
+        }
+        if let Some(suffix) = insn.mnemonic.strip_prefix("cmov") {
+            let kind: CondKind = CondKind::parse(suffix).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported conditional move `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?;
+            let live_flags: Flags = flags.clone().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "cmov without preceding flags at {:#x}",
+                    insn.address
+                ))
+            })?;
+            if !condition_is_sound(kind, &live_flags) {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            }
+            let (lhs, rhs): (&str, &str) = insn
+                .operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed cmov at {:#x}", insn.address)))?;
+            let dest: RegRef = parse_reg(lhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("cmov dest not a register at {:#x}", insn.address))
+            })?;
+            let src: Source = parse_source(rhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
+            })?;
+            if dest.reg == Reg::Rax {
+                return_width = dest.width;
+            }
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Cond {
+                    dest,
+                    src,
+                    kind,
+                    flags: live_flags,
+                }),
+            });
+            continue;
+        }
+        if let Some(suffix) = insn.mnemonic.strip_prefix("set")
+            && let Some(kind) = CondKind::parse(suffix)
+        {
+            let dest: RegRef = parse_reg(insn.operands.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("setcc dest not a register at {:#x}", insn.address))
+            })?;
+            if dest.width != Width::W8 {
+                return Err(Error::LlvmIr(format!(
+                    "setcc at {:#x} does not target a byte register",
+                    insn.address
+                )));
+            }
+            let live_flags: Flags = flags.clone().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "setcc without preceding flags at {:#x}",
+                    insn.address
+                ))
+            })?;
+            if !condition_is_sound(kind, &live_flags) {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            }
+            if dest.reg == Reg::Rax {
+                return_width = dest.width;
+                fp_return = None;
+            }
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::SetCc {
+                    dest,
+                    kind,
+                    flags: live_flags,
+                }),
+            });
+            continue;
+        }
+        if let Some(stmt) = lift_width_extension(&insn.mnemonic, &insn.operands) {
+            if let Stmt::Extend { dest, .. } = &stmt
+                && dest.reg == Reg::Rax
+            {
+                return_width = dest.width;
+            }
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(stmt),
+            });
+            continue;
+        }
+        let stmt: Stmt = lift_one(&insn.mnemonic, &insn.operands).ok_or_else(|| {
+            Error::LlvmIr(format!(
+                "unsupported leaf instruction `{} {}` at {:#x}",
+                insn.mnemonic, insn.operands, insn.address
+            ))
+        })?;
+        if let Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. } = &stmt
+            && dest.reg == Reg::Rax
+        {
+            return_width = dest.width;
+            fp_return = None;
+        }
+        if matches!(&stmt, Stmt::WideMul { .. }) {
+            return_width = Width::W64;
+            fp_return = None;
+        }
+        dividend_high = track_dividend_high(dividend_high, &stmt);
+        match &stmt {
+            Stmt::Assign { .. } => {}
+            Stmt::BinAssign { dest, op, .. } => {
+                flags = match flag_effect_bin(*op) {
+                    FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
+                    FlagEffect::Clobber => None,
+                };
+            }
+            Stmt::UnAssign { dest, op } => {
+                flags = match op {
+                    UnOp::Neg => Some(Flags::Sign { result: *dest }),
+                    UnOp::Not => flags,
+                };
+            }
+            Stmt::Cond { .. } => {}
+            Stmt::SetCc { .. } => {}
+            Stmt::Store { .. } => {}
+            Stmt::MemRmw { .. } => {
+                flags = None;
+            }
+            Stmt::Extend { .. } => {}
+            Stmt::MulImm { .. } | Stmt::WideMul { .. } | Stmt::DoubleShift { .. } => {
+                flags = None;
+            }
+            Stmt::Divide { .. } => {
+                flags = None;
+            }
+            Stmt::BlockMove { .. } | Stmt::BlockFill { .. } => {
+                flags = None;
+            }
+            Stmt::FpBin { .. }
+            | Stmt::FpMov { .. }
+            | Stmt::FpStore { .. }
+            | Stmt::IntToFp { .. }
+            | Stmt::FpToInt { .. }
+            | Stmt::FpConvert { .. }
+            | Stmt::FpMinMax { .. }
+            | Stmt::FpSqrt { .. }
+            | Stmt::GprToXmm { .. }
+            | Stmt::XmmToGpr { .. } => {
+                flags = None;
+            }
+            Stmt::Call { .. } => {}
+        }
+        items.push(Item {
+            address: insn.address,
+            kind: ItemKind::Stmt(stmt),
+        });
+    }
+    if !saw_ret {
+        return Err(Error::LlvmIr(
+            "no ret found; not a single-exit leaf".to_owned(),
+        ));
+    }
+
+    let structured: Structured = structure_items(&items)?;
+    let mut call_targets: Vec<u64> = Vec::new();
+    collect_call_targets(&structured.body, &mut call_targets);
+    let sret_plan: Option<SretPlan> = fp_return
+        .is_none()
+        .then(|| detect_sret(&structured.body, abi))
+        .flatten();
+    let mut params: Vec<Reg> = infer_params(&structured.body, abi);
+    if let Some(plan) = &sret_plan {
+        params.retain(|r: &Reg| *r != plan.ptr);
+    }
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body);
+    let returns_fp: Option<ScalarType> = fp_return.map(scalar_of_fp);
+    let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
+    let signature: FnSignature = FnSignature {
+        fp: fp_args,
+        int: params.clone(),
+        ret,
+    };
+    let fp_params: Vec<ScalarType> = signature.ordered_param_types();
+    let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns))?;
+    let source: String = emit_c(
+        &structured.body,
+        &signature,
+        abi,
+        frame_plan.as_ref(),
+        sret_plan.as_ref(),
+    );
+    let sret: Option<SretReturn> = sret_plan.as_ref().map(|plan: &SretPlan| SretReturn {
+        field_widths: plan
+            .fields
+            .iter()
+            .map(|(_, w): &(i64, Width)| w.bits() / 8)
+            .collect(),
+        size: plan.size,
+    });
+    Ok(LeafRecovery {
+        source,
+        return_width_bits: return_width.bits(),
+        params,
+        fp_params,
+        returns_fp,
+        lifted_split_return: structured.lifted_split_return,
+        lifted_loop: structured.lifted_loop,
+        lifted_switch: false,
+        call_targets,
+        sret,
+    })
+}
+
+const fn scalar_of_fp(width: FpWidth) -> ScalarType {
+    match width {
+        FpWidth::F32 => ScalarType::Float,
+        FpWidth::F64 => ScalarType::Double,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FnReturn {
+    Int(Width),
+    Fp(FpWidth),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FnSignature {
+    fp: Vec<(Xmm, FpWidth)>,
+    int: Vec<Reg>,
+    ret: FnReturn,
+}
+
+impl FnSignature {
+    fn ordered_param_types(&self) -> Vec<ScalarType> {
+        let mut out: Vec<ScalarType> = self
+            .fp
+            .iter()
+            .map(|(_, w): &(Xmm, FpWidth)| scalar_of_fp(*w))
+            .collect();
+        out.extend(std::iter::repeat_n(ScalarType::Int, self.int.len()));
+        out
+    }
+}
+
+pub fn recover_leaf_function_switch_abi(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    tables: &[JumpTable],
+) -> Result<LeafRecovery> {
+    recover_leaf_function_switch_const_abi(machine_code, base, abi, tables, &[])
+}
+
+pub fn recover_leaf_function_switch_const_abi(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    tables: &[JumpTable],
+    consts: &[FpConstant],
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let by_addr: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &DisasmInsn)| (insn.address, i))
+        .collect();
+    let Some(dispatch): Option<SwitchDispatch> = detect_switch_dispatch(&insns) else {
+        return Err(Error::LlvmIr(
+            "no dense jump-table dispatch prologue in leaf".to_owned(),
+        ));
+    };
+    let Some(table): Option<&JumpTable> = tables
+        .iter()
+        .find(|t: &&JumpTable| t.table_va == dispatch.table_va)
+    else {
+        return Err(Error::LlvmIr(format!(
+            "no resolved jump table supplied for base {:#x}",
+            dispatch.table_va
+        )));
+    };
+    let expected: usize = (dispatch.bound as usize)
+        .checked_add(1)
+        .ok_or_else(|| Error::LlvmIr("jump-table bound overflow".to_owned()))?;
+    if table.entries.len() != expected {
+        return Err(Error::LlvmIr(format!(
+            "jump table has {} entries but bound implies {expected} cases",
+            table.entries.len()
+        )));
+    }
+
+    let mut case_targets: Vec<u64> = Vec::with_capacity(expected);
+    for entry in &table.entries {
+        let target: u64 = dispatch
+            .table_va
+            .checked_add_signed(i64::from(*entry))
+            .ok_or_else(|| Error::LlvmIr("jump-table target out of range".to_owned()))?;
+        case_targets.push(target);
+    }
+
+    let mut leaders: Vec<u64> = case_targets.clone();
+    leaders.push(dispatch.default_addr);
+    leaders.sort_unstable();
+    leaders.dedup();
+
+    let preamble: Vec<Stmt> = lift_stmt_range(&insns, 0, dispatch.first_index, consts)?;
+    let inter: Vec<Stmt> =
+        lift_stmt_range(&insns, dispatch.inter_start, dispatch.inter_end, consts)?;
+
+    let mut return_width: Width = Width::W64;
+    for stmt in preamble.iter().chain(inter.iter()) {
+        update_return_width(stmt, &mut return_width);
+    }
+
+    let mut bodies: BTreeMap<u64, SwitchBody> = BTreeMap::new();
+    let mut pending: Vec<u64> = leaders.clone();
+    while let Some(addr) = pending.pop() {
+        if bodies.contains_key(&addr) {
+            continue;
+        }
+        let (stmts, term, fp_end): (Vec<Stmt>, BodyTerm, Option<FpWidth>) =
+            lift_switch_body(&insns, &by_addr, addr, &leaders, &mut return_width, consts)?;
+        if let BodyTerm::Tail(tail) = term {
+            pending.push(tail);
+        }
+        bodies.insert(
+            addr,
+            SwitchBody {
+                stmts,
+                term,
+                fp_end,
+            },
+        );
+    }
+
+    let ret: FnReturn = infer_switch_return(
+        &case_targets,
+        dispatch.default_addr,
+        &bodies,
+        &leaders,
+        return_width,
+    )?;
+
+    let mut cases: Vec<SwitchCase> = Vec::with_capacity(expected);
+    for (value, &target) in case_targets.iter().enumerate() {
+        let SwitchBody { stmts, term, .. } = bodies
+            .get(&target)
+            .ok_or_else(|| Error::LlvmIr("case body not lifted".to_owned()))?;
+        let mut body: Block = stmts.iter().cloned().map(Node::Stmt).collect();
+        let textual_next: u64 = case_targets
+            .get(value + 1)
+            .copied()
+            .unwrap_or(dispatch.default_addr);
+        let fallthrough: bool = match term {
+            BodyTerm::Ret => false,
+            BodyTerm::Tail(tail_addr) if *tail_addr == textual_next => true,
+            BodyTerm::Tail(tail_addr) => {
+                append_tail(&mut body, &bodies, *tail_addr, &leaders)?;
+                false
+            }
+            BodyTerm::FellInto(next_addr) => {
+                if *next_addr != textual_next {
+                    return Err(Error::LlvmIr(
+                        "case falls through to a non-adjacent block; unsupported".to_owned(),
+                    ));
+                }
+                true
+            }
+        };
+        cases.push(SwitchCase {
+            value: i64::try_from(value)
+                .map_err(|_| Error::LlvmIr("case index overflow".to_owned()))?,
+            body,
+            fallthrough,
+        });
+    }
+
+    let SwitchBody {
+        stmts: default_stmts,
+        term: default_term,
+        ..
+    } = bodies
+        .get(&dispatch.default_addr)
+        .ok_or_else(|| Error::LlvmIr("default body not lifted".to_owned()))?;
+    let mut default_body: Block = default_stmts.iter().cloned().map(Node::Stmt).collect();
+    match default_term {
+        BodyTerm::Ret => {}
+        BodyTerm::Tail(tail_addr) => append_tail(&mut default_body, &bodies, *tail_addr, &leaders)?,
+        BodyTerm::FellInto(_) => {
+            return Err(Error::LlvmIr(
+                "default body falls into another block; unsupported".to_owned(),
+            ));
+        }
+    }
+
+    let mut body: Block = preamble.into_iter().map(Node::Stmt).collect();
+    body.extend(inter.into_iter().map(Node::Stmt));
+    body.push(Node::Switch {
+        disc: dispatch.disc,
+        cases,
+        default: default_body,
+    });
+
+    let mut call_targets: Vec<u64> = Vec::new();
+    collect_call_targets(&body, &mut call_targets);
+    let params: Vec<Reg> = infer_params(&body, abi);
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body);
+    let signature: FnSignature = FnSignature {
+        fp: fp_args,
+        int: params.clone(),
+        ret,
+    };
+    let returns_fp: Option<ScalarType> = match ret {
+        FnReturn::Int(_) => None,
+        FnReturn::Fp(width) => Some(scalar_of_fp(width)),
+    };
+    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(&insns))?;
+    let source: String = emit_c(&body, &signature, abi, frame_plan.as_ref(), None);
+    Ok(LeafRecovery {
+        source,
+        return_width_bits: return_width.bits(),
+        params,
+        fp_params: signature.ordered_param_types(),
+        returns_fp,
+        lifted_split_return: false,
+        lifted_loop: false,
+        lifted_switch: true,
+        call_targets,
+        sret: None,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SwitchDispatch {
+    disc: RegRef,
+    bound: u64,
+    default_addr: u64,
+    table_va: u64,
+    first_index: usize,
+    inter_start: usize,
+    inter_end: usize,
+}
+
+fn detect_switch_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch> {
+    'outer: for cmp_idx in 0..insns.len() {
+        let Some((disc, bound)): Option<(RegRef, u64)> = parse_cmp_bound(&insns[cmp_idx]) else {
+            continue;
+        };
+        let ja_idx: usize = cmp_idx + 1;
+        let Some(ja): Option<&DisasmInsn> = insns.get(ja_idx) else {
+            continue;
+        };
+        if !matches!(ja.mnemonic.as_str(), "ja" | "jae" | "jnbe" | "jnb") {
+            continue;
+        }
+        let Some(default_addr): Option<u64> = parse_branch_target(&ja.operands) else {
+            continue;
+        };
+        let above: bool = matches!(ja.mnemonic.as_str(), "ja" | "jnbe");
+        let Some(effective_bound): Option<u64> = (if above {
+            Some(bound)
+        } else {
+            bound.checked_sub(1)
+        }) else {
+            continue;
+        };
+
+        let inter_start: usize = ja_idx + 1;
+        let mut lea_hit: Option<(usize, Reg, u64)> = None;
+        let mut scan: usize = inter_start;
+        while scan < insns.len() {
+            let insn: &DisasmInsn = &insns[scan];
+            if let Some((dest, va)) = parse_lea_rip(insn) {
+                lea_hit = Some((scan, dest, va));
+                break;
+            }
+            if lift_straight_stmt(insn).is_none() && !is_ignorable(insn) {
+                continue 'outer;
+            }
+            scan += 1;
+        }
+        let Some((lea_idx, base_reg, table_va)): Option<(usize, Reg, u64)> = lea_hit else {
+            continue;
+        };
+        let inter_end: usize = lea_idx;
+
+        let load_idx: usize = lea_idx + 1;
+        let Some(load): Option<&DisasmInsn> = insns.get(load_idx) else {
+            continue;
+        };
+        let Some((off_reg, index_reg)): Option<(Reg, Reg)> =
+            parse_movsxd_table_load(load, base_reg)
+        else {
+            continue;
+        };
+        if index_reg != disc.reg {
+            continue;
+        }
+        let add_idx: usize = load_idx + 1;
+        let Some(add): Option<&DisasmInsn> = insns.get(add_idx) else {
+            continue;
+        };
+        if !is_add_regs(add, off_reg, base_reg) {
+            continue;
+        }
+        let jmp_idx: usize = add_idx + 1;
+        let Some(jmp): Option<&DisasmInsn> = insns.get(jmp_idx) else {
+            continue;
+        };
+        if !is_indirect_jmp(jmp, off_reg) {
+            continue;
+        }
+        return Some(SwitchDispatch {
+            disc,
+            bound: effective_bound,
+            default_addr,
+            table_va,
+            first_index: cmp_idx,
+            inter_start,
+            inter_end,
+        });
+    }
+    None
+}
+
+fn parse_cmp_bound(insn: &DisasmInsn) -> Option<(RegRef, u64)> {
+    if insn.mnemonic != "cmp" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let disc: RegRef = parse_reg(lhs.trim())?;
+    let bound: i64 = parse_imm(rhs.trim())?;
+    if bound < 1 {
+        return None;
+    }
+    Some((disc, bound as u64))
+}
+
+fn parse_lea_rip(insn: &DisasmInsn) -> Option<(Reg, u64)> {
+    if insn.mnemonic != "lea" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.width != Width::W64 {
+        return None;
+    }
+    let inner: &str = rhs.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
+    let body: &str = inner.strip_prefix("rel ")?.trim();
+    let va: u64 = parse_hex_u64(body)?;
+    Some((dest.reg, va))
+}
+
+fn parse_hex_u64(token: &str) -> Option<u64> {
+    let t: &str = token.trim();
+    let body: &str = t.strip_suffix(['h', 'H']).unwrap_or(t);
+    let body: &str = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+        .unwrap_or(body);
+    u64::from_str_radix(body, 16).ok()
+}
+
+fn parse_movsxd_table_load(insn: &DisasmInsn, base_reg: Reg) -> Option<(Reg, Reg)> {
+    if !matches!(insn.mnemonic.as_str(), "movsxd" | "movsx") {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.width != Width::W64 {
+        return None;
+    }
+    let mem: MemRef = parse_mem_access(rhs.trim(), Some(Width::W32))?;
+    if mem.width != Width::W32 {
+        return None;
+    }
+    let (index_reg, scale): (Reg, u8) = mem.index?;
+    if scale != 4 {
+        return None;
+    }
+    if mem.base != Some(base_reg) || mem.disp != 0 {
+        return None;
+    }
+    Some((dest.reg, index_reg))
+}
+
+fn is_add_regs(insn: &DisasmInsn, dest: Reg, src: Reg) -> bool {
+    if insn.mnemonic != "add" {
+        return false;
+    }
+    let Some((lhs, rhs)): Option<(&str, &str)> = insn.operands.split_once(',') else {
+        return false;
+    };
+    parse_reg(lhs.trim()).is_some_and(|r: RegRef| r.reg == dest && r.width == Width::W64)
+        && parse_reg(rhs.trim()).is_some_and(|r: RegRef| r.reg == src && r.width == Width::W64)
+}
+
+fn is_indirect_jmp(insn: &DisasmInsn, reg: Reg) -> bool {
+    insn.mnemonic == "jmp" && parse_reg(insn.operands.trim()).is_some_and(|r: RegRef| r.reg == reg)
+}
+
+fn is_ignorable(insn: &DisasmInsn) -> bool {
+    insn.mnemonic == "nop"
+        || insn.mnemonic == "endbr64"
+        || is_frame_management(&insn.mnemonic, &insn.operands)
+}
+
+fn lift_straight_stmt(insn: &DisasmInsn) -> Option<Stmt> {
+    if let Some(stmt) = lift_width_extension(&insn.mnemonic, &insn.operands) {
+        return Some(stmt);
+    }
+    lift_one(&insn.mnemonic, &insn.operands)
+}
+
+fn lift_stmt_range(
+    insns: &[DisasmInsn],
+    lo: usize,
+    hi: usize,
+    consts: &[FpConstant],
+) -> Result<Vec<Stmt>> {
+    let mut out: Vec<Stmt> = Vec::new();
+    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts);
+    for insn in &insns[lo..hi] {
+        match lifter.feed(insn)? {
+            StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
+            StraightOutcome::Emit(stmt) => out.push(stmt),
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyTerm {
+    Ret,
+    Tail(u64),
+    FellInto(u64),
+}
+
+#[derive(Debug)]
+enum StraightOutcome {
+    Emit(Stmt),
+    StateOnly,
+    Ignorable,
+}
+
+#[derive(Debug)]
+struct StraightLifter<'a> {
+    flags: Option<Flags>,
+    dividend_high: Option<DividendHigh>,
+    consts: &'a [FpConstant],
+}
+
+impl<'a> StraightLifter<'a> {
+    const fn new(consts: &'a [FpConstant]) -> Self {
+        Self {
+            flags: None,
+            dividend_high: None,
+            consts,
+        }
+    }
+
+    fn feed(&mut self, insn: &DisasmInsn) -> Result<StraightOutcome> {
+        if is_ignorable(insn) {
+            return Ok(StraightOutcome::Ignorable);
+        }
+        if let Some(fp_flags) =
+            lift_fp_compare(&insn.mnemonic, &insn.operands, insn.address, self.consts)?
+        {
+            self.flags = Some(fp_flags);
+            return Ok(StraightOutcome::StateOnly);
+        }
+        if let Some(fp_stmt) = lift_fp(&insn.mnemonic, &insn.operands, insn.address, self.consts)? {
+            self.flags = None;
+            self.dividend_high = None;
+            return Ok(StraightOutcome::Emit(fp_stmt));
+        }
+        if let Some(high) = lift_dividend_extend(&insn.mnemonic, &insn.operands) {
+            self.dividend_high = Some(high);
+            return Ok(StraightOutcome::StateOnly);
+        }
+        if let Some(divisor) = parse_divide_operand(&insn.mnemonic, &insn.operands) {
+            let signed: bool = insn.mnemonic == "idiv";
+            let high: DividendHigh = self.dividend_high.take().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "division at {:#x} without a tracked high-half dividend setup",
+                    insn.address
+                ))
+            })?;
+            if !dividend_high_matches(high, signed, divisor.width) {
+                return Err(Error::LlvmIr(format!(
+                    "division at {:#x} has a high-half dividend inconsistent with a width-fitting `{}`",
+                    insn.address, insn.mnemonic
+                )));
+            }
+            self.flags = None;
+            return Ok(StraightOutcome::Emit(Stmt::Divide { divisor, signed }));
+        }
+        if let Some(new_flags) = lift_flag_setter(&insn.mnemonic, &insn.operands) {
+            self.flags = Some(new_flags);
+            return Ok(StraightOutcome::StateOnly);
+        }
+        if let Some(suffix) = insn.mnemonic.strip_prefix("cmov") {
+            let kind: CondKind = CondKind::parse(suffix).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "unsupported conditional move `{} {}` at {:#x}",
+                    insn.mnemonic, insn.operands, insn.address
+                ))
+            })?;
+            let live_flags: Flags = self.flags.clone().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "cmov without preceding flags at {:#x}",
+                    insn.address
+                ))
+            })?;
+            if !condition_is_sound(kind, &live_flags) {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            }
+            let (lhs, rhs): (&str, &str) = insn
+                .operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed cmov at {:#x}", insn.address)))?;
+            let dest: RegRef = parse_reg(lhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("cmov dest not a register at {:#x}", insn.address))
+            })?;
+            let src: Source = parse_source(rhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
+            })?;
+            return Ok(StraightOutcome::Emit(Stmt::Cond {
+                dest,
+                src,
+                kind,
+                flags: live_flags,
+            }));
+        }
+        if let Some(suffix) = insn.mnemonic.strip_prefix("set")
+            && let Some(kind) = CondKind::parse(suffix)
+        {
+            let dest: RegRef = parse_reg(insn.operands.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("setcc dest not a register at {:#x}", insn.address))
+            })?;
+            if dest.width != Width::W8 {
+                return Err(Error::LlvmIr(format!(
+                    "setcc at {:#x} does not target a byte register",
+                    insn.address
+                )));
+            }
+            let live_flags: Flags = self.flags.clone().ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "setcc without preceding flags at {:#x}",
+                    insn.address
+                ))
+            })?;
+            if !condition_is_sound(kind, &live_flags) {
+                return Err(Error::LlvmIr(format!(
+                    "condition `{}` not sound against tracked flags at {:#x}",
+                    insn.mnemonic, insn.address
+                )));
+            }
+            return Ok(StraightOutcome::Emit(Stmt::SetCc {
+                dest,
+                kind,
+                flags: live_flags,
+            }));
+        }
+        let stmt: Stmt = lift_straight_stmt(insn).ok_or_else(|| {
+            Error::LlvmIr(format!(
+                "unsupported structured-body instruction `{} {}` at {:#x}",
+                insn.mnemonic, insn.operands, insn.address
+            ))
+        })?;
+        self.dividend_high = track_dividend_high(self.dividend_high, &stmt);
+        match &stmt {
+            Stmt::BinAssign { dest, op, .. } => {
+                self.flags = match flag_effect_bin(*op) {
+                    FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
+                    FlagEffect::Clobber => None,
+                };
+            }
+            Stmt::UnAssign { dest, op } => {
+                self.flags = match op {
+                    UnOp::Neg => Some(Flags::Sign { result: *dest }),
+                    UnOp::Not => self.flags.take(),
+                };
+            }
+            Stmt::MulImm { .. } | Stmt::WideMul { .. } | Stmt::DoubleShift { .. } => {
+                self.flags = None;
+            }
+            Stmt::MemRmw { .. } => {
+                self.flags = None;
+            }
+            Stmt::Assign { .. } | Stmt::Store { .. } | Stmt::Extend { .. } => {}
+            _ => {}
+        }
+        Ok(StraightOutcome::Emit(stmt))
+    }
+}
+
+fn lift_switch_body(
+    insns: &[DisasmInsn],
+    by_addr: &BTreeMap<u64, usize>,
+    start_addr: u64,
+    leaders: &[u64],
+    return_width: &mut Width,
+    consts: &[FpConstant],
+) -> Result<(Vec<Stmt>, BodyTerm, Option<FpWidth>)> {
+    let start: usize = *by_addr
+        .get(&start_addr)
+        .ok_or_else(|| Error::LlvmIr(format!("case target {start_addr:#x} not an instruction")))?;
+    let mut stmts: Vec<Stmt> = Vec::new();
+    let mut lifter: StraightLifter<'_> = StraightLifter::new(consts);
+    let mut fp_return: Option<FpWidth> = None;
+    let mut idx: usize = start;
+    while idx < insns.len() {
+        let insn: &DisasmInsn = &insns[idx];
+        if idx != start && leaders.contains(&insn.address) {
+            return Ok((stmts, BodyTerm::FellInto(insn.address), fp_return));
+        }
+        if insn.mnemonic == "ret" {
+            return Ok((stmts, BodyTerm::Ret, fp_return));
+        }
+        if insn.mnemonic == "jmp" {
+            let target: u64 = parse_branch_target(&insn.operands).ok_or_else(|| {
+                Error::LlvmIr("switch case jmp is not a direct forward tail".to_owned())
+            })?;
+            return Ok((stmts, BodyTerm::Tail(target), fp_return));
+        }
+        match lifter.feed(insn)? {
+            StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
+            StraightOutcome::Emit(stmt) => {
+                update_return_width(&stmt, return_width);
+                fp_return = fp_return_after(fp_return, &stmt);
+                stmts.push(stmt);
+            }
+        }
+        idx += 1;
+    }
+    Err(Error::LlvmIr(
+        "switch case body ran past the function without a terminator".to_owned(),
+    ))
+}
+
+fn append_tail(
+    body: &mut Block,
+    bodies: &BTreeMap<u64, SwitchBody>,
+    tail_addr: u64,
+    leaders: &[u64],
+) -> Result<()> {
+    if leaders.contains(&tail_addr) {
+        return Err(Error::LlvmIr(
+            "switch tail jumps into another case (shared-body chain unsupported)".to_owned(),
+        ));
+    }
+    let SwitchBody { stmts, term, .. } = bodies
+        .get(&tail_addr)
+        .ok_or_else(|| Error::LlvmIr("switch shared tail body not lifted".to_owned()))?;
+    if *term != BodyTerm::Ret {
+        return Err(Error::LlvmIr(
+            "multi-level switch tail chains unsupported".to_owned(),
+        ));
+    }
+    body.extend(stmts.iter().cloned().map(Node::Stmt));
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct SwitchBody {
+    stmts: Vec<Stmt>,
+    term: BodyTerm,
+    fp_end: Option<FpWidth>,
+}
+
+fn chain_terminal_fp(
+    bodies: &BTreeMap<u64, SwitchBody>,
+    start: u64,
+    fallthrough_next: impl Fn(u64) -> Option<u64>,
+) -> Result<Option<FpWidth>> {
+    let mut state: Option<FpWidth> = None;
+    let mut addr: u64 = start;
+    let mut visited: Vec<u64> = Vec::new();
+    loop {
+        if visited.contains(&addr) {
+            return Err(Error::LlvmIr(
+                "switch body chain loops; cannot type return".to_owned(),
+            ));
+        }
+        visited.push(addr);
+        let SwitchBody { stmts, term, .. } = bodies
+            .get(&addr)
+            .ok_or_else(|| Error::LlvmIr("switch body chain hit an unlifted block".to_owned()))?;
+        for stmt in stmts {
+            state = fp_return_after(state, stmt);
+        }
+        match term {
+            BodyTerm::Ret => return Ok(state),
+            BodyTerm::Tail(tail_addr) => {
+                if let Some(next) = fallthrough_next(addr)
+                    && *tail_addr == next
+                {
+                    addr = next;
+                } else {
+                    let SwitchBody {
+                        stmts: tail_stmts,
+                        term: tail_term,
+                        ..
+                    } = bodies.get(tail_addr).ok_or_else(|| {
+                        Error::LlvmIr("switch tail body not lifted for return typing".to_owned())
+                    })?;
+                    if *tail_term != BodyTerm::Ret {
+                        return Err(Error::LlvmIr(
+                            "multi-level switch tail chains unsupported".to_owned(),
+                        ));
+                    }
+                    for stmt in tail_stmts {
+                        state = fp_return_after(state, stmt);
+                    }
+                    return Ok(state);
+                }
+            }
+            BodyTerm::FellInto(next_addr) => addr = *next_addr,
+        }
+    }
+}
+
+fn unify_fp_return(states: &[Option<FpWidth>], return_width: Width) -> Result<FnReturn> {
+    let mut fp: Option<FpWidth> = None;
+    let mut saw_int: bool = false;
+    for state in states {
+        match state {
+            None => saw_int = true,
+            Some(width) => match fp {
+                None => fp = Some(*width),
+                Some(seen) if seen == *width => {}
+                Some(_) => {
+                    return Err(Error::LlvmIr(
+                        "switch case bodies return floats of differing widths; cannot type return"
+                            .to_owned(),
+                    ));
+                }
+            },
+        }
+    }
+    match (fp, saw_int) {
+        (Some(_), true) => Err(Error::LlvmIr(
+            "switch mixes integer and floating-point returns across cases; cannot type return"
+                .to_owned(),
+        )),
+        (Some(width), false) => Ok(FnReturn::Fp(width)),
+        (None, _) => Ok(FnReturn::Int(return_width)),
+    }
+}
+
+fn infer_switch_return(
+    case_targets: &[u64],
+    default_addr: u64,
+    bodies: &BTreeMap<u64, SwitchBody>,
+    leaders: &[u64],
+    return_width: Width,
+) -> Result<FnReturn> {
+    let fast_int: bool = bodies.values().all(|b: &SwitchBody| b.fp_end.is_none());
+    if fast_int {
+        return Ok(FnReturn::Int(return_width));
+    }
+    let textual_next =
+        |value: usize| -> u64 { case_targets.get(value + 1).copied().unwrap_or(default_addr) };
+    let fallthrough_for = |addr: u64| -> Option<u64> {
+        case_targets
+            .iter()
+            .position(|&t: &u64| t == addr)
+            .map(|value: usize| textual_next(value))
+    };
+    let mut states: Vec<Option<FpWidth>> = Vec::with_capacity(case_targets.len() + 1);
+    for &target in case_targets {
+        states.push(chain_terminal_fp(bodies, target, fallthrough_for)?);
+    }
+    let default_body: &SwitchBody = bodies
+        .get(&default_addr)
+        .ok_or_else(|| Error::LlvmIr("default body not lifted".to_owned()))?;
+    match default_body.term {
+        BodyTerm::Ret => {
+            let mut state: Option<FpWidth> = None;
+            for stmt in &default_body.stmts {
+                state = fp_return_after(state, stmt);
+            }
+            states.push(state);
+        }
+        BodyTerm::Tail(tail_addr) => {
+            if leaders.contains(&tail_addr) {
+                return Err(Error::LlvmIr(
+                    "default tail jumps into another case (shared-body chain unsupported)"
+                        .to_owned(),
+                ));
+            }
+            states.push(chain_terminal_fp(bodies, default_addr, |_: u64| None)?);
+        }
+        BodyTerm::FellInto(_) => {
+            return Err(Error::LlvmIr(
+                "default body falls into another block; unsupported".to_owned(),
+            ));
+        }
+    }
+    unify_fp_return(&states, return_width)
+}
+
+fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
+    match stmt {
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::Extend { dest, .. } => {
+            if dest.reg == Reg::Rax {
+                *return_width = dest.width;
+            }
+        }
+        Stmt::WideMul { .. } | Stmt::Call { .. } => *return_width = Width::W64,
+        Stmt::Divide { divisor, .. } => *return_width = divisor.width,
+        Stmt::FpToInt { dest, .. } | Stmt::XmmToGpr { dest, .. } => {
+            if dest.reg == Reg::Rax {
+                *return_width = dest.width;
+            }
+        }
+        Stmt::SetCc { dest, .. } => {
+            if dest.reg == Reg::Rax {
+                *return_width = dest.width;
+            }
+        }
+        Stmt::Cond { .. }
+        | Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. } => {}
+    }
+}
+
+fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
+    for node in body {
+        match node {
+            Node::Stmt(Stmt::Call { target }) => acc.push(*target),
+            Node::Stmt(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_call_targets(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_call_targets(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => collect_call_targets(body, acc),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_call_targets(&case.body, acc);
+                }
+                collect_call_targets(default, acc);
+            }
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn is_frame_management(mnemonic: &str, operands: &str) -> bool {
+    match mnemonic {
+        "push" | "pop" => parse_reg(operands.trim()).is_some_and(|r: RegRef| r.width == Width::W64),
+        "sub" | "add" => operands_target_rsp_with_imm(operands),
+        "leave" => operands.trim().is_empty(),
+        "mov" => is_stack_pointer_move(operands),
+        _ => false,
+    }
+}
+
+fn is_stack_pointer_move(operands: &str) -> bool {
+    matches!(
+        operands.split_once(','),
+        Some((lhs, rhs)) if matches!((lhs.trim(), rhs.trim()), ("rbp", "rsp") | ("rsp", "rbp"))
+    )
+}
+
+fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
+    if !matches!(mnemonic, "sub" | "add") {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    (lhs.trim() == "rsp")
+        .then(|| parse_imm(rhs.trim()))
+        .flatten()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrameShape {
+    base: Option<Reg>,
+    rbp_is_frame: bool,
+}
+
+fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
+    let real: Vec<&DisasmInsn> = insns
+        .iter()
+        .filter(|i: &&DisasmInsn| !matches!(i.mnemonic.as_str(), "nop" | "endbr64"))
+        .collect();
+    let rbp_is_frame: bool = real
+        .iter()
+        .any(|i: &&DisasmInsn| i.mnemonic == "mov" && is_stack_pointer_move(&i.operands));
+    if rbp_is_frame {
+        return FrameShape {
+            base: Some(Reg::Rbp),
+            rbp_is_frame: true,
+        };
+    }
+    if rsp_frame_is_constant(&real) {
+        return FrameShape {
+            base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+        };
+    }
+    FrameShape {
+        base: None,
+        rbp_is_frame: false,
+    }
+}
+
+fn rsp_frame_is_constant(real: &[&DisasmInsn]) -> bool {
+    let Some(first): Option<&&DisasmInsn> = real.first() else {
+        return false;
+    };
+    if first.mnemonic != "sub" {
+        return false;
+    }
+    let Some(alloc): Option<i64> = rsp_delta_imm("sub", &first.operands) else {
+        return false;
+    };
+    real.iter().enumerate().all(
+        |(idx, insn): (usize, &&DisasmInsn)| match insn.mnemonic.as_str() {
+            "push" | "pop" | "leave" => false,
+            "mov" => insn
+                .operands
+                .split_once(',')
+                .is_none_or(|(lhs, _): (&str, &str)| lhs.trim() != "rsp"),
+            "sub" if rsp_delta_imm("sub", &insn.operands).is_some() => idx == 0,
+            "add" => rsp_delta_imm("add", &insn.operands).map_or(true, |delta: i64| {
+                delta == alloc
+                    && real
+                        .get(idx + 1)
+                        .is_some_and(|n: &&DisasmInsn| n.mnemonic == "ret")
+            }),
+            _ => true,
+        },
+    )
+}
+
+const fn is_bare_string_op(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic.as_bytes(),
+        b"movsb" | b"movsw" | b"movsq" | b"stosb" | b"stosw" | b"stosd" | b"stosq"
+    )
+}
+
+fn string_elem_width(op: &str) -> Option<Width> {
+    match op {
+        "movsb" | "stosb" => Some(Width::W8),
+        "movsw" | "stosw" => Some(Width::W16),
+        "movsd" | "stosd" => Some(Width::W32),
+        "movsq" | "stosq" => Some(Width::W64),
+        _ => None,
+    }
+}
+
+fn lift_rep_string(operands: &str, df_backward: bool) -> Option<Stmt> {
+    let op: &str = operands.trim();
+    if df_backward {
+        return None;
+    }
+    if op.contains(char::is_whitespace) || op.contains(',') || op.contains('[') {
+        return None;
+    }
+    let elem: Width = string_elem_width(op)?;
+    if op.starts_with("movs") {
+        Some(Stmt::BlockMove { elem })
+    } else {
+        Some(Stmt::BlockFill { elem })
+    }
+}
+
+fn operands_target_rsp_with_imm(operands: &str) -> bool {
+    let Some((lhs, rhs)): Option<(&str, &str)> = operands.split_once(',') else {
+        return false;
+    };
+    lhs.trim() == "rsp" && parse_imm(rhs.trim()).is_some()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Structured {
+    body: Block,
+    lifted_split_return: bool,
+    lifted_loop: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ItemKind {
+    Stmt(Stmt),
+    Branch {
+        kind: CondKind,
+        flags: Flags,
+        target: u64,
+    },
+    Jmp {
+        target: u64,
+    },
+    Ret,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Item {
+    address: u64,
+    kind: ItemKind,
+}
+
+fn parse_branch_target(operands: &str) -> Option<u64> {
+    let trimmed: &str = operands.trim();
+    let token: &str = trimmed.strip_prefix("short ").unwrap_or(trimmed).trim();
+    if token.contains([' ', ',', '[']) {
+        return None;
+    }
+    let body: &str = token.strip_suffix(['h', 'H']).unwrap_or(token);
+    let body: &str = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+        .unwrap_or(body);
+    u64::from_str_radix(body, 16).ok()
+}
+
+fn structure_items(items: &[Item]) -> Result<Structured> {
+    if items.is_empty() {
+        return Err(Error::LlvmIr("no structured body".to_owned()));
+    }
+    let Some(ret_pos): Option<usize> = items
+        .iter()
+        .position(|it: &Item| matches!(it.kind, ItemKind::Ret))
+    else {
+        return Err(Error::LlvmIr("missing terminal ret".to_owned()));
+    };
+    if let Some(body) = structure_do_while(items, ret_pos)? {
+        return Ok(Structured {
+            body,
+            lifted_split_return: false,
+            lifted_loop: true,
+        });
+    }
+    if let Some(body) = structure_guarded_while(items, ret_pos)? {
+        return Ok(Structured {
+            body,
+            lifted_split_return: false,
+            lifted_loop: true,
+        });
+    }
+    if ret_pos + 1 == items.len()
+        && let Ok(body) = structure_range(items, 0, ret_pos)
+    {
+        return Ok(Structured {
+            body,
+            lifted_split_return: false,
+            lifted_loop: false,
+        });
+    }
+    if let Some(body) = structure_split_return(items, ret_pos)? {
+        return Ok(Structured {
+            body,
+            lifted_split_return: true,
+            lifted_loop: false,
+        });
+    }
+    if let Some(body) = structure_reducible_cfg(items)? {
+        return Ok(Structured {
+            body,
+            lifted_split_return: false,
+            lifted_loop: true,
+        });
+    }
+    Err(Error::LlvmIr(
+        "multiple/early returns not in forward-skip class".to_owned(),
+    ))
+}
+
+fn flags_are_comparison(flags: &Flags) -> bool {
+    matches!(
+        flags,
+        Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } | Flags::TestImm { .. }
+    )
+}
+
+fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
+    match flags {
+        Flags::Cmp { lhs, rhs } => {
+            let mut regs: Vec<Reg> = vec![lhs.reg];
+            source_regs(rhs, &mut regs);
+            regs
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            let mut regs: Vec<Reg> = Vec::new();
+            mem_regs(lhs, &mut regs);
+            regs.push(rhs.reg);
+            regs
+        }
+        Flags::Test { operand } | Flags::TestImm { operand, .. } => vec![operand.reg],
+        Flags::Sign { result } => vec![result.reg],
+        Flags::FpCmp { rhs, .. } => {
+            let mut regs: Vec<Reg> = Vec::new();
+            if let FpOperand::Mem(mem) = rhs {
+                mem_regs(mem, &mut regs);
+            }
+            regs
+        }
+    }
+}
+
+fn source_regs(src: &Source, acc: &mut Vec<Reg>) {
+    match src {
+        Source::Reg(r) => acc.push(r.reg),
+        Source::Imm(_) => {}
+        Source::Lea { base, index, .. } => {
+            if let Some(b) = base {
+                acc.push(*b);
+            }
+            if let Some((i, _)) = index {
+                acc.push(*i);
+            }
+        }
+        Source::Mem(mem) => mem_regs(mem, acc),
+    }
+}
+
+fn mem_regs(mem: &MemRef, acc: &mut Vec<Reg>) {
+    if let Some(b) = mem.base {
+        acc.push(b);
+    }
+    if let Some((i, _)) = mem.index {
+        acc.push(i);
+    }
+}
+
+fn trailing_latch_copy_dests(body: &Block) -> Vec<Reg> {
+    let mut dests: Vec<Reg> = Vec::new();
+    for node in body.iter().rev() {
+        match node {
+            Node::Stmt(Stmt::Assign {
+                dest,
+                src: Source::Reg(_),
+            }) => dests.push(dest.reg),
+            _ => break,
+        }
+    }
+    dests
+}
+
+fn make_loop_cond(
+    body: Block,
+    cond: CondKind,
+    flags: Flags,
+    next_var: &mut u32,
+) -> (Block, LoopCond) {
+    if !flags_are_comparison(&flags) {
+        return (body, LoopCond::Direct { cond, flags });
+    }
+    let latch_dests: Vec<Reg> = trailing_latch_copy_dests(&body);
+    if latch_dests.is_empty() {
+        return (body, LoopCond::Direct { cond, flags });
+    }
+    let operands: Vec<Reg> = flag_operand_regs(&flags);
+    if !operands.iter().any(|r: &Reg| latch_dests.contains(r)) {
+        return (body, LoopCond::Direct { cond, flags });
+    }
+    let split: usize = body.len() - latch_dests.len();
+    let var: u32 = *next_var;
+    *next_var += 1;
+    let mut rewritten: Block = body;
+    rewritten.insert(split, Node::CondSnapshot { var, cond, flags });
+    (rewritten, LoopCond::Snapshot { var })
+}
+
+fn structure_do_while(items: &[Item], ret_pos: usize) -> Result<Option<Block>> {
+    if items
+        .iter()
+        .filter(|it: &&Item| matches!(it.kind, ItemKind::Ret))
+        .count()
+        != 1
+        || ret_pos + 1 != items.len()
+    {
+        return Ok(None);
+    }
+    if items
+        .iter()
+        .any(|it: &Item| matches!(it.kind, ItemKind::Jmp { .. }))
+    {
+        return Ok(None);
+    }
+    let branch_positions: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(p, it): (usize, &Item)| match it.kind {
+            ItemKind::Branch { .. } => Some(p),
+            _ => None,
+        })
+        .collect();
+    let &[back_pos]: &[usize] = branch_positions.as_slice() else {
+        return Ok(None);
+    };
+    let ItemKind::Branch {
+        kind,
+        ref flags,
+        target,
+    } = items[back_pos].kind
+    else {
+        return Ok(None);
+    };
+    let Some(entry_pos): Option<usize> = item_pos(items, target) else {
+        return Ok(None);
+    };
+    if entry_pos > back_pos {
+        return Ok(None);
+    }
+    if back_pos >= ret_pos {
+        return Ok(None);
+    }
+    let preheader: Block = structure_range(items, 0, entry_pos)?;
+    let loop_body: Block = structure_range(items, entry_pos, back_pos)?;
+    let tail: Block = structure_range(items, back_pos + 1, ret_pos)?;
+    let mut next_var: u32 = 0;
+    let (loop_body, loop_cond): (Block, LoopCond) =
+        make_loop_cond(loop_body, kind, flags.clone(), &mut next_var);
+    let mut body: Block = preheader;
+    body.push(Node::DoWhile {
+        body: loop_body,
+        cond: loop_cond,
+    });
+    body.extend(tail);
+    Ok(Some(body))
+}
+
+fn structure_guarded_while(items: &[Item], ret_pos: usize) -> Result<Option<Block>> {
+    if ret_pos + 1 != items.len() {
+        return Ok(None);
+    }
+    if items
+        .iter()
+        .any(|it: &Item| matches!(it.kind, ItemKind::Jmp { .. }))
+    {
+        return Ok(None);
+    }
+    let branch_positions: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(p, it): (usize, &Item)| match it.kind {
+            ItemKind::Branch { .. } => Some(p),
+            _ => None,
+        })
+        .collect();
+    let &[first_pos, second_pos]: &[usize] = branch_positions.as_slice() else {
+        return Ok(None);
+    };
+    let ItemKind::Branch {
+        kind: back_kind,
+        flags: ref back_flags,
+        target: back_target,
+    } = items[second_pos].kind
+    else {
+        return Ok(None);
+    };
+    let Some(entry_pos): Option<usize> = item_pos(items, back_target) else {
+        return Ok(None);
+    };
+    if entry_pos > second_pos || entry_pos <= first_pos {
+        return Ok(None);
+    }
+    if second_pos >= ret_pos {
+        return Ok(None);
+    }
+    let ItemKind::Branch {
+        kind: guard_kind,
+        flags: ref guard_flags,
+        target: guard_target,
+    } = items[first_pos].kind
+    else {
+        return Ok(None);
+    };
+    let Some(guard_target_pos): Option<usize> = item_pos(items, guard_target) else {
+        return Ok(None);
+    };
+    if guard_target_pos != second_pos + 1 {
+        return Ok(None);
+    }
+    let preheader: Block = structure_range(items, 0, first_pos)?;
+    let pre_loop: Block = structure_range(items, first_pos + 1, entry_pos)?;
+    let loop_body: Block = structure_range(items, entry_pos, second_pos)?;
+    let tail: Block = structure_range(items, second_pos + 1, ret_pos)?;
+    let mut next_var: u32 = 0;
+    let (loop_body, loop_cond): (Block, LoopCond) =
+        make_loop_cond(loop_body, back_kind, back_flags.clone(), &mut next_var);
+    let mut then_body: Block = pre_loop;
+    then_body.push(Node::DoWhile {
+        body: loop_body,
+        cond: loop_cond,
+    });
+    let mut body: Block = preheader;
+    body.push(Node::If {
+        cond: guard_kind.negate(),
+        flags: guard_flags.clone(),
+        then_body,
+        else_body: None,
+    });
+    body.extend(tail);
+    Ok(Some(body))
+}
+
+fn structure_split_return(items: &[Item], ret_pos: usize) -> Result<Option<Block>> {
+    if items
+        .iter()
+        .filter(|it: &&Item| matches!(it.kind, ItemKind::Ret))
+        .count()
+        != 1
+    {
+        return Ok(None);
+    }
+    let ret_addr: u64 = items[ret_pos].address;
+    let Some(tail): Option<&Item> = items.last() else {
+        return Ok(None);
+    };
+    let ItemKind::Jmp {
+        target: tail_target,
+    } = tail.kind
+    else {
+        return Ok(None);
+    };
+    if tail_target != ret_addr {
+        return Ok(None);
+    }
+    let branch_positions: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(p, it): (usize, &Item)| match it.kind {
+            ItemKind::Branch { .. } => Some(p),
+            _ => None,
+        })
+        .collect();
+    let &[guard_pos]: &[usize] = branch_positions.as_slice() else {
+        return Ok(None);
+    };
+    if guard_pos >= ret_pos {
+        return Ok(None);
+    }
+    let jmp_count: usize = items
+        .iter()
+        .filter(|it: &&Item| matches!(it.kind, ItemKind::Jmp { .. }))
+        .count();
+    if jmp_count != 1 {
+        return Ok(None);
+    }
+    let ItemKind::Branch {
+        kind,
+        ref flags,
+        target,
+    } = items[guard_pos].kind
+    else {
+        return Ok(None);
+    };
+    let ool_start_addr: u64 = items[ret_pos + 1].address;
+    if target != ool_start_addr {
+        return Ok(None);
+    }
+    let mut head: Block = structure_range(items, 0, guard_pos)?;
+    let fall_through: Block = structure_range(items, guard_pos + 1, ret_pos)?;
+    let ool_body: Block = structure_range(items, ret_pos + 1, items.len() - 1)?;
+    head.push(Node::If {
+        cond: kind.negate(),
+        flags: flags.clone(),
+        then_body: fall_through,
+        else_body: Some(ool_body),
+    });
+    Ok(Some(head))
+}
+
+#[derive(Debug, Clone)]
+enum BlockTerm {
+    Ret,
+    Jump(usize),
+    Branch {
+        kind: CondKind,
+        flags: Flags,
+        taken: usize,
+        fallthrough: usize,
+    },
+    Fall(usize),
+}
+
+#[derive(Debug, Clone)]
+struct CfgBlock {
+    stmts: Vec<Stmt>,
+    term: BlockTerm,
+}
+
+impl CfgBlock {
+    fn successors(&self) -> Vec<usize> {
+        match &self.term {
+            BlockTerm::Ret => Vec::new(),
+            BlockTerm::Jump(t) | BlockTerm::Fall(t) => vec![*t],
+            BlockTerm::Branch {
+                taken, fallthrough, ..
+            } => vec![*taken, *fallthrough],
+        }
+    }
+}
+
+fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
+    let addr_to_idx: BTreeMap<u64, usize> = items
+        .iter()
+        .enumerate()
+        .map(|(i, it): (usize, &Item)| (it.address, i))
+        .collect();
+    let resolve = |target: u64| -> Option<usize> {
+        addr_to_idx
+            .range(target..)
+            .next()
+            .map(|(_, idx): (&u64, &usize)| *idx)
+    };
+
+    let mut is_leader: Vec<bool> = vec![false; items.len()];
+    is_leader[0] = true;
+    for (i, it) in items.iter().enumerate() {
+        match &it.kind {
+            ItemKind::Branch { target, .. } => {
+                let t: usize = resolve(*target)?;
+                is_leader[t] = true;
+                if i + 1 < items.len() {
+                    is_leader[i + 1] = true;
+                }
+            }
+            ItemKind::Jmp { target } => {
+                let t: usize = resolve(*target)?;
+                is_leader[t] = true;
+                if i + 1 < items.len() {
+                    is_leader[i + 1] = true;
+                }
+            }
+            ItemKind::Ret => {
+                if i + 1 < items.len() {
+                    is_leader[i + 1] = true;
+                }
+            }
+            ItemKind::Stmt(_) => {}
+        }
+    }
+
+    let leaders: Vec<usize> = (0..items.len()).filter(|&i: &usize| is_leader[i]).collect();
+    let leader_block: BTreeMap<usize, usize> = leaders
+        .iter()
+        .enumerate()
+        .map(|(b, &i): (usize, &usize)| (i, b))
+        .collect();
+    let item_block = |item_idx: usize| -> usize {
+        let mut b: usize = 0;
+        for (k, &leader) in leaders.iter().enumerate() {
+            if leader <= item_idx {
+                b = k;
+            } else {
+                break;
+            }
+        }
+        b
+    };
+
+    let mut blocks: Vec<CfgBlock> = Vec::with_capacity(leaders.len());
+    for (b, &start) in leaders.iter().enumerate() {
+        let end: usize = leaders.get(b + 1).copied().unwrap_or(items.len());
+        let mut stmts: Vec<Stmt> = Vec::new();
+        let mut term: Option<BlockTerm> = None;
+        for it in &items[start..end] {
+            match &it.kind {
+                ItemKind::Stmt(stmt) => stmts.push(stmt.clone()),
+                ItemKind::Ret => term = Some(BlockTerm::Ret),
+                ItemKind::Jmp { target } => {
+                    term = Some(BlockTerm::Jump(item_block(resolve(*target)?)));
+                }
+                ItemKind::Branch {
+                    kind,
+                    flags,
+                    target,
+                } => {
+                    let taken: usize = item_block(resolve(*target)?);
+                    let fallthrough: usize = b + 1;
+                    if fallthrough >= leaders.len() {
+                        return None;
+                    }
+                    term = Some(BlockTerm::Branch {
+                        kind: *kind,
+                        flags: flags.clone(),
+                        taken,
+                        fallthrough,
+                    });
+                }
+            }
+        }
+        let term: BlockTerm = term.unwrap_or_else(|| BlockTerm::Fall(b + 1));
+        let term: BlockTerm = match term {
+            BlockTerm::Fall(next) if next >= leaders.len() => return None,
+            other => other,
+        };
+        let _ = &leader_block;
+        blocks.push(CfgBlock { stmts, term });
+    }
+    Some(blocks)
+}
+
+fn block_predecessors(blocks: &[CfgBlock]) -> Vec<Vec<usize>> {
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
+    for (from, block) in blocks.iter().enumerate() {
+        for succ in block.successors() {
+            if succ < blocks.len() && !preds[succ].contains(&from) {
+                preds[succ].push(from);
+            }
+        }
+    }
+    preds
+}
+
+fn dominator_sets(
+    blocks: &[CfgBlock],
+    preds: &[Vec<usize>],
+) -> Vec<std::collections::BTreeSet<usize>> {
+    use std::collections::BTreeSet;
+    let count: usize = blocks.len();
+    let all: BTreeSet<usize> = (0..count).collect();
+    let mut dom: Vec<BTreeSet<usize>> = vec![all; count];
+    dom[0] = BTreeSet::from([0]);
+    let mut changed: bool = true;
+    while changed {
+        changed = false;
+        for node in 1..count {
+            let mut new_dom: Option<BTreeSet<usize>> = None;
+            for &pred in &preds[node] {
+                new_dom = Some(new_dom.map_or_else(
+                    || dom[pred].clone(),
+                    |acc: BTreeSet<usize>| acc.intersection(&dom[pred]).copied().collect(),
+                ));
+            }
+            let mut new_dom: BTreeSet<usize> = new_dom.unwrap_or_default();
+            new_dom.insert(node);
+            if new_dom != dom[node] {
+                dom[node] = new_dom;
+                changed = true;
+            }
+        }
+    }
+    dom
+}
+
+#[derive(Debug, Clone)]
+struct LoopInfo {
+    header: usize,
+    body: std::collections::BTreeSet<usize>,
+    exit: usize,
+    parent: Option<usize>,
+}
+
+fn natural_loop_body(
+    header: usize,
+    latch: usize,
+    preds: &[Vec<usize>],
+) -> std::collections::BTreeSet<usize> {
+    use std::collections::BTreeSet;
+    let mut body: BTreeSet<usize> = BTreeSet::from([header]);
+    let mut stack: Vec<usize> = Vec::new();
+    if body.insert(latch) {
+        stack.push(latch);
+    }
+    while let Some(node) = stack.pop() {
+        for &pred in &preds[node] {
+            if body.insert(pred) {
+                stack.push(pred);
+            }
+        }
+    }
+    body
+}
+
+fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<LoopInfo>> {
+    use std::collections::BTreeSet;
+    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks, preds);
+    let mut back_edges: Vec<(usize, usize)> = Vec::new();
+    for (from, block) in blocks.iter().enumerate() {
+        for succ in block.successors() {
+            if dom[from].contains(&succ) {
+                back_edges.push((from, succ));
+            }
+        }
+    }
+    if back_edges.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut by_header: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for &(_, header) in &back_edges {
+        *by_header.entry(header).or_insert(0) += 1;
+    }
+    if by_header.values().any(|count: &usize| *count != 1) {
+        return None;
+    }
+
+    let mut loops: Vec<LoopInfo> = Vec::with_capacity(back_edges.len());
+    for &(latch, header) in &back_edges {
+        let body: BTreeSet<usize> = natural_loop_body(header, latch, preds);
+
+        for &from in &body {
+            if from == header {
+                continue;
+            }
+            for pred in &preds[from] {
+                if !body.contains(pred) {
+                    return None;
+                }
+            }
+        }
+
+        let mut exits: BTreeSet<usize> = BTreeSet::new();
+        for &node in &body {
+            for succ in blocks[node].successors() {
+                if !body.contains(&succ) {
+                    exits.insert(succ);
+                }
+            }
+        }
+        let &[exit]: &[usize] = exits.iter().copied().collect::<Vec<usize>>().as_slice() else {
+            return None;
+        };
+        loops.push(LoopInfo {
+            header,
+            body,
+            exit,
+            parent: None,
+        });
+    }
+
+    loops.sort_by_key(|l: &LoopInfo| l.body.len());
+    for i in 0..loops.len() {
+        for j in (i + 1)..loops.len() {
+            let (inner, outer): (&BTreeSet<usize>, &BTreeSet<usize>) =
+                (&loops[i].body, &loops[j].body);
+            let disjoint: bool = inner.is_disjoint(outer);
+            let nested: bool = inner.is_subset(outer);
+            if !disjoint && !nested {
+                return None;
+            }
+        }
+    }
+
+    for i in 0..loops.len() {
+        let mut parent: Option<usize> = None;
+        let mut parent_size: usize = usize::MAX;
+        for j in 0..loops.len() {
+            if i == j {
+                continue;
+            }
+            if loops[i].body.is_subset(&loops[j].body) && loops[j].body.len() < parent_size {
+                parent = Some(j);
+                parent_size = loops[j].body.len();
+            }
+        }
+        loops[i].parent = parent;
+    }
+
+    for i in 0..loops.len() {
+        let exit: usize = loops[i].exit;
+        if let Some(parent) = loops[i].parent
+            && !loops[parent].body.contains(&exit)
+        {
+            return None;
+        }
+    }
+
+    Some(loops)
+}
+
+struct CfgCtx<'a> {
+    blocks: &'a [CfgBlock],
+    idom: Vec<Option<usize>>,
+    pred_count: Vec<usize>,
+    loops: &'a [LoopInfo],
+}
+
+impl CfgCtx<'_> {
+    fn loop_at_header(&self, block: usize) -> Option<usize> {
+        self.loops.iter().position(|l: &LoopInfo| l.header == block)
+    }
+
+    fn child_loop_here(&self, active: Option<usize>, block: usize) -> Option<usize> {
+        let candidate: usize = self.loop_at_header(block)?;
+        if active.is_some_and(|top: usize| candidate == top) {
+            return None;
+        }
+        (self.loops[candidate].parent == active).then_some(candidate)
+    }
+
+    fn in_body_of(&self, active: Option<usize>, block: usize) -> bool {
+        active.is_none_or(|top: usize| self.loops[top].body.contains(&block))
+    }
+}
+
+fn immediate_dominators(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Vec<Option<usize>> {
+    use std::collections::BTreeSet;
+    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks, preds);
+    let mut idom: Vec<Option<usize>> = vec![None; blocks.len()];
+    for node in 1..blocks.len() {
+        let strict: Vec<usize> = dom[node]
+            .iter()
+            .copied()
+            .filter(|d: &usize| *d != node)
+            .collect();
+        idom[node] = strict.iter().copied().find(|cand: &usize| {
+            strict
+                .iter()
+                .all(|other: &usize| other == cand || dom[*cand].contains(other))
+        });
+    }
+    idom
+}
+
+fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
+    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
+        return Ok(None);
+    };
+    if blocks.len() < 2 {
+        return Ok(None);
+    }
+    let preds: Vec<Vec<usize>> = block_predecessors(&blocks);
+    let Some(loops): Option<Vec<LoopInfo>> = detect_loop_forest(&blocks, &preds) else {
+        return Ok(None);
+    };
+    let idom: Vec<Option<usize>> = immediate_dominators(&blocks, &preds);
+    let pred_count: Vec<usize> = preds.iter().map(Vec::len).collect();
+    let ctx: CfgCtx<'_> = CfgCtx {
+        blocks: &blocks,
+        idom,
+        pred_count,
+        loops: &loops,
+    };
+    let mut body: Block = Vec::new();
+    let stop: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut visited: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    match emit_region(&ctx, 0, &[], &stop, &mut visited, &mut body) {
+        Ok(()) if loop_count(&body) == loops.len() => Ok(Some(body)),
+        _ => Ok(None),
+    }
+}
+
+fn loop_count(body: &Block) -> usize {
+    body.iter()
+        .map(|node: &Node| match node {
+            Node::While { body } => 1 + loop_count(body),
+            Node::DoWhile { body, .. } => loop_count(body),
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => loop_count(then_body) + else_body.as_ref().map_or(0, loop_count),
+            _ => 0,
+        })
+        .sum()
+}
+
+#[derive(Debug)]
+struct StructureError;
+
+fn emit_stmts(blocks: &[CfgBlock], block: usize, out: &mut Block) {
+    for stmt in &blocks[block].stmts {
+        out.push(Node::Stmt(stmt.clone()));
+    }
+}
+
+fn emit_region(
+    ctx: &CfgCtx<'_>,
+    start: usize,
+    loop_stack: &[usize],
+    stop: &std::collections::BTreeSet<usize>,
+    visited: &mut std::collections::BTreeSet<usize>,
+    out: &mut Block,
+) -> std::result::Result<(), StructureError> {
+    let active: Option<usize> = loop_stack.last().copied();
+    let mut current: usize = start;
+    loop {
+        if stop.contains(&current) {
+            return Ok(());
+        }
+        if let Some(top) = active {
+            if current == ctx.loops[top].exit {
+                out.push(Node::Break);
+                return Ok(());
+            }
+            if current == ctx.loops[top].header {
+                out.push(Node::Continue);
+                return Ok(());
+            }
+        }
+        if let Some(child) = ctx.child_loop_here(active, current) {
+            let mut child_stack: Vec<usize> = loop_stack.to_vec();
+            child_stack.push(child);
+            let mut loop_body: Block = Vec::new();
+            let entry_stop: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+            emit_loop_body(ctx, &child_stack, &entry_stop, visited, &mut loop_body)?;
+            out.push(Node::While { body: loop_body });
+            current = ctx.loops[child].exit;
+            continue;
+        }
+        if !ctx.in_body_of(active, current) {
+            return Err(StructureError);
+        }
+        if !visited.insert(current) {
+            return Err(StructureError);
+        }
+        emit_stmts(ctx.blocks, current, out);
+        match &ctx.blocks[current].term {
+            BlockTerm::Ret => {
+                if active.is_some() {
+                    return Err(StructureError);
+                }
+                return Ok(());
+            }
+            BlockTerm::Jump(t) | BlockTerm::Fall(t) => current = *t,
+            BlockTerm::Branch {
+                kind,
+                flags,
+                taken,
+                fallthrough,
+            } => {
+                let follow: Option<usize> = branch_follow(ctx, active, current);
+                let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
+                if let Some(f) = follow {
+                    branch_stop.insert(f);
+                }
+                let mut then_body: Block = Vec::new();
+                emit_region(
+                    ctx,
+                    *fallthrough,
+                    loop_stack,
+                    &branch_stop,
+                    visited,
+                    &mut then_body,
+                )?;
+                let mut else_body: Block = Vec::new();
+                emit_region(
+                    ctx,
+                    *taken,
+                    loop_stack,
+                    &branch_stop,
+                    visited,
+                    &mut else_body,
+                )?;
+                out.push(Node::If {
+                    cond: kind.negate(),
+                    flags: flags.clone(),
+                    then_body,
+                    else_body: if else_body.is_empty() {
+                        None
+                    } else {
+                        Some(else_body)
+                    },
+                });
+                match follow {
+                    Some(f) => current = f,
+                    None => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+fn emit_loop_body(
+    ctx: &CfgCtx<'_>,
+    loop_stack: &[usize],
+    stop: &std::collections::BTreeSet<usize>,
+    visited: &mut std::collections::BTreeSet<usize>,
+    out: &mut Block,
+) -> std::result::Result<(), StructureError> {
+    let active: usize = *loop_stack.last().ok_or(StructureError)?;
+    let header: usize = ctx.loops[active].header;
+    if !visited.insert(header) {
+        return Err(StructureError);
+    }
+    emit_stmts(ctx.blocks, header, out);
+    match &ctx.blocks[header].term {
+        BlockTerm::Ret => Err(StructureError),
+        BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
+            emit_region(ctx, *t, loop_stack, stop, visited, out)
+        }
+        BlockTerm::Branch {
+            kind,
+            flags,
+            taken,
+            fallthrough,
+        } => {
+            let follow: Option<usize> = branch_follow(ctx, Some(active), header);
+            let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
+            if let Some(f) = follow {
+                branch_stop.insert(f);
+            }
+            let mut then_body: Block = Vec::new();
+            emit_region(
+                ctx,
+                *fallthrough,
+                loop_stack,
+                &branch_stop,
+                visited,
+                &mut then_body,
+            )?;
+            let mut else_body: Block = Vec::new();
+            emit_region(
+                ctx,
+                *taken,
+                loop_stack,
+                &branch_stop,
+                visited,
+                &mut else_body,
+            )?;
+            out.push(Node::If {
+                cond: kind.negate(),
+                flags: flags.clone(),
+                then_body,
+                else_body: if else_body.is_empty() {
+                    None
+                } else {
+                    Some(else_body)
+                },
+            });
+            follow.map_or(Ok(()), |f: usize| {
+                emit_region(ctx, f, loop_stack, stop, visited, out)
+            })
+        }
+    }
+}
+
+fn branch_follow(ctx: &CfgCtx<'_>, active: Option<usize>, branch: usize) -> Option<usize> {
+    ctx.idom
+        .iter()
+        .enumerate()
+        .filter(|(node, idom): &(usize, &Option<usize>)| {
+            **idom == Some(branch)
+                && ctx.pred_count[*node] >= 2
+                && ctx.in_body_of(active, *node)
+                && active.is_none_or(|top: usize| *node != ctx.loops[top].header)
+                && ctx.child_loop_here(active, *node).is_none()
+        })
+        .map(|(node, _): (usize, &Option<usize>)| node)
+        .next()
+}
+
+fn structure_range(items: &[Item], lo: usize, hi: usize) -> Result<Block> {
+    let mut block: Block = Vec::new();
+    let mut i: usize = lo;
+    while i < hi {
+        match &items[i].kind {
+            ItemKind::Stmt(stmt) => {
+                block.push(Node::Stmt(stmt.clone()));
+                i += 1;
+            }
+            ItemKind::Branch {
+                kind,
+                flags,
+                target,
+            } => {
+                let target_pos: usize = item_pos(items, *target).ok_or_else(|| {
+                    Error::LlvmIr(format!(
+                        "branch target {target:#x} is not a forward join point"
+                    ))
+                })?;
+                if target_pos <= i || target_pos > hi {
+                    return Err(Error::LlvmIr(
+                        "non-forward or out-of-region branch not supported".to_owned(),
+                    ));
+                }
+                let then_lo: usize = i + 1;
+                let then_hi: usize = target_pos;
+                let (then_body, else_body, next): (Block, Option<Block>, usize) =
+                    if let Some(else_target) = trailing_jmp_target(items, then_lo, then_hi) {
+                        let else_pos: usize = item_pos(items, else_target)
+                            .filter(|p: &usize| *p > target_pos && *p <= hi)
+                            .ok_or_else(|| {
+                                Error::LlvmIr(
+                                    "if/else join target not forward-reducible".to_owned(),
+                                )
+                            })?;
+                        let then_b: Block = structure_range(items, then_lo, then_hi - 1)?;
+                        let else_b: Block = structure_range(items, target_pos, else_pos)?;
+                        (then_b, Some(else_b), else_pos)
+                    } else {
+                        let then_b: Block = structure_range(items, then_lo, then_hi)?;
+                        (then_b, None, target_pos)
+                    };
+                block.push(Node::If {
+                    cond: kind.negate(),
+                    flags: flags.clone(),
+                    then_body,
+                    else_body,
+                });
+                i = next;
+            }
+            ItemKind::Jmp { .. } => {
+                return Err(Error::LlvmIr(
+                    "unstructured jump not in forward-skip class".to_owned(),
+                ));
+            }
+            ItemKind::Ret => {
+                return Err(Error::LlvmIr("unexpected interior ret".to_owned()));
+            }
+        }
+    }
+    Ok(block)
+}
+
+fn item_pos(items: &[Item], target: u64) -> Option<usize> {
+    items.iter().position(|it: &Item| it.address == target)
+}
+
+fn trailing_jmp_target(items: &[Item], lo: usize, hi: usize) -> Option<u64> {
+    if hi <= lo {
+        return None;
+    }
+    match items.get(hi - 1).map(|it: &Item| &it.kind) {
+        Some(ItemKind::Jmp { target }) => Some(*target),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlagEffect {
+    Sign,
+    Clobber,
+}
+
+const fn flag_effect_bin(op: BinOp) -> FlagEffect {
+    match op {
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::And
+        | BinOp::Or
+        | BinOp::Xor
+        | BinOp::Shl
+        | BinOp::Shr
+        | BinOp::Sar => FlagEffect::Sign,
+        BinOp::Imul => FlagEffect::Clobber,
+    }
+}
+
+fn lift_flag_setter(mnemonic: &str, operands: &str) -> Option<Flags> {
+    match mnemonic {
+        "cmp" => {
+            let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+            let lhs_tok: &str = lhs.trim();
+            let rhs_tok: &str = rhs.trim();
+            if is_mem_token(lhs_tok) {
+                let rhs_reg: RegRef = parse_reg(rhs_tok)?;
+                let mem: MemRef = parse_mem_access(lhs_tok, Some(rhs_reg.width))?;
+                return Some(Flags::CmpMem {
+                    lhs: mem,
+                    rhs: rhs_reg,
+                });
+            }
+            let lhs_reg: RegRef = parse_reg(lhs_tok)?;
+            let rhs_src: Source = if is_mem_token(rhs_tok) {
+                Source::Mem(parse_mem_access(rhs_tok, Some(lhs_reg.width))?)
+            } else {
+                parse_source(rhs_tok)?
+            };
+            Some(Flags::Cmp {
+                lhs: lhs_reg,
+                rhs: rhs_src,
+            })
+        }
+        "test" => {
+            let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+            let lhs_reg: RegRef = parse_reg(lhs.trim())?;
+            if let Some(rhs_reg) = parse_reg(rhs.trim()) {
+                return (lhs_reg == rhs_reg).then_some(Flags::Test { operand: lhs_reg });
+            }
+            let mask: i64 = parse_imm(rhs.trim())?;
+            Some(Flags::TestImm {
+                operand: lhs_reg,
+                mask,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
+    match flags {
+        Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
+        Flags::TestImm { .. } => matches!(kind, CondKind::E | CondKind::Ne),
+        Flags::Sign { .. } => kind.sign_zero_only(),
+        Flags::FpCmp { .. } => {
+            kind.is_unsigned_order() || matches!(kind, CondKind::E | CondKind::Ne)
+        }
+    }
+}
+
+fn infer_params(body: &Block, abi: Abi) -> Vec<Reg> {
+    let arg_order: &[Reg] = abi.arg_order();
+    let mut written: BTreeMap<Reg, bool> = BTreeMap::new();
+    let mut read_before_write: Vec<Reg> = Vec::new();
+    let mut note_read = |reg: Reg, written: &BTreeMap<Reg, bool>, acc: &mut Vec<Reg>| {
+        if arg_order.contains(&reg)
+            && !written.get(&reg).copied().unwrap_or(false)
+            && !acc.contains(&reg)
+        {
+            acc.push(reg);
+        }
+    };
+    scan_block_params(body, &mut written, &mut read_before_write, &mut note_read);
+    let mut ordered: Vec<Reg> = read_before_write;
+    ordered.sort_by_key(|r: &Reg| {
+        arg_order
+            .iter()
+            .position(|a: &Reg| a == r)
+            .unwrap_or(usize::MAX)
+    });
+    ordered
+}
+
+const FP_ARG_ORDER: [Xmm; 8] = [
+    Xmm::Xmm0,
+    Xmm::Xmm1,
+    Xmm::Xmm2,
+    Xmm::Xmm3,
+    Xmm::Xmm4,
+    Xmm::Xmm5,
+    Xmm::Xmm6,
+    Xmm::Xmm7,
+];
+
+fn infer_fp_params(body: &Block) -> Vec<(Xmm, FpWidth)> {
+    let mut written: BTreeMap<Xmm, bool> = BTreeMap::new();
+    let mut read_before_write: Vec<(Xmm, FpWidth)> = Vec::new();
+    scan_fp_params(body, &mut written, &mut read_before_write);
+    read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
+    read_before_write
+}
+
+fn note_fp_read(
+    xmm: Xmm,
+    width: FpWidth,
+    written: &BTreeMap<Xmm, bool>,
+    acc: &mut Vec<(Xmm, FpWidth)>,
+) {
+    if FP_ARG_ORDER.contains(&xmm)
+        && !written.get(&xmm).copied().unwrap_or(false)
+        && !acc.iter().any(|(x, _): &(Xmm, FpWidth)| *x == xmm)
+    {
+        acc.push((xmm, width));
+    }
+}
+
+fn scan_fp_operand(
+    operand: &FpOperand,
+    width: FpWidth,
+    written: &BTreeMap<Xmm, bool>,
+    acc: &mut Vec<(Xmm, FpWidth)>,
+) {
+    if let FpOperand::Xmm(x) = operand {
+        note_fp_read(*x, width, written, acc);
+    }
+}
+
+fn scan_fp_stmt(stmt: &Stmt, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+    match stmt {
+        Stmt::FpBin {
+            dest, rhs, width, ..
+        } => {
+            note_fp_read(*dest, *width, written, acc);
+            scan_fp_operand(rhs, *width, written, acc);
+            written.insert(*dest, true);
+        }
+        Stmt::FpMov { dest, src, width } => {
+            scan_fp_operand(src, *width, written, acc);
+            written.insert(*dest, true);
+        }
+        Stmt::FpStore { src, width, .. } => {
+            note_fp_read(*src, *width, written, acc);
+        }
+        Stmt::IntToFp { dest, .. } => {
+            written.insert(*dest, true);
+        }
+        Stmt::FpToInt { src, width, .. } => {
+            note_fp_read(*src, *width, written, acc);
+        }
+        Stmt::FpConvert {
+            dest, src, from, ..
+        } => {
+            note_fp_read(*src, *from, written, acc);
+            written.insert(*dest, true);
+        }
+        Stmt::FpMinMax {
+            dest, rhs, width, ..
+        } => {
+            note_fp_read(*dest, *width, written, acc);
+            scan_fp_operand(rhs, *width, written, acc);
+            written.insert(*dest, true);
+        }
+        Stmt::FpSqrt { dest, src, width } => {
+            scan_fp_operand(src, *width, written, acc);
+            written.insert(*dest, true);
+        }
+        Stmt::GprToXmm { dest, .. } => {
+            written.insert(*dest, true);
+        }
+        Stmt::XmmToGpr { src, width, .. } => {
+            note_fp_read(*src, *width, written, acc);
+        }
+        Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } => {
+            scan_fp_flags(flags, written, acc);
+        }
+        _ => {}
+    }
+}
+
+fn scan_fp_flags(flags: &Flags, written: &BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+    if let Flags::FpCmp { lhs, rhs, width } = flags {
+        note_fp_read(*lhs, *width, written, acc);
+        scan_fp_operand(rhs, *width, written, acc);
+    }
+}
+
+fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec<(Xmm, FpWidth)>) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc),
+            Node::If {
+                flags,
+                then_body,
+                else_body,
+                ..
+            } => {
+                scan_fp_flags(flags, written, acc);
+                let mut then_written: BTreeMap<Xmm, bool> = written.clone();
+                scan_fp_params(then_body, &mut then_written, acc);
+                if let Some(else_b) = else_body {
+                    let mut else_written: BTreeMap<Xmm, bool> = written.clone();
+                    scan_fp_params(else_b, &mut else_written, acc);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
+                scan_fp_params(body, &mut loop_written, acc);
+                if let LoopCond::Direct { flags, .. } = cond {
+                    scan_fp_flags(flags, &loop_written, acc);
+                }
+            }
+            Node::While { body } => {
+                let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
+                scan_fp_params(body, &mut loop_written, acc);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    let mut case_written: BTreeMap<Xmm, bool> = written.clone();
+                    scan_fp_params(&case.body, &mut case_written, acc);
+                }
+                let mut default_written: BTreeMap<Xmm, bool> = written.clone();
+                scan_fp_params(default, &mut default_written, acc);
+            }
+            Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc),
+            Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn scan_block_params(
+    body: &Block,
+    written: &mut BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => scan_stmt_params(stmt, written, acc, note),
+            Node::If {
+                flags,
+                then_body,
+                else_body,
+                ..
+            } => {
+                read_flags(flags, written, acc, note);
+                let mut branch_written: BTreeMap<Reg, bool> = written.clone();
+                scan_block_params(then_body, &mut branch_written, acc, note);
+                if let Some(else_b) = else_body {
+                    let mut else_written: BTreeMap<Reg, bool> = written.clone();
+                    scan_block_params(else_b, &mut else_written, acc, note);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                let mut loop_written: BTreeMap<Reg, bool> = written.clone();
+                scan_block_params(body, &mut loop_written, acc, note);
+                if let LoopCond::Direct { flags, .. } = cond {
+                    read_flags(flags, &loop_written, acc, note);
+                }
+            }
+            Node::While { body } => {
+                let mut loop_written: BTreeMap<Reg, bool> = written.clone();
+                scan_block_params(body, &mut loop_written, acc, note);
+            }
+            Node::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                note(disc.reg, written, acc);
+                for case in cases {
+                    let mut case_written: BTreeMap<Reg, bool> = written.clone();
+                    scan_block_params(&case.body, &mut case_written, acc, note);
+                }
+                let mut default_written: BTreeMap<Reg, bool> = written.clone();
+                scan_block_params(default, &mut default_written, acc, note);
+            }
+            Node::CondSnapshot { flags, .. } => read_flags(flags, written, acc, note),
+            Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn scan_stmt_params(
+    stmt: &Stmt,
+    written: &mut BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    match stmt {
+        Stmt::Assign { dest, src } => {
+            read_sources(src, written, acc, note);
+            written.insert(dest.reg, true);
+        }
+        Stmt::BinAssign { dest, src, .. } => {
+            note(dest.reg, written, acc);
+            read_sources(src, written, acc, note);
+            written.insert(dest.reg, true);
+        }
+        Stmt::UnAssign { dest, .. } => {
+            note(dest.reg, written, acc);
+            written.insert(dest.reg, true);
+        }
+        Stmt::Cond {
+            dest, src, flags, ..
+        } => {
+            read_flags(flags, written, acc, note);
+            read_sources(src, written, acc, note);
+            note(dest.reg, written, acc);
+            written.insert(dest.reg, true);
+        }
+        Stmt::SetCc { dest, flags, .. } => {
+            read_flags(flags, written, acc, note);
+            note(dest.reg, written, acc);
+            written.insert(dest.reg, true);
+        }
+        Stmt::Store { addr, src } => {
+            read_addr(addr, written, acc, note);
+            read_sources(src, written, acc, note);
+        }
+        Stmt::MemRmw { addr, op } => {
+            read_addr(addr, written, acc, note);
+            if let Some(src) = op.source() {
+                read_sources(src, written, acc, note);
+            }
+        }
+        Stmt::Extend { dest, src, .. } => {
+            match src {
+                ExtSource::Reg(r) => note(r.reg, written, acc),
+                ExtSource::Mem(mem) => read_addr(mem, written, acc, note),
+            }
+            written.insert(dest.reg, true);
+        }
+        Stmt::MulImm { dest, src, .. } => {
+            match src {
+                ExtSource::Reg(r) => note(r.reg, written, acc),
+                ExtSource::Mem(mem) => read_addr(mem, written, acc, note),
+            }
+            written.insert(dest.reg, true);
+        }
+        Stmt::WideMul { src } => {
+            note(Reg::Rax, written, acc);
+            note(src.reg, written, acc);
+            written.insert(Reg::Rax, true);
+            written.insert(Reg::Rdx, true);
+        }
+        Stmt::Divide { divisor, .. } => {
+            note(Reg::Rax, written, acc);
+            note(divisor.reg, written, acc);
+            written.insert(Reg::Rax, true);
+            written.insert(Reg::Rdx, true);
+        }
+        Stmt::DoubleShift { dest, src, .. } => {
+            note(dest.reg, written, acc);
+            note(src.reg, written, acc);
+            written.insert(dest.reg, true);
+        }
+        Stmt::BlockMove { .. } => {
+            note(Reg::Rdi, written, acc);
+            note(Reg::Rsi, written, acc);
+            note(Reg::Rcx, written, acc);
+            written.insert(Reg::Rdi, true);
+            written.insert(Reg::Rsi, true);
+            written.insert(Reg::Rcx, true);
+        }
+        Stmt::BlockFill { .. } => {
+            note(Reg::Rdi, written, acc);
+            note(Reg::Rax, written, acc);
+            note(Reg::Rcx, written, acc);
+            written.insert(Reg::Rdi, true);
+            written.insert(Reg::Rcx, true);
+        }
+        Stmt::Call { .. } => {
+            for reg in [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9] {
+                note(reg, written, acc);
+            }
+            written.insert(Reg::Rax, true);
+        }
+        Stmt::IntToFp { src, .. } => {
+            note(src.reg, written, acc);
+        }
+        Stmt::FpToInt { dest, .. } => {
+            written.insert(dest.reg, true);
+        }
+        Stmt::FpBin { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                read_addr(mem, written, acc, note);
+            }
+        }
+        Stmt::FpMov { src, .. } => {
+            if let FpOperand::Mem(mem) = src {
+                read_addr(mem, written, acc, note);
+            }
+        }
+        Stmt::FpStore { addr, .. } => {
+            read_addr(addr, written, acc, note);
+        }
+        Stmt::FpMinMax { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                read_addr(mem, written, acc, note);
+            }
+        }
+        Stmt::FpSqrt { src, .. } => {
+            if let FpOperand::Mem(mem) = src {
+                read_addr(mem, written, acc, note);
+            }
+        }
+        Stmt::GprToXmm { src, .. } => {
+            note(src.reg, written, acc);
+        }
+        Stmt::XmmToGpr { dest, .. } => {
+            written.insert(dest.reg, true);
+        }
+        Stmt::FpConvert { .. } => {}
+    }
+}
+
+fn read_flags(
+    flags: &Flags,
+    written: &BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    match flags {
+        Flags::Cmp { lhs, rhs } => {
+            note(lhs.reg, written, acc);
+            read_sources(rhs, written, acc, note);
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            read_addr(lhs, written, acc, note);
+            note(rhs.reg, written, acc);
+        }
+        Flags::Test { operand } | Flags::TestImm { operand, .. } => {
+            note(operand.reg, written, acc);
+        }
+        Flags::Sign { result } => note(result.reg, written, acc),
+        Flags::FpCmp { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                read_addr(mem, written, acc, note);
+            }
+        }
+    }
+}
+
+fn read_addr(
+    addr: &MemRef,
+    written: &BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    if let Some(b) = addr.base {
+        note(b, written, acc);
+    }
+    if let Some((i, _)) = addr.index {
+        note(i, written, acc);
+    }
+}
+
+fn read_sources(
+    src: &Source,
+    written: &BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    match src {
+        Source::Reg(r) => note(r.reg, written, acc),
+        Source::Imm(_) => {}
+        Source::Lea { base, index, .. } => {
+            if let Some(b) = base {
+                note(*b, written, acc);
+            }
+            if let Some((i, _)) = index {
+                note(*i, written, acc);
+            }
+        }
+        Source::Mem(mem) => read_addr(mem, written, acc, note),
+    }
+}
+
+fn lift_width_extension(mnemonic: &str, operands: &str) -> Option<Stmt> {
+    if mnemonic == "cdqe" {
+        if !operands.trim().is_empty() {
+            return None;
+        }
+        return Some(Stmt::Extend {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: ExtSource::Reg(RegRef {
+                reg: Reg::Rax,
+                width: Width::W32,
+            }),
+            signed: true,
+        });
+    }
+    let signed: bool = match mnemonic {
+        "movzx" => false,
+        "movsx" | "movsxd" => true,
+        _ => return None,
+    };
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    let rhs_tok: &str = rhs.trim();
+    if is_mem_token(rhs_tok) {
+        let mem: MemRef = parse_mem_access(rhs_tok, None)?;
+        if mem.width >= dest.width {
+            return None;
+        }
+        return Some(Stmt::Extend {
+            dest,
+            src: ExtSource::Mem(mem),
+            signed,
+        });
+    }
+    let src: RegRef = parse_reg(rhs_tok)?;
+    if src.width >= dest.width {
+        return None;
+    }
+    Some(Stmt::Extend {
+        dest,
+        src: ExtSource::Reg(src),
+        signed,
+    })
+}
+
+fn lift_dividend_extend(mnemonic: &str, operands: &str) -> Option<DividendHigh> {
+    if !operands.trim().is_empty() {
+        return None;
+    }
+    match mnemonic {
+        "cqo" => Some(DividendHigh::SignExtended { width: Width::W64 }),
+        "cdq" => Some(DividendHigh::SignExtended { width: Width::W32 }),
+        _ => None,
+    }
+}
+
+fn parse_divide_operand(mnemonic: &str, operands: &str) -> Option<RegRef> {
+    if !matches!(mnemonic, "idiv" | "div") {
+        return None;
+    }
+    let divisor: RegRef = parse_reg(operands.trim())?;
+    matches!(divisor.width, Width::W32 | Width::W64).then_some(divisor)
+}
+
+const fn dividend_high_matches(high: DividendHigh, signed: bool, width: Width) -> bool {
+    match high {
+        DividendHigh::SignExtended { width: w } => signed && w as u8 == width as u8,
+        DividendHigh::Zeroed => !signed,
+    }
+}
+
+fn track_dividend_high(prev: Option<DividendHigh>, stmt: &Stmt) -> Option<DividendHigh> {
+    match stmt {
+        Stmt::Assign {
+            dest,
+            src: Source::Imm(0),
+        } if dest.reg == Reg::Rdx => Some(DividendHigh::Zeroed),
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::Cond { dest, .. }
+        | Stmt::SetCc { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+            if dest.reg == Reg::Rdx =>
+        {
+            None
+        }
+        Stmt::WideMul { .. } | Stmt::Call { .. } | Stmt::Divide { .. } => None,
+        _ => prev,
+    }
+}
+
+fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {
+    match stmt {
+        Stmt::FpBin { dest, width, .. } | Stmt::FpMov { dest, width, .. } => Some((*dest, *width)),
+        Stmt::IntToFp { dest, width, .. } => Some((*dest, *width)),
+        Stmt::FpConvert { dest, to, .. } => Some((*dest, *to)),
+        Stmt::FpMinMax { dest, width, .. } => Some((*dest, *width)),
+        Stmt::FpSqrt { dest, width, .. } | Stmt::GprToXmm { dest, width, .. } => {
+            Some((*dest, *width))
+        }
+        _ => None,
+    }
+}
+
+fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::Cond { dest, .. }
+        | Stmt::SetCc { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. } => dest.reg == Reg::Rax,
+        Stmt::WideMul { .. } | Stmt::Divide { .. } | Stmt::Call { .. } => true,
+        Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. } => false,
+    }
+}
+
+fn fp_return_after(current: Option<FpWidth>, stmt: &Stmt) -> Option<FpWidth> {
+    if let Some((dest, width)) = fp_stmt_result_xmm(stmt)
+        && dest == Xmm::Xmm0
+    {
+        return Some(width);
+    }
+    if stmt_writes_rax_int(stmt) {
+        return None;
+    }
+    current
+}
+
+fn is_rip_relative_mem(token: &str) -> bool {
+    let trimmed: &str = token.trim();
+    let bracketed: &str = trimmed
+        .strip_prefix('[')
+        .or_else(|| {
+            trimmed
+                .split_once(char::is_whitespace)
+                .filter(|(kw, _): &(&str, &str)| size_keyword_width(kw.trim()).is_some())
+                .map(|(_, rest): (&str, &str)| rest.trim())
+                .and_then(|rest: &str| rest.strip_prefix('['))
+        })
+        .unwrap_or("");
+    bracketed.trim_start().starts_with("rel ")
+}
+
+fn resolve_fp_const(site: u64, width: FpWidth, consts: &[FpConstant]) -> Option<FpOperand> {
+    let entry: &FpConstant = consts.iter().find(|c: &&FpConstant| c.site == site)?;
+    let bits: u64 = match width {
+        FpWidth::F32 => u64::from(entry.bits as u32),
+        FpWidth::F64 => entry.bits,
+    };
+    Some(FpOperand::Const { bits, width })
+}
+
+fn parse_fp_operand(
+    token: &str,
+    width: FpWidth,
+    site: u64,
+    consts: &[FpConstant],
+) -> Result<FpOperand> {
+    if let Some(xmm) = parse_xmm(token) {
+        return Ok(FpOperand::Xmm(xmm));
+    }
+    if is_rip_relative_mem(token) {
+        return resolve_fp_const(site, width, consts).ok_or_else(|| {
+            Error::LlvmIr(format!(
+                "rip-relative float operand at {site:#x} has no resolved .rodata constant"
+            ))
+        });
+    }
+    if is_mem_token(token) {
+        let fallback: Width = match width {
+            FpWidth::F32 => Width::W32,
+            FpWidth::F64 => Width::W64,
+        };
+        let mem: MemRef = parse_mem_access(token, Some(fallback)).ok_or_else(|| {
+            Error::LlvmIr(format!("float memory operand `{token}` is unsupported"))
+        })?;
+        return Ok(FpOperand::Mem(mem));
+    }
+    Err(Error::LlvmIr(format!(
+        "float operand `{token}` unsupported"
+    )))
+}
+
+fn fp_arith_kind(mnemonic: &str) -> Option<(FpOp, FpWidth)> {
+    Some(match mnemonic {
+        "addsd" => (FpOp::Add, FpWidth::F64),
+        "subsd" => (FpOp::Sub, FpWidth::F64),
+        "mulsd" => (FpOp::Mul, FpWidth::F64),
+        "divsd" => (FpOp::Div, FpWidth::F64),
+        "addss" => (FpOp::Add, FpWidth::F32),
+        "subss" => (FpOp::Sub, FpWidth::F32),
+        "mulss" => (FpOp::Mul, FpWidth::F32),
+        "divss" => (FpOp::Div, FpWidth::F32),
+        _ => return None,
+    })
+}
+
+fn fp_minmax_kind(mnemonic: &str) -> Option<(bool, FpWidth)> {
+    Some(match mnemonic {
+        "minsd" => (false, FpWidth::F64),
+        "maxsd" => (true, FpWidth::F64),
+        "minss" => (false, FpWidth::F32),
+        "maxss" => (true, FpWidth::F32),
+        _ => return None,
+    })
+}
+
+const REJECTED_SSE: &[&str] = &[
+    "addpd",
+    "subpd",
+    "mulpd",
+    "divpd",
+    "addps",
+    "subps",
+    "mulps",
+    "divps",
+    "andpd",
+    "andps",
+    "andnpd",
+    "andnps",
+    "orpd",
+    "orps",
+    "xorpd",
+    "xorps",
+    "pxor",
+    "shufps",
+    "shufpd",
+    "unpckhpd",
+    "unpcklpd",
+    "unpckhps",
+    "unpcklps",
+    "sqrtpd",
+    "sqrtps",
+    "maxpd",
+    "minpd",
+    "cmpsd",
+    "cmpss",
+    "cmpltsd",
+    "cmpltss",
+    "cmplesd",
+    "cmpless",
+    "cmpeqsd",
+    "cmpeqss",
+    "cmpneqsd",
+    "cmpneqss",
+    "cmpnlesd",
+    "cmpnless",
+    "cmpnltsd",
+    "cmpnltss",
+    "haddpd",
+    "hsubpd",
+    "haddps",
+    "hsubps",
+    "movhps",
+    "movlps",
+    "movhpd",
+    "movlpd",
+    "movddup",
+    "movsldup",
+    "movshdup",
+    "pshufd",
+    "cvtdq2pd",
+    "cvtpd2dq",
+    "cvtps2pd",
+    "cvtpd2ps",
+    "roundsd",
+    "roundss",
+    "blendpd",
+    "blendps",
+    "movmskpd",
+    "movmskps",
+    "punpcklqdq",
+    "punpckhqdq",
+];
+
+fn lift_fp_compare(
+    mnemonic: &str,
+    operands: &str,
+    site: u64,
+    consts: &[FpConstant],
+) -> Result<Option<Flags>> {
+    let width: FpWidth = match mnemonic {
+        "ucomisd" | "comisd" => FpWidth::F64,
+        "ucomiss" | "comiss" => FpWidth::F32,
+        _ => return Ok(None),
+    };
+    let (lhs, rhs): (&str, &str) = operands
+        .split_once(',')
+        .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+    let lhs_xmm: Xmm = parse_xmm(lhs.trim())
+        .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` lhs is not an xmm register")))?;
+    let rhs_operand: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
+    Ok(Some(Flags::FpCmp {
+        lhs: lhs_xmm,
+        rhs: rhs_operand,
+        width,
+    }))
+}
+
+fn lift_fp(
+    mnemonic: &str,
+    operands: &str,
+    site: u64,
+    consts: &[FpConstant],
+) -> Result<Option<Stmt>> {
+    let reject = |m: &str| -> Result<Option<Stmt>> {
+        Err(Error::LlvmIr(format!(
+            "unmodeled SSE/packed instruction `{m}` outside the scalar float leaf class"
+        )))
+    };
+    if matches!(mnemonic, "xorps" | "xorpd" | "pxor") {
+        if let Some((lhs, rhs)) = operands.split_once(',')
+            && let Some(dest) = parse_xmm(lhs.trim())
+            && let Some(src) = parse_xmm(rhs.trim())
+            && dest == src
+        {
+            return Ok(Some(Stmt::FpMov {
+                dest,
+                src: FpOperand::Const {
+                    bits: 0,
+                    width: FpWidth::F64,
+                },
+                width: FpWidth::F64,
+            }));
+        }
+        return reject(mnemonic);
+    }
+    if REJECTED_SSE.contains(&mnemonic) {
+        return reject(mnemonic);
+    }
+    if let Some((op, width)) = fp_arith_kind(mnemonic) {
+        let (lhs, rhs): (&str, &str) = operands
+            .split_once(',')
+            .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+        let dest: Xmm = parse_xmm(lhs.trim())
+            .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register")))?;
+        let rhs_operand: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
+        return Ok(Some(Stmt::FpBin {
+            dest,
+            rhs: rhs_operand,
+            op,
+            width,
+        }));
+    }
+    if let Some((is_max, width)) = fp_minmax_kind(mnemonic) {
+        let (lhs, rhs): (&str, &str) = operands
+            .split_once(',')
+            .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+        let dest: Xmm = parse_xmm(lhs.trim())
+            .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register")))?;
+        let rhs_operand: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
+        return Ok(Some(Stmt::FpMinMax {
+            dest,
+            rhs: rhs_operand,
+            is_max,
+            width,
+        }));
+    }
+    match mnemonic {
+        "movsd" | "movss" => {
+            let width: FpWidth = if mnemonic == "movsd" {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let lhs_tok: &str = lhs.trim();
+            let rhs_tok: &str = rhs.trim();
+            if let Some(dest) = parse_xmm(lhs_tok) {
+                let src: FpOperand = parse_fp_operand(rhs_tok, width, site, consts)?;
+                return Ok(Some(Stmt::FpMov { dest, src, width }));
+            }
+            if is_mem_token(lhs_tok) {
+                let src: Xmm = parse_xmm(rhs_tok).ok_or_else(|| {
+                    Error::LlvmIr(format!("`{mnemonic}` store source not an xmm register"))
+                })?;
+                let fallback: Width = match width {
+                    FpWidth::F32 => Width::W32,
+                    FpWidth::F64 => Width::W64,
+                };
+                let addr: MemRef = parse_mem_access(lhs_tok, Some(fallback)).ok_or_else(|| {
+                    Error::LlvmIr(format!("`{mnemonic}` store address unsupported"))
+                })?;
+                return Ok(Some(Stmt::FpStore { addr, src, width }));
+            }
+            reject(mnemonic)
+        }
+        "movaps" | "movapd" | "movups" | "movupd" => {
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let dest: Xmm = parse_xmm(lhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest not an xmm register")))?;
+            let src: Xmm = parse_xmm(rhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "`{mnemonic}` with a memory operand is outside the scalar float leaf class"
+                ))
+            })?;
+            let width: FpWidth = if matches!(mnemonic, "movapd" | "movupd") {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            Ok(Some(Stmt::FpMov {
+                dest,
+                src: FpOperand::Xmm(src),
+                width,
+            }))
+        }
+        "cvtsi2sd" | "cvtsi2ss" => {
+            let width: FpWidth = if mnemonic == "cvtsi2sd" {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let dest: Xmm = parse_xmm(lhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest not an xmm register")))?;
+            let src: RegRef = fp_convert_int_operand(rhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` integer source unsupported")))?;
+            Ok(Some(Stmt::IntToFp {
+                dest,
+                src,
+                signed: true,
+                width,
+            }))
+        }
+        "cvttsd2si" | "cvttss2si" | "cvtsd2si" | "cvtss2si" => {
+            let width: FpWidth = if matches!(mnemonic, "cvttsd2si" | "cvtsd2si") {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            if matches!(mnemonic, "cvtsd2si" | "cvtss2si") {
+                return reject(mnemonic);
+            }
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let dest: RegRef = parse_reg(lhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest not a register")))?;
+            if !matches!(dest.width, Width::W32 | Width::W64) {
+                return reject(mnemonic);
+            }
+            let src: Xmm = parse_xmm(rhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` source not an xmm register")))?;
+            Ok(Some(Stmt::FpToInt { dest, src, width }))
+        }
+        "cvtsd2ss" | "cvtss2sd" => {
+            let (from, to): (FpWidth, FpWidth) = if mnemonic == "cvtsd2ss" {
+                (FpWidth::F64, FpWidth::F32)
+            } else {
+                (FpWidth::F32, FpWidth::F64)
+            };
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let dest: Xmm = parse_xmm(lhs.trim())
+                .ok_or_else(|| Error::LlvmIr(format!("`{mnemonic}` dest not an xmm register")))?;
+            let src: Xmm = parse_xmm(rhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!(
+                    "`{mnemonic}` with a memory operand is outside the scalar float leaf class"
+                ))
+            })?;
+            Ok(Some(Stmt::FpConvert {
+                dest,
+                src,
+                from,
+                to,
+            }))
+        }
+        "sqrtsd" | "sqrtss" => {
+            let width: FpWidth = if mnemonic == "sqrtsd" {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let dest: Xmm = parse_xmm(lhs.trim()).ok_or_else(|| {
+                Error::LlvmIr(format!("`{mnemonic}` dest is not an xmm register"))
+            })?;
+            let src: FpOperand = parse_fp_operand(rhs.trim(), width, site, consts)?;
+            Ok(Some(Stmt::FpSqrt { dest, src, width }))
+        }
+        "movq" | "movd" => {
+            let width: FpWidth = if mnemonic == "movq" {
+                FpWidth::F64
+            } else {
+                FpWidth::F32
+            };
+            let gpr_width: Width = if mnemonic == "movq" {
+                Width::W64
+            } else {
+                Width::W32
+            };
+            let (lhs, rhs): (&str, &str) = operands
+                .split_once(',')
+                .ok_or_else(|| Error::LlvmIr(format!("malformed `{mnemonic}` operands")))?;
+            let lt: &str = lhs.trim();
+            let rt: &str = rhs.trim();
+            match (parse_xmm(lt), parse_xmm(rt)) {
+                (Some(dest), Some(src)) => Ok(Some(Stmt::FpMov {
+                    dest,
+                    src: FpOperand::Xmm(src),
+                    width,
+                })),
+                (Some(dest), None) => {
+                    let src: RegRef = parse_reg(rt)
+                        .filter(|r: &RegRef| r.width == gpr_width)
+                        .ok_or_else(|| {
+                            Error::LlvmIr(format!(
+                                "`{mnemonic}` source is neither an xmm nor a width-matched gpr; memory and mmx forms are outside the scalar float leaf class"
+                            ))
+                        })?;
+                    Ok(Some(Stmt::GprToXmm { dest, src, width }))
+                }
+                (None, Some(src)) => {
+                    let dest: RegRef = parse_reg(lt)
+                        .filter(|r: &RegRef| r.width == gpr_width)
+                        .ok_or_else(|| {
+                            Error::LlvmIr(format!(
+                                "`{mnemonic}` destination is neither an xmm nor a width-matched gpr; memory and mmx forms are outside the scalar float leaf class"
+                            ))
+                        })?;
+                    Ok(Some(Stmt::XmmToGpr { dest, src, width }))
+                }
+                (None, None) => Err(Error::LlvmIr(format!(
+                    "`{mnemonic} {operands}` moves neither into nor out of an xmm register; memory and mmx forms are outside the scalar float leaf class"
+                ))),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn fp_convert_int_operand(token: &str) -> Option<RegRef> {
+    if let Some(reg) = parse_reg(token) {
+        return matches!(reg.width, Width::W32 | Width::W64).then_some(reg);
+    }
+    None
+}
+
+fn lift_one(mnemonic: &str, operands: &str) -> Option<Stmt> {
+    let (lhs, rhs): (&str, Option<&str>) = match operands.split_once(',') {
+        Some((a, b)) => (a.trim(), Some(b.trim())),
+        None => (operands.trim(), None),
+    };
+    match mnemonic {
+        "mov" => {
+            let rhs_tok: &str = rhs?;
+            if is_mem_token(lhs) {
+                let dest_w: Option<Width> = parse_reg(rhs_tok).map(|r: RegRef| r.width);
+                let addr: MemRef = parse_mem_access(lhs, dest_w)?;
+                let src: Source = parse_source(rhs_tok)?;
+                return Some(Stmt::Store { addr, src });
+            }
+            let dest: RegRef = parse_reg(lhs)?;
+            if is_mem_token(rhs_tok) {
+                let mem: MemRef = parse_mem_access(rhs_tok, Some(dest.width))?;
+                return Some(Stmt::Assign {
+                    dest,
+                    src: Source::Mem(mem),
+                });
+            }
+            let src: Source = parse_source(rhs_tok)?;
+            Some(Stmt::Assign { dest, src })
+        }
+        "lea" => {
+            let dest: RegRef = parse_reg(lhs)?;
+            let src: Source = parse_mem(rhs?)?;
+            Some(Stmt::Assign { dest, src })
+        }
+        "mul" => {
+            if rhs.is_some() {
+                return None;
+            }
+            let src: RegRef = parse_reg(lhs)?;
+            (src.width == Width::W64).then_some(Stmt::WideMul { src })
+        }
+        "shld" | "shrd" => lift_double_shift(mnemonic, operands),
+        "imul" if operands.matches(',').count() == 2 => lift_imul_ternary(operands),
+        "add" | "sub" | "imul" | "and" | "or" | "xor" | "shl" | "sal" | "shr" | "sar" => {
+            let rhs_tok: &str = rhs?;
+            let op: BinOp = match mnemonic {
+                "add" => BinOp::Add,
+                "sub" => BinOp::Sub,
+                "imul" => BinOp::Imul,
+                "and" => BinOp::And,
+                "or" => BinOp::Or,
+                "xor" => BinOp::Xor,
+                "shl" | "sal" => BinOp::Shl,
+                "shr" => BinOp::Shr,
+                "sar" => BinOp::Sar,
+                _ => return None,
+            };
+            if is_mem_token(lhs) {
+                if op == BinOp::Imul {
+                    return None;
+                }
+                if is_mem_token(rhs_tok) {
+                    return None;
+                }
+                let hint: Option<Width> = parse_reg(rhs_tok).map(|r: RegRef| r.width);
+                let addr: MemRef = parse_mem_access(lhs, hint)?;
+                let src: Source = parse_source(rhs_tok)?;
+                return Some(Stmt::MemRmw {
+                    addr,
+                    op: MemRmwOp::Bin { op, src },
+                });
+            }
+            let dest: RegRef = parse_reg(lhs)?;
+            if matches!(mnemonic, "xor" | "sub")
+                && parse_reg(rhs_tok).is_some_and(|r: RegRef| r.reg == dest.reg)
+            {
+                return Some(Stmt::Assign {
+                    dest,
+                    src: Source::Imm(0),
+                });
+            }
+            let src: Source = if is_mem_token(rhs_tok) {
+                Source::Mem(parse_mem_access(rhs_tok, Some(dest.width))?)
+            } else {
+                parse_source(rhs_tok)?
+            };
+            Some(Stmt::BinAssign { dest, op, src })
+        }
+        "inc" | "dec" => {
+            if rhs.is_some() {
+                return None;
+            }
+            let op: BinOp = if mnemonic == "inc" {
+                BinOp::Add
+            } else {
+                BinOp::Sub
+            };
+            if is_mem_token(lhs) {
+                let addr: MemRef = parse_mem_access(lhs, None)?;
+                return Some(Stmt::MemRmw {
+                    addr,
+                    op: MemRmwOp::Bin {
+                        op,
+                        src: Source::Imm(1),
+                    },
+                });
+            }
+            let dest: RegRef = parse_reg(lhs)?;
+            Some(Stmt::BinAssign {
+                dest,
+                op,
+                src: Source::Imm(1),
+            })
+        }
+        "neg" | "not" => {
+            let op: UnOp = if mnemonic == "neg" {
+                UnOp::Neg
+            } else {
+                UnOp::Not
+            };
+            if is_mem_token(lhs) {
+                if rhs.is_some() {
+                    return None;
+                }
+                let addr: MemRef = parse_mem_access(lhs, None)?;
+                return Some(Stmt::MemRmw {
+                    addr,
+                    op: MemRmwOp::Un(op),
+                });
+            }
+            let dest: RegRef = parse_reg(lhs)?;
+            Some(Stmt::UnAssign { dest, op })
+        }
+        _ => None,
+    }
+}
+
+fn lift_double_shift(mnemonic: &str, operands: &str) -> Option<Stmt> {
+    let mut parts: std::str::Split<'_, char> = operands.split(',');
+    let dest_tok: &str = parts.next()?.trim();
+    let src_tok: &str = parts.next()?.trim();
+    let amount_tok: &str = parts.next()?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+    let dest: RegRef = parse_reg(dest_tok)?;
+    let src: RegRef = parse_reg(src_tok)?;
+    if dest.width != Width::W64 || src.width != Width::W64 {
+        return None;
+    }
+    let amount: i64 = parse_imm(amount_tok)?;
+    if !(1..=63).contains(&amount) {
+        return None;
+    }
+    let amount: u8 = u8::try_from(amount).ok()?;
+    Some(Stmt::DoubleShift {
+        dest,
+        src,
+        amount,
+        left: mnemonic == "shld",
+    })
+}
+
+fn lift_imul_ternary(operands: &str) -> Option<Stmt> {
+    let mut parts: std::str::Split<'_, char> = operands.split(',');
+    let dest_tok: &str = parts.next()?.trim();
+    let src_tok: &str = parts.next()?.trim();
+    let imm_tok: &str = parts.next()?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+    let dest: RegRef = parse_reg(dest_tok)?;
+    if !matches!(dest.width, Width::W32 | Width::W64) {
+        return None;
+    }
+    let imm: i64 = parse_imm(imm_tok)?;
+    let src: ExtSource = if is_mem_token(src_tok) {
+        let mem: MemRef = parse_mem_access(src_tok, Some(dest.width))?;
+        if mem.width != dest.width {
+            return None;
+        }
+        ExtSource::Mem(mem)
+    } else {
+        let reg: RegRef = parse_reg(src_tok)?;
+        if reg.width != dest.width {
+            return None;
+        }
+        ExtSource::Reg(reg)
+    };
+    Some(Stmt::MulImm { dest, src, imm })
+}
+
+fn parse_source(token: &str) -> Option<Source> {
+    if let Some(reg) = parse_reg(token) {
+        return Some(Source::Reg(reg));
+    }
+    parse_imm(token).map(Source::Imm)
+}
+
+fn parse_imm(token: &str) -> Option<i64> {
+    let t: &str = token.trim();
+    let (neg, body): (bool, &str) = t
+        .strip_prefix('-')
+        .map_or((false, t), |rest: &str| (true, rest.trim()));
+    let hex_body: Option<&str> = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+        .or_else(|| body.strip_suffix('h').or_else(|| body.strip_suffix('H')));
+    let value: i64 = if let Some(hex) = hex_body {
+        i64::from_str_radix(hex, 16)
+            .ok()
+            .or_else(|| u64::from_str_radix(hex, 16).ok().map(|u: u64| u as i64))?
+    } else {
+        body.parse::<i64>().ok()?
+    };
+    Some(if neg { -value } else { value })
+}
+
+fn parse_addr_terms(bracketed: &str) -> Option<AddrTerms> {
+    let inner: &str = bracketed
+        .trim()
+        .strip_prefix('[')?
+        .strip_suffix(']')?
+        .trim();
+    let mut base: Option<Reg> = None;
+    let mut index: Option<(Reg, u8)> = None;
+    let mut disp: i64 = 0;
+    let mut rest: String = inner.replace('-', "+-");
+    if rest.starts_with("+-") {
+        rest.remove(0);
+    }
+    for raw_term in rest.split('+') {
+        let term: &str = raw_term.trim();
+        if term.is_empty() {
+            continue;
+        }
+        if let Some((reg_tok, scale_tok)) = term.split_once('*') {
+            let reg: RegRef = parse_reg(reg_tok.trim())?;
+            if reg.width != Width::W64 {
+                return None;
+            }
+            let scale: u8 = scale_tok.trim().parse::<u8>().ok()?;
+            if !matches!(scale, 1 | 2 | 4 | 8) {
+                return None;
+            }
+            index = Some((reg.reg, scale));
+            continue;
+        }
+        if let Some(reg) = parse_reg(term) {
+            if reg.width != Width::W64 {
+                return None;
+            }
+            if base.is_none() {
+                base = Some(reg.reg);
+            } else if index.is_none() {
+                index = Some((reg.reg, 1));
+            } else {
+                return None;
+            }
+            continue;
+        }
+        disp = disp.checked_add(parse_imm(term)?)?;
+    }
+    Some((base, index, disp))
+}
+
+fn parse_mem(token: &str) -> Option<Source> {
+    let (base, index, disp): AddrTerms = parse_addr_terms(token)?;
+    Some(Source::Lea { base, index, disp })
+}
+
+fn size_keyword_width(keyword: &str) -> Option<Width> {
+    match keyword {
+        "byte" => Some(Width::W8),
+        "word" => Some(Width::W16),
+        "dword" => Some(Width::W32),
+        "qword" => Some(Width::W64),
+        _ => None,
+    }
+}
+
+fn is_mem_token(token: &str) -> bool {
+    let trimmed: &str = token.trim();
+    if trimmed.starts_with('[') {
+        return true;
+    }
+    trimmed
+        .split_once(char::is_whitespace)
+        .and_then(|(kw, rest): (&str, &str)| {
+            size_keyword_width(kw.trim()).map(|_| rest.trim().starts_with('['))
+        })
+        .unwrap_or(false)
+}
+
+fn parse_mem_access(token: &str, reg_width: Option<Width>) -> Option<MemRef> {
+    let trimmed: &str = token.trim();
+    let (width, bracketed): (Width, &str) = if trimmed.starts_with('[') {
+        (reg_width?, trimmed)
+    } else {
+        let (kw, rest): (&str, &str) = trimmed.split_once(char::is_whitespace)?;
+        let keyword_width: Width = size_keyword_width(kw.trim())?;
+        (keyword_width, rest.trim())
+    };
+    let (base, index, disp): AddrTerms = parse_addr_terms(bracketed)?;
+    if base.is_none() && index.is_none() {
+        return None;
+    }
+    Some(MemRef {
+        base,
+        index,
+        disp,
+        width,
+    })
+}
+
+fn reg_var(reg: Reg) -> String {
+    format!("r_{}", reg.canonical_c_name())
+}
+
+fn loop_cond_var(var: u32) -> String {
+    format!("loop_cond_{var}")
+}
+
+fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
+    for node in body {
+        match node {
+            Node::CondSnapshot { var, .. } => {
+                if !acc.contains(var) {
+                    acc.push(*var);
+                }
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_snapshot_vars(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_snapshot_vars(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => collect_snapshot_vars(body, acc),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_snapshot_vars(&case.body, acc);
+                }
+                collect_snapshot_vars(default, acc);
+            }
+            Node::Stmt(_) | Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn width_mask(out: &mut String, width: Width, body: &str) {
+    match width {
+        Width::W64 => {
+            let _ = write!(out, "{body}");
+        }
+        other => {
+            let _ = write!(out, "(({body}) & 0x{:x}ULL)", (1u128 << other.bits()) - 1);
+        }
+    }
+}
+
+fn addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(b) = base {
+        parts.push(reg_var(b));
+    }
+    if let Some((i, scale)) = index {
+        parts.push(format!("({} * {scale}ULL)", reg_var(i)));
+    }
+    if disp != 0 || parts.is_empty() {
+        parts.push(format!("(uint64_t)(int64_t){disp}LL"));
+    }
+    parts.join(" + ")
+}
+
+fn deref_expr(mem: &MemRef) -> String {
+    let addr: String = addr_expr(mem.base, mem.index, mem.disp);
+    let ty: &str = match mem.width {
+        Width::W8 => "uint8_t",
+        Width::W16 => "uint16_t",
+        Width::W32 => "uint32_t",
+        Width::W64 => "uint64_t",
+    };
+    format!("(*({ty}*)(uintptr_t)({addr}))")
+}
+
+fn call_name(target: u64) -> String {
+    format!("callee_{target:x}")
+}
+
+fn abi_arg_sig(abi: Abi) -> String {
+    vec!["uint64_t"; abi.arg_order().len()].join(", ")
+}
+
+fn call_expr(target: u64, abi: Abi) -> String {
+    let args: String = abi
+        .arg_order()
+        .iter()
+        .map(|r: &Reg| reg_var(*r))
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("{}({args})", call_name(target))
+}
+
+fn source_expr(src: &Source, width: Width) -> String {
+    match src {
+        Source::Reg(r) => {
+            if r.width == width || width == Width::W64 {
+                reg_var(r.reg)
+            } else {
+                let mask: u128 = (1u128 << r.width.bits()) - 1;
+                format!("({} & 0x{mask:x}ULL)", reg_var(r.reg))
+            }
+        }
+        Source::Imm(value) => format!("(uint64_t)(int64_t){value}LL"),
+        Source::Lea { base, index, disp } => addr_expr(*base, *index, *disp),
+        Source::Mem(mem) => format!("(uint64_t){}", deref_expr(mem)),
+    }
+}
+
+fn emit_fp_helpers(out: &mut String) {
+    let _ = writeln!(out, "#include <string.h>");
+    let _ = writeln!(
+        out,
+        "static inline double fp_d_from_bits(uint64_t b){{ double v; memcpy(&v,&b,8); return v; }}"
+    );
+    let _ = writeln!(
+        out,
+        "static inline uint64_t fp_d_to_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}"
+    );
+    let _ = writeln!(
+        out,
+        "static inline float fp_f_from_bits(uint32_t b){{ float v; memcpy(&v,&b,4); return v; }}"
+    );
+    let _ = writeln!(
+        out,
+        "static inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}"
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FramePlan {
+    base: Reg,
+    size: usize,
+    base_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrameScan {
+    frame_base: Option<Reg>,
+    rbp_is_frame: bool,
+}
+
+impl FrameScan {
+    fn is_stack_reg(self, reg: Reg) -> bool {
+        reg == Reg::Rsp || (self.rbp_is_frame && reg == Reg::Rbp)
+    }
+
+    fn note_reg(self, reg: Reg, misuse: &mut bool) {
+        if self.is_stack_reg(reg) {
+            *misuse = true;
+        }
+    }
+
+    fn note_mem(self, mem: &MemRef, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+        if let Some((idx, _)) = mem.index
+            && self.is_stack_reg(idx)
+        {
+            *misuse = true;
+        }
+        match mem.base {
+            Some(b) if Some(b) == self.frame_base => {
+                if mem.index.is_some() {
+                    *misuse = true;
+                } else {
+                    slots.push((mem.disp, mem.width));
+                }
+            }
+            Some(b) if self.is_stack_reg(b) => *misuse = true,
+            _ => {}
+        }
+    }
+
+    fn note_source(self, src: &Source, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+        match src {
+            Source::Reg(r) => self.note_reg(r.reg, misuse),
+            Source::Imm(_) => {}
+            Source::Lea { base, index, .. } => {
+                if base.is_some_and(|b: Reg| self.is_stack_reg(b))
+                    || index.is_some_and(|(i, _): (Reg, u8)| self.is_stack_reg(i))
+                {
+                    *misuse = true;
+                }
+            }
+            Source::Mem(mem) => self.note_mem(mem, slots, misuse),
+        }
+    }
+
+    fn note_fp(self, op: &FpOperand, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+        if let FpOperand::Mem(mem) = op {
+            self.note_mem(mem, slots, misuse);
+        }
+    }
+
+    fn note_flags(self, flags: &Flags, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+        match flags {
+            Flags::Cmp { lhs, rhs } => {
+                self.note_reg(lhs.reg, misuse);
+                self.note_source(rhs, slots, misuse);
+            }
+            Flags::CmpMem { lhs, rhs } => {
+                self.note_mem(lhs, slots, misuse);
+                self.note_reg(rhs.reg, misuse);
+            }
+            Flags::Test { operand } | Flags::TestImm { operand, .. } => {
+                self.note_reg(operand.reg, misuse);
+            }
+            Flags::Sign { result } => self.note_reg(result.reg, misuse),
+            Flags::FpCmp { rhs, .. } => self.note_fp(rhs, slots, misuse),
+        }
+    }
+
+    fn note_stmt(self, stmt: &Stmt, slots: &mut Vec<(i64, Width)>, misuse: &mut bool) {
+        match stmt {
+            Stmt::Assign { dest, src } | Stmt::BinAssign { dest, src, .. } => {
+                self.note_reg(dest.reg, misuse);
+                self.note_source(src, slots, misuse);
+            }
+            Stmt::UnAssign { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::Cond {
+                dest, src, flags, ..
+            } => {
+                self.note_reg(dest.reg, misuse);
+                self.note_source(src, slots, misuse);
+                self.note_flags(flags, slots, misuse);
+            }
+            Stmt::SetCc { dest, flags, .. } => {
+                self.note_reg(dest.reg, misuse);
+                self.note_flags(flags, slots, misuse);
+            }
+            Stmt::Store { addr, src } => {
+                self.note_mem(addr, slots, misuse);
+                self.note_source(src, slots, misuse);
+            }
+            Stmt::MemRmw { addr, op } => {
+                self.note_mem(addr, slots, misuse);
+                if let Some(src) = op.source() {
+                    self.note_source(src, slots, misuse);
+                }
+            }
+            Stmt::Extend { dest, src, .. } => {
+                self.note_reg(dest.reg, misuse);
+                match src {
+                    ExtSource::Reg(r) => self.note_reg(r.reg, misuse),
+                    ExtSource::Mem(mem) => self.note_mem(mem, slots, misuse),
+                }
+            }
+            Stmt::MulImm { dest, src, .. } => {
+                self.note_reg(dest.reg, misuse);
+                match src {
+                    ExtSource::Reg(r) => self.note_reg(r.reg, misuse),
+                    ExtSource::Mem(mem) => self.note_mem(mem, slots, misuse),
+                }
+            }
+            Stmt::WideMul { src } => self.note_reg(src.reg, misuse),
+            Stmt::Divide { divisor, .. } => self.note_reg(divisor.reg, misuse),
+            Stmt::DoubleShift { dest, src, .. } => {
+                self.note_reg(dest.reg, misuse);
+                self.note_reg(src.reg, misuse);
+            }
+            Stmt::IntToFp { src, .. } => self.note_reg(src.reg, misuse),
+            Stmt::FpToInt { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::GprToXmm { src, .. } => self.note_reg(src.reg, misuse),
+            Stmt::XmmToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::FpBin { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Stmt::FpMov { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpSqrt { src, .. } => self.note_fp(src, slots, misuse),
+            Stmt::FpMinMax { rhs, .. } => self.note_fp(rhs, slots, misuse),
+            Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
+            Stmt::FpConvert { .. }
+            | Stmt::BlockMove { .. }
+            | Stmt::BlockFill { .. }
+            | Stmt::Call { .. } => {}
+        }
+    }
+}
+
+fn scan_frame_block(
+    ctx: FrameScan,
+    body: &Block,
+    slots: &mut Vec<(i64, Width)>,
+    misuse: &mut bool,
+) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => ctx.note_stmt(stmt, slots, misuse),
+            Node::If {
+                flags,
+                then_body,
+                else_body,
+                ..
+            } => {
+                ctx.note_flags(flags, slots, misuse);
+                scan_frame_block(ctx, then_body, slots, misuse);
+                if let Some(else_b) = else_body {
+                    scan_frame_block(ctx, else_b, slots, misuse);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                scan_frame_block(ctx, body, slots, misuse);
+                if let LoopCond::Direct { flags, .. } = cond {
+                    ctx.note_flags(flags, slots, misuse);
+                }
+            }
+            Node::While { body } => scan_frame_block(ctx, body, slots, misuse),
+            Node::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                ctx.note_reg(disc.reg, misuse);
+                for case in cases {
+                    scan_frame_block(ctx, &case.body, slots, misuse);
+                }
+                scan_frame_block(ctx, default, slots, misuse);
+            }
+            Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, slots, misuse),
+            Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
+    let ctx: FrameScan = FrameScan {
+        frame_base: shape.base,
+        rbp_is_frame: shape.rbp_is_frame,
+    };
+    let mut slots: Vec<(i64, Width)> = Vec::new();
+    let mut misuse: bool = false;
+    scan_frame_block(ctx, body, &mut slots, &mut misuse);
+    if misuse {
+        return Err(Error::LlvmIr(
+            "stack-frame register escapes a fixed-offset slot access (address-taken, dynamic, aliased, or used as a value); not a modelable spill frame".to_owned(),
+        ));
+    }
+    if slots.is_empty() {
+        return Ok(None);
+    }
+    let Some(base): Option<Reg> = shape.base else {
+        return Err(Error::LlvmIr(
+            "stack slots referenced without a provably constant frame base".to_owned(),
+        ));
+    };
+    if base == Reg::Rbp
+        && slots
+            .iter()
+            .any(|(disp, _): &(i64, Width)| (0..16).contains(disp))
+    {
+        return Err(Error::LlvmIr(
+            "access into the saved-frame-pointer/return-address region is not a data slot"
+                .to_owned(),
+        ));
+    }
+    let lo: i64 = slots
+        .iter()
+        .map(|(d, _): &(i64, Width)| *d)
+        .min()
+        .unwrap_or(0)
+        .min(0);
+    let hi: i64 = slots
+        .iter()
+        .map(|(d, w): &(i64, Width)| d + i64::from(w.bits() / 8))
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let size: usize = usize::try_from(hi - lo)
+        .map_err(|_| Error::LlvmIr("stack frame size overflow".to_owned()))?;
+    let base_offset: usize = usize::try_from(-lo)
+        .map_err(|_| Error::LlvmIr("stack frame base offset overflow".to_owned()))?;
+    Ok(Some(FramePlan {
+        base,
+        size,
+        base_offset,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SretPlan {
+    ptr: Reg,
+    fields: Vec<(i64, Width)>,
+    size: usize,
+}
+
+const fn sret_ptr_reg(abi: Abi) -> Reg {
+    match abi {
+        Abi::SysV => Reg::Rdi,
+        Abi::MsX64 => Reg::Rcx,
+    }
+}
+
+const fn sret_min_memory_class(abi: Abi) -> usize {
+    match abi {
+        Abi::SysV => 16,
+        Abi::MsX64 => 8,
+    }
+}
+
+const fn width_c_uint(width: Width) -> &'static str {
+    match width {
+        Width::W8 => "uint8_t",
+        Width::W16 => "uint16_t",
+        Width::W32 => "uint32_t",
+        Width::W64 => "uint64_t",
+    }
+}
+
+fn assign_is_pointer_copy(
+    dest: RegRef,
+    src: &Source,
+    alias: &std::collections::BTreeSet<Reg>,
+) -> bool {
+    if dest.width != Width::W64 {
+        return false;
+    }
+    match src {
+        Source::Reg(r) => r.width == Width::W64 && alias.contains(&r.reg),
+        Source::Lea {
+            base: Some(b),
+            index: None,
+            disp: 0,
+        } => alias.contains(b),
+        _ => false,
+    }
+}
+
+fn mem_reads_alias(mem: &MemRef, alias: &std::collections::BTreeSet<Reg>) -> bool {
+    mem.base.is_some_and(|b: Reg| alias.contains(&b))
+        || mem
+            .index
+            .is_some_and(|(i, _): (Reg, u8)| alias.contains(&i))
+}
+
+fn source_reads_alias(src: &Source, alias: &std::collections::BTreeSet<Reg>) -> bool {
+    match src {
+        Source::Reg(r) => alias.contains(&r.reg),
+        Source::Imm(_) => false,
+        Source::Lea { base, index, .. } => {
+            base.is_some_and(|b: Reg| alias.contains(&b))
+                || index.is_some_and(|(i, _): (Reg, u8)| alias.contains(&i))
+        }
+        Source::Mem(mem) => mem_reads_alias(mem, alias),
+    }
+}
+
+fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
+    match stmt {
+        Stmt::Assign { src, .. } => source_regs(src, acc),
+        Stmt::BinAssign { dest, src, .. } => {
+            acc.push(dest.reg);
+            source_regs(src, acc);
+        }
+        Stmt::UnAssign { dest, .. } => acc.push(dest.reg),
+        Stmt::Cond {
+            dest, src, flags, ..
+        } => {
+            acc.push(dest.reg);
+            source_regs(src, acc);
+            acc.extend(flag_operand_regs(flags));
+        }
+        Stmt::SetCc { dest, flags, .. } => {
+            acc.push(dest.reg);
+            acc.extend(flag_operand_regs(flags));
+        }
+        Stmt::Store { addr, src } => {
+            mem_regs(addr, acc);
+            source_regs(src, acc);
+        }
+        Stmt::MemRmw { addr, op } => {
+            mem_regs(addr, acc);
+            if let Some(src) = op.source() {
+                source_regs(src, acc);
+            }
+        }
+        Stmt::Extend { src, .. } => match src {
+            ExtSource::Reg(r) => acc.push(r.reg),
+            ExtSource::Mem(mem) => mem_regs(mem, acc),
+        },
+        Stmt::MulImm { src, .. } => match src {
+            ExtSource::Reg(r) => acc.push(r.reg),
+            ExtSource::Mem(mem) => mem_regs(mem, acc),
+        },
+        Stmt::WideMul { src } => {
+            acc.push(Reg::Rax);
+            acc.push(src.reg);
+        }
+        Stmt::Divide { divisor, .. } => {
+            acc.push(Reg::Rax);
+            acc.push(Reg::Rdx);
+            acc.push(divisor.reg);
+        }
+        Stmt::DoubleShift { dest, src, .. } => {
+            acc.push(dest.reg);
+            acc.push(src.reg);
+        }
+        Stmt::IntToFp { src, .. } | Stmt::GprToXmm { src, .. } => acc.push(src.reg),
+        Stmt::FpToInt { .. } | Stmt::XmmToGpr { .. } | Stmt::FpConvert { .. } => {}
+        Stmt::FpBin { rhs, .. } | Stmt::FpMinMax { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                mem_regs(mem, acc);
+            }
+        }
+        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } => {
+            if let FpOperand::Mem(mem) = src {
+                mem_regs(mem, acc);
+            }
+        }
+        Stmt::FpStore { addr, .. } => mem_regs(addr, acc),
+        Stmt::BlockMove { .. } => {
+            acc.push(Reg::Rdi);
+            acc.push(Reg::Rsi);
+            acc.push(Reg::Rcx);
+        }
+        Stmt::BlockFill { .. } => {
+            acc.push(Reg::Rdi);
+            acc.push(Reg::Rax);
+            acc.push(Reg::Rcx);
+        }
+        Stmt::Call { .. } => {
+            acc.extend_from_slice(&[Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9]);
+        }
+    }
+}
+
+fn stmt_reads_alias(stmt: &Stmt, alias: &std::collections::BTreeSet<Reg>) -> bool {
+    let mut regs: Vec<Reg> = Vec::new();
+    stmt_value_reads(stmt, &mut regs);
+    regs.iter().any(|r: &Reg| alias.contains(r))
+}
+
+fn stmt_gpr_dests(stmt: &Stmt) -> Vec<Reg> {
+    match stmt {
+        Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::Cond { dest, .. }
+        | Stmt::SetCc { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. } => vec![dest.reg],
+        Stmt::WideMul { .. } | Stmt::Divide { .. } => vec![Reg::Rax, Reg::Rdx],
+        Stmt::BlockMove { .. } => vec![Reg::Rdi, Reg::Rsi, Reg::Rcx],
+        Stmt::BlockFill { .. } => vec![Reg::Rdi, Reg::Rcx],
+        Stmt::Call { .. } => vec![Reg::Rax],
+        _ => Vec::new(),
+    }
+}
+
+fn tile_sret_fields(raw: &[(i64, Width)]) -> Option<Vec<(i64, Width)>> {
+    if raw.is_empty() {
+        return None;
+    }
+    let mut by_offset: BTreeMap<i64, Width> = BTreeMap::new();
+    for &(disp, width) in raw {
+        if disp < 0 {
+            return None;
+        }
+        match by_offset.get(&disp) {
+            Some(prev) if *prev != width => return None,
+            _ => {
+                by_offset.insert(disp, width);
+            }
+        }
+    }
+    let mut expect: i64 = 0;
+    let mut fields: Vec<(i64, Width)> = Vec::with_capacity(by_offset.len());
+    for (&disp, &width) in &by_offset {
+        if disp != expect {
+            return None;
+        }
+        let bytes: i64 = i64::from(width.bits() / 8);
+        if disp % bytes != 0 {
+            return None;
+        }
+        expect = disp.checked_add(bytes)?;
+        fields.push((disp, width));
+    }
+    let max_bytes: i64 = fields
+        .iter()
+        .map(|(_, w): &(i64, Width)| i64::from(w.bits() / 8))
+        .max()?;
+    if expect % max_bytes != 0 {
+        return None;
+    }
+    Some(fields)
+}
+
+fn detect_sret(body: &Block, abi: Abi) -> Option<SretPlan> {
+    let stmts: Vec<&Stmt> = body
+        .iter()
+        .map(|node: &Node| match node {
+            Node::Stmt(stmt) => Some(stmt),
+            _ => None,
+        })
+        .collect::<Option<Vec<&Stmt>>>()?;
+    let ptr: Reg = sret_ptr_reg(abi);
+    let mut alias: std::collections::BTreeSet<Reg> = std::collections::BTreeSet::new();
+    alias.insert(ptr);
+    let mut raw_fields: Vec<(i64, Width)> = Vec::new();
+    for stmt in &stmts {
+        match stmt {
+            Stmt::Store { addr, src } => {
+                if source_reads_alias(src, &alias) {
+                    return None;
+                }
+                if addr.base.is_some_and(|b: Reg| alias.contains(&b)) {
+                    if addr.index.is_some() {
+                        return None;
+                    }
+                    raw_fields.push((addr.disp, addr.width));
+                } else if mem_reads_alias(addr, &alias) {
+                    return None;
+                }
+            }
+            Stmt::Assign { dest, src } => {
+                if assign_is_pointer_copy(*dest, src, &alias) {
+                    alias.insert(dest.reg);
+                } else {
+                    if source_reads_alias(src, &alias) {
+                        return None;
+                    }
+                    alias.remove(&dest.reg);
+                }
+            }
+            other => {
+                if matches!(other, Stmt::Call { .. }) || stmt_reads_alias(other, &alias) {
+                    return None;
+                }
+                for dest in stmt_gpr_dests(other) {
+                    alias.remove(&dest);
+                }
+            }
+        }
+    }
+    if !alias.contains(&Reg::Rax) {
+        return None;
+    }
+    let fields: Vec<(i64, Width)> = tile_sret_fields(&raw_fields)?;
+    let last: &(i64, Width) = fields.last()?;
+    let size: usize = usize::try_from(last.0 + i64::from(last.1.bits() / 8)).ok()?;
+    if size <= sret_min_memory_class(abi) {
+        return None;
+    }
+    Some(SretPlan { ptr, fields, size })
+}
+
+fn emit_c(
+    body: &Block,
+    signature: &FnSignature,
+    abi: Abi,
+    frame: Option<&FramePlan>,
+    sret: Option<&SretPlan>,
+) -> String {
+    let mut out: String = String::new();
+    let _ = writeln!(out, "#include <stdint.h>");
+    let uses_fp: bool = !signature.fp.is_empty() || matches!(signature.ret, FnReturn::Fp(_)) || {
+        let mut probe: Vec<Xmm> = Vec::new();
+        collect_block_xmm(body, &mut probe);
+        !probe.is_empty()
+    };
+    if uses_fp {
+        emit_fp_helpers(&mut out);
+    } else if block_string_ops_present(body) {
+        let _ = writeln!(out, "#include <string.h>");
+    }
+    let mut targets: Vec<u64> = Vec::new();
+    collect_call_targets(body, &mut targets);
+    targets.sort_unstable();
+    targets.dedup();
+    for target in &targets {
+        let _ = writeln!(
+            out,
+            "extern uint64_t {}({});",
+            call_name(*target),
+            abi_arg_sig(abi)
+        );
+    }
+
+    let param_types: Vec<ScalarType> = signature.ordered_param_types();
+    let params_sig: String = if param_types.is_empty() {
+        "void".to_owned()
+    } else {
+        param_types
+            .iter()
+            .enumerate()
+            .map(|(i, ty): (usize, &ScalarType)| match ty {
+                ScalarType::Int => format!("uint64_t a{i}"),
+                ScalarType::Double => format!("double a{i}"),
+                ScalarType::Float => format!("float a{i}"),
+            })
+            .collect::<Vec<String>>()
+            .join(", ")
+    };
+    if let Some(plan) = sret {
+        let _ = writeln!(out, "typedef struct {{");
+        for (i, (_, width)) in plan.fields.iter().enumerate() {
+            let _ = writeln!(out, "    {} f{i};", width_c_uint(*width));
+        }
+        let _ = writeln!(out, "}} recovered_sret_t;");
+    }
+    let return_type: &str = match (sret, signature.ret) {
+        (Some(_), _) => "recovered_sret_t",
+        (None, FnReturn::Int(_)) => "uint64_t",
+        (None, FnReturn::Fp(width)) => width.c_type(),
+    };
+    let _ = writeln!(out, "{return_type} recovered({params_sig}) {{");
+    if sret.is_some() {
+        let _ = writeln!(out, "    recovered_sret_t __sret;");
+    }
+    if let Some(plan) = frame {
+        let _ = writeln!(
+            out,
+            "    _Alignas(16) unsigned char stack_frame[{}];",
+            plan.size
+        );
+    }
+
+    let mut touched_gp: Vec<Reg> = Vec::new();
+    collect_block_regs(body, &mut touched_gp);
+    if !matches!(signature.ret, FnReturn::Fp(_)) && !touched_gp.contains(&Reg::Rax) {
+        touched_gp.push(Reg::Rax);
+    }
+    let mut touched_xmm: Vec<Xmm> = Vec::new();
+    collect_block_xmm(body, &mut touched_xmm);
+    if matches!(signature.ret, FnReturn::Fp(_)) && !touched_xmm.contains(&Xmm::Xmm0) {
+        touched_xmm.push(Xmm::Xmm0);
+    }
+
+    let mut declared_gp: Vec<Reg> = Vec::new();
+    let mut declared_xmm: Vec<Xmm> = Vec::new();
+    for (i, ty) in param_types.iter().enumerate() {
+        match ty {
+            ScalarType::Int => {
+                let index: usize = declared_gp.len();
+                let reg: Reg = signature.int[index];
+                let _ = writeln!(out, "    uint64_t {} = a{i};", reg_var(reg));
+                declared_gp.push(reg);
+            }
+            ScalarType::Double | ScalarType::Float => {
+                let index: usize = declared_xmm.len();
+                let (xmm, width): (Xmm, FpWidth) = signature.fp[index];
+                let _ = writeln!(
+                    out,
+                    "    uint64_t {} = {};",
+                    xmm_var(xmm),
+                    fp_store_expr(&format!("a{i}"), width)
+                );
+                declared_xmm.push(xmm);
+            }
+        }
+    }
+    for reg in &touched_gp {
+        if !declared_gp.contains(reg) {
+            let init: String = match (sret, frame) {
+                (Some(plan), _) if plan.ptr == *reg => "(uint64_t)(uintptr_t)&__sret".to_owned(),
+                (_, Some(plan)) if plan.base == *reg => {
+                    format!("(uint64_t)(uintptr_t)(stack_frame + {})", plan.base_offset)
+                }
+                _ => "0".to_owned(),
+            };
+            let _ = writeln!(out, "    uint64_t {} = {init};", reg_var(*reg));
+            declared_gp.push(*reg);
+        }
+    }
+    for xmm in &touched_xmm {
+        if !declared_xmm.contains(xmm) {
+            let _ = writeln!(out, "    uint64_t {} = 0;", xmm_var(*xmm));
+            declared_xmm.push(*xmm);
+        }
+    }
+    let mut snapshot_vars: Vec<u32> = Vec::new();
+    collect_snapshot_vars(body, &mut snapshot_vars);
+    for var in &snapshot_vars {
+        let _ = writeln!(out, "    uint64_t {} = 0;", loop_cond_var(*var));
+    }
+
+    emit_block(&mut out, body, 1, abi);
+
+    if sret.is_some() {
+        let _ = writeln!(out, "    return __sret;");
+    } else {
+        match signature.ret {
+            FnReturn::Int(return_width) => {
+                let ret_body: String = reg_var(Reg::Rax);
+                let _ = write!(out, "    return ");
+                width_mask(&mut out, return_width, &ret_body);
+                let _ = writeln!(out, ";");
+            }
+            FnReturn::Fp(width) => {
+                let _ = writeln!(
+                    out,
+                    "    return {};",
+                    fp_load(&FpOperand::Xmm(Xmm::Xmm0), width)
+                );
+            }
+        }
+    }
+    let _ = writeln!(out, "}}");
+    out
+}
+
+fn block_string_ops_present(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::Stmt(stmt) => matches!(stmt, Stmt::BlockMove { .. } | Stmt::BlockFill { .. }),
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_string_ops_present(then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|b: &Block| block_string_ops_present(b))
+        }
+        Node::DoWhile { body, .. } | Node::While { body } => block_string_ops_present(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|c: &SwitchCase| block_string_ops_present(&c.body))
+                || block_string_ops_present(default)
+        }
+        Node::CondSnapshot { .. } | Node::Break | Node::Continue => false,
+    })
+}
+
+fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
+    let push = |reg: Reg, acc: &mut Vec<Reg>| {
+        if !acc.contains(&reg) {
+            acc.push(reg);
+        }
+    };
+    let push_addr = |mem: &MemRef, acc: &mut Vec<Reg>| {
+        if let Some(b) = mem.base {
+            push(b, acc);
+        }
+        if let Some((i, _)) = mem.index {
+            push(i, acc);
+        }
+    };
+    let push_src = |src: &Source, acc: &mut Vec<Reg>| match src {
+        Source::Reg(r) => push(r.reg, acc),
+        Source::Mem(mem) => push_addr(mem, acc),
+        Source::Lea { base, index, .. } => {
+            if let Some(b) = base {
+                push(*b, acc);
+            }
+            if let Some((i, _)) = index {
+                push(*i, acc);
+            }
+        }
+        Source::Imm(_) => {}
+    };
+    let push_flags = |flags: &Flags, acc: &mut Vec<Reg>| match flags {
+        Flags::Cmp { lhs, rhs } => {
+            push(lhs.reg, acc);
+            push_src(rhs, acc);
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            push_addr(lhs, acc);
+            push(rhs.reg, acc);
+        }
+        Flags::Test { operand } | Flags::TestImm { operand, .. } => push(operand.reg, acc),
+        Flags::Sign { result } => push(result.reg, acc),
+        Flags::FpCmp { rhs, .. } => {
+            if let FpOperand::Mem(mem) = rhs {
+                push_addr(mem, acc);
+            }
+        }
+    };
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => match stmt {
+                Stmt::Assign { dest, src } | Stmt::BinAssign { dest, src, .. } => {
+                    push(dest.reg, acc);
+                    push_src(src, acc);
+                }
+                Stmt::UnAssign { dest, .. } => push(dest.reg, acc),
+                Stmt::Cond {
+                    dest, src, flags, ..
+                } => {
+                    push(dest.reg, acc);
+                    push_src(src, acc);
+                    push_flags(flags, acc);
+                }
+                Stmt::SetCc { dest, flags, .. } => {
+                    push(dest.reg, acc);
+                    push_flags(flags, acc);
+                }
+                Stmt::Store { addr, src } => {
+                    push_addr(addr, acc);
+                    push_src(src, acc);
+                }
+                Stmt::MemRmw { addr, op } => {
+                    push_addr(addr, acc);
+                    if let Some(src) = op.source() {
+                        push_src(src, acc);
+                    }
+                }
+                Stmt::Extend { dest, src, .. } => {
+                    push(dest.reg, acc);
+                    match src {
+                        ExtSource::Reg(r) => push(r.reg, acc),
+                        ExtSource::Mem(mem) => push_addr(mem, acc),
+                    }
+                }
+                Stmt::MulImm { dest, src, .. } => {
+                    push(dest.reg, acc);
+                    match src {
+                        ExtSource::Reg(r) => push(r.reg, acc),
+                        ExtSource::Mem(mem) => push_addr(mem, acc),
+                    }
+                }
+                Stmt::WideMul { src } => {
+                    push(Reg::Rax, acc);
+                    push(Reg::Rdx, acc);
+                    push(src.reg, acc);
+                }
+                Stmt::Divide { divisor, .. } => {
+                    push(Reg::Rax, acc);
+                    push(Reg::Rdx, acc);
+                    push(divisor.reg, acc);
+                }
+                Stmt::DoubleShift { dest, src, .. } => {
+                    push(dest.reg, acc);
+                    push(src.reg, acc);
+                }
+                Stmt::BlockMove { .. } => {
+                    push(Reg::Rdi, acc);
+                    push(Reg::Rsi, acc);
+                    push(Reg::Rcx, acc);
+                }
+                Stmt::BlockFill { .. } => {
+                    push(Reg::Rdi, acc);
+                    push(Reg::Rax, acc);
+                    push(Reg::Rcx, acc);
+                }
+                Stmt::IntToFp { src, .. } => push(src.reg, acc),
+                Stmt::FpToInt { dest, .. } => push(dest.reg, acc),
+                Stmt::FpBin { rhs, .. } => {
+                    if let FpOperand::Mem(mem) = rhs {
+                        push_addr(mem, acc);
+                    }
+                }
+                Stmt::FpMov { src, .. } => {
+                    if let FpOperand::Mem(mem) = src {
+                        push_addr(mem, acc);
+                    }
+                }
+                Stmt::FpStore { addr, .. } => push_addr(addr, acc),
+                Stmt::FpMinMax { rhs, .. } => {
+                    if let FpOperand::Mem(mem) = rhs {
+                        push_addr(mem, acc);
+                    }
+                }
+                Stmt::FpSqrt { src, .. } => {
+                    if let FpOperand::Mem(mem) = src {
+                        push_addr(mem, acc);
+                    }
+                }
+                Stmt::GprToXmm { src, .. } => push(src.reg, acc),
+                Stmt::XmmToGpr { dest, .. } => push(dest.reg, acc),
+                Stmt::FpConvert { .. } => {}
+                Stmt::Call { .. } => push(Reg::Rax, acc),
+            },
+            Node::If {
+                flags,
+                then_body,
+                else_body,
+                ..
+            } => {
+                push_flags(flags, acc);
+                collect_block_regs(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_block_regs(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                collect_block_regs(body, acc);
+                if let LoopCond::Direct { flags, .. } = cond {
+                    push_flags(flags, acc);
+                }
+            }
+            Node::While { body } => collect_block_regs(body, acc),
+            Node::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                push(disc.reg, acc);
+                for case in cases {
+                    collect_block_regs(&case.body, acc);
+                }
+                collect_block_regs(default, acc);
+            }
+            Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
+            Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
+    let push = |xmm: Xmm, acc: &mut Vec<Xmm>| {
+        if !acc.contains(&xmm) {
+            acc.push(xmm);
+        }
+    };
+    let push_operand = |operand: &FpOperand, acc: &mut Vec<Xmm>| {
+        if let FpOperand::Xmm(x) = operand {
+            push(*x, acc);
+        }
+    };
+    let push_flags = |flags: &Flags, acc: &mut Vec<Xmm>| {
+        if let Flags::FpCmp { lhs, rhs, .. } = flags {
+            push(*lhs, acc);
+            push_operand(rhs, acc);
+        }
+    };
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => match stmt {
+                Stmt::FpBin { dest, rhs, .. } => {
+                    push(*dest, acc);
+                    push_operand(rhs, acc);
+                }
+                Stmt::FpMov { dest, src, .. } => {
+                    push(*dest, acc);
+                    push_operand(src, acc);
+                }
+                Stmt::FpStore { src, .. } => push(*src, acc),
+                Stmt::IntToFp { dest, .. } => push(*dest, acc),
+                Stmt::FpToInt { src, .. } => push(*src, acc),
+                Stmt::FpConvert { dest, src, .. } => {
+                    push(*dest, acc);
+                    push(*src, acc);
+                }
+                Stmt::FpMinMax { dest, rhs, .. } => {
+                    push(*dest, acc);
+                    push_operand(rhs, acc);
+                }
+                Stmt::FpSqrt { dest, src, .. } => {
+                    push(*dest, acc);
+                    push_operand(src, acc);
+                }
+                Stmt::GprToXmm { dest, .. } => push(*dest, acc),
+                Stmt::XmmToGpr { src, .. } => push(*src, acc),
+                Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } => push_flags(flags, acc),
+                Stmt::Assign { .. }
+                | Stmt::BinAssign { .. }
+                | Stmt::UnAssign { .. }
+                | Stmt::Store { .. }
+                | Stmt::MemRmw { .. }
+                | Stmt::Extend { .. }
+                | Stmt::MulImm { .. }
+                | Stmt::WideMul { .. }
+                | Stmt::Divide { .. }
+                | Stmt::DoubleShift { .. }
+                | Stmt::BlockMove { .. }
+                | Stmt::BlockFill { .. }
+                | Stmt::Call { .. } => {}
+            },
+            Node::If {
+                flags,
+                then_body,
+                else_body,
+                ..
+            } => {
+                push_flags(flags, acc);
+                collect_block_xmm(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_block_xmm(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                collect_block_xmm(body, acc);
+                if let LoopCond::Direct { flags, .. } = cond {
+                    push_flags(flags, acc);
+                }
+            }
+            Node::While { body } => collect_block_xmm(body, acc),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_block_xmm(&case.body, acc);
+                }
+                collect_block_xmm(default, acc);
+            }
+            Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
+            Node::Break | Node::Continue => {}
+        }
+    }
+}
+
+fn emit_block(out: &mut String, body: &Block, depth: usize, abi: Abi) {
+    let indent: String = "    ".repeat(depth);
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => emit_stmt(out, stmt, &indent, abi),
+            Node::If {
+                cond,
+                flags,
+                then_body,
+                else_body,
+            } => {
+                let cond_text: String = cond_expr(*cond, flags);
+                let _ = writeln!(out, "{indent}if ({cond_text}) {{");
+                emit_block(out, then_body, depth + 1, abi);
+                if let Some(else_b) = else_body {
+                    let _ = writeln!(out, "{indent}}} else {{");
+                    emit_block(out, else_b, depth + 1, abi);
+                }
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::DoWhile { body, cond } => {
+                let cond_text: String = match cond {
+                    LoopCond::Direct { cond, flags } => cond_expr(*cond, flags),
+                    LoopCond::Snapshot { var } => loop_cond_var(*var),
+                };
+                let _ = writeln!(out, "{indent}do {{");
+                emit_block(out, body, depth + 1, abi);
+                let _ = writeln!(out, "{indent}}} while ({cond_text});");
+            }
+            Node::While { body } => {
+                let _ = writeln!(out, "{indent}while (1) {{");
+                emit_block(out, body, depth + 1, abi);
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::Switch {
+                disc,
+                cases,
+                default,
+            } => {
+                let key: String = source_expr(&Source::Reg(*disc), disc.width);
+                let _ = writeln!(out, "{indent}switch ({key}) {{");
+                for case in cases {
+                    let _ = writeln!(out, "{indent}    case {}: {{", case.value);
+                    emit_block(out, &case.body, depth + 2, abi);
+                    if !case.fallthrough {
+                        let _ = writeln!(out, "{indent}        break;");
+                    }
+                    let _ = writeln!(out, "{indent}    }}");
+                }
+                let _ = writeln!(out, "{indent}    default: {{");
+                emit_block(out, default, depth + 2, abi);
+                let _ = writeln!(out, "{indent}        break;");
+                let _ = writeln!(out, "{indent}    }}");
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::CondSnapshot { var, cond, flags } => {
+                let cond_text: String = cond_expr(*cond, flags);
+                let _ = writeln!(out, "{indent}{} = ({cond_text});", loop_cond_var(*var));
+            }
+            Node::Break => {
+                let _ = writeln!(out, "{indent}break;");
+            }
+            Node::Continue => {
+                let _ = writeln!(out, "{indent}continue;");
+            }
+        }
+    }
+}
+
+fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str, abi: Abi) {
+    match stmt {
+        Stmt::Assign { dest, src } => {
+            let body: String = source_expr(src, dest.width);
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::BinAssign { dest, op, src } => {
+            let rhs: String = source_expr(src, dest.width);
+            let body: String = bin_expr(*op, &reg_var(dest.reg), &rhs, dest.width);
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::UnAssign { dest, op } => {
+            let body: String = match op {
+                UnOp::Neg => format!("(uint64_t)(-(int64_t){})", reg_var(dest.reg)),
+                UnOp::Not => format!("(~{})", reg_var(dest.reg)),
+            };
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::Cond {
+            dest,
+            src,
+            kind,
+            flags,
+        } => {
+            let cond: String = cond_expr(*kind, flags);
+            let chosen: String = source_expr(src, dest.width);
+            let mut masked_chosen: String = String::new();
+            width_mask(&mut masked_chosen, dest.width, &chosen);
+            let kept: String = reg_var(dest.reg);
+            let body: String = format!("({cond}) ? ({masked_chosen}) : ({kept})");
+            let _ = writeln!(out, "{indent}{} = {body};", reg_var(dest.reg));
+        }
+        Stmt::SetCc { dest, kind, flags } => {
+            let cond: String = cond_expr(*kind, flags);
+            let var: String = reg_var(dest.reg);
+            let _ = writeln!(
+                out,
+                "{indent}{var} = ({var} & 0xffffffffffffff00ULL) | (uint64_t)(({cond}) ? 1 : 0);"
+            );
+        }
+        Stmt::Store { addr, src } => {
+            let target: String = deref_expr(addr);
+            let value: String = source_expr(src, addr.width);
+            let mut masked: String = String::new();
+            width_mask(&mut masked, addr.width, &value);
+            let _ = writeln!(out, "{indent}{target} = {masked};");
+        }
+        Stmt::MemRmw { addr, op } => {
+            let target: String = deref_expr(addr);
+            let current: String = format!("(uint64_t){target}");
+            let body: String = match op {
+                MemRmwOp::Bin { op, src } => {
+                    let rhs: String = source_expr(src, addr.width);
+                    bin_expr(*op, &current, &rhs, addr.width)
+                }
+                MemRmwOp::Un(UnOp::Neg) => format!("(uint64_t)(-(int64_t){current})"),
+                MemRmwOp::Un(UnOp::Not) => format!("(~{current})"),
+            };
+            let _ = write!(out, "{indent}{target} = ");
+            width_mask(out, addr.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::Extend { dest, src, signed } => {
+            let (raw, src_width): (String, Width) = match src {
+                ExtSource::Reg(r) => (reg_var(r.reg), r.width),
+                ExtSource::Mem(mem) => (deref_expr(mem), mem.width),
+            };
+            let body: String = extend_expr(&raw, src_width, dest.width, *signed);
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::MulImm { dest, src, imm } => {
+            let factor: String = format!("(uint64_t)(int64_t){imm}LL");
+            let operand: String = match src {
+                ExtSource::Reg(r) => reg_var(r.reg),
+                ExtSource::Mem(mem) => format!("(uint64_t){}", deref_expr(mem)),
+            };
+            let body: String = format!("{operand} * {factor}");
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &body);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::WideMul { src } => {
+            let rax: String = reg_var(Reg::Rax);
+            let rdx: String = reg_var(Reg::Rdx);
+            let factor: String = reg_var(src.reg);
+            let _ = writeln!(out, "{indent}{{");
+            let _ = writeln!(
+                out,
+                "{indent}    unsigned __int128 wide_prod = (unsigned __int128){rax} * (unsigned __int128){factor};"
+            );
+            let _ = writeln!(out, "{indent}    {rax} = (uint64_t)wide_prod;");
+            let _ = writeln!(out, "{indent}    {rdx} = (uint64_t)(wide_prod >> 64);");
+            let _ = writeln!(out, "{indent}}}");
+        }
+        Stmt::Divide { divisor, signed } => {
+            emit_divide(out, *divisor, *signed, indent);
+        }
+        Stmt::DoubleShift {
+            dest,
+            src,
+            amount,
+            left,
+        } => {
+            let dst: String = reg_var(dest.reg);
+            let other: String = reg_var(src.reg);
+            let complement: u32 = 64 - u32::from(*amount);
+            let body: String = if *left {
+                format!("({dst} << {amount}) | ({other} >> {complement})")
+            } else {
+                format!("({dst} >> {amount}) | ({other} << {complement})")
+            };
+            let _ = writeln!(out, "{indent}{dst} = {body};");
+        }
+        Stmt::BlockMove { elem } => {
+            let dest: String = reg_var(Reg::Rdi);
+            let src: String = reg_var(Reg::Rsi);
+            let count: String = reg_var(Reg::Rcx);
+            let width: u32 = elem.bits() / 8;
+            let _ = writeln!(out, "{indent}{{");
+            let _ = writeln!(out, "{indent}    uint64_t move_n = {count} * {width}ULL;");
+            let _ = writeln!(
+                out,
+                "{indent}    memcpy((void*)(uintptr_t){dest}, (const void*)(uintptr_t){src}, (size_t)move_n);"
+            );
+            let _ = writeln!(out, "{indent}    {dest} = {dest} + move_n;");
+            let _ = writeln!(out, "{indent}    {src} = {src} + move_n;");
+            let _ = writeln!(out, "{indent}    {count} = 0;");
+            let _ = writeln!(out, "{indent}}}");
+        }
+        Stmt::BlockFill { elem } => {
+            let dest: String = reg_var(Reg::Rdi);
+            let value: String = reg_var(Reg::Rax);
+            let count: String = reg_var(Reg::Rcx);
+            let width: u32 = elem.bits() / 8;
+            let _ = writeln!(out, "{indent}{{");
+            match elem {
+                Width::W8 => {
+                    let _ = writeln!(
+                        out,
+                        "{indent}    memset((void*)(uintptr_t){dest}, (int)({value} & 0xffULL), (size_t){count});"
+                    );
+                }
+                other => {
+                    let ty: &str = match other {
+                        Width::W8 => "uint8_t",
+                        Width::W16 => "uint16_t",
+                        Width::W32 => "uint32_t",
+                        Width::W64 => "uint64_t",
+                    };
+                    let mask: u128 = (1u128 << other.bits()) - 1;
+                    let _ = writeln!(
+                        out,
+                        "{indent}    for (uint64_t fill_i = 0; fill_i < {count}; fill_i++) {{ (({ty}*)(uintptr_t){dest})[fill_i] = ({ty})({value} & 0x{mask:x}ULL); }}"
+                    );
+                }
+            }
+            let _ = writeln!(out, "{indent}    {dest} = {dest} + {count} * {width}ULL;");
+            let _ = writeln!(out, "{indent}    {count} = 0;");
+            let _ = writeln!(out, "{indent}}}");
+        }
+        Stmt::Call { target } => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                reg_var(Reg::Rax),
+                call_expr(*target, abi)
+            );
+        }
+        Stmt::FpBin {
+            dest,
+            rhs,
+            op,
+            width,
+        } => {
+            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width);
+            let rhs_val: String = fp_load(rhs, *width);
+            let computed: String = format!("({lhs_val} {} {rhs_val})", op.c_operator());
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&computed, *width)
+            );
+        }
+        Stmt::FpMov { dest, src, width } => {
+            if let FpOperand::Xmm(sx) = src {
+                let _ = writeln!(out, "{indent}{} = {};", xmm_var(*dest), xmm_var(*sx));
+            } else {
+                let value: String = fp_load(src, *width);
+                let _ = writeln!(
+                    out,
+                    "{indent}{} = {};",
+                    xmm_var(*dest),
+                    fp_store_expr(&value, *width)
+                );
+            }
+        }
+        Stmt::FpStore { addr, src, width } => {
+            let target: String = deref_expr(addr);
+            let bits: String = xmm_bits(*src, *width);
+            let _ = writeln!(out, "{indent}{target} = {bits};");
+        }
+        Stmt::IntToFp {
+            dest,
+            src,
+            signed,
+            width,
+        } => {
+            let bits: u32 = src.width.bits();
+            let int_expr: String = if *signed {
+                format!("(int{bits}_t){}", reg_var(src.reg))
+            } else {
+                format!("(uint{bits}_t){}", reg_var(src.reg))
+            };
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&int_expr, *width)
+            );
+        }
+        Stmt::FpToInt { dest, src, width } => {
+            let value: String = fp_load(&FpOperand::Xmm(*src), *width);
+            let bits: u32 = dest.width.bits();
+            let truncated: String = format!("(uint{bits}_t)(int{bits}_t)({value})");
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &truncated);
+            let _ = writeln!(out, ";");
+        }
+        Stmt::FpConvert {
+            dest,
+            src,
+            from,
+            to,
+        } => {
+            let value: String = fp_load(&FpOperand::Xmm(*src), *from);
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&value, *to)
+            );
+        }
+        Stmt::FpMinMax {
+            dest,
+            rhs,
+            is_max,
+            width,
+        } => {
+            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width);
+            let rhs_val: String = fp_load(rhs, *width);
+            let op: &str = if *is_max { ">" } else { "<" };
+            let computed: String = format!("(({lhs_val} {op} {rhs_val}) ? {lhs_val} : {rhs_val})");
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&computed, *width)
+            );
+        }
+        Stmt::FpSqrt { dest, src, width } => {
+            let value: String = fp_load(src, *width);
+            let call: String = match width {
+                FpWidth::F64 => format!("__builtin_sqrt({value})"),
+                FpWidth::F32 => format!("__builtin_sqrtf({value})"),
+            };
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                fp_store_expr(&call, *width)
+            );
+        }
+        Stmt::GprToXmm { dest, src, width } => {
+            let bits: String = match width {
+                FpWidth::F64 => reg_var(src.reg),
+                FpWidth::F32 => format!("(uint32_t){}", reg_var(src.reg)),
+            };
+            let _ = writeln!(out, "{indent}{} = {bits};", xmm_var(*dest));
+        }
+        Stmt::XmmToGpr { dest, src, width } => {
+            let bits: String = xmm_bits(*src, *width);
+            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
+            width_mask(out, dest.width, &bits);
+            let _ = writeln!(out, ";");
+        }
+    }
+}
+
+fn xmm_var(xmm: Xmm) -> String {
+    format!("x_xmm{}", xmm.index())
+}
+
+fn fp_load(operand: &FpOperand, width: FpWidth) -> String {
+    match operand {
+        FpOperand::Xmm(x) => match width {
+            FpWidth::F64 => format!("fp_d_from_bits({})", xmm_var(*x)),
+            FpWidth::F32 => format!("fp_f_from_bits((uint32_t){})", xmm_var(*x)),
+        },
+        FpOperand::Mem(mem) => {
+            let addr: String = addr_expr(mem.base, mem.index, mem.disp);
+            match width {
+                FpWidth::F64 => format!("(*(double*)(uintptr_t)({addr}))"),
+                FpWidth::F32 => format!("(*(float*)(uintptr_t)({addr}))"),
+            }
+        }
+        FpOperand::Const { bits, .. } => fp_const_literal(*bits, width),
+    }
+}
+
+fn fp_const_literal(bits: u64, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => format!("fp_d_from_bits(0x{bits:016x}ULL)"),
+        FpWidth::F32 => format!("fp_f_from_bits(0x{:08x}U)", bits as u32),
+    }
+}
+
+fn fp_store_expr(value: &str, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => format!("fp_d_to_bits((double)({value}))"),
+        FpWidth::F32 => format!("(uint64_t)fp_f_to_bits((float)({value}))"),
+    }
+}
+
+fn xmm_bits(xmm: Xmm, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => xmm_var(xmm),
+        FpWidth::F32 => format!("(uint32_t){}", xmm_var(xmm)),
+    }
+}
+
+fn emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str) {
+    let rax: String = reg_var(Reg::Rax);
+    let rdx: String = reg_var(Reg::Rdx);
+    let width: Width = divisor.width;
+    let bits: u32 = width.bits();
+    let (dividend, divisor_expr, result_ty): (String, String, String) = if signed {
+        (
+            format!("(int{bits}_t){rax}"),
+            format!("(int{bits}_t){}", reg_var(divisor.reg)),
+            format!("int{bits}_t"),
+        )
+    } else {
+        (
+            format!("(uint{bits}_t){rax}"),
+            format!("(uint{bits}_t){}", reg_var(divisor.reg)),
+            format!("uint{bits}_t"),
+        )
+    };
+    let _ = writeln!(out, "{indent}{{");
+    let _ = writeln!(out, "{indent}    {result_ty} div_lhs = {dividend};");
+    let _ = writeln!(out, "{indent}    {result_ty} div_rhs = {divisor_expr};");
+    let _ = writeln!(
+        out,
+        "{indent}    {rax} = (uint64_t)(uint{bits}_t)(div_lhs / div_rhs);"
+    );
+    let _ = writeln!(
+        out,
+        "{indent}    {rdx} = (uint64_t)(uint{bits}_t)(div_lhs % div_rhs);"
+    );
+    let _ = writeln!(out, "{indent}}}");
+}
+
+fn extend_expr(raw: &str, src_width: Width, dest_width: Width, signed: bool) -> String {
+    let src_mask: u128 = (1u128 << src_width.bits()) - 1;
+    let narrowed: String = format!("(({raw}) & 0x{src_mask:x}ULL)");
+    if signed {
+        format!(
+            "((uint{dst}_t)(int{dst}_t)(int{src}_t){narrowed})",
+            dst = dest_width.bits(),
+            src = src_width.bits()
+        )
+    } else {
+        format!(
+            "((uint{dst}_t)(uint{src}_t){narrowed})",
+            dst = dest_width.bits(),
+            src = src_width.bits()
+        )
+    }
+}
+
+fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
+    match op {
+        BinOp::Add => format!("{lhs} + {rhs}"),
+        BinOp::Sub => format!("{lhs} - {rhs}"),
+        BinOp::Imul => format!("{lhs} * {rhs}"),
+        BinOp::And => format!("{lhs} & {rhs}"),
+        BinOp::Or => format!("{lhs} | {rhs}"),
+        BinOp::Xor => format!("{lhs} ^ {rhs}"),
+        BinOp::Shl => format!("{lhs} << ({rhs} & {})", width.bits() - 1),
+        BinOp::Shr => {
+            let mask: u128 = (1u128 << width.bits()) - 1;
+            format!(
+                "(({lhs} & 0x{mask:x}ULL) >> ({rhs} & {}))",
+                width.bits() - 1
+            )
+        }
+        BinOp::Sar => format!(
+            "(uint64_t)(((int64_t)((int{}_t){lhs})) >> ({rhs} & {}))",
+            width.bits(),
+            width.bits() - 1
+        ),
+    }
+}
+
+fn signed_operand(expr: &str, width: Width) -> String {
+    format!("((int64_t)(int{}_t)({expr}))", width.bits())
+}
+
+fn unsigned_operand(expr: &str, width: Width) -> String {
+    match width {
+        Width::W64 => format!("((uint64_t)({expr}))"),
+        other => {
+            let mask: u128 = (1u128 << other.bits()) - 1;
+            format!("((uint64_t)(({expr}) & 0x{mask:x}ULL))")
+        }
+    }
+}
+
+fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    if kind.is_unsigned_order() {
+        let a: String = unsigned_operand(lhs_expr, width);
+        let b: String = unsigned_operand(rhs_expr, width);
+        let op: &str = match kind {
+            CondKind::A => ">",
+            CondKind::Ae => ">=",
+            CondKind::B => "<",
+            CondKind::Be => "<=",
+            _ => unreachable!(),
+        };
+        format!("{a} {op} {b}")
+    } else if kind.is_signed_order() {
+        let a: String = signed_operand(lhs_expr, width);
+        let b: String = signed_operand(rhs_expr, width);
+        let op: &str = match kind {
+            CondKind::G => ">",
+            CondKind::Ge => ">=",
+            CondKind::L => "<",
+            CondKind::Le => "<=",
+            _ => unreachable!(),
+        };
+        format!("{a} {op} {b}")
+    } else {
+        let a: String = signed_operand(lhs_expr, width);
+        let b: String = signed_operand(rhs_expr, width);
+        match kind {
+            CondKind::E => format!("{a} == {b}"),
+            CondKind::Ne => format!("{a} != {b}"),
+            CondKind::S => {
+                let diff: String = sign_truncated_diff(lhs_expr, rhs_expr, width);
+                format!("{diff} < 0")
+            }
+            CondKind::Ns => {
+                let diff: String = sign_truncated_diff(lhs_expr, rhs_expr, width);
+                format!("{diff} >= 0")
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn cond_expr(kind: CondKind, flags: &Flags) -> String {
+    match flags {
+        Flags::Cmp { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: String = reg_var(lhs.reg);
+            let rhs_expr: String = source_expr(rhs, width);
+            compare_expr(kind, &lhs_expr, &rhs_expr, width)
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: String = deref_expr(lhs);
+            let rhs_expr: String = source_expr(&Source::Reg(*rhs), width);
+            compare_expr(kind, &lhs_expr, &rhs_expr, width)
+        }
+        Flags::TestImm { operand, mask } => {
+            let width: Width = operand.width;
+            let masked: String = format!(
+                "({} & 0x{:x}ULL)",
+                unsigned_operand(&reg_var(operand.reg), width),
+                (*mask as u64) & ((1u128 << width.bits()) - 1) as u64
+            );
+            match kind {
+                CondKind::E => format!("{masked} == 0"),
+                CondKind::Ne => format!("{masked} != 0"),
+                _ => unreachable!(),
+            }
+        }
+        Flags::Test { operand } => {
+            let width: Width = operand.width;
+            let var: String = reg_var(operand.reg);
+            match kind {
+                CondKind::E | CondKind::Be => format!("{} == 0", signed_operand(&var, width)),
+                CondKind::Ne | CondKind::A => format!("{} != 0", signed_operand(&var, width)),
+                CondKind::G => format!("{} > 0", signed_operand(&var, width)),
+                CondKind::Ge | CondKind::Ns => format!("{} >= 0", signed_operand(&var, width)),
+                CondKind::L | CondKind::S => format!("{} < 0", signed_operand(&var, width)),
+                CondKind::Le => format!("{} <= 0", signed_operand(&var, width)),
+                CondKind::Ae => "1".to_owned(),
+                CondKind::B => "0".to_owned(),
+            }
+        }
+        Flags::Sign { result } => {
+            let width: Width = result.width;
+            let var: String = signed_operand(&reg_var(result.reg), width);
+            match kind {
+                CondKind::S => format!("{var} < 0"),
+                CondKind::Ns => format!("{var} >= 0"),
+                CondKind::E => format!("{var} == 0"),
+                CondKind::Ne => format!("{var} != 0"),
+                _ => unreachable!(),
+            }
+        }
+        Flags::FpCmp { lhs, rhs, width } => {
+            let a: String = fp_load(&FpOperand::Xmm(*lhs), *width);
+            let b: String = fp_load(rhs, *width);
+            let op: &str = match kind {
+                CondKind::B => "<",
+                CondKind::Be => "<=",
+                CondKind::A => ">",
+                CondKind::Ae => ">=",
+                CondKind::E => "==",
+                CondKind::Ne => "!=",
+                _ => unreachable!(),
+            };
+            format!("({a}) {op} ({b})")
+        }
+    }
+}
+
+fn sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
+    let a: String = unsigned_operand(lhs, width);
+    let b: String = unsigned_operand(rhs, width);
+    format!("(int{}_t)({a} - {b})", width.bits())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lea_add_recovers_two_param_add() {
+        let code: [u8; 4] = [0x8d, 0x04, 0x11, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(rec.source.contains("uint64_t recovered"));
+        assert!(rec.source.contains("return"));
+    }
+
+    #[test]
+    fn parse_mem_base_index_scale() {
+        let src: Source = parse_mem("[rax+rax*2]").expect("mem");
+        assert_eq!(
+            src,
+            Source::Lea {
+                base: Some(Reg::Rax),
+                index: Some((Reg::Rax, 2)),
+                disp: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn no_ret_rejected() {
+        let code: [u8; 2] = [0x89, 0xc8];
+        let err: Error = recover_leaf_function(&code, 0x1000).expect_err("no ret");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn pointer_load_lifts_to_width_exact_deref() {
+        let code: [u8; 8] = [0x48, 0x8b, 0x01, 0x48, 0x03, 0x41, 0x08, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert!(rec.source.contains("(*(uint64_t*)(uintptr_t)(r_rcx))"));
+        assert!(
+            rec.source
+                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL))")
+        );
+    }
+
+    #[test]
+    fn dword_load_uses_uint32_deref() {
+        let code: [u8; 6] = [0x8b, 0x01, 0x03, 0x41, 0x04, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert_eq!(rec.return_width_bits, 32);
+        assert!(rec.source.contains("(*(uint32_t*)(uintptr_t)(r_rcx))"));
+    }
+
+    #[test]
+    fn pointer_store_lifts_to_assignment_through_deref() {
+        let code: [u8; 10] = [0x48, 0x89, 0xd0, 0x48, 0x03, 0x01, 0x48, 0x89, 0x01, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(
+            rec.source
+                .contains("(*(uint64_t*)(uintptr_t)(r_rcx)) = r_rax")
+        );
+    }
+
+    #[test]
+    fn scaled_index_load_lifts_to_array_index() {
+        let code: [u8; 5] = [0x48, 0x8b, 0x04, 0xd1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(
+            rec.source
+                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + (r_rdx * 8ULL)))")
+        );
+    }
+
+    #[test]
+    fn parse_mem_access_infers_register_width() {
+        let mem: MemRef = parse_mem_access("[rcx+8]", Some(Width::W64)).expect("mem");
+        assert_eq!(
+            mem,
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 8,
+                width: Width::W64,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_mem_access_honors_size_keyword() {
+        let mem: MemRef = parse_mem_access("dword [rax]", None).expect("mem");
+        assert_eq!(mem.width, Width::W32);
+        assert_eq!(mem.base, Some(Reg::Rax));
+    }
+
+    #[test]
+    fn cond_kind_negation_is_an_involution() {
+        for kind in [
+            CondKind::E,
+            CondKind::Ne,
+            CondKind::G,
+            CondKind::Ge,
+            CondKind::L,
+            CondKind::Le,
+            CondKind::A,
+            CondKind::Ae,
+            CondKind::B,
+            CondKind::Be,
+            CondKind::S,
+            CondKind::Ns,
+        ] {
+            assert_eq!(kind.negate().negate(), kind);
+            assert_ne!(kind.negate(), kind);
+        }
+    }
+
+    #[test]
+    fn forward_jcc_skip_recovers_negated_if_guard() {
+        let code: [u8; 14] = [
+            0x48, 0x8d, 0x04, 0x11, 0x48, 0x39, 0xd1, 0x7e, 0x04, 0x48, 0x83, 0xc0, 0x0a, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x2000).expect("recover");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(
+            rec.source.contains("if ("),
+            "expected a structured if: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("if (((int64_t)(int64_t)(r_rcx)) > ((int64_t)(int64_t)(r_rdx)))"),
+            "jle skip must invert to a signed-greater guard: {}",
+            rec.source
+        );
+        assert!(
+            !rec.source.contains("<="),
+            "must not emit the un-negated jle predicate: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn nested_forward_skips_nest_the_if_blocks() {
+        let code: [u8; 24] = [
+            0xb8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc9, 0x7e, 0x0d, 0x48, 0x8d, 0x04, 0x11,
+            0x48, 0x85, 0xd2, 0x7e, 0x04, 0x48, 0x83, 0xc0, 0x64, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x3000).expect("recover");
+        let opens: usize = rec.source.matches("if (").count();
+        assert_eq!(opens, 2, "two nested guards expected: {}", rec.source);
+        let outer: usize = rec.source.find("if (").expect("outer if");
+        let inner: usize = rec.source[outer + 4..]
+            .find("if (")
+            .map(|p: usize| p + outer + 4)
+            .expect("inner if");
+        let inner_indent: &str = &rec.source[..inner];
+        assert!(
+            inner_indent
+                .lines()
+                .last()
+                .is_some_and(|l: &str| l.starts_with("        ")),
+            "inner if must be indented under the outer block: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn single_back_edge_reconstructs_do_while_loop() {
+        let code: [u8; 7] = [0x48, 0x83, 0xc0, 0x01, 0x75, 0xfa, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x4000).expect("do-while loop");
+        assert!(
+            rec.lifted_loop,
+            "single back-edge must structure as a loop: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("do {"),
+            "expected a do-while body: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("} while ("),
+            "expected a do-while back-edge condition: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("} while (((int64_t)(int64_t)(r_rax)) != 0);"),
+            "the jne back-edge over `add rax,1` must invert to a not-equal-zero guard: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn forward_jump_with_backward_branch_is_rejected() {
+        let code: [u8; 8] = [0x48, 0x83, 0xc0, 0x01, 0x75, 0xfb, 0xeb, 0xf9];
+        let err: Error = recover_leaf_function(&code, 0x4000)
+            .expect_err("a trailing jmp with no terminal ret is out of class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn bytes_after_first_ret_are_truncated_as_unreachable() {
+        let code: [u8; 8] = [0x48, 0x89, 0xc8, 0xc3, 0x90, 0x48, 0xff, 0xc0];
+        let rec: LeafRecovery =
+            recover_leaf_function(&code, 0x5000).expect("trailing padding must not abort");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert!(!rec.source.contains("if ("));
+    }
+
+    #[test]
+    fn forward_branch_over_the_exit_is_rejected() {
+        let code: [u8; 9] = [0x48, 0x85, 0xc9, 0x7e, 0x02, 0xc3, 0x48, 0xff, 0xc0];
+        let err: Error = recover_leaf_function(&code, 0x6000)
+            .expect_err("branch past the single exit is out of class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn out_of_line_tail_return_idiom_reconstructs_single_return_if_else() {
+        let code: [u8; 20] = [
+            0x48, 0x85, 0xc9, 0x7f, 0x08, 0x48, 0x89, 0xc8, 0x48, 0xc1, 0xf8, 0x3f, 0xc3, 0xb8,
+            0x01, 0x00, 0x00, 0x00, 0xeb, 0xf8,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x7000).expect("sign idiom");
+        assert!(
+            rec.lifted_split_return,
+            "must take the out-of-line tail-return path: {}",
+            rec.source
+        );
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(
+            rec.source.matches("return ").count(),
+            1,
+            "the three-exit source must collapse to a single return: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("} else {"),
+            "fallthrough vs out-of-line block must become an if/else: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn out_of_line_block_with_head_statement_keeps_prefix_before_if() {
+        let code: [u8; 17] = [
+            0x48, 0x8d, 0x04, 0x11, 0x48, 0x39, 0xd1, 0x74, 0x01, 0xc3, 0xb8, 0xad, 0xde, 0x00,
+            0x00, 0xeb, 0xf8,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x8000).expect("orconst idiom");
+        assert!(rec.lifted_split_return, "split-return path: {}", rec.source);
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        let head_pos: usize = rec.source.find("r_rax =").expect("head assign");
+        let if_pos: usize = rec.source.find("if (").expect("guard if");
+        assert!(
+            head_pos < if_pos,
+            "the precomputed head value must be emitted before the guard: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn top_guarded_while_reconstructs_guard_wrapping_a_do_while() {
+        let code: [u8; 0x17] = [
+            0x48, 0x89, 0xc8, 0x48, 0x85, 0xc9, 0x74, 0x0e, 0xba, 0x00, 0x00, 0x00, 0x00, 0x48,
+            0x83, 0xc2, 0x01, 0x48, 0x39, 0xd0, 0x75, 0xf7, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x4b).expect("guarded while");
+        assert!(
+            rec.lifted_loop,
+            "top-guarded while must structure as a loop: {}",
+            rec.source
+        );
+        let if_pos: usize = rec.source.find("if (").expect("guard if");
+        let do_pos: usize = rec.source.find("do {").expect("inner do-while");
+        assert!(
+            if_pos < do_pos,
+            "the zero-trip guard must wrap the do-while body: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("} while ("),
+            "expected a do-while back-edge condition: {}",
+            rec.source
+        );
+        assert_eq!(
+            rec.source.matches("do {").count(),
+            1,
+            "exactly one loop reconstructed: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movzx_reg_zero_extends_subregister() {
+        let code: [u8; 4] = [0x0f, 0xb7, 0xc1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9000).expect("movzx");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.return_width_bits, 32);
+        assert!(
+            rec.source.contains(
+                "r_rax = ((((uint32_t)(uint16_t)((r_rcx) & 0xffffULL))) & 0xffffffffULL)"
+            ),
+            "movzx eax,cx must zero-extend the low 16 bits of rcx into rax: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movsx_reg_sign_extends_to_full_width() {
+        let code: [u8; 5] = [0x48, 0x0f, 0xbe, 0xc9, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9100).expect("movsx");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.return_width_bits, 64);
+        assert!(
+            rec.source
+                .contains("r_rcx = ((uint64_t)(int64_t)(int8_t)((r_rcx) & 0xffULL))"),
+            "movsx rcx,cl must sign-extend the low byte: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movsxd_reg_sign_extends_dword() {
+        let code: [u8; 4] = [0x48, 0x63, 0xc1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9200).expect("movsxd");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert!(
+            rec.source
+                .contains("r_rax = ((uint64_t)(int64_t)(int32_t)((r_rcx) & 0xffffffffULL))"),
+            "movsxd rax,ecx must sign-extend the low dword: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn cdqe_sign_extends_eax_into_rax() {
+        let code: [u8; 3] = [0x48, 0x98, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9300).expect("cdqe");
+        assert!(
+            rec.source
+                .contains("r_rax = ((uint64_t)(int64_t)(int32_t)((r_rax) & 0xffffffffULL))"),
+            "cdqe must sign-extend eax into rax: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movzx_mem_zero_extends_byte_load() {
+        let code: [u8; 4] = [0x0f, 0xb6, 0x01, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9400).expect("movzx mem");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert!(
+            rec.source.contains("(*(uint8_t*)(uintptr_t)(r_rcx))"),
+            "byte load must deref through uint8_t: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("(uint32_t)(uint8_t)"),
+            "movzx must zero-extend the byte: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn width_extension_to_narrower_or_equal_is_rejected() {
+        assert!(lift_width_extension("movzx", "ax,eax").is_none());
+        assert!(lift_width_extension("movsx", "al,al").is_none());
+        assert!(lift_width_extension("cdqe", "rax,eax").is_none());
+        assert!(lift_width_extension("mov", "eax,ecx").is_none());
+    }
+
+    #[test]
+    fn ternary_imul_lifts_to_source_times_constant() {
+        let code: [u8; 5] = [0x48, 0x6b, 0xc7, 0x64, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9500, Abi::SysV).expect("imul3");
+        assert_eq!(rec.params, vec![Reg::Rdi]);
+        assert!(
+            rec.source
+                .contains("r_rax = r_rdi * (uint64_t)(int64_t)100LL"),
+            "imul rax,rdi,0x64 must lift to rdi * 100: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn wide_mul_lifts_to_unsigned_128_bit_product_pair() {
+        let code: [u8; 4] = [0x48, 0xf7, 0xe1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9600, Abi::SysV).expect("mul");
+        assert!(
+            rec.source.contains(
+                "unsigned __int128 wide_prod = (unsigned __int128)r_rax * (unsigned __int128)r_rcx"
+            ),
+            "mul rcx must form a 128-bit product from rax*rcx: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rax = (uint64_t)wide_prod;")
+                && rec.source.contains("r_rdx = (uint64_t)(wide_prod >> 64);"),
+            "mul must split the product into rax (low) and rdx (high): {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn shld_lifts_to_double_precision_left_shift() {
+        let code: [u8; 6] = [0x48, 0x0f, 0xa4, 0xc2, 0x3f, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9700, Abi::SysV).expect("shld");
+        assert!(
+            rec.source.contains("r_rdx = (r_rdx << 63) | (r_rax >> 1);"),
+            "shld rdx,rax,0x3f must widen to (rdx<<63)|(rax>>1): {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn shrd_lifts_to_double_precision_right_shift() {
+        let code: [u8; 6] = [0x48, 0x0f, 0xac, 0xd0, 0x01, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9800, Abi::SysV).expect("shrd");
+        assert!(
+            rec.source.contains("r_rax = (r_rax >> 1) | (r_rdx << 63);"),
+            "shrd rax,rdx,1 must widen to (rax>>1)|(rdx<<63): {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn out_of_range_double_shift_is_rejected() {
+        assert!(lift_double_shift("shld", "rdx,rax,0").is_none());
+        assert!(lift_double_shift("shld", "rdx,rax,64").is_none());
+        assert!(lift_double_shift("shrd", "eax,edx,3").is_none());
+        assert!(lift_double_shift("shld", "rdx,rax").is_none());
+    }
+
+    #[test]
+    fn call_to_same_object_helper_lifts_to_c_call_and_skips_frame() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x8).expect("call recover");
+        assert_eq!(rec.call_targets, vec![0x0]);
+        assert!(
+            rec.source.contains("extern uint64_t callee_0("),
+            "the helper must be forward-declared with the full ABI arg list: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rax = callee_0(r_rcx, r_rdx, r_r8, r_r9);"),
+            "the call must pass the ABI argument registers positionally: {}",
+            rec.source
+        );
+        assert!(
+            !rec.source.contains("rsp"),
+            "the stack-frame adjust must be skipped, not emitted: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn callee_saved_save_across_call_is_a_plain_move() {
+        let code: [u8; 14] = [
+            0x53, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x89, 0xc3, 0xe8, 0xe3, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x10).expect("save-arg recover");
+        assert_eq!(rec.call_targets, vec![0x0]);
+        assert!(
+            rec.source.contains("r_rbx = r_r8"),
+            "the cross-call argument save must lift to a register copy: {}",
+            rec.source
+        );
+        assert!(
+            !rec.source.contains("push") && !rec.source.contains("rsp"),
+            "push/sub-rsp frame management must be skipped: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn frame_management_classifies_rsp_adjust_and_register_save() {
+        assert!(is_frame_management("sub", "rsp,28h"));
+        assert!(is_frame_management("add", "rsp,20h"));
+        assert!(is_frame_management("push", "rbx"));
+        assert!(is_frame_management("pop", "rbx"));
+        assert!(!is_frame_management("sub", "rax,8"));
+        assert!(!is_frame_management("push", "1"));
+        assert!(!is_frame_management("mov", "rbx,r8"));
+    }
+
+    #[test]
+    fn parse_branch_target_reads_iced_short_form() {
+        assert_eq!(parse_branch_target("short 0000000000001011h"), Some(0x1011));
+        assert_eq!(parse_branch_target("0000000000002000h"), Some(0x2000));
+        assert_eq!(parse_branch_target("rax"), None);
+        assert_eq!(parse_branch_target("qword [rax]"), None);
+    }
+
+    const JT6_SYSV: [u8; 0x6f] = [
+        0x48, 0x83, 0xff, 0x05, 0x77, 0x59, 0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48, 0x63,
+        0x0c, 0xb8, 0x48, 0x01, 0xc1, 0xff, 0xe1, 0x48, 0x01, 0xf2, 0x48, 0x8d, 0x04, 0x55, 0x01,
+        0x00, 0x00, 0x00, 0xc3, 0x48, 0x09, 0xf2, 0x48, 0x8d, 0x04, 0x55, 0x01, 0x00, 0x00, 0x00,
+        0xc3, 0x48, 0x0f, 0xaf, 0xd6, 0x48, 0x8d, 0x04, 0x55, 0x01, 0x00, 0x00, 0x00, 0xc3, 0x48,
+        0x31, 0xf2, 0x48, 0x8d, 0x04, 0x55, 0x01, 0x00, 0x00, 0x00, 0xc3, 0x48, 0x29, 0xd6, 0x48,
+        0x8d, 0x04, 0x75, 0x01, 0x00, 0x00, 0x00, 0xc3, 0x48, 0x21, 0xf2, 0x48, 0x8d, 0x04, 0x55,
+        0x01, 0x00, 0x00, 0x00, 0xc3, 0x48, 0xc7, 0xc2, 0xff, 0xff, 0xff, 0xff, 0x48, 0x8d, 0x04,
+        0x55, 0x01, 0x00, 0x00, 0x00, 0xc3,
+    ];
+
+    fn jt6_table() -> Vec<JumpTable> {
+        vec![JumpTable {
+            table_va: 0xd,
+            entries: vec![0x9, 0x3a, 0x21, 0x2e, 0x15, 0x46],
+        }]
+    }
+
+    #[test]
+    fn dense_jump_table_reconstructs_six_case_switch() {
+        let rec: LeafRecovery =
+            recover_leaf_function_switch_abi(&JT6_SYSV, 0, Abi::SysV, &jt6_table())
+                .expect("dense switch");
+        assert!(
+            rec.lifted_switch,
+            "must flag a lifted switch: {}",
+            rec.source
+        );
+        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi, Reg::Rdx]);
+        assert!(
+            rec.source.contains("switch (r_rdi)"),
+            "must switch on the discriminant register: {}",
+            rec.source
+        );
+        for value in 0..=5 {
+            assert!(
+                rec.source.contains(&format!("case {value}: {{")),
+                "expected case {value}: {}",
+                rec.source
+            );
+        }
+        assert!(
+            rec.source.contains("default: {"),
+            "must carry the out-of-range default: {}",
+            rec.source
+        );
+        assert_eq!(
+            rec.source.matches("case ").count(),
+            6,
+            "exactly six dense cases: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn dense_switch_rejects_missing_table() {
+        let err: Error = recover_leaf_function_switch_abi(&JT6_SYSV, 0, Abi::SysV, &[])
+            .expect_err("no table supplied");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn dense_switch_rejects_wrong_entry_count() {
+        let short: Vec<JumpTable> = vec![JumpTable {
+            table_va: 0xd,
+            entries: vec![0x9, 0x3a, 0x21],
+        }];
+        let err: Error = recover_leaf_function_switch_abi(&JT6_SYSV, 0, Abi::SysV, &short)
+            .expect_err("entry-count mismatch");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn dense_switch_rejects_non_switch_leaf() {
+        let code: [u8; 4] = [0x8d, 0x04, 0x11, 0xc3];
+        let err: Error = recover_leaf_function_switch_abi(&code, 0x1000, Abi::MsX64, &[])
+            .expect_err("plain leaf has no dispatch");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn nested_do_while_reconstructs_two_structured_while_loops() {
+        let nl_sum: [u8; 0x2c] = [
+            0x41, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x41, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x4c, 0x89,
+            0xc8, 0x49, 0x01, 0xc0, 0x48, 0x83, 0xc0, 0x01, 0x48, 0x39, 0xd0, 0x75, 0xf4, 0x49,
+            0x83, 0xc1, 0x01, 0x48, 0x83, 0xc2, 0x01, 0x49, 0x39, 0xc9, 0x75, 0xe4, 0x4c, 0x89,
+            0xc0, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&nl_sum, 0, Abi::SysV).expect("nested do-while");
+        assert!(
+            rec.lifted_loop,
+            "two back-edges must structure as loops: {}",
+            rec.source
+        );
+        let outer: usize = rec.source.find("while (1) {").expect("outer while");
+        let inner: usize = rec.source[outer + "while (1) {".len()..]
+            .find("while (1) {")
+            .map(|p: usize| p + outer + "while (1) {".len())
+            .expect("inner while nested under the outer");
+        let outer_line_indent: &str = rec.source[..outer].lines().last().unwrap_or_default();
+        let inner_line_indent: &str = rec.source[..inner].lines().last().unwrap_or_default();
+        assert!(
+            inner_line_indent.len() > outer_line_indent.len(),
+            "the inner loop must be indented inside the outer body: {}",
+            rec.source
+        );
+        assert_eq!(
+            rec.source.matches("while (1) {").count(),
+            2,
+            "exactly two loops for a doubly-nested do-while: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn triply_nested_do_while_reconstructs_three_structured_loops() {
+        let t3: [u8; 77] = [
+            0x56, 0x53, 0x49, 0x89, 0xd3, 0x4c, 0x89, 0xc3, 0x49, 0x89, 0xca, 0x48, 0x8d, 0x34,
+            0xd1, 0xba, 0x00, 0x00, 0x00, 0x00, 0x4d, 0x01, 0xc3, 0x4d, 0x8b, 0x02, 0x49, 0x8d,
+            0x0c, 0x18, 0x4f, 0x8d, 0x0c, 0x03, 0x4c, 0x89, 0xc0, 0x48, 0x01, 0xc2, 0x48, 0x83,
+            0xc0, 0x01, 0x48, 0x39, 0xc8, 0x75, 0xf4, 0x49, 0x83, 0xc0, 0x01, 0x48, 0x83, 0xc1,
+            0x01, 0x4c, 0x39, 0xc9, 0x75, 0xe4, 0x49, 0x83, 0xc2, 0x08, 0x49, 0x39, 0xf2, 0x75,
+            0xd0, 0x48, 0x89, 0xd0, 0x5b, 0x5e, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&t3, 0, Abi::SysV).expect("triple nested do-while");
+        assert!(rec.lifted_loop, "three back-edges must structure as loops");
+        assert_eq!(
+            rec.source.matches("while (1) {").count(),
+            3,
+            "the interval structurer generalizes past double nesting: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn overlapping_back_edges_are_rejected_as_irreducible() {
+        let items: Vec<Item> = vec![
+            Item {
+                address: 0,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(0),
+                }),
+            },
+            Item {
+                address: 1,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rcx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 3,
+                },
+            },
+            Item {
+                address: 2,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rcx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 1,
+                },
+            },
+            Item {
+                address: 3,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rcx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 2,
+                },
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Ret,
+            },
+        ];
+        let out: Option<Block> = structure_reducible_cfg(&items).expect("no hard error");
+        assert!(
+            out.is_none(),
+            "an irreducible two-entry cycle must be soundly rejected, not misstructured"
+        );
+    }
+
+    #[test]
+    fn signed_divide_lifts_quotient_and_remainder_from_cqo_idiv() {
+        let code: [u8; 9] = [0x48, 0x89, 0xf8, 0x48, 0x99, 0x48, 0xf7, 0xfe, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xa000, Abi::SysV).expect("signed divide");
+        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi]);
+        assert_eq!(rec.return_width_bits, 64);
+        assert!(
+            rec.source.contains("int64_t div_lhs = (int64_t)r_rax;"),
+            "cqo/idiv must divide the signed 64-bit dividend: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rax = (uint64_t)(uint64_t)(div_lhs / div_rhs);"),
+            "quotient must land in rax: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rdx = (uint64_t)(uint64_t)(div_lhs % div_rhs);"),
+            "remainder must land in rdx: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn unsigned_divide_lifts_from_xor_edx_div() {
+        let code: [u8; 8] = [0x48, 0x89, 0xf8, 0x31, 0xd2, 0x48, 0xf7, 0xf6];
+        let mut with_ret: Vec<u8> = code.to_vec();
+        with_ret.push(0xc3);
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&with_ret, 0xa100, Abi::SysV).expect("unsigned divide");
+        assert!(
+            rec.source.contains("uint64_t div_lhs = (uint64_t)r_rax;"),
+            "xor edx,edx / div must divide the unsigned 64-bit dividend: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("uint64_t div_rhs = (uint64_t)r_rsi;"),
+            "divisor must be read unsigned: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn thirty_two_bit_signed_divide_uses_int32_operands() {
+        let code: [u8; 7] = [0x89, 0xf8, 0x99, 0xf7, 0xfe, 0x90, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xa200, Abi::SysV).expect("32-bit signed divide");
+        assert_eq!(rec.return_width_bits, 32);
+        assert!(
+            rec.source.contains("int32_t div_lhs = (int32_t)r_rax;")
+                && rec.source.contains("int32_t div_rhs = (int32_t)r_rsi;"),
+            "cdq/idiv on 32-bit operands must divide at int32_t width: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rax = (uint64_t)(uint32_t)(div_lhs / div_rhs);"),
+            "32-bit quotient must be zero-extended into rax: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn divide_without_high_half_setup_is_rejected() {
+        let code: [u8; 6] = [0x48, 0x89, 0xf8, 0x48, 0xf7, 0xf6];
+        let mut with_ret: Vec<u8> = code.to_vec();
+        with_ret.push(0xc3);
+        let err: Error = recover_leaf_function_abi(&with_ret, 0xa300, Abi::SysV)
+            .expect_err("idiv without cqo must be out of class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn signed_divide_rejects_zeroed_high_half() {
+        let code: [u8; 8] = [0x48, 0x89, 0xf8, 0x31, 0xd2, 0x48, 0xf7, 0xfe];
+        let mut with_ret: Vec<u8> = code.to_vec();
+        with_ret.push(0xc3);
+        let err: Error = recover_leaf_function_abi(&with_ret, 0xa400, Abi::SysV)
+            .expect_err("idiv after xor edx,edx has an unsound sign-extension");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn addsd_lifts_double_addition_with_fp_signature() {
+        let code: [u8; 5] = [0xf2, 0x0f, 0x58, 0xc1, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb000, Abi::SysV).expect("addsd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(
+            rec.fp_params,
+            vec![ScalarType::Double, ScalarType::Double],
+            "addsd xmm0,xmm1 must take two double params: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("double recovered(double a0, double a1)"),
+            "double signature expected: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("(fp_d_from_bits(x_xmm0) + fp_d_from_bits(x_xmm1))"),
+            "addsd must recover a double addition: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("return fp_d_from_bits(x_xmm0);"),
+            "result must be reinterpreted from the low xmm0 bits: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn subss_lifts_float_subtraction() {
+        let code: [u8; 5] = [0xf3, 0x0f, 0x5c, 0xc1, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb100, Abi::SysV).expect("subss leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Float));
+        assert_eq!(rec.fp_params, vec![ScalarType::Float, ScalarType::Float]);
+        assert!(
+            rec.source.contains("float recovered(float a0, float a1)"),
+            "float signature expected: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("(fp_f_from_bits((uint32_t)x_xmm0) - fp_f_from_bits((uint32_t)x_xmm1))"),
+            "subss must recover a float subtraction: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn cvtsi2sd_recovers_signed_int_to_double_conversion() {
+        let code: [u8; 6] = [0xf2, 0x48, 0x0f, 0x2a, 0xc1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0xb200).expect("cvtsi2sd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.fp_params, vec![ScalarType::Int]);
+        assert!(
+            rec.source.contains("double recovered(uint64_t a0)"),
+            "int-to-double takes an integer param and returns double: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("x_xmm0 = fp_d_to_bits((double)((int64_t)r_rcx));"),
+            "cvtsi2sd must cast the signed 64-bit int to a double: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn cvttsd2si_recovers_double_to_int_truncation() {
+        let code: [u8; 6] = [0xf2, 0x48, 0x0f, 0x2c, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb300, Abi::SysV).expect("cvttsd2si leaf");
+        assert_eq!(rec.returns_fp, None);
+        assert_eq!(rec.return_width_bits, 64);
+        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert!(
+            rec.source.contains("uint64_t recovered(double a0)"),
+            "double-to-int returns an integer from a double param: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rax = (uint64_t)(int64_t)(fp_d_from_bits(x_xmm0));"),
+            "cvttsd2si must truncate the double toward zero into a signed int: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn cvtss2sd_recovers_float_to_double_widening() {
+        let code: [u8; 5] = [0xf3, 0x0f, 0x5a, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb400, Abi::SysV).expect("cvtss2sd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert!(
+            rec.source
+                .contains("x_xmm0 = fp_d_to_bits((double)(fp_f_from_bits((uint32_t)x_xmm0)));"),
+            "cvtss2sd must widen a float to a double: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn ucomisd_branch_recovers_fp_compare_and_select() {
+        let code: [u8; 20] = [
+            0x66, 0x0f, 0x2e, 0xc8, 0x76, 0x05, 0xf2, 0x0f, 0x5e, 0xc1, 0xc3, 0xf2, 0x0f, 0x5e,
+            0xc8, 0x66, 0x0f, 0x28, 0xc1, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb500, Abi::SysV).expect("ucomisd branch leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert!(
+            rec.source.contains("if ("),
+            "compare must lower to a branch: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("fp_d_from_bits(x_xmm1)")
+                && rec.source.contains("fp_d_from_bits(x_xmm0)"),
+            "the fp compare must read both xmm operands as doubles: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("if ((fp_d_from_bits(x_xmm1)) > (fp_d_from_bits(x_xmm0)))"),
+            "ucomisd xmm1,xmm0 + jbe (taken to the else arm) must recover the negated `>` guard: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn packed_sse_is_rejected_as_out_of_class() {
+        let code: [u8; 5] = [0x66, 0x0f, 0x58, 0xc1, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0xb600, Abi::SysV)
+            .expect_err("addpd is a packed SIMD op outside the scalar float class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn minsd_lifts_to_a_scalar_min_ternary() {
+        let code: [u8; 5] = [0xf2, 0x0f, 0x5d, 0xc1, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb700, Abi::SysV).expect("minsd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(rec.fp_params, vec![ScalarType::Double, ScalarType::Double]);
+        assert!(
+            rec.source.contains(
+                "((fp_d_from_bits(x_xmm0) < fp_d_from_bits(x_xmm1)) ? fp_d_from_bits(x_xmm0) : fp_d_from_bits(x_xmm1))"
+            ),
+            "minsd xmm0,xmm1 must lower to the dest<src ? dest : src select that mirrors the hardware NaN and signed-zero result: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn packed_minpd_is_rejected_as_out_of_class() {
+        let code: [u8; 5] = [0x66, 0x0f, 0x5d, 0xc1, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0xb710, Abi::SysV)
+            .expect_err("packed minpd operates on two lanes and is outside the scalar float class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn movsd_load_and_store_round_trips_through_memory() {
+        let code: [u8; 11] = [
+            0xf2, 0x0f, 0x10, 0x07, 0xf2, 0x0f, 0x58, 0xc0, 0xf2, 0x0f, 0x11,
+        ];
+        let mut with_store: Vec<u8> = code.to_vec();
+        with_store.push(0x07);
+        with_store.push(0xc3);
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&with_store, 0xb800, Abi::SysV).expect("movsd mem leaf");
+        assert!(
+            rec.source.contains("(*(double*)(uintptr_t)"),
+            "movsd load must dereference the address as a double: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("x_xmm0"),
+            "the loaded scalar lands in an xmm var: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn xor_self_zeroes_without_reading_the_register() {
+        let code: [u8; 6] = [0x31, 0xc9, 0x48, 0x01, 0xc8, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code[..], 0x1000, Abi::SysV).expect("xor-zero leaf");
+        assert!(
+            !rec.params.contains(&Reg::Rcx),
+            "xor ecx,ecx must not make rcx a parameter: {:?}",
+            rec.params
+        );
+        assert!(
+            rec.source
+                .contains("r_rcx = (((uint64_t)(int64_t)0LL) & 0xffffffffULL)"),
+            "xor ecx,ecx must lower to a zeroing assignment: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn setl_after_cmp_recovers_signed_less_than_boolean() {
+        let code: [u8; 10] = [0x48, 0x39, 0xd1, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0xc000).expect("setl leaf");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(
+            rec.source.contains(
+                "r_rax = (r_rax & 0xffffffffffffff00ULL) | (uint64_t)((((int64_t)(int64_t)(r_rcx)) < ((int64_t)(int64_t)(r_rdx))) ? 1 : 0);"
+            ),
+            "cmp+setl must write only the low byte of rax with a signed-less-than predicate: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("((uint32_t)(uint8_t)((r_rax) & 0xffULL))"),
+            "the following movzx eax,al must zero-extend the boolean byte: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn sete_after_test_recovers_equal_zero_boolean() {
+        let code: [u8; 8] = [0x48, 0x85, 0xc9, 0x0f, 0x94, 0xc0, 0x90, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xc100, Abi::SysV).expect("sete leaf");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert!(
+            rec.source.contains(
+                "r_rax = (r_rax & 0xffffffffffffff00ULL) | (uint64_t)((((int64_t)(int64_t)(r_rcx)) == 0) ? 1 : 0);"
+            ),
+            "test rcx,rcx + sete must recover an equal-zero boolean into the low byte: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn setcc_preserves_the_upper_bytes_of_the_destination() {
+        let code: [u8; 10] = [0x48, 0x39, 0xd1, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0xc200).expect("setl leaf");
+        assert!(
+            rec.source.contains("& 0xffffffffffffff00ULL)"),
+            "setcc must be modeled as a byte write that keeps the upper 56 bits: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn setcc_without_preceding_flags_is_rejected() {
+        let code: [u8; 4] = [0x0f, 0x9c, 0xc0, 0xc3];
+        let err: Error = recover_leaf_function(&code, 0xc300)
+            .expect_err("a setcc with no tracked comparison must be out of class");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn setcc_with_signed_order_over_fp_flags_is_rejected() {
+        let code: [u8; 8] = [0x66, 0x0f, 0x2e, 0xc1, 0x0f, 0x9f, 0xc0, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0xc400, Abi::SysV).expect_err(
+            "setg (signed order) is not sound against unordered ucomisd flags and must be rejected",
+        );
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn switch_return_unifies_uniform_double_cases_to_fp() {
+        let states: [Option<FpWidth>; 3] =
+            [Some(FpWidth::F64), Some(FpWidth::F64), Some(FpWidth::F64)];
+        let ret: FnReturn =
+            unify_fp_return(&states, Width::W64).expect("uniform double cases type as fp");
+        assert_eq!(ret, FnReturn::Fp(FpWidth::F64));
+    }
+
+    #[test]
+    fn switch_return_all_int_cases_stay_int() {
+        let states: [Option<FpWidth>; 3] = [None, None, None];
+        let ret: FnReturn =
+            unify_fp_return(&states, Width::W32).expect("all-int cases type as int");
+        assert_eq!(ret, FnReturn::Int(Width::W32));
+    }
+
+    #[test]
+    fn switch_return_mixed_int_and_fp_cases_are_rejected() {
+        let states: [Option<FpWidth>; 3] = [Some(FpWidth::F64), None, Some(FpWidth::F64)];
+        let err: Error = unify_fp_return(&states, Width::W64)
+            .expect_err("a switch mixing an integer and a float return cannot be typed");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn switch_return_conflicting_fp_widths_are_rejected() {
+        let states: [Option<FpWidth>; 2] = [Some(FpWidth::F64), Some(FpWidth::F32)];
+        let err: Error = unify_fp_return(&states, Width::W64)
+            .expect_err("a switch returning both a double and a float cannot be typed");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn sqrtsd_lifts_scalar_double_square_root() {
+        let code: [u8; 5] = [0xf2, 0x0f, 0x51, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd000, Abi::SysV).expect("sqrtsd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert!(
+            rec.source.contains(
+                "x_xmm0 = fp_d_to_bits((double)(__builtin_sqrt(fp_d_from_bits(x_xmm0))));"
+            ),
+            "sqrtsd must lower to a double __builtin_sqrt over the low xmm0 bits: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn sqrtss_lifts_scalar_single_square_root() {
+        let code: [u8; 5] = [0xf3, 0x0f, 0x51, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd100, Abi::SysV).expect("sqrtss leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Float));
+        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert!(
+            rec.source
+                .contains("__builtin_sqrtf(fp_f_from_bits((uint32_t)x_xmm0))"),
+            "sqrtss must lower to a float __builtin_sqrtf: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn xorps_self_zeroes_the_xmm_register() {
+        let code: [u8; 4] = [0x0f, 0x57, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd200, Abi::SysV).expect("xorps zero leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert!(
+            rec.fp_params.is_empty(),
+            "self-xor zeroing reads no register and takes no fp param: {:?}",
+            rec.fp_params
+        );
+        assert!(
+            rec.source.contains(
+                "x_xmm0 = fp_d_to_bits((double)(fp_d_from_bits(0x0000000000000000ULL)));"
+            ),
+            "xorps xmm0,xmm0 must materialize a 0.0 constant: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn xorpd_zero_feeds_addsd_as_an_additive_identity() {
+        let code: [u8; 10] = [0x66, 0x0f, 0x57, 0xc9, 0xf2, 0x0f, 0x58, 0xc1, 0x90, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd300, Abi::SysV).expect("xorpd+addsd leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(
+            rec.fp_params,
+            vec![ScalarType::Double],
+            "only xmm0 is read before write; the zeroed xmm1 is not a param: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("(fp_d_from_bits(x_xmm0) + fp_d_from_bits(x_xmm1))"),
+            "the addsd of the zeroed register must survive: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movq_gpr_to_xmm_bitcasts_int_to_double() {
+        let code: [u8; 6] = [0x66, 0x48, 0x0f, 0x6e, 0xc1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0xd400).expect("movq gpr->xmm leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Double));
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.fp_params, vec![ScalarType::Int]);
+        assert!(
+            rec.source.contains("x_xmm0 = r_rcx;")
+                && rec.source.contains("return fp_d_from_bits(x_xmm0);"),
+            "movq xmm0,rcx must copy the integer bits into xmm0 and return them as a double: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movq_xmm_to_gpr_bitcasts_double_to_int() {
+        let code: [u8; 6] = [0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd500, Abi::SysV).expect("movq xmm->gpr leaf");
+        assert_eq!(rec.returns_fp, None);
+        assert_eq!(rec.return_width_bits, 64);
+        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert!(
+            rec.source.contains("r_rax = x_xmm0;"),
+            "movq rax,xmm0 must copy the low double bits into rax verbatim: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movd_gpr_to_xmm_bitcasts_int_to_float() {
+        let code: [u8; 5] = [0x66, 0x0f, 0x6e, 0xc1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0xd600).expect("movd gpr->xmm leaf");
+        assert_eq!(rec.returns_fp, Some(ScalarType::Float));
+        assert!(
+            rec.source.contains("x_xmm0 = (uint32_t)r_rcx;"),
+            "movd xmm0,ecx must copy the low 32 bits into xmm0: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn movd_xmm_to_gpr_bitcasts_float_to_int() {
+        let code: [u8; 5] = [0x66, 0x0f, 0x7e, 0xc0, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xd700, Abi::SysV).expect("movd xmm->gpr leaf");
+        assert_eq!(rec.returns_fp, None);
+        assert_eq!(rec.return_width_bits, 32);
+        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert!(
+            rec.source.contains("(uint32_t)x_xmm0"),
+            "movd eax,xmm0 must copy the low 32 float bits into eax: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn cross_register_xorps_is_rejected_as_a_real_bitwise_op() {
+        let code: [u8; 4] = [0x0f, 0x57, 0xc1, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0xd800, Abi::SysV).expect_err(
+            "xorps of two distinct registers is a real 128-bit bitwise op, not a zero idiom",
+        );
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn cross_register_pxor_is_rejected_as_a_real_bitwise_op() {
+        let code: [u8; 5] = [0x66, 0x0f, 0xef, 0xc1, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0xd900, Abi::SysV).expect_err(
+            "pxor of two distinct registers is a real 128-bit bitwise op outside the scalar class",
+        );
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn rbp_frame_arg_spill_reload_models_slots_as_a_local_frame() {
+        let code: [u8; 22] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x8b,
+            0x45, 0xf8, 0x48, 0x03, 0x45, 0xf0, 0x5d, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0x8000, Abi::SysV).expect("rbp-frame spill add");
+        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi]);
+        assert!(
+            rec.source.contains("unsigned char stack_frame["),
+            "expected a real local frame backing the spill slots: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rbp = (uint64_t)(uintptr_t)(stack_frame +"),
+            "the frame pointer must be aimed into the local frame array: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn rsp_frame_arg_spill_reload_models_slots_as_a_local_frame() {
+        let code: [u8; 27] = [
+            0x48, 0x83, 0xec, 0x10, 0x48, 0x89, 0x54, 0x24, 0x08, 0x48, 0x89, 0x0c, 0x24, 0x48,
+            0x8b, 0x04, 0x24, 0x48, 0x03, 0x44, 0x24, 0x08, 0x48, 0x83, 0xc4, 0x10, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function(&code, 0x8100).expect("frameless rsp-frame spill add");
+        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(
+            rec.source
+                .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame +"),
+            "the stack pointer must be aimed into the local frame array: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn taking_the_address_of_a_stack_slot_is_soundly_rejected() {
+        let code: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x45, 0xf8, 0x5d, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0x8200, Abi::SysV)
+            .expect_err("a leaked frame-slot address is not a modelable fixed slot");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn reading_the_frame_pointer_as_a_value_is_soundly_rejected() {
+        let code: [u8; 9] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0xe8, 0x5d, 0xc3];
+        let err: Error = recover_leaf_function_abi(&code, 0x8300, Abi::SysV)
+            .expect_err("using rbp as a value escapes the frame model");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    const SYSV_MK3_SRET: [u8; 29] = [
+        0x48, 0x89, 0xf8, 0x48, 0x8d, 0x0c, 0x32, 0x48, 0x89, 0x0f, 0x48, 0x89, 0xf1, 0x48, 0x29,
+        0xd1, 0x48, 0x89, 0x4f, 0x08, 0x48, 0x0f, 0xaf, 0xd6, 0x48, 0x89, 0x57, 0x10, 0xc3,
+    ];
+
+    #[test]
+    fn sysv_memory_class_struct_return_lifts_to_by_value_struct() {
+        let rec: LeafRecovery = recover_leaf_function_abi(&SYSV_MK3_SRET, 0x1000, Abi::SysV)
+            .expect("a three-qword sret leaf must lift");
+        let sret: &SretReturn = rec.sret.as_ref().expect("must be recognized as sret");
+        assert_eq!(sret.field_widths, vec![8, 8, 8]);
+        assert_eq!(sret.size, 24);
+        assert_eq!(
+            rec.params,
+            vec![Reg::Rsi, Reg::Rdx],
+            "the hidden pointer in rdi must be dropped, leaving the two real args"
+        );
+        assert!(
+            rec.source
+                .contains("typedef struct {\n    uint64_t f0;\n    uint64_t f1;\n    uint64_t f2;\n} recovered_sret_t;"),
+            "the reconstructed struct type must be emitted: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("recovered_sret_t recovered("),
+            "the recovered function must return the struct by value: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("recovered_sret_t __sret;")
+                && rec.source.contains("r_rdi = (uint64_t)(uintptr_t)&__sret;")
+                && rec.source.contains("return __sret;"),
+            "the hidden pointer must target the local struct and be returned by value: {}",
+            rec.source
+        );
+    }
+
+    const MSX64_MK3_SRET: [u8; 29] = [
+        0x48, 0x89, 0xc8, 0x4a, 0x8d, 0x0c, 0x02, 0x48, 0x89, 0x08, 0x48, 0x89, 0xd1, 0x4c, 0x29,
+        0xc1, 0x48, 0x89, 0x48, 0x08, 0x49, 0x0f, 0xaf, 0xd0, 0x48, 0x89, 0x50, 0x10, 0xc3,
+    ];
+
+    #[test]
+    fn msx64_memory_class_struct_return_drops_hidden_rcx() {
+        let rec: LeafRecovery = recover_leaf_function_abi(&MSX64_MK3_SRET, 0x1000, Abi::MsX64)
+            .expect("an msx64 sret leaf must lift");
+        let sret: &SretReturn = rec.sret.as_ref().expect("must be recognized as sret");
+        assert_eq!(sret.field_widths, vec![8, 8, 8]);
+        assert_eq!(sret.size, 24);
+        assert_eq!(
+            rec.params,
+            vec![Reg::Rdx, Reg::R8],
+            "the hidden pointer copied out of rcx must be dropped for the win64 ABI"
+        );
+        assert!(
+            rec.source.contains("recovered_sret_t recovered(")
+                && rec.source.contains("return __sret;"),
+            "win64 sret must reconstruct a by-value struct return: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn two_qword_fill_is_register_class_not_sret_on_sysv() {
+        let code: [u8; 11] = [
+            0x48, 0x89, 0xf8, 0x48, 0x89, 0x37, 0x48, 0x89, 0x57, 0x08, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, Abi::SysV)
+            .expect("a two-qword pointer fill still lifts");
+        assert!(
+            rec.sret.is_none(),
+            "a 16-byte fill is SysV register class, not a hidden-pointer sret: {}",
+            rec.source
+        );
+    }
+}

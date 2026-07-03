@@ -1,0 +1,4082 @@
+{
+  "function_count": 7,
+  "functions": [
+    {
+      "address": 2101600,
+      "blocks": [
+        {
+          "end": 2101616,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "push",
+              "offset": 2101600,
+              "operands": [
+                "rax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": 2101632,
+              "class": "call",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "call",
+              "offset": 2101601,
+              "operands": [
+                "0000000000201180h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101606,
+              "operands": [
+                "[rsp+4]",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 1,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 1
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101610,
+              "operands": [
+                "eax",
+                "[rsp+4]"
+              ],
+              "segments": {
+                "displacement": 1,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 1
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL8086"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xchg",
+              "offset": 2101614,
+              "operands": [
+                "ax",
+                "ax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 1,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101600,
+          "successors": [
+            2101616
+          ]
+        },
+        {
+          "end": 2101632,
+          "instructions": [
+            {
+              "branch_target": 2101616,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101616,
+              "operands": [
+                "short 0000000000201170h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101618,
+              "operands": [
+                "word [rax+rax]"
+              ],
+              "segments": {
+                "displacement": 4,
+                "immediate": 0,
+                "legacy_prefix": 6,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 1
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101616,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101632,
+      "instruction_count": 7,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "push",
+          "offset": 2101600,
+          "operands": [
+            "rax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": 2101632,
+          "class": "call",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "call",
+          "offset": 2101601,
+          "operands": [
+            "0000000000201180h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101606,
+          "operands": [
+            "[rsp+4]",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 1,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 1
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101610,
+          "operands": [
+            "eax",
+            "[rsp+4]"
+          ],
+          "segments": {
+            "displacement": 1,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 1
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL8086"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xchg",
+          "offset": 2101614,
+          "operands": [
+            "ax",
+            "ax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 1,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101616,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101616,
+          "operands": [
+            "short 0000000000201170h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101618,
+          "operands": [
+            "word [rax+rax]"
+          ],
+          "segments": {
+            "displacement": 4,
+            "immediate": 0,
+            "legacy_prefix": 6,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 1
+          }
+        }
+      ],
+      "is_export": true,
+      "name": "_start"
+    },
+    {
+      "address": 2101632,
+      "blocks": [
+        {
+          "end": 2101680,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "push",
+              "offset": 2101632,
+              "operands": [
+                "rbx"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101633,
+              "operands": [
+                "edi",
+                "11h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101680,
+              "class": "call",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "call",
+              "offset": 2101638,
+              "operands": [
+                "00000000002011B0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101643,
+              "operands": [
+                "ebx",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101645,
+              "operands": [
+                "edi",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101728,
+              "class": "call",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "call",
+              "offset": 2101647,
+              "operands": [
+                "00000000002011E0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "and",
+              "offset": 2101652,
+              "operands": [
+                "ebx",
+                "7"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101655,
+              "operands": [
+                "edi",
+                "ebx"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101657,
+              "operands": [
+                "esi",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101744,
+              "class": "call",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "call",
+              "offset": 2101659,
+              "operands": [
+                "00000000002011F0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101664,
+              "operands": [
+                "edi",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101666,
+              "operands": [
+                "esi",
+                "3E8h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "pop",
+              "offset": 2101671,
+              "operands": [
+                "rbx"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": 2101808,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101672,
+              "operands": [
+                "0000000000201230h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101677,
+              "operands": [
+                "dword [rax]"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101632,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101680,
+      "instruction_count": 15,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "push",
+          "offset": 2101632,
+          "operands": [
+            "rbx"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101633,
+          "operands": [
+            "edi",
+            "11h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101680,
+          "class": "call",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "call",
+          "offset": 2101638,
+          "operands": [
+            "00000000002011B0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101643,
+          "operands": [
+            "ebx",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101645,
+          "operands": [
+            "edi",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101728,
+          "class": "call",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "call",
+          "offset": 2101647,
+          "operands": [
+            "00000000002011E0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "and",
+          "offset": 2101652,
+          "operands": [
+            "ebx",
+            "7"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101655,
+          "operands": [
+            "edi",
+            "ebx"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101657,
+          "operands": [
+            "esi",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101744,
+          "class": "call",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "call",
+          "offset": 2101659,
+          "operands": [
+            "00000000002011F0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101664,
+          "operands": [
+            "edi",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101666,
+          "operands": [
+            "esi",
+            "3E8h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "pop",
+          "offset": 2101671,
+          "operands": [
+            "rbx"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": 2101808,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101672,
+          "operands": [
+            "0000000000201230h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101677,
+          "operands": [
+            "dword [rax]"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "compute"
+    },
+    {
+      "address": 2101680,
+      "blocks": [
+        {
+          "end": 2101684,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "test",
+              "offset": 2101680,
+              "operands": [
+                "edi",
+                "edi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101718,
+              "class": "conditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jle",
+              "offset": 2101682,
+              "operands": [
+                "short 00000000002011D6h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "conditional",
+          "start": 2101680,
+          "successors": [
+            2101684,
+            2101718
+          ]
+        },
+        {
+          "end": 2101696,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "push",
+              "offset": 2101684,
+              "operands": [
+                "rbp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "push",
+              "offset": 2101685,
+              "operands": [
+                "rbx"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "push",
+              "offset": 2101686,
+              "operands": [
+                "rax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101687,
+              "operands": [
+                "ebx",
+                "edi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xor",
+              "offset": 2101689,
+              "operands": [
+                "ebp",
+                "ebp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xor",
+              "offset": 2101691,
+              "operands": [
+                "eax",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101693,
+              "operands": [
+                "dword [rax]"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101684,
+          "successors": [
+            2101696
+          ]
+        },
+        {
+          "end": 2101711,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101696,
+              "operands": [
+                "edi",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101698,
+              "operands": [
+                "esi",
+                "ebp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101824,
+              "class": "call",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "call",
+              "offset": 2101700,
+              "operands": [
+                "0000000000201240h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": -8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "inc",
+              "offset": 2101705,
+              "operands": [
+                "ebp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "cmp",
+              "offset": 2101707,
+              "operands": [
+                "ebx",
+                "ebp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101696,
+              "class": "conditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jne",
+              "offset": 2101709,
+              "operands": [
+                "short 00000000002011C0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "conditional",
+          "start": 2101696,
+          "successors": [
+            2101696,
+            2101711
+          ]
+        },
+        {
+          "end": 2101718,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "add",
+              "offset": 2101711,
+              "operands": [
+                "rsp",
+                "8"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 1,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "pop",
+              "offset": 2101715,
+              "operands": [
+                "rbx"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "pop",
+              "offset": 2101716,
+              "operands": [
+                "rbp"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101717,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            }
+          ],
+          "kind": "return",
+          "start": 2101711,
+          "successors": []
+        },
+        {
+          "end": 2101728,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xor",
+              "offset": 2101718,
+              "operands": [
+                "eax",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101720,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101721,
+              "operands": [
+                "dword [rax]"
+              ],
+              "segments": {
+                "displacement": 4,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101718,
+          "successors": []
+        }
+      ],
+      "complexity": 2,
+      "end": 2101728,
+      "instruction_count": 22,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "test",
+          "offset": 2101680,
+          "operands": [
+            "edi",
+            "edi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101718,
+          "class": "conditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jle",
+          "offset": 2101682,
+          "operands": [
+            "short 00000000002011D6h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "push",
+          "offset": 2101684,
+          "operands": [
+            "rbp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "push",
+          "offset": 2101685,
+          "operands": [
+            "rbx"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "push",
+          "offset": 2101686,
+          "operands": [
+            "rax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101687,
+          "operands": [
+            "ebx",
+            "edi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xor",
+          "offset": 2101689,
+          "operands": [
+            "ebp",
+            "ebp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xor",
+          "offset": 2101691,
+          "operands": [
+            "eax",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101693,
+          "operands": [
+            "dword [rax]"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101696,
+          "operands": [
+            "edi",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101698,
+          "operands": [
+            "esi",
+            "ebp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101824,
+          "class": "call",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "call",
+          "offset": 2101700,
+          "operands": [
+            "0000000000201240h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": -8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "inc",
+          "offset": 2101705,
+          "operands": [
+            "ebp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "cmp",
+          "offset": 2101707,
+          "operands": [
+            "ebx",
+            "ebp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101696,
+          "class": "conditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jne",
+          "offset": 2101709,
+          "operands": [
+            "short 00000000002011C0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "add",
+          "offset": 2101711,
+          "operands": [
+            "rsp",
+            "8"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 1,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "pop",
+          "offset": 2101715,
+          "operands": [
+            "rbx"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "pop",
+          "offset": 2101716,
+          "operands": [
+            "rbp"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101717,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xor",
+          "offset": 2101718,
+          "operands": [
+            "eax",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101720,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101721,
+          "operands": [
+            "dword [rax]"
+          ],
+          "segments": {
+            "displacement": 4,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "sum_to"
+    },
+    {
+      "address": 2101728,
+      "blocks": [
+        {
+          "end": 2101744,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "lea",
+              "offset": 2101728,
+              "operands": [
+                "eax",
+                "[rdi+rdi]"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 1
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101731,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101732,
+              "operands": [
+                "word [rax+rax]"
+              ],
+              "segments": {
+                "displacement": 4,
+                "immediate": 0,
+                "legacy_prefix": 4,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 1
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101728,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101744,
+      "instruction_count": 3,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "lea",
+          "offset": 2101728,
+          "operands": [
+            "eax",
+            "[rdi+rdi]"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 1
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101731,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101732,
+          "operands": [
+            "word [rax+rax]"
+          ],
+          "segments": {
+            "displacement": 4,
+            "immediate": 0,
+            "legacy_prefix": 4,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 1
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "mul"
+    },
+    {
+      "address": 2101744,
+      "blocks": [
+        {
+          "end": 2101808,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101744,
+              "operands": [
+                "eax",
+                "edi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101746,
+              "operands": [
+                "qword [rax*8+200120h]"
+              ],
+              "segments": {
+                "displacement": 4,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 1
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101753,
+              "operands": [
+                "edi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101755,
+              "operands": [
+                "esi",
+                "1"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101824,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101760,
+              "operands": [
+                "short 0000000000201240h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "dec",
+              "offset": 2101762,
+              "operands": [
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101764,
+              "operands": [
+                "eax",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101766,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101767,
+              "operands": [
+                "edi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101680,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101769,
+              "operands": [
+                "short 00000000002011B0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101771,
+              "operands": [
+                "edi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101773,
+              "operands": [
+                "esi",
+                "0Ah"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 4,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101808,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101778,
+              "operands": [
+                "short 0000000000201230h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "add",
+              "offset": 2101780,
+              "operands": [
+                "esi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101782,
+              "operands": [
+                "eax",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101784,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101785,
+              "operands": [
+                "edi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": 2101728,
+              "class": "unconditional-jump",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "jmp",
+              "offset": 2101787,
+              "operands": [
+                "short 00000000002011E0h"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xor",
+              "offset": 2101789,
+              "operands": [
+                "esi",
+                "7"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 1,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "mov",
+              "offset": 2101792,
+              "operands": [
+                "eax",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101794,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101795,
+              "operands": [
+                "word [rax+rax]"
+              ],
+              "segments": {
+                "displacement": 4,
+                "immediate": 0,
+                "legacy_prefix": 5,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 1
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101744,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101808,
+      "instruction_count": 22,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101744,
+          "operands": [
+            "eax",
+            "edi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101746,
+          "operands": [
+            "qword [rax*8+200120h]"
+          ],
+          "segments": {
+            "displacement": 4,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 1
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101753,
+          "operands": [
+            "edi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101755,
+          "operands": [
+            "esi",
+            "1"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101824,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101760,
+          "operands": [
+            "short 0000000000201240h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "dec",
+          "offset": 2101762,
+          "operands": [
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101764,
+          "operands": [
+            "eax",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101766,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101767,
+          "operands": [
+            "edi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101680,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101769,
+          "operands": [
+            "short 00000000002011B0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101771,
+          "operands": [
+            "edi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101773,
+          "operands": [
+            "esi",
+            "0Ah"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 4,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101808,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101778,
+          "operands": [
+            "short 0000000000201230h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "add",
+          "offset": 2101780,
+          "operands": [
+            "esi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101782,
+          "operands": [
+            "eax",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101784,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101785,
+          "operands": [
+            "edi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": 2101728,
+          "class": "unconditional-jump",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "jmp",
+          "offset": 2101787,
+          "operands": [
+            "short 00000000002011E0h"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xor",
+          "offset": 2101789,
+          "operands": [
+            "esi",
+            "7"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 1,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "mov",
+          "offset": 2101792,
+          "operands": [
+            "eax",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101794,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101795,
+          "operands": [
+            "word [rax+rax]"
+          ],
+          "segments": {
+            "displacement": 4,
+            "immediate": 0,
+            "legacy_prefix": 5,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 1
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "dispatch"
+    },
+    {
+      "address": 2101808,
+      "blocks": [
+        {
+          "end": 2101824,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "cmp",
+              "offset": 2101808,
+              "operands": [
+                "edi",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "CMOV"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "cmovl",
+              "offset": 2101810,
+              "operands": [
+                "esi",
+                "edi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "xor",
+              "offset": 2101813,
+              "operands": [
+                "eax",
+                "eax"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "test",
+              "offset": 2101815,
+              "operands": [
+                "edi",
+                "edi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "CMOV"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "cmovns",
+              "offset": 2101817,
+              "operands": [
+                "eax",
+                "esi"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101820,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "MULTIBYTENOP"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "nop",
+              "offset": 2101821,
+              "operands": [
+                "dword [rax]"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 2,
+                "sib": 0
+              }
+            }
+          ],
+          "kind": "fall-through",
+          "start": 2101808,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101824,
+      "instruction_count": 7,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "cmp",
+          "offset": 2101808,
+          "operands": [
+            "edi",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "CMOV"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "cmovl",
+          "offset": 2101810,
+          "operands": [
+            "esi",
+            "edi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "xor",
+          "offset": 2101813,
+          "operands": [
+            "eax",
+            "eax"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "test",
+          "offset": 2101815,
+          "operands": [
+            "edi",
+            "edi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "CMOV"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "cmovns",
+          "offset": 2101817,
+          "operands": [
+            "eax",
+            "esi"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101820,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "MULTIBYTENOP"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "nop",
+          "offset": 2101821,
+          "operands": [
+            "dword [rax]"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 2,
+            "sib": 0
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "clamp_val"
+    },
+    {
+      "address": 2101824,
+      "blocks": [
+        {
+          "end": 2101828,
+          "instructions": [
+            {
+              "branch_target": null,
+              "class": "other",
+              "isa": {
+                "cpuid_features": [
+                  "INTEL386"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "lea",
+              "offset": 2101824,
+              "operands": [
+                "eax",
+                "[rdi+rsi]"
+              ],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 1,
+                "opcode": 1,
+                "sib": 1
+              }
+            },
+            {
+              "branch_target": null,
+              "class": "return",
+              "isa": {
+                "cpuid_features": [
+                  "X64"
+                ],
+                "encoding": "legacy"
+              },
+              "mnemonic": "ret",
+              "offset": 2101827,
+              "operands": [],
+              "segments": {
+                "displacement": 0,
+                "immediate": 0,
+                "legacy_prefix": 0,
+                "modrm": 0,
+                "opcode": 1,
+                "sib": 0
+              },
+              "stack_effect": {
+                "fpu_increment": 0,
+                "fpu_writes_top": false,
+                "is_stack": true,
+                "sp_delta": 8
+              }
+            }
+          ],
+          "kind": "return",
+          "start": 2101824,
+          "successors": []
+        }
+      ],
+      "complexity": 1,
+      "end": 2101828,
+      "instruction_count": 2,
+      "instructions": [
+        {
+          "branch_target": null,
+          "class": "other",
+          "isa": {
+            "cpuid_features": [
+              "INTEL386"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "lea",
+          "offset": 2101824,
+          "operands": [
+            "eax",
+            "[rdi+rsi]"
+          ],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 1,
+            "opcode": 1,
+            "sib": 1
+          }
+        },
+        {
+          "branch_target": null,
+          "class": "return",
+          "isa": {
+            "cpuid_features": [
+              "X64"
+            ],
+            "encoding": "legacy"
+          },
+          "mnemonic": "ret",
+          "offset": 2101827,
+          "operands": [],
+          "segments": {
+            "displacement": 0,
+            "immediate": 0,
+            "legacy_prefix": 0,
+            "modrm": 0,
+            "opcode": 1,
+            "sib": 0
+          },
+          "stack_effect": {
+            "fpu_increment": 0,
+            "fpu_writes_top": false,
+            "is_stack": true,
+            "sp_delta": 8
+          }
+        }
+      ],
+      "is_export": false,
+      "name": "add"
+    }
+  ],
+  "schema": "disrobe.native.disasm/v2"
+}

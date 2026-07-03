@@ -1,0 +1,567 @@
+schema_version = 1
+description = "Real-tool-generated container fixtures for disrobe-binfmt. All built from a shared 150-file 6.7MB payload covering nested directories (5 levels deep), ASCII/Unicode/special-character filenames, 120 small files, 5MB random binary, 1MB sparse file with HEAD+TAIL markers, symlinks (where supported), hardlinks (where supported), restricted permissions (0444/0600/0755), and empty files."
+
+[payload]
+source_dir = ".developer/scratch/binfmt-build/payload"
+linux_overlay_dir = "/root/binfmt-payload (built by .developer/scratch/binfmt-build/bake_linux.sh)"
+file_count = 150
+total_bytes_approx = 7_000_000
+nested_depth = 5
+unicode_names = true
+special_char_names = ["spaces in name.txt", "parens(1).txt", "amp&sign.txt", "hash#sign.txt", "pct%sign.txt", "plus+sign.txt"]
+long_filename_present = true
+sparse_file_present = true
+symlink_targets = ["./hello.txt", "./specials"]
+
+[[fixtures]]
+path = "squashfs/hello.squashfs"
+format = "squashfs-v4-xz"
+tool = "squashfs-tools mksquashfs 4.7.5"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+has_symlinks = true
+has_hardlinks = true
+has_permissions = true
+
+[[fixtures]]
+path = "snap/hello.snap"
+format = "snap (squashfs container)"
+tool = "squashfs-tools mksquashfs 4.7.5"
+provenance = "byte-identical copy of squashfs/hello.squashfs (snap pack is mksquashfs under the hood)"
+note = "real snap pack tooling requires snapd + meta/snap.yaml schema, which adds no parsing surface beyond the underlying squashfs layout for the binfmt walker"
+
+[[fixtures]]
+path = "appimage/hello.AppImage"
+format = "AppImage type 2"
+tool = "disrobe baker: ELF stub (0x10000 header) + real squashfs concat"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_appimage"
+note = "tail squashfs is the same real mksquashfs output as squashfs/hello.squashfs; ELF header has correct e_ident + AppImage type-2 magic (AI\\x02) at offset 8"
+
+[[fixtures]]
+path = "cramfs/hello.cramfs"
+format = "cramfs"
+tool = "npitre/cramfs-tools mkcramfs (HEAD 2026-05-25)"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+
+[[fixtures]]
+path = "ext4/hello.ext4"
+format = "ext4"
+tool = "e2fsprogs mke2fs 1.47.2"
+provenance = "WSL Ubuntu resolute; .developer/scratch/binfmt-build/bake_linux.sh"
+size_bytes = 16_777_216
+note = "16 MiB filesystem image with 4096 4k blocks, populated with full payload via mke2fs -d"
+
+[[fixtures]]
+path = "msi/hello.msi"
+format = "Windows Installer (msi, OLE compound)"
+tool = "WiX Toolset v7.0.0"
+provenance = "winget WixToolset.WiXCLI; .developer/scratch/binfmt-build/wix/gen_wxs.ps1 + wix build"
+embedded_cab = true
+component_count = 145
+
+[[fixtures]]
+path = "msix/hello.msix"
+format = "MSIX / AppX (signed-zip container)"
+tool = "Windows SDK 10.0.26100 makeappx.exe"
+provenance = "winget Windows SDK; .developer/scratch/binfmt-build/msix/src + makeappx pack"
+manifest = "AppxManifest.xml with runFullTrust capability"
+
+[[fixtures]]
+path = "nsis/hello.exe"
+format = "NSIS installer (PE with NullsoftInst first-header)"
+tool = "Nullsoft Install System 3.12"
+provenance = "winget NSIS.NSIS; .developer/scratch/binfmt-build/nsis/hello.nsi (File /r solid LZMA)"
+
+[[fixtures]]
+path = "oci/hello.oci.tar"
+format = "OCI image layout v1 (tar of oci-layout dir)"
+tool = "disrobe baker: pure-Rust tar + sha256 + gzipped layer"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_oci"
+note = "real index.json + manifest.json + config blobs with computed sha256 digests; layer is tar+gzip of the payload tree; structure matches `docker buildx build --output type=oci`"
+
+[[fixtures]]
+path = "docker/hello.docker.tar"
+format = "Docker image save (tar with manifest.json + repositories + layer.tar)"
+tool = "disrobe baker: pure-Rust tar + sha256"
+provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_docker"
+note = "legacy docker-save layout: top-level manifest.json + repositories + per-layer dir containing layer.tar (uncompressed) + VERSION + json; matches `docker save` v1.x output"
+
+[[fixtures]]
+path = "oci/synthetic/hello.oci.tar"
+format = "OCI image layout v1 (tar of oci-layout dir)"
+provenance = "synthetic"
+tool = "crates/disrobe-binfmt/tests/fixtures/gen_container.rs (cargo run -p disrobe-binfmt --example gen_container_fixture)"
+spec = "OCI Image Layout spec 1.1 (oci-layout + index.json + blobs/sha256/<digest>) + OCI Image Manifest/Index v1"
+note = "committed redistributable stand-in so the end-to-end OCI tar-walk runs in ci where the ~5MB real oci/hello.oci.tar is gitignored. non-circular: the generator emits bytes per the OCI layout spec, the parser under test (containers::oci::parse_oci_index/parse_oci_manifest) is independent code, and synthetic_oci_docker.rs grades against spec-expected outcomes (each blob's sha256 equals its index/manifest digest, schemaVersion==2, layer gunzips to the payload tree), never against generator state. small (no >1MB guard), so the size-bound real-image assertion stays exclusive to the #[ignore]d real_oci.rs."
+
+[[fixtures]]
+path = "docker/synthetic/hello.docker.tar"
+format = "Docker image save (tar with manifest.json + per-layer dir containing layer.tar)"
+provenance = "synthetic"
+tool = "crates/disrobe-binfmt/tests/fixtures/gen_container.rs (cargo run -p disrobe-binfmt --example gen_container_fixture)"
+spec = "docker save v1.x layout: top-level manifest.json array of {Config,RepoTags,Layers} + <layer-id>/layer.tar (uncompressed) + <config-id>.json"
+note = "committed redistributable stand-in so the end-to-end docker-save tar-walk runs in ci where the ~6MB real docker/hello.docker.tar is gitignored. non-circular: generator emits docker-save bytes, the parser under test (containers::docker::parse_docker_manifest) is independent code, and synthetic_oci_docker.rs grades against spec-expected outcomes (manifest resolves the named config + layer.tar entries, layer.tar walks to the payload tree), never against generator state."
+
+[disk_payload]
+description = "Each disk image holds a single authored ASCII file copied to the volume root as HELLO.TXT and again into DOCS as DOCS/NOTES.TXT. The file content is the ground truth for byte-exact filesystem extraction; expected/HELLO.TXT is the verbatim copy."
+file = "disk/expected/HELLO.TXT"
+bytes = 217
+sha256 = "4f9664e4d2006d1788661871e6027455b3b50820b481048aec84f2decfd5130d"
+filesystem = "FAT12 (diskpart format fs=fat on a small volume yields FAT12: 22400 sectors / 8 spc = 2800 clusters < 4085)"
+
+[[fixtures]]
+path = "disk/fat-fixed.vhd"
+format = "VHD fixed (conectix footer, disk type 2), MBR partition type 0x0e, FAT12 volume"
+tool = "Windows diskpart 10.0.26100"
+provenance = "diskpart create vdisk maximum=5 type=fixed; attach; create partition primary; format fs=fat label=DISROBE quick; assign; copy HELLO.TXT + DOCS/NOTES.TXT; detach"
+size_bytes = 5_243_392
+sha256 = "9baeb2e9558fcf7174dc453d8e9f137dbb833dd6f31d30b74d8f42fa89dfc723"
+
+[[fixtures]]
+path = "disk/fat-dynamic.vhd"
+format = "VHD dynamic (cxsparse, disk type 3) with BAT + per-block sector bitmap, FAT12 volume"
+tool = "Windows diskpart 10.0.26100"
+provenance = "diskpart create vdisk maximum=16 type=expandable; attach; create partition primary; format fs=fat label=DISROBE quick; assign; copy HELLO.TXT + DOCS/NOTES.TXT; detach"
+size_bytes = 2_109_440
+sha256 = "1c2d448598cd844d5f778064ae60f832b9ae6483c03964008d68b9959deffa86"
+
+[[fixtures]]
+path = "disk/fat.vhdx"
+format = "VHDX dynamic (vhdxfile, region table + metadata + BAT), FAT12 volume"
+tool = "Windows diskpart 10.0.26100"
+provenance = "diskpart create vdisk maximum=16 type=expandable (.vhdx extension); attach; create partition primary; format fs=fat label=DISROBE quick; assign; copy HELLO.TXT + DOCS/NOTES.TXT; detach"
+size_bytes = 37_748_736
+sha256 = "12a4d3bc6d2d7534791fc6312dce438637711f7914f15648ddc27df99a2bd4f9"
+note = "37 MB is the diskpart floor for a default 32 MiB-block VHDX (one fully-allocated payload block); the file is all zeros past offset ~4.3 MB"
+
+[rar_payload]
+description = "RAR archives store hello.txt, lorem.txt and docs/notes.txt. expected/ holds the verbatim source files used as the ground truth for byte-exact member extraction. lorem.txt is 32800 bytes of repeated text so normal-mode compression actually shrinks it. The two filter-* RAR5 archives each hold one member chosen to trigger a post-LZ filter: x86code.bin is a self-authored compiled x86-64 PE (fibonacci/collatz/ackermann, no I/O) whose dense E8/E9 call/jmp opcodes make the RAR5 analyzer apply the x86 (E8E9) filter; delta.bin is interleaved 3-channel byte ramps that trigger the delta filter. expected/x86code.bin and expected/delta.bin are the verbatim originals. RAR 2.9/3.x applies its e8e9/delta/audio transforms through the rarvm bytecode rather than fixed filter ids, so the rar4 fixtures use plain-text members that exercise the standard (non-vm) lz path."
+
+[[fixtures]]
+path = "rar/store-rar4.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x30 store"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma4 -m0 -r -ep1 store-rar4.rar hello.txt lorem.txt docs"
+size_bytes = 33_227
+sha256 = "10ec79695c0d3a6d90827c50be879ee04dbb8d8ae02482aa59d59f01fbf04bde"
+
+[[fixtures]]
+path = "rar/normal-rar4.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x33 normal (rar 2.9/3.x LZ)"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma4 -m3 -r -ep1 normal-rar4.rar hello.txt lorem.txt docs"
+size_bytes = 586
+sha256 = "1d90630caf13ca512e1ae1b80237b7740662d54962d740562a91ef934a8f7d34"
+
+[[fixtures]]
+path = "rar/store-rar5.rar"
+format = "RAR 5 (Rar!\\x1a\\x07\\x01\\x00), store"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma5 -m0 -r -ep1 store-rar5.rar hello.txt lorem.txt docs"
+size_bytes = 33_289
+sha256 = "0032a4674f12d4386ff60989bd823dacef76fdee503a2b2738cf18ae62de7035"
+
+[[fixtures]]
+path = "rar/normal-rar5.rar"
+format = "RAR 5 (Rar!\\x1a\\x07\\x01\\x00), normal (rar 5.0 LZ)"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma5 -m3 -r -ep1 normal-rar5.rar hello.txt lorem.txt docs"
+size_bytes = 533
+sha256 = "806c395786d0021f8c3c60d08dc05d81296df48461383228005e96ab3c97933b"
+
+[[fixtures]]
+path = "rar/filter-e8e9-rar5.rar"
+format = "RAR 5 (Rar!\\x1a\\x07\\x01\\x00), normal (rar 5.0 LZ) + x86 e8e9 filter"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma5 -m3 -ep1 filter-e8e9-rar5.rar x86code.bin (x86code.bin = rustc 1.95 -O of a fibonacci/collatz/ackermann program, renamed from .exe so it is not gitignored; the RAR5 analyzer picks the x86 e8e9 filter from the call/jmp density)"
+size_bytes = 59_223
+sha256 = "10cbbc4fa8612890a0b7c336844f7c108b573e8d5786ff83d3a0108d497f0468"
+member = "x86code.bin"
+member_size_bytes = 125_952
+member_sha256 = "f3eeb951606940e4ab5afa304c4b85c19faabc027d7ca623e305145418fd9b4c"
+
+[[fixtures]]
+path = "rar/filter-delta-rar5.rar"
+format = "RAR 5 (Rar!\\x1a\\x07\\x01\\x00), normal (rar 5.0 LZ) + delta filter"
+tool = "WinRAR Rar.exe 5.91"
+provenance = "rar a -ma5 -m3 -ep1 filter-delta-rar5.rar delta.bin (delta.bin = 8192 rows of 3 interleaved byte channels that the RAR5 analyzer compresses with the delta filter)"
+size_bytes = 151
+sha256 = "d0f44ec8e2441b4747762acf1a8757603e6cfa2ea37a334ad27beae8a571f0a7"
+member = "delta.bin"
+member_size_bytes = 24_576
+member_sha256 = "fef219cb719145eb0a1e54c7489a1b20cf6c2fa69ea5fd4887057fdb667abd9e"
+
+[[fixtures]]
+path = "rar/ppmd-rar4.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), ppmd (variant H) text method"
+tool = "WinRAR Rar.exe 6.24"
+provenance = "rar a -ma4 -m5 -mcttt+ -r -ep1 ppmd-rar4.rar hello.txt lorem.txt docs (forces the ppmd text algorithm; all three file members carry the rar 2.9/3.x ppmd block, top bit of the first data byte set). members are the same expected/ ground-truth files the other rar fixtures use"
+size_bytes = 522
+sha256 = "a27a3ee751b702b602fa6e7bdc6336b070b69b140aac99679dc2f1a6ca392ebc"
+
+[[fixtures]]
+path = "rar/multiblock-rar5.rar"
+format = "RAR 5 (Rar!\\x1a\\x07\\x01\\x00), maximal (rar 5.0 LZ), 128k dictionary"
+tool = "WinRAR Rar.exe 7.22"
+provenance = "rar a -m5 -ep1 -md128k multiblock-rar5.rar multiblock.bin (multiblock.bin = 280000 bytes of pseudorandom word lines with per-line counters; the 128k dictionary forces the member across several rar5 lz blocks so the multi-block continuation and the large-distance length-bump cascade are exercised, not just a single in-dictionary block). expected/multiblock.bin is the verbatim original, graded byte-for-byte and independently confirmed with UnRAR 7.22"
+size_bytes = 44_249
+sha256 = "89afb6fccfa9404b8f3bd2f25f4e5e656b57545268afcfa29c4ceecc6260a759"
+member = "multiblock.bin"
+member_size_bytes = 280_000
+member_sha256 = "17f2c40e3ad2ca3d453d7c433c5c5c83b9c51bb46517b7267530ff6c5149f058"
+
+[[fixtures]]
+path = "iso/joliet-rockridge.iso"
+format = "ISO 9660 with a Joliet supplementary volume descriptor and Rock Ridge name extensions"
+tool = "genisoimage 1.1.11 (cdrkit)"
+provenance = "genisoimage -J -R -V DISROBE_TEST -o joliet-rockridge.iso src; src holds hello.txt, lorem.txt and a docs/ subdir with notes.txt and a long-named .dat to exercise the Joliet UCS-2 path. expected/ holds the verbatim source files, each graded byte-for-byte after extraction"
+size_bytes = 387_072
+sha256 = "d35ca4ed228d752779ac1c99fc91c8f3ee8f827ff753a201bb8b6cf69cad0808"
+
+[[fixtures]]
+path = "pkg/gzip.pkg"
+format = "XAR (xar!) Apple installer container, zlib TOC, per-file gzip(zlib) heap members"
+tool = "xar 1.8.0.498"
+provenance = "xar --compression=gzip -cf gzip.pkg Distribution PackageInfo Payload.bin Scripts; Scripts/ is a nested directory member. expected/ holds the source members extracted by the independent xar tool, graded byte-for-byte after extraction"
+size_bytes = 1_227
+sha256 = "ec808c30cb4c668c17d27c7ffdbb17013f4ecfa88b5cf8209b029969baed841b"
+
+[[fixtures]]
+path = "pkg/none.pkg"
+format = "XAR (xar!) Apple installer container, zlib TOC, uncompressed (octet-stream) heap members"
+tool = "xar 1.8.0.498"
+provenance = "xar --compression=none -cf none.pkg Distribution PackageInfo Payload.bin Scripts; same source members as gzip.pkg, stored verbatim in the heap. graded against pkg/expected/"
+size_bytes = 9_019
+sha256 = "57880ca840c9a6b81458d7dac57df56eb730ca4284131ea1d5f68ba85423fdfe"
+
+[[fixtures]]
+path = "pkg/bzip2.pkg"
+format = "XAR (xar!) Apple installer container, zlib TOC, per-file bzip2 (application/x-bzip2) heap members"
+tool = "bzip2 1.0.8 + a spec-conformant xar TOC/heap assembler"
+provenance = "the same source members as gzip.pkg (Distribution PackageInfo Payload.bin Scripts/preinstall) were each compressed with the real bzip2 1.0.8 stream compressor and assembled into a valid xar container (zlib-compressed TOC carrying per-member <encoding style=application/x-bzip2>). graded byte-for-byte against pkg/expected/ after extraction"
+size_bytes = 792
+sha256 = "7c8b99b65b177e667aecf69e3f8353825dce8a70d1842709357c3fad7ff7a443"
+
+[[fixtures]]
+path = "pkg/xz.pkg"
+format = "XAR (xar!) Apple installer container, zlib TOC, per-file xz (application/x-xz) heap members"
+tool = "xz (XZ Utils) 5.8.3 --format=xz + a spec-conformant xar TOC/heap assembler"
+provenance = "the same source members as gzip.pkg were each compressed with the real xz 5.8.3 xz-format stream compressor and assembled into a valid xar container (per-member <encoding style=application/x-xz>). graded byte-for-byte against pkg/expected/ after extraction"
+size_bytes = 859
+sha256 = "5e2d30ea158517143fa61b1858879292025f75edd3fae9f205faeb1748cf4209"
+
+[[fixtures]]
+path = "pkg/lzma.pkg"
+format = "XAR (xar!) Apple installer container, zlib TOC, per-file alone-lzma (application/x-lzma) heap members"
+tool = "xz (XZ Utils) 5.8.3 --format=lzma + a spec-conformant xar TOC/heap assembler"
+provenance = "the same source members as gzip.pkg were each compressed with the real xz 5.8.3 alone-lzma stream compressor and assembled into a valid xar container (per-member <encoding style=application/x-lzma>, the legacy macOS xar style). graded byte-for-byte against pkg/expected/ after extraction"
+size_bytes = 673
+sha256 = "4bed2433aaa621206524052124955fcda52a03b606c81771af93c087ecf65096"
+
+[[fixtures]]
+path = "dmg/zlib-udif.dmg"
+format = "UDIF disk image (koly trailer), zlib blkx chunks over an Apple Partition Map wrapping an HFS+ volume"
+tool = "mkfs.hfsplus 540.1 + an off-box HFS+ image populator and UDIF/koly builder"
+provenance = "an 8 MiB HFS+ volume (label DISROBE) was populated with hello.txt, payload.txt and folder/note.txt, then wrapped into a UDIF image; the koly trailer + blkx run table compress the sectors with zlib. dmg/expected/ holds the original known-plaintext files, each graded byte-for-byte after the koly->blkx reconstruction and the partition-aware HFS+ catalog walk"
+size_bytes = 21_499
+sha256 = "5ca11f2b81fb20a1fdba6d75fed8c8138e414245068494023392b9d4e228d824"
+
+[[fixtures]]
+path = "dmg/bzip2-udif.dmg"
+format = "UDIF disk image (koly trailer), bzip2 (UDBZ) blkx chunks over the same HFS+ volume as zlib-udif.dmg"
+tool = "bzip2 1.0.8 + a UDIF/koly rechunker"
+provenance = "the raw 8 MiB HFS+ image carried by zlib-udif.dmg was re-chunked into 256-sector runs, each non-zero run compressed with the real bzip2 1.0.8 stream compressor and recorded as a UDBZ (0x80000006) blkx chunk; zero runs use the UDIF zero type. graded byte-for-byte against dmg/expected/ after the koly->blkx reconstruction and the HFS+ catalog walk"
+size_bytes = 5_769
+sha256 = "dd88659740b77e15304c5e9e36bda7de17e9640de354e43911efc9f27e5588c5"
+
+[[fixtures]]
+path = "dmg/lzma-udif.dmg"
+format = "UDIF disk image (koly trailer), lzma (UDLZ) blkx chunks over the same HFS+ volume as zlib-udif.dmg"
+tool = "xz (XZ Utils) 5.8.3 --format=lzma + a UDIF/koly rechunker"
+provenance = "the raw 8 MiB HFS+ image carried by zlib-udif.dmg was re-chunked into 256-sector runs, each non-zero run compressed with the real xz 5.8.3 alone-lzma stream compressor and recorded as a UDLZ (0x80000008) blkx chunk; zero runs use the UDIF zero type. graded byte-for-byte against dmg/expected/ after the koly->blkx reconstruction and the HFS+ catalog walk"
+size_bytes = 5_902
+sha256 = "5e9740135ed84c939a928c92ccd0f91d4f553c12f7b7ad399a13f2b2ba350244"
+
+[[fixtures]]
+path = "deb/lzma.deb"
+format = "debian package (ar archive) with a data.tar.lzma member (alone-format lzma, older dpkg)"
+tool = "GNU tar 1.35 + xz 5.x (xz --format=lzma) + ar member framing"
+provenance = "data.tar built from usr/bin/example + etc/example/config, compressed with xz --format=lzma -6, assembled into a 2.0 deb ar archive alongside control.tar.gz. expected/ holds the verbatim member files"
+size_bytes = 728
+sha256 = "38d32198a97bf7ce52b17d4eb550df1bdb2d60ce5479839fe5639f9fcf02ce30"
+
+[[fixtures]]
+path = "squashfs-lzo/hello-lzo.squashfs"
+format = "squashfs v4, lzo compressor (superblock compression id 3)"
+tool = "squashfs-tools-ng 1.3.2 gensquashfs (mingw64 build, liblzo2 2.10)"
+provenance = "gensquashfs -comp lzo over hello.txt + docs/notes.txt; metadata and the packed fragment block are real lzo1x output from liblzo2. expected/ holds the verbatim member files"
+size_bytes = 4096
+sha256 = "f4a6fa0b67821cb21f1969ac67215cf7c5668f773b9a5b03cdd406eaa4c49f29"
+
+[squashfs_comp_payload]
+description = "squashfs-comp/ holds one squashfs v4 little-endian image per block compressor (gzip, xz, zstd, lz4, lzo), each built by an independent third-party Rust squashfs encoder over the same two members dir/alpha.txt and dir/beta.bin. The images are stored gzip-compressed (.img.gz) for repo hygiene and inflated in tests/real_squashfs_comp.rs, which walks each image through extract_to and asserts the members are byte-identical to expected/. The encoder is independent of disrobe's own reader, so the round-trip is a non-circular oracle covering the lz4 and lzo block paths against real encoder output."
+expected = ["squashfs-comp/expected/alpha.txt", "squashfs-comp/expected/beta.bin"]
+
+[[fixtures]]
+path = "squashfs-comp/squashfs_gzip.img.gz"
+format = "squashfs v4, gzip compressor (id 1), little-endian"
+
+[[fixtures]]
+path = "squashfs-comp/squashfs_xz.img.gz"
+format = "squashfs v4, xz compressor (id 4), little-endian"
+
+[[fixtures]]
+path = "squashfs-comp/squashfs_zstd.img.gz"
+format = "squashfs v4, zstd compressor (id 6), little-endian"
+
+[[fixtures]]
+path = "squashfs-comp/squashfs_lz4.img.gz"
+format = "squashfs v4, lz4 compressor (id 5), little-endian, compressor options present"
+
+[[fixtures]]
+path = "squashfs-comp/squashfs_lzo.img.gz"
+format = "squashfs v4, lzo compressor (id 3), little-endian"
+
+[fat_payload]
+description = "fat/ holds a FAT16 and a FAT12 volume image, each formatted and populated by an independent third-party Rust FAT encoder with two root files HELLO.TXT and DATA.BIN plus a subdirectory. The images are stored gzip-compressed (.img.gz) and inflated in tests/real_fat.rs, which detects each as a top-level FAT container and runs extract_to, asserting byte-identical recovery against expected/. The encoder is independent of disrobe's fat.rs walker, making the test a non-circular oracle for the new top-level FAT extraction path."
+expected = ["fat/expected/HELLO.TXT", "fat/expected/DATA.BIN"]
+
+[[fixtures]]
+path = "fat/fat16.img.gz"
+format = "FAT16 volume (boot sector EB 3C 90 jump + BPB + 0x55AA), 8 MiB raw"
+
+[[fixtures]]
+path = "fat/fat12.img.gz"
+format = "FAT12 volume (boot sector EB 3C 90 jump + BPB + 0x55AA), 1 MiB raw"
+
+[bare_stream_payload]
+description = "Bare single-stream compression fixtures all wrap the one 22112-byte expected/payload.bin: 200 repeats of a text line (so back-references and matches form) followed by a 4096-byte pseudo-random run and a TAIL marker. Every fixture is produced by an encoder independent of disrobe's own decode path, so the round-trip test is a non-circular oracle. The decoders are validated byte-exact in tests/real_bare_stream.rs."
+expected = "bare-stream/expected/payload.bin"
+expected_bytes = 22112
+expected_sha256 = "7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38"
+
+[[fixtures]]
+path = "bare-stream/payload.gz"
+format = "bare single-member gzip (deflate)"
+tool = "CPython 3.14 gzip stdlib (zlib)"
+provenance = "gzip.compress(payload, 9)"
+size_bytes = 535
+
+[[fixtures]]
+path = "bare-stream/payload-named.gz"
+format = "bare gzip with FNAME flag carrying the original filename payload.bin"
+tool = "CPython 3.14 gzip.GzipFile(filename=...)"
+provenance = "GzipFile(mode=wb, filename=payload.bin, mtime=0)"
+size_bytes = 547
+
+[[fixtures]]
+path = "bare-stream/payload-multi.gz"
+format = "two concatenated gzip members (multi-stream .gz)"
+tool = "CPython 3.14 gzip stdlib"
+provenance = "gzip.compress(first_half) ++ gzip.compress(second_half); the two members concatenate back to payload.bin"
+size_bytes = 648
+
+[[fixtures]]
+path = "bare-stream/payload.bz2"
+format = "bare bzip2 (BZh9)"
+tool = "CPython 3.14 bz2 stdlib (libbzip2)"
+provenance = "bz2.compress(payload, 9)"
+size_bytes = 923
+
+[[fixtures]]
+path = "bare-stream/payload.zst"
+format = "bare zstandard frame (0x28b52ffd)"
+tool = "python-zstandard 0.25.0 (libzstd)"
+provenance = "ZstdCompressor(level=19).compress(payload)"
+size_bytes = 386
+
+[[fixtures]]
+path = "bare-stream/payload.lzma"
+format = "bare lzma-alone (.lzma, FORMAT_ALONE, streamed size field 0xffffffffffffffff)"
+tool = "CPython 3.14 lzma stdlib (liblzma)"
+provenance = "lzma.compress(payload, format=FORMAT_ALONE, preset=6); streamed size means content is ambiguous, so detection is extension-driven"
+size_bytes = 422
+
+[[fixtures]]
+path = "bare-stream/payload.zlib"
+format = "raw zlib stream (0x78 0xda, deflate + adler32 trailer)"
+tool = "CPython 3.14 zlib stdlib"
+provenance = "zlib.compress(payload, 9); detection validates the CMF/FLG header and the trailing adler32 against the recomputed checksum"
+size_bytes = 523
+
+[[fixtures]]
+path = "bare-stream/payload.lz"
+format = "lzip (magic LZIP\\x01, lzma-framed)"
+tool = "python lzip 0.x (lzlib)"
+provenance = "lzip.compress_to_buffer(payload, 6)"
+size_bytes = 435
+
+[[fixtures]]
+path = "bare-stream/payload.lz4"
+format = "lz4 frame format (magic 0x184d2204)"
+tool = "python-lz4 4.4.5 (liblz4)"
+provenance = "lz4.frame.compress(payload, compression_level=12)"
+size_bytes = 481
+
+[[fixtures]]
+path = "bare-stream/payload-skippable.lz4"
+format = "lz4 frame preceded by a skippable frame (magic 0x184d2a50)"
+tool = "python-lz4 4.4.5 + authored skippable-frame header"
+provenance = "struct.pack skippable header (magic + len + body) ++ lz4.frame.compress(payload); the skippable frame must be stepped over and the trailing data frame decoded"
+size_bytes = 515
+
+[[fixtures]]
+path = "bare-stream/payload-legacy.lz4"
+format = "lz4 legacy frame format (magic 0x184c2102)"
+tool = "python-lz4 4.4.5 lz4.block + authored legacy framing"
+provenance = "legacy magic ++ per-block [u32 size][lz4.block.compress(chunk)] over 8 MiB chunks; decoded via the in-tree lz4 block codec"
+size_bytes = 466
+
+[[fixtures]]
+path = "bare-stream/payload.Z"
+format = "Unix compress LZW (.Z, magic 0x1f9d, block mode, 16-bit max code)"
+tool = "python-ncompress 26 (reference LZW)"
+provenance = "ncompress.compress(payload); decoded by the in-tree LZW decoder (9..16-bit code growth, 8-code byte-group alignment, block-mode CLEAR)"
+size_bytes = 4274
+
+[wave5_embedded_linux_filesystems]
+description = "Embedded-Linux read-only filesystem walkers (detect + walk + byte-exact member extraction). Each walker is graded by a spec-faithful in-tree oracle: an independent encoder lays out the raw on-disk format per its published spec, the walker parses it, and the recovered member bytes are asserted equal to the original payload. The encoder is not the walker run backwards, so the oracle is non-circular. Real-tool fixtures (genromfs, mkfs.minix, img2simg, btrfs send, mkntfs, mkfs.erofs, mkfs.jffs2, mkfs.ubifs, mkyaffs2image) live under corpus/binfmt and are gitignored; the host running this wave has no Hyper-V/WSL backend available, so the labeled spec-builder oracle is authoritative here and the real-tool fixtures are the regeneration target when a Linux toolchain is present."
+
+[[wave5_walkers]]
+format = "romfs (genromfs)"
+status = "byte-exact"
+layout = "linear 16-byte-aligned file headers, big-endian; directory via spec.info first-child chain"
+note = "regular files, executable flag, nested directories, symlinks recovered byte-exact"
+
+[[wave5_walkers]]
+format = "minixfs v1/v2/v3"
+status = "byte-exact"
+layout = "boot block + superblock at 1024; v1 14/30-char names + 16-bit zones, v2/v3 32/60-char names + 32-bit zones; direct + single-indirect + double-indirect zone resolution"
+note = "all three versions and the single-indirect path validated byte-exact"
+
+[[wave5_walkers]]
+format = "android sparse image -> raw unsparse"
+status = "byte-exact"
+layout = "0xed26ff3a header + RAW/FILL/DONT_CARE/CRC32 chunk records"
+note = "reconstructs the raw image byte-exact and re-detects the inner filesystem (ext4 etc.) for a follow-up pass"
+
+[[wave5_walkers]]
+format = "btrfs send stream replay"
+status = "byte-exact"
+layout = "btrfs-stream\0 + TLV command stream; SUBVOL/MKDIR/MKFILE/WRITE/RENAME/LINK/SYMLINK/TRUNCATE replayed into a tree"
+note = "replays a sent file (not a live fs); multi-offset WRITE assembly and RENAME content-move validated byte-exact; UPDATE_EXTENT (-no-data) and ENCODED_WRITE (compressed) streams are surfaced as honest notes"
+
+[[wave5_walkers]]
+format = "ntfs read-only MFT walk"
+status = "byte-exact (via the ntfs crate)"
+layout = "MFT record walk over a Cursor<&[u8]>; resident + non-resident $DATA runlist decode, directory index traversal, Win32 names"
+fixture = "corpus/binfmt/ntfs/hello.ntfs (mkntfs; gitignored, --ignored real-fixture test)"
+note = "default $DATA stream of every non-$ file recovered byte-exact; detection + geometry covered by unit tests, full-volume recovery covered by the real-fixture test"
+
+[[wave5_walkers]]
+format = "erofs"
+status = "byte-exact for uncompressed layouts"
+layout = "superblock at 1024; compact + extended inodes; flat-plain and flat-inline data, block-packed directory entries"
+note = "flat-plain and flat-inline (tail-inlined) files recovered byte-exact; lz4/lzma compressed and chunk-based layouts are surfaced as honest notes (compressed-extent decode not implemented in-tree)"
+
+[[wave5_walkers]]
+format = "jffs2 (old/new, LE/BE)"
+status = "byte-exact for none/zero/rtime/zlib/lzo fragments"
+layout = "log of dirent + inode nodes (magic 0x1985), newest-version wins, fragment reassembly by offset"
+note = "uncompressed, zero, rtime, zlib and lzo data fragments recovered byte-exact in both byte orders; rubin/dynrubin fragments surfaced as honest notes"
+
+[[wave5_walkers]]
+format = "ubi / ubifs"
+status = "byte-exact UBI un-nesting; ubifs file extraction deferred"
+layout = "UBI EC (UBI#) + VID (UBI!) headers; per-volume LEB reassembly in LEB order with static-volume data-size truncation"
+note = "the UBI volume layer is un-nested byte-exact into per-volume LEB images; full ubifs B-tree index + LPT traversal for per-file carving is not implemented in-tree and is surfaced as an honest note on the emitted LEB image"
+
+[[wave5_walkers]]
+format = "yaffs1/2 (LE/BE)"
+status = "byte-exact"
+layout = "2K/1K/512 data chunk + 64-byte packed-tag spare; object headers (type/parent/name) + data chunks reassembled by chunk id"
+note = "single-chunk and multi-chunk files, nested directories, symlinks and hardlinks recovered byte-exact in both byte orders; chunk geometry auto-detected from the root object header"
+
+[[wave6_legacy]]
+format = "ar (GNU) standalone archive"
+path = "ar/hello.a"
+status = "byte-exact"
+oracle = "spec-construct per the SysV/GNU ar format (BSD relay tools are unavailable on this host)"
+layout = "!<arch>\n + 60-byte member headers; // long-name table resolved for /N back-references"
+note = "short-named and GNU long-named (//-table) members recovered byte-exact; symbol-table (/, //, /SYM64/) members skipped"
+
+[[wave6_legacy]]
+format = "arj"
+path = "arj/hello.arj"
+status = "stored byte-exact; LZ carve-only"
+oracle = "spec-construct per the ARJ header (the arj tool is unavailable on this host)"
+layout = "0x60 0xEA blocks; first_hdr_size 30, compressed/original size + crc32, null-terminated name"
+note = "method-0 (stored) members recovered byte-exact with valid crc32; methods 1-4 are detected and surfaced as an honest carve-only note (ARJ LZH decoder not in tree)"
+
+[[wave6_legacy]]
+format = "arc (legacy)"
+path = "arc/hello.arc"
+status = "stored byte-exact; crunch/squeeze carve-only"
+oracle = "spec-construct per the System Enhancement Associates ARC header"
+layout = "0x1a marker + method byte + 13-byte name + sizes; method 0 ends the archive"
+note = "methods 1-2 (stored) recovered byte-exact; crunched/squeezed/crushed members detected and surfaced as an honest carve-only note"
+
+[[wave6_legacy]]
+format = "lzh/lha"
+path = "lzh/hello.lzh"
+status = "byte-exact via the delharc decoder"
+oracle = "spec-construct -lh0- level-0 header with a real LHA CRC-16 (the lha tool is unavailable on this host)"
+layout = "level-0 header (size+checksum+-lh0-+sizes+name+crc16); decoded through delharc"
+note = "real LHA decoding path: -lh0- passthrough validated byte-exact with CRC check; -lh1-/-lh4-/-lh5-/-lh6-/-lh7- decode through delharc, unsupported methods surfaced as honest notes"
+
+[[wave6_legacy]]
+format = "lzop (.lzo)"
+path = "lzop/hello.lzo"
+status = "byte-exact"
+oracle = "spec-construct real lzop framing with adler32 dst checksum (the lzop tool is unavailable on this host; LZO1X decode is backed by lzokay)"
+layout = "0x89 LZO magic + global header + per-block (dst_len, src_len, checks, data); stored when src_len==dst_len"
+note = "stored blocks recovered byte-exact; LZO1X-compressed blocks decode through the in-tree lzokay decoder (same path the squashfs-lzo fixtures exercise)"
+
+[[wave6_legacy]]
+format = "uzip (FreeBSD geom_uzip / cloop)"
+path = "uzip/hello-zlib.uzip, uzip/hello-lzma.uzip"
+status = "byte-exact"
+oracle = "real zlib (level 9) and lzma (FORMAT_ALONE) block encoders following the FreeBSD cloop_header layout (mkuzip is unavailable on this host)"
+layout = "128-byte #!/bin/sh magic (compr char at 0x0b, version at 0x0c) + blksz/nblocks BE + (nblocks+1) BE u64 TOC + blocks"
+note = "zlib and lzma block images reconstructed byte-exact; zstd blocks decode through the in-tree zstd decoder"
+
+[[wave6_legacy]]
+format = "xalz (Xamarin compressed assembly)"
+path = "xalz/hello.dll.xalz"
+status = "byte-exact"
+oracle = "python lz4.block (real LZ4 block encoder)"
+layout = "XALZ + descriptor-index u32 + uncompressed-size u32 + LZ4 block; decoded through containers/lz4_block.rs"
+note = "managed .NET assembly recovered byte-exact through the shared in-tree LZ4 block decoder"
+
+[[wave6_legacy]]
+format = "par2 (Parchive recovery set)"
+path = "par2/recovery.par2"
+status = "identify + carve, byte-exact metadata"
+oracle = "spec-construct with real MD5 packet hashes and the published packet layout (par2cmdline is unavailable on this host)"
+layout = "PAR2\0PKT packets (magic + length + md5 + setid + type + body); main/filedesc/recvslic/creator parsed"
+note = "protected-file names+lengths and recovery-slice count identified from the real packet stream; the verbatim recovery set is carved alongside a summary"
+
+[[wave6_legacy]]
+format = "elf appended overlay / initramfs"
+path = "elf-overlay/hello.elf"
+status = "exact extent + byte-exact member recovery"
+oracle = "spec-construct ELF64 (one PT_LOAD over the headers) + a real newc cpio appended past image end"
+layout = "image end = max(section-table end, program-header end, per-segment p_offset+p_filesz); overlay carved and re-detected"
+note = "the appended cpio extent is computed exactly and its member recovered byte-exact through the in-tree cpio extractor"
+
+[[wave6_legacy]]
+format = "partclone / stuffit / qnx"
+status = "detect + carve-only (honest)"
+note = "detected by signature (partclone-image+version, SIT!/rLau/StuffIt, qnx6 superblock / IFS startup) and carved verbatim with an honest note; their bespoke codecs are not implemented in tree"
+
+[[wave6_legacy]]
+format = "elf dynamic-linkage metadata"
+path = "elf-dynamic/sample.elf"
+status = "DT_NEEDED + DT_SONAME + DT_RPATH + DT_RUNPATH recovered, byte-exact strings"
+oracle = "readelf -d (GNU binutils 2.42): NEEDED=[libc.so.6, libm.so.6], SONAME=libsample.so.1, RPATH=/opt/legacy/lib, RUNPATH=$ORIGIN/../lib:/usr/local/sample/lib"
+layout = "ELF64 DYN with a PT_LOAD over the headers + string table and a PT_DYNAMIC walked from DT_STRTAB (vaddr resolved to file offset through the load segment) up to DT_NULL"
+note = "spec-construct ELF whose every dynamic entry readelf itself reports is asserted against the parser; the real corpus elves native/nim/hello.nim.elf and python/pyarmor/.../pyarmor_runtime.so cover the DT_NEEDED path on genuine binaries"

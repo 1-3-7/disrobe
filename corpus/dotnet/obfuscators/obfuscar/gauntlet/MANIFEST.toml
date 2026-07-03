@@ -1,0 +1,51 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-06-17"
+toolchain = "Obfuscar.GlobalTool 2.2.50 (obfuscar.console)"
+note = "self-authored .NET 8 console sample (8 public types, loops, branches, string + numeric constants, nested logic) obfuscated with full identifier rename + string hiding; graded against the clean pre-obfuscation original"
+
+[provenance]
+compiler = "dotnet SDK 9.0.314, TargetFramework=net8.0, -c Release, Deterministic=true, DebugType=none"
+obfuscator = "Obfuscar 2.2.50 with obfuscar.xml: KeepPublicApi=false, HidePrivateApi=true, RenameProperties/RenameFields/RenameEvents=true, ReuseNames=false, HideStrings=true"
+transform = "rename: every type/method/field/property renamed to Obfuscar NameMaker base-52 odometer slots (A, a, B, b, C, ...); strings: HideStrings moves ldstr literals out of the #US plaintext heap"
+verified = "disrobe fingerprints Obfuscar from the odometer #Strings block (is_obfuscar=true, 10 distinct slots) and reports it as the primary protector; all 17 source identifiers are absent from the obfuscated #Strings heap (present in the clean original); HideStrings confirmed (6 sampled ldstr literals plaintext in clean, none in obfuscated; the inlined public-const banner survives, a documented limit of HideStrings)"
+
+[[fixture]]
+name = "clean_original.cs"
+path = "clean_original.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source: InventoryLedger/StockSnapshot/PriceCalculator/SkuValidator/AuditTrail/WarehouseRouter/ReorderPolicy with real loops, if-chains, a switch, and known string + numeric constants"
+
+[[fixture]]
+name = "GauntletSample.clean.dll"
+path = "GauntletSample.clean.dll"
+kind = "managed-pe-dll"
+provenance = "real"
+source = "clean_original.cs"
+description = "unobfuscated baseline (net8.0, Release); all source identifiers and string constants are present as plaintext"
+
+[[fixture]]
+name = "GauntletSample.obfuscar.dll"
+path = "GauntletSample.obfuscar.dll"
+kind = "obfuscar-rename-stringhide-pe-dll"
+provenance = "real"
+description = "the clean dll after Obfuscar 2.2.50 rename + HideStrings; source identifiers are renamed to base-52 odometer slots and the sampled string literals are absent from plaintext"
+
+[[fixture]]
+name = "obfuscar.xml"
+path = "obfuscar.xml"
+kind = "obfuscar-project"
+provenance = "real"
+description = "the Obfuscar config used (paths normalized to the fixture directory): full rename + string hiding, ReuseNames disabled so the odometer block is dense and contiguous"
+
+[measured_recovery]
+source_identifiers_in_clean = "15 of 15 sampled originals present"
+source_identifiers_in_obfuscated = "0 of 15 sampled originals present (100% renamed away by the real tool)"
+obfuscar_detected = "true on obfuscated, false on clean (no false positive)"
+primary_protector = "Obfuscar"
+renamable_identifier_count = "clean 2 -> obfuscated 6 (rename raised the odometer-slot count)"
+string_hiding = "6 of 6 sampled ldstr literals plaintext in clean, 0 of 6 in obfuscated; the inlined public-const banner is a compile-time constant baked into metadata and is not hideable (honest residual)"
+
+[walled]
+note = "Original identifier strings are not statically recoverable: Obfuscar's default rename embeds no in-PE name map (the optional Mapping.txt is written beside the build, not into the assembly), so the pre-rename names are information-theoretically absent from the artifact. disrobe proves the tool, the odometer slots, and which human-readable identifiers survive; reversing the renames to the original names would require that out-of-band map. String hiding here is metadata-level removal from the #US plaintext heap rather than a recoverable in-IL decryptor."

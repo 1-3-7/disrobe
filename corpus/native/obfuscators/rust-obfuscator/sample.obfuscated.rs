@@ -1,0 +1,1 @@
+fn classify (n : i32) -> i32 { cryptify :: flow_stmt ! () ; if n > 10 { n * 2 } else { n + 1 } } fn main () { cryptify :: flow_stmt ! () ; let secret = cryptify :: encrypt_string ! ("the-hidden-flag-value") ; println ! ("classify={},{}" , classify (7) , classify (20)) ; println ! ("secret={}" , secret) ; }

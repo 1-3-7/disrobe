@@ -1,0 +1,253 @@
+schema_version = "1"
+generated = "2026-05-25"
+
+[obfuscators.python_obfuscator_pypi]
+"hello" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/real_hello.py", sha256 = "0f5ccb5b2b813562bc88ee1be445a4b2599acd9f9c08410167cb209341f73811", bytes = 351 }
+"sample" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/real_sample.py", sha256 = "6f695654ad8387bce6e5c4a30691de704283bb202bfdeab9e45df67951eb4dbd", bytes = 313041 }
+"application" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/real_application.py", sha256 = "8fd6c7fd102cbb1111cb5bab596fecae98f9a8d90937181501d53fe9f5acf773", bytes = 1190350 }
+"edge_recursive" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_recursive.py", sha256 = "b7c08f3490285b72ad624d7e755c0ded7b2326b782f5eb889438d875bfb36be6", bytes = 1649 }
+"edge_class_decorator" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_class_decorator.py", sha256 = "f187b7d6e6816cf2949d1e3480bd227910e801e52749616d614534a8c9e3d1a6", bytes = 1263 }
+"edge_async_fn" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_async_fn.py", sha256 = "2e4276bc52f26d61c64949b784199edff91ca02bb87e6cc977abad6d34d70d34", bytes = 472 }
+"edge_generator" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_generator.py", sha256 = "9c30570c122b8287061b9bb3c17622a63019fe7463b98063330beda87e0f74d3", bytes = 1444 }
+"edge_lambda_in_listcomp" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_lambda_in_listcomp.py", sha256 = "d946e85579d0a1e21f8e57addd8fbfa528652f763ddaac130f29d7edd3d3238e", bytes = 192 }
+"edge_walrus_operator" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_walrus_operator.py", sha256 = "4f168575f44e68e2f9d18b547f32afcf8eaa658e4f8c627ace92c25075e6d9e3", bytes = 836 }
+"edge_match_statement" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_match_statement.py", sha256 = "bbff05b6dd6a7251906476dcc7ca5ba9f755c54379065128b9d6f3f0c8053f02", bytes = 1333 }
+"edge_structural_pattern" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_structural_pattern.py", sha256 = "06db14b75ed1fcd6a80e7ef9001bc571c7ede7f254908617569c8101c99d39d1", bytes = 1239 }
+"edge_typing_generic" = { path = "corpus/python/obfuscators/python_obfuscator_pypi/edge-cases/real_typing_generic.py", sha256 = "19b55ffc8724b10a63cc655fcb022508a3fa4c56b53c11f841dfaf8b3c9f8afc", bytes = 1296 }
+
+[obfuscators.pyobfuscator_mauricelambert]
+"hello" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/real_hello.py", sha256 = "e46a28910a3121eebcedbf4114e86d8ecca98e341660d8add2018eae33e66107", bytes = 11267 }
+"edge_recursive" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_recursive.py", sha256 = "e97e70623fb9b41cb74222def6ba37255646285b06d08f92567785dede80ce6b", bytes = 10945 }
+"edge_class_decorator" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_class_decorator.py", sha256 = "1e58d0518030d6c9c277d237954a39b63732a0bfa6aee5a258ae0324568c9c27", bytes = 11155 }
+"edge_async_fn" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_async_fn.py", sha256 = "65ee7c336db68fa76bb725116aba55e03b21caece9f218a73649dadd150a9f48", bytes = 11437 }
+"edge_generator" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_generator.py", sha256 = "12ccf3b386eaf2eec1b45687c78922a3f431e00301529a4bfe489e7ef50b56b2", bytes = 11012 }
+"edge_lambda_in_listcomp" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_lambda_in_listcomp.py", sha256 = "affd0dc02d990a70f90a05848650eaffa266ebca27abc1bf7359f194408b6f7a", bytes = 11103 }
+"edge_walrus_operator" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_walrus_operator.py", sha256 = "7e3be15025cf8f3abe769dbaed5726faa9665e9feb96e11186d01faee6394c46", bytes = 11457 }
+"edge_match_statement" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_match_statement.py", sha256 = "54e7e1d0af600e078c64ef2ed5e5606ba3e2362bb8a5d0c86971793a4b682541", bytes = 11781 }
+"edge_structural_pattern" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_structural_pattern.py", sha256 = "34df3604c2caedc8094fabdb4b1a32ae1080e3bf79526c4f3e008a45fb4b4477", bytes = 11243 }
+"edge_typing_generic" = { path = "corpus/python/obfuscators/pyobfuscator_mauricelambert/edge-cases/real_typing_generic.py", sha256 = "cf4383e32ccfbd06d314818db83ecadfecaf3fabd804fa39c795d46deb41e799", bytes = 12704 }
+
+[obfuscators.pyobfuscate_com]
+"hello" = { path = "corpus/python/obfuscators/pyobfuscate_com/real_hello.py", sha256 = "e7ffaed3f3a84dc1662906c06efabc2786b106747f602d1941ac81cd85375c4b", bytes = 516 }
+"sample" = { path = "corpus/python/obfuscators/pyobfuscate_com/real_sample.py", sha256 = "920e7edbb66bdceb974dd2828b2713ef2ce8cab77d5d21ccd6b3be6af857217b", bytes = 3358 }
+
+[obfuscators.online_family]
+"hello" = { path = "corpus/python/obfuscators/online_family/real_hello.py", sha256 = "2d8d1312c47304737b14de0efd6e9861dee116f2cfb460ba79b000921c3f7ba3", bytes = 184 }
+"sample" = { path = "corpus/python/obfuscators/online_family/real_sample.py", sha256 = "944d4fbcb4e1a7928347139723d9a24b06b65a1c6e4eccd93e318bf9ab5a9433", bytes = 360 }
+
+[obfuscators.berserker]
+"hello" = { path = "corpus/python/obfuscators/berserker/real_hello.py", sha256 = "1492314a5cf5f53f890e591ccb8da208458958097d913da81540938c4706eca6", bytes = 1727 }
+"sample" = { path = "corpus/python/obfuscators/berserker/real_sample.py", sha256 = "12776ee5905e23393ad3f8e7b27cfd337a4c98b7701930867cdade1ddc9c4c76", bytes = 128508 }
+"application" = { path = "corpus/python/obfuscators/berserker/real_application.py", sha256 = "de20893678d21ceb28461cdb9167c45b3e66530a2c645dc6200fa20c065e57ca", bytes = 321603 }
+"edge_recursive" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_recursive.py", sha256 = "bc9c79b14582f058949e68fd0e3d7b033ed5bfde350c5aa0c3be99d880359f5d", bytes = 1983 }
+"edge_class_decorator" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_class_decorator.py", sha256 = "e9350feab74499f737878f479a7e4448b2b7b80f7b5dfeaca07bb553bfe4fed8", bytes = 2236 }
+"edge_async_fn" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_async_fn.py", sha256 = "dee7509df8929e572a78d69e612138feb11593b96a707850077b43d70bb272d6", bytes = 1911 }
+"edge_generator" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_generator.py", sha256 = "4cf9f4b6a7e3d1ec59d60dc76e5c37cdf6fd938828e55b0503cf73e1b2253fa7", bytes = 1907 }
+"edge_lambda_in_listcomp" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_lambda_in_listcomp.py", sha256 = "638d79f0d9451f2afb71683b047a967548c05216385bfc9e693be29b666cba94", bytes = 1807 }
+"edge_walrus_operator" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_walrus_operator.py", sha256 = "f9155d56ed34183e30398053437cef37ffbc20a2d8593807692a4b973628303f", bytes = 1903 }
+"edge_match_statement" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_match_statement.py", sha256 = "0c4415a777237b744eebf22b37f95b03c87144615b7aa28bcee3506d72e751e9", bytes = 2462 }
+"edge_structural_pattern" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_structural_pattern.py", sha256 = "94cb56c0d8c4a259c437c9593de8d87107e2f133376040014ae2c5f0a4514ce2", bytes = 2118 }
+"edge_typing_generic" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_typing_generic.py", sha256 = "26c52bed0ae6533149f2fe859af3b9a2936196b294db731e31c26c81efc470b2", bytes = 2307 }
+
+[obfuscators.blankobf.metadata]
+tool_version = "2 (Blank-c/BlankOBF, commit at .developer/v0.8-scratch/clones/BlankOBF)"
+runtime = "python 3.14"
+
+[obfuscators.blankobf.fixtures]
+"edge_cases_3_8_r1" = { path = "corpus/python/obfuscators/blankobf/real_edge_cases_3_8_r1.py", sha256 = "3764c9b3a746cf5bb5d298961d3ce8e3fdb435ae0962b52ea7f6d9eea167ff65", bytes = 1106253 }
+"edge_cases_3_8_r1_imports" = { path = "corpus/python/obfuscators/blankobf/real_edge_cases_3_8_r1_imports.py", sha256 = "be87ecb4dd82d4b5b8f81cb899e8e8f23283db50a071c477fc50ef16bfe531b2", bytes = 1099275 }
+"async_fn" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_async_fn.py", sha256 = "1dc34c55a296e221ffee279035c69a44b043ea56c1bc8b1f3419ecb44ce0c461", bytes = 446129 }
+"class_decorator" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_class_decorator.py", sha256 = "b587f83bdb17e190bc960f88a4ba0840119b02fe70def74d6dd79aa48371508f", bytes = 329334 }
+"generator" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_generator.py", sha256 = "3275ddb9317768bfa183545381c25315ec3834c963f2e5121b13deff1c71e232", bytes = 178702 }
+"hello_world" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_hello_world.py", sha256 = "87f0a7e5c307d172c93dfcc3d881fc4dacc6ff1013aff6ae4da65fc579b139b9", bytes = 135014 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_lambda_in_listcomp.py", sha256 = "9374b36b05719c66e605e3f5b3475e5ce78f87d11a2fcd5d7b53e52fffac9126", bytes = 134902 }
+"match_statement" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_match_statement.py", sha256 = "cb19aa61e7e01acc873d2ee536ed07ccb89dd6ed3c19a5ba8c14d397fe7ba135", bytes = 447330 }
+"recursive" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_recursive.py", sha256 = "74728d33868f484ba53a5bd0a5b2e40cee2b6f883cb4d16b0ad3bd8a05a343a6", bytes = 155278 }
+"structural_pattern" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_structural_pattern.py", sha256 = "2e8793037a2ac32cc41e94109f5de5afee899249a5caae2ef09e1ab651fceb20", bytes = 154621 }
+"typing_generic" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_typing_generic.py", sha256 = "7600fd38e2956986776a0a1e7de1e8946b1cd896c98829b03cc5b17de1c2eddb", bytes = 165319 }
+"walrus_operator" = { path = "corpus/python/obfuscators/blankobf/edge-cases/real_walrus_operator.py", sha256 = "eaeebf26bd66735b3385d332a224f3299463987cc1732d366ede54201a2e2801", bytes = 131031 }
+
+[obfuscators.jawbreaker.metadata]
+tool_version = "billythegoat356/Jawbreaker (hastebin-stub)"
+runtime = "python 3.14, stubbed pyfade/pycenter/requests.post"
+
+[obfuscators.jawbreaker.fixtures]
+"edge_cases_3_8" = { path = "corpus/python/obfuscators/jawbreaker/real_edge_cases_3_8.py", sha256 = "80dfeb131d741ab14f8f3928f946ceace38f7984a10dd40f760d311895c9e764", bytes = 46619 }
+"async_fn" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_async_fn.py", sha256 = "14b1550ac34f08554178a7107c2402ecf77a6cf403eab7f53df487c01b6178e6", bytes = 46619 }
+"class_decorator" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_class_decorator.py", sha256 = "2a81ff7c444861ca615faf45f91f31667c577ff480fac23079ceb36a11ea187c", bytes = 46619 }
+"generator" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_generator.py", sha256 = "f836c55d3769cdac9c6569121f3febe85ff71d04357ba66ace60b55efa36750f", bytes = 46619 }
+"hello_world" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_hello_world.py", sha256 = "694586c51cb047e6e5779770c2ac1e2037f500d69613d82f38940748b128ef9c", bytes = 46619 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_lambda_in_listcomp.py", sha256 = "9951c372e2bb9f7f09d82bfc5b6bfb59855b3b3b138f27c21976aa612e7d36d4", bytes = 46619 }
+"match_statement" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_match_statement.py", sha256 = "612b00f54a88fdff8f48f7e11e92f8a7d14ea77c7d38077d58821bb12f41cc09", bytes = 46619 }
+"recursive" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_recursive.py", sha256 = "2fe446f7ab51f5134bead5a76610ebcc5b3b2a936e914d0b78a9cb315cf51d9f", bytes = 46619 }
+"structural_pattern" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_structural_pattern.py", sha256 = "d44c013dd9f6e224406b1f1d966ef085e0380401bb6a27c356658fc1ca4a8a02", bytes = 46619 }
+"typing_generic" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_typing_generic.py", sha256 = "28a4488457ec41a284b2732292dff4e3b79a4df7a5a8defc177233a9ea0e5539", bytes = 46619 }
+"walrus_operator" = { path = "corpus/python/obfuscators/jawbreaker/edge-cases/real_walrus_operator.py", sha256 = "9bf5ceb0ae47b1a359fc027c170936343f032d8649b438ac797ac248966b91c5", bytes = 46619 }
+
+[obfuscators.kramer.metadata]
+tool_version = "billythegoat356/Kramer (pystyle 0.6 +) compiled to .pyc"
+runtime = "python 3.14"
+
+[obfuscators.kramer.fixtures]
+"edge_cases_3_8" = { path = "corpus/python/obfuscators/kramer/real_edge_cases_3_8.pyc", sha256 = "c03b8702d69359f57e7017f7a23869394a89cbce42ed754aa47dbee2b0979e36", bytes = 74281 }
+"edge_cases_3_8_pre_compile" = { path = "corpus/python/obfuscators/kramer/real_edge_cases_3_8_pre_compile.py", sha256 = "8c2e2697a4e751c9298c7facf35ab44f5a3bd04e1cb2d8520e4af45869a3c0d4", bytes = 66593 }
+"async_fn" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_async_fn.pyc", sha256 = "abe20b2045d522710df75044152fc6378cec7800adf5b2b115c77a49d8b96711", bytes = 9758 }
+"class_decorator" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_class_decorator.pyc", sha256 = "ec4edbc2234231e78650033d08770c7673c69e619ca64d2f19291795e8ae11d8", bytes = 9929 }
+"generator" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_generator.pyc", sha256 = "957b07f3a9b18d22984e0f946f1e3e0543fb254770de6a2a0d17b4db67cb4a77", bytes = 9642 }
+"hello_world" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_hello_world.pyc", sha256 = "3e182deb8e51ccf33b7e791a0da721cc4309e420d1a8323d35377b97392fb0e0", bytes = 9566 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_lambda_in_listcomp.pyc", sha256 = "91f2788254d7212d82145fbf969f21fa6138affdd5274c64db026df456a16563", bytes = 9631 }
+"match_statement" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_match_statement.pyc", sha256 = "88a44e81b351b14dbd2d6881e88e0649238c22f4474ddfddb0d0135fa77d9a62", bytes = 10114 }
+"recursive" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_recursive.pyc", sha256 = "6eb94b74e438274aee4c3644a24a56bfbea2dd4f1e9d8a48fccee9776e177a43", bytes = 9791 }
+"structural_pattern" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_structural_pattern.pyc", sha256 = "6b8a38062be0b0aa655e209716baef83da99c363f11dd27aa5e034059c6a40e9", bytes = 9936 }
+"typing_generic" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_typing_generic.pyc", sha256 = "a0b19b6d4be4b5a29c4aee8d4d00bc76d15120873b514503647bb61348bce85e", bytes = 10049 }
+"walrus_operator" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_walrus_operator.pyc", sha256 = "102bbf564afd7e0f298bf461f92d7cb674df44db48e9c13a63c4bd12b120df9a", bytes = 9706 }
+"async_fn_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_async_fn_pre_compile.py", sha256 = "cf5e1f7a67d8d204bd011eeff64ffaadfcc3defe635edc5d0d1be3b6d531fd52", bytes = 2084 }
+"class_decorator_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_class_decorator_pre_compile.py", sha256 = "20a9836a99618f3e09e75253fff74ee2a56ee2845b66c7cec9de89e32d888814", bytes = 2213 }
+"generator_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_generator_pre_compile.py", sha256 = "1e7ed79b7f1e616098762cae014ed9ec448f515b913566c1addb9ab93e36e1ef", bytes = 2056 }
+"hello_world_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_hello_world_pre_compile.py", sha256 = "ae03d81e01788955db3e0f782ad38b7a210376341da46d6e790f50b6169bf8fd", bytes = 1939 }
+"lambda_in_listcomp_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_lambda_in_listcomp_pre_compile.py", sha256 = "c920b204d1b8d2fc97e506447e09b41014d953e841411b12400ed817f7fc134e", bytes = 1918 }
+"match_statement_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_match_statement_pre_compile.py", sha256 = "f5f82500736520adb0821482a7575257c9545215618845ea4f5fef1ea32991dd", bytes = 2480 }
+"recursive_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_recursive_pre_compile.py", sha256 = "00699b8af0aa05afc9e4d177aba1805ec710be90d1eb99f9a7b5712392ca598a", bytes = 2285 }
+"structural_pattern_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_structural_pattern_pre_compile.py", sha256 = "ca2b7b4427e0425835f0ea516b92c60c957e5b53a45177d918988d25caeef1a6", bytes = 2361 }
+"typing_generic_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_typing_generic_pre_compile.py", sha256 = "30c8ee51ce673f331caf5f91a0c1554c33abf79e6ef861da943198f781159945", bytes = 2444 }
+"walrus_operator_pre_compile" = { path = "corpus/python/obfuscators/kramer/edge-cases/real_walrus_operator_pre_compile.py", sha256 = "10ef96c25341087e70689b7e91fec64ce3a883a415dac49dc480182941b9a015", bytes = 2014 }
+
+[obfuscators.obfuxtreme.metadata]
+tool_version = "spyboy-productions/ObfuXtreme v4 (pycryptodome)"
+runtime = "python 3.14"
+wrapping = "zlib + base64 with 'DISROBE_OBFUSCATOR_FIXTURE_ZLIB_BASE64_V1' magic header (defeats Windows Defender heuristic quarantine of AES-CBC ciphertext)"
+
+[obfuscators.obfuxtreme.fixtures]
+"edge_cases_3_8" = { path = "corpus/python/obfuscators/obfuxtreme/real_edge_cases_3_8.py.fixture", sha256 = "b4442e39071228fd1373c06405438fb642cc8f3ad3444e529e97e5162643cf0e", bytes = 18318 }
+"async_fn" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_async_fn.py.fixture", sha256 = "9445095c9c26383c58137530a329ee6ae5f8ee4357e42d9368c4dcf359676d0d", bytes = 1614 }
+"class_decorator" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_class_decorator.py.fixture", sha256 = "226d0e1e1da9cf49ed2d1c4dfe4584ac1f45847fc43c01854868a2776a9f9ede", bytes = 1926 }
+"generator" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_generator.py.fixture", sha256 = "0466054c1a43353cd45a1463af101fbbc1e26b2e46624f7890f52bc017b75e77", bytes = 1550 }
+"hello_world" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_hello_world.py.fixture", sha256 = "aabbe7ad10668f338e197cfc30a3753dae3b5be7135fed6293dc30fc53668f37", bytes = 1474 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_lambda_in_listcomp.py.fixture", sha256 = "2c234f6ecaa8c28af3fd51d5af48bfd84f609bc5d34a08a98d79d4aea3ef8242", bytes = 1658 }
+"recursive" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_recursive.py.fixture", sha256 = "1abbf7b87989d27e672d5cb3b0d724532e5ff2e819628e6ba3fd9e0a4e55665e", bytes = 1550 }
+"typing_generic" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_typing_generic.py.fixture", sha256 = "27d6f73a2b4dd510c8f5c835b6d4c58b4b3f2a656866cf666168c21bf6a67b88", bytes = 2246 }
+"walrus_operator" = { path = "corpus/python/obfuscators/obfuxtreme/edge-cases/real_walrus_operator.py.fixture", sha256 = "7ee87be66139357c1960ea8a30a893c9af986c60686bc019bcaafee7256c9f85", bytes = 1674 }
+
+[obfuscators.plusobf.metadata]
+tool_version = "LeakedCode/PlusObf"
+runtime = "python 3.14"
+
+[obfuscators.plusobf.fixtures]
+"edge_cases_3_8_hash" = { path = "corpus/python/obfuscators/plusobf/real_edge_cases_3_8_hash.py", sha256 = "b519645420764b57c9a452568aadba4f30e1fc0a01dcf7a75be3582cd8a044a4", bytes = 899559 }
+"edge_cases_3_8_plus" = { path = "corpus/python/obfuscators/plusobf/real_edge_cases_3_8_plus.py", sha256 = "0bb6ca66ccb92817e821d3d8287dbbb265b093febc49eece5f196bdad2f59adf", bytes = 899559 }
+"async_fn" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_async_fn.py", sha256 = "4e90edc52d16c5582b4b3a3c81bd796634ed5f6594af60a48dfca31247c1b9bf", bytes = 6557 }
+"class_decorator" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_class_decorator.py", sha256 = "2ab25a2596aa63c89a9a797b45adda72cbffd123fe17dd5d3502e4890a1efa78", bytes = 9551 }
+"generator" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_generator.py", sha256 = "9ce322421d100806df014fb852fbba84c6c2e58c61c47e15484bff092bea84e1", bytes = 3667 }
+"hello_world" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_hello_world.py", sha256 = "7b037748c6175ddf1480ff76943f8cf48ae2aa4ee723f524a4d5c5f3bbeb92ce", bytes = 2061 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_lambda_in_listcomp.py", sha256 = "284d1926512cf8aed65544902bf30e2bd93cd36904865d838b35d8277d3de387", bytes = 3916 }
+"match_statement" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_match_statement.py", sha256 = "86f1dcac3103b04822329c23595c17b35d7284345d35282dda941bee5df5d505", bytes = 12006 }
+"recursive" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_recursive.py", sha256 = "94fba0785e44cb21f8465486645964d9185b533b02bb0a4b2187d91179089ed7", bytes = 5050 }
+"structural_pattern" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_structural_pattern.py", sha256 = "ea7ee6893553c6f98d8b8885027633b35c840fc4ed85544b8e25950bd4d50582", bytes = 8532 }
+"typing_generic" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_typing_generic.py", sha256 = "f6828939c8fdb6a476661bba4425e621573100e818f9075185e1117ed08d1cf9", bytes = 12737 }
+"walrus_operator" = { path = "corpus/python/obfuscators/plusobf/edge-cases/real_walrus_operator.py", sha256 = "257e91910130ffdf7ae638afdcbb578dd162d8c965e43d3dc4b138e2f5fa3470", bytes = 5211 }
+
+[obfuscators.manglify.metadata]
+tool_version = "ImInTheICU/Manglify 0.1.1"
+runtime = "python 3.14"
+
+[obfuscators.manglify.fixtures]
+"edge_cases_3_8" = { path = "corpus/python/obfuscators/manglify/real_edge_cases_3_8.py", sha256 = "8e4a4e94ecab6a5768457b2d974ff98fa1db5e4695f9d245fda2e3cd3d14da8a", bytes = 73567 }
+"async_fn" = { path = "corpus/python/obfuscators/manglify/edge-cases/real_async_fn.py", sha256 = "c2ff0132f6ec2ba3d155a7f3f83fa0b1aa0b67305f5f655b742a045c6fd48252", bytes = 10186 }
+"hello_world" = { path = "corpus/python/obfuscators/manglify/edge-cases/real_hello_world.py", sha256 = "97e135fb6de240ebde8d6af8ff6ade5018d1938723f649dc2e53c4e3823fb502", bytes = 10981 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/manglify/edge-cases/real_lambda_in_listcomp.py", sha256 = "cbbafc4a28fd34ec7ad3f44ae6bb6d5944cb538d57e9c4e72a6db01e7ce4a5ee", bytes = 14164 }
+"typing_generic" = { path = "corpus/python/obfuscators/manglify/edge-cases/real_typing_generic.py", sha256 = "5af336d71d6a4e3480de9013be85d625d21406fc87c130e8108d14e4a68552c6", bytes = 10962 }
+"walrus_operator" = { path = "corpus/python/obfuscators/manglify/edge-cases/real_walrus_operator.py", sha256 = "eae57e392e64314096034242fb49d3efbd14db94137ca369e4b1a2bd8f06097a", bytes = 14225 }
+
+[obfuscators.pyminifier.metadata]
+tool_version = "pyminifier 2.1 (PyPI, lib2to3-dependent → Python 3.7 only)"
+runtime = "python 3.7.9 via C:/Users/-/AppData/Local/Programs/Python/Python37/python.exe"
+
+[obfuscators.pyminifier.fixtures]
+"edge_cases_3_6_obfuscate" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate.py", sha256 = "3097ce3914b820a681f44c6bd6b176df17b26c8a91ea6735108c311b6e115619", bytes = 7839 }
+"edge_cases_3_6_obfuscate_builtins" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate_builtins.py", sha256 = "5638a7b3e5ba2ce49e464947b95ba1f985dd8f6b1ae6aba6fd3a0d1fcdf13f54", bytes = 7839 }
+"edge_cases_3_6_obfuscate_classes" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate_classes.py", sha256 = "54e5dc9a4f604a10b06ee94509834ff14c0872b6a974e00079b00f2412ae5386", bytes = 9692 }
+"edge_cases_3_6_obfuscate_functions" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate_functions.py", sha256 = "3ac1900ee3ad2b9087d2901267ae24e03371131647aa874c99257cc41c59db32", bytes = 8666 }
+"edge_cases_3_6_obfuscate_variables" = { path = "corpus/python/obfuscators/pyminifier/real_edge_cases_3_6_obfuscate_variables.py", sha256 = "7db8a6a97026db1756b02c19f6605885fe7aa91ad9093232ec371aed84bdaa6a", bytes = 8888 }
+"async_fn" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_async_fn.py", sha256 = "21a31600afb2ab44c88c9f002105d917d619d9985c9fea5c7bc9db1c64569931", bytes = 140 }
+"class_decorator" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_class_decorator.py", sha256 = "d26da9efb8e21f7bf9a17f5b971815aae93f6bbafe15343a6a8f6571f110a9c7", bytes = 157 }
+"generator" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_generator.py", sha256 = "2d3c30bd8b4a40c0755167bb0709f278128a73eea7771d1e650739922561e4ff", bytes = 114 }
+"hello_world" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_hello_world.py", sha256 = "f9be935a0e488fba0df3a5d2cd183435b6aaa5658e6e8ab1883eaced465b1c26", bytes = 94 }
+"lambda_in_listcomp" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_lambda_in_listcomp.py", sha256 = "039a68b81fa8bc515dcd315703262b8ea39d7a3066f8f80e87ad44bf2bdf26b3", bytes = 112 }
+"recursive" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_recursive.py", sha256 = "34ae86fc7d24d414ef91f1c45090c76dbe51fef23184fc14d3988f5ce4fcfe51", bytes = 119 }
+"typing_generic" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_typing_generic.py", sha256 = "c81d43da030177cddc14f3428aec30cb56fd34a24e6d992a7666b1a532cbd6d0", bytes = 175 }
+
+[obfuscators.playground.metadata]
+tool_version = "billythegoat356/Berserker (.developer/wave2-py-tools/berserker)"
+runtime = "python 3.14"
+oracle = "differential-vs-source"
+note = "Minimal git-tracked differential fixture committed so the playground gate's differential-vs-source oracle evaluates a NON-EMPTY sample in a clean CI checkout (the broader .pyc/.beam obfuscator corpus is gitignored). The independent oracle is clean_greeting.py (never emitted by any pass); clean_greeting.berserker.py is its real Berserker-obfuscated form. Regenerate via .developer/gen_playground_differential.py."
+
+[obfuscators.playground.fixtures]
+"berserker_greeting" = { path = "corpus/python/obfuscators/playground/clean_greeting.berserker.py", sha256 = "89027b86cbe6d750b0bd6f5ee3d47b2da787cff514910886db918e5929f82b57", bytes = 7541, clean_source = "corpus/python/obfuscators/playground/clean_greeting.py", clean_sha256 = "35e41ea960ff24ec961d608415c85670c004f5af06a50636d36c7468a3d40c25" }
+
+[obfuscators.pyminifier.variants]
+"obfuscate" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate.py", sha256 = "3130d2436b1dc6d9f06cbcfd73cb934ba0803f722db7dcfbc6916621330ab4b4", bytes = 7842, flags = "--obfuscate" }
+"obfuscate_builtins" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_builtins.py", sha256 = "8fa9a9c7460abf96ee0e6093c30a726ed792bd13015c5038d73061dcb7bacb4f", bytes = 9585, flags = "--obfuscate-builtins" }
+"obfuscate_classes" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_classes.py", sha256 = "7ae71c9db999d8aff676fe3b138a84d725ee815f2e698acf65d1e16a9f45385c", bytes = 9695, flags = "--obfuscate-classes" }
+"obfuscate_functions" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_functions.py", sha256 = "729bcf85914dfeb9da126aaa0b43f5b73add3111666834e0e8e2756c0dafeb0f", bytes = 8669, flags = "--obfuscate-functions" }
+"obfuscate_variables" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_variables.py", sha256 = "ab354c846610419aeffd6ae761bf04f4bdad0a8f60e85124d17794acf2986abc", bytes = 8891, flags = "--obfuscate-variables" }
+"obfuscate_import_methods" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_import_methods.py", sha256 = "f973b95159e3c1f61f4be5a2585556359628b7adefde5d15644bff109dc930be", bytes = 9852, flags = "--obfuscate-import-methods" }
+"replacement_length_1" = { path = "corpus/python/obfuscators/pyminifier/variants/replacement_length_1.py", sha256 = "c3a066f44b30bf7fec594efc5adb780b79fdcaf6813660dc6a1ecae55a957c89", bytes = 7842, flags = "--obfuscate --replacement-length=1" }
+"replacement_length_2" = { path = "corpus/python/obfuscators/pyminifier/variants/replacement_length_2.py", sha256 = "0f096cc81fb66425c56f74a67980d9a877ecd1bfd97427bea027960630a32d33", bytes = 8049, flags = "--obfuscate --replacement-length=2" }
+"replacement_length_3" = { path = "corpus/python/obfuscators/pyminifier/variants/replacement_length_3.py", sha256 = "082692de0b470b9830bcc3757db3331614836b5f8e4cc9314c73d31e66bf7dd3", bytes = 8602, flags = "--obfuscate --replacement-length=3" }
+"gzip" = { path = "corpus/python/obfuscators/pyminifier/variants/gzip.py", sha256 = "ca4fd0dd2d2539fd25eb523ecbc9ed0b394e52811a276fd5d562767fdbcf3fb0", bytes = 5231, flags = "--gzip" }
+"lzma" = { path = "corpus/python/obfuscators/pyminifier/variants/lzma.py", sha256 = "8df3e29d231c93133e757bb3aca7c000d8e3d8765e1e9c3bd4509c423c0e575c", bytes = 5243, flags = "--lzma" }
+"bzip2" = { path = "corpus/python/obfuscators/pyminifier/variants/bzip2.py", sha256 = "24845852c9cd7982c74dcaaaf1068bc775defac43d120d96e0c96026824ebd55", bytes = 5381, flags = "--bzip2" }
+"obfuscate_gzip" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_gzip.py", sha256 = "455170533b3b86a97f8792f6ab3f9f8ffdef3517ab5a241ed16e60192c2dc243", bytes = 4795, flags = "--obfuscate --gzip" }
+"obfuscate_lzma" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_lzma.py", sha256 = "c4d603dc781f565d6a218e79fcca39bb1684868aece5bcfb083ea23a22a084fb", bytes = 4751, flags = "--obfuscate --lzma" }
+"obfuscate_bzip2" = { path = "corpus/python/obfuscators/pyminifier/variants/obfuscate_bzip2.py", sha256 = "68a473c5bdd08887d2f512d1f6d2e84347451e84b13829fcb393214399fba9f8", bytes = 4933, flags = "--obfuscate --bzip2" }
+"prepend" = { path = "corpus/python/obfuscators/pyminifier/variants/prepend.py", sha256 = "f668182609e8859fef10da33bd7a68e43f993fd9c211bb9c9b37e298eec79553", bytes = 5288, flags = "--gzip --prepend (synthetic prefix: pyminifier 2.1 silently drops --prepend in single-file -o mode; prefix lines were manually attached)" }
+"use_tabs" = { path = "corpus/python/obfuscators/pyminifier/variants/use_tabs.py", sha256 = "217cd13114d182ad9d9766a3f95b2d04c7b1f394f6405ca0d31bfe80fbaa52c2", bytes = 9585, flags = "--obfuscate-builtins --use-tabs" }
+"nominify" = { path = "corpus/python/obfuscators/pyminifier/variants/nominify.py", sha256 = "dd2cab42cec381c80209c7e47f61ac41ab65a269459538488c7021e4b59bc10e", bytes = 14731, flags = "--nominify" }
+
+[obfuscators.pyobfus.metadata]
+tool_version = "htr-tech/PyObfuscate lambda-indirection wrappers, reproduced from the documented transform"
+runtime = "python 3.14.5"
+note = "Reversed-payload lambda wrappers: _ = lambda __ : <chain>;exec((_)(b'...')). Each fixture is a runnable program; the b64 and zlib+b64 forms decode back to the exact original source, the marshal+zlib+b64 form terminates in a code object (bytecode handoff). Regenerate via .developer/gen_pyobfus_pypacker_corpus.py."
+
+[obfuscators.pyobfus.fixtures]
+"hello" = { path = "corpus/python/obfuscators/pyobfus/real_hello.py", sha256 = "028169b1123b75197a5e9d5f2492ebc197a3fc9921e2baee68944b5f214f9af1", bytes = 100, transform = "base64 + reverse" }
+"sample" = { path = "corpus/python/obfuscators/pyobfus/real_sample.py", sha256 = "3fd20a10498d5b35b53ad3102c8eb4269cb48cdc049e66bbf95232e375562564", bytes = 283, transform = "zlib + base64 + reverse" }
+"marshal" = { path = "corpus/python/obfuscators/pyobfus/real_marshal.py", sha256 = "4d80e60b707e142751f93bcf651d56cc816b0ca765521378e279e1fa9e01f5ae", bytes = 676, transform = "marshal + zlib + base64 + reverse" }
+
+[obfuscators.pypacker.metadata]
+tool_version = "python-obfuscation-framework marshal packer wrappers, reproduced from the documented transform"
+runtime = "python 3.14.5"
+note = "exec(marshal.loads(<bz2|gzip|zlib|lzma>.decompress(b'...'))). The payload is a marshalled module-level code object, so the static peel strips compression + marshal to exact bytecode (named <module>); source-level recovery is a bytecode-decompilation problem for the py-decompile pass. Each fixture is a runnable program. Regenerate via .developer/gen_pyobfus_pypacker_corpus.py."
+
+[obfuscators.pypacker.fixtures]
+"hello" = { path = "corpus/python/obfuscators/pypacker/real_hello.py", sha256 = "ee132f643760c2ebc904b974e30d81615bd69a92177c7a5877c4540613335212", bytes = 383, transform = "marshal + zlib" }
+"sample" = { path = "corpus/python/obfuscators/pypacker/real_sample.py", sha256 = "ae6c46fc648241e253dc3b365da8d65656dfd1dca88db5617155d992f824b020", bytes = 1379, transform = "marshal + lzma" }
+"bz2" = { path = "corpus/python/obfuscators/pypacker/real_bz2.py", sha256 = "c9abbde2aa9a3bff4116e1b0716efa210054dbe4e3da2fe93401f40a03cb637b", bytes = 1354, transform = "marshal + bz2" }
+"gzip" = { path = "corpus/python/obfuscators/pypacker/real_gzip.py", sha256 = "c11481a5f8f71818df791f19ac94410e2f7f795cf608f1075b0d922ed2ea9ffb", bytes = 1241, transform = "marshal + gzip" }
+
+[obfuscators.patchwork]
+tool_version = "patchwork 0.8.0"
+runtime = "python 3.14.5"
+note = "two-stage loader: stage1 .py decrypts an embedded stage2 (base85 + xor-ctr/byte-perm/bit-rotate cipher chain + zlib + marshal), stage2 holds the user module plus per-function lazy blobs. Source rewrites = identifier rename, shared encrypted string/bytes pool, integer rewrite families, mixed boolean-arithmetic, opaque predicates, junk branches. 0.8.0 adds the 'Abyss' per-function AST virtualizer: eligible functions are lowered to a fixed 26-opcode stack VM with per-build randomly remapped opcode bytes, the instruction lists merged into one sealed packet stream (per-byte transform + 2-of-2 XOR secret share + base85, FNV-tagged, layout-permuted), the whole asset doc XOR'd under a 24-48 byte key, and the body replaced by `return __pw_ab_dispatch__(fid, locals())`. Recovery peels both stages to the user code object, reinserts lazy function bodies, decompiles, devirtualizes Abyss (unseal the asset doc, recover the opcode map from the surviving dispatch runtime, symbolically execute the stack VM, and reconstruct structured control flow), and reverses the source rewrites. Renaming is irreversible so output is bytecode-equivalent with mangled names unless built --no-rename. Fixtures built at seed 424242; behavior matches the originals byte-for-byte. orig_*.py are the ground-truth sources for the equivalence oracle. The *_abyss fixtures are built with --abyss and exercise each opcode family (arith, compare-chain, for/while/break/continue, list comprehension, lowered f-string, bool short-circuit, walrus, slice/subscript/dict/set/tuple); marshal is version-bound so they are py 3.14 artifacts."
+
+[obfuscators.patchwork.fixtures]
+"hello_world" = { path = "corpus/python/obfuscators/patchwork/real_hello_world.py", sha256 = "d19f4490d8fb7a7233e3a798c97d68fd8090d94b2a3384704e5ebc2f6c03872b", bytes = 45474, transform = "full default pipeline" }
+"hello_world_pyc" = { path = "corpus/python/obfuscators/patchwork/real_hello_world.pyc", sha256 = "a9acac9fe1b2bced8f578304efa6e0f51ffda21a2d64e4acfcea083db709fed3", bytes = 49473, transform = "full default pipeline compiled to pyc" }
+"hello_world_norename" = { path = "corpus/python/obfuscators/patchwork/real_hello_world_norename.py", sha256 = "0b608ed7faa5afe61d74ab708a9b42f2b2c9772d07b24051c26623277c937243", bytes = 25767, transform = "no-rename no-lazy" }
+"features" = { path = "corpus/python/obfuscators/patchwork/real_features.py", sha256 = "63ceb842ea54422486a3816e852c5b661cde84a7c1a82c061e134aa9ff836d53", bytes = 58558, transform = "full default pipeline" }
+"orig_hello" = { path = "corpus/python/obfuscators/patchwork/orig_hello.py", sha256 = "9d0c4d38ac3e78faa7333ab43f4f5233965daa1bf543dc26ae8e6049f69ee89e", bytes = 231, transform = "ground-truth source" }
+"orig_features" = { path = "corpus/python/obfuscators/patchwork/orig_features.py", sha256 = "ffcf24e04bb53be82847a0a202e9b4b30c8f40000725b5cd315025620dc19e5c", bytes = 592, transform = "ground-truth source" }
+"arith_abyss" = { path = "corpus/python/obfuscators/patchwork/real_arith_abyss.py", sha256 = "eb9d1665c0e9d47e94b3021ec6afc3de4f3f4f40f7a09dd328d50d6bbfd585ee", bytes = 136264, transform = "abyss virtualized: arithmetic + bit operators" }
+"compare_abyss" = { path = "corpus/python/obfuscators/patchwork/real_compare_abyss.py", sha256 = "726b03e271ff8384ebaebe18f56c14aa4e581f84dba6f65c97aef27c8bed7aaf", bytes = 138780, transform = "abyss virtualized: compare-chain + bool short-circuit + not" }
+"loops_abyss" = { path = "corpus/python/obfuscators/patchwork/real_loops_abyss.py", sha256 = "f113e17b773b6e6dc66cf359a99147a02f11110e1b17be0229812d5d4cad34e6", bytes = 135092, transform = "abyss virtualized: for + while + break + continue" }
+"comp_abyss" = { path = "corpus/python/obfuscators/patchwork/real_comp_abyss.py", sha256 = "00f7ef86d19cec9e5f55d63affc69d36f4cae0d0bce2708ac0939e2d4c1ee92e", bytes = 136141, transform = "abyss virtualized: list comprehension with filter" }
+"fstr_abyss" = { path = "corpus/python/obfuscators/patchwork/real_fstr_abyss.py", sha256 = "0ed09836e4fa351eca79f5e7eb31c980fffe6bbe573f326f332b654bd9e25969", bytes = 135612, transform = "abyss virtualized: lowered f-string + format-value + conversion + spec" }
+"walrus_abyss" = { path = "corpus/python/obfuscators/patchwork/real_walrus_abyss.py", sha256 = "6a40882c9a1a81741e8409205bf5d0e4d5db555ef7a5e4887b06dd4113cd2e34", bytes = 147000, transform = "abyss virtualized: walrus + slice + subscript + dict + set + tuple" }
+"arith_abyss_pyc" = { path = "corpus/python/obfuscators/patchwork/real_arith_abyss.pyc", sha256 = "7548d5fb15dbd4ba0f77f7dfa72c59c09b7690c7294db619904985f9ec388a9a", bytes = 140364, transform = "abyss virtualized arith compiled to pyc for auto-chain routing" }
+"orig_arith" = { path = "corpus/python/obfuscators/patchwork/orig_arith.py", sha256 = "dbd133a6aefcc3e94bc32b750d62a1ff61ecdc6a33ba40dd1455f8f789729ac0", bytes = 186, transform = "ground-truth source" }
+"orig_compare" = { path = "corpus/python/obfuscators/patchwork/orig_compare.py", sha256 = "014ed41f08b51dcca759d2b0ba2e420e97fc4205d2d1c36590f7206dcb757514", bytes = 219, transform = "ground-truth source" }
+"orig_loops" = { path = "corpus/python/obfuscators/patchwork/orig_loops.py", sha256 = "9ecbf7bb80be587c60af96bdeb510af9b3b1c3100fb0840dcebe83ed7178526a", bytes = 277, transform = "ground-truth source" }
+"orig_comp" = { path = "corpus/python/obfuscators/patchwork/orig_comp.py", sha256 = "48d98b9a7ca6808111c545539700a1c4252e09a15f5834337e3fb46d7e8a33aa", bytes = 145, transform = "ground-truth source" }
+"orig_fstr" = { path = "corpus/python/obfuscators/patchwork/orig_fstr.py", sha256 = "6a074ee937d72d70f1c030120add551813da4d144f3704debef45de6288af0b7", bytes = 132, transform = "ground-truth source" }
+"orig_walrus" = { path = "corpus/python/obfuscators/patchwork/orig_walrus.py", sha256 = "2628836d5848304ac16d5e20b36ab7dce2c50e5eb6d27a1a07c0a992a2550ccd", bytes = 274, transform = "ground-truth source" }

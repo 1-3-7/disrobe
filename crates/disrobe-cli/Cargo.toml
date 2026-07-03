@@ -1,0 +1,176 @@
+[package]
+name = "disrobe-cli"
+description = "Command-line entry point for `disrobe` -- a multi-language decompilation and deobfuscation suite covering Python (PyArmor / PyInstaller / .pyc), JS/TS, Node V8 bytecode, WASM, and more, with forensic-grade provenance and a novel `--llm` mode."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["decompiler", "deobfuscator", "reverse-engineering", "pyarmor", "forensics"]
+categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe"
+path = "src/main.rs"
+
+[[test]]
+name = "self_refresh_check_only"
+path = "tests/self_update_check_only.rs"
+
+[features]
+default = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang"]
+
+py = []
+native = []
+binfmt = []
+
+js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain"]
+wasm = ["dep:disrobe-pass-wasm-deob", "dep:disrobe-nir-lift"]
+jvm = ["dep:disrobe-pass-jvm", "dep:disrobe-nir-lift"]
+dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain", "dep:disrobe-nir-lift"]
+mobile = ["dep:disrobe-pass-mobile"]
+lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "dep:disrobe-nir-lift"]
+php = ["dep:disrobe-pass-php", "disrobe-pass-php/chain"]
+ruby = ["dep:disrobe-pass-ruby", "dep:disrobe-nir-lift"]
+beam = ["dep:disrobe-pass-beam", "dep:disrobe-nir-lift"]
+swift = ["dep:disrobe-pass-swift-objc"]
+as3 = ["dep:disrobe-pass-as3", "dep:disrobe-nir-lift"]
+flutter = ["dep:disrobe-pass-mobile"]
+go = ["dep:disrobe-pass-go"]
+shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain"]
+pickle = ["dep:disrobe-pass-pickle"]
+scriptlang = ["dep:disrobe-pass-scriptlang"]
+
+chain = [
+    "disrobe-core/chain",
+    "disrobe-binfmt/chain",
+    "disrobe-pass-pyarmor/chain",
+    "disrobe-pass-native/chain",
+    "disrobe-pass-py-deob/chain",
+    "disrobe-pass-sourcedefender/chain",
+    "disrobe-pass-pyfreeze/chain",
+    "disrobe-pass-nuitka/chain",
+    "disrobe-pass-py-disasm/chain",
+    "disrobe-pass-py-decompile/chain",
+    "disrobe-pass-pyinstaller/chain",
+    "disrobe-pass-js-deob?/chain",
+    "disrobe-pass-wasm-deob?/chain",
+    "disrobe-pass-php?/chain",
+    "disrobe-pass-ruby?/chain",
+    "disrobe-pass-shell?/chain",
+    "disrobe-pass-mobile?/chain",
+    "disrobe-pass-lua?/chain",
+    "disrobe-pass-swift-objc?/chain",
+    "disrobe-pass-jvm?/chain",
+    "disrobe-pass-dotnet?/chain",
+    "disrobe-pass-go?/chain",
+    "disrobe-pass-beam?/chain",
+    "disrobe-pass-as3?/chain",
+    "disrobe-pass-pickle?/chain",
+    "disrobe-pass-scriptlang?/chain",
+]
+
+[dependencies]
+disrobe-core = { workspace = true, features = ["chain", "cache"] }
+disrobe-ir = { workspace = true }
+disrobe-binfmt = { workspace = true }
+disrobe-capabilities = { workspace = true }
+disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-native = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-pyinstaller = { workspace = true }
+disrobe-pass-pyfreeze = { workspace = true }
+disrobe-pass-nuitka = { workspace = true }
+disrobe-pass-sourcedefender = { workspace = true }
+disrobe-pass-py-deob = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-js-deob = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-wasm-deob = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-py-decompile = { workspace = true, features = ["llm-metadata"] }
+disrobe-pass-php = { workspace = true, optional = true }
+disrobe-pass-ruby = { workspace = true, optional = true }
+disrobe-pass-shell = { workspace = true, optional = true }
+disrobe-pass-mobile = { workspace = true, optional = true }
+disrobe-pass-lua = { workspace = true, optional = true }
+disrobe-pass-swift-objc = { workspace = true, optional = true }
+disrobe-pass-jvm = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-dotnet = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-go = { workspace = true, features = ["llm-metadata"], optional = true }
+disrobe-pass-beam = { workspace = true, optional = true }
+disrobe-pass-as3 = { workspace = true, optional = true }
+disrobe-pass-pickle = { workspace = true, optional = true }
+disrobe-pass-scriptlang = { workspace = true, optional = true }
+disrobe-prowl = { workspace = true }
+disrobe-py-marshal = { workspace = true }
+disrobe-nir = { workspace = true }
+disrobe-nir-lift = { workspace = true, optional = true }
+disrobe-taint = { workspace = true }
+disrobe-query = { workspace = true }
+disrobe-llm-metadata = { workspace = true }
+disrobe-mcp = { workspace = true }
+blake3 = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
+indicatif = { workspace = true }
+anstyle = { workspace = true }
+owo-colors = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+miette = { workspace = true, features = ["fancy"] }
+color-eyre = { workspace = true }
+human-panic = { workspace = true }
+console = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+camino = { workspace = true }
+wasmparser = { workspace = true }
+object = { workspace = true }
+axum = { workspace = true }
+hyper = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+fastwebsockets = { workspace = true }
+utoipa = { workspace = true }
+lsp-server = { workspace = true }
+lsp-types = { workspace = true }
+futures = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+tonic-reflection = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+reqwest = { workspace = true }
+num_cpus = { workspace = true }
+rayon = { workspace = true }
+walkdir = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+zstd = { workspace = true }
+sha2 = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+disrobe-playground = { workspace = true, features = ["chain"] }
+iced-x86 = { workspace = true }
+indicatif = { workspace = true, features = ["in_memory"] }
+insta = { workspace = true }
+insta-cmd = { workspace = true }
+serde_json = { workspace = true }
+jsonschema = "0.28"
+serde_yaml_ng = "0.10"
+tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net"] }
+wait-timeout = { workspace = true }
+wat = "1"

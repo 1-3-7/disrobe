@@ -1,0 +1,219 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use disrobe_pass_ruby::analyze_bytes;
+
+fn ruby_oracle_available() -> bool {
+    let Ok(out): Result<std::process::Output, std::io::Error> =
+        Command::new("ruby").arg("--version").output()
+    else {
+        return false;
+    };
+    out.status.success() && String::from_utf8_lossy(&out.stdout).contains("ruby 3.4")
+}
+
+fn compile_to_yarb(source: &str, tag: &str) -> Option<Vec<u8>> {
+    let mut script_path: PathBuf = std::env::temp_dir();
+    script_path.push(format!("disrobe_la_gen_{tag}.rb"));
+    let mut out_path: PathBuf = std::env::temp_dir();
+    out_path.push(format!("disrobe_la_{tag}.yarvc"));
+
+    let script: String = format!(
+        "src = {source:?}\nFile.binwrite(ARGV.fetch(0), RubyVM::InstructionSequence.compile(src).to_binary)\n"
+    );
+    std::fs::write(&script_path, script).ok()?;
+    let status = Command::new("ruby")
+        .arg(&script_path)
+        .arg(&out_path)
+        .status()
+        .ok()?;
+    let _ = std::fs::remove_file(&script_path);
+    if !status.success() {
+        return None;
+    }
+    let bytes: Vec<u8> = std::fs::read(&out_path).ok()?;
+    let _ = std::fs::remove_file(&out_path);
+    Some(bytes)
+}
+
+fn recover(source: &str, tag: &str) -> Option<String> {
+    let bytes: Vec<u8> = compile_to_yarb(source, tag)?;
+    let analysis = analyze_bytes(&bytes, tag).ok()?;
+    let yarv = analysis.yarv?;
+    Some(yarv.decompiled.source)
+}
+
+fn code_only(src: &str) -> String {
+    src.lines()
+        .take_while(|l| !l.starts_with("# string literals"))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn recompile_pct(original: &str, recovered_code: &str, tag: &str) -> Option<u32> {
+    let mut orig_path: PathBuf = std::env::temp_dir();
+    orig_path.push(format!("disrobe_la_orig_{tag}.rb"));
+    let mut rec_path: PathBuf = std::env::temp_dir();
+    rec_path.push(format!("disrobe_la_rec_{tag}.rb"));
+    std::fs::write(&orig_path, original).ok()?;
+    std::fs::write(&rec_path, recovered_code).ok()?;
+
+    let script: &str = concat!(
+        "def ops(i); o=[]; w=->(x){x.disasm.each_line{|l| o<<$1 if l=~/^\\d{4} (\\S+)/}; ",
+        "x.each_child{|c| w.call(c)}}; w.call(i); o; end\n",
+        "def mm(a,b); ha=Hash.new(0); a.each{|x| ha[x]+=1}; hb=Hash.new(0); b.each{|x| hb[x]+=1}; ",
+        "n=0; ha.each{|k,v| n+=[v,hb[k]].min}; n; end\n",
+        "w=ops(RubyVM::InstructionSequence.compile(File.read(ARGV[0])))\n",
+        "h=ops(RubyVM::InstructionSequence.compile(File.read(ARGV[1])))\n",
+        "puts(w.empty? ? 0 : (100*mm(w,h)/w.size))\n"
+    );
+    let mut script_path: PathBuf = std::env::temp_dir();
+    script_path.push(format!("disrobe_la_oracle_{tag}.rb"));
+    std::fs::write(&script_path, script).ok()?;
+
+    let output = Command::new("ruby")
+        .arg(&script_path)
+        .arg(&orig_path)
+        .arg(&rec_path)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&orig_path);
+    let _ = std::fs::remove_file(&rec_path);
+    let _ = std::fs::remove_file(&script_path);
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+}
+
+fn assert_recovers(source: &str, tag: &str, needle: &str, min_pct: u32) {
+    if !ruby_oracle_available() {
+        eprintln!("skip: {tag} needs ruby 3.4.x");
+        return;
+    }
+    let Some(src): Option<String> = recover(source, tag) else {
+        eprintln!("skip: ruby could not compile the {tag} source");
+        return;
+    };
+    let code: String = code_only(&src);
+    assert!(
+        code.contains(needle),
+        "[{tag}] expected `{needle}` in recovered code:\n{code}"
+    );
+    let pct: u32 = recompile_pct(source, &code, tag)
+        .unwrap_or_else(|| panic!("[{tag}] oracle did not produce a rate for:\n{code}"));
+    assert!(
+        pct >= min_pct,
+        "[{tag}] recompile-equivalence {pct}% below floor {min_pct}% for:\n{code}"
+    );
+}
+
+#[test]
+fn until_pre_tested_loop_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(n)\n  i = 0\n  until i >= n\n    i += 1\n  end\n  i\nend\n",
+        "until_pre",
+        "until i >= n",
+        95,
+    );
+}
+
+#[test]
+fn begin_while_post_tested_loop_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(n)\n  i = 0\n  begin\n    i += 1\n  end while i < n\n  i\nend\n",
+        "begin_while",
+        "end while i < n",
+        95,
+    );
+}
+
+#[test]
+fn begin_until_post_tested_loop_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(n)\n  i = 0\n  begin\n    i += 1\n  end until i >= n\n  i\nend\n",
+        "begin_until",
+        "end until i >= n",
+        95,
+    );
+}
+
+#[test]
+fn while_modifier_loop_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(arr)\n  arr.pop while arr.size > 2\n  arr\nend\n",
+        "while_mod",
+        "while",
+        95,
+    );
+}
+
+#[test]
+fn aref_or_assign_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(h)\n  h[:cache] ||= {}\n  h\nend\n",
+        "aref_oreq",
+        "] ||= {}",
+        85,
+    );
+}
+
+#[test]
+fn aref_and_assign_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(a, i)\n  a[i] &&= 7\n  a\nend\n",
+        "aref_andeq",
+        "&&= 7",
+        85,
+    );
+}
+
+#[test]
+fn nested_aref_or_assign_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(t, on, from, to)\n  (t[on] ||= {})[from] = to\n  t\nend\n",
+        "nested_oreq",
+        "||= {})[from] = to",
+        90,
+    );
+}
+
+#[test]
+fn retry_in_rescue_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(max)\n  tries = 0\n  begin\n    tries += 1\n    raise 'boom'\n  rescue StandardError\n    retry if tries < max\n    :gave_up\n  end\nend\n",
+        "retry",
+        "retry",
+        90,
+    );
+}
+
+#[test]
+fn value_break_in_block_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(arr)\n  arr.each do |x|\n    break x * 2 if x > 9\n    x\n  end\nend\n",
+        "break_value",
+        "break x * 2",
+        90,
+    );
+}
+
+#[test]
+fn explicit_return_in_block_reconstructs_from_real_yarv() {
+    assert_recovers(
+        "def f(arr)\n  arr.each do |x|\n    return x if x > 9\n  end\n  nil\nend\n",
+        "return_blk",
+        "return",
+        78,
+    );
+}

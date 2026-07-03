@@ -1,0 +1,28 @@
+[package]
+name = "disrobe-transcode"
+description = "Rewrites a `.dr` envelope's hot rkyv segment through the canonical IR codec and recomputes the BLAKE3 root while leaving the cold postcard sidecar byte-identical."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-transcode"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+
+[dev-dependencies]
+disrobe-ir = { workspace = true }
+disrobe-core = { workspace = true }
+blake3 = { workspace = true }

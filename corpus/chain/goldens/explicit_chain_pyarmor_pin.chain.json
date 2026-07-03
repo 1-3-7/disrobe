@@ -1,0 +1,67 @@
+{
+  "final_format": null,
+  "input": {
+    "blake3": "9614ed3862f292e135e4b4ece4a2b259e46eab14d39587bfe8053f4729923bb1",
+    "detected": [],
+    "path": "synthetic://pyc-with-pin",
+    "size": 14
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "9614ed3862f292e135e4b4ece4a2b259e46eab14d39587bfe8053f4729923bb1",
+      "input_size": 14,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 1,
+      "input_blake3": "9614ed3862f292e135e4b4ece4a2b259e46eab14d39587bfe8053f4729923bb1",
+      "input_size": 14,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": 0,
+      "pass": null,
+      "verdict": "stalled"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "prefix-then-auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 1,
+    "layers": 1,
+    "max_branch_depth": 1,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "stalled"
+}

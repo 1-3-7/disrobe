@@ -1,0 +1,32 @@
+[package]
+name = "disrobe-capabilities"
+description = "Capability rule engine over disrobe's disasm IR: extracts api / number / string (substring, exact, regex) / bytes / mnemonic / offset / operand-indexed / characteristic features plus os / arch / format global and import / export / section file features at file, function, basic-block, and instruction scope, evaluates and / or / not / N-of / optional / count / cross-rule-match expressions that carry the evidence address of every match, and ships a built-in rule set tagging MITRE ATT&CK and MBC behaviors."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["capability", "malware-analysis", "mitre-attack", "reverse-engineering", "rules"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-binfmt = { workspace = true }
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-pass-native = { workspace = true }
+disrobe-query = { workspace = true }
+goblin = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+blake3 = { workspace = true }
+goblin = { workspace = true }
+object = { workspace = true }

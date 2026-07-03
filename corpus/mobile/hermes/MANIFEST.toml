@@ -1,0 +1,106 @@
+schema = "disrobe-corpus-v1"
+category = "mobile.hermes"
+target_crate = "disrobe-pass-mobile"
+fetched_utc = "2026-05-26T00:00:00Z"
+notes = """
+Hermes bytecode bundles (React Native). Source APKs in corpus/mobile/apk/inbox/.
+Magic: 0x1f19_03c1_03bc_1fc6 (little-endian first 8 bytes: c6 1f bc 03 c1 03 19 1f).
+"""
+
+[[sample]]
+name = "regex/regexes.hbc.v96"
+source_url = "self-authored regexes.js compiled with hermesc (FOSS, facebook/hermes release binary v0.13.0)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3032
+sha256 = "4448f399264398acddf319179e29feec991775b9745dcc59e14bda7cc651edfb"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode (HBC v96) holding 23 compiled regex literals. The regex
+disassembler reconstructs each pattern from the RegExp table bytecode blob and is
+graded against the known source in tests/real_hermes_regex.rs. See
+regex/PROVENANCE.txt for the build command and exact pattern coverage.
+"""
+
+[[sample]]
+name = "regex/edge.hbc.v96"
+source_url = "self-authored edge.js compiled with hermesc (FOSS, facebook/hermes release binary v0.13.0)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1315
+sha256 = "fd5d2f718c832406648f6e452cc94868a0d4cfcf9a485629fe043d6499055c3f"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode (HBC v96) holding 8 harder regex constructs: lookbehind,
+non-word-boundary, simple-loop with alternation body, nested groups, unicode bracket
+range, coalesced negated bracket, optional non-capturing group.
+"""
+
+[[sample]]
+name = "regex/nest.hbc.v96"
+source_url = "self-authored nest.js compiled with hermesc (FOSS, facebook/hermes release binary v0.13.0)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1400
+sha256 = "16ae5cbe7be52019205f10e7b5fe79efb8d42c074be0f466db0974039077c63f"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode (HBC v96) holding 7 nested regex constructs: quantified groups,
+alternation in a group, loops in groups, nested groups under a quantifier, anchored
+captures with quantified char classes, and an optional group.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v96"
+source_url = "self-authored sample.js compiled with hermesc (FOSS, facebook/hermes release binary)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1467
+sha256 = "830c75e06d4f9240595ffbcd4227d023558b214e0ab83e92718c7b937f964b5d"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode (HBC v96) from hermesc release 0.12.0. CI-gated: the lifter
+recovers all 8 functions with correct names at 100 percent op-coverage. See
+sample/PROVENANCE.txt for the exact build command and ground-truth source.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v84"
+source_url = "self-authored sample.js compiled with hermesc 0.11.0 (FOSS)"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1203
+sha256 = "d20af4934937c51f127b944cbc6cf405f80f72eaf2a2cd1e465f01295ec50bc9"
+hermes_version_detected = 84
+notes = "HBC v84. Parses and recovers function names; opcode bodies decode under the v96 table only."
+
+[[sample]]
+name = "sample/sample.hbc.v76"
+source_url = "self-authored sample.js compiled with hermesc 0.7.2 (FOSS)"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1203
+sha256 = "a7dae2ae8d2b7dad344f00315c0709d3050962db8e3c25424c804ecd1e6754bf"
+hermes_version_detected = 76
+notes = "HBC v76. Parses and recovers function names; opcode bodies decode under the v96 table only."
+
+[[sample]]
+name = "discord/index.android.bundle"
+source_apk = "corpus/mobile/apk/inbox/discord.apkm"
+source_url = "https://www.apkmirror.com/apk/discord-inc/discord/ (user-supplied download)"
+upstream_repo = "https://github.com/discord (closed-source app, fixture for runtime detection only)"
+license = "proprietary (Discord Inc. - corpus use: bytecode-format identification per fair use, no redistribution)"
+size_bytes = 66978165
+sha256 = "75f377c1ef1c5b7896fe94d748ae23bd555482021fa409d78f3d2afa1b51d2ed"
+hermes_version_detected = 96
+notes = """
+Real Hermes bytecode from production Discord Android. Header parses cleanly (version 96).
+Full-module parse exposes depyo-fate signal: DR-MOB-0009 string-storage OOB at offset 11141143
+(reader treats file as smaller than actual bundle). See .developer/wave-c-mobile-signals-2026-05-25.md.
+"""
+
+[[sample]]
+name = "discord/index.android.bundle.patch"
+source_apk = "corpus/mobile/apk/inbox/discord.apkm"
+license = "proprietary"
+size_bytes = 66978221
+sha256 = "a424dd6d6086bbf2ac56132eec4572751263f3b6911e0db4c4fbeebc12c26d2b"
+notes = "Mercurial-style binary diff (MBSDIFF43 magic) for hot-update delivery, not Hermes bytecode."

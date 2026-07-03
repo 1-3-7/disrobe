@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="484" viewBox="0 0 920 484" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="920" height="484" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="919" height="483" rx="9.5" fill="none" stroke="#262626"/>
+  <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Chain auto-detection</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">disrobe auto fingerprints the input and composes the pipeline</text>
+  <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#333333" stroke-width="1"/>
+  <text x="28.00" y="104.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="500">Packed native executable</text>
+  <rect x="28.00" y="114.00" width="180.00" height="52.00" rx="7.00" fill="#161616" stroke="#333333" stroke-width="1"/>
+  <text x="118.00" y="145.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">PE</text>
+  <line x1="214.00" y1="140.00" x2="245.00" y2="140.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M245.0,136.0 L251.0,140.0 L245.0,144.0 Z" fill="#8fb3d9"/>
+  <rect x="256.00" y="114.00" width="180.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="346.00" y="137.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">UPX</text>
+  <text x="346.00" y="152.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">byte-identical unpack</text>
+  <line x1="442.00" y1="140.00" x2="473.00" y2="140.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M473.0,136.0 L479.0,140.0 L473.0,144.0 Z" fill="#8fb3d9"/>
+  <rect x="484.00" y="114.00" width="180.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="574.00" y="137.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">rust-demangle</text>
+  <text x="574.00" y="152.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">symbol restore</text>
+  <line x1="670.00" y1="140.00" x2="701.00" y2="140.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M701.0,136.0 L707.0,140.0 L701.0,144.0 Z" fill="#8fb3d9"/>
+  <rect x="712.00" y="114.00" width="180.00" height="52.00" rx="7.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="802.00" y="145.00" font-size="13" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">clean image</text>
+  <text x="28.00" y="200.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="500">Android app</text>
+  <rect x="28.00" y="210.00" width="256.00" height="52.00" rx="7.00" fill="#161616" stroke="#333333" stroke-width="1"/>
+  <text x="156.00" y="241.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">APK</text>
+  <line x1="290.00" y1="236.00" x2="321.00" y2="236.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M321.0,232.0 L327.0,236.0 L321.0,240.0 Z" fill="#8fb3d9"/>
+  <rect x="332.00" y="210.00" width="256.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="460.00" y="233.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">dex</text>
+  <text x="460.00" y="248.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">sig v1-v3 verify</text>
+  <line x1="594.00" y1="236.00" x2="625.00" y2="236.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M625.0,232.0 L631.0,236.0 L625.0,240.0 Z" fill="#8fb3d9"/>
+  <rect x="636.00" y="210.00" width="256.00" height="52.00" rx="7.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="764.00" y="233.00" font-size="13" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">Java</text>
+  <text x="764.00" y="248.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">in-house Dalvik decompiler</text>
+  <text x="28.00" y="296.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="500">Protected frozen Python</text>
+  <rect x="28.00" y="306.00" width="180.00" height="52.00" rx="7.00" fill="#161616" stroke="#333333" stroke-width="1"/>
+  <text x="118.00" y="337.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">PyInstaller</text>
+  <line x1="214.00" y1="332.00" x2="245.00" y2="332.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M245.0,328.0 L251.0,332.0 L245.0,336.0 Z" fill="#8fb3d9"/>
+  <rect x="256.00" y="306.00" width="180.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="346.00" y="329.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">PyArmor</text>
+  <text x="346.00" y="344.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">static-key recovery</text>
+  <line x1="442.00" y1="332.00" x2="473.00" y2="332.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M473.0,328.0 L479.0,332.0 L473.0,336.0 Z" fill="#8fb3d9"/>
+  <rect x="484.00" y="306.00" width="180.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="574.00" y="329.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">.pyc decompile</text>
+  <text x="574.00" y="344.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">recompile-verified</text>
+  <line x1="670.00" y1="332.00" x2="701.00" y2="332.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M701.0,328.0 L707.0,332.0 L701.0,336.0 Z" fill="#8fb3d9"/>
+  <rect x="712.00" y="306.00" width="180.00" height="52.00" rx="7.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="802.00" y="337.00" font-size="13" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">source</text>
+  <text x="28.00" y="392.00" font-size="12" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="500">Untrusted pickle</text>
+  <rect x="28.00" y="402.00" width="256.00" height="52.00" rx="7.00" fill="#161616" stroke="#333333" stroke-width="1"/>
+  <text x="156.00" y="433.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">pickle</text>
+  <line x1="290.00" y1="428.00" x2="321.00" y2="428.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M321.0,424.0 L327.0,428.0 L321.0,432.0 Z" fill="#8fb3d9"/>
+  <rect x="332.00" y="402.00" width="256.00" height="52.00" rx="7.00" fill="#101010" stroke="#262626" stroke-width="1"/>
+  <text x="460.00" y="425.00" font-size="13" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">AST</text>
+  <text x="460.00" y="440.00" font-size="9.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="middle" font-weight="400">symbolic VM trace, never executes</text>
+  <line x1="594.00" y1="428.00" x2="625.00" y2="428.00" stroke="#8fb3d9" stroke-width="1.4"/>
+  <path d="M625.0,424.0 L631.0,428.0 L625.0,432.0 Z" fill="#8fb3d9"/>
+  <rect x="636.00" y="402.00" width="256.00" height="52.00" rx="7.00" fill="#161616" stroke="#8fb3d9" stroke-width="1"/>
+  <text x="764.00" y="433.00" font-size="13" fill="#8fb3d9" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="600">safety grade</text>
+</svg>

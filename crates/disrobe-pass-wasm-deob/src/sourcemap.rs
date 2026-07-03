@@ -1,0 +1,447 @@
+use std::collections::BTreeMap;
+
+use serde::Serialize;
+
+use crate::error::{Error, Result};
+
+pub const SOURCE_MAPPING_URL_SECTION: &str = "sourceMappingURL";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Segment {
+    pub gen_line: u32,
+    pub gen_column: u32,
+    pub source_index: Option<u32>,
+    pub source_line: Option<u32>,
+    pub source_column: Option<u32>,
+    pub name_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SourceMap {
+    pub version: u8,
+    pub file: Option<String>,
+    pub source_root: Option<String>,
+    pub sources: Vec<Option<String>>,
+    pub sources_content: Vec<Option<String>>,
+    pub names: Vec<String>,
+    pub segments: Vec<Segment>,
+    pub byte_to_segment: BTreeMap<u32, usize>,
+}
+
+impl SourceMap {
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn name_count(&self) -> usize {
+        self.names.len()
+    }
+
+    #[must_use]
+    pub fn resolved_source(&self, source_index: u32) -> Option<String> {
+        let raw: &str = self.sources.get(source_index as usize)?.as_deref()?;
+        match self.source_root.as_deref() {
+            Some(root) if !root.is_empty() => Some(join_source_root(root, raw)),
+            _ => Some(raw.to_owned()),
+        }
+    }
+
+    #[must_use]
+    pub fn segment_for_byte(&self, byte_offset: u32) -> Option<&Segment> {
+        let (_, &seg_idx): (&u32, &usize) =
+            self.byte_to_segment.range(..=byte_offset).next_back()?;
+        self.segments.get(seg_idx)
+    }
+
+    #[must_use]
+    pub fn name_for_byte(&self, byte_offset: u32) -> Option<&str> {
+        let seg: &Segment = self.segment_for_byte(byte_offset)?;
+        let idx: u32 = seg.name_index?;
+        self.names.get(idx as usize).map(String::as_str)
+    }
+}
+
+fn join_source_root(root: &str, source: &str) -> String {
+    if root.ends_with('/') {
+        format!("{root}{source}")
+    } else {
+        format!("{root}/{source}")
+    }
+}
+
+pub fn extract_source_mapping_url(input: &[u8]) -> Result<Option<String>> {
+    use wasmparser::{Parser, Payload};
+    for payload in Parser::new(0).parse_all(input) {
+        let payload: Payload<'_> = payload.map_err(|e| Error::Parse(format!("{e}")))?;
+        if let Payload::CustomSection(reader) = payload
+            && reader.name() == SOURCE_MAPPING_URL_SECTION
+        {
+            let url: String = decode_name_string(reader.data())?;
+            crate::debug::dbg_kv_guarded("source-mapping-url", || url.clone());
+            return Ok(Some(url));
+        }
+    }
+    Ok(None)
+}
+
+fn decode_name_string(data: &[u8]) -> Result<String> {
+    let (len, consumed): (u64, usize) = read_uleb128(data)?;
+    let start: usize = consumed;
+    let end: usize = start
+        .checked_add(usize::try_from(len).map_err(|_| Error::Parse("name length overflow".into()))?)
+        .ok_or_else(|| Error::Parse("name span overflow".into()))?;
+    let bytes: &[u8] = data
+        .get(start..end)
+        .ok_or_else(|| Error::Parse("sourceMappingURL truncated".into()))?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|e| Error::Parse(format!("sourceMappingURL not utf-8: {e}")))
+}
+
+fn read_uleb128(data: &[u8]) -> Result<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        if shift >= 64 {
+            return Err(Error::Parse("uleb128 overflow".into()));
+        }
+        result |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok((result, i + 1));
+        }
+        shift += 7;
+    }
+    Err(Error::Parse("uleb128 truncated".into()))
+}
+
+pub fn parse_source_map(json: &[u8]) -> Result<SourceMap> {
+    let doc: SourceMapDoc =
+        serde_json::from_slice(json).map_err(|e| Error::Parse(format!("source map json: {e}")))?;
+    if doc.version != 3 {
+        return Err(Error::Parse(format!(
+            "unsupported source map version {} (expected 3)",
+            doc.version
+        )));
+    }
+    let segments: Vec<Segment> = decode_mappings(doc.mappings.as_deref().unwrap_or(""))?;
+    let mut byte_to_segment: BTreeMap<u32, usize> = BTreeMap::new();
+    for (i, seg) in segments.iter().enumerate() {
+        byte_to_segment.entry(seg.gen_column).or_insert(i);
+    }
+    crate::debug::dbg_kv("sourcemap-v3", || {
+        format!(
+            "segments={} names={} sources={} named_segments={}",
+            segments.len(),
+            doc.names.as_ref().map_or(0, Vec::len),
+            doc.sources.as_ref().map_or(0, Vec::len),
+            segments
+                .iter()
+                .filter(|s: &&Segment| s.name_index.is_some())
+                .count()
+        )
+    });
+    Ok(SourceMap {
+        version: 3,
+        file: doc.file,
+        source_root: doc.source_root,
+        sources: doc.sources.unwrap_or_default(),
+        sources_content: doc.sources_content.unwrap_or_default(),
+        names: doc.names.unwrap_or_default(),
+        segments,
+        byte_to_segment,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SourceMapDoc {
+    version: u8,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default, rename = "sourceRoot")]
+    source_root: Option<String>,
+    #[serde(default)]
+    sources: Option<Vec<Option<String>>>,
+    #[serde(default, rename = "sourcesContent")]
+    sources_content: Option<Vec<Option<String>>>,
+    #[serde(default)]
+    names: Option<Vec<String>>,
+    #[serde(default)]
+    mappings: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct DeltaState {
+    source_index: i64,
+    source_line: i64,
+    source_column: i64,
+    name_index: i64,
+}
+
+fn decode_mappings(mappings: &str) -> Result<Vec<Segment>> {
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut state: DeltaState = DeltaState::default();
+    for (gen_line, line) in mappings.split(';').enumerate() {
+        let gen_line: u32 =
+            u32::try_from(gen_line).map_err(|_| Error::Parse("generated line overflow".into()))?;
+        let mut gen_column: i64 = 0;
+        if line.is_empty() {
+            continue;
+        }
+        for raw_segment in line.split(',') {
+            if raw_segment.is_empty() {
+                continue;
+            }
+            let fields: Vec<i64> = decode_vlq_segment(raw_segment)?;
+            let segment: Segment = build_segment(gen_line, &fields, &mut gen_column, &mut state)?;
+            segments.push(segment);
+        }
+    }
+    Ok(segments)
+}
+
+fn build_segment(
+    gen_line: u32,
+    fields: &[i64],
+    gen_column: &mut i64,
+    state: &mut DeltaState,
+) -> Result<Segment> {
+    if !matches!(fields.len(), 1 | 4 | 5) {
+        return Err(Error::Parse(format!(
+            "source map segment must have 1, 4, or 5 fields, found {}",
+            fields.len()
+        )));
+    }
+    *gen_column = gen_column.saturating_add(fields[0]);
+    let gen_column_u: u32 =
+        u32::try_from(*gen_column).map_err(|_| Error::Parse("generated column negative".into()))?;
+
+    let (source_index, source_line, source_column): (Option<u32>, Option<u32>, Option<u32>) =
+        if fields.len() >= 4 {
+            state.source_index = state.source_index.saturating_add(fields[1]);
+            state.source_line = state.source_line.saturating_add(fields[2]);
+            state.source_column = state.source_column.saturating_add(fields[3]);
+            (
+                Some(clamp_u32(state.source_index, "source index")?),
+                Some(clamp_u32(state.source_line, "source line")?),
+                Some(clamp_u32(state.source_column, "source column")?),
+            )
+        } else {
+            (None, None, None)
+        };
+
+    let name_index: Option<u32> = if fields.len() == 5 {
+        state.name_index = state.name_index.saturating_add(fields[4]);
+        Some(clamp_u32(state.name_index, "name index")?)
+    } else {
+        None
+    };
+
+    Ok(Segment {
+        gen_line,
+        gen_column: gen_column_u,
+        source_index,
+        source_line,
+        source_column,
+        name_index,
+    })
+}
+
+fn clamp_u32(value: i64, what: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| Error::Parse(format!("{what} out of range: {value}")))
+}
+
+const VLQ_CONTINUATION: u32 = 0x20;
+const VLQ_VALUE_MASK: u32 = 0x1f;
+const VLQ_SHIFT: u32 = 5;
+
+fn decode_vlq_segment(segment: &str) -> Result<Vec<i64>> {
+    let mut out: Vec<i64> = Vec::with_capacity(5);
+    let bytes: &[u8] = segment.as_bytes();
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        let (value, next): (i64, usize) = decode_vlq_value(bytes, i)?;
+        out.push(value);
+        i = next;
+    }
+    Ok(out)
+}
+
+fn decode_vlq_value(bytes: &[u8], start: usize) -> Result<(i64, usize)> {
+    let mut result: u32 = 0;
+    let mut shift: u32 = 0;
+    let mut i: usize = start;
+    loop {
+        let byte: u8 = *bytes
+            .get(i)
+            .ok_or_else(|| Error::Parse("vlq segment truncated".into()))?;
+        let digit: u32 = base64_decode_digit(byte)?;
+        if shift >= 32 {
+            return Err(Error::Parse("vlq value overflow".into()));
+        }
+        result |= (digit & VLQ_VALUE_MASK) << shift;
+        i += 1;
+        if digit & VLQ_CONTINUATION == 0 {
+            break;
+        }
+        shift += VLQ_SHIFT;
+    }
+    let negative: bool = result & 1 == 1;
+    let magnitude: u32 = result >> 1;
+    let value: i64 = if negative {
+        -i64::from(magnitude)
+    } else {
+        i64::from(magnitude)
+    };
+    Ok((value, i))
+}
+
+#[inline]
+fn base64_decode_digit(byte: u8) -> Result<u32> {
+    let value: i16 = match byte {
+        b'A'..=b'Z' => i16::from(byte - b'A'),
+        b'a'..=b'z' => i16::from(byte - b'a') + 26,
+        b'0'..=b'9' => i16::from(byte - b'0') + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => -1,
+    };
+    if value < 0 {
+        return Err(Error::Parse(format!(
+            "invalid base64 vlq digit: 0x{byte:02x}"
+        )));
+    }
+    Ok(value as u32)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vlq_decodes_zero() {
+        let (v, n): (i64, usize) = decode_vlq_value(b"A", 0).unwrap();
+        assert_eq!(v, 0);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn vlq_decodes_small_positive_and_negative() {
+        assert_eq!(decode_vlq_value(b"C", 0).unwrap().0, 1);
+        assert_eq!(decode_vlq_value(b"D", 0).unwrap().0, -1);
+        assert_eq!(decode_vlq_value(b"E", 0).unwrap().0, 2);
+        assert_eq!(decode_vlq_value(b"F", 0).unwrap().0, -2);
+    }
+
+    #[test]
+    fn vlq_decodes_multi_digit_continuation() {
+        let (v, n): (i64, usize) = decode_vlq_value(b"2H", 0).unwrap();
+        assert_eq!(v, 123);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn vlq_segment_splits_five_fields() {
+        let fields: Vec<i64> = decode_vlq_segment("AAAA").unwrap();
+        assert_eq!(fields, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rejects_invalid_digit() {
+        assert!(decode_vlq_value(b"$", 0).is_err());
+    }
+
+    #[test]
+    fn mappings_delta_decode_across_segments() {
+        let segments: Vec<Segment> = decode_mappings("AAAA,CAEC").unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].gen_column, 0);
+        assert_eq!(segments[0].source_line, Some(0));
+        assert_eq!(segments[1].gen_column, 1);
+        assert_eq!(segments[1].source_line, Some(2));
+        assert_eq!(segments[1].source_column, Some(1));
+    }
+
+    #[test]
+    fn mappings_reset_gen_column_each_line() {
+        let segments: Vec<Segment> = decode_mappings("CAAA;CAAA").unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].gen_line, 0);
+        assert_eq!(segments[0].gen_column, 1);
+        assert_eq!(segments[1].gen_line, 1);
+        assert_eq!(segments[1].gen_column, 1);
+    }
+
+    #[test]
+    fn parse_full_wasm_profile_map() {
+        let json: &str = r#"{
+            "version": 3,
+            "file": "out.wasm",
+            "sources": ["src/lib.rs"],
+            "names": ["compute", "total"],
+            "mappings": "AAAAA,IAACC"
+        }"#;
+        let map: SourceMap = parse_source_map(json.as_bytes()).unwrap();
+        assert_eq!(map.version, 3);
+        assert_eq!(map.segment_count(), 2);
+        assert_eq!(map.names, vec!["compute", "total"]);
+        assert_eq!(map.name_for_byte(0), Some("compute"));
+        assert_eq!(map.name_for_byte(4), Some("total"));
+        assert_eq!(map.resolved_source(0).as_deref(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn source_root_prepended() {
+        let json: &str = r#"{
+            "version": 3,
+            "sourceRoot": "https://example.com/src",
+            "sources": ["a.rs"],
+            "mappings": "AAAA"
+        }"#;
+        let map: SourceMap = parse_source_map(json.as_bytes()).unwrap();
+        assert_eq!(
+            map.resolved_source(0).as_deref(),
+            Some("https://example.com/src/a.rs")
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_version() {
+        let json: &str = r#"{"version": 2, "sources": [], "names": [], "mappings": ""}"#;
+        assert!(parse_source_map(json.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn extract_url_from_name_section() {
+        let url: &str = "out.wasm.map";
+        let mut section: Vec<u8> = Vec::new();
+        section.push(url.len() as u8);
+        section.extend_from_slice(url.as_bytes());
+        let mut wasm: Vec<u8> = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        let name: &str = SOURCE_MAPPING_URL_SECTION;
+        let mut body: Vec<u8> = Vec::new();
+        body.push(name.len() as u8);
+        body.extend_from_slice(name.as_bytes());
+        body.extend_from_slice(&section);
+        wasm.push(0x00);
+        wasm.push(body.len() as u8);
+        wasm.extend_from_slice(&body);
+        let recovered: Option<String> = extract_source_mapping_url(&wasm).unwrap();
+        assert_eq!(recovered.as_deref(), Some("out.wasm.map"));
+    }
+
+    #[test]
+    fn empty_module_has_no_source_mapping_url() {
+        let wasm: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        assert_eq!(extract_source_mapping_url(&wasm).unwrap(), None);
+    }
+}

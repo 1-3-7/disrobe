@@ -1,0 +1,33 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Swift version 6.3.2 (swift-6.3.2-RELEASE)
+// swift-module-flags: -target x86_64-unknown-windows-msvc -disable-objc-interop -enable-library-evolution -swift-version 6 -module-name GreetingKit
+// swift-module-flags-ignorable:  -formal-cxx-interoperability-mode=off -interface-compiler-version 6.3.2
+import Swift
+import _Concurrency
+import _StringProcessing
+import _SwiftConcurrencyShims
+public struct Greeting {
+  public let recipientName: Swift.String
+  public let salutationCount: Swift.Int
+  public init(recipientName: Swift.String, salutationCount: Swift.Int)
+  public func renderBanner() -> Swift.String
+}
+public enum DeliveryChannel {
+  case inbox
+  case archive
+  case spamFolder
+  public static func == (a: GreetingKit.DeliveryChannel, b: GreetingKit.DeliveryChannel) -> Swift.Bool
+  public func hash(into hasher: inout Swift.Hasher)
+  public var hashValue: Swift.Int {
+    get
+  }
+}
+public class CourierService {
+  public var pendingMessages: Swift.Int
+  final public let channelLabel: Swift.String
+  public init(channelLabel: Swift.String)
+  public func enqueueGreeting(_ greeting: GreetingKit.Greeting)
+  deinit
+}
+extension GreetingKit.DeliveryChannel : Swift.Equatable {}
+extension GreetingKit.DeliveryChannel : Swift.Hashable {}

@@ -1,0 +1,40 @@
+schema = "disrobe-corpus-v1"
+category = "flash.swf.synthetic"
+target_crate = "disrobe-pass-as3"
+provenance = "synthetic"
+notes = """
+SYNTHETIC, redistributable SWF fixtures, NOT captured from a real Flash title. The large
+real archive.org SWF corpus (see ../MANIFEST.toml) is multi-megabyte and gitignored, so the
+container-level SWF tests skip in CI. These two tiny fixtures exist solely so the SWF
+container path (signature detection, header/RECT/tag walk, zlib body inflate, DoABC
+extraction) is exercised by a COMMITTED, CI-run fixture.
+
+The bytes are hand-assembled to the published Adobe specifications, not emitted by disrobe:
+  - SWF File Format Specification v19 (FWS/CWS headers, tag-length encoding, FileAttributes,
+    SymbolClass, DoABC tag 82)
+  - ActionScript Virtual Machine 2 (AVM2) Overview (constant pool, instance/class/method/body
+    layout, the bytecode in the sumTo body)
+Generator: ../../../../crates/disrobe-pass-as3/tests/fixtures/gen_swf.py (deterministic).
+
+The grade is NOT circular. The generator only lays bytes per the external Adobe spec; the
+code under test (disrobe's independent swf::parse -> abc::parse -> disasm -> lift_body) decodes
+them, and tests/synthetic_swf_fixture.rs asserts the spec-dictated recovery: a `Counter` class
+with a `total` property and a `sumTo` method whose counted loop must restructure into a
+for/while with zero dropped opcodes and full fidelity. No assertion is graded against the
+generator's own output.
+
+[[sample]]
+name = "synthetic_counter_fws.swf"
+provenance = "synthetic"
+compression = "uncompressed"
+magic = "465753"
+swf_version = 13
+notes = "FWS uncompressed; carries FileAttributes (AS3), SymbolClass(Counter), and one DoABC."
+
+[[sample]]
+name = "synthetic_counter_cws.swf"
+provenance = "synthetic"
+compression = "zlib"
+magic = "435753"
+swf_version = 13
+notes = "CWS zlib-compressed; identical body to the FWS fixture, exercises the inflate path."

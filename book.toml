@@ -1,0 +1,35 @@
+[book]
+title = "disrobe"
+description = "disrobe is a deterministic multi-language decompiler, deobfuscator, and unpacker in a single Rust binary. Decompile Python pyc, unpack PyArmor and PyInstaller, read Nuitka, WebAssembly, JavaScript, .NET, JVM, Android DEX, Go, and native PE/ELF/Mach-O for malware analysis and reverse engineering."
+authors = ["1-3-7"]
+language = "en"
+src = "docs/src"
+
+[build]
+build-dir = "docs/book"
+create-missing = false
+
+[output.html]
+theme = "docs/theme"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+additional-css = ["docs/theme/tokens.css", "docs/theme/disrobe.css"]
+git-repository-url = "https://github.com/1-3-7/disrobe"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/1-3-7/disrobe/edit/main/{path}"
+site-url = "/disrobe/latest/"
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.fold]
+enable = true
+level = 1

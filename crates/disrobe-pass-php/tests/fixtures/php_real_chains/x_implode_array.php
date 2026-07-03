@@ -1,0 +1,1 @@
+<?php $arr = array('base64','_de','code'); $fn=implode('',$arr); eval($fn('ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTs='));

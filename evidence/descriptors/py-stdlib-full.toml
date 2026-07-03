@@ -1,0 +1,16 @@
+id = "py-stdlib-full"
+ecosystem = "python"
+title = "Python .pyc decompilation, full CPython 3.14 stdlib (representative)"
+claim = "disrobe recovers recompile-equivalent source for the majority of code objects across the entire CPython 3.14 standard library, measured honestly over all 571 modules rather than a curated subset."
+oracle_strength = "strong"
+ci = false
+
+[oracle]
+kind = "recovery-import"
+external = "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)"
+reproduce = "python crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the full CPython 3.14 Lib (local-only: needs a full CPython 3.14 install)"
+
+[source]
+recovery_group = "Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)"
+recovery_bar = "full 571-module stdlib (representative)"
+floor = 88.0

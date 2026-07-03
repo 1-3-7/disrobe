@@ -1,0 +1,53 @@
+{
+  "hello": [
+    [
+      "putself",
+      "putchilledstring",
+      "opt_send_without_block",
+      "leave"
+    ]
+  ],
+  "greeter": [
+    [
+      "putspecialobject",
+      "putnil",
+      "defineclass",
+      "pop",
+      "putself",
+      "opt_getconstant_path",
+      "putchilledstring",
+      "opt_send_without_block",
+      "opt_send_without_block",
+      "opt_send_without_block",
+      "leave"
+    ],
+    [
+      "putspecialobject",
+      "putnil",
+      "defineclass",
+      "leave"
+    ],
+    [
+      "definemethod",
+      "definemethod",
+      "putobject",
+      "leave"
+    ],
+    [
+      "getlocal_WC_0",
+      "dup",
+      "setinstancevariable",
+      "leave"
+    ],
+    [
+      "putobject",
+      "getinstancevariable",
+      "dup",
+      "objtostring",
+      "anytostring",
+      "putobject",
+      "concatstrings",
+      "leave"
+    ]
+  ]
+}

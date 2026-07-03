@@ -1,0 +1,42 @@
+Self-contained static-table string-decrypt fixture (benign, authored in-house)
+==============================================================================
+
+Purpose
+-------
+StaticTableCrypt exercises the recoverable shape of a commercial string
+encryptor (Zelix KlassMaster / Stringer in their self-contained mode): a
+private static decrypt(String) method whose XOR key table is a
+private static final char[] built once in the class initializer (<clinit>),
+read back through getstatic. No runtime state, no cross-class global table,
+no stack-trace key. Everything the decryptor needs is present in the static
+artifact, so the constrained bytecode evaluator executes the class's own
+decrypt body (running <clinit> first to populate the key table) and recovers
+the plaintext. This is the honest, schedule-agnostic path: disrobe runs the
+real method, it never reimplements an invented cipher.
+
+Provenance (non-circular oracle)
+--------------------------------
+StaticTableCrypt.java was authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by
+disrobe. The encrypted String constants are the literal ciphertext baked into
+the source (the way an obfuscator bakes an encrypted pool constant). The
+ground-truth plaintexts are listed below; the .class was run under the real JVM
+(java com.disrobe.bench.StaticTableCrypt) and prints exactly these two lines.
+
+Files
+-----
+StaticTableCrypt.class (1176 B) -- DEFEATABLE. decrypt(String) XORs the cipher
+    against a static final char[16] key built in <clinit> by buildKey()
+    (seed 0x1F, x*33+15 mod 128). Two reachable call sites:
+        url()   -> "jdbc:mysql://10.0.0.5:3306/billing"
+        token() -> "X-Internal-Auth: 9f8e7d6c"
+StaticTableCrypt.java  -- the in-house source; the literals above are the oracle.
+
+Why this is not a fake wall
+---------------------------
+The key table is reconstructable statically (run <clinit>), so the decrypt is
+defeated end-to-end against the known plaintext. Contrast corpus/jvm/stringer
+(Digi/uh): that real Stringer sample keys on the live stack-trace caller hash
+plus a lazily-built cross-class global Object[] table seeded at run time, which
+is information-theoretically absent from the artifact and stays an honest wall.

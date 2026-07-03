@@ -1,0 +1,16 @@
+id = "py-stdlib-recompile"
+ecosystem = "python"
+title = "Python .pyc decompilation, per-code-object recompile-equivalence"
+claim = "disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)"
+reproduce = "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
+
+[source]
+recovery_group = "Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)"
+recovery_bar = "200-module pinned corpus"
+floor = 90.0

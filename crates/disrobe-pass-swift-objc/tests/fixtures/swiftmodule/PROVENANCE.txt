@@ -1,0 +1,22 @@
+GreetingKit.swiftmodule / GreetingKit.swiftinterface provenance
+
+Source: Greeting.swift (benign struct/enum/class with typed fields and methods).
+
+Compiler: Swift version 6.3.2 (swift-6.3.2-RELEASE), target x86_64-unknown-windows-msvc.
+
+Command (run in this directory):
+  swiftc -emit-module \
+    -emit-module-path GreetingKit.swiftmodule \
+    -emit-module-interface-path GreetingKit.swiftinterface \
+    -enable-library-evolution -swift-version 6 \
+    -module-name GreetingKit Greeting.swift
+
+GreetingKit.swiftmodule is a real Swift serialized module: 4-byte signature
+0xE2 0x9C 0xA8 0x0E followed by a standard LLVM bitstream. The declared
+identifier names live in the IDENTIFIER_DATA block (block id 12) as a single
+NUL-separated blob. swiftmodule.rs recovers those names; the test grades the
+recovery against the identifiers declared in Greeting.swift (the independent
+oracle) and cross-checks the textual GreetingKit.swiftinterface.
+
+Scope: this recovers the declared symbol / type / member NAMES, not Swift
+function-body source.

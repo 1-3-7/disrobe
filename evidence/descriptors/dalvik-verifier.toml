@@ -1,0 +1,16 @@
+id = "dalvik-verifier"
+ecosystem = "android"
+title = "Dalvik recovered bodies, real JVM verifier"
+claim = "disrobe re-hosts Dalvik method bodies into class bytecode that the real JVM bytecode verifier accepts under -Xverify:all, on the committed dex corpus."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real JVM verifier (-Xverify:all over the assembled jar; the JVM rejects malformed bytecode)"
+reproduce = "cargo test -p disrobe-pass-jvm --test dalvik_verifier_gate"
+
+[source]
+recovery_group = "Dalvik recovered bodies (committed dex corpus, real JVM verifier)"
+recovery_bar = "verifier-clean (committed, CI)"
+floor = 97.0

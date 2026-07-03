@@ -1,0 +1,62 @@
+disrobe self-authored Hermes regex-bytecode fixtures
+====================================================
+
+Two benign self-authored JavaScript files, each a list of regex literals, compiled
+with the real Hermes compiler (hermesc, FOSS, facebook/hermes release binary
+hermes-cli-windows from tag v0.13.0). The bytecode is never executed; it is parsed
+and the compiled RegExp table is disassembled back to pattern text statically.
+
+Exact build command (per file):
+
+  hermesc.exe -emit-binary -out regexes.hbc.v96 regexes.js
+  hermesc.exe -emit-binary -out edge.hbc.v96    edge.js
+  hermesc.exe -emit-binary -out nest.hbc.v96    nest.js
+
+Artifacts (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
+
+  regexes.js        ground-truth source: 23 regex literals exercising literal runs,
+                    anchors, dot, the i/g/m flags, character classes (\d \s \w and
+                    negated), bracket ranges, capture groups, alternation, the greedy
+                    and lazy quantifiers (* + ? {n} {n,} {n,m}), word boundaries,
+                    non-capturing groups, lookahead, and backreferences.
+                    sha256 463732627fecc031d2748dedf14f0ca5fbbb70d82d75702c2c9ec630370ddcb7
+
+  regexes.hbc.v96   HBC version 96, 3032 bytes, RegExp count 23.
+                    sha256 4448f399264398acddf319179e29feec991775b9745dcc59e14bda7cc651edfb
+
+  edge.js           ground-truth source: 8 regex literals for the harder constructs:
+                    lookbehind (positive and negative), \B, a simple-loop with an
+                    alternation body, nested capture groups, a unicode bracket range
+                    under the u flag, a coalesced negated bracket, and an optional
+                    non-capturing group.
+                    sha256 (see file)
+
+  edge.hbc.v96      HBC version 96, 1315 bytes, RegExp count 8.
+                    sha256 fd5d2f718c832406648f6e452cc94868a0d4cfcf9a485629fe043d6499055c3f
+
+  nest.js           ground-truth source: 7 regex literals for nested structure:
+                    a captured group under a quantifier, alternation inside a group,
+                    a width-1 loop inside a group, a simple-loop with alternation body
+                    between literals, nested groups under a quantifier, anchored
+                    captures with quantified char classes, and an optional group.
+                    sha256 606a2b1135d55abfea8a6ed8092e3bc2cebe493221dc50f37110ba23d7e423b2
+
+  nest.hbc.v96      HBC version 96, 1400 bytes, RegExp count 7.
+                    sha256 16ae5cbe7be52019205f10e7b5fe79efb8d42c074be0f466db0974039077c63f
+
+Scope of recovery, stated plainly:
+
+  The disassembler reads the RegExp table and per-regex bytecode blob (header plus
+  the regex opcode stream) and reconstructs each pattern back to its source text.
+  Grading is non-circular: each recovered pattern is asserted against the known
+  source regex in tests/real_hermes_regex.rs, not against the disassembler's own
+  output. All 31 patterns across the two fixtures reconstruct exactly.
+
+  A few recovered forms differ from the source spelling because the compiler
+  rewrites them and the original spelling is not present in the bytecode:
+  case-insensitive literals are upcased (a.c with the i flag stores A and C), bracket
+  ranges are canonicalized and sorted ([A-Za-z0-9_] stores 0-9 A-Z _ a-z), adjacent
+  members are coalesced into ranges ([^abc] stores a-c), and a lookbehind body is
+  stored reversed (recovered by reversing simple literal runs). Any regex opcode the
+  decoder cannot model is marked rather than guessed: the recovered struct exposes a
+  fully_modeled flag that goes false and the pattern is left as decoded so far.

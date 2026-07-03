@@ -1,0 +1,144 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "theme/**"
+      - "book.toml"
+      - "README.md"
+      - "playground/**"
+      - "crates/disrobe-wasm/**"
+      - "docs/gen-llms-full.sh"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.4.40"
+  PLAYGROUND_BASE: "/disrobe/playground/"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: ${{ env.MDBOOK_VERSION }}
+
+      - name: Build book
+        run: mdbook build
+
+      - name: Index with Pagefind
+        run: npx -y pagefind --site docs/book
+
+      - name: Install Rust (wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-playground
+
+      - name: Build disrobe-wasm
+        run: cargo build -p disrobe-wasm --target wasm32-unknown-unknown --release
+
+      - name: Guard the native binary-analysis stack out of the wasm graph
+        run: |
+          for banned in capstone-sys disrobe-pass-native disrobe-binfmt; do
+            if cargo tree -p disrobe-wasm --target wasm32-unknown-unknown -e no-dev -i "$banned" 2>/dev/null | grep -qE "^${banned} v"; then
+              echo "banned crate ${banned} re-entered the disrobe-wasm wasm graph"
+              exit 1
+            fi
+          done
+
+      - name: Stage wasm into playground
+        run: cp target/wasm32-unknown-unknown/release/disrobe_wasm.wasm playground/src/wasm/disrobe_wasm.wasm
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install playground deps
+        working-directory: playground
+        run: bun install --frozen-lockfile
+
+      - name: Build playground
+        working-directory: playground
+        run: bun run build
+
+      - name: Assemble Pages site with /latest/ doc root and /playground/
+        run: |
+          set -euo pipefail
+          rm -rf site
+          mkdir -p site/latest
+          cp -a docs/book/. site/latest/
+          mkdir -p site/playground
+          cp -a playground/dist/. site/playground/
+          cp docs/theme/sitemap.xml site/sitemap.xml
+          cp docs/theme/sitemap.xml site/latest/sitemap.xml
+          cp docs/theme/robots.txt site/robots.txt
+          cp docs/theme/robots.txt site/latest/robots.txt
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="google-site-verification" content="fdcg9WgF_Qn1yn7B35093wWjC4kSWrfHH3ra_lQO85s" />
+              <meta http-equiv="refresh" content="0; url=./latest/" />
+              <link rel="canonical" href="https://1-3-7.github.io/disrobe/" />
+              <meta name="description" content="disrobe: deterministic multi-language decompiler, deobfuscator, and unpacker in a single Rust binary for malware analysis and reverse engineering." />
+              <title>disrobe documentation</title>
+            </head>
+            <body>
+              <p>Redirecting to the <a href="./latest/">latest disrobe documentation</a>.</p>
+            </body>
+          </html>
+          HTML
+
+      - name: Publish llms.txt and llms-full.txt at site root and under /latest/ for AI crawlers
+        run: |
+          set -euo pipefail
+          cp docs/theme/llms.txt site/llms.txt
+          cp docs/theme/llms.txt site/latest/llms.txt
+          bash docs/gen-llms-full.sh site/llms-full.txt
+          cp site/llms-full.txt site/latest/llms-full.txt
+          test -s site/llms.txt
+          test -s site/latest/llms.txt
+          test -s site/llms-full.txt
+          test -s site/latest/llms-full.txt
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,15 @@
+id = "binfmt-extract"
+ecosystem = "binfmt"
+title = "Container, archive, and firmware in-tree extraction"
+claim = "disrobe extracts member bytes in-tree for every container, archive, and firmware format it detects, with no metadata-only or external-tool-gated formats."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "per-format in-tree member-byte extraction count (every detected format writes real bytes)"
+reproduce = "cargo test -p disrobe-binfmt every_real_format_extracts_in_tree"
+
+[source]
+recovery_group = "Detection and extraction breadth (counts, not percentages)"
+recovery_bar = "Containers"

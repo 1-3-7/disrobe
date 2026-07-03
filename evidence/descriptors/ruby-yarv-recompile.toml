@@ -1,0 +1,16 @@
+id = "ruby-yarv-recompile"
+ecosystem = "ruby"
+title = "Ruby YARV decompilation, MRI recompile-equivalence"
+claim = "disrobe decompiles Ruby YARV bytecode to source whose recompiled instruction multiset matches the original under the real MRI interpreter."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset"
+reproduce = "cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle"
+
+[source]
+recovery_group = "Ruby YARV (MRI recompile-equivalence oracle)"
+recovery_bar = "megafile"
+floor = 96.0

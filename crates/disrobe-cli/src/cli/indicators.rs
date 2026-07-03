@@ -1,0 +1,155 @@
+use std::path::PathBuf;
+
+use disrobe_core::interop::{ArtifactSchema, IndicatorAggregator, IndicatorBundle};
+
+use crate::cli::output::OutputFormat;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum IndicatorsFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+const fn schema_label(schema: ArtifactSchema) -> &'static str {
+    match schema {
+        ArtifactSchema::Recon => "recon",
+        ArtifactSchema::Ioc => "ioc",
+        ArtifactSchema::Prowl => "prowl",
+    }
+}
+
+fn render_text(bundle: &IndicatorBundle) {
+    if bundle.indicators.is_empty() {
+        println!("no indicators");
+    } else {
+        for ind in &bundle.indicators {
+            println!(
+                "{}\t{}\t[{}]\t{}",
+                ind.class.label(),
+                ind.value,
+                ind.sources.join(","),
+                ind.kinds.join(",")
+            );
+        }
+    }
+    println!(
+        "\n{} indicator(s) from {} artifact(s): {}",
+        bundle.total,
+        bundle.ingested.len(),
+        bundle.ingested.join(", ")
+    );
+}
+
+pub(crate) fn run(
+    inputs: Vec<PathBuf>,
+    targets_only: bool,
+    format: IndicatorsFormat,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    if inputs.is_empty() {
+        return Err(miette::miette!(
+            "DR-IND-0060: pass at least one disrobe recon/ioc/prowl JSON artifact"
+        ));
+    }
+    let mut agg: IndicatorAggregator = IndicatorAggregator::new();
+    for path in &inputs {
+        let text: String = std::fs::read_to_string(path)
+            .map_err(|e| miette::miette!("DR-IND-0061: cannot read `{}`: {e}", path.display()))?;
+        match agg.ingest_json(&text) {
+            Some(schema) => {
+                eprintln!("ingested {} as {}", path.display(), schema_label(schema));
+            }
+            None => {
+                return Err(miette::miette!(
+                    "DR-IND-0062: `{}` is not a recognized disrobe recon/ioc/prowl artifact",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    if targets_only {
+        for target in agg.network_values() {
+            println!("{target}");
+        }
+        return Ok(());
+    }
+
+    let bundle: IndicatorBundle = agg.finish();
+    let effective: IndicatorsFormat = if fmt.is_machine() {
+        IndicatorsFormat::Json
+    } else {
+        format
+    };
+    match effective {
+        IndicatorsFormat::Text => {
+            render_text(&bundle);
+            Ok(())
+        }
+        IndicatorsFormat::Json => {
+            let s: String = serde_json::to_string_pretty(&bundle)
+                .map_err(|e| miette::miette!("DR-IND-0063: json serialize: {e}"))?;
+            println!("{s}");
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use disrobe_core::interop::{IndicatorClass, UnifiedIndicator};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn tmp_file(stem: &str, content: &str) -> PathBuf {
+        let pid: u32 = std::process::id();
+        let n: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
+        let p: PathBuf = std::env::temp_dir().join(format!("disrobe-ind-{stem}-{pid}-{n}.json"));
+        std::fs::write(&p, content).expect("write tmp");
+        p
+    }
+
+    const RECON_DOC: &str = r#"{"schema":"disrobe.recon/v0","files_scanned":1,"bytes_scanned":1,"non_utf8_files":0,"total":1,"findings":[{"category":"url","rule_id":"r","value":"https://recon.example/x","line":1,"column":1,"offset":0,"severity":"note"}]}"#;
+    const PROWL_DOC: &str = r#"{"schema":"disrobe.prowl/v0","targets":["recon.example"],"sources":["wayback"],"url_total":1,"ioc_total":0,"urls":[{"url":"https://recon.example/y","source":"wayback"}],"iocs":[]}"#;
+
+    #[test]
+    fn aggregates_files_across_schemas() {
+        let recon: PathBuf = tmp_file("recon", RECON_DOC);
+        let prowl: PathBuf = tmp_file("prowl", PROWL_DOC);
+        let mut agg: IndicatorAggregator = IndicatorAggregator::new();
+        let r: String = std::fs::read_to_string(&recon).unwrap();
+        let p: String = std::fs::read_to_string(&prowl).unwrap();
+        assert_eq!(agg.ingest_json(&r), Some(ArtifactSchema::Recon));
+        assert_eq!(agg.ingest_json(&p), Some(ArtifactSchema::Prowl));
+        let bundle: IndicatorBundle = agg.finish();
+        assert!(
+            bundle
+                .indicators
+                .iter()
+                .any(|i: &UnifiedIndicator| i.class == IndicatorClass::Url
+                    && i.value == "https://recon.example/x"),
+            "{:?}",
+            bundle.indicators
+        );
+        let _ = std::fs::remove_file(&recon);
+        let _ = std::fs::remove_file(&prowl);
+    }
+
+    #[test]
+    fn unknown_input_errors() {
+        let junk: PathBuf = tmp_file("junk", r#"{"unrelated":true}"#);
+        let err: miette::Report = run(
+            vec![junk.clone()],
+            false,
+            IndicatorsFormat::Json,
+            OutputFormat::Text,
+        )
+        .expect_err("must reject unknown artifact");
+        assert!(format!("{err}").contains("DR-IND-0062"));
+        let _ = std::fs::remove_file(&junk);
+    }
+}

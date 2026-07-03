@@ -1,0 +1,45 @@
+{
+  "ecosystem": "cross-ecosystem",
+  "gates": [
+    {
+      "display": "37/37 (100.0%)",
+      "id": "swift-demangle-recall",
+      "metric": "% of the binary's own Swift symbols recovered",
+      "ok": 37,
+      "oracle": "the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is swift-demangle",
+      "reproduce": "cargo test -p disrobe-pass-swift-objc --test real_swift_demangle",
+      "status": "ok",
+      "title": "Swift mangled-symbol demangle recall vs the binary's own symbol table",
+      "total": 37,
+      "value": 100.0
+    },
+    {
+      "display": "6/6 (100.0%)",
+      "id": "frisk-planted-recall",
+      "metric": "% of the planted committed (non-secret) IOC categories detected",
+      "ok": 6,
+      "oracle": "deliberately planted findings (endpoint, manifest, URL, IPv4, email, .onion) committed under corpus/recon/planted - the ground truth",
+      "reproduce": "cargo test -p disrobe-core --test frisk_gauntlet",
+      "status": "ok",
+      "title": "frisk recon category recall on the committed planted ground-truth tree",
+      "total": 6,
+      "value": 100.0
+    },
+    {
+      "display": "102/102 (100.0%)",
+      "id": "pickle-corpus-coverage",
+      "metric": "% of committed pickle fixtures fully disassembled + traced + classified",
+      "ok": 102,
+      "oracle": "pickletools-semantics equivalence: every committed fixture must disassemble to a STOP, symbolically execute, and classify (benign vs malicious) correctly",
+      "reproduce": "cargo test -p disrobe-pass-pickle --test corpus",
+      "status": "ok",
+      "title": "pickle corpus disassemble + symbolic-trace + safety-classification coverage",
+      "total": 102,
+      "value": 100.0
+    }
+  ],
+  "id": "gate-harvest",
+  "note": "These three gates already prove disrobe correct against an external reference or a planted ground truth, but their numbers were not in recovery.json. This bench runs each gate's measurement in-process (the same public API the committed test exercises) and records the number so the evidence report can surface it. A gate whose fixture is sourcing-gated on this box is recorded skipped-with-reason, never a silent pass.",
+  "status": "ok",
+  "title": "Gate-test harvest: real oracle gates with no recovery.json number, surfaced"
+}

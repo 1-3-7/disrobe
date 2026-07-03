@@ -1,0 +1,577 @@
+#![cfg(feature = "sandbox")]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use disrobe_pass_wasm_deob::{
+    CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
+    lift_function_body, rust_runtime_prelude,
+};
+use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
+use wasmtime::{Config, Engine, Linker, Module, Store, Val};
+
+const FUEL_BUDGET: u64 = 4_000_000;
+
+fn corpus_dirs() -> Vec<PathBuf> {
+    let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    vec![
+        root.join("../../corpus/src/wasm/sources"),
+        root.join("../../corpus/src/wasm/edge_cases"),
+        root.join("../../corpus/wasm/wat"),
+        root.join("../../corpus/wasm/plugins"),
+    ]
+}
+
+fn wat_files() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in corpus_dirs() {
+        let Ok(entries): Result<fs::ReadDir, _> = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path: PathBuf = entry.path();
+            if path.extension().is_some_and(|e| e == "wat") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
+    let mut out: Vec<FunctionBody<'_>> = Vec::new();
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Ok(Payload::CodeSectionEntry(body)) = payload {
+            out.push(body);
+        }
+    }
+    out
+}
+
+fn callees(sigs: &ModuleSignatures) -> CalleeNames {
+    CalleeNames::with_signatures(
+        sigs.callee_names(),
+        sigs.call_signatures(),
+        sigs.call_signatures(),
+    )
+}
+
+const fn numeric(ty: ValType) -> bool {
+    matches!(
+        ty,
+        ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64
+    )
+}
+
+fn signature_is_numeric(sig: &FunctionSig) -> bool {
+    sig.params.iter().copied().all(numeric)
+        && sig.results.len() == 1
+        && sig.results.iter().copied().all(numeric)
+}
+
+fn body_is_self_contained_and_total(body: &FunctionBody<'_>) -> bool {
+    let Ok(reader): Result<wasmparser::OperatorsReader<'_>, _> = body.get_operators_reader() else {
+        return false;
+    };
+    for op in reader {
+        let Ok(op): Result<Operator<'_>, _> = op else {
+            return false;
+        };
+        match op {
+            Operator::Call { .. }
+            | Operator::CallIndirect { .. }
+            | Operator::ReturnCall { .. }
+            | Operator::ReturnCallIndirect { .. }
+            | Operator::CallRef { .. }
+            | Operator::ReturnCallRef { .. }
+            | Operator::GlobalGet { .. }
+            | Operator::GlobalSet { .. }
+            | Operator::I32Load { .. }
+            | Operator::I64Load { .. }
+            | Operator::F32Load { .. }
+            | Operator::F64Load { .. }
+            | Operator::I32Load8U { .. }
+            | Operator::I32Load8S { .. }
+            | Operator::I32Load16U { .. }
+            | Operator::I32Load16S { .. }
+            | Operator::I64Load8U { .. }
+            | Operator::I64Load8S { .. }
+            | Operator::I64Load16U { .. }
+            | Operator::I64Load16S { .. }
+            | Operator::I64Load32U { .. }
+            | Operator::I64Load32S { .. }
+            | Operator::I32Store { .. }
+            | Operator::I64Store { .. }
+            | Operator::F32Store { .. }
+            | Operator::F64Store { .. }
+            | Operator::I32Store8 { .. }
+            | Operator::I32Store16 { .. }
+            | Operator::I64Store8 { .. }
+            | Operator::I64Store16 { .. }
+            | Operator::I64Store32 { .. }
+            | Operator::MemorySize { .. }
+            | Operator::MemoryGrow { .. }
+            | Operator::MemoryCopy { .. }
+            | Operator::MemoryFill { .. }
+            | Operator::MemoryInit { .. }
+            | Operator::I32DivS
+            | Operator::I32DivU
+            | Operator::I32RemS
+            | Operator::I32RemU
+            | Operator::I64DivS
+            | Operator::I64DivU
+            | Operator::I64RemS
+            | Operator::I64RemU
+            | Operator::I32TruncF32S
+            | Operator::I32TruncF32U
+            | Operator::I32TruncF64S
+            | Operator::I32TruncF64U
+            | Operator::I64TruncF32S
+            | Operator::I64TruncF32U
+            | Operator::I64TruncF64S
+            | Operator::I64TruncF64U
+            | Operator::Unreachable => return false,
+            other if other.is_simd() || other.is_atomic() || other.is_reference_or_gc() => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+trait OpClass {
+    fn is_simd(&self) -> bool;
+    fn is_atomic(&self) -> bool;
+    fn is_reference_or_gc(&self) -> bool;
+}
+
+impl OpClass for Operator<'_> {
+    fn is_simd(&self) -> bool {
+        let mnemonic: String = format!("{self:?}");
+        mnemonic.contains("x16")
+            || mnemonic.contains("x8")
+            || mnemonic.contains("x4")
+            || mnemonic.contains("x2")
+            || mnemonic.starts_with("V128")
+    }
+    fn is_atomic(&self) -> bool {
+        format!("{self:?}").contains("Atomic")
+    }
+    fn is_reference_or_gc(&self) -> bool {
+        let mnemonic: String = format!("{self:?}");
+        mnemonic.starts_with("Ref")
+            || mnemonic.starts_with("Struct")
+            || mnemonic.starts_with("Array")
+            || mnemonic.starts_with("I31")
+            || mnemonic.starts_with("Table")
+            || mnemonic.starts_with("Elem")
+            || mnemonic.starts_with("CallRef")
+            || mnemonic.starts_with("BrOn")
+            || mnemonic.starts_with("Throw")
+            || mnemonic.starts_with("Try")
+            || mnemonic.starts_with("Catch")
+            || mnemonic.starts_with("Rethrow")
+            || mnemonic.starts_with("Delegate")
+            || mnemonic.starts_with("Cont")
+            || mnemonic.starts_with("Resume")
+            || mnemonic.starts_with("Suspend")
+            || mnemonic.starts_with("Switch")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CmpVal {
+    I32(i32),
+    I64(i64),
+    F32Bits(u32),
+    F64Bits(u64),
+}
+
+const fn canonical_f32(bits: u32) -> u32 {
+    if f32::from_bits(bits).is_nan() {
+        0x7fc0_0000
+    } else {
+        bits
+    }
+}
+
+const fn canonical_f64(bits: u64) -> u64 {
+    if f64::from_bits(bits).is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        bits
+    }
+}
+
+const fn from_val(val: &Val) -> Option<CmpVal> {
+    match val {
+        Val::I32(v) => Some(CmpVal::I32(*v)),
+        Val::I64(v) => Some(CmpVal::I64(*v)),
+        Val::F32(bits) => Some(CmpVal::F32Bits(canonical_f32(*bits))),
+        Val::F64(bits) => Some(CmpVal::F64Bits(canonical_f64(*bits))),
+        _ => None,
+    }
+}
+
+fn seed_values(ty: ValType) -> Vec<Val> {
+    match ty {
+        ValType::I32 => [0_i32, 1, -1, 2, 7, -8, 100, i32::MIN, i32::MAX]
+            .iter()
+            .map(|v| Val::I32(*v))
+            .collect(),
+        ValType::I64 => [0_i64, 1, -1, 3, 65_536, i64::MIN, i64::MAX]
+            .iter()
+            .map(|v| Val::I64(*v))
+            .collect(),
+        ValType::F32 => [0.0_f32, 1.0, -1.0, 3.5, -2.25]
+            .iter()
+            .map(|v| Val::F32(v.to_bits()))
+            .collect(),
+        ValType::F64 => [0.0_f64, 1.0, -1.0, 2.5, -0.5]
+            .iter()
+            .map(|v| Val::F64(v.to_bits()))
+            .collect(),
+        ValType::Ref(_) | ValType::V128 => Vec::new(),
+    }
+}
+
+fn argument_battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
+    if params.is_empty() {
+        return vec![Vec::new()];
+    }
+    let per_param: Vec<Vec<Val>> = params.iter().map(|ty| seed_values(*ty)).collect();
+    let mut out: Vec<Vec<Val>> = vec![Vec::new()];
+    for choices in &per_param {
+        let mut next: Vec<Vec<Val>> = Vec::new();
+        for prefix in &out {
+            for choice in choices {
+                let mut extended: Vec<Val> = prefix.clone();
+                extended.push(*choice);
+                next.push(extended);
+                if next.len() >= cap {
+                    break;
+                }
+            }
+            if next.len() >= cap {
+                break;
+            }
+        }
+        out = next;
+    }
+    out.truncate(cap);
+    out
+}
+
+fn result_print_expr(ty: ValType, call: &str) -> String {
+    match ty {
+        ValType::I32 => format!("println!(\"I32 {{}}\", ({call}))"),
+        ValType::I64 => format!("println!(\"I64 {{}}\", ({call}))"),
+        ValType::F32 => format!("println!(\"F32 {{}}\", ({call}).to_bits())"),
+        ValType::F64 => format!("println!(\"F64 {{}}\", ({call}).to_bits())"),
+        ValType::Ref(_) | ValType::V128 => "()".to_owned(),
+    }
+}
+
+fn rich_config() -> Config {
+    let mut config: Config = Config::new();
+    config.consume_fuel(true);
+    config
+}
+
+struct Sandbox {
+    store: Store<()>,
+    instance: wasmtime::Instance,
+}
+
+fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
+    let module: Module = Module::new(eng, bytes).ok()?;
+    let mut store: Store<()> = Store::new(eng, ());
+    store.set_fuel(FUEL_BUDGET).ok()?;
+    let mut linker: Linker<()> = Linker::new(eng);
+    linker.define_unknown_imports_as_traps(&module).ok()?;
+    let instance: wasmtime::Instance = linker.instantiate(&mut store, &module).ok()?;
+    Some(Sandbox { store, instance })
+}
+
+fn wasm_outcome(
+    sandbox: &mut Sandbox,
+    export: &str,
+    args: &[Val],
+    result_ty: ValType,
+) -> Option<CmpVal> {
+    let func: wasmtime::Func = sandbox.instance.get_func(&mut sandbox.store, export)?;
+    let mut results: Vec<Val> = vec![Val::I32(0)];
+    if func.call(&mut sandbox.store, args, &mut results).is_err() {
+        let _ = sandbox.store.set_fuel(FUEL_BUDGET);
+        return None;
+    }
+    let _ = result_ty;
+    from_val(results.first()?)
+}
+
+fn tool_on_path(tool: &str) -> Option<PathBuf> {
+    let probe: &str = if cfg!(windows) { "where" } else { "which" };
+    let output: std::process::Output = Command::new(probe).arg(tool).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout: String = String::from_utf8_lossy(&output.stdout).to_string();
+    let first: &str = stdout.lines().next()?.trim();
+    (!first.is_empty()).then(|| PathBuf::from(first))
+}
+
+struct Target {
+    export: String,
+    rust_name: String,
+    params: Vec<ValType>,
+    result_ty: ValType,
+    battery: Vec<Vec<Val>>,
+}
+
+#[test]
+fn recovered_rust_executes_identically_to_original_under_wasmtime() {
+    let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
+        eprintln!("SKIP: rustc not on PATH for the rust-execution differential");
+        return;
+    };
+
+    let eng: Engine = Engine::new(&rich_config()).expect("wasmtime engine");
+    let mut program: String = rust_runtime_prelude().to_owned();
+    let mut targets: Vec<(Vec<u8>, Target)> = Vec::new();
+    let mut emitted_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut idiomatic_functions: usize = 0;
+    let mut scaffolded_functions: usize = 0;
+    let mut control_functions: usize = 0;
+    let mut total_labeled_loops: usize = 0;
+    let mut nested_loop_functions: usize = 0;
+
+    for wat_path in wat_files() {
+        let Ok(text): Result<String, _> = fs::read_to_string(&wat_path) else {
+            continue;
+        };
+        let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
+            continue;
+        };
+        let Ok(sigs): Result<ModuleSignatures, _> = extract_signatures(&bytes) else {
+            continue;
+        };
+        let defined: Vec<FunctionSig> = sigs.defined().to_vec();
+        let calls: CalleeNames = callees(&sigs);
+
+        for (i, body) in defined_bodies(&bytes).iter().enumerate() {
+            let Some(sig): Option<&FunctionSig> = defined.get(i) else {
+                continue;
+            };
+            if !sig.exported || !signature_is_numeric(sig) {
+                continue;
+            }
+            if !body_is_self_contained_and_total(body) {
+                continue;
+            }
+            let lifted: LiftResult = lift_function_body(body, sig, &calls, LiftTarget::Rust);
+            if !lifted.coverage.fully_recovered() {
+                continue;
+            }
+            let has_control: bool = lifted.pseudo_source.contains("if ")
+                || lifted.pseudo_source.contains("loop {")
+                || lifted.pseudo_source.contains("match ");
+            if has_control {
+                control_functions += 1;
+                let labeled_loops: usize = lifted.pseudo_source.matches(": loop {").count();
+                total_labeled_loops += labeled_loops;
+                if labeled_loops >= 2 {
+                    nested_loop_functions += 1;
+                }
+                if labeled_loops == 0 {
+                    idiomatic_functions += 1;
+                } else {
+                    scaffolded_functions += 1;
+                }
+            }
+
+            let rust_name: String = sig.name.clone();
+            if !emitted_names.insert(rust_name.clone()) {
+                continue;
+            }
+            program.push('\n');
+            program.push_str(&lifted.pseudo_source);
+            targets.push((
+                bytes.clone(),
+                Target {
+                    export: sig.name.clone(),
+                    rust_name,
+                    params: sig.params.clone(),
+                    result_ty: sig.results[0],
+                    battery: argument_battery(&sig.params, 48),
+                },
+            ));
+        }
+    }
+
+    assert!(
+        targets.len() >= 5,
+        "expected a non-trivial executable target set, got {}",
+        targets.len()
+    );
+
+    program.push_str("\nfn main() {\n");
+    program.push_str("    let args: Vec<String> = std::env::args().collect();\n");
+    program.push_str("    let which: &str = args.get(1).map(|s| s.as_str()).unwrap_or(\"\");\n");
+    program.push_str("    let raw: Vec<String> = args.iter().skip(2).cloned().collect();\n");
+    program.push_str("    match which {\n");
+    for (_bytes, target) in &targets {
+        let mut call_args: Vec<String> = Vec::with_capacity(target.params.len());
+        for (idx, ty) in target.params.iter().enumerate() {
+            let parse: &str = match ty {
+                ValType::I64 => "parse::<i64>().unwrap()",
+                ValType::F32 => "parse::<u32>().map(f32::from_bits).unwrap()",
+                ValType::F64 => "parse::<u64>().map(f64::from_bits).unwrap()",
+                ValType::I32 | ValType::Ref(_) | ValType::V128 => "parse::<i32>().unwrap()",
+            };
+            call_args.push(format!("raw[{idx}].{parse}"));
+        }
+        let call: String = format!("{}({})", target.rust_name, call_args.join(", "));
+        let print: String = result_print_expr(target.result_ty, &call);
+        let _ = writeln!(program, "        \"{}\" => {{ {print}; }}", target.export);
+    }
+    program.push_str("        _ => { eprintln!(\"unknown fn\"); }\n");
+    program.push_str("    }\n}\n");
+
+    let dir: PathBuf =
+        std::env::temp_dir().join(format!("disrobe_wasm_exec_diff_{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("mkdir");
+    let rs: PathBuf = dir.join("recovered.rs");
+    fs::write(&rs, &program).expect("write rs");
+    let bin: PathBuf = dir.join(if cfg!(windows) {
+        "recovered.exe"
+    } else {
+        "recovered"
+    });
+    let compile: std::process::Output = Command::new(&rustc)
+        .args(["--edition", "2021", "-O", "-o"])
+        .arg(&bin)
+        .arg(&rs)
+        .output()
+        .expect("spawn rustc");
+    assert!(
+        compile.status.success(),
+        "rustc rejected recovered idiomatic Rust (exit {:?})\n{}",
+        compile.status.code(),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let mut checked: usize = 0;
+    let mut equivalent: usize = 0;
+    let mut diverged: Vec<String> = Vec::new();
+
+    for (bytes, target) in &targets {
+        let Some(mut sandbox): Option<Sandbox> = instantiate(&eng, bytes) else {
+            continue;
+        };
+        for args in &target.battery {
+            let Some(want): Option<CmpVal> =
+                wasm_outcome(&mut sandbox, &target.export, args, target.result_ty)
+            else {
+                continue;
+            };
+            checked += 1;
+            let arg_strs: Vec<String> = args.iter().map(val_to_rust_arg_string).collect();
+            let run: std::process::Output = Command::new(&bin)
+                .arg(&target.export)
+                .args(&arg_strs)
+                .output()
+                .expect("run recovered binary");
+            let stdout: String = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+            let got: Option<CmpVal> = parse_cmp(&stdout);
+            if got == Some(want) {
+                equivalent += 1;
+            } else {
+                diverged.push(format!(
+                    "{}({args:?}): wasmtime={want:?} recovered-rust={got:?} (raw {stdout:?})",
+                    target.export
+                ));
+            }
+        }
+    }
+
+    eprintln!("recovered-RUST execution differential vs wasmtime:");
+    eprintln!(
+        "  executable targets compiled into one binary: {}",
+        targets.len()
+    );
+    eprintln!("  control-flow functions among targets: {control_functions}");
+    eprintln!(
+        "  of those, idiomatic (no loop-scaffold): {idiomatic_functions}, scaffolded: {scaffolded_functions}"
+    );
+    eprintln!(
+        "  labeled loops emitted across control fns: {total_labeled_loops} (functions still nesting 2+ labeled loops: {nested_loop_functions})"
+    );
+    eprintln!("  battery invocations checked: {checked}");
+    eprintln!("  EXECUTION-EQUIVALENT recovered-rust == original-wasm: {equivalent}/{checked}");
+    if !diverged.is_empty() {
+        eprintln!("  DIVERGENCES:");
+        for line in &diverged {
+            eprintln!("    {line}");
+        }
+    }
+
+    assert!(
+        checked >= 200,
+        "expected a real battery (ratchet floor), only checked {checked}"
+    );
+    assert_eq!(
+        equivalent,
+        checked,
+        "every recovered idiomatic Rust function MUST execute identically to the original wasm \
+         under wasmtime; divergences:\n{}",
+        diverged.join("\n")
+    );
+    assert!(
+        idiomatic_functions >= 6,
+        "the relooper must produce idiomatic (scaffold-free) control flow for a real share of \
+         functions; ratchet this up as more CFG shapes are relooped; \
+         idiomatic={idiomatic_functions} scaffolded={scaffolded_functions}"
+    );
+    assert!(
+        nested_loop_functions <= 1,
+        "the canonical block+loop counted idiom must collapse to a single labeled loop, so only \
+         genuine multi-exit cascades (br_table) may keep nested labeled loops; \
+         nested_loop_functions={nested_loop_functions}"
+    );
+    assert!(
+        total_labeled_loops <= 8,
+        "labeled-loop scaffolding must not regress above the collapsed floor; \
+         total_labeled_loops={total_labeled_loops}"
+    );
+}
+
+fn val_to_rust_arg_string(val: &Val) -> String {
+    match val {
+        Val::I32(v) => format!("{v}"),
+        Val::I64(v) => format!("{v}"),
+        Val::F32(bits) => format!("{bits}"),
+        Val::F64(bits) => format!("{bits}"),
+        _ => "0".to_owned(),
+    }
+}
+
+fn parse_cmp(line: &str) -> Option<CmpVal> {
+    let (tag, rest): (&str, &str) = line.split_once(' ')?;
+    match tag {
+        "I32" => rest.parse::<i32>().ok().map(CmpVal::I32),
+        "I64" => rest.parse::<i64>().ok().map(CmpVal::I64),
+        "F32" => rest
+            .parse::<u32>()
+            .ok()
+            .map(|b| CmpVal::F32Bits(canonical_f32(b))),
+        "F64" => rest
+            .parse::<u64>()
+            .ok()
+            .map(|b| CmpVal::F64Bits(canonical_f64(b))),
+        _ => None,
+    }
+}

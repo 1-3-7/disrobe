@@ -1,0 +1,15 @@
+id = "dotnet-koivm"
+ecosystem = "dotnet"
+title = ".NET KoiVM devirtualization"
+claim = "disrobe lifts every virtualized body out of the #Koi stream back to CIL on a sample produced by the real KoiVM tool, graded against an independently compiled clean exe with a hand-derived ground-truth instruction set."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "independently compiled KoiSample.clean.exe + hand-derived ground-truth ops (non-circular structural compare >= 75%)"
+reproduce = "cargo test -p disrobe-pass-dotnet --test real_koivm"
+
+[source]
+recovery_group = "Detection and extraction breadth (counts, not percentages)"
+recovery_bar = ".NET protectors"

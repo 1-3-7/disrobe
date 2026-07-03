@@ -1,0 +1,8 @@
+- id: disrobe
+  name: disrobe (block packed/obfuscated artifacts)
+  description: Scan staged files with `disrobe auto --dry-run` and fail the commit when a packed or obfuscated artifact is detected. Requires the `disrobe` binary on PATH (or set DISROBE_BIN).
+  entry: hooks/pre-commit-gate.sh
+  language: script
+  types: [file]
+  require_serial: false
+  minimum_pre_commit_version: "2.18.0"

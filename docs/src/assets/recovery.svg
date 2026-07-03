@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1138" viewBox="0 0 920 1138" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <rect x="0" y="0" width="920" height="1138" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="919" height="1137" rx="9.5" fill="none" stroke="#333333"/>
+  <text x="28.0" y="40.0" font-size="19.0" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Measured recovery by ecosystem</text>
+  <text x="28.0" y="61.0" font-size="12.5" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">disrobe&#39;s own measured numbers; sources cited per value in this file</text>
+  <line x1="28.0" y1="74.0" x2="892.0" y2="74.0" stroke="#262626"/>
+  <text x="28.0" y="104.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)</text>
+  <text x="892.0" y="104.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">per-code-object recompile-to-equivalent-bytecode, %</text>
+  <text x="28.0" y="143.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">full 571-module stdlib (representative)</text>
+  <rect x="196.0" y="132.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>full 571-module stdlib (representative) - 16880 / 18262 code objects across the entire CPython 3.14 Lib; the honest representative number (the 200-module pinned corpus over-represents recoverable modules)</title></rect>
+  <rect x="196.0" y="132.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="132.0" width="521.3" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="143.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">92.43%</text>
+  <text x="28.0" y="169.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">200-module pinned corpus</text>
+  <rect x="196.0" y="158.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>200-module pinned corpus - 5920 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib</title></rect>
+  <rect x="196.0" y="158.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="158.0" width="531.2" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="169.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">94.18%</text>
+  <text x="28.0" y="204.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)</text>
+  <text x="892.0" y="204.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">proven-correct decompiles over the legacy band, %</text>
+  <text x="28.0" y="243.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">proven-correct</text>
+  <rect x="196.0" y="232.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>proven-correct - CI floor 152 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)</title></rect>
+  <rect x="196.0" y="232.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="232.0" width="448.9" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="243.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">79.60%</text>
+  <text x="28.0" y="278.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">WebAssembly (committed 126-fn corpus: op-coverage, 50 execution-verified under wasmtime)</text>
+  <text x="892.0" y="278.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">op-coverage on parseable corpus modules, %</text>
+  <text x="28.0" y="317.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">op-coverage</text>
+  <rect x="196.0" y="306.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>op-coverage - 124 of 126 functions in the 36 PARSEABLE corpus modules are fully op-covered (every operator lowered, output re-parses); 3 corpus modules are skipped on wat-parse/sig-extract failure, so this is 98.4% of the supported subset, NOT of all wasm; separately, 50 of 50 execution-eligible functions are EXECUTION-EQUIVALENT under wasmtime (original vs recovered: return values, trap parity, linear memory; 6 byte-identical), the remainder op-coverage-only</title></rect>
+  <rect x="196.0" y="306.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="306.0" width="555.0" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="317.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">98.41%</text>
+  <text x="28.0" y="352.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">JVM classfile (EdgeCases corpus, per-method real-javac recompile)</text>
+  <text x="892.0" y="352.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">methods that recompile error-free under javac, %</text>
+  <text x="28.0" y="391.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">per-method</text>
+  <rect x="196.0" y="380.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>per-method - CI floor 131 of 131 (every top-level method recompiles error-free) measured under real javac attribution; the pickWord switch-expression lift (9afa2306) unmasked 25 latent defects previously hidden by javac parse-masking from the __unresolved__ token, all fixed by class: pattern-switch subject resolved to its source parameter (sealed-subtype exhaustiveness), sealed/permits emitted on inner type stubs, typed default initializers on final inner-stub fields, the Exceptions attribute threaded into a real throws clause, the loop-exhausted terminal emitted after a while loop whose exit is a shared pure-return tail, loop-captured locals hoisted to a fresh final declaration, and the shared return tail of an instanceof if-else-if chain duplicated under a Region-tree fall-through analysis</title></rect>
+  <rect x="196.0" y="380.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="380.0" width="564.0" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="391.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">100.00%</text>
+  <text x="28.0" y="426.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Go type-name recovery (go1.26.3 fixture)</text>
+  <text x="892.0" y="426.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">type names resolved on stripped fixture, %</text>
+  <text x="28.0" y="465.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">type names</text>
+  <rect x="196.0" y="454.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>type names - CI floor &gt;= 85% on the committed stripped fixture; 528 of 528 (100%) measured (typelinks/moduledata survive -s -w stripping)</title></rect>
+  <rect x="196.0" y="454.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="454.0" width="479.4" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="465.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">85.00%</text>
+  <text x="28.0" y="500.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Dalvik recovered bodies (committed dex corpus, real JVM verifier)</text>
+  <text x="892.0" y="500.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">recovered classes that pass -Xverify:all, %</text>
+  <text x="28.0" y="539.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">verifier-clean (committed, CI)</text>
+  <rect x="196.0" y="528.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>verifier-clean (committed, CI) - 102 of 103 verifiable classes pass the real JVM bytecode verifier (-Xverify:all) on the committed EdgeCases/EdgeCasesKt/Hello dex; 0 lifter verify failures (the 103rd is link-blocked by an unbundled Kotlin Function1 supertype, a test-harness limit not a lifter defect); a live-range-splitting pass recovers bodies with conflicting register types across joins, 307 re-hosted method bodies verify clean; floor 102 classes; oracle is the JVM rejecting malformed bytecode, not the lifter self-report</title></rect>
+  <rect x="196.0" y="528.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="528.0" width="558.4" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="539.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">99.00%</text>
+  <text x="28.0" y="565.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">body-lowering (real apks, local)</text>
+  <rect x="196.0" y="554.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>body-lowering (real apks, local) - transmissionic 92.5 / enrecipes 90.7 / rustdesk 89.0; counts methods the lifter returned a body for vs a throw-stub (self-reported, NOT verifier-attested); the apks are gitignored, so this gate does not run in CI; the committed-corpus bar above is the verifier-attested number</title></rect>
+  <rect x="196.0" y="554.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="554.0" width="521.7" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="565.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">92.50%</text>
+  <text x="28.0" y="600.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Detection and extraction breadth (counts, not percentages)</text>
+  <text x="892.0" y="600.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">families detected vs reversed or extracted in-tree</text>
+  <text x="28.0" y="639.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Containers</text>
+  <rect x="196.0" y="628.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>Containers - 98 extracted of 98 detected</title></rect>
+  <rect x="196.0" y="628.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="628.0" width="564.0" height="14.0" rx="3.0" fill="#828282"/>
+  <rect x="196.0" y="628.0" width="564.0" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="639.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">98 / 98</text>
+  <text x="28.0" y="665.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">.NET protectors</text>
+  <rect x="196.0" y="654.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>.NET protectors - 3 reversed on real samples of 21 detected</title></rect>
+  <rect x="196.0" y="654.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="654.0" width="120.9" height="14.0" rx="3.0" fill="#828282"/>
+  <rect x="196.0" y="654.0" width="17.3" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="665.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">3 / 21</text>
+  <text x="28.0" y="691.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">PyArmor samples</text>
+  <rect x="196.0" y="680.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>PyArmor samples - 72 recovered of 72 detected</title></rect>
+  <rect x="196.0" y="680.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="680.0" width="414.4" height="14.0" rx="3.0" fill="#828282"/>
+  <rect x="196.0" y="680.0" width="414.4" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="691.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">72 / 72</text>
+  <text x="28.0" y="726.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Obfuscator and bundler family coverage (counts)</text>
+  <text x="892.0" y="726.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">families covered</text>
+  <text x="28.0" y="765.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">JS bundlers</text>
+  <rect x="196.0" y="754.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>JS bundlers</title></rect>
+  <rect x="196.0" y="754.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="754.0" width="387.8" height="14.0" rx="3.0" fill="#828282"/>
+  <text x="892.0" y="765.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">11 families</text>
+  <text x="28.0" y="791.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Lua chain catalog entries</text>
+  <rect x="196.0" y="780.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>Lua chain catalog entries</title></rect>
+  <rect x="196.0" y="780.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="780.0" width="564.0" height="14.0" rx="3.0" fill="#828282"/>
+  <text x="892.0" y="791.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">16 families</text>
+  <text x="28.0" y="817.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">Lua VM-devirt (IronBrew2 real, MoonSec synthetic)</text>
+  <rect x="196.0" y="806.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>Lua VM-devirt (IronBrew2 real, MoonSec synthetic)</title></rect>
+  <rect x="196.0" y="806.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="806.0" width="70.5" height="14.0" rx="3.0" fill="#828282"/>
+  <text x="892.0" y="817.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">2 families</text>
+  <text x="28.0" y="843.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">WASM obfuscator reversers</text>
+  <rect x="196.0" y="832.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>WASM obfuscator reversers</title></rect>
+  <rect x="196.0" y="832.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="832.0" width="141.0" height="14.0" rx="3.0" fill="#828282"/>
+  <text x="892.0" y="843.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">4 families</text>
+  <text x="28.0" y="878.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Ruby YARV (MRI recompile-equivalence oracle)</text>
+  <text x="892.0" y="878.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">opcode-multiset equivalence after recompile, %</text>
+  <text x="28.0" y="917.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">greeter</text>
+  <rect x="196.0" y="906.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>greeter - gate floor (&gt;= 100%)</title></rect>
+  <rect x="196.0" y="906.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="906.0" width="564.0" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="917.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">100.00%</text>
+  <text x="28.0" y="943.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">megafile</text>
+  <rect x="196.0" y="932.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>megafile - gate floor (&gt;= 98%)</title></rect>
+  <rect x="196.0" y="932.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="932.0" width="552.7" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="943.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">98.00%</text>
+  <text x="28.0" y="978.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">React Native Hermes (committed hermesc-built HBC v96 sample: op-coverage, CI-gated)</text>
+  <text x="892.0" y="978.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">op-coverage on the committed v96 sample, %</text>
+  <text x="28.0" y="1017.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">op-coverage</text>
+  <rect x="196.0" y="1006.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>op-coverage - self-authored sample.js compiled with the real hermesc (HBC v96); all 8 functions lift with correct names and source-matching bodies at 0 fallback ops; CI-gated</title></rect>
+  <rect x="196.0" y="1006.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="1006.0" width="564.0" height="14.0" rx="3.0" fill="#8fb3d9"/>
+  <text x="892.0" y="1017.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">100.00%</text>
+  <text x="28.0" y="1052.0" font-size="12.5" fill="#ededed" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">React Native Hermes production-bundle parse scale (local non-redistributable bundle, secondary, not CI-gated)</text>
+  <text x="892.0" y="1052.0" font-size="10.5" fill="#828282" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="400">functions parsed with no module-parse failure</text>
+  <text x="28.0" y="1091.0" font-size="12.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">functions parsed</text>
+  <rect x="196.0" y="1080.0" width="564.0" height="14.0" rx="3.0" fill="#101010"><title>functions parsed</title></rect>
+  <rect x="196.0" y="1080.0" width="564.0" height="14.0" rx="3.0" fill="none" stroke="#262626"/>
+  <rect x="196.0" y="1080.0" width="564.0" height="14.0" rx="3.0" fill="#828282"/>
+  <text x="892.0" y="1091.0" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="end" font-weight="500">122,633 fns</text>
+  <line x1="28.0" y1="1114.0" x2="892.0" y2="1114.0" stroke="#262626"/>
+  <rect x="28.0" y="1121.0" width="16.0" height="10.0" rx="2.0" fill="#8fb3d9"/>
+  <text x="50.0" y="1130.0" font-size="10.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">delivered / recovered</text>
+  <rect x="196.0" y="1121.0" width="16.0" height="10.0" rx="2.0" fill="#828282"/>
+  <text x="218.0" y="1130.0" font-size="10.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">detected / count</text>
+  <rect x="348.0" y="1121.0" width="16.0" height="10.0" rx="2.0" fill="#c9a98e"/>
+  <text x="370.0" y="1130.0" font-size="10.0" fill="#a1a1a1" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">partial recovery</text>
+</svg>

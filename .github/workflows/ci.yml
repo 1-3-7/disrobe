@@ -1,0 +1,263 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo check --workspace --all-targets --all-features
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+
+  graphs:
+    name: graphs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: all generated artifacts are byte-fresh (graphs + card + demo + plugins + evidence)
+        run: cargo run -p xtask -- sync --check
+      - name: evidence numbers trace to recovery.json and floors hold
+        run: cargo run -p xtask -- evidence --check
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space (linux runner)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.8-3.14 for the py-decompile construct matrix
+        run: uv python install 3.8 3.9 3.10 3.11 3.12 3.13 3.14
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - run: cargo test --workspace --all-features
+
+  py-recompile-gate:
+    name: py recompile-equivalence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.14 (pinned corpus interpreter)
+        run: uv python install 3.14
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: build the disrobe cli the harness drives
+        run: cargo build --release -p disrobe-cli --bin disrobe
+      - name: per-code-object recompile-equivalence floor (>= 90% on the pinned 3.14 corpus)
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
+
+  execution-differentials:
+    name: execution differentials
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - name: install lua5.4 and luajit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4 luajit
+          lua5.4 -v
+          luajit -v
+      - name: install luau 0.725 (matches the committed decompile fixtures)
+        run: |
+          curl -fsSL -o luau-ubuntu.zip \
+            https://github.com/luau-lang/luau/releases/download/0.725/luau-ubuntu.zip
+          mkdir -p "$HOME/.local/bin"
+          unzip -o luau-ubuntu.zip -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/luau" "$HOME/.local/bin/luau-compile"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/luau" --help >/dev/null 2>&1 || true
+          "$HOME/.local/bin/luau-compile" --help >/dev/null 2>&1 || true
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: opcache
+          tools: none
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: locate the opcache zend_extension the op_array emitter loads
+        run: |
+          ext_dir="$(php -r 'echo ini_get("extension_dir");')"
+          dll="${ext_dir}/opcache.so"
+          if [ ! -f "$dll" ]; then
+            echo "opcache.so not found at ${dll}; the php op_array differential cannot emit without it" >&2
+            ls -la "$ext_dir" || true
+            exit 1
+          fi
+          echo "DZOA_OPCACHE_DLL=${dll}" >> "$GITHUB_ENV"
+          echo "resolved opcache: ${dll}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: wasmtime re-execution differential (recovered wasm runs identically to clean)
+        run: cargo test -p disrobe-pass-wasm-deob --features sandbox -- --nocapture
+      - name: lua interpreter re-execution differential
+        run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
+      - name: luajit decompile re-execution differential
+        run: cargo test -p disrobe-pass-lua --test luajit_decompile_oracle -- --nocapture
+      - name: luau decompile re-execution differential
+        run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture
+      - name: ruby yarv recompile differential
+        run: cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle -- --nocapture
+      - name: php op_array behavioral differential
+        run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
+      - name: php loader re-execution differential
+        run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture
+      - name: node re-execution differential for the js deobfuscator
+        run: cargo test -p disrobe-pass-js-deob --test jsconfuser_node_oracle -- --nocapture
+      - name: node packager carve checks
+        run: cargo test -p disrobe-pass-js-deob --test node_sea_pkg_nexe --test real_node_packagers -- --nocapture
+      - name: v8 code-serializer fixture differential
+        run: cargo test -p disrobe-pass-js-deob --test v8_codeserializer_real -- --nocapture
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@master
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo +1.95.0 check --workspace --all-features

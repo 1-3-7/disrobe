@@ -1,0 +1,21 @@
+[package]
+name = "disrobe-rules"
+description = "Data-driven deobfuscation rewrite rules for the disrobe suite: a serde-validated match-pattern + rewrite-template DSL over the normalized bitvector expression shape, with a loader and a bounded apply engine."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["deobfuscation", "rewrite", "rule-engine", "bitvector", "dsl"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-mba = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

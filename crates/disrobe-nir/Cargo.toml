@@ -1,0 +1,25 @@
+[package]
+name = "disrobe-nir"
+description = "Architecture- and language-neutral normalized IR (the Mir rung): a typed SSA-shaped control-flow representation that recovered native/wasm/jvm/python artifacts lower into, so one queryable form spans every source language."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+serde = { workspace = true }
+rkyv = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+postcard = { workspace = true }

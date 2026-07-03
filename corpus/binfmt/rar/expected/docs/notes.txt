@@ -1,0 +1,3 @@
+second member file
+nested under docs/
+rar4 and rar5 must both recover this verbatim

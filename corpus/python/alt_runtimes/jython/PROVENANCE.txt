@@ -1,0 +1,23 @@
+Jython ($py.class) fixtures
+===========================
+
+hello.py               original greeting source (kept for reference).
+greet_mod.py           source compiled to the classfile: greet() returns 'hi from jython'.
+greet_mod$py.class     real Jython output, a JVM classfile compiled from greet_mod.py.
+
+Origin
+------
+Compiled in-house with the official Jython 2.7.4 standalone (org.python:jython-standalone)
+on Temurin JDK 25:
+  java -jar jython-standalone-2.7.4.jar -m compileall -l .
+
+Jython compiles each Python module to a JVM classfile whose class extends
+org.python.core.PyFunctionTable and stores per-function PyCode objects; the bytecode
+carries the org/python/ package references and the $py marker used for detection.
+
+Oracle
+------
+The classfile routes through disrobe-pass-jvm: detection matches on org/python/ and $py,
+and decompile_classfile_bytes lifts the real Java. The recovered greet$1 method returns
+PyString.fromInterned("hi from jython"), so the original Python string literal is present
+in the lifted Java verbatim, graded against the known greet_mod.py source.

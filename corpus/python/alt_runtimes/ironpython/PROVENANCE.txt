@@ -1,0 +1,30 @@
+IronPython (.NET assembly) fixtures
+===================================
+
+hello.py           original greeting source (kept for reference).
+GreetModule.cs     source compiled to the assembly: Greet() and Classify(PythonList).
+greet_ip.dll       real .NET PE that references the IronPython runtime.
+
+Origin
+------
+IronPython 3.4.2 (ironpython.console dotnet tool) on .NET 9 cannot statically save a
+Python module to a standalone DLL: clr.CompileModules emits "Specified method is not
+supported" because System.Reflection.Emit.AssemblyBuilder.Save was removed in .NET 5+.
+That path is a runtime limitation, not a recovery gap.
+
+To exercise the IronPython routing on a real, small .NET PE that genuinely references the
+IronPython runtime, GreetModule.cs uses IronPython.Runtime.PythonList and was compiled
+against the shipped IronPython.dll with Roslyn:
+  csc -target:library -nostdlib -noconfig -out:greet_ip.dll \
+      -reference:IronPython.dll -reference:System.Runtime.dll \
+      -reference:System.Private.CoreLib.dll GreetModule.cs
+
+The assembly carries IronPython and IronPython.Runtime AssemblyRef/TypeRef tokens, the
+MZ/PE32 header, and the CLR metadata streams used for detection.
+
+Oracle
+------
+The PE routes through disrobe-pass-dotnet: detection matches the IronPython markers, and
+decompile_assembly lifts real C#. Greet() returns "hi from ironpython" and
+Classify(IronPython.Runtime.PythonList items) reconstructs the items.Count > 10 branch,
+graded against the known GreetModule.cs source.

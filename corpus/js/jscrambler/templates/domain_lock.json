@@ -1,0 +1,27 @@
+{
+  "schema": "disrobe.jscrambler.template.v1",
+  "name": "Domain Lock",
+  "version": "8.5",
+  "harvested_at": "2026-05-25T20:18:00Z",
+  "description": "Lock down a JavaScript application so it only works for a list of domains you specify. Good for demos and to enforce license agreements.",
+  "transforms_camel_case": [
+    "domainLock",
+    "objectPropertiesSparsing",
+    "variableMasking",
+    "whitespaceRemoval",
+    "identifiersRenaming",
+    "globalVariableIndirection",
+    "dotToBracketNotation",
+    "duplicateLiteralsRemoval",
+    "stringConcealing",
+    "functionReordering",
+    "functionOutlining",
+    "propertyKeysObfuscation",
+    "regexObfuscation",
+    "booleanToAnything"
+  ],
+  "transform_count": 14,
+  "category": "lock-config",
+  "tier": "paid",
+  "requires_options": ["domains"]
+}

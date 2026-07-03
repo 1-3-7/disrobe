@@ -1,0 +1,133 @@
+{
+  "schema": "disrobe.native.symbols/v0",
+  "input": "corpus/native/discovery/disc.unstripped.elf",
+  "format": "elf",
+  "arch": "x86_64",
+  "entry": 2101600,
+  "is_64": true,
+  "exports": [
+    {
+      "name": "disc.c",
+      "address": 0,
+      "size": 0,
+      "kind": "file",
+      "section": null
+    },
+    {
+      "name": "compute",
+      "address": 2101632,
+      "size": 45,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "sum_to",
+      "address": 2101680,
+      "size": 41,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "mul",
+      "address": 2101728,
+      "size": 4,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "dispatch",
+      "address": 2101744,
+      "size": 51,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "clamp_val",
+      "address": 2101808,
+      "size": 13,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "add",
+      "address": 2101824,
+      "size": 4,
+      "kind": "text",
+      "section": ".text"
+    },
+    {
+      "name": "_start",
+      "address": 2101600,
+      "size": 18,
+      "kind": "text",
+      "section": ".text"
+    }
+  ],
+  "imports": [],
+  "sections": [
+    {
+      "index": 0,
+      "name": ".rodata",
+      "address": 2097440,
+      "size": 64,
+      "kind": "readonlydata",
+      "flags": "elf:0x2"
+    },
+    {
+      "index": 1,
+      "name": ".text",
+      "address": 2101600,
+      "size": 228,
+      "kind": "text",
+      "flags": "elf:0x6"
+    },
+    {
+      "index": 2,
+      "name": ".comment",
+      "address": 0,
+      "size": 201,
+      "kind": "otherstring",
+      "flags": "elf:0x30"
+    },
+    {
+      "index": 3,
+      "name": ".symtab",
+      "address": 0,
+      "size": 216,
+      "kind": "metadata",
+      "flags": "elf:0x0"
+    },
+    {
+      "index": 4,
+      "name": ".shstrtab",
+      "address": 0,
+      "size": 50,
+      "kind": "metadata",
+      "flags": "elf:0x0"
+    },
+    {
+      "index": 5,
+      "name": ".strtab",
+      "address": 0,
+      "size": 57,
+      "kind": "metadata",
+      "flags": "elf:0x0"
+    }
+  ],
+  "segments": [
+    {
+      "name": null,
+      "address": 2097152,
+      "size": 352
+    },
+    {
+      "name": null,
+      "address": 2101600,
+      "size": 228
+    }
+  ],
+  "debug_info": {
+    "present": false,
+    "sections": []
+  }
+}

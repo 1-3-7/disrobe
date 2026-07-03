@@ -1,0 +1,15 @@
+id = "lua-ironbrew"
+ecosystem = "lua"
+title = "Lua IronBrew2 2.7.0 devirtualization, real-Lua execution differential"
+claim = "disrobe devirtualizes real IronBrew2 2.7.0 obfuscator output back to runnable Lua whose execution under the real Lua interpreter matches the original, in both standard and MAX mode."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real Lua interpreter execution differential (recovered output executed under real Lua, asserted equal to the original)"
+reproduce = "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle"
+
+[source]
+recovery_group = "Obfuscator and bundler family coverage (counts)"
+recovery_bar = "Lua VM-devirt (IronBrew2 real, MoonSec synthetic)"

@@ -1,0 +1,36 @@
+[package]
+name = "disrobe-pass-nativelang"
+description = "Natively-compiled language recovery pass: Nim/Zig/Crystal/D binary fingerprinting, symbol demangling (Itanium/dotted/Crystal type-path/D _D length-prefixed with template instances), runtime+GC-metadata and std-symbol recovery, per-function boundary recovery (symbol table + DWARF low_pc/high_pc, recursive-traversal entry points when stripped), DWARF type-DIE reconstruction, source-file/line-range mapping and parameter names, graded source-recovery scoring, and per-function carve+disassembly of machine-code bodies. Recovers names, boundaries, types, source lines, parameters, and disassembled bodies; the original high-level surface syntax (Nim/Zig/Crystal/D source text) stays a genuine wall."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["nim", "zig", "crystal", "dlang", "demangle"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-nir = { workspace = true }
+disrobe-pass-native = { workspace = true }
+blake3 = { workspace = true }
+object = { workspace = true }
+gimli = { workspace = true }
+flate2 = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dev-dependencies]
+insta = { workspace = true }

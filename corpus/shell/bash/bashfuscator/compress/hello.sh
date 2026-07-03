@@ -1,0 +1,2 @@
+#!/bin/bash
+ "${@}" ${!#}  $* <<< "$(   "${@}"  ${*,,}pr"i"nt''f  'H4sIAAAAAAAC/0tNzshXyEjNyclXKM8vyknhAgBGd3BuEQAAAA=='   ${*} ${*%Z6=?O} | ${*}  ${@//+gQp\!Mn/ODt2i__H} \ba\s$'\145'6$[   (("7"#"0"*"$@"29#${*~~}1)+"2"#10"0")   ]  -d  ${*%%f-b\}X0}   | ${@,}   g""u''$'\u006e'""z""ip  -c  ${*,}  ${@//\!7^BN0\!S}   )"   ${@##-XNo7x7}  "${@}"   

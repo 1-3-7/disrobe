@@ -1,0 +1,72 @@
+DashO-shaped per-class-keyed string-decrypt fixtures (benign, authored in-house)
+================================================================================
+
+Purpose
+-------
+These two classes exercise the recoverable shape of PreEmptive DashO string
+encryption: a private static decrypt method whose XOR key is a per-class key
+derived from the class name and built once in the class initializer (<clinit>),
+read back through getstatic. Per PreEmptive's own documentation, DashO string
+encryption "uses per-class keys derived from class metadata" and emits the
+decryptor as an auto-generated static method, decrypting lazily on first access.
+Everything the decryptor needs is present in the static artifact, so the
+constrained bytecode evaluator runs <clinit> first to populate the key, then
+executes the class's own decrypt body and recovers the plaintext. This is the
+honest, schedule-agnostic path: disrobe runs the real method; it never
+reimplements an invented cipher.
+
+DashOReflect additionally exercises DashO's reflection-hiding feature: the
+target class, method, and argument names handed to Class.forName / getMethod /
+invoke are themselves encrypted constants. The evaluator decrypts those
+constants through the class's own decrypt method, so the reflective member names
+are resolved from the constant pool even though the reflective dispatch itself
+is not executed.
+
+Provenance (non-circular oracle)
+--------------------------------
+Both .java sources were authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by disrobe.
+The encrypted String constants are the literal ciphertext baked into the source
+(the way DashO bakes an encrypted pool constant). The ground-truth plaintexts are
+listed below; both .class files were run under the real JVM and print exactly the
+expected output.
+
+Files
+-----
+DashOStrings.class: DEFEATABLE. d(String) XORs the cipher against a per-class
+    String key built in <clinit> by buildKey("com/disrobe/bench/DashOStrings").
+    Five reachable call sites:
+        dbUrl()          -> "jdbc:oracle:thin:@prod-db:1521/ORCL"
+        serviceToken()   -> "X-Service-Token: 4b1d9e"
+        chargeEndpoint() -> "https://billing.internal/api/charge"
+        role()           -> "ROLE_SUPERUSER"
+        secretsPath()    -> "/etc/app/secrets.properties"
+DashOReflect.class: DEFEATABLE. readProperty() decrypts the reflective target
+    names and reflectively reads a system property. The three decrypted constants
+    (the recovery oracle) are:
+        owner  -> "java.lang.System"
+        method -> "getProperty"
+        arg    -> "java.version"
+    Running it under the real JVM prints this JVM's java.version (25.0.3),
+    confirming the decrypted reflective constants are correct.
+DashOStrings.java / DashOReflect.java: the in-house sources; the literals above
+    are the oracle.
+
+Sourcing note (not a wall)
+--------------------------
+These are in-house benign fixtures that reproduce the DashO per-class-key
+string-encryption SHAPE, not a real commercial DashO-obfuscated sample. A real
+DashO trial sample is commercial-corpus-blocked (DashO is a paid PreEmptive
+product; no benign real-obfuscated artifact is bundled here). This is a sourcing
+gap, not an information-theoretic wall: the recovery method (run the class's own
+decrypt under the evaluator) is exactly what defeats a real DashO class, and it
+is graded here against the known in-house plaintext via tests/real_dasho.rs.
+
+Why this is not a fake wall
+---------------------------
+The per-class key is reconstructable statically (run <clinit>), so the decrypt is
+defeated end to end against the known plaintext. A DashO build that instead keys
+on runtime-only state (a system property, the clock, environment, or live thread
+identity) is information-theoretically absent from the artifact and stays an
+honest RuntimeKeyUnavailable wall, the same as corpus/jvm/callerkeyed/EnvKeyed.

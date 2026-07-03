@@ -1,0 +1,94 @@
+Licel Stringer (JVM string-encryption) real-sample fixture
+==========================================================
+
+Source / provenance
+-------------------
+All three .class files are extracted verbatim from:
+  huzpsb/JavaObfuscatorTest -- sample/Stringer.jar (CC0 1.0, public domain dedication)
+  https://raw.githubusercontent.com/huzpsb/JavaObfuscatorTest/main/sample/Stringer.jar
+The whole jar is 305 KB (> the 256 KB fixture cap); only the minimal subset proving the
+real Stringer scheme is committed here.
+
+Files
+-----
+Digi.class    (1852 B) -- jar path pack/tests/basics/accu/Digi.class. A real obfuscated
+                          CALLER carrying 3 genuine encrypted String constants
+                          (constant-pool #27 / #50 / #52, high-code-unit) and the decrypt
+                          call site invokestatic d.J:(Ljava/lang/Object;I)Ljava/lang/String;.
+Handler.class (777 B)  -- jar path ube/tms/Handler.class. Runtime caller proving the
+                          ube.tms.uh.T:(Object,int)->String shape and the inline
+                          per-call-site int-key construction.
+uh.class      (11095 B)-- jar path ube/tms/uh.class. The actual stack-trace-keyed decryptor
+                          body (LRU cache, lazy global key table via z7878(), getStackTrace
+                          caller hashCode XOR, BigInteger[] tableswitch state machine).
+
+Why disrobe stays detect-only on the real runtime-keyed sample
+--------------------------------------------------------------
+The real bundled sample is Stringer's runtime-keyed anti-tamper mode. The recovered plaintext
+is a function of the calling class+method hashCode (via Thread.currentThread().getStackTrace(),
+fixed per call site and statically known), a threaded BigInteger-built AES key/T-table/S-box
+table, an LRU cache, and one AES key word (word 2) masked by a self-integrity checksum. That
+checksum is a SipHash-2-4 fold the decryptor computes at runtime: it reflectively locates a
+getResourceAsStream method, invokes it, and walks the resulting ZipInputStream over the ENCLOSING
+JAR's ZIP directory (every sibling entry's name and size in central-directory order), then folds
+those bytes. On the real sample that stream is 3539 bytes (~80 jar entries), not empty.
+
+Ground truth captured under Eclipse Temurin JDK 8 (1.8.0_492) from the CC0 public-domain
+huzpsb/JavaObfuscatorTest Stringer.jar, run in isolation for oracle only:
+  - pack.tests.basics.accu.Digi constants #27 / #50 / #52 decrypt to PASS / FAIL / FAIL;
+  - ube.tms.uh.B() and pack.tests.basics.accu.d.y() both return 1738644257434835613 in the
+    sealed-jar runtime (the genuine self-tamper fold), while the empty-input fold uh.O(0,0,[])
+    returns the decoy 2202906307356721367.
+The committed corpus is a <256 KB subset (5 of ~80 jar entries), so the jar directory the fold
+consumes is absent from the static artifact and word 2 of the AES key cannot be reproduced from
+it. disrobe detects and parses the protector honestly, statically evaluates the empty-input decoy
+fold, and does NOT fabricate cleartext; the constants stay opaque. This is an honest information-
+theoretic wall for the committed artifact (given the full original jar it becomes static again,
+since the fold input is then the jar directory disrobe could read directly).
+
+Defeatable classic non-flow mode (in-house benign fixture)
+==========================================================
+
+Purpose
+-------
+StringerClassic exercises the recoverable shape of Stringer's classic (non-flow,
+non-runtime-keyed) string mode: a private static String->String decrypt method whose key is a
+single int folded from the class name once in the class initializer (<clinit>) and read back
+through getstatic. The mask is an index-rotated feedback XOR (a per-position mask mixed with a
+running rotation that is advanced from each consumed code unit), the classic mode's distinguishing
+shape over a flat single-byte XOR. No runtime state, no environment key, no stack-trace caller
+hash: every input the decryptor needs is present in the static artifact, so the constrained
+bytecode evaluator runs <clinit> first to populate the key int, then executes the class's own
+decrypt body and recovers the plaintext. The evaluator runs the real method; it never reimplements
+an invented cipher.
+
+Provenance (non-circular oracle)
+--------------------------------
+StringerClassic.java was authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by disrobe. The encrypted
+String constants are the literal ciphertext baked into the source (the way Stringer bakes an
+encrypted pool constant). The .class was run under the real JVM
+(java com.disrobe.bench.StringerClassic) and prints exactly the five ground-truth plaintexts
+below; the test grades recovered strings against these authored plaintexts, never against
+disrobe's own decoder output.
+
+Files
+-----
+StringerClassic.class (1641 B) -- DEFEATABLE. decrypt(String) folds the class-name key in
+    <clinit> and applies the index-rotated feedback XOR. Five reachable call sites:
+        dbUrl()      -> "jdbc:sqlserver://10.9.8.7:1433;db=orders"
+        authHeader() -> "Authorization: Bearer 7c1e0a4d"
+        vaultUrl()   -> "https://vault.internal/v1/secret/app"
+        role()       -> "ROLE_TENANT_ADMIN"
+        keyPath()    -> "/var/run/secrets/app.key"
+StringerClassic.java -- the in-house source; the literals above are the oracle.
+
+Sourcing note (not a wall)
+--------------------------
+A real commercial Stringer trial keys its default profile on the runtime/anti-tamper material
+above; the classic non-flow profile is reproduced here as an in-house benign fixture rather than
+from a paid trial build. This is a sourcing gap, not an information-theoretic wall: the recovery
+method (run the class's own decrypt under the evaluator with <clinit> applied) is exactly what
+defeats a real classic-mode Stringer class, and it is graded here against the known in-house
+plaintext via tests/stringer_classic_real.rs.

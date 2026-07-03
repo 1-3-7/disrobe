@@ -1,0 +1,55 @@
+[package]
+name = "disrobe-python"
+description = "Python bindings for the disrobe deobfuscator/decompiler suite. Wraps the same library code the disrobe CLI uses, exposed as the importable `disrobe` Python module via pyo3."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords = ["deobfuscator", "decompiler", "python", "pyo3", "bindings"]
+categories = ["development-tools", "command-line-utilities"]
+
+[lib]
+name = "disrobe"
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[dependencies]
+pyo3 = { workspace = true }
+pyo3-ffi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-capabilities = { workspace = true }
+disrobe-llm-metadata = { workspace = true }
+disrobe-binfmt = { workspace = true, features = ["chain"] }
+disrobe-pass-py-decompile = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-py-deob = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-py-disasm = { workspace = true, features = ["llm-metadata"] }
+disrobe-py-marshal = { workspace = true }
+disrobe-pass-pyarmor = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-pyinstaller = { workspace = true, features = ["chain"] }
+disrobe-pass-nuitka = { workspace = true, features = ["chain"] }
+disrobe-pass-mobile = { workspace = true, features = ["chain"] }
+disrobe-pass-swift-objc = { workspace = true, features = ["chain"] }
+disrobe-pass-jvm = { workspace = true, features = ["chain"] }
+disrobe-pass-dotnet = { workspace = true, features = ["chain"] }
+disrobe-pass-wasm-deob = { workspace = true, features = ["chain"] }
+disrobe-pass-js-deob = { workspace = true, features = ["chain"] }
+disrobe-pass-native = { workspace = true, features = ["chain"] }
+disrobe-pass-beam = { workspace = true }
+disrobe-pass-pickle = { workspace = true, features = ["chain"] }
+disrobe-pass-lua = { workspace = true, features = ["chain"] }
+disrobe-pass-go = { workspace = true, features = ["chain", "llm-metadata"] }
+disrobe-pass-ruby = { workspace = true, features = ["chain"] }
+disrobe-pass-php = { workspace = true, features = ["chain"] }
+disrobe-pass-shell = { workspace = true, features = ["chain"] }
+disrobe-query = { workspace = true }
+
+[lints]
+workspace = true

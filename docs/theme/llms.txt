@@ -1,0 +1,82 @@
+# disrobe
+
+> One tool to decompile, deobfuscate, and unpack almost anything, deterministically, in a single Rust binary. disrobe is a multi-language decompiler, deobfuscator, and unpacker covering Python, JavaScript, WebAssembly, .NET, JVM, Android, Go, Lua, PHP, Ruby, native PE/ELF/Mach-O, and more, behind one CLI with a deterministic pass pipeline that records exactly what it recovered and what it could not.
+
+Recovery is always measured against an independent reference, never the tool's own output, and lossy results are reported as measured. The hosted docs live at https://1-3-7.github.io/disrobe/latest/ and a browser playground at https://1-3-7.github.io/disrobe/playground/.
+
+disrobe is licensed under the Elastic License 2.0 (source-available; free to use, copy, modify, and self-host, with no rebranding and no offering as a hosted service). The name "disrobe" is reserved. A full single-file copy of these docs for ingestion lives at https://1-3-7.github.io/disrobe/llms-full.txt.
+
+## Getting started
+
+- [Introduction and capability overview](https://1-3-7.github.io/disrobe/latest/index.html): what disrobe decompiles, deobfuscates, and unpacks, and where its honest limits are.
+- [Installation](https://1-3-7.github.io/disrobe/latest/installation.html): prebuilt binaries from GitHub Releases or build from source with one Rust toolchain.
+- [Quickstart](https://1-3-7.github.io/disrobe/latest/quickstart.html): the disrobe auto command fingerprints an input and chains the right passes end to end.
+
+## Architecture
+
+- [Architecture overview](https://1-3-7.github.io/disrobe/latest/architecture.html): the workspace of Rust crates and the bytes-in, passes, emit recovery shape.
+- [The five-rung IR ladder](https://1-3-7.github.io/disrobe/latest/ir-ladder.html): how artifacts are lifted from raw bytes up to recovered source.
+- [Passes and the capability model](https://1-3-7.github.io/disrobe/latest/passes.html): the unit of work each transform performs and how capabilities are declared.
+- [The chain runner](https://1-3-7.github.io/disrobe/latest/chain.html): how passes are detected and composed into an end-to-end recovery.
+- [The .dr envelope](https://1-3-7.github.io/disrobe/latest/envelope.html): content-addressed caching of intermediate recovery state.
+- [Metadata sidecar and provenance](https://1-3-7.github.io/disrobe/latest/llm-sidecar.html): deterministic metadata bundles and line-level provenance tracked separately from recovered output.
+
+## Reverse-engineering toolkit
+
+- [Supported families catalog](https://1-3-7.github.io/disrobe/latest/catalog.html): every packer, obfuscator, and bytecode format disrobe recognizes, per language, with what it recovers and where it walls.
+- [Anti-analysis defeat](https://1-3-7.github.io/disrobe/latest/anti-analysis.html): how disrobe strips anti-debug, anti-VM, and obfuscation guards statically, without running the sample.
+- [Queryable IR and capabilities](https://1-3-7.github.io/disrobe/latest/query.html): the disrobe query subcommand over recovered functions, calls, cross-references, string decoders, and capabilities.
+
+## Language and format guides
+
+- [Python decompiler](https://1-3-7.github.io/disrobe/latest/languages/python.html): in-house Rust pyc decompiler, pyarmor unpacker, pyinstaller and Nuitka extractors, and pickle analysis.
+- [JavaScript and TypeScript deobfuscator](https://1-3-7.github.io/disrobe/latest/languages/javascript.html): deobfuscates obfuscated JS/TS, unbundles webpack output, and inspects packaged JS runtimes.
+- [WebAssembly decompiler](https://1-3-7.github.io/disrobe/latest/languages/wasm.html): lifts Wasm modules to readable surfaces, reverses Wasm obfuscators, and decodes the Component Model and GC types.
+- [JVM and Android decompiler](https://1-3-7.github.io/disrobe/latest/languages/jvm-android.html): Java class and DEX/Dalvik recovery to readable source.
+- [.NET and CIL decompiler](https://1-3-7.github.io/disrobe/latest/languages/dotnet.html): managed assembly decompilation and deobfuscation.
+- [Native PE, ELF, and Mach-O unpacking](https://1-3-7.github.io/disrobe/latest/languages/native.html): UPX and packer unpacking, symbol recovery, chain detection, and headless Ghidra decompile.
+- [Go decompiler](https://1-3-7.github.io/disrobe/latest/languages/go.html): Go binary symbol and structure recovery.
+- [Lua decompiler](https://1-3-7.github.io/disrobe/latest/languages/lua.html): Lua bytecode decompilation across versions.
+- [PHP](https://1-3-7.github.io/disrobe/latest/languages/php.html): PHP source and bytecode recovery.
+- [Ruby decompiler](https://1-3-7.github.io/disrobe/latest/languages/ruby.html): Ruby source recovery.
+- [BEAM (Erlang and Elixir)](https://1-3-7.github.io/disrobe/latest/languages/beam.html): BEAM bytecode lifting to Erlang and Elixir.
+- [Swift and Objective-C](https://1-3-7.github.io/disrobe/latest/languages/swift.html): Swift and Objective-C class dump and source recovery.
+- [ActionScript 3 and Flash](https://1-3-7.github.io/disrobe/latest/languages/as3.html): SWF and ABC decompilation to ActionScript.
+- [Mobile (Hermes and Flutter)](https://1-3-7.github.io/disrobe/latest/languages/mobile.html): Hermes bytecode and Flutter snapshot analysis.
+- [Python pickle analysis](https://1-3-7.github.io/disrobe/latest/languages/pickle.html): scans pickle streams for malicious reduce callables without executing them.
+- [Shell and PowerShell deobfuscation](https://1-3-7.github.io/disrobe/latest/languages/shell.html): unravels obfuscated shell and PowerShell scripts.
+- [Containers and archives](https://1-3-7.github.io/disrobe/latest/languages/containers.html): unpacks installers, container images, and archive formats.
+
+## CLI reference
+
+- [CLI overview](https://1-3-7.github.io/disrobe/latest/cli/overview.html): the disrobe pass action input shape shared by every command.
+- [Global flags](https://1-3-7.github.io/disrobe/latest/cli/global-flags.html): flags available across all passes.
+- [Command reference](https://1-3-7.github.io/disrobe/latest/cli/reference.html): full per-pass command and action listing.
+- [Project configuration](https://1-3-7.github.io/disrobe/latest/cli/config.html): the disrobe config file for repeatable runs.
+- [Batch directory processing](https://1-3-7.github.io/disrobe/latest/cli/batch.html): recover a whole directory tree in one invocation.
+- [Run reports](https://1-3-7.github.io/disrobe/latest/cli/report.html): machine-readable reports of what each run recovered.
+- [Analysis-depth commands](https://1-3-7.github.io/disrobe/latest/cli/analysis-depth.html): strings, entropy, IOC, and YARA-style triage commands.
+- [Diff and guard tooling](https://1-3-7.github.io/disrobe/latest/cli/diff-guard.html): diff recovered output and guard against regressions.
+- [The daemon: HTTP, gRPC, LSP, MCP](https://1-3-7.github.io/disrobe/latest/cli/serve.html): long-running server exposing disrobe over four transports.
+
+## Integrations
+
+- [Use disrobe as a Rust library](https://1-3-7.github.io/disrobe/latest/library.html): embed disrobe's passes and chain runner directly in a Rust program.
+- [Python bindings](https://1-3-7.github.io/disrobe/latest/python-bindings.html): drive disrobe passes from Python.
+- [GitHub Action](https://1-3-7.github.io/disrobe/latest/integrations/github-action.html): run disrobe in CI.
+- [pre-commit hook](https://1-3-7.github.io/disrobe/latest/integrations/pre-commit.html): block obfuscated or packed artifacts at commit time.
+- [MCP server](https://1-3-7.github.io/disrobe/latest/integrations/mcp.html): a Model Context Protocol server for deobfuscation and decompilation tools. Analysis tools take inline base64 bytes and return structured JSON.
+
+## Malware analysis and safety
+
+- [Forensics and malware-safety posture](https://1-3-7.github.io/disrobe/latest/forensics-safety.html): exactly what does and does not execute, for analysts running hostile input without detonating it.
+- [Threat model](https://1-3-7.github.io/disrobe/latest/threat-model.html): the attacker model disrobe defends against and its trust boundaries.
+
+## Optional
+
+- [Security policy](https://1-3-7.github.io/disrobe/latest/security.html): how to report a vulnerability.
+- [Legal](https://1-3-7.github.io/disrobe/latest/legal.html): Elastic License 2.0 terms, the reserved disrobe name, and acceptable-use notes.
+- [Contributing](https://1-3-7.github.io/disrobe/latest/contributing.html): how to build, test, and contribute.
+- [The browser playground guide](https://1-3-7.github.io/disrobe/latest/playground.html): what the client-side WASM playground runs and why nothing leaves the browser.
+- [The disrobe playground](https://1-3-7.github.io/disrobe/playground/): decompile a .pyc, scan a pickle, and summarize a .wasm entirely client-side in the browser.
+- [Source repository](https://github.com/1-3-7/disrobe): the disrobe source on GitHub.

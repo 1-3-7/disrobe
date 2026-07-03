@@ -1,0 +1,41 @@
+disrobe self-authored benign Dart/Flutter AOT sample
+=====================================================
+
+Source: disrobe_aot_sample.dart (pure Dart, no third-party packages, no network,
+deterministic seeded Random). Authored for disrobe regression fixtures.
+
+Toolchain: Flutter stable SDK, bundled Dart SDK 3.12.2 (stable, windows_x64),
+kernel binary formatVersion 130/132, gen_snapshot android-arm64-release.
+
+Artifacts committed here:
+
+  disrobe_aot_sample.app.dill   real Dart kernel (.dill), app library only
+                                (--no-link-platform), full Dart bodies present.
+                                magic 0x90ABCDEF, formatVersion 130.
+
+  libapp_arm64.so               real ARM64 (AArch64, e_machine 0xB7) AOT ELF
+                                snapshot, identical in form to the libapp.so
+                                Flutter ships in an Android arm64-v8a APK.
+                                Contains _kDartVmSnapshot* / _kDartIsolateSnapshot*
+                                symbols and two 0xdcdcf5f5 snapshot blobs.
+
+Build commands (run from this directory; DART = bundled dart-sdk):
+
+  # 1. App-only kernel (.dill) with recoverable Dart bodies:
+  dartaotruntime  dart-sdk/bin/snapshots/gen_kernel_aot.dart.snapshot \
+      --platform dart-sdk/lib/_internal/vm_platform_strong.dill \
+      --no-link-platform -o disrobe_aot_sample.app.dill disrobe_aot_sample.dart
+
+  # 2. AOT kernel with tree-shaking (intermediate, not committed):
+  dartaotruntime  dart-sdk/bin/snapshots/gen_kernel_aot.dart.snapshot \
+      --platform dart-sdk/lib/_internal/vm_platform_strong.dill \
+      --aot -o disrobe_aot_sample.aot.dill disrobe_aot_sample.dart
+
+  # 3. Real ARM64 AOT ELF snapshot from the AOT kernel:
+  artifacts/engine/android-arm64-release/windows-x64/gen_snapshot.exe \
+      --snapshot_kind=app-aot-elf --elf=libapp_arm64.so disrobe_aot_sample.aot.dill
+
+The one genuine limit: exact Dart source for a function body is not byte-recoverable
+from the optimized ARM64 machine code (register allocation and inlining are lossy).
+The kernel (.dill) does carry full bodies and the ARM64 .so disassembles to real
+AArch64 instructions with recovered control flow; both are recovered here.

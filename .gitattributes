@@ -1,0 +1,50 @@
+assets/graphs/*.svg text eol=lf
+docs/assets/*.svg text eol=lf
+docs/src/**/*.svg text eol=lf
+crates/disrobe-pass-go/tests/fixtures/embedsrc/assets/* text eol=lf
+crates/disrobe-pass-go/tests/fixtures/**/*.go text eol=lf
+docs/**/*.md text eol=lf
+docs/errors/*.md text eol=lf
+docs/decisions/*.md text eol=lf
+docs/legal/*.md text eol=lf
+theme/*.hbs text eol=lf
+.github/**/*.yml text eol=lf
+*.jsc binary
+*.pkl binary
+*.luac binary
+*.beam binary
+*.ez binary
+*.pye binary
+*.class binary
+*.rds binary
+*.kit binary
+*.swf binary
+*.hl binary
+*.apk binary
+*.dex binary
+*.idsig binary
+crates/disrobe-pass-scriptlang/tests/fixtures/** -text
+crates/disrobe-binfmt/tests/fixtures/** -text
+crates/disrobe-pass-scriptlang/tests/fixtures/*.js binary
+crates/disrobe-pass-scriptlang/tests/fixtures/*.hx binary
+crates/disrobe-pass-scriptlang/tests/fixtures/*.n binary
+crates/disrobe-pass-scriptlang/tests/fixtures/*.concise.txt text eol=lf
+corpus/** -text linguist-vendored
+crates/disrobe-pass-py-decompile/tests/harness/** linguist-vendored
+crates/*/corpus/** linguist-vendored
+crates/*/tests/**/*.py linguist-vendored
+corpus/mobile/hermes/sample/sample.hbc.v96 binary
+corpus/mobile/hermes/sample/sample.hbc.v84 binary
+corpus/mobile/hermes/sample/sample.hbc.v76 binary
+corpus/mobile/macho-mac/SwiftHello.original binary
+corpus/mobile/macho-mac/SwiftHello.obfuscated binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.original binary
+corpus/mobile/macho-mac/swiftshield-edgecases/SwiftEdgeCases.obfuscated binary
+corpus/native/zig/hello.zig.elf binary
+corpus/native/nim/hello.nim.elf binary
+corpus/native/crystal/hello.cr.exe binary
+crates/disrobe-capabilities/tests/fixtures/*.exe binary
+corpus/python/obfuscators/playground/*.py text eol=lf
+
+*.rs text eol=lf
+*.toml text eol=lf

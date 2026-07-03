@@ -1,0 +1,202 @@
+.ayu,
+.coal,
+.navy,
+.light,
+.rust {
+  --bg: var(--card-canvas);
+  --fg: var(--card-text);
+
+  --sidebar-bg: var(--card-surface);
+  --sidebar-fg: var(--card-text2);
+  --sidebar-non-existant: var(--card-faint);
+  --sidebar-active: var(--card-green);
+  --sidebar-spacer: var(--card-hairline);
+
+  --scrollbar: var(--card-faint);
+
+  --icons: var(--card-faint);
+  --icons-hover: var(--card-text);
+
+  --links: var(--card-green);
+  --links-hover: var(--card-keyword);
+
+  --inline-code-color: var(--card-text);
+
+  --theme-popup-bg: var(--card-surface);
+  --theme-popup-border: var(--card-hairline);
+  --theme-hover: var(--card-panel);
+
+  --quote-bg: var(--card-surface);
+  --quote-border: var(--card-hairline);
+
+  --warning-border: var(--card-amber);
+
+  --table-border-color: var(--card-hairline);
+  --table-header-bg: var(--card-panel);
+  --table-alternate-bg: var(--card-surface);
+
+  --searchbar-border-color: var(--card-hairline);
+  --searchbar-bg: var(--card-surface);
+  --searchbar-fg: var(--card-text);
+  --searchbar-shadow-color: var(--card-hairline);
+  --searchresults-header-fg: var(--card-faint);
+  --searchresults-border-color: var(--card-hairline);
+  --searchresults-li-bg: var(--card-surface);
+  --search-mark-bg: var(--card-amber);
+}
+
+html,
+body {
+  background-color: var(--card-canvas);
+}
+
+code,
+pre,
+kbd,
+.hljs,
+code span {
+  font-family: var(--card-mono) !important;
+  font-variant-ligatures: none;
+}
+
+pre,
+pre > code,
+pre code.hljs {
+  background-color: var(--card-surface);
+  border: 1px solid var(--card-hairline);
+  border-radius: 7px;
+}
+
+:not(pre) > code {
+  background-color: var(--card-surface);
+  border: 1px solid var(--card-subtle);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+.content a:link,
+.content a:visited {
+  color: var(--card-green);
+}
+
+.content a:hover {
+  color: var(--card-keyword);
+}
+
+.menu-title {
+  color: var(--card-text);
+}
+
+.chapter li.chapter-item a.active {
+  color: var(--card-green);
+  font-weight: 600;
+}
+
+.chapter li.chapter-item a:hover {
+  color: var(--card-keyword);
+}
+
+blockquote {
+  border-inline-start: 3px solid var(--card-green);
+  color: var(--card-text2);
+}
+
+table thead {
+  border-bottom: 1px solid var(--card-hairline);
+}
+
+table td,
+table th {
+  border: 1px solid var(--card-hairline);
+}
+
+hr {
+  border-color: var(--card-hairline);
+}
+
+img {
+  border-radius: 8px;
+}
+
+.sidebar .sidebar-scrollbox {
+  border-inline-end: 1px solid var(--card-hairline);
+}
+
+#menu-bar,
+.menu-bar {
+  background-color: var(--card-surface);
+  border-bottom: 1px solid var(--card-hairline);
+}
+
+.hljs {
+  color: var(--card-punctuation);
+  background: var(--card-surface);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--card-faint);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+  color: var(--card-keyword);
+}
+
+.hljs-string,
+.hljs-doctag,
+.hljs-regexp,
+.hljs-meta-string {
+  color: var(--card-amber);
+}
+
+.hljs-number,
+.hljs-bullet {
+  color: var(--card-orange);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-title.function_,
+.hljs-title.class_ {
+  color: var(--card-blue);
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-class .hljs-title,
+.hljs-type,
+.hljs-params {
+  color: var(--card-amber);
+}
+
+.hljs-symbol,
+.hljs-link,
+.hljs-meta,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--card-orange);
+}
+
+.hljs-deletion {
+  color: var(--card-red);
+}
+
+.hljs-addition {
+  color: var(--card-green);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 700;
+}

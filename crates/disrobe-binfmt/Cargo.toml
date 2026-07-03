@@ -1,0 +1,68 @@
+[package]
+name = "disrobe-binfmt"
+description = "Container and archive format detector / extractor for the disrobe suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["binary-format", "extract", "archive", "container", "disrobe"]
+categories = ["parser-implementations", "filesystem", "compression"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["rpm"]
+chain = ["disrobe-core/chain"]
+rpm = ["dep:rpm"]
+
+[dependencies]
+disrobe-core = { workspace = true }
+aes = { workspace = true }
+ar = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+brotli = { workspace = true }
+bzip2-rs = { workspace = true }
+cab = { workspace = true }
+cbc = { workspace = true }
+cipher = { version = "0.4", features = ["block-padding"] }
+crc32fast = { workspace = true }
+delharc = { workspace = true }
+flate2 = { workspace = true }
+liblzma = { workspace = true }
+lz4_flex = { workspace = true }
+lzfse_rust = "0.2.1"
+lzma-rs = "0.3.0"
+lzokay = { version = "2.0.1", default-features = false, features = ["decompress"] }
+miette = { workspace = true }
+msi = { workspace = true }
+ntfs = "0.4.0"
+object = { workspace = true, features = ["write"] }
+plist = { workspace = true }
+rpm = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sevenz-rust2 = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+tempfile = "3"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+wait-timeout = { workspace = true }
+zip = { workspace = true }
+zstd = { workspace = true }
+
+[[bin]]
+name = "disrobe-binfmt-mock-tool"
+path = "src/bin/mock_tool.rs"
+
+[[example]]
+name = "gen_container_fixture"
+path = "tests/fixtures/gen_container.rs"
+
+[dev-dependencies]
+insta = { workspace = true }

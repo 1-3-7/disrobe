@@ -1,0 +1,1 @@
+<?php $a='ba'; $b='se64_de'; $c='code'; $fn=$a.$b.$c; eval($fn('ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTs='));

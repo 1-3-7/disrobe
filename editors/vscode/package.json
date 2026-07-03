@@ -1,0 +1,195 @@
+{
+  "name": "disrobe",
+  "displayName": "disrobe",
+  "description": "Deobfuscate, decompile, and unpack almost anything via the disrobe CLI and LSP daemon.",
+  "version": "0.1.0",
+  "publisher": "disrobe",
+  "license": "Elastic-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Linters",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "disrobe.auto",
+        "title": "Auto: run full deobfuscation pipeline",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.detect",
+        "title": "Detect: identify obfuscator / packer",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.strings",
+        "title": "Strings: extract and deobfuscate strings",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.ioc",
+        "title": "IOC: extract indicators of compromise",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.behavior",
+        "title": "Behavior: summarize binary capabilities (MITRE)",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.identify",
+        "title": "Identify: compiler / packer / protector fingerprint",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.scan",
+        "title": "Scan: leak credentials scanner",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.startServer",
+        "title": "Start LSP daemon (disrobe serve --stdio)",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.stopServer",
+        "title": "Stop LSP daemon",
+        "category": "disrobe"
+      },
+      {
+        "command": "disrobe.showOutput",
+        "title": "Show output channel",
+        "category": "disrobe"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+      {
+        "command": "disrobe.auto",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.detect",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.strings",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.ioc",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.behavior",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.identify",
+        "when": "resourceScheme == 'file'"
+      },
+      {
+        "command": "disrobe.scan",
+        "when": "resourceScheme == 'file'"
+      }
+      ]
+    },
+    "configuration": {
+      "title": "disrobe",
+      "properties": {
+        "disrobe.executablePath": {
+          "type": "string",
+          "default": "disrobe",
+          "description": "Path to the disrobe binary. Defaults to 'disrobe' (resolved from PATH)."
+        },
+        "disrobe.lsp.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start 'disrobe serve --stdio' and connect the LSP client on extension activation."
+        },
+        "disrobe.lsp.trace": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "LSP trace level forwarded to the output channel."
+        },
+        "disrobe.auto.outDir": {
+          "type": "string",
+          "default": "",
+          "description": "Output directory for 'disrobe auto'. Leave blank to use the default (./out/<stem>-auto)."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "python",
+        "extensions": [".py"]
+      },
+      {
+        "id": "javascript",
+        "extensions": [".js"]
+      },
+      {
+        "id": "typescript",
+        "extensions": [".ts"]
+      },
+      {
+        "id": "wat",
+        "extensions": [".wat"]
+      },
+      {
+        "id": "csharp",
+        "extensions": [".cs"]
+      },
+      {
+        "id": "java",
+        "extensions": [".java"]
+      },
+      {
+        "id": "go",
+        "extensions": [".go"]
+      },
+      {
+        "id": "lua",
+        "extensions": [".lua"]
+      },
+      {
+        "id": "php",
+        "extensions": [".php"]
+      },
+      {
+        "id": "ruby",
+        "extensions": [".rb"]
+      },
+      {
+        "id": "shellscript",
+        "extensions": [".sh"]
+      },
+      {
+        "id": "powershell",
+        "extensions": [".ps1"]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

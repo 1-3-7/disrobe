@@ -1,0 +1,25 @@
+:root {
+  --card-canvas: #0a0a0a;
+  --card-surface: #161616;
+  --card-panel: #101010;
+  --card-hairline: #262626;
+  --card-subtle: #333333;
+  --card-text: #ededed;
+  --card-text2: #a1a1a1;
+  --card-muted: #a1a1a1;
+  --card-faint: #828282;
+  --card-green: #8fb3d9;
+  --card-keyword: #9cc2c4;
+  --card-blue: #92b4d6;
+  --card-amber: #c9a98e;
+  --card-orange: #cfc9a8;
+  --card-red: #d08c8c;
+  --card-punctuation: #ededed;
+  --card-decor: #333333;
+  --card-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --card-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "Fira Code",
+    SFMono-Regular, Menlo, Consolas, monospace;
+  --mono-font: "JetBrains Mono", ui-monospace, "Cascadia Mono", "Fira Code",
+    SFMono-Regular, Menlo, Consolas, monospace;
+}

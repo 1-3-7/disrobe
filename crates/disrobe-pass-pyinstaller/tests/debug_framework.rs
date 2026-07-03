@@ -1,0 +1,141 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use std::process::{Command, Output};
+
+const HARNESS_ENV: &str = "DISROBE_PYINSTALLER_DEBUG_HARNESS";
+
+const FIXTURE: &[u8] =
+    include_bytes!("../../../corpus/python/freezers/pyinstaller/gauntlet/hello.exe");
+
+fn run_harness(debug: Option<&str>, json: bool) -> Output {
+    let exe: std::path::PathBuf = std::env::current_exe().expect("test executable path");
+    let mut cmd: Command = Command::new(exe);
+    cmd.env(HARNESS_ENV, "1");
+    cmd.env_remove("DISROBE_DEBUG");
+    cmd.env_remove("DISROBE_DEBUG_FORMAT");
+    cmd.env("NO_COLOR", "1");
+    if let Some(spec) = debug {
+        cmd.env("DISROBE_DEBUG", spec);
+    }
+    if json {
+        cmd.env("DISROBE_DEBUG_FORMAT", "json");
+    }
+    cmd.arg("--ignored");
+    cmd.arg("--exact");
+    cmd.arg("--nocapture");
+    cmd.arg("--test-threads=1");
+    cmd.arg("harness_entrypoint");
+    cmd.output().expect("spawn harness child")
+}
+
+#[test]
+#[ignore = "spawned as a subprocess by the debug-framework contract tests"]
+fn harness_entrypoint() {
+    if std::env::var_os(HARNESS_ENV).is_none() {
+        return;
+    }
+    let output: disrobe_pass_pyinstaller::ExtractOutput =
+        disrobe_pass_pyinstaller::extract_archive(FIXTURE).expect("gauntlet fixture extracts");
+    assert!(
+        !output.entries.is_empty(),
+        "real pyinstaller fixture must yield entries"
+    );
+}
+
+fn child_stderr(out: &Output) -> String {
+    assert!(out.status.success(), "child failed: {out:?}");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn unset_is_zero_overhead() {
+    let out: Output = run_harness(None, false);
+    let stderr: String = child_stderr(&out);
+    let noise: String = stderr
+        .lines()
+        .filter(|line: &&str| !line.trim_start().starts_with("Compiling"))
+        .filter(|line: &&str| !line.trim_start().starts_with("Finished"))
+        .filter(|line: &&str| !line.trim_start().starts_with("Running"))
+        .filter(|line: &&str| !line.trim().is_empty())
+        .filter(|line: &&str| !line.contains("test result"))
+        .filter(|line: &&str| !line.contains("running 1 test"))
+        .filter(|line: &&str| !line.contains("harness_entrypoint"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        !noise.contains("[debug:pyinstaller]"),
+        "DISROBE_DEBUG unset must emit no pyinstaller debug output, got:\n{noise}"
+    );
+}
+
+#[test]
+fn set_emits_decision_points() {
+    let out: Output = run_harness(Some("pyinstaller"), false);
+    let stderr: String = child_stderr(&out);
+    assert!(
+        stderr.contains("[debug:pyinstaller] === cookie.find ==="),
+        "expected the cookie.find section header, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] python_version ="),
+        "expected the python-version decision point, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] === toc.walk ==="),
+        "expected the toc.walk section header, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] entry_count ="),
+        "expected the toc entry count, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] === extract.archive ==="),
+        "expected the extract.archive section header, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] no pyimod00_crypto_key module"),
+        "expected the crypto-key decision point, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[debug:pyinstaller] pyc-head:"),
+        "expected per-entry pyc-head hex dump, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn other_scope_does_not_enable_pyinstaller() {
+    let out: Output = run_harness(Some("jvm,native"), false);
+    let stderr: String = child_stderr(&out);
+    assert!(
+        !stderr.contains("[debug:pyinstaller]"),
+        "a sibling scope must not enable pyinstaller output, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn json_mode_is_one_object_per_line() {
+    let out: Output = run_harness(Some("pyinstaller"), true);
+    let stderr: String = child_stderr(&out);
+    let events: Vec<&str> = stderr
+        .lines()
+        .filter(|line: &&str| line.trim_start().starts_with("{\"scope\":\"pyinstaller\""))
+        .collect();
+    assert!(
+        events.len() >= 4,
+        "expected several pyinstaller json events, got {}:\n{stderr}",
+        events.len()
+    );
+    for line in &events {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid json line {line:?}: {e}"));
+        assert!(
+            value.is_object(),
+            "each debug line must be a json object: {line}"
+        );
+        assert_eq!(
+            value.get("scope").and_then(serde_json::Value::as_str),
+            Some("pyinstaller"),
+            "every pyinstaller event carries scope=pyinstaller: {line}"
+        );
+    }
+}

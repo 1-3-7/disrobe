@@ -1,0 +1,63 @@
+{
+  "title": "How recovery is proven",
+  "subtitle": "every number is graded by an independent oracle, never the tool reading its own output",
+  "rows": [
+    {
+      "ecosystem": "Python",
+      "oracle": "recompile to equivalent bytecode",
+      "result": "94.18% of 6286 objects",
+      "ci": true,
+      "source": "arbitrary_recompile_gate.rs, CI floor 90%"
+    },
+    {
+      "ecosystem": "JVM classfile",
+      "oracle": "recompile under real javac",
+      "result": "131 / 131 methods clean",
+      "ci": true,
+      "source": "decompile_recompile_rate.rs, JDK 25"
+    },
+    {
+      "ecosystem": "Android DEX",
+      "oracle": "real JVM verifier, -Xverify:all",
+      "result": "102 / 103 classes clean",
+      "ci": true,
+      "source": "dalvik_verifier_gate.rs"
+    },
+    {
+      "ecosystem": "WebAssembly",
+      "oracle": "execution differential under wasmtime",
+      "result": "50 / 50 numeric fns equal",
+      "ci": true,
+      "source": "semantic_differential.rs, --features sandbox"
+    },
+    {
+      "ecosystem": "Lua",
+      "oracle": "re-run recovered output under real Lua",
+      "result": "IronBrew2 2.7.0 equal",
+      "ci": true,
+      "source": "ironbrew2_real_oracle.rs"
+    },
+    {
+      "ecosystem": "Ruby YARV",
+      "oracle": "recompile under MRI, opcode multiset",
+      "result": "100% / 98% on corpus",
+      "ci": true,
+      "source": "yarv_recompile_oracle.rs"
+    },
+    {
+      "ecosystem": ".NET Eazfuscator VM",
+      "oracle": "re-inject CIL, byte-identical stdout",
+      "result": "57 / 57 instructions",
+      "ci": true,
+      "source": "real_eazvm.rs"
+    },
+    {
+      "ecosystem": "Native UPX",
+      "oracle": "byte-identity vs committed original",
+      "result": ".text byte-identical",
+      "ci": true,
+      "source": "benches/native-unpack"
+    }
+  ],
+  "footnote": "Each oracle can reject a wrong answer: a compiler, a verifier, a runtime, or a byte compare. A green number that the tool could not have faked is the only kind reported."
+}

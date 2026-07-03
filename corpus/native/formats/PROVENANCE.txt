@@ -1,0 +1,49 @@
+Native object/executable format fixtures
+========================================
+
+Tiny real binaries used to exercise the format classifier (detect_format) and the
+file-identity walk (identify_file / parse_pe_image) against genuine toolchain output
+rather than hand-baked headers. All are sub-256KB.
+
+Files
+-----
+hello.elf64        linked ELF64 executable (e_type=ET_EXEC, x86-64).
+hello_reloc.ko.o   relocatable ELF64 object (e_type=ET_REL) - the format shape a
+                   Linux kernel module carries; classified as KernelModule.
+hello.macho64.o    Mach-O 64-bit object (MH_MAGIC_64, x86-64).
+hello.coff.x64.o   COFF object (IMAGE_FILE_MACHINE_AMD64) from the windows-msvc target.
+hello.pe64.exe     linked PE32+ executable (x86-64) with a real section table.
+hello.auditable.exe  PE built by cargo-auditable; carries a zlib .dep-v0 SBOM section.
+dwarf_v2.o ..        four COFF objects compiled at -gdwarf-2/3/4/5; each .debug_info
+dwarf_v5.o           CU header records the matching DWARF version.
+hello.efi            real UEFI PE32+ application (subsystem 10) from the uefi target.
+hello_stabs.o        object with real .stab/.stabstr sections (GNU as .stabs directives).
+hello_ne.exe         real Win16 NE executable (OpenWatcom wcl -bcl=windows).
+hello_lx.exe         real OS/2 LX executable (OpenWatcom wcl386 -bcl=os2v2).
+avr_firmware.elf     real AVR ELF firmware (avr-gcc, atmega328p, e_machine=EM_AVR).
+
+Build (on this machine, no MSVC / WSL / macOS host needed)
+----------------------------------------------------------
+ELF executable:   rustc --emit obj --target x86_64-unknown-linux-gnu -C panic=abort \
+                    -C opt-level=z elfprog.rs -o elfprog.o
+                  rust-lld -flavor gnu -o hello.elf64 elfprog.o -e _start --static
+Relocatable ELF:  rustc --emit obj --target x86_64-unknown-linux-gnu -C panic=abort \
+                    -C opt-level=z elfprog.rs -o hello_reloc.ko.o
+Mach-O object:    rustc --emit obj --target x86_64-apple-darwin -C panic=abort sample.rs
+COFF object:      rustc --emit obj --target x86_64-pc-windows-msvc -C panic=abort sample.rs
+PE executable:    gcc -O2 -s peprog.c -o hello.pe64.exe   (x86_64-w64-mingw32)
+Auditable PE:     cargo auditable build --release   (cargo-auditable 0.7.4; one dep: adler2)
+DWARF objects:    gcc -gdwarf-N -O0 -c dwsrc.c -o dwarf_vN.o   for N in 2 3 4 5
+EFI application:  rustc --target x86_64-unknown-uefi -C panic=abort efiprog.rs -o hello.efi
+STABS object:     as -o hello_stabs.o stabsrc.s   (GNU as 2.42, .stabs directives)
+Win16 NE:         wcl -bcl=windows necode.c -fe=hello_ne.exe    (OpenWatcom v2)
+OS/2 LX:          wcl386 -bcl=os2v2 necode.c -fe=hello_lx.exe   (OpenWatcom v2)
+AVR firmware:     avr-gcc -mmcu=atmega328p -Os avrprog.c -o avr_firmware.elf  (avr-gcc 14.1.0)
+                  disasm wired via yaxpeax-avr 0.1.0 (yaxpeax-arch 0.2.8, aliased)
+
+Deferred (require a host these fixtures cannot be built on)
+----------------------------------------------------------
+Universal/fat Mach-O      needs lipo / a macOS runner.
+Linux .ko with .modinfo   needs kernel build headers (CI / Linux host).
+Signed PE32+ directory     needs a code-signing certificate.
+These remain ignored or out of scope and are honestly not claimed by the tests here.

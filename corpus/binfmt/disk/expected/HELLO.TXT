@@ -1,0 +1,4 @@
+DISROBE DISK IMAGE FIXTURE
+This known benign text is stored inside the filesystem for byte-exact recovery.
+FAT directory entry + cluster chain must reconstruct this verbatim.
+0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ

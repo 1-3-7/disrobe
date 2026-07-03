@@ -1,0 +1,168 @@
+schema = "disrobe-corpus-v1"
+category = "php"
+target_crate = "disrobe-pass-php"
+fetched_utc = "2026-05-25T17:02:00Z"
+notes = """
+PHP corpus generated on Windows 11 with PHP 8.3.31 (NTS / Zend Engine v4.3.31).
+Three tiers:
+  baseline/hello.php - smoke fixture for token-stream + signature tests.
+  megafile/edge_cases.php - PHP 8.x megafile: strict_types, enums, readonly
+    classes, union/intersection types, never/nullable, match expression, nullsafe
+    operator, constructor property promotion, traits, interfaces, generators with
+    yield from, fibers, WeakMap, first-class callable, named args, attributes
+    (Route, Cached), throw expressions, anonymous classes, all magic methods,
+    namespaces, group use. PHP-8 features make this incompatible with naneau
+    obfuscator (PhpParser v1 limit).
+  megafile/pre80_edge_cases.php - PHP 5.4/7-compat variant for the obfuscator
+    pipeline. Classes, traits-substitute, switch/case fall-through, closures
+    in array_map/filter/reduce, try/catch with multiple handlers, regex,
+    json round-trip, sort/usort, magic methods.
+  better-php-obfuscator/edge_cases.obf.php - real output of naneau/php-obfuscator
+    0.0.5 (variable-name scrambling) over pre80_edge_cases.php.
+  phar/{hello.phar, edge_cases.phar} - real PHP-built Phar archives (PHP CLI
+    `Phar::buildFromDirectory` + `createDefaultStub`).
+  phar/bzip2.phar - real PHP-built Phar with every member bzip2-compressed
+    (`compressFiles(Phar::BZ2)`, PHP_BZ2 enabled); benign sources under
+    phar-bz2/src/. Non-circular oracle for the in-tree phar bzip2 decompress:
+    PHP compresses, disrobe decompresses, members must equal the on-disk
+    sources byte-for-byte (`tests/real_phar.rs`). Rebuild via phar-bz2/build.php.
+TOOL-GENUINE-WALL: ionCube, SourceGuardian, Zend Guard - these ship encrypted
+  Zend opcode arrays; the decryption key lives inside the licensed native loader
+  (.so/.dll), NOT in the PHP envelope, so source is NOT recoverable without that
+  runtime key. `crates/disrobe-pass-php/src/protectors/{ioncube,sourceguardian,
+  zend_guard}.rs` are HONEST DETECT-ONLY: they recognize the real era/version
+  markers, locate the structural ciphertext boundary, scrape printable envelope
+  strings for triage, and report a documented `wall_reason`. They NEVER fabricate
+  recovered source. `tests/{ioncube,sourceguardian,zend_guard}_detect.rs`,
+  `tests/{ioncube,sourceguardian,zend_guard}_decode.rs`, and
+  `tests/{ioncube,sourceguardian,zend_guard}_synthetic_envelope_detect.rs` assert
+  detect-only / structural-only behavior (family/era/marker, auth gate, no
+  recovered source). The public CLI decode path uses the auth-gated `encoder`
+  module returning `DecodeOutcome::StructuralOnly`.
+  (A prior revision shipped a homemade RC4/XOR-keystream "decode" with circular
+  self-encode/decode round-trip tests over `megafile/edge_cases.php`; that was a
+  fake capability - real ionCube/SG/ZendGuard use no such public scheme - and has
+  been removed.)
+DZOA-CONTAINER-HONESTY: `decompile.rs` parses + lifts a Zend op_array via
+  disrobe's OWN canonical container (magic `DZOA`). The lifter (temporary folding
+  into expressions, if/while/foreach/ternary/short-circuit recovery from the
+  opcode jumps) is graded by a NON-CIRCULAR behavioral oracle: oparray/emit_dzoa.php
+  drives PHP's real opcache opcode dump (opt_debug_level) of the benign
+  oparray/src/*.php into DZOA, disrobe lifts it back to PHP WITHOUT seeing the
+  source, and `tests/oparray_behavioral.rs` re-runs the recovered PHP under the
+  interpreter and asserts stdout equals the original program's (the opcode
+  sequence, operand wiring, and control-flow graph come from PHP's compiler, not
+  from hand-rigged bytes). Local variable names stay $vN: original identifiers are
+  not carried in the opcode stream. Fully-const array literals are elided by the
+  textual opcache dump (printed as `array(...)`), so the behavioral samples build
+  arrays with a non-const element; that is an emit_dzoa.php transport limit, not a
+  lifter limit. This is still NOT a real-world ionCube/SG/ZendGuard op_array
+  decompiler: those commercial encoders return `DecodeOutcome::StructuralOnly`
+  because their op_arrays are encrypted with a runtime loader key that is absent
+  from the envelope, so no real-world commercial-encoder op_array decompile is
+  claimed.
+TOOL-DEAD-DOCUMENT: bcompiler (EOL ~PHP 5.3) - fixtures remain synthesized + documented.
+TOOL-CAPTURE-MANUAL: FOPO web obfuscator (online, CAPTCHA-protected) - fixture
+  remains in-test synth via `build_fopo`.
+"""
+
+[[sample]]
+name = "baseline/hello.php"
+source_tool = "manual"
+size_bytes = 30
+sha256 = "aba065912cadefc0c17e7cbe40066924e72ead6be3973a66ca42ac6ec93abc6c"
+notes = "Single-statement baseline."
+
+[[sample]]
+name = "megafile/edge_cases.php"
+source_tool = "manual (PHP 8.3 megafile)"
+size_bytes = 21660
+sha256 = "f13ec2612c7ca75137aa3341ef562eaab8817f6ac566581a916e5fdf3c752d92"
+notes = "PHP 8.x feature catalogue."
+
+[[sample]]
+name = "megafile/pre80_edge_cases.php"
+source_tool = "manual (PHP 5.4/7-compat for obfuscator chain)"
+size_bytes = 9032
+sha256 = "4fceb49157c44ca059154f6f8613840b025d3551e4c27d8e08f645fd0b55cfb1"
+notes = "Pre-PHP-8 subset suitable for naneau/php-obfuscator (uses nikic/php-parser v1)."
+
+[[sample]]
+name = "better-php-obfuscator/edge_cases.obf.php"
+source_tool = "naneau/php-obfuscator 0.0.5 (variable-name scramble)"
+source_file = "megafile/pre80_edge_cases.php"
+size_bytes = 8229
+sha256 = "0463a55e9be27b3a20fde894bd2e75da9c7c570fa3d334864143d21c76c3ec2f"
+notes = "Real obfuscator output, retains identifiers but scrambles all local variables to sp<hex>."
+
+[[sample]]
+name = "better-php-obfuscator/hello.obf.php"
+source_tool = "naneau/php-obfuscator 0.0.5"
+source_file = "baseline/hello.php"
+size_bytes = 26
+sha256 = "378e4ec5318eb289a16dbc8cec7218f74c698cbe2a73c4f695bc90c02d5edd79"
+notes = "Trivial baseline obfuscated (no variables to scramble)."
+
+[[sample]]
+name = "phar/hello.phar"
+source_tool = "PHP CLI Phar::buildFromDirectory + createDefaultStub"
+size_bytes = 6883
+sha256 = "81f8aefaf06a4f856f38c1bf62a0408c0fc98aa2cc8abf1497166de11c562ee6"
+notes = "Phar of {index.php, helper.php}."
+
+[[sample]]
+name = "phar/edge_cases.phar"
+source_tool = "PHP CLI Phar::buildFromDirectory + createDefaultStub"
+size_bytes = 36542
+sha256 = "52bb8454a02e41261597dad1d7c42eef733cdb0bbf47752b887d989b8305c997"
+notes = "Phar bundling {edge_cases.php (PHP-8 megafile), pre80_edge_cases.php, hello.php} with hello.php as entry stub."
+
+[[sample]]
+name = "phar/bzip2.phar"
+source_tool = "PHP CLI Phar::buildFromDirectory + createDefaultStub + compressFiles(Phar::BZ2)"
+source_file = "phar-bz2/src/{index.php, lib/greeter.php, lib/math.php}"
+size_bytes = 7494
+sha256 = "03798e6ee0e13841623cdd99a2ff698c6a1cb5c6d59f28026ef9788e8d34cce6"
+notes = "All 3 members bzip2-compressed by the PHP CLI (PHP_BZ2). Non-circular oracle for the disrobe phar bzip2 decompress path: members decompress byte-identical to the on-disk phar-bz2/src files. Rebuild via phar-bz2/build.php (needs -d extension=php_bz2 -d phar.readonly=0)."
+
+[[sample]]
+name = "phar-bz2/src/index.php"
+source_tool = "manual"
+size_bytes = 306
+sha256 = "d3e1ac037016ee34a1d2e42b649fc10d0f070c84b0f221d09bd81890010ff24c"
+notes = "Benign phar bzip2 member: instantiates Greeter + Math, prints deterministic stdout."
+
+[[sample]]
+name = "phar-bz2/src/lib/greeter.php"
+source_tool = "manual"
+size_bytes = 222
+sha256 = "9a50fdf3878bd1bf1e4c869a554467024e122c4864d870e99c50265f0ed506cd"
+notes = "Benign phar bzip2 member: Greeter value class."
+
+[[sample]]
+name = "phar-bz2/src/lib/math.php"
+source_tool = "manual"
+size_bytes = 308
+sha256 = "39b393dbbdfaa9133c4d0317aa65f8c32a88d8d55ac04e86025c122266cbe1ea"
+notes = "Benign phar bzip2 member: Math (sum, factorial)."
+
+[[sample]]
+name = "oparray/src/arithmetic.php"
+source_tool = "manual"
+size_bytes = 303
+sha256 = "4c990b7e338c0a2405c2b6aa642de392c6df4b51d3c1afdb22546cefe5130e6e"
+notes = "Benign op_array behavioral-oracle sample: int arithmetic, pow, short-circuit &&, ternary. Compiled to DZOA by oparray/emit_dzoa.php (PHP opcache dump), lifted by disrobe, re-run for stdout equivalence."
+
+[[sample]]
+name = "oparray/src/control_flow.php"
+source_tool = "manual"
+size_bytes = 415
+sha256 = "f6d707d22c78dc6e9d285ed4dc5790aa1e6248d46d73eca9ea1247db698bcf27"
+notes = "Benign op_array behavioral-oracle sample: while loop, if/else, foreach (non-const array), string concat, strlen/count. Behavioral round-trip via tests/oparray_behavioral.rs."
+
+[[sample]]
+name = "oparray/src/functions.php"
+source_tool = "manual"
+size_bytes = 409
+sha256 = "614f25abad0c2556af007ee0ff5983763eac8a748838e437d9ed740c4d74e62a"
+notes = "Benign op_array behavioral-oracle sample: user functions (add/greet/pick) with typed params, return, early-return if; main calls them. Nested op_arrays lifted to function declarations."

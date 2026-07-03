@@ -1,0 +1,64 @@
+[package]
+name = "disrobe-pass-native"
+description = "Native binary deobfuscation: PE/ELF/Mach-O/COFF/MZ/NE/LE/LX/EFI/.ko parsers, DWARF/PDB/STABS debug readers, x86/x64/ARM/ARM64/RISC-V/MIPS/PPC/SPARC/EBPF/AVR disasm, UPX/ASPack/ASProtect/Petite/MPRESS/FSG/Morphine/PECompact/Yodas/nPack/NeoLite/MEW/PolyCryptor packer detect+unpack, VMProtect/Themida/Enigma/Armadillo/Obsidium/WinLicense/PELock detect-only, ALCATRAZ/OLLVM/Tigress/Emotet obfuscator strip, Mirai/Dridex/Trickbot string sigs, Ghidra/rizin/Binja/IDA/angr/retdec/llvm-ir decompiler orchestration, Rust + C/C++ recovery."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["pe", "elf", "macho", "upx", "deobfuscation"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-binfmt = { workspace = true }
+disrobe-mba = { workspace = true }
+blake3 = { workspace = true }
+flate2 = { workspace = true }
+crc32fast = { workspace = true }
+object = { workspace = true }
+goblin = { workspace = true }
+gimli = { workspace = true }
+pdb = { workspace = true }
+iced-x86 = { workspace = true }
+yaxpeax-arch = { workspace = true }
+yaxpeax-arch-avr = { workspace = true }
+yaxpeax-arm = { workspace = true }
+yaxpeax-avr = { workspace = true }
+capstone = { workspace = true }
+rustc-demangle = { workspace = true }
+cpp_demangle = { workspace = true }
+msvc-demangler = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wait-timeout = { workspace = true }
+disrobe-llm-metadata = { workspace = true, optional = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+stub-emulation = []
+
+[dev-dependencies]
+disrobe-query = { workspace = true }
+iced-x86 = { workspace = true, features = ["code_asm"] }
+flate2 = { workspace = true }
+insta = { workspace = true }
+rand = { workspace = true }
+liblzma = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+sevenz-rust2 = { workspace = true }
+cab = { workspace = true }
+crc32fast = { workspace = true }
+tempfile = "3"

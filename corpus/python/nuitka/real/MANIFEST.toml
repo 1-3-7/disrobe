@@ -1,0 +1,35 @@
+schema_version = 1
+tool = "Nuitka"
+host_platform = "win_amd64"
+source_app = "self-authored sample_app"
+note = """
+Real Nuitka-compiled PE binaries of a self-authored sample app, committed so the
+end-to-end variant classification and Nuitka-marker detection run in ci. Exercised
+by crates/disrobe-pass-nuitka/tests/real_committed.rs, which reads each binary
+(hard fail on absence, no skip) and grades against the markers Nuitka genuinely
+emits at the outer layer: the standalone exe carries __compiled__ /
+nuitka_module_loader, the onefile bootstrap carries NUITKA_ONEFILE_* strings (the
+__compiled__ markers live in its embedded payload, not the outer stub). The
+standalone exe is the start binary only; running it needs its sibling .dist tree,
+but static classification reads the markers in the exe alone.
+"""
+
+[[fixtures]]
+file = "sample_app-standalone.exe"
+sha256 = "a46d28d6a91531d051a1171f3d3101179b7fcce751fd6750acf1e273917605f2"
+bytes = 7_080_960
+variant = "standalone"
+detect_markers = ["__compiled__", "nuitka_module_loader"]
+
+[[fixtures]]
+file = "sample_app-onefile.exe"
+sha256 = "ac8af0563f2ecb6990a2ab4d10e93fc2f8c2aae5336b546f06ae1adb7677b1d0"
+bytes = 7_108_608
+variant = "onefile"
+detect_markers = [
+    "NUITKA_ONEFILE_PARENT",
+    "NUITKA_ONEFILE_START",
+    "NUITKA_ONEFILE_TIME_US",
+    "NUITKA_ONEFILE_RANDOM",
+    "NUITKA_ONEFILE_DIRECTORY",
+]

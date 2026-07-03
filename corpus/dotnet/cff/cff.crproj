@@ -1,0 +1,6 @@
+<project outputDir="./obf" baseDir="." xmlns="http://confuser.codeplex.com">
+  <rule pattern="true" preset="none" inherit="false">
+    <protection id="ctrl flow" />
+  </rule>
+  <module path="src\CffSample.exe" />
+</project>

@@ -1,0 +1,84 @@
+SOURCEdefender (.pye) real-sample fixture
+=========================================
+
+hello.pye  (185 bytes) - real SOURCEdefender-armored payload of the source below.
+hello.py   (22 bytes)  - the plaintext oracle: print("Hello World!")
+
+known_v16_trial.pye (524 bytes) - real SOURCEdefender v16.0.62 trial-tier output, produced
+   on-box by `sourcedefender encrypt known_v16_trial.py`.
+known_v16_trial.py  (65 bytes)  - the plaintext oracle for the modern sample.
+
+legacy_bytecode.pye - real SOURCEdefender v15.0.22 output, produced on-box (trial tier, no
+   license unlock) by `sourcedefender encrypt --no-bytecode legacy_bytecode.py`. Unlike the
+   free/source-string samples above, its `original_code` field is a genuine CPython 3.14
+   marshalled code object (marshal TYPE_CODE 'c' = 0x63), i.e. the legacy marshalled-bytecode
+   variant. v15 keeps the recoverable aes-256-ctr basename-key scheme (key derives solely from
+   the basename "legacy_bytecode") but adopts the newer `---BEGIN PYE FILE---` markers with an
+   rfc1924/ascii85 armored body - so the container is discriminated by body shape (base85 =
+   this legacy ctr scheme, uppercase-hex = the v16 aes-256-gcm runtime-key wall), not by marker
+   text. disrobe peels the container, decrypts the marshal, routes it through py-decompile, and
+   the recovered Python source is graded by real-CPython stdout equivalence against
+   legacy_bytecode.py (never by a marshal round-trip). This de-circularises the legacy
+   marshalled-bytecode path: ground truth is the real interpreter, not disrobe's own marshal.
+legacy_bytecode.py  - the plaintext oracle for the marshalled-bytecode sample.
+
+Modern v16 format (the runtime-license-key wall)
+------------------------------------------------
+The current engine (engine.cp314-win_amd64.pyd, compiled Cython) frames .pye as
+   ---BEGIN PYE FILE---  /  ----END PYE FILE----  with an uppercase-hex body.
+The body is AES-256-GCM (engine symbol _secure_aesgcm_encrypt/_decrypt). The key comes
+from _derive_password_and_salt over get_machine_id (first physical MAC), the activation
+token (_generate_plaintext_token / activate), and an NTP-validated time offset
+(_get_ntp_offset). None of those inputs live in the .pye, so the hex layer peels
+statically but the AES-GCM body is an info-theoretic wall (runtime-license-key). The
+container/hex parse is graded against this real sample; the body stays an honest wall.
+
+Verified against the real 16.0.63 package: the upstream loader (engine.cpython-314 .so /
+engine.cp314-win_amd64.pyd) refuses to load known_v16_trial.pye on a machine that was never
+activated, raising "Failed to load encrypted file ... invalid format". That behavioural test
+(a real, non-circular oracle) plus the engine symbol table (_build_password_derivation_secret,
+_secure_hkdf_derive, get_machine_id._get_first_physical_mac, _encrypt_with_token) and the
+psutil/ntplib dependencies confirm the default-mode key is machine + license-token bound and
+genuinely absent from the artifact. The README also documents a custom-password mode
+(--password / SOURCEDEFENDER_PASSWORD): that key is user-supplied, equally absent from the
+.pye, but recoverable once the password is known. disrobe peels the AES-GCM framing for both
+and decrypts statically through recover_layered_with_modern_key when a key is supplied.
+
+crafted_modern_aesgcm_known_key.pye / .py  (known-key codec oracle, NOT real tool output)
+------------------------------------------------------------------------------------------
+A salt(16)||nonce(12)||ciphertext||tag(16) modern body produced by the same cryptography
+library SOURCEdefender uses (AESGCM.encrypt) over a msgpack {original_code, eol_timestamp}
+map, sealed with the fixed key 000102..1f. It is NOT genuine SOURCEdefender output (producing
+that needs an activated licence we will not forge); it is a non-circular AES-256-GCM oracle
+that proves disrobe's modern GCTR decrypt is byte-correct against real AES-GCM and recovers
+the original source the instant a correct key is supplied.
+
+Source / provenance
+-------------------
+Both files are taken verbatim from a public-domain example pair distributed with the
+documented .pye format:
+  hello.pye (the encrypted sample)
+  hello.py  (the plaintext source it decrypts to)
+
+Algorithm reference
+-------------------
+The in-house Rust decryptor in crates/disrobe-pass-sourcedefender reimplements the
+proprietary `sourcedefender` PyPI library's .pye scheme from scratch, cross-checked against
+the documented format facts:
+  - the scheme is published as a public-domain reference algorithm
+  - the cipher is AES-256-CTR and the payload is a msgpack map with `code` / `eol_timestamp`.
+
+Format (this 185-byte sample, hand-decoded byte-for-byte)
+--------------------------------------------------------
+1. Armor markers: "--BEGIN SOURCEDEFENDER FILE---" / "---END SOURCEDEFENDER FILE----".
+   Line[0] = BEGIN, line[1] = IV, line[2..n-1] = ciphertext, line[n-1] = END.
+2. Each armored line is Ascii85 (Python stdlib a85, alphabet chr(33)..chr(117)) then
+   zlib-inflated. IV -> 16 bytes (310dbdb9...), ciphertext -> 58 bytes.
+3. KDF: password = presalt = basename without extension ("hello", UTF-8).
+   key64 = blake2b(password, 64); salt16 = blake2b(presalt, 16);
+   aes_key = blake2b(key=key64, salt=salt16, 32). For "hello":
+   2e8ef91afe6da4abd8e665aaf2104d5027ccfbfdb1890da81b40bf628d7d8c98.
+4. Cipher: AES-256-CTR, full 16-byte IV as the initial big-endian counter.
+5. Payload: msgpack map {code: 'print("Hello World!")\n', ttl_info: '', eol_timestamp: ...}.
+   Free version => `code` is the source string; paid => marshalled code object under
+   `original_code`.

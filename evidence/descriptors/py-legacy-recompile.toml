@@ -1,0 +1,16 @@
+id = "py-legacy-recompile"
+ecosystem = "python"
+title = "CPython legacy 1.0-3.7 proven-correct decompilation"
+claim = "disrobe decompiles legacy CPython bytecode (1.0 through 3.7) to source that is proven correct by recompile-equivalence or, where the period interpreter is absent, a structural token-match against the original .py."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "period CPython interpreters 1.0-3.7 (recompile-equivalence) or original .py source (structural token-match)"
+reproduce = "cargo test -p disrobe-pass-py-decompile --test legacy_recompile"
+
+[source]
+recovery_group = "CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)"
+recovery_bar = "proven-correct"
+floor = 78.0

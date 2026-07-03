@@ -1,0 +1,27 @@
+[package]
+name = "disrobe-bench-native-unpack"
+description = "Reproducible native-unpack benchmark: runs disrobe-pass-native's unpack API over the committed packer corpus and measures byte-identity, Shannon entropy, and disrobe-disassembler-resolvable call targets with no external tool."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-bench-native-unpack"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-pass-native = { workspace = true }
+iced-x86 = { workspace = true }
+object = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eyre = { workspace = true }

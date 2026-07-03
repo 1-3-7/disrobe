@@ -1,0 +1,7 @@
+{
+  "url_list": [
+    { "url": "https://planted.example.com/api/v2/admin", "date": "2023-05-01", "httpcode": 200 },
+    { "url": "https://planted.example.com/internal/metrics", "date": "2023-05-02", "httpcode": 403 }
+  ],
+  "has_next": false
+}

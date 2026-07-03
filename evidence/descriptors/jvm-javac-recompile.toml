@@ -1,0 +1,17 @@
+id = "jvm-javac-recompile"
+ecosystem = "jvm"
+title = "JVM classfile decompilation, per-method javac recompile"
+claim = "disrobe decompiles JVM bytecode to Java that recompiles error-free under the real javac, per method, across the EdgeCases corpus."
+oracle_strength = "recompile-only"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real javac (JDK 25): recovered Java must recompile error-free per method"
+reproduce = "cargo test -p disrobe-pass-jvm --test decompile_recompile_rate"
+note = "Oracle strength is recompile-only: the recovered source compiling is necessary but not sufficient for equivalence (a dropped branch can still compile). The .pyc gate is the stronger standard (recompile-equivalent). Upgrade to bytecode-equivalence is tracked for a later phase."
+
+[source]
+recovery_group = "JVM classfile (EdgeCases corpus, per-method real-javac recompile)"
+recovery_bar = "per-method"
+floor = 98.0

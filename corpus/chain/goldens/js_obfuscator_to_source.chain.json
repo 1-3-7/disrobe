@@ -1,0 +1,159 @@
+{
+  "final_format": null,
+  "input": {
+    "blake3": "34d25b2a866af9145e29e4dfa2feec64c6277f57fb9fc57c036a91dc7cf9d7f7",
+    "detected": [
+      "js-javascript-obfuscator"
+    ],
+    "path": "synthetic://obfuscated.js",
+    "size": 63
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "34d25b2a866af9145e29e4dfa2feec64c6277f57fb9fc57c036a91dc7cf9d7f7",
+      "input_size": 63,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [
+        {
+          "band": "high",
+          "chosen": true,
+          "confidence": 0.949999988079071,
+          "explain": "js detector family=ObfuscatorIo",
+          "family": "obfuscator-wrapper",
+          "format_tag": "js-javascript-obfuscator",
+          "markers": [
+            "js-obf-marker"
+          ],
+          "pass_id": "js.deob",
+          "specificity": 30
+        }
+      ],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": "js-javascript-obfuscator",
+      "id": 1,
+      "input_blake3": "34d25b2a866af9145e29e4dfa2feec64c6277f57fb9fc57c036a91dc7cf9d7f7",
+      "input_size": 63,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": {
+        "children": [
+          {
+            "artifact_index": 0,
+            "hint": "disrobe.terminal",
+            "relative_path": "js-deob.recovered.js"
+          },
+          {
+            "artifact_index": 1,
+            "hint": "disrobe.terminal",
+            "relative_path": "js-deob.detection.json"
+          },
+          {
+            "artifact_index": 2,
+            "hint": "disrobe.terminal",
+            "relative_path": "js-deob.pipeline.json"
+          }
+        ],
+        "kind": "mixed"
+      },
+      "output_size": null,
+      "parent_id": 0,
+      "pass": "js.deob",
+      "verdict": "fan-out"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "b",
+      "depth": 2,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 2,
+      "input_blake3": "787e4c85ac257c963fee1f7390797bc2996eb5453dd637da6d51d7039c700b13",
+      "input_size": 59,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": 1,
+      "pass": null,
+      "verdict": "extracted"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "c",
+      "depth": 2,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 3,
+      "input_blake3": "0d5615bda0cb5d148037ebb21a1043041fe845942ab082fc72e49c7a7f383ad3",
+      "input_size": 99,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": 1,
+      "pass": null,
+      "verdict": "extracted"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "d",
+      "depth": 2,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 4,
+      "input_blake3": "0cb7e0328f0fc47878a850e029415a31a13bbd6240ad284c8deaa538c0d82ec6",
+      "input_size": 1464,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": 1,
+      "pass": null,
+      "verdict": "extracted"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 4,
+    "detector_calls": 1,
+    "layers": 4,
+    "max_branch_depth": 2,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "tree",
+  "verdict": "ok"
+}

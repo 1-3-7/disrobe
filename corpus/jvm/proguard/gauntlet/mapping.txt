@@ -1,0 +1,32 @@
+Cipher -> a:
+# {"fileName":"Cipher.java","id":"sourceFile"}
+    int shift -> a
+    int callCount -> b
+    5:8:void <init>(int) -> <init>
+    11:23:java.lang.String encrypt(java.lang.String) -> a
+DataStore -> b:
+# {"fileName":"DataStore.java","id":"sourceFile"}
+    java.util.List entries -> a
+    java.lang.String label -> a
+    8:11:void <init>(java.lang.String) -> <init>
+    14:18:void add(java.lang.String) -> a
+    32:32:java.lang.String getLabel() -> a
+Gauntlet -> Gauntlet:
+# {"fileName":"Gauntlet.java","id":"sourceFile"}
+    Cipher cipher -> a
+    DataStore store -> a
+    int processedCount -> c
+    9:13:void <init>() -> <init>
+    16:25:OpResult processEntry(java.lang.String) -> a
+    35:35:int getProcessedCount() -> a
+    39:39:DataStore getStore() -> a
+    43:53:int fibonacci(int) -> a
+    57:66:void main(java.lang.String[]) -> main
+OpResult -> c:
+# {"fileName":"OpResult.java","id":"sourceFile"}
+    boolean success -> a
+    java.lang.String message -> b
+    int code -> d
+    6:10:void <init>(boolean,java.lang.String,int) -> <init>
+    13:13:OpResult ok(java.lang.String) -> b
+    17:17:OpResult fail(java.lang.String,int) -> a

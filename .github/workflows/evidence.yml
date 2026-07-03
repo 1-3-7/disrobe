@@ -1,0 +1,161 @@
+name: evidence
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 7 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'evidence/**'
+      - 'corpus/**'
+      - 'xtask/src/evidence.rs'
+      - 'benches/head-to-head/**'
+      - '.github/workflows/evidence.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  apk-jadx-cfr:
+    name: head-to-head (apk vs jadx + cfr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: install competitors (jadx + cfr)
+        run: bash evidence/competitors/install-linux.sh --only apk
+      - name: assert oracle + competitors present (skip == hard fail)
+        run: |
+          command -v javac
+          command -v jadx
+          test -f evidence/competitors/jars/cfr.jar
+      - name: run apk head-to-head
+        run: cargo run -p disrobe-bench-head-to-head
+      - name: assert disrobe leads and every tool was scored (no silent skip)
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("evidence/results/measured/apk-jadx-cfr.json"))
+          assert d["status"] == "ok", d
+          tools = d["tools"]
+          dis = [t for t in tools if t["status"] == "ok" and t["name"].startswith("disrobe")]
+          comp = [t for t in tools if t["status"] == "ok" and not t["name"].startswith("disrobe")]
+          assert dis, "no disrobe tool produced an ok result"
+          assert comp, "no competitor produced an ok result; the lane proved nothing"
+          best_dis = max(t["value"] for t in dis)
+          best_comp = max(t["value"] for t in comp)
+          print("apk head-to-head:", [(t["name"], t["display"]) for t in tools])
+          assert best_dis >= best_comp - 1e-9, f"disrobe {best_dis} trails competitor {best_comp}"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-apk-jadx-cfr
+          path: evidence/results/measured/apk-jadx-cfr.json
+
+  frisk-apkleaks:
+    name: head-to-head (frisk vs apkleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: install competitors (apkleaks + jadx)
+        run: |
+          bash evidence/competitors/install-linux.sh --only frisk
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: assert competitors present (skip == hard fail)
+        run: |
+          command -v jadx
+          python3 -m pip show apkleaks
+      - name: run frisk head-to-head
+        run: cargo run -p disrobe-bench-head-to-head
+      - name: assert apkleaks was scored and disrobe leads (no silent skip)
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("evidence/results/measured/frisk-apkleaks.json"))
+          assert d["status"] == "ok", d
+          tools = {t["name"]: t for t in d["tools"]}
+          apkleaks = [t for n, t in tools.items() if n.startswith("apkleaks")]
+          assert apkleaks and apkleaks[0]["status"] == "ok", f"apkleaks not scored: {apkleaks}"
+          dis = [t for n, t in tools.items() if n.startswith("disrobe")][0]
+          print("frisk head-to-head:", [(t["name"], t["display"]) for t in d["tools"]])
+          assert dis["value"] >= apkleaks[0]["value"] - 1e-9, "disrobe frisk trails apkleaks"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-frisk-apkleaks
+          path: evidence/results/measured/frisk-apkleaks.json
+
+  gate-harvest:
+    name: gate-test harvest (committed corpora)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run gate harvest (committed corpora only)
+        run: cargo run -p disrobe-bench-head-to-head
+      - name: assert committed-corpus gates are scored (no silent skip)
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("evidence/results/measured/gate-harvest.json"))
+          gates = {g["id"]: g for g in d["gates"]}
+          for gid in ("frisk-planted-recall", "pickle-corpus-coverage"):
+              g = gates[gid]
+              assert g["status"] == "ok", f"{gid} skipped in CI: {g}"
+              print(gid, "->", g["display"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-gate-harvest
+          path: evidence/results/measured/gate-harvest.json
+
+  rollup:
+    name: rollup + drift gate
+    needs: [apk-jadx-cfr, frisk-apkleaks, gate-harvest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: drift gate (committed report matches committed measured + recovery.json)
+        run: cargo run -p xtask -- evidence --check
+      - name: collect lane artifacts for publication
+        uses: actions/download-artifact@v4
+        with:
+          pattern: evidence-*
+          merge-multiple: true
+          path: ci-measured
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-report
+          path: |
+            evidence/results/EVIDENCE.md
+            evidence/results/index.json
+            evidence/results/measured
+            ci-measured

@@ -1,0 +1,65 @@
+{
+  "title": "Python decompiler version coverage",
+  "subtitle": "factual supported-version ranges across the CPython 3.x line",
+  "note": "Bars show each tool's claimed CPython 3.x support, not accuracy. No competitor recovery percentage is plotted: disrobe cannot run these tools (no installs), so a head-to-head accuracy number would be fabricated. The honest, plottable difference is span. Axis is the CPython 3.x minor line where the active comparison lives; disrobe additionally disassembles 1.0-2.7 and 3.0-3.5 (legacy, partial), noted beside its bar. Versions encode as 3 + minor/100 (3.6 = 3.06, 3.15 = 3.15) so ordering is correct; labels render back to major.minor.",
+  "axis": {
+    "min": 3.0,
+    "max": 3.15,
+    "ticks": [3.0, 3.03, 3.06, 3.09, 3.12, 3.15]
+  },
+  "tools": [
+    {
+      "name": "disrobe",
+      "highlight": true,
+      "segments": [
+        { "from": 3.0, "to": 3.15, "kind": "disasm", "label": "disassemble 3.0-3.15" },
+        { "from": 3.06, "to": 3.15, "kind": "verified", "label": "current 3.x recompile gates" }
+      ],
+      "mode": "deterministic, no LLM; + legacy 1.0-2.7 disasm",
+      "source": "README.md (CPython 1.0-3.15 support; 3.14 stdlib and pinned-corpus recompile-equivalence, legacy 1.0-3.7 proven-correct floor)"
+    },
+    {
+      "name": "uncompyle6",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.08, "kind": "range", "label": "<= 3.8, unmaintained" }
+      ],
+      "mode": "deterministic; also covers 2.x",
+      "source": "rocky/python-uncompyle6 README: supports through 3.8; project archived"
+    },
+    {
+      "name": "decompyle3",
+      "highlight": false,
+      "segments": [
+        { "from": 3.07, "to": 3.09, "kind": "range", "label": "~3.7-3.9" }
+      ],
+      "mode": "deterministic",
+      "source": "rocky/python-decompile3 README: 3.7-3.9 focus"
+    },
+    {
+      "name": "pycdc",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.15, "kind": "partial", "label": "broad but partial, no version guarantee" }
+      ],
+      "mode": "deterministic, best-effort",
+      "source": "zrax/pycdc README: aims at all versions, no per-version correctness guarantee"
+    },
+    {
+      "name": "pychd",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.14, "kind": "range", "label": "3.0-3.14, LLM-assisted" }
+      ],
+      "mode": "LLM-assisted; deterministic mode stubs bodies",
+      "source": "pychd README (github.com/diohabara/pychd): 3.0-3.14; 86.5% strict-AST / 43.2% behavioral are LLM-assisted and self-flagged likely-contaminated; deterministic mode emits pass-bodies"
+    }
+  ],
+  "legend": [
+    { "kind": "disasm", "label": "disassemble" },
+    { "kind": "verified", "label": "recompile-verified" },
+    { "kind": "range", "label": "supported range" },
+    { "kind": "partial", "label": "broad, no guarantee" }
+  ],
+  "footnote": "Deterministic tools reproduce identical output for identical input and cannot contaminate a benchmark. pychd is LLM-assisted and non-reproducible; its own README flags likely benchmark contamination, and its deterministic fallback leaves complex bodies as pass. disrobe is fully deterministic and reconstructs bodies."
+}

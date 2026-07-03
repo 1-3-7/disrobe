@@ -1,0 +1,30 @@
+[package]
+name = "disrobe-query"
+description = "Queryable-IR layer over disrobe-ir: a typed query model and evaluator that runs symbol / call / xref / string / control-flow / capability queries against a loaded `.dr` Disasm envelope or IR module."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-ir = { workspace = true }
+disrobe-nir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+disrobe-binfmt = { workspace = true }
+iced-x86 = { workspace = true }
+object = { workspace = true }
+blake3 = { workspace = true }

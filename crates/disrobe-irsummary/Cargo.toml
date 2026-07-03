@@ -1,0 +1,34 @@
+[package]
+name = "disrobe-irsummary"
+description = "IR-driven summaries over the architecture-neutral normalized IR (the Mir rung): a per-function control-flow-graph summary (basic blocks, successor edges, cyclomatic complexity), an intra-function memory data-flow summary (write-to-read def-use edges over the block graph), and a module-level capability roll-up that classifies every resolved external call into the network / crypto / filesystem / process behaviour families, each serializable to the JSON the LLM-metadata bundle consumes through emit_cfg / emit_dfg."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-nir = { workspace = true }
+disrobe-query = { workspace = true }
+disrobe-mba = { workspace = true, features = ["smt-verify"] }
+disrobe-llm-metadata = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+
+[dev-dependencies]
+disrobe-nir-lift = { workspace = true }
+disrobe-pass-native = { workspace = true }
+iced-x86 = { workspace = true, features = ["code_asm"] }
+object = { workspace = true }
+wasmparser = { workspace = true }
+wat = "1"

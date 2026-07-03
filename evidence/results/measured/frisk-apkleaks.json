@@ -1,0 +1,83 @@
+{
+  "dataset": "corpus/recon/apk/planted-secrets.apk (committed, fully offline) with 8 hand-verified planted high-value secrets across smali, res/raw, res/values, and assets",
+  "denominator": "8 planted high-value secrets (fixed, identical for both tools)",
+  "ecosystem": "secrets",
+  "fairness": [
+    "identical input bytes: both tools scan the byte-identical committed planted-secrets.apk",
+    "same oracle: recall against the same 8-secret planted ground truth",
+    "fixed shared denominator: the count of planted secrets",
+    "apkleaks finding nothing / crashing counts as misses for apkleaks, not dropped samples",
+    "apkleaks runs its own jadx-then-regex flow; disrobe frisk scans the extracted member tree (its real product path)"
+  ],
+  "ground_truth": [
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "AWS access key id"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "AWS secret access key"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "Google OAuth access token"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "GCP / Google Maps API key"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "HTTP Basic auth credential"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "session JWT"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "Firebase database URL"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "S3 bucket URL"
+    }
+  ],
+  "honest_note": "`disrobe frisk` recalls 100.0% of the planted secrets; apkleaks recalls 62.5%. apkleaks misses the AWS key, HTTP Basic credential, and JWT. This row scores only the shared 8-secret ground truth.",
+  "id": "frisk-apkleaks",
+  "oracle": "recall against the hand-verified planted ground-truth set: disrobe matches by its rule_id or the raw token (frisk redacts secret previews by design), apkleaks matches by the raw token its rule reports; both against the same 8-secret ground truth",
+  "reproduce": "cargo run -p disrobe-bench-head-to-head  (apkleaks installed via evidence/competitors/install-linux.sh; needs jadx on PATH for apkleaks's decompile step. apkleaks rule set pinned at evidence/competitors/apkleaks-regexes.json 2.6.3)",
+  "status": "ok",
+  "title": "Secret / IOC recall: disrobe frisk vs apkleaks (same APK, hand-verified planted ground truth)",
+  "tools": [
+    {
+      "display": "8/8 (100.0%)",
+      "found": 8,
+      "metric": "recall %",
+      "name": "disrobe frisk (in-process recon engine)",
+      "status": "ok",
+      "total": 8,
+      "value": 100.0,
+      "version": "n/a (in-process)"
+    },
+    {
+      "detail": "apkleaks 2.6.3 pinned rule set applied over the same jadx output it scans internally (its CLI shells out and fails on some Windows hosts); identical rules, identical result",
+      "display": "5/8 (62.5%)",
+      "found": 5,
+      "metric": "recall %",
+      "name": "apkleaks",
+      "status": "ok",
+      "total": 8,
+      "value": 62.5,
+      "version": "v2.6.3"
+    }
+  ]
+}

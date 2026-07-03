@@ -1,0 +1,243 @@
+use crate::cursor::{ByteCursor, MAX_PROTO_DEPTH};
+use crate::error::{Error, Result};
+use crate::reader::common::{
+    LUA_SIGNATURE, LUAC_DATA_TAIL, LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto,
+    LuaUpvalueName, capped_u32, low_u32,
+};
+
+const LUAC_INT_5_4: u64 = 0x5678;
+const LUAC_NUM_5_4: f64 = 370.5_f64;
+
+pub fn read(bytes: &[u8]) -> Result<LuaChunk> {
+    let mut c: ByteCursor<'_> = ByteCursor::new(bytes);
+    let sig: &[u8] = c.read_bytes(4)?;
+    if sig != LUA_SIGNATURE {
+        return Err(Error::BadSignature);
+    }
+    let version: u8 = c.read_u8()?;
+    if version != 0x54 {
+        return Err(Error::UnsupportedLuaVersion(version));
+    }
+    let format: u8 = c.read_u8()?;
+    if format != 0x00 {
+        return Err(Error::UnsupportedFormat(format));
+    }
+    let tail_off: usize = c.position();
+    let tail: &[u8] = c.read_bytes(6)?;
+    if tail != LUAC_DATA_TAIL {
+        return Err(Error::BadLuacData(tail_off));
+    }
+    let size_instr: u8 = c.read_u8()?;
+    let size_lua_integer: u8 = c.read_u8()?;
+    let size_lua_number: u8 = c.read_u8()?;
+    if size_instr != 4 {
+        return Err(Error::BadIntSize(size_instr));
+    }
+    if size_lua_integer != 4 && size_lua_integer != 8 {
+        return Err(Error::BadIntSize(size_lua_integer));
+    }
+    if size_lua_number != 4 && size_lua_number != 8 {
+        return Err(Error::BadNumberSize(size_lua_number));
+    }
+    let int_check: u64 = c.read_size(size_lua_integer)?;
+    if int_check != LUAC_INT_5_4 {
+        return Err(Error::EndianMismatch { got: int_check });
+    }
+    let num_check: f64 = if size_lua_number == 8 {
+        c.read_f64()?
+    } else {
+        let raw: u32 = c.read_u32()?;
+        f64::from(f32::from_bits(raw))
+    };
+    if (num_check - LUAC_NUM_5_4).abs() > 0.001 {
+        return Err(Error::FloatMismatch { got: num_check });
+    }
+    let _num_upvals_main: u8 = c.read_u8()?;
+    let main: LuaProto = read_proto(&mut c, size_instr, size_lua_integer, size_lua_number, 0)?;
+    Ok(LuaChunk {
+        dialect: LuaDialect::Lua54,
+        version_byte: 0x54,
+        format,
+        little_endian: true,
+        size_of_int: 0,
+        size_of_size_t: 0,
+        size_of_instruction: size_instr,
+        size_of_lua_integer: size_lua_integer,
+        size_of_lua_number: size_lua_number,
+        integral_number: false,
+        main,
+    })
+}
+
+fn read_lua54_size(c: &mut ByteCursor<'_>) -> Result<u64> {
+    let mut result: u64 = 0;
+    loop {
+        let offset: usize = c.position();
+        let byte: u8 = c.read_u8()?;
+        if result > (u64::MAX >> 7) {
+            return Err(Error::BadUleb128(offset));
+        }
+        result = (result << 7) | u64::from(byte & 0x7F);
+        if byte & 0x80 != 0 {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+fn read_string(c: &mut ByteCursor<'_>) -> Result<Option<String>> {
+    let len: u64 = read_lua54_size(c)?;
+    if len == 0 {
+        return Ok(None);
+    }
+    let raw_len: usize = c.checked_len("lua54 string length", len.saturating_sub(1))?;
+    let raw: &[u8] = c.read_bytes(raw_len)?;
+    let owned: String = String::from_utf8_lossy(raw).into_owned();
+    Ok(Some(owned))
+}
+
+fn read_proto(
+    c: &mut ByteCursor<'_>,
+    size_instr: u8,
+    size_lua_integer: u8,
+    size_lua_number: u8,
+    depth: usize,
+) -> Result<LuaProto> {
+    if depth > MAX_PROTO_DEPTH {
+        return Err(Error::ProtoNestingTooDeep(depth));
+    }
+    let source: Option<String> = read_string(c)?;
+    let line_defined: u32 = capped_u32(read_lua54_size(c)?);
+    let last_line_defined: u32 = capped_u32(read_lua54_size(c)?);
+    let num_params: u8 = c.read_u8()?;
+    let is_vararg: u8 = c.read_u8()?;
+    let max_stack_size: u8 = c.read_u8()?;
+
+    let code_len: u64 = read_lua54_size(c)?;
+    let code_len: usize = c.checked_count::<u32>("lua54 code", code_len, size_instr.into())?;
+    let mut code: Vec<u32> = Vec::with_capacity(code_len);
+    for _ in 0..code_len {
+        let inst: u64 = c.read_size(size_instr)?;
+        code.push(low_u32(inst));
+    }
+
+    let const_count: u64 = read_lua54_size(c)?;
+    let const_count: usize = c.checked_count::<LuaConstant>("lua54 constant", const_count, 1)?;
+    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count);
+    for _ in 0..const_count {
+        let tag: u8 = c.read_u8()?;
+        let value: LuaConstant = match tag {
+            0x00 => LuaConstant::Nil,
+            0x01 => LuaConstant::Bool(false),
+            0x11 => LuaConstant::Bool(true),
+            0x03 => {
+                let raw: u64 = c.read_size(size_lua_integer)?;
+                LuaConstant::Integer(i64::from_le_bytes(raw.to_le_bytes()))
+            }
+            0x13 => {
+                if size_lua_number == 8 {
+                    LuaConstant::Number(c.read_f64()?)
+                } else {
+                    let raw: u32 = c.read_u32()?;
+                    LuaConstant::Number(f64::from(f32::from_bits(raw)))
+                }
+            }
+            0x04 | 0x14 => {
+                read_string(c)?.map_or(LuaConstant::Str(String::new()), LuaConstant::Str)
+            }
+            other => return Err(Error::BadConstantTag(other, c.position())),
+        };
+        constants.push(value);
+    }
+
+    let upval_count: u64 = read_lua54_size(c)?;
+    let upval_count: usize = c.checked_count::<LuaUpvalueName>("lua54 upvalue", upval_count, 3)?;
+    let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(upval_count);
+    for _ in 0..upval_count {
+        let _in_stack: u8 = c.read_u8()?;
+        let _idx: u8 = c.read_u8()?;
+        let _kind: u8 = c.read_u8()?;
+        upvalues.push(LuaUpvalueName {
+            name: String::new(),
+        });
+    }
+
+    let proto_count: u64 = read_lua54_size(c)?;
+    let proto_count: usize = c.checked_count::<LuaProto>("lua54 proto", proto_count, 1)?;
+    let mut protos: Vec<LuaProto> = Vec::with_capacity(proto_count);
+    for _ in 0..proto_count {
+        protos.push(read_proto(
+            c,
+            size_instr,
+            size_lua_integer,
+            size_lua_number,
+            depth + 1,
+        )?);
+    }
+
+    let line_info_count: u64 = read_lua54_size(c)?;
+    let line_info_count: usize = c.checked_count::<u8>("lua54 line delta", line_info_count, 1)?;
+    for _ in 0..line_info_count {
+        let _: u8 = c.read_u8()?;
+    }
+    let abs_line_count: u64 = read_lua54_size(c)?;
+    let abs_line_count: usize = c.checked_count::<u32>("lua54 absolute line", abs_line_count, 2)?;
+    let mut source_lines: Vec<u32> = Vec::with_capacity(abs_line_count);
+    for _ in 0..abs_line_count {
+        let _pc: u64 = read_lua54_size(c)?;
+        let line: u64 = read_lua54_size(c)?;
+        source_lines.push(capped_u32(line));
+    }
+
+    let local_count: u64 = read_lua54_size(c)?;
+    let local_count: usize = c.checked_count::<LuaLocal>("lua54 local", local_count, 1)?;
+    let mut locals: Vec<LuaLocal> = Vec::with_capacity(local_count);
+    for _ in 0..local_count {
+        let name: String = read_string(c)?.unwrap_or_default();
+        let start_pc: u32 = capped_u32(read_lua54_size(c)?);
+        let end_pc: u32 = capped_u32(read_lua54_size(c)?);
+        locals.push(LuaLocal {
+            name,
+            start_pc,
+            end_pc,
+        });
+    }
+
+    let upval_names: u64 = read_lua54_size(c)?;
+    let upval_names: usize = c.checked_count::<u8>("lua54 upvalue name", upval_names, 1)?;
+    for idx in 0..upval_names {
+        let name: String = read_string(c)?.unwrap_or_default();
+        if idx < upvalues.len() {
+            upvalues[idx].name = name;
+        }
+    }
+
+    Ok(LuaProto {
+        source,
+        line_defined,
+        last_line_defined,
+        num_params,
+        is_vararg,
+        max_stack_size,
+        code,
+        constants,
+        protos,
+        source_lines,
+        locals,
+        upvalues,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_varint_rejects_bits_shifted_past_u64() {
+        let mut bytes: Vec<u8> = vec![0x7Fu8; 9];
+        bytes.push(0xFFu8);
+        let mut cursor: ByteCursor<'_> = ByteCursor::new(&bytes);
+        let result: Result<u64> = read_lua54_size(&mut cursor);
+        assert!(matches!(result, Err(Error::BadUleb128(9))));
+    }
+}

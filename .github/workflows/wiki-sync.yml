@@ -1,0 +1,75 @@
+name: wiki-sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/wiki_sync.py"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Checkout wiki repo
+        id: wiki_checkout
+        uses: actions/checkout@v6
+        continue-on-error: true
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Initialize wiki if empty
+        run: |
+          set -euo pipefail
+          if [ ! -d wiki/.git ]; then
+            echo "wiki repository is empty or uninitialized; initializing"
+            rm -rf wiki
+            mkdir -p wiki
+            git -C wiki init -b master
+            git -C wiki remote add origin \
+              "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git"
+          fi
+
+      - name: Generate wiki from docs/src
+        run: python scripts/wiki_sync.py --out wiki
+
+      - name: Commit and push wiki
+        working-directory: wiki
+        run: |
+          set -euo pipefail
+          git config user.name "1-3-7"
+          git config user.email "266389671+1-3-7@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "wiki already up to date; nothing to push"
+            exit 0
+          fi
+          git commit -m "sync wiki from docs"
+          if ! git push origin HEAD:master 2>push.err; then
+            if grep -q "Repository not found" push.err; then
+              echo "::notice::wiki repo not initialized; create one page via the GitHub Wiki tab once, then re-run. docs/src will auto-mirror thereafter."
+              cat push.err
+              exit 0
+            fi
+            cat push.err
+            exit 1
+          fi

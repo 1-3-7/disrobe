@@ -1,0 +1,83 @@
+#![forbid(unsafe_code)]
+#![allow(clippy::redundant_pub_crate)]
+#[cfg(feature = "chain")]
+pub mod chain_detector;
+pub(crate) mod debug;
+pub mod demangle;
+pub mod error;
+pub mod fairplay;
+pub mod ipa;
+pub mod macho;
+pub mod native_bodies;
+pub mod objc;
+pub mod objc_records;
+pub mod pass;
+pub mod plist_decode;
+pub mod provenance_header;
+pub mod swift;
+pub mod swift_reflect;
+pub mod swift_symbolic;
+pub mod swift_typedump;
+pub mod swiftinterface;
+pub mod swiftmodule;
+
+pub use error::{Error, Result};
+pub use fairplay::{FairPlayStatus, detect as detect_fairplay};
+pub use ipa::{
+    IpaEntry, IpaExtract, IpaInventory, extract as extract_ipa, inventory as ipa_inventory,
+};
+pub use macho::{
+    Bitness, CpuKind, EncryptionInfo, Endian, FatArchEntry, FunctionSymbol, LoadCommand, MachoKind,
+    ParsedSlice, Section, Segment, SliceHeader, SymtabInfo, detect_magic, find_section,
+    function_symbols, parse_slice, section_bytes, slice_bytes, symbol_names, walk_fat,
+};
+pub use native_bodies::{
+    DisasmInstruction, FunctionBody, NativeBodyReport, ReconstructedMember,
+    ReconstructedTypeReport, SourceGrade, SourceLine, recover_native_bodies,
+};
+pub use objc::{
+    ObjcClassDump, ObjcPointerList, ObjcStringTable, SelectorIndex, class_dump as objc_class_dump,
+    index_selectors,
+};
+pub use objc_records::{
+    ObjcInterface, ObjcIvar, ObjcMethod, ObjcProperty,
+    recover_interfaces as recover_objc_interfaces,
+};
+pub use pass::{
+    ContainerKind, MetadataSummary, PASS_ID, SliceReport, SwiftObjcPass, SwiftObjcReport, analyze,
+};
+pub use plist_decode::{
+    EntitlementValue, EntitlementsDecode, InfoPlistSummary,
+    decode_entitlements_from_code_signature, decode_entitlements_xml, parse_info_plist,
+};
+pub use provenance_header::{
+    objc_class_dump_header, render_objc_with_header, render_swift_with_header,
+    swift_class_dump_header,
+};
+pub use swift::{
+    ConfidentialDecryptResult, ConfidentialKeyRecovery, MIN_RECOVERABLE_CIPHERTEXT_LEN,
+    SwiftClassDump, SwiftReflectionStrings, SwiftSectionPointers, SwiftShieldUndoMap,
+    class_dump as swift_class_dump, confidential_recover, confidential_recover_key,
+    confidential_recover_strings, confidential_xor_decrypt, demangle as swift_demangle,
+    looks_like_swift_mangled, swiftshield_undo_from_dsym_text,
+};
+pub use swift_reflect::{
+    FieldDescriptorKind, SwiftField, SwiftTypeReflection,
+    parse_field_descriptors as parse_swift_field_descriptors, read_field_list,
+};
+pub use swift_typedump::{
+    ConformanceProtocolKind, NominalKind, ProtocolRequirementKind, SwiftAssociatedTypeRecord,
+    SwiftAssociatedTypeWitness, SwiftNominalType, SwiftProtocolConformance,
+    SwiftProtocolDescriptor, SwiftProtocolRequirement, SwiftTypeDump, nominal_kind_for,
+    parse_type_dump,
+};
+pub use swiftinterface::{
+    InterfaceCase, InterfaceDecl, InterfaceDeclKind, InterfaceMethod, InterfaceProperty,
+    ParsedInterface, looks_like_swiftinterface, merge_elided_field_names,
+    parse as parse_swiftinterface,
+};
+pub use swiftmodule::{
+    MODULE_SIGNATURE, SwiftModuleDecls, is_swift_module, read as read_swift_module,
+};
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

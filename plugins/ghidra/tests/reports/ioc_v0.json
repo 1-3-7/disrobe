@@ -1,0 +1,15 @@
+{
+  "schema": "disrobe.ioc/v0",
+  "uri": "corpus/native/discovery/disc.unstripped.elf",
+  "byte_len": 1560,
+  "total": 1,
+  "indicators": [
+    {
+      "kind": "url",
+      "value": "https://github.com/llvm/llvm-project",
+      "offset": 762,
+      "encoding": "plain",
+      "context": "er: LLD 22.1.6 (https://github.com/llvm/llvm-project fc4aad7b5db3fff"
+    }
+  ]
+}

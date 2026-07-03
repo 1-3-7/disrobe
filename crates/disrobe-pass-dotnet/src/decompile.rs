@@ -1,0 +1,786 @@
+use serde::{Deserialize, Serialize};
+
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
+use crate::error::Result;
+use crate::metadata::{MetadataRoot, parse_metadata_root};
+use crate::model::{MethodModel, Resolver, TypeModel};
+use crate::names::NameTable;
+use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
+use crate::structurize::{
+    MethodNamer, StructuredMethod, TargetLang, decompile_method_named, decompile_move_next_named,
+};
+
+fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
+    let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
+    if let Err(error) = result {
+        unreachable!("string formatting failed: {error}");
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CSharpPseudo {
+    pub method_name: String,
+    pub body: String,
+    pub instruction_count: u32,
+    pub flow_summary: FlowSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecompiledAssembly {
+    pub module_name: String,
+    pub methods: Vec<StructuredMethod>,
+    pub methods_decompiled: u32,
+    pub methods_bodyless: u32,
+    pub methods_failed: u32,
+}
+
+pub fn decompile_assembly(image: &[u8]) -> Result<DecompiledAssembly> {
+    decompile_assembly_in(image, TargetLang::CSharp)
+}
+
+pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<DecompiledAssembly> {
+    let pe: PeImage = parse(image)?;
+    let clr: ClrHeader = parse_clr_header(image, &pe)?;
+    let root: MetadataRoot = parse_metadata_root(image, &pe, &clr)?;
+    let resolver: Resolver = Resolver::build(image, &pe, &clr, &root)?;
+    let model: crate::model::AssemblyModel = resolver.model();
+
+    let mut methods: Vec<StructuredMethod> = Vec::new();
+    let mut bodyless: u32 = 0;
+    let mut failed: u32 = 0;
+    for ty in &model.types {
+        let state_machine: Option<crate::state_machine::StateMachine> =
+            crate::state_machine::classify(ty);
+        let is_record: bool = crate::records::is_record_type(ty);
+        for m in &ty.methods {
+            decompile_one(
+                &pe,
+                image,
+                &resolver,
+                ty,
+                m,
+                state_machine.as_ref(),
+                is_record,
+                lang,
+                &mut methods,
+                &mut bodyless,
+                &mut failed,
+            );
+        }
+    }
+    if lang == TargetLang::CSharp {
+        let _ = crate::lambda_reverse::inline_lambdas(&mut methods);
+        let hoisted_types: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, String>,
+        > = hoisted_field_types(&model, lang);
+        let _ = crate::iterator_reverse::reconstruct_iterator_stubs(&mut methods, &hoisted_types);
+        let _ = crate::switch_expr_reverse::reconstruct_switch_expressions(&mut methods);
+    }
+    let decompiled: u32 = u32::try_from(methods.len()).unwrap_or(u32::MAX);
+    Ok(DecompiledAssembly {
+        module_name: model.module_name,
+        methods,
+        methods_decompiled: decompiled,
+        methods_bodyless: bodyless,
+        methods_failed: failed,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decompile_one(
+    pe: &PeImage,
+    image: &[u8],
+    resolver: &Resolver,
+    ty: &TypeModel,
+    m: &MethodModel,
+    state_machine: Option<&crate::state_machine::StateMachine>,
+    is_record: bool,
+    lang: TargetLang,
+    methods: &mut Vec<StructuredMethod>,
+    bodyless: &mut u32,
+    failed: &mut u32,
+) {
+    if m.rva == 0 {
+        *bodyless = bodyless.saturating_add(1);
+        return;
+    }
+    let Some(off): Option<usize> = pe.rva_to_offset(m.rva) else {
+        *failed = failed.saturating_add(1);
+        return;
+    };
+    if off >= image.len() {
+        *failed = failed.saturating_add(1);
+        return;
+    }
+    match parse_method_body(&image[off..]) {
+        Ok(body) => {
+            let provenance: &str = if crate::state_machine::is_closure_display_type(ty) {
+                " [compiler-generated closure]"
+            } else if state_machine.is_some() {
+                match state_machine.map(|s: &crate::state_machine::StateMachine| s.kind) {
+                    Some(crate::state_machine::StateMachineKind::Async) => " [async state machine]",
+                    Some(crate::state_machine::StateMachineKind::Iterator) => {
+                        " [iterator state machine]"
+                    }
+                    Some(crate::state_machine::StateMachineKind::AsyncIterator) => {
+                        " [async iterator state machine]"
+                    }
+                    None => "",
+                }
+            } else if is_record && crate::records::is_synthesized_record_member(m) {
+                " [record - compiler-synthesized member]"
+            } else if is_record {
+                " [record]"
+            } else {
+                ""
+            };
+            let raw_sig: String = match lang {
+                TargetLang::CSharp => {
+                    format!("// {}{provenance}\n{}", ty.full_name, m.csharp_signature())
+                }
+                TargetLang::FSharp => {
+                    format!("// {}{provenance}\n{}", ty.full_name, m.fsharp_signature())
+                }
+                TargetLang::VbNet => {
+                    format!("' {}{provenance}\n{}", ty.full_name, m.vbnet_signature())
+                }
+            };
+            let resolved_sig: String = resolver.resolve_type_tokens(&raw_sig);
+            let namer: MethodNamer<'_> = MethodNamer {
+                resolver,
+                has_this: !m.is_static(),
+            };
+            let names: NameTable = build_name_table(resolver, m, &body, lang);
+            let header_sig: String = if lang == TargetLang::CSharp {
+                apply_inferred_param_names(&resolved_sig, &names)
+            } else {
+                resolved_sig
+            };
+            let folded_body: crate::cil::MethodBody = if lang == TargetLang::CSharp {
+                fold_cached_delegate_init(&body, resolver)
+            } else {
+                body
+            };
+            let is_sm_move_next: bool = lang == TargetLang::CSharp
+                && state_machine.is_some()
+                && crate::state_machine::is_move_next(m);
+            let is_async_sm: bool = matches!(
+                state_machine.map(|s: &crate::state_machine::StateMachine| s.kind),
+                Some(
+                    crate::state_machine::StateMachineKind::Async
+                        | crate::state_machine::StateMachineKind::AsyncIterator
+                )
+            );
+            let mut structured: StructuredMethod = if is_sm_move_next {
+                decompile_move_next_named(
+                    &header_sig,
+                    &folded_body,
+                    &namer,
+                    &names,
+                    lang,
+                    is_async_sm,
+                )
+            } else {
+                decompile_method_named(&header_sig, &folded_body, &namer, &names, lang)
+            };
+            if let Some(sm) = state_machine
+                && is_sm_move_next
+            {
+                let (reversed, _points): (String, u32) =
+                    crate::state_machine_reverse::reverse_move_next(&structured.body, sm);
+                let type_param_names: Vec<String> =
+                    resolver.type_generic_param_names(ty.token & 0x00FF_FFFF);
+                structured.body = crate::state_machine_reverse::lower_generic_placeholders(
+                    &reversed,
+                    &type_param_names,
+                );
+            }
+            if lang == TargetLang::CSharp {
+                let (cleaned, _folded): (String, u32) =
+                    crate::closure_reverse::fold_cached_delegates(&structured.body);
+                structured.body = cleaned;
+            }
+            if lang == TargetLang::CSharp && !is_sm_move_next {
+                let normalized: MethodBody =
+                    crate::structurize::normalize_branches_pub(&folded_body);
+                let switch_body: Option<String> =
+                    crate::property_switch_reverse::reconstruct_property_switch(
+                        &normalized,
+                        &namer,
+                        &names,
+                        lang,
+                    )
+                    .or_else(|| {
+                        crate::list_switch_reverse::reconstruct_list_switch(
+                            &normalized,
+                            &namer,
+                            &names,
+                            lang,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::positional_switch_reverse::reconstruct_positional_switch(
+                            &normalized,
+                            &namer,
+                            &names,
+                            lang,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::tuple_switch_reverse::reconstruct_tuple_switch(
+                            &normalized,
+                            &namer,
+                            &names,
+                            lang,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::range_switch_reverse::reconstruct_range_switch(
+                            &normalized,
+                            &namer,
+                            &names,
+                            lang,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::with_reverse::reconstruct_with_expression(
+                            &normalized,
+                            &namer,
+                            &names,
+                            lang,
+                        )
+                    });
+                if let Some(switch_body) = switch_body
+                    && let Some(rewrapped) = rewrap_method_body(&structured.body, &switch_body)
+                {
+                    structured.body = rewrapped;
+                }
+            }
+            if is_sm_move_next && lang == TargetLang::CSharp {
+                structured.body =
+                    crate::state_machine_reverse::sanitize_generated_residue(&structured.body);
+            }
+            methods.push(structured);
+        }
+        Err(_) => *failed = failed.saturating_add(1),
+    }
+}
+
+fn rewrap_method_body(original: &str, switch_body: &str) -> Option<String> {
+    let trailing_newline: bool = original.ends_with('\n');
+    let lines: Vec<&str> = original.lines().collect();
+    let open: usize = lines.iter().position(|l: &&str| l.trim() == "{")?;
+    let close: usize = lines.iter().rposition(|l: &&str| l.trim() == "}")?;
+    if close <= open {
+        return None;
+    }
+    let mut text: String = String::new();
+    for line in &lines[..=open] {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text.push_str(switch_body);
+    text.push_str(lines[close]);
+    if trailing_newline {
+        text.push('\n');
+    }
+    Some(text)
+}
+
+fn fold_cached_delegate_init(body: &crate::cil::MethodBody, resolver: &Resolver) -> MethodBody {
+    let instrs: &[Instruction] = &body.instructions;
+    let mut nop_targets: Vec<usize> = Vec::new();
+    for i in 0..instrs.len() {
+        if let Some(end) = cached_delegate_init_span(instrs, i, resolver) {
+            nop_targets.extend((i + 1)..=end);
+        }
+    }
+    if nop_targets.is_empty() {
+        return body.clone();
+    }
+    let mut patched: MethodBody = body.clone();
+    for idx in nop_targets {
+        let ins: &mut Instruction = &mut patched.instructions[idx];
+        ins.opcode = 0x00;
+        "nop".clone_into(&mut ins.name);
+        ins.operand = OperandValue::None;
+        ins.flow = FlowControl::Next;
+    }
+    patched
+}
+
+fn cached_delegate_init_span(
+    instrs: &[Instruction],
+    i: usize,
+    resolver: &Resolver,
+) -> Option<usize> {
+    let load: &Instruction = instrs.get(i)?;
+    if load.name != "ldsfld" {
+        return None;
+    }
+    let OperandValue::Token(field_tok): OperandValue = load.operand else {
+        return None;
+    };
+    if !is_cached_delegate_field(field_tok, resolver) {
+        return None;
+    }
+    if instrs.get(i + 1)?.name != "dup" {
+        return None;
+    }
+    let branch: &Instruction = instrs.get(i + 2)?;
+    if branch.name != "brtrue" && branch.name != "brtrue.s" {
+        return None;
+    }
+    let OperandValue::BrTarget(rel): OperandValue = branch.operand else {
+        return None;
+    };
+    let branch_next: &Instruction = instrs.get(i + 3)?;
+    let branch_target: i64 = i64::from(branch_next.offset) + i64::from(rel);
+    let store: usize = (i + 3..instrs.len()).find(|&j: &usize| {
+        instrs[j].name == "stsfld" && instrs[j].operand == OperandValue::Token(field_tok)
+    })?;
+    let after_store: &Instruction = instrs.get(store + 1)?;
+    (i64::from(after_store.offset) == branch_target).then_some(store)
+}
+
+fn is_cached_delegate_field(token: u32, resolver: &Resolver) -> bool {
+    let name: String = resolver.resolve_token(token);
+    let short: &str = name.rsplit("::").next().unwrap_or(&name);
+    short.starts_with("<>9__") || short == "<>9"
+}
+
+fn hoisted_field_types(
+    model: &crate::model::AssemblyModel,
+    lang: TargetLang,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+    let mut out: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
+        std::collections::BTreeMap::new();
+    for ty in &model.types {
+        let short: &str = ty.name.rsplit('.').next().unwrap_or(&ty.name);
+        if !short.contains(">d__") {
+            continue;
+        }
+        let mut fields: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for f in &ty.fields {
+            if let Some(name) = hoisted_source_name(&f.name) {
+                fields.insert(name, f.field_type.render_in(lang));
+            }
+        }
+        if !fields.is_empty() {
+            out.insert(ty.full_name.clone(), fields);
+        }
+    }
+    out
+}
+
+fn hoisted_source_name(field_name: &str) -> Option<String> {
+    let short: &str = field_name.rsplit("::").next().unwrap_or(field_name);
+    if let Some(rest) = short.strip_prefix('<') {
+        let close: usize = rest.find('>')?;
+        let inner: &str = &rest[..close];
+        return (!inner.is_empty()).then(|| inner.to_owned());
+    }
+    if short.starts_with("<>") {
+        return None;
+    }
+    Some(short.to_owned())
+}
+
+fn apply_inferred_param_names(signature: &str, names: &NameTable) -> String {
+    let inferred: &[String] = names.param_names();
+    if inferred.is_empty() {
+        return signature.to_owned();
+    }
+    let mut lines: Vec<String> = signature.lines().map(str::to_owned).collect();
+    let Some(idx): Option<usize> = lines
+        .iter()
+        .position(|l: &String| !l.trim_start().starts_with("//") && l.contains('('))
+    else {
+        return signature.to_owned();
+    };
+    let header: String = lines[idx].clone();
+    let Some(open): Option<usize> = header.find('(') else {
+        return signature.to_owned();
+    };
+    let Some(close): Option<usize> = header.rfind(')') else {
+        return signature.to_owned();
+    };
+    if close <= open + 1 {
+        return signature.to_owned();
+    }
+    let prefix: &str = &header[..=open];
+    let suffix: &str = &header[close..];
+    let params: &str = &header[open + 1..close];
+    let rewritten: Vec<String> = params
+        .split(',')
+        .enumerate()
+        .map(|(i, raw): (usize, &str)| rewrite_one_param(raw, inferred.get(i).map(String::as_str)))
+        .collect();
+    lines[idx] = format!("{prefix}{}{suffix}", rewritten.join(", "));
+    lines.join("\n")
+}
+
+fn rewrite_one_param(raw: &str, inferred: Option<&str>) -> String {
+    let Some(inferred): Option<&str> = inferred else {
+        return raw.trim().to_owned();
+    };
+    let trimmed: &str = raw.trim();
+    let Some((ty, name)): Option<(&str, &str)> = trimmed.rsplit_once(' ') else {
+        return trimmed.to_owned();
+    };
+    if (name.starts_with("arg") || name.is_empty())
+        && !inferred.is_empty()
+        && (inferred.starts_with('@') || !inferred.starts_with("arg"))
+    {
+        format!("{ty} {inferred}")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn build_name_table(
+    resolver: &Resolver,
+    m: &MethodModel,
+    body: &crate::cil::MethodBody,
+    lang: TargetLang,
+) -> NameTable {
+    let mut param_names: Vec<String> = m.param_names();
+    let param_types: Vec<String> = m
+        .signature
+        .params
+        .iter()
+        .map(|p: &crate::signature::TypeSig| resolver.render_type(p, lang))
+        .collect();
+    if lang == TargetLang::CSharp {
+        infer_param_names_from_field_stores(resolver, m, body, &mut param_names);
+    }
+    let local_types: Vec<String> = resolver.local_types(body.local_var_sig_tok, lang);
+    NameTable::new(!m.is_static(), param_names, param_types, local_types)
+}
+
+fn infer_param_names_from_field_stores(
+    resolver: &Resolver,
+    m: &MethodModel,
+    body: &crate::cil::MethodBody,
+    param_names: &mut [String],
+) {
+    let has_this: bool = !m.is_static();
+    let instrs: &[Instruction] = &body.instructions;
+    for window in instrs.windows(2) {
+        let store: &Instruction = &window[1];
+        if store.name != "stfld" && store.name != "stsfld" {
+            continue;
+        }
+        let OperandValue::Token(field_tok): OperandValue = store.operand else {
+            continue;
+        };
+        let Some(slot): Option<u32> = ldarg_param_slot(&window[0], has_this) else {
+            continue;
+        };
+        let Some(name): Option<&mut String> = param_names.get_mut(slot as usize) else {
+            continue;
+        };
+        if !name.is_empty() && !name.starts_with("arg") {
+            continue;
+        }
+        if let Some(inferred) = param_name_from_field(&resolver.resolve_token(field_tok)) {
+            *name = inferred;
+        }
+    }
+}
+
+fn ldarg_param_slot(ins: &Instruction, has_this: bool) -> Option<u32> {
+    let raw: u32 = match ins.name.as_str() {
+        "ldarg.0" => 0,
+        "ldarg.1" => 1,
+        "ldarg.2" => 2,
+        "ldarg.3" => 3,
+        "ldarg" | "ldarg.s" | "ldarga" | "ldarga.s" => match ins.operand {
+            OperandValue::U8(v) => u32::from(v),
+            OperandValue::U16(v) => u32::from(v),
+            OperandValue::I32(v) => u32::try_from(v).ok()?,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let base: u32 = u32::from(has_this);
+    raw.checked_sub(base)
+}
+
+fn param_name_from_field(field: &str) -> Option<String> {
+    let short: &str = field.rsplit("::").next().unwrap_or(field);
+    let short: &str = short.rsplit('.').next().unwrap_or(short);
+    let bare: &str = short
+        .trim_start_matches('_')
+        .trim_start_matches("m_")
+        .trim_start_matches('<');
+    let core: &str = bare.split('>').next().unwrap_or(bare);
+    if core.is_empty() || core.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+        return None;
+    }
+    let mut chars: std::str::Chars<'_> = core.chars();
+    let first: char = chars.next()?;
+    let lowered: String = first.to_ascii_lowercase().to_string() + chars.as_str();
+    let safe: String = if is_csharp_keyword(&lowered) {
+        format!("@{lowered}")
+    } else {
+        lowered
+    };
+    Some(safe)
+}
+
+fn is_csharp_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "abstract"
+            | "as"
+            | "base"
+            | "bool"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "checked"
+            | "class"
+            | "const"
+            | "continue"
+            | "decimal"
+            | "default"
+            | "delegate"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "event"
+            | "explicit"
+            | "extern"
+            | "false"
+            | "finally"
+            | "fixed"
+            | "float"
+            | "for"
+            | "foreach"
+            | "goto"
+            | "if"
+            | "implicit"
+            | "in"
+            | "int"
+            | "interface"
+            | "internal"
+            | "is"
+            | "lock"
+            | "long"
+            | "namespace"
+            | "new"
+            | "null"
+            | "object"
+            | "operator"
+            | "out"
+            | "override"
+            | "params"
+            | "private"
+            | "protected"
+            | "public"
+            | "readonly"
+            | "ref"
+            | "return"
+            | "sbyte"
+            | "sealed"
+            | "short"
+            | "sizeof"
+            | "stackalloc"
+            | "static"
+            | "string"
+            | "struct"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "uint"
+            | "ulong"
+            | "unchecked"
+            | "unsafe"
+            | "ushort"
+            | "using"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "while"
+    )
+}
+
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FlowSummary {
+    pub branches: u32,
+    pub calls: u32,
+    pub returns: u32,
+    pub throws: u32,
+}
+
+#[must_use]
+pub fn emit_csharp(method_name: &str, body: &MethodBody) -> CSharpPseudo {
+    let mut text: String = String::with_capacity(body.instructions.len() * 24);
+    text.push_str("// pseudo-c# reconstructed from cil\n");
+    push_format(&mut text, format_args!("void {method_name}()\n"));
+    text.push_str("{\n");
+    push_format(
+        &mut text,
+        format_args!(
+            "    // max_stack={} init_locals={}\n",
+            body.max_stack, body.init_locals
+        ),
+    );
+    let mut flow: FlowSummary = FlowSummary::default();
+    for ins in &body.instructions {
+        accumulate(&mut flow, ins.flow);
+        emit_instruction(&mut text, ins);
+    }
+    text.push_str("}\n");
+    CSharpPseudo {
+        method_name: method_name.to_owned(),
+        body: text,
+        instruction_count: u32::try_from(body.instructions.len()).unwrap_or(u32::MAX),
+        flow_summary: flow,
+    }
+}
+
+const fn accumulate(flow: &mut FlowSummary, fc: FlowControl) {
+    match fc {
+        FlowControl::Branch | FlowControl::CondBranch => {
+            flow.branches = flow.branches.saturating_add(1);
+        }
+        FlowControl::Call => flow.calls = flow.calls.saturating_add(1),
+        FlowControl::Return => flow.returns = flow.returns.saturating_add(1),
+        FlowControl::Throw => flow.throws = flow.throws.saturating_add(1),
+        FlowControl::Next | FlowControl::Meta | FlowControl::Break => {}
+    }
+}
+
+fn emit_instruction(text: &mut String, ins: &Instruction) {
+    let line: String = match &ins.operand {
+        OperandValue::None => format!("    IL_{:04X}: {};", ins.offset, ins.name),
+        OperandValue::I32(v) => format!("    IL_{:04X}: {} {};", ins.offset, ins.name, v),
+        OperandValue::I64(v) => format!("    IL_{:04X}: {} {}L;", ins.offset, ins.name, v),
+        OperandValue::U8(v) => format!("    IL_{:04X}: {} {};", ins.offset, ins.name, v),
+        OperandValue::U16(v) => format!("    IL_{:04X}: {} {};", ins.offset, ins.name, v),
+        OperandValue::F32Bits(b) => {
+            format!(
+                "    IL_{:04X}: {} {};",
+                ins.offset,
+                ins.name,
+                f32::from_bits(*b)
+            )
+        }
+        OperandValue::F64Bits(b) => {
+            format!(
+                "    IL_{:04X}: {} {};",
+                ins.offset,
+                ins.name,
+                f64::from_bits(*b)
+            )
+        }
+        OperandValue::BrTarget(t) => {
+            let target: i64 = i64::from(ins.offset) + i64::from(*t);
+            format!("    IL_{:04X}: {} IL_{target:04X};", ins.offset, ins.name)
+        }
+        OperandValue::Token(tok) => {
+            format!("    IL_{:04X}: {} 0x{tok:08X};", ins.offset, ins.name)
+        }
+        OperandValue::Switch(targets) => {
+            let joined: String = targets
+                .iter()
+                .map(|t: &i32| format!("0x{:08X}", i64::from(ins.offset) + i64::from(*t)))
+                .collect::<Vec<String>>()
+                .join(", ");
+            format!("    IL_{:04X}: {} [{joined}];", ins.offset, ins.name)
+        }
+    };
+    push_format(text, format_args!("{line}\n"));
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::cil::disassemble;
+
+    #[test]
+    fn param_name_from_field_lowercases_first_char() {
+        assert_eq!(
+            param_name_from_field("Foo::NullableFlags").as_deref(),
+            Some("nullableFlags")
+        );
+        assert_eq!(param_name_from_field("_count").as_deref(), Some("count"));
+        assert_eq!(
+            param_name_from_field("Bar::m_value").as_deref(),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn param_name_from_field_escapes_keyword() {
+        assert_eq!(
+            param_name_from_field("Holder::Object").as_deref(),
+            Some("@object")
+        );
+    }
+
+    #[test]
+    fn param_name_from_backing_field_extracts_property_name() {
+        assert_eq!(
+            param_name_from_field("T::<Length>k__BackingField").as_deref(),
+            Some("length")
+        );
+    }
+
+    #[test]
+    fn ldarg_slot_accounts_for_this() {
+        let load: Instruction = Instruction {
+            offset: 0,
+            opcode: 0x03,
+            name: "ldarg.1".to_owned(),
+            operand: OperandValue::None,
+            flow: FlowControl::Next,
+        };
+        assert_eq!(ldarg_param_slot(&load, true), Some(0));
+        assert_eq!(ldarg_param_slot(&load, false), Some(1));
+    }
+
+    #[test]
+    fn apply_inferred_param_names_rewrites_arg_in_csharp_header() {
+        let names: NameTable = NameTable::new(
+            true,
+            vec!["count".to_owned()],
+            vec!["int".to_owned()],
+            Vec::new(),
+        );
+        let sig: &str = "// Sample.Box\npublic void .ctor(int arg1)";
+        let out: String = apply_inferred_param_names(sig, &names);
+        assert!(out.contains("(int count)"), "got:\n{out}");
+    }
+
+    #[test]
+    fn emit_csharp_round_trips_simple_method() {
+        let code: [u8; 4] = [0x16, 0x17, 0x58, 0x2A];
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let body: MethodBody = MethodBody {
+            max_stack: 2,
+            code_size: 4,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions,
+            exception_clauses: Vec::new(),
+        };
+        let out: CSharpPseudo = emit_csharp("Main", &body);
+        assert_eq!(out.instruction_count, 4);
+        assert!(out.body.contains("ldc.i4.0"));
+        assert!(out.body.contains("add"));
+        assert!(out.body.contains("ret"));
+        assert_eq!(out.flow_summary.returns, 1);
+    }
+}

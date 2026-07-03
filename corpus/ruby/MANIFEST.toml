@@ -1,0 +1,78 @@
+schema = 1
+generated = "2026-05-25"
+
+[host]
+os = "Windows 11 Pro 10.0.26200"
+arch = "x86_64"
+ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
+
+[sources]
+"hello.rb" = { kind = "source", description = "minimal hello-world Ruby source" }
+"greeter.rb" = { kind = "source", description = "module/class/method/string-interp Ruby source" }
+"mruby/greet.rb" = { kind = "source", description = "greet(name) method with interpolated puts and a greet(\"world\") call, compiled to mruby bytecode" }
+"megafile/edge_cases.rb" = { kind = "source", description = "1677-LOC Ruby 1.9-3.4 feature megafile: blocks/procs/lambdas, &-operator, Symbol#to_proc, splat/double-splat, keyword args, pattern matching (all kinds), endless methods, hash short syntax, safe-nav, rescue modifier, retry, ensure, BEGIN/END, refinements, Struct/Data class, Comparable/Enumerable mixins, lazy enumerators, fibers, ractors, ObjectSpace, GC.stat, method_missing, define_method, class_eval, instance_eval, singleton class, include vs prepend, ancestors, frozen string literal, magic comments, Threading mutex/queue, beginless/endless ranges, heredocs, percent literals, forward-all (...), heredocs with interp" }
+"mri/yarv/literals.rb" = { kind = "source", description = "focused literal-pool coverage: frozen array/string constants, shareable_constant_value magic comment, true/false/nil immediates, symbol-keyed hash, inclusive/exclusive/beginless/endless ranges, opt_newarray_send (.max), endless methods" }
+
+[[fixtures]]
+path = "mri/yarv/hello.rb.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "3.4.9"
+generator = "RubyVM::InstructionSequence.compile_file('hello.rb').to_binary"
+generator_script = "mri/yarv/dump_iseq.rb"
+status = "REAL"
+magic = "YARB"
+notes = "real Ruby 3.4 IBF iseq dump"
+
+[[fixtures]]
+path = "mri/yarv/greeter.rb.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "3.4.9"
+generator = "RubyVM::InstructionSequence.compile_file('greeter.rb').to_binary"
+generator_script = "mri/yarv/dump_iseq.rb"
+status = "REAL"
+magic = "YARB"
+notes = "real Ruby 3.4 IBF with module/class/iv access"
+
+[[fixtures]]
+path = "mri/yarv/edge_cases.rb.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "3.4.9"
+generator = "RubyVM::InstructionSequence.compile_file('megafile/edge_cases.rb').to_binary"
+generator_script = "mri/yarv/dump_iseq.rb"
+status = "REAL"
+magic = "YARB"
+size_bytes = 135920
+source_loc = 1677
+notes = "real Ruby 3.4 IBF dump of the 1677-LOC feature megafile - broadest YARV opcode coverage available without forking opcode tables"
+
+[[fixtures]]
+path = "mri/yarv/literals.rb.yarvc"
+bucket = "yarv"
+runtime = "MRI"
+runtime_version = "3.4.9"
+generator = "RubyVM::InstructionSequence.compile_file('mri/yarv/literals.rb').to_binary"
+generator_script = "mri/yarv/dump_iseq.rb"
+status = "REAL"
+magic = "YARB"
+notes = "real Ruby 3.4 IBF dump exercising the IBF object pool: frozen array/string literals, true/false/nil, symbol-keyed hash, all four range kinds, opt_ary_freeze/opt_str_freeze/opt_newarray_send"
+
+[[fixtures]]
+path = "mruby/greet.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -g -o greet.mrb greet.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 245
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc; carries IREP, DBG, and LVAR sections; the top-level iseq is TCLASS/METHOD/DEF/STRING/SSEND/RETURN/STOP and the greet body is ENTER/STRING/MOVE/STRCAT/STRING/STRCAT/SSEND/RETURN"
+
+[blocked]
+jruby = { reason = "JRuby not available - no winget package; manual JDK+JRuby install out of scope", workaround = "download from jruby.org and run jrubyc on a Linux/macOS host", fixture_status = "SYNTHESIZED-RETAIN" }
+truffleruby = { reason = "GraalVM TruffleRuby not pre-installed and gu installer is multi-GB; out of scope for time budget", workaround = "install GraalVM, then `gu install ruby`, then `truffleruby --native -e 'puts 1'`", fixture_status = "SYNTHESIZED-RETAIN" }
+ocra = { reason = "ocra 1.3.11 (latest on rubygems) is broken on Ruby 3.4 - references fiber.so which was merged into core; gem installs but build fails with Errno::ENOENT @ rb_sysopen - fiber.so", workaround = "downgrade to Ruby 3.3 or wait for upstream ocra fix", fixture_status = "SYNTHESIZED-RETAIN" }
+ruby2exe = { reason = "ruby2exe gem long abandoned (last release 2012); upstream-DEAD per inventory note", workaround = "none - DEAD-DOCUMENT", fixture_status = "DEAD-DOCUMENT" }

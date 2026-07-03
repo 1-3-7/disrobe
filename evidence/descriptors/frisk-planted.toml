@@ -1,0 +1,17 @@
+id = "frisk-planted"
+ecosystem = "secrets"
+title = "frisk recon category recall on the committed planted tree"
+claim = "disrobe frisk detects every planted (non-secret) IOC category - endpoints, manifest findings, URLs, IPv4, email, .onion - on the committed planted ground-truth tree."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "gate-test-harvest"
+external = "deliberately planted findings committed under corpus/recon/planted - the ground truth the frisk_gauntlet test asserts"
+reproduce = "cargo test -p disrobe-core --test frisk_gauntlet  (harvested by cargo run -p disrobe-bench-head-to-head)"
+note = "Recall against a committed planted ground truth (strong for recall). The secret-provider recall over the same tree is the frisk-apkleaks head-to-head; this row covers the non-secret IOC categories."
+
+[measured]
+result_file = "gate-harvest.json"
+gate_id = "frisk-planted-recall"
+disrobe_floor = 100.0

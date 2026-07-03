@@ -1,0 +1,32 @@
+{
+  "title": "The five-rung IR ladder",
+  "subtitle": "every artifact climbs the same ladder, so passes from different ecosystems compose through one .dr envelope",
+  "rungs": [
+    {
+      "label": "Raw",
+      "sub": "bytes",
+      "detail": "the input file, format fingerprinted from internal self-consistency, not a single magic byte"
+    },
+    {
+      "label": "Disasm",
+      "sub": "opcodes",
+      "detail": "format-specific decode: CPython, Dalvik, CIL, Wasm, YARV, JS AST, native x86"
+    },
+    {
+      "label": "MIR",
+      "sub": "mid",
+      "detail": "ecosystem-neutral mid IR where deobfuscation passes run: unflatten, MBA-fold, devirtualize"
+    },
+    {
+      "label": "HIR",
+      "sub": "high",
+      "detail": "structured high IR: loops, conditionals, and expressions recovered from the control-flow graph"
+    },
+    {
+      "label": "Surface",
+      "sub": "source",
+      "detail": "rendered source, verified against an independent oracle, never the tool's own output"
+    }
+  ],
+  "footnote": "Recovery is reported at the highest rung reached. A wall is named at the rung it stops on, with the reason: runtime-only key, native-VM handler stream, or a source body the compiler discarded."
+}

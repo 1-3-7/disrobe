@@ -1,0 +1,209 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::print_stdout
+)]
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
+
+const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass"];
+const EQUIVALENT_SET: &[&str] = &["arith", "strings", "coll", "klass", "blocks"];
+const BREADTH_SET: &[&str] = &[
+    "arith",
+    "strings",
+    "coll",
+    "klass",
+    "control",
+    "blocks",
+    "exceptions",
+];
+
+fn corpus_path(name: &str, ext: &str) -> PathBuf {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("corpus");
+    path.push("ruby");
+    path.push("mruby");
+    path.push("breadth");
+    path.push(format!("{name}.{ext}"));
+    path
+}
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn recover(name: &str) -> MrubyDecompiled {
+    let bytes: Vec<u8> =
+        std::fs::read(corpus_path(name, "mrb")).expect("committed breadth .mrb fixture present");
+    assert_eq!(&bytes[..4], b"RITE", "fixture {name} is a real RITE binary");
+    let analysis = analyze_bytes(&bytes, &format!("{name}.mrb")).expect("analyze real mrb");
+    analysis.mruby.expect("mruby analysis present").decompiled
+}
+
+fn reconstructed_body(dec: &MrubyDecompiled) -> String {
+    dec.source
+        .split_once("# --- reconstructed source ---\n")
+        .map_or_else(|| dec.source.clone(), |(_, body)| body.to_owned())
+}
+
+fn write_temp(name: &str, source: &str) -> PathBuf {
+    let mut path: PathBuf = std::env::temp_dir();
+    path.push(format!("disrobe_mruby_recovered_{name}.rb"));
+    std::fs::write(&path, source).expect("write recovered source");
+    path
+}
+
+fn mrbc_recompiles(rb_path: &PathBuf) -> bool {
+    let mut out_path: PathBuf = std::env::temp_dir();
+    out_path.push("disrobe_mruby_recompile_probe.mrb");
+    let ok: bool = Command::new("mrbc")
+        .arg("-o")
+        .arg(&out_path)
+        .arg(rb_path)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let _ = std::fs::remove_file(&out_path);
+    ok
+}
+
+fn mruby_stdout(rb_path: &PathBuf) -> Option<String> {
+    let output = Command::new("mruby").arg(rb_path).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[test]
+fn breadth_corpus_opcode_coverage_is_measured_not_dropped() {
+    for name in BREADTH_SET {
+        let dec: MrubyDecompiled = recover(name);
+        assert!(
+            dec.lifted_opcodes > 0,
+            "{name}: lift produced no opcodes at all"
+        );
+        assert_eq!(
+            dec.modeled_opcodes + dec.unmodeled_opcodes,
+            dec.lifted_opcodes,
+            "{name}: modeled + unmodeled must account for every lifted opcode"
+        );
+        let pct: u32 = dec.modeled_opcodes.saturating_mul(100) / dec.lifted_opcodes;
+        println!(
+            "[{name}] opcode fidelity {}/{} ({pct}%) unmodeled={:?}",
+            dec.modeled_opcodes, dec.lifted_opcodes, dec.unmodeled_mnemonics
+        );
+    }
+}
+
+#[test]
+fn straight_line_corpus_models_every_opcode() {
+    for name in STRAIGHT_LINE_SET {
+        let dec: MrubyDecompiled = recover(name);
+        assert_eq!(
+            dec.unmodeled_opcodes, 0,
+            "{name}: straight-line program must have zero unmodeled opcodes, got {:?}",
+            dec.unmodeled_mnemonics
+        );
+        assert_eq!(
+            dec.modeled_opcodes, dec.lifted_opcodes,
+            "{name}: every opcode in a straight-line program must be modeled"
+        );
+    }
+}
+
+#[test]
+fn control_flow_opcodes_are_honestly_marked() {
+    let dec: MrubyDecompiled = recover("control");
+    assert!(
+        dec.unmodeled_opcodes > 0,
+        "control flow currently uses honest markers, so unmodeled must be non-zero"
+    );
+    assert!(
+        dec.unmodeled_mnemonics.iter().any(|m| m.starts_with("JMP")),
+        "the unmodeled set must name the jump opcodes it could not structure, got {:?}",
+        dec.unmodeled_mnemonics
+    );
+    assert!(
+        dec.source.contains("# unmodeled"),
+        "unmodeled opcodes must surface as visible markers in the recovered source"
+    );
+}
+
+#[test]
+fn mrbc_recompile_and_semantic_equivalence_oracle() {
+    if !tool_available("mrbc") || !tool_available("mruby") {
+        eprintln!(
+            "skip: mrbc/mruby not on PATH; build mruby (rake) and add build/host/bin to run the non-circular mrbc oracle"
+        );
+        return;
+    }
+
+    let mut recompiled: u32 = 0;
+    let mut equivalent: u32 = 0;
+    let total: u32 = BREADTH_SET.len() as u32;
+
+    for name in BREADTH_SET {
+        let dec: MrubyDecompiled = recover(name);
+        let body: String = reconstructed_body(&dec);
+        let recovered_path: PathBuf = write_temp(name, &body);
+        let original_path: PathBuf = corpus_path(name, "rb");
+
+        let recompiles: bool = mrbc_recompiles(&recovered_path);
+        if recompiles {
+            recompiled += 1;
+        }
+
+        let want: Option<String> = mruby_stdout(&original_path);
+        let have: Option<String> = mruby_stdout(&recovered_path);
+        let same: bool = matches!((&want, &have), (Some(w), Some(h)) if w == h);
+        if same {
+            equivalent += 1;
+        }
+        println!(
+            "[{name}] recompile={recompiles} semantic_equivalent={same} want={want:?} have={have:?}"
+        );
+        let _ = std::fs::remove_file(&recovered_path);
+    }
+
+    println!(
+        "mruby oracle: recompiled {recompiled}/{total}, semantically equivalent {equivalent}/{total}"
+    );
+
+    for name in EQUIVALENT_SET {
+        let dec: MrubyDecompiled = recover(name);
+        let body: String = reconstructed_body(&dec);
+        let recovered_path: PathBuf = write_temp(name, &body);
+        let original_path: PathBuf = corpus_path(name, "rb");
+
+        assert!(
+            mrbc_recompiles(&recovered_path),
+            "{name}: mrbc must recompile the recovered source"
+        );
+        let want: Option<String> = mruby_stdout(&original_path);
+        let have: Option<String> = mruby_stdout(&recovered_path);
+        assert_eq!(
+            have, want,
+            "{name}: recovered source must produce identical mruby output to the original"
+        );
+        let _ = std::fs::remove_file(&recovered_path);
+    }
+
+    assert!(
+        recompiled >= 7,
+        "every recovered program must be valid, mrbc-recompilable ruby, got {recompiled}/{total}"
+    );
+    assert!(
+        equivalent >= 5,
+        "the straight-line and block programs must be semantically equivalent, got {equivalent}/{total}"
+    );
+}

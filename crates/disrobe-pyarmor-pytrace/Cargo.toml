@@ -1,0 +1,24 @@
+[package]
+name = "disrobe-pyarmor-pytrace"
+description = "sys.settrace capturer for PyArmor v6/v7 user-code bytecode: records code objects executed under the Python tracer. The C-eval gap (settrace misses runtime-DLL direct PyEval_EvalCode calls) is covered by disrobe-pyarmor-cextract."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["pyarmor", "deobfuscation", "tracer", "python", "pyo3"]
+categories = ["command-line-utilities", "development-tools", "parser-implementations"]
+
+[lib]
+name = "disrobe_pytrace"
+crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
+
+[dependencies]
+pyo3 = { workspace = true }
+
+[lints]
+workspace = true

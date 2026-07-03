@@ -1,0 +1,47 @@
+{
+  "name": "disrobe-playground",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+  },
+  "dependencies": {
+    "@codemirror/lang-javascript": "6",
+    "@codemirror/lang-json": "6",
+    "@codemirror/lang-php": "6",
+    "@codemirror/lang-python": "6",
+    "@codemirror/lang-wast": "6",
+    "@codemirror/language": "6",
+    "@codemirror/legacy-modes": "6",
+    "@codemirror/state": "6",
+    "@codemirror/view": "6",
+    "@fontsource/jetbrains-mono": "5.1.1",
+    "@headlessui/react": "2.2.10",
+    "@lezer/highlight": "1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "comlink": "^4.4.2",
+    "lucide-react": "1.21.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.1.14",
+    "@types/node": "22.19.21",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "tailwindcss": "4.1.14",
+    "typescript": "7.0.1-rc",
+    "vite": "6.4.3"
+  },
+  "trustedDependencies": [
+    "@tailwindcss/oxide"
+  ]
+}

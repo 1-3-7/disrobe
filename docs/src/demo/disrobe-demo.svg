@@ -1,0 +1,408 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1064" height="516" viewBox="0 0 1064 516" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+  <rect x="0" y="0" width="1064" height="516" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="1063" height="515" rx="9.5" fill="none" stroke="#262626"/>
+  <rect x="0.5" y="0.5" width="1063" height="34.0" rx="9.5" fill="#161616"/>
+  <rect x="0.5" y="22.0" width="1063" height="12" fill="#161616"/>
+  <line x1="0.5" y1="34.0" x2="1063.5" y2="34.0" stroke="#262626"/>
+  <circle cx="20.0" cy="17.0" r="4.5" fill="#d08c8c" opacity="0.85"/>
+  <circle cx="36.0" cy="17.0" r="4.5" fill="#c9a98e" opacity="0.85"/>
+  <circle cx="52.0" cy="17.0" r="4.5" fill="#8fb3d9" opacity="0.85"/>
+  <text x="532.0" y="21.5" font-size="12.5" fill="#a1a1a1" text-anchor="middle" font-weight="600" letter-spacing="0.5">disrobe</text>
+  <clipPath id="screen"><rect x="1" y="45.0" width="1062" height="471.0"/></clipPath>
+  <g clip-path="url(#screen)">
+    <g>
+      <animateTransform attributeName="transform" type="translate" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="20.0,48.0;20.0,29.0;20.0,10.0;20.0,-9.0;20.0,-28.0;20.0,-47.0;20.0,-66.0;20.0,-85.0;20.0,-104.0;20.0,-123.0;20.0,-142.0;20.0,-161.0;20.0,-180.0;20.0,-199.0;20.0,-218.0;20.0,-237.0;20.0,-256.0;20.0,-275.0;20.0,-294.0;20.0,-313.0;20.0,-332.0;20.0,-351.0;20.0,-370.0;20.0,-389.0;20.0,-408.0;20.0,-427.0;20.0,-446.0;20.0,-465.0" keyTimes="0.000000;0.403110;0.404516;0.578210;0.586099;0.588729;0.590089;0.591812;0.594079;0.596074;0.598114;0.599882;0.602104;0.757753;0.828845;0.830205;0.832291;0.834376;0.836552;0.838774;0.840724;0.843399;0.845484;0.847162;0.848839;0.850336;0.852421;0.854915"/>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.022670"/>
+        <text x="0.00" y="9.88" fill="#8fb3d9" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">user@disrobe</text>
+        <text x="96.00" y="9.88" fill="#a1a1a1" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">:~$ </text>
+      </g>
+      <clipPath id="type0" clipPathUnits="userSpaceOnUse"><rect x="128.00" y="-1.00" height="19.0" width="0">
+        <animate attributeName="width" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;0.00;8.00;16.00;24.00;32.00;40.00;48.00;56.00;64.00;72.00;80.00;88.00;96.00;104.00;112.00;120.00;128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;512.00" keyTimes="0;0.022670;0.038448;0.040397;0.042347;0.044342;0.045657;0.047243;0.049510;0.052729;0.054407;0.055994;0.058261;0.059757;0.061208;0.063067;0.064926;0.066240;0.070094;0.072225;0.074492;0.076804;0.078165;0.079978;0.081656;0.083787;0.085464;0.087777;0.089545;0.091676;0.093263;0.095167;0.097298;0.098431;0.099927;0.101242;0.103373;0.105232;0.107136;0.108497;0.110038;0.111489;0.113348;0.114436;0.116522;0.118426;0.120511;0.122280;0.124003;0.125499;0.127222;0.129171;0.130758;0.132572;0.134204;0.136380;0.138466;0.140642;0.142501;0.144269;0.146491;0.148758;0.149937;0.151161;0.152929;0.154470;1"/>
+      </rect></clipPath>
+      <g clip-path="url(#type0)" opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.022670"/>
+        <text x="128.00" y="9.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">disrobe</text>
+        <text x="184.00" y="9.88" fill="#ededed" xml:space="preserve" textLength="80.00" lengthAdjust="spacing"> identify </text>
+        <text x="264.00" y="9.88" fill="#a1a1a1" xml:space="preserve" textLength="376.00" lengthAdjust="spacing">corpus/native/packers/upx/hello.packed.lzma.exe</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.177367"/>
+        <text x="0.00" y="28.88" fill="#a1a1a1" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">format:</text>
+        <text x="56.00" y="28.88" fill="#ededed" xml:space="preserve" textLength="288.00" lengthAdjust="spacing"> pe64 (64-bit) subsystem=windows-cui</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.179906"/>
+        <text x="0.00" y="47.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">packer</text>
+        <text x="48.00" y="47.88" fill="#a1a1a1" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">     UPX  </text>
+        <text x="128.00" y="47.88" fill="#c9a98e" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">(96%)</text>
+        <text x="184.00" y="47.88" fill="#8fb3d9" xml:space="preserve" textLength="192.00" lengthAdjust="spacing">-&gt; disrobe native unpack</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.181447"/>
+        <text x="0.00" y="66.88" fill="#828282" xml:space="preserve" textLength="448.00" lengthAdjust="spacing">             - [section UPX0] UPX characteristic section</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.183669"/>
+        <text x="0.00" y="85.88" fill="#828282" xml:space="preserve" textLength="448.00" lengthAdjust="spacing">             - [section UPX1] UPX characteristic section</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.185664"/>
+        <text x="0.00" y="104.88" fill="#828282" xml:space="preserve" textLength="448.00" lengthAdjust="spacing">             - [section UPX2] UPX characteristic section</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.187976"/>
+        <text x="0.00" y="123.88" fill="#828282" xml:space="preserve" textLength="344.00" lengthAdjust="spacing">             - [byte scan] UPX packer magic</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.189427"/>
+        <text x="0.00" y="142.88" fill="#8fb3d9" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">compiler</text>
+        <text x="64.00" y="142.88" fill="#a1a1a1" xml:space="preserve" textLength="336.00" lengthAdjust="spacing">   MSVC (Visual C++) 14.0.35721 (VS2015)  </text>
+        <text x="400.00" y="142.88" fill="#c9a98e" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">(86%)</text>
+        <text x="456.00" y="142.88" fill="#8fb3d9" xml:space="preserve" textLength="216.00" lengthAdjust="spacing">-&gt; disrobe native decompile</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.192147"/>
+        <text x="0.00" y="161.88" fill="#828282" xml:space="preserve" textLength="848.00" lengthAdjust="spacing">             - [rich comp.id product 0x0105] rich-header product id maps to MSVC 14.0 (Visual Studio 2015)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.194233"/>
+        <text x="0.00" y="180.88" fill="#828282" xml:space="preserve" textLength="752.00" lengthAdjust="spacing">             - [rich comp.id product 0x0105] Rich header decodes MSVC toolset build 14.0.35721</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.196817"/>
+        <text x="0.00" y="199.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">linker</text>
+        <text x="48.00" y="199.88" fill="#a1a1a1" xml:space="preserve" textLength="160.00" lengthAdjust="spacing">     MSVC link.exe  </text>
+        <text x="208.00" y="199.88" fill="#c9a98e" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">(85%)</text>
+        <text x="264.00" y="199.88" fill="#8fb3d9" xml:space="preserve" textLength="216.00" lengthAdjust="spacing">-&gt; disrobe native decompile</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.198812"/>
+        <text x="0.00" y="218.88" fill="#828282" xml:space="preserve" textLength="576.00" lengthAdjust="spacing">             - [rich header at 0xD8] DanS/Rich build-stamp block present</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.200988"/>
+        <text x="0.00" y="237.88" fill="#828282" xml:space="preserve" textLength="392.00" lengthAdjust="spacing">             - [byte scan] Rich header linker 0.0</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.202757"/>
+        <text x="0.00" y="256.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">library</text>
+        <text x="56.00" y="256.88" fill="#a1a1a1" xml:space="preserve" textLength="208.00" lengthAdjust="spacing">    Universal CRT (UCRT)  </text>
+        <text x="264.00" y="256.88" fill="#c9a98e" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">(70%)</text>
+        <text x="320.00" y="256.88" fill="#8fb3d9" xml:space="preserve" textLength="216.00" lengthAdjust="spacing">-&gt; disrobe native decompile</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.204162"/>
+        <text x="0.00" y="275.88" fill="#828282" xml:space="preserve" textLength="632.00" lengthAdjust="spacing">             - [import directory] imports api-ms-win-crt / ucrtbase / vcruntime</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.206792"/>
+        <text x="0.00" y="294.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">packer</text>
+        <text x="48.00" y="294.88" fill="#a1a1a1" xml:space="preserve" textLength="344.00" lengthAdjust="spacing">     compressed or encrypted code section  </text>
+        <text x="392.00" y="294.88" fill="#c9a98e" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">(62%)</text>
+        <text x="448.00" y="294.88" fill="#8fb3d9" xml:space="preserve" textLength="192.00" lengthAdjust="spacing">-&gt; disrobe native unpack</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.209240"/>
+        <text x="0.00" y="313.88" fill="#828282" xml:space="preserve" textLength="680.00" lengthAdjust="spacing">             - [section UPX1] 1 executable section(s) above 7.2 bits/byte (peak 7.96)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.231910"/>
+        <text x="0.00" y="332.88" fill="#8fb3d9" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">user@disrobe</text>
+        <text x="96.00" y="332.88" fill="#a1a1a1" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">:~$ </text>
+      </g>
+      <clipPath id="type17" clipPathUnits="userSpaceOnUse"><rect x="128.00" y="322.00" height="19.0" width="0">
+        <animate attributeName="width" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;0.00;8.00;16.00;24.00;32.00;40.00;48.00;56.00;64.00;72.00;80.00;88.00;96.00;104.00;112.00;120.00;128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;552.00" keyTimes="0;0.231910;0.248368;0.250227;0.252267;0.254579;0.255939;0.257934;0.260156;0.263602;0.265325;0.266413;0.267818;0.270040;0.272398;0.274528;0.278110;0.280060;0.281964;0.283959;0.285138;0.286634;0.288538;0.292120;0.294432;0.295793;0.297606;0.298694;0.299828;0.301279;0.303228;0.305359;0.306765;0.308351;0.309893;0.311797;0.313792;0.314880;0.316331;0.318009;0.319324;0.321273;0.323177;0.325444;0.327258;0.329253;0.331338;0.332563;0.334240;0.336235;0.338185;0.339681;0.341404;0.343580;0.345303;0.347252;0.348386;0.349655;0.350744;0.352738;0.354461;0.355822;0.357227;0.359449;0.361716;0.363439;0.365388;0.366476;0.368426;0.370602;0.372098;1"/>
+      </rect></clipPath>
+      <g clip-path="url(#type17)" opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.231910"/>
+        <text x="128.00" y="332.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">disrobe</text>
+        <text x="184.00" y="332.88" fill="#ededed" xml:space="preserve" textLength="120.00" lengthAdjust="spacing"> native unpack </text>
+        <text x="304.00" y="332.88" fill="#a1a1a1" xml:space="preserve" textLength="376.00" lengthAdjust="spacing">corpus/native/packers/upx/hello.packed.lzma.exe</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.394450"/>
+        <text x="0.00" y="351.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">native</text>
+        <text x="48.00" y="351.88" fill="#a1a1a1" xml:space="preserve" textLength="72.00" lengthAdjust="spacing"> unpack: </text>
+        <text x="120.00" y="351.88" fill="#8fb3d9" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">OK</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.396445"/>
+        <text x="0.00" y="370.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  input:</text>
+        <text x="64.00" y="370.88" fill="#ededed" xml:space="preserve" textLength="440.00" lengthAdjust="spacing">        corpus/native/packers/upx/hello.packed.lzma.exe</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.398032"/>
+        <text x="0.00" y="389.88" fill="#a1a1a1" xml:space="preserve" textLength="72.00" lengthAdjust="spacing">  packer:</text>
+        <text x="72.00" y="389.88" fill="#ededed" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">       upx</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.399574"/>
+        <text x="0.00" y="408.88" fill="#a1a1a1" xml:space="preserve" textLength="72.00" lengthAdjust="spacing">  status:</text>
+        <text x="72.00" y="408.88" fill="#ededed" xml:space="preserve" textLength="144.00" lengthAdjust="spacing">       Implemented</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.401115"/>
+        <text x="0.00" y="427.88" fill="#a1a1a1" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">  packed_size:</text>
+        <text x="112.00" y="427.88" fill="#ededed" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">  51712</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.403110"/>
+        <text x="0.00" y="446.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">  recovered:</text>
+        <text x="96.00" y="446.88" fill="#ededed" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">    116810 bytes</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.404516"/>
+        <text x="0.00" y="465.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  wrote:</text>
+        <text x="64.00" y="465.88" fill="#ededed" xml:space="preserve" textLength="352.00" lengthAdjust="spacing">        ./out/hello.packed.lzma.unpacked.bin</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.427185"/>
+        <text x="0.00" y="484.88" fill="#8fb3d9" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">user@disrobe</text>
+        <text x="96.00" y="484.88" fill="#a1a1a1" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">:~$ </text>
+      </g>
+      <clipPath id="type25" clipPathUnits="userSpaceOnUse"><rect x="128.00" y="474.00" height="19.0" width="0">
+        <animate attributeName="width" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;0.00;8.00;16.00;24.00;32.00;40.00;48.00;56.00;64.00;72.00;80.00;88.00;96.00;104.00;112.00;120.00;128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;552.00" keyTimes="0;0.427185;0.443870;0.445910;0.447135;0.448767;0.450218;0.451623;0.453573;0.456792;0.458515;0.459966;0.461462;0.463638;0.465724;0.467537;0.471391;0.473159;0.474791;0.476786;0.479053;0.480912;0.482408;0.485537;0.487033;0.488529;0.490479;0.491567;0.493653;0.495693;0.496781;0.498594;0.500181;0.502312;0.504217;0.505577;0.507572;0.508660;0.510519;0.512559;0.514282;0.516231;0.517954;0.519632;0.521627;0.522851;0.524392;0.525707;0.527929;0.529198;0.530831;0.532735;0.535047;0.536951;0.538992;0.540805;0.542029;0.543344;0.545112;0.546518;0.547969;0.549057;0.550281;0.552276;0.553818;0.554906;0.556583;0.557807;0.559304;0.561208;0.562795;1"/>
+      </rect></clipPath>
+      <g clip-path="url(#type25)" opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.427185"/>
+        <text x="128.00" y="484.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">disrobe</text>
+        <text x="184.00" y="484.88" fill="#ededed" xml:space="preserve" textLength="120.00" lengthAdjust="spacing"> pickle safety </text>
+        <text x="304.00" y="484.88" fill="#a1a1a1" xml:space="preserve" textLength="376.00" lengthAdjust="spacing">corpus/pickle/malicious/p0/reduce_os_system.pkl</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.586099"/>
+        <text x="0.00" y="503.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">pickle</text>
+        <text x="48.00" y="503.88" fill="#a1a1a1" xml:space="preserve" textLength="72.00" lengthAdjust="spacing"> safety: </text>
+        <text x="120.00" y="503.88" fill="#d08c8c" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">OvertlyMalicious</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.588729"/>
+        <text x="0.00" y="522.88" fill="#a1a1a1" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">  imports:</text>
+        <text x="80.00" y="522.88" fill="#ededed" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">      1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.590089"/>
+        <text x="32.00" y="541.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">-</text>
+        <text x="40.00" y="541.88" fill="#a1a1a1" xml:space="preserve" textLength="80.00" lengthAdjust="spacing"> nt.system</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.591812"/>
+        <text x="0.00" y="560.88" fill="#a1a1a1" xml:space="preserve" textLength="120.00" lengthAdjust="spacing">  reduce_count:</text>
+        <text x="120.00" y="560.88" fill="#ededed" xml:space="preserve" textLength="16.00" lengthAdjust="spacing"> 1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.594079"/>
+        <text x="0.00" y="579.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing">  findings:</text>
+        <text x="88.00" y="579.88" fill="#ededed" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">     4</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.596074"/>
+        <text x="32.00" y="598.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">[</text>
+        <text x="40.00" y="598.88" fill="#d08c8c" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">OvertlyMalicious</text>
+        <text x="168.00" y="598.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">]</text>
+        <text x="176.00" y="598.88" fill="#a1a1a1" xml:space="preserve" textLength="640.00" lengthAdjust="spacing"> global.dangerous_callable: imports nt.system - code/command execution primitive</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.598114"/>
+        <text x="32.00" y="617.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">[</text>
+        <text x="40.00" y="617.88" fill="#d08c8c" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">OvertlyMalicious</text>
+        <text x="168.00" y="617.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">]</text>
+        <text x="176.00" y="617.88" fill="#a1a1a1" xml:space="preserve" textLength="824.00" lengthAdjust="spacing"> reduce.dangerous_callable: 1 REDUCE/INST/OBJ invocations resolve a dangerous callable at unpickle time</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.599882"/>
+        <text x="32.00" y="636.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">[</text>
+        <text x="40.00" y="636.88" fill="#d08c8c" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">OvertlyMalicious</text>
+        <text x="168.00" y="636.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">]</text>
+        <text x="176.00" y="636.88" fill="#a1a1a1" xml:space="preserve" textLength="568.00" lengthAdjust="spacing"> reduce.payload: nt.system() executed on load with args (&#39;echo pwned&#39;,)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.602104"/>
+        <text x="32.00" y="655.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">[</text>
+        <text x="40.00" y="655.88" fill="#c9a98e" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">Suspicious</text>
+        <text x="120.00" y="655.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">]</text>
+        <text x="128.00" y="655.88" fill="#a1a1a1" xml:space="preserve" textLength="784.00" lengthAdjust="spacing"> memo.unused: 4 memoized object(s) are never referenced - possible dead-stack injection or evasion</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.624773"/>
+        <text x="0.00" y="674.88" fill="#8fb3d9" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">user@disrobe</text>
+        <text x="96.00" y="674.88" fill="#a1a1a1" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">:~$ </text>
+      </g>
+      <clipPath id="type35" clipPathUnits="userSpaceOnUse"><rect x="128.00" y="664.00" height="19.0" width="0">
+        <animate attributeName="width" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;0.00;8.00;16.00;24.00;32.00;40.00;48.00;56.00;64.00;72.00;80.00;88.00;96.00;104.00;112.00;120.00;128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;448.00" keyTimes="0;0.624773;0.641367;0.642592;0.643997;0.645629;0.647806;0.649528;0.651478;0.655604;0.657463;0.659050;0.660909;0.661997;0.665896;0.667347;0.668616;0.670702;0.672334;0.674057;0.675236;0.676369;0.678682;0.679815;0.681175;0.682762;0.683850;0.685981;0.688112;0.690243;0.692555;0.694641;0.695820;0.697044;0.698268;0.699991;0.702077;0.704389;0.708152;0.710102;0.712278;0.714182;0.715950;0.717492;0.721074;0.722887;0.724973;0.726877;0.728056;0.729733;0.731003;0.732091;0.734222;0.735673;0.737396;0.739481;0.740751;0.742338;1"/>
+      </rect></clipPath>
+      <g clip-path="url(#type35)" opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.624773"/>
+        <text x="128.00" y="674.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">disrobe</text>
+        <text x="184.00" y="674.88" fill="#ededed" xml:space="preserve" textLength="48.00" lengthAdjust="spacing"> auto </text>
+        <text x="232.00" y="674.88" fill="#a1a1a1" xml:space="preserve" textLength="184.00" lengthAdjust="spacing">corpus/pickle/malicious</text>
+        <text x="424.00" y="674.88" fill="#828282" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">--out</text>
+        <text x="472.00" y="674.88" fill="#a1a1a1" xml:space="preserve" textLength="104.00" lengthAdjust="spacing">out/mal-batch</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.773032;0.780967"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#828282" xml:space="preserve" textLength="240.00" lengthAdjust="spacing">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       0/6       p0/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.780967;0.789037"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">█████</text>
+        <text x="160.00" y="693.88" fill="#828282" xml:space="preserve" textLength="200.00" lengthAdjust="spacing">░░░░░░░░░░░░░░░░░░░░░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       1/6       p1/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.789037;0.795022"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">██████████</text>
+        <text x="200.00" y="693.88" fill="#828282" xml:space="preserve" textLength="160.00" lengthAdjust="spacing">░░░░░░░░░░░░░░░░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       2/6       p2/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.795022;0.801052"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="120.00" lengthAdjust="spacing">███████████████</text>
+        <text x="240.00" y="693.88" fill="#828282" xml:space="preserve" textLength="120.00" lengthAdjust="spacing">░░░░░░░░░░░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       3/6       p3/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.801052;0.808714"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="160.00" lengthAdjust="spacing">████████████████████</text>
+        <text x="280.00" y="693.88" fill="#828282" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">░░░░░░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       4/6       p4/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.808714;0.816150"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="200.00" lengthAdjust="spacing">█████████████████████████</text>
+        <text x="320.00" y="693.88" fill="#828282" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">░░░░░</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       5/6       p5/reduce_os_system.pkl           </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.816150;0.999999"/>
+        <text x="16.00" y="693.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">disrobe auto</text>
+        <text x="120.00" y="693.88" fill="#8fb3d9" xml:space="preserve" textLength="240.00" lengthAdjust="spacing">██████████████████████████████</text>
+        <text x="360.00" y="693.88" fill="#ededed" xml:space="preserve" textLength="408.00" lengthAdjust="spacing">       6/6       6 file(s) processed               </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.830205"/>
+        <text x="0.00" y="712.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">disrobe</text>
+        <text x="56.00" y="712.88" fill="#a1a1a1" xml:space="preserve" textLength="104.00" lengthAdjust="spacing"> auto (batch)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.832291"/>
+        <text x="0.00" y="731.88" fill="#a1a1a1" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">  root:</text>
+        <text x="56.00" y="731.88" fill="#ededed" xml:space="preserve" textLength="248.00" lengthAdjust="spacing">        corpus/pickle/malicious</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.834376"/>
+        <text x="0.00" y="750.88" fill="#a1a1a1" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">  out:</text>
+        <text x="48.00" y="750.88" fill="#ededed" xml:space="preserve" textLength="176.00" lengthAdjust="spacing">         out/mal-batch</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.836552"/>
+        <text x="0.00" y="769.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  chain:</text>
+        <text x="64.00" y="769.88" fill="#ededed" xml:space="preserve" textLength="104.00" lengthAdjust="spacing">       auto:8</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.838774"/>
+        <text x="0.00" y="788.88" fill="#a1a1a1" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">  jobs:</text>
+        <text x="56.00" y="788.88" fill="#ededed" xml:space="preserve" textLength="72.00" lengthAdjust="spacing">        1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.840724"/>
+        <text x="0.00" y="807.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  files:</text>
+        <text x="64.00" y="807.88" fill="#ededed" xml:space="preserve" textLength="448.00" lengthAdjust="spacing">       6 processed, 6 recovered, 0 detect-only, 0 errors</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.843399"/>
+        <text x="32.00" y="826.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="826.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p0/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.845484"/>
+        <text x="32.00" y="845.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="845.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p1/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.847162"/>
+        <text x="32.00" y="864.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="864.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p2/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.848839"/>
+        <text x="32.00" y="883.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="883.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p3/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.850336"/>
+        <text x="32.00" y="902.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="902.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p4/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.852421"/>
+        <text x="32.00" y="921.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">[ok</text>
+        <text x="56.00" y="921.88" fill="#a1a1a1" xml:space="preserve" textLength="520.00" lengthAdjust="spacing">  ] p5/reduce_os_system.pkl                          score=0.67  </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.854915"/>
+        <text x="0.00" y="940.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing">  manifest:</text>
+        <text x="88.00" y="940.88" fill="#ededed" xml:space="preserve" textLength="248.00" lengthAdjust="spacing">    out/mal-batch\manifest.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.882118"/>
+        <text x="0.00" y="959.88" fill="#8fb3d9" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">user@disrobe</text>
+        <text x="96.00" y="959.88" fill="#a1a1a1" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">:~$ </text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.022670;0.177367"/>
+        <g opacity="1">
+          <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" calcMode="discrete" values="1;1;0;0" keyTimes="0;0.5;0.5;1"/>
+          <rect x="0" y="2.50" width="8.0" height="15.0" rx="1" fill="#ededed" opacity="0.75">
+            <animate attributeName="x" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;560.00;568.00;576.00;584.00;592.00;600.00;608.00;616.00;624.00;632.00;640.00" keyTimes="0.000000;0.038448;0.040397;0.042347;0.044342;0.045657;0.047243;0.049510;0.052729;0.054407;0.055994;0.058261;0.059757;0.061208;0.063067;0.064926;0.066240;0.070094;0.072225;0.074492;0.076804;0.078165;0.079978;0.081656;0.083787;0.085464;0.087777;0.089545;0.091676;0.093263;0.095167;0.097298;0.098431;0.099927;0.101242;0.103373;0.105232;0.107136;0.108497;0.110038;0.111489;0.113348;0.114436;0.116522;0.118426;0.120511;0.122280;0.124003;0.125499;0.127222;0.129171;0.130758;0.132572;0.134204;0.136380;0.138466;0.140642;0.142501;0.144269;0.146491;0.148758;0.149937;0.151161;0.152929;0.154470"/>
+          </rect>
+        </g>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.231910;0.394450"/>
+        <g opacity="1">
+          <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" calcMode="discrete" values="1;1;0;0" keyTimes="0;0.5;0.5;1"/>
+          <rect x="0" y="325.50" width="8.0" height="15.0" rx="1" fill="#ededed" opacity="0.75">
+            <animate attributeName="x" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;560.00;568.00;576.00;584.00;592.00;600.00;608.00;616.00;624.00;632.00;640.00;648.00;656.00;664.00;672.00;680.00" keyTimes="0.000000;0.248368;0.250227;0.252267;0.254579;0.255939;0.257934;0.260156;0.263602;0.265325;0.266413;0.267818;0.270040;0.272398;0.274528;0.278110;0.280060;0.281964;0.283959;0.285138;0.286634;0.288538;0.292120;0.294432;0.295793;0.297606;0.298694;0.299828;0.301279;0.303228;0.305359;0.306765;0.308351;0.309893;0.311797;0.313792;0.314880;0.316331;0.318009;0.319324;0.321273;0.323177;0.325444;0.327258;0.329253;0.331338;0.332563;0.334240;0.336235;0.338185;0.339681;0.341404;0.343580;0.345303;0.347252;0.348386;0.349655;0.350744;0.352738;0.354461;0.355822;0.357227;0.359449;0.361716;0.363439;0.365388;0.366476;0.368426;0.370602;0.372098"/>
+          </rect>
+        </g>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.427185;0.586099"/>
+        <g opacity="1">
+          <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" calcMode="discrete" values="1;1;0;0" keyTimes="0;0.5;0.5;1"/>
+          <rect x="0" y="477.50" width="8.0" height="15.0" rx="1" fill="#ededed" opacity="0.75">
+            <animate attributeName="x" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;560.00;568.00;576.00;584.00;592.00;600.00;608.00;616.00;624.00;632.00;640.00;648.00;656.00;664.00;672.00;680.00" keyTimes="0.000000;0.443870;0.445910;0.447135;0.448767;0.450218;0.451623;0.453573;0.456792;0.458515;0.459966;0.461462;0.463638;0.465724;0.467537;0.471391;0.473159;0.474791;0.476786;0.479053;0.480912;0.482408;0.485537;0.487033;0.488529;0.490479;0.491567;0.493653;0.495693;0.496781;0.498594;0.500181;0.502312;0.504217;0.505577;0.507572;0.508660;0.510519;0.512559;0.514282;0.516231;0.517954;0.519632;0.521627;0.522851;0.524392;0.525707;0.527929;0.529198;0.530831;0.532735;0.535047;0.536951;0.538992;0.540805;0.542029;0.543344;0.545112;0.546518;0.547969;0.549057;0.550281;0.552276;0.553818;0.554906;0.556583;0.557807;0.559304;0.561208;0.562795"/>
+          </rect>
+        </g>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.624773;0.773032"/>
+        <g opacity="1">
+          <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" calcMode="discrete" values="1;1;0;0" keyTimes="0;0.5;0.5;1"/>
+          <rect x="0" y="667.50" width="8.0" height="15.0" rx="1" fill="#ededed" opacity="0.75">
+            <animate attributeName="x" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="128.00;136.00;144.00;152.00;160.00;168.00;176.00;184.00;192.00;200.00;208.00;216.00;224.00;232.00;240.00;248.00;256.00;264.00;272.00;280.00;288.00;296.00;304.00;312.00;320.00;328.00;336.00;344.00;352.00;360.00;368.00;376.00;384.00;392.00;400.00;408.00;416.00;424.00;432.00;440.00;448.00;456.00;464.00;472.00;480.00;488.00;496.00;504.00;512.00;520.00;528.00;536.00;544.00;552.00;560.00;568.00;576.00" keyTimes="0.000000;0.641367;0.642592;0.643997;0.645629;0.647806;0.649528;0.651478;0.655604;0.657463;0.659050;0.660909;0.661997;0.665896;0.667347;0.668616;0.670702;0.672334;0.674057;0.675236;0.676369;0.678682;0.679815;0.681175;0.682762;0.683850;0.685981;0.688112;0.690243;0.692555;0.694641;0.695820;0.697044;0.698268;0.699991;0.702077;0.704389;0.708152;0.710102;0.712278;0.714182;0.715950;0.717492;0.721074;0.722887;0.724973;0.726877;0.728056;0.729733;0.731003;0.732091;0.734222;0.735673;0.737396;0.739481;0.740751;0.742338"/>
+          </rect>
+        </g>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="22.056s" repeatCount="indefinite" calcMode="discrete" values="0;1;0" keyTimes="0;0.882118;0.999998"/>
+        <g opacity="1">
+          <animate attributeName="opacity" dur="1.06s" repeatCount="indefinite" calcMode="discrete" values="1;1;0;0" keyTimes="0;0.5;0.5;1"/>
+          <rect x="0" y="952.50" width="8.0" height="15.0" rx="1" fill="#ededed" opacity="0.75">
+            <animate attributeName="x" dur="22.056s" repeatCount="indefinite" values="128.00;128.00" keyTimes="0;1"/>
+          </rect>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
