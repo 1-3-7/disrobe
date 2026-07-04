@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use walrus::ir::{BinaryOp, Binop, Instr, VisitorMut};
 use walrus::{FunctionId, ImportKind, Module, ModuleConfig};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReinlineStats {
@@ -12,8 +12,7 @@ pub struct ReinlineStats {
 }
 
 pub fn reinline_imported_ops(wasm: &[u8]) -> Result<(Vec<u8>, ReinlineStats)> {
-    let mut module: Module = Module::from_buffer_with_config(wasm, &lenient_config())
-        .map_err(|e| Error::Parse(format!("walrus parse: {e}")))?;
+    let mut module: Module = crate::recover::parse_walrus_module(wasm, &lenient_config())?;
     let op_map: BTreeMap<FunctionId, BinaryOp> = collect_op_imports(&module);
     if op_map.is_empty() {
         return Ok((module.emit_wasm(), ReinlineStats::default()));

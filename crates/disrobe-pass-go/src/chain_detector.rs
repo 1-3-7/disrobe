@@ -345,6 +345,7 @@ impl ObfuscatorCatalog for GoDetector {
     }
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectorOutput> {
+        Detector::detect(&GoDetector, ctx)?;
         let bytes: &[u8] = ctx.bytes;
         let analysis: GoAnalysis = crate::analyze(bytes).ok()?;
         let confidence: f32 = match analysis.garble.quality {

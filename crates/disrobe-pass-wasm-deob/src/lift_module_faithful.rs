@@ -525,9 +525,12 @@ fn render_memory(idx: u32, mem: &wasmparser::MemoryType) -> String {
 
 fn memory_limits(mem: &wasmparser::MemoryType) -> String {
     let prefix: &str = if mem.memory64 { "i64 " } else { "" };
-    let page: String = mem
-        .page_size_log2
-        .map_or_else(String::new, |log2| format!(" (pagesize {})", 1u64 << log2));
+    let page: String = mem.page_size_log2.map_or_else(String::new, |log2| {
+        format!(
+            " (pagesize {})",
+            1u64.checked_shl(log2).unwrap_or(1u64 << 63)
+        )
+    });
     match (mem.maximum, mem.shared) {
         (Some(max), true) => format!("{prefix}{} {max} shared{page}", mem.initial),
         (Some(max), false) => format!("{prefix}{} {max}{page}", mem.initial),

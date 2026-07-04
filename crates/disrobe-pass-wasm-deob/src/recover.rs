@@ -165,11 +165,22 @@ fn recover_obfuscator_families(wasm: &[u8], report: &mut RecoveryReport) -> Resu
     Ok(after_mixer)
 }
 
+pub(crate) fn parse_walrus_module(wasm: &[u8], config: &ModuleConfig) -> Result<Module> {
+    let mut validator: wasmparser::Validator =
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::WASM2);
+    validator.validate_all(wasm).map_err(|e| {
+        Error::Parse(format!(
+            "DR-WASMDEOB: wasm outside supported feature set: {e}"
+        ))
+    })?;
+    Module::from_buffer_with_config(wasm, config)
+        .map_err(|e| Error::Parse(format!("DR-WASMDEOB: walrus parse: {e}")))
+}
+
 fn parse_module(wasm: &[u8]) -> Result<Module> {
     let mut config: ModuleConfig = ModuleConfig::new();
     config.generate_producers_section(false);
-    Module::from_buffer_with_config(wasm, &config)
-        .map_err(|e| Error::Parse(format!("DR-WASMDEOB-RECOVER: walrus parse: {e}")))
+    parse_walrus_module(wasm, &config)
 }
 
 const fn exceeds_fold_budget(total_instructions: usize) -> bool {

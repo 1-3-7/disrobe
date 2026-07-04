@@ -1960,6 +1960,7 @@ dependencies = [
  "flate2",
  "gix",
  "hmac",
+ "iced-x86",
  "liblzma",
  "md5",
  "memchr",

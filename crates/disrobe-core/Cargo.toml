@@ -53,6 +53,7 @@ tar = { workspace = true }
 wait-timeout = { workspace = true }
 liblzma = { workspace = true }
 gix = { workspace = true }
+iced-x86 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

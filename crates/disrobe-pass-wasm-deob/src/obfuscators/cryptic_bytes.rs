@@ -187,8 +187,7 @@ fn non_recovery(detection: CrypticBytesDetection, input: &[u8]) -> CrypticBytesP
 fn parse_module(wasm: &[u8]) -> Result<Module> {
     let mut config: ModuleConfig = ModuleConfig::new();
     config.generate_producers_section(false);
-    Module::from_buffer_with_config(wasm, &config)
-        .map_err(|e| Error::Parse(format!("DR-WASMDEOB-CRYPTIC: walrus parse: {e}")))
+    crate::recover::parse_walrus_module(wasm, &config)
 }
 
 #[cfg(test)]

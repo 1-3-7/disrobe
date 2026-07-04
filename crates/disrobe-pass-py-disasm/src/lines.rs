@@ -189,9 +189,9 @@ fn lnotab_line_starts(lnotab: &[u8], firstlineno: i32, version: PyVersion) -> Ve
                 starts.push((addr, line));
                 last_line = Some(line);
             }
-            addr += u32::from(addr_incr);
+            addr = addr.saturating_add(u32::from(addr_incr));
         }
-        line += decode_lnotab_line_delta(line_incr, signed_line_delta);
+        line = line.saturating_add(decode_lnotab_line_delta(line_incr, signed_line_delta));
     }
     if Some(line) != last_line {
         starts.push((addr, line));
@@ -219,11 +219,11 @@ fn decode_linetable_310(linetable: &[u8], firstlineno: i32) -> Vec<LineRegion> {
         } else {
             i32::from(line_incr)
         };
-        let end: u32 = addr + u32::from(byte_incr);
+        let end: u32 = addr.saturating_add(u32::from(byte_incr));
         if line_incr == 0x80 {
             push_region(&mut regions, addr, end, None);
         } else {
-            line += signed;
+            line = line.saturating_add(signed);
             push_region(&mut regions, addr, end, Some(line.max(0) as u32));
         }
         addr = end;
@@ -257,18 +257,18 @@ fn decode_location_table(table: &[u8], firstlineno: i32, code_len: usize) -> Vec
                 cursor = skip_location_varint(table, cursor);
                 cursor = skip_location_varint(table, cursor);
                 cursor = skip_location_varint(table, cursor);
-                line += delta;
+                line = line.saturating_add(delta);
                 Some(line.max(0) as u32)
             }
             LOCATION_NO_COLUMNS => {
                 let (delta, next): (i32, usize) = read_signed_location_varint(table, cursor);
                 cursor = next;
-                line += delta;
+                line = line.saturating_add(delta);
                 Some(line.max(0) as u32)
             }
             LOCATION_ONE_LINE_0..=LOCATION_ONE_LINE_2 => {
                 let delta: i32 = i32::from(code) - i32::from(LOCATION_ONE_LINE_0);
-                line += delta;
+                line = line.saturating_add(delta);
                 cursor = skip_location_varint(table, cursor);
                 cursor = skip_location_varint(table, cursor);
                 Some(line.max(0) as u32)

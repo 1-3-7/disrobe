@@ -7,8 +7,8 @@ use std::time::Instant;
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::anti_analysis::{
-    AntiAnalysisReport, ChainEvidence, DefeatStatus, Technique as AntiTechnique,
-    scan_with_chain as scan_anti_analysis,
+    AntiAnalysisFinding, AntiAnalysisReport, ChainEvidence, DefeatStatus,
+    Technique as AntiTechnique, scan_with_chain as scan_anti_analysis,
 };
 use disrobe_core::chain::spec::PassToken;
 use disrobe_core::chain::state_machine::{PassRunner, Verdict};
@@ -251,16 +251,33 @@ fn push_unique_technique(techniques: &mut Vec<AntiTechnique>, technique: AntiTec
 }
 
 fn render_anti_analysis(report: &AntiAnalysisReport) {
-    if !report.any_detected() {
+    let detected: Vec<&AntiAnalysisFinding> = report
+        .findings
+        .iter()
+        .filter(|f: &&AntiAnalysisFinding| f.detected)
+        .collect();
+    let informational: Vec<&AntiAnalysisFinding> = report
+        .findings
+        .iter()
+        .filter(|f: &&AntiAnalysisFinding| !f.detected)
+        .collect();
+    if detected.is_empty() && informational.is_empty() {
         println!("anti-analysis: none detected");
         return;
     }
-    println!(
-        "anti-analysis ({} technique(s), {} overcome):",
-        report.findings.len(),
-        report.overcome_count()
-    );
-    for finding in &report.findings {
+    if detected.is_empty() {
+        println!(
+            "anti-analysis: no verdict-grade techniques ({} informational signal(s)):",
+            informational.len()
+        );
+    } else {
+        println!(
+            "anti-analysis ({} technique(s), {} overcome):",
+            detected.len(),
+            report.overcome_count()
+        );
+    }
+    for finding in &detected {
         match &finding.defeated_by {
             DefeatStatus::OvercomeBy { mechanism } => {
                 println!(
@@ -277,6 +294,12 @@ fn render_anti_analysis(report: &AntiAnalysisReport) {
                 );
             }
         }
+    }
+    for finding in &informational {
+        println!(
+            "  anti-analysis [informational]: {} -> weak signal surfaced for triage",
+            finding.technique.label()
+        );
     }
 }
 

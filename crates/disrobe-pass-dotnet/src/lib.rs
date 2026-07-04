@@ -86,7 +86,7 @@ pub use peel::{
 };
 pub use protectors::{
     DetectionReport, ExecuteOptions, ExecutionOutcome, GreyZone, Handling, Protector, detect_all,
-    plan_execution,
+    is_dotnet_assembly, plan_execution,
 };
 pub use provenance_header::{
     cil_disasm_header, csharp_decompiled_header, fsharp_decompiled_header, render_cil_with_header,

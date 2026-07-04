@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_enabled, dbg_kv, dbg_line};
+use crate::pe::{ClrHeader, DataDirectory, PeImage};
+
+const METADATA_ROOT_SIGNATURE: [u8; 4] = [0x42, 0x53, 0x4A, 0x42];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -185,7 +188,36 @@ pub struct DetectionReport {
 }
 
 #[must_use]
+pub fn is_dotnet_assembly(image: &[u8]) -> bool {
+    let Ok(pe): crate::error::Result<PeImage> = crate::pe::parse(image) else {
+        return false;
+    };
+    let Some(dir): Option<DataDirectory> = pe.clr_directory() else {
+        return false;
+    };
+    if dir.rva == 0 {
+        return false;
+    }
+    let Ok(clr): crate::error::Result<ClrHeader> = crate::pe::parse_clr_header(image, &pe) else {
+        return false;
+    };
+    if clr.metadata.rva == 0 {
+        return false;
+    }
+    let Ok(root): crate::error::Result<&[u8]> = pe.slice_at_rva(image, clr.metadata.rva, 4) else {
+        return false;
+    };
+    root == METADATA_ROOT_SIGNATURE
+}
+
+#[must_use]
 pub fn detect_all(image: &[u8]) -> DetectionReport {
+    if !is_dotnet_assembly(image) {
+        return DetectionReport {
+            matches: BTreeMap::new(),
+            primary: None,
+        };
+    }
     let mut matches: BTreeMap<Protector, Vec<u32>> = BTreeMap::new();
     let all: [Protector; 23] = [
         Protector::ConfuserEx,
@@ -362,13 +394,97 @@ pub const fn plan_execution(protector: Protector, options: ExecuteOptions) -> Ex
 mod tests {
     use super::*;
 
+    fn native_pe_with_marker(marker: &[u8]) -> Vec<u8> {
+        let mut img: Vec<u8> = vec![0u8; 0x400];
+        img[0] = b'M';
+        img[1] = b'Z';
+        let pe_off: u32 = 0x80;
+        img[0x3C..0x40].copy_from_slice(&pe_off.to_le_bytes());
+        let p: usize = pe_off as usize;
+        img[p..p + 4].copy_from_slice(b"PE\0\0");
+        img[p + 4..p + 6].copy_from_slice(&0x8664u16.to_le_bytes());
+        img[p + 6..p + 8].copy_from_slice(&1u16.to_le_bytes());
+        let opt_size: u16 = 0xF0;
+        img[p + 20..p + 22].copy_from_slice(&opt_size.to_le_bytes());
+        let opt_start: usize = p + 24;
+        img[opt_start..opt_start + 2].copy_from_slice(&0x020Bu16.to_le_bytes());
+        img[opt_start + 108..opt_start + 112].copy_from_slice(&16u32.to_le_bytes());
+        let at: usize = 0x300;
+        img[at..at + marker.len()].copy_from_slice(marker);
+        img
+    }
+
+    fn managed_pe_with_marker(marker: &[u8]) -> Vec<u8> {
+        let mut img: Vec<u8> = vec![0u8; 0x600];
+        img[0] = b'M';
+        img[1] = b'Z';
+        let pe_off: u32 = 0x80;
+        img[0x3C..0x40].copy_from_slice(&pe_off.to_le_bytes());
+        let p: usize = pe_off as usize;
+        img[p..p + 4].copy_from_slice(b"PE\0\0");
+        img[p + 4..p + 6].copy_from_slice(&0x014Cu16.to_le_bytes());
+        img[p + 6..p + 8].copy_from_slice(&1u16.to_le_bytes());
+        let opt_size: u16 = 0xE0;
+        img[p + 20..p + 22].copy_from_slice(&opt_size.to_le_bytes());
+        let opt_start: usize = p + 24;
+        img[opt_start..opt_start + 2].copy_from_slice(&0x010Bu16.to_le_bytes());
+        img[opt_start + 92..opt_start + 96].copy_from_slice(&16u32.to_le_bytes());
+        let dirs: usize = opt_start + 96;
+        let clr_rva: u32 = 0x2008;
+        let clr_dir: usize = dirs + 14 * 8;
+        img[clr_dir..clr_dir + 4].copy_from_slice(&clr_rva.to_le_bytes());
+        img[clr_dir + 4..clr_dir + 8].copy_from_slice(&72u32.to_le_bytes());
+        let sect: usize = opt_start + opt_size as usize;
+        img[sect..sect + 8].copy_from_slice(b".text\0\0\0");
+        img[sect + 8..sect + 12].copy_from_slice(&0x1000u32.to_le_bytes());
+        img[sect + 12..sect + 16].copy_from_slice(&0x2000u32.to_le_bytes());
+        img[sect + 16..sect + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        let raw_ptr: u32 = 0x200;
+        img[sect + 20..sect + 24].copy_from_slice(&raw_ptr.to_le_bytes());
+        img[sect + 36..sect + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        let clr_off: usize = (raw_ptr + (clr_rva - 0x2000)) as usize;
+        img[clr_off..clr_off + 4].copy_from_slice(&72u32.to_le_bytes());
+        let md_rva: u32 = 0x2100;
+        img[clr_off + 8..clr_off + 12].copy_from_slice(&md_rva.to_le_bytes());
+        img[clr_off + 12..clr_off + 16].copy_from_slice(&0x80u32.to_le_bytes());
+        let md_off: usize = (raw_ptr + (md_rva - 0x2000)) as usize;
+        img[md_off..md_off + 4].copy_from_slice(&METADATA_ROOT_SIGNATURE);
+        let at: usize = 0x500;
+        img[at..at + marker.len()].copy_from_slice(marker);
+        img
+    }
+
     #[test]
     fn detect_confuserex2_signature_present() {
-        let mut img: Vec<u8> = vec![0u8; 1024];
-        let sig: &[u8] = b"ConfuserEx2";
-        img[100..100 + sig.len()].copy_from_slice(sig);
+        let img: Vec<u8> = managed_pe_with_marker(b"ConfuserEx2");
+        assert!(
+            is_dotnet_assembly(&img),
+            "carrier must be a valid managed PE"
+        );
         let r: DetectionReport = detect_all(&img);
         assert!(r.matches.contains_key(&Protector::ConfuserEx2));
+    }
+
+    #[test]
+    fn native_binary_with_themida_marker_is_not_applicable() {
+        let img: Vec<u8> = native_pe_with_marker(b"Themida\0.themida\0.vmp0\0WinLicense");
+        assert!(
+            !is_dotnet_assembly(&img),
+            "a native PE with no CLI header must not be classified as a .NET assembly"
+        );
+        let r: DetectionReport = detect_all(&img);
+        assert!(
+            r.matches.is_empty() && r.primary.is_none(),
+            "native binary must yield zero .NET-protector classifications; got {:?}",
+            r.matches.keys().collect::<Vec<&Protector>>()
+        );
+    }
+
+    #[test]
+    fn non_pe_blob_is_not_applicable() {
+        let img: Vec<u8> = vec![0x90u8; 4096];
+        assert!(!is_dotnet_assembly(&img));
+        assert!(detect_all(&img).matches.is_empty());
     }
 
     #[test]

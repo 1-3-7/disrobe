@@ -1115,13 +1115,17 @@ fn memory_operand(memory: u32) -> String {
     }
 }
 
+fn memarg_align_bytes(align: u32) -> u64 {
+    1u64.checked_shl(align).unwrap_or(1u64 << 63)
+}
+
 fn format_memarg(mnemonic: &str, memarg: wasmparser::MemArg, reqs: &mut FeatureReqs) -> String {
     reqs.note_memory(memarg.memory);
     format!(
         "{mnemonic}{} offset={} align={}",
         memory_operand(memarg.memory),
         memarg.offset,
-        1u32 << memarg.align
+        memarg_align_bytes(u32::from(memarg.align))
     )
 }
 
@@ -1165,7 +1169,7 @@ fn render_simd_op(op: &Operator<'_>, reqs: &mut FeatureReqs) -> Option<String> {
             "{mnemonic}{} offset={} align={} {lane}",
             memory_operand(memarg.memory),
             memarg.offset,
-            1u32 << memarg.align
+            memarg_align_bytes(u32::from(memarg.align))
         ));
     }
     Some(match op {

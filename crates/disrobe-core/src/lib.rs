@@ -30,7 +30,7 @@ pub mod yara_gen;
 
 pub use anti_analysis::{
     ANTI_ANALYSIS_SCHEMA, AntiAnalysisFinding, AntiAnalysisReport,
-    ChainEvidence as AntiChainEvidence, DefeatStatus, Mechanism as AntiMechanism,
+    ChainEvidence as AntiChainEvidence, DefeatStatus, FindingSeverity, Mechanism as AntiMechanism,
     TargetFamily as AntiTargetFamily, Technique as AntiTechnique,
     classify_family as classify_anti_family, scan as scan_anti_analysis,
     scan_with_chain as scan_anti_analysis_with_chain,
