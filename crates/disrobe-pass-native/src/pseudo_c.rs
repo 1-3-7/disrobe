@@ -380,7 +380,7 @@ enum Flags {
     },
     CmpMem {
         lhs: MemRef,
-        rhs: RegRef,
+        rhs: Source,
     },
     Test {
         operand: RegRef,
@@ -400,6 +400,28 @@ enum Flags {
     Snapshot {
         var: u32,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Cond {
+    Leaf { kind: CondKind, flags: Flags },
+    Or(Box<Self>, Box<Self>),
+}
+
+impl Cond {
+    fn leaf(kind: CondKind, flags: Flags) -> Self {
+        Self::Leaf { kind, flags }
+    }
+
+    fn visit_leaves(&self, visit: &mut impl FnMut(CondKind, &Flags)) {
+        match self {
+            Self::Leaf { kind, flags } => visit(*kind, flags),
+            Self::Or(lhs, rhs) => {
+                lhs.visit_leaves(visit);
+                rhs.visit_leaves(visit);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,8 +597,7 @@ enum ExtSource {
 enum Node {
     Stmt(Stmt),
     If {
-        cond: CondKind,
-        flags: Flags,
+        cond: Cond,
         then_body: Block,
         else_body: Option<Block>,
     },
@@ -2580,6 +2601,7 @@ fn is_frame_management(mnemonic: &str, operands: &str) -> bool {
         "sub" | "add" => operands_target_rsp_with_imm(operands),
         "leave" => operands.trim().is_empty(),
         "mov" => is_stack_pointer_move(operands),
+        "lea" => is_rbp_lea_frame(operands),
         _ => false,
     }
 }
@@ -2589,6 +2611,19 @@ fn is_stack_pointer_move(operands: &str) -> bool {
         operands.split_once(','),
         Some((lhs, rhs)) if matches!((lhs.trim(), rhs.trim()), ("rbp", "rsp") | ("rsp", "rbp"))
     )
+}
+
+fn is_rbp_lea_frame(operands: &str) -> bool {
+    let Some((dest, src)): Option<(&str, &str)> = operands.split_once(',') else {
+        return false;
+    };
+    if !parse_reg(dest.trim()).is_some_and(|r: RegRef| r.reg == Reg::Rbp && r.width == Width::W64) {
+        return false;
+    }
+    let Some((base, index, _disp)): Option<AddrTerms> = parse_addr_terms(src.trim()) else {
+        return false;
+    };
+    base == Some(Reg::Rsp) && index.is_none()
 }
 
 fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
@@ -2612,9 +2647,10 @@ fn classify_frame(insns: &[DisasmInsn]) -> FrameShape {
         .iter()
         .filter(|i: &&DisasmInsn| !matches!(i.mnemonic.as_str(), "nop" | "endbr64"))
         .collect();
-    let rbp_is_frame: bool = real
-        .iter()
-        .any(|i: &&DisasmInsn| i.mnemonic == "mov" && is_stack_pointer_move(&i.operands));
+    let rbp_is_frame: bool = real.iter().any(|i: &&DisasmInsn| {
+        (i.mnemonic == "mov" && is_stack_pointer_move(&i.operands))
+            || (i.mnemonic == "lea" && is_rbp_lea_frame(&i.operands))
+    });
     if rbp_is_frame {
         return FrameShape {
             base: Some(Reg::Rbp),
@@ -2812,7 +2848,7 @@ fn flag_operand_regs(flags: &Flags) -> Vec<Reg> {
         Flags::CmpMem { lhs, rhs } => {
             let mut regs: Vec<Reg> = Vec::new();
             mem_regs(lhs, &mut regs);
-            regs.push(rhs.reg);
+            source_regs(rhs, &mut regs);
             regs
         }
         Flags::Test { operand } | Flags::TestImm { operand, .. } => vec![operand.reg],
@@ -3017,8 +3053,7 @@ fn structure_guarded_while(items: &[Item], ret_pos: usize) -> Result<Option<Bloc
     });
     let mut body: Block = preheader;
     body.push(Node::If {
-        cond: guard_kind.negate(),
-        flags: guard_flags.clone(),
+        cond: Cond::leaf(guard_kind.negate(), guard_flags.clone()),
         then_body,
         else_body: None,
     });
@@ -3085,8 +3120,7 @@ fn structure_split_return(items: &[Item], ret_pos: usize) -> Result<Option<Block
     let fall_through: Block = structure_range(items, guard_pos + 1, ret_pos)?;
     let ool_body: Block = structure_range(items, ret_pos + 1, items.len() - 1)?;
     head.push(Node::If {
-        cond: kind.negate(),
-        flags: flags.clone(),
+        cond: Cond::leaf(kind.negate(), flags.clone()),
         then_body: fall_through,
         else_body: Some(ool_body),
     });
@@ -3271,8 +3305,52 @@ fn dominator_sets(
 struct LoopInfo {
     header: usize,
     body: std::collections::BTreeSet<usize>,
-    exit: usize,
+    exit_targets: std::collections::BTreeSet<usize>,
+    follow: usize,
     parent: Option<usize>,
+}
+
+fn resolve_trampoline(
+    blocks: &[CfgBlock],
+    body: &std::collections::BTreeSet<usize>,
+    start: usize,
+) -> Option<usize> {
+    use std::collections::BTreeSet;
+    let mut current: usize = start;
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    loop {
+        if body.contains(&current) || !seen.insert(current) {
+            return None;
+        }
+        let block: &CfgBlock = blocks.get(current)?;
+        if !block.stmts.is_empty() {
+            return Some(current);
+        }
+        match &block.term {
+            BlockTerm::Jump(t) | BlockTerm::Fall(t) => current = *t,
+            _ => return Some(current),
+        }
+    }
+}
+
+fn resolve_loop_follow(
+    blocks: &[CfgBlock],
+    body: &std::collections::BTreeSet<usize>,
+    exits: &std::collections::BTreeSet<usize>,
+) -> Option<usize> {
+    if exits.len() == 1 {
+        return exits.iter().next().copied();
+    }
+    let mut follow: Option<usize> = None;
+    for &exit in exits {
+        let resolved: usize = resolve_trampoline(blocks, body, exit)?;
+        match follow {
+            None => follow = Some(resolved),
+            Some(f) if f == resolved => {}
+            Some(_) => return None,
+        }
+    }
+    follow
 }
 
 fn natural_loop_body(
@@ -3334,21 +3412,20 @@ fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<L
             }
         }
 
-        let mut exits: BTreeSet<usize> = BTreeSet::new();
+        let mut exit_targets: BTreeSet<usize> = BTreeSet::new();
         for &node in &body {
             for succ in blocks[node].successors() {
                 if !body.contains(&succ) {
-                    exits.insert(succ);
+                    exit_targets.insert(succ);
                 }
             }
         }
-        let &[exit]: &[usize] = exits.iter().copied().collect::<Vec<usize>>().as_slice() else {
-            return None;
-        };
+        let follow: usize = resolve_loop_follow(blocks, &body, &exit_targets)?;
         loops.push(LoopInfo {
             header,
             body,
-            exit,
+            exit_targets,
+            follow,
             parent: None,
         });
     }
@@ -3382,9 +3459,9 @@ fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<L
     }
 
     for i in 0..loops.len() {
-        let exit: usize = loops[i].exit;
+        let follow: usize = loops[i].follow;
         if let Some(parent) = loops[i].parent
-            && !loops[parent].body.contains(&exit)
+            && !loops[parent].body.contains(&follow)
         {
             return None;
         }
@@ -3504,7 +3581,7 @@ fn emit_region(
             return Ok(());
         }
         if let Some(top) = active {
-            if current == ctx.loops[top].exit {
+            if ctx.loops[top].exit_targets.contains(&current) {
                 out.push(Node::Break);
                 return Ok(());
             }
@@ -3520,7 +3597,7 @@ fn emit_region(
             let entry_stop: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
             emit_loop_body(ctx, &child_stack, &entry_stop, visited, &mut loop_body)?;
             out.push(Node::While { body: loop_body });
-            current = ctx.loops[child].exit;
+            current = ctx.loops[child].follow;
             continue;
         }
         if !ctx.in_body_of(active, current) {
@@ -3545,6 +3622,51 @@ fn emit_region(
                 taken,
                 fallthrough,
             } => {
+                if let Some(orc) =
+                    detect_or_chain(ctx, active, current, *kind, flags, *taken, *fallthrough)
+                {
+                    if !visited.insert(orc.guard) {
+                        return Err(StructureError);
+                    }
+                    let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
+                    if let Some(f) = orc.follow {
+                        branch_stop.insert(f);
+                    }
+                    let mut then_body: Block = Vec::new();
+                    emit_region(
+                        ctx,
+                        orc.then_blk,
+                        loop_stack,
+                        &branch_stop,
+                        visited,
+                        &mut then_body,
+                    )?;
+                    let mut else_body: Block = Vec::new();
+                    emit_region(
+                        ctx,
+                        orc.else_blk,
+                        loop_stack,
+                        &branch_stop,
+                        visited,
+                        &mut else_body,
+                    )?;
+                    out.push(Node::If {
+                        cond: orc.cond,
+                        then_body,
+                        else_body: if else_body.is_empty() {
+                            None
+                        } else {
+                            Some(else_body)
+                        },
+                    });
+                    match orc.follow {
+                        Some(f) => {
+                            current = f;
+                            continue;
+                        }
+                        None => return Ok(()),
+                    }
+                }
                 let follow: Option<usize> = branch_follow(ctx, active, current);
                 let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
                 if let Some(f) = follow {
@@ -3569,8 +3691,7 @@ fn emit_region(
                     &mut else_body,
                 )?;
                 out.push(Node::If {
-                    cond: kind.negate(),
-                    flags: flags.clone(),
+                    cond: Cond::leaf(kind.negate(), flags.clone()),
                     then_body,
                     else_body: if else_body.is_empty() {
                         None
@@ -3635,8 +3756,7 @@ fn emit_loop_body(
                 &mut else_body,
             )?;
             out.push(Node::If {
-                cond: kind.negate(),
-                flags: flags.clone(),
+                cond: Cond::leaf(kind.negate(), flags.clone()),
                 then_body,
                 else_body: if else_body.is_empty() {
                     None
@@ -3664,6 +3784,92 @@ fn branch_follow(ctx: &CfgCtx<'_>, active: Option<usize>, branch: usize) -> Opti
         })
         .map(|(node, _): (usize, &Option<usize>)| node)
         .next()
+}
+
+struct OrChain {
+    guard: usize,
+    then_blk: usize,
+    else_blk: usize,
+    cond: Cond,
+    follow: Option<usize>,
+}
+
+fn or_merge_follow(
+    ctx: &CfgCtx<'_>,
+    active: Option<usize>,
+    header: usize,
+    then_blk: usize,
+    else_blk: usize,
+) -> Option<usize> {
+    ctx.idom
+        .iter()
+        .enumerate()
+        .filter(|(node, idom): &(usize, &Option<usize>)| {
+            **idom == Some(header)
+                && *node != then_blk
+                && *node != else_blk
+                && ctx.pred_count[*node] >= 2
+                && ctx.in_body_of(active, *node)
+                && active.is_none_or(|top: usize| *node != ctx.loops[top].header)
+                && ctx.child_loop_here(active, *node).is_none()
+        })
+        .map(|(node, _): (usize, &Option<usize>)| node)
+        .next()
+}
+
+fn detect_or_chain(
+    ctx: &CfgCtx<'_>,
+    active: Option<usize>,
+    header: usize,
+    k0: CondKind,
+    flags0: &Flags,
+    taken: usize,
+    fallthrough: usize,
+) -> Option<OrChain> {
+    let guard: usize = fallthrough;
+    if guard == header
+        || ctx.pred_count[guard] != 1
+        || !ctx.blocks[guard].stmts.is_empty()
+        || !ctx.in_body_of(active, guard)
+        || ctx.child_loop_here(active, guard).is_some()
+        || active.is_some_and(|top: usize| guard == ctx.loops[top].header)
+    {
+        return None;
+    }
+    let BlockTerm::Branch {
+        kind: k1,
+        flags: flags1,
+        taken: g_taken,
+        fallthrough: g_fallthrough,
+    } = &ctx.blocks[guard].term
+    else {
+        return None;
+    };
+    if *g_fallthrough != taken {
+        return None;
+    }
+    let then_blk: usize = taken;
+    let else_blk: usize = *g_taken;
+    if then_blk == guard
+        || else_blk == guard
+        || then_blk == else_blk
+        || then_blk == header
+        || else_blk == header
+    {
+        return None;
+    }
+    let cond: Cond = Cond::Or(
+        Box::new(Cond::leaf(k0, flags0.clone())),
+        Box::new(Cond::leaf(k1.negate(), flags1.clone())),
+    );
+    let follow: Option<usize> = or_merge_follow(ctx, active, header, then_blk, else_blk);
+    Some(OrChain {
+        guard,
+        then_blk,
+        else_blk,
+        cond,
+        follow,
+    })
 }
 
 fn structure_range(items: &[Item], lo: usize, hi: usize) -> Result<Block> {
@@ -3709,8 +3915,7 @@ fn structure_range(items: &[Item], lo: usize, hi: usize) -> Result<Block> {
                         (then_b, None, target_pos)
                     };
                 block.push(Node::If {
-                    cond: kind.negate(),
-                    flags: flags.clone(),
+                    cond: Cond::leaf(kind.negate(), flags.clone()),
                     then_body,
                     else_body,
                 });
@@ -3770,11 +3975,18 @@ fn lift_flag_setter(mnemonic: &str, operands: &str) -> Option<Flags> {
             let lhs_tok: &str = lhs.trim();
             let rhs_tok: &str = rhs.trim();
             if is_mem_token(lhs_tok) {
-                let rhs_reg: RegRef = parse_reg(rhs_tok)?;
-                let mem: MemRef = parse_mem_access(lhs_tok, Some(rhs_reg.width))?;
+                if let Some(rhs_reg) = parse_reg(rhs_tok) {
+                    let mem: MemRef = parse_mem_access(lhs_tok, Some(rhs_reg.width))?;
+                    return Some(Flags::CmpMem {
+                        lhs: mem,
+                        rhs: Source::Reg(rhs_reg),
+                    });
+                }
+                let mem: MemRef = parse_mem_access(lhs_tok, None)?;
+                let imm: i64 = parse_imm(rhs_tok)?;
                 return Some(Flags::CmpMem {
                     lhs: mem,
-                    rhs: rhs_reg,
+                    rhs: Source::Imm(imm),
                 });
             }
             let lhs_reg: RegRef = parse_reg(lhs_tok)?;
@@ -4004,12 +4216,13 @@ fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec
         match node {
             Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc),
             Node::If {
-                flags,
+                cond,
                 then_body,
                 else_body,
-                ..
             } => {
-                scan_fp_flags(flags, written, acc);
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
+                    scan_fp_flags(flags, written, acc);
+                });
                 let mut then_written: BTreeMap<Xmm, bool> = written.clone();
                 scan_fp_params(then_body, &mut then_written, acc);
                 if let Some(else_b) = else_body {
@@ -4052,12 +4265,13 @@ fn scan_block_params(
         match node {
             Node::Stmt(stmt) => scan_stmt_params(stmt, written, acc, note),
             Node::If {
-                flags,
+                cond,
                 then_body,
                 else_body,
-                ..
             } => {
-                read_flags(flags, written, acc, note);
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
+                    read_flags(flags, written, acc, note);
+                });
                 let mut branch_written: BTreeMap<Reg, bool> = written.clone();
                 scan_block_params(then_body, &mut branch_written, acc, note);
                 if let Some(else_b) = else_body {
@@ -4250,7 +4464,7 @@ fn read_flags(
         }
         Flags::CmpMem { lhs, rhs } => {
             read_addr(lhs, written, acc, note);
-            note(rhs.reg, written, acc);
+            read_sources(rhs, written, acc, note);
         }
         Flags::Test { operand } | Flags::TestImm { operand, .. } => {
             note(operand.reg, written, acc);
@@ -5494,7 +5708,7 @@ impl FrameScan {
             }
             Flags::CmpMem { lhs, rhs } => {
                 self.note_mem(lhs, slots, misuse);
-                self.note_reg(rhs.reg, misuse);
+                self.note_source(rhs, slots, misuse);
             }
             Flags::Test { operand } | Flags::TestImm { operand, .. } => {
                 self.note_reg(operand.reg, misuse);
@@ -5582,12 +5796,13 @@ fn scan_frame_block(
         match node {
             Node::Stmt(stmt) => ctx.note_stmt(stmt, slots, misuse),
             Node::If {
-                flags,
+                cond,
                 then_body,
                 else_body,
-                ..
             } => {
-                ctx.note_flags(flags, slots, misuse);
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
+                    ctx.note_flags(flags, slots, misuse);
+                });
                 scan_frame_block(ctx, then_body, slots, misuse);
                 if let Some(else_b) = else_body {
                     scan_frame_block(ctx, else_b, slots, misuse);
@@ -6152,7 +6367,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
         }
         Flags::CmpMem { lhs, rhs } => {
             push_addr(lhs, acc);
-            push(rhs.reg, acc);
+            push_src(rhs, acc);
         }
         Flags::Test { operand } | Flags::TestImm { operand, .. } => push(operand.reg, acc),
         Flags::Sign { result } => push(result.reg, acc),
@@ -6270,12 +6485,11 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 }
             },
             Node::If {
-                flags,
+                cond,
                 then_body,
                 else_body,
-                ..
             } => {
-                push_flags(flags, acc);
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| push_flags(flags, acc));
                 collect_block_regs(then_body, acc);
                 if let Some(else_b) = else_body {
                     collect_block_regs(else_b, acc);
@@ -6371,12 +6585,11 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 | Stmt::Call { .. } => {}
             },
             Node::If {
-                flags,
+                cond,
                 then_body,
                 else_body,
-                ..
             } => {
-                push_flags(flags, acc);
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| push_flags(flags, acc));
                 collect_block_xmm(then_body, acc);
                 if let Some(else_b) = else_body {
                     collect_block_xmm(else_b, acc);
@@ -6408,11 +6621,10 @@ fn emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) {
             Node::Stmt(stmt) => emit_stmt(out, stmt, &indent),
             Node::If {
                 cond,
-                flags,
                 then_body,
                 else_body,
             } => {
-                let cond_text: String = cond_expr(*cond, flags);
+                let cond_text: String = if_cond_expr(cond);
                 let _ = writeln!(out, "{indent}if ({cond_text}) {{");
                 emit_block(out, then_body, depth + 1, ret_expr);
                 if let Some(else_b) = else_body {
@@ -6972,6 +7184,13 @@ fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) ->
     }
 }
 
+fn if_cond_expr(cond: &Cond) -> String {
+    match cond {
+        Cond::Leaf { kind, flags } => cond_expr(*kind, flags),
+        Cond::Or(lhs, rhs) => format!("({}) || ({})", if_cond_expr(lhs), if_cond_expr(rhs)),
+    }
+}
+
 fn cond_expr(kind: CondKind, flags: &Flags) -> String {
     match flags {
         Flags::Cmp { lhs, rhs } => {
@@ -6983,7 +7202,7 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: String = deref_expr(lhs);
-            let rhs_expr: String = source_expr(&Source::Reg(*rhs), width);
+            let rhs_expr: String = source_expr(rhs, width);
             compare_expr(kind, &lhs_expr, &rhs_expr, width)
         }
         Flags::TestImm { operand, mask } => {
@@ -7201,11 +7420,10 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
             Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent)?,
             Node::If {
                 cond,
-                flags,
                 then_body,
                 else_body,
             } => {
-                let cond_text: String = rs_cond_expr(*cond, flags)?;
+                let cond_text: String = rs_if_cond_expr(cond)?;
                 let _ = writeln!(out, "{indent}if {cond_text} {{");
                 rs_emit_block(out, then_body, depth + 1, ret_expr)?;
                 if let Some(else_b) = else_body {
@@ -7774,6 +7992,17 @@ fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
     let a: String = rs_unsigned_operand(lhs, width);
     let b: String = rs_unsigned_operand(rhs, width);
     format!("(({a}).wrapping_sub({b}) as {ity})", ity = rs_int_ty(width))
+}
+
+fn rs_if_cond_expr(cond: &Cond) -> Option<String> {
+    match cond {
+        Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags),
+        Cond::Or(lhs, rhs) => Some(format!(
+            "({}) || ({})",
+            rs_if_cond_expr(lhs)?,
+            rs_if_cond_expr(rhs)?
+        )),
+    }
 }
 
 fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
