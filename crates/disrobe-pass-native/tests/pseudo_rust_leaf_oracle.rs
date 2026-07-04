@@ -14,8 +14,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_native::{
-    Arch, JumpTable, LeafRecovery, PseudoAbi, ResolvedCall, callee_int_arity, disassemble,
-    recover_leaf_function_abi, recover_leaf_function_switch_abi, recover_leaf_function_with_calls,
+    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, ResolvedCall, callee_int_arity,
+    disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
+    recover_leaf_function_switch_abi, recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -1613,5 +1614,628 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         &rustc_bin,
         &dir,
         &battery_o,
+    );
+}
+
+fn clang() -> Option<String> {
+    Command::new("clang")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o: std::process::Output| o.status.success())
+        .then(|| "clang".to_owned())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FpArg {
+    Double,
+    Float,
+    LongLong,
+    Int,
+}
+
+impl FpArg {
+    const fn c_type(self) -> &'static str {
+        match self {
+            Self::Double => "double",
+            Self::Float => "float",
+            Self::LongLong => "long long",
+            Self::Int => "int",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FpRet {
+    Double,
+    Float,
+    LongLong,
+}
+
+struct FpCase {
+    name: &'static str,
+    args: &'static [FpArg],
+    ret: FpRet,
+    c_source: &'static str,
+}
+
+const FP_BATTERY: &[FpCase] = &[
+    FpCase {
+        name: "fv_addd",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_addd(double a, double b){ return a + b; }",
+    },
+    FpCase {
+        name: "fv_subd",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_subd(double a, double b){ return a - b; }",
+    },
+    FpCase {
+        name: "fv_muld",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_muld(double a, double b){ return a * b; }",
+    },
+    FpCase {
+        name: "fv_divd",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_divd(double a, double b){ return a / b; }",
+    },
+    FpCase {
+        name: "fv_adds",
+        args: &[FpArg::Float, FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float fv_adds(float a, float b){ return a + b; }",
+    },
+    FpCase {
+        name: "fv_muls",
+        args: &[FpArg::Float, FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float fv_muls(float a, float b){ return a * b; }",
+    },
+    FpCase {
+        name: "fv_divs",
+        args: &[FpArg::Float, FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float fv_divs(float a, float b){ return a / b; }",
+    },
+    FpCase {
+        name: "fv_i2d",
+        args: &[FpArg::LongLong],
+        ret: FpRet::Double,
+        c_source: "double fv_i2d(long long a){ return (double)a; }",
+    },
+    FpCase {
+        name: "fv_i2s",
+        args: &[FpArg::LongLong],
+        ret: FpRet::Float,
+        c_source: "float fv_i2s(long long a){ return (float)a; }",
+    },
+    FpCase {
+        name: "fv_d2i",
+        args: &[FpArg::Double],
+        ret: FpRet::LongLong,
+        c_source: "long long fv_d2i(double a){ return (long long)a; }",
+    },
+    FpCase {
+        name: "fv_f2d",
+        args: &[FpArg::Float],
+        ret: FpRet::Double,
+        c_source: "double fv_f2d(float a){ return (double)a; }",
+    },
+    FpCase {
+        name: "fv_d2f",
+        args: &[FpArg::Double],
+        ret: FpRet::Float,
+        c_source: "float fv_d2f(double a){ return (float)a; }",
+    },
+    FpCase {
+        name: "fv_cmpdiv",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_cmpdiv(double a, double b){ if (a < b) return a / b; return b / a; }",
+    },
+    FpCase {
+        name: "fv_mixed",
+        args: &[FpArg::Double, FpArg::Int],
+        ret: FpRet::Double,
+        c_source: "double fv_mixed(double a, int n){ return a * (double)n; }",
+    },
+    FpCase {
+        name: "fv_chain",
+        args: &[FpArg::Double, FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_chain(double a, double b){ double r = a + b; r = r * a; r = r - b; return r; }",
+    },
+    FpCase {
+        name: "fv_add15",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_add15(double a){ return a + 1.5; }",
+    },
+    FpCase {
+        name: "fv_mulpi",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_mulpi(double a){ return a * 3.14159; }",
+    },
+    FpCase {
+        name: "fv_subhalff",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float fv_subhalff(float a){ return a - 0.5f; }",
+    },
+    FpCase {
+        name: "fv_sqrtd",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_sqrtd(double a){ return __builtin_sqrt(a); }",
+    },
+    FpCase {
+        name: "fv_sqrts",
+        args: &[FpArg::Float],
+        ret: FpRet::Float,
+        c_source: "float fv_sqrts(float a){ return __builtin_sqrtf(a); }",
+    },
+    FpCase {
+        name: "fv_floor",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_floor(double a){ return __builtin_floor(a); }",
+    },
+    FpCase {
+        name: "fv_ceil",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_ceil(double a){ return __builtin_ceil(a); }",
+    },
+    FpCase {
+        name: "fv_trunc",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_trunc(double a){ return __builtin_trunc(a); }",
+    },
+    FpCase {
+        name: "fv_roundeven",
+        args: &[FpArg::Double],
+        ret: FpRet::Double,
+        c_source: "double fv_roundeven(double a){ return __builtin_roundeven(a); }",
+    },
+];
+
+const FP_PAIRS: &[[f64; 2]] = &[
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [-1.0, 1.0],
+    [7.0, 3.0],
+    [-7.0, 3.0],
+    [7.0, -3.0],
+    [3.5, 2.25],
+    [-3.5, 2.25],
+    [100.0, 7.0],
+    [-100.0, -7.0],
+    [0.1, 0.2],
+    [123456.75, 789.5],
+    [2147483647.0, 3.0],
+    [1e18, 1000.0],
+    [-1e18, 3.0],
+    [42.0, 42.0],
+    [5.0, 9.0],
+    [0.0, -7.0],
+    [1e-30, 1000000.0],
+    [-0.0, 4.0],
+];
+
+fn fp_width_bytes(mnemonic: &str) -> Option<usize> {
+    match mnemonic {
+        "movsd" | "addsd" | "subsd" | "mulsd" | "divsd" | "ucomisd" | "comisd" | "minsd"
+        | "maxsd" => Some(8),
+        "movss" | "addss" | "subss" | "mulss" | "divss" | "ucomiss" | "comiss" | "minss"
+        | "maxss" => Some(4),
+        _ => None,
+    }
+}
+
+fn resolve_fp_constants(object_bytes: &[u8], code: &[u8], base: u64) -> Vec<FpConstant> {
+    let Ok(file): Result<object::File<'_>, _> = object::File::parse(object_bytes) else {
+        return Vec::new();
+    };
+    let Ok(insns): Result<Vec<disrobe_pass_native::DisasmInsn>, _> =
+        disassemble(Arch::X86_64, base, code)
+    else {
+        return Vec::new();
+    };
+    let Some(text): Option<object::Section<'_, '_>> = file.section_by_name(".text") else {
+        return Vec::new();
+    };
+    let mut out: Vec<FpConstant> = Vec::new();
+    for insn in &insns {
+        let Some(len): Option<usize> = fp_width_bytes(&insn.mnemonic) else {
+            continue;
+        };
+        if !insn.operands.contains("[rel ") {
+            continue;
+        }
+        let disp_off: u64 = insn.address + insn.bytes.len() as u64 - 4;
+        for (off, reloc) in text.relocations() {
+            if off != disp_off {
+                continue;
+            }
+            let object::RelocationTarget::Symbol(si) = reloc.target() else {
+                continue;
+            };
+            let Ok(sym): Result<object::Symbol<'_, '_>, _> = file.symbol_by_index(si) else {
+                continue;
+            };
+            let implicit_addend: i64 = if reloc.has_implicit_addend() {
+                let Ok(slot): Result<usize, _> = usize::try_from(off - text.address()) else {
+                    continue;
+                };
+                let Some(bytes): Option<[u8; 4]> = text
+                    .data()
+                    .ok()
+                    .and_then(|d: &[u8]| d.get(slot..slot + 4))
+                    .and_then(|s: &[u8]| s.try_into().ok())
+                else {
+                    continue;
+                };
+                i64::from(i32::from_le_bytes(bytes)) + reloc.addend()
+            } else {
+                reloc.addend()
+            };
+            let target_va: i64 = sym.address() as i64 + implicit_addend + 4;
+            let Some((section, section_va)): Option<(object::Section<'_, '_>, u64)> =
+                (match sym.section() {
+                    object::SymbolSection::Section(idx) => {
+                        file.section_by_index(idx)
+                            .ok()
+                            .map(|s: object::Section<'_, '_>| {
+                                let addr: u64 = s.address();
+                                (s, addr)
+                            })
+                    }
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            let Ok(rel_off): Result<usize, _> = usize::try_from(target_va - section_va as i64)
+            else {
+                continue;
+            };
+            let Some(raw): Option<&[u8]> = section
+                .data()
+                .ok()
+                .and_then(|d: &[u8]| d.get(rel_off..rel_off + len))
+            else {
+                continue;
+            };
+            let mut le: [u8; 8] = [0u8; 8];
+            le[..len].copy_from_slice(raw);
+            out.push(FpConstant {
+                site: insn.address,
+                bits: u64::from_le_bytes(le),
+            });
+        }
+    }
+    out
+}
+
+struct PreparedFp {
+    name: String,
+    args: &'static [FpArg],
+    ret: FpRet,
+    rust: String,
+}
+
+fn prepare_fp(case: &FpCase, object_bytes: &[u8], abi: PseudoAbi) -> Option<PreparedFp> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
+    let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
+    let rec: LeafRecovery = match recover_leaf_function_const_abi(&code, base, abi, &consts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "skip {} ({abi:?}): not in scalar float leaf class ({e})",
+                case.name
+            );
+            return None;
+        }
+    };
+    let Some(rust): Option<String> = rec.rust_source else {
+        eprintln!(
+            "skip {}: scalar float leaf but not pure-safe rust-emittable",
+            case.name
+        );
+        return None;
+    };
+    let total_params: usize = rec.fp_params.len();
+    if total_params != case.args.len() {
+        eprintln!(
+            "skip {}: recovered {total_params} params but source declares {}",
+            case.name,
+            case.args.len()
+        );
+        return None;
+    }
+    let renamed: String = rust.replacen(
+        "pub fn recovered(",
+        &format!("pub fn rec_{}(", case.name),
+        1,
+    );
+    Some(PreparedFp {
+        name: case.name.to_owned(),
+        args: case.args,
+        ret: case.ret,
+        rust: renamed,
+    })
+}
+
+fn fp_arg_expr_c(arg: FpArg, slot: usize) -> String {
+    match arg {
+        FpArg::Double => format!("pairs[k][{slot}]"),
+        FpArg::Float => format!("(float)pairs[k][{slot}]"),
+        FpArg::LongLong => format!("(long long)pairs[k][{slot}]"),
+        FpArg::Int => format!("(int)pairs[k][{slot}]"),
+    }
+}
+
+fn fp_arg_expr_rs(arg: FpArg, slot: usize) -> String {
+    match arg {
+        FpArg::Double => format!("pairs[k][{slot}]"),
+        FpArg::Float => format!("(pairs[k][{slot}] as f32)"),
+        FpArg::LongLong => format!("((pairs[k][{slot}] as i64) as u64)"),
+        FpArg::Int => format!("((pairs[k][{slot}] as i32) as u32 as u64)"),
+    }
+}
+
+const fn fp_c_ret(ret: FpRet) -> &'static str {
+    match ret {
+        FpRet::Double => "double",
+        FpRet::Float => "float",
+        FpRet::LongLong => "long long",
+    }
+}
+
+const fn fp_c_bits_fn(ret: FpRet) -> &'static str {
+    match ret {
+        FpRet::Double => "d_bits",
+        FpRet::Float => "f_bits",
+        FpRet::LongLong => "i_bits",
+    }
+}
+
+fn build_fp_c_golden(prepared: &[PreparedFp]) -> String {
+    let mut decls: String = String::new();
+    for p in prepared {
+        let argtypes: Vec<&str> = p.args.iter().map(|a: &FpArg| a.c_type()).collect();
+        let sig: String = if argtypes.is_empty() {
+            "void".to_owned()
+        } else {
+            argtypes.join(", ")
+        };
+        let _ = writeln!(decls, "extern {} {}({sig});", fp_c_ret(p.ret), p.name);
+    }
+    let mut body: String = String::new();
+    for p in prepared {
+        let args: String = p
+            .args
+            .iter()
+            .enumerate()
+            .map(|(slot, a): (usize, &FpArg)| fp_arg_expr_c(*a, slot))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let _ = writeln!(
+            body,
+            "        printf(\"{} %zu %llu\\n\", k, (unsigned long long){}({}({args})));",
+            p.name,
+            fp_c_bits_fn(p.ret),
+            p.name
+        );
+    }
+    let mut arr: String = String::new();
+    for row in FP_PAIRS {
+        let _ = write!(arr, "{{{:e},{:e}}},", row[0], row[1]);
+    }
+    format!(
+        "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\n\
+         static uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         static uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
+         static uint64_t i_bits(long long v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {decls}\n\
+         int main(void) {{\n\
+         \x20   double pairs[][2] = {{{arr}}};\n\
+         \x20   size_t n = sizeof(pairs)/sizeof(pairs[0]);\n\
+         \x20   for (size_t k = 0; k < n; k++) {{\n\
+         {body}\
+         \x20   }}\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+fn build_fp_rust_driver(prepared: &[PreparedFp]) -> String {
+    let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
+    for p in prepared {
+        out.push_str(&p.rust);
+        out.push('\n');
+    }
+    let mut body: String = String::new();
+    for p in prepared {
+        let args: String = p
+            .args
+            .iter()
+            .enumerate()
+            .map(|(slot, a): (usize, &FpArg)| fp_arg_expr_rs(*a, slot))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let bits: String = match p.ret {
+            FpRet::Double => format!("rec_{}({args}).to_bits()", p.name),
+            FpRet::Float => format!("(rec_{}({args}).to_bits() as u64)", p.name),
+            FpRet::LongLong => format!("rec_{}({args})", p.name),
+        };
+        let _ = writeln!(
+            body,
+            "        println!(\"{} {{}} {{}}\", k, {bits});",
+            p.name
+        );
+    }
+    let mut arr: String = String::new();
+    for row in FP_PAIRS {
+        let _ = write!(arr, "[{:e},{:e}],", row[0], row[1]);
+    }
+    let _ = write!(
+        out,
+        "fn main() {{\n\
+         \x20   let pairs: [[f64; 2]; {}] = [{arr}];\n\
+         \x20   for k in 0..pairs.len() {{\n\
+         {body}\
+         \x20   }}\n\
+         }}\n",
+        FP_PAIRS.len()
+    );
+    out
+}
+
+#[test]
+fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native rust scalar-float oracle on non-windows: the x86-64 ground-truth object requires the windows host"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = clang() else {
+        eprintln!(
+            "skipping rust scalar-float oracle: clang (needed for a clean scalar SSE lowering) not on PATH"
+        );
+        return;
+    };
+    let Some(rustc_bin): Option<String> = rustc() else {
+        eprintln!("skipping rust scalar-float oracle: rustc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let mut battery_src: String = String::new();
+    for case in FP_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("rustfp_battery.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write rustfp_battery.c");
+    let battery_o: PathBuf = dir.join("rustfp_battery.o");
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-math-errno",
+            "-msse4.1",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke clang for scalar float battery");
+    assert!(
+        compile.status.success(),
+        "rust fp battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read rustfp_battery.o");
+
+    let prepared: Vec<PreparedFp> = FP_BATTERY
+        .iter()
+        .filter_map(|case: &FpCase| prepare_fp(case, &object_bytes, HOST_ABI))
+        .collect();
+    if prepared.is_empty() {
+        eprintln!(
+            "skipping rust scalar-float differential: this clang build lowered none of the {} cases into the pure-safe rust float class",
+            FP_BATTERY.len()
+        );
+        return;
+    }
+
+    let carriers: usize = prepared
+        .iter()
+        .filter(|p: &&PreparedFp| {
+            p.rust.contains("f64::from_bits") || p.rust.contains("f32::from_bits")
+        })
+        .count();
+    assert!(
+        carriers >= 1,
+        "the rust scalar-float oracle has no teeth: not one recovered function emitted an `f64::from_bits`/`f32::from_bits`, so the float path was never graded"
+    );
+
+    let c_golden: String = build_fp_c_golden(&prepared);
+    let c_golden_path: PathBuf = dir.join("rustfp_ground.c");
+    std::fs::write(&c_golden_path, c_golden.as_bytes()).expect("write rustfp ground");
+    let c_exe: PathBuf = dir.join("rustfp_ground.exe");
+    let c_link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&c_exe)
+        .arg(&c_golden_path)
+        .arg(&battery_o)
+        .output()
+        .expect("link rust fp c ground-truth");
+    assert!(
+        c_link.status.success(),
+        "rust fp c ground-truth link failed: {}\n--- ground ---\n{c_golden}",
+        String::from_utf8_lossy(&c_link.stderr)
+    );
+    let c_run: std::process::Output = Command::new(&c_exe).output().expect("run rust fp ground");
+    assert!(c_run.status.success(), "rust fp c ground-truth run failed");
+    let golden: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&c_run.stdout));
+
+    let rust_driver: String = build_fp_rust_driver(&prepared);
+    let rust_driver_path: PathBuf = dir.join("rustfp_recovered.rs");
+    std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write rust fp driver");
+    let rust_exe: PathBuf = dir.join("rustfp_recovered.exe");
+    let rust_build: std::process::Output = Command::new(&rustc_bin)
+        .args(["--edition", "2021", "-o"])
+        .arg(&rust_exe)
+        .arg(&rust_driver_path)
+        .output()
+        .expect("invoke rustc for recovered rust float module");
+    assert!(
+        rust_build.status.success(),
+        "recovered rust float module compile failed: {}\n--- recovered.rs ---\n{rust_driver}",
+        String::from_utf8_lossy(&rust_build.stderr)
+    );
+    let rust_run: std::process::Output = Command::new(&rust_exe)
+        .output()
+        .expect("run recovered rust float module");
+    assert!(
+        rust_run.status.success(),
+        "recovered rust float run failed: {}",
+        String::from_utf8_lossy(&rust_run.stderr)
+    );
+    let got: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&rust_run.stdout));
+
+    assert!(!golden.is_empty(), "rust fp produced no comparable results");
+    assert_eq!(
+        golden.len(),
+        got.len(),
+        "rust fp result-count mismatch: c ground truth {} vs rust {}",
+        golden.len(),
+        got.len()
+    );
+    for (key, want) in &golden {
+        let have: u64 = *got
+            .get(key)
+            .unwrap_or_else(|| panic!("rust fp missing result for {key:?}"));
+        assert_eq!(
+            *want, have,
+            "rust fp bit-exact differential MISMATCH for {key:?}: c={want} rust={have}"
+        );
+    }
+    println!(
+        "scalar float rust bit-exact recompile-equivalence PASSED for {} leaf functions across {} input vectors",
+        prepared.len(),
+        FP_PAIRS.len()
     );
 }

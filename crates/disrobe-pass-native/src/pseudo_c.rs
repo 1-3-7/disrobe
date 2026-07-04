@@ -7000,17 +7000,6 @@ fn emit_rust(
     if frame.is_some() || sret.is_some() {
         return None;
     }
-    if !signature.fp.is_empty() {
-        return None;
-    }
-    let FnReturn::Int(return_width): FnReturn = signature.ret else {
-        return None;
-    };
-    let mut xmm_probe: Vec<Xmm> = Vec::new();
-    collect_block_xmm(body, &mut xmm_probe);
-    if !xmm_probe.is_empty() {
-        return None;
-    }
     if block_string_ops_present(body) {
         return None;
     }
@@ -7029,30 +7018,73 @@ fn emit_rust(
         }
         let _ = writeln!(out, "}}");
     }
-    let params_sig: String = (0..signature.int.len())
-        .map(|i: usize| format!("a{i}: u64"))
+
+    let param_types: Vec<ScalarType> = signature.ordered_param_types();
+    let params_sig: String = param_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty): (usize, &ScalarType)| match ty {
+            ScalarType::Int => format!("a{i}: u64"),
+            ScalarType::Double => format!("a{i}: f64"),
+            ScalarType::Float => format!("a{i}: f32"),
+        })
         .collect::<Vec<String>>()
         .join(", ");
+    let return_type: &str = match signature.ret {
+        FnReturn::Int(_) => "u64",
+        FnReturn::Fp(FpWidth::F64) => "f64",
+        FnReturn::Fp(FpWidth::F32) => "f32",
+    };
     let _ = writeln!(
         out,
         "#[allow(unused_mut, unused_variables, unused_assignments, unused_parens, dead_code)]"
     );
-    let _ = writeln!(out, "pub fn recovered({params_sig}) -> u64 {{");
+    let _ = writeln!(out, "pub fn recovered({params_sig}) -> {return_type} {{");
 
-    let mut declared_gp: Vec<Reg> = Vec::new();
-    for (i, reg) in signature.int.iter().enumerate() {
-        let _ = writeln!(out, "    let mut {}: u64 = a{i};", reg_var(*reg));
-        declared_gp.push(*reg);
-    }
     let mut touched_gp: Vec<Reg> = Vec::new();
     collect_block_regs(body, &mut touched_gp);
-    if !touched_gp.contains(&Reg::Rax) {
+    if matches!(signature.ret, FnReturn::Int(_)) && !touched_gp.contains(&Reg::Rax) {
         touched_gp.push(Reg::Rax);
+    }
+    let mut touched_xmm: Vec<Xmm> = Vec::new();
+    collect_block_xmm(body, &mut touched_xmm);
+    if matches!(signature.ret, FnReturn::Fp(_)) && !touched_xmm.contains(&Xmm::Xmm0) {
+        touched_xmm.push(Xmm::Xmm0);
+    }
+
+    let mut declared_gp: Vec<Reg> = Vec::new();
+    let mut declared_xmm: Vec<Xmm> = Vec::new();
+    for (i, ty) in param_types.iter().enumerate() {
+        match ty {
+            ScalarType::Int => {
+                let index: usize = declared_gp.len();
+                let reg: Reg = signature.int[index];
+                let _ = writeln!(out, "    let mut {}: u64 = a{i};", reg_var(reg));
+                declared_gp.push(reg);
+            }
+            ScalarType::Double | ScalarType::Float => {
+                let index: usize = declared_xmm.len();
+                let (xmm, width): (Xmm, FpWidth) = signature.fp[index];
+                let _ = writeln!(
+                    out,
+                    "    let mut {}: u64 = {};",
+                    xmm_var(xmm),
+                    rs_fp_store_expr(&format!("a{i}"), width)
+                );
+                declared_xmm.push(xmm);
+            }
+        }
     }
     for reg in &touched_gp {
         if !declared_gp.contains(reg) {
             let _ = writeln!(out, "    let mut {}: u64 = 0;", reg_var(*reg));
             declared_gp.push(*reg);
+        }
+    }
+    for xmm in &touched_xmm {
+        if !declared_xmm.contains(xmm) {
+            let _ = writeln!(out, "    let mut {}: u64 = 0;", xmm_var(*xmm));
+            declared_xmm.push(*xmm);
         }
     }
     let mut snapshot_vars: Vec<u32> = Vec::new();
@@ -7068,8 +7100,15 @@ fn emit_rust(
 
     rs_emit_block(&mut out, body, 1)?;
 
-    let ret_body: String = rs_width_mask(return_width, &reg_var(Reg::Rax));
-    let _ = writeln!(out, "    {ret_body}");
+    match signature.ret {
+        FnReturn::Int(return_width) => {
+            let ret_body: String = rs_width_mask(return_width, &reg_var(Reg::Rax));
+            let _ = writeln!(out, "    {ret_body}");
+        }
+        FnReturn::Fp(width) => {
+            let _ = writeln!(out, "    {}", rs_fp_load_xmm(Xmm::Xmm0, width));
+        }
+    }
     let _ = writeln!(out, "}}");
     Some(out)
 }
@@ -7280,23 +7319,186 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
                 call_display_name(*target, name.as_deref())
             );
         }
+        Stmt::FpBin {
+            dest,
+            rhs,
+            op,
+            width,
+        } => {
+            let lhs_val: String = rs_fp_load_xmm(*dest, *width);
+            let rhs_val: String = rs_fp_load(rhs, *width)?;
+            let opstr: &str = match op {
+                FpOp::Add => "+",
+                FpOp::Sub => "-",
+                FpOp::Mul => "*",
+                FpOp::Div => "/",
+            };
+            let computed: String = format!("({lhs_val} {opstr} {rhs_val})");
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&computed, *width)
+            );
+        }
+        Stmt::FpMov { dest, src, width } => {
+            if let FpOperand::Xmm(sx) = src {
+                let _ = writeln!(out, "{indent}{} = {};", xmm_var(*dest), xmm_var(*sx));
+            } else {
+                let value: String = rs_fp_load(src, *width)?;
+                let _ = writeln!(
+                    out,
+                    "{indent}{} = {};",
+                    xmm_var(*dest),
+                    rs_fp_store_expr(&value, *width)
+                );
+            }
+        }
+        Stmt::IntToFp {
+            dest,
+            src,
+            signed,
+            width,
+        } => {
+            let bits: u32 = src.width.bits();
+            let int_expr: String = if *signed {
+                format!("({} as u{bits} as i{bits})", reg_var(src.reg))
+            } else {
+                format!("({} as u{bits})", reg_var(src.reg))
+            };
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&int_expr, *width)
+            );
+        }
+        Stmt::FpToInt { dest, src, width } => {
+            let value: String = rs_fp_load_xmm(*src, *width);
+            let ity: &str = rs_int_ty(dest.width);
+            let uty: &str = rs_uint_ty(dest.width);
+            let truncated: String = format!("((({value}) as {ity}) as {uty} as u64)");
+            let masked: String = rs_width_mask(dest.width, &truncated);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
+        Stmt::FpConvert {
+            dest,
+            src,
+            from,
+            to,
+        } => {
+            let value: String = rs_fp_load_xmm(*src, *from);
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&value, *to)
+            );
+        }
+        Stmt::FpMinMax {
+            dest,
+            rhs,
+            is_max,
+            width,
+        } => {
+            let lhs_val: String = rs_fp_load_xmm(*dest, *width);
+            let rhs_val: String = rs_fp_load(rhs, *width)?;
+            let opstr: &str = if *is_max { ">" } else { "<" };
+            let computed: String =
+                format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})");
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&computed, *width)
+            );
+        }
+        Stmt::FpSqrt { dest, src, width } => {
+            let value: String = rs_fp_load(src, *width)?;
+            let call: String = format!("({value}).sqrt()");
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&call, *width)
+            );
+        }
+        Stmt::FpRound {
+            dest,
+            src,
+            width,
+            mode,
+        } => {
+            let value: String = rs_fp_load(src, *width)?;
+            let method: &str = match mode {
+                RoundMode::Nearest => "round_ties_even",
+                RoundMode::Floor => "floor",
+                RoundMode::Ceil => "ceil",
+                RoundMode::Trunc => "trunc",
+            };
+            let call: String = format!("({value}).{method}()");
+            let _ = writeln!(
+                out,
+                "{indent}{} = {};",
+                xmm_var(*dest),
+                rs_fp_store_expr(&call, *width)
+            );
+        }
+        Stmt::GprToXmm { dest, src, width } => {
+            let bits: String = match width {
+                FpWidth::F64 => reg_var(src.reg),
+                FpWidth::F32 => format!("(({} as u32) as u64)", reg_var(src.reg)),
+            };
+            let _ = writeln!(out, "{indent}{} = {bits};", xmm_var(*dest));
+        }
+        Stmt::XmmToGpr { dest, src, width } => {
+            let bits: String = rs_xmm_bits(*src, *width);
+            let masked: String = rs_width_mask(dest.width, &bits);
+            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+        }
         Stmt::Store { .. }
         | Stmt::MemRmw { .. }
-        | Stmt::FpBin { .. }
-        | Stmt::FpMov { .. }
         | Stmt::FpStore { .. }
-        | Stmt::IntToFp { .. }
-        | Stmt::FpToInt { .. }
-        | Stmt::FpConvert { .. }
-        | Stmt::FpMinMax { .. }
-        | Stmt::FpSqrt { .. }
-        | Stmt::FpRound { .. }
-        | Stmt::GprToXmm { .. }
-        | Stmt::XmmToGpr { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. } => return None,
     }
     Some(())
+}
+
+fn rs_fp_load(operand: &FpOperand, width: FpWidth) -> Option<String> {
+    match operand {
+        FpOperand::Xmm(x) => Some(rs_fp_load_xmm(*x, width)),
+        FpOperand::Mem(_) => None,
+        FpOperand::Const { bits, .. } => Some(rs_fp_const_literal(*bits, width)),
+    }
+}
+
+fn rs_fp_load_xmm(xmm: Xmm, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => format!("f64::from_bits({})", xmm_var(xmm)),
+        FpWidth::F32 => format!("f32::from_bits({} as u32)", xmm_var(xmm)),
+    }
+}
+
+fn rs_fp_const_literal(bits: u64, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => format!("f64::from_bits(0x{bits:016x}u64)"),
+        FpWidth::F32 => format!("f32::from_bits(0x{:08x}u32)", bits as u32),
+    }
+}
+
+fn rs_fp_store_expr(value: &str, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => format!("(({value}) as f64).to_bits()"),
+        FpWidth::F32 => format!("((({value}) as f32).to_bits() as u64)"),
+    }
+}
+
+fn rs_xmm_bits(xmm: Xmm, width: FpWidth) -> String {
+    match width {
+        FpWidth::F64 => xmm_var(xmm),
+        FpWidth::F32 => format!("(({} as u32) as u64)", xmm_var(xmm)),
+    }
 }
 
 fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str) {
@@ -7521,7 +7723,20 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
                 _ => None,
             }
         }
-        Flags::FpCmp { .. } => None,
+        Flags::FpCmp { lhs, rhs, width } => {
+            let a: String = rs_fp_load_xmm(*lhs, *width);
+            let b: String = rs_fp_load(rhs, *width)?;
+            let op: &str = match kind {
+                CondKind::B => "<",
+                CondKind::Be => "<=",
+                CondKind::A => ">",
+                CondKind::Ae => ">=",
+                CondKind::E => "==",
+                CondKind::Ne => "!=",
+                _ => return None,
+            };
+            Some(format!("({a}) {op} ({b})"))
+        }
         Flags::Snapshot { var } => Some(format!("{} != 0", sel_var(*var))),
     }
 }
