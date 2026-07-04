@@ -1859,10 +1859,7 @@ fn inline_exit_splits_try(
             ) else {
                 return false;
             };
-            try_start >= region.header
-                && try_start <= first_cond
-                && handler_start > first_cond
-                && handler_start < body_end
+            try_start >= region.header && try_start <= first_cond && handler_start < body_end
         })
 }
 

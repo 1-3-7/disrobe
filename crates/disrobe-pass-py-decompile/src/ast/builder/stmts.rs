@@ -26,10 +26,10 @@ use super::loops::{
 use super::try_with::{
     LoopKind, LoopRegion, extend_window_over_split_handler, find_try_region, is_back_edge,
     is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
-    is_value_form_shortcircuit, recover_return_at, region_is_linear, skip_await_poll,
-    structure_try, trim_trailing_comp_cleanup, try_enclosed_by_leading_guard,
-    try_structure_cold_sibling_try, try_structure_else_try, try_structure_empty_body_try,
-    try_structure_guarded_try, try_structure_multibranch_guarded_try,
+    is_value_form_shortcircuit, loop_inside_unpeeled_pre311_try, recover_return_at,
+    region_is_linear, skip_await_poll, structure_try, trim_trailing_comp_cleanup,
+    try_enclosed_by_leading_guard, try_structure_cold_sibling_try, try_structure_else_try,
+    try_structure_empty_body_try, try_structure_guarded_try, try_structure_multibranch_guarded_try,
 };
 use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
@@ -1646,6 +1646,7 @@ pub(super) fn structure_stmts(
         && !loop_enclosed_by_guard(stream, lo, &loop_region)
         && !loop_is_else_arm_of_leading_if(stream, lo, hi, &loop_region)
         && !leading_cond_arm_holds_loop(stream, lo, &loop_region)
+        && !loop_inside_unpeeled_pre311_try(stream, hi, &loop_region)
     {
         return structure_loop(code, stream, lo, hi, &loop_region);
     }
@@ -1675,6 +1676,9 @@ pub(super) fn structure_stmts(
         return Ok(vec![Stmt::Return(Some(expr))]);
     }
     if let Some(stmts) = try_structure_compound_assert(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_trailing_guard(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     let first_cond: Option<usize> = (lo..hi).find(|&i: &usize| {
@@ -1887,6 +1891,65 @@ pub(super) fn structure_stmts(
     }
     out.extend(tail);
     Ok(out)
+}
+
+fn try_structure_trailing_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(guard): Option<usize> = (lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
+        return Ok(None);
+    };
+    if target <= hi || guard + 1 >= hi {
+        return Ok(None);
+    }
+    if try_recover_compound_if(code, stream, lo, hi)?.is_some() {
+        return Ok(None);
+    }
+    let head_region: &[CanonicalOp] = &stream.ops[lo..guard];
+    let head_merges: Vec<usize> = collect_value_boolop_merges(stream, lo, guard);
+    let head_sc: Vec<ScDesc> = collect_value_boolop_sc(stream, lo, guard);
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        with_boolop_context(head_region, head_merges, head_sc, || {
+            build_linear_stmts_sim(code, head_region)
+        })?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, hi)?;
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfFalseRel(_)
+                | CanonicalOp::PopJumpIfFalseBackward(_)
+        ) {
+        test
+    } else {
+        negate_cond_expr(test)
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body,
+        orelse: Vec::new(),
+        line: None,
+    });
+    Ok(Some(out))
 }
 
 fn build_linear_stmts(code: &CodeObject, ops: &[CanonicalOp]) -> Result<Vec<Stmt>> {

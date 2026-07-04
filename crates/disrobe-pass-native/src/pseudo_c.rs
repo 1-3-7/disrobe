@@ -1069,6 +1069,14 @@ fn recover_leaf_function_calls_impl(
             let src: Source = parse_source(rhs.trim()).ok_or_else(|| {
                 Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
             })?;
+            if (kind.is_signed_order() || kind.is_unsigned_order())
+                && near_miss_ordering_select(&items, &used_flags, &src, dest)
+            {
+                return Err(Error::LlvmIr(format!(
+                    "ordering cmov selecting a compared operand against their difference is not soundly recoverable at {:#x}",
+                    insn.address
+                )));
+            }
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
             }
@@ -4608,6 +4616,116 @@ fn track_dividend_high(prev: Option<DividendHigh>, stmt: &Stmt) -> Option<Divide
         Stmt::WideMul { .. } | Stmt::Call { .. } | Stmt::Divide { .. } => None,
         _ => prev,
     }
+}
+
+fn stmt_dest_regs(stmt: &Stmt) -> Vec<Reg> {
+    match stmt {
+        Stmt::Assign { dest, .. }
+        | Stmt::BinAssign { dest, .. }
+        | Stmt::UnAssign { dest, .. }
+        | Stmt::Cond { dest, .. }
+        | Stmt::SetCc { dest, .. }
+        | Stmt::Extend { dest, .. }
+        | Stmt::MulImm { dest, .. }
+        | Stmt::DoubleShift { dest, .. }
+        | Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. } => vec![dest.reg],
+        Stmt::WideMul { .. } | Stmt::Divide { .. } => vec![Reg::Rax, Reg::Rdx],
+        Stmt::Call { .. } => vec![Reg::Rax],
+        _ => Vec::new(),
+    }
+}
+
+#[derive(Debug, Default)]
+struct SubIdentity {
+    origin: BTreeMap<Reg, Reg>,
+    diff: BTreeMap<Reg, (Reg, Reg)>,
+}
+
+impl SubIdentity {
+    fn origin_of(&self, reg: Reg) -> Reg {
+        *self.origin.get(&reg).unwrap_or(&reg)
+    }
+
+    fn observe(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Assign {
+                dest,
+                src: Source::Reg(src),
+            } => {
+                let root: Reg = self.origin_of(src.reg);
+                self.diff.remove(&dest.reg);
+                if root == dest.reg {
+                    self.origin.remove(&dest.reg);
+                } else {
+                    self.origin.insert(dest.reg, root);
+                }
+            }
+            Stmt::BinAssign {
+                dest,
+                op: BinOp::Sub,
+                src: Source::Reg(src),
+            } => {
+                let minuend: Reg = self.origin_of(dest.reg);
+                let subtrahend: Reg = self.origin_of(src.reg);
+                self.origin.remove(&dest.reg);
+                self.diff.insert(dest.reg, (minuend, subtrahend));
+            }
+            other => {
+                for reg in stmt_dest_regs(other) {
+                    self.origin.remove(&reg);
+                    self.diff.remove(&reg);
+                }
+            }
+        }
+    }
+
+    fn is_diff_of(&self, reg: Reg, lo: Reg, ro: Reg) -> bool {
+        self.diff
+            .get(&reg)
+            .is_some_and(|&(a, b): &(Reg, Reg)| (a == lo && b == ro) || (a == ro && b == lo))
+    }
+
+    fn selects_operand_and_difference(&self, cmp: &Flags, src: &Source, dest: RegRef) -> bool {
+        let (lhs, rhs): (Reg, Reg) = match cmp {
+            Flags::Cmp {
+                lhs,
+                rhs: Source::Reg(rhs),
+            } => (lhs.reg, rhs.reg),
+            _ => return false,
+        };
+        let (lo, ro): (Reg, Reg) = (self.origin_of(lhs), self.origin_of(rhs));
+        let operands: [Option<Reg>; 2] = [
+            Some(dest.reg),
+            match src {
+                Source::Reg(r) => Some(r.reg),
+                _ => None,
+            },
+        ];
+        let mut has_diff: bool = false;
+        let mut has_bare: bool = false;
+        for reg in operands.into_iter().flatten() {
+            if self.is_diff_of(reg, lo, ro) {
+                has_diff = true;
+            } else {
+                let root: Reg = self.origin_of(reg);
+                if root == lo || root == ro {
+                    has_bare = true;
+                }
+            }
+        }
+        has_diff && has_bare
+    }
+}
+
+fn near_miss_ordering_select(items: &[Item], cmp: &Flags, src: &Source, dest: RegRef) -> bool {
+    let mut identity: SubIdentity = SubIdentity::default();
+    for item in items {
+        if let ItemKind::Stmt(stmt) = &item.kind {
+            identity.observe(stmt);
+        }
+    }
+    identity.selects_operand_and_difference(cmp, src, dest)
 }
 
 fn fp_stmt_result_xmm(stmt: &Stmt) -> Option<(Xmm, FpWidth)> {

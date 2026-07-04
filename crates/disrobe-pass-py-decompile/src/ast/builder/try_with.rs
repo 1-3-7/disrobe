@@ -2097,6 +2097,23 @@ pub(super) fn try_enclosed_by_leading_guard(
     target >= region.region_end && target > region.handler_start
 }
 
+pub(super) fn loop_inside_unpeeled_pre311_try(
+    stream: &DecodedStream,
+    hi: usize,
+    loop_region: &LoopRegion,
+) -> bool {
+    if !stream.is_pre_311() || stream.exception_table.is_empty() {
+        return false;
+    }
+    let Some(region): Option<TryRegion> = find_try_region(stream, loop_region.header, hi) else {
+        return false;
+    };
+    !region.is_with
+        && region.try_start <= loop_region.header
+        && region.handler_start > loop_region.back_edge
+        && region.handler_start <= hi
+}
+
 fn guard_test_split_after_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
