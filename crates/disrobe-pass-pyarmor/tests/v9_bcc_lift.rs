@@ -395,6 +395,12 @@ fn bcc_lift_route_recompiles_to_behavioral_equivalence() {
 
 #[test]
 fn bcc_lift_route_discovers_multiple_function_boundaries() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!(
+            "skipping: host cc emits non-x86-64 .text that the win-x64 boundary lifter cannot parse"
+        );
+        return;
+    }
     let Some(compiler): Option<String> = cc() else {
         eprintln!("skipping: no C compiler on PATH");
         return;

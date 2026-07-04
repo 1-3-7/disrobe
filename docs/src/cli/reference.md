@@ -46,7 +46,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 
 | Command | Purpose |
 |---|---|
-| `disrobe native decompile <bin>` | Ghidra-headless decompile. `--emit source,disasm,ast,cfg,ir,manifest,sourcemap,symbols,strings,imports,signatures,report`. |
+| `disrobe native decompile <bin>` | In-tree x86-64 -> C/Rust decompile with whole-program call resolution, default (`--backend native --format c\|rust`), graded vs real gcc/clang/rustc. `--backend ghidra` drives ghidra-headless instead: `--emit source,disasm,ast,cfg,ir,manifest,sourcemap,symbols,strings,imports,signatures,report`. |
 | `disrobe native symbols <bin>` | Dump symbols, sections, segments, imports, and debug info. |
 | `disrobe native identify <bin>` | Fingerprint compiler / packer / protector / installer, each routed to its pass. |
 | `disrobe native unpack [bin]` | Detect + unpack UPX/kkrunchy/NSPack/Petite/MPRESS/MEW/FSG/ASPack/PECompact/Yoda's Crypter via in-house decoders + x86 stub emulator. Input is optional; `--list` shows all supported packers. |

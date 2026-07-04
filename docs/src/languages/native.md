@@ -104,10 +104,21 @@ disrobe native sbom app.exe --out app.cyclonedx.json     # CycloneDX 1.5 SBOM fr
 
 The reusable rendering logic lives in `disrobe_pass_native::entropy_viz` (`entropy_sparkline`, `byte_histogram`, `histogram_ascii_16`, `high_entropy_runs`, `render_entropy_svg`) so other tools can embed it.
 
+## Native decompile (in-tree x86-64 -> C or Rust)
+
+```sh
+disrobe native decompile app.exe --out decompiled/                 # x86-64 -> C, default backend
+disrobe native decompile app.exe --format rust --out decompiled/   # x86-64 -> idiomatic Rust
+```
+
+`--backend native` (the default) is disrobe's own x86-64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. Each function is leaf-recovered in the object's context, its outgoing calls are walked to resolve each callee's real name and integer arity against the sibling function set (falling back to the object's own relocations when a call target is a link-time placeholder in an unlinked object), then the caller is re-recovered with that call graph stitched in. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it.
+
+Every recovered function is graded by execution-differential recompilation against real gcc, clang, or rustc, never against disrobe's own prior output. Output lands at `<out>/<stem>.c` or `<out>/<stem>.rs` alongside a `manifest.json` (schema `disrobe.native.decompile/v1`) listing which functions recovered, which did not and why, and the emitted symbol name for each.
+
 ## Full decompile via Ghidra
 
 ```sh
-disrobe native decompile app.exe --out decompiled/
+disrobe native decompile app.exe --backend ghidra --out decompiled/
 ```
 
-Runs Ghidra headlessly (install it with `disrobe install-deps ghidra`) and returns pseudo-C alongside the standardized emits. This is the one place where an external native engine is the legitimate primary: **disrobe**'s job is to hand it a clean, unpacked, symbol-rich input.
+Runs Ghidra headlessly (install it with `disrobe install-deps ghidra`) and returns pseudo-C alongside the standardized emits. Reach for this on large, deeply nested binaries where Ghidra's whole-program type and structure recovery still leads: **disrobe**'s job there is to hand it a clean, unpacked, symbol-rich input.

@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_native::{
-    LeafRecovery, PseudoAbi, ResolvedCall, recover_leaf_function_in_object,
-    resolved_int_arity_in_object,
+    ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
+    RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -336,88 +336,6 @@ fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     Some((slice.to_vec(), sym_addr))
 }
 
-fn function_code_at(object_bytes: &[u8], addr: u64) -> Option<(Vec<u8>, u64, String)> {
-    let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
-    let sym: object::Symbol<'_, '_> = file.symbols().find(|s: &object::Symbol<'_, '_>| {
-        s.address() == addr && s.kind() == object::SymbolKind::Text
-    })?;
-    let name: String = sym.name().ok()?.to_owned();
-    let bare: &str = name.strip_prefix('_').unwrap_or(&name);
-    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, bare)?;
-    Some((code, base, bare.to_owned()))
-}
-
-fn call_callee_for_target(object_bytes: &[u8], caller: &str, target: u64) -> Option<String> {
-    let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
-    let candidates: [String; 2] = [caller.to_owned(), format!("_{caller}")];
-    let caller_sym: object::Symbol<'_, '_> =
-        file.symbols().find(|s: &object::Symbol<'_, '_>| {
-            s.name()
-                .is_ok_and(|n: &str| candidates.iter().any(|c: &String| c == n))
-        })?;
-    let section_index: object::SectionIndex = match caller_sym.section() {
-        object::SymbolSection::Section(idx) => idx,
-        _ => return None,
-    };
-    let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
-    let caller_start: u64 = caller_sym.address();
-    let caller_end: u64 = caller_start.saturating_add(caller_sym.size());
-    let target_offset: u64 = target.saturating_sub(4).saturating_sub(section.address());
-    for (offset, reloc) in section.relocations() {
-        let reloc_addr: u64 = section.address().saturating_add(offset);
-        if !(reloc_addr >= caller_start && reloc_addr < caller_end) || offset != target_offset {
-            continue;
-        }
-        let object::RelocationTarget::Symbol(sym_index) = reloc.target() else {
-            continue;
-        };
-        let sym: object::Symbol<'_, '_> = file.symbol_by_index(sym_index).ok()?;
-        let name: &str = sym.name().ok()?;
-        return Some(name.strip_prefix('_').unwrap_or(name).to_owned());
-    }
-    None
-}
-
-fn locate_callee(object: &[u8], caller: &str, target: u64) -> Option<(Vec<u8>, u64, String)> {
-    function_code_at(object, target).or_else(|| {
-        let resolved: String = call_callee_for_target(object, caller, target)?;
-        let (code, base): (Vec<u8>, u64) = function_code(object, &resolved)?;
-        Some((code, base, resolved))
-    })
-}
-
-fn resolve_recovered_calls(
-    object: &[u8],
-    caller: &str,
-    targets: &[u64],
-    program: &WholeProgram,
-    abi: PseudoAbi,
-) -> Option<Vec<ResolvedCall>> {
-    let mut out: Vec<ResolvedCall> = Vec::new();
-    let mut seen: Vec<u64> = Vec::new();
-    for &target in targets {
-        if seen.contains(&target) {
-            continue;
-        }
-        seen.push(target);
-        let (code, base, name): (Vec<u8>, u64, String) = locate_callee(object, caller, target)?;
-        if !program.functions.contains(&name.as_str()) {
-            eprintln!(
-                "sound-reject {}: {caller} calls unlisted callee {name}",
-                program.name
-            );
-            return None;
-        }
-        let arg_count: usize = resolved_int_arity_in_object(object, &code, base, abi)?;
-        out.push(ResolvedCall {
-            target,
-            name: Some(format!("rec_{name}")),
-            arg_count,
-        });
-    }
-    Some(out)
-}
-
 struct RecoveredProgram {
     module: String,
     entry_params: usize,
@@ -425,57 +343,48 @@ struct RecoveredProgram {
     used_frame: bool,
 }
 
-fn strip_extern_prefix(rust: &str) -> &str {
-    rust.find("#[allow(unused_mut")
-        .map_or(rust, |pos: usize| &rust[pos..])
-}
-
 fn recover_program(
     object: &[u8],
     program: &WholeProgram,
     abi: PseudoAbi,
 ) -> Option<RecoveredProgram> {
-    let mut module: String = String::new();
-    let mut entry_params: usize = 0;
-    let mut entry_return_width: u32 = 64;
-    let mut used_frame: bool = false;
+    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(program.functions.len());
     for &fname in program.functions {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, fname) else {
             eprintln!("skip {}: {fname} symbol not located", program.name);
             return None;
         };
-        let probe: LeafRecovery =
-            match recover_leaf_function_in_object(object, &code, base, abi, &[]) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("sound-reject {}: {fname} not in class ({e})", program.name);
-                    return None;
-                }
-            };
-        let resolved: Vec<ResolvedCall> =
-            resolve_recovered_calls(object, fname, &probe.call_targets, program, abi)?;
-        let rec: LeafRecovery =
-            match recover_leaf_function_in_object(object, &code, base, abi, &resolved) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!(
-                        "sound-reject {}: {fname} not in call class ({e})",
-                        program.name
-                    );
-                    return None;
-                }
-            };
-        let Some(rust): Option<String> = rec.rust_source else {
+        functions.push(ProgramFunction {
+            name: format!("rec_{fname}"),
+            address: base,
+            code,
+        });
+    }
+    let result: LibRecoveredProgram = lib_recover_program(object, &functions, abi);
+    if !result.unrecovered.is_empty() {
+        for bad in &result.unrecovered {
+            eprintln!(
+                "sound-reject {}: {} not in call class ({})",
+                program.name, bad.name, bad.reason
+            );
+        }
+        return None;
+    }
+    let mut module: String = String::new();
+    let mut entry_params: usize = 0;
+    let mut entry_return_width: u32 = 64;
+    let mut used_frame: bool = false;
+    for (idx, &fname) in program.functions.iter().enumerate() {
+        let rec: &LibRecoveredFunction = &result.recovered[idx];
+        let Some(rust): Option<&String> = rec.rust_source.as_ref() else {
             eprintln!(
                 "sound-reject {}: {fname} not pure-safe rust-emittable (sret/block-op)",
                 program.name
             );
             return None;
         };
-        let body: &str = strip_extern_prefix(&rust);
-        used_frame |= body.contains("stack_frame");
-        let def: String = body.replacen("pub fn recovered(", &format!("pub fn rec_{fname}("), 1);
-        module.push_str(&def);
+        used_frame |= rust.contains("stack_frame");
+        module.push_str(rust);
         module.push('\n');
         if fname == program.entry {
             entry_params = rec.params.len();

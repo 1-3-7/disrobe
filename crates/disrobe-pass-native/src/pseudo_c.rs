@@ -839,6 +839,206 @@ fn symbol_code(file: &object::File<'_>, sym: &object::Symbol<'_, '_>) -> Option<
     Some((data.get(start..end)?.to_vec(), sym_addr))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramFunction {
+    pub name: String,
+    pub address: u64,
+    pub code: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredFunction {
+    pub name: String,
+    pub address: u64,
+    pub source: String,
+    pub rust_source: Option<String>,
+    pub return_width_bits: u32,
+    pub params: Vec<Reg>,
+    pub resolved_calls: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecoveredFunction {
+    pub name: String,
+    pub address: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecoveredProgram {
+    pub recovered: Vec<RecoveredFunction>,
+    pub unrecovered: Vec<UnrecoveredFunction>,
+}
+
+pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -> RecoveredProgram {
+    let by_addr: BTreeMap<u64, &ProgramFunction> = functions
+        .iter()
+        .map(|f: &ProgramFunction| (f.address, f))
+        .collect();
+    let mut recovered: Vec<RecoveredFunction> = Vec::with_capacity(functions.len());
+    let mut unrecovered: Vec<UnrecoveredFunction> = Vec::new();
+    for f in functions {
+        match recover_program_function(object, f, &by_addr, abi) {
+            Ok(rec) => recovered.push(rec),
+            Err(reason) => unrecovered.push(UnrecoveredFunction {
+                name: f.name.clone(),
+                address: f.address,
+                reason,
+            }),
+        }
+    }
+    RecoveredProgram {
+        recovered,
+        unrecovered,
+    }
+}
+
+fn recover_program_function(
+    object: &[u8],
+    f: &ProgramFunction,
+    by_addr: &BTreeMap<u64, &ProgramFunction>,
+    abi: Abi,
+) -> core::result::Result<RecoveredFunction, String> {
+    let probe: LeafRecovery = recover_leaf_function_in_object(object, &f.code, f.address, abi, &[])
+        .map_err(|e: Error| e.to_string())?;
+    let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
+    let mut seen: Vec<u64> = Vec::with_capacity(probe.call_targets.len());
+    for target in probe.call_targets {
+        if seen.contains(&target) {
+            continue;
+        }
+        seen.push(target);
+        let sibling_addr: u64 = if by_addr.contains_key(&target) {
+            target
+        } else if let Some(relocated) = resolve_relocated_call_target(object, f, target) {
+            relocated
+        } else {
+            target
+        };
+        let Some(callee): Option<&&ProgramFunction> = by_addr.get(&sibling_addr) else {
+            continue;
+        };
+        let Some(arg_count): Option<usize> =
+            resolved_int_arity_in_object(object, &callee.code, callee.address, abi)
+        else {
+            continue;
+        };
+        resolved.push(ResolvedCall {
+            target,
+            name: Some(callee.name.clone()),
+            arg_count,
+        });
+    }
+    let rec: LeafRecovery =
+        recover_leaf_function_in_object(object, &f.code, f.address, abi, &resolved)
+            .map_err(|e: Error| e.to_string())?;
+    let resolved_names: Vec<String> = resolved
+        .iter()
+        .filter_map(|c: &ResolvedCall| c.name.clone())
+        .collect();
+    let source: String = rename_recovered_c_symbol(&rec.source, &f.name);
+    let rust_source: Option<String> = rec
+        .rust_source
+        .as_deref()
+        .map(|body: &str| rename_recovered_rust_symbol(body, &f.name, &resolved_names));
+    Ok(RecoveredFunction {
+        name: f.name.clone(),
+        address: f.address,
+        source,
+        rust_source,
+        return_width_bits: rec.return_width_bits,
+        params: rec.params,
+        resolved_calls: resolved.iter().map(|c: &ResolvedCall| c.target).collect(),
+    })
+}
+
+fn resolve_relocated_call_target(
+    object: &[u8],
+    caller: &ProgramFunction,
+    target: u64,
+) -> Option<u64> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
+
+    let file: object::File<'_> = object::File::parse(object).ok()?;
+    let caller_start: u64 = caller.address;
+    let caller_len: u64 = u64::try_from(caller.code.len()).ok()?;
+    let caller_end: u64 = caller_start.saturating_add(caller_len);
+    for section in file.sections() {
+        let section_addr: u64 = section.address();
+        let Ok(section_data): core::result::Result<&[u8], object::Error> = section.data() else {
+            continue;
+        };
+        for (offset, reloc) in section.relocations() {
+            let reloc_addr: u64 = section_addr.saturating_add(offset);
+            if reloc_addr < caller_start || reloc_addr >= caller_end {
+                continue;
+            }
+            if reloc_addr.saturating_add(4) != target {
+                continue;
+            }
+            let RelocationTarget::Symbol(sym_index) = reloc.target() else {
+                continue;
+            };
+            let sym: object::Symbol<'_, '_> = file.symbol_by_index(sym_index).ok()?;
+            let effective: i64 = reloc_effective_addend(&reloc, section_data, offset, 4).ok()?;
+            let sym_addr: i64 = i64::try_from(sym.address()).ok()?;
+            let resolved: i64 = sym_addr.checked_add(effective)?.checked_add(4)?;
+            return u64::try_from(resolved).ok();
+        }
+    }
+    None
+}
+
+fn rename_recovered_c_symbol(source: &str, name: &str) -> String {
+    source.replacen("recovered(", &format!("{name}("), 1)
+}
+
+fn rename_recovered_rust_symbol(source: &str, name: &str, resolved_names: &[String]) -> String {
+    let filtered: String = drop_resolved_sibling_externs(source, resolved_names);
+    filtered.replacen("pub fn recovered(", &format!("pub fn {name}("), 1)
+}
+
+fn drop_resolved_sibling_externs(source: &str, resolved_names: &[String]) -> String {
+    let trailing_newline: bool = source.ends_with('\n');
+    let mut out: Vec<String> = Vec::new();
+    let mut in_extern_block: bool = false;
+    let mut kept_decls: Vec<String> = Vec::new();
+    for line in source.lines() {
+        if !in_extern_block && line.trim_end() == "extern \"C\" {" {
+            in_extern_block = true;
+            kept_decls.clear();
+            continue;
+        }
+        if in_extern_block {
+            if line.trim() == "}" {
+                in_extern_block = false;
+                if !kept_decls.is_empty() {
+                    out.push("extern \"C\" {".to_owned());
+                    out.append(&mut kept_decls);
+                    out.push("}".to_owned());
+                }
+                continue;
+            }
+            let callee_name: Option<&str> = line
+                .trim()
+                .strip_prefix("fn ")
+                .and_then(|rest: &str| rest.split('(').next());
+            let is_resolved_sibling: bool =
+                callee_name.is_some_and(|n: &str| resolved_names.iter().any(|r: &String| r == n));
+            if !is_resolved_sibling {
+                kept_decls.push(line.to_owned());
+            }
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    let mut joined: String = out.join("\n");
+    if trailing_newline {
+        joined.push('\n');
+    }
+    joined
+}
+
 fn recover_leaf_function_calls_impl(
     machine_code: &[u8],
     base: u64,

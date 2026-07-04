@@ -141,8 +141,8 @@ disrobe dotnet decompile App.dll --out src/            # in-house CIL to C#/F#/V
 disrobe native unpack packed.exe --out unpacked.bin    # UPX/ASPack/PECompact/Yoda's and more
 disrobe native devirt vmprotected.exe --out devirt/    # recover a bytecode-VM protector's handler table + lift to pseudo-code
 disrobe native disasm stripped.bin --emit cfg-dot      # function discovery + per-function CFG
-disrobe native decompile app.exe --backend native      # in-tree x86-64 -> C pseudo-code, per-function, graded vs gcc/clang
-disrobe native decompile app.exe --backend native --format rust  # x86-64 -> idiomatic Rust (integer + control-flow leaf), graded vs rustc
+disrobe native decompile app.exe --backend native      # in-tree x86-64 -> C, whole-program call resolution, graded vs gcc/clang
+disrobe native decompile app.exe --backend native --format rust  # x86-64 -> idiomatic Rust, whole-program call resolution, graded vs rustc
 disrobe query packed.exe "calls-to recv"               # queryable IR over stripped code
 disrobe query packed.exe string-decoders               # decoder-shaped functions (loop + xor/add)
 disrobe capabilities packed.exe                        # MITRE ATT&CK + MBC tags with per-instruction evidence
@@ -311,7 +311,7 @@ This section names the supported surface and its residual. Measured scores live 
 | Surface | Coverage |
 |---|---|
 | Symbols and structure | DWARF/PDB/STABS across x86/ARM/RISC-V/MIPS/PowerPC/SPARC/eBPF. Rust + C++ + Swift + Itanium demangle; C++ RTTI/vtable and class-hierarchy recovery. Exports unpacked, symbol-annotated input for external tools (`native export --format ghidra\|ida\|json`). |
-| Decompiler | In-tree x86-64 -> C pseudo-code decompiler (`native decompile --backend native`, no external dependency), every recovered function graded against real gcc and clang by execution-differential recompilation, plus an x86-64 -> Rust backend (`--format rust`) covering the integer and control-flow leaf class, graded the same way against `rustc`. Whole-program lifting and float/memory Rust are in progress. `native decompile --backend ghidra` drives ghidra-headless when it is installed. |
+| Decompiler | In-tree x86-64 -> C and x86-64 -> Rust decompiler (`native decompile --backend native --format c\|rust`, no external dependency, default), with whole-program call resolution: it stitches each function's outgoing calls to their siblings, resolves callee arity, and recovers dense switch dispatch straight from the object, not just isolated leaves. Every recovered function is graded against real gcc, clang, and rustc by execution-differential recompilation. `native decompile --backend ghidra` drives ghidra-headless when it is installed. |
 | Disassembler | In-tree iced-backed disassembler discovers functions without symbols, builds the whole-program call graph and per-function CFG (`native disasm --emit cfg-dot`), renders Intel/AT&T/NASM/MASM with per-instruction register, memory, and rflags effects. `native callgraph`, `native patch`, `native sigmaker`, and `native diff` work on stripped input. |
 | Packers (27 families) | Recover with the in-house x86 stub emulator: UPX, kkrunchy classic, NSPack, Petite, MPRESS, MEW, FSG, ASPack, PECompact, and Yoda's Crypter. Partial: ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone Crypter. Detect + carve: VMProtect, Themida, Yoda's Protector. Detect-only: WinLicense, Enigma, Armadillo, Obsidium, PE-Protector, PELock (per-machine-keyed handler stream absent from the file). |
 | Queryable IR | Recover: `disrobe query` runs over the disassembled code symbol-independently (functions, calls-to, xrefs-to, string-decoder-shaped functions, complexity-over, capability sites). `disrobe capabilities` maps matched behavior to MITRE ATT&CK and Malware Behavior Catalog IDs with per-match evidence. |
@@ -600,4 +600,4 @@ Download a prebuilt binary from the [Releases page](https://github.com/1-3-7/dis
 
 ### How does it compare to Ghidra or IDA?
 
-`disrobe` has its own in-tree x86-64 -> C and x86-64 -> Rust pseudo-code decompiler (`native decompile --backend native --format c|rust`, no external dependency, every recovered function graded against real gcc, clang, and rustc), plus full bytecode-to-source across 20+ ecosystems. Ghidra and IDA still lead on whole-program C recovery of large native binaries, so `disrobe` also unpacks, recovers symbols, and exports straight into them (`native export --format ghidra|ida|json`) and can drive ghidra-headless itself (`native decompile --backend ghidra`).
+`disrobe` has its own in-tree x86-64 -> C and x86-64 -> Rust decompiler (`native decompile --backend native --format c|rust`, no external dependency, whole-program call resolution, every recovered function graded against real gcc, clang, and rustc), plus full bytecode-to-source across 20+ ecosystems. Ghidra and IDA still lead on large, deeply nested native binaries, so `disrobe` also unpacks, recovers symbols, and exports straight into them (`native export --format ghidra|ida|json`) and can drive ghidra-headless itself (`native decompile --backend ghidra`).

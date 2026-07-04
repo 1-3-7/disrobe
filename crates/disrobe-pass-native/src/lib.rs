@@ -234,11 +234,12 @@ pub use provenance_header::{
     render_rust_with_header, rust_lifted_header,
 };
 pub use pseudo_c::{
-    Abi as PseudoAbi, FpConstant, JumpTable, LeafRecovery, Reg as PseudoReg, ResolvedCall,
-    ScalarType as PseudoScalarType, SretReturn, callee_int_arity, recover_leaf_function,
-    recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_in_object,
+    Abi as PseudoAbi, FpConstant, JumpTable, LeafRecovery, ProgramFunction, RecoveredFunction,
+    RecoveredProgram, Reg as PseudoReg, ResolvedCall, ScalarType as PseudoScalarType, SretReturn,
+    UnrecoveredFunction, callee_int_arity, recover_leaf_function, recover_leaf_function_abi,
+    recover_leaf_function_const_abi, recover_leaf_function_in_object,
     recover_leaf_function_rust_abi, recover_leaf_function_switch_abi,
-    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
+    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls, recover_program,
     resolved_int_arity_in_object,
 };
 pub use rust_recovery::{

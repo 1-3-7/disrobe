@@ -148,7 +148,7 @@ fn decompile_native(
     out: Option<PathBuf>,
     format: DecompileLang,
 ) -> miette::Result<()> {
-    use disrobe_pass_native::{PseudoAbi, recover_leaf_function_abi};
+    use disrobe_pass_native::{ProgramFunction, PseudoAbi, RecoveredFunction, recover_program};
     use std::fmt::Write as _;
 
     let bytes: Vec<u8> = std::fs::read(&input)
@@ -186,6 +186,7 @@ fn decompile_native(
     let mut bodies: String = String::new();
     let mut recovered: Vec<serde_json::Value> = Vec::new();
     let mut unrecovered: Vec<serde_json::Value> = Vec::new();
+    let mut program_functions: Vec<ProgramFunction> = Vec::with_capacity(module.functions().len());
 
     for f in module.functions() {
         let Some(code): Option<Vec<u8>> = bytes_for_va_range(&obj, f.address, f.end) else {
@@ -194,46 +195,70 @@ fn decompile_native(
             }));
             continue;
         };
-        match recover_leaf_function_abi(&code, f.address, abi) {
-            Ok(rec) => {
-                let selected: Option<&str> = match format {
-                    DecompileLang::C => Some(rec.source.as_str()),
-                    DecompileLang::Rust => rec.rust_source.as_deref(),
-                };
-                let Some(src): Option<&str> = selected else {
-                    unrecovered.push(serde_json::json!({
-                        "name": f.name, "address": f.address,
-                        "reason": "not in the pure-safe Rust-emittable leaf class (float, memory access, stack frame, struct return, switch, or call)"
-                    }));
-                    continue;
-                };
-                if matches!(format, DecompileLang::C) {
-                    for line in src.lines() {
-                        if line.trim_start().starts_with("#include") {
-                            includes.insert(line.trim().to_owned());
-                        }
-                    }
+        program_functions.push(ProgramFunction {
+            name: unique_c_name(&f.name, f.address, &mut seen),
+            address: f.address,
+            code,
+        });
+    }
+
+    let program: disrobe_pass_native::RecoveredProgram =
+        recover_program(&bytes, &program_functions, abi);
+    let raw_names_by_address: BTreeMap<u64, &str> = module
+        .functions()
+        .iter()
+        .map(|f: &disrobe_query::Function| (f.address, f.name.as_str()))
+        .collect();
+    for bad in &program.unrecovered {
+        let raw_name: &str = raw_names_by_address
+            .get(&bad.address)
+            .copied()
+            .unwrap_or(bad.name.as_str());
+        unrecovered.push(serde_json::json!({
+            "name": raw_name, "address": bad.address, "reason": bad.reason
+        }));
+    }
+    let by_address: BTreeMap<u64, &RecoveredFunction> = program
+        .recovered
+        .iter()
+        .map(|rec: &RecoveredFunction| (rec.address, rec))
+        .collect();
+
+    for f in module.functions() {
+        let Some(rec): Option<&RecoveredFunction> = by_address.get(&f.address).copied() else {
+            continue;
+        };
+        let selected: Option<&str> = match format {
+            DecompileLang::C => Some(rec.source.as_str()),
+            DecompileLang::Rust => rec.rust_source.as_deref(),
+        };
+        let Some(src): Option<&str> = selected else {
+            unrecovered.push(serde_json::json!({
+                "name": f.name, "address": f.address,
+                "reason": "not in the pure-safe Rust-emittable class (struct return or a block memcpy/memset idiom)"
+            }));
+            continue;
+        };
+        if matches!(format, DecompileLang::C) {
+            for line in src.lines() {
+                if line.trim_start().starts_with("#include") {
+                    includes.insert(line.trim().to_owned());
                 }
-                let cname: String = unique_c_name(&f.name, f.address, &mut seen);
-                let renamed: String = src
-                    .lines()
-                    .filter(|l: &&str| !l.trim_start().starts_with("#include"))
-                    .collect::<Vec<&str>>()
-                    .join("\n")
-                    .replace("recovered(", &format!("{cname}("));
-                let comment: String = match format {
-                    DecompileLang::C => format!("/* {} @ {:#x} */", f.name, f.address),
-                    DecompileLang::Rust => format!("// {} @ {:#x}", f.name, f.address),
-                };
-                let _ = writeln!(bodies, "{comment}\n{}\n", renamed.trim());
-                recovered.push(serde_json::json!({
-                    "name": f.name, "address": f.address, "emitted_as": cname
-                }));
             }
-            Err(e) => unrecovered.push(serde_json::json!({
-                "name": f.name, "address": f.address, "reason": e.to_string()
-            })),
         }
+        let renamed: String = src
+            .lines()
+            .filter(|l: &&str| !l.trim_start().starts_with("#include"))
+            .collect::<Vec<&str>>()
+            .join("\n");
+        let comment: String = match format {
+            DecompileLang::C => format!("/* {} @ {:#x} */", f.name, f.address),
+            DecompileLang::Rust => format!("// {} @ {:#x}", f.name, f.address),
+        };
+        let _ = writeln!(bodies, "{comment}\n{}\n", renamed.trim());
+        recovered.push(serde_json::json!({
+            "name": f.name, "address": f.address, "emitted_as": rec.name
+        }));
     }
 
     let mut source_text: String = String::new();
