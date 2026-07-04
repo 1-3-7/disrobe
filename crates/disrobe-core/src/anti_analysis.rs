@@ -2232,7 +2232,7 @@ fn shannon_entropy_bits(bytes: &[u8]) -> f64 {
             continue;
         }
         let p: f64 = f64::from(c) / total;
-        entropy -= p * p.log2();
+        entropy = p.mul_add(-p.log2(), entropy);
     }
     entropy
 }
