@@ -702,6 +702,12 @@ fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
 
 #[test]
 fn whole_programs_recompile_to_behavioral_equivalence_sysv() {
+    if cfg!(target_os = "macos") {
+        eprintln!(
+            "skipping sysv whole-program oracle on macos: the host gcc is an apple-clang alias that rejects the gcc-only if-conversion flags in CC_FLAGS, and arm64 cannot execute the x86-64 sysv battery; ubuntu carries the cross-platform sysv floor"
+        );
+        return;
+    }
     let Some(_host): Option<String> = cc() else {
         eprintln!("skipping: no host C compiler on PATH");
         return;
@@ -1042,6 +1048,12 @@ fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
 
 #[test]
 fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
+    if cfg!(target_os = "macos") {
+        eprintln!(
+            "skipping sysv shape oracle on macos: the host gcc is an apple-clang alias that rejects the gcc-only if-conversion flags in CC_FLAGS, and arm64 cannot execute the x86-64 sysv battery; ubuntu carries the cross-platform sysv floor"
+        );
+        return;
+    }
     let Some(host_cc): Option<String> = cc() else {
         eprintln!("skipping sysv shape oracle: no host C compiler on PATH");
         return;

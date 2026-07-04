@@ -1163,12 +1163,7 @@ fn structure_legacy_with(
         legacy_with_body_bound(stream, body_start, region_end);
     let body: Vec<Stmt> = if is_return && !region_contains_setup_with(stream, body_start, body_end)
     {
-        let (mut stmts, residual): (Vec<Stmt>, Vec<Expr>) =
-            build_linear_stmts_sim(code, &stream.ops[body_start..body_end])?;
-        if let Some(value) = residual.into_iter().next_back() {
-            stmts.push(Stmt::Return(Some(value)));
-        }
-        stmts
+        legacy_with_return_body(code, stream, body_start, body_end)?
     } else {
         let mut stmts: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
         if !region_contains_setup_with(stream, body_start, body_end)
@@ -1190,6 +1185,68 @@ fn structure_legacy_with(
     let mut out: Vec<Stmt> = head_stmts;
     out.push(with_stmt);
     Ok(Some((out, hi)))
+}
+
+fn legacy_with_return_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Result<Vec<Stmt>> {
+    let has_branch: bool = (body_start..body_end).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > k && t <= body_end)
+    });
+    if has_branch
+        && let Some(stmts) = legacy_with_return_structured(code, stream, body_start, body_end)?
+    {
+        return Ok(stmts);
+    }
+    let (mut stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[body_start..body_end])?;
+    if let Some(value) = residual.into_iter().next_back() {
+        stmts.push(Stmt::Return(Some(value)));
+    }
+    Ok(stmts)
+}
+
+fn legacy_with_return_structured(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(&pop_block): Option<&usize> = stream
+        .pre311_pop_block_idx
+        .range(body_start..body_end)
+        .next_back()
+    else {
+        return Ok(None);
+    };
+    let gap_inert: bool = (pop_block + 1..body_end).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::RotN(_)
+                | CanonicalOp::Swap(_)
+        )
+    });
+    if !gap_inert {
+        return Ok(None);
+    }
+    let mut patched: DecodedStream = stream.clone();
+    patched.ops[pop_block] = CanonicalOp::Return;
+    Ok(Some(structure_stmts(
+        code,
+        &patched,
+        body_start,
+        pop_block + 1,
+    )?))
 }
 
 fn else_jump_exits_to_shared_join(

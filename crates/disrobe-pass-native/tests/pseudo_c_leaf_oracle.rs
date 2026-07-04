@@ -11379,6 +11379,8 @@ struct SelCase {
     name: &'static str,
     arity: usize,
     expect_sel_cc: bool,
+    require_ternary: bool,
+    allow_sound_reject: bool,
     c_source: &'static str,
 }
 
@@ -11387,72 +11389,96 @@ const SEL_BATTERY: &[SelCase] = &[
         name: "s_absdiff64",
         arity: 2,
         expect_sel_cc: true,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "long long s_absdiff64(long long a, long long b){ long long d = a - b; if (d < 0) d = -d; return d; }",
     },
     SelCase {
         name: "s_absdiff32",
         arity: 2,
         expect_sel_cc: true,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "int s_absdiff32(int a, int b){ int d = a - b; if (d < 0) d = -d; return d; }",
     },
     SelCase {
         name: "s_absdiff16",
         arity: 2,
         expect_sel_cc: true,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "int s_absdiff16(short a, short b){ int d = (int)a - (int)b; if (d < 0) d = -d; return d; }",
     },
     SelCase {
         name: "s_absdiff8",
         arity: 2,
         expect_sel_cc: true,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "signed char s_absdiff8(signed char a, signed char b){ int d = (int)a - (int)b; if (d < 0) d = -d; return (signed char)d; }",
     },
     SelCase {
         name: "s_abs64",
         arity: 1,
         expect_sel_cc: false,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "long long s_abs64(long long x){ return x < 0 ? -x : x; }",
     },
     SelCase {
         name: "s_abs16",
         arity: 1,
         expect_sel_cc: false,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "short s_abs16(short x){ int v = x; return (short)(v < 0 ? -v : v); }",
     },
     SelCase {
         name: "s_max64",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: true,
+        allow_sound_reject: false,
         c_source: "long long s_max64(long long a, long long b){ return a > b ? a : b; }",
     },
     SelCase {
         name: "s_min64",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: true,
+        allow_sound_reject: false,
         c_source: "long long s_min64(long long a, long long b){ return a < b ? a : b; }",
     },
     SelCase {
         name: "s_max8",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: true,
+        allow_sound_reject: false,
         c_source: "signed char s_max8(signed char a, signed char b){ return a > b ? a : b; }",
     },
     SelCase {
         name: "s_umax32",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: true,
+        allow_sound_reject: false,
         c_source: "unsigned s_umax32(unsigned a, unsigned b){ return a > b ? a : b; }",
     },
     SelCase {
         name: "s_selnz",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: true,
+        allow_sound_reject: false,
         c_source: "long long s_selnz(long long a, long long b){ return a != 0 ? a : b; }",
     },
     SelCase {
         name: "s_nearmiss",
         arity: 2,
         expect_sel_cc: false,
+        require_ternary: false,
+        allow_sound_reject: true,
         c_source: "long long s_nearmiss(long long a, long long b){ long long d = a - b; return (a >= b) ? a : d; }",
     },
 ];
@@ -11490,6 +11516,7 @@ static int mism(const char *n, long long a, long long b, unsigned long long w, u
     return 1;
 }
 
+#ifdef SEL_HAVE_s_absdiff64
 static int check_s_absdiff64(void) {
     for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
         long long a = A64[i], b = A64[j], d;
@@ -11501,6 +11528,8 @@ static int check_s_absdiff64(void) {
     }
     return 0;
 }
+#endif
+#ifdef SEL_HAVE_s_absdiff32
 static int check_s_absdiff32(void) {
     for (size_t i = 0; i < NA32; i++) for (size_t j = 0; j < NA32; j++) {
         int a = (int)A32[i], b = (int)A32[j], d;
@@ -11512,6 +11541,8 @@ static int check_s_absdiff32(void) {
     }
     return 0;
 }
+#endif
+#ifdef SEL_HAVE_s_absdiff16
 static int check_s_absdiff16(void) {
     static const short BS[] = { -32768, -1, 0, 1, 32767, 12345 };
     for (int ia = -32768; ia <= 32767; ia++) for (size_t k = 0; k < 6; k++) {
@@ -11522,6 +11553,8 @@ static int check_s_absdiff16(void) {
     }
     return 0;
 }
+#endif
+#ifdef SEL_HAVE_s_absdiff8
 static int check_s_absdiff8(void) {
     for (int ia = -128; ia < 128; ia++) for (int ib = -128; ib < 128; ib++) {
         signed char a = (signed char)ia, b = (signed char)ib;
@@ -11531,6 +11564,8 @@ static int check_s_absdiff8(void) {
     }
     return 0;
 }
+#endif
+#ifdef SEL_HAVE_s_abs64
 static int check_s_abs64(void) {
     for (size_t i = 0; i < NA64; i++) {
         long long x = A64[i];
@@ -11540,6 +11575,8 @@ static int check_s_abs64(void) {
     }
     return 0;
 }
+#endif
+#ifdef SEL_HAVE_s_abs16
 static int check_s_abs16(void) {
     for (int ix = -32768; ix <= 32767; ix++) {
         short x = (short)ix;
@@ -11549,6 +11586,7 @@ static int check_s_abs16(void) {
     }
     return 0;
 }
+#endif
 static int check_s_max64(void) {
     for (size_t i = 0; i < NA64; i++) for (size_t j = 0; j < NA64; j++) {
         long long a = A64[i], b = A64[j];
@@ -11608,12 +11646,24 @@ static int check_s_nearmiss(void) {
 #endif
 
 int main(void) {
+#ifdef SEL_HAVE_s_absdiff64
     if (check_s_absdiff64()) return 1;
+#endif
+#ifdef SEL_HAVE_s_absdiff32
     if (check_s_absdiff32()) return 1;
+#endif
+#ifdef SEL_HAVE_s_absdiff16
     if (check_s_absdiff16()) return 1;
+#endif
+#ifdef SEL_HAVE_s_absdiff8
     if (check_s_absdiff8()) return 1;
+#endif
+#ifdef SEL_HAVE_s_abs64
     if (check_s_abs64()) return 1;
+#endif
+#ifdef SEL_HAVE_s_abs16
     if (check_s_abs16()) return 1;
+#endif
     if (check_s_max64()) return 1;
     if (check_s_min64()) return 1;
     if (check_s_max8()) return 1;
@@ -11629,6 +11679,7 @@ int main(void) {
 
 fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) -> String {
     let mut decls: String = String::new();
+    let mut select_ternaries: usize = 0;
     for case in SEL_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name)
         else {
@@ -11638,8 +11689,8 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
             Ok(recovery) => recovery,
             Err(e) => {
                 assert!(
-                    case.name == "s_nearmiss",
-                    "sel case {} not in leaf class: {e}",
+                    case.allow_sound_reject,
+                    "sel case {} must recover, not sound-reject: {e}",
                     case.name
                 );
                 continue;
@@ -11653,12 +11704,15 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
             recovery.params.len(),
             case.arity
         );
-        assert!(
-            recovery.source.contains(") ? ("),
-            "sel case {} recovered without a select ternary (cmov path did not fire):\n{}",
-            case.name,
-            recovery.source
-        );
+        if recovery.source.contains(") ? (") {
+            select_ternaries += 1;
+        } else {
+            assert!(
+                !case.require_ternary,
+                "sel case {} recovered without a select ternary (cmov path did not fire):\n{}",
+                case.name, recovery.source
+            );
+        }
         if case.name == "s_nearmiss" {
             assert!(
                 !recovery.source.contains("sel_cc_"),
@@ -11693,6 +11747,10 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
         decls.push_str(&renamed);
         decls.push('\n');
     }
+    assert!(
+        select_ternaries >= 5,
+        "the cmov select path must fire for the pure-select ordering idioms; only {select_ternaries} recovered as a select ternary"
+    );
     decls
 }
 

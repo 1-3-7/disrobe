@@ -69,6 +69,61 @@ const TRY_WRAPPING_LOOP: &str = concat!(
     "        cleanup()\n",
 );
 
+const WITH_IF_RETURN: &str = concat!(
+    "def branch_else(ctx, width, a, b):\n",
+    "    with ctx():\n",
+    "        if width >= 9:\n",
+    "            names = a\n",
+    "        else:\n",
+    "            names = b\n",
+    "        name = names[width]\n",
+    "        return name[:width].center(width)\n",
+    "\n",
+    "\n",
+    "def branch_no_else(ctx, month, year, width, withyear):\n",
+    "    with ctx():\n",
+    "        s = month[year]\n",
+    "        if withyear:\n",
+    "            s = '%s %r' % (s, year)\n",
+    "        return s.center(width)\n",
+    "\n",
+    "\n",
+    "def branch_pre_return(ctx, flag, x):\n",
+    "    with ctx():\n",
+    "        y = 1\n",
+    "        if flag:\n",
+    "            y = x\n",
+    "        z = y + 1\n",
+    "        return z\n",
+);
+
+const NESTED_TRY_IN_EXCEPT: &str = concat!(
+    "def end(dispatch, tag, data):\n",
+    "    try:\n",
+    "        f = dispatch[tag]\n",
+    "    except KeyError:\n",
+    "        if ':' not in tag:\n",
+    "            return None\n",
+    "        try:\n",
+    "            f = dispatch[tag.split(':')[-1]]\n",
+    "        except KeyError:\n",
+    "            return None\n",
+    "    return f(data)\n",
+    "\n",
+    "\n",
+    "def end_dispatch(dispatch, tag, data):\n",
+    "    try:\n",
+    "        f = dispatch[tag]\n",
+    "    except KeyError:\n",
+    "        if ':' not in tag:\n",
+    "            return None\n",
+    "        try:\n",
+    "            f = dispatch[tag.split(':')[-1]]\n",
+    "        except KeyError:\n",
+    "            return None\n",
+    "    return f(data)\n",
+);
+
 const ALIASES: &[&str] = &["3.8", "3.9", "3.10", "3.11"];
 const PRE311_ALIASES: &[&str] = &["3.8", "3.9", "3.10"];
 
@@ -234,5 +289,78 @@ fn try_wrapping_loop_handler_not_orphaned() {
         "{} try-wrapping-loop structuring failures:\n{}",
         failures.len(),
         failures.join("\n\n")
+    );
+}
+
+fn assert_recompiles_equivalent(scratch_name: &str, fixture: &str, label: &str, aliases: &[&str]) {
+    let scratch: PathBuf = PathBuf::from(format!("../../target/{scratch_name}"));
+    fs::create_dir_all(&scratch).expect("scratch");
+
+    let mut checked: usize = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for &alias in aliases {
+        let Some((original, marshal_version, source)): Option<(
+            CodeObject,
+            MarshalVersion,
+            String,
+        )> = recover(&scratch, alias, fixture) else {
+            continue;
+        };
+        let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
+        fs::write(&recovered_path, &source).expect("write recovered");
+        checked += 1;
+        if source.contains("exception matches") {
+            failures.push(format!(
+                "py{alias}: exc-match leaked into source:\n{source}"
+            ));
+            continue;
+        }
+        let interpreter: PathBuf = find_interpreter(alias).expect("interpreter re-resolve");
+        let recompiled_pyc: PathBuf = scratch.join(format!("recovered.{alias}.pyc"));
+        if let Err(e) = compile_source(&interpreter, &recovered_path, &recompiled_pyc) {
+            failures.push(format!(
+                "py{alias}: recovered does not parse: {e}\n{source}"
+            ));
+            continue;
+        }
+        let (recompiled, _): (CodeObject, MarshalVersion) =
+            read_code(&recompiled_pyc).unwrap_or_else(|e| panic!("{alias} read recompiled: {e}"));
+        match semantic_equiv(&original, &recompiled, marshal_version) {
+            Verdict::Perfect | Verdict::Semantic => {}
+            Verdict::CodeDiff(detail) => {
+                failures.push(format!("py{alias}: not equivalent ({detail:?})\n{source}"));
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "no CPython interpreter resolvable via uv for {label}; the proof is vacuous"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} {label} recompile failures:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+#[test]
+fn with_if_return_recompiles_equivalent() {
+    assert_recompiles_equivalent(
+        "py-with-if-return",
+        WITH_IF_RETURN,
+        "with-if-return",
+        PRE311_ALIASES,
+    );
+}
+
+#[test]
+fn nested_try_in_except_recompiles_equivalent() {
+    assert_recompiles_equivalent(
+        "py-nested-try-in-except",
+        NESTED_TRY_IN_EXCEPT,
+        "nested-try-in-except",
+        ALIASES,
     );
 }

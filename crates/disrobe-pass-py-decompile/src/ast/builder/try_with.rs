@@ -887,11 +887,24 @@ fn pre311_handler_region_end(stream: &DecodedStream, handler_start: usize, hi: u
     }
     let prefer_raise: bool = last_end == handler_start
         || (last_raise > last_end && pre311_trailing_bare_except(stream, last_end, last_raise));
-    if prefer_raise {
+    let end: usize = if prefer_raise {
         last_raise.min(hi)
     } else {
         last_end.min(hi)
+    };
+    if end <= handler_start && pre311_terminator_truncated_at(stream, handler_start, hi) {
+        hi
+    } else {
+        end
     }
+}
+
+fn pre311_terminator_truncated_at(stream: &DecodedStream, handler_start: usize, hi: usize) -> bool {
+    hi < stream.ops.len()
+        && hi > handler_start
+        && (matches!(stream.ops[hi], CanonicalOp::Reraise(_))
+            || stream.pre311_end_finally_idx.contains(&hi))
+        && !pre311_reraise_inside_nested(stream, handler_start, hi, stream.ops.len())
 }
 
 fn pre311_trailing_bare_except(stream: &DecodedStream, lo: usize, hi: usize) -> bool {

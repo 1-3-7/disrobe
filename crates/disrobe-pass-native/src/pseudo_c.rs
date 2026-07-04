@@ -1136,6 +1136,12 @@ fn recover_leaf_function_calls_impl(
             continue;
         }
         if let Some(stmt) = lift_width_extension(&insn.mnemonic, &insn.operands) {
+            if sign_extended_high_read_is_unsound(dividend_high, &stmt) {
+                return Err(Error::LlvmIr(format!(
+                    "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
+                    insn.address
+                )));
+            }
             if let Stmt::Extend { dest, .. } = &stmt
                 && dest.reg == Reg::Rax
             {
@@ -1153,6 +1159,12 @@ fn recover_leaf_function_calls_impl(
                 insn.mnemonic, insn.operands, insn.address
             ))
         })?;
+        if sign_extended_high_read_is_unsound(dividend_high, &stmt) {
+            return Err(Error::LlvmIr(format!(
+                "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
+                insn.address
+            )));
+        }
         if let Stmt::Assign { dest, .. }
         | Stmt::BinAssign { dest, .. }
         | Stmt::UnAssign { dest, .. }
@@ -2167,6 +2179,12 @@ impl<'a> StraightLifter<'a> {
                 insn.mnemonic, insn.operands, insn.address
             ))
         })?;
+        if sign_extended_high_read_is_unsound(self.dividend_high, &stmt) {
+            return Err(Error::LlvmIr(format!(
+                "sign-extended high half in rdx from a cqo/cdq is read at {:#x} without a modeled division; not soundly recoverable",
+                insn.address
+            )));
+        }
         self.dividend_high = track_dividend_high(self.dividend_high, &stmt);
         match &stmt {
             Stmt::BinAssign { dest, op, .. } => {
@@ -4593,6 +4611,15 @@ const fn dividend_high_matches(high: DividendHigh, signed: bool, width: Width) -
         DividendHigh::SignExtended { width: w } => signed && w as u8 == width as u8,
         DividendHigh::Zeroed => !signed,
     }
+}
+
+fn sign_extended_high_read_is_unsound(dividend_high: Option<DividendHigh>, stmt: &Stmt) -> bool {
+    if !matches!(dividend_high, Some(DividendHigh::SignExtended { .. })) {
+        return false;
+    }
+    let mut reads: Vec<Reg> = Vec::new();
+    stmt_value_reads(stmt, &mut reads);
+    reads.contains(&Reg::Rdx)
 }
 
 fn track_dividend_high(prev: Option<DividendHigh>, stmt: &Stmt) -> Option<DividendHigh> {
@@ -8618,6 +8645,41 @@ mod tests {
         assert!(lift_width_extension("movsx", "al,al").is_none());
         assert!(lift_width_extension("cdqe", "rax,eax").is_none());
         assert!(lift_width_extension("mov", "eax,ecx").is_none());
+    }
+
+    #[test]
+    fn nearmiss_ordering_cmov_is_sound_rejected() {
+        let code: [u8; 13] = [
+            0x48, 0x89, 0xc8, 0x48, 0x29, 0xd1, 0x48, 0x39, 0xd0, 0x48, 0x0f, 0x4c, 0xc1,
+        ];
+        let mut full: Vec<u8> = code.to_vec();
+        full.push(0xc3);
+        let result: Result<LeafRecovery> = recover_leaf_function(&full, 0x9500);
+        assert!(
+            result.is_err(),
+            "gcc 14/15 near-miss ordering cmov `(a>=b)?a:(a-b)` must sound-reject, not emit a wrong select: {:?}",
+            result.map(|r: LeafRecovery| r.source)
+        );
+    }
+
+    #[test]
+    fn branchless_cqo_abs_is_sound_rejected() {
+        let absdiff: [u8; 13] = [
+            0x48, 0x89, 0xc8, 0x48, 0x29, 0xd0, 0x48, 0x99, 0x48, 0x31, 0xd0, 0x48, 0x29,
+        ];
+        let mut absdiff_full: Vec<u8> = absdiff.to_vec();
+        absdiff_full.extend_from_slice(&[0xd0, 0xc3]);
+        assert!(
+            recover_leaf_function(&absdiff_full, 0x9600).is_err(),
+            "gcc 14/15 branchless cqo abs must not be silently mis-recovered with a stale rdx"
+        );
+        let abs64: [u8; 10] = [0x48, 0x89, 0xc8, 0x48, 0x99, 0x48, 0x31, 0xd0, 0x48, 0x29];
+        let mut abs64_full: Vec<u8> = abs64.to_vec();
+        abs64_full.extend_from_slice(&[0xd0, 0xc3]);
+        assert!(
+            recover_leaf_function(&abs64_full, 0x9700).is_err(),
+            "gcc 14/15 branchless cqo abs64 must not be silently mis-recovered with a stale rdx"
+        );
     }
 
     #[test]
