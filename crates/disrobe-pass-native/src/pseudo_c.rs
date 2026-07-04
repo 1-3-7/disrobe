@@ -599,6 +599,7 @@ enum Node {
     },
     Break,
     Continue,
+    Return,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -841,7 +842,10 @@ fn recover_leaf_function_calls_impl(
     let mut max_branch_target: u64 = 0;
     let mut df_backward: bool = false;
     for insn in &insns {
-        if insn.mnemonic == "nop" || insn.mnemonic == "endbr64" {
+        if insn.mnemonic == "nop"
+            || insn.mnemonic == "endbr64"
+            || is_xchg_self(&insn.mnemonic, &insn.operands)
+        {
             continue;
         }
         if insn.mnemonic == "cld" {
@@ -982,17 +986,24 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            if !condition_is_sound(kind, &live_flags) {
-                return Err(Error::LlvmIr(format!(
-                    "branch condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            }
+            let (branch_kind, used_flags): (CondKind, Flags) =
+                if condition_is_sound(kind, &live_flags) {
+                    (kind, live_flags)
+                } else if let Some(repaired) =
+                    snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
+                {
+                    (CondKind::Ne, repaired)
+                } else {
+                    return Err(Error::LlvmIr(format!(
+                        "branch condition `{}` not sound against tracked flags at {:#x}",
+                        insn.mnemonic, insn.address
+                    )));
+                };
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Branch {
-                    kind,
-                    flags: live_flags,
+                    kind: branch_kind,
+                    flags: used_flags,
                     target,
                 },
             });
@@ -1192,6 +1203,9 @@ fn recover_leaf_function_calls_impl(
     }
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
+    if fp_return.is_none() {
+        return_width = folded_int_return_width(&structured.body, Width::W64);
+    }
     let sret_plan: Option<SretPlan> = fp_return
         .is_none()
         .then(|| detect_sret(&structured.body, abi))
@@ -1944,9 +1958,17 @@ fn is_indirect_jmp(insn: &DisasmInsn, reg: Reg) -> bool {
     insn.mnemonic == "jmp" && parse_reg(insn.operands.trim()).is_some_and(|r: RegRef| r.reg == reg)
 }
 
+fn is_xchg_self(mnemonic: &str, operands: &str) -> bool {
+    mnemonic == "xchg"
+        && operands
+            .split_once(',')
+            .is_some_and(|(a, b): (&str, &str)| a.trim() == b.trim())
+}
+
 fn is_ignorable(insn: &DisasmInsn) -> bool {
     insn.mnemonic == "nop"
         || insn.mnemonic == "endbr64"
+        || is_xchg_self(&insn.mnemonic, &insn.operands)
         || is_frame_management(&insn.mnemonic, &insn.operands)
 }
 
@@ -2287,6 +2309,44 @@ fn rax_write_width(stmt: &Stmt) -> Option<Width> {
     }
 }
 
+fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
+    let mut cur: Width = incoming;
+    let mut result: Width = Width::W8;
+    for node in nodes {
+        match node {
+            Node::Stmt(stmt) => {
+                if let Some(w) = rax_write_width(stmt) {
+                    cur = w;
+                }
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let then_w: Width = folded_int_return_width(then_body, cur);
+                let else_w: Width = else_body
+                    .as_ref()
+                    .map_or(cur, |e: &Block| folded_int_return_width(e, cur));
+                cur = then_w.max(else_w);
+            }
+            Node::While { body } | Node::DoWhile { body, .. } => {
+                cur = cur.max(folded_int_return_width(body, cur));
+            }
+            Node::Switch { cases, default, .. } => {
+                let mut widest: Width = folded_int_return_width(default, cur);
+                for case in cases {
+                    widest = widest.max(folded_int_return_width(&case.body, cur));
+                }
+                cur = cur.max(widest);
+            }
+            Node::Return => result = result.max(cur),
+            Node::Break | Node::CondSnapshot { .. } | Node::Continue => {}
+        }
+    }
+    result.max(cur)
+}
+
 /// The terminal rax-write width along a switch body chain, used to size an integer switch's return.
 fn chain_terminal_int_width(
     bodies: &BTreeMap<u64, SwitchBody>,
@@ -2482,7 +2542,7 @@ fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, ab
                 }
                 annotate_calls_block(default, map, abi);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -2509,7 +2569,7 @@ fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
                 }
                 collect_call_targets(default, acc);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -3475,6 +3535,7 @@ fn emit_region(
                 if active.is_some() {
                     return Err(StructureError);
                 }
+                out.push(Node::Return);
                 return Ok(());
             }
             BlockTerm::Jump(t) | BlockTerm::Fall(t) => current = *t,
@@ -3976,7 +4037,7 @@ fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec
                 scan_fp_params(default, &mut default_written, acc);
             }
             Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc),
-            Node::Break | Node::Continue => {}
+            Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -4029,7 +4090,7 @@ fn scan_block_params(
                 scan_block_params(default, &mut default_written, acc, note);
             }
             Node::CondSnapshot { flags, .. } => read_flags(flags, written, acc, note),
-            Node::Break | Node::Continue => {}
+            Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -5191,7 +5252,11 @@ fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
                 }
                 collect_sel_vars(default, acc);
             }
-            Node::Stmt(_) | Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+            Node::Stmt(_)
+            | Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return => {}
         }
     }
 }
@@ -5221,7 +5286,7 @@ fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
                 }
                 collect_snapshot_vars(default, acc);
             }
-            Node::Stmt(_) | Node::Break | Node::Continue => {}
+            Node::Stmt(_) | Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -5234,6 +5299,17 @@ fn width_mask(out: &mut String, width: Width, body: &str) {
         other => {
             let _ = write!(out, "(({body}) & 0x{:x}ULL)", (1u128 << other.bits()) - 1);
         }
+    }
+}
+
+fn reg_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
+    match width {
+        Width::W64 => body.to_owned(),
+        Width::W32 => format!("(({body}) & 0xffffffffULL)"),
+        Width::W16 => {
+            format!("(({dest_var} & 0xffffffffffff0000ULL) | (({body}) & 0xffffULL))")
+        }
+        Width::W8 => format!("(({dest_var} & 0xffffffffffffff00ULL) | (({body}) & 0xffULL))"),
     }
 }
 
@@ -5305,7 +5381,7 @@ fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
                 }
                 collect_call_decls(default, acc);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue => {}
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -5536,7 +5612,7 @@ fn scan_frame_block(
                 scan_frame_block(ctx, default, slots, misuse);
             }
             Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, slots, misuse),
-            Node::Break | Node::Continue => {}
+            Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -5996,26 +6072,23 @@ fn emit_c(
         let _ = writeln!(out, "    uint64_t {} = 0;", sel_var(*var));
     }
 
-    emit_block(&mut out, body, 1);
-
-    if sret.is_some() {
-        let _ = writeln!(out, "    return __sret;");
+    let ret_expr: String = if sret.is_some() {
+        "__sret".to_owned()
     } else {
         match signature.ret {
             FnReturn::Int(return_width) => {
-                let ret_body: String = reg_var(Reg::Rax);
-                let _ = write!(out, "    return ");
-                width_mask(&mut out, return_width, &ret_body);
-                let _ = writeln!(out, ";");
+                let mut masked: String = String::new();
+                width_mask(&mut masked, return_width, &reg_var(Reg::Rax));
+                masked
             }
-            FnReturn::Fp(width) => {
-                let _ = writeln!(
-                    out,
-                    "    return {};",
-                    fp_load(&FpOperand::Xmm(Xmm::Xmm0), width)
-                );
-            }
+            FnReturn::Fp(width) => fp_load(&FpOperand::Xmm(Xmm::Xmm0), width),
         }
+    };
+
+    emit_block(&mut out, body, 1, &ret_expr);
+
+    if !matches!(body.last(), Some(Node::Return)) {
+        let _ = writeln!(out, "    return {ret_expr};");
     }
     let _ = writeln!(out, "}}");
     out
@@ -6041,7 +6114,7 @@ fn block_string_ops_present(body: &Block) -> bool {
                 .any(|c: &SwitchCase| block_string_ops_present(&c.body))
                 || block_string_ops_present(default)
         }
-        Node::CondSnapshot { .. } | Node::Break | Node::Continue => false,
+        Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => false,
     })
 }
 
@@ -6227,7 +6300,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 collect_block_regs(default, acc);
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue => {}
+            Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -6323,12 +6396,12 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 collect_block_xmm(default, acc);
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue => {}
+            Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
 
-fn emit_block(out: &mut String, body: &Block, depth: usize) {
+fn emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) {
     let indent: String = "    ".repeat(depth);
     for node in body {
         match node {
@@ -6341,10 +6414,10 @@ fn emit_block(out: &mut String, body: &Block, depth: usize) {
             } => {
                 let cond_text: String = cond_expr(*cond, flags);
                 let _ = writeln!(out, "{indent}if ({cond_text}) {{");
-                emit_block(out, then_body, depth + 1);
+                emit_block(out, then_body, depth + 1, ret_expr);
                 if let Some(else_b) = else_body {
                     let _ = writeln!(out, "{indent}}} else {{");
-                    emit_block(out, else_b, depth + 1);
+                    emit_block(out, else_b, depth + 1, ret_expr);
                 }
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -6354,12 +6427,12 @@ fn emit_block(out: &mut String, body: &Block, depth: usize) {
                     LoopCond::Snapshot { var } => loop_cond_var(*var),
                 };
                 let _ = writeln!(out, "{indent}do {{");
-                emit_block(out, body, depth + 1);
+                emit_block(out, body, depth + 1, ret_expr);
                 let _ = writeln!(out, "{indent}}} while ({cond_text});");
             }
             Node::While { body } => {
                 let _ = writeln!(out, "{indent}while (1) {{");
-                emit_block(out, body, depth + 1);
+                emit_block(out, body, depth + 1, ret_expr);
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::Switch {
@@ -6378,14 +6451,14 @@ fn emit_block(out: &mut String, body: &Block, depth: usize) {
                         };
                         let _ = writeln!(out, "{indent}    case {value}:{opener}");
                     }
-                    emit_block(out, &case.body, depth + 2);
+                    emit_block(out, &case.body, depth + 2, ret_expr);
                     if !case.fallthrough {
                         let _ = writeln!(out, "{indent}        break;");
                     }
                     let _ = writeln!(out, "{indent}    }}");
                 }
                 let _ = writeln!(out, "{indent}    default: {{");
-                emit_block(out, default, depth + 2);
+                emit_block(out, default, depth + 2, ret_expr);
                 let _ = writeln!(out, "{indent}        break;");
                 let _ = writeln!(out, "{indent}    }}");
                 let _ = writeln!(out, "{indent}}}");
@@ -6400,6 +6473,9 @@ fn emit_block(out: &mut String, body: &Block, depth: usize) {
             Node::Continue => {
                 let _ = writeln!(out, "{indent}continue;");
             }
+            Node::Return => {
+                let _ = writeln!(out, "{indent}return {ret_expr};");
+            }
         }
     }
 }
@@ -6408,25 +6484,25 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
     match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = source_expr(src, dest.width);
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &body);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::BinAssign { dest, op, src } => {
-            let rhs: String = source_expr(src, dest.width);
-            let body: String = bin_expr(*op, &reg_var(dest.reg), &rhs, dest.width);
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &body);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs_src: String = source_expr(src, dest.width);
+            let body: String = bin_expr(*op, &var, &rhs_src, dest.width);
+            let rhs: String = reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::UnAssign { dest, op } => {
+            let var: String = reg_var(dest.reg);
             let body: String = match op {
-                UnOp::Neg => format!("(uint64_t)(-(int64_t){})", reg_var(dest.reg)),
-                UnOp::Not => format!("(~{})", reg_var(dest.reg)),
+                UnOp::Neg => format!("(uint64_t)(-(int64_t){var})"),
+                UnOp::Not => format!("(~{var})"),
             };
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &body);
-            let _ = writeln!(out, ";");
+            let rhs: String = reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::Cond {
             dest,
@@ -6436,11 +6512,10 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
         } => {
             let cond: String = cond_expr(*kind, flags);
             let chosen: String = source_expr(src, dest.width);
-            let mut masked_chosen: String = String::new();
-            width_mask(&mut masked_chosen, dest.width, &chosen);
-            let kept: String = reg_var(dest.reg);
-            let body: String = format!("({cond}) ? ({masked_chosen}) : ({kept})");
-            let _ = writeln!(out, "{indent}{} = {body};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let taken: String = reg_write_rhs(&var, dest.width, &chosen);
+            let body: String = format!("({cond}) ? ({taken}) : ({var})");
+            let _ = writeln!(out, "{indent}{var} = {body};");
         }
         Stmt::SetCc { dest, kind, flags } => {
             let cond: String = cond_expr(*kind, flags);
@@ -6482,9 +6557,9 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
                 ExtSource::Mem(mem) => (deref_expr(mem), mem.width),
             };
             let body: String = extend_expr(&raw, src_width, dest.width, *signed);
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &body);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::MulImm { dest, src, imm } => {
             let factor: String = format!("(uint64_t)(int64_t){imm}LL");
@@ -6493,9 +6568,9 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
                 ExtSource::Mem(mem) => format!("(uint64_t){}", deref_expr(mem)),
             };
             let body: String = format!("{operand} * {factor}");
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &body);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::WideMul { src } => {
             let rax: String = reg_var(Reg::Rax);
@@ -6646,9 +6721,9 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
             let value: String = fp_load(&FpOperand::Xmm(*src), *width);
             let bits: u32 = dest.width.bits();
             let truncated: String = format!("(uint{bits}_t)(int{bits}_t)({value})");
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &truncated);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(&var, dest.width, &truncated);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
         Stmt::FpConvert {
             dest,
@@ -6718,9 +6793,9 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) {
         }
         Stmt::XmmToGpr { dest, src, width } => {
             let bits: String = xmm_bits(*src, *width);
-            let _ = write!(out, "{indent}{} = ", reg_var(dest.reg));
-            width_mask(out, dest.width, &bits);
-            let _ = writeln!(out, ";");
+            let var: String = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(&var, dest.width, &bits);
+            let _ = writeln!(out, "{indent}{var} = {rhs};");
         }
     }
 }
@@ -6963,7 +7038,14 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
             };
             format!("({a}) {op} ({b})")
         }
-        Flags::Snapshot { var } => format!("{} != 0", sel_var(*var)),
+        Flags::Snapshot { var } => {
+            let cmp: &str = if matches!(kind, CondKind::E) {
+                "=="
+            } else {
+                "!="
+            };
+            format!("{} {cmp} 0", sel_var(*var))
+        }
     }
 }
 
@@ -7098,22 +7180,21 @@ fn emit_rust(
         let _ = writeln!(out, "    let mut {}: u64 = 0;", sel_var(*var));
     }
 
-    rs_emit_block(&mut out, body, 1)?;
+    let ret_expr: String = match signature.ret {
+        FnReturn::Int(return_width) => rs_width_mask(return_width, &reg_var(Reg::Rax)),
+        FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
+    };
 
-    match signature.ret {
-        FnReturn::Int(return_width) => {
-            let ret_body: String = rs_width_mask(return_width, &reg_var(Reg::Rax));
-            let _ = writeln!(out, "    {ret_body}");
-        }
-        FnReturn::Fp(width) => {
-            let _ = writeln!(out, "    {}", rs_fp_load_xmm(Xmm::Xmm0, width));
-        }
+    rs_emit_block(&mut out, body, 1, &ret_expr)?;
+
+    if !matches!(body.last(), Some(Node::Return)) {
+        let _ = writeln!(out, "    {ret_expr}");
     }
     let _ = writeln!(out, "}}");
     Some(out)
 }
 
-fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
+fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -> Option<()> {
     let indent: String = "    ".repeat(depth);
     for node in body {
         match node {
@@ -7126,10 +7207,10 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
             } => {
                 let cond_text: String = rs_cond_expr(*cond, flags)?;
                 let _ = writeln!(out, "{indent}if {cond_text} {{");
-                rs_emit_block(out, then_body, depth + 1)?;
+                rs_emit_block(out, then_body, depth + 1, ret_expr)?;
                 if let Some(else_b) = else_body {
                     let _ = writeln!(out, "{indent}}} else {{");
-                    rs_emit_block(out, else_b, depth + 1)?;
+                    rs_emit_block(out, else_b, depth + 1, ret_expr)?;
                 }
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -7140,13 +7221,13 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
                 };
                 let inner: String = "    ".repeat(depth + 1);
                 let _ = writeln!(out, "{indent}loop {{");
-                rs_emit_block(out, body, depth + 1)?;
+                rs_emit_block(out, body, depth + 1, ret_expr)?;
                 let _ = writeln!(out, "{inner}if !({cond_text}) {{ break; }}");
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::While { body } => {
                 let _ = writeln!(out, "{indent}loop {{");
-                rs_emit_block(out, body, depth + 1)?;
+                rs_emit_block(out, body, depth + 1, ret_expr)?;
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::Switch {
@@ -7167,20 +7248,20 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
                     let mut cursor: usize = idx;
                     loop {
                         let arm: &SwitchCase = &cases[cursor];
-                        rs_emit_block(out, &arm.body, depth + 2)?;
+                        rs_emit_block(out, &arm.body, depth + 2, ret_expr)?;
                         if !arm.fallthrough {
                             break;
                         }
                         cursor += 1;
                         if cursor >= cases.len() {
-                            rs_emit_block(out, default, depth + 2)?;
+                            rs_emit_block(out, default, depth + 2, ret_expr)?;
                             break;
                         }
                     }
                     let _ = writeln!(out, "{indent}    }}");
                 }
                 let _ = writeln!(out, "{indent}    _ => {{");
-                rs_emit_block(out, default, depth + 2)?;
+                rs_emit_block(out, default, depth + 2, ret_expr)?;
                 let _ = writeln!(out, "{indent}    }}");
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -7198,6 +7279,9 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize) -> Option<()> {
             Node::Continue => {
                 let _ = writeln!(out, "{indent}continue;");
             }
+            Node::Return => {
+                let _ = writeln!(out, "{indent}return {ret_expr};");
+            }
         }
     }
     Some(())
@@ -7208,22 +7292,25 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
     match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = rs_source_expr(src, dest.width)?;
-            let masked: String = rs_width_mask(dest.width, &body);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::BinAssign { dest, op, src } => {
+            let var: String = reg_var(dest.reg);
             let rhs: String = rs_source_expr(src, dest.width)?;
-            let body: String = rs_bin_expr(*op, &reg_var(dest.reg), &rhs, dest.width);
-            let masked: String = rs_width_mask(dest.width, &body);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let body: String = rs_bin_expr(*op, &var, &rhs, dest.width);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::UnAssign { dest, op } => {
+            let var: String = reg_var(dest.reg);
             let body: String = match op {
-                UnOp::Neg => format!("({}).wrapping_neg()", reg_var(dest.reg)),
-                UnOp::Not => format!("(!{})", reg_var(dest.reg)),
+                UnOp::Neg => format!("({var}).wrapping_neg()"),
+                UnOp::Not => format!("(!{var})"),
             };
-            let masked: String = rs_width_mask(dest.width, &body);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::Cond {
             dest,
@@ -7233,12 +7320,11 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         } => {
             let cond: String = rs_cond_expr(*kind, flags)?;
             let chosen: String = rs_source_expr(src, dest.width)?;
-            let masked_chosen: String = rs_width_mask(dest.width, &chosen);
-            let kept: String = reg_var(dest.reg);
+            let var: String = reg_var(dest.reg);
+            let taken: String = rs_reg_write_rhs(&var, dest.width, &chosen);
             let _ = writeln!(
                 out,
-                "{indent}{} = if {cond} {{ {masked_chosen} }} else {{ {kept} }};",
-                reg_var(dest.reg)
+                "{indent}{var} = if {cond} {{ {taken} }} else {{ {var} }};"
             );
         }
         Stmt::SetCc { dest, kind, flags } => {
@@ -7259,8 +7345,9 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
                 ExtSource::Mem(_) => return None,
             };
             let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
-            let masked: String = rs_width_mask(dest.width, &body);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::MulImm { dest, src, imm } => {
             let operand: String = match src {
@@ -7268,8 +7355,9 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
                 ExtSource::Mem(_) => return None,
             };
             let body: String = format!("({operand}).wrapping_mul(({imm}i64) as u64)");
-            let masked: String = rs_width_mask(dest.width, &body);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::WideMul { src } => {
             let rax: String = reg_var(Reg::Rax);
@@ -7378,8 +7466,9 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             let ity: &str = rs_int_ty(dest.width);
             let uty: &str = rs_uint_ty(dest.width);
             let truncated: String = format!("((({value}) as {ity}) as {uty} as u64)");
-            let masked: String = rs_width_mask(dest.width, &truncated);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &truncated);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::FpConvert {
             dest,
@@ -7453,8 +7542,9 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         }
         Stmt::XmmToGpr { dest, src, width } => {
             let bits: String = rs_xmm_bits(*src, *width);
-            let masked: String = rs_width_mask(dest.width, &bits);
-            let _ = writeln!(out, "{indent}{} = {masked};", reg_var(dest.reg));
+            let var: String = reg_var(dest.reg);
+            let masked: String = rs_reg_write_rhs(&var, dest.width, &bits);
+            let _ = writeln!(out, "{indent}{var} = {masked};");
         }
         Stmt::Store { .. }
         | Stmt::MemRmw { .. }
@@ -7567,6 +7657,17 @@ fn rs_width_mask(width: Width, body: &str) -> String {
     match width {
         Width::W64 => body.to_owned(),
         other => format!("(({body}) & 0x{:x}u64)", (1u128 << other.bits()) - 1),
+    }
+}
+
+fn rs_reg_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
+    match width {
+        Width::W64 => body.to_owned(),
+        Width::W32 => format!("(({body}) & 0xffffffffu64)"),
+        Width::W16 => {
+            format!("(({dest_var} & 0xffffffffffff0000u64) | (({body}) & 0xffffu64))")
+        }
+        Width::W8 => format!("(({dest_var} & 0xffffffffffffff00u64) | (({body}) & 0xffu64))"),
     }
 }
 
@@ -7737,7 +7838,14 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
             };
             Some(format!("({a}) {op} ({b})"))
         }
-        Flags::Snapshot { var } => Some(format!("{} != 0", sel_var(*var))),
+        Flags::Snapshot { var } => {
+            let cmp: &str = if matches!(kind, CondKind::E) {
+                "=="
+            } else {
+                "!="
+            };
+            Some(format!("{} {cmp} 0", sel_var(*var)))
+        }
     }
 }
 

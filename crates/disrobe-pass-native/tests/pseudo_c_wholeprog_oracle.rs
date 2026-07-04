@@ -131,6 +131,99 @@ const PROGRAMS: &[WholeProgram] = &[
     },
 ];
 
+const SHAPE_PROGRAMS: &[WholeProgram] = &[
+    WholeProgram {
+        name: "wp_ifelse_chain",
+        entry: "wp_ifelse_chain_entry",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["wp_ifelse_chain_entry", "wp_ifelse_chain_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_ifelse_chain_h(long long a){ if (a > 100) return 3; else if (a > 10) return 2; else if (a > 0) return 1; else return 0; }\n\
+                   long long wp_ifelse_chain_entry(long long a){ return wp_ifelse_chain_h(a) * 7 + a; }",
+    },
+    WholeProgram {
+        name: "wp_nested_if",
+        entry: "wp_nested_if_entry",
+        entry_arity: 2,
+        loopy: false,
+        functions: &["wp_nested_if_entry", "wp_nested_if_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_nested_if_h(long long a, long long b){ long long r = 0; if (a > 0) { if (b > 0) { r = a + b; } else { r = a - b; } } return r; }\n\
+                   long long wp_nested_if_entry(long long a, long long b){ return wp_nested_if_h(a, b) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_for",
+        entry: "wp_for_entry",
+        entry_arity: 1,
+        loopy: true,
+        functions: &["wp_for_entry", "wp_for_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_for_h(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { s += i * i; } return s; }\n\
+                   long long wp_for_entry(long long n){ return wp_for_h(n) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_dowhile",
+        entry: "wp_dowhile_entry",
+        entry_arity: 1,
+        loopy: true,
+        functions: &["wp_dowhile_entry", "wp_dowhile_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_dowhile_h(long long n){ long long s = 0; long long i = 1; do { s += i; i++; } while (i <= n); return s; }\n\
+                   long long wp_dowhile_entry(long long n){ return wp_dowhile_h(n) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_nested_loop",
+        entry: "wp_nested_loop_entry",
+        entry_arity: 2,
+        loopy: true,
+        functions: &["wp_nested_loop_entry", "wp_nested_loop_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_nested_loop_h(long long n, long long m){ long long s = 0; for (long long i = 0; i < n; i++) { for (long long j = 0; j < m; j++) { s += i + j; } } return s; }\n\
+                   long long wp_nested_loop_entry(long long n, long long m){ return wp_nested_loop_h(n, m) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_multiret",
+        entry: "wp_multiret_entry",
+        entry_arity: 2,
+        loopy: false,
+        functions: &["wp_multiret_entry", "wp_multiret_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_multiret_h(long long a, long long b){ if (a < 0) return -1; if (b < 0) return -2; if (a > b) return a - b; return b - a; }\n\
+                   long long wp_multiret_entry(long long a, long long b){ return wp_multiret_h(a, b) + 5; }",
+    },
+    WholeProgram {
+        name: "wp_sc_and",
+        entry: "wp_sc_and_entry",
+        entry_arity: 2,
+        loopy: false,
+        functions: &["wp_sc_and_entry", "wp_sc_and_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_sc_and_h(long long a, long long b){ long long r = a - b; if (a > 0 && b > 0) { r = a + b; } return r; }\n\
+                   long long wp_sc_and_entry(long long a, long long b){ return wp_sc_and_h(a, b) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_sc_or",
+        entry: "wp_sc_or_entry",
+        entry_arity: 2,
+        loopy: false,
+        functions: &["wp_sc_or_entry", "wp_sc_or_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_sc_or_h(long long a, long long b){ long long r; if (a < 0 || b < 0) { r = a + b; } else { r = a - b; } return r; }\n\
+                   long long wp_sc_or_entry(long long a, long long b){ return wp_sc_or_h(a, b) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_loop_break",
+        entry: "wp_loop_break_entry",
+        entry_arity: 1,
+        loopy: true,
+        functions: &["wp_loop_break_entry", "wp_loop_break_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_loop_break_h(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { if (i > 5) break; s += i; } return s; }\n\
+                   long long wp_loop_break_entry(long long n){ return wp_loop_break_h(n) + 1; }",
+    },
+    WholeProgram {
+        name: "wp_loop_continue",
+        entry: "wp_loop_continue_entry",
+        entry_arity: 1,
+        loopy: true,
+        functions: &["wp_loop_continue_entry", "wp_loop_continue_h"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_loop_continue_h(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { if ((i & 1) == 0) continue; s += i; } return s; }\n\
+                   long long wp_loop_continue_entry(long long n){ return wp_loop_continue_h(n) + 1; }",
+    },
+];
+
 const TEETH_SQ: WholeProgram = WholeProgram {
     name: "teeth_sq",
     entry: "teeth_sq_entry",
@@ -303,6 +396,16 @@ fn run_bounded(exe: &Path, secs: u64) -> BoundedRun {
 }
 
 fn compile_object(compiler: &str, extra: &[&str], source: &str, out: &Path) -> Option<Vec<u8>> {
+    compile_object_opt(compiler, "-O1", extra, source, out)
+}
+
+fn compile_object_opt(
+    compiler: &str,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> Option<Vec<u8>> {
     let dir: PathBuf = scratch_dir();
     let src: PathBuf = dir.join(format!(
         "{}.c",
@@ -310,7 +413,7 @@ fn compile_object(compiler: &str, extra: &[&str], source: &str, out: &Path) -> O
     ));
     std::fs::write(&src, source.as_bytes()).expect("write source");
     let compiled: std::process::Output = Command::new(compiler)
-        .arg("-O1")
+        .arg(opt)
         .args(extra)
         .arg("-o")
         .arg(out)
@@ -789,4 +892,203 @@ fn teeth_swapping_a_call_argument_diverges() {
         "teeth FAILED: swapping the subtraction operands must diverge from the original: {stdout}"
     );
     println!("teeth confirmed: swapping a call argument diverges (MISMATCH observed)");
+}
+
+const OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShapeOutcome {
+    Equivalent,
+    Mismatch,
+    SoundRejected,
+    Skipped,
+}
+
+fn opt_tag(opt: &str) -> &str {
+    opt.trim_start_matches('-')
+}
+
+fn full_battery() -> Vec<&'static WholeProgram> {
+    PROGRAMS.iter().chain(SHAPE_PROGRAMS).collect()
+}
+
+fn measure_host_program(
+    builder: &str,
+    program: &WholeProgram,
+    opt: &str,
+    dir: &Path,
+) -> ShapeOutcome {
+    let obj_path: PathBuf = dir.join(format!("{}_{}_host.o", program.name, opt_tag(opt)));
+    let Some(object): Option<Vec<u8>> =
+        compile_object_opt(builder, opt, &CC_FLAGS, program.c_source, &obj_path)
+    else {
+        return ShapeOutcome::Skipped;
+    };
+    let Some(recovered): Option<RecoveredProgram> = recover_program(&object, program, HOST_ABI)
+    else {
+        return ShapeOutcome::SoundRejected;
+    };
+    let driver: String = build_program_driver(program, &recovered);
+    let watchdog: u64 = if program.loopy { 20 } else { 10 };
+    let tag: String = format!("{}_{}_host", program.name, opt_tag(opt));
+    let stdout: String = link_and_run(builder, &driver, &object, &tag, watchdog)
+        .expect("link and run host shape harness");
+    if stdout.contains("OK") && !stdout.contains("MISMATCH") {
+        ShapeOutcome::Equivalent
+    } else {
+        eprintln!("MISMATCH host {} at {opt}: {}", program.name, stdout.trim());
+        ShapeOutcome::Mismatch
+    }
+}
+
+fn measure_sysv_program(
+    host_cc: &str,
+    clang_cc: &str,
+    program: &WholeProgram,
+    opt: &str,
+    dir: &Path,
+) -> ShapeOutcome {
+    let host_path: PathBuf = dir.join(format!("{}_{}_gt.o", program.name, opt_tag(opt)));
+    let Some(host_obj): Option<Vec<u8>> =
+        compile_object_opt(host_cc, opt, &CC_FLAGS, program.c_source, &host_path)
+    else {
+        return ShapeOutcome::Skipped;
+    };
+    let sysv_path: PathBuf = dir.join(format!("{}_{}_sysv.o", program.name, opt_tag(opt)));
+    let sysv_flags: [&str; 5] = [
+        "--target=x86_64-unknown-linux-gnu",
+        "-fno-stack-protector",
+        "-fno-optimize-sibling-calls",
+        "-fcf-protection=none",
+        "-c",
+    ];
+    let Some(sysv_obj): Option<Vec<u8>> =
+        compile_object_opt(clang_cc, opt, &sysv_flags, program.c_source, &sysv_path)
+    else {
+        return ShapeOutcome::Skipped;
+    };
+    let Some(recovered): Option<RecoveredProgram> =
+        recover_program(&sysv_obj, program, PseudoAbi::SysV)
+    else {
+        return ShapeOutcome::SoundRejected;
+    };
+    let driver: String = build_program_driver(program, &recovered);
+    let watchdog: u64 = if program.loopy { 20 } else { 10 };
+    let tag: String = format!("{}_{}_sysv", program.name, opt_tag(opt));
+    let stdout: String = link_and_run(host_cc, &driver, &host_obj, &tag, watchdog)
+        .expect("link and run sysv shape harness");
+    if stdout.contains("OK") && !stdout.contains("MISMATCH") {
+        ShapeOutcome::Equivalent
+    } else {
+        eprintln!("MISMATCH sysv {} at {opt}: {}", program.name, stdout.trim());
+        ShapeOutcome::Mismatch
+    }
+}
+
+#[test]
+fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native shape oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv class is the cross-platform x86-64 guard"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!("skipping host shape oracle: gcc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let battery: Vec<&WholeProgram> = full_battery();
+    let mut total_equivalent: usize = 0;
+    let mut total_slots: usize = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for opt in OPT_LEVELS {
+        let mut equivalent: usize = 0;
+        let mut rejected: Vec<&str> = Vec::new();
+        let mut skipped: usize = 0;
+        for program in &battery {
+            match measure_host_program(&builder, program, opt, &dir) {
+                ShapeOutcome::Equivalent => equivalent += 1,
+                ShapeOutcome::Mismatch => mismatches.push(format!("{} {opt}", program.name)),
+                ShapeOutcome::SoundRejected => rejected.push(program.name),
+                ShapeOutcome::Skipped => skipped += 1,
+            }
+        }
+        let graded: usize = battery.len() - skipped;
+        total_equivalent += equivalent;
+        total_slots += graded;
+        println!(
+            "host shape oracle {opt}: {equivalent}/{graded} whole programs behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
+            rejected.len()
+        );
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "host shape battery has UNSOUND recoveries (recovered but behaviorally wrong): {mismatches:?}"
+    );
+    assert!(
+        total_equivalent >= 36,
+        "host shape battery regressed below the measured floor: {total_equivalent}/{total_slots} equivalent across {} opt levels",
+        OPT_LEVELS.len()
+    );
+    println!(
+        "host shape oracle TOTAL: {total_equivalent}/{total_slots} equivalent across {} opt levels x {} programs",
+        OPT_LEVELS.len(),
+        battery.len()
+    );
+}
+
+#[test]
+fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
+    let Some(host_cc): Option<String> = cc() else {
+        eprintln!("skipping sysv shape oracle: no host C compiler on PATH");
+        return;
+    };
+    let Some(clang_cc): Option<String> = clang() else {
+        eprintln!("skipping sysv shape oracle: clang (needed for the SysV object) not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let battery: Vec<&WholeProgram> = full_battery();
+    let mut total_equivalent: usize = 0;
+    let mut total_slots: usize = 0;
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for opt in OPT_LEVELS {
+        let mut equivalent: usize = 0;
+        let mut rejected: Vec<&str> = Vec::new();
+        let mut skipped: usize = 0;
+        for program in &battery {
+            match measure_sysv_program(&host_cc, &clang_cc, program, opt, &dir) {
+                ShapeOutcome::Equivalent => equivalent += 1,
+                ShapeOutcome::Mismatch => mismatches.push(format!("{} {opt}", program.name)),
+                ShapeOutcome::SoundRejected => rejected.push(program.name),
+                ShapeOutcome::Skipped => skipped += 1,
+            }
+        }
+        let graded: usize = battery.len() - skipped;
+        total_equivalent += equivalent;
+        total_slots += graded;
+        println!(
+            "sysv shape oracle {opt}: {equivalent}/{graded} whole programs behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
+            rejected.len()
+        );
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "sysv shape battery has UNSOUND recoveries (recovered but behaviorally wrong): {mismatches:?}"
+    );
+    assert!(
+        total_equivalent >= 40,
+        "sysv shape battery regressed below the measured floor: {total_equivalent}/{total_slots} equivalent across {} opt levels",
+        OPT_LEVELS.len()
+    );
+    println!(
+        "sysv shape oracle TOTAL: {total_equivalent}/{total_slots} equivalent across {} opt levels x {} programs",
+        OPT_LEVELS.len(),
+        battery.len()
+    );
 }
