@@ -420,6 +420,7 @@ fn link_and_run_sysv(tag: &str, driver: &str, host_object: &[u8], watchdog_secs:
         .arg(&harness_exe)
         .arg(&driver_c)
         .arg(&host_o)
+        .arg("-lm")
         .output()
         .expect("invoke host cc to link sysv harness");
     assert!(
@@ -7573,6 +7574,28 @@ fn function_has_mnemonic(object_bytes: &[u8], name: &str, mnemonic: &str) -> boo
         .any(|insn: &DisasmInsn| insn.mnemonic == mnemonic)
 }
 
+fn function_uses_ordering_cmov(object_bytes: &[u8], name: &str) -> bool {
+    let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
+        return false;
+    };
+    let Ok(insns): Result<Vec<DisasmInsn>, _> = disassemble(Arch::X86_64, base, &code) else {
+        return false;
+    };
+    insns
+        .iter()
+        .take_while(|insn: &&DisasmInsn| insn.mnemonic != "ret")
+        .any(|insn: &DisasmInsn| {
+            insn.mnemonic
+                .strip_prefix("cmov")
+                .is_some_and(|suffix: &str| {
+                    matches!(
+                        suffix,
+                        "g" | "ge" | "l" | "le" | "nl" | "nle" | "ng" | "nge"
+                    )
+                })
+        })
+}
+
 #[test]
 fn round_lift_emits_expected_builtin_for_each_mode() {
     let base: u64 = 0x1000;
@@ -7876,6 +7899,7 @@ fn link_and_run_round_sysv(
         .arg(&harness_exe)
         .arg(&driver_c)
         .arg(&host_o)
+        .arg("-lm")
         .output()
         .expect("invoke host cc to link sysv round harness");
     assert!(
@@ -11624,10 +11648,13 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
                 recovery.source
             );
         }
-        if clang_flavor && case.expect_sel_cc {
+        if clang_flavor
+            && case.expect_sel_cc
+            && function_uses_ordering_cmov(object_bytes, case.name)
+        {
             assert!(
                 recovery.source.contains("sel_cc_"),
-                "sel case {} lowered by clang to ordering cmov must recover via the snapshot repair:\n{}",
+                "sel case {} lowered by an ordering cmov against a value-producing sub must recover via the snapshot repair:\n{}",
                 case.name,
                 recovery.source
             );
