@@ -873,6 +873,12 @@ fn whole_programs_recompile_to_rust_equivalence_hostabi() {
 
 #[test]
 fn whole_programs_recompile_to_rust_equivalence_sysv() {
+    if cfg!(target_os = "macos") {
+        eprintln!(
+            "skipping sysv rust whole-program oracle on macos: the host gcc is an apple-clang alias and arm64 cannot faithfully run the x86-64 sysv differential, so the ground-truth vs recovered-rust comparison diverges; ubuntu carries the cross-platform sysv floor"
+        );
+        return;
+    }
     let Some(host_cc): Option<String> = cc() else {
         eprintln!("skipping sysv rust whole-program oracle: no host C compiler on PATH");
         return;

@@ -856,6 +856,7 @@ fn recover_leaf_function_calls_impl(
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<Flags> = None;
+    let mut flags_mark: usize = 0;
     let mut next_sel: u32 = 0;
     let mut dividend_high: Option<DividendHigh> = None;
     let mut fp_return: Option<FpWidth> = None;
@@ -1007,19 +1008,14 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            let (branch_kind, used_flags): (CondKind, Flags) =
-                if condition_is_sound(kind, &live_flags) {
-                    (kind, live_flags)
-                } else if let Some(repaired) =
-                    snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
-                {
-                    (CondKind::Ne, repaired)
-                } else {
-                    return Err(Error::LlvmIr(format!(
-                        "branch condition `{}` not sound against tracked flags at {:#x}",
-                        insn.mnemonic, insn.address
-                    )));
-                };
+            let (branch_kind, used_flags): (CondKind, Flags) = resolve_conditional_flags(
+                &mut items,
+                flags_mark,
+                kind,
+                live_flags,
+                &mut next_sel,
+                insn.address,
+            )?;
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Branch {
@@ -1032,6 +1028,7 @@ fn recover_leaf_function_calls_impl(
         }
         if let Some(new_flags) = lift_flag_setter(&insn.mnemonic, &insn.operands) {
             flags = Some(new_flags);
+            flags_mark = items.len();
             continue;
         }
         if let Some(suffix) = insn.mnemonic.strip_prefix("cmov") {
@@ -1047,18 +1044,14 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            let used_flags: Flags = if condition_is_sound(kind, &live_flags) {
-                live_flags
-            } else if let Some(repaired) =
-                snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
-            {
-                repaired
-            } else {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            };
+            let (cond_kind, used_flags): (CondKind, Flags) = resolve_conditional_flags(
+                &mut items,
+                flags_mark,
+                kind,
+                live_flags,
+                &mut next_sel,
+                insn.address,
+            )?;
             let (lhs, rhs): (&str, &str) = insn
                 .operands
                 .split_once(',')
@@ -1085,7 +1078,7 @@ fn recover_leaf_function_calls_impl(
                 kind: ItemKind::Stmt(Stmt::Cond {
                     dest,
                     src,
-                    kind,
+                    kind: cond_kind,
                     flags: used_flags,
                 }),
             });
@@ -1109,18 +1102,14 @@ fn recover_leaf_function_calls_impl(
                     insn.address
                 ))
             })?;
-            let used_flags: Flags = if condition_is_sound(kind, &live_flags) {
-                live_flags
-            } else if let Some(repaired) =
-                snapshot_repair(&mut items, kind, &live_flags, &mut next_sel)
-            {
-                repaired
-            } else {
-                return Err(Error::LlvmIr(format!(
-                    "condition `{}` not sound against tracked flags at {:#x}",
-                    insn.mnemonic, insn.address
-                )));
-            };
+            let (cond_kind, used_flags): (CondKind, Flags) = resolve_conditional_flags(
+                &mut items,
+                flags_mark,
+                kind,
+                live_flags,
+                &mut next_sel,
+                insn.address,
+            )?;
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
                 fp_return = None;
@@ -1129,7 +1118,7 @@ fn recover_leaf_function_calls_impl(
                 address: insn.address,
                 kind: ItemKind::Stmt(Stmt::SetCc {
                     dest,
-                    kind,
+                    kind: cond_kind,
                     flags: used_flags,
                 }),
             });
@@ -3499,6 +3488,7 @@ fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<L
 struct CfgCtx<'a> {
     blocks: &'a [CfgBlock],
     idom: Vec<Option<usize>>,
+    pdom: Vec<std::collections::BTreeSet<usize>>,
     pred_count: Vec<usize>,
     loops: &'a [LoopInfo],
 }
@@ -3540,6 +3530,44 @@ fn immediate_dominators(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Vec<Option
     idom
 }
 
+fn post_dominator_sets(blocks: &[CfgBlock]) -> Vec<std::collections::BTreeSet<usize>> {
+    use std::collections::BTreeSet;
+    let count: usize = blocks.len();
+    let all: BTreeSet<usize> = (0..count).collect();
+    let mut pdom: Vec<BTreeSet<usize>> = vec![all; count];
+    for (node, block) in blocks.iter().enumerate() {
+        if block.successors().is_empty() {
+            pdom[node] = BTreeSet::from([node]);
+        }
+    }
+    let mut changed: bool = true;
+    while changed {
+        changed = false;
+        for node in 0..count {
+            if blocks[node].successors().is_empty() {
+                continue;
+            }
+            let mut new_pdom: Option<BTreeSet<usize>> = None;
+            for succ in blocks[node].successors() {
+                if succ >= count {
+                    continue;
+                }
+                new_pdom = Some(new_pdom.map_or_else(
+                    || pdom[succ].clone(),
+                    |acc: BTreeSet<usize>| acc.intersection(&pdom[succ]).copied().collect(),
+                ));
+            }
+            let mut new_pdom: BTreeSet<usize> = new_pdom.unwrap_or_default();
+            new_pdom.insert(node);
+            if new_pdom != pdom[node] {
+                pdom[node] = new_pdom;
+                changed = true;
+            }
+        }
+    }
+    pdom
+}
+
 fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
     let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
         return Ok(None);
@@ -3552,10 +3580,12 @@ fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
         return Ok(None);
     };
     let idom: Vec<Option<usize>> = immediate_dominators(&blocks, &preds);
+    let pdom: Vec<std::collections::BTreeSet<usize>> = post_dominator_sets(&blocks);
     let pred_count: Vec<usize> = preds.iter().map(Vec::len).collect();
     let ctx: CfgCtx<'_> = CfgCtx {
         blocks: &blocks,
         idom,
+        pdom,
         pred_count,
         loops: &loops,
     };
@@ -3804,6 +3834,7 @@ fn branch_follow(ctx: &CfgCtx<'_>, active: Option<usize>, branch: usize) -> Opti
         .filter(|(node, idom): &(usize, &Option<usize>)| {
             **idom == Some(branch)
                 && ctx.pred_count[*node] >= 2
+                && (ctx.pdom[branch].contains(node) || ctx.blocks[*node].successors().is_empty())
                 && ctx.in_body_of(active, *node)
                 && active.is_none_or(|top: usize| *node != ctx.loops[top].header)
                 && ctx.child_loop_here(active, *node).is_none()
@@ -4091,6 +4122,62 @@ fn snapshot_repair(
         },
     );
     Some(Flags::Snapshot { var })
+}
+
+fn comparison_operand_clobbered(items: &[Item], mark: usize, flags: &Flags) -> bool {
+    let deps: Vec<Reg> = flag_operand_regs(flags);
+    if deps.is_empty() {
+        return false;
+    }
+    let start: usize = mark.min(items.len());
+    items[start..].iter().any(|item: &Item| {
+        let ItemKind::Stmt(stmt) = &item.kind else {
+            return false;
+        };
+        stmt_dest_regs(stmt)
+            .iter()
+            .any(|reg: &Reg| deps.contains(reg))
+    })
+}
+
+fn resolve_conditional_flags(
+    items: &mut Vec<Item>,
+    flags_mark: usize,
+    kind: CondKind,
+    live_flags: Flags,
+    next_sel: &mut u32,
+    addr: u64,
+) -> Result<(CondKind, Flags)> {
+    if flags_are_comparison(&live_flags)
+        && condition_is_sound(kind, &live_flags)
+        && comparison_operand_clobbered(items, flags_mark, &live_flags)
+    {
+        let var: u32 = *next_sel;
+        *next_sel += 1;
+        let at: usize = flags_mark.min(items.len());
+        let snapshot_addr: u64 = items.get(at).map_or(addr, |item: &Item| item.address);
+        items.insert(
+            at,
+            Item {
+                address: snapshot_addr,
+                kind: ItemKind::Stmt(Stmt::FlagSnapshot {
+                    var,
+                    kind,
+                    flags: live_flags,
+                }),
+            },
+        );
+        return Ok((CondKind::Ne, Flags::Snapshot { var }));
+    }
+    if condition_is_sound(kind, &live_flags) {
+        return Ok((kind, live_flags));
+    }
+    if let Some(repaired) = snapshot_repair(items, kind, &live_flags, next_sel) {
+        return Ok((CondKind::Ne, repaired));
+    }
+    Err(Error::LlvmIr(format!(
+        "condition not sound against tracked flags at {addr:#x}"
+    )))
 }
 
 fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
@@ -8659,6 +8746,40 @@ mod tests {
             result.is_err(),
             "gcc 14/15 near-miss ordering cmov `(a>=b)?a:(a-b)` must sound-reject, not emit a wrong select: {:?}",
             result.map(|r: LeafRecovery| r.source)
+        );
+    }
+
+    #[test]
+    fn nearmiss_clobbered_compare_operand_snapshots_before_the_write() {
+        let code: [u8; 19] = [
+            0x48, 0x89, 0xc8, 0x48, 0x39, 0xd1, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0f, 0x4d,
+            0xd1, 0x48, 0x29, 0xd0, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function(&code, 0x9800).expect("gcc-16 near-miss must recover");
+        let snapshot: usize = rec
+            .source
+            .find("sel_cc_0 = (")
+            .expect("compare must be snapshotted");
+        let clobber: usize = rec
+            .source
+            .find("r_rcx = (")
+            .expect("the zeroing write must be present");
+        assert!(
+            snapshot < clobber,
+            "the compare must be captured before rcx is clobbered: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains(">="),
+            "the ge compare must be preserved: {}",
+            rec.source
+        );
+        assert!(
+            rec.source
+                .contains("r_rdx = (sel_cc_0 != 0) ? (r_rcx) : (r_rdx)"),
+            "the cmovge must consume the snapshot: {}",
+            rec.source
         );
     }
 
