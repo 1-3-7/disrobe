@@ -7298,7 +7298,7 @@ fn emit_rust(
     frame: Option<&FramePlan>,
     sret: Option<&SretPlan>,
 ) -> Option<String> {
-    if frame.is_some() || sret.is_some() {
+    if sret.is_some() {
         return None;
     }
     if block_string_ops_present(body) {
@@ -7341,6 +7341,17 @@ fn emit_rust(
         "#[allow(unused_mut, unused_variables, unused_assignments, unused_parens, dead_code)]"
     );
     let _ = writeln!(out, "pub fn recovered({params_sig}) -> {return_type} {{");
+    if let Some(plan) = frame {
+        let _ = writeln!(
+            out,
+            "    let mut stack_frame: [u8; {}] = [0u8; {}];",
+            plan.size, plan.size
+        );
+        let _ = writeln!(
+            out,
+            "    let frame_base: u64 = stack_frame.as_mut_ptr() as usize as u64;"
+        );
+    }
 
     let mut touched_gp: Vec<Reg> = Vec::new();
     collect_block_regs(body, &mut touched_gp);
@@ -7378,7 +7389,13 @@ fn emit_rust(
     }
     for reg in &touched_gp {
         if !declared_gp.contains(reg) {
-            let _ = writeln!(out, "    let mut {}: u64 = 0;", reg_var(*reg));
+            let init: String = match frame {
+                Some(plan) if plan.base == *reg => {
+                    format!("frame_base.wrapping_add({}u64)", plan.base_offset)
+                }
+                _ => "0".to_owned(),
+            };
+            let _ = writeln!(out, "    let mut {}: u64 = {init};", reg_var(*reg));
             declared_gp.push(*reg);
         }
     }
@@ -7560,7 +7577,7 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
                 ExtSource::Reg(r) => (reg_var(r.reg), r.width),
-                ExtSource::Mem(_) => return None,
+                ExtSource::Mem(mem) => (rs_deref_read(mem), mem.width),
             };
             let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
             let var: String = reg_var(dest.reg);
@@ -7570,7 +7587,7 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         Stmt::MulImm { dest, src, imm } => {
             let operand: String = match src {
                 ExtSource::Reg(r) => reg_var(r.reg),
-                ExtSource::Mem(_) => return None,
+                ExtSource::Mem(mem) => rs_deref_read(mem),
             };
             let body: String = format!("({operand}).wrapping_mul(({imm}i64) as u64)");
             let var: String = reg_var(dest.reg);
@@ -7764,13 +7781,40 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             let masked: String = rs_reg_write_rhs(&var, dest.width, &bits);
             let _ = writeln!(out, "{indent}{var} = {masked};");
         }
-        Stmt::Store { .. }
-        | Stmt::MemRmw { .. }
-        | Stmt::FpStore { .. }
-        | Stmt::BlockMove { .. }
-        | Stmt::BlockFill { .. } => return None,
+        Stmt::Store { addr, src } => {
+            let value: String = rs_source_expr(src, addr.width)?;
+            rs_emit_store(out, addr, &value, indent);
+        }
+        Stmt::MemRmw { addr, op } => {
+            let current: String = rs_deref_read(addr);
+            let body: String = match op {
+                MemRmwOp::Bin { op, src } => {
+                    let rhs: String = rs_source_expr(src, addr.width)?;
+                    rs_bin_expr(*op, &current, &rhs, addr.width)
+                }
+                MemRmwOp::Un(UnOp::Neg) => format!("({current}).wrapping_neg()"),
+                MemRmwOp::Un(UnOp::Not) => format!("(!({current}))"),
+            };
+            rs_emit_store(out, addr, &body, indent);
+        }
+        Stmt::FpStore { .. } | Stmt::BlockMove { .. } | Stmt::BlockFill { .. } => return None,
     }
     Some(())
+}
+
+fn rs_deref_read(mem: &MemRef) -> String {
+    let uty: &str = rs_uint_ty(mem.width);
+    let ptr: String = rs_addr_expr(mem.base, mem.index, mem.disp);
+    format!("(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {uty}) }} as u64)")
+}
+
+fn rs_emit_store(out: &mut String, addr: &MemRef, value: &str, indent: &str) {
+    let uty: &str = rs_uint_ty(addr.width);
+    let ptr: String = rs_addr_expr(addr.base, addr.index, addr.disp);
+    let _ = writeln!(
+        out,
+        "{indent}unsafe {{ core::ptr::write_unaligned((({ptr}) as usize) as *mut {uty}, ({value}) as {uty}); }}"
+    );
 }
 
 fn rs_fp_load(operand: &FpOperand, width: FpWidth) -> Option<String> {
@@ -7867,7 +7911,7 @@ fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
         }
         Source::Imm(value) => Some(format!("(({value}i64) as u64)")),
         Source::Lea { base, index, disp } => Some(rs_addr_expr(*base, *index, *disp)),
-        Source::Mem(_) => None,
+        Source::Mem(mem) => Some(rs_deref_read(mem)),
     }
 }
 
@@ -8013,7 +8057,12 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
             let rhs_expr: String = rs_source_expr(rhs, width)?;
             Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
         }
-        Flags::CmpMem { .. } => None,
+        Flags::CmpMem { lhs, rhs } => {
+            let width: Width = lhs.width;
+            let lhs_expr: String = rs_deref_read(lhs);
+            let rhs_expr: String = rs_source_expr(rhs, width)?;
+            Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
+        }
         Flags::TestImm { operand, mask } => {
             let width: Width = operand.width;
             let maskval: u64 = (*mask as u64) & ((1u128 << width.bits()) - 1) as u64;
