@@ -439,15 +439,17 @@ impl CodeObject {
 #[inline]
 fn decode_hex32(hex: &str) -> PyResult<[u8; 32]> {
     let trimmed: &str = hex.trim();
-    if trimmed.len() != 64 {
+    let bytes: &[u8] = trimmed.as_bytes();
+    if bytes.len() != 64 {
         return Err(DisrobeError::new_err(format!(
             "source_hash must be 64 hex chars (32 bytes); got {} chars",
-            trimmed.len()
+            trimmed.chars().count()
         )));
     }
     let mut out: [u8; 32] = [0u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        let byte_hex: &str = &trimmed[i * 2..i * 2 + 2];
+    for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+        let byte_hex: &str = core::str::from_utf8(chunk)
+            .map_err(|e: core::str::Utf8Error| DisrobeError::new_err(format!("hex: {e}")))?;
         *slot = u8::from_str_radix(byte_hex, 16)
             .map_err(|e: std::num::ParseIntError| DisrobeError::new_err(format!("hex: {e}")))?;
     }

@@ -71,6 +71,16 @@ def test_codeobject_mutation_and_roundtrip() -> None:
     assert reloaded.produced_by == "edited-producer"
 
 
+def test_codeobject_source_hash_rejects_non_ascii_without_panic() -> None:
+    obj = disrobe.CodeObject()
+    try:
+        obj.source_hash = "\U0001F600" * 16
+    except disrobe.DisrobeError as exc:
+        assert "hex:" in str(exc)
+    else:
+        raise AssertionError("non-ascii source_hash must be rejected")
+
+
 def test_envelope_verify_typed() -> None:
     dr = _build_disasm_dr()
     report = disrobe.envelope_verify(dr)
