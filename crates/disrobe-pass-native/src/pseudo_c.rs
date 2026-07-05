@@ -35,29 +35,6 @@ pub enum Reg {
     R15,
 }
 
-impl Reg {
-    const fn canonical_c_name(self) -> &'static str {
-        match self {
-            Self::Rax => "rax",
-            Self::Rbx => "rbx",
-            Self::Rcx => "rcx",
-            Self::Rdx => "rdx",
-            Self::Rsi => "rsi",
-            Self::Rdi => "rdi",
-            Self::Rbp => "rbp",
-            Self::Rsp => "rsp",
-            Self::R8 => "r8",
-            Self::R9 => "r9",
-            Self::R10 => "r10",
-            Self::R11 => "r11",
-            Self::R12 => "r12",
-            Self::R13 => "r13",
-            Self::R14 => "r14",
-            Self::R15 => "r15",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Width {
     W8,
@@ -5861,8 +5838,25 @@ fn parse_mem_access(token: &str, reg_width: Option<Width>) -> Option<MemRef> {
     })
 }
 
-fn reg_var(reg: Reg) -> String {
-    format!("r_{}", reg.canonical_c_name())
+const fn reg_var(reg: Reg) -> &'static str {
+    match reg {
+        Reg::Rax => "r_rax",
+        Reg::Rbx => "r_rbx",
+        Reg::Rcx => "r_rcx",
+        Reg::Rdx => "r_rdx",
+        Reg::Rsi => "r_rsi",
+        Reg::Rdi => "r_rdi",
+        Reg::Rbp => "r_rbp",
+        Reg::Rsp => "r_rsp",
+        Reg::R8 => "r_r8",
+        Reg::R9 => "r_r9",
+        Reg::R10 => "r_r10",
+        Reg::R11 => "r_r11",
+        Reg::R12 => "r_r12",
+        Reg::R13 => "r_r13",
+        Reg::R14 => "r_r14",
+        Reg::R15 => "r_r15",
+    }
 }
 
 fn loop_cond_var(var: u32) -> String {
@@ -6071,7 +6065,7 @@ fn addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
     c_render(|cx| {
         let mut terms: Vec<CExpr> = Vec::new();
         if let Some(b) = base {
-            terms.push(cx.var(&reg_var(b)));
+            terms.push(cx.var(reg_var(b)));
         }
         if let Some((i, scale)) = index {
             let scaled: CExpr = CExpr::Int {
@@ -6082,7 +6076,7 @@ fn addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
                     long: LongSuffix::LongLong,
                 },
             };
-            terms.push(c_bin(BinaryOp::Mul, cx.var(&reg_var(i)), scaled));
+            terms.push(c_bin(BinaryOp::Mul, cx.var(reg_var(i)), scaled));
         }
         if disp != 0 || terms.is_empty() {
             let signed: CExpr = c_cast(cx, "int64_t", c_i64_literal(disp));
@@ -6156,12 +6150,12 @@ fn source_expr(src: &Source, width: Width) -> String {
     match src {
         Source::Reg(r) => {
             if r.width == width || width == Width::W64 {
-                reg_var(r.reg)
+                reg_var(r.reg).to_string()
             } else {
                 let mask: u128 = (1u128 << r.width.bits()) - 1;
-                let rv: String = reg_var(r.reg);
+                let rv: &'static str = reg_var(r.reg);
                 let rendered: String =
-                    c_render(|cx| c_bin(BinaryOp::BitAnd, cx.var(&rv), c_hex_mask(mask)));
+                    c_render(|cx| c_bin(BinaryOp::BitAnd, cx.var(rv), c_hex_mask(mask)));
                 format!("({rendered})")
             }
         }
@@ -6860,7 +6854,7 @@ fn emit_c(
         match signature.ret {
             FnReturn::Int(return_width) => {
                 let mut masked: String = String::new();
-                width_mask(&mut masked, return_width, &reg_var(Reg::Rax));
+                width_mask(&mut masked, return_width, reg_var(Reg::Rax));
                 masked
             }
             FnReturn::Fp(width) => fp_load(&FpOperand::Xmm(Xmm::Xmm0), width),
@@ -7352,22 +7346,22 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
     match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = source_expr(src, dest.width);
-            let var: String = reg_var(dest.reg);
-            let rhs: String = reg_write_rhs(&var, dest.width, &body);
-            assign_cstmt(cx, &var, &rhs)
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::BinAssign { dest, op, src } => {
-            let var: String = reg_var(dest.reg);
+            let var: &'static str = reg_var(dest.reg);
             let rhs_src: String = source_expr(src, dest.width);
-            let body: String = bin_expr(*op, &var, &rhs_src, dest.width);
-            let rhs: String = reg_write_rhs(&var, dest.width, &body);
-            assign_cstmt(cx, &var, &rhs)
+            let body: String = bin_expr(*op, var, &rhs_src, dest.width);
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::UnAssign { dest, op } => {
-            let var: String = reg_var(dest.reg);
+            let var: &'static str = reg_var(dest.reg);
             let body: String = match op {
                 UnOp::Neg => c_render(|cx| {
-                    let inner: CExpr = cx.var(&var);
+                    let inner: CExpr = cx.var(var);
                     let signed: CExpr = c_cast(cx, "int64_t", inner);
                     let negated: CExpr = CExpr::Unary {
                         op: UnaryOp::Neg,
@@ -7377,11 +7371,11 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 }),
                 UnOp::Not => c_render(|cx| CExpr::Unary {
                     op: UnaryOp::BitNot,
-                    operand: Box::new(cx.var(&var)),
+                    operand: Box::new(cx.var(var)),
                 }),
             };
-            let rhs: String = reg_write_rhs(&var, dest.width, &body);
-            assign_cstmt(cx, &var, &rhs)
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::Cond {
             dest,
@@ -7391,22 +7385,22 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
         } => {
             let cond: String = cond_expr(*kind, flags);
             let chosen: String = source_expr(src, dest.width);
-            let var: String = reg_var(dest.reg);
-            let taken: String = reg_write_rhs(&var, dest.width, &chosen);
+            let var: &'static str = reg_var(dest.reg);
+            let taken: String = reg_write_rhs(var, dest.width, &chosen);
             let body: String = c_render(|cx| CExpr::Ternary {
                 cond: Box::new(cx.var(&cond)),
                 then: Box::new(cx.var(&taken)),
-                els: Box::new(cx.var(&var)),
+                els: Box::new(cx.var(var)),
             });
-            assign_cstmt(cx, &var, &body)
+            assign_cstmt(cx, var, &body)
         }
         Stmt::SetCc { dest, kind, flags } => {
             let cond: String = cond_expr(*kind, flags);
-            let var: String = reg_var(dest.reg);
+            let var: &'static str = reg_var(dest.reg);
             let rhs: String = c_render(|cx| {
                 let kept: CExpr = c_bin(
                     BinaryOp::BitAnd,
-                    cx.var(&var),
+                    cx.var(var),
                     c_hex_mask(0xffff_ffff_ffff_ff00),
                 );
                 let cond_opaque: CExpr = c_opaque(cx, &cond);
@@ -7418,7 +7412,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 let widened: CExpr = c_cast(cx, "uint64_t", ternary);
                 c_bin(BinaryOp::BitOr, kept, widened)
             });
-            assign_cstmt(cx, &var, &rhs)
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::FlagSnapshot { var, kind, flags } => {
             let cond: String = cond_expr(*kind, flags);
@@ -7462,17 +7456,17 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
         }
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
-                ExtSource::Reg(r) => (reg_var(r.reg), r.width),
+                ExtSource::Reg(r) => (reg_var(r.reg).to_string(), r.width),
                 ExtSource::Mem(mem) => (deref_expr(mem), mem.width),
             };
             let body: String = extend_expr(&raw, src_width, dest.width, *signed);
-            let var: String = reg_var(dest.reg);
-            let rhs: String = reg_write_rhs(&var, dest.width, &body);
-            assign_cstmt(cx, &var, &rhs)
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::MulImm { dest, src, imm } => {
             let operand: String = match src {
-                ExtSource::Reg(r) => reg_var(r.reg),
+                ExtSource::Reg(r) => reg_var(r.reg).to_string(),
                 ExtSource::Mem(mem) => {
                     let d: String = deref_expr(mem);
                     c_render(|cx| {
@@ -7487,9 +7481,9 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 let factor: CExpr = c_cast(cx, "uint64_t", signed);
                 c_bin(BinaryOp::Mul, cx.var(&operand), factor)
             });
-            let var: String = reg_var(dest.reg);
-            let rhs: String = reg_write_rhs(&var, dest.width, &body);
-            assign_cstmt(cx, &var, &rhs)
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::WideMul { src } => wide_mul_cstmt(cx, *src),
         Stmt::Divide { divisor, signed } => divide_cstmt(cx, *divisor, *signed),
@@ -7499,26 +7493,26 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             amount,
             left,
         } => {
-            let dst: String = reg_var(dest.reg);
-            let other: String = reg_var(src.reg);
+            let dst: &'static str = reg_var(dest.reg);
+            let other: &'static str = reg_var(src.reg);
             let complement: u32 = 64 - u32::from(*amount);
             let amount_val: u64 = u64::from(*amount);
             let complement_val: u64 = u64::from(complement);
             let body: String = c_render(|cx| {
                 let (hi, lo): (CExpr, CExpr) = if *left {
                     (
-                        c_bin(BinaryOp::Shl, cx.var(&dst), CExpr::int(amount_val)),
-                        c_bin(BinaryOp::Shr, cx.var(&other), CExpr::int(complement_val)),
+                        c_bin(BinaryOp::Shl, cx.var(dst), CExpr::int(amount_val)),
+                        c_bin(BinaryOp::Shr, cx.var(other), CExpr::int(complement_val)),
                     )
                 } else {
                     (
-                        c_bin(BinaryOp::Shr, cx.var(&dst), CExpr::int(amount_val)),
-                        c_bin(BinaryOp::Shl, cx.var(&other), CExpr::int(complement_val)),
+                        c_bin(BinaryOp::Shr, cx.var(dst), CExpr::int(amount_val)),
+                        c_bin(BinaryOp::Shl, cx.var(other), CExpr::int(complement_val)),
                     )
                 };
                 c_bin(BinaryOp::BitOr, hi, lo)
             });
-            assign_cstmt(cx, &dst, &body)
+            assign_cstmt(cx, dst, &body)
         }
         Stmt::BlockMove { elem } => block_move_cstmt(cx, *elem),
         Stmt::BlockFill { elem } => block_fill_cstmt(cx, *elem),
@@ -7533,14 +7527,14 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             let rhs_val: String = fp_load(rhs, *width);
             let bin_op: BinaryOp = fp_binary_op(*op);
             let computed: String = c_render(|cx| c_bin(bin_op, cx.var(&lhs_val), cx.var(&rhs_val)));
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&computed, *width))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpMov { dest, src, width } => {
             if let FpOperand::Xmm(sx) = src {
-                assign_cstmt(cx, &xmm_var(*dest), &xmm_var(*sx))
+                assign_cstmt(cx, xmm_var(*dest), xmm_var(*sx))
             } else {
                 let value: String = fp_load(src, *width);
-                assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&value, *width))
+                assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
             }
         }
         Stmt::FpStore { addr, src, width } => {
@@ -7555,17 +7549,17 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             width,
         } => {
             let bits: u32 = src.width.bits();
-            let rv: String = reg_var(src.reg);
+            let rv: &'static str = reg_var(src.reg);
             let ty: String = if *signed {
                 format!("int{bits}_t")
             } else {
                 format!("uint{bits}_t")
             };
             let int_expr: String = c_render(|cx| {
-                let inner: CExpr = cx.var(&rv);
+                let inner: CExpr = cx.var(rv);
                 c_cast(cx, &ty, inner)
             });
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&int_expr, *width))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&int_expr, *width))
         }
         Stmt::FpToInt { dest, src, width } => {
             let value: String = fp_load(&FpOperand::Xmm(*src), *width);
@@ -7575,9 +7569,9 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 let signed: CExpr = c_cast(cx, &format!("int{bits}_t"), opaque);
                 c_cast(cx, &format!("uint{bits}_t"), signed)
             });
-            let var: String = reg_var(dest.reg);
-            let rhs: String = reg_write_rhs(&var, dest.width, &truncated);
-            assign_cstmt(cx, &var, &rhs)
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &truncated);
+            assign_cstmt(cx, var, &rhs)
         }
         Stmt::FpConvert {
             dest,
@@ -7586,7 +7580,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             to,
         } => {
             let value: String = fp_load(&FpOperand::Xmm(*src), *from);
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&value, *to))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *to))
         }
         Stmt::FpMinMax {
             dest,
@@ -7602,7 +7596,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 then: Box::new(cx.var(&lhs_val)),
                 els: Box::new(cx.var(&rhs_val)),
             });
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&computed, *width))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpSqrt { dest, src, width } => {
             let value: String = fp_load(src, *width);
@@ -7614,7 +7608,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 let arg: CExpr = cx.var(&value);
                 cx.call(name, vec![arg])
             });
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&call, *width))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&call, *width))
         }
         Stmt::FpRound {
             dest,
@@ -7628,64 +7622,64 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
                 let arg: CExpr = cx.var(&value);
                 cx.call(name, vec![arg])
             });
-            assign_cstmt(cx, &xmm_var(*dest), &fp_store_expr(&call, *width))
+            assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&call, *width))
         }
         Stmt::GprToXmm { dest, src, width } => {
             let bits: String = match width {
-                FpWidth::F64 => reg_var(src.reg),
+                FpWidth::F64 => reg_var(src.reg).to_string(),
                 FpWidth::F32 => {
-                    let rv: String = reg_var(src.reg);
+                    let rv: &'static str = reg_var(src.reg);
                     c_render(|cx| {
-                        let inner: CExpr = cx.var(&rv);
+                        let inner: CExpr = cx.var(rv);
                         c_cast(cx, "uint32_t", inner)
                     })
                 }
             };
-            assign_cstmt(cx, &xmm_var(*dest), &bits)
+            assign_cstmt(cx, xmm_var(*dest), &bits)
         }
         Stmt::XmmToGpr { dest, src, width } => {
             let bits: String = xmm_bits(*src, *width);
-            let var: String = reg_var(dest.reg);
-            let rhs: String = reg_write_rhs(&var, dest.width, &bits);
-            assign_cstmt(cx, &var, &rhs)
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &bits);
+            assign_cstmt(cx, var, &rhs)
         }
     }
 }
 
 fn wide_mul_cstmt(cx: &mut Cx<'_>, src: RegRef) -> CStmt {
-    let rax: String = reg_var(Reg::Rax);
-    let rdx: String = reg_var(Reg::Rdx);
-    let factor: String = reg_var(src.reg);
-    let rax_ident: CExpr = cx.var(&rax);
+    let rax: &'static str = reg_var(Reg::Rax);
+    let rdx: &'static str = reg_var(Reg::Rdx);
+    let factor: &'static str = reg_var(src.reg);
+    let rax_ident: CExpr = cx.var(rax);
     let lhs128: CExpr = c_cast(cx, "unsigned __int128", rax_ident);
-    let factor_ident: CExpr = cx.var(&factor);
+    let factor_ident: CExpr = cx.var(factor);
     let rhs128: CExpr = c_cast(cx, "unsigned __int128", factor_ident);
     let product: CExpr = c_bin(BinaryOp::Mul, lhs128, rhs128);
     let decl: CStmt = decl_with_init(cx, "unsigned __int128", "wide_prod", product);
     let wide_prod: CExpr = cx.var("wide_prod");
     let rax_rhs: CExpr = c_cast(cx, "uint64_t", wide_prod);
-    let assign_rax: CStmt = assign_expr_cstmt(cx, &rax, rax_rhs);
+    let assign_rax: CStmt = assign_expr_cstmt(cx, rax, rax_rhs);
     let wide_prod_shr: CExpr = cx.var("wide_prod");
     let shr: CExpr = c_bin(BinaryOp::Shr, wide_prod_shr, CExpr::int(64));
     let rdx_rhs: CExpr = c_cast(cx, "uint64_t", shr);
-    let assign_rdx: CStmt = assign_expr_cstmt(cx, &rdx, rdx_rhs);
+    let assign_rdx: CStmt = assign_expr_cstmt(cx, rdx, rdx_rhs);
     CStmt::Block(vec![decl, assign_rax, assign_rdx])
 }
 
 fn divide_cstmt(cx: &mut Cx<'_>, divisor: RegRef, signed: bool) -> CStmt {
-    let rax: String = reg_var(Reg::Rax);
-    let rdx: String = reg_var(Reg::Rdx);
+    let rax: &'static str = reg_var(Reg::Rax);
+    let rdx: &'static str = reg_var(Reg::Rdx);
     let bits: u32 = divisor.width.bits();
-    let divisor_var: String = reg_var(divisor.reg);
+    let divisor_var: &'static str = reg_var(divisor.reg);
     let result_ty: String = if signed {
         format!("int{bits}_t")
     } else {
         format!("uint{bits}_t")
     };
-    let rax_ident: CExpr = cx.var(&rax);
+    let rax_ident: CExpr = cx.var(rax);
     let dividend: CExpr = c_cast(cx, &result_ty, rax_ident);
     let decl_lhs: CStmt = decl_with_init(cx, &result_ty, "div_lhs", dividend);
-    let divisor_ident: CExpr = cx.var(&divisor_var);
+    let divisor_ident: CExpr = cx.var(divisor_var);
     let divisor_expr: CExpr = c_cast(cx, &result_ty, divisor_ident);
     let decl_rhs: CStmt = decl_with_init(cx, &result_ty, "div_rhs", divisor_expr);
     let uwidth_ty: String = format!("uint{bits}_t");
@@ -7694,22 +7688,22 @@ fn divide_cstmt(cx: &mut Cx<'_>, divisor: RegRef, signed: bool) -> CStmt {
     let quotient: CExpr = c_bin(BinaryOp::Div, div_lhs_a, div_rhs_a);
     let quotient_narrow: CExpr = c_cast(cx, &uwidth_ty, quotient);
     let quotient_wide: CExpr = c_cast(cx, "uint64_t", quotient_narrow);
-    let assign_rax: CStmt = assign_expr_cstmt(cx, &rax, quotient_wide);
+    let assign_rax: CStmt = assign_expr_cstmt(cx, rax, quotient_wide);
     let div_lhs_b: CExpr = cx.var("div_lhs");
     let div_rhs_b: CExpr = cx.var("div_rhs");
     let remainder: CExpr = c_bin(BinaryOp::Rem, div_lhs_b, div_rhs_b);
     let remainder_narrow: CExpr = c_cast(cx, &uwidth_ty, remainder);
     let remainder_wide: CExpr = c_cast(cx, "uint64_t", remainder_narrow);
-    let assign_rdx: CStmt = assign_expr_cstmt(cx, &rdx, remainder_wide);
+    let assign_rdx: CStmt = assign_expr_cstmt(cx, rdx, remainder_wide);
     CStmt::Block(vec![decl_lhs, decl_rhs, assign_rax, assign_rdx])
 }
 
 fn block_move_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
-    let dest: String = reg_var(Reg::Rdi);
-    let src: String = reg_var(Reg::Rsi);
-    let count: String = reg_var(Reg::Rcx);
+    let dest: &'static str = reg_var(Reg::Rdi);
+    let src: &'static str = reg_var(Reg::Rsi);
+    let count: &'static str = reg_var(Reg::Rcx);
     let width: u32 = elem.bits() / 8;
-    let count_ident: CExpr = cx.var(&count);
+    let count_ident: CExpr = cx.var(count);
     let width_lit: CExpr = CExpr::Int {
         value: u64::from(width),
         radix: Radix::Dec,
@@ -7720,25 +7714,25 @@ fn block_move_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
     };
     let move_n_init: CExpr = c_bin(BinaryOp::Mul, count_ident, width_lit);
     let decl_move_n: CStmt = decl_with_init(cx, "uint64_t", "move_n", move_n_init);
-    let dest_ptr: CExpr = cx.var(&dest);
+    let dest_ptr: CExpr = cx.var(dest);
     let dest_uptr: CExpr = c_cast(cx, "uintptr_t", dest_ptr);
     let dest_void: CExpr = c_ptr_cast(cx, "void", dest_uptr);
-    let src_ptr: CExpr = cx.var(&src);
+    let src_ptr: CExpr = cx.var(src);
     let src_uptr: CExpr = c_cast(cx, "uintptr_t", src_ptr);
     let src_void: CExpr = c_ptr_cast(cx, "const void", src_uptr);
     let move_n_size_ident: CExpr = cx.var("move_n");
     let move_n_size: CExpr = c_cast(cx, "size_t", move_n_size_ident);
     let memcpy_call: CExpr = cx.call("memcpy", vec![dest_void, src_void, move_n_size]);
     let memcpy_stmt: CStmt = CStmt::Expr(memcpy_call);
-    let dest_move: CExpr = cx.var(&dest);
+    let dest_move: CExpr = cx.var(dest);
     let move_n_a: CExpr = cx.var("move_n");
     let dest_add: CExpr = c_bin(BinaryOp::Add, dest_move, move_n_a);
-    let assign_dest: CStmt = assign_expr_cstmt(cx, &dest, dest_add);
-    let src_move: CExpr = cx.var(&src);
+    let assign_dest: CStmt = assign_expr_cstmt(cx, dest, dest_add);
+    let src_move: CExpr = cx.var(src);
     let move_n_b: CExpr = cx.var("move_n");
     let src_add: CExpr = c_bin(BinaryOp::Add, src_move, move_n_b);
-    let assign_src: CStmt = assign_expr_cstmt(cx, &src, src_add);
-    let assign_count: CStmt = assign_expr_cstmt(cx, &count, CExpr::int(0));
+    let assign_src: CStmt = assign_expr_cstmt(cx, src, src_add);
+    let assign_count: CStmt = assign_expr_cstmt(cx, count, CExpr::int(0));
     CStmt::Block(vec![
         decl_move_n,
         memcpy_stmt,
@@ -7749,20 +7743,20 @@ fn block_move_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
 }
 
 fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
-    let dest: String = reg_var(Reg::Rdi);
-    let value: String = reg_var(Reg::Rax);
-    let count: String = reg_var(Reg::Rcx);
+    let dest: &'static str = reg_var(Reg::Rdi);
+    let value: &'static str = reg_var(Reg::Rax);
+    let count: &'static str = reg_var(Reg::Rcx);
     let width: u32 = elem.bits() / 8;
     let fill_stmt: CStmt = match elem {
         Width::W8 => {
-            let dest_ptr: CExpr = cx.var(&dest);
+            let dest_ptr: CExpr = cx.var(dest);
             let dest_uptr: CExpr = c_cast(cx, "uintptr_t", dest_ptr);
             let dest_void: CExpr = c_ptr_cast(cx, "void", dest_uptr);
-            let value_ident: CExpr = cx.var(&value);
+            let value_ident: CExpr = cx.var(value);
             let byte_mask: CExpr = c_hex_mask(0xff);
             let masked: CExpr = c_bin(BinaryOp::BitAnd, value_ident, byte_mask);
             let masked_int: CExpr = c_cast(cx, "int", masked);
-            let count_ident: CExpr = cx.var(&count);
+            let count_ident: CExpr = cx.var(count);
             let count_size: CExpr = c_cast(cx, "size_t", count_ident);
             let memset_call: CExpr = cx.call("memset", vec![dest_void, masked_int, count_size]);
             CStmt::Expr(memset_call)
@@ -7777,14 +7771,14 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
             let mask: u128 = (1u128 << other.bits()) - 1;
             let decl_fill_i: CStmt = decl_with_init(cx, "uint64_t", "fill_i", CExpr::int(0));
             let fill_i_cond: CExpr = cx.var("fill_i");
-            let count_ident: CExpr = cx.var(&count);
+            let count_ident: CExpr = cx.var(count);
             let cond: CExpr = c_bin(BinaryOp::Lt, fill_i_cond, count_ident);
             let fill_i_step: CExpr = cx.var("fill_i");
             let step: CExpr = CExpr::Postfix {
                 op: PostfixOp::PostInc,
                 operand: Box::new(fill_i_step),
             };
-            let dest_ptr: CExpr = cx.var(&dest);
+            let dest_ptr: CExpr = cx.var(dest);
             let dest_uptr: CExpr = c_cast(cx, "uintptr_t", dest_ptr);
             let dest_typed: CExpr = c_ptr_cast(cx, ty, dest_uptr);
             let fill_i_index: CExpr = cx.var("fill_i");
@@ -7792,7 +7786,7 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
                 base: Box::new(dest_typed),
                 index: Box::new(fill_i_index),
             };
-            let value_ident: CExpr = cx.var(&value);
+            let value_ident: CExpr = cx.var(value);
             let mask_lit: CExpr = c_hex_mask(mask);
             let masked: CExpr = c_bin(BinaryOp::BitAnd, value_ident, mask_lit);
             let masked_typed: CExpr = c_cast(cx, ty, masked);
@@ -7810,8 +7804,8 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
             }
         }
     };
-    let dest_a: CExpr = cx.var(&dest);
-    let count_a: CExpr = cx.var(&count);
+    let dest_a: CExpr = cx.var(dest);
+    let count_a: CExpr = cx.var(count);
     let width_lit: CExpr = CExpr::Int {
         value: u64::from(width),
         radix: Radix::Dec,
@@ -7822,8 +7816,8 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
     };
     let count_width: CExpr = c_bin(BinaryOp::Mul, count_a, width_lit);
     let dest_add: CExpr = c_bin(BinaryOp::Add, dest_a, count_width);
-    let assign_dest: CStmt = assign_expr_cstmt(cx, &dest, dest_add);
-    let assign_count: CStmt = assign_expr_cstmt(cx, &count, CExpr::int(0));
+    let assign_dest: CStmt = assign_expr_cstmt(cx, dest, dest_add);
+    let assign_count: CStmt = assign_expr_cstmt(cx, count, CExpr::int(0));
     CStmt::Block(vec![fill_stmt, assign_dest, assign_count])
 }
 
@@ -7831,15 +7825,32 @@ fn call_cstmt(cx: &mut Cx<'_>, target: u64, args: &[Reg], name: Option<&str>) ->
     let display: String = call_display_name(target, name);
     let mut arg_exprs: Vec<CExpr> = Vec::with_capacity(args.len());
     for r in args {
-        let arg: CExpr = cx.var(&reg_var(*r));
+        let arg: CExpr = cx.var(reg_var(*r));
         arg_exprs.push(arg);
     }
     let call_expr: CExpr = cx.call(&display, arg_exprs);
-    assign_expr_cstmt(cx, &reg_var(Reg::Rax), call_expr)
+    assign_expr_cstmt(cx, reg_var(Reg::Rax), call_expr)
 }
 
-fn xmm_var(xmm: Xmm) -> String {
-    format!("x_xmm{}", xmm.index())
+const fn xmm_var(xmm: Xmm) -> &'static str {
+    match xmm {
+        Xmm::Xmm0 => "x_xmm0",
+        Xmm::Xmm1 => "x_xmm1",
+        Xmm::Xmm2 => "x_xmm2",
+        Xmm::Xmm3 => "x_xmm3",
+        Xmm::Xmm4 => "x_xmm4",
+        Xmm::Xmm5 => "x_xmm5",
+        Xmm::Xmm6 => "x_xmm6",
+        Xmm::Xmm7 => "x_xmm7",
+        Xmm::Xmm8 => "x_xmm8",
+        Xmm::Xmm9 => "x_xmm9",
+        Xmm::Xmm10 => "x_xmm10",
+        Xmm::Xmm11 => "x_xmm11",
+        Xmm::Xmm12 => "x_xmm12",
+        Xmm::Xmm13 => "x_xmm13",
+        Xmm::Xmm14 => "x_xmm14",
+        Xmm::Xmm15 => "x_xmm15",
+    }
 }
 
 fn fp_binary_op(op: FpOp) -> BinaryOp {
@@ -7854,14 +7865,14 @@ fn fp_binary_op(op: FpOp) -> BinaryOp {
 fn fp_load(operand: &FpOperand, width: FpWidth) -> String {
     match operand {
         FpOperand::Xmm(x) => {
-            let xv: String = xmm_var(*x);
+            let xv: &'static str = xmm_var(*x);
             match width {
                 FpWidth::F64 => c_render(|cx| {
-                    let arg: CExpr = cx.var(&xv);
+                    let arg: CExpr = cx.var(xv);
                     cx.call("fp_d_from_bits", vec![arg])
                 }),
                 FpWidth::F32 => c_render(|cx| {
-                    let inner: CExpr = cx.var(&xv);
+                    let inner: CExpr = cx.var(xv);
                     let arg: CExpr = c_cast(cx, "uint32_t", inner);
                     cx.call("fp_f_from_bits", vec![arg])
                 }),
@@ -7918,11 +7929,11 @@ fn fp_store_expr(value: &str, width: FpWidth) -> String {
 
 fn xmm_bits(xmm: Xmm, width: FpWidth) -> String {
     match width {
-        FpWidth::F64 => xmm_var(xmm),
+        FpWidth::F64 => xmm_var(xmm).to_string(),
         FpWidth::F32 => {
-            let xv: String = xmm_var(xmm);
+            let xv: &'static str = xmm_var(xmm);
             c_render(|cx| {
-                let inner: CExpr = cx.var(&xv);
+                let inner: CExpr = cx.var(xv);
                 c_cast(cx, "uint32_t", inner)
             })
         }
@@ -8070,9 +8081,9 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
     match flags {
         Flags::Cmp { lhs, rhs } => {
             let width: Width = lhs.width;
-            let lhs_expr: String = reg_var(lhs.reg);
+            let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = source_expr(rhs, width);
-            compare_expr(kind, &lhs_expr, &rhs_expr, width)
+            compare_expr(kind, lhs_expr, &rhs_expr, width)
         }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
@@ -8082,7 +8093,7 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
         }
         Flags::TestImm { operand, mask } => {
             let width: Width = operand.width;
-            let uop: String = unsigned_operand(&reg_var(operand.reg), width);
+            let uop: String = unsigned_operand(reg_var(operand.reg), width);
             let mask_val: u128 = u128::from((*mask as u64) & ((1u128 << width.bits()) - 1) as u64);
             let cmp: BinaryOp = match kind {
                 CondKind::E => BinaryOp::Eq,
@@ -8096,8 +8107,8 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
         }
         Flags::Test { operand } => {
             let width: Width = operand.width;
-            let var: String = reg_var(operand.reg);
-            let sop: String = signed_operand(&var, width);
+            let var: &'static str = reg_var(operand.reg);
+            let sop: String = signed_operand(var, width);
             match kind {
                 CondKind::E | CondKind::Be => {
                     c_render(|cx| c_bin(BinaryOp::Eq, cx.var(&sop), CExpr::int(0)))
@@ -8119,7 +8130,7 @@ fn cond_expr(kind: CondKind, flags: &Flags) -> String {
         }
         Flags::Sign { result } => {
             let width: Width = result.width;
-            let var: String = signed_operand(&reg_var(result.reg), width);
+            let var: String = signed_operand(reg_var(result.reg), width);
             match kind {
                 CondKind::S => c_render(|cx| c_bin(BinaryOp::Lt, cx.var(&var), CExpr::int(0))),
                 CondKind::Ns => c_render(|cx| c_bin(BinaryOp::Ge, cx.var(&var), CExpr::int(0))),
@@ -8307,7 +8318,7 @@ fn emit_rust(
     }
 
     let ret_expr: String = match signature.ret {
-        FnReturn::Int(return_width) => rs_width_mask(return_width, &reg_var(Reg::Rax)),
+        FnReturn::Int(return_width) => rs_width_mask(return_width, reg_var(Reg::Rax)),
         FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
     };
 
@@ -8360,7 +8371,7 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
                 cases,
                 default,
             } => {
-                let key: String = rs_signed_operand(&reg_var(disc.reg), disc.width);
+                let key: String = rs_signed_operand(reg_var(disc.reg), disc.width);
                 let _ = writeln!(out, "{indent}match {key} {{");
                 for (idx, case) in cases.iter().enumerate() {
                     let pattern: String = case
@@ -8413,8 +8424,8 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
 }
 
 fn rs_emit_reg_assign(out: &mut String, dest: RegRef, body: &str, indent: &str) {
-    let var: String = reg_var(dest.reg);
-    let masked: String = rs_reg_write_rhs(&var, dest.width, body);
+    let var: &'static str = reg_var(dest.reg);
+    let masked: String = rs_reg_write_rhs(var, dest.width, body);
     let _ = writeln!(out, "{indent}{var} = {masked};");
 }
 
@@ -8429,7 +8440,7 @@ fn rs_emit_xmm_store(out: &mut String, dest: Xmm, value: &str, width: FpWidth, i
 
 fn rs_mul_imm_stmt(out: &mut String, dest: RegRef, src: &ExtSource, imm: i64, indent: &str) {
     let operand: String = match src {
-        ExtSource::Reg(r) => reg_var(r.reg),
+        ExtSource::Reg(r) => reg_var(r.reg).to_string(),
         ExtSource::Mem(mem) => rs_deref_read(mem),
     };
     let body: String = parse_expr(&operand).map_or_else(
@@ -8443,9 +8454,9 @@ fn rs_mul_imm_stmt(out: &mut String, dest: RegRef, src: &ExtSource, imm: i64, in
 }
 
 fn rs_emit_wide_mul(out: &mut String, src: RegRef, indent: &str) {
-    let rax: String = reg_var(Reg::Rax);
-    let rdx: String = reg_var(Reg::Rdx);
-    let factor: String = reg_var(src.reg);
+    let rax: &'static str = reg_var(Reg::Rax);
+    let rdx: &'static str = reg_var(Reg::Rdx);
+    let factor: &'static str = reg_var(src.reg);
     let _ = writeln!(out, "{indent}{{");
     let _ = writeln!(
         out,
@@ -8464,8 +8475,8 @@ fn rs_double_shift_stmt(
     left: bool,
     indent: &str,
 ) {
-    let dst: String = reg_var(dest.reg);
-    let other: String = reg_var(src.reg);
+    let dst: &'static str = reg_var(dest.reg);
+    let other: &'static str = reg_var(src.reg);
     let amount32: u32 = u32::from(amount);
     let complement: u32 = 64 - amount32;
     let (first_method, second_method): (&str, &str) = if left {
@@ -8476,12 +8487,12 @@ fn rs_double_shift_stmt(
     let combined: RustExpr = binary(
         RBinOp::BitOr,
         method_call(
-            rvar(&dst),
+            rvar(dst),
             first_method,
             vec![int_dec(u128::from(amount32), "u32")],
         ),
         method_call(
-            rvar(&other),
+            rvar(other),
             second_method,
             vec![int_dec(u128::from(complement), "u32")],
         ),
@@ -8494,7 +8505,7 @@ fn rs_call_stmt(out: &mut String, target: u64, args: &[Reg], name: Option<&str>,
     let arg_list: String = args
         .iter()
         .map(|r: &Reg| reg_var(*r))
-        .collect::<Vec<String>>()
+        .collect::<Vec<&str>>()
         .join(", ");
     let _ = writeln!(
         out,
@@ -8630,7 +8641,7 @@ fn rs_fp_round_stmt(
 
 fn rs_gpr_to_xmm_stmt(out: &mut String, dest: Xmm, src: RegRef, width: FpWidth, indent: &str) {
     let bits: String = match width {
-        FpWidth::F64 => reg_var(src.reg),
+        FpWidth::F64 => reg_var(src.reg).to_string(),
         FpWidth::F32 => format!("(({} as u32) as u64)", reg_var(src.reg)),
     };
     let _ = writeln!(out, "{indent}{} = {bits};", xmm_var(dest));
@@ -8661,14 +8672,14 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::BinAssign { dest, op, src } => {
-            let var: String = reg_var(dest.reg);
+            let var: &'static str = reg_var(dest.reg);
             let rhs: String = rs_source_expr(src, dest.width)?;
-            let body: String = rs_bin_expr(*op, &var, &rhs, dest.width);
+            let body: String = rs_bin_expr(*op, var, &rhs, dest.width);
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::UnAssign { dest, op } => {
-            let var: String = reg_var(dest.reg);
-            let body: String = rs_unop_expr(*op, &var);
+            let var: &'static str = reg_var(dest.reg);
+            let body: String = rs_unop_expr(*op, var);
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::Cond {
@@ -8679,8 +8690,8 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         } => {
             let cond: String = rs_cond_expr(*kind, flags)?;
             let chosen: String = rs_source_expr(src, dest.width)?;
-            let var: String = reg_var(dest.reg);
-            let taken: String = rs_reg_write_rhs(&var, dest.width, &chosen);
+            let var: &'static str = reg_var(dest.reg);
+            let taken: String = rs_reg_write_rhs(var, dest.width, &chosen);
             let _ = writeln!(
                 out,
                 "{indent}{var} = if {cond} {{ {taken} }} else {{ {var} }};"
@@ -8688,7 +8699,7 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         }
         Stmt::SetCc { dest, kind, flags } => {
             let cond: String = rs_cond_expr(*kind, flags)?;
-            let var: String = reg_var(dest.reg);
+            let var: &'static str = reg_var(dest.reg);
             let _ = writeln!(
                 out,
                 "{indent}{var} = ({var} & 0xffffffffffffff00u64) | (({cond}) as u64);"
@@ -8700,7 +8711,7 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         }
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
-                ExtSource::Reg(r) => (reg_var(r.reg), r.width),
+                ExtSource::Reg(r) => (reg_var(r.reg).to_string(), r.width),
                 ExtSource::Mem(mem) => (rs_deref_read(mem), mem.width),
             };
             let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
@@ -8817,11 +8828,11 @@ fn rs_fp_load_xmm(xmm: Xmm, width: FpWidth) -> String {
     match width {
         FpWidth::F64 => render_rust_expr(&rcall(
             path_expr(&["f64", "from_bits"]),
-            vec![rvar(&xmm_var(xmm))],
+            vec![rvar(xmm_var(xmm))],
         )),
         FpWidth::F32 => render_rust_expr(&rcall(
             path_expr(&["f32", "from_bits"]),
-            vec![rcast(rvar(&xmm_var(xmm)), rtype_path("u32"))],
+            vec![rcast(rvar(xmm_var(xmm)), rtype_path("u32"))],
         )),
     }
 }
@@ -8863,18 +8874,18 @@ fn rs_fp_store_expr(value: &str, width: FpWidth) -> String {
 
 fn rs_xmm_bits(xmm: Xmm, width: FpWidth) -> String {
     match width {
-        FpWidth::F64 => xmm_var(xmm),
+        FpWidth::F64 => xmm_var(xmm).to_string(),
         FpWidth::F32 => render_rust_expr(&rcast(
-            rcast(rvar(&xmm_var(xmm)), rtype_path("u32")),
+            rcast(rvar(xmm_var(xmm)), rtype_path("u32")),
             rtype_path("u64"),
         )),
     }
 }
 
 fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str) {
-    let rax: String = reg_var(Reg::Rax);
-    let rdx: String = reg_var(Reg::Rdx);
-    let div: String = reg_var(divisor.reg);
+    let rax: &'static str = reg_var(Reg::Rax);
+    let rdx: &'static str = reg_var(Reg::Rdx);
+    let div: &'static str = reg_var(divisor.reg);
     let width: Width = divisor.width;
     let _ = writeln!(out, "{indent}{{");
     if signed {
@@ -8917,11 +8928,11 @@ fn rs_unop_expr(op: UnOp, text: &str) -> String {
 fn rs_addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
     let mut parts: Vec<RustExpr> = Vec::new();
     if let Some(b) = base {
-        parts.push(rvar(&reg_var(b)));
+        parts.push(rvar(reg_var(b)));
     }
     if let Some((i, scale)) = index {
         let scaled: RustExpr = method_call(
-            rvar(&reg_var(i)),
+            rvar(reg_var(i)),
             "wrapping_mul",
             vec![int_dec(u128::from(scale), "u64")],
         );
@@ -8941,11 +8952,11 @@ fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
     match src {
         Source::Reg(r) => {
             if r.width == width || width == Width::W64 {
-                Some(reg_var(r.reg))
+                Some(reg_var(r.reg).to_string())
             } else {
                 let mask: u128 = (1u128 << r.width.bits()) - 1;
                 let masked: RustExpr =
-                    binary(RBinOp::BitAnd, rvar(&reg_var(r.reg)), int_hex(mask, "u64"));
+                    binary(RBinOp::BitAnd, rvar(reg_var(r.reg)), int_hex(mask, "u64"));
                 Some(render_rust_expr(&masked))
             }
         }
@@ -9230,9 +9241,9 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
     match flags {
         Flags::Cmp { lhs, rhs } => {
             let width: Width = lhs.width;
-            let lhs_expr: String = reg_var(lhs.reg);
+            let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = rs_source_expr(rhs, width)?;
-            Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
+            Some(rs_compare_expr(kind, lhs_expr, &rhs_expr, width))
         }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
@@ -9243,7 +9254,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
         Flags::TestImm { operand, mask } => {
             let width: Width = operand.width;
             let maskval: u64 = (*mask as u64) & ((1u128 << width.bits()) - 1) as u64;
-            let unsigned: String = rs_unsigned_operand(&reg_var(operand.reg), width);
+            let unsigned: String = rs_unsigned_operand(reg_var(operand.reg), width);
             let masked: String = match parse_expr(&unsigned) {
                 Some(opaque) => render_rust_expr(&binary(
                     RBinOp::BitAnd,
@@ -9260,7 +9271,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
         }
         Flags::Test { operand } => {
             let width: Width = operand.width;
-            let var: String = rs_signed_operand(&reg_var(operand.reg), width);
+            let var: String = rs_signed_operand(reg_var(operand.reg), width);
             let expr: String = match kind {
                 CondKind::E | CondKind::Be => rs_binary_text(&var, "0", RBinOp::Eq, "=="),
                 CondKind::Ne | CondKind::A => rs_binary_text(&var, "0", RBinOp::Ne, "!="),
@@ -9275,7 +9286,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
         }
         Flags::Sign { result } => {
             let width: Width = result.width;
-            let var: String = rs_signed_operand(&reg_var(result.reg), width);
+            let var: String = rs_signed_operand(reg_var(result.reg), width);
             match kind {
                 CondKind::S => Some(rs_binary_text(&var, "0", RBinOp::Lt, "<")),
                 CondKind::Ns => Some(rs_binary_text(&var, "0", RBinOp::Ge, ">=")),
