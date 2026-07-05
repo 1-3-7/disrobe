@@ -18,7 +18,6 @@ workspace = true
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-nir = { workspace = true }
-disrobe-pass-native = { workspace = true }
 blake3 = { workspace = true }
 object = { workspace = true }
 miette = { workspace = true }
@@ -29,6 +28,9 @@ serde_json = { workspace = true }
 plist = { workspace = true }
 zip = { workspace = true }
 memchr = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+disrobe-pass-native = { workspace = true }
 
 [features]
 default = []

@@ -1,20 +1,32 @@
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::num::TryFromIntError;
 
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
     Arch, DisasmInsn, LeafRecovery, PseudoAbi, disassemble, recover_leaf_function_abi,
 };
 
-use crate::error::{Error, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::error::Error;
+use crate::error::Result;
 use crate::v8v9::BccArch;
 
+#[cfg(not(target_arch = "wasm32"))]
 const SHT_PROGBITS: u32 = 1;
+#[cfg(not(target_arch = "wasm32"))]
 const SHF_ALLOC: u64 = 0x2;
+#[cfg(not(target_arch = "wasm32"))]
 const SHF_EXECINSTR: u64 = 0x4;
+#[cfg(not(target_arch = "wasm32"))]
 const SHF_STRINGS: u64 = 0x20;
+#[cfg(not(target_arch = "wasm32"))]
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FUNCTIONS: usize = 4096;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_DISASM_LINES: usize = 4096;
+#[cfg(not(target_arch = "wasm32"))]
 const MIN_STRING_LEN: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,12 +57,36 @@ pub struct BccLiftOutput {
     pub notes: Vec<String>,
 }
 
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::unnecessary_wraps)]
+pub fn lift_bcc_native(_blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
+    Ok(BccLiftOutput {
+        architecture: arch,
+        text_base: 0,
+        functions: BTreeMap::new(),
+        modeled_count: 0,
+        unmodeled_count: 0,
+        strings: Vec::new(),
+        notes: vec![
+            "native pseudo-C BCC lift is unavailable in the wasm build; run the native disrobe binary for x86-64 body recovery".to_owned(),
+        ],
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub const fn lift_bcc_code_region(_code: &[u8], _base: u64, _arch: BccArch) -> Vec<PseudoCFunction> {
+    Vec::new()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 struct ExecutableImage {
     base: u64,
     code: Vec<u8>,
     strings: Vec<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
     if blob.is_empty() {
         return Err(Error::BccLiftEmptyBlob);
@@ -104,11 +140,13 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn lift_bcc_code_region(code: &[u8], base: u64, arch: BccArch) -> Vec<PseudoCFunction> {
     arch_to_abi(arch).map_or_else(Vec::new, |abi: PseudoAbi| lift_code_region(code, base, abi))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<PseudoCFunction> {
     let Ok(insns): std::result::Result<Vec<DisasmInsn>, _> = disassemble(Arch::X86_64, base, code)
     else {
@@ -144,6 +182,7 @@ pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<Ps
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_function(
     slice: &[u8],
     entry_va: u64,
@@ -179,6 +218,7 @@ fn render_function(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn function_byte_window<'a>(
     code: &'a [u8],
     base: u64,
@@ -196,6 +236,7 @@ fn function_byte_window<'a>(
     Some((slice, size))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_declined_function(
     entry_va: u64,
     size: u32,
@@ -218,22 +259,26 @@ fn render_declined_function(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn saturating_u32_len(value: usize) -> u32 {
     let converted: std::result::Result<u32, TryFromIntError> = u32::try_from(value);
     converted.map_or(u32::MAX, |value: u32| value)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn saturating_u32(value: u64) -> u32 {
     let converted: std::result::Result<u32, TryFromIntError> = u32::try_from(value);
     converted.map_or(u32::MAX, |value: u32| value)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn rename_recovered(recovery: &LeafRecovery, name: &str) -> String {
     recovery
         .source
         .replacen("recovered(", &format!("{name}("), 1)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_signature(pseudo_c: &str, name: &str) -> String {
     let needle: String = format!("{name}(");
     pseudo_c
@@ -245,6 +290,7 @@ fn extract_signature(pseudo_c: &str, name: &str) -> String {
         )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_unmodeled(name: &str, entry_va: u64, insns: &[DisasmInsn], reason: &str) -> String {
     let mut out: String = String::new();
     push_format(
@@ -289,6 +335,7 @@ fn render_unmodeled(name: &str, entry_va: u64, insns: &[DisasmInsn], reason: &st
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
     if let Err(error) = result {
@@ -296,6 +343,7 @@ fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn discover_functions(insns: &[DisasmInsn]) -> Vec<(usize, usize)> {
     let mut bounds: Vec<(usize, usize)> = Vec::new();
     let mut idx: usize = 0;
@@ -336,10 +384,12 @@ fn discover_functions(insns: &[DisasmInsn]) -> Vec<(usize, usize)> {
     bounds
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_padding(insn: &DisasmInsn) -> bool {
     insn.mnemonic == "nop" || insn.mnemonic == "int3"
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn branch_target(insn: &DisasmInsn) -> Option<u64> {
     let is_branch: bool =
         insn.mnemonic == "jmp" || (insn.mnemonic.starts_with('j') && insn.mnemonic.len() <= 4);
@@ -349,6 +399,7 @@ fn branch_target(insn: &DisasmInsn) -> Option<u64> {
     parse_hex_operand(&insn.operands)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_hex_operand(operands: &str) -> Option<u64> {
     let trimmed: &str = operands.trim();
     let token: &str = trimmed
@@ -367,6 +418,7 @@ fn parse_hex_operand(operands: &str) -> Option<u64> {
     u64::from_str_radix(body, 16).ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn arch_to_abi(arch: BccArch) -> Option<PseudoAbi> {
     match arch {
         BccArch::WinX64 | BccArch::Other(_) => Some(PseudoAbi::MsX64),
@@ -375,6 +427,7 @@ const fn arch_to_abi(arch: BccArch) -> Option<PseudoAbi> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_executable_image(blob: &[u8]) -> Result<ExecutableImage> {
     if blob.len() >= 4 && blob[..4] == ELF_MAGIC {
         return parse_elf64(blob);
@@ -382,6 +435,7 @@ fn extract_executable_image(blob: &[u8]) -> Result<ExecutableImage> {
     parse_via_object(blob)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
     if blob.len() < 64 || blob[4] != 2 || blob[5] != 1 {
         return Err(Error::BccLiftParse(
@@ -455,6 +509,7 @@ fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_via_object(blob: &[u8]) -> Result<ExecutableImage> {
     use object::{Object as _, ObjectSection as _};
     let file: object::File<'_> =
@@ -493,6 +548,7 @@ fn parse_via_object(blob: &[u8]) -> Result<ExecutableImage> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn carve_c_strings(data: &[u8]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for chunk in data.split(|b: &u8| *b == 0) {
@@ -507,10 +563,12 @@ fn carve_c_strings(data: &[u8]) -> Vec<String> {
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn section_overflow() -> Error {
     Error::BccLiftParse("ELF section header offset overflow".to_owned())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_u16(blob: &[u8], off: usize) -> Result<u16> {
     let bytes: [u8; 2] = blob
         .get(off..off + 2)
@@ -519,6 +577,7 @@ fn read_u16(blob: &[u8], off: usize) -> Result<u16> {
     Ok(u16::from_le_bytes(bytes))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_u32(blob: &[u8], off: usize) -> Result<u32> {
     let bytes: [u8; 4] = blob
         .get(off..off + 4)
@@ -527,6 +586,7 @@ fn read_u32(blob: &[u8], off: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_u64(blob: &[u8], off: usize) -> Result<u64> {
     let bytes: [u8; 8] = blob
         .get(off..off + 8)
@@ -535,7 +595,7 @@ fn read_u64(blob: &[u8], off: usize) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;

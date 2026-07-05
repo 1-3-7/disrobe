@@ -1,16 +1,22 @@
+use disrobe_nir::{NirModule, SourceLang};
+use serde::{Deserialize, Serialize};
+
+use crate::macho::ParsedSlice;
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 
-use disrobe_nir::{
-    BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirOp, NirSymbol, SourceRef, SymbolKind};
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
     Arch, CoverageScore, DisasmInsn, DwarfSourcemap, ReconstructedType, SplitDwarfInfo, TypeKind,
     TypeMember, TypeReconstruction, disassemble, reconstruct_dwarf_types,
     synthesize_dwarf_sourcemap,
 };
-use serde::{Deserialize, Serialize};
-
-use crate::macho::{CpuKind, FunctionSymbol, ParsedSlice, Section, function_symbols};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::macho::{CpuKind, FunctionSymbol, Section, function_symbols};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::swift;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,13 +130,26 @@ impl NativeBodyReport {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub const fn recover_native_bodies(_slice: &[u8], _parsed: &ParsedSlice) -> NativeBodyReport {
+    NativeBodyReport::empty(SourceGrade::None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 const LINE_COVERAGE_GRADE_FLOOR: f64 = 50.0;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_REPORTED_TYPES: usize = 1 << 16;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_LISTED_FUNCTIONS: usize = 4096;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_FUNCTION_BYTES: u64 = 256 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_INSTRUCTIONS_PER_FUNCTION: usize = 8192;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_LINES_PER_FUNCTION: usize = 4096;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn recover_native_bodies(slice: &[u8], parsed: &ParsedSlice) -> NativeBodyReport {
     let symbols: Vec<FunctionSymbol> = function_symbols(slice, parsed);
@@ -201,6 +220,7 @@ pub fn recover_native_bodies(slice: &[u8], parsed: &ParsedSlice) -> NativeBodyRe
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lift_native_nir(
     slice: &[u8],
     cpu: CpuKind,
@@ -234,8 +254,10 @@ fn lift_native_nir(
     module
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_NIR_SYMBOLS: usize = 8192;
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn source_lang(cpu: CpuKind) -> SourceLang {
     match cpu {
         CpuKind::X86 | CpuKind::X86_64 => SourceLang::NativeX86,
@@ -244,6 +266,7 @@ const fn source_lang(cpu: CpuKind) -> SourceLang {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lift_function(lang: SourceLang, function: &FunctionBody) -> NirFunction {
     let instructions: Vec<NirInstr> = function
         .instructions
@@ -260,6 +283,7 @@ fn lift_function(lang: SourceLang, function: &FunctionBody) -> NirFunction {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lift_instruction(lang: SourceLang, instruction: &DisasmInstruction) -> NirInstr {
     let mnemonic: String = instruction.mnemonic.to_ascii_lowercase();
     let operands: Vec<String> = split_operands(&instruction.operands);
@@ -278,6 +302,7 @@ fn lift_instruction(lang: SourceLang, instruction: &DisasmInstruction) -> NirIns
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn split_operands(operands: &str) -> Vec<String> {
     operands
         .split(',')
@@ -287,6 +312,7 @@ fn split_operands(operands: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn classify(mnemonic: &str, raw_operands: &str, operands: &[String]) -> NirOp {
     if is_return(mnemonic) {
         return NirOp::Return;
@@ -323,6 +349,7 @@ fn classify(mnemonic: &str, raw_operands: &str, operands: &[String]) -> NirOp {
     NirOp::Nop
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn direct_target(operands: &str) -> Option<u64> {
     let mut head: &str = operands.split(',').next()?.trim();
     for prefix in [
@@ -335,10 +362,12 @@ fn direct_target(operands: &str) -> Option<u64> {
     u64::from_str_radix(cleaned, 16).ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn is_return(mnemonic: &str) -> bool {
     starts_with_bytes(mnemonic, b"ret")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn is_call(mnemonic: &str) -> bool {
     matches!(
         mnemonic.as_bytes(),
@@ -346,6 +375,7 @@ const fn is_call(mnemonic: &str) -> bool {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn is_unconditional_branch(mnemonic: &str) -> bool {
     matches!(
         mnemonic.as_bytes(),
@@ -353,12 +383,14 @@ const fn is_unconditional_branch(mnemonic: &str) -> bool {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_conditional_branch(mnemonic: &str) -> bool {
     (mnemonic.starts_with('j') && !is_unconditional_branch(mnemonic) && !is_call(mnemonic))
         || mnemonic.starts_with("b.")
         || matches!(mnemonic, "cbz" | "cbnz" | "tbz" | "tbnz" | "beq" | "bne")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn starts_with_bytes(value: &str, prefix: &[u8]) -> bool {
     let bytes: &[u8] = value.as_bytes();
     if bytes.len() < prefix.len() {
@@ -374,6 +406,7 @@ const fn starts_with_bytes(value: &str, prefix: &[u8]) -> bool {
     true
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn binary_op(mnemonic: &str) -> Option<BinaryOp> {
     match mnemonic.as_bytes() {
         b"add" | b"adc" | b"inc" => Some(BinaryOp::Add),
@@ -393,6 +426,7 @@ const fn binary_op(mnemonic: &str) -> Option<BinaryOp> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_store(mnemonic: &str, operands: &[String]) -> bool {
     let dest_memory: bool = operands
         .first()
@@ -404,6 +438,7 @@ fn is_store(mnemonic: &str, operands: &[String]) -> bool {
         )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_load(mnemonic: &str, operands: &[String]) -> bool {
     let source_memory: bool = operands
         .iter()
@@ -416,6 +451,7 @@ fn is_load(mnemonic: &str, operands: &[String]) -> bool {
         )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_const(mnemonic: &str, operands: &[String]) -> bool {
     mnemonic == "lea"
         || operands
@@ -423,6 +459,7 @@ fn is_const(mnemonic: &str, operands: &[String]) -> bool {
             .any(|operand: &String| immediate_operand(operand).is_some())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn memory_facets(mnemonic: &str, operands: &[String]) -> (bool, bool) {
     let reads_memory: bool = is_load(mnemonic, operands)
         || is_return(mnemonic)
@@ -438,6 +475,7 @@ fn memory_facets(mnemonic: &str, operands: &[String]) -> (bool, bool) {
     (reads_memory, writes_memory)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_memory_operand(operand: &str) -> bool {
     operand.contains('[')
         || operand.contains(']')
@@ -447,6 +485,7 @@ fn is_memory_operand(operand: &str) -> bool {
         || operand.starts_with("qword ptr ")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn immediate_operand(operand: &str) -> Option<u64> {
     let head: &str = operand.trim_start_matches("0x");
     if head != operand {
@@ -458,6 +497,7 @@ fn immediate_operand(operand: &str) -> Option<u64> {
     operand.parse::<u64>().ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn build_function_bodies(
     slice: &[u8],
     parsed: &ParsedSlice,
@@ -509,6 +549,7 @@ fn build_function_bodies(
     bodies
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn disasm_for(
     slice: &[u8],
     parsed: &ParsedSlice,
@@ -532,6 +573,7 @@ fn disasm_for(
         .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lines_for(map: &DwarfSourcemap, start: u64, end: u64) -> Vec<SourceLine> {
     map.line_rows
         .iter()
@@ -545,6 +587,7 @@ fn lines_for(map: &DwarfSourcemap, start: u64, end: u64) -> Vec<SourceLine> {
         .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn end_boundary(
     parsed: &ParsedSlice,
     start: u64,
@@ -564,6 +607,7 @@ fn end_boundary(
     Some(end.min(start.saturating_add(MAX_FUNCTION_BYTES)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn nth_section(parsed: &ParsedSlice, section_index: u8) -> Option<&Section> {
     let mut running: u32 = 0;
     for seg in &parsed.segments {
@@ -577,6 +621,7 @@ fn nth_section(parsed: &ParsedSlice, section_index: u8) -> Option<&Section> {
     None
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn carve<'a>(slice: &'a [u8], parsed: &ParsedSlice, start: u64, end: u64) -> Option<&'a [u8]> {
     let len: u64 = end.checked_sub(start)?;
     if len == 0 || len > MAX_FUNCTION_BYTES {
@@ -596,6 +641,7 @@ fn carve<'a>(slice: &'a [u8], parsed: &ParsedSlice, start: u64, end: u64) -> Opt
     None
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn grade_for(named_type_count: u32, line_coverage_pct: f64, has_symbols: bool) -> SourceGrade {
     if named_type_count > 0 && line_coverage_pct >= LINE_COVERAGE_GRADE_FLOOR {
         SourceGrade::TypesAndLines
@@ -606,6 +652,7 @@ fn grade_for(named_type_count: u32, line_coverage_pct: f64, has_symbols: bool) -
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn map_arch(cpu: CpuKind) -> Option<Arch> {
     match cpu {
         CpuKind::X86 => Some(Arch::X86),
@@ -615,6 +662,7 @@ const fn map_arch(cpu: CpuKind) -> Option<Arch> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_type(t: ReconstructedType) -> ReconstructedTypeReport {
     ReconstructedTypeReport {
         name: t.name,
@@ -625,6 +673,7 @@ fn render_type(t: ReconstructedType) -> ReconstructedTypeReport {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_member(m: TypeMember) -> ReconstructedMember {
     ReconstructedMember {
         name: m.name,
@@ -633,6 +682,7 @@ fn render_member(m: TypeMember) -> ReconstructedMember {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn render_insn(insn: DisasmInsn) -> DisasmInstruction {
     DisasmInstruction {
         address: insn.address,
@@ -642,6 +692,7 @@ fn render_insn(insn: DisasmInsn) -> DisasmInstruction {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn hex_bytes(bytes: &[u8]) -> String {
     let mut out: String = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -651,6 +702,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn nibble(v: u8) -> char {
     match v {
         0..=9 => (b'0' + v) as char,
@@ -658,6 +710,7 @@ const fn nibble(v: u8) -> char {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const fn kind_label(kind: TypeKind) -> &'static str {
     match kind {
         TypeKind::Base => "base",
@@ -676,7 +729,7 @@ const fn kind_label(kind: TypeKind) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;

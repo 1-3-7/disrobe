@@ -18,7 +18,6 @@ workspace = true
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-py-marshal = { workspace = true }
-disrobe-pass-native = { workspace = true }
 aes = { workspace = true }
 ctr = { workspace = true }
 rc4 = { workspace = true }
@@ -36,6 +35,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+disrobe-pass-native = { workspace = true }
 
 [dev-dependencies]
 disrobe-py-marshal = { workspace = true }
