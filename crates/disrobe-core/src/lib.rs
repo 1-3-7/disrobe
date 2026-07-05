@@ -12,6 +12,7 @@ pub mod chain;
 pub mod codec;
 pub mod complexity;
 pub mod debug;
+pub mod dominators;
 pub mod error;
 pub mod format;
 pub mod pass;
@@ -51,6 +52,7 @@ pub use codec::{
     classify_crypto_wall, decode as codec_decode,
 };
 pub use complexity::{Cfg, FunctionComplexity, cyclomatic_complexity, from_decision_points};
+pub use dominators::{AdjGraph, DiGraph, Dominators, dominator_sets, immediate_post_dominators};
 pub use error::{CoreError, Result};
 pub use format::{
     CClangFormatFormatter, CSharpDotnetFormatFormatter, CppClangFormatFormatter, DartFormatter,
