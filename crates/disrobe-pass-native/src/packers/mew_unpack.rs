@@ -1,3 +1,4 @@
+use disrobe_bytes::align_up_u32;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -193,7 +194,7 @@ fn flat_dump_to_pe(memory_image: &[u8], image_base: u32, oep_rva: u32) -> Option
     if content_end <= FLAT_DUMP_SECTION_ALIGNMENT {
         return None;
     }
-    let image_span: u32 = align_up_u32_local(content_end, FLAT_DUMP_SECTION_ALIGNMENT);
+    let image_span: u32 = align_up_u32(content_end, FLAT_DUMP_SECTION_ALIGNMENT);
     let body_va: u32 = FLAT_DUMP_SECTION_ALIGNMENT;
     let body_len: u32 = image_span - body_va;
     let body_lo: usize = body_va as usize;
@@ -243,14 +244,6 @@ fn flat_dump_to_pe(memory_image: &[u8], image_base: u32, oep_rva: u32) -> Option
     out[headers_len..headers_len + body_len as usize]
         .copy_from_slice(&memory_image[body_lo..body_hi]);
     Some(out)
-}
-
-fn align_up_u32_local(value: u32, alignment: u32) -> u32 {
-    if alignment <= 1 {
-        return value;
-    }
-    let mask: u32 = alignment - 1;
-    value.wrapping_add(mask) & !mask
 }
 
 fn put_u16_local(buf: &mut [u8], off: usize, v: u16) {

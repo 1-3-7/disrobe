@@ -20,6 +20,7 @@ chain = ["disrobe-core/chain"]
 rpm = ["dep:rpm"]
 
 [dependencies]
+disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 aes = { workspace = true }
 ar = { workspace = true }

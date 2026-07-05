@@ -8961,7 +8961,7 @@ mod tests {
         assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
         assert!(
             rec.source
-                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + (r_rdx * 8ULL)))")
+                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + r_rdx * 8ULL))")
         );
     }
 
@@ -9021,7 +9021,7 @@ mod tests {
         );
         assert!(
             rec.source
-                .contains("if (((int64_t)(int64_t)(r_rcx)) > ((int64_t)(int64_t)(r_rdx)))"),
+                .contains("if ((int64_t)(int64_t)(r_rcx) > (int64_t)(int64_t)(r_rdx))"),
             "jle skip must invert to a signed-greater guard: {}",
             rec.source
         );
@@ -9078,7 +9078,7 @@ mod tests {
         );
         assert!(
             rec.source
-                .contains("} while (((int64_t)(int64_t)(r_rax)) != 0);"),
+                .contains("} while ((int64_t)(int64_t)(r_rax) != 0);"),
             "the jne back-edge over `add rax,1` must invert to a not-equal-zero guard: {}",
             rec.source
         );
@@ -9192,9 +9192,8 @@ mod tests {
         assert_eq!(rec.params, vec![Reg::Rcx]);
         assert_eq!(rec.return_width_bits, 32);
         assert!(
-            rec.source.contains(
-                "r_rax = ((((uint32_t)(uint16_t)((r_rcx) & 0xffffULL))) & 0xffffffffULL)"
-            ),
+            rec.source
+                .contains("r_rax = ((uint32_t)(uint16_t)((r_rcx) & 0xffffULL)) & 0xffffffffULL"),
             "movzx eax,cx must zero-extend the low 16 bits of rcx into rax: {}",
             rec.source
         );
@@ -9208,7 +9207,7 @@ mod tests {
         assert_eq!(rec.return_width_bits, 64);
         assert!(
             rec.source
-                .contains("r_rcx = ((uint64_t)(int64_t)(int8_t)((r_rcx) & 0xffULL))"),
+                .contains("r_rcx = (uint64_t)(int64_t)(int8_t)((r_rcx) & 0xffULL)"),
             "movsx rcx,cl must sign-extend the low byte: {}",
             rec.source
         );
@@ -9221,7 +9220,7 @@ mod tests {
         assert_eq!(rec.params, vec![Reg::Rcx]);
         assert!(
             rec.source
-                .contains("r_rax = ((uint64_t)(int64_t)(int32_t)((r_rcx) & 0xffffffffULL))"),
+                .contains("r_rax = (uint64_t)(int64_t)(int32_t)((r_rcx) & 0xffffffffULL)"),
             "movsxd rax,ecx must sign-extend the low dword: {}",
             rec.source
         );
@@ -9233,7 +9232,7 @@ mod tests {
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9300).expect("cdqe");
         assert!(
             rec.source
-                .contains("r_rax = ((uint64_t)(int64_t)(int32_t)((r_rax) & 0xffffffffULL))"),
+                .contains("r_rax = (uint64_t)(int64_t)(int32_t)((r_rax) & 0xffffffffULL)"),
             "cdqe must sign-extend eax into rax: {}",
             rec.source
         );
@@ -9306,8 +9305,7 @@ mod tests {
             rec.source
         );
         assert!(
-            rec.source
-                .contains("r_rdx = (sel_cc_0 != 0) ? (r_rcx) : (r_rdx)"),
+            rec.source.contains("r_rdx = sel_cc_0 != 0 ? r_rcx : r_rdx"),
             "the cmovge must consume the snapshot: {}",
             rec.source
         );
@@ -9370,7 +9368,7 @@ mod tests {
         let code: [u8; 6] = [0x48, 0x0f, 0xa4, 0xc2, 0x3f, 0xc3];
         let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9700, Abi::SysV).expect("shld");
         assert!(
-            rec.source.contains("r_rdx = (r_rdx << 63) | (r_rax >> 1);"),
+            rec.source.contains("r_rdx = r_rdx << 63 | r_rax >> 1;"),
             "shld rdx,rax,0x3f must widen to (rdx<<63)|(rax>>1): {}",
             rec.source
         );
@@ -9381,7 +9379,7 @@ mod tests {
         let code: [u8; 6] = [0x48, 0x0f, 0xac, 0xd0, 0x01, 0xc3];
         let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9800, Abi::SysV).expect("shrd");
         assert!(
-            rec.source.contains("r_rax = (r_rax >> 1) | (r_rdx << 63);"),
+            rec.source.contains("r_rax = r_rax >> 1 | r_rdx << 63;"),
             "shrd rax,rdx,1 must widen to (rax>>1)|(rdx<<63): {}",
             rec.source
         );
@@ -9982,7 +9980,7 @@ mod tests {
         assert_eq!(rec.fp_params, vec![ScalarType::Double, ScalarType::Double]);
         assert!(
             rec.source.contains(
-                "((fp_d_from_bits(x_xmm0) < fp_d_from_bits(x_xmm1)) ? fp_d_from_bits(x_xmm0) : fp_d_from_bits(x_xmm1))"
+                "fp_d_from_bits(x_xmm0) < fp_d_from_bits(x_xmm1) ? fp_d_from_bits(x_xmm0) : fp_d_from_bits(x_xmm1)"
             ),
             "minsd xmm0,xmm1 must lower to the dest<src ? dest : src select that mirrors the hardware NaN and signed-zero result: {}",
             rec.source
@@ -10031,7 +10029,7 @@ mod tests {
         );
         assert!(
             rec.source
-                .contains("r_rcx = (((uint64_t)(int64_t)0LL) & 0xffffffffULL)"),
+                .contains("r_rcx = ((uint64_t)(int64_t)0LL) & 0xffffffffULL"),
             "xor ecx,ecx must lower to a zeroing assignment: {}",
             rec.source
         );
@@ -10044,7 +10042,7 @@ mod tests {
         assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
         assert!(
             rec.source.contains(
-                "r_rax = (r_rax & 0xffffffffffffff00ULL) | (uint64_t)((((int64_t)(int64_t)(r_rcx)) < ((int64_t)(int64_t)(r_rdx))) ? 1 : 0);"
+                "r_rax = r_rax & 0xffffffffffffff00ULL | (uint64_t)(((int64_t)(int64_t)(r_rcx) < (int64_t)(int64_t)(r_rdx)) ? 1 : 0);"
             ),
             "cmp+setl must write only the low byte of rax with a signed-less-than predicate: {}",
             rec.source
@@ -10065,7 +10063,7 @@ mod tests {
         assert_eq!(rec.params, vec![Reg::Rcx]);
         assert!(
             rec.source.contains(
-                "r_rax = (r_rax & 0xffffffffffffff00ULL) | (uint64_t)((((int64_t)(int64_t)(r_rcx)) == 0) ? 1 : 0);"
+                "r_rax = r_rax & 0xffffffffffffff00ULL | (uint64_t)(((int64_t)(int64_t)(r_rcx) == 0) ? 1 : 0);"
             ),
             "test rcx,rcx + sete must recover an equal-zero boolean into the low byte: {}",
             rec.source
@@ -10077,7 +10075,7 @@ mod tests {
         let code: [u8; 10] = [0x48, 0x39, 0xd1, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0xc200).expect("setl leaf");
         assert!(
-            rec.source.contains("& 0xffffffffffffff00ULL)"),
+            rec.source.contains("r_rax & 0xffffffffffffff00ULL"),
             "setcc must be modeled as a byte write that keeps the upper 56 bits: {}",
             rec.source
         );
@@ -10176,9 +10174,8 @@ mod tests {
             rec.fp_params
         );
         assert!(
-            rec.source.contains(
-                "x_xmm0 = fp_d_to_bits((double)(fp_d_from_bits(0x0000000000000000ULL)));"
-            ),
+            rec.source
+                .contains("x_xmm0 = fp_d_to_bits((double)(fp_d_from_bits(0x0ULL)));"),
             "xorps xmm0,xmm0 must materialize a 0.0 constant: {}",
             rec.source
         );

@@ -1,3 +1,4 @@
+use disrobe_bytes::align_up_usize as align_up;
 use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::packers::overlay::ArchiveKind;
@@ -552,10 +553,6 @@ fn rar_extent(window: &[u8]) -> Option<usize> {
     } else {
         None
     }
-}
-
-const fn align_up(value: usize, alignment: usize) -> usize {
-    value.div_ceil(alignment) * alignment
 }
 
 #[cfg(test)]

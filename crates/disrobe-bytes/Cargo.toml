@@ -1,0 +1,21 @@
+[package]
+name = "disrobe-bytes"
+version = "0.10.3"
+description = "zero-dependency bounds-checked byte reader and alignment primitives shared across disrobe passes"
+readme.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true

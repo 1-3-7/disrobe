@@ -13,6 +13,8 @@
     clippy::needless_type_cast
 )]
 
+use disrobe_bytes::align_up_u32;
+
 use crate::error::{Error, Result};
 use crate::stub_emu::mem::MAX_MAP_BYTES;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
@@ -588,14 +590,6 @@ fn memory_to_file_image(mem_image: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
-}
-
-fn align_up_u32(value: u32, alignment: u32) -> u32 {
-    if alignment <= 1 {
-        return value;
-    }
-    let mask: u32 = alignment - 1;
-    value.wrapping_add(mask) & !mask
 }
 
 #[derive(Debug, Clone)]

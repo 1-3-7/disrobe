@@ -140,17 +140,23 @@ fn cstr(field: &[u8]) -> String {
 }
 
 fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
-    let s: &[u8] = bytes
-        .get(at..at + 2)
+    let sub: &[u8] = bytes
+        .get(at..)
         .ok_or_else(|| Error::Arc("arc: truncated u16".to_owned()))?;
-    Ok(u16::from_le_bytes([s[0], s[1]]))
+    let mut reader: disrobe_bytes::ByteReader<'_> = disrobe_bytes::ByteReader::new(sub);
+    reader
+        .read_u16_le()
+        .map_err(|_| Error::Arc("arc: truncated u16".to_owned()))
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    let s: &[u8] = bytes
-        .get(at..at + 4)
+    let sub: &[u8] = bytes
+        .get(at..)
         .ok_or_else(|| Error::Arc("arc: truncated u32".to_owned()))?;
-    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    let mut reader: disrobe_bytes::ByteReader<'_> = disrobe_bytes::ByteReader::new(sub);
+    reader
+        .read_u32_le()
+        .map_err(|_| Error::Arc("arc: truncated u32".to_owned()))
 }
 
 #[cfg(test)]

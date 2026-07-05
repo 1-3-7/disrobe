@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/disrobe-binfmt",
+    "crates/disrobe-bytes",
     "crates/disrobe-capabilities",
     "crates/disrobe-cli",
     "crates/disrobe-core",
@@ -151,6 +152,7 @@ ctr = "0.9.2"
 delharc = "0.6.1"
 des = "0.8.1"
 disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.3" }
+disrobe-bytes = { path = "crates/disrobe-bytes", version = "0.10.3" }
 disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.3" }
 disrobe-core = { path = "crates/disrobe-core", version = "0.10.3" }
 disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.3" }
