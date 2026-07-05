@@ -303,7 +303,7 @@ pub(crate) fn render_index(codes: &[ErrorCode]) -> String {
     let mut md: String = String::with_capacity(codes.len() * 64 + 256);
     md.push_str("# Error codes\n\n");
     md.push_str(
-        "Every emittable `DR-<DOMAIN>-<NNNN>` diagnostic has a page here, generated from the in-tree registry at `crates/disrobe-cli/src/cli/explain/codes/`. Look any code up at runtime with `disrobe explain <code>`.\n\n",
+        "Each `DR-<DOMAIN>-<NNNN>` code in the in-tree registry (`crates/disrobe-cli/src/cli/explain/codes/`) has a page here and resolves at runtime with `disrobe explain <code>`. Other passes raise further errors through their own types that are not part of this curated registry.\n\n",
     );
     md.push_str("| Code | Title |\n");
     md.push_str("|---|---|\n");
