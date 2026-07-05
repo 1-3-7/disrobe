@@ -104,8 +104,10 @@ pub(crate) fn extract(bytes: &[u8]) -> Result<WrapperExtract> {
 }
 
 fn extract_ocra(bytes: &[u8]) -> Result<WrapperExtract> {
-    let (stream_offset, marker_offset): (usize, usize) = locate_ocra_stream(bytes);
-    let stream: &[u8] = bytes.get(stream_offset..).unwrap_or(&[]);
+    let (stream_offset, marker_offset): (usize, usize) = locate_ocra_stream(bytes)?;
+    let stream: &[u8] = bytes
+        .get(stream_offset..)
+        .ok_or(RubyError::OcraOpcodeStreamTruncated { at: stream_offset })?;
     let mut image: OcraImage = OcraImage::default();
     parse_opcode_stream(stream, &mut image, 0)?;
     Ok(WrapperExtract {
@@ -118,17 +120,18 @@ fn extract_ocra(bytes: &[u8]) -> Result<WrapperExtract> {
     })
 }
 
-fn locate_ocra_stream(bytes: &[u8]) -> (usize, usize) {
+fn locate_ocra_stream(bytes: &[u8]) -> Result<(usize, usize)> {
     let len: usize = bytes.len();
     if len >= 8 && &bytes[len - 4..] == crate::detect::OCRA_SIGNATURE.as_slice() {
         let mut cursor: Cursor<'_> = Cursor::new(&bytes[len - 8..len - 4]);
         if let Some(offset) = cursor.u32() {
             let offset: usize = offset as usize;
             if offset < len {
-                return (offset, len - 4);
+                return Ok((offset, len - 4));
             }
+            return Err(RubyError::OcraOpcodeStreamTruncated { at: offset });
         }
-        return (0, len - 4);
+        return Err(RubyError::OcraOpcodeStreamTruncated { at: len - 8 });
     }
     if let Some(sig) = find(bytes, crate::detect::OCRA_SIGNATURE.as_slice()) {
         if sig >= 4 {
@@ -136,13 +139,14 @@ fn locate_ocra_stream(bytes: &[u8]) -> (usize, usize) {
             if let Some(offset) = cursor.u32() {
                 let offset: usize = offset as usize;
                 if offset < len {
-                    return (offset, sig);
+                    return Ok((offset, sig));
                 }
+                return Err(RubyError::OcraOpcodeStreamTruncated { at: offset });
             }
         }
-        return (0, sig);
+        return Ok((0, sig));
     }
-    (0, 0)
+    Ok((0, 0))
 }
 
 fn parse_opcode_stream(stream: &[u8], image: &mut OcraImage, depth: u8) -> Result<()> {
@@ -454,6 +458,19 @@ mod tests {
     fn rejects_no_signature() {
         let err: RubyError = extract(b"MZ\x00\x00\x00").expect_err("none");
         assert!(matches!(err, RubyError::Ruby2ExeNoSignature));
+    }
+
+    #[test]
+    fn rejects_ocra_signature_with_out_of_range_stream_offset() {
+        let mut bytes: Vec<u8> = b"MZ".to_vec();
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        bytes.extend_from_slice(crate::detect::OCRA_SIGNATURE.as_slice());
+        let err: RubyError = extract(&bytes).expect_err("bad offset");
+        assert!(matches!(
+            err,
+            RubyError::OcraOpcodeStreamTruncated { at } if at == u32::MAX as usize
+        ));
     }
 
     #[test]

@@ -1175,6 +1175,13 @@ pub static NUMBER_SIGS: &[NumberSig] = &[
         note: "vmware backdoor io port vx",
     },
     NumberSig {
+        value: 0xc000_0008,
+        class: SigClass::AntiDebug,
+        confidence: Confidence::Medium,
+        corroboration: NumberCorroboration::Corroborated,
+        note: "exception-invalid-handle close-trick code",
+    },
+    NumberSig {
         value: 0x4001_0006,
         class: SigClass::AntiDebug,
         confidence: Confidence::Low,
@@ -1187,6 +1194,13 @@ pub static NUMBER_SIGS: &[NumberSig] = &[
         confidence: Confidence::Low,
         corroboration: NumberCorroboration::Standalone,
         note: "dbg-printexception-wide-c output-debug-string trap code",
+    },
+    NumberSig {
+        value: 0x8000_0001,
+        class: SigClass::AntiDebug,
+        confidence: Confidence::Medium,
+        corroboration: NumberCorroboration::Corroborated,
+        note: "status-guard-page-violation page-guard trap code",
     },
     NumberSig {
         value: 0x000a_fe74,

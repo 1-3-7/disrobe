@@ -24,6 +24,7 @@ disrobe-pass-wasm-deob = { workspace = true }
 disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", version = "0.10.0", default-features = false }
 disrobe-pass-pickle = { path = "../disrobe-pass-pickle", version = "0.10.0", default-features = false }
 disrobe-pass-py-decompile = { workspace = true }
+disrobe-pass-pyarmor = { workspace = true }
 disrobe-pass-ruby = { workspace = true }
 disrobe-pass-php = { workspace = true }
 disrobe-pass-lua = { workspace = true }
@@ -31,6 +32,7 @@ disrobe-pass-beam = { workspace = true }
 disrobe-pass-as3 = { workspace = true }
 disrobe-pass-scriptlang = { workspace = true }
 disrobe-pass-shell = { workspace = true }
+disrobe-pass-swift-objc = { workspace = true }
 disrobe-pass-mobile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -136,7 +136,7 @@ fn read_pool_entry(cur: &mut Cursor<'_>) -> Result<PoolEntry> {
         0x00 | 0x02 => {
             let len: u16 = cur.u16()?;
             let bytes: &[u8] = cur.take(usize::from(len).saturating_add(1))?;
-            let text: &[u8] = bytes.get(..usize::from(len)).unwrap_or(&[]);
+            let text: &[u8] = &bytes[..usize::from(len)];
             Ok(PoolEntry {
                 kind: PoolKind::String,
                 value: Some(String::from_utf8_lossy(text).into_owned()),
@@ -191,7 +191,7 @@ fn read_symbol(cur: &mut Cursor<'_>) -> Result<Option<String>> {
         return Ok(None);
     }
     let bytes: &[u8] = cur.take(usize::from(len).saturating_add(1))?;
-    let name: &[u8] = bytes.get(..usize::from(len)).unwrap_or(&[]);
+    let name: &[u8] = &bytes[..usize::from(len)];
     Ok(Some(String::from_utf8_lossy(name).into_owned()))
 }
 
@@ -217,11 +217,16 @@ fn read_record(
         0
     };
     let insn_len: u32 = cur.u32()?;
-    let iseq_bytes: usize = (insn_len as usize)
-        .checked_add(CATCH_HANDLER_SIZE.saturating_mul(usize::from(catch_count)))
+    let insn_len_usize: usize =
+        usize::try_from(insn_len).map_err(|_| RubyError::MrubyIrepTruncated { at: cur.pos })?;
+    let catch_bytes: usize = CATCH_HANDLER_SIZE
+        .checked_mul(usize::from(catch_count))
+        .ok_or(RubyError::MrubyIrepTruncated { at: cur.pos })?;
+    let iseq_bytes: usize = insn_len_usize
+        .checked_add(catch_bytes)
         .ok_or(RubyError::MrubyIrepTruncated { at: cur.pos })?;
     let iseq_full: &[u8] = cur.take(iseq_bytes)?;
-    let iseq: Vec<u8> = iseq_full.get(..insn_len as usize).unwrap_or(&[]).to_vec();
+    let iseq: Vec<u8> = iseq_full[..insn_len_usize].to_vec();
 
     let pool_len: u32 = u32::from(cur.u16()?);
     let mut pool: Vec<PoolEntry> = Vec::with_capacity((pool_len as usize).min(POOL_PREALLOC_CAP));

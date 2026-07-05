@@ -129,6 +129,12 @@ def _shared() -> list[Any]:
     return [inner, inner, {"ref": inner}]
 
 
+def _cyclic_deque() -> collections.deque[Any]:
+    box: collections.deque[Any] = collections.deque([1, 2])
+    box.append(box)
+    return box
+
+
 def cases() -> dict[str, Callable[[], Any]]:
     return {
         "int": lambda: 42,
@@ -169,9 +175,17 @@ def cases() -> dict[str, Callable[[], Any]]:
         "time": lambda: datetime.time(23, 59, 58),
         "timedelta": lambda: datetime.timedelta(days=5, seconds=42, microseconds=7),
         "ordered_dict": lambda: collections.OrderedDict([("a", 1), ("b", 2)]),
+        "nested_ordered_dict": lambda: collections.OrderedDict(
+            [("nums", [1, 2, 3]), ("meta", {"k": "v"}), ("t", (1, 2))]
+        ),
         "counter": lambda: collections.Counter("abracadabra"),
         "default_dict": lambda: collections.defaultdict(int, {"x": 1, "y": 2}),
+        "nested_default_dict": lambda: collections.defaultdict(
+            list, {"a": [1, 2], "b": [3]}
+        ),
         "deque": lambda: collections.deque([1, 2, 3]),
+        "deque_of_containers": lambda: collections.deque([{"a": 1}, [2, 3], (4,)]),
+        "cyclic_deque": _cyclic_deque,
         "state_obj": StateObj,
         "getset_state": lambda: GetSetState(21),
         "slot_obj": SlotObj,

@@ -1103,6 +1103,8 @@ pub struct EhEntry {
     pub action: u32,
 }
 
+const MAX_ITANIUM_LSDA_ENTRIES: usize = 65_536;
+
 pub fn parse_itanium_lsda(bytes: &[u8]) -> Result<Vec<EhEntry>> {
     if bytes.len() < 4 {
         return Err(Error::Truncated {
@@ -1110,7 +1112,13 @@ pub fn parse_itanium_lsda(bytes: &[u8]) -> Result<Vec<EhEntry>> {
             had: bytes.len(),
         });
     }
-    let mut out: Vec<EhEntry> = Vec::new();
+    let entry_count: usize = (bytes.len() - 4) / 16;
+    if entry_count > MAX_ITANIUM_LSDA_ENTRIES {
+        return Err(Error::SignatureDb(format!(
+            "Itanium LSDA entry count {entry_count} exceeds {MAX_ITANIUM_LSDA_ENTRIES}"
+        )));
+    }
+    let mut out: Vec<EhEntry> = Vec::with_capacity(entry_count);
     let mut idx: usize = 4;
     while idx + 16 <= bytes.len() {
         let start: u64 =
@@ -1264,6 +1272,14 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].start, 100);
         assert_eq!(out[0].landing_pad, 300);
+    }
+
+    #[test]
+    fn itanium_lsda_rejects_excessive_entries_before_alloc() {
+        let entries: usize = MAX_ITANIUM_LSDA_ENTRIES + 1;
+        let buf: Vec<u8> = vec![0u8; 4 + entries * 16];
+        let result: Result<Vec<EhEntry>> = parse_itanium_lsda(&buf);
+        assert!(matches!(result, Err(Error::SignatureDb(_))));
     }
 
     #[test]

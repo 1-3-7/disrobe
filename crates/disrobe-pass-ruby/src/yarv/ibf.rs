@@ -227,11 +227,37 @@ fn render_float_literal(value: f64) -> String {
     text
 }
 
+const fn unknown_ibf_object(index: u32, offset: u32) -> IbfObject {
+    IbfObject {
+        index,
+        offset,
+        kind: IbfObjectKind::Unknown,
+        literal: None,
+        element_count: None,
+        elements: Vec::new(),
+    }
+}
+
+fn capped_usize(raw: u64, cap: usize) -> Option<usize> {
+    let value: usize = usize::try_from(raw).ok()?;
+    (value <= cap).then_some(value)
+}
+
+fn checked_slice(bytes: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)> {
+    let end: usize = pos.checked_add(len)?;
+    let slice: &[u8] = bytes.get(pos..end)?;
+    Some((slice, end))
+}
+
 fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
     let off: usize = offset as usize;
-    let tag: u8 = bytes.get(off).copied().unwrap_or(0);
+    let Some(tag): Option<u8> = bytes.get(off).copied() else {
+        return unknown_ibf_object(index, offset);
+    };
     let kind: IbfObjectKind = classify_tag(tag);
-    let after_tag: usize = off.saturating_add(1);
+    let Some(after_tag): Option<usize> = off.checked_add(1) else {
+        return unknown_ibf_object(index, offset);
+    };
     let mut literal: Option<String> = None;
     let mut element_count: Option<u32> = None;
     let mut elements: Vec<u32> = Vec::new();
@@ -239,13 +265,10 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
         IbfObjectKind::String | IbfObjectKind::Symbol => {
             if let Some((_enc, p1)) = read_small_value(bytes, after_tag)
                 && let Some((len, p2)) = read_small_value(bytes, p1)
+                && let Some(len_usize) = capped_usize(len, IBF_STRING_LEN_CAP)
+                && let Some((slice, _)) = checked_slice(bytes, p2, len_usize)
             {
-                let len_usize: usize = usize::try_from(len).unwrap_or(usize::MAX);
-                if len_usize <= IBF_STRING_LEN_CAP
-                    && let Some(slice) = bytes.get(p2..p2.saturating_add(len_usize))
-                {
-                    literal = Some(String::from_utf8_lossy(slice).into_owned());
-                }
+                literal = Some(String::from_utf8_lossy(slice).into_owned());
             }
         }
         IbfObjectKind::Array => {
@@ -270,8 +293,9 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
             }
         }
         IbfObjectKind::Float => {
-            if let Some(slice) = bytes.get(after_tag..after_tag.saturating_add(8)) {
-                let bits: [u8; 8] = slice.try_into().unwrap_or([0u8; 8]);
+            if let Some((slice, _)) = checked_slice(bytes, after_tag, 8)
+                && let Ok(bits) = <[u8; 8]>::try_from(slice)
+            {
                 literal = Some(render_float_literal(f64::from_le_bytes(bits)));
             }
         }
@@ -300,8 +324,9 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
             }
         }
         IbfObjectKind::Regexp => {
-            let src_pos: usize = after_tag.saturating_add(1);
-            if let Some((src_index, _)) = read_small_value(bytes, src_pos) {
+            if let Some(src_pos) = after_tag.checked_add(1)
+                && let Some((src_index, _)) = read_small_value(bytes, src_pos)
+            {
                 elements.push(u32::try_from(src_index).unwrap_or(u32::MAX));
             }
         }
@@ -879,19 +904,23 @@ fn decode_iseq_body(
                     }
                 }
                 TsKind::Builtin => {
-                    let Some((bidx, p1)): Option<(u64, usize)> = read_small_value(bytes, rp) else {
+                    let Some((_bidx, p1)): Option<(u64, usize)> = read_small_value(bytes, rp)
+                    else {
                         break 'decode;
                     };
                     let Some((blen, p2)): Option<(u64, usize)> = read_small_value(bytes, p1) else {
                         break 'decode;
                     };
-                    let blen_usize: usize =
-                        usize::try_from(blen).unwrap_or(0).min(IBF_STRING_LEN_CAP);
-                    let name_end: usize = p2.saturating_add(blen_usize);
-                    let name: String = bytes.get(p2..name_end).map_or_else(
-                        || format!("builtin#{bidx}"),
-                        |s| String::from_utf8_lossy(s).into_owned(),
-                    );
+                    let Some(blen_usize): Option<usize> = capped_usize(blen, IBF_STRING_LEN_CAP)
+                    else {
+                        break 'decode;
+                    };
+                    let Some((name_slice, name_end)): Option<(&[u8], usize)> =
+                        checked_slice(bytes, p2, blen_usize)
+                    else {
+                        break 'decode;
+                    };
+                    let name: String = String::from_utf8_lossy(name_slice).into_owned();
                     rp = name_end;
                     YarvOperand::Builtin(name)
                 }
@@ -1310,6 +1339,41 @@ mod tests {
         assert!(obj.literal.is_none());
     }
 
+    #[test]
+    fn out_of_bounds_object_offset_is_unknown() {
+        let bytes: [u8; 1] = [0x11];
+        let obj: IbfObject = decode_object(&bytes, 7, 128);
+        assert_eq!(obj.kind, IbfObjectKind::Unknown);
+        assert!(obj.literal.is_none());
+        assert!(obj.elements.is_empty());
+    }
+
+    #[test]
+    fn builtin_operand_rejects_oversized_name() {
+        let mut bytecode: Vec<u8> = Vec::new();
+        bytecode.extend_from_slice(&dump_small_value(0));
+        bytecode.extend_from_slice(&dump_small_value(7));
+        let oversized_len: u64 = u64::try_from(IBF_STRING_LEN_CAP).expect("string cap") + 1;
+        bytecode.extend_from_slice(&dump_small_value(oversized_len));
+        let body: YarvIseqBody = decode_single_builtin_bytecode(&bytecode);
+        assert!(body.instructions.is_empty());
+    }
+
+    #[test]
+    fn builtin_operand_decodes_bounded_name() {
+        let mut bytecode: Vec<u8> = Vec::new();
+        bytecode.extend_from_slice(&dump_small_value(0));
+        bytecode.extend_from_slice(&dump_small_value(7));
+        bytecode.extend_from_slice(&dump_small_value(3));
+        bytecode.extend_from_slice(b"jit");
+        let body: YarvIseqBody = decode_single_builtin_bytecode(&bytecode);
+        assert_eq!(body.instructions.len(), 1);
+        assert_eq!(
+            body.instructions[0].operands,
+            vec![YarvOperand::Builtin("jit".to_owned())]
+        );
+    }
+
     fn leaf(index: u32, kind: IbfObjectKind, literal: Option<&str>) -> IbfObject {
         IbfObject {
             index,
@@ -1431,6 +1495,22 @@ mod tests {
         assert_eq!(objects[0].literal.as_deref(), Some("(1..10)"));
         assert_eq!(objects[1].literal.as_deref(), Some("(1...10)"));
         assert_eq!(objects[2].literal.as_deref(), Some("(1..)"));
+    }
+
+    fn decode_single_builtin_bytecode(bytecode: &[u8]) -> YarvIseqBody {
+        let mut bytes: Vec<u8> = bytecode.to_vec();
+        let body_offset: u32 = u32::try_from(bytes.len()).expect("body offset");
+        let bytecode_size: u64 = u64::try_from(bytecode.len()).expect("bytecode size");
+        for raw in [0u64, 1, u64::from(body_offset), bytecode_size] {
+            bytes.extend_from_slice(&dump_small_value(raw));
+        }
+        let opcodes: [YarvOpcode; 1] = [YarvOpcode {
+            mnemonic: "builtin",
+            operands: &[TsKind::Builtin],
+        }];
+        let objects: Vec<IbfObject> = Vec::new();
+        let object_table: ObjectTable<'_> = ObjectTable { objects: &objects };
+        decode_iseq_body(&bytes, &opcodes, &object_table, body_offset, 0, false).expect("body")
     }
 
     fn dump_small_value(mut x: u64) -> Vec<u8> {

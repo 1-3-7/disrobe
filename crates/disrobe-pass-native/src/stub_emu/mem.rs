@@ -126,8 +126,26 @@ impl Memory {
             )));
         }
         let start: u64 = addr & !PAGE_MASK;
-        let end: u64 = (addr.wrapping_add(size).wrapping_add(PAGE_MASK)) & !PAGE_MASK;
-        let requested_pages: u64 = ((end.wrapping_sub(start)) >> PAGE_BITS).min(MAX_MAP_PAGES);
+        let raw_end: u64 = addr.checked_add(size).ok_or_else(|| {
+            Error::GoblinParse(format!(
+                "emu: refusing map at 0x{addr:016x} of {size} bytes (address overflow)"
+            ))
+        })?;
+        let end: u64 = raw_end.checked_add(PAGE_MASK).ok_or_else(|| {
+            Error::GoblinParse(format!(
+                "emu: refusing map at 0x{addr:016x} of {size} bytes (page alignment overflow)"
+            ))
+        })? & !PAGE_MASK;
+        let requested_pages: u64 = end.checked_sub(start).ok_or_else(|| {
+            Error::GoblinParse(format!(
+                "emu: refusing map at 0x{addr:016x} of {size} bytes (address range inverted)"
+            ))
+        })? >> PAGE_BITS;
+        if requested_pages > MAX_MAP_PAGES {
+            return Err(Error::GoblinParse(format!(
+                "emu: refusing map of {size} bytes spanning {requested_pages} pages (exceeds {MAX_MAP_PAGES}-page ceiling)"
+            )));
+        }
         for page_index in 0..requested_pages {
             let p: u64 = start.wrapping_add(page_index << PAGE_BITS);
             self.pages
@@ -418,6 +436,22 @@ mod tests {
             committed as u64,
             MAX_MAP_BYTES / (PAGE_SIZE as u64),
             "map must commit at most the ceiling's worth of pages"
+        );
+    }
+
+    #[test]
+    fn map_near_u64_max_rejects_address_wrap_without_allocating() {
+        let mut m: Memory = Memory::new();
+        let err: Error = m
+            .map(u64::MAX - 0x800, 0x1000, Perm::RWX)
+            .expect_err("wrapped map must fail");
+        assert!(
+            err.to_string().contains("address overflow"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            m.page_keys().next().is_none(),
+            "a wrapped map must commit zero pages"
         );
     }
 

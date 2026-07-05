@@ -1104,24 +1104,6 @@ mod tests {
         (value + align - 1) & !(align - 1)
     }
 
-    /// System V x86-64 `decode(rdi=enc, rsi=out, rdx=len)` that walks `len`
-    /// bytes and writes `out[i] = enc[i] ^ key[i & 3]`, with the 4-byte key
-    /// stored at `enc + len`. Assembly listing (offset: instruction):
-    /// ```text
-    /// 0x00 xor r8d, r8d
-    /// 0x03 cmp r8, len               (.loop)
-    /// 0x07 jge 0x28                   (.done)
-    /// 0x09 mov eax, r8d
-    /// 0x0c and eax, 3
-    /// 0x0f cdqe
-    /// 0x11 movzx edx, byte [rdi+r8]
-    /// 0x16 movzx r9d, byte [rdi+rax+len]
-    /// 0x1c xor edx, r9d
-    /// 0x1f mov byte [rsi+r8], dl
-    /// 0x23 inc r8
-    /// 0x26 jmp 0x03
-    /// 0x28 ret                        (.done)
-    /// ```
     fn sysv64_xor_decoder() -> Vec<u8> {
         let plain_len: u8 = PLAINTEXT.len() as u8;
         let key_disp: u8 = PLAINTEXT.len() as u8;

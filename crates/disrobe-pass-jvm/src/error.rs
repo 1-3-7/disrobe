@@ -136,4 +136,7 @@ pub enum Error {
         needed: usize,
         had: usize,
     },
+
+    #[error("DR-JVM-0033: resource string index {idx} out of range (size {size})")]
+    BadArscStringIndex { idx: usize, size: usize },
 }

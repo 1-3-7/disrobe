@@ -195,6 +195,10 @@ fn find_first_base36_string(s: &str) -> Option<String> {
 
 const LZW_MAX_OUTPUT: usize = 64 << 20;
 const LZW_MAX_DICT: usize = 1 << 20;
+const IB_CONST_COUNT_CAP: usize = 1 << 16;
+const IB_INSTRUCTION_COUNT_CAP: usize = 1 << 20;
+const IB_FUNCTION_COUNT_CAP: usize = 1 << 16;
+const IB_LINEINFO_COUNT_CAP: usize = 1 << 20;
 
 pub fn lzw_decompress_base36(s: &str) -> Result<Vec<u8>> {
     let chars: Vec<char> = s.chars().collect();
@@ -405,6 +409,43 @@ impl<'a> Cursor<'a> {
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+}
+
+fn checked_count(
+    raw: u32,
+    limit: usize,
+    section: &'static str,
+    cursor: &Cursor<'_>,
+    min_entry_width: usize,
+) -> Result<usize> {
+    let count: usize = raw as usize;
+    if count > limit {
+        return Err(Error::LimitExceeded {
+            section,
+            count: u64::from(raw),
+            limit,
+        });
+    }
+    let needed: usize = count
+        .checked_mul(min_entry_width)
+        .ok_or(Error::LimitExceeded {
+            section,
+            count: u64::from(raw),
+            limit,
+        })?;
+    let remaining: usize = cursor.remaining();
+    if needed > remaining {
+        return Err(Error::Truncated {
+            offset: cursor.pos,
+            needed,
+            had: remaining,
+        });
+    }
+    Ok(count)
 }
 
 fn read_chunk(
@@ -416,8 +457,9 @@ fn read_chunk(
     if depth > 200 {
         return Err(Error::ProtoNestingTooDeep(depth));
     }
-    let const_count: u32 = c.u32()?;
-    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count.min(1 << 16) as usize);
+    let const_count: usize =
+        checked_count(c.u32()?, IB_CONST_COUNT_CAP, "ironbrew constants", c, 1)?;
+    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count);
     for _ in 0..const_count {
         let tag: u8 = c.u8()?;
         let value: LuaConstant = if tag == keys.const_bool {
@@ -438,8 +480,14 @@ fn read_chunk(
         match step {
             ChunkStep::ParameterCount => param_count = c.u8()?,
             ChunkStep::Instructions => {
-                let count: u32 = c.u32()?;
-                instrs.reserve(count.min(1 << 20) as usize);
+                let count: usize = checked_count(
+                    c.u32()?,
+                    IB_INSTRUCTION_COUNT_CAP,
+                    "ironbrew instructions",
+                    c,
+                    1,
+                )?;
+                instrs.reserve(count);
                 for _ in 0..count {
                     let desc: u8 = c.u8()?;
                     if desc & 1 != 0 {
@@ -470,14 +518,16 @@ fn read_chunk(
                 }
             }
             ChunkStep::Functions => {
-                let count: u32 = c.u32()?;
-                for _ in 0..count.min(1 << 16) {
+                let count: usize =
+                    checked_count(c.u32()?, IB_FUNCTION_COUNT_CAP, "ironbrew functions", c, 1)?;
+                for _ in 0..count {
                     functions.push(read_chunk(c, keys, steps, depth + 1)?);
                 }
             }
             ChunkStep::LineInfo => {
-                let count: u32 = c.u32()?;
-                for _ in 0..count.min(1 << 20) {
+                let count: usize =
+                    checked_count(c.u32()?, IB_LINEINFO_COUNT_CAP, "ironbrew lineinfo", c, 4)?;
+                for _ in 0..count {
                     let _ = c.u32()?;
                 }
             }
@@ -588,5 +638,35 @@ impl VmKeys {
     #[must_use]
     fn key(&self) -> u8 {
         self.xor_key
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_count_rejects_over_cap() {
+        let cursor: Cursor<'_> = Cursor::new(&[0u8; 16], 0);
+        let err: Error = checked_count(
+            (IB_CONST_COUNT_CAP as u32) + 1,
+            IB_CONST_COUNT_CAP,
+            "ironbrew constants",
+            &cursor,
+            1,
+        )
+        .expect_err("cap");
+
+        assert!(matches!(err, Error::LimitExceeded { .. }));
+    }
+
+    #[test]
+    fn checked_count_rejects_short_remaining_bytes() {
+        let cursor: Cursor<'_> = Cursor::new(&[0u8; 4], 0);
+        let err: Error = checked_count(2, IB_LINEINFO_COUNT_CAP, "ironbrew lineinfo", &cursor, 4)
+            .expect_err("span");
+
+        assert!(matches!(err, Error::Truncated { .. }));
     }
 }

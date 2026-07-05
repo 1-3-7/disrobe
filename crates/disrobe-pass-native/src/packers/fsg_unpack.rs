@@ -233,7 +233,10 @@ fn parse_import_meta(
     pe: &PeImage<'_>,
     anchors: &StubAnchors,
 ) -> Result<Vec<FsgImport>> {
-    let meta_off: usize = rva_to_file_offset(pe, anchors.import_meta_va - anchors.image_base)?;
+    let import_meta_rva: u32 = anchors.import_meta_va.checked_sub(anchors.image_base).ok_or(
+        Error::PackerUnpackerNotImplemented("FSG: import metadata VA below ImageBase"),
+    )?;
+    let meta_off: usize = rva_to_file_offset(pe, import_meta_rva)?;
     let mut entries: Vec<FsgImport> = Vec::new();
     let mut cursor: usize = meta_off;
     let max_walk: usize = 4096;
@@ -244,9 +247,12 @@ fn parse_import_meta(
             break;
         }
         cursor += 4;
-        let name_off: usize = match rva_to_file_offset(pe, name_rva - anchors.image_base) {
-            Ok(o) => o,
-            Err(_) => break,
+        let name_off: usize = match name_rva
+            .checked_sub(anchors.image_base)
+            .and_then(|rva: u32| rva_to_file_offset(pe, rva).ok())
+        {
+            Some(o) => o,
+            None => break,
         };
         let dll_name: String = read_cstr(bytes, name_off);
         loop {
@@ -259,8 +265,10 @@ fn parse_import_meta(
                 break;
             }
             cursor += 4;
-            let api_name: String = rva_to_file_offset(pe, thunk_or_marker - anchors.image_base)
-                .map_or_else(|_: Error| String::new(), |o: usize| read_cstr(bytes, o));
+            let api_name: String = thunk_or_marker
+                .checked_sub(anchors.image_base)
+                .and_then(|rva: u32| rva_to_file_offset(pe, rva).ok())
+                .map_or_else(String::new, |o: usize| read_cstr(bytes, o));
             entries.push(FsgImport {
                 dll_name: dll_name.clone(),
                 thunk_rva: thunk_or_marker,
@@ -480,5 +488,74 @@ mod tests {
         let stream: Vec<u8> = vec![b'H', 0x00];
         let r: Result<Vec<u8>> = aplib_depack(&stream);
         assert!(r.is_ok() || matches!(r, Err(Error::Truncated { .. })));
+    }
+
+    fn write_test_section(bytes: &mut [u8]) {
+        let section_off: usize = 0x18;
+        bytes[section_off + 8..section_off + 12].copy_from_slice(&0x100u32.to_le_bytes());
+        bytes[section_off + 12..section_off + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        bytes[section_off + 16..section_off + 20].copy_from_slice(&0x100u32.to_le_bytes());
+        bytes[section_off + 20..section_off + 24].copy_from_slice(&0x100u32.to_le_bytes());
+    }
+
+    fn test_pe(bytes: &[u8]) -> PeImage<'_> {
+        PeImage {
+            bytes,
+            pe_off: 0,
+            image_base: 0x0040_0000,
+            section_count: 1,
+            opt_header_size: 0,
+            entry_rva: 0,
+        }
+    }
+
+    const fn test_anchors(import_meta_va: u32) -> StubAnchors {
+        StubAnchors {
+            image_base: 0x0040_0000,
+            unpack_dest_va: 0,
+            packed_stream_va: 0,
+            import_meta_va,
+        }
+    }
+
+    #[test]
+    fn parse_import_meta_rejects_meta_va_below_image_base_without_panicking() {
+        let bytes: Vec<u8> = vec![0u8; 0x200];
+        let pe: PeImage<'_> = test_pe(&bytes);
+        let anchors: StubAnchors = test_anchors(0x0010_0000);
+
+        let r: Result<Vec<FsgImport>> = parse_import_meta(&bytes, &pe, &anchors);
+
+        assert!(matches!(r, Err(Error::PackerUnpackerNotImplemented(_))));
+    }
+
+    #[test]
+    fn parse_import_meta_breaks_on_dll_name_va_below_image_base_without_panicking() {
+        let mut bytes: Vec<u8> = vec![0u8; 0x200];
+        write_test_section(&mut bytes);
+        bytes[0x100..0x104].copy_from_slice(&1u32.to_le_bytes());
+        let pe: PeImage<'_> = test_pe(&bytes);
+        let anchors: StubAnchors = test_anchors(0x0040_1000);
+
+        let entries: Vec<FsgImport> = parse_import_meta(&bytes, &pe, &anchors).expect("no panic");
+
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_import_meta_falls_back_to_empty_api_name_below_image_base_without_panicking() {
+        let mut bytes: Vec<u8> = vec![0u8; 0x200];
+        write_test_section(&mut bytes);
+        bytes[0x100..0x104].copy_from_slice(&0x0040_1020u32.to_le_bytes());
+        bytes[0x104..0x108].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0x120..0x12d].copy_from_slice(b"kernel32.dll\0");
+        let pe: PeImage<'_> = test_pe(&bytes);
+        let anchors: StubAnchors = test_anchors(0x0040_1000);
+
+        let entries: Vec<FsgImport> = parse_import_meta(&bytes, &pe, &anchors).expect("no panic");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].dll_name, "kernel32.dll");
+        assert_eq!(entries[0].api_name, "");
     }
 }

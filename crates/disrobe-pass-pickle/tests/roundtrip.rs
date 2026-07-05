@@ -9,6 +9,19 @@ use serde_json::{Map, Value, json};
 const MIN_SUPPORTED: usize = 120;
 const FLOOR_PERCENT: usize = 100;
 
+const GENUINE_CEILINGS: &[&str] = &[
+    "resolves only via the runtime copyreg registry",
+    "out-of-band buffer",
+    "persistent id requires a runtime",
+    "has no importable module",
+];
+
+fn is_genuine_ceiling(reason: &str) -> bool {
+    GENUINE_CEILINGS
+        .iter()
+        .any(|needle: &&str| reason.contains(needle))
+}
+
 fn probe(exe: &str) -> bool {
     Command::new(exe)
         .arg("--version")
@@ -118,7 +131,8 @@ fn cpython_roundtrip_differential_oracle() {
     let mut ok: usize = 0;
     let mut mismatch: Vec<String> = Vec::new();
     let mut errored: Vec<String> = Vec::new();
-    let mut excluded: BTreeMap<String, usize> = BTreeMap::new();
+    let mut genuine: BTreeMap<String, usize> = BTreeMap::new();
+    let mut modelable: Vec<String> = Vec::new();
     for (file, outcome) in &results {
         let status: &str = outcome["status"].as_str().unwrap_or("?");
         let detail: &str = outcome["detail"].as_str().unwrap_or("");
@@ -126,29 +140,39 @@ fn cpython_roundtrip_differential_oracle() {
             "ok" => ok += 1,
             "mismatch" => mismatch.push(format!("{file}: {detail}")),
             "error" => errored.push(format!("{file}: {detail}")),
-            "excluded" => *excluded.entry(detail.to_owned()).or_default() += 1,
+            "excluded" if is_genuine_ceiling(detail) => {
+                *genuine.entry(detail.to_owned()).or_default() += 1;
+            }
+            "excluded" => modelable.push(format!("{file}: {detail}")),
             other => errored.push(format!("{file}: unknown status {other}")),
         }
     }
-    let supported: usize = ok + mismatch.len() + errored.len();
-    let pct: usize = ok.saturating_mul(100).checked_div(supported).unwrap_or(0);
+    let total: usize = results.len();
+    let genuine_total: usize = genuine.values().sum();
+    let recoverable: usize = total.saturating_sub(genuine_total);
+    let pct: usize = ok.saturating_mul(100).checked_div(recoverable).unwrap_or(0);
 
     let mut summary: String = format!(
-        "\n=== pickle re-execution differential oracle ===\ncases={} supported(reexecutable)={} ok={} mismatch={} error={} excluded={}\nre-exec-equivalence = {ok}/{supported} = {pct}%\n",
-        results.len(),
-        supported,
-        ok,
+        "\n=== pickle re-execution differential oracle ===\ncases={total} ok={ok} mismatch={} error={} genuine-ceiling(excluded)={genuine_total} modelable-walled={}\nrecoverable={recoverable} (all cases minus proven info-theoretic ceilings)\nre-exec-equivalence = {ok}/{recoverable} = {pct}%  (full-corpus ok/total = {ok}/{total})\n",
         mismatch.len(),
         errored.len(),
-        excluded.values().sum::<usize>(),
+        modelable.len(),
     );
-    summary.push_str("excluded (walled, by reason):\n");
-    for (reason, count) in &excluded {
+    summary.push_str("genuine info-theoretic ceilings (correctly excluded, by reason):\n");
+    for (reason, count) in &genuine {
         summary.push_str("  [");
         summary.push_str(&count.to_string());
         summary.push_str("] ");
         summary.push_str(reason);
         summary.push('\n');
+    }
+    if !modelable.is_empty() {
+        summary.push_str("MODELABLE cases walled (denominator-inflation guard tripped):\n");
+        for m in &modelable {
+            summary.push_str("  ");
+            summary.push_str(m);
+            summary.push('\n');
+        }
     }
     if !mismatch.is_empty() {
         summary.push_str("mismatches:\n");
@@ -171,8 +195,18 @@ fn cpython_roundtrip_differential_oracle() {
     let _ = std::fs::remove_dir_all(&workdir);
 
     assert!(
-        supported >= MIN_SUPPORTED,
-        "too few re-executable cases: {supported} < {MIN_SUPPORTED}{summary}"
+        total >= MIN_SUPPORTED,
+        "corpus too small: {total} < {MIN_SUPPORTED}{summary}"
+    );
+    assert!(
+        modelable.is_empty(),
+        "modelable cases walled instead of reconstructed (a wall here would inflate the denominator and fake the score){summary}"
+    );
+    assert!(mismatch.is_empty(), "reconstruction mismatches{summary}");
+    assert!(errored.is_empty(), "reconstruction runtime errors{summary}");
+    assert_eq!(
+        ok, recoverable,
+        "every case except a proven info-theoretic ceiling must re-execute equivalently{summary}"
     );
     assert!(
         pct >= FLOOR_PERCENT,

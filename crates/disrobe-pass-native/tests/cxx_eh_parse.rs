@@ -23,6 +23,17 @@ fn itanium_lsda_minimal_entry_round_trip() {
 }
 
 #[test]
+fn itanium_lsda_rejects_excessive_entries() {
+    let entries: usize = 65_537;
+    let buf: Vec<u8> = vec![0u8; 4 + entries * 16];
+    let result: Result<Vec<EhEntry>, disrobe_pass_native::error::Error> = parse_itanium_lsda(&buf);
+    assert!(matches!(
+        result,
+        Err(disrobe_pass_native::error::Error::SignatureDb(_))
+    ));
+}
+
+#[test]
 fn windows_seh_scope_table_round_trip() {
     let mut buf: Vec<u8> = 1u32.to_le_bytes().to_vec();
     buf.extend_from_slice(&100u32.to_le_bytes());

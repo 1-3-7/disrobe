@@ -608,7 +608,7 @@ fn parse_type_chunk(
     let entry_count: u32 = read_u32(bytes, chunk_off + 12)?;
     let entries_start: u32 = read_u32(bytes, chunk_off + 16)?;
     let config_size: u32 = read_u32(bytes, chunk_off + 20)?;
-    let qualifier: String = decode_config_qualifier(bytes, chunk_off + 20, config_size as usize);
+    let qualifier: String = decode_config_qualifier(bytes, chunk_off + 20, config_size as usize)?;
 
     let index_base: usize = chunk_off + header_size;
     let data_base: usize =
@@ -650,11 +650,19 @@ fn parse_type_chunk(
         let entry_size: u16 = read_u16(bytes, entry_off)?;
         let entry_flags: u16 = read_u16(bytes, entry_off + 2)?;
         let key_idx: u32 = read_u32(bytes, entry_off + 4)?;
-        let key: String = key_strings
-            .strings
-            .get(key_idx as usize)
-            .cloned()
-            .unwrap_or_default();
+        let key_index: usize = usize::try_from(key_idx).map_err(|_| Error::BadArscStringIndex {
+            idx: usize::MAX,
+            size: key_strings.strings.len(),
+        })?;
+        let key: String =
+            key_strings
+                .strings
+                .get(key_index)
+                .cloned()
+                .ok_or(Error::BadArscStringIndex {
+                    idx: key_index,
+                    size: key_strings.strings.len(),
+                })?;
         let value: ResEntryValue = if (entry_flags & ENTRY_FLAG_COMPLEX) != 0 {
             let map_off: usize = entry_off + usize::from(entry_size);
             let parent: u32 = read_u32(bytes, map_off)?;
@@ -745,17 +753,54 @@ fn density_qualifier(density: u16) -> Option<String> {
     }
 }
 
-fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) -> String {
-    if config_size < 12 {
-        return String::new();
+fn read_config_u8(bytes: &[u8], config_off: usize, config_size: usize, rel: usize) -> Result<u8> {
+    if rel
+        .checked_add(1)
+        .is_none_or(|end: usize| end > config_size)
+    {
+        return Err(Error::ArscTruncated {
+            offset: config_off + rel,
+            needed: 1,
+            had: bytes.len(),
+        });
     }
-    let read_u8 = |rel: usize| -> u8 { bytes.get(config_off + rel).copied().unwrap_or(0) };
-    let read_u16le = |rel: usize| -> u16 { read_u16(bytes, config_off + rel).unwrap_or(0) };
+    bytes
+        .get(config_off + rel)
+        .copied()
+        .ok_or(Error::ArscTruncated {
+            offset: config_off + rel,
+            needed: 1,
+            had: bytes.len(),
+        })
+}
+
+fn read_config_u16(bytes: &[u8], config_off: usize, config_size: usize, rel: usize) -> Result<u16> {
+    if rel
+        .checked_add(2)
+        .is_none_or(|end: usize| end > config_size)
+    {
+        return Err(Error::ArscTruncated {
+            offset: config_off + rel,
+            needed: 2,
+            had: bytes.len(),
+        });
+    }
+    read_u16(bytes, config_off + rel)
+}
+
+fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) -> Result<String> {
+    if config_size < 12 {
+        return Ok(String::new());
+    }
+    let read_u8 =
+        |rel: usize| -> Result<u8> { read_config_u8(bytes, config_off, config_size, rel) };
+    let read_u16le =
+        |rel: usize| -> Result<u16> { read_config_u16(bytes, config_off, config_size, rel) };
 
     let mut parts: Vec<String> = Vec::new();
 
-    let mcc: u16 = read_u16le(4);
-    let mnc: u16 = read_u16le(6);
+    let mcc: u16 = read_u16le(4)?;
+    let mnc: u16 = read_u16le(6)?;
     if mcc != 0 {
         parts.push(format!("mcc{mcc}"));
     }
@@ -773,15 +818,15 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         parts.push(s);
     }
 
-    if config_size > 30 {
-        let smallest_width_dp: u16 = read_u16le(30);
+    if config_size >= 32 {
+        let smallest_width_dp: u16 = read_u16le(30)?;
         if smallest_width_dp != 0 {
             parts.push(format!("sw{smallest_width_dp}dp"));
         }
     }
-    if config_size > 34 {
-        let width_dp: u16 = read_u16le(32);
-        let height_dp: u16 = read_u16le(34);
+    if config_size >= 36 {
+        let width_dp: u16 = read_u16le(32)?;
+        let height_dp: u16 = read_u16le(34)?;
         if width_dp != 0 {
             parts.push(format!("w{width_dp}dp"));
         }
@@ -790,8 +835,8 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         }
     }
 
-    if config_size > 28 {
-        let screen_layout: u8 = read_u8(28);
+    if config_size >= 29 {
+        let screen_layout: u8 = read_u8(28)?;
         match screen_layout & 0x0F {
             0x01 => parts.push("small".to_owned()),
             0x02 => parts.push("normal".to_owned()),
@@ -811,16 +856,16 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         }
     }
 
-    if config_size > 48 {
-        let screen_layout2: u8 = read_u8(48);
+    if config_size >= 49 {
+        let screen_layout2: u8 = read_u8(48)?;
         match screen_layout2 & 0x03 {
             0x01 => parts.push("notround".to_owned()),
             0x02 => parts.push("round".to_owned()),
             _ => {}
         }
     }
-    if config_size > 49 {
-        let color_mode: u8 = read_u8(49);
+    if config_size >= 50 {
+        let color_mode: u8 = read_u8(49)?;
         match color_mode & 0x03 {
             0x01 => parts.push("nowidecg".to_owned()),
             0x02 => parts.push("widecg".to_owned()),
@@ -833,16 +878,18 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         }
     }
 
-    let orientation: u8 = read_u8(12);
-    match orientation {
-        0x01 => parts.push("port".to_owned()),
-        0x02 => parts.push("land".to_owned()),
-        0x03 => parts.push("square".to_owned()),
-        _ => {}
+    if config_size >= 13 {
+        let orientation: u8 = read_u8(12)?;
+        match orientation {
+            0x01 => parts.push("port".to_owned()),
+            0x02 => parts.push("land".to_owned()),
+            0x03 => parts.push("square".to_owned()),
+            _ => {}
+        }
     }
 
-    if config_size > 29 {
-        let ui_mode: u8 = read_u8(29);
+    if config_size >= 30 {
+        let ui_mode: u8 = read_u8(29)?;
         match ui_mode & 0x0F {
             0x01 => parts.push("desk".to_owned()),
             0x02 => parts.push("car".to_owned()),
@@ -859,20 +906,24 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         }
     }
 
-    let density: u16 = read_u16le(14);
-    if let Some(d) = density_qualifier(density) {
-        parts.push(d);
+    if config_size >= 16 {
+        let density: u16 = read_u16le(14)?;
+        if let Some(d) = density_qualifier(density) {
+            parts.push(d);
+        }
     }
 
-    let touchscreen: u8 = read_u8(13);
-    match touchscreen {
-        0x01 => parts.push("notouch".to_owned()),
-        0x03 => parts.push("finger".to_owned()),
-        _ => {}
+    if config_size >= 14 {
+        let touchscreen: u8 = read_u8(13)?;
+        match touchscreen {
+            0x01 => parts.push("notouch".to_owned()),
+            0x03 => parts.push("finger".to_owned()),
+            _ => {}
+        }
     }
 
-    if config_size > 18 {
-        let input_flags: u8 = read_u8(18);
+    if config_size >= 19 {
+        let input_flags: u8 = read_u8(18)?;
         match input_flags & 0x03 {
             0x01 => parts.push("keysexposed".to_owned()),
             0x02 => parts.push("keyshidden".to_owned()),
@@ -886,39 +937,43 @@ fn decode_config_qualifier(bytes: &[u8], config_off: usize, config_size: usize) 
         }
     }
 
-    let keyboard: u8 = read_u8(16);
-    match keyboard {
-        0x01 => parts.push("nokeys".to_owned()),
-        0x02 => parts.push("qwerty".to_owned()),
-        0x03 => parts.push("12key".to_owned()),
-        _ => {}
+    if config_size >= 17 {
+        let keyboard: u8 = read_u8(16)?;
+        match keyboard {
+            0x01 => parts.push("nokeys".to_owned()),
+            0x02 => parts.push("qwerty".to_owned()),
+            0x03 => parts.push("12key".to_owned()),
+            _ => {}
+        }
     }
 
-    let navigation: u8 = read_u8(17);
-    match navigation {
-        0x01 => parts.push("nonav".to_owned()),
-        0x02 => parts.push("dpad".to_owned()),
-        0x03 => parts.push("trackball".to_owned()),
-        0x04 => parts.push("wheel".to_owned()),
-        _ => {}
+    if config_size >= 18 {
+        let navigation: u8 = read_u8(17)?;
+        match navigation {
+            0x01 => parts.push("nonav".to_owned()),
+            0x02 => parts.push("dpad".to_owned()),
+            0x03 => parts.push("trackball".to_owned()),
+            0x04 => parts.push("wheel".to_owned()),
+            _ => {}
+        }
     }
 
-    if config_size > 20 {
-        let screen_width: u16 = read_u16le(20);
-        let screen_height: u16 = read_u16le(22);
+    if config_size >= 24 {
+        let screen_width: u16 = read_u16le(20)?;
+        let screen_height: u16 = read_u16le(22)?;
         if screen_width != 0 || screen_height != 0 {
             parts.push(format!("{screen_width}x{screen_height}"));
         }
     }
 
-    if config_size > 24 {
-        let sdk_version: u16 = read_u16le(24);
+    if config_size >= 26 {
+        let sdk_version: u16 = read_u16le(24)?;
         if sdk_version != 0 {
             parts.push(format!("v{sdk_version}"));
         }
     }
 
-    parts.join("-")
+    Ok(parts.join("-"))
 }
 
 fn parse_package(bytes: &[u8], chunk_off: usize, chunk_size: usize) -> Result<ResTablePackage> {

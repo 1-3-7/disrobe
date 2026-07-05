@@ -47,16 +47,26 @@ fn value_depth(v: &PickleValue, cap: u32) -> u32 {
             args,
             kwargs,
             state,
+            listitems,
+            dictitems,
             ..
         } => {
             let mut base: u32 = value_depth(cls, child_cap).max(value_depth(args, child_cap));
             if let Some(kwargs) = kwargs {
                 base = base.max(value_depth(kwargs, child_cap));
             }
-            match state {
-                Some(state) => base.max(value_depth(state, child_cap)),
-                None => base,
+            if let Some(state) = state {
+                base = base.max(value_depth(state, child_cap));
             }
+            for item in listitems {
+                base = base.max(value_depth(item, child_cap));
+            }
+            for (k, val) in dictitems {
+                base = base
+                    .max(value_depth(k, child_cap))
+                    .max(value_depth(val, child_cap));
+            }
+            base
         }
         PickleValue::None
         | PickleValue::Bool(_)
@@ -110,6 +120,8 @@ fn node_count_capped(v: &PickleValue, cap: u64) -> u64 {
                 args,
                 kwargs,
                 state,
+                listitems,
+                dictitems,
                 ..
             } => {
                 walk(cls, cap, acc);
@@ -119,6 +131,22 @@ fn node_count_capped(v: &PickleValue, cap: u64) -> u64 {
                 }
                 if let Some(state) = state {
                     walk(state, cap, acc);
+                }
+                for item in listitems {
+                    if *acc >= cap {
+                        return;
+                    }
+                    walk(item, cap, acc);
+                }
+                for (k, val) in dictitems {
+                    if *acc >= cap {
+                        return;
+                    }
+                    walk(k, cap, acc);
+                    if *acc >= cap {
+                        return;
+                    }
+                    walk(val, cap, acc);
                 }
             }
             PickleValue::None
@@ -186,6 +214,8 @@ pub enum PickleValue {
         args: Box<PickleValue>,
         kwargs: Option<Box<PickleValue>>,
         state: Option<Box<PickleValue>>,
+        listitems: Vec<PickleValue>,
+        dictitems: Vec<(PickleValue, PickleValue)>,
     },
     MemoRef {
         key: u64,
@@ -1009,6 +1039,8 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 args: Box::new(args),
                 kwargs: None,
                 state: None,
+                listitems: Vec::new(),
+                dictitems: Vec::new(),
             })?;
         }
         "NEWOBJ_EX" => {
@@ -1023,6 +1055,8 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 args: Box::new(args),
                 kwargs: Some(Box::new(kwargs)),
                 state: None,
+                listitems: Vec::new(),
+                dictitems: Vec::new(),
             })?;
         }
         "INST" => {
@@ -1043,6 +1077,8 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 args: Box::new(arg_tuple),
                 kwargs: None,
                 state: None,
+                listitems: Vec::new(),
+                dictitems: Vec::new(),
             })?;
         }
         "OBJ" => {
@@ -1061,6 +1097,8 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 args: Box::new(arg_tuple),
                 kwargs: None,
                 state: None,
+                listitems: Vec::new(),
+                dictitems: Vec::new(),
             })?;
         }
         "BUILD" => {
@@ -1202,9 +1240,27 @@ fn container_mutation_error(op: &'static str, top_is_value: bool, off: usize) ->
     }
 }
 
+fn ensure_reduce_object(value: &mut PickleValue) -> bool {
+    if matches!(value, PickleValue::Reduce { .. }) {
+        let PickleValue::Reduce { callable, args } = std::mem::replace(value, PickleValue::None)
+        else {
+            return false;
+        };
+        *value = PickleValue::Object {
+            ctor: ObjCtor::Reduce,
+            cls: callable,
+            args,
+            kwargs: None,
+            state: None,
+            listitems: Vec::new(),
+            dictitems: Vec::new(),
+        };
+    }
+    matches!(value, PickleValue::Object { .. })
+}
+
 fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
     let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(m, placed);
-    let top_is_value: bool = matches!(m.stack.last(), Some(Slot::Value { .. }));
     match m.stack.last_mut() {
         Some(Slot::Value {
             value: PickleValue::List(l),
@@ -1222,7 +1278,17 @@ fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
             s.append(&mut items);
             deepen_top(depth, deepest_child)
         }
-        _ => Err(container_mutation_error("APPEND", top_is_value, off)),
+        Some(Slot::Value { value, depth, .. }) => {
+            if ensure_reduce_object(value) {
+                if let PickleValue::Object { listitems, .. } = value {
+                    listitems.append(&mut items);
+                }
+                deepen_top(depth, deepest_child)
+            } else {
+                Err(container_mutation_error("APPEND", true, off))
+            }
+        }
+        _ => Err(container_mutation_error("APPEND", false, off)),
     }
 }
 
@@ -1244,8 +1310,7 @@ fn add_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
 
 fn set_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
     let (values, deepest_child): (Vec<PickleValue>, u32) = resolve_all(m, placed);
-    let kvs: Vec<(PickleValue, PickleValue)> = pairs(values);
-    let top_is_value: bool = matches!(m.stack.last(), Some(Slot::Value { .. }));
+    let mut kvs: Vec<(PickleValue, PickleValue)> = pairs(values);
     match m.stack.last_mut() {
         Some(Slot::Value {
             value: PickleValue::Dict(d),
@@ -1255,7 +1320,17 @@ fn set_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
             d.extend(kvs);
             deepen_top(depth, deepest_child)
         }
-        _ => Err(container_mutation_error("SETITEMS", top_is_value, off)),
+        Some(Slot::Value { value, depth, .. }) => {
+            if ensure_reduce_object(value) {
+                if let PickleValue::Object { dictitems, .. } = value {
+                    dictitems.append(&mut kvs);
+                }
+                deepen_top(depth, deepest_child)
+            } else {
+                Err(container_mutation_error("SETITEMS", true, off))
+            }
+        }
+        _ => Err(container_mutation_error("SETITEMS", false, off)),
     }
 }
 
@@ -1266,6 +1341,8 @@ fn apply_build(target: PickleValue, state: PickleValue) -> PickleValue {
             cls,
             args,
             kwargs,
+            listitems,
+            dictitems,
             ..
         } => PickleValue::Object {
             ctor,
@@ -1273,6 +1350,8 @@ fn apply_build(target: PickleValue, state: PickleValue) -> PickleValue {
             args,
             kwargs,
             state: Some(Box::new(state)),
+            listitems,
+            dictitems,
         },
         PickleValue::Reduce { callable, args } => PickleValue::Object {
             ctor: ObjCtor::Reduce,
@@ -1280,6 +1359,8 @@ fn apply_build(target: PickleValue, state: PickleValue) -> PickleValue {
             args,
             kwargs: None,
             state: Some(Box::new(state)),
+            listitems: Vec::new(),
+            dictitems: Vec::new(),
         },
         other => PickleValue::Object {
             ctor: ObjCtor::Reduce,
@@ -1287,6 +1368,8 @@ fn apply_build(target: PickleValue, state: PickleValue) -> PickleValue {
             args: Box::new(PickleValue::Tuple(Vec::new())),
             kwargs: None,
             state: Some(Box::new(state)),
+            listitems: Vec::new(),
+            dictitems: Vec::new(),
         },
     }
 }
@@ -1459,7 +1542,7 @@ fn describe_target(v: &PickleValue) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::disasm::disassemble;
@@ -1757,6 +1840,85 @@ mod tests {
                 key: 0
             }])]),
             "the inner list must back-reference the outer via memo key 0"
+        );
+    }
+
+    #[test]
+    fn reduce_listitems_accumulate_on_deque() {
+        let t: VmTrace = run(b"\x80\x02ccollections\ndeque\nq\x00)Rq\x01(K\x01K\x02K\x03e.");
+        let PickleValue::Object {
+            ctor,
+            cls,
+            listitems,
+            dictitems,
+            state,
+            ..
+        } = &t.result
+        else {
+            panic!("expected reduce-constructed object, got {:?}", t.result);
+        };
+        assert_eq!(*ctor, ObjCtor::Reduce);
+        assert_eq!(
+            cls.as_ref(),
+            &PickleValue::Global {
+                module: "collections".into(),
+                name: "deque".into(),
+            }
+        );
+        assert_eq!(
+            listitems,
+            &vec![
+                PickleValue::Int(1),
+                PickleValue::Int(2),
+                PickleValue::Int(3)
+            ],
+            "APPENDS after REDUCE must accumulate the deque's listitems"
+        );
+        assert!(dictitems.is_empty());
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn reduce_dictitems_accumulate_on_ordered_dict() {
+        let t: VmTrace = run(
+            b"\x80\x02ccollections\nOrderedDict\nq\x00)Rq\x01(X\x01\x00\x00\x00aq\x02K\x01X\x01\x00\x00\x00bq\x03K\x02u.",
+        );
+        let PickleValue::Object {
+            ctor,
+            cls,
+            listitems,
+            dictitems,
+            ..
+        } = &t.result
+        else {
+            panic!("expected reduce-constructed object, got {:?}", t.result);
+        };
+        assert_eq!(*ctor, ObjCtor::Reduce);
+        assert_eq!(
+            cls.as_ref(),
+            &PickleValue::Global {
+                module: "collections".into(),
+                name: "OrderedDict".into(),
+            }
+        );
+        assert!(listitems.is_empty());
+        assert_eq!(
+            dictitems,
+            &vec![
+                (PickleValue::Str("a".into()), PickleValue::Int(1)),
+                (PickleValue::Str("b".into()), PickleValue::Int(2)),
+            ],
+            "SETITEMS after REDUCE must accumulate the dict's dictitems"
+        );
+    }
+
+    #[test]
+    fn append_onto_non_container_int_is_rejected() {
+        let dis: Disassembly = disassemble(b"\x80\x02K\x01(K\x02e.").expect("disasm");
+        let err: Error = execute(&dis).expect_err("APPENDS onto a bare int must fail, not panic");
+        assert!(
+            matches!(err, Error::Container(_)),
+            "expected a container error, got {err:?}"
         );
     }
 

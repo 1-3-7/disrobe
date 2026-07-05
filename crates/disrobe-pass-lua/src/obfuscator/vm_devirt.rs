@@ -106,6 +106,9 @@ const PB_STEP_LIMIT: usize = 1 << 20;
 const EMBEDDED_PAYLOAD_SCAN_LIMIT: usize = 8 << 20;
 const LUA_STRING_PAYLOAD_CAP: usize = 16 << 20;
 const LUA_TABLE_PAYLOAD_CAP: usize = 16 << 20;
+const VM_CONST_COUNT_CAP: usize = 1 << 20;
+const VM_CODE_COUNT_CAP: usize = 1 << 20;
+const VM_INSTR_MIN_BYTES: usize = 13;
 const BASE64_PAYLOAD_CHAR_CAP: usize = (LUA_STRING_PAYLOAD_CAP / 3) * 4 + 8;
 const BOOTSTRAP_SCAN_LIMIT: usize = 8 << 20;
 const SEED_NAMES: &[&str] = &[
@@ -617,8 +620,8 @@ impl<'a> VmCursor<'a> {
 
     fn read_string(&mut self) -> Result<String> {
         let len: u32 = self.read_u32()?;
-        let n: usize = usize::try_from(len).unwrap_or(0);
-        let available: usize = self.data.len().saturating_sub(self.pos);
+        let n: usize = checked_len(u64::from(len), LUA_STRING_PAYLOAD_CAP, "vm string")?;
+        let available: usize = self.remaining();
         if n > available {
             return Err(Error::LuauTruncated { offset: self.pos });
         }
@@ -628,6 +631,48 @@ impl<'a> VmCursor<'a> {
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+}
+
+fn checked_len(raw: u64, limit: usize, section: &'static str) -> Result<usize> {
+    let len: usize = usize::try_from(raw).map_err(|_| Error::LimitExceeded {
+        section,
+        count: raw,
+        limit,
+    })?;
+    if len > limit {
+        return Err(Error::LimitExceeded {
+            section,
+            count: raw,
+            limit,
+        });
+    }
+    Ok(len)
+}
+
+fn checked_count(
+    raw: u32,
+    limit: usize,
+    section: &'static str,
+    cursor: &VmCursor<'_>,
+    min_entry_width: usize,
+) -> Result<usize> {
+    let count: usize = checked_len(u64::from(raw), limit, section)?;
+    let needed: usize = count
+        .checked_mul(min_entry_width)
+        .ok_or(Error::LimitExceeded {
+            section,
+            count: u64::from(raw),
+            limit,
+        })?;
+    let remaining: usize = cursor.remaining();
+    if needed > remaining {
+        return Err(Error::LuauTruncated { offset: cursor.pos });
+    }
+    Ok(count)
 }
 
 pub fn devirtualize(payload: &[u8], bootstrap: &str) -> Result<Devirtualized> {
@@ -671,8 +716,10 @@ pub fn devirtualize(payload: &[u8], bootstrap: &str) -> Result<Devirtualized> {
     let num_params: u8 = c.read_u8()?;
     let is_vararg: u8 = c.read_u8()?;
 
-    let const_count: u32 = c.read_u32()?;
-    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count.min(1024) as usize);
+    let const_count_raw: u32 = c.read_u32()?;
+    let const_count: usize =
+        checked_count(const_count_raw, VM_CONST_COUNT_CAP, "vm constants", &c, 1)?;
+    let mut constants: Vec<LuaConstant> = Vec::with_capacity(const_count.min(1024));
     let mut constants_decoded: usize = 0;
     for _ in 0..const_count {
         let tag: u8 = c.read_u8()?;
@@ -687,10 +734,17 @@ pub fn devirtualize(payload: &[u8], bootstrap: &str) -> Result<Devirtualized> {
         constants.push(value);
     }
 
-    let code_count: u32 = c.read_u32()?;
-    let mut code: Vec<u32> = Vec::with_capacity(code_count.min(1 << 20) as usize);
+    let code_count_raw: u32 = c.read_u32()?;
+    let code_count: usize = checked_count(
+        code_count_raw,
+        VM_CODE_COUNT_CAP,
+        "vm instructions",
+        &c,
+        VM_INSTR_MIN_BYTES,
+    )?;
+    let mut code: Vec<u32> = Vec::with_capacity(code_count);
     let mut opcodes_lifted: usize = 0;
-    let opcodes_total: usize = code_count as usize;
+    let opcodes_total: usize = code_count;
     for _ in 0..code_count {
         let encoded_op: u8 = c.read_u8()?;
         let a: u32 = c.read_u32()?;
@@ -767,7 +821,9 @@ fn scan_encoded_ops(c: &mut VmCursor<'_>, seen: &mut std::collections::BTreeSet<
     let _max: u8 = c.read_u8()?;
     let _params: u8 = c.read_u8()?;
     let _vararg: u8 = c.read_u8()?;
-    let const_count: u32 = c.read_u32()?;
+    let const_count_raw: u32 = c.read_u32()?;
+    let const_count: usize =
+        checked_count(const_count_raw, VM_CONST_COUNT_CAP, "vm constants", c, 1)?;
     for _ in 0..const_count {
         let tag: u8 = c.read_u8()?;
         match tag {
@@ -784,7 +840,14 @@ fn scan_encoded_ops(c: &mut VmCursor<'_>, seen: &mut std::collections::BTreeSet<
             other => return Err(Error::BadConstantTag(other, c.pos)),
         }
     }
-    let code_count: u32 = c.read_u32()?;
+    let code_count_raw: u32 = c.read_u32()?;
+    let code_count: usize = checked_count(
+        code_count_raw,
+        VM_CODE_COUNT_CAP,
+        "vm instructions",
+        c,
+        VM_INSTR_MIN_BYTES,
+    )?;
     for _ in 0..code_count {
         let op: u8 = c.read_u8()?;
         seen.insert(op);
@@ -1226,9 +1289,39 @@ mod tests {
             .read_string()
             .expect_err("u32::MAX length over a tiny buffer must be a bounded error, not an OOM");
         assert!(
-            matches!(err, Error::LuauTruncated { .. }),
-            "expected LuauTruncated structured error, got {err:?}"
+            matches!(err, Error::LimitExceeded { .. }),
+            "expected LimitExceeded structured error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn vm_count_guard_rejects_over_limit() {
+        let cursor: VmCursor<'_> = VmCursor::new(&[0u8; 16], 0);
+        let err: Error = checked_count(
+            (VM_CODE_COUNT_CAP as u32) + 1,
+            VM_CODE_COUNT_CAP,
+            "vm instructions",
+            &cursor,
+            VM_INSTR_MIN_BYTES,
+        )
+        .expect_err("cap");
+
+        assert!(matches!(err, Error::LimitExceeded { .. }));
+    }
+
+    #[test]
+    fn vm_count_guard_rejects_short_remaining_bytes() {
+        let cursor: VmCursor<'_> = VmCursor::new(&[0u8; 4], 0);
+        let err: Error = checked_count(
+            1,
+            VM_CODE_COUNT_CAP,
+            "vm instructions",
+            &cursor,
+            VM_INSTR_MIN_BYTES,
+        )
+        .expect_err("span");
+
+        assert!(matches!(err, Error::LuauTruncated { .. }));
     }
 
     #[test]

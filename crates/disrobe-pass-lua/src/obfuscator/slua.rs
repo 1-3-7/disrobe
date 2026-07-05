@@ -37,6 +37,13 @@ const KEY_MODE_EXTERNAL: u8 = 2;
 
 const MAX_DECOMPRESSED: usize = 64 * 1024 * 1024;
 const MAX_PROTO_DEPTH: usize = 200;
+const MAX_SLUA_CODE_COUNT: usize = 1 << 20;
+const MAX_SLUA_CONSTANT_COUNT: usize = 1 << 20;
+const MAX_SLUA_UPVALUE_COUNT: usize = 1 << 16;
+const MAX_SLUA_PROTO_COUNT: usize = 1 << 16;
+const MAX_SLUA_LINE_COUNT: usize = 1 << 20;
+const MAX_SLUA_LOCAL_COUNT: usize = 1 << 20;
+const MAX_SLUA_UPVALUE_NAME_COUNT: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SluaCompression {
@@ -574,8 +581,7 @@ impl<'a> ObfReader<'a> {
     fn read_size_plain(&mut self, size_bytes: u8) -> Result<u64> {
         match size_bytes {
             8 => {
-                let slice: &[u8] = self.read_raw(8)?;
-                let arr: [u8; 8] = slice.try_into().unwrap_or([0u8; 8]);
+                let arr: [u8; 8] = self.read_array::<8>()?;
                 Ok(if self.little_endian {
                     u64::from_le_bytes(arr)
                 } else {
@@ -583,8 +589,7 @@ impl<'a> ObfReader<'a> {
                 })
             }
             4 => {
-                let slice: &[u8] = self.read_raw(4)?;
-                let arr: [u8; 4] = slice.try_into().unwrap_or([0u8; 4]);
+                let arr: [u8; 4] = self.read_array::<4>()?;
                 Ok(u64::from(if self.little_endian {
                     u32::from_le_bytes(arr)
                 } else {
@@ -595,11 +600,38 @@ impl<'a> ObfReader<'a> {
         }
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let slice: &[u8] = self.read_raw(N)?;
+        slice.try_into().map_err(|_| Error::Truncated {
+            offset: self.pos.saturating_sub(N),
+            needed: N,
+            had: slice.len(),
+        })
+    }
+
+    fn read_masked_array<const N: usize>(&mut self, mask: u8) -> Result<[u8; N]> {
+        let mut arr: [u8; N] = self.read_array::<N>()?;
+        for byte in &mut arr {
+            *byte ^= mask;
+        }
+        Ok(arr)
+    }
+
     fn read_value_bytes_xored(&mut self, seed: u64, n: usize) -> Result<Vec<u8>> {
-        let slice: Vec<u8> = self.read_raw(n)?.to_vec();
+        let slice: &[u8] = self.read_raw(n)?;
         let mut out: Vec<u8> = Vec::with_capacity(n);
-        for byte in slice {
+        for &byte in slice {
             out.push(byte ^ Self::key_byte(seed, self.const_xor_index));
+            self.const_xor_index += 1;
+        }
+        Ok(out)
+    }
+
+    fn read_value_array_xored<const N: usize>(&mut self, seed: u64) -> Result<[u8; N]> {
+        let slice: &[u8] = self.read_raw(N)?;
+        let mut out: [u8; N] = [0u8; N];
+        for (index, byte) in slice.iter().enumerate() {
+            out[index] = *byte ^ Self::key_byte(seed, self.const_xor_index);
             self.const_xor_index += 1;
         }
         Ok(out)
@@ -691,14 +723,12 @@ fn obf_read_string(
 ) -> Result<Option<String>> {
     let first: u8 = r.read_u8()? ^ params.len_mask();
     let len: u64 = if first == 0xFF {
-        let slice: Vec<u8> = r
-            .read_raw(usize::from(size_size_t))?
-            .iter()
-            .map(|byte: &u8| byte ^ params.len_mask())
-            .collect();
         match size_size_t {
-            8 => u64::from_le_bytes(slice.try_into().unwrap_or([0u8; 8])),
-            _ => u64::from(u32::from_le_bytes(slice.try_into().unwrap_or([0u8; 4]))),
+            8 => u64::from_le_bytes(r.read_masked_array::<8>(params.len_mask())?),
+            4 => u64::from(u32::from_le_bytes(
+                r.read_masked_array::<4>(params.len_mask())?,
+            )),
+            other => return Err(Error::BadIntSize(other)),
         }
     } else {
         u64::from(first)
@@ -706,7 +736,7 @@ fn obf_read_string(
     if len == 0 {
         return Ok(None);
     }
-    let raw_len: usize = usize::try_from(len.saturating_sub(1)).unwrap_or(0);
+    let raw_len: usize = checked_payload_len(len.saturating_sub(1), "slua string")?;
     let bytes: Vec<u8> = r.read_value_bytes_xored(params.seed, raw_len)?;
     let text: String = String::from_utf8_lossy(&bytes).into_owned();
     Ok(Some(text))
@@ -728,16 +758,24 @@ fn obf_read_proto(
     }
     r.const_xor_index = 0;
     let source: Option<String> = obf_read_string(r, params, size_size_t)?;
-    let line_defined: u32 = u32::try_from(r.read_size_plain(size_int)?).unwrap_or(0);
-    let last_line_defined: u32 = u32::try_from(r.read_size_plain(size_int)?).unwrap_or(0);
+    let line_defined: u32 = checked_u32(r.read_size_plain(size_int)?, "slua line_defined")?;
+    let last_line_defined: u32 =
+        checked_u32(r.read_size_plain(size_int)?, "slua last_line_defined")?;
     let num_params: u8 = r.read_u8()?;
     let is_vararg: u8 = r.read_u8()?;
     let max_stack_size: u8 = r.read_u8()?;
 
     let code_len: u64 = r.read_size_plain(size_int)?;
-    let mut code: Vec<u32> = Vec::with_capacity(bounded(code_len, r));
-    for _ in 0..code_len {
-        let raw: u32 = u32::try_from(r.read_size_plain(size_instr)? & 0xFFFF_FFFF).unwrap_or(0);
+    let code_count: usize = checked_count(
+        code_len,
+        MAX_SLUA_CODE_COUNT,
+        "slua code",
+        r,
+        usize::from(size_instr),
+    )?;
+    let mut code: Vec<u32> = Vec::with_capacity(code_count);
+    for _ in 0..code_count {
+        let raw: u32 = checked_u32(r.read_size_plain(size_instr)?, "slua instruction")?;
         let stored_op: u8 = (raw & 0x3F) as u8;
         let clean_op: u8 =
             params
@@ -749,8 +787,10 @@ fn obf_read_proto(
     }
 
     let const_count: u64 = r.read_size_plain(size_int)?;
-    let mut constants: Vec<LuaConstant> = Vec::with_capacity(bounded(const_count, r));
-    for _ in 0..const_count {
+    let constant_count: usize =
+        checked_count(const_count, MAX_SLUA_CONSTANT_COUNT, "slua constants", r, 1)?;
+    let mut constants: Vec<LuaConstant> = Vec::with_capacity(constant_count);
+    for _ in 0..constant_count {
         constants.push(obf_read_constant(
             r,
             params,
@@ -761,8 +801,10 @@ fn obf_read_proto(
     }
 
     let upval_count: u64 = r.read_size_plain(size_int)?;
-    let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(bounded(upval_count, r));
-    for _ in 0..upval_count {
+    let upvalue_count: usize =
+        checked_count(upval_count, MAX_SLUA_UPVALUE_COUNT, "slua upvalues", r, 2)?;
+    let mut upvalues: Vec<LuaUpvalueName> = Vec::with_capacity(upvalue_count);
+    for _ in 0..upvalue_count {
         let _in_stack: u8 = r.read_u8()?;
         let _idx: u8 = r.read_u8()?;
         upvalues.push(LuaUpvalueName {
@@ -771,8 +813,10 @@ fn obf_read_proto(
     }
 
     let proto_count: u64 = r.read_size_plain(size_int)?;
-    let mut protos: Vec<LuaProto> = Vec::with_capacity(bounded(proto_count, r));
-    for _ in 0..proto_count {
+    let child_proto_count: usize =
+        checked_count(proto_count, MAX_SLUA_PROTO_COUNT, "slua child protos", r, 1)?;
+    let mut protos: Vec<LuaProto> = Vec::with_capacity(child_proto_count);
+    for _ in 0..child_proto_count {
         protos.push(obf_read_proto(
             r,
             params,
@@ -786,17 +830,42 @@ fn obf_read_proto(
     }
 
     let line_count: u64 = r.read_size_plain(size_int)?;
-    let mut source_lines: Vec<u32> = Vec::with_capacity(bounded(line_count, r));
-    for _ in 0..line_count {
-        source_lines.push(u32::try_from(r.read_size_plain(size_int)?).unwrap_or(0));
+    let source_line_count: usize = checked_count(
+        line_count,
+        MAX_SLUA_LINE_COUNT,
+        "slua source lines",
+        r,
+        usize::from(size_int),
+    )?;
+    let mut source_lines: Vec<u32> = Vec::with_capacity(source_line_count);
+    for _ in 0..source_line_count {
+        source_lines.push(checked_u32(
+            r.read_size_plain(size_int)?,
+            "slua source line",
+        )?);
     }
 
     let local_count: u64 = r.read_size_plain(size_int)?;
-    let mut locals: Vec<LuaLocal> = Vec::with_capacity(bounded(local_count, r));
-    for _ in 0..local_count {
+    let local_min_width: usize = usize::from(size_int)
+        .checked_mul(2)
+        .and_then(|pc_bytes: usize| pc_bytes.checked_add(1))
+        .ok_or(Error::LimitExceeded {
+            section: "slua locals",
+            count: local_count,
+            limit: MAX_SLUA_LOCAL_COUNT,
+        })?;
+    let parsed_local_count: usize = checked_count(
+        local_count,
+        MAX_SLUA_LOCAL_COUNT,
+        "slua locals",
+        r,
+        local_min_width,
+    )?;
+    let mut locals: Vec<LuaLocal> = Vec::with_capacity(parsed_local_count);
+    for _ in 0..parsed_local_count {
         let name: String = obf_read_string(r, params, size_size_t)?.unwrap_or_default();
-        let start_pc: u32 = u32::try_from(r.read_size_plain(size_int)?).unwrap_or(0);
-        let end_pc: u32 = u32::try_from(r.read_size_plain(size_int)?).unwrap_or(0);
+        let start_pc: u32 = checked_u32(r.read_size_plain(size_int)?, "slua local start_pc")?;
+        let end_pc: u32 = checked_u32(r.read_size_plain(size_int)?, "slua local end_pc")?;
         locals.push(LuaLocal {
             name,
             start_pc,
@@ -805,8 +874,14 @@ fn obf_read_proto(
     }
 
     let upval_names: u64 = r.read_size_plain(size_int)?;
-    for i in 0..upval_names {
-        let idx: usize = usize::try_from(i).unwrap_or(0);
+    let upvalue_name_count: usize = checked_count(
+        upval_names,
+        MAX_SLUA_UPVALUE_NAME_COUNT,
+        "slua upvalue names",
+        r,
+        1,
+    )?;
+    for idx in 0..upvalue_name_count {
         let name: String = obf_read_string(r, params, size_size_t)?.unwrap_or_default();
         if idx < upvalues.len() {
             upvalues[idx].name = name;
@@ -840,42 +915,92 @@ fn obf_read_constant(
     match tag {
         0x00 => Ok(LuaConstant::Nil),
         0x01 => {
-            let value: Vec<u8> = r.read_value_bytes_xored(params.seed, 1)?;
-            Ok(LuaConstant::Bool(value.first().copied().unwrap_or(0) != 0))
+            let value: [u8; 1] = r.read_value_array_xored::<1>(params.seed)?;
+            Ok(LuaConstant::Bool(value[0] != 0))
         }
-        0x03 => {
-            if size_lua_number == 8 {
-                let bytes: Vec<u8> = r.read_value_bytes_xored(params.seed, 8)?;
-                Ok(LuaConstant::Number(f64::from_le_bytes(
-                    bytes.try_into().unwrap_or([0u8; 8]),
-                )))
-            } else {
-                let bytes: Vec<u8> = r.read_value_bytes_xored(params.seed, 4)?;
-                let raw: u32 = u32::from_le_bytes(bytes.try_into().unwrap_or([0u8; 4]));
+        0x03 => match size_lua_number {
+            8 => {
+                let bytes: [u8; 8] = r.read_value_array_xored::<8>(params.seed)?;
+                Ok(LuaConstant::Number(f64::from_le_bytes(bytes)))
+            }
+            4 => {
+                let bytes: [u8; 4] = r.read_value_array_xored::<4>(params.seed)?;
+                let raw: u32 = u32::from_le_bytes(bytes);
                 Ok(LuaConstant::Number(f64::from(f32::from_bits(raw))))
             }
-        }
-        0x13 => {
-            if size_lua_integer == 8 {
-                let bytes: Vec<u8> = r.read_value_bytes_xored(params.seed, 8)?;
-                Ok(LuaConstant::Integer(i64::from_le_bytes(
-                    bytes.try_into().unwrap_or([0u8; 8]),
-                )))
-            } else {
-                let bytes: Vec<u8> = r.read_value_bytes_xored(params.seed, 4)?;
-                let raw: u32 = u32::from_le_bytes(bytes.try_into().unwrap_or([0u8; 4]));
+            other => Err(Error::BadNumberSize(other)),
+        },
+        0x13 => match size_lua_integer {
+            8 => {
+                let bytes: [u8; 8] = r.read_value_array_xored::<8>(params.seed)?;
+                Ok(LuaConstant::Integer(i64::from_le_bytes(bytes)))
+            }
+            4 => {
+                let bytes: [u8; 4] = r.read_value_array_xored::<4>(params.seed)?;
+                let raw: u32 = u32::from_le_bytes(bytes);
                 Ok(LuaConstant::Integer(i64::from(raw as i32)))
             }
-        }
+            other => Err(Error::BadIntSize(other)),
+        },
         0x04 | 0x14 => Ok(obf_read_string(r, params, size_size_t)?
             .map_or(LuaConstant::Str(String::new()), LuaConstant::Str)),
         other => Err(Error::BadConstantTag(other, r.pos)),
     }
 }
 
-fn bounded(count: u64, r: &ObfReader<'_>) -> usize {
-    let remaining: usize = r.bytes.len().saturating_sub(r.pos) + 1;
-    usize::try_from(count).unwrap_or(usize::MAX).min(remaining)
+const U32_FIELD_LIMIT: usize = u32::MAX as usize;
+
+fn checked_u32(value: u64, section: &'static str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| Error::LimitExceeded {
+        section,
+        count: value,
+        limit: U32_FIELD_LIMIT,
+    })
+}
+
+fn checked_payload_len(value: u64, section: &'static str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| Error::LimitExceeded {
+        section,
+        count: value,
+        limit: usize::MAX,
+    })
+}
+
+fn checked_count(
+    count: u64,
+    limit: usize,
+    section: &'static str,
+    r: &ObfReader<'_>,
+    min_entry_width: usize,
+) -> Result<usize> {
+    let native: usize = usize::try_from(count).map_err(|_| Error::LimitExceeded {
+        section,
+        count,
+        limit,
+    })?;
+    if native > limit {
+        return Err(Error::LimitExceeded {
+            section,
+            count,
+            limit,
+        });
+    }
+    let min_bytes: usize = native
+        .checked_mul(min_entry_width)
+        .ok_or(Error::LimitExceeded {
+            section,
+            count,
+            limit,
+        })?;
+    let remaining: usize = r.bytes.len().saturating_sub(r.pos);
+    if min_bytes > remaining {
+        return Err(Error::Truncated {
+            offset: r.pos,
+            needed: min_bytes,
+            had: remaining,
+        });
+    }
+    Ok(native)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1351,6 +1476,30 @@ mod tests {
         };
         let obf_err: Error = obf.read_raw(usize::MAX).expect_err("obf overflow");
         assert!(matches!(obf_err, Error::Truncated { .. }));
+    }
+
+    #[test]
+    fn slua_count_guard_rejects_over_limit() {
+        let bytes: [u8; 16] = [0; 16];
+        let reader: ObfReader<'_> = ObfReader::new(&bytes, true);
+        let err: Error = checked_count(
+            (MAX_SLUA_CODE_COUNT as u64) + 1,
+            MAX_SLUA_CODE_COUNT,
+            "slua code",
+            &reader,
+            4,
+        )
+        .expect_err("count cap");
+        assert!(matches!(err, Error::LimitExceeded { .. }));
+    }
+
+    #[test]
+    fn slua_count_guard_rejects_short_remaining_span() {
+        let bytes: [u8; 4] = [0; 4];
+        let reader: ObfReader<'_> = ObfReader::new(&bytes, true);
+        let err: Error =
+            checked_count(2, MAX_SLUA_CODE_COUNT, "slua code", &reader, 4).expect_err("span");
+        assert!(matches!(err, Error::Truncated { .. }));
     }
 
     #[test]

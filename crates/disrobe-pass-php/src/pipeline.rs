@@ -5,7 +5,7 @@ use crate::encoder::{
     AuthorizationToken, DecodeOutcome, EncoderDetection, EncoderFamily, ioncube, sourceguardian,
     zend_guard,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::key_extractor::{KeyProvenance, KeyScan, scan, xor_decrypt};
 use crate::peel::{PeelOptions, PeelReport, peel};
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,7 @@ pub fn recover(bytes: &[u8], auth: Option<AuthorizationToken>) -> Result<Recover
     dbg_kv("input-len", || bytes.len().to_string());
     dbg_kv("classify", || format!("{:?}", detect(bytes).kind));
     dbg_kv("auth-supplied", || auth.is_some().to_string());
-    if let Some(report) = try_encoder(bytes, auth) {
+    if let Some(report) = try_encoder(bytes, auth)? {
         dbg_kv("route", || "encoder".to_owned());
         dbg_kv("stage", || format!("{:?}", report.stage));
         return Ok(report);
@@ -61,8 +61,12 @@ pub fn recover(bytes: &[u8], auth: Option<AuthorizationToken>) -> Result<Recover
     Ok(report)
 }
 
-fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<RecoveryReport> {
-    let (family, detection): (EncoderFamily, EncoderDetection) = detect_encoder(bytes)?;
+fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Result<Option<RecoveryReport>> {
+    let Some((family, detection)): Option<(EncoderFamily, EncoderDetection)> =
+        detect_encoder(bytes)
+    else {
+        return Ok(None);
+    };
     dbg_section("php encoder");
     dbg_kv("encoder-family", || format!("{family:?}"));
     dbg_kv("encoder-version", || detection.version_label.clone());
@@ -96,7 +100,7 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
             "decode gated: authorization required or container version unsupported".to_owned()
         });
         notes.push("decode gated: authorization required or version unsupported".to_owned());
-        return Some(RecoveryReport {
+        return Ok(Some(RecoveryReport {
             stage: RecoveryStage::StructuralOnly,
             php_kind: "Encoder".to_owned(),
             encoder: Some(format!("{family:?}")),
@@ -105,7 +109,7 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
             decompilation: None,
             residual_ciphertext_len: 0,
             notes,
-        });
+        }));
     };
     let ciphertext: Vec<u8> = match decoded {
         DecodeOutcome::StructuralOnly { header, ciphertext } => {
@@ -121,13 +125,13 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
             dbg_kv("recovered-len", || recovered.len().to_string());
             dbg_hex("recovered-head", &recovered, 32);
             if let Some(report) =
-                lift_recovered_opcode_stream(&recovered, family, &key_scan, &mut notes)
+                lift_recovered_opcode_stream(&recovered, family, &key_scan, &mut notes)?
             {
-                return Some(report);
+                return Ok(Some(report));
             }
             dbg_line(|| residual_wall_note(family, recovered.len()));
             notes.push(residual_wall_note(family, recovered.len()));
-            return Some(RecoveryReport {
+            return Ok(Some(RecoveryReport {
                 stage: RecoveryStage::StructuralOnly,
                 php_kind: "Encoder".to_owned(),
                 encoder: Some(format!("{family:?}")),
@@ -136,12 +140,12 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
                 decompilation: None,
                 residual_ciphertext_len: recovered.len(),
                 notes,
-            });
+            }));
         }
     };
-    let plaintext: Vec<u8> = static_decrypt(bytes, &ciphertext, &key_scan);
-    if let Some(report) = decompile_if_container(&plaintext, family, &key_scan, &mut notes) {
-        return Some(report);
+    let plaintext: Vec<u8> = static_decrypt(bytes, &ciphertext, &key_scan)?;
+    if let Some(report) = decompile_if_container(&plaintext, family, &key_scan, &mut notes)? {
+        return Ok(Some(report));
     }
     dbg_line(|| {
         format!(
@@ -152,7 +156,7 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
     notes.push(format!(
         "{detection:?}: structural framing recovered; payload not a recoverable op_array container"
     ));
-    Some(RecoveryReport {
+    Ok(Some(RecoveryReport {
         stage: RecoveryStage::StructuralOnly,
         php_kind: "Encoder".to_owned(),
         encoder: Some(format!("{family:?}")),
@@ -161,7 +165,7 @@ fn try_encoder(bytes: &[u8], auth: Option<AuthorizationToken>) -> Option<Recover
         decompilation: None,
         residual_ciphertext_len: ciphertext.len(),
         notes,
-    })
+    }))
 }
 
 fn lift_recovered_opcode_stream(
@@ -169,22 +173,22 @@ fn lift_recovered_opcode_stream(
     family: EncoderFamily,
     key_scan: &KeyScan,
     notes: &mut Vec<String>,
-) -> Option<RecoveryReport> {
-    if let Some(report) = decompile_if_container(recovered, family, key_scan, notes) {
-        return Some(report);
+) -> Result<Option<RecoveryReport>> {
+    if let Some(report) = decompile_if_container(recovered, family, key_scan, notes)? {
+        return Ok(Some(report));
     }
     if !key_scan.key.is_empty() {
         let unkeyed: Vec<u8> = xor_decrypt(recovered, &key_scan.key);
-        if let Some(report) = decompile_if_container(&unkeyed, family, key_scan, notes) {
+        if let Some(report) = decompile_if_container(&unkeyed, family, key_scan, notes)? {
             notes.insert(
                 0,
                 "statically-embedded obfuscation key applied to the recovered opcode stream"
                     .to_owned(),
             );
-            return Some(report);
+            return Ok(Some(report));
         }
     }
-    None
+    Ok(None)
 }
 
 fn residual_wall_note(family: EncoderFamily, residual_len: usize) -> String {
@@ -204,11 +208,17 @@ fn residual_wall_note(family: EncoderFamily, residual_len: usize) -> String {
     )
 }
 
-fn static_decrypt(bytes: &[u8], ciphertext: &[u8], key_scan: &KeyScan) -> Vec<u8> {
+fn static_decrypt(bytes: &[u8], ciphertext: &[u8], key_scan: &KeyScan) -> Result<Vec<u8>> {
     match (key_scan.provenance, key_scan.key_offset) {
         (KeyProvenance::StaticEmbedded, Some(offset)) if !key_scan.key.is_empty() => {
             let payload_start: usize = offset.saturating_add(key_scan.key.len());
-            let payload: &[u8] = bytes.get(payload_start..).unwrap_or(&[]);
+            let payload: &[u8] =
+                bytes
+                    .get(payload_start..)
+                    .ok_or_else(|| Error::ContainerBadFraming {
+                        family: encoder_family_label(key_scan.family),
+                        reason: "static key offset exceeds input length",
+                    })?;
             dbg_kv("static-xor-payload-offset", || {
                 format!("0x{payload_start:x}")
             });
@@ -219,12 +229,20 @@ fn static_decrypt(bytes: &[u8], ciphertext: &[u8], key_scan: &KeyScan) -> Vec<u8
                     key_scan.key.len()
                 )
             });
-            xor_decrypt(payload, &key_scan.key)
+            Ok(xor_decrypt(payload, &key_scan.key))
         }
         _ => {
             dbg_line(|| "no static-embedded key: passing ciphertext through unmodified".to_owned());
-            ciphertext.to_vec()
+            Ok(ciphertext.to_vec())
         }
+    }
+}
+
+const fn encoder_family_label(family: EncoderFamily) -> &'static str {
+    match family {
+        EncoderFamily::IonCube => "IonCube",
+        EncoderFamily::SourceGuardian => "SourceGuardian",
+        EncoderFamily::ZendGuard => "ZendGuard",
     }
 }
 
@@ -233,11 +251,11 @@ fn decompile_if_container(
     family: EncoderFamily,
     key_scan: &KeyScan,
     notes: &mut Vec<String>,
-) -> Option<RecoveryReport> {
+) -> Result<Option<RecoveryReport>> {
     if payload.len() < 5 || &payload[..4] != OPARRAY_MAGIC {
-        return None;
+        return Ok(None);
     }
-    let parsed: OpArray = parse_oparray(payload).ok()?;
+    let parsed: OpArray = parse_oparray(payload)?;
     let decomp: Decompilation = decompile(&parsed);
     dbg_kv("oparray-root-kind", || format!("{:?}", parsed.kind));
     dbg_kv("oparray-arrays", || decomp.op_array_count.to_string());
@@ -253,7 +271,7 @@ fn decompile_if_container(
         total_named_params(&parsed).to_string()
     });
     notes.push("decrypted payload is a Zend op_array container; lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned());
-    Some(RecoveryReport {
+    Ok(Some(RecoveryReport {
         stage: RecoveryStage::OpArrayDecompiled,
         php_kind: "Encoder".to_owned(),
         encoder: Some(format!("{family:?}")),
@@ -262,7 +280,7 @@ fn decompile_if_container(
         decompilation: Some(decomp),
         residual_ciphertext_len: 0,
         notes: std::mem::take(notes),
-    })
+    }))
 }
 
 fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
@@ -505,4 +523,53 @@ fn count_kind(node: &OpArray, pred: fn(crate::decompile::OpArrayKind) -> bool) -
 
 fn total_named_params(node: &OpArray) -> usize {
     node.num_args as usize + node.children.iter().map(total_named_params).sum::<usize>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn static_key_scan(offset: usize) -> KeyScan {
+        KeyScan {
+            family: EncoderFamily::ZendGuard,
+            provenance: KeyProvenance::StaticEmbedded,
+            key: b"key".to_vec(),
+            key_offset: Some(offset),
+            note: "test",
+        }
+    }
+
+    #[test]
+    fn static_decrypt_rejects_key_offset_past_input() -> core::result::Result<(), String> {
+        let scan: KeyScan = static_key_scan(16);
+        let err: Error = match static_decrypt(b"<?", b"ciphertext", &scan) {
+            Ok(_) => return Err("bad static offset must fail".to_owned()),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            err,
+            Error::ContainerBadFraming {
+                family: "ZendGuard",
+                reason: "static key offset exceeds input length",
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn decompile_if_container_rejects_malformed_oparray() -> core::result::Result<(), String> {
+        let scan: KeyScan = static_key_scan(0);
+        let mut notes: Vec<String> = Vec::new();
+        let err: Error = match decompile_if_container(
+            b"DZOA\x02",
+            EncoderFamily::ZendGuard,
+            &scan,
+            &mut notes,
+        ) {
+            Ok(_) => return Err("malformed DZOA payload must fail".to_owned()),
+            Err(error) => error,
+        };
+        assert!(matches!(err, Error::OpArrayTruncated { .. }));
+        Ok(())
+    }
 }

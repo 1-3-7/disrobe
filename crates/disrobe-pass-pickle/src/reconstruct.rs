@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::decompile::{py_repr_bytes, py_repr_str, render_float};
 use crate::vm::{ObjCtor, PickleValue};
 
-const PREAMBLE: &str = "def _apply_state(obj, state):\n    if state is None:\n        return obj\n    setstate = getattr(obj, \"__setstate__\", None)\n    if setstate is not None:\n        setstate(state)\n        return obj\n    slotstate = None\n    if isinstance(state, tuple) and len(state) == 2:\n        state, slotstate = state\n    if state:\n        obj.__dict__.update(state)\n    if slotstate:\n        for _k, _v in slotstate.items():\n            setattr(obj, _k, _v)\n    return obj\n\n\ndef _unsupported(reason):\n    raise RuntimeError(\"disrobe: unreconstructable pickle shape: \" + reason)\n";
+const PREAMBLE: &str = "def _apply_state(obj, state):\n    if state is None:\n        return obj\n    setstate = getattr(obj, \"__setstate__\", None)\n    if setstate is not None:\n        setstate(state)\n        return obj\n    slotstate = None\n    if isinstance(state, tuple) and len(state) == 2:\n        state, slotstate = state\n    if state:\n        obj.__dict__.update(state)\n    if slotstate:\n        for _k, _v in slotstate.items():\n            setattr(obj, _k, _v)\n    return obj\n\n\ndef _extend(obj, items):\n    extend = getattr(obj, \"extend\", None)\n    if extend is not None:\n        extend(items)\n    else:\n        append = obj.append\n        for _it in items:\n            append(_it)\n    return obj\n\n\ndef _setitems(obj, items):\n    for _k, _v in items:\n        obj[_k] = _v\n    return obj\n\n\ndef _unsupported(reason):\n    raise RuntimeError(\"disrobe: unreconstructable pickle shape: \" + reason)\n";
 
 const MAX_CYCLE_TARGETS: usize = 4_096;
 
@@ -167,11 +167,26 @@ fn emit_fill(
                 }
             }
             Some(PickleValue::Object {
-                state: Some(state), ..
+                state,
+                listitems,
+                dictitems,
+                ..
             }) => {
-                let mut rendered: String = String::new();
-                render(ctx, state, &mut rendered);
-                program.push_str(&format!("_apply_state(_m[{key}], {rendered})\n"));
+                if !listitems.is_empty() {
+                    let mut body: String = String::new();
+                    render_seq_items(ctx, listitems, &mut body);
+                    program.push_str(&format!("_extend(_m[{key}], [{body}])\n"));
+                }
+                if !dictitems.is_empty() {
+                    let mut body: String = String::new();
+                    render_pair_tuples(ctx, dictitems, &mut body);
+                    program.push_str(&format!("_setitems(_m[{key}], [{body}])\n"));
+                }
+                if let Some(state) = state {
+                    let mut rendered: String = String::new();
+                    render(ctx, state, &mut rendered);
+                    program.push_str(&format!("_apply_state(_m[{key}], {rendered})\n"));
+                }
             }
             _ => {}
         }
@@ -247,16 +262,27 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
             args,
             kwargs,
             state,
+            listitems,
+            dictitems,
         } => {
-            if state.is_some() {
-                out.push_str("_apply_state(");
+            let mut expr: String = String::new();
+            render_object_base(ctx, *ctor, cls, args, kwargs.as_deref(), &mut expr);
+            if !listitems.is_empty() {
+                let mut body: String = String::new();
+                render_seq_items(ctx, listitems, &mut body);
+                expr = format!("_extend({expr}, [{body}])");
             }
-            render_object_base(ctx, *ctor, cls, args, kwargs.as_deref(), out);
+            if !dictitems.is_empty() {
+                let mut body: String = String::new();
+                render_pair_tuples(ctx, dictitems, &mut body);
+                expr = format!("_setitems({expr}, [{body}])");
+            }
             if let Some(state) = state {
-                out.push_str(", ");
-                render(ctx, state, out);
-                out.push(')');
+                let mut rendered: String = String::new();
+                render(ctx, state, &mut rendered);
+                expr = format!("_apply_state({expr}, {rendered})");
             }
+            out.push_str(&expr);
         }
         PickleValue::Ext { code } => {
             out.push_str(&format!(
@@ -342,6 +368,19 @@ fn render_seq_items(ctx: &Ctx<'_>, items: &[PickleValue], out: &mut String) {
     }
 }
 
+fn render_pair_tuples(ctx: &Ctx<'_>, pairs: &[(PickleValue, PickleValue)], out: &mut String) {
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push('(');
+        render(ctx, k, out);
+        out.push_str(", ");
+        render(ctx, v, out);
+        out.push(')');
+    }
+}
+
 #[inline]
 fn is_target_kind(value: &PickleValue) -> bool {
     matches!(
@@ -396,6 +435,8 @@ fn collect_refs(value: &PickleValue, out: &mut Vec<u64>) {
             args,
             kwargs,
             state,
+            listitems,
+            dictitems,
             ..
         } => {
             collect_refs(cls, out);
@@ -405,6 +446,13 @@ fn collect_refs(value: &PickleValue, out: &mut Vec<u64>) {
             }
             if let Some(state) = state {
                 collect_refs(state, out);
+            }
+            for item in listitems {
+                collect_refs(item, out);
+            }
+            for (k, v) in dictitems {
+                collect_refs(k, out);
+                collect_refs(v, out);
             }
         }
         _ => {}
@@ -465,6 +513,8 @@ fn scan(
             args,
             kwargs,
             state,
+            listitems,
+            dictitems,
             ..
         } => {
             if !is_constructible(cls) {
@@ -478,6 +528,13 @@ fn scan(
             }
             if let Some(state) = state {
                 scan(state, modules, reasons, ok);
+            }
+            for item in listitems {
+                scan(item, modules, reasons, ok);
+            }
+            for (k, v) in dictitems {
+                scan(k, modules, reasons, ok);
+                scan(v, modules, reasons, ok);
             }
         }
         _ => {}
@@ -527,6 +584,40 @@ mod tests {
         let r: Reconstruction = build(b"\x80\x02\x82\x10.");
         assert!(!r.reexecutable);
         assert!(!r.unsupported.is_empty());
+    }
+
+    #[test]
+    fn reduce_deque_listitems_reexecutable() {
+        let r: Reconstruction =
+            build(b"\x80\x02ccollections\ndeque\nq\x00)Rq\x01(K\x01K\x02K\x03e.");
+        assert!(
+            r.reexecutable,
+            "deque via reduce+listitems must reconstruct"
+        );
+        assert!(r.program.contains("import collections"));
+        assert!(
+            r.program
+                .contains("_extend(collections.deque(), [1, 2, 3])"),
+            "listitems must re-emit via the extend helper: {}",
+            r.program
+        );
+    }
+
+    #[test]
+    fn reduce_ordered_dict_dictitems_reexecutable() {
+        let r: Reconstruction = build(
+            b"\x80\x02ccollections\nOrderedDict\nq\x00)Rq\x01(X\x01\x00\x00\x00aq\x02K\x01X\x01\x00\x00\x00bq\x03K\x02u.",
+        );
+        assert!(
+            r.reexecutable,
+            "OrderedDict via reduce+dictitems must reconstruct"
+        );
+        assert!(
+            r.program
+                .contains("_setitems(collections.OrderedDict(), [('a', 1), ('b', 2)])"),
+            "dictitems must re-emit via the setitems helper: {}",
+            r.program
+        );
     }
 
     #[test]

@@ -191,7 +191,13 @@ fn write_proto_51(w: &mut ByteWriter, proto: &LuaProto, chunk: &LuaChunk) -> Res
     write_string_5152(w, proto.source.as_deref(), chunk.size_of_size_t)?;
     w.write_size(u64::from(proto.line_defined), chunk.size_of_int)?;
     w.write_size(u64::from(proto.last_line_defined), chunk.size_of_int)?;
-    w.push(u8::try_from(proto.upvalues.len()).unwrap_or(u8::MAX));
+    let upvalue_count: u8 =
+        u8::try_from(proto.upvalues.len()).map_err(|_| Error::LimitExceeded {
+            section: "lua51 upvalues",
+            count: proto.upvalues.len() as u64,
+            limit: usize::from(u8::MAX),
+        })?;
+    w.push(upvalue_count);
     w.push(proto.num_params);
     w.push(proto.is_vararg);
     w.push(proto.max_stack_size);
@@ -515,5 +521,25 @@ mod tests {
             reparsed.main.protos[0].constants,
             chunk.main.protos[0].constants
         );
+    }
+
+    #[test]
+    fn serialize_51_rejects_upvalue_count_over_u8() {
+        let mut main: LuaProto = sample_proto_5152();
+        main.upvalues = (0..=usize::from(u8::MAX))
+            .map(|index: usize| crate::reader::common::LuaUpvalueName {
+                name: format!("up{index}"),
+            })
+            .collect();
+        let chunk: LuaChunk = chunk_5152(LuaDialect::Lua51, main);
+        let err: Error = serialize_chunk(&chunk).expect_err("overflowing upvalues must fail");
+        assert!(matches!(
+            err,
+            Error::LimitExceeded {
+                section: "lua51 upvalues",
+                count: 256,
+                limit: 255
+            }
+        ));
     }
 }

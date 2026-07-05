@@ -64,6 +64,8 @@ fn render(value: &PickleValue, depth: u32, out: &mut String) {
             args,
             kwargs,
             state,
+            listitems,
+            dictitems,
         } => {
             render_object(
                 *ctor,
@@ -71,6 +73,8 @@ fn render(value: &PickleValue, depth: u32, out: &mut String) {
                 args,
                 kwargs.as_deref(),
                 state.as_deref(),
+                listitems,
+                dictitems,
                 child,
                 out,
             );
@@ -79,38 +83,63 @@ fn render(value: &PickleValue, depth: u32, out: &mut String) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_object(
     ctor: ObjCtor,
     cls: &PickleValue,
     args: &PickleValue,
     kwargs: Option<&PickleValue>,
     state: Option<&PickleValue>,
+    listitems: &[PickleValue],
+    dictitems: &[(PickleValue, PickleValue)],
     depth: u32,
     out: &mut String,
 ) {
-    if state.is_some() {
-        out.push_str("_apply_state(");
-    }
+    let mut expr: String = String::new();
     match ctor {
         ObjCtor::NewObj | ObjCtor::NewObjEx => {
-            render(cls, depth, out);
-            out.push_str(".__new__(");
-            render(cls, depth, out);
-            render_positional_tail(args, depth, out);
+            render(cls, depth, &mut expr);
+            expr.push_str(".__new__(");
+            render(cls, depth, &mut expr);
+            render_positional_tail(args, depth, &mut expr);
             if let Some(kw) = kwargs {
-                out.push_str(", **");
-                render(kw, depth, out);
+                expr.push_str(", **");
+                render(kw, depth, &mut expr);
             }
-            out.push(')');
+            expr.push(')');
         }
         ObjCtor::Reduce | ObjCtor::Inst | ObjCtor::Obj => {
-            render(cls, depth, out);
-            render_call_args(args, depth, out);
+            render(cls, depth, &mut expr);
+            render_call_args(args, depth, &mut expr);
         }
     }
+    if !listitems.is_empty() {
+        let mut body: String = String::new();
+        render_seq(listitems, "[", "]", depth, &mut body);
+        expr = format!("_extend({expr}, {body})");
+    }
+    if !dictitems.is_empty() {
+        let mut body: String = String::new();
+        render_pair_tuples(dictitems, depth, &mut body);
+        expr = format!("_setitems({expr}, [{body}])");
+    }
     if let Some(s) = state {
+        let mut rendered: String = String::new();
+        render(s, depth, &mut rendered);
+        expr = format!("_apply_state({expr}, {rendered})");
+    }
+    out.push_str(&expr);
+}
+
+fn render_pair_tuples(pairs: &[(PickleValue, PickleValue)], depth: u32, out: &mut String) {
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push('(');
+        render(k, depth, out);
         out.push_str(", ");
-        render(s, depth, out);
+        render(v, depth, out);
         out.push(')');
     }
 }

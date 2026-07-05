@@ -30,6 +30,10 @@ use disrobe_pass_pickle::{
     to_python_assignment,
 };
 use disrobe_pass_py_disasm::Instruction;
+use disrobe_pass_pyarmor::{
+    Detection as PyarmorDetection, DetectionConfidence as PyarmorConfidence, ModeClassification,
+    ProtectionKind as PyarmorProtection, PyarmorVersion, classify_modes, detect_from_wrapper,
+};
 use disrobe_pass_ruby::{RubyAnalysis, analyze_bytes as ruby_analyze_bytes};
 use disrobe_pass_scriptlang::{
     ScriptArtifact, ScriptLang, analyze as scriptlang_analyze, classify as scriptlang_classify,
@@ -37,6 +41,7 @@ use disrobe_pass_scriptlang::{
 use disrobe_pass_shell::{
     BatchDeobReport, Detection as ShellDetection, deobfuscate_batch, detect as shell_detect,
 };
+use disrobe_pass_swift_objc::{SwiftObjcReport, analyze as swift_objc_analyze};
 use disrobe_pass_wasm_deob::{
     CalleeNames, ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg,
     FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
@@ -132,6 +137,34 @@ pub struct WasmDetectResult {
     ok: bool,
     format: &'static str,
     detection: WasmDetection,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PyarmorDetectionView {
+    version: &'static str,
+    protection: &'static str,
+    confidence: &'static str,
+    serial: Option<String>,
+    python_version: Option<String>,
+    pyc_magic: Option<u16>,
+    has_iv: bool,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PyarmorDetectResult {
+    ok: bool,
+    format: &'static str,
+    detection: PyarmorDetectionView,
+    payload_len: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PyarmorClassifyResult {
+    ok: bool,
+    format: &'static str,
+    detection: PyarmorDetectionView,
+    classification: ModeClassification,
 }
 
 #[derive(Debug, Serialize)]
@@ -731,6 +764,79 @@ pub fn wasm_source_map(bytes: &[u8]) -> Result<WasmSourceMapResult, String> {
     })
 }
 
+const fn pyarmor_version_label(version: PyarmorVersion) -> &'static str {
+    match version {
+        PyarmorVersion::V3 => "3",
+        PyarmorVersion::V4 => "4",
+        PyarmorVersion::V5 => "5",
+        PyarmorVersion::V6 => "6",
+        PyarmorVersion::V7 => "7",
+        PyarmorVersion::V8 => "8",
+        PyarmorVersion::V9 => "9",
+    }
+}
+
+const fn pyarmor_protection_label(kind: PyarmorProtection) -> &'static str {
+    match kind {
+        PyarmorProtection::Standard => "standard",
+        PyarmorProtection::SuperMode => "super-mode",
+        PyarmorProtection::Bcc => "bcc",
+        PyarmorProtection::Unknown => "unknown",
+    }
+}
+
+const fn pyarmor_confidence_label(confidence: PyarmorConfidence) -> &'static str {
+    match confidence {
+        PyarmorConfidence::High => "high",
+        PyarmorConfidence::Medium => "medium",
+        PyarmorConfidence::Low => "low",
+    }
+}
+
+fn pyarmor_view(detection: &PyarmorDetection) -> PyarmorDetectionView {
+    let python_version: Option<String> = match (detection.python_major, detection.python_minor) {
+        (Some(major), Some(minor)) => Some(format!("{major}.{minor}")),
+        _ => None,
+    };
+    PyarmorDetectionView {
+        version: pyarmor_version_label(detection.version),
+        protection: pyarmor_protection_label(detection.protection),
+        confidence: pyarmor_confidence_label(detection.confidence),
+        serial: detection.serial.clone(),
+        python_version,
+        pyc_magic: detection.pyc_magic,
+        has_iv: detection.iv.is_some(),
+        diagnostics: detection.diagnostics.clone(),
+    }
+}
+
+pub fn pyarmor_detect(source: &[u8]) -> Result<PyarmorDetectResult, String> {
+    let text: &str =
+        core::str::from_utf8(source).map_err(|_| "pyarmor input is not utf-8 text".to_string())?;
+    let (detection, payload): (PyarmorDetection, Vec<u8>) =
+        detect_from_wrapper(text).map_err(|e| format!("pyarmor detect: {e}"))?;
+    Ok(PyarmorDetectResult {
+        ok: true,
+        format: "pyarmor",
+        detection: pyarmor_view(&detection),
+        payload_len: payload.len(),
+    })
+}
+
+pub fn pyarmor_classify(source: &[u8]) -> Result<PyarmorClassifyResult, String> {
+    let text: &str =
+        core::str::from_utf8(source).map_err(|_| "pyarmor input is not utf-8 text".to_string())?;
+    let (detection, payload): (PyarmorDetection, Vec<u8>) =
+        detect_from_wrapper(text).map_err(|e| format!("pyarmor detect: {e}"))?;
+    let classification: ModeClassification = classify_modes(text, &payload);
+    Ok(PyarmorClassifyResult {
+        ok: true,
+        format: "pyarmor",
+        detection: pyarmor_view(&detection),
+        classification,
+    })
+}
+
 const fn lua_dialect_label(format: LuaFormat) -> &'static str {
     match format {
         LuaFormat::Lua51 => "lua 5.1",
@@ -1050,6 +1156,25 @@ pub fn shell_deob(bytes: &[u8]) -> Result<ShellResult, String> {
         format: "shell",
         detection,
         batch,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct SwiftObjcResult {
+    ok: bool,
+    format: &'static str,
+    slice_count: usize,
+    report: SwiftObjcReport,
+}
+
+pub fn swift_objc_entry(bytes: &[u8]) -> Result<SwiftObjcResult, String> {
+    let report: SwiftObjcReport =
+        swift_objc_analyze(bytes).map_err(|e| format!("swift-objc analyze: {e}"))?;
+    Ok(SwiftObjcResult {
+        ok: true,
+        format: "swift-objc",
+        slice_count: report.slices.len(),
+        report,
     })
 }
 

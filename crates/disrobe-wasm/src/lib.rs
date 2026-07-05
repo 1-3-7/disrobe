@@ -271,6 +271,16 @@ pub unsafe extern "C" fn wasm_source_map(ptr: *const u8, len: usize) -> *mut u8 
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn pyarmor_detect(ptr: *const u8, len: usize) -> *mut u8 {
+    unsafe { dispatch(ptr, len, entry::pyarmor_detect) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pyarmor_classify(ptr: *const u8, len: usize) -> *mut u8 {
+    unsafe { dispatch(ptr, len, entry::pyarmor_classify) }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn lua_detect(ptr: *const u8, len: usize) -> *mut u8 {
     unsafe { dispatch(ptr, len, |bytes: &[u8]| Ok(entry::lua_detect(bytes))) }
 }
@@ -308,6 +318,11 @@ pub unsafe extern "C" fn scriptlang_analyze(ptr: *const u8, len: usize) -> *mut 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shell_deob(ptr: *const u8, len: usize) -> *mut u8 {
     unsafe { dispatch(ptr, len, entry::shell_deob) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swift_objc(ptr: *const u8, len: usize) -> *mut u8 {
+    unsafe { dispatch(ptr, len, entry::swift_objc_entry) }
 }
 
 #[unsafe(no_mangle)]
