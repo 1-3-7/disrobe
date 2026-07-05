@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_core::{AdjGraph, Dominators};
 use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind, Value};
 use walrus::{LocalFunction, LocalId};
 
@@ -512,7 +513,7 @@ impl<'g> Analysis<'g> {
         if order.len() != graph.nodes.len() {
             return None;
         }
-        let idom: BTreeMap<i32, i32> = dominators(graph, &order)?;
+        let idom: BTreeMap<i32, i32> = dominators(graph)?;
         let ipostdom: BTreeMap<NodeRef, NodeRef> = post_dominators(graph, &order);
         Some(Analysis {
             graph,
@@ -767,84 +768,39 @@ fn reverse_postorder(graph: &Graph) -> Vec<i32> {
     post
 }
 
-fn dominators(graph: &Graph, order: &[i32]) -> Option<BTreeMap<i32, i32>> {
-    let len: usize = order.len();
-    let postnum: BTreeMap<i32, usize> = order
+fn dominators(graph: &Graph) -> Option<BTreeMap<i32, i32>> {
+    let ids: Vec<i32> = graph.nodes.keys().copied().collect();
+    let index: BTreeMap<i32, u32> = ids
         .iter()
         .enumerate()
-        .map(|(i, &s)| (s, len - 1 - i))
+        .map(|(i, &id): (usize, &i32)| (id, i as u32))
         .collect();
+    let entry_dense: u32 = *index.get(&graph.entry)?;
+    let succ: Vec<Vec<u32>> = ids
+        .iter()
+        .map(|&id: &i32| {
+            successors(graph, id)
+                .into_iter()
+                .filter_map(|s: NodeRef| match s {
+                    NodeRef::State(v) => index.get(&v).copied(),
+                    NodeRef::Exit => None,
+                })
+                .collect()
+        })
+        .collect();
+    let adj: AdjGraph = AdjGraph::new(entry_dense, succ);
+    let doms: Dominators = Dominators::compute(&adj);
     let mut idom: BTreeMap<i32, i32> = BTreeMap::new();
     idom.insert(graph.entry, graph.entry);
-    let mut changed: bool = true;
-    let mut guard: usize = 0;
-    while changed {
-        changed = false;
-        guard += 1;
-        if guard > NODE_LIMIT * 4 {
-            return None;
+    for (i, &id) in ids.iter().enumerate() {
+        if id == graph.entry {
+            continue;
         }
-        for &node in order.iter().skip(1) {
-            let preds: Vec<i32> = predecessors(graph, node);
-            let mut new_idom: Option<i32> = None;
-            for pred in preds {
-                if !idom.contains_key(&pred) {
-                    continue;
-                }
-                new_idom = Some(new_idom.map_or(pred, |cur| intersect(&idom, &postnum, cur, pred)));
-            }
-            if let Some(new_idom) = new_idom {
-                if idom.get(&node) != Some(&new_idom) {
-                    idom.insert(node, new_idom);
-                    changed = true;
-                }
-            }
+        if let Some(d) = doms.immediate_dominator(i as u32) {
+            idom.insert(id, ids[d as usize]);
         }
     }
     Some(idom)
-}
-
-fn intersect(
-    idom: &BTreeMap<i32, i32>,
-    postnum: &BTreeMap<i32, usize>,
-    mut a: i32,
-    mut b: i32,
-) -> i32 {
-    let mut guard: usize = 0;
-    while a != b {
-        guard += 1;
-        if guard > NODE_LIMIT * 4 {
-            return a;
-        }
-        while postnum.get(&a).copied().unwrap_or(0) < postnum.get(&b).copied().unwrap_or(0) {
-            let next: i32 = *idom.get(&a).unwrap_or(&a);
-            if next == a {
-                return a;
-            }
-            a = next;
-        }
-        while postnum.get(&b).copied().unwrap_or(0) < postnum.get(&a).copied().unwrap_or(0) {
-            let next: i32 = *idom.get(&b).unwrap_or(&b);
-            if next == b {
-                return b;
-            }
-            b = next;
-        }
-    }
-    a
-}
-
-fn predecessors(graph: &Graph, node: i32) -> Vec<i32> {
-    let mut out: Vec<i32> = Vec::new();
-    for &u in graph.nodes.keys() {
-        if successors(graph, u)
-            .into_iter()
-            .any(|s| matches!(s, NodeRef::State(v) if v == node))
-        {
-            out.push(u);
-        }
-    }
-    out
 }
 
 fn post_dominators(graph: &Graph, order: &[i32]) -> BTreeMap<NodeRef, NodeRef> {

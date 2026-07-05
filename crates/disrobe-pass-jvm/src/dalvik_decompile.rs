@@ -303,11 +303,7 @@ fn lift_method(dex: &DexFile, item: &CodeItem, is_static: bool) -> MethodBody {
     };
     let blackobf_note: String =
         blackobfuscator_annotation(&built.insns, &built.switch_payloads, dex);
-    let Ok(dom): Result<Dominators, _> = compute_dominators(&built.cfg) else {
-        let mut body: MethodBody = flat_fallback(dex, item, is_static, &built);
-        body.text = format!("{blackobf_note}{}", body.text);
-        return body;
-    };
+    let dom: Dominators = compute_dominators(&built.cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&built.cfg, &dom);
     let mut structurer: Structurer<'_> =
         Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map.clone());
@@ -362,33 +358,6 @@ fn blackobfuscator_annotation(
             "        // BlackObfuscator control-flow flattening detected ({} hashCode-keyed dispatcher case(s)); block-name strings unresolved\n",
             report.dispatch_cases
         ),
-    }
-}
-
-fn flat_fallback(
-    dex: &DexFile,
-    item: &CodeItem,
-    is_static: bool,
-    built: &DalvikMethodCfg,
-) -> MethodBody {
-    let ctx: MethodContext<'_> = MethodContext::new(
-        dex,
-        item.registers_size,
-        item.ins_size,
-        &item.method_descriptor,
-        is_static,
-    );
-    let mut file: RegisterFile = RegisterFile::new();
-    seed_block_registers(&ctx, &mut file);
-    let mut pending: Option<crate::decompile::Expr> = None;
-    let mut out: String = String::new();
-    let _ = writeln!(out, "        // irreducible CFG (flat fallback)");
-    for insn in &built.insns {
-        emit_insn(&ctx, &mut file, insn, &mut pending, &mut out, 2);
-    }
-    MethodBody {
-        text: out,
-        fully_lifted: false,
     }
 }
 

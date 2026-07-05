@@ -689,7 +689,7 @@ mod tests {
             "dispatcher switch must be unreachable after unflattening"
         );
 
-        let dom: Dominators = compute_dominators(&cfg).expect("dom after");
+        let dom: Dominators = compute_dominators(&cfg);
         let loops: Vec<NaturalLoop> = find_natural_loops(&cfg, &dom);
         let mut s: Structurer<'_> = Structurer::new(&cfg, &dom, &loops, &insns);
         let after: Region = s.structure();

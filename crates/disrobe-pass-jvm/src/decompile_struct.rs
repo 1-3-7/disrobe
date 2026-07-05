@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_core::DiGraph;
 use serde::{Deserialize, Serialize};
 
 use crate::bytecode::{CodeAttribute, ExceptionEntry, Instruction, Operands, branch_target};
 use crate::classfile::{ClassFile, ConstantPoolEntry};
 
 const MAX_BLOCKS: usize = 16_384;
-const MAX_DOM_ITERATIONS: usize = 256;
 const MAX_STRUCTURE_DEPTH: usize = 256;
 const MAX_STRUCTURE_WORK: usize = 200_000;
 
@@ -325,8 +325,6 @@ pub enum StructureError {
     TooManyBlocks(usize),
     #[error("leader index missing from instruction stream")]
     BadLeader,
-    #[error("dominator computation did not converge")]
-    DominatorFixpointFailure,
     #[error("structuring recursion depth exceeded")]
     StructuringDepthExceeded,
 }
@@ -337,81 +335,43 @@ pub struct Dominators {
     pub order: Vec<BlockId>,
 }
 
-pub fn compute_dominators(cfg: &Cfg) -> Result<Dominators, StructureError> {
+#[must_use]
+pub fn compute_dominators(cfg: &Cfg) -> Dominators {
     let n: usize = cfg.blocks.len();
     let order: Vec<BlockId> = reverse_postorder(cfg);
-    let rpo_index: BTreeMap<BlockId, usize> =
-        order.iter().enumerate().map(|(i, b)| (*b, i)).collect();
-    let mut idom: Vec<Option<usize>> = vec![None; n];
     let entry_idx: usize = cfg.entry.0 as usize;
-    idom[entry_idx] = Some(entry_idx);
-
-    let mut changed: bool = true;
-    let mut iters: usize = 0;
-    while changed {
-        changed = false;
-        iters += 1;
-        if iters > MAX_DOM_ITERATIONS {
-            return Err(StructureError::DominatorFixpointFailure);
-        }
-        for &b in &order {
-            let bi: usize = b.0 as usize;
-            if bi == entry_idx {
-                continue;
+    let graph: BlockGraph<'_> = BlockGraph { cfg };
+    let doms: disrobe_core::Dominators = disrobe_core::Dominators::compute(&graph);
+    let idom: Vec<Option<BlockId>> = (0..n)
+        .map(|i: usize| {
+            if i == entry_idx {
+                Some(cfg.entry)
+            } else {
+                doms.immediate_dominator(i as u32).map(BlockId)
             }
-            let preds: &[BlockId] = &cfg.blocks[bi].predecessors;
-            let mut new_idom: Option<usize> = None;
-            for &p in preds {
-                let pi: usize = p.0 as usize;
-                if idom[pi].is_some() {
-                    new_idom = Some(match new_idom {
-                        None => pi,
-                        Some(cur) => intersect(cur, pi, &idom, &rpo_index, cfg),
-                    });
-                }
-            }
-            if new_idom.is_some() && new_idom != idom[bi] {
-                idom[bi] = new_idom;
-                changed = true;
-            }
-        }
-    }
-
-    Ok(Dominators {
-        idom: idom
-            .into_iter()
-            .map(|o| o.map(|i| BlockId(i as u32)))
-            .collect(),
-        order,
-    })
+        })
+        .collect();
+    Dominators { idom, order }
 }
 
-fn intersect(
-    mut b1: usize,
-    mut b2: usize,
-    idom: &[Option<usize>],
-    rpo: &BTreeMap<BlockId, usize>,
-    cfg: &Cfg,
-) -> usize {
-    while b1 != b2 {
-        while rpo.get(&cfg.blocks[b1].id).copied().unwrap_or(usize::MAX)
-            > rpo.get(&cfg.blocks[b2].id).copied().unwrap_or(usize::MAX)
-        {
-            b1 = match idom[b1] {
-                Some(x) => x,
-                None => return b1,
-            };
-        }
-        while rpo.get(&cfg.blocks[b2].id).copied().unwrap_or(usize::MAX)
-            > rpo.get(&cfg.blocks[b1].id).copied().unwrap_or(usize::MAX)
-        {
-            b2 = match idom[b2] {
-                Some(x) => x,
-                None => return b2,
-            };
+struct BlockGraph<'a> {
+    cfg: &'a Cfg,
+}
+
+impl DiGraph for BlockGraph<'_> {
+    fn node_count(&self) -> usize {
+        self.cfg.blocks.len()
+    }
+
+    fn entry(&self) -> u32 {
+        self.cfg.entry.0
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        for edge in &self.cfg.blocks[node as usize].successors {
+            visit(edge.target.0);
         }
     }
-    b1
 }
 
 fn reverse_postorder(cfg: &Cfg) -> Vec<BlockId> {

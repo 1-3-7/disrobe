@@ -83,9 +83,7 @@ pub fn unflatten_method(cf: &ClassFile, code: &CodeAttribute) -> Option<MethodCf
 }
 
 fn verify_structured(cfg: &Cfg, insns: &[Instruction]) -> (bool, u32) {
-    let Ok(dom): Result<Dominators, _> = compute_dominators(cfg) else {
-        return (false, u32::MAX);
-    };
+    let dom: Dominators = compute_dominators(cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(cfg, &dom);
     let mut structurer: Structurer<'_> = Structurer::new(cfg, &dom, &loops, insns);
     let region: Region = structurer.structure();

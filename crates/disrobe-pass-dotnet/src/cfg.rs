@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_core::DiGraph;
+
 use crate::cil::{ExceptionClause, FlowControl, Instruction, MethodBody, OperandValue};
 use crate::debug::dbg_kv;
 
@@ -225,51 +227,18 @@ impl Cfg {
 
     fn compute_dominators(&mut self) {
         let count: usize = self.blocks.len();
-        let undefined: BlockId = usize::MAX;
-        let mut idom: Vec<BlockId> = vec![undefined; count];
-        idom[self.entry] = self.entry;
-        let mut changed: bool = true;
-        while changed {
-            changed = false;
-            for &b in &self.rpo {
-                if b == self.entry {
-                    continue;
-                }
-                let mut new_idom: BlockId = undefined;
-                for &p in &self.blocks[b].preds {
-                    if idom[p] == undefined {
-                        continue;
-                    }
-                    new_idom = if new_idom == undefined {
-                        p
-                    } else {
-                        self.intersect(p, new_idom, &idom)
-                    };
-                }
-                if new_idom != undefined && idom[b] != new_idom {
-                    idom[b] = new_idom;
-                    changed = true;
-                }
-            }
-        }
-        for d in &mut idom {
-            if *d == undefined {
-                *d = self.entry;
+        let graph: BlockGraph<'_> = BlockGraph {
+            blocks: &self.blocks,
+            entry: self.entry,
+        };
+        let doms: disrobe_core::Dominators = disrobe_core::Dominators::compute(&graph);
+        let mut idom: Vec<BlockId> = vec![self.entry; count];
+        for (b, slot) in idom.iter_mut().enumerate() {
+            if let Some(d) = doms.immediate_dominator(b as u32) {
+                *slot = d as usize;
             }
         }
         self.idom = idom;
-    }
-
-    fn intersect(&self, mut a: BlockId, mut b: BlockId, idom: &[BlockId]) -> BlockId {
-        while a != b {
-            while self.postorder_num[a] < self.postorder_num[b] {
-                a = idom[a];
-            }
-            while self.postorder_num[b] < self.postorder_num[a] {
-                b = idom[b];
-            }
-        }
-        a
     }
 
     #[must_use]
@@ -441,6 +410,27 @@ impl Cfg {
             }
         }
         ipdom
+    }
+}
+
+struct BlockGraph<'a> {
+    blocks: &'a [BasicBlock],
+    entry: BlockId,
+}
+
+impl DiGraph for BlockGraph<'_> {
+    fn node_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    fn entry(&self) -> u32 {
+        self.entry as u32
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        for &s in &self.blocks[node as usize].succs {
+            visit(s as u32);
+        }
     }
 }
 

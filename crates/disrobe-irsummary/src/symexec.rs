@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_core::DiGraph;
 use disrobe_mba::{BinOp, CmpOp, Expr, Predicate, Width};
 use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirOp, SourceLang};
 
@@ -403,35 +404,32 @@ fn predecessors(region: &Region) -> Vec<Vec<usize>> {
     preds
 }
 
-fn dominator_sets(region: &Region, order: &[usize], preds: &[Vec<usize>]) -> Vec<BTreeSet<usize>> {
-    let count: usize = region.blocks.len();
-    let all: BTreeSet<usize> = (0..count).collect();
-    let mut dom: Vec<BTreeSet<usize>> = vec![all; count];
-    dom[region.entry_block] = BTreeSet::from([region.entry_block]);
+struct RegionGraph<'a> {
+    region: &'a Region,
+}
 
-    let mut changed: bool = true;
-    while changed {
-        changed = false;
-        for &node in order {
-            if node == region.entry_block {
-                continue;
-            }
-            let mut new_dom: Option<BTreeSet<usize>> = None;
-            for &pred in &preds[node] {
-                new_dom = Some(new_dom.map_or_else(
-                    || dom[pred].clone(),
-                    |acc: BTreeSet<usize>| acc.intersection(&dom[pred]).copied().collect(),
-                ));
-            }
-            let mut new_dom: BTreeSet<usize> = new_dom.unwrap_or_default();
-            new_dom.insert(node);
-            if new_dom != dom[node] {
-                dom[node] = new_dom;
-                changed = true;
-            }
+impl DiGraph for RegionGraph<'_> {
+    fn node_count(&self) -> usize {
+        self.region.blocks.len()
+    }
+
+    fn entry(&self) -> u32 {
+        self.region.entry_block as u32
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        for succ in successors(&self.region.blocks[node as usize]) {
+            visit(succ as u32);
         }
     }
-    dom
+}
+
+fn dominator_sets(region: &Region) -> Vec<BTreeSet<usize>> {
+    let graph: RegionGraph<'_> = RegionGraph { region };
+    disrobe_core::dominator_sets(&graph)
+        .into_iter()
+        .map(|set: BTreeSet<u32>| set.into_iter().map(|id: u32| id as usize).collect())
+        .collect()
 }
 
 fn merge_plan(
@@ -487,7 +485,7 @@ fn summarize_region(
 ) -> Option<NirSummary> {
     let insns: &[NirInstr] = &function.instructions;
     let preds: Vec<Vec<usize>> = predecessors(region);
-    let dom: Vec<BTreeSet<usize>> = dominator_sets(region, order, &preds);
+    let dom: Vec<BTreeSet<usize>> = dominator_sets(region);
     let mut exit_states: Vec<Option<State>> = vec![None; region.blocks.len()];
     let mut branch_facts: BTreeMap<usize, BranchFact> = BTreeMap::new();
     let mut next_var: u32 = 0;

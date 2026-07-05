@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use disrobe_core::DiGraph;
 use disrobe_emit::Interner;
 use disrobe_emit::c::{
     AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CInit, CStmt, CTypeSpec, Cx, DeclaratorChain,
@@ -3462,35 +3463,33 @@ fn block_predecessors(blocks: &[CfgBlock]) -> Vec<Vec<usize>> {
     preds
 }
 
-fn dominator_sets(
-    blocks: &[CfgBlock],
-    preds: &[Vec<usize>],
-) -> Vec<std::collections::BTreeSet<usize>> {
-    use std::collections::BTreeSet;
-    let count: usize = blocks.len();
-    let all: BTreeSet<usize> = (0..count).collect();
-    let mut dom: Vec<BTreeSet<usize>> = vec![all; count];
-    dom[0] = BTreeSet::from([0]);
-    let mut changed: bool = true;
-    while changed {
-        changed = false;
-        for node in 1..count {
-            let mut new_dom: Option<BTreeSet<usize>> = None;
-            for &pred in &preds[node] {
-                new_dom = Some(new_dom.map_or_else(
-                    || dom[pred].clone(),
-                    |acc: BTreeSet<usize>| acc.intersection(&dom[pred]).copied().collect(),
-                ));
-            }
-            let mut new_dom: BTreeSet<usize> = new_dom.unwrap_or_default();
-            new_dom.insert(node);
-            if new_dom != dom[node] {
-                dom[node] = new_dom;
-                changed = true;
-            }
+struct BlockGraph<'a> {
+    blocks: &'a [CfgBlock],
+}
+
+impl DiGraph for BlockGraph<'_> {
+    fn node_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    fn entry(&self) -> u32 {
+        0
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        for succ in self.blocks[node as usize].successors() {
+            visit(succ as u32);
         }
     }
-    dom
+}
+
+fn dominator_sets(blocks: &[CfgBlock]) -> Vec<std::collections::BTreeSet<usize>> {
+    use std::collections::BTreeSet;
+    let graph: BlockGraph<'_> = BlockGraph { blocks };
+    disrobe_core::dominator_sets(&graph)
+        .into_iter()
+        .map(|set: BTreeSet<u32>| set.into_iter().map(|id: u32| id as usize).collect())
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -3568,7 +3567,7 @@ fn natural_loop_body(
 
 fn detect_loop_forest(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Option<Vec<LoopInfo>> {
     use std::collections::BTreeSet;
-    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks, preds);
+    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks);
     let mut back_edges: Vec<(usize, usize)> = Vec::new();
     for (from, block) in blocks.iter().enumerate() {
         for succ in block.successors() {
@@ -3688,9 +3687,9 @@ impl CfgCtx<'_> {
     }
 }
 
-fn immediate_dominators(blocks: &[CfgBlock], preds: &[Vec<usize>]) -> Vec<Option<usize>> {
+fn immediate_dominators(blocks: &[CfgBlock]) -> Vec<Option<usize>> {
     use std::collections::BTreeSet;
-    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks, preds);
+    let dom: Vec<BTreeSet<usize>> = dominator_sets(blocks);
     let mut idom: Vec<Option<usize>> = vec![None; blocks.len()];
     for node in 1..blocks.len() {
         let strict: Vec<usize> = dom[node]
@@ -3756,7 +3755,7 @@ fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
     let Some(loops): Option<Vec<LoopInfo>> = detect_loop_forest(&blocks, &preds) else {
         return Ok(None);
     };
-    let idom: Vec<Option<usize>> = immediate_dominators(&blocks, &preds);
+    let idom: Vec<Option<usize>> = immediate_dominators(&blocks);
     let pdom: Vec<std::collections::BTreeSet<usize>> = post_dominator_sets(&blocks);
     let pred_count: Vec<usize> = preds.iter().map(Vec::len).collect();
     let ctx: CfgCtx<'_> = CfgCtx {

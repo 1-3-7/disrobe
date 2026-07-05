@@ -19,7 +19,7 @@ fn code_items() -> Vec<CodeItem> {
 
 fn structure_method(item: &CodeItem) -> (Region, bool) {
     let built: DalvikMethodCfg = build_dalvik_cfg_from_code_item(item).expect("build dalvik cfg");
-    let dom = compute_dominators(&built.cfg).expect("dominators");
+    let dom = compute_dominators(&built.cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&built.cfg, &dom);
     let mut s: Structurer<'_> =
         Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map);
@@ -158,9 +158,7 @@ fn ninety_percent_of_edgecases_methods_are_reducible() {
         let Some(built): Option<DalvikMethodCfg> = build_dalvik_cfg_from_code_item(item) else {
             continue;
         };
-        let Ok(dom) = compute_dominators(&built.cfg) else {
-            continue;
-        };
+        let dom = compute_dominators(&built.cfg);
         let loops: Vec<NaturalLoop> = find_natural_loops(&built.cfg, &dom);
         let mut s: Structurer<'_> =
             Structurer::with_switch_map(&built.cfg, &dom, &loops, &[], built.switch_map);

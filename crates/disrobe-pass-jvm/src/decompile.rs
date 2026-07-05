@@ -1011,7 +1011,7 @@ fn lift_structured(
     {
         return Some(body);
     }
-    let dom: Dominators = compute_dominators(&cfg).ok()?;
+    let dom: Dominators = compute_dominators(&cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&cfg, &dom);
     let mut structurer: Structurer<'_> = Structurer::new(&cfg, &dom, &loops, insns).with_class(cf);
     let root: Region = structurer.structure();
@@ -2963,10 +2963,7 @@ fn compute_block_entry_stacks(
         bool_array_names: BTreeSet::new(),
         string_switch_tables: BTreeMap::new(),
     };
-    let dom: Dominators = match compute_dominators(cfg) {
-        Ok(d) => d,
-        Err(_) => return BTreeMap::new(),
-    };
+    let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
     let mut entry_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
