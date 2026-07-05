@@ -19,6 +19,7 @@ disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-mba = { workspace = true }
+disrobe-emit = { workspace = true }
 blake3 = { workspace = true }
 flate2 = { workspace = true }
 crc32fast = { workspace = true }

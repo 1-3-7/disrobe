@@ -1,0 +1,26 @@
+[package]
+name = "disrobe-emit"
+version = "0.10.3"
+readme.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "typed per-target output ASTs and a precedence-aware pretty-printer for recovered source"
+
+[lints]
+workspace = true
+
+[dependencies]
+pretty.workspace = true
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+prettyplease.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

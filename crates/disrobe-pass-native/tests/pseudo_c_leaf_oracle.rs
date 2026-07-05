@@ -10099,7 +10099,7 @@ fn recovered_has_setcc(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool 
     };
     recovery
         .source
-        .contains("& 0xffffffffffffff00ULL) | (uint64_t)((")
+        .contains("& 0xffffffffffffff00ULL | (uint64_t)((")
 }
 
 #[test]
@@ -10409,7 +10409,7 @@ fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
         assert!(
             recovery
                 .source
-                .contains("& 0xffffffffffffff00ULL) | (uint64_t)(("),
+                .contains("& 0xffffffffffffff00ULL | (uint64_t)(("),
             "sysv {} must recover a conditional-set byte write: {}",
             case.name,
             recovery.source
@@ -10506,7 +10506,7 @@ fn setcc_lifter_rejects_a_conditional_set_without_a_preceding_compare() {
     assert!(
         recovered
             .source
-            .contains("& 0xffffffffffffff00ULL) | (uint64_t)(("),
+            .contains("& 0xffffffffffffff00ULL | (uint64_t)(("),
         "the clean setcc idiom must recover as a byte-preserving conditional set: {}",
         recovered.source
     );
@@ -11795,7 +11795,7 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
             recovery.params.len(),
             case.arity
         );
-        if recovery.source.contains(") ? (") {
+        if recovery.source.contains(" ? ") {
             select_ternaries += 1;
         } else {
             assert!(

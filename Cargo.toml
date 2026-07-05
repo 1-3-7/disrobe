@@ -5,6 +5,7 @@ members = [
     "crates/disrobe-capabilities",
     "crates/disrobe-cli",
     "crates/disrobe-core",
+    "crates/disrobe-emit",
     "crates/disrobe-ir",
     "crates/disrobe-llm-metadata",
     "crates/disrobe-mba",
@@ -152,6 +153,7 @@ des = "0.8.1"
 disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.3" }
 disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.3" }
 disrobe-core = { path = "crates/disrobe-core", version = "0.10.3" }
+disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.3" }
 disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.3" }
 disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.3" }
 disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.3" }
@@ -234,10 +236,14 @@ pdb = "0.8.0"
 plist = "1.9.0"
 postcard = { version = "1.1.3", features = ["use-std"] }
 postcard-schema = { version = "0.2.5", features = ["use-std"] }
+pretty = "0.12.4"
+prettyplease = "0.2.37"
 proptest = "1.11.0"
+proc-macro2 = "1.0.106"
 prost = "0.13.5"
 prost-types = "0.13.5"
 protoc-bin-vendored = "3.2.0"
+quote = "1.0.45"
 pyo3 = { version = "0.29", features = ["abi3", "abi3-py39", "extension-module"] }
 pyo3-ffi = { version = "0.29", features = ["abi3", "abi3-py39", "extension-module"] }
 rand = { version = "0.10.1", default-features = false, features = ["std", "std_rng", "sys_rng", "thread_rng"] }
@@ -261,6 +267,7 @@ serde_json = "1.0.150"
 sevenz-rust2 = "0.13.2"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
+syn = { version = "2.0.117", features = ["full", "extra-traits", "fold", "parsing", "printing"] }
 scrypt = "0.11.0"
 tar = "0.4.46"
 thiserror = "2.0.18"

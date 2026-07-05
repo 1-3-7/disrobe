@@ -61,6 +61,7 @@ deny = [
     { crate = "criterion", reason = "lead-maintainer AWOL; use divan" },
 ]
 skip = [
+    { crate = "arrayvec", reason = "0.5 via the pretty Wadler pretty-printer vs 0.7 across the disassembler/parser stack; tiny fixed-capacity vector, no advisory, used only over emitter-owned output" },
     { crate = "bitflags@1.3.2", reason = "transitive; modern direct deps use bitflags 2" },
     { crate = "heck@0.4.1", reason = "transitive via the ntfs crate's strum_macros 0.24; our direct deps use heck 0.5" },
     { crate = "syn@1.0.109", reason = "transitive proc-macro chains still on syn 1" },
