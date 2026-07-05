@@ -188,6 +188,9 @@ fn build_categories(per_pass: &[Json]) -> Result<Map<String, Json>, LlmMetadataE
                     && let Some(a) = v.get("authorized").and_then(Json::as_bool)
                 {
                     authorized = authorized || a;
+                    if !a {
+                        continue;
+                    }
                     if let Some(arr) = v.get("entries").and_then(Json::as_array) {
                         if inner_entries.len().saturating_add(arr.len())
                             > MAX_DECRYPTION_KEY_ENTRIES

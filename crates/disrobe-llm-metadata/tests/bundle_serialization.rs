@@ -423,6 +423,56 @@ fn finalize_rejects_unknown_per_pass_category_label() {
 }
 
 #[test]
+fn unauthorized_decryption_key_envelope_does_not_aggregate_entries() {
+    let selection: MetadataSelection = SelectionBuilder::new()
+        .category(Category::DecryptionKeys)
+        .authorize_decryption_keys()
+        .build();
+    let mut entries: BTreeMap<&'static str, PerPassEnvelope> = BTreeMap::new();
+    entries.insert(
+        Category::DecryptionKeys.label(),
+        PerPassEnvelope::applicable(
+            "disrobe-pass-example",
+            "0.1.0",
+            json!({
+                "authorized": false,
+                "entries": [{ "id": "must-not-appear" }]
+            }),
+        ),
+    );
+    let mut builder: BundleBuilder = BundleBuilder::new();
+    builder.record_pass(synthetic_step(), envelope_map(entries));
+    let bundle: Json = builder
+        .finalize(
+            "2026-05-26T00:00:00.000000000Z".to_owned(),
+            ToolDescriptor::default(),
+            &selection,
+            synthetic_input(),
+        )
+        .expect("bundle finalizes");
+    let category: &Json = bundle
+        .get("categories")
+        .and_then(|v: &Json| v.get(Category::DecryptionKeys.label()))
+        .expect("decryption-key category present");
+    assert_eq!(
+        category.get("authorized").and_then(Json::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        category
+            .get("entries")
+            .and_then(Json::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    assert!(
+        !serde_json::to_string(category)
+            .unwrap()
+            .contains("must-not-appear")
+    );
+}
+
+#[test]
 fn pack_monotonicity_invariant() {
     let p1: BTreeSet<Category> = SelectionBuilder::new().pack(Pack::Pack1).build().resolved();
     let p2: BTreeSet<Category> = SelectionBuilder::new().pack(Pack::Pack2).build().resolved();
