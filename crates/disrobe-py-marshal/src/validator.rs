@@ -88,7 +88,9 @@ fn objects_semantically_equal(a: &Object, b: &Object) -> bool {
         (Object::Bytes(x), Object::Bytes(y)) => x == y,
         (Object::String { .. }, Object::String { .. })
         | (Object::Unicode { .. }, Object::Unicode { .. })
-        | (Object::ShortAscii { .. }, Object::ShortAscii { .. }) => {
+        | (Object::ShortAscii { .. }, Object::ShortAscii { .. })
+        | (Object::String { .. }, Object::ShortAscii { .. })
+        | (Object::ShortAscii { .. }, Object::String { .. }) => {
             string_with_interned(a) == string_with_interned(b)
         }
         (Object::Tuple(x), Object::Tuple(y))
@@ -121,8 +123,6 @@ fn objects_semantically_equal(a: &Object, b: &Object) -> bool {
                 && objects_semantically_equal(s1, s2)
         }
         (Object::Ref(a), Object::Ref(b)) => a == b,
-        (Object::String { value: v1, .. }, Object::ShortAscii { value: v2, .. })
-        | (Object::ShortAscii { value: v1, .. }, Object::String { value: v2, .. }) => v1 == v2,
         _ => false,
     }
 }
@@ -211,6 +211,19 @@ mod tests {
         let report: RoundTripReport = validate_roundtrip(&s, PyVersion::PY312).unwrap();
         assert!(report.is_clean());
         assert_eq!(report.encoded_len, 7);
+    }
+
+    #[test]
+    fn string_short_ascii_semantic_equality_respects_interned_flag() {
+        let wide: Object = Object::String {
+            value: "name".to_owned(),
+            interned: true,
+        };
+        let short: Object = Object::ShortAscii {
+            value: "name".to_owned(),
+            interned: false,
+        };
+        assert!(!objects_semantically_equal(&wide, &short));
     }
 
     #[test]
