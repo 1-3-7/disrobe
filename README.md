@@ -533,6 +533,8 @@ Every recovered artifact is persisted as a `.dr` envelope: an rkyv payload, a po
 
 Any pass can emit an `--llm` metadata sidecar (call graph, types, control flow, capability surface, provenance). See the [architecture docs](https://1-3-7.github.io/disrobe/latest/architecture.html) for the full model.
 
+For the methodology in depth, the [architecture whitepaper](https://1-3-7.github.io/disrobe/latest/architecture/whitepaper.html) documents the deterministic CPython decompiler, the typed-AST x86-64 lift, managed-VM devirtualization, and the non-circular oracle discipline that grades every claim.
+
 ## Limits and honest walls
 
 Recovery is bounded by what the compiler or protector left in the artifact. `disrobe` reports those bounds rather than rounding them away. The remaining hard limits are:

@@ -10,6 +10,7 @@
 # Architecture
 
 - [Overview](./architecture.md)
+- [Whitepaper: deterministic static recovery](./architecture/whitepaper.md)
 - [The five-rung IR ladder](./ir-ladder.md)
 - [Passes and the capability model](./passes.md)
 - [The chain runner](./chain.md)
