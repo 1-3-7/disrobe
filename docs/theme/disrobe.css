@@ -1,3 +1,71 @@
+.coal {
+  --card-canvas: #141617;
+  --card-surface: #1e2225;
+  --card-panel: #191c1f;
+  --card-hairline: #2d3236;
+  --card-subtle: #3c4247;
+  --card-text: #e3e7e9;
+  --card-text2: #a7b0b5;
+  --card-muted: #a7b0b5;
+  --card-faint: #7c868c;
+  --card-punctuation: #e3e7e9;
+  --card-decor: #2d3236;
+}
+
+.navy {
+  --card-canvas: #0f1221;
+  --card-surface: #191d31;
+  --card-panel: #141829;
+  --card-hairline: #2a3049;
+  --card-subtle: #3a4166;
+  --card-text: #e4e5f2;
+  --card-text2: #abb0cc;
+  --card-muted: #abb0cc;
+  --card-faint: #7278a0;
+  --card-punctuation: #e4e5f2;
+  --card-decor: #2a3049;
+}
+
+.rust {
+  --card-canvas: #e6e3da;
+  --card-surface: #efece3;
+  --card-panel: #eae6dc;
+  --card-hairline: #d3cdbd;
+  --card-subtle: #bfb8a5;
+  --card-text: #24211b;
+  --card-text2: #524d43;
+  --card-muted: #524d43;
+  --card-faint: #6e685a;
+  --card-green: #9c4221;
+  --card-keyword: #0b6e6e;
+  --card-blue: #2f5c8f;
+  --card-amber: #8a5a1a;
+  --card-orange: #7a5b0f;
+  --card-red: #a11f1f;
+  --card-punctuation: #24211b;
+  --card-decor: #d3cdbd;
+}
+
+.light {
+  --card-canvas: #ffffff;
+  --card-surface: #f5f6f7;
+  --card-panel: #eef0f1;
+  --card-hairline: #e1e4e6;
+  --card-subtle: #cfd4d7;
+  --card-text: #1a1c1e;
+  --card-text2: #4a4f54;
+  --card-muted: #4a4f54;
+  --card-faint: #727a80;
+  --card-green: #1f6feb;
+  --card-keyword: #0b6e75;
+  --card-blue: #1f5c99;
+  --card-amber: #8a5a00;
+  --card-orange: #6d5b00;
+  --card-red: #c0392b;
+  --card-punctuation: #1a1c1e;
+  --card-decor: #e1e4e6;
+}
+
 .ayu,
 .coal,
 .navy,
