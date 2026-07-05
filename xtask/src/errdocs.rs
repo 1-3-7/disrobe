@@ -320,10 +320,13 @@ pub(crate) fn render_index(codes: &[ErrorCode]) -> String {
 }
 
 pub(crate) fn generate(workspace_root: &Path) -> Result<usize> {
+    generate_into(workspace_root, &errors_doc_dir(workspace_root))
+}
+
+pub(crate) fn generate_into(workspace_root: &Path, out_dir: &Path) -> Result<usize> {
     let registry: PathBuf = registry_dir(workspace_root);
     let codes: Vec<ErrorCode> = parse_registry(&registry)?;
-    let out_dir: PathBuf = errors_doc_dir(workspace_root);
-    fs::create_dir_all(&out_dir).with_context_str(|| format!("creating {}", out_dir.display()))?;
+    fs::create_dir_all(out_dir).with_context_str(|| format!("creating {}", out_dir.display()))?;
     for code in &codes {
         let path: PathBuf = out_dir.join(format!("{}.md", code.code));
         fs::write(&path, render(code))

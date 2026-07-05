@@ -215,7 +215,7 @@ pub fn render_expr(expr: &Expr) -> String {
             let parts: Vec<String> = args.iter().map(render_expr).collect();
             format!("{name}({})", parts.join(", "))
         }
-        Expr::MakeFun { name, arity, .. } => format!("fun {name}/{arity}"),
+        Expr::MakeFun { name, arity, env } => render_make_fun(name, *arity, env),
         Expr::CallFun { fun, args } => {
             let parts: Vec<String> = args.iter().map(render_expr).collect();
             format!("{}({})", render_operand(fun), parts.join(", "))
@@ -234,6 +234,24 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::Block(stmts) => render_body(stmts, 0),
         Expr::Raw(s) => s.clone(),
     }
+}
+
+fn render_make_fun(name: &str, arity: u32, env: &[Expr]) -> String {
+    if env.is_empty() {
+        return format!("fun {name}/{arity}");
+    }
+    let Some(visible): Option<usize> = (arity as usize).checked_sub(env.len()) else {
+        return format!("fun {name}/{arity}");
+    };
+    let params: Vec<String> = (0..visible).map(|i: usize| format!("Arg{i}")).collect();
+    let captures: Vec<String> = env.iter().map(render_expr).collect();
+    let mut call_args: Vec<String> = params.clone();
+    call_args.extend(captures);
+    format!(
+        "fun({}) -> {name}({}) end",
+        params.join(", "),
+        call_args.join(", ")
+    )
 }
 
 fn render_record_update(base: &Expr, updates: &[(u32, Expr)]) -> String {

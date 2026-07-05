@@ -51,7 +51,7 @@ const fn evidence_mode(check: bool) -> crate::evidence::Mode {
     }
 }
 
-fn run_one<F>(name: &str, check: bool, f: F, stale: &mut Vec<String>)
+pub(crate) fn run_one<F>(name: &str, check: bool, f: F, stale: &mut Vec<String>)
 where
     F: FnOnce() -> Result<()>,
 {

@@ -33,3 +33,4 @@ chain = ["disrobe-core/chain"]
 insta = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true }
+wait-timeout = { workspace = true }

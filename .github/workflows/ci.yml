@@ -76,10 +76,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
-      - name: all generated artifacts are byte-fresh (graphs + card + demo + plugins + evidence)
-        run: cargo run -p xtask -- sync --check
-      - name: evidence numbers trace to recovery.json and floors hold
-        run: cargo run -p xtask -- evidence --check
+      - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check)
+        run: cargo run -p xtask -- regen --check
 
   test:
     name: test (${{ matrix.os }})

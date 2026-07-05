@@ -587,14 +587,14 @@ fn is_reraise(body: &[Stmt]) -> bool {
     )
 }
 
-fn class_from_guard(guard: &Expr) -> (String, Option<Expr>) {
+fn class_from_guard(guard: &Expr, class_var: &str) -> (String, Option<Expr>) {
     let conds: Vec<Expr> = split_andalso(guard.clone());
     let mut class: Option<String> = None;
     let mut rest: Vec<Expr> = Vec::new();
     for cond in conds {
         match &cond {
             Expr::BinOp { op, lhs, rhs }
-                if op == "=:=" && matches!(&**lhs, Expr::Var(v) if v == "Class") =>
+                if op == "=:=" && matches!(&**lhs, Expr::Var(v) if v == class_var) =>
             {
                 if let Expr::Atom(a) = &**rhs {
                     class = Some(a.clone());
@@ -606,7 +606,7 @@ fn class_from_guard(guard: &Expr) -> (String, Option<Expr>) {
         }
     }
     let combined: Option<Expr> = (!rest.is_empty()).then(|| combine_guard(rest));
-    (class.unwrap_or_else(|| "Class".to_owned()), combined)
+    (class.unwrap_or_else(|| class_var.to_owned()), combined)
 }
 
 fn split_andalso(expr: Expr) -> Vec<Expr> {
@@ -769,7 +769,12 @@ fn is_ensure_exactly_zero(items: &[Operand], chunks: &Chunks) -> bool {
         && matches!(items.get(1), Some(Operand::Literal(0)))
 }
 
-fn class_of_trace(_trace: &Expr) -> Expr {
+fn class_of_trace(trace: &Expr) -> Expr {
+    if let Expr::Var(name) = trace
+        && let Some(suffix) = name.strip_prefix("Stack")
+    {
+        return Expr::Var(format!("Class{suffix}"));
+    }
     Expr::Var("Class".to_owned())
 }
 

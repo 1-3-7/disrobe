@@ -289,8 +289,9 @@ impl Lifter<'_> {
         };
         let mut body_env: Env = env.clone();
         let body: Vec<Stmt> = self.walk_synth(region, &mut body_env, flags, depth + 1);
+        let (cls, rsn, stk): (String, String, String) = choose_exc_names(&body);
         let (of_arms, catch_arms): (Vec<CaseArm>, Vec<CatchArm>) =
-            self.build_try_handlers(catch_label, env, flags, depth);
+            self.build_try_handlers(catch_label, env, flags, depth, &cls, &rsn, &stk);
         Expr::Try {
             body,
             of_arms,
@@ -316,6 +317,9 @@ impl Lifter<'_> {
         env: &Env,
         flags: &mut Flags,
         depth: u32,
+        cls: &str,
+        rsn: &str,
+        stk: &str,
     ) -> (Vec<CaseArm>, Vec<CatchArm>) {
         let Some(block): Option<Block> = self.blocks.get(&label).copied() else {
             return (Vec::new(), Vec::new());
@@ -325,53 +329,15 @@ impl Lifter<'_> {
             cursor += 1;
         }
         let mut catch_env: Env = env.clone();
-        catch_env.set(Reg::X(0), Expr::Var("Class".to_owned()));
-        catch_env.set(Reg::X(1), Expr::Var("Reason".to_owned()));
-        catch_env.set(Reg::X(2), Expr::Var("Stack".to_owned()));
+        catch_env.set(Reg::X(0), Expr::Var(cls.to_owned()));
+        catch_env.set(Reg::X(1), Expr::Var(rsn.to_owned()));
+        catch_env.set(Reg::X(2), Expr::Var(stk.to_owned()));
         let synth: Block = Block {
             start: cursor + 1,
             end: block.end,
         };
         let stmts: Vec<Stmt> = self.walk_synth(synth, &mut catch_env, flags, depth + 1);
-        (Vec::new(), Self::to_catch_arms(stmts))
-    }
-
-    fn to_catch_arms(stmts: Vec<Stmt>) -> Vec<CatchArm> {
-        if let [Stmt::Return(Expr::If { arms })] = stmts.as_slice() {
-            let mut out: Vec<CatchArm> = Vec::with_capacity(arms.len());
-            for arm in arms {
-                if is_reraise(&arm.body) {
-                    continue;
-                }
-                let (class, extra): (String, Option<Expr>) = class_from_guard(&arm.guard);
-                let stacktrace: Option<String> =
-                    body_uses_var(&arm.body, "Stack").then(|| "Stack".to_owned());
-                let guarded_body: Vec<Stmt> = match extra {
-                    Some(rest) => vec![Stmt::Return(Expr::If {
-                        arms: vec![IfArm {
-                            guard: rest,
-                            body: arm.body.clone(),
-                        }],
-                    })],
-                    None => arm.body.clone(),
-                };
-                out.push(CatchArm {
-                    class,
-                    pattern: Expr::Var("Reason".to_owned()),
-                    stacktrace,
-                    body: guarded_body,
-                });
-            }
-            if !out.is_empty() {
-                return out;
-            }
-        }
-        vec![CatchArm {
-            class: "Class".to_owned(),
-            pattern: Expr::Var("Reason".to_owned()),
-            stacktrace: Some("Stack".to_owned()),
-            body: stmts,
-        }]
+        (Vec::new(), to_catch_arms(stmts, cls, rsn, stk))
     }
 
     pub(super) fn walk_synth(
@@ -592,4 +558,58 @@ impl Lifter<'_> {
             _ => None,
         }
     }
+}
+
+fn choose_exc_names(body: &[Stmt]) -> (String, String, String) {
+    for suffix_n in 0u32..64 {
+        let suffix: String = if suffix_n == 0 {
+            String::new()
+        } else {
+            suffix_n.to_string()
+        };
+        let cls: String = format!("Class{suffix}");
+        let rsn: String = format!("Reason{suffix}");
+        let stk: String = format!("Stack{suffix}");
+        if !body_uses_var(body, &cls) && !body_uses_var(body, &rsn) && !body_uses_var(body, &stk) {
+            return (cls, rsn, stk);
+        }
+    }
+    ("Class".to_owned(), "Reason".to_owned(), "Stack".to_owned())
+}
+
+fn to_catch_arms(stmts: Vec<Stmt>, cls: &str, rsn: &str, stk: &str) -> Vec<CatchArm> {
+    if let [Stmt::Return(Expr::If { arms })] = stmts.as_slice() {
+        let mut out: Vec<CatchArm> = Vec::with_capacity(arms.len());
+        for arm in arms {
+            if is_reraise(&arm.body) {
+                continue;
+            }
+            let (class, extra): (String, Option<Expr>) = class_from_guard(&arm.guard, cls);
+            let stacktrace: Option<String> = body_uses_var(&arm.body, stk).then(|| stk.to_owned());
+            let guarded_body: Vec<Stmt> = match extra {
+                Some(rest) => vec![Stmt::Return(Expr::If {
+                    arms: vec![IfArm {
+                        guard: rest,
+                        body: arm.body.clone(),
+                    }],
+                })],
+                None => arm.body.clone(),
+            };
+            out.push(CatchArm {
+                class,
+                pattern: Expr::Var(rsn.to_owned()),
+                stacktrace,
+                body: guarded_body,
+            });
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    vec![CatchArm {
+        class: cls.to_owned(),
+        pattern: Expr::Var(rsn.to_owned()),
+        stacktrace: Some(stk.to_owned()),
+        body: stmts,
+    }]
 }

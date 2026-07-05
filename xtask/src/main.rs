@@ -14,6 +14,8 @@ mod graphs;
 #[cfg(feature = "playground")]
 mod playground;
 mod plugins;
+mod readme_stats;
+mod regen;
 mod sync;
 
 use std::fs;
@@ -39,6 +41,8 @@ enum Cmd {
     GenBindings {
         #[arg(long)]
         out_dir: Option<PathBuf>,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
     },
     BakeFixtures {
         #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -47,8 +51,18 @@ enum Cmd {
         edge_cases: bool,
     },
     ReleasePackage,
-    Schemas,
-    GenErrorDocs,
+    Schemas {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    GenErrorDocs {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Regen {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
     Graphs {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
@@ -87,14 +101,15 @@ enum Cmd {
 fn main() -> ExitCode {
     let cli: Cli = Cli::parse();
     let result: Result<()> = match cli.command {
-        Cmd::GenBindings { out_dir } => run_gen_bindings(out_dir),
+        Cmd::GenBindings { out_dir, check } => run_gen_bindings(out_dir, check),
         Cmd::BakeFixtures {
             dry_run,
             edge_cases,
         } => run_bake_fixtures(dry_run, edge_cases),
         Cmd::ReleasePackage => run_release_package(),
-        Cmd::Schemas => run_schemas(),
-        Cmd::GenErrorDocs => run_gen_error_docs(),
+        Cmd::Schemas { check } => run_schemas(check),
+        Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
+        Cmd::Regen { check } => run_regen(check),
         Cmd::Graphs { check } => run_graphs(check),
         Cmd::Demo { check } => run_demo(check),
         Cmd::Card { check } => run_card(check),
@@ -219,33 +234,87 @@ fn run_playground(sample_per_kind: Option<usize>, fail_on_circular: bool) -> Res
     playground::run(&root, &opts)
 }
 
-fn run_schemas() -> Result<()> {
+pub(crate) fn run_schemas(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     let out_dir: PathBuf = root.join("schemas").join("v0").join("json");
-    fs::create_dir_all(&out_dir).with_context_msg(|| format!("creating {}", out_dir.display()))?;
     let envelope: Value = envelope_schema();
     let manifest: Value = freezer_manifest_schema();
     let extraction: Value = extraction_result_schema();
     let detection: Value = pyarmor_detection_schema();
-    write_json(&out_dir.join("dr-envelope.schema.json"), &envelope)?;
-    write_json(&out_dir.join("freezer-manifest.schema.json"), &manifest)?;
-    write_json(&out_dir.join("extraction-result.schema.json"), &extraction)?;
-    write_json(&out_dir.join("pyarmor-detection.schema.json"), &detection)?;
-    println!(
-        "xtask schemas: wrote 4 JSON Schemas under {}",
-        out_dir.display()
-    );
-    Ok(())
+    let rendered: [(&str, &Value); 4] = [
+        ("dr-envelope.schema.json", &envelope),
+        ("freezer-manifest.schema.json", &manifest),
+        ("extraction-result.schema.json", &extraction),
+        ("pyarmor-detection.schema.json", &detection),
+    ];
+
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for schemas check".to_owned())?;
+        for (name, value) in rendered {
+            write_json(&tmp.path().join(name), value)?;
+        }
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_tree(tmp.path(), &out_dir, &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask schemas --check: {} JSON Schema(s) match regeneration",
+                rendered.len()
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed JSON Schemas are stale; run `cargo run -p xtask -- schemas`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        fs::create_dir_all(&out_dir)
+            .with_context_msg(|| format!("creating {}", out_dir.display()))?;
+        for (name, value) in rendered {
+            write_json(&out_dir.join(name), value)?;
+        }
+        println!(
+            "xtask schemas: wrote {} JSON Schemas under {}",
+            rendered.len(),
+            out_dir.display()
+        );
+        Ok(())
+    }
 }
 
-fn run_gen_error_docs() -> Result<()> {
+pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
-    let written: usize = errdocs::generate(&root)?;
-    println!(
-        "xtask gen-error-docs: wrote {written} error-code page(s) + index under {}",
-        errdocs::errors_doc_dir(&root).display()
-    );
-    Ok(())
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for error-docs check".to_owned())?;
+        let written: usize = errdocs::generate_into(&root, tmp.path())?;
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_tree(tmp.path(), &errdocs::errors_doc_dir(&root), &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask gen-error-docs --check: {written} error-code page(s) + index match regeneration"
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed error docs are stale; run `cargo run -p xtask -- gen-error-docs`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        let written: usize = errdocs::generate(&root)?;
+        println!(
+            "xtask gen-error-docs: wrote {written} error-code page(s) + index under {}",
+            errdocs::errors_doc_dir(&root).display()
+        );
+        Ok(())
+    }
+}
+
+fn run_regen(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    regen::run(&root, check)
 }
 
 fn run_graphs(check: bool) -> Result<()> {
@@ -285,27 +354,65 @@ fn run_evidence(check: bool, list: bool) -> Result<()> {
     evidence::run(&root, mode)
 }
 
-fn run_gen_bindings(out_dir: Option<PathBuf>) -> Result<()> {
+pub(crate) fn run_gen_bindings(out_dir: Option<PathBuf>, check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     let schemas_dir: PathBuf = root.join("schemas").join("v0").join("json");
     if !schemas_dir.is_dir() {
-        run_schemas()?;
+        run_schemas(false)?;
     }
     let bindings_root: PathBuf = out_dir.unwrap_or_else(|| root.join("bindings"));
     let py_dir: PathBuf = bindings_root.join("python");
     let ts_dir: PathBuf = bindings_root.join("typescript");
     let schemas: Vec<SchemaArtifact> = load_schemas(&schemas_dir)?;
-    let summary: CodegenSummary = write_bindings(&schemas, &py_dir, &ts_dir)?;
-    println!(
-        "xtask gen-bindings: python {written_py} written, {skipped_py} skipped in {py_path}; typescript {written_ts} written, {skipped_ts} skipped in {ts_path}",
-        written_py = summary.py_written,
-        skipped_py = summary.py_skipped,
-        written_ts = summary.ts_written,
-        skipped_ts = summary.ts_skipped,
-        py_path = py_dir.display(),
-        ts_path = ts_dir.display()
-    );
-    Ok(())
+
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for bindings check".to_owned())?;
+        let tmp_py: PathBuf = tmp.path().join("python");
+        let tmp_ts: PathBuf = tmp.path().join("typescript");
+        write_bindings(&schemas, &tmp_py, &tmp_ts)?;
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_flat(&tmp_py, &py_dir, is_python_binding_artifact, &mut stale)?;
+        fileio::diff_generated_flat(&tmp_ts, &ts_dir, is_typescript_binding_artifact, &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask gen-bindings --check: {} schema(s) match regeneration",
+                schemas.len()
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed bindings are stale; run `cargo run -p xtask -- gen-bindings`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        let summary: CodegenSummary = write_bindings(&schemas, &py_dir, &ts_dir)?;
+        println!(
+            "xtask gen-bindings: python {written_py} written, {skipped_py} skipped in {py_path}; typescript {written_ts} written, {skipped_ts} skipped in {ts_path}",
+            written_py = summary.py_written,
+            skipped_py = summary.py_skipped,
+            written_ts = summary.ts_written,
+            skipped_ts = summary.ts_skipped,
+            py_path = py_dir.display(),
+            ts_path = ts_dir.display()
+        );
+        Ok(())
+    }
+}
+
+fn has_suffix_ci(name: &str, suffix: &str) -> bool {
+    let split_at: usize = name.len().saturating_sub(suffix.len());
+    name.get(split_at..)
+        .is_some_and(|candidate: &str| candidate.eq_ignore_ascii_case(suffix))
+}
+
+fn is_python_binding_artifact(name: &str) -> bool {
+    has_suffix_ci(name, ".pyi") || name == ".checksum.json"
+}
+
+fn is_typescript_binding_artifact(name: &str) -> bool {
+    has_suffix_ci(name, ".d.ts") || name == ".checksum.json"
 }
 
 fn run_release_package() -> Result<()> {

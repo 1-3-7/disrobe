@@ -36,3 +36,8 @@ commit-msg:
   commands:
     committed:
       run: committed {1}
+
+pre-push:
+  commands:
+    regen-check:
+      run: cargo run -p xtask -- regen --check

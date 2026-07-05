@@ -11,7 +11,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-You need Rust stable; `rust-toolchain.toml` pins the version. Builds that touch the pyo3 bindings need a Python on `PATH`, and `PYO3_PYTHON` pins a specific one. `lefthook` runs the pre-commit checks:
+You need Rust stable; `rust-toolchain.toml` pins the version. Builds that touch the pyo3 bindings need a Python on `PATH`, and `PYO3_PYTHON` pins a specific one. `lefthook` runs the pre-commit checks and a pre-push gate that fails the push if any generated artifact (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, or the README stat cross-check) has drifted from its source:
 
 ```
 lefthook install
@@ -118,6 +118,7 @@ cargo fmt -p <crate> -- --check
 cargo test --workspace            # run per-crate if RAM is tight
 cargo deny check
 typos
+cargo run -p xtask -- regen --check   # every generated artifact must be byte-fresh
 ```
 
 Determinism rules the linter enforces:

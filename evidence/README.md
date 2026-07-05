@@ -24,8 +24,8 @@ cargo run -p xtask -- evidence --list     # list discovered descriptors, strengt
 ```
 
 `--check` is the CI drift gate. It re-renders every result and fails if any number drifts from
-`xtask/data/recovery.json` (the canonical results store), or if a floor is violated. The same freshness gate runs under `cargo run -p xtask -- sync --check`, so
-`evidence/results/` is held byte-fresh exactly like the graphs, card, and demo artifacts.
+`xtask/data/recovery.json` (the canonical results store), or if a floor is violated. The same freshness gate runs under `cargo run -p xtask -- regen --check`, the umbrella that also covers schemas, generated bindings, error docs, the graphs, card, and demo artifacts, and a README stat cross-check, so
+`evidence/results/` is held byte-fresh exactly like every other generated artifact in the repo.
 
 ## What it renders
 
