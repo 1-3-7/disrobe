@@ -69,7 +69,9 @@ pub(crate) fn setup_hooks(root: &Path) -> Result<()> {
         .status();
     match result {
         Ok(status) if status.success() => {
-            println!("xtask setup-hooks: lefthook hooks installed (pre-commit, commit-msg, pre-push)");
+            println!(
+                "xtask setup-hooks: lefthook hooks installed (pre-commit, commit-msg, pre-push)"
+            );
             Ok(())
         }
         Ok(status) => bail!("`lefthook install` exited with {status}"),
@@ -91,7 +93,10 @@ fn gate<F: FnOnce() -> Result<GateOutcome>>(name: &str, run_gate: F) -> Result<D
     match outcome {
         GateOutcome::Ran => println!("  [{name}] ok ({:.1}s)", elapsed.as_secs_f64()),
         GateOutcome::Skipped(reason) => {
-            println!("  [{name}] skipped ({reason}) ({:.1}s)", elapsed.as_secs_f64());
+            println!(
+                "  [{name}] skipped ({reason}) ({:.1}s)",
+                elapsed.as_secs_f64()
+            );
         }
     }
     Ok(elapsed)
@@ -134,7 +139,14 @@ fn gate_clippy(root: &Path) -> Result<GateOutcome> {
     run_checked(
         root,
         cargo_bin().as_str(),
-        &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
         || "resolve the clippy findings above, then re-run the push".to_owned(),
     )?;
     Ok(GateOutcome::Ran)
@@ -166,7 +178,10 @@ fn scope_from_stdin(root: &Path) -> Result<Option<Scope>> {
     std::io::stdin()
         .read_to_string(&mut raw)
         .wrap_err("reading pre-push ref pairs from stdin")?;
-    let lines: Vec<&str> = raw.lines().filter(|line: &&str| !line.trim().is_empty()).collect();
+    let lines: Vec<&str> = raw
+        .lines()
+        .filter(|line: &&str| !line.trim().is_empty())
+        .collect();
     if lines.is_empty() {
         return Ok(None);
     }
@@ -246,7 +261,10 @@ fn owning_crates(root: &Path, paths: &[Utf8PathBuf]) -> Result<Vec<String>> {
 }
 
 fn owns(dir: &str, file: &str) -> bool {
-    file == dir || file.strip_prefix(dir).is_some_and(|rest: &str| rest.starts_with('/'))
+    file == dir
+        || file
+            .strip_prefix(dir)
+            .is_some_and(|rest: &str| rest.starts_with('/'))
 }
 
 fn workspace_crates(root: &Path) -> Result<Vec<String>> {
@@ -345,7 +363,11 @@ fn merge_base(root: &Path, left: &str, right: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let base: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if base.is_empty() { Ok(None) } else { Ok(Some(base)) }
+    if base.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(base))
+    }
 }
 
 fn run_checked<F: FnOnce() -> String>(
