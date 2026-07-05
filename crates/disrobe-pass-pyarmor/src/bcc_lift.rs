@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::num::TryFromIntError;
 
 use disrobe_pass_native::{
     Arch, DisasmInsn, LeafRecovery, PseudoAbi, disassemble, recover_leaf_function_abi,
@@ -121,11 +122,17 @@ pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<Ps
     for (start_idx, end_idx) in bounds {
         let entry_va: u64 = insns[start_idx].address;
         let last: &DisasmInsn = &insns[end_idx - 1];
-        let end_va: u64 = last.address + last.bytes.len() as u64;
-        let size: u32 = u32::try_from(end_va.saturating_sub(entry_va)).unwrap_or(u32::MAX);
-        let start_off: usize = usize::try_from(entry_va.saturating_sub(base)).unwrap_or(0);
-        let end_off: usize = usize::try_from(end_va.saturating_sub(base)).unwrap_or(code.len());
-        let slice: &[u8] = code.get(start_off..end_off).unwrap_or(&[]);
+        let Some((slice, size)): Option<(&[u8], u32)> =
+            function_byte_window(code, base, entry_va, last)
+        else {
+            out.push(render_declined_function(
+                entry_va,
+                0,
+                &insns[start_idx..end_idx],
+                "BCC function address range exceeds input bytes".to_owned(),
+            ));
+            continue;
+        };
         out.push(render_function(
             slice,
             entry_va,
@@ -147,8 +154,12 @@ fn render_function(
     let name: String = format!("sub_{entry_va:x}");
     match recover_leaf_function_abi(slice, entry_va, abi) {
         Ok(recovery) => {
-            let parameter_count: u32 =
-                u32::try_from(recovery.params.len() + recovery.fp_params.len()).unwrap_or(0);
+            let parameter_count: u32 = saturating_u32_len(
+                recovery
+                    .params
+                    .len()
+                    .saturating_add(recovery.fp_params.len()),
+            );
             let pseudo_c: String = rename_recovered(&recovery, &name);
             let signature: String = extract_signature(&pseudo_c, &name);
             PseudoCFunction {
@@ -163,21 +174,58 @@ fn render_function(
         }
         Err(e) => {
             let reason: String = format!("{e}");
-            let pseudo_c: String = render_unmodeled(&name, entry_va, insns, &reason);
-            PseudoCFunction {
-                id: FunctionId {
-                    entry_va,
-                    name: name.clone(),
-                },
-                signature: format!("void {name}(void)"),
-                pseudo_c,
-                size,
-                parameter_count: 0,
-                modeled: false,
-                note: Some(reason),
-            }
+            render_declined_function(entry_va, size, insns, reason)
         }
     }
+}
+
+fn function_byte_window<'a>(
+    code: &'a [u8],
+    base: u64,
+    entry_va: u64,
+    last: &DisasmInsn,
+) -> Option<(&'a [u8], u32)> {
+    let last_len: u64 = u64::try_from(last.bytes.len()).ok()?;
+    let end_va: u64 = last.address.checked_add(last_len)?;
+    let size: u32 = saturating_u32(end_va.checked_sub(entry_va)?);
+    let start_delta: u64 = entry_va.checked_sub(base)?;
+    let end_delta: u64 = end_va.checked_sub(base)?;
+    let start_off: usize = usize::try_from(start_delta).ok()?;
+    let end_off: usize = usize::try_from(end_delta).ok()?;
+    let slice: &[u8] = code.get(start_off..end_off)?;
+    Some((slice, size))
+}
+
+fn render_declined_function(
+    entry_va: u64,
+    size: u32,
+    insns: &[DisasmInsn],
+    reason: String,
+) -> PseudoCFunction {
+    let name: String = format!("sub_{entry_va:x}");
+    let pseudo_c: String = render_unmodeled(&name, entry_va, insns, &reason);
+    PseudoCFunction {
+        id: FunctionId {
+            entry_va,
+            name: name.clone(),
+        },
+        signature: format!("void {name}(void)"),
+        pseudo_c,
+        size,
+        parameter_count: 0,
+        modeled: false,
+        note: Some(reason),
+    }
+}
+
+fn saturating_u32_len(value: usize) -> u32 {
+    let converted: std::result::Result<u32, TryFromIntError> = u32::try_from(value);
+    converted.map_or(u32::MAX, |value: u32| value)
+}
+
+fn saturating_u32(value: u64) -> u32 {
+    let converted: std::result::Result<u32, TryFromIntError> = u32::try_from(value);
+    converted.map_or(u32::MAX, |value: u32| value)
 }
 
 fn rename_recovered(recovery: &LeafRecovery, name: &str) -> String {
@@ -303,15 +351,19 @@ fn branch_target(insn: &DisasmInsn) -> Option<u64> {
 
 fn parse_hex_operand(operands: &str) -> Option<u64> {
     let trimmed: &str = operands.trim();
-    let token: &str = trimmed.strip_prefix("short ").unwrap_or(trimmed).trim();
+    let token: &str = trimmed
+        .strip_prefix("short ")
+        .map_or(trimmed, |token: &str| token.trim());
     if token.contains([' ', ',', '[']) {
         return None;
     }
-    let body: &str = token.strip_suffix(['h', 'H']).unwrap_or(token);
-    let body: &str = body
+    let body_without_suffix: &str = token
+        .strip_suffix(['h', 'H'])
+        .map_or(token, |body: &str| body);
+    let body: &str = body_without_suffix
         .strip_prefix("0x")
-        .or_else(|| body.strip_prefix("0X"))
-        .unwrap_or(body);
+        .or_else(|| body_without_suffix.strip_prefix("0X"))
+        .map_or(body_without_suffix, |body: &str| body);
     u64::from_str_radix(body, 16).ok()
 }
 
@@ -336,7 +388,9 @@ fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
             "not a little-endian ELF64 relocatable object".to_owned(),
         ));
     }
-    let e_shoff: usize = usize::try_from(read_u64(blob, 0x28)?).unwrap_or(usize::MAX);
+    let e_shoff: usize = usize::try_from(read_u64(blob, 0x28)?).map_err(|_: TryFromIntError| {
+        Error::BccLiftParse("ELF section table offset exceeds addressable memory".to_owned())
+    })?;
     let e_shentsize: usize = usize::from(read_u16(blob, 0x3a)?);
     let e_shnum: usize = usize::from(read_u16(blob, 0x3c)?);
     if e_shentsize < 64 || e_shnum == 0 {
@@ -357,8 +411,14 @@ fn parse_elf64(blob: &[u8]) -> Result<ExecutableImage> {
         let sh_type: u32 = read_u32(blob, sh + 4)?;
         let sh_flags: u64 = read_u64(blob, sh + 8)?;
         let sh_addr: u64 = read_u64(blob, sh + 16)?;
-        let sh_offset: usize = usize::try_from(read_u64(blob, sh + 24)?).unwrap_or(usize::MAX);
-        let sh_size: usize = usize::try_from(read_u64(blob, sh + 32)?).unwrap_or(usize::MAX);
+        let sh_offset: usize = match usize::try_from(read_u64(blob, sh + 24)?) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let sh_size: usize = match usize::try_from(read_u64(blob, sh + 32)?) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
         let Some(section): Option<&[u8]> = sh_offset
             .checked_add(sh_size)
             .and_then(|end: usize| blob.get(sh_offset..end))
@@ -553,6 +613,18 @@ mod tests {
         assert!(!funcs[0].modeled);
         assert!(funcs[0].pseudo_c.contains("call"));
         assert!(funcs[0].note.is_some());
+    }
+
+    #[test]
+    fn address_overflow_is_surfaced_without_panicking() {
+        let mc: &[u8] = &[0xc3];
+        let funcs: Vec<PseudoCFunction> = lift_code_region(mc, u64::MAX, PseudoAbi::SysV);
+        assert_eq!(funcs.len(), 1);
+        assert!(!funcs[0].modeled);
+        assert!(matches!(
+            funcs[0].note.as_deref(),
+            Some("BCC function address range exceeds input bytes")
+        ));
     }
 
     #[test]
