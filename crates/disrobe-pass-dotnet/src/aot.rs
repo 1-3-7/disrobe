@@ -31,6 +31,8 @@ const AOT_NEEDLES: &[(&[u8], &str)] = &[
     (b"RhpReversePInvoke", "reverse_pinvoke"),
 ];
 
+const EAGER_CCTOR_SCAN_CAP: u32 = 512;
+
 #[must_use]
 pub fn detect(image: &[u8]) -> AotReport {
     let mut symbols: BTreeMap<String, u32> = BTreeMap::new();
@@ -55,7 +57,10 @@ pub fn detect(image: &[u8]) -> AotReport {
     }
     let eager_marker: &[u8] = b"EagerCctor";
     let mut cursor: usize = 0;
-    while let Some(pos) = window_find(&image[cursor..], eager_marker) {
+    while eager < EAGER_CCTOR_SCAN_CAP {
+        let Some(pos): Option<usize> = window_find(&image[cursor..], eager_marker) else {
+            break;
+        };
         eager = eager.saturating_add(1);
         cursor += pos + eager_marker.len();
     }
@@ -121,5 +126,16 @@ mod tests {
     fn detect_empty_image_is_not_aot() {
         let report: AotReport = detect(&[]);
         assert!(!report.is_native_aot);
+    }
+
+    #[test]
+    fn eager_class_constructor_scan_is_capped() {
+        let mut img: Vec<u8> = Vec::new();
+        for _ in 0..600 {
+            img.extend_from_slice(b"EagerCctor");
+            img.push(0);
+        }
+        let report: AotReport = detect(&img);
+        assert_eq!(report.eager_class_constructors, 512);
     }
 }
