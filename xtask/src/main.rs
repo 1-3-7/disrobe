@@ -14,6 +14,7 @@ mod graphs;
 #[cfg(feature = "playground")]
 mod playground;
 mod plugins;
+mod prepush;
 mod readme_stats;
 mod regen;
 mod sync;
@@ -89,6 +90,11 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         list: bool,
     },
+    Prepush {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        full: bool,
+    },
+    SetupHooks,
     #[cfg(feature = "playground")]
     Playground {
         #[arg(long)]
@@ -116,6 +122,8 @@ fn main() -> ExitCode {
         Cmd::Plugins { check } => run_plugins(check),
         Cmd::Sync { check } => run_sync(check),
         Cmd::Evidence { check, list } => run_evidence(check, list),
+        Cmd::Prepush { full } => run_prepush(full),
+        Cmd::SetupHooks => run_setup_hooks(),
         #[cfg(feature = "playground")]
         Cmd::Playground {
             sample_per_kind,
@@ -340,6 +348,16 @@ fn run_plugins(check: bool) -> Result<()> {
 fn run_sync(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     sync::run(&root, check)
+}
+
+fn run_prepush(full: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    prepush::run(&root, full)
+}
+
+fn run_setup_hooks() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    prepush::setup_hooks(&root)
 }
 
 fn run_evidence(check: bool, list: bool) -> Result<()> {
