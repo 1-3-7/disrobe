@@ -75,7 +75,11 @@ pub fn lift_bcc_native(_blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
 
 #[cfg(target_arch = "wasm32")]
 #[must_use]
-pub const fn lift_bcc_code_region(_code: &[u8], _base: u64, _arch: BccArch) -> Vec<PseudoCFunction> {
+pub const fn lift_bcc_code_region(
+    _code: &[u8],
+    _base: u64,
+    _arch: BccArch,
+) -> Vec<PseudoCFunction> {
     Vec::new()
 }
 

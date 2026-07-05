@@ -7,6 +7,10 @@ use crate::macho::ParsedSlice;
 use std::collections::BTreeMap;
 
 #[cfg(not(target_arch = "wasm32"))]
+use crate::macho::{CpuKind, FunctionSymbol, Section, function_symbols};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::swift;
+#[cfg(not(target_arch = "wasm32"))]
 use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirOp, NirSymbol, SourceRef, SymbolKind};
 #[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
@@ -14,10 +18,6 @@ use disrobe_pass_native::{
     TypeMember, TypeReconstruction, disassemble, reconstruct_dwarf_types,
     synthesize_dwarf_sourcemap,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::macho::{CpuKind, FunctionSymbol, Section, function_symbols};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::swift;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
