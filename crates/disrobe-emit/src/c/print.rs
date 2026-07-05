@@ -604,11 +604,18 @@ fn stmt_doc<'a>(ctx: &Ctx<'a>, stmt: &'a CStmt) -> Doc<'a> {
             .append(expr_doc(ctx, value))
             .append(arena.text(") "))
             .append(braced_doc(ctx, body)),
-        CStmt::Case { value, body } => arena
-            .text("case ")
-            .append(expr_doc(ctx, value))
-            .append(arena.text(": "))
-            .append(stmt_doc(ctx, body)),
+        CStmt::Case { value, body } => {
+            let separator: Doc<'a> = if matches!(body.as_ref(), CStmt::Case { .. }) {
+                arena.text(":").append(arena.hardline())
+            } else {
+                arena.text(": ")
+            };
+            arena
+                .text("case ")
+                .append(expr_doc(ctx, value))
+                .append(separator)
+                .append(stmt_doc(ctx, body))
+        }
         CStmt::Default { body } => arena.text("default: ").append(stmt_doc(ctx, body)),
         CStmt::Return(value) => value.as_ref().map_or_else(
             || arena.text("return;"),
