@@ -29,6 +29,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe wasm deob <wasm>` | Reverse Wasm obfuscator families. |
 | `disrobe wasm component <wasm>` | Parse a Component Model envelope. |
 | `disrobe wasm types <wasm>` | Recover the GC type graph. |
+| `disrobe wasm lift-gc <wasm>` | Lift the recovered GC type graph to typed Rust + TypeScript struct / array source. |
 
 ## JVM / Android / .NET
 
@@ -37,8 +38,10 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe jvm decompile <class\|jar\|dex\|apk>` | Decompile via `--backend cfr\|vineflower\|procyon\|jadx`. |
 | `disrobe jvm extract <jar\|apk>` | Extract container + dump classfile inventory. |
 | `disrobe jvm backends` | Report JVM/Android backends on PATH. |
+| `disrobe jvm retrace` | Retrace an obfuscated stack frame back to class/method/line through a ProGuard/R8 `mapping.txt` (`--mapping`, `--class`, `--method`, `--line`). |
 | `disrobe apk <apk>` | Decode the binary AndroidManifest.xml, map resource ids to names, and dump each signer certificate's SHA-256. `--out <DIR>` writes the decoded manifest and resource table to disk. |
 | `disrobe dotnet decompile <dll\|exe>` | Decompile via `--backend ilspy\|dnspy\|dnspyex\|de4dot`. |
+| `disrobe dotnet deobfuscate\|peel <dll\|exe>` | Detect the .NET protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks. `--protector <name>` forces one. |
 | `disrobe dotnet analyze <dll>` | PE/CLR metadata, protector detection, R2R + NativeAOT probe. |
 | `disrobe dotnet backends` | Report .NET backends on PATH. |
 
@@ -49,10 +52,10 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe native decompile <bin>` | In-tree x86-64 -> C/Rust decompile with whole-program call resolution, default (`--backend native --format c\|rust`), graded vs real gcc/clang/rustc. `--backend ghidra` drives ghidra-headless instead: `--emit source,disasm,ast,cfg,ir,manifest,sourcemap,symbols,strings,imports,signatures,report`. |
 | `disrobe native symbols <bin>` | Dump symbols, sections, segments, imports, and debug info. |
 | `disrobe native identify <bin>` | Fingerprint compiler / packer / protector / installer, each routed to its pass. |
-| `disrobe native unpack [bin]` | Detect + unpack UPX/kkrunchy/NSPack/Petite/MPRESS/MEW/FSG/ASPack/PECompact/Yoda's Crypter via in-house decoders + x86 stub emulator. Input is optional; `--list` shows all supported packers. |
+| `disrobe native unpack [bin]` | Detect + unpack UPX/kkrunchy/NSPack/Petite/MPRESS/MEW/FSG/ASPack/PECompact via in-house decoders + x86 stub emulator. Input is optional; `--list` shows all supported packers (the full detect catalog is 25 packers/protectors; families like Yoda's Crypter are detect-only or need the original image for a diff-based carve). |
 | `disrobe native devirt <bin>` | Devirtualize the bytecode-VM tier: recover the handler table, lift to a re-executable IR + pseudo-code. |
 | `disrobe native export <bin>` | Unpack, recover symbols, and export a backend-ready bundle: a rebuilt loadable PE + a Ghidra post-script / IDAPython / JSON symbol map. `--format ghidra\|ida\|json` (default `ghidra`). |
-| `disrobe native disasm <bin>` | Per-function listing / `--emit cfg-dot` CFG / `--emit json` / `--raw` linear sweep (`--syntax intel\|at&t\|nasm\|masm`). Accepts a `.dr` envelope. |
+| `disrobe native disasm <bin>` | Per-function listing / `--emit cfg-dot` CFG / `--emit json` / `--raw` linear sweep (`--syntax nasm\|intel\|att\|masm`). Accepts a `.dr` envelope. |
 | `disrobe native callgraph <bin>` | Whole-program call graph as Graphviz DOT. |
 | `disrobe native patch <bin>` | Rewrite bytes at a VA (or nop a span) and revalidate the image. |
 | `disrobe native sigmaker <bin>` | Wildcarded byte signature from a function, uniqueness-tested. |
@@ -64,6 +67,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe native graph <bin>` | Import/export table as Graphviz DOT. |
 | `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm-rung `.dr` envelope. |
 | `disrobe capabilities <bin\|.dr>` | Rule engine over the IR, mapping behaviors to MITRE ATT&CK + MBC with per-match evidence. |
+| `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). |
 
 ## Other languages
 
@@ -72,21 +76,23 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe go recover\|info <bin>` | Go symbol recovery / build fingerprint. |
 | `disrobe lua decompile\|deobfuscate\|detect <chunk>` | Lua decompile / obfuscator peel / dialect detect. |
 | `disrobe php decode\|deobfuscate\|extract <input>` | Encoder decode / eval-chain peel / Phar extract. |
+| `disrobe shell deob\|detect <input>` | PowerShell / Bash / Batch / VBA deobfuscate (Invoke-Obfuscation, Invoke-Stealth, Bashfuscator, ...) and dialect / family detect. |
 | `disrobe ruby decompile\|detect <input>` | Ruby artifact analysis / flavor detection. |
 | `disrobe beam parse\|lift\|disasm <beam>` | BEAM chunk parse / Core Erlang lift / Code disasm. |
 | `disrobe pickle disasm\|decompile\|safety\|trace\|polyglot\|ml-detect <input>` | Pickle static analysis suite. |
 | `disrobe swift classdump\|shield-undo\|confidential-decrypt <input>` | Swift/ObjC class-dump, SwiftShield rename-undo, Confidential XOR-decrypt. |
-| `disrobe macho dump\|classdump\|slices <input>` | Mach-O / fat / `.ipa` inspection. |
+| `disrobe macho dump\|classdump\|fat <input>` | Mach-O / fat / `.ipa` inspection. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |
 | `disrobe flutter dump\|decompile\|kernel\|disasm\|map <input>` | Flutter Dart AOT + kernel inspection. |
-| `disrobe mobile detect\|extract\|hermes\|flutter <input>` | Mobile runtime pipeline. |
+| `disrobe mobile detect\|extract\|hermes\|flutter\|recon <input>` | Mobile runtime pipeline. |
 
 ## Chain, envelope, and forensics
 
 | Command | Purpose |
 |---|---|
 | `disrobe detect <input>` | Run every obfuscator/packer catalog detector against a file and report each hit (pass, obfuscator, confidence, markers). |
+| `disrobe identify <input>` | Fingerprint the compiler / linker / packer / protector / installer of a PE / ELF / Mach-O with structural evidence and the pass that handles each (top-level shortcut for `native identify`; alias `die`). |
 | `disrobe catalog [ecosystem]` | List the supported obfuscator, packer, protector, freezer, and bundler registry by ecosystem. The live binary reports 167 families across 15 ecosystems; filter with `python`, `js`, `jvm`, `dotnet`, `native`, `go`, `wasm`, `ruby`, `lua`, `php`, `beam`, `as3`, `mobile`, `swift`, or `shell`. `--json` emits `{ family_count, ecosystem_count, ecosystems[] }`. |
 | `disrobe auto <input>` | Auto-detect + chain. `--max-depth <N>` (default 8), `--capture-stages`, `--emit recovery`, `--dry-run`. A directory input is [batch-processed](./batch.md) recursively (`--include <GLOB>`, `--exclude <GLOB>`, `--batch-max-depth <N>`, `--jobs <N>`) into an aggregate `manifest.json`. |
 | `disrobe chain <input>` | Explicit pipeline. `--chain 'auto:8'` or `'pyarmor+py-decompile'`, `--chain-pin <ver>`, `--capture-stages`. |

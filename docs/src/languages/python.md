@@ -7,7 +7,7 @@ Python is **disrobe**'s most contested and most developed ecosystem. It ships an
 | Layer | Coverage |
 |---|---|
 | Bytecode disassembly | CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
-| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; 92.43% per-code-object recompile-equivalence on the full CPython 3.14 stdlib (16880 of 18262), 94.18% on the pinned 200-module corpus (5920 of 6286, above a 90% CI floor), and the legacy 1.0-3.7 band asserts a CI floor of 152 of 191 proven-correct (67 by recompile-equivalence, the rest by structural token-match) |
+| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; 92.43% per-code-object recompile-equivalence on the full CPython 3.14 stdlib (16880 of 18262), 94.18% on the pinned 200-module corpus (5920 of 6286, above a 90% CI floor), and the legacy 1.0-3.7 band asserts a CI floor of 150 of 191 proven-correct (166 of 191 measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender |
 | Protectors | PyArmor v6-v9-pro and 18 source obfuscators with an AST-evaluator backend |
@@ -52,7 +52,7 @@ Peels source-level obfuscator wrappers (Kramer/Specter, Berserker, Jawbreaker, B
 ## Freezers and packagers
 
 ```sh
-disrobe pyinstaller extract onefile.exe --out out/       # PyInstaller 2.1 .. 6.x, AES-CTR/CFB decrypt
+disrobe pyinstaller extract onefile.exe --out out/       # PyInstaller 2.x .. 6.20+, AES-CTR/CFB decrypt
 disrobe pyinstaller detect onefile.exe                   # cookie, Python version, TOC offsets, no extract
 disrobe pyfreeze extract app.exe --out out/              # cx_Freeze / py2exe / shiv / pex / PyOxidizer / Briefcase
 disrobe nuitka detect app.exe                            # flavor + Python version

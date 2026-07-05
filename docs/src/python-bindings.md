@@ -715,7 +715,7 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 Decompiles a `.pyc` (with header) to source. Full CPython 3.14 stdlib coverage is
 92.43% per-code-object recompile equivalence (16880 of 18262); the pinned
 200-module corpus is 94.18% (5920 of 6286, CI floor 90%). Legacy CPython
-1.0-3.7: 79.6% proven-correct (CI floor 152 of 191; 166 of 191 with the full
+1.0-3.7: 78.5% proven-correct (CI floor 150 of 191; 166 of 191 with the full
 interpreter zoo present).
 
 ```python

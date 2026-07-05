@@ -18,9 +18,9 @@ The `disrobe auto` chain at the bottom is what stitches these together: it finge
 
 ## Native packers and protectors (27)
 
-The `Packer` enum carries 27 variants and the native chain detector advertises the same 27.
+The `Packer` enum carries 27 variants across five `UnpackerStatus` tiers (10 + 6 + 3 + 6 + 2 = 27). The native chain detector catalog advertises 25 of them; the two CLR-layer crypters route to the .NET pass, so `disrobe catalog native` lists 25.
 
-The tier names below are the in-tree `UnpackerStatus` values, so the split is exactly what the binary advertises (10 + 6 + 3 + 6 + 2 = 27).
+The tier names below are the in-tree `UnpackerStatus` values, so the split is exactly what the binary advertises.
 
 | Tier (`UnpackerStatus`) | Count | Families |
 |---|---|---|
@@ -28,7 +28,7 @@ The tier names below are the in-tree `UnpackerStatus` values, so the split is ex
 | **StubEvalPending**: stub emulator validated against a spec-built stub, real-sample recovery tracked | 6 | ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone crypter |
 | **GreyZoneDetectAndCarve**: virtualizing tier, runtime-keyed handler stream | 3 | VMProtect, Themida, Yoda's Protector |
 | **GreyZoneDetectOnly**: commercial protector tier, reported without static recovery | 6 | WinLicense, Enigma Protector, Obsidium, Armadillo, PELock, PE-Protector |
-| **DetectOnly**: CLR-layer crypter, JIT-derived key absent from the image | 2 | DotNetPatcher, NetCryptor |
+| **DelegatedToDotnet**: managed CLR crypter, recovery delegated to the .NET pass | 2 | DotNetPatcher, NetCryptor |
 
 The recover tier is scored byte-for-byte against real committed originals: UPX `.text` and `.pdata` are bit-identical (the whole loaded image about 96%, the residual being loader-rebuilt relocations and IAT the OS resolves at run time), kkrunchy is byte-exact, NSPack reaches about 99% of the content section, and Yoda's Crypter `.rsrc` is byte-identical with its `.text` decrypted to full plaintext. The full breakdown is in the [native guide](./languages/native.md).
 
@@ -38,7 +38,7 @@ The recover tier is scored byte-for-byte against real committed originals: UPX `
 |---|---|---|
 | **Freezers / packagers** | 9 | PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` |
 | **Protector (PyArmor)** | 7 versions | PyArmor v6-v9-pro (default / super / no-wrap); recovered 72 of 72 real-corpus samples. The v3-v5 RSA-wrapped-key tier is a runtime-key wall. |
-| **Source obfuscators (AST-evaluator)** | 18 | Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online-obfuscator family, Xindex, pyobfus, Pypacker, Patchwork |
+| **Source obfuscators (AST-evaluator)** | 20 | Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, pyobfuscate.com (2026 XOR/lambda), PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online-obfuscator family, Xindex, pyobfus, Pypacker, Patchwork, pyc-zipper |
 
 Jawbreaker's b16/b32/b64 loader shell is decoded statically, but a payload it fetches from a remote paste at run time is absent from the file. ObfuXtreme's AES-CBC/b85/xor static body is recovered; its runtime-payload segment is not in the artifact. python-obfuscator (PyPI), pyobfus, and Pypacker are detect plus partial-peel. See the [Python guide](./languages/python.md).
 
@@ -57,9 +57,9 @@ The [JS](./languages/javascript.md) and [WebAssembly](./languages/wasm.md) guide
 
 | Surface | Count | Families |
 |---|---|---|
-| **JVM / Android protectors** | 9 | ProGuard/R8 (mapping replay), Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for the keyed-constant variants); yGuard, SkidSuite2, JBCO (detect-only) |
+| **JVM / Android protectors** | 10 | ProGuard/R8 (mapping replay), Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for the keyed-constant variants), BlackObfuscator (DEX deflattening); yGuard, SkidSuite2, JBCO (detect-only) |
 | **Android RASP vendors** | 8 | Promon SHIELD, Guardsquare DexGuard RASP, Guardsquare ThreatCast, Appdome, OneSpan, Arxan / Digital.ai, Zimperium zShield, Licel DexProtector |
-| **.NET protectors** | 21 | ConfuserEx, ConfuserEx2, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, Eazfuscator.NET, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, Themida (.NET wrapper), ILProtector, MaxToCode, KoiVM, DotNetPatcher |
+| **.NET protectors** | 23 | ConfuserEx, ConfuserEx2, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, Eazfuscator.NET, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, Themida (.NET wrapper), ILProtector, MaxToCode, KoiVM, DotNetPatcher, NetCryptor, BitMono |
 
 On .NET, ConfuserEx2 constant decryption is reversed on a real committed sample, the Eazfuscator VM tier is devirtualized at 57 of 57 instructions against an in-repo EazVM virtualizer of our own, and the KoiVM VM tier is devirtualized on a sample produced by the real KoiVM tool (6 of 6 bodies lifted to CIL). ILProtector, MaxToCode, and the Themida/.NET wrapper derive their per-method key in a native loader absent from the artifact, so those bodies are runtime-key walled. See the [JVM and Android](./languages/jvm-android.md) and [.NET](./languages/dotnet.md) guides.
 
@@ -78,7 +78,7 @@ IronBrew2 2.7.0 is reversed on real committed output in standard and MAX mode, v
 
 | Surface | Count | Families |
 |---|---|---|
-| **Shell obfuscators** | 19 (catalog) | PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids; Bashfuscator (Token, String, Obfuscate, Compress) and bash IFS/eval indirection; Batch `%random%` and set-indirection |
+| **Shell obfuscators** | 20 (catalog) | PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids; Bashfuscator (Token, String, Obfuscate, Compress), bash IFS/eval indirection, and node-bash-obfuscate; Batch `%random%` and set-indirection |
 
 Full VBA p-code decompile (264-opcode table, VBA3/5/6/7) with VBA-stomping detection rounds out the shell pass. See the [shell guide](./languages/shell.md).
 

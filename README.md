@@ -132,7 +132,7 @@ disrobe wasm decompile module.wasm --target rust --out lifted.rs   # also ts, wa
 disrobe jvm decompile app.apk --out src/               # in-house Dalvik decompiler is the default
 disrobe jvm decompile App.class --out src/             # classfile 1.0.2-25
 disrobe jvm decompile app.jar --backend cfr --out src/ # optional external backend
-disrobe dotnet decompile App.dll --out src/            # in-house CIL to C#/F#/VB, 21 protectors classified
+disrobe dotnet decompile App.dll --out src/            # in-house CIL to C#/F#/VB, 23 protectors classified
 ```
 
 ### Native, packers, queryable IR
@@ -282,7 +282,7 @@ This section names the supported surface and its residual. Measured scores live 
 | Freezers | Recover: PyInstaller 2.x-6.20+, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` (in-house AES-256-CTR + BLAKE2b decrypt). Partial: Nuitka (byte-exact unpack, names/signatures/constants lossless, native bodies lossy). |
 | PyArmor | Recover: v6-v9-pro static unpack (default, super, no-wrap); BCC native body carved and lifted to pseudo-C via the in-house x86-64 decompiler (leaf functions today, whole-function in progress). Detect-only: v3-v5 RSA-wrapped-key tier (runtime-key wall). |
 | Source obfuscators (18) | Recover to source via an AST evaluator: Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, PyObfuscator, ObfuXtreme, Manglify, Oxyry, pyminifier, Xindex, Patchwork, and the online-obfuscator family. Partial: python-obfuscator (PyPI), pyobfus, Pypacker. Remote-fetched or runtime-eval payload segments are flagged as absent-data walls. |
-| Pickle | Recover: static disasm + symbolic-VM trace + safety grading + polyglot and ML-model detection. Never unpickles. |
+| Pickle | Recover: static disasm + symbolic-VM trace + reconstruction to re-executable source (reduce-based objects like `deque`, `OrderedDict`, and `defaultdict` rebuild to a CPython-equal object) + safety grading + polyglot and ML-model detection. Never unpickles. |
 
 ### JavaScript / TypeScript / WebAssembly
 
@@ -304,7 +304,7 @@ This section names the supported surface and its residual. Measured scores live 
 | Android / DEX | In-house Rust decompiler for DEX 1.0-16. Verifier-gated under real `java -Xverify:all`; production APK body-recovery counts are listed separately in Benchmarks as self-reported coverage. Binary AXML + arsc parse, APK signature v1-v4 verify, BlackObfuscator deflatten. |
 | JVM / Android obfuscators (9) | Recover: ProGuard/R8 name restore. Partial: Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for keyed-constant variants). Detect-only: yGuard, SkidSuite2, JBCO. |
 | Android RASP (8 vendors) | Detect-only: Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome Mobile Shield, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector. |
-| .NET / CIL (21 protectors) | In-house CIL to C#/F#/VB; full PE + CLR + table-stream parser, R2R + native-AOT classify. Recover on committed samples: ConfuserEx2 constant decryption and KoiVM (from the real KoiVM tool); Eazfuscator VM devirt is graded against an in-repo EazVM encoder. Partial: ConfuserEx, SmartAssembly, Babel, Crypto Obfuscator, .NET Reactor, Agile.NET, Dotfuscator, DeepSea, Spices.Net, Skater, Goliath, ArmDot, Obfuscar. Detect-only: ILProtector, MaxToCode, Themida-.NET (per-method key derived in a native loader, absent from the artifact). |
+| .NET / CIL (23 protectors) | In-house CIL to C#/F#/VB; full PE + CLR + table-stream parser, R2R + native-AOT classify. Recover on committed samples: ConfuserEx2 constant decryption and KoiVM (from the real KoiVM tool); Eazfuscator VM devirt is graded against an in-repo EazVM encoder. Partial: ConfuserEx, SmartAssembly, Babel, Crypto Obfuscator, .NET Reactor, Agile.NET, Dotfuscator, Dotfuscator CE, DeepSea, Spices.Net, Skater, Goliath, ArmDot, Obfuscar, DotNetPatcher, NetCryptor, BitMono. Detect-only: ILProtector, MaxToCode, Themida-.NET (per-method key derived in a native loader, absent from the artifact). |
 
 ### Native (PE / ELF / Mach-O / COFF)
 
@@ -456,14 +456,15 @@ Oracle strength: `strong` means external-equivalence, execution, or byte-identit
 |---|---|---|---|
 | Python `.pyc`, full CPython 3.14 stdlib | 92.43% per-code-object (16880 / 18262, 571 modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
 | Python `.pyc`, pinned 200-module corpus | 94.18% per-code-object (5920 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
-| Python legacy 1.0-3.7 | 152 / 191 proven-correct floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
+| Python legacy 1.0-3.7 | 150 / 191 proven-correct floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | JVM classfile | 131 / 131 methods recompile error-free, floor 131 `[CI]` `recompile-only` | real `javac` (JDK 25); recompile-only, not yet bytecode-equivalence | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
 | Android DEX, committed corpus | 102 / 103 verifiable classes clean, 307 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | Android DEX, real APKs | transmissionic 92.5% / enrecipes 90.7% / rustdesk 89.0% of methods recover a body, >= 20k methods each `[local]` `coverage-self-reported` | per-method body-recovery count, self-reported (NOT verifier-attested); the verifier-attested number is the committed-corpus row above | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
 | .NET Eazfuscator VM | 57 / 57 instructions lifted, recovered CIL re-injects to byte-identical stdout `[CI]` | independently compiled clean DLL, ordered CIL compare | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
 | .NET KoiVM | 6 / 6 bodies lifted to CIL, structural recovery >= 75% `[CI]` | independently compiled `KoiSample.clean.exe` | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
-| .NET protectors | 21 detected and classified, ConfuserEx2 constants decrypted on a real sample `[CI]` | plaintext-absent oracle on the committed DLL | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs`, `src/protectors.rs` |
+| .NET protectors | 23 detected and classified, ConfuserEx2 constants decrypted on a real sample `[CI]` | plaintext-absent oracle on the committed DLL | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs`, `src/protectors.rs` |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify `[CI]` | pickletools-semantics equivalence | `crates/disrobe-pass-pickle/tests/corpus.rs` |
+| Pickle reconstruction roundtrip | 340 / 340 fixtures reconstruct to source that re-executes to an equal object under CPython (100%, floor 100%) `[CI]` | CPython re-execution differential | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
 | WebAssembly, op-coverage | 124 / 126 corpus functions fully op-covered (98.4% of the parseable subset) `[CI]` | output re-parses, every operator lowered | `crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs` |
 | WebAssembly, execution-equiv | 50 / 50 execution-eligible functions execution-equivalent (6 byte-identical) `[CI]` | execution differential under wasmtime | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
 | WebAssembly obfuscator reversers | 4 reverser families `[CI]` | family-specific byte or IR transforms, then parser/execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs`, `reverse_oracle.rs` |

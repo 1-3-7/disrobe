@@ -39,7 +39,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 | Ecosystem | Measured | Oracle |
 |---|---|---|
 | Python bytecode | 92.43% per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262); 94.18% on the pinned 200-module corpus (5920 of 6286) | recompile on CPython 3.14.5, opcode diff |
-| CPython legacy 1.0-3.7 | 152 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
+| CPython legacy 1.0-3.7 | 150 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 98.4% op-coverage on the 36 parseable corpus modules (124 of 126); 50 of 50 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | 131 of 131 methods recompile error-free | real `javac` |
 | Android (Dalvik) | 99% of verifiable classes pass the JVM verifier (102 of 103) | `-Xverify:all` over assembled jar |

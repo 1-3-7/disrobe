@@ -17,6 +17,12 @@ disrobe pickle ml-detect model.bin
 
 `disrobe pickle trace` walks the opcode stream and reconstructs the object graph the same way a real unpickler would build it, but every operation is symbolic. A `GLOBAL` records a `(module, name)` reference without importing the module; a `REDUCE` records "this callable would be applied to these arguments" without calling it; the memo, stack, and `STOP` result are all inert values. The output is the full graph (objects, memo, resolved globals, reduce count) with nothing executed. `decompile` renders that graph back to equivalent Python assignments.
 
+## Reconstruction fidelity
+
+The graph the symbolic VM builds is rendered back to re-executable Python, and the reduce protocol's `listitems` and `dictitems` extension streams are modeled, not dropped. That is what lets `collections.deque`, `OrderedDict`, and `defaultdict` reconstruct: a `REDUCE` that builds the container is followed by the item stream, which `disrobe` re-emits through `extend`/`__setitem__` helpers so the rebuilt object is populated exactly as the original was, without ever running the pickle.
+
+A committed differential oracle proves this against real CPython. It pickles a corpus spanning primitives, containers, cyclic and shared references, `__reduce__` objects, and the collection types above across every protocol (0 through 5), reconstructs each with `disrobe`, and re-executes the reconstruction under a real interpreter to check it rebuilds a deep-equal object. Every case that is not a proven information-theoretic ceiling re-executes equivalently, a 100% floor a CI gate enforces wherever a CPython interpreter is present.
+
 ## Safety grading
 
 `disrobe pickle safety` grades a stream into one of three severity tiers. Each finding is tagged with a confidence tier so a reviewer can tell a certain hit from an inference.

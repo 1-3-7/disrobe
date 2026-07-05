@@ -100,7 +100,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "dotnet-eazvm",
-      "measured": "3 reversed on real samples / 21 detected",
+      "measured": "3 reversed on real samples / 23 detected",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-dotnet --test real_eazvm"
     },
@@ -114,7 +114,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "dotnet-koivm",
-      "measured": "3 reversed on real samples / 21 detected",
+      "measured": "3 reversed on real samples / 23 detected",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-dotnet --test real_koivm"
     },

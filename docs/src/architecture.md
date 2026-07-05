@@ -2,6 +2,8 @@
 
 **disrobe** is a workspace of focused Rust crates orchestrated by one CLI. Every recovery flows through the same shape: bytes in, a chain of **passes** that each transform the artifact up the **IR ladder**, an optional **`.dr` envelope** for content-addressed caching, and a final emit.
 
+For the full design rationale, including the determinism argument and the oracle-grading methodology, read the [architecture whitepaper](./architecture/whitepaper.md).
+
 ## The shape of a recovery
 
 ```text

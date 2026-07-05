@@ -44,7 +44,7 @@ Schema `disrobe.batch.manifest/v1`:
 ```json
 {
   "schema": "disrobe.batch.manifest/v1",
-  "tool_version": "0.10.0",
+  "tool_version": "0.10.4",
   "root": "samples",
   "out_root": "out/samples-batch",
   "chain": "auto:8",

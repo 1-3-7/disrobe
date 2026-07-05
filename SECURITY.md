@@ -9,8 +9,8 @@ Security fixes ship on the `main` branch. Tagged releases (`v0.x.y`) snapshot kn
 | Version  | Status        | Security fixes |
 | -------- | ------------- | -------------- |
 | `main`   | active        | yes (rolling)  |
-| `0.9.x`  | current minor | yes            |
-| `< 0.9`  | pre-release   | no             |
+| `0.10.x` | current minor | yes            |
+| `< 0.10` | pre-release   | no             |
 
 ## Reporting a vulnerability
 
@@ -33,7 +33,7 @@ If you want to disclose publicly after the fix ships, we credit you in the advis
 
 The reporting channel covers any issue in the `disrobe` source tree that affects an instance running locally or in a CI:
 
-- **Memory safety in the parsing surface.** `disrobe` is pure-Rust (`unsafe_code = "deny"` workspace-wide; the only `unsafe` lives in `crates/disrobe-pyarmor-cextract/` and `disrobe-pyarmor-pytrace/` for C-level pyo3 interop, gated behind explicit features). Any panic / abort on adversarial input that is not a clean `Result::Err` is in scope. Any heap corruption is high severity.
+- **Memory safety in the parsing surface.** `disrobe` is pure-Rust: `#![forbid(unsafe_code)]` is set on the parsing-surface crates, and the `unsafe` that exists is confined to interop boundaries. `crates/disrobe-pyarmor-cextract/` carries C-level pyo3 / libc interop behind explicit features, `crates/disrobe-wasm/` carries the WebAssembly C-ABI export shims, `crates/disrobe-ir/` has one audited memory-map, and the CLI install path has a single OS env-var call. Any panic / abort on adversarial input that is not a clean `Result::Err` is in scope. Any heap corruption is high severity.
 - **Resource exhaustion on adversarial input.** Zip-bombs, decompression bombs, container-recursion bombs, malformed-length-field bombs. `disrobe`'s binfmt layer (`crates/disrobe-binfmt/src/quota.rs`) enforces per-entry and aggregate quotas; bypasses are in scope.
 - **Path traversal.** zip-slip and equivalents on every container kind (zip, tar.{gz,bz2,xz,zst}, 7z, asar, cab, ar, deb, rpm, NSIS, InstallShield, Inno Setup, AppImage, Docker, OCI, Flatpak, Snap, squashfs, cramfs, ext4). Path-sanitisation lives in `crates/disrobe-binfmt/src/quota.rs::sanitize_entry_path` and sibling functions.
 - **HTTP / gRPC server input handling.** `disrobe serve` (HTTP) and the gRPC surface accept `bytes_b64` only, never a filesystem path. Endpoints reject unknown JSON fields via `#[serde(deny_unknown_fields)]`. Any way to make the server read a file via a client-controlled string is high severity.
@@ -51,10 +51,10 @@ The reporting channel covers any issue in the `disrobe` source tree that affects
 
 ## Hardening posture
 
-- `#![forbid(unsafe_code)]` workspace-wide; the only opt-out is the two pyo3-cextract / pytrace crates that need C-level interop.
+- `#![forbid(unsafe_code)]` is set crate-by-crate across the parsing surface; the `unsafe` that exists sits at interop boundaries: `disrobe-pyarmor-cextract` (C-level pyo3 / libc interop), `disrobe-wasm` (WASM C-ABI export shims), an audited memory-map in `disrobe-ir`, and one OS env-var call in the CLI install path.
 - Workspace clippy gate (`-D warnings -W unreachable_pub -W missing_debug_implementations -W unused`) is required for every commit on `main`.
 - `cargo deny check` (advisories / bans / licenses / sources) runs on every push and weekly on a cron via `EmbarkStudios/cargo-deny-action@v2`.
-- `cargo audit` runs weekly (Monday 06:00 UTC) on a separate schedule.
+- A dedicated `audit` job runs `cargo-deny check advisories` against the RustSec advisory database on the same triggers (every push to `main` and the weekly Monday 06:00 UTC cron).
 - All container extractors share the quota machinery in `crates/disrobe-binfmt/src/quota.rs`: per-entry size cap, aggregate size cap, recursion-depth cap, zip-slip path sanitisation.
 - `corpus/native/packers/MANIFEST.toml` and sibling registries pin every fixture by BLAKE3; tests verify byte-identity before exercising the parser.
 - The HTTP / gRPC / LSP servers never read files from disk based on client input. Only `bytes_b64` is accepted; `#[serde(deny_unknown_fields)]` is enforced; non-loopback HTTP binds emit a `tracing::warn!` banner at startup.
@@ -74,9 +74,9 @@ Release artifacts published via the `release.yml` workflow are signed with cosig
 cosign verify-blob \
   --certificate-identity-regexp '^https://github.com/1-3-7/disrobe/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  --signature disrobe-v0.9.0-<target>.tar.zst.sig \
-  --bundle    disrobe-v0.9.0-<target>.tar.zst.cosign.bundle \
-  disrobe-v0.9.0-<target>.tar.zst
+  --signature disrobe-v0.10.4-<target>.tar.zst.sig \
+  --bundle    disrobe-v0.10.4-<target>.tar.zst.cosign.bundle \
+  disrobe-v0.10.4-<target>.tar.zst
 ```
 
 Or via `slsa-verifier` against the SLSA provenance attached to each release.

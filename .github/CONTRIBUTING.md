@@ -19,14 +19,14 @@ lefthook install
 
 ## Workspace map
 
-The workspace has 50 crates, layered core -> ir -> passes -> surfaces.
+The workspace has 53 crates, layered core -> ir -> passes -> surfaces.
 
 **Core and plumbing**
 
 - `disrobe-core` - shared traits, error types, the capability model, and pass-dispatch primitives.
 - `disrobe-ir` - the five-rung ladder IR (Raw / Disasm / MIR / HIR / Surface), the `.dr` envelope codec, and capability negotiation.
 - `disrobe-binfmt` - container and archive detection and extraction across 98 in-tree formats.
-- `disrobe-py-marshal` - the CPython `marshal` codec and `.pyc` encoder/decoder, spanning Python 2.7 through 3.15.
+- `disrobe-py-marshal` - the CPython `marshal` codec and `.pyc` encoder/decoder, spanning Python 1.0 through 3.15.
 - `disrobe-llm-metadata` - the versioned deterministic metadata envelope and the per-pass emitter trait behind `--metadata-pack-*` / `--llm`.
 - `disrobe-validator` - the corpus walker and benchmark harness; asserts byte-level determinism and exports HTML/JSON reports.
 
