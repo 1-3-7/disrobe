@@ -87,12 +87,21 @@ impl RawBeam {
             }
             let data: Vec<u8> = reader.take(len_usize)?.to_vec();
             let padding: usize = (4 - (len_usize % 4)) % 4;
-            if padding != 0
-                && reader
-                    .position()
-                    .checked_add(padding)
-                    .is_some_and(|next: usize| next <= end)
-            {
+            if padding != 0 {
+                let remaining_padding: usize =
+                    end.checked_sub(reader.position())
+                        .ok_or_else(|| Error::BadChunkLength {
+                            tag: ascii_tag(&tag),
+                            len: padding,
+                            remaining: 0,
+                        })?;
+                if padding > remaining_padding {
+                    return Err(Error::BadChunkLength {
+                        tag: ascii_tag(&tag),
+                        len: len_usize.saturating_add(padding),
+                        remaining: remaining_padding,
+                    });
+                }
                 reader.take(padding)?;
             }
             raw_chunks.push(RawChunk {
@@ -236,4 +245,48 @@ fn ascii_tag(tag: &[u8; 4]) -> String {
     tag.iter()
         .map(|&b: &u8| if b.is_ascii_graphic() { b as char } else { '.' })
         .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn raw_beam_with_chunk(data: &[u8], include_padding: bool) -> Vec<u8> {
+        let padding: usize = if include_padding {
+            (4 - (data.len() % 4)) % 4
+        } else {
+            0
+        };
+        let form_length: u32 =
+            u32::try_from(4 + 8 + data.len() + padding).expect("test beam size fits u32");
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&IFF_MAGIC);
+        bytes.extend_from_slice(&form_length.to_be_bytes());
+        bytes.extend_from_slice(&FORM_TYPE);
+        bytes.extend_from_slice(b"Tst0");
+        bytes.extend_from_slice(
+            &u32::try_from(data.len())
+                .expect("test chunk len")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(data);
+        bytes.extend(std::iter::repeat_n(0, padding));
+        bytes
+    }
+
+    #[test]
+    fn raw_beam_rejects_missing_chunk_padding() {
+        let bytes: Vec<u8> = raw_beam_with_chunk(b"x", false);
+        let err: Error = RawBeam::parse(&bytes).expect_err("missing chunk padding must fail");
+        assert!(matches!(err, Error::BadChunkLength { .. }));
+    }
+
+    #[test]
+    fn raw_beam_accepts_declared_chunk_padding() {
+        let bytes: Vec<u8> = raw_beam_with_chunk(b"x", true);
+        let raw: RawBeam = RawBeam::parse(&bytes).expect("padded chunk parses");
+        assert_eq!(raw.raw_chunks.len(), 1);
+        assert_eq!(raw.raw_chunks[0].data, b"x");
+    }
 }
