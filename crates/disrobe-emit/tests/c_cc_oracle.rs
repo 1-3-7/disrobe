@@ -112,9 +112,12 @@ fn cc() -> Option<String> {
 }
 
 fn scratch_file() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-emit-cc-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir.join("probe.c")
+    let unique: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!("probe-{unique}.c"))
 }
 
 fn syntax_ok(compiler: &str, source: &str) -> Result<(), String> {

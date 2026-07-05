@@ -6,6 +6,11 @@ use disrobe_emit::c::{
     AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CInit, CStmt, CTypeSpec, Cx, DeclaratorChain,
     IntSuffix, LongSuffix, PostfixOp, Radix, TypeName, UnaryOp, render_expr, render_stmt,
 };
+use disrobe_emit::rust::{
+    RBinOp, RUnOp, RustExpr, binary, call as rcall, cast as rcast, int_dec, int_hex, method_call,
+    parse_expr, path_expr, ptr_type, render_expr as render_rust_expr, signed_int,
+    type_path as rtype_path, unary as runary, unsafe_block, var as rvar,
+};
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
@@ -8407,30 +8412,264 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
     Some(())
 }
 
-#[allow(clippy::too_many_lines)]
+fn rs_emit_reg_assign(out: &mut String, dest: RegRef, body: &str, indent: &str) {
+    let var: String = reg_var(dest.reg);
+    let masked: String = rs_reg_write_rhs(&var, dest.width, body);
+    let _ = writeln!(out, "{indent}{var} = {masked};");
+}
+
+fn rs_emit_xmm_store(out: &mut String, dest: Xmm, value: &str, width: FpWidth, indent: &str) {
+    let _ = writeln!(
+        out,
+        "{indent}{} = {};",
+        xmm_var(dest),
+        rs_fp_store_expr(value, width)
+    );
+}
+
+fn rs_mul_imm_stmt(out: &mut String, dest: RegRef, src: &ExtSource, imm: i64, indent: &str) {
+    let operand: String = match src {
+        ExtSource::Reg(r) => reg_var(r.reg),
+        ExtSource::Mem(mem) => rs_deref_read(mem),
+    };
+    let body: String = parse_expr(&operand).map_or_else(
+        || format!("({operand}).wrapping_mul(({imm}i64) as u64)"),
+        |opaque: RustExpr| {
+            let factor: RustExpr = rcast(signed_int(imm, "i64"), rtype_path("u64"));
+            render_rust_expr(&method_call(opaque, "wrapping_mul", vec![factor]))
+        },
+    );
+    rs_emit_reg_assign(out, dest, &body, indent);
+}
+
+fn rs_emit_wide_mul(out: &mut String, src: RegRef, indent: &str) {
+    let rax: String = reg_var(Reg::Rax);
+    let rdx: String = reg_var(Reg::Rdx);
+    let factor: String = reg_var(src.reg);
+    let _ = writeln!(out, "{indent}{{");
+    let _ = writeln!(
+        out,
+        "{indent}    let wide_prod: u128 = ({rax} as u128) * ({factor} as u128);"
+    );
+    let _ = writeln!(out, "{indent}    {rax} = wide_prod as u64;");
+    let _ = writeln!(out, "{indent}    {rdx} = (wide_prod >> 64) as u64;");
+    let _ = writeln!(out, "{indent}}}");
+}
+
+fn rs_double_shift_stmt(
+    out: &mut String,
+    dest: RegRef,
+    src: RegRef,
+    amount: u8,
+    left: bool,
+    indent: &str,
+) {
+    let dst: String = reg_var(dest.reg);
+    let other: String = reg_var(src.reg);
+    let amount32: u32 = u32::from(amount);
+    let complement: u32 = 64 - amount32;
+    let (first_method, second_method): (&str, &str) = if left {
+        ("wrapping_shl", "wrapping_shr")
+    } else {
+        ("wrapping_shr", "wrapping_shl")
+    };
+    let combined: RustExpr = binary(
+        RBinOp::BitOr,
+        method_call(
+            rvar(&dst),
+            first_method,
+            vec![int_dec(u128::from(amount32), "u32")],
+        ),
+        method_call(
+            rvar(&other),
+            second_method,
+            vec![int_dec(u128::from(complement), "u32")],
+        ),
+    );
+    let body: String = render_rust_expr(&combined);
+    let _ = writeln!(out, "{indent}{dst} = {body};");
+}
+
+fn rs_call_stmt(out: &mut String, target: u64, args: &[Reg], name: Option<&str>, indent: &str) {
+    let arg_list: String = args
+        .iter()
+        .map(|r: &Reg| reg_var(*r))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let _ = writeln!(
+        out,
+        "{indent}{} = unsafe {{ {}({arg_list}) }};",
+        reg_var(Reg::Rax),
+        call_display_name(target, name)
+    );
+}
+
+fn rs_fp_bin_stmt(
+    out: &mut String,
+    dest: Xmm,
+    rhs: &FpOperand,
+    op: FpOp,
+    width: FpWidth,
+    indent: &str,
+) -> Option<()> {
+    let lhs_val: String = rs_fp_load_xmm(dest, width);
+    let rhs_val: String = rs_fp_load(rhs, width)?;
+    let opstr: &str = match op {
+        FpOp::Add => "+",
+        FpOp::Sub => "-",
+        FpOp::Mul => "*",
+        FpOp::Div => "/",
+    };
+    let computed: String = format!("({lhs_val} {opstr} {rhs_val})");
+    rs_emit_xmm_store(out, dest, &computed, width, indent);
+    Some(())
+}
+
+fn rs_fp_mov_stmt(
+    out: &mut String,
+    dest: Xmm,
+    src: &FpOperand,
+    width: FpWidth,
+    indent: &str,
+) -> Option<()> {
+    if let FpOperand::Xmm(sx) = src {
+        let _ = writeln!(out, "{indent}{} = {};", xmm_var(dest), xmm_var(*sx));
+    } else {
+        let value: String = rs_fp_load(src, width)?;
+        rs_emit_xmm_store(out, dest, &value, width, indent);
+    }
+    Some(())
+}
+
+fn rs_int_to_fp_stmt(
+    out: &mut String,
+    dest: Xmm,
+    src: RegRef,
+    signed: bool,
+    width: FpWidth,
+    indent: &str,
+) {
+    let bits: u32 = src.width.bits();
+    let int_expr: String = if signed {
+        format!("({} as u{bits} as i{bits})", reg_var(src.reg))
+    } else {
+        format!("({} as u{bits})", reg_var(src.reg))
+    };
+    rs_emit_xmm_store(out, dest, &int_expr, width, indent);
+}
+
+fn rs_fp_to_int_stmt(out: &mut String, dest: RegRef, src: Xmm, width: FpWidth, indent: &str) {
+    let value: String = rs_fp_load_xmm(src, width);
+    let ity: &str = rs_int_ty(dest.width);
+    let uty: &str = rs_uint_ty(dest.width);
+    let truncated: String = format!("((({value}) as {ity}) as {uty} as u64)");
+    rs_emit_reg_assign(out, dest, &truncated, indent);
+}
+
+fn rs_fp_convert_stmt(
+    out: &mut String,
+    dest: Xmm,
+    src: Xmm,
+    from: FpWidth,
+    to: FpWidth,
+    indent: &str,
+) {
+    let value: String = rs_fp_load_xmm(src, from);
+    rs_emit_xmm_store(out, dest, &value, to, indent);
+}
+
+fn rs_fp_minmax_stmt(
+    out: &mut String,
+    dest: Xmm,
+    rhs: &FpOperand,
+    is_max: bool,
+    width: FpWidth,
+    indent: &str,
+) -> Option<()> {
+    let lhs_val: String = rs_fp_load_xmm(dest, width);
+    let rhs_val: String = rs_fp_load(rhs, width)?;
+    let opstr: &str = if is_max { ">" } else { "<" };
+    let computed: String =
+        format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})");
+    rs_emit_xmm_store(out, dest, &computed, width, indent);
+    Some(())
+}
+
+fn rs_fp_sqrt_stmt(
+    out: &mut String,
+    dest: Xmm,
+    src: &FpOperand,
+    width: FpWidth,
+    indent: &str,
+) -> Option<()> {
+    let value: String = rs_fp_load(src, width)?;
+    let call: String = format!("({value}).sqrt()");
+    rs_emit_xmm_store(out, dest, &call, width, indent);
+    Some(())
+}
+
+fn rs_fp_round_stmt(
+    out: &mut String,
+    dest: Xmm,
+    src: &FpOperand,
+    width: FpWidth,
+    mode: RoundMode,
+    indent: &str,
+) -> Option<()> {
+    let value: String = rs_fp_load(src, width)?;
+    let method: &str = match mode {
+        RoundMode::Nearest => "round_ties_even",
+        RoundMode::Floor => "floor",
+        RoundMode::Ceil => "ceil",
+        RoundMode::Trunc => "trunc",
+    };
+    let call: String = format!("({value}).{method}()");
+    rs_emit_xmm_store(out, dest, &call, width, indent);
+    Some(())
+}
+
+fn rs_gpr_to_xmm_stmt(out: &mut String, dest: Xmm, src: RegRef, width: FpWidth, indent: &str) {
+    let bits: String = match width {
+        FpWidth::F64 => reg_var(src.reg),
+        FpWidth::F32 => format!("(({} as u32) as u64)", reg_var(src.reg)),
+    };
+    let _ = writeln!(out, "{indent}{} = {bits};", xmm_var(dest));
+}
+
+fn rs_xmm_to_gpr_stmt(out: &mut String, dest: RegRef, src: Xmm, width: FpWidth, indent: &str) {
+    let bits: String = rs_xmm_bits(src, width);
+    rs_emit_reg_assign(out, dest, &bits, indent);
+}
+
+fn rs_mem_rmw_stmt(out: &mut String, addr: &MemRef, op: &MemRmwOp, indent: &str) -> Option<()> {
+    let current: String = rs_deref_read(addr);
+    let body: String = match op {
+        MemRmwOp::Bin { op, src } => {
+            let rhs: String = rs_source_expr(src, addr.width)?;
+            rs_bin_expr(*op, &current, &rhs, addr.width)
+        }
+        MemRmwOp::Un(un_op) => rs_unop_expr(*un_op, &current),
+    };
+    rs_emit_store(out, addr, &body, indent);
+    Some(())
+}
+
 fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
     match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = rs_source_expr(src, dest.width)?;
-            let var: String = reg_var(dest.reg);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
+            rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::BinAssign { dest, op, src } => {
             let var: String = reg_var(dest.reg);
             let rhs: String = rs_source_expr(src, dest.width)?;
             let body: String = rs_bin_expr(*op, &var, &rhs, dest.width);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
+            rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::UnAssign { dest, op } => {
             let var: String = reg_var(dest.reg);
-            let body: String = match op {
-                UnOp::Neg => format!("({var}).wrapping_neg()"),
-                UnOp::Not => format!("(!{var})"),
-            };
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
+            let body: String = rs_unop_expr(*op, &var);
+            rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::Cond {
             dest,
@@ -8465,241 +8704,105 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
                 ExtSource::Mem(mem) => (rs_deref_read(mem), mem.width),
             };
             let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
-            let var: String = reg_var(dest.reg);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
+            rs_emit_reg_assign(out, *dest, &body, indent);
         }
-        Stmt::MulImm { dest, src, imm } => {
-            let operand: String = match src {
-                ExtSource::Reg(r) => reg_var(r.reg),
-                ExtSource::Mem(mem) => rs_deref_read(mem),
-            };
-            let body: String = format!("({operand}).wrapping_mul(({imm}i64) as u64)");
-            let var: String = reg_var(dest.reg);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &body);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
-        }
-        Stmt::WideMul { src } => {
-            let rax: String = reg_var(Reg::Rax);
-            let rdx: String = reg_var(Reg::Rdx);
-            let factor: String = reg_var(src.reg);
-            let _ = writeln!(out, "{indent}{{");
-            let _ = writeln!(
-                out,
-                "{indent}    let wide_prod: u128 = ({rax} as u128) * ({factor} as u128);"
-            );
-            let _ = writeln!(out, "{indent}    {rax} = wide_prod as u64;");
-            let _ = writeln!(out, "{indent}    {rdx} = (wide_prod >> 64) as u64;");
-            let _ = writeln!(out, "{indent}}}");
-        }
+        Stmt::MulImm { dest, src, imm } => rs_mul_imm_stmt(out, *dest, src, *imm, indent),
+        Stmt::WideMul { src } => rs_emit_wide_mul(out, *src, indent),
         Stmt::Divide { divisor, signed } => rs_emit_divide(out, *divisor, *signed, indent),
         Stmt::DoubleShift {
             dest,
             src,
             amount,
             left,
-        } => {
-            let dst: String = reg_var(dest.reg);
-            let other: String = reg_var(src.reg);
-            let amount32: u32 = u32::from(*amount);
-            let complement: u32 = 64 - amount32;
-            let body: String = if *left {
-                format!(
-                    "({dst}.wrapping_shl({amount32}u32)) | ({other}.wrapping_shr({complement}u32))"
-                )
-            } else {
-                format!(
-                    "({dst}.wrapping_shr({amount32}u32)) | ({other}.wrapping_shl({complement}u32))"
-                )
-            };
-            let _ = writeln!(out, "{indent}{dst} = {body};");
-        }
+        } => rs_double_shift_stmt(out, *dest, *src, *amount, *left, indent),
         Stmt::Call { target, args, name } => {
-            let arg_list: String = args
-                .iter()
-                .map(|r: &Reg| reg_var(*r))
-                .collect::<Vec<String>>()
-                .join(", ");
-            let _ = writeln!(
-                out,
-                "{indent}{} = unsafe {{ {}({arg_list}) }};",
-                reg_var(Reg::Rax),
-                call_display_name(*target, name.as_deref())
-            );
+            rs_call_stmt(out, *target, args, name.as_deref(), indent);
         }
         Stmt::FpBin {
             dest,
             rhs,
             op,
             width,
-        } => {
-            let lhs_val: String = rs_fp_load_xmm(*dest, *width);
-            let rhs_val: String = rs_fp_load(rhs, *width)?;
-            let opstr: &str = match op {
-                FpOp::Add => "+",
-                FpOp::Sub => "-",
-                FpOp::Mul => "*",
-                FpOp::Div => "/",
-            };
-            let computed: String = format!("({lhs_val} {opstr} {rhs_val})");
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&computed, *width)
-            );
-        }
-        Stmt::FpMov { dest, src, width } => {
-            if let FpOperand::Xmm(sx) = src {
-                let _ = writeln!(out, "{indent}{} = {};", xmm_var(*dest), xmm_var(*sx));
-            } else {
-                let value: String = rs_fp_load(src, *width)?;
-                let _ = writeln!(
-                    out,
-                    "{indent}{} = {};",
-                    xmm_var(*dest),
-                    rs_fp_store_expr(&value, *width)
-                );
-            }
-        }
+        } => rs_fp_bin_stmt(out, *dest, rhs, *op, *width, indent)?,
+        Stmt::FpMov { dest, src, width } => rs_fp_mov_stmt(out, *dest, src, *width, indent)?,
         Stmt::IntToFp {
             dest,
             src,
             signed,
             width,
-        } => {
-            let bits: u32 = src.width.bits();
-            let int_expr: String = if *signed {
-                format!("({} as u{bits} as i{bits})", reg_var(src.reg))
-            } else {
-                format!("({} as u{bits})", reg_var(src.reg))
-            };
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&int_expr, *width)
-            );
-        }
-        Stmt::FpToInt { dest, src, width } => {
-            let value: String = rs_fp_load_xmm(*src, *width);
-            let ity: &str = rs_int_ty(dest.width);
-            let uty: &str = rs_uint_ty(dest.width);
-            let truncated: String = format!("((({value}) as {ity}) as {uty} as u64)");
-            let var: String = reg_var(dest.reg);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &truncated);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
-        }
+        } => rs_int_to_fp_stmt(out, *dest, *src, *signed, *width, indent),
+        Stmt::FpToInt { dest, src, width } => rs_fp_to_int_stmt(out, *dest, *src, *width, indent),
         Stmt::FpConvert {
             dest,
             src,
             from,
             to,
-        } => {
-            let value: String = rs_fp_load_xmm(*src, *from);
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&value, *to)
-            );
-        }
+        } => rs_fp_convert_stmt(out, *dest, *src, *from, *to, indent),
         Stmt::FpMinMax {
             dest,
             rhs,
             is_max,
             width,
-        } => {
-            let lhs_val: String = rs_fp_load_xmm(*dest, *width);
-            let rhs_val: String = rs_fp_load(rhs, *width)?;
-            let opstr: &str = if *is_max { ">" } else { "<" };
-            let computed: String =
-                format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})");
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&computed, *width)
-            );
-        }
-        Stmt::FpSqrt { dest, src, width } => {
-            let value: String = rs_fp_load(src, *width)?;
-            let call: String = format!("({value}).sqrt()");
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&call, *width)
-            );
-        }
+        } => rs_fp_minmax_stmt(out, *dest, rhs, *is_max, *width, indent)?,
+        Stmt::FpSqrt { dest, src, width } => rs_fp_sqrt_stmt(out, *dest, src, *width, indent)?,
         Stmt::FpRound {
             dest,
             src,
             width,
             mode,
-        } => {
-            let value: String = rs_fp_load(src, *width)?;
-            let method: &str = match mode {
-                RoundMode::Nearest => "round_ties_even",
-                RoundMode::Floor => "floor",
-                RoundMode::Ceil => "ceil",
-                RoundMode::Trunc => "trunc",
-            };
-            let call: String = format!("({value}).{method}()");
-            let _ = writeln!(
-                out,
-                "{indent}{} = {};",
-                xmm_var(*dest),
-                rs_fp_store_expr(&call, *width)
-            );
-        }
-        Stmt::GprToXmm { dest, src, width } => {
-            let bits: String = match width {
-                FpWidth::F64 => reg_var(src.reg),
-                FpWidth::F32 => format!("(({} as u32) as u64)", reg_var(src.reg)),
-            };
-            let _ = writeln!(out, "{indent}{} = {bits};", xmm_var(*dest));
-        }
-        Stmt::XmmToGpr { dest, src, width } => {
-            let bits: String = rs_xmm_bits(*src, *width);
-            let var: String = reg_var(dest.reg);
-            let masked: String = rs_reg_write_rhs(&var, dest.width, &bits);
-            let _ = writeln!(out, "{indent}{var} = {masked};");
-        }
+        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent)?,
+        Stmt::GprToXmm { dest, src, width } => rs_gpr_to_xmm_stmt(out, *dest, *src, *width, indent),
+        Stmt::XmmToGpr { dest, src, width } => rs_xmm_to_gpr_stmt(out, *dest, *src, *width, indent),
         Stmt::Store { addr, src } => {
             let value: String = rs_source_expr(src, addr.width)?;
             rs_emit_store(out, addr, &value, indent);
         }
-        Stmt::MemRmw { addr, op } => {
-            let current: String = rs_deref_read(addr);
-            let body: String = match op {
-                MemRmwOp::Bin { op, src } => {
-                    let rhs: String = rs_source_expr(src, addr.width)?;
-                    rs_bin_expr(*op, &current, &rhs, addr.width)
-                }
-                MemRmwOp::Un(UnOp::Neg) => format!("({current}).wrapping_neg()"),
-                MemRmwOp::Un(UnOp::Not) => format!("(!({current}))"),
-            };
-            rs_emit_store(out, addr, &body, indent);
-        }
+        Stmt::MemRmw { addr, op } => rs_mem_rmw_stmt(out, addr, op, indent)?,
         Stmt::FpStore { .. } | Stmt::BlockMove { .. } | Stmt::BlockFill { .. } => return None,
     }
     Some(())
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_deref_read(mem: &MemRef) -> String {
     let uty: &str = rs_uint_ty(mem.width);
     let ptr: String = rs_addr_expr(mem.base, mem.index, mem.disp);
-    format!("(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {uty}) }} as u64)")
+    match parse_expr(&ptr) {
+        Some(ptr_expr) => {
+            let as_usize: RustExpr = rcast(ptr_expr, rtype_path("usize"));
+            let as_const_ptr: RustExpr = rcast(as_usize, ptr_type(false, rtype_path(uty)));
+            let read: RustExpr = rcall(
+                path_expr(&["core", "ptr", "read_unaligned"]),
+                vec![as_const_ptr],
+            );
+            render_rust_expr(&rcast(unsafe_block(read), rtype_path("u64")))
+        }
+        None => {
+            format!(
+                "(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {uty}) }} as u64)"
+            )
+        }
+    }
 }
 
 fn rs_emit_store(out: &mut String, addr: &MemRef, value: &str, indent: &str) {
     let uty: &str = rs_uint_ty(addr.width);
     let ptr: String = rs_addr_expr(addr.base, addr.index, addr.disp);
-    let _ = writeln!(
-        out,
-        "{indent}unsafe {{ core::ptr::write_unaligned((({ptr}) as usize) as *mut {uty}, ({value}) as {uty}); }}"
-    );
+    let stmt: String = match (parse_expr(&ptr), parse_expr(value)) {
+        (Some(ptr_expr), Some(value_expr)) => {
+            let as_usize: RustExpr = rcast(ptr_expr, rtype_path("usize"));
+            let as_mut_ptr: RustExpr = rcast(as_usize, ptr_type(true, rtype_path(uty)));
+            let write: RustExpr = rcall(
+                path_expr(&["core", "ptr", "write_unaligned"]),
+                vec![as_mut_ptr, rcast(value_expr, rtype_path(uty))],
+            );
+            format!("{};", render_rust_expr(&unsafe_block(write)))
+        }
+        _ => format!(
+            "unsafe {{ core::ptr::write_unaligned((({ptr}) as usize) as *mut {uty}, ({value}) as {uty}); }}"
+        ),
+    };
+    let _ = writeln!(out, "{indent}{stmt}");
 }
 
 fn rs_fp_load(operand: &FpOperand, width: FpWidth) -> Option<String> {
@@ -8712,29 +8815,59 @@ fn rs_fp_load(operand: &FpOperand, width: FpWidth) -> Option<String> {
 
 fn rs_fp_load_xmm(xmm: Xmm, width: FpWidth) -> String {
     match width {
-        FpWidth::F64 => format!("f64::from_bits({})", xmm_var(xmm)),
-        FpWidth::F32 => format!("f32::from_bits({} as u32)", xmm_var(xmm)),
+        FpWidth::F64 => render_rust_expr(&rcall(
+            path_expr(&["f64", "from_bits"]),
+            vec![rvar(&xmm_var(xmm))],
+        )),
+        FpWidth::F32 => render_rust_expr(&rcall(
+            path_expr(&["f32", "from_bits"]),
+            vec![rcast(rvar(&xmm_var(xmm)), rtype_path("u32"))],
+        )),
     }
 }
 
 fn rs_fp_const_literal(bits: u64, width: FpWidth) -> String {
     match width {
-        FpWidth::F64 => format!("f64::from_bits(0x{bits:016x}u64)"),
-        FpWidth::F32 => format!("f32::from_bits(0x{:08x}u32)", bits as u32),
+        FpWidth::F64 => render_rust_expr(&rcall(
+            path_expr(&["f64", "from_bits"]),
+            vec![int_hex(u128::from(bits), "u64")],
+        )),
+        FpWidth::F32 => render_rust_expr(&rcall(
+            path_expr(&["f32", "from_bits"]),
+            vec![int_hex(u128::from(bits as u32), "u32")],
+        )),
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_fp_store_expr(value: &str, width: FpWidth) -> String {
-    match width {
-        FpWidth::F64 => format!("(({value}) as f64).to_bits()"),
-        FpWidth::F32 => format!("((({value}) as f32).to_bits() as u64)"),
+    let rust_ty: &str = match width {
+        FpWidth::F64 => "f64",
+        FpWidth::F32 => "f32",
+    };
+    match parse_expr(value) {
+        Some(opaque) => {
+            let as_float: RustExpr = rcast(opaque, rtype_path(rust_ty));
+            let bits: RustExpr = method_call(as_float, "to_bits", Vec::new());
+            match width {
+                FpWidth::F64 => render_rust_expr(&bits),
+                FpWidth::F32 => render_rust_expr(&rcast(bits, rtype_path("u64"))),
+            }
+        }
+        None => match width {
+            FpWidth::F64 => format!("(({value}) as f64).to_bits()"),
+            FpWidth::F32 => format!("((({value}) as f32).to_bits() as u64)"),
+        },
     }
 }
 
 fn rs_xmm_bits(xmm: Xmm, width: FpWidth) -> String {
     match width {
         FpWidth::F64 => xmm_var(xmm),
-        FpWidth::F32 => format!("(({} as u32) as u64)", xmm_var(xmm)),
+        FpWidth::F32 => render_rust_expr(&rcast(
+            rcast(rvar(&xmm_var(xmm)), rtype_path("u32")),
+            rtype_path("u64"),
+        )),
     }
 }
 
@@ -8767,21 +8900,41 @@ fn rs_emit_divide(out: &mut String, divisor: RegRef, signed: bool, indent: &str)
     let _ = writeln!(out, "{indent}}}");
 }
 
+#[allow(clippy::option_if_let_else)]
+fn rs_unop_expr(op: UnOp, text: &str) -> String {
+    match parse_expr(text) {
+        Some(operand) => match op {
+            UnOp::Neg => render_rust_expr(&method_call(operand, "wrapping_neg", Vec::new())),
+            UnOp::Not => render_rust_expr(&runary(RUnOp::Not, operand)),
+        },
+        None => match op {
+            UnOp::Neg => format!("({text}).wrapping_neg()"),
+            UnOp::Not => format!("(!({text}))"),
+        },
+    }
+}
+
 fn rs_addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<RustExpr> = Vec::new();
     if let Some(b) = base {
-        parts.push(reg_var(b));
+        parts.push(rvar(&reg_var(b)));
     }
     if let Some((i, scale)) = index {
-        parts.push(format!("({}.wrapping_mul({scale}u64))", reg_var(i)));
+        let scaled: RustExpr = method_call(
+            rvar(&reg_var(i)),
+            "wrapping_mul",
+            vec![int_dec(u128::from(scale), "u64")],
+        );
+        parts.push(scaled);
     }
     if disp != 0 || parts.is_empty() {
-        parts.push(format!("(({disp}i64) as u64)"));
+        parts.push(rcast(signed_int(disp, "i64"), rtype_path("u64")));
     }
-    parts
+    let combined: RustExpr = parts
         .into_iter()
-        .reduce(|acc: String, part: String| format!("{acc}.wrapping_add({part})"))
-        .unwrap_or_else(|| "0u64".to_owned())
+        .reduce(|acc: RustExpr, part: RustExpr| method_call(acc, "wrapping_add", vec![part]))
+        .unwrap_or_else(|| int_dec(0, "u64"));
+    render_rust_expr(&combined)
 }
 
 fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
@@ -8791,87 +8944,219 @@ fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
                 Some(reg_var(r.reg))
             } else {
                 let mask: u128 = (1u128 << r.width.bits()) - 1;
-                Some(format!("({} & 0x{mask:x}u64)", reg_var(r.reg)))
+                let masked: RustExpr =
+                    binary(RBinOp::BitAnd, rvar(&reg_var(r.reg)), int_hex(mask, "u64"));
+                Some(render_rust_expr(&masked))
             }
         }
-        Source::Imm(value) => Some(format!("(({value}i64) as u64)")),
+        Source::Imm(value) => Some(render_rust_expr(&rcast(
+            signed_int(*value, "i64"),
+            rtype_path("u64"),
+        ))),
         Source::Lea { base, index, disp } => Some(rs_addr_expr(*base, *index, *disp)),
         Source::Mem(mem) => Some(rs_deref_read(mem)),
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_width_mask(width: Width, body: &str) -> String {
     match width {
         Width::W64 => body.to_owned(),
-        other => format!("(({body}) & 0x{:x}u64)", (1u128 << other.bits()) - 1),
+        other => {
+            let mask: u128 = (1u128 << other.bits()) - 1;
+            match parse_expr(body) {
+                Some(opaque) => {
+                    render_rust_expr(&binary(RBinOp::BitAnd, opaque, int_hex(mask, "u64")))
+                }
+                None => format!("(({body}) & 0x{mask:x}u64)"),
+            }
+        }
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_reg_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
     match width {
         Width::W64 => body.to_owned(),
-        Width::W32 => format!("(({body}) & 0xffffffffu64)"),
-        Width::W16 => {
-            format!("(({dest_var} & 0xffffffffffff0000u64) | (({body}) & 0xffffu64))")
-        }
-        Width::W8 => format!("(({dest_var} & 0xffffffffffffff00u64) | (({body}) & 0xffu64))"),
+        Width::W32 => match parse_expr(body) {
+            Some(opaque) => {
+                render_rust_expr(&binary(RBinOp::BitAnd, opaque, int_hex(0xffff_ffff, "u64")))
+            }
+            None => format!("(({body}) & 0xffffffffu64)"),
+        },
+        Width::W16 => match parse_expr(body) {
+            Some(opaque) => render_rust_expr(&binary(
+                RBinOp::BitOr,
+                binary(
+                    RBinOp::BitAnd,
+                    rvar(dest_var),
+                    int_hex(0xffff_ffff_ffff_0000, "u64"),
+                ),
+                binary(RBinOp::BitAnd, opaque, int_hex(0xffff, "u64")),
+            )),
+            None => format!("(({dest_var} & 0xffffffffffff0000u64) | (({body}) & 0xffffu64))"),
+        },
+        Width::W8 => match parse_expr(body) {
+            Some(opaque) => render_rust_expr(&binary(
+                RBinOp::BitOr,
+                binary(
+                    RBinOp::BitAnd,
+                    rvar(dest_var),
+                    int_hex(0xffff_ffff_ffff_ff00, "u64"),
+                ),
+                binary(RBinOp::BitAnd, opaque, int_hex(0xff, "u64")),
+            )),
+            None => format!("(({dest_var} & 0xffffffffffffff00u64) | (({body}) & 0xffu64))"),
+        },
     }
 }
 
 fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
     let bits: u32 = width.bits();
     let shift_mask: u32 = bits - 1;
+    let (parsed_lhs, parsed_rhs): (Option<RustExpr>, Option<RustExpr>) =
+        (parse_expr(lhs), parse_expr(rhs));
     match op {
-        BinOp::Add => format!("({lhs}).wrapping_add({rhs})"),
-        BinOp::Sub => format!("({lhs}).wrapping_sub({rhs})"),
-        BinOp::Imul => format!("({lhs}).wrapping_mul({rhs})"),
-        BinOp::And => format!("(({lhs}) & ({rhs}))"),
-        BinOp::Or => format!("(({lhs}) | ({rhs}))"),
-        BinOp::Xor => format!("(({lhs}) ^ ({rhs}))"),
-        BinOp::Shl => format!("({lhs}).wrapping_shl((({rhs}) & {shift_mask}u64) as u32)"),
+        BinOp::Add => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&method_call(l, "wrapping_add", vec![r])),
+            _ => format!("({lhs}).wrapping_add({rhs})"),
+        },
+        BinOp::Sub => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&method_call(l, "wrapping_sub", vec![r])),
+            _ => format!("({lhs}).wrapping_sub({rhs})"),
+        },
+        BinOp::Imul => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&method_call(l, "wrapping_mul", vec![r])),
+            _ => format!("({lhs}).wrapping_mul({rhs})"),
+        },
+        BinOp::And => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&binary(RBinOp::BitAnd, l, r)),
+            _ => format!("(({lhs}) & ({rhs}))"),
+        },
+        BinOp::Or => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&binary(RBinOp::BitOr, l, r)),
+            _ => format!("(({lhs}) | ({rhs}))"),
+        },
+        BinOp::Xor => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => render_rust_expr(&binary(RBinOp::BitXor, l, r)),
+            _ => format!("(({lhs}) ^ ({rhs}))"),
+        },
+        BinOp::Shl => match (parsed_lhs, parsed_rhs) {
+            (Some(l), Some(r)) => {
+                let masked_shift: RustExpr =
+                    binary(RBinOp::BitAnd, r, int_dec(u128::from(shift_mask), "u64"));
+                let amount: RustExpr = rcast(masked_shift, rtype_path("u32"));
+                render_rust_expr(&method_call(l, "wrapping_shl", vec![amount]))
+            }
+            _ => format!("({lhs}).wrapping_shl((({rhs}) & {shift_mask}u64) as u32)"),
+        },
         BinOp::Shr => {
             let mask: u128 = (1u128 << bits) - 1;
-            format!("(({lhs}) & 0x{mask:x}u64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32)")
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let masked_lhs: RustExpr = binary(RBinOp::BitAnd, l, int_hex(mask, "u64"));
+                    let masked_shift: RustExpr =
+                        binary(RBinOp::BitAnd, r, int_dec(u128::from(shift_mask), "u64"));
+                    let amount: RustExpr = rcast(masked_shift, rtype_path("u32"));
+                    render_rust_expr(&method_call(masked_lhs, "wrapping_shr", vec![amount]))
+                }
+                _ => format!(
+                    "(({lhs}) & 0x{mask:x}u64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32)"
+                ),
+            }
         }
         BinOp::Sar => {
             let ity: &str = rs_int_ty(width);
-            format!(
-                "(((({lhs}) as {ity}) as i64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32) as u64)"
-            )
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let signed: RustExpr = rcast(rcast(l, rtype_path(ity)), rtype_path("i64"));
+                    let masked_shift: RustExpr =
+                        binary(RBinOp::BitAnd, r, int_dec(u128::from(shift_mask), "u64"));
+                    let amount: RustExpr = rcast(masked_shift, rtype_path("u32"));
+                    let shifted: RustExpr = method_call(signed, "wrapping_shr", vec![amount]);
+                    render_rust_expr(&rcast(shifted, rtype_path("u64")))
+                }
+                _ => format!(
+                    "(((({lhs}) as {ity}) as i64).wrapping_shr((({rhs}) & {shift_mask}u64) as u32) as u64)"
+                ),
+            }
         }
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_extend_expr(raw: &str, src_width: Width, dst_width: Width, signed: bool) -> String {
     let src_mask: u128 = (1u128 << src_width.bits()) - 1;
-    let narrowed: String = format!("(({raw}) & 0x{src_mask:x}u64)");
-    if signed {
-        format!(
-            "({narrowed} as {si} as {di} as {du} as u64)",
-            si = rs_int_ty(src_width),
-            di = rs_int_ty(dst_width),
-            du = rs_uint_ty(dst_width)
-        )
-    } else {
-        format!(
-            "({narrowed} as {su} as {du} as u64)",
-            su = rs_uint_ty(src_width),
-            du = rs_uint_ty(dst_width)
-        )
+    match parse_expr(raw) {
+        Some(opaque) => {
+            let narrowed: RustExpr = binary(RBinOp::BitAnd, opaque, int_hex(src_mask, "u64"));
+            let chain: RustExpr = if signed {
+                rcast(
+                    rcast(
+                        rcast(narrowed, rtype_path(rs_int_ty(src_width))),
+                        rtype_path(rs_int_ty(dst_width)),
+                    ),
+                    rtype_path(rs_uint_ty(dst_width)),
+                )
+            } else {
+                rcast(
+                    rcast(narrowed, rtype_path(rs_uint_ty(src_width))),
+                    rtype_path(rs_uint_ty(dst_width)),
+                )
+            };
+            render_rust_expr(&rcast(chain, rtype_path("u64")))
+        }
+        None => {
+            let narrowed: String = format!("(({raw}) & 0x{src_mask:x}u64)");
+            if signed {
+                format!(
+                    "({narrowed} as {si} as {di} as {du} as u64)",
+                    si = rs_int_ty(src_width),
+                    di = rs_int_ty(dst_width),
+                    du = rs_uint_ty(dst_width)
+                )
+            } else {
+                format!(
+                    "({narrowed} as {su} as {du} as u64)",
+                    su = rs_uint_ty(src_width),
+                    du = rs_uint_ty(dst_width)
+                )
+            }
+        }
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_signed_operand(expr: &str, width: Width) -> String {
-    format!("((({expr}) as {ity}) as i64)", ity = rs_int_ty(width))
+    match parse_expr(expr) {
+        Some(opaque) => render_rust_expr(&rcast(
+            rcast(opaque, rtype_path(rs_int_ty(width))),
+            rtype_path("i64"),
+        )),
+        None => format!("((({expr}) as {ity}) as i64)", ity = rs_int_ty(width)),
+    }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_unsigned_operand(expr: &str, width: Width) -> String {
     match width {
         Width::W64 => format!("({expr})"),
         other => {
             let mask: u128 = (1u128 << other.bits()) - 1;
-            format!("(({expr}) & 0x{mask:x}u64)")
+            match parse_expr(expr) {
+                Some(opaque) => {
+                    render_rust_expr(&binary(RBinOp::BitAnd, opaque, int_hex(mask, "u64")))
+                }
+                None => format!("(({expr}) & 0x{mask:x}u64)"),
+            }
         }
+    }
+}
+
+fn rs_binary_text(a: &str, b: &str, op: RBinOp, op_text: &str) -> String {
+    match (parse_expr(a), parse_expr(b)) {
+        (Some(l), Some(r)) => render_rust_expr(&binary(op, l, r)),
+        _ => format!("{a} {op_text} {b}"),
     }
 }
 
@@ -8879,38 +9164,38 @@ fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width)
     if kind.is_unsigned_order() {
         let a: String = rs_unsigned_operand(lhs_expr, width);
         let b: String = rs_unsigned_operand(rhs_expr, width);
-        let op: &str = match kind {
-            CondKind::A => ">",
-            CondKind::Ae => ">=",
-            CondKind::B => "<",
-            CondKind::Be => "<=",
+        let (op, op_text): (RBinOp, &str) = match kind {
+            CondKind::A => (RBinOp::Gt, ">"),
+            CondKind::Ae => (RBinOp::Ge, ">="),
+            CondKind::B => (RBinOp::Lt, "<"),
+            CondKind::Be => (RBinOp::Le, "<="),
             _ => unreachable!(),
         };
-        format!("{a} {op} {b}")
+        rs_binary_text(&a, &b, op, op_text)
     } else if kind.is_signed_order() {
         let a: String = rs_signed_operand(lhs_expr, width);
         let b: String = rs_signed_operand(rhs_expr, width);
-        let op: &str = match kind {
-            CondKind::G => ">",
-            CondKind::Ge => ">=",
-            CondKind::L => "<",
-            CondKind::Le => "<=",
+        let (op, op_text): (RBinOp, &str) = match kind {
+            CondKind::G => (RBinOp::Gt, ">"),
+            CondKind::Ge => (RBinOp::Ge, ">="),
+            CondKind::L => (RBinOp::Lt, "<"),
+            CondKind::Le => (RBinOp::Le, "<="),
             _ => unreachable!(),
         };
-        format!("{a} {op} {b}")
+        rs_binary_text(&a, &b, op, op_text)
     } else {
         let a: String = rs_signed_operand(lhs_expr, width);
         let b: String = rs_signed_operand(rhs_expr, width);
         match kind {
-            CondKind::E => format!("{a} == {b}"),
-            CondKind::Ne => format!("{a} != {b}"),
+            CondKind::E => rs_binary_text(&a, &b, RBinOp::Eq, "=="),
+            CondKind::Ne => rs_binary_text(&a, &b, RBinOp::Ne, "!="),
             CondKind::S => {
                 let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
-                format!("{diff} < 0")
+                rs_binary_text(&diff, "0", RBinOp::Lt, "<")
             }
             CondKind::Ns => {
                 let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
-                format!("{diff} >= 0")
+                rs_binary_text(&diff, "0", RBinOp::Ge, ">=")
             }
             _ => unreachable!(),
         }
@@ -8920,20 +9205,27 @@ fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width)
 fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
     let a: String = rs_unsigned_operand(lhs, width);
     let b: String = rs_unsigned_operand(rhs, width);
-    format!("(({a}).wrapping_sub({b}) as {ity})", ity = rs_int_ty(width))
+    match (parse_expr(&a), parse_expr(&b)) {
+        (Some(l), Some(r)) => {
+            let diff: RustExpr = method_call(l, "wrapping_sub", vec![r]);
+            render_rust_expr(&rcast(diff, rtype_path(rs_int_ty(width))))
+        }
+        _ => format!("(({a}).wrapping_sub({b}) as {ity})", ity = rs_int_ty(width)),
+    }
 }
 
 fn rs_if_cond_expr(cond: &Cond) -> Option<String> {
     match cond {
         Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags),
-        Cond::Or(lhs, rhs) => Some(format!(
-            "({}) || ({})",
-            rs_if_cond_expr(lhs)?,
-            rs_if_cond_expr(rhs)?
-        )),
+        Cond::Or(lhs, rhs) => {
+            let a: String = rs_if_cond_expr(lhs)?;
+            let b: String = rs_if_cond_expr(rhs)?;
+            Some(rs_binary_text(&a, &b, RBinOp::Or, "||"))
+        }
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
     match flags {
         Flags::Cmp { lhs, rhs } => {
@@ -8951,13 +9243,18 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
         Flags::TestImm { operand, mask } => {
             let width: Width = operand.width;
             let maskval: u64 = (*mask as u64) & ((1u128 << width.bits()) - 1) as u64;
-            let masked: String = format!(
-                "({} & 0x{maskval:x}u64)",
-                rs_unsigned_operand(&reg_var(operand.reg), width)
-            );
+            let unsigned: String = rs_unsigned_operand(&reg_var(operand.reg), width);
+            let masked: String = match parse_expr(&unsigned) {
+                Some(opaque) => render_rust_expr(&binary(
+                    RBinOp::BitAnd,
+                    opaque,
+                    int_hex(u128::from(maskval), "u64"),
+                )),
+                None => format!("({unsigned} & 0x{maskval:x}u64)"),
+            };
             match kind {
-                CondKind::E => Some(format!("{masked} == 0")),
-                CondKind::Ne => Some(format!("{masked} != 0")),
+                CondKind::E => Some(rs_binary_text(&masked, "0", RBinOp::Eq, "==")),
+                CondKind::Ne => Some(rs_binary_text(&masked, "0", RBinOp::Ne, "!=")),
                 _ => None,
             }
         }
@@ -8965,12 +9262,12 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
             let width: Width = operand.width;
             let var: String = rs_signed_operand(&reg_var(operand.reg), width);
             let expr: String = match kind {
-                CondKind::E | CondKind::Be => format!("{var} == 0"),
-                CondKind::Ne | CondKind::A => format!("{var} != 0"),
-                CondKind::G => format!("{var} > 0"),
-                CondKind::Ge | CondKind::Ns => format!("{var} >= 0"),
-                CondKind::L | CondKind::S => format!("{var} < 0"),
-                CondKind::Le => format!("{var} <= 0"),
+                CondKind::E | CondKind::Be => rs_binary_text(&var, "0", RBinOp::Eq, "=="),
+                CondKind::Ne | CondKind::A => rs_binary_text(&var, "0", RBinOp::Ne, "!="),
+                CondKind::G => rs_binary_text(&var, "0", RBinOp::Gt, ">"),
+                CondKind::Ge | CondKind::Ns => rs_binary_text(&var, "0", RBinOp::Ge, ">="),
+                CondKind::L | CondKind::S => rs_binary_text(&var, "0", RBinOp::Lt, "<"),
+                CondKind::Le => rs_binary_text(&var, "0", RBinOp::Le, "<="),
                 CondKind::Ae => "true".to_owned(),
                 CondKind::B => "false".to_owned(),
             };
@@ -8980,34 +9277,34 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
             let width: Width = result.width;
             let var: String = rs_signed_operand(&reg_var(result.reg), width);
             match kind {
-                CondKind::S => Some(format!("{var} < 0")),
-                CondKind::Ns => Some(format!("{var} >= 0")),
-                CondKind::E => Some(format!("{var} == 0")),
-                CondKind::Ne => Some(format!("{var} != 0")),
+                CondKind::S => Some(rs_binary_text(&var, "0", RBinOp::Lt, "<")),
+                CondKind::Ns => Some(rs_binary_text(&var, "0", RBinOp::Ge, ">=")),
+                CondKind::E => Some(rs_binary_text(&var, "0", RBinOp::Eq, "==")),
+                CondKind::Ne => Some(rs_binary_text(&var, "0", RBinOp::Ne, "!=")),
                 _ => None,
             }
         }
         Flags::FpCmp { lhs, rhs, width } => {
             let a: String = rs_fp_load_xmm(*lhs, *width);
             let b: String = rs_fp_load(rhs, *width)?;
-            let op: &str = match kind {
-                CondKind::B => "<",
-                CondKind::Be => "<=",
-                CondKind::A => ">",
-                CondKind::Ae => ">=",
-                CondKind::E => "==",
-                CondKind::Ne => "!=",
+            let (op, op_text): (RBinOp, &str) = match kind {
+                CondKind::B => (RBinOp::Lt, "<"),
+                CondKind::Be => (RBinOp::Le, "<="),
+                CondKind::A => (RBinOp::Gt, ">"),
+                CondKind::Ae => (RBinOp::Ge, ">="),
+                CondKind::E => (RBinOp::Eq, "=="),
+                CondKind::Ne => (RBinOp::Ne, "!="),
                 _ => return None,
             };
-            Some(format!("({a}) {op} ({b})"))
+            Some(rs_binary_text(&a, &b, op, op_text))
         }
         Flags::Snapshot { var } => {
-            let cmp: &str = if matches!(kind, CondKind::E) {
-                "=="
+            let (op, op_text): (RBinOp, &str) = if matches!(kind, CondKind::E) {
+                (RBinOp::Eq, "==")
             } else {
-                "!="
+                (RBinOp::Ne, "!=")
             };
-            Some(format!("{} {cmp} 0", sel_var(*var)))
+            Some(rs_binary_text(&sel_var(*var), "0", op, op_text))
         }
     }
 }

@@ -2,10 +2,10 @@ use proc_macro2::Span;
 use quote::format_ident;
 use syn::punctuated::Punctuated;
 use syn::{
-    BinOp, Block, Expr, ExprAssign, ExprBinary, ExprCall, ExprCast, ExprField, ExprIndex, ExprLit,
-    ExprParen, ExprPath, ExprReference, ExprUnary, FnArg, Ident, Item, ItemFn, Lit, LitInt, Local,
-    LocalInit, Member, Pat, PatIdent, PatType, Path, ReturnType, Signature, Stmt, Type, TypePath,
-    UnOp, Visibility,
+    BinOp, Block, Expr, ExprAssign, ExprBinary, ExprBlock, ExprCall, ExprCast, ExprField,
+    ExprIndex, ExprLit, ExprMethodCall, ExprParen, ExprPath, ExprReference, ExprUnary, ExprUnsafe,
+    FnArg, Ident, Item, ItemFn, Lit, LitInt, Local, LocalInit, Member, Pat, PatIdent, PatType,
+    Path, PathSegment, ReturnType, Signature, Stmt, Type, TypePath, TypePtr, UnOp, Visibility,
 };
 
 fn tok<T: Default>() -> T {
@@ -91,11 +91,56 @@ pub fn var(name: &str) -> Expr {
 }
 
 #[must_use]
+pub fn path_expr(segments: &[&str]) -> Expr {
+    let mut path: Path = Path {
+        leading_colon: None,
+        segments: Punctuated::new(),
+    };
+    for segment in segments {
+        path.segments.push(PathSegment::from(ident(segment)));
+    }
+    Expr::Path(ExprPath {
+        attrs: Vec::new(),
+        qself: None,
+        path,
+    })
+}
+
+fn lit_int(repr: &str) -> Expr {
+    Expr::Lit(ExprLit {
+        attrs: Vec::new(),
+        lit: Lit::Int(LitInt::new(repr, Span::call_site())),
+    })
+}
+
+#[must_use]
 pub fn int(value: u64) -> Expr {
     Expr::Lit(ExprLit {
         attrs: Vec::new(),
         lit: Lit::Int(LitInt::new(&value.to_string(), Span::call_site())),
     })
+}
+
+#[must_use]
+pub fn int_dec(value: u128, suffix: &str) -> Expr {
+    lit_int(&format!("{value}{suffix}"))
+}
+
+#[must_use]
+pub fn int_hex(value: u128, suffix: &str) -> Expr {
+    lit_int(&format!("0x{value:x}{suffix}"))
+}
+
+#[must_use]
+pub fn signed_int(value: i64, suffix: &str) -> Expr {
+    if value < 0 {
+        unary(
+            RUnOp::Neg,
+            int_dec(u128::from(value.unsigned_abs()), suffix),
+        )
+    } else {
+        int_dec(value as u128, suffix)
+    }
 }
 
 #[must_use]
@@ -122,6 +167,19 @@ pub fn call(func: Expr, args: Vec<Expr>) -> Expr {
     Expr::Call(ExprCall {
         attrs: Vec::new(),
         func: Box::new(func),
+        paren_token: tok(),
+        args: args.into_iter().collect(),
+    })
+}
+
+#[must_use]
+pub fn method_call(receiver: Expr, method: &str, args: Vec<Expr>) -> Expr {
+    Expr::MethodCall(ExprMethodCall {
+        attrs: Vec::new(),
+        receiver: Box::new(receiver),
+        dot_token: tok(),
+        method: ident(method),
+        turbofish: None,
         paren_token: tok(),
         args: args.into_iter().collect(),
     })
@@ -187,10 +245,58 @@ pub fn paren(inner: Expr) -> Expr {
 }
 
 #[must_use]
+pub fn block_expr(stmts: Vec<Stmt>) -> Expr {
+    Expr::Block(ExprBlock {
+        attrs: Vec::new(),
+        label: None,
+        block: Block {
+            brace_token: tok(),
+            stmts,
+        },
+    })
+}
+
+#[must_use]
+pub fn unsafe_block(inner: Expr) -> Expr {
+    Expr::Unsafe(ExprUnsafe {
+        attrs: Vec::new(),
+        unsafe_token: tok(),
+        block: Block {
+            brace_token: tok(),
+            stmts: vec![trailing_expr(inner)],
+        },
+    })
+}
+
+#[must_use]
+pub fn if_else(cond: Expr, then_expr: Expr, else_expr: Expr) -> Expr {
+    Expr::If(syn::ExprIf {
+        attrs: Vec::new(),
+        if_token: tok(),
+        cond: Box::new(cond),
+        then_branch: Block {
+            brace_token: tok(),
+            stmts: vec![trailing_expr(then_expr)],
+        },
+        else_branch: Some((tok(), Box::new(block_expr(vec![trailing_expr(else_expr)])))),
+    })
+}
+
+#[must_use]
 pub fn type_path(name: &str) -> Type {
     Type::Path(TypePath {
         qself: None,
         path: Path::from(ident(name)),
+    })
+}
+
+#[must_use]
+pub fn ptr_type(mutable: bool, elem: Type) -> Type {
+    Type::Ptr(TypePtr {
+        star_token: tok(),
+        const_token: (!mutable).then(tok),
+        mutability: mutable.then(tok),
+        elem: Box::new(elem),
     })
 }
 
