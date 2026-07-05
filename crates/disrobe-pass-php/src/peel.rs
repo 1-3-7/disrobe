@@ -536,6 +536,13 @@ fn resolve_inner_full(inner_arg: &[u8]) -> Vec<u8> {
 const RESOLVE_DEPTH_CAP: u32 = 32;
 
 fn classify_inner(arg: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
+    classify_inner_at_depth(arg, 0)
+}
+
+fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)> {
+    if depth > RESOLVE_DEPTH_CAP {
+        return None;
+    }
     if let Some(caps) = b64_call_re().captures(arg) {
         let body: Vec<u8> = caps
             .get(1)?
@@ -645,7 +652,8 @@ fn classify_inner(arg: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
     }
     if let Some(caps) = createfunction_call_re().captures(arg) {
         let inner_arg: &[u8] = caps.get(1)?.as_bytes();
-        let (kind, body): (EvalKind, Vec<u8>) = classify_inner(inner_arg)
+        let next_depth: u32 = depth.saturating_add(1);
+        let (kind, body): (EvalKind, Vec<u8>) = classify_inner_at_depth(inner_arg, next_depth)
             .unwrap_or_else(|| (EvalKind::CreateFunction, resolve_inner(inner_arg)));
         return Some((kind, body));
     }
@@ -1170,5 +1178,24 @@ mod tests {
         let report: PeelReport = peel(&blob, PeelOptions::default()).expect("peeled");
         assert_eq!(report.final_source, payload);
         assert!(report.layer_counts.contains_key(&PeelLayer::Hex2Bin));
+    }
+
+    #[test]
+    fn nested_create_function_classification_stops_at_depth_cap() {
+        let payload: &[u8] = b"echo 'bounded';";
+        let mut expr: String = format!("base64_decode('{}')", B64_STD.encode(payload));
+        for _ in 0..RESOLVE_DEPTH_CAP + 8 {
+            expr = format!("create_function('', {expr})");
+        }
+
+        let (kind, body): (EvalKind, Vec<u8>) =
+            classify_inner(expr.as_bytes()).expect("outer create_function must classify");
+
+        assert!(matches!(kind, EvalKind::CreateFunction));
+        assert!(
+            body.windows(b"create_function".len())
+                .any(|window: &[u8]| window == b"create_function"),
+            "depth cap must leave nested create_function source for a later bounded peel"
+        );
     }
 }
