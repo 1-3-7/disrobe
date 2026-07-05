@@ -39,5 +39,5 @@ commit-msg:
 
 pre-push:
   commands:
-    regen-check:
-      run: cargo run -p xtask -- regen --check
+    prepush:
+      run: cargo run -p xtask -- prepush

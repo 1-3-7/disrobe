@@ -1,3 +1,6 @@
+[alias]
+xtask = "run --package xtask --"
+
 [env]
 PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"
 PYO3_NO_PYTHON = "1"

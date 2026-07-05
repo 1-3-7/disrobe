@@ -11,11 +11,13 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-You need Rust stable; `rust-toolchain.toml` pins the version. Builds that touch the pyo3 bindings need a Python on `PATH`, and `PYO3_PYTHON` pins a specific one. `lefthook` runs the pre-commit checks and a pre-push gate that fails the push if any generated artifact (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, or the README stat cross-check) has drifted from its source:
+`rust-toolchain.toml` pins the exact Rust version so your local `rustfmt` and `clippy` match CI byte-for-byte. Builds that touch the pyo3 bindings need a Python on `PATH`, and `PYO3_PYTHON` pins a specific one. Install the git hooks once with:
 
 ```
-lefthook install
+cargo xtask setup-hooks
 ```
+
+That points git at `lefthook`, which runs the pre-commit checks and a pre-push pre-mortem (`cargo xtask prepush`). The pre-push gate is the single source of truth shared with CI: it formats every changed crate (`cargo fmt -p <crate> -- --check`), re-checks generated-artifact freshness when the change touches a generator or its inputs, and runs `cargo clippy --workspace --all-targets -- -D warnings`, failing fast and printing the exact fix for whatever drifted. Run `cargo xtask prepush --full` before a release to gate every crate unscoped. `LEFTHOOK=0 git push` or `git push --no-verify` skips it in an emergency.
 
 ## Workspace map
 
