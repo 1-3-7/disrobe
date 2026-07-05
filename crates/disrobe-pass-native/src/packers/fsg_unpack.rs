@@ -233,9 +233,12 @@ fn parse_import_meta(
     pe: &PeImage<'_>,
     anchors: &StubAnchors,
 ) -> Result<Vec<FsgImport>> {
-    let import_meta_rva: u32 = anchors.import_meta_va.checked_sub(anchors.image_base).ok_or(
-        Error::PackerUnpackerNotImplemented("FSG: import metadata VA below ImageBase"),
-    )?;
+    let import_meta_rva: u32 = anchors
+        .import_meta_va
+        .checked_sub(anchors.image_base)
+        .ok_or(Error::PackerUnpackerNotImplemented(
+            "FSG: import metadata VA below ImageBase",
+        ))?;
     let meta_off: usize = rva_to_file_offset(pe, import_meta_rva)?;
     let mut entries: Vec<FsgImport> = Vec::new();
     let mut cursor: usize = meta_off;
