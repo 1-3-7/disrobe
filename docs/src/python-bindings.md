@@ -713,9 +713,9 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 ### `py_decompile`
 
 Decompiles a `.pyc` (with header) to source. Full CPython 3.14 stdlib coverage is
-92.43% per-code-object recompile equivalence (16880 of 18262); the pinned
-200-module corpus is 94.18% (5920 of 6286, CI floor 90%). Legacy CPython
-1.0-3.7: 78.5% proven-correct (CI floor 150 of 191; 166 of 191 with the full
+<!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object recompile equivalence (16880 of 18262); the pinned
+200-module corpus is <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> (5920 of 6286, CI floor 90%). Legacy CPython
+1.0-3.7: <!-- m:py_legacy_pct -->78.5%<!-- /m --> proven-correct (CI floor 150 of 191; 166 of 191 with the full
 interpreter zoo present).
 
 ```python
@@ -813,7 +813,7 @@ payload_size: int | None = detection.payload_size
 
 ### `pyarmor_unpack`
 
-Statically unpacks a PyArmor wrapper image. 72 of 72 PyArmor samples (v6-v9)
+Statically unpacks a PyArmor wrapper image. <!-- m:pyarmor_samples -->72<!-- /m --> of 72 PyArmor samples (v6-v9)
 recover. The bindings expose only the static path; there is no
 `--allow-dynamic` equivalent.
 
@@ -918,7 +918,7 @@ freezer families; reach it via `report.raw`.
 ## Hermes (React Native)
 
 All 8 functions in the committed hermesc-built HBC v96 sample lift at 100%
-op-coverage with 0 fallback ops. A 122,633-function production React Native
+op-coverage with 0 fallback ops. A <!-- m:hermes_functions -->122,633<!-- /m -->-function production React Native
 bundle parses with no module-parse failure in the local scale harness.
 
 ```python
@@ -979,7 +979,7 @@ swift_slice_count: int = swift.slice_count
 ## JVM and Android
 
 131 of 131 JVM methods recompile error-free under javac (CI floor 131 of 131,
-JDK 25). 99% of committed DEX classes pass `-Xverify:all`.
+JDK 25). <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of committed DEX classes pass `-Xverify:all`.
 
 ```python
 import disrobe
@@ -1130,7 +1130,7 @@ function_count: int | None = detection.function_count
 
 ## JavaScript
 
-Detects 11 bundlers. The explicit target hint accepts `auto`, `webpack4`,
+Detects <!-- m:js_bundlers -->11<!-- /m --> bundlers. The explicit target hint accepts `auto`, `webpack4`,
 `webpack5`/`webpack`, `vite`, `rollup`, `esbuild`, `turbopack`, and `bun`.
 An unrecognised hint string raises `DisrobeError`.
 
@@ -1204,7 +1204,7 @@ recovered_string_count: int = deob.recovered_string_count
 
 ## Go
 
-85%+ type-name recovery on stripped go1.26 fixtures; 528 of 528 measured.
+<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; 528 of 528 measured.
 
 ```python
 import disrobe

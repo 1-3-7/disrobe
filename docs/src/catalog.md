@@ -37,7 +37,7 @@ The recover tier is scored byte-for-byte against real committed originals: UPX `
 | Surface | Count | Families |
 |---|---|---|
 | **Freezers / packagers** | 9 | PyInstaller 2.x-6.20+, Nuitka (onefile / standalone / module / wheel), cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender `.pye` |
-| **Protector (PyArmor)** | 7 versions | PyArmor v6-v9-pro (default / super / no-wrap); recovered 72 of 72 real-corpus samples. The v3-v5 RSA-wrapped-key tier is a runtime-key wall. |
+| **Protector (PyArmor)** | 7 versions | PyArmor v6-v9-pro (default / super / no-wrap); recovered <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples. The v3-v5 RSA-wrapped-key tier is a runtime-key wall. |
 | **Source obfuscators (AST-evaluator)** | 20 | Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, pyobfuscate.com (2026 XOR/lambda), PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online-obfuscator family, Xindex, pyobfus, Pypacker, Patchwork, pyc-zipper |
 
 Jawbreaker's b16/b32/b64 loader shell is decoded statically, but a payload it fetches from a remote paste at run time is absent from the file. ObfuXtreme's AES-CBC/b85/xor static body is recovered; its runtime-payload segment is not in the artifact. python-obfuscator (PyPI), pyobfus, and Pypacker are detect plus partial-peel. See the [Python guide](./languages/python.md).
@@ -59,7 +59,7 @@ The [JS](./languages/javascript.md) and [WebAssembly](./languages/wasm.md) guide
 |---|---|---|
 | **JVM / Android protectors** | 10 | ProGuard/R8 (mapping replay), Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for the keyed-constant variants), BlackObfuscator (DEX deflattening); yGuard, SkidSuite2, JBCO (detect-only) |
 | **Android RASP vendors** | 8 | Promon SHIELD, Guardsquare DexGuard RASP, Guardsquare ThreatCast, Appdome, OneSpan, Arxan / Digital.ai, Zimperium zShield, Licel DexProtector |
-| **.NET protectors** | 23 | ConfuserEx, ConfuserEx2, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, Eazfuscator.NET, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, Themida (.NET wrapper), ILProtector, MaxToCode, KoiVM, DotNetPatcher, NetCryptor, BitMono |
+| **.NET protectors** | <!-- m:dotnet_protectors -->23<!-- /m --> | ConfuserEx, ConfuserEx2, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, Eazfuscator.NET, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, Themida (.NET wrapper), ILProtector, MaxToCode, KoiVM, DotNetPatcher, NetCryptor, BitMono |
 
 On .NET, ConfuserEx2 constant decryption is reversed on a real committed sample, the Eazfuscator VM tier is devirtualized at 57 of 57 instructions against an in-repo EazVM virtualizer of our own, and the KoiVM VM tier is devirtualized on a sample produced by the real KoiVM tool (6 of 6 bodies lifted to CIL). ILProtector, MaxToCode, and the Themida/.NET wrapper derive their per-method key in a native loader absent from the artifact, so those bodies are runtime-key walled. See the [JVM and Android](./languages/jvm-android.md) and [.NET](./languages/dotnet.md) guides.
 
@@ -94,13 +94,13 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 
 | Ecosystem | Coverage |
 |---|---|
-| **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names resolved above an 85% floor on the committed go1.26.3 fixture. |
+| **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names resolved above an <!-- m:go_typename_pct -->85%<!-- /m --> floor on the committed go1.26.3 fixture. |
 | **Ruby** | MRI/YARV 2.6-3.4 and mruby recompile-equivalence decompile; Ruby2Exe and Ocra freezers detected; JRuby and TruffleRuby AOT classified. |
 | **BEAM** | `.beam` and `.ez` chunk parse, Core Erlang lift, Elixir `Dbgi` quoted-AST recovery. |
 | **Swift / Obj-C** | Mach-O class-dump plus SwiftConfidential and SwiftShield rename-undo. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 lift; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm. |
-| **Containers / archives / filesystems / firmware** | 98 formats detected, all 98 with in-tree extractors that write member bytes. |
+| **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->98<!-- /m --> formats detected, all <!-- m:containers_formats -->98<!-- /m --> with in-tree extractors that write member bytes. |
 
 ## The `disrobe auto` chain
 

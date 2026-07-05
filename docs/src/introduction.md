@@ -17,7 +17,7 @@ Built for forensic and recovery work where reproducibility matters:
 - **Deterministic.** No model anywhere in the decompile path. The same input produces byte-identical output on every machine and every run, usable as evidence and as a diff baseline.
 - **Single static binary.** No JVM, no Python runtime, no Docker image required to run the core. Builds from one `cargo build --release`. Drops into CI headlessly.
 - **Content-addressed.** Every recovered artifact persists as a `.dr` envelope: an rkyv hot payload plus a postcard cold sidecar, rooted by a BLAKE3 hash. Cache hits are byte-identical and chains compose offline.
-- **Honest.** Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: 92.43% per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262), plus 94.18% on the pinned 200-module corpus (5920 of 6286). Recovery that is not perfect is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that **disrobe** cannot fully unpack are reported as detect-only by design, never faked.
+- **Honest.** Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262), plus <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> on the pinned 200-module corpus (5920 of 6286). Recovery that is not perfect is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that **disrobe** cannot fully unpack are reported as detect-only by design, never faked.
 
 ## Who this is for
 
@@ -38,14 +38,14 @@ Every figure below is produced by a committed test gate or a local measurement h
 
 | Ecosystem | Measured | Oracle |
 |---|---|---|
-| Python bytecode | 92.43% per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262); 94.18% on the pinned 200-module corpus (5920 of 6286) | recompile on CPython 3.14.5, opcode diff |
+| Python bytecode | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262); <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> on the pinned 200-module corpus (5920 of 6286) | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | 150 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 98.4% op-coverage on the 36 parseable corpus modules (124 of 126); 50 of 50 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | 131 of 131 methods recompile error-free | real `javac` |
-| Android (Dalvik) | 99% of verifiable classes pass the JVM verifier (102 of 103) | `-Xverify:all` over assembled jar |
-| Ruby YARV | greeter 100%, megafile 98% opcode-multiset equivalence | recompile on MRI |
-| PyArmor | 72 of 72 real-corpus samples recovered | plaintext-absent oracle |
-| Containers | 98 formats detected, 98 extracted in-tree | per-format byte length |
+| Android (Dalvik) | <!-- m:dalvik_verifier_pct -->99%<!-- /m --> of verifiable classes pass the JVM verifier (102 of 103) | `-Xverify:all` over assembled jar |
+| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98%<!-- /m --> opcode-multiset equivalence | recompile on MRI |
+| PyArmor | <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples recovered | plaintext-absent oracle |
+| Containers | <!-- m:containers_formats -->98<!-- /m --> formats detected, <!-- m:containers_formats -->98<!-- /m --> extracted in-tree | per-format byte length |
 
 The numbers that are not perfect are labelled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
 

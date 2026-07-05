@@ -82,6 +82,8 @@ jobs:
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check)
         run: cargo run -p xtask -- regen --check
+      - name: documentation metric markers match xtask/data/recovery.json (README + mdBook)
+        run: cargo run -p xtask -- metrics --check
 
   test:
     name: test (${{ matrix.os }})

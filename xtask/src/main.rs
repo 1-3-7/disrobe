@@ -11,6 +11,7 @@ mod errdocs;
 mod evidence;
 mod fileio;
 mod graphs;
+mod metrics;
 #[cfg(feature = "playground")]
 mod playground;
 mod plugins;
@@ -61,6 +62,12 @@ enum Cmd {
         check: bool,
     },
     Regen {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Metrics {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        write: bool,
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
     },
@@ -116,6 +123,7 @@ fn main() -> ExitCode {
         Cmd::Schemas { check } => run_schemas(check),
         Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
         Cmd::Regen { check } => run_regen(check),
+        Cmd::Metrics { write, check } => run_metrics(write, check),
         Cmd::Graphs { check } => run_graphs(check),
         Cmd::Demo { check } => run_demo(check),
         Cmd::Card { check } => run_card(check),
@@ -323,6 +331,16 @@ pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
 fn run_regen(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     regen::run(&root, check)
+}
+
+fn run_metrics(write: bool, check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let mode: metrics::Mode = match (write, check) {
+        (_, true) => metrics::Mode::Check,
+        (true, false) => metrics::Mode::Write,
+        (false, false) => bail!("specify --write to rewrite markers or --check to verify them"),
+    };
+    metrics::run(&root, mode)
 }
 
 fn run_graphs(check: bool) -> Result<()> {

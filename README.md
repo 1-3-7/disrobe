@@ -291,7 +291,7 @@ This section names the supported surface and its residual. Measured scores live 
 | JS obfuscators | Recover: obfuscator.io (full pipeline), JS-Confuser, Jscrambler. Partial: js-obfuscator (jsobfu). Scope-aware renaming, control-flow unflattening, and an MBA simplifier throughout. |
 | JS esoteric encoders | Recover: JSFuck, aaencode, jjencode, JSFireTruck, Dean Edwards `p,a,c,k,e,r`; static atob/base64 and eval/Function indirection folded back. |
 | JS protectors | Partial: JSDefender static-layer peel; Arxan/Digital.ai detect + self-identifying static-guard-marker strip (synthetic fixtures, no real-sample oracle yet). Detect-only: PACE. |
-| JS bundlers (11) | Recover: webpack 4/5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Parcel, Browserify, SystemJS, with source-map reconstruction. |
+| JS bundlers (<!-- m:js_bundlers -->11<!-- /m -->) | Recover: webpack 4/5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Parcel, Browserify, SystemJS, with source-map reconstruction. |
 | Source maps | Recover: deployed-frontend byte-identical source recovery whenever `sourcesContent` is present, across terser/esbuild/rollup/webpack output; inline, external, indexed, sectioned, nested, and `sourceRoot` maps. |
 | V8 / Bytenode | Recover: `.jsc` user-string layer + structure, Node SEA blob carve, Node 18-24 detection. Offline, no patched V8. |
 | WebAssembly | Recover: lift to typed Rust, TypeScript, WAT, or C with DWARF recovery (GC, component model, threads, SIMD, tail-call, memory64); reverses Jscrambler-WASM, Wobfuscator, Tigress-via-Emscripten, wasm-mixer. Detect-only: wasm-name-obfuscator (hex renames destroy original names). |
@@ -304,7 +304,7 @@ This section names the supported surface and its residual. Measured scores live 
 | Android / DEX | In-house Rust decompiler for DEX 1.0-16. Verifier-gated under real `java -Xverify:all`; production APK body-recovery counts are listed separately in Benchmarks as self-reported coverage. Binary AXML + arsc parse, APK signature v1-v4 verify, BlackObfuscator deflatten. |
 | JVM / Android obfuscators (9) | Recover: ProGuard/R8 name restore. Partial: Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for keyed-constant variants). Detect-only: yGuard, SkidSuite2, JBCO. |
 | Android RASP (8 vendors) | Detect-only: Promon SHIELD, Guardsquare DexGuard RASP and ThreatCast, Appdome Mobile Shield, OneSpan, Arxan/Digital.ai, Zimperium zShield, Licel DexProtector. |
-| .NET / CIL (23 protectors) | In-house CIL to C#/F#/VB; full PE + CLR + table-stream parser, R2R + native-AOT classify. Recover on committed samples: ConfuserEx2 constant decryption and KoiVM (from the real KoiVM tool); Eazfuscator VM devirt is graded against an in-repo EazVM encoder. Partial: ConfuserEx, SmartAssembly, Babel, Crypto Obfuscator, .NET Reactor, Agile.NET, Dotfuscator, Dotfuscator CE, DeepSea, Spices.Net, Skater, Goliath, ArmDot, Obfuscar, DotNetPatcher, NetCryptor, BitMono. Detect-only: ILProtector, MaxToCode, Themida-.NET (per-method key derived in a native loader, absent from the artifact). |
+| .NET / CIL (<!-- m:dotnet_protectors -->23<!-- /m --> protectors) | In-house CIL to C#/F#/VB; full PE + CLR + table-stream parser, R2R + native-AOT classify. Recover on committed samples: ConfuserEx2 constant decryption and KoiVM (from the real KoiVM tool); Eazfuscator VM devirt is graded against an in-repo EazVM encoder. Partial: ConfuserEx, SmartAssembly, Babel, Crypto Obfuscator, .NET Reactor, Agile.NET, Dotfuscator, Dotfuscator CE, DeepSea, Spices.Net, Skater, Goliath, ArmDot, Obfuscar, DotNetPatcher, NetCryptor, BitMono. Detect-only: ILProtector, MaxToCode, Themida-.NET (per-method key derived in a native loader, absent from the artifact). |
 
 ### Native (PE / ELF / Mach-O / COFF)
 
@@ -322,7 +322,7 @@ This section names the supported surface and its residual. Measured scores live 
 |---|---|
 | Go | Recover: pclntab symbol recovery across Go 1.2-1.26, full BuildInfo, garble name-recovery, embedded-FS walker, and garble `-literals` rebuilt via static init-thunk emulation. Wall: seedless garble name-hashing. |
 | Swift / Obj-C | Recover: Swift symbol demangle against `swift-demangle`, ObjC class/selector/ivar metadata, resilient field names, generic where-clauses, full parameter types, Punycode identifiers, SwiftConfidential/SwiftShield rename-undo, confidential XOR key recovery, and declared type/property/method names from a binary `.swiftmodule` (in-house LLVM-bitstream reader, graded against real `swiftc` output). Wall: native machine-code function bodies. |
-| Lua (16 catalog entries) | Recover: bytecode 5.1-5.4, LuaJIT 2.0/2.1, full Luau, GLua, SLua, recompile-equivalent; 14 obfuscator catalog entries plus Luau and GLua dialect detectors. IronBrew2 VM devirt is validated by a real-`lua` execution differential. Partial: Prometheus, MoonSec V1-V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, Hercules, Luraph. |
+| Lua (<!-- m:lua_catalog_entries -->16<!-- /m --> catalog entries) | Recover: bytecode 5.1-5.4, LuaJIT 2.0/2.1, full Luau, GLua, SLua, recompile-equivalent; 14 obfuscator catalog entries plus Luau and GLua dialect detectors. IronBrew2 VM devirt is validated by a real-`lua` execution differential. Partial: Prometheus, MoonSec V1-V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, Hercules, Luraph. |
 | Ruby | Recover: MRI/YARV 2.6-3.4 + mruby via a recompile-equivalence oracle, plus JRuby, TruffleRuby AOT, Ruby2Exe and OCRA freezers. |
 | PHP | Partial: source + bytecode skeleton recovery, Phar decode, Zend legacy XOR decrypt. Detect-only: ionCube, SourceGuardian, Zend Guard (native-loader-resident key). |
 | BEAM | Recover: `.beam`/`.ez` chunk parse + Core Erlang lift + Elixir `Dbgi` quoted-AST (100% with Dbgi). Partial: Erlang without Dbgi (register names absent from bytecode). |
@@ -419,11 +419,11 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 
 | Surface | Current proof | Leading tool(s) | Next proof |
 |---|---|---|---|
-| Python `.pyc` | 92.43% full CPython 3.14 stdlib; 94.18% pinned corpus, both recompile-equivalence | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus, same recompile oracle |
+| Python `.pyc` | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> full CPython 3.14 stdlib; <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> pinned corpus, both recompile-equivalence | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus, same recompile oracle |
 | Python freezers | PyInstaller and freezer chains extract `.pyc` payloads before the Python gate | pyinstxtractor-ng, pydecipher | shared onefile corpus, byte-exact `.pyc` carve, then source gate |
-| PyArmor | 72 / 72 static free-mode samples recover locally | Pyarmor-Static-Unpack-1shot | public subset or SHA-pinned external corpus |
+| PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> static free-mode samples recover locally | Pyarmor-Static-Unpack-1shot | public subset or SHA-pinned external corpus |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify by pickletools semantics | fickling | same malicious and benign corpus, safety-label agreement |
-| JavaScript and source maps | obfuscator and bundler recovery is pass-gated; 11 bundler families are cataloged | webcrack, wakaru, synchrony, REstringer, sourcemapper | same deployed bundle set, recovered-tree diff |
+| JavaScript and source maps | obfuscator and bundler recovery is pass-gated; <!-- m:js_bundlers -->11<!-- /m --> bundler families are cataloged | webcrack, wakaru, synchrony, REstringer, sourcemapper | same deployed bundle set, recovered-tree diff |
 | WebAssembly | 124 / 126 op-covered; 50 / 50 execution-eligible functions match under wasmtime | wabt `wasm-decompile`, Binaryen | same module set, parse plus wasmtime differential |
 | JVM `.class` | 131 / 131 methods recompile; CFR row is proven above | CFR, Vineflower, Procyon, Fernflower | add the missing decompilers to the `javac` gate |
 | Android DEX/APK | 102 / 103 committed classes verify; JADX row is proven above | JADX, apktool, androguard, dex2jar | verifier-attested FOSS APK set, SHA-pinned |
@@ -433,13 +433,13 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 | Go | 528 / 528 stripped type names; garble literals rebuilt from init-thunk emulation | GoReSym, redress, gore | same stripped binaries, type-name and literal recall |
 | Swift / ObjC | 37 / 37 Swift symbols recover against the binary's own symbol table and `swift-demangle` | `swift-demangle`, class-dump, jtool2 | ObjC record recall against class-dump |
 | Lua | real IronBrew2 2.7.0 output runs equal under `lua` after devirt | unluac, luadec, LuaDec51 | same `.luac` and VM-obfuscated set, execution differential |
-| Ruby YARV | greeter 100%, megafile floor 98% under MRI recompile | MRI disasm, ruby_decompiler | same `.iseq` set, opcode multiset gate |
+| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile floor <!-- m:ruby_megafile_pct -->98%<!-- /m --> under MRI recompile | MRI disasm, ruby_decompiler | same `.iseq` set, opcode multiset gate |
 | PHP | recursive eval-chain and encoded-container lifts have pass gates and length guards | php-decoder, de4php, php-malware-finder | same encoded corpus, parser plus runtime-output gate |
 | Shell / VBA | PowerShell, bash, batch, and VBA deobfuscation have pass gates over recursive decoders | PowerDecode, flare tools, olevba | same script corpus, AST and execution-output gate |
 | BEAM / AS3 | BEAM and ABC parsers lift bytecode to typed intermediate forms | `beam_disasm`, rabcdasm | same bytecode set, assembler round-trip gate |
-| Hermes / React Native | HBC v96 sample lifts 8 / 8 functions at zero fallback ops; 122,633-function bundle parses locally | hermes-dec, hbctool | same HBC set, bytecode-to-source and parse gates |
+| Hermes / React Native | HBC v96 sample lifts 8 / 8 functions at zero fallback ops; <!-- m:hermes_functions -->122,633<!-- /m -->-function bundle parses locally | hermes-dec, hbctool | same HBC set, bytecode-to-source and parse gates |
 | Flutter / Dart AOT | snapshot structure and cluster tags are parsed without fabricating names | reFlutter, Darter, blutter | same `libapp.so`, object-body name and field oracle |
-| Containers and firmware | 98 / 98 detected formats write member bytes in-tree | binwalk, unblob, 7-Zip | same archive and firmware set, member-byte diff |
+| Containers and firmware | <!-- m:containers_frac -->98 / 98<!-- /m --> detected formats write member bytes in-tree | binwalk, unblob, 7-Zip | same archive and firmware set, member-byte diff |
 | Recon and secrets | apkleaks row is proven above; planted non-secret IOC recall is 6 / 6 | trufflehog, gitleaks, apkleaks, LinkFinder | same recovered tree, shared ground truth |
 | Format / packer / compiler ID | multi-signal ID tolerates damaged magic and renamed sections | Detect It Easy, TrID, PEiD, binwalk | same mutated corpus, ID accuracy plus extraction |
 | Capabilities and taint | ATT&CK/MBC mapping and source-to-sink paths run over normalized IR | capa, Ghidra scripts, Joern | same samples, rule-match and flow-path agreement |
@@ -454,34 +454,34 @@ Oracle strength: `strong` means external-equivalence, execution, or byte-identit
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Python `.pyc`, full CPython 3.14 stdlib | 92.43% per-code-object (16880 / 18262, 571 modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
-| Python `.pyc`, pinned 200-module corpus | 94.18% per-code-object (5920 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python `.pyc`, full CPython 3.14 stdlib | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object (16880 / 18262, 571 modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
+| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> per-code-object (5920 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | 150 / 191 proven-correct floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | JVM classfile | 131 / 131 methods recompile error-free, floor 131 `[CI]` `recompile-only` | real `javac` (JDK 25); recompile-only, not yet bytecode-equivalence | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
 | Android DEX, committed corpus | 102 / 103 verifiable classes clean, 307 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
-| Android DEX, real APKs | transmissionic 92.5% / enrecipes 90.7% / rustdesk 89.0% of methods recover a body, >= 20k methods each `[local]` `coverage-self-reported` | per-method body-recovery count, self-reported (NOT verifier-attested); the verifier-attested number is the committed-corpus row above | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
+| Android DEX, real APKs | transmissionic <!-- m:dalvik_body_pct -->92.5%<!-- /m --> / enrecipes 90.7% / rustdesk 89.0% of methods recover a body, >= 20k methods each `[local]` `coverage-self-reported` | per-method body-recovery count, self-reported (NOT verifier-attested); the verifier-attested number is the committed-corpus row above | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
 | .NET Eazfuscator VM | 57 / 57 instructions lifted, recovered CIL re-injects to byte-identical stdout `[CI]` | independently compiled clean DLL, ordered CIL compare | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
 | .NET KoiVM | 6 / 6 bodies lifted to CIL, structural recovery >= 75% `[CI]` | independently compiled `KoiSample.clean.exe` | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
-| .NET protectors | 23 detected and classified, ConfuserEx2 constants decrypted on a real sample `[CI]` | plaintext-absent oracle on the committed DLL | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs`, `src/protectors.rs` |
+| .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> detected and classified, ConfuserEx2 constants decrypted on a real sample `[CI]` | plaintext-absent oracle on the committed DLL | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs`, `src/protectors.rs` |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify `[CI]` | pickletools-semantics equivalence | `crates/disrobe-pass-pickle/tests/corpus.rs` |
 | Pickle reconstruction roundtrip | 340 / 340 fixtures reconstruct to source that re-executes to an equal object under CPython (100%, floor 100%) `[CI]` | CPython re-execution differential | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
 | WebAssembly, op-coverage | 124 / 126 corpus functions fully op-covered (98.4% of the parseable subset) `[CI]` | output re-parses, every operator lowered | `crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs` |
 | WebAssembly, execution-equiv | 50 / 50 execution-eligible functions execution-equivalent (6 byte-identical) `[CI]` | execution differential under wasmtime | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
-| WebAssembly obfuscator reversers | 4 reverser families `[CI]` | family-specific byte or IR transforms, then parser/execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs`, `reverse_oracle.rs` |
+| WebAssembly obfuscator reversers | <!-- m:wasm_reversers -->4<!-- /m --> reverser families `[CI]` | family-specific byte or IR transforms, then parser/execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs`, `reverse_oracle.rs` |
 | Lua IronBrew2 2.7.0 devirt | recovered output runs equal to original, standard + MAX mode `[CI]` | real-`lua` execution differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
-| Ruby YARV | greeter 100%, megafile floor 98% `[CI]` | recompile under MRI, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
-| Go type-name recovery | 528 / 528 on stripped go1.26.3 fixture, floor 85% `[CI]` | typelinks/moduledata survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
+| Ruby YARV | greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile floor <!-- m:ruby_megafile_pct -->98%<!-- /m --> `[CI]` | recompile under MRI, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
+| Go type-name recovery | 528 / 528 on stripped go1.26.3 fixture, floor <!-- m:go_typename_pct -->85%<!-- /m --> `[CI]` | typelinks/moduledata survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
 | Go BuildInfo + garble undo | BuildInfo recovered, garble `-literals` rebuilt via static init-thunk emulation `[CI]` | parsed against the real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs`, `go_garble_undo.rs` |
 | Swift symbol demangle | 37 / 37 mangled symbols `[local]` | binary LC_SYMTAB symbols, with reference `swift-demangle` parity | `crates/disrobe-pass-swift-objc/tests/real_swift_demangle.rs` |
 | HashLink (Haxe `.hl`) | class names 100%, method names >= 75% floor, whole HLB image parsed byte-exact (336 functions, 421 types on the committed fixture) `[CI]` | recovered class and method names vs the original `.hx` source | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
-| PyArmor v6-v9-pro | 72 / 72 real-corpus samples `[local]` | static unpack + decompile | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
+| PyArmor v6-v9-pro | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> real-corpus samples `[local]` | static unpack + decompile | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 | Native UPX | `.text` and `.pdata` byte-identical, ~96% whole image (floor 96%) `[CI]` | byte-identity vs committed original | `crates/disrobe-pass-native/tests/upx_unpack_all.rs` |
 | Native packers (byte-parity) | aspack / petite / fsg / nspack / mpress / mew / kkrunchy recover content byte-for-byte against the original `[CI]` | byte-identity / RVA-aligned recovery percentage | `crates/disrobe-pass-native/tests/{aspack_pecompact_phase2,petite_unpack,fsg_unpack,nspack_byte_recovery,mpress_unpack,mew_unpack,kkrunchy_unpack}.rs` |
 | Native stub-emulator unpack | dispatch + decode validated through the in-house x86 stub emulator round-trip `[CI]` | stub-emu execution equivalence | `crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs` |
-| Hermes HBC v96 | 8 / 8 functions, 0 fallback ops `[CI]`; 122,633-function production bundle parsed without module-parse failure `[local]` | op-coverage with source-matching bodies for the CI fixture; parse-scale only for the local bundle | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs`, `real_hermes_discord.rs` |
+| Hermes HBC v96 | 8 / 8 functions, 0 fallback ops `[CI]`; <!-- m:hermes_functions -->122,633<!-- /m -->-function production bundle parsed without module-parse failure `[local]` | op-coverage with source-matching bodies for the CI fixture; parse-scale only for the local bundle | `crates/disrobe-pass-mobile/tests/real_hermes_sample.rs`, `real_hermes_discord.rs` |
 | APK secrets vs apkleaks | 8 / 8 planted secrets vs 5 / 8 `[CI]` | hand-verified planted APK ground truth | `cargo run -p disrobe-bench-head-to-head` |
 | frisk IOC detection | 6 / 6 planted non-secret IOC categories `[CI]` | known-planted endpoints, manifest findings, URLs, IPv4, email, and `.onion` | `crates/disrobe-core/tests/frisk_gauntlet.rs` |
-| Container / archive / firmware extraction | 98 / 98 formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
+| Container / archive / firmware extraction | <!-- m:containers_frac -->98 / 98<!-- /m --> formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
 
 <details>
 <summary>Reproduce every number</summary>

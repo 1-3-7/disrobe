@@ -21,7 +21,7 @@ disrobe hermes disasm index.android.bundle --out disasm/
 disrobe hermes info index.android.bundle
 ```
 
-`decompile` handles Hermes bytecode versions v60 through v96 and lifts each function back to pseudo-JavaScript. On a hermesc-built HBC v96 sample (8 functions, CI-gated) every function lifts at 0 fallback opcodes. A non-redistributable 66 MiB production bundle parsed the 122,633-function table with no parse failure (measured locally, not CI-gated). `disasm` emits a per-function summary without a JS surface. `info` prints the version, function count, string count, and identifier count.
+`decompile` handles Hermes bytecode versions v60 through v96 and lifts each function back to pseudo-JavaScript. On a hermesc-built HBC v96 sample (8 functions, CI-gated) every function lifts at 0 fallback opcodes. A non-redistributable 66 MiB production bundle parsed the <!-- m:hermes_functions -->122,633<!-- /m -->-function table with no parse failure (measured locally, not CI-gated). `disasm` emits a per-function summary without a JS surface. `info` prints the version, function count, string count, and identifier count.
 
 This is a structured lifter, not a full decompiler. Variadic call arguments are marked `<arg?>` where the Hermes frame-register layout is not modeled; unreconstructed opcodes appear in disasm form inline.
 

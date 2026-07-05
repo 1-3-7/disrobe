@@ -1,6 +1,6 @@
 # .NET / CIL
 
-**disrobe** parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, detects 23 protectors, and handles ReadyToRun and Native AOT images. In-house static recovery reverses ConfuserEx2 constant decryption on a real committed sample (its encrypted-resource layer is carved byte-exact but walled on the runtime key, and full ConfuserEx2 cleanup delegates to `--backend de4dot`); the Eazfuscator VM-tier is devirtualized at 57 of 57 instructions against an in-repo EazVM virtualizer of our own (the committed assembly is encoded by that virtualizer, not the shipping Eazfuscator.NET product); the KoiVM VM-tier is devirtualized on a committed sample produced by the real KoiVM tool (all six virtualized bodies lifted back to CIL and graded against the independently compiled clean baseline); and ILProtector and MaxToCode are detected and structurally enumerated with their method bodies walled on the native-runtime key (derived in the loader, absent from the assembly), never fabricated. The rest are detected with watermark-strip and encrypted-resource classification.
+**disrobe** parses the full .NET PE + CLR metadata surface, decompiles CIL to C#, F#, and VB pseudo-source, detects <!-- m:dotnet_protectors -->23<!-- /m --> protectors, and handles ReadyToRun and Native AOT images. In-house static recovery reverses ConfuserEx2 constant decryption on a real committed sample (its encrypted-resource layer is carved byte-exact but walled on the runtime key, and full ConfuserEx2 cleanup delegates to `--backend de4dot`); the Eazfuscator VM-tier is devirtualized at 57 of 57 instructions against an in-repo EazVM virtualizer of our own (the committed assembly is encoded by that virtualizer, not the shipping Eazfuscator.NET product); the KoiVM VM-tier is devirtualized on a committed sample produced by the real KoiVM tool (all six virtualized bodies lifted back to CIL and graded against the independently compiled clean baseline); and ILProtector and MaxToCode are detected and structurally enumerated with their method bodies walled on the native-runtime key (derived in the loader, absent from the assembly), never fabricated. The rest are detected with watermark-strip and encrypted-resource classification.
 
 ## Decompiling
 
@@ -23,7 +23,7 @@ disrobe dotnet backends                  # report available .NET backends on PAT
 
 ## Obfuscator reversal
 
-**disrobe** detects 23 protector families. Recovery depth varies by protector and by what is statically present in the artifact. The model for in-house recovery is the same one used by the JVM and Lua passes: locate the decryptor method or key inside the assembly and emulate it over the encrypted data through the in-house CIL stack-machine, never a re-derived or hard-coded key.
+**disrobe** detects <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The model for in-house recovery is the same one used by the JVM and Lua passes: locate the decryptor method or key inside the assembly and emulate it over the encrypted data through the in-house CIL stack-machine, never a re-derived or hard-coded key.
 
 Reversed on a real committed sample (plaintext recovered from the artifact, plaintext-absent oracle):
 
