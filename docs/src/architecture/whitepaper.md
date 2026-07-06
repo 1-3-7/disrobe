@@ -14,8 +14,8 @@ vocabulary before any structuring begins. The second is a native decompiler that
 x86-64 machine code into a typed abstract syntax tree with a single precedence authority and
 emits both C and Rust, removing the parenthesization errors intrinsic to
 string-concatenation emission. The third is managed-VM devirtualization, reconstructing
-Common Intermediate Language from two bytecode-virtualizing .NET protectors, Eazfuscator.NET's
-EazVM and the ConfuserEx-lineage KoiVM, and recording information-theoretic walls where the
+Common Intermediate Language from two bytecode-virtualizing .NET VM schemes, an in-repo
+reimplementation of Eazfuscator.NET's EazVM and the real ConfuserEx-lineage KoiVM, and recording information-theoretic walls where the
 plaintext leaves the static file. The final part is the verification methodology itself, a
 four-tier taxonomy of non-circular oracles ordered from recompile-equivalence to byte-exact
 comparison against the original. The central methodological claim is that every capability is
@@ -1633,7 +1633,7 @@ interpreter in its place.
 
 ## 3. Managed-VM devirtualization: recovering CIL from bytecode-virtualized .NET assemblies
 
-A bytecode-virtualizing protector does not encrypt a method and decrypt it at runtime. It deletes the method's Common Intermediate Language (CIL) entirely and replaces the body with a stub that hands a stream of custom virtual-machine (VM) bytecode to an interpreter shipped inside the same assembly. The interpreter's opcode table, register layout, and dispatch structure are randomized per build. Recovering the original method therefore means reconstructing three separate objects from static bytes alone: the per-build instruction encoding, the virtual program for each protected body, and a lifting from the VM's stack or register semantics back to CIL. disrobe implements this end to end for two managed VMs, Eazfuscator.NET's EazVM and the ConfuserEx-lineage KoiVM, and records honest information-theoretic walls for the protectors whose bodies leave the static file altogether.
+A bytecode-virtualizing protector does not encrypt a method and decrypt it at runtime. It deletes the method's Common Intermediate Language (CIL) entirely and replaces the body with a stub that hands a stream of custom virtual-machine (VM) bytecode to an interpreter shipped inside the same assembly. The interpreter's opcode table, register layout, and dispatch structure are randomized per build. Recovering the original method therefore means reconstructing three separate objects from static bytes alone: the per-build instruction encoding, the virtual program for each protected body, and a lifting from the VM's stack or register semantics back to CIL. disrobe implements this end to end for two managed VM schemes: an in-repo reimplementation of Eazfuscator.NET's EazVM (the graded sample is encoded by our own virtualizer, not the shipping Eazfuscator.NET product) and the real ConfuserEx-lineage KoiVM (whose sample is the genuine tool's output). It also records honest information-theoretic walls for the protectors whose bodies leave the static file altogether.
 
 The .NET pass classifies twenty-three protector families. The canonical enumeration is fixed in the detector:
 
@@ -1654,7 +1654,7 @@ Each family carries a static handling verdict, drawn from `Handling`: `De4dotDel
 
 A common failure mode in devirtualization work is a circular oracle. If a devirtualizer is graded by feeding its own recovered IL back through its own lifter, or by comparing against a "ground truth" that was itself produced by the tool under test, the measurement asserts nothing: a lifter that drops half the program will still agree with itself. A green number obtained this way is not evidence of recovery; it is evidence that a function equals itself.
 
-disrobe's EazVM oracle refuses that shortcut. The virtualized sample and its expected answer come from two physically distinct assemblies. `EazSample.eazvm.dll` is the protected image the devirtualizer consumes. `EazSample.clean.dll` is the same source compiled without the protector; it still contains real, compiler-emitted CIL. The test parses the clean DLL's method bodies directly and treats that CIL, in program order, as the answer key:
+disrobe's EazVM oracle refuses that shortcut. The virtualized sample and its expected answer come from two physically distinct assemblies. `EazSample.eazvm.dll` is the protected image the devirtualizer consumes, encoded by an in-repo reimplementation of the EazVM scheme (`corpus/dotnet/eazvm/virtualizer/`) rather than the shipping Eazfuscator.NET product; the answer key it is graded against is independent of disrobe's lifter, so the reimplemented encoder does not make the measurement circular. `EazSample.clean.dll` is the same source compiled without the protector; it still contains real, compiler-emitted CIL. The test parses the clean DLL's method bodies directly and treats that CIL, in program order, as the answer key:
 
 ```rust
 let vm: Vec<u8> = corpus("EazSample.eazvm.dll");

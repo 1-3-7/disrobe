@@ -1293,7 +1293,12 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                         .last()
                         .copied()
                         .filter(|&c: &usize| is_bottom_test(stream, c, back_edge));
-                    while_region(stream, header, back_edge, hi, &conds, bottom_cond)
+                    let effective: Vec<usize> = if bottom_cond.is_some() {
+                        conds.clone()
+                    } else {
+                        top_test_run(stream, &conds, header)
+                    };
+                    while_region(stream, header, back_edge, hi, &effective, bottom_cond)
                 };
             if best.is_none_or(|b: LoopRegion| header < b.header) {
                 best = Some(region);
@@ -1411,6 +1416,22 @@ pub(super) fn legacy_async_for_enclosed_by_loop(
         }
     }
     false
+}
+
+fn top_test_run(stream: &DecodedStream, conds: &[usize], header: usize) -> Vec<usize> {
+    let mut kept: Vec<usize> = Vec::with_capacity(conds.len());
+    let mut prev_end: usize = header;
+    for &cond in conds {
+        let value_start: usize = cond_expr_start(stream, cond, header);
+        if !kept.is_empty()
+            && (prev_end..value_start).any(|k: usize| completes_body_stmt(stream, k))
+        {
+            break;
+        }
+        kept.push(cond);
+        prev_end = cond + 1;
+    }
+    kept
 }
 
 fn bottom_test_run_start(

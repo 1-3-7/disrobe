@@ -1,5 +1,9 @@
 use crate::structurize::TargetLang;
 
+fn is_managed_byref_type(ty: &str) -> bool {
+    ty.starts_with("ref ") || ty.starts_with("byref<") || ty.starts_with("ByRef ")
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NameTable {
     has_this: bool,
@@ -48,6 +52,16 @@ impl NameTable {
     pub fn arg_type(&self, slot: u32) -> Option<&str> {
         let idx: usize = (slot as usize).wrapping_sub(1);
         self.param_types.get(idx).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn arg_is_managed_byref(&self, slot: u32) -> bool {
+        self.arg_type(slot).is_some_and(is_managed_byref_type)
+    }
+
+    #[must_use]
+    pub fn local_is_managed_byref(&self, slot: u32) -> bool {
+        self.local_type(slot).is_some_and(is_managed_byref_type)
     }
 
     #[must_use]

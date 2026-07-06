@@ -1,8 +1,8 @@
 use super::branches::{
     CompoundIf, OrBodyGuard, build_shortcircuit_stack_expr, collect_value_boolop_merges,
     collect_value_boolop_sc, jump_taken_if_true, match_head_enclosed_by_loop,
-    match_head_enclosed_by_try, region_contains_match_head, structure_guarded_break,
-    structure_match, try_recover_compound_if, try_recover_or_body_guard,
+    match_head_enclosed_by_try, region_contains_match_head, structure_break_on_false_continue,
+    structure_guarded_break, structure_match, try_recover_compound_if, try_recover_or_body_guard,
     try_structure_compound_assert, try_structure_literal_wildcard_match,
     try_structure_return_ternary, try_structure_ternary_expr,
 };
@@ -1714,6 +1714,9 @@ pub(super) fn structure_stmts(
         return Ok(stmts);
     }
     if let Some(stmts) = structure_compound_continue_guard(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = structure_break_on_false_continue(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     if let Some(stmts) = structure_guarded_break(code, stream, lo, hi)? {

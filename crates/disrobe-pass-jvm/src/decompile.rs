@@ -1240,6 +1240,9 @@ fn append_shared_fallthrough_tail(
         return;
     }
     if let Some(stmt) = shared_terminal_tail_statement(ctx, tail_bid) {
+        if stmt.contains(HOLE_RENDER) {
+            return;
+        }
         let already_emitted: bool = out
             .lines()
             .rev()
@@ -2514,6 +2517,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             if try_render_value_switch(ctx, *head, cases, default.as_deref(), *join, out, level) {
                 return;
             }
+            if try_render_yield_switch(ctx, *head, cases, default.as_deref(), *join, out, level) {
+                return;
+            }
             let expr: String = render_switch_subject(ctx, *head, out, level);
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}switch ({expr}) {{");
@@ -3314,7 +3320,9 @@ fn try_render_conditional_expr(
     let (Some(then_b), Some(else_b)): (Option<BlockId>, Option<BlockId>) =
         (single_block(then_body), single_block(else_body))
     else {
-        return false;
+        return try_render_nested_conditional_expr(
+            ctx, head, then_body, else_body, join_bid, out, level,
+        );
     };
     if ctx.rendered_blocks.contains(&then_b)
         || ctx.rendered_blocks.contains(&else_b)
@@ -3354,6 +3362,93 @@ fn try_render_conditional_expr(
     ctx.rendered_blocks.insert(else_b);
     render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
     true
+}
+
+fn try_render_nested_conditional_expr(
+    ctx: &mut RenderCtx<'_>,
+    head: BlockId,
+    then_body: &Region,
+    else_body: &Region,
+    join_bid: BlockId,
+    out: &mut String,
+    level: usize,
+) -> bool {
+    if ctx.rendered_blocks.contains(&head) || ctx.rendered_blocks.contains(&join_bid) {
+        return false;
+    }
+    if !join_consumes_one_value(ctx, join_bid) || join_seed_use_count(ctx, join_bid) > 1 {
+        return false;
+    }
+    let mut consumed: Vec<BlockId> = Vec::new();
+    let Some(then_val): Option<Expr> =
+        lift_nested_conditional_value(ctx, then_body, join_bid, &mut consumed)
+    else {
+        return false;
+    };
+    let Some(else_val): Option<Expr> =
+        lift_nested_conditional_value(ctx, else_body, join_bid, &mut consumed)
+    else {
+        return false;
+    };
+    if consumed
+        .iter()
+        .any(|bid: &BlockId| ctx.rendered_blocks.contains(bid))
+    {
+        return false;
+    }
+    let cond: String = render_head_prefix_and_condition(ctx, head, out, level);
+    let displayed: String = invert(&cond);
+    for bid in &consumed {
+        ctx.rendered_blocks.insert(*bid);
+    }
+    let ternary: Expr = Expr::Opaque(format!(
+        "({displayed} ? {} : {})",
+        then_val.render(),
+        else_val.render()
+    ));
+    render_block_seeded(ctx, join_bid, out, level, vec![ternary]);
+    true
+}
+
+fn lift_nested_conditional_value(
+    ctx: &RenderCtx<'_>,
+    region: &Region,
+    join_bid: BlockId,
+    consumed: &mut Vec<BlockId>,
+) -> Option<Expr> {
+    if let Some(bid) = region_value_block(region, join_bid) {
+        if bid == join_bid || ctx.rendered_blocks.contains(&bid) || consumed.contains(&bid) {
+            return None;
+        }
+        let value: Expr = lift_block_to_value(ctx, bid, 0)?;
+        if expr_has_hole(&value) {
+            return None;
+        }
+        consumed.push(bid);
+        return Some(value);
+    }
+    let Region::IfThenElse {
+        head,
+        then_body,
+        else_body,
+        ..
+    } = region
+    else {
+        return None;
+    };
+    if ctx.rendered_blocks.contains(head) || consumed.contains(head) {
+        return None;
+    }
+    let then_entry: BlockId = leftmost_block(then_body)?;
+    let then_val: Expr = lift_nested_conditional_value(ctx, then_body, join_bid, consumed)?;
+    let else_val: Expr = lift_nested_conditional_value(ctx, else_body, join_bid, consumed)?;
+    let cond: String = head_condition_to(ctx, *head, then_entry)?;
+    consumed.push(*head);
+    Some(Expr::Opaque(format!(
+        "({cond} ? {} : {})",
+        then_val.render(),
+        else_val.render()
+    )))
 }
 
 fn collapse_bool_ternary(
@@ -3956,6 +4051,165 @@ fn try_render_value_switch(
     for bid in &default_blocks {
         ctx.rendered_blocks.insert(*bid);
     }
+    render_block_seeded(ctx, join_bid, out, level, vec![Expr::Opaque(switch_src)]);
+    true
+}
+
+struct YieldSwitchArm {
+    block: BlockId,
+    label: String,
+    stmts: String,
+    value: Expr,
+}
+
+fn lift_switch_arm_body(
+    ctx: &RenderCtx<'_>,
+    bid: BlockId,
+    body_level: usize,
+) -> Option<(String, Expr)> {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let mut stack: Vec<Expr> = Vec::new();
+    let mut stmts: String = String::new();
+    let pad: String = indent_string(body_level);
+    for ins in &ctx.insns[start..end] {
+        let op: u8 = ins.opcode;
+        if matches!(op, 0xA7 | 0xC8) {
+            continue;
+        }
+        if matches!(op, 0x99..=0xA6 | 0xC6 | 0xC7 | 0xAA | 0xAB | 0xA9 | 0xAC..=0xB1 | 0xBF) {
+            return None;
+        }
+        match lift_one(
+            ctx.cf,
+            ins,
+            &mut stack,
+            ctx.params,
+            ctx.bootstraps,
+            ctx.has_this,
+            ctx.bool_return,
+        ) {
+            LiftResult::Pushed => {}
+            LiftResult::Statement(s) => {
+                let _ = writeln!(stmts, "{pad}{s};");
+            }
+            LiftResult::ControlFlow(_) | LiftResult::Unhandled => return None,
+        }
+    }
+    if stack.len() != 1 {
+        return None;
+    }
+    let value: Expr = stack.pop()?;
+    if expr_has_hole(&value) || stmts.contains(HOLE_RENDER) {
+        return None;
+    }
+    Some((stmts, value))
+}
+
+fn write_yield_arm(out: &mut String, selector: &str, stmts: &str, value: &Expr, level: usize) {
+    let inner: String = indent_string(level + 1);
+    if stmts.is_empty() {
+        let _ = writeln!(out, "{inner}{selector} -> {};", value.render());
+        return;
+    }
+    let arm_inner: String = indent_string(level + 2);
+    let _ = writeln!(out, "{inner}{selector} -> {{");
+    out.push_str(stmts);
+    let _ = writeln!(out, "{arm_inner}yield {};", value.render());
+    let _ = writeln!(out, "{inner}}}");
+}
+
+fn try_render_yield_switch(
+    ctx: &mut RenderCtx<'_>,
+    head: BlockId,
+    cases: &[(SwitchKey, Region)],
+    default: Option<&Region>,
+    join: Option<BlockId>,
+    out: &mut String,
+    level: usize,
+) -> bool {
+    if cases.is_empty() || !head_ends_in_int_switch(ctx, head) {
+        return false;
+    }
+    let Some(join_bid): Option<BlockId> = join else {
+        return false;
+    };
+    let Some(default_region): Option<&Region> = default else {
+        return false;
+    };
+    if ctx.rendered_blocks.contains(&head) || ctx.rendered_blocks.contains(&join_bid) {
+        return false;
+    }
+    if !join_consumes_one_value(ctx, join_bid) {
+        return false;
+    }
+    let head_start_pc: u32 = ctx.cfg.blocks[head.0 as usize].start_pc;
+
+    let mut arms: Vec<YieldSwitchArm> = Vec::with_capacity(cases.len());
+    let mut has_block_arm: bool = false;
+    for (i, (key, body)) in cases.iter().enumerate() {
+        let Some(bid): Option<BlockId> = single_block(body) else {
+            return false;
+        };
+        if ctx.rendered_blocks.contains(&bid) || block_branches_to_pc(ctx, bid, head_start_pc) {
+            return false;
+        }
+        let Some((stmts, value)): Option<(String, Expr)> =
+            lift_switch_arm_body(ctx, bid, level + 2)
+        else {
+            return false;
+        };
+        has_block_arm |= !stmts.is_empty();
+        arms.push(YieldSwitchArm {
+            block: bid,
+            label: format_switch_key(key, i),
+            stmts,
+            value,
+        });
+    }
+
+    let Some(default_bid): Option<BlockId> = single_block(default_region) else {
+        return false;
+    };
+    if ctx.rendered_blocks.contains(&default_bid)
+        || block_branches_to_pc(ctx, default_bid, head_start_pc)
+    {
+        return false;
+    }
+    let Some((default_stmts, default_value)): Option<(String, Expr)> =
+        lift_switch_arm_body(ctx, default_bid, level + 2)
+    else {
+        return false;
+    };
+    has_block_arm |= !default_stmts.is_empty();
+    if !has_block_arm {
+        return false;
+    }
+
+    let subject: String = render_switch_subject(ctx, head, out, level);
+    let pad: String = indent_string(level);
+    let mut switch_src: String = format!("switch ({subject}) {{\n");
+    for arm in &arms {
+        write_yield_arm(
+            &mut switch_src,
+            &format!("case {}", arm.label),
+            &arm.stmts,
+            &arm.value,
+            level,
+        );
+    }
+    write_yield_arm(
+        &mut switch_src,
+        "default",
+        &default_stmts,
+        &default_value,
+        level,
+    );
+    let _ = write!(switch_src, "{pad}}}");
+
+    for arm in &arms {
+        ctx.rendered_blocks.insert(arm.block);
+    }
+    ctx.rendered_blocks.insert(default_bid);
     render_block_seeded(ctx, join_bid, out, level, vec![Expr::Opaque(switch_src)]);
     true
 }

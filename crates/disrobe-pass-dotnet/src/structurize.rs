@@ -223,6 +223,7 @@ impl Expr {
                 TargetLang::VbNet => e.render(lang, names),
             },
             Self::Deref(e) => match lang {
+                TargetLang::CSharp if is_managed_byref_expr(e, names) => e.render(lang, names),
                 TargetLang::CSharp => format!("*{}", paren(e, lang, names)),
                 TargetLang::FSharp => format!("{}.Value", paren(e, lang, names)),
                 TargetLang::VbNet => e.render(lang, names),
@@ -282,7 +283,18 @@ fn call_receiver(e: &Expr, lang: TargetLang, names: &NameTable) -> String {
 fn deref_target(addr: &Expr, lang: TargetLang, names: &NameTable) -> String {
     match addr {
         Expr::AddressOf(inner) => inner.render(lang, names),
+        other if lang == TargetLang::CSharp && is_managed_byref_expr(other, names) => {
+            other.render(lang, names)
+        }
         other => format!("*{}", paren(other, lang, names)),
+    }
+}
+
+fn is_managed_byref_expr(e: &Expr, names: &NameTable) -> bool {
+    match e {
+        Expr::Arg(n) => names.arg_is_managed_byref(*n),
+        Expr::Local(n) => names.local_is_managed_byref(*n),
+        _ => false,
     }
 }
 
@@ -2265,6 +2277,33 @@ mod tests {
         assert_eq!(
             deref_target(&raw_ptr, TargetLang::CSharp, &names),
             "*local5"
+        );
+    }
+
+    #[test]
+    fn managed_byref_arg_derefs_directly_but_pointer_keeps_star() {
+        let byref: NameTable = NameTable::new(
+            true,
+            vec!["value".to_owned()],
+            vec!["ref int".to_owned()],
+            Vec::new(),
+        );
+        let arg: Expr = Expr::Arg(1);
+        assert_eq!(deref_target(&arg, TargetLang::CSharp, &byref), "value");
+        assert_eq!(
+            Expr::Deref(Box::new(Expr::Arg(1))).render(TargetLang::CSharp, &byref),
+            "value"
+        );
+        let ptr: NameTable = NameTable::new(
+            true,
+            vec!["value".to_owned()],
+            vec!["int*".to_owned()],
+            Vec::new(),
+        );
+        assert_eq!(deref_target(&arg, TargetLang::CSharp, &ptr), "*value");
+        assert_eq!(
+            Expr::Deref(Box::new(Expr::Arg(1))).render(TargetLang::CSharp, &ptr),
+            "*value"
         );
     }
 

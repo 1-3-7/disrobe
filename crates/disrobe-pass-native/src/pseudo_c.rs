@@ -176,6 +176,28 @@ pub struct FpConstant {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PackedConstant {
+    site: u64,
+    q0: u64,
+    q1: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackedOp {
+    MovReg(Xmm),
+    Const { q0: u64, q1: u64 },
+    Zero,
+    AddQ(Xmm),
+    And(Xmm),
+    AndN(Xmm),
+    ShlQ(u8),
+    ShlDq(u8),
+    CmpEqD(Xmm),
+    ShufD { src: Xmm, imm: u8 },
+    FromGpr { src: RegRef },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegRef {
     reg: Reg,
     width: Width,
@@ -565,6 +587,14 @@ enum Stmt {
         kind: CondKind,
         flags: Flags,
     },
+    Packed {
+        dest: Xmm,
+        op: PackedOp,
+    },
+    PackedToGpr {
+        dest: RegRef,
+        src: Xmm,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,7 +703,7 @@ pub fn recover_leaf_function_const_abi(
     abi: Abi,
     consts: &[FpConstant],
 ) -> Result<LeafRecovery> {
-    recover_leaf_function_calls_impl(machine_code, base, abi, consts, &[])
+    recover_leaf_function_calls_impl(machine_code, base, abi, consts, &[], &[])
 }
 
 pub fn recover_leaf_function_with_calls(
@@ -682,7 +712,7 @@ pub fn recover_leaf_function_with_calls(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
-    recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls)
+    recover_leaf_function_calls_impl(machine_code, base, abi, &[], &[], calls)
 }
 
 /// Recover a leaf function, resolving a dense-switch jump table from the object's relocatable data.
@@ -693,8 +723,10 @@ pub fn recover_leaf_function_in_object(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
+    let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
     let straight_err: Error =
-        match recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls) {
+        match recover_leaf_function_calls_impl(machine_code, base, abi, &[], &packed_consts, calls)
+        {
             Ok(recovery) => return Ok(recovery),
             Err(err) => err,
         };
@@ -1065,6 +1097,7 @@ fn build_leaf_items(
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
+    packed_consts: &[PackedConstant],
 ) -> Result<LeafItems> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -1073,6 +1106,7 @@ fn build_leaf_items(
     if insns.is_empty() {
         return Err(Error::LlvmIr("no decodable instructions".to_owned()));
     }
+    let packed_mode: bool = uses_packed_integer_sse(&insns);
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<Flags> = None;
@@ -1126,6 +1160,24 @@ fn build_leaf_items(
             )));
         }
         if is_frame_management(&insn.mnemonic, &insn.operands) {
+            continue;
+        }
+        if packed_mode
+            && let Some(stmt) =
+                lift_packed(&insn.mnemonic, &insn.operands, insn.address, packed_consts)?
+        {
+            if let Stmt::PackedToGpr { dest, .. } = &stmt
+                && dest.reg == Reg::Rax
+            {
+                return_width = Width::W64;
+                fp_return = None;
+            }
+            flags = None;
+            dividend_high = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(stmt),
+            });
             continue;
         }
         if let Some(fp_flags) =
@@ -1432,6 +1484,7 @@ fn build_leaf_items(
             | Stmt::XmmToGpr { .. } => {
                 flags = None;
             }
+            Stmt::Packed { .. } | Stmt::PackedToGpr { .. } => {}
             Stmt::Call { .. } | Stmt::FlagSnapshot { .. } => {}
         }
         items.push(Item {
@@ -1457,6 +1510,7 @@ fn recover_leaf_function_calls_impl(
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
+    packed_consts: &[PackedConstant],
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
     let LeafItems {
@@ -1464,7 +1518,7 @@ fn recover_leaf_function_calls_impl(
         items,
         mut return_width,
         fp_return,
-    } = build_leaf_items(machine_code, base, abi, consts)?;
+    } = build_leaf_items(machine_code, base, abi, consts, packed_consts)?;
     let mut structured: Structured = structure_items(&items)?;
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
@@ -2207,6 +2261,73 @@ fn resolve_lea_table<'data>(
     Err(Error::LlvmIr(
         "switch lea has no relocation naming the jump table".to_owned(),
     ))
+}
+
+fn resolve_packed_constants(object: &[u8], machine_code: &[u8], base: u64) -> Vec<PackedConstant> {
+    use object::{Object as _, ObjectSection as _};
+
+    let Ok(insns): Result<Vec<DisasmInsn>> = disassemble(Arch::X86_64, base, machine_code) else {
+        return Vec::new();
+    };
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(object)
+    else {
+        return Vec::new();
+    };
+    let Some(code_section): Option<object::Section<'_, '_>> =
+        file.sections().find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            let end: u64 = start.saturating_add(section.size());
+            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
+        })
+    else {
+        return Vec::new();
+    };
+    let mut resolved: Vec<PackedConstant> = Vec::new();
+    for insn in &insns {
+        if !matches!(insn.mnemonic.as_str(), "movdqa" | "movdqu") || !insn.operands.contains("[rel")
+        {
+            continue;
+        }
+        let Some(disp_field_va): Option<u64> = (insn.address)
+            .checked_add(insn.bytes.len() as u64)
+            .and_then(|end: u64| end.checked_sub(4))
+        else {
+            continue;
+        };
+        let Ok((section_index, off)): Result<(object::SectionIndex, u64)> =
+            resolve_lea_table(&file, &code_section, disp_field_va)
+        else {
+            continue;
+        };
+        let Ok(section): core::result::Result<object::Section<'_, '_>, object::Error> =
+            file.section_by_index(section_index)
+        else {
+            continue;
+        };
+        let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
+            continue;
+        };
+        let start: usize = match usize::try_from(off) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let low: Option<[u8; 8]> = data
+            .get(start..start.saturating_add(8))
+            .and_then(|b: &[u8]| b.try_into().ok());
+        let high: Option<[u8; 8]> = data
+            .get(start.saturating_add(8)..start.saturating_add(16))
+            .and_then(|b: &[u8]| b.try_into().ok());
+        let (Some(low), Some(high)): (Option<[u8; 8]>, Option<[u8; 8]>) = (low, high) else {
+            continue;
+        };
+        resolved.push(PackedConstant {
+            site: insn.address,
+            q0: u64::from_le_bytes(low),
+            q1: u64::from_le_bytes(high),
+        });
+    }
+    resolved
 }
 
 /// Decode dense-switch case targets from the object's jump table via one relocation-aware reader.
@@ -3344,6 +3465,7 @@ fn rax_write_width(stmt: &Stmt) -> Option<Width> {
         | Stmt::FpToInt { dest, .. }
         | Stmt::XmmToGpr { dest, .. }
         | Stmt::SetCc { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
+        Stmt::PackedToGpr { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
         Stmt::WideMul { .. } | Stmt::Call { .. } => Some(Width::W64),
         Stmt::Divide { divisor, .. } => Some(divisor.width),
         _ => None,
@@ -3525,7 +3647,9 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         }
         Stmt::WideMul { .. } | Stmt::Call { .. } => *return_width = Width::W64,
         Stmt::Divide { divisor, .. } => *return_width = divisor.width,
-        Stmt::FpToInt { dest, .. } | Stmt::XmmToGpr { dest, .. } => {
+        Stmt::FpToInt { dest, .. }
+        | Stmt::XmmToGpr { dest, .. }
+        | Stmt::PackedToGpr { dest, .. } => {
             if dest.reg == Reg::Rax {
                 *return_width = dest.width;
             }
@@ -3549,6 +3673,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
+        | Stmt::Packed { .. }
         | Stmt::FlagSnapshot { .. } => {}
     }
 }
@@ -6137,6 +6262,14 @@ fn scan_stmt_params(
             written.insert(dest.reg, true);
         }
         Stmt::FpConvert { .. } => {}
+        Stmt::Packed { op, .. } => {
+            if let PackedOp::FromGpr { src } = op {
+                note(src.reg, written, acc);
+            }
+        }
+        Stmt::PackedToGpr { dest, .. } => {
+            written.insert(dest.reg, true);
+        }
         Stmt::FlagSnapshot { flags, .. } => {
             read_flags(flags, written, acc, note);
         }
@@ -6322,7 +6455,8 @@ fn stmt_dest_regs(stmt: &Stmt) -> Vec<Reg> {
         | Stmt::MulImm { dest, .. }
         | Stmt::DoubleShift { dest, .. }
         | Stmt::FpToInt { dest, .. }
-        | Stmt::XmmToGpr { dest, .. } => vec![dest.reg],
+        | Stmt::XmmToGpr { dest, .. }
+        | Stmt::PackedToGpr { dest, .. } => vec![dest.reg],
         Stmt::WideMul { .. } | Stmt::Divide { .. } => vec![Reg::Rax, Reg::Rdx],
         Stmt::Call { .. } => vec![Reg::Rax],
         _ => Vec::new(),
@@ -6445,7 +6579,8 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::MulImm { dest, .. }
         | Stmt::DoubleShift { dest, .. }
         | Stmt::FpToInt { dest, .. }
-        | Stmt::XmmToGpr { dest, .. } => dest.reg == Reg::Rax,
+        | Stmt::XmmToGpr { dest, .. }
+        | Stmt::PackedToGpr { dest, .. } => dest.reg == Reg::Rax,
         Stmt::WideMul { .. } | Stmt::Divide { .. } | Stmt::Call { .. } => true,
         Stmt::Store { .. }
         | Stmt::MemRmw { .. }
@@ -6460,6 +6595,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::GprToXmm { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
+        | Stmt::Packed { .. }
         | Stmt::FlagSnapshot { .. } => false,
     }
 }
@@ -6620,6 +6756,195 @@ const REJECTED_SSE: &[&str] = &[
     "punpcklqdq",
     "punpckhqdq",
 ];
+
+const PACKED_INT_MARKERS: &[&str] = &[
+    "movdqa",
+    "movdqu",
+    "paddq",
+    "paddd",
+    "psubq",
+    "psubd",
+    "pand",
+    "pandn",
+    "por",
+    "psllq",
+    "psrlq",
+    "pslldq",
+    "psrldq",
+    "pcmpeqd",
+    "pcmpeqq",
+    "pcmpeqb",
+    "pcmpgtd",
+    "pshufd",
+    "punpcklqdq",
+    "punpckhqdq",
+    "punpckldq",
+    "punpckhdq",
+];
+
+fn uses_packed_integer_sse(insns: &[DisasmInsn]) -> bool {
+    insns
+        .iter()
+        .any(|insn: &DisasmInsn| PACKED_INT_MARKERS.contains(&insn.mnemonic.as_str()))
+}
+
+fn packed_xmm_pair(operands: &str) -> Option<(Xmm, Xmm)> {
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    Some((parse_xmm(lhs.trim())?, parse_xmm(rhs.trim())?))
+}
+
+fn lift_packed(
+    mnemonic: &str,
+    operands: &str,
+    site: u64,
+    consts: &[PackedConstant],
+) -> Result<Option<Stmt>> {
+    if !operands.contains("xmm") {
+        return Ok(None);
+    }
+    let reject = |detail: &str| -> Result<Option<Stmt>> {
+        Err(Error::LlvmIr(format!(
+            "unmodeled packed SSE `{mnemonic} {operands}` at {site:#x}: {detail}"
+        )))
+    };
+    let (lhs, rhs): (&str, &str) = operands
+        .split_once(',')
+        .ok_or_else(|| Error::LlvmIr(format!("malformed packed `{mnemonic}` at {site:#x}")))?;
+    let lhs: &str = lhs.trim();
+    let rhs: &str = rhs.trim();
+    match mnemonic {
+        "movq" | "movd" => {
+            if let Some(dest) = parse_xmm(lhs) {
+                if let Some(src) = parse_reg(rhs) {
+                    return Ok(Some(Stmt::Packed {
+                        dest,
+                        op: PackedOp::FromGpr { src },
+                    }));
+                }
+                return reject("movq/movd into xmm from a non-gpr source is unmodeled");
+            }
+            if let (Some(dest), Some(src)) = (parse_reg(lhs), parse_xmm(rhs)) {
+                return Ok(Some(Stmt::PackedToGpr { dest, src }));
+            }
+            reject("movq/movd form is unmodeled")
+        }
+        "movdqa" | "movdqu" => {
+            let dest: Xmm = parse_xmm(lhs)
+                .ok_or_else(|| Error::LlvmIr(format!("movdqa dest not xmm at {site:#x}")))?;
+            if let Some(src) = parse_xmm(rhs) {
+                return Ok(Some(Stmt::Packed {
+                    dest,
+                    op: PackedOp::MovReg(src),
+                }));
+            }
+            if is_rip_relative_mem(rhs) {
+                let Some(k): Option<&PackedConstant> =
+                    consts.iter().find(|c: &&PackedConstant| c.site == site)
+                else {
+                    return reject("rip-relative packed constant not resolved from .rodata");
+                };
+                return Ok(Some(Stmt::Packed {
+                    dest,
+                    op: PackedOp::Const { q0: k.q0, q1: k.q1 },
+                }));
+            }
+            reject("movdqa memory source is not a resolvable rip-relative constant")
+        }
+        "pxor" => {
+            let (dest, src): (Xmm, Xmm) = packed_xmm_pair(operands)
+                .ok_or_else(|| Error::LlvmIr("pxor operands".to_owned()))?;
+            if dest == src {
+                return Ok(Some(Stmt::Packed {
+                    dest,
+                    op: PackedOp::Zero,
+                }));
+            }
+            reject("pxor of two distinct registers is unmodeled")
+        }
+        "paddq" => {
+            let (dest, src): (Xmm, Xmm) = packed_xmm_pair(operands)
+                .ok_or_else(|| Error::LlvmIr("paddq operands".to_owned()))?;
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::AddQ(src),
+            }))
+        }
+        "pand" => {
+            let (dest, src): (Xmm, Xmm) = packed_xmm_pair(operands)
+                .ok_or_else(|| Error::LlvmIr("pand operands".to_owned()))?;
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::And(src),
+            }))
+        }
+        "pandn" => {
+            let (dest, src): (Xmm, Xmm) = packed_xmm_pair(operands)
+                .ok_or_else(|| Error::LlvmIr("pandn operands".to_owned()))?;
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::AndN(src),
+            }))
+        }
+        "pcmpeqd" => {
+            let (dest, src): (Xmm, Xmm) = packed_xmm_pair(operands)
+                .ok_or_else(|| Error::LlvmIr("pcmpeqd operands".to_owned()))?;
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::CmpEqD(src),
+            }))
+        }
+        "psllq" => {
+            let dest: Xmm = parse_xmm(lhs)
+                .ok_or_else(|| Error::LlvmIr(format!("psllq dest not xmm at {site:#x}")))?;
+            let imm: i64 = parse_imm(rhs)
+                .ok_or_else(|| Error::LlvmIr(format!("psllq needs an immediate at {site:#x}")))?;
+            if !(0..=255).contains(&imm) {
+                return reject("psllq by a register count is unmodeled");
+            }
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::ShlQ(imm as u8),
+            }))
+        }
+        "pslldq" => {
+            let dest: Xmm = parse_xmm(lhs)
+                .ok_or_else(|| Error::LlvmIr(format!("pslldq dest not xmm at {site:#x}")))?;
+            let imm: i64 = parse_imm(rhs)
+                .ok_or_else(|| Error::LlvmIr(format!("pslldq needs an immediate at {site:#x}")))?;
+            if !(0..=255).contains(&imm) {
+                return reject("pslldq by a register count is unmodeled");
+            }
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::ShlDq(imm as u8),
+            }))
+        }
+        "pshufd" => {
+            let mut parts = operands.splitn(3, ',');
+            let dest_tok: &str = parts.next().unwrap_or("").trim();
+            let src_tok: &str = parts.next().unwrap_or("").trim();
+            let imm_tok: &str = parts.next().unwrap_or("").trim();
+            let dest: Xmm = parse_xmm(dest_tok)
+                .ok_or_else(|| Error::LlvmIr(format!("pshufd dest not xmm at {site:#x}")))?;
+            let Some(src): Option<Xmm> = parse_xmm(src_tok) else {
+                return reject("pshufd from a memory operand is unmodeled");
+            };
+            let imm: i64 = parse_imm(imm_tok)
+                .ok_or_else(|| Error::LlvmIr(format!("pshufd needs an imm8 at {site:#x}")))?;
+            if !(0..=255).contains(&imm) {
+                return reject("pshufd control byte out of range");
+            }
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::ShufD {
+                    src,
+                    imm: imm as u8,
+                },
+            }))
+        }
+        _ => reject("xmm-touching instruction outside the recovered packed-integer class"),
+    }
+}
 
 fn lift_fp_compare(
     mnemonic: &str,
@@ -7741,6 +8066,12 @@ impl FrameScan {
             Stmt::FpMinMax { rhs, .. } => self.note_fp(rhs, slots, misuse),
             Stmt::FpStore { addr, .. } => self.note_mem(addr, slots, misuse),
             Stmt::FlagSnapshot { flags, .. } => self.note_flags(flags, slots, misuse),
+            Stmt::Packed { op, .. } => {
+                if let PackedOp::FromGpr { src } = op {
+                    self.note_reg(src.reg, misuse);
+                }
+            }
+            Stmt::PackedToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
             | Stmt::BlockFill { .. }
@@ -7991,6 +8322,12 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             acc.push(Reg::Rcx);
         }
         Stmt::Call { args, .. } => acc.extend_from_slice(args),
+        Stmt::Packed { op, .. } => {
+            if let PackedOp::FromGpr { src } = op {
+                acc.push(src.reg);
+            }
+        }
+        Stmt::PackedToGpr { .. } => {}
         Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
 }
@@ -8239,6 +8576,12 @@ fn emit_c(
             declared_xmm.push(*xmm);
         }
     }
+    let mut packed_xmm: Vec<Xmm> = Vec::new();
+    collect_block_packed_xmm(body, &mut packed_xmm);
+    for xmm in &packed_xmm {
+        let _ = writeln!(out, "    uint64_t {} = 0;", packed_lane(*xmm, false));
+        let _ = writeln!(out, "    uint64_t {} = 0;", packed_lane(*xmm, true));
+    }
     let mut snapshot_vars: Vec<u32> = Vec::new();
     collect_snapshot_vars(body, &mut snapshot_vars);
     for var in &snapshot_vars {
@@ -8440,6 +8783,12 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 Stmt::GprToXmm { src, .. } => push(src.reg, acc),
                 Stmt::XmmToGpr { dest, .. } => push(dest.reg, acc),
                 Stmt::FpConvert { .. } => {}
+                Stmt::Packed { op, .. } => {
+                    if let PackedOp::FromGpr { src } = op {
+                        push(src.reg, acc);
+                    }
+                }
+                Stmt::PackedToGpr { dest, .. } => push(dest.reg, acc),
                 Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
                     for reg in args {
@@ -8546,6 +8895,8 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 | Stmt::BlockMove { .. }
                 | Stmt::BlockFill { .. }
                 | Stmt::FlagSnapshot { .. }
+                | Stmt::Packed { .. }
+                | Stmt::PackedToGpr { .. }
                 | Stmt::Call { .. } => {}
             },
             Node::If {
@@ -8574,6 +8925,62 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
             Node::Break | Node::Continue | Node::Return => {}
+        }
+    }
+}
+
+fn packed_stmt_lanes(stmt: &Stmt, acc: &mut Vec<Xmm>) {
+    let push = |xmm: Xmm, acc: &mut Vec<Xmm>| {
+        if !acc.contains(&xmm) {
+            acc.push(xmm);
+        }
+    };
+    match stmt {
+        Stmt::Packed { dest, op } => {
+            push(*dest, acc);
+            match op {
+                PackedOp::MovReg(src)
+                | PackedOp::AddQ(src)
+                | PackedOp::And(src)
+                | PackedOp::AndN(src)
+                | PackedOp::CmpEqD(src)
+                | PackedOp::ShufD { src, .. } => push(*src, acc),
+                PackedOp::Const { .. }
+                | PackedOp::Zero
+                | PackedOp::ShlQ(_)
+                | PackedOp::ShlDq(_)
+                | PackedOp::FromGpr { .. } => {}
+            }
+        }
+        Stmt::PackedToGpr { src, .. } => push(*src, acc),
+        _ => {}
+    }
+}
+
+fn collect_block_packed_xmm(body: &Block, acc: &mut Vec<Xmm>) {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => packed_stmt_lanes(stmt, acc),
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_block_packed_xmm(then_body, acc);
+                if let Some(else_b) = else_body {
+                    collect_block_packed_xmm(else_b, acc);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => {
+                collect_block_packed_xmm(body, acc);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    collect_block_packed_xmm(&case.body, acc);
+                }
+                collect_block_packed_xmm(default, acc);
+            }
+            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
         }
     }
 }
@@ -8742,6 +9149,132 @@ fn c_render_stmt(build: impl FnOnce(&mut Cx<'_>) -> CStmt) -> String {
         build(&mut cx)
     };
     render_stmt(&stmt, &interner, C_RENDER_WIDTH)
+}
+
+fn packed_lane(xmm: Xmm, hi: bool) -> String {
+    format!("v{}_{}", xmm.index(), if hi { "hi" } else { "lo" })
+}
+
+fn packed_dword_expr(lo: &str, hi: &str, dword: u8) -> String {
+    match dword & 3 {
+        0 => format!("((uint64_t)(uint32_t){lo})"),
+        1 => format!("((uint64_t)(uint32_t)({lo} >> 32))"),
+        2 => format!("((uint64_t)(uint32_t){hi})"),
+        _ => format!("((uint64_t)(uint32_t)({hi} >> 32))"),
+    }
+}
+
+fn packed_cmpeqd_lane(dest: &str, src: &str) -> String {
+    let low: String = format!("(((uint32_t){dest} == (uint32_t){src}) ? 0xffffffffULL : 0ULL)");
+    let high: String =
+        format!("(((uint32_t)({dest} >> 32) == (uint32_t)({src} >> 32)) ? 0xffffffffULL : 0ULL)");
+    format!("({low} | ({high} << 32))")
+}
+
+fn packed_op_cstmt(cx: &mut Cx<'_>, dest: Xmm, op: &PackedOp) -> CStmt {
+    let d_lo: String = packed_lane(dest, false);
+    let d_hi: String = packed_lane(dest, true);
+    let mut stmts: Vec<CStmt> = Vec::new();
+    match op {
+        PackedOp::MovReg(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            stmts.push(assign_cstmt(cx, &d_lo, &s_lo));
+            stmts.push(assign_cstmt(cx, &d_hi, &s_hi));
+        }
+        PackedOp::Const { q0, q1 } => {
+            stmts.push(assign_cstmt(cx, &d_lo, &format!("0x{q0:x}ULL")));
+            stmts.push(assign_cstmt(cx, &d_hi, &format!("0x{q1:x}ULL")));
+        }
+        PackedOp::Zero => {
+            stmts.push(assign_cstmt(cx, &d_lo, "0ULL"));
+            stmts.push(assign_cstmt(cx, &d_hi, "0ULL"));
+        }
+        PackedOp::AddQ(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            stmts.push(assign_cstmt(cx, &d_lo, &format!("{d_lo} + {s_lo}")));
+            stmts.push(assign_cstmt(cx, &d_hi, &format!("{d_hi} + {s_hi}")));
+        }
+        PackedOp::And(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            stmts.push(assign_cstmt(cx, &d_lo, &format!("{d_lo} & {s_lo}")));
+            stmts.push(assign_cstmt(cx, &d_hi, &format!("{d_hi} & {s_hi}")));
+        }
+        PackedOp::AndN(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            stmts.push(assign_cstmt(cx, &d_lo, &format!("(~{d_lo}) & {s_lo}")));
+            stmts.push(assign_cstmt(cx, &d_hi, &format!("(~{d_hi}) & {s_hi}")));
+        }
+        PackedOp::ShlQ(imm) => {
+            if *imm >= 64 {
+                stmts.push(assign_cstmt(cx, &d_lo, "0ULL"));
+                stmts.push(assign_cstmt(cx, &d_hi, "0ULL"));
+            } else {
+                stmts.push(assign_cstmt(cx, &d_lo, &format!("{d_lo} << {imm}")));
+                stmts.push(assign_cstmt(cx, &d_hi, &format!("{d_hi} << {imm}")));
+            }
+        }
+        PackedOp::ShlDq(imm) => {
+            let (lo_expr, hi_expr): (String, String) = packed_shldq_exprs(*imm, "vsd_lo", "vsd_hi");
+            let lo_init: CExpr = cx.var(&d_lo);
+            stmts.push(decl_with_init(cx, "uint64_t", "vsd_lo", lo_init));
+            let hi_init: CExpr = cx.var(&d_hi);
+            stmts.push(decl_with_init(cx, "uint64_t", "vsd_hi", hi_init));
+            stmts.push(assign_cstmt(cx, &d_lo, &lo_expr));
+            stmts.push(assign_cstmt(cx, &d_hi, &hi_expr));
+        }
+        PackedOp::CmpEqD(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            let lo_expr: String = packed_cmpeqd_lane(&d_lo, &s_lo);
+            let hi_expr: String = packed_cmpeqd_lane(&d_hi, &s_hi);
+            stmts.push(assign_cstmt(cx, &d_lo, &lo_expr));
+            stmts.push(assign_cstmt(cx, &d_hi, &hi_expr));
+        }
+        PackedOp::ShufD { src, imm } => {
+            let s_lo: String = packed_lane(*src, false);
+            let s_hi: String = packed_lane(*src, true);
+            let lo_init: CExpr = cx.var(&s_lo);
+            stmts.push(decl_with_init(cx, "uint64_t", "vsf_lo", lo_init));
+            let hi_init: CExpr = cx.var(&s_hi);
+            stmts.push(decl_with_init(cx, "uint64_t", "vsf_hi", hi_init));
+            let d0: String = packed_dword_expr("vsf_lo", "vsf_hi", imm & 3);
+            let d1: String = packed_dword_expr("vsf_lo", "vsf_hi", (imm >> 2) & 3);
+            let d2: String = packed_dword_expr("vsf_lo", "vsf_hi", (imm >> 4) & 3);
+            let d3: String = packed_dword_expr("vsf_lo", "vsf_hi", (imm >> 6) & 3);
+            stmts.push(assign_cstmt(cx, &d_lo, &format!("{d0} | ({d1} << 32)")));
+            stmts.push(assign_cstmt(cx, &d_hi, &format!("{d2} | ({d3} << 32)")));
+        }
+        PackedOp::FromGpr { src } => {
+            let mut masked: String = String::new();
+            width_mask(&mut masked, src.width, reg_var(src.reg));
+            stmts.push(assign_cstmt(cx, &d_lo, &masked));
+            stmts.push(assign_cstmt(cx, &d_hi, "0ULL"));
+        }
+    }
+    CStmt::Block(stmts)
+}
+
+fn packed_shldq_exprs(imm: u8, lo: &str, hi: &str) -> (String, String) {
+    if imm >= 16 {
+        return ("0ULL".to_owned(), "0ULL".to_owned());
+    }
+    let bits: u32 = u32::from(imm) * 8;
+    if bits == 0 {
+        return (lo.to_owned(), hi.to_owned());
+    }
+    if bits < 64 {
+        let lo_expr: String = format!("({lo} << {bits})");
+        let hi_expr: String = format!("(({hi} << {bits}) | ({lo} >> {}))", 64 - bits);
+        return (lo_expr, hi_expr);
+    }
+    if bits == 64 {
+        return ("0ULL".to_owned(), lo.to_owned());
+    }
+    ("0ULL".to_owned(), format!("({lo} << {})", bits - 64))
 }
 
 fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
@@ -9043,6 +9576,13 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             let bits: String = xmm_bits(*src, *width);
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = reg_write_rhs(var, dest.width, &bits);
+            assign_cstmt(cx, var, &rhs)
+        }
+        Stmt::Packed { dest, op } => packed_op_cstmt(cx, *dest, op),
+        Stmt::PackedToGpr { dest, src } => {
+            let body: String = packed_lane(*src, false);
+            let var: &'static str = reg_var(dest.reg);
+            let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
         }
     }
@@ -10176,7 +10716,11 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             rs_emit_store(out, addr, &value, indent);
         }
         Stmt::MemRmw { addr, op } => rs_mem_rmw_stmt(out, addr, op, indent)?,
-        Stmt::FpStore { .. } | Stmt::BlockMove { .. } | Stmt::BlockFill { .. } => return None,
+        Stmt::FpStore { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => return None,
     }
     Some(())
 }
@@ -12439,7 +12983,7 @@ mod structuring_corpus {
 
     pub(super) fn lift(object_bytes: &[u8], name: &str) -> Option<Vec<Item>> {
         let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
-        build_leaf_items(&code, base, HOST_ABI, &[])
+        build_leaf_items(&code, base, HOST_ABI, &[], &[])
             .ok()
             .map(|leaf: LeafItems| leaf.items)
     }

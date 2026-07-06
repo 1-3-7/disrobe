@@ -16,8 +16,8 @@ use super::try_with::{
 };
 use super::{
     DecodedStream, ScDesc, active_version, fallthrough_cond_test, loop_break_target,
-    negate_cond_expr, none_jump_test, none_jump_test_taken, with_boolop_context,
-    with_boolop_merges,
+    loop_continue_target, negate_cond_expr, none_jump_test, none_jump_test_taken,
+    with_boolop_context, with_boolop_merges,
 };
 use crate::ast::node::{ConstValue, Expr, ExprCtx, MatchCase, Pattern, Stmt};
 use crate::bytecode::opcode::{CanonicalOp, CmpOp, UnaryOp};
@@ -1213,6 +1213,86 @@ pub(super) fn structure_guarded_break(
     Ok(Some(out))
 }
 
+pub(super) fn structure_break_on_false_continue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(exit): Option<usize> = loop_break_target() else {
+        return Ok(None);
+    };
+    if exit <= hi {
+        return Ok(None);
+    }
+    let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+    }) else {
+        return Ok(None);
+    };
+    let break_targets_exit: bool = resolve_jump_target(stream, first_jump, &stream.ops[first_jump])
+        .is_some_and(|t: usize| {
+            t > hi && t <= exit && first_significant(stream, t, exit).is_none()
+        });
+    if jump_taken_if_true(stream, first_jump) || !break_targets_exit {
+        return Ok(None);
+    }
+    let Some(body_lo): Option<usize> = first_significant(stream, first_jump + 1, hi) else {
+        return Ok(None);
+    };
+    if body_lo >= hi {
+        return Ok(None);
+    }
+    let body_breaks_again: bool = (body_lo..hi).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > hi)
+    });
+    if body_breaks_again {
+        return Ok(None);
+    }
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let true_path_continues: bool = first_significant(stream, hi, exit).is_some_and(|e: usize| {
+        is_back_edge(&stream.ops[e])
+            && resolve_jump_target(stream, e, &stream.ops[e]).is_some_and(|t: usize| t <= header)
+    });
+    if !true_path_continues {
+        return Ok(None);
+    }
+    let head_end: usize = first_jump_value_lo(stream, lo, first_jump);
+    let (head, _): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..head_end])?;
+    let (cond_stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[head_end..first_jump])?;
+    if !cond_stmts.is_empty() {
+        return Ok(None);
+    }
+    let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let test: Expr = none_jump_test(stream, first_jump, value.clone()).unwrap_or(value);
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_lo, hi)?;
+    if !matches!(
+        body.last(),
+        Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+    ) {
+        body.push(Stmt::Continue);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.push(Stmt::Break);
+    Ok(Some(out))
+}
+
 fn collect_break_cond_jumps(
     stream: &DecodedStream,
     first_jump: usize,
@@ -1315,8 +1395,18 @@ fn collect_if_cond_jumps(
             return Some((jumps, body, exit));
         }
         let next_jump: Option<usize> = scan_to_cond_jump(stream, next_op, target);
-        let continues: bool = next_jump
-            .is_some_and(|j: usize| j < target && !region_has_statement(stream, next_op, j));
+        let pure_and_run: bool =
+            body_targets.is_empty() && targets.iter().all(|&t: &usize| t == target);
+        let continues: bool = next_jump.is_some_and(|j: usize| {
+            if j >= target || region_has_statement(stream, next_op, j) {
+                return false;
+            }
+            if pure_and_run && !jump_taken_if_true(stream, j) {
+                return resolve_jump_target(stream, j, &stream.ops[j])
+                    .is_none_or(|t: usize| t >= target);
+            }
+            true
+        });
         match next_jump {
             Some(j) if continues => cursor = j,
             _ => {
