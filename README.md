@@ -79,7 +79,7 @@ cargo build -p disrobe-cli --release --no-default-features
 cargo build-slim
 ```
 
-Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain, and with them large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. The `wasm` subcommand still parses in a slim binary and reports a clear message if you run it:
+Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain, and with them large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. On a Windows release build that trims the binary from about 75 MB to 49 MB, roughly a third smaller; the exact figure varies by platform and toolchain. The `wasm` subcommand still parses in a slim binary and reports a clear message if you run it:
 
 ```text
 $ disrobe wasm decompile app.wasm
