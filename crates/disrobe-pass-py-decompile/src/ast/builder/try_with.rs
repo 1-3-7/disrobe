@@ -2924,6 +2924,9 @@ fn try_else_handler_continuation_split(
     if cont_start <= else_start || cont_start >= else_end_full {
         return None;
     }
+    if !starts_at_statement_boundary(stream, else_start, cont_start) {
+        return None;
+    }
     if !first_significant(stream, cont_start, else_end_full)
         .is_some_and(|k: usize| else_entry_is_fallthrough(&stream.ops[k]))
     {
@@ -2943,10 +2946,20 @@ fn try_else_handler_continuation_split(
 
 fn continuation_span_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     let mut k: usize = lo;
+    let mut reach: usize = lo;
     while k < hi {
+        if let Some(target) = resolve_jump_target(stream, k, &stream.ops[k])
+            && target > k
+        {
+            reach = reach.max(target.min(hi));
+        }
         match stream.ops[k] {
-            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_) => return k,
-            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => return k + 1,
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+                if reach <= k =>
+            {
+                return k;
+            }
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) if reach <= k => return k + 1,
             _ => k += 1,
         }
     }
