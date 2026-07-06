@@ -691,13 +691,38 @@ pub fn recover_leaf_function_in_object(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
-    match recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls) {
+    let straight_err: Error =
+        match recover_leaf_function_calls_impl(machine_code, base, abi, &[], calls) {
+            Ok(recovery) => return Ok(recovery),
+            Err(err) => err,
+        };
+    match recover_switch_in_object(object, machine_code, base, abi, calls) {
+        Ok(recovery) => return Ok(recovery),
+        Err(switch_err) => {
+            if !matches!(&switch_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
+            {
+                return Err(switch_err);
+            }
+        }
+    }
+    match recover_value_switch_in_object(object, machine_code, base, abi) {
+        Ok(recovery) => return Ok(recovery),
+        Err(value_err) => {
+            if !matches!(&value_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
+            {
+                return Err(value_err);
+            }
+        }
+    }
+    match recover_o0_switch_in_object(object, machine_code, base, abi, calls) {
         Ok(recovery) => Ok(recovery),
-        Err(straight_err) => recover_switch_in_object(object, machine_code, base, abi, calls)
-            .map_err(|switch_err: Error| match &switch_err {
-                Error::LlvmIr(message) if message.contains("dispatch prologue") => straight_err,
-                _ => switch_err,
-            }),
+        Err(o0_err) => {
+            if matches!(&o0_err, Error::LlvmIr(message) if message.contains("dispatch prologue")) {
+                Err(straight_err)
+            } else {
+                Err(o0_err)
+            }
+        }
     }
 }
 
@@ -1820,6 +1845,255 @@ fn recover_switch_in_object(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
 }
 
+/// Recover an `-O0` dense jump-table switch (stack-homed discriminant, split index-scale, double table `lea`).
+fn recover_o0_switch_in_object(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let by_addr: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &DisasmInsn)| (insn.address, i))
+        .collect();
+    let Some((dispatch, second_lea_idx)): Option<(SwitchDispatch, usize)> =
+        detect_o0_jump_dispatch(&insns)
+    else {
+        return Err(Error::LlvmIr(
+            "no O0 dense jump-table dispatch prologue in leaf".to_owned(),
+        ));
+    };
+    verify_shared_table_lea(object, base, &insns, dispatch.inter_end, second_lea_idx)?;
+    let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
+    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+}
+
+/// Prove both rip-relative table `lea`s of an `-O0` dispatch name the same rodata table.
+fn verify_shared_table_lea(
+    object: &[u8],
+    base: u64,
+    insns: &[DisasmInsn],
+    first_lea_idx: usize,
+    second_lea_idx: usize,
+) -> Result<()> {
+    use object::{Object as _, ObjectSection as _};
+
+    let file: object::File<'_> = object::File::parse(object)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for table leas: {e}")))?;
+    let code_section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            let end: u64 = start.saturating_add(section.size());
+            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
+        })
+        .ok_or_else(|| Error::LlvmIr("dispatch code section not located".to_owned()))?;
+    let first: (object::SectionIndex, u64) =
+        lea_table_location(&file, &code_section, insns, first_lea_idx)?;
+    let second: (object::SectionIndex, u64) =
+        lea_table_location(&file, &code_section, insns, second_lea_idx)?;
+    if first != second {
+        return Err(Error::LlvmIr(
+            "dispatch table leas resolve to different tables; not a soundly recoverable switch"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// The section and in-section offset a table `lea` at `lea_idx` points at.
+fn lea_table_location<'data>(
+    file: &object::File<'data>,
+    code_section: &object::Section<'data, '_>,
+    insns: &[DisasmInsn],
+    lea_idx: usize,
+) -> Result<(object::SectionIndex, u64)> {
+    let lea: &DisasmInsn = insns
+        .get(lea_idx)
+        .ok_or_else(|| Error::LlvmIr("table lea index out of range".to_owned()))?;
+    let disp_field_va: u64 = lea
+        .address
+        .checked_add(lea.bytes.len() as u64)
+        .and_then(|end: u64| end.checked_sub(4))
+        .ok_or_else(|| Error::LlvmIr("table lea has no displacement field".to_owned()))?;
+    resolve_lea_table(file, code_section, disp_field_va)
+}
+
+/// Recover a return-value-data-table switch (a range-checked rodata result-table load) as a `switch`.
+fn recover_value_switch_in_object(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let Some(switch): Option<ValueTableSwitch> = detect_value_table_switch(&insns) else {
+        return Err(Error::LlvmIr(
+            "no value-table dispatch prologue in leaf".to_owned(),
+        ));
+    };
+    let values: Vec<i64> = object_value_table(object, base, &insns, &switch)?;
+    build_value_switch_recovery(abi, &switch, &values)
+}
+
+/// Emit a leaf `switch` whose cases assign the resolved table values and default the fallback value.
+fn build_value_switch_recovery(
+    abi: Abi,
+    switch: &ValueTableSwitch,
+    values: &[i64],
+) -> Result<LeafRecovery> {
+    let ret_reg: RegRef = RegRef {
+        reg: Reg::Rax,
+        width: Width::W64,
+    };
+    let mut cases: Vec<SwitchCase> = Vec::with_capacity(values.len());
+    for (index, &value) in values.iter().enumerate() {
+        let case_value: i64 = i64::try_from(index)
+            .map_err(|_| Error::LlvmIr("value-switch case overflow".to_owned()))?;
+        cases.push(SwitchCase {
+            values: vec![case_value],
+            body: vec![Node::Stmt(Stmt::Assign {
+                dest: ret_reg,
+                src: Source::Imm(value),
+            })],
+            fallthrough: false,
+        });
+    }
+    let default: Block = vec![Node::Stmt(Stmt::Assign {
+        dest: ret_reg,
+        src: Source::Imm(switch.default_value),
+    })];
+    let body: Block = vec![Node::Switch {
+        disc: switch.disc,
+        cases,
+        default,
+    }];
+    let return_width: Width = Width::W64;
+    let params: Vec<Reg> = infer_params(&body, abi);
+    let signature: FnSignature = FnSignature {
+        fp: Vec::new(),
+        int: params.clone(),
+        ret: FnReturn::Int(return_width),
+    };
+    let source: String = emit_c(&body, &signature, None, None);
+    let rust_source: Option<String> = emit_rust(&body, &signature, None, None);
+    Ok(LeafRecovery {
+        source,
+        rust_source,
+        return_width_bits: return_width.bits(),
+        params,
+        fp_params: signature.ordered_param_types(),
+        returns_fp: None,
+        lifted_split_return: false,
+        lifted_loop: false,
+        lifted_switch: true,
+        call_targets: Vec::new(),
+        sret: None,
+    })
+}
+
+/// Read the constant result values a value-table switch loads, reusing the switch-lea resolver.
+fn object_value_table(
+    object: &[u8],
+    base: u64,
+    insns: &[DisasmInsn],
+    switch: &ValueTableSwitch,
+) -> Result<Vec<i64>> {
+    use object::{Object as _, ObjectSection as _};
+
+    let file: object::File<'_> = object::File::parse(object)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for value table: {e}")))?;
+    let width: u64 = u64::from(switch.entry_width);
+    let lea: &DisasmInsn = insns
+        .get(switch.lea_idx)
+        .ok_or_else(|| Error::LlvmIr("value-table lea index out of range".to_owned()))?;
+    let disp_field_va: u64 = lea
+        .address
+        .checked_add(lea.bytes.len() as u64)
+        .and_then(|end: u64| end.checked_sub(4))
+        .ok_or_else(|| Error::LlvmIr("value-table lea has no displacement field".to_owned()))?;
+    let code_section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            let end: u64 = start.saturating_add(section.size());
+            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
+        })
+        .ok_or_else(|| Error::LlvmIr("value-table code section not located".to_owned()))?;
+    let (table_index, table_off): (object::SectionIndex, u64) =
+        resolve_lea_table(&file, &code_section, disp_field_va)?;
+    let table_section: object::Section<'_, '_> = file
+        .section_by_index(table_index)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("value-table section missing: {e}")))?;
+    let table_data: &[u8] = table_section
+        .data()
+        .map_err(|e: object::Error| Error::LlvmIr(format!("value-table data unavailable: {e}")))?;
+    let table_addr: u64 = table_section.address();
+    let span: u64 = width
+        .checked_mul(switch.count as u64)
+        .ok_or_else(|| Error::LlvmIr("value-table span overflow".to_owned()))?;
+    for (off, _reloc) in table_section.relocations() {
+        let slot: u64 = off.saturating_sub(table_addr);
+        if slot >= table_off && slot < table_off.saturating_add(span) {
+            return Err(Error::LlvmIr(
+                "value-table slot carries a relocation; entries are addresses, not constants"
+                    .to_owned(),
+            ));
+        }
+    }
+    let mut values: Vec<i64> = Vec::with_capacity(switch.count);
+    for index in 0..switch.count {
+        let slot: u64 = table_off
+            .checked_add(
+                width
+                    .checked_mul(index as u64)
+                    .ok_or_else(|| Error::LlvmIr("value-table index overflow".to_owned()))?,
+            )
+            .ok_or_else(|| Error::LlvmIr("value-table slot overflow".to_owned()))?;
+        let start: usize = usize::try_from(slot)
+            .map_err(|_| Error::LlvmIr("value-table slot address overflow".to_owned()))?;
+        let value: i64 = match (switch.entry_width, switch.signed_load) {
+            (8, _) => table_data
+                .get(start..start + 8)
+                .and_then(|b: &[u8]| b.try_into().ok())
+                .map(i64::from_le_bytes)
+                .ok_or_else(|| Error::LlvmIr("value-table slot out of range".to_owned()))?,
+            (4, true) => table_data
+                .get(start..start + 4)
+                .and_then(|b: &[u8]| b.try_into().ok())
+                .map(|b: [u8; 4]| i64::from(i32::from_le_bytes(b)))
+                .ok_or_else(|| Error::LlvmIr("value-table slot out of range".to_owned()))?,
+            (4, false) => table_data
+                .get(start..start + 4)
+                .and_then(|b: &[u8]| b.try_into().ok())
+                .map(|b: [u8; 4]| i64::from(u32::from_le_bytes(b)))
+                .ok_or_else(|| Error::LlvmIr("value-table slot out of range".to_owned()))?,
+            _ => {
+                return Err(Error::LlvmIr(
+                    "unsupported value-table entry width".to_owned(),
+                ));
+            }
+        };
+        values.push(value);
+    }
+    Ok(values)
+}
+
 /// The addend a relocation contributes: implicit in-field value plus its addend, or the explicit addend.
 fn reloc_effective_addend(
     reloc: &object::Relocation,
@@ -2100,6 +2374,355 @@ fn detect_switch_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch> {
         });
     }
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ValueTableSwitch {
+    disc: RegRef,
+    count: usize,
+    default_value: i64,
+    lea_idx: usize,
+    entry_width: u8,
+    signed_load: bool,
+}
+
+/// Match a range-checked rip-relative table load into the return register (default pre-loaded or in the out-of-range block).
+fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
+    for cmp_idx in 0..insns.len() {
+        let Some((disc, bound)): Option<(RegRef, u64)> = parse_cmp_bound(&insns[cmp_idx]) else {
+            continue;
+        };
+        if disc.reg == Reg::Rax {
+            continue;
+        }
+        let Some(jump): Option<&DisasmInsn> = insns.get(cmp_idx + 1) else {
+            continue;
+        };
+        if !matches!(jump.mnemonic.as_str(), "ja" | "jnbe" | "jae" | "jnb") {
+            continue;
+        }
+        let Some(default_target): Option<u64> = parse_branch_target(&jump.operands) else {
+            continue;
+        };
+        let above: bool = matches!(jump.mnemonic.as_str(), "ja" | "jnbe");
+        let Some(effective_bound): Option<u64> = (if above {
+            Some(bound)
+        } else {
+            bound.checked_sub(1)
+        }) else {
+            continue;
+        };
+        let Some(count): Option<usize> = usize::try_from(effective_bound)
+            .ok()
+            .and_then(|b: usize| b.checked_add(1))
+        else {
+            continue;
+        };
+        let Some(lea_idx): Option<usize> = next_effective(insns, cmp_idx + 2) else {
+            continue;
+        };
+        let Some((tbl_reg, _table_va)): Option<(Reg, u64)> = parse_lea_rip(&insns[lea_idx]) else {
+            continue;
+        };
+        if tbl_reg == disc.reg {
+            continue;
+        }
+        let Some(load_idx): Option<usize> = next_effective(insns, lea_idx + 1) else {
+            continue;
+        };
+        let Some((entry_width, signed_load)): Option<(u8, bool)> =
+            parse_value_table_load(&insns[load_idx], tbl_reg, disc.reg)
+        else {
+            continue;
+        };
+        let Some(ret_idx): Option<usize> = next_effective(insns, load_idx + 1) else {
+            continue;
+        };
+        if insns[ret_idx].mnemonic != "ret" {
+            continue;
+        }
+        let Some(default_value): Option<i64> = (if default_target == insns[ret_idx].address {
+            preloaded_default(insns, cmp_idx)
+        } else {
+            default_block_value(insns, default_target)
+        }) else {
+            continue;
+        };
+        return Some(ValueTableSwitch {
+            disc,
+            count,
+            default_value,
+            lea_idx,
+            entry_width,
+            signed_load,
+        });
+    }
+    None
+}
+
+/// The index of the next non-ignorable instruction at or after `from`.
+fn next_effective(insns: &[DisasmInsn], from: usize) -> Option<usize> {
+    (from..insns.len()).find(|&i: &usize| !is_ignorable(&insns[i]))
+}
+
+/// The default value pre-loaded into `rax` immediately before a range check (`mov rax, imm`).
+fn preloaded_default(insns: &[DisasmInsn], cmp_idx: usize) -> Option<i64> {
+    let idx: usize = (0..cmp_idx)
+        .rev()
+        .find(|&i: &usize| !is_ignorable(&insns[i]))?;
+    match lift_one(&insns[idx].mnemonic, &insns[idx].operands)? {
+        Stmt::Assign {
+            dest,
+            src: Source::Imm(value),
+        } if dest.reg == Reg::Rax => Some(value),
+        _ => None,
+    }
+}
+
+/// The default value supplied by an out-of-range branch target block (`mov rax, imm; ret`).
+fn default_block_value(insns: &[DisasmInsn], target: u64) -> Option<i64> {
+    let start: usize = insns
+        .iter()
+        .position(|insn: &DisasmInsn| insn.address == target)?;
+    let mov_idx: usize = next_effective(insns, start)?;
+    let value: i64 = match lift_one(&insns[mov_idx].mnemonic, &insns[mov_idx].operands)? {
+        Stmt::Assign {
+            dest,
+            src: Source::Imm(value),
+        } if dest.reg == Reg::Rax => value,
+        _ => return None,
+    };
+    let ret_idx: usize = next_effective(insns, mov_idx + 1)?;
+    (insns[ret_idx].mnemonic == "ret").then_some(value)
+}
+
+/// Parse `mov/movsxd rax, [table + disc * width]`, returning the entry width and whether it sign-extends.
+fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Option<(u8, bool)> {
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.reg != Reg::Rax {
+        return None;
+    }
+    match insn.mnemonic.as_str() {
+        "mov" => {
+            let mem: MemRef = parse_mem_access(rhs.trim(), Some(dest.width))?;
+            let (index_reg, scale): (Reg, u8) = mem.index?;
+            if mem.base != Some(tbl_reg) || index_reg != disc_reg || mem.disp != 0 {
+                return None;
+            }
+            let entry_width: u8 = u8::try_from(mem.width.bits() / 8).ok()?;
+            if scale != entry_width || !matches!(entry_width, 4 | 8) {
+                return None;
+            }
+            Some((entry_width, false))
+        }
+        "movsxd" | "movsx" => {
+            if dest.width != Width::W64 {
+                return None;
+            }
+            let mem: MemRef = parse_mem_access(rhs.trim(), Some(Width::W32))?;
+            if mem.width != Width::W32 {
+                return None;
+            }
+            let (index_reg, scale): (Reg, u8) = mem.index?;
+            if mem.base != Some(tbl_reg) || index_reg != disc_reg || mem.disp != 0 || scale != 4 {
+                return None;
+            }
+            Some((4, true))
+        }
+        _ => None,
+    }
+}
+
+/// Match the `-O0` dense jump-table dispatch, returning a `SwitchDispatch` and the second table `lea` index.
+fn detect_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<(SwitchDispatch, usize)> {
+    for cmp_idx in 0..insns.len() {
+        let Some((slot, bound)): Option<(MemRef, u64)> = parse_cmp_mem_bound(&insns[cmp_idx])
+        else {
+            continue;
+        };
+        let Some(disc_reg): Option<Reg> = (0..cmp_idx)
+            .rev()
+            .find_map(|i: usize| parse_store_reg_to(&insns[i], &slot))
+        else {
+            continue;
+        };
+        let Some(jump): Option<&DisasmInsn> = insns.get(cmp_idx + 1) else {
+            continue;
+        };
+        if !matches!(jump.mnemonic.as_str(), "ja" | "jnbe" | "jae" | "jnb") {
+            continue;
+        }
+        let Some(default_target): Option<u64> = parse_branch_target(&jump.operands) else {
+            continue;
+        };
+        let above: bool = matches!(jump.mnemonic.as_str(), "ja" | "jnbe");
+        let Some(effective_bound): Option<u64> = (if above {
+            Some(bound)
+        } else {
+            bound.checked_sub(1)
+        }) else {
+            continue;
+        };
+        let Some(reload_idx): Option<usize> = next_effective(insns, cmp_idx + 2) else {
+            continue;
+        };
+        let Some(index_reg): Option<Reg> = parse_load_reg_from(&insns[reload_idx], &slot) else {
+            continue;
+        };
+        let Some(scale_idx): Option<usize> = next_effective(insns, reload_idx + 1) else {
+            continue;
+        };
+        let Some((scale_reg, scaled, scale)): Option<(Reg, Reg, u8)> =
+            parse_scaled_index_lea(&insns[scale_idx])
+        else {
+            continue;
+        };
+        if scaled != index_reg || scale != 4 {
+            continue;
+        }
+        let Some(lea_idx): Option<usize> = next_effective(insns, scale_idx + 1) else {
+            continue;
+        };
+        let Some((tbl_reg, table_va)): Option<(Reg, u64)> = parse_lea_rip(&insns[lea_idx]) else {
+            continue;
+        };
+        let Some(load_idx): Option<usize> = next_effective(insns, lea_idx + 1) else {
+            continue;
+        };
+        if parse_o0_table_load(&insns[load_idx], scale_reg, tbl_reg).is_none() {
+            continue;
+        }
+        let Some(cdqe_idx): Option<usize> = next_effective(insns, load_idx + 1) else {
+            continue;
+        };
+        if insns[cdqe_idx].mnemonic != "cdqe" {
+            continue;
+        }
+        let Some(base_lea_idx): Option<usize> = next_effective(insns, cdqe_idx + 1) else {
+            continue;
+        };
+        let Some((base_reg, _)): Option<(Reg, u64)> = parse_lea_rip(&insns[base_lea_idx]) else {
+            continue;
+        };
+        let Some(add_idx): Option<usize> = next_effective(insns, base_lea_idx + 1) else {
+            continue;
+        };
+        if !is_add_regs(&insns[add_idx], Reg::Rax, base_reg) {
+            continue;
+        }
+        let Some(jmp_idx): Option<usize> = next_effective(insns, add_idx + 1) else {
+            continue;
+        };
+        if !is_indirect_jmp(&insns[jmp_idx], Reg::Rax) {
+            continue;
+        }
+        let dispatch: SwitchDispatch = SwitchDispatch {
+            disc: RegRef {
+                reg: disc_reg,
+                width: Width::W64,
+            },
+            bound: effective_bound,
+            default_addr: default_target,
+            table_va,
+            bias: None,
+            entry_width: 4,
+            first_index: cmp_idx,
+            inter_start: cmp_idx + 2,
+            inter_end: lea_idx,
+        };
+        return Some((dispatch, base_lea_idx));
+    }
+    None
+}
+
+/// Parse `cmp <size> [frame + disp], imm`, returning the discriminant slot and the range bound.
+fn parse_cmp_mem_bound(insn: &DisasmInsn) -> Option<(MemRef, u64)> {
+    if insn.mnemonic != "cmp" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    if !is_mem_token(lhs.trim()) {
+        return None;
+    }
+    let mem: MemRef = parse_mem_access(lhs.trim(), None)?;
+    let bound: i64 = parse_imm(rhs.trim())?;
+    if bound < 1 {
+        return None;
+    }
+    Some((mem, bound as u64))
+}
+
+/// Parse `mov <slot>, reg` storing a 64-bit register into the given frame slot.
+fn parse_store_reg_to(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    if !is_mem_token(lhs.trim()) {
+        return None;
+    }
+    let src: RegRef = parse_reg(rhs.trim())?;
+    if src.width != Width::W64 {
+        return None;
+    }
+    let addr: MemRef = parse_mem_access(lhs.trim(), Some(Width::W64))?;
+    (addr == *slot).then_some(src.reg)
+}
+
+/// Parse `mov reg, <slot>` reloading the given frame slot into a 64-bit register.
+fn parse_load_reg_from(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.width != Width::W64 || !is_mem_token(rhs.trim()) {
+        return None;
+    }
+    let mem: MemRef = parse_mem_access(rhs.trim(), Some(Width::W64))?;
+    (mem == *slot).then_some(dest.reg)
+}
+
+/// Parse `lea reg, [index * scale]` (pure index scaling with no base or displacement).
+fn parse_scaled_index_lea(insn: &DisasmInsn) -> Option<(Reg, Reg, u8)> {
+    if insn.mnemonic != "lea" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.width != Width::W64 {
+        return None;
+    }
+    let (base, index, disp): AddrTerms = parse_addr_terms(rhs.trim())?;
+    if base.is_some() || disp != 0 {
+        return None;
+    }
+    let (index_reg, scale): (Reg, u8) = index?;
+    Some((dest.reg, index_reg, scale))
+}
+
+/// Parse the `-O0` 32-bit table load `mov eax, [scale_reg + table_reg]` into the return register.
+fn parse_o0_table_load(insn: &DisasmInsn, scale_reg: Reg, tbl_reg: Reg) -> Option<()> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    if dest.reg != Reg::Rax || dest.width != Width::W32 {
+        return None;
+    }
+    let mem: MemRef = parse_mem_access(rhs.trim(), Some(Width::W32))?;
+    if mem.width != Width::W32 || mem.disp != 0 {
+        return None;
+    }
+    let base: Reg = mem.base?;
+    let (index_reg, index_scale): (Reg, u8) = mem.index?;
+    if index_scale != 1 || scale_reg == tbl_reg {
+        return None;
+    }
+    let addr_regs: [Reg; 2] = [base, index_reg];
+    (addr_regs.contains(&scale_reg) && addr_regs.contains(&tbl_reg)).then_some(())
 }
 
 fn parse_cmp_bound(insn: &DisasmInsn) -> Option<(RegRef, u64)> {

@@ -129,6 +129,33 @@ const PROGRAMS: &[WholeProgram] = &[
         c_source: "__attribute__((noinline,noclone)) long long wp_switch_pick(long long k){ switch(k){ case 0: return 10; case 1: return 21; case 2: return 32; case 3: return 43; case 4: return 54; default: return -1; } }\n\
                    long long wp_switch_entry(long long k){ return wp_switch_pick(k) + k; }",
     },
+    WholeProgram {
+        name: "wp_vswitch",
+        entry: "wp_vswitch_entry",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["wp_vswitch_entry", "wp_vswitch_pick"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_vswitch_pick(long long k){ switch(k){ case 0: return 7; case 1: return 3; case 2: return 91; case 3: return 5; case 4: return 42; case 5: return 8; case 6: return 64; default: return -1; } }\n\
+                   long long wp_vswitch_entry(long long k){ return wp_vswitch_pick(k) + k; }",
+    },
+    WholeProgram {
+        name: "wp_vswitch_neg",
+        entry: "wp_vswitch_neg_entry",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["wp_vswitch_neg_entry", "wp_vswitch_neg_pick"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_vswitch_neg_pick(long long k){ switch(k){ case 0: return -5; case 1: return 12; case 2: return -700; case 3: return 3; case 4: return -1000000; default: return 77; } }\n\
+                   long long wp_vswitch_neg_entry(long long k){ return wp_vswitch_neg_pick(k) + k; }",
+    },
+    WholeProgram {
+        name: "wp_sparse_switch",
+        entry: "wp_sparse_switch_entry",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["wp_sparse_switch_entry", "wp_sparse_switch_pick"],
+        c_source: "__attribute__((noinline,noclone)) long long wp_sparse_switch_pick(long long k){ switch(k){ case 1: return 11; case 7: return 22; case 42: return 33; case 100: return 44; default: return -1; } }\n\
+                   long long wp_sparse_switch_entry(long long k){ return wp_sparse_switch_pick(k) + k; }",
+    },
 ];
 
 const SHAPE_PROGRAMS: &[WholeProgram] = &[
