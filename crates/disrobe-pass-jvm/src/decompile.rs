@@ -1603,6 +1603,16 @@ fn local_declarations(
             inferred.insert(slot, ty);
         }
     }
+    for (slot, ty) in constructed_array_local_types(cf, insns) {
+        let conflicts_with_seen: bool = seen_types
+            .get(&slot)
+            .is_some_and(|tys: &BTreeSet<String>| tys.iter().any(|t: &String| *t != ty));
+        if exc_conflicted.contains(&slot) || conflicts_with_seen {
+            inferred.insert(slot, "Object".to_string());
+        } else {
+            inferred.insert(slot, ty);
+        }
+    }
     for (slot, ty) in exception_local_types(insns, exception_regions) {
         if reused_exc.contains(&slot) {
             continue;
@@ -1874,6 +1884,72 @@ fn constructed_local_types(cf: &ClassFile, insns: &[Instruction]) -> BTreeMap<u1
                 }
             }
             _ => last_constructed = None,
+        }
+    }
+    out
+}
+
+#[derive(Clone)]
+enum ArrayStackVal {
+    Array(String),
+    Scalar,
+}
+
+fn constructed_array_local_types(cf: &ClassFile, insns: &[Instruction]) -> BTreeMap<u16, String> {
+    let mut out: BTreeMap<u16, String> = BTreeMap::new();
+    let mut stack: Vec<ArrayStackVal> = Vec::new();
+    for insn in insns {
+        let op: u8 = insn.opcode;
+        match op {
+            0x01..=0x2D => stack.push(ArrayStackVal::Scalar),
+            0xBC | 0xBD => {
+                stack.pop();
+                stack.push(
+                    new_array_static_type(cf, insn)
+                        .map_or(ArrayStackVal::Scalar, ArrayStackVal::Array),
+                );
+            }
+            0xC5 => {
+                let dims: usize = match &insn.operands {
+                    Operands::MultiANewArray { dimensions, .. } => usize::from(*dimensions),
+                    _ => 0,
+                };
+                for _ in 0..dims {
+                    stack.pop();
+                }
+                stack.push(
+                    multi_new_array_static_type(cf, insn)
+                        .map_or(ArrayStackVal::Scalar, ArrayStackVal::Array),
+                );
+            }
+            0x59 => {
+                let top: ArrayStackVal = stack.last().cloned().unwrap_or(ArrayStackVal::Scalar);
+                stack.push(top);
+            }
+            0x4F..=0x56 => {
+                stack.pop();
+                stack.pop();
+                stack.pop();
+            }
+            0x3A | 0x4B..=0x4E => {
+                let top: Option<ArrayStackVal> = stack.pop();
+                let slot: u16 = match (op, &insn.operands) {
+                    (0x3A, Operands::Local(idx)) => *idx,
+                    (0x4B..=0x4E, _) => u16::from(op - 0x4B),
+                    _ => continue,
+                };
+                if let Some(ArrayStackVal::Array(ty)) = top {
+                    match out.get(&slot) {
+                        Some(existing) if *existing != ty => {
+                            out.insert(slot, "Object".to_string());
+                        }
+                        _ => {
+                            out.insert(slot, ty);
+                        }
+                    }
+                }
+            }
+            _ => stack.clear(),
         }
     }
     out

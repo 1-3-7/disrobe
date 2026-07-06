@@ -168,8 +168,12 @@ fn sanitize_generated_name_at(s: &str, out: &mut String) -> Option<usize> {
 }
 
 #[must_use]
-pub fn lower_generic_placeholders(body: &str, type_param_names: &[String]) -> String {
-    if type_param_names.is_empty() || !body.contains('!') {
+pub fn lower_generic_placeholders(
+    body: &str,
+    type_param_names: &[String],
+    method_param_names: &[String],
+) -> String {
+    if (type_param_names.is_empty() && method_param_names.is_empty()) || !body.contains('!') {
         return body.to_owned();
     }
     let bytes: &[u8] = body.as_bytes();
@@ -181,11 +185,8 @@ pub fn lower_generic_placeholders(body: &str, type_param_names: &[String]) -> St
             i += 1;
             continue;
         }
-        let digit_start: usize = if bytes.get(i + 1) == Some(&b'!') {
-            i + 2
-        } else {
-            i + 1
-        };
+        let is_method_var: bool = bytes.get(i + 1) == Some(&b'!');
+        let digit_start: usize = if is_method_var { i + 2 } else { i + 1 };
         let mut j: usize = digit_start;
         while j < bytes.len() && bytes[j].is_ascii_digit() {
             j += 1;
@@ -195,9 +196,14 @@ pub fn lower_generic_placeholders(body: &str, type_param_names: &[String]) -> St
             .and_then(|p: usize| bytes.get(p))
             .is_some_and(|&p: &u8| p.is_ascii_alphanumeric() || p == b'_');
         let index: usize = body[digit_start..j].parse::<usize>().unwrap_or(usize::MAX);
+        let names: &[String] = if is_method_var {
+            method_param_names
+        } else {
+            type_param_names
+        };
         if j > digit_start
             && !preceded_by_ident
-            && let Some(name) = type_param_names.get(index)
+            && let Some(name) = names.get(index)
         {
             out.push_str(&body[copy_from..i]);
             out.push_str(name);
@@ -2858,7 +2864,7 @@ mod tests {
         let body: &str =
             "    System.Collections.Generic.IEnumerator<!0> local2;\n    local3 = default(!0);\n";
         let names: Vec<String> = vec!["T".to_owned()];
-        let out: String = lower_generic_placeholders(body, &names);
+        let out: String = lower_generic_placeholders(body, &names, &[]);
         assert!(out.contains("IEnumerator<T>"), "type var lowered:\n{out}");
         assert!(out.contains("default(T)"), "default lowered:\n{out}");
         assert!(!out.contains("!0"), "no placeholder residue:\n{out}");
@@ -2869,7 +2875,7 @@ mod tests {
         let body: &str =
             "    if (!(local1.handlers.TryGetValue(typeof(!0), &local3)))\n    !1 local2;\n";
         let names: Vec<String> = vec!["TRequest".to_owned(), "TResponse".to_owned()];
-        let out: String = lower_generic_placeholders(body, &names);
+        let out: String = lower_generic_placeholders(body, &names, &names);
         assert!(
             out.contains("typeof(TRequest)"),
             "index 0 -> TRequest:\n{out}"
@@ -2881,10 +2887,22 @@ mod tests {
     }
 
     #[test]
+    fn lowers_method_var_against_method_param_list() {
+        let body: &str = "    !!0 local0;\n    local0 = default(!!1);\n    !0 local1;\n";
+        let type_names: Vec<String> = vec!["TClass".to_owned()];
+        let method_names: Vec<String> = vec!["TMethod".to_owned(), "UMethod".to_owned()];
+        let out: String = lower_generic_placeholders(body, &type_names, &method_names);
+        assert!(out.contains("TMethod local0"), "!!0 -> TMethod:\n{out}");
+        assert!(out.contains("default(UMethod)"), "!!1 -> UMethod:\n{out}");
+        assert!(out.contains("TClass local1"), "!0 -> TClass:\n{out}");
+        assert!(!out.contains('!'), "no placeholder residue:\n{out}");
+    }
+
+    #[test]
     fn placeholder_lowering_keeps_logical_not_intact() {
         let body: &str = "    if (!visited.Add(node))\n";
         let names: Vec<String> = vec!["T".to_owned()];
-        let out: String = lower_generic_placeholders(body, &names);
+        let out: String = lower_generic_placeholders(body, &names, &[]);
         assert_eq!(
             out, body,
             "a logical-not on an identifier must be untouched"
@@ -2895,7 +2913,7 @@ mod tests {
     fn placeholder_lowering_ignores_unmapped_index() {
         let body: &str = "    !5 local0;\n";
         let names: Vec<String> = vec!["T".to_owned()];
-        let out: String = lower_generic_placeholders(body, &names);
+        let out: String = lower_generic_placeholders(body, &names, &[]);
         assert_eq!(out, body, "an out-of-range placeholder stays literal");
     }
 

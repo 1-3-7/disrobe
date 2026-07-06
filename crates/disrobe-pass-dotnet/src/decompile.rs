@@ -194,6 +194,7 @@ fn decompile_one(
                 structured.body = crate::state_machine_reverse::lower_generic_placeholders(
                     &reversed,
                     &type_param_names,
+                    &type_param_names,
                 );
             }
             if lang == TargetLang::CSharp {
@@ -260,6 +261,22 @@ fn decompile_one(
             if is_sm_move_next && lang == TargetLang::CSharp {
                 structured.body =
                     crate::state_machine_reverse::sanitize_generated_residue(&structured.body);
+            }
+            let type_param_names: Vec<String> =
+                resolver.type_generic_param_names(ty.token & 0x00FF_FFFF);
+            let method_param_names: Vec<String> =
+                resolver.method_generic_param_names(m.token & 0x00FF_FFFF);
+            if !type_param_names.is_empty() || !method_param_names.is_empty() {
+                structured.signature = crate::state_machine_reverse::lower_generic_placeholders(
+                    &structured.signature,
+                    &type_param_names,
+                    &method_param_names,
+                );
+                structured.body = crate::state_machine_reverse::lower_generic_placeholders(
+                    &structured.body,
+                    &type_param_names,
+                    &method_param_names,
+                );
             }
             methods.push(structured);
         }

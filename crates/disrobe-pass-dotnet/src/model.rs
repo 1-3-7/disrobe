@@ -291,6 +291,27 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn method_generic_param_names(&self, method_def_rid: u32) -> Vec<String> {
+        let mut named: Vec<(u16, String)> = self
+            .tables
+            .generic_params
+            .iter()
+            .filter(|g: &&GenericParamRow| {
+                g.owner.is_some_and(|o: RowRef| {
+                    matches!(o.table, TableId::MethodDef) && o.row == method_def_rid
+                })
+            })
+            .map(|g: &GenericParamRow| (g.number, self.string(g.name)))
+            .filter(|(_, name): &(u16, String)| !name.is_empty())
+            .collect();
+        named.sort_by_key(|(number, _): &(u16, String)| *number);
+        named
+            .into_iter()
+            .map(|(_, name): (u16, String)| name)
+            .collect()
+    }
+
+    #[must_use]
     fn string(&self, index: u32) -> String {
         if index == 0 {
             return String::new();
