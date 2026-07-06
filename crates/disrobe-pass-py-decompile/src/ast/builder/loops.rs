@@ -289,6 +289,7 @@ fn find_infinite_while(
             is_back_edge(&stream.ops[j])
                 && !is_async_send_back_edge(stream, j)
                 && !is_async_cleanup_throw_back_edge(stream, j)
+                && !back_edge_inside_exc_handler_cold_block(stream, header, j)
                 && resolve_jump_target(stream, j, &stream.ops[j]) == Some(header)
         });
         let Some(back_edge): Option<usize> = back_edge else {
@@ -878,6 +879,7 @@ fn max_back_edge_to_header(stream: &DecodedStream, header: usize, lo: usize, hi:
             is_back_edge(&stream.ops[k])
                 && !is_async_send_back_edge(stream, k)
                 && !is_async_cleanup_throw_back_edge(stream, k)
+                && !back_edge_inside_exc_handler_cold_block(stream, header, k)
                 && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
         })
         .unwrap_or(header)
@@ -1256,7 +1258,10 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
             && t >= lo
             && t < j
         {
-            if is_async_send_back_edge(stream, j) || is_async_cleanup_throw_back_edge(stream, j) {
+            if is_async_send_back_edge(stream, j)
+                || is_async_cleanup_throw_back_edge(stream, j)
+                || back_edge_inside_exc_handler_cold_block(stream, t, j)
+            {
                 continue;
             }
             let header: usize = t;
@@ -1274,11 +1279,13 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                 .collect();
             let region: LoopRegion =
                 if unconditional_back_edge_is_infinite(stream, lo, header, back_edge, &conds) {
-                    let exit: usize = conds
+                    let legacy_exit: usize = conds
                         .first()
                         .and_then(|&c: &usize| resolve_jump_target(stream, c, &stream.ops[c]))
                         .filter(|&t: &usize| t > back_edge)
                         .unwrap_or_else(|| (back_edge + 1).min(hi));
+                    let exit: usize =
+                        infinite_loop_reach_exit(stream, header, legacy_exit, lo, hi).min(hi);
                     LoopRegion {
                         kind: LoopKind::While,
                         header,
@@ -1882,6 +1889,166 @@ fn inline_exit_splits_try(
             };
             try_start >= region.header && try_start <= first_cond && handler_start < body_end
         })
+}
+
+fn loop_cfg_successors(
+    stream: &DecodedStream,
+    idx: usize,
+    lo: usize,
+    cap: usize,
+    out: &mut Vec<usize>,
+) -> bool {
+    out.clear();
+    let op: &CanonicalOp = &stream.ops[idx];
+    if matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+    ) {
+        return false;
+    }
+    let mut leaves: bool = false;
+    let uncond: bool = matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    );
+    let two_way: bool = is_forward_cond_jump(op)
+        || is_cond_back_edge(op)
+        || is_cond_jump_with_backward_target(stream, idx)
+        || matches!(
+            op,
+            CanonicalOp::JumpIfTrueOrPop(_)
+                | CanonicalOp::JumpIfFalseOrPop(_)
+                | CanonicalOp::ForIter(_)
+                | CanonicalOp::ForLoopLegacy(_)
+        );
+    if (uncond || two_way)
+        && let Some(target) = resolve_jump_target(stream, idx, op)
+    {
+        if target >= lo && target < cap {
+            out.push(target);
+        } else {
+            leaves = true;
+        }
+    }
+    if !uncond {
+        let next: usize = idx + 1;
+        if next < cap {
+            out.push(next);
+        } else {
+            leaves = true;
+        }
+    }
+    leaves
+}
+
+fn reachable_in_loop(stream: &DecodedStream, header: usize, lo: usize, cap: usize) -> Vec<bool> {
+    let exc: Vec<(usize, usize, usize)> = stream
+        .exception_table
+        .iter()
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let hs: usize = stream.index_for_offset(e.target)?;
+            let te: usize = stream.index_for_offset_ceil(e.end()).unwrap_or(cap);
+            (ts >= lo && ts < cap).then_some((ts, te, hs))
+        })
+        .collect();
+    let mut seen: Vec<bool> = vec![false; cap];
+    let mut stack: Vec<usize> = vec![header];
+    let mut succ: Vec<usize> = Vec::new();
+    while let Some(n) = stack.pop() {
+        if n >= cap || seen[n] {
+            continue;
+        }
+        seen[n] = true;
+        let _: bool = loop_cfg_successors(stream, n, lo, cap, &mut succ);
+        for &s in &succ {
+            if s < cap && !seen[s] {
+                stack.push(s);
+            }
+        }
+        for &(ts, te, hs) in &exc {
+            if n >= ts && n < te && hs < cap && !seen[hs] {
+                stack.push(hs);
+            }
+        }
+    }
+    seen
+}
+
+fn trailing_block_absorbable(
+    stream: &DecodedStream,
+    reach: &[bool],
+    legacy_exit: usize,
+    lo: usize,
+    cap: usize,
+) -> bool {
+    let mut succ: Vec<usize> = Vec::new();
+    for (i, &reachable) in reach.iter().enumerate().take(cap).skip(legacy_exit) {
+        if !reachable {
+            continue;
+        }
+        if (is_back_edge(&stream.ops[i])
+            && !is_async_send_back_edge(stream, i)
+            && !is_async_cleanup_throw_back_edge(stream, i))
+            || is_cond_back_edge(&stream.ops[i])
+            || is_cond_jump_with_backward_target(stream, i)
+        {
+            return false;
+        }
+        if loop_cfg_successors(stream, i, lo, cap, &mut succ) {
+            return false;
+        }
+    }
+    true
+}
+
+fn exit_follows_bottom_back_edge(
+    stream: &DecodedStream,
+    legacy_exit: usize,
+    header: usize,
+) -> bool {
+    let Some(prev): Option<usize> = (header..legacy_exit).rev().find(|&k: &usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    }) else {
+        return false;
+    };
+    (is_back_edge(&stream.ops[prev])
+        || is_cond_back_edge(&stream.ops[prev])
+        || is_cond_jump_with_backward_target(stream, prev))
+        && resolve_jump_target(stream, prev, &stream.ops[prev]).is_some_and(|t: usize| t <= header)
+}
+
+fn infinite_loop_reach_exit(
+    stream: &DecodedStream,
+    header: usize,
+    legacy_exit: usize,
+    lo: usize,
+    hi: usize,
+) -> usize {
+    let cap: usize = hi.min(stream.ops.len());
+    if header >= cap || legacy_exit >= cap {
+        return legacy_exit;
+    }
+    if exit_follows_bottom_back_edge(stream, legacy_exit, header) {
+        return legacy_exit;
+    }
+    let reach: Vec<bool> = reachable_in_loop(stream, header, lo, cap);
+    if !trailing_block_absorbable(stream, &reach, legacy_exit, lo, cap) {
+        return legacy_exit;
+    }
+    (lo..cap)
+        .rev()
+        .find(|&i: &usize| reach[i])
+        .map_or(legacy_exit, |m: usize| (m + 1).min(cap).max(legacy_exit))
 }
 
 fn infinite_body_end(stream: &DecodedStream, region: &LoopRegion) -> usize {
