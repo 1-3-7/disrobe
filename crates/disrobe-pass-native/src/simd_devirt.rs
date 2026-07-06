@@ -948,29 +948,53 @@ fn verify_acc_init(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
     Some(())
 }
 
-fn verify_epilog(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
-    let lpr: usize = vloop.lanes_per_reg();
-    let total: usize = vloop.total_lanes();
+fn verify_epilog(
+    insns: &[Insn],
+    back_idx: usize,
+    op: RingOp,
+    width: ElemWidth,
+    accumulators: &[u8],
+) -> Option<()> {
+    let lpr: usize = (16 / width.bytes()) as usize;
+    let total: usize = accumulators.len() * lpr;
     let mut regs: BTreeMap<u8, Vec<Term>> = BTreeMap::new();
-    for (k, &acc) in vloop.accumulators.iter().enumerate() {
+    for (k, &acc) in accumulators.iter().enumerate() {
         let vars: Vec<Term> = (0..lpr)
             .map(|l: usize| Term::Var((k * lpr + l) as u32))
             .collect();
         regs.insert(acc, vars);
     }
-    for insn in insns.get(vloop.back_idx + 1..)? {
+    for insn in insns.get(back_idx + 1..)? {
         match insn.mnem.as_str() {
-            "movd" | "movq" => {
+            "movd" | "movq" | "pextrw" | "pextrd" | "pextrq" => {
                 let src: u8 = insn.xmm(1)?;
-                let got: Term = regs.get(&src)?.first()?.clone();
+                let lane: usize = match insn.mnem.as_str() {
+                    "movd" | "movq" => 0,
+                    _ => usize::try_from(insn.imm(2)? & 0xff).ok()?,
+                };
+                let got: Term = regs.get(&src)?.get(lane)?.clone();
                 let all: Vec<Term> = (0..total).map(|i: usize| Term::Var(i as u32)).collect();
-                let want: Term = fold_terms(vloop.op, vloop.width, &all);
+                let want: Term = fold_terms(op, width, &all);
                 return terms_equivalent(&got, &want).then_some(());
             }
             "movdqa" => {
                 let (dst, src): (u8, u8) = (insn.xmm(0)?, insn.xmm(1)?);
                 let value: Vec<Term> = regs.get(&src)?.clone();
                 regs.insert(dst, value);
+            }
+            "psrldq" => {
+                let dst: u8 = insn.xmm(0)?;
+                let shift_bytes: u64 = u64::try_from(insn.imm(1)? & 0xff).ok()?;
+                let elem_bytes: u64 = width.bytes();
+                if shift_bytes % elem_bytes != 0 {
+                    return None;
+                }
+                let lane_shift: usize = usize::try_from(shift_bytes / elem_bytes).ok()?;
+                let cur: Vec<Term> = regs.get(&dst)?.clone();
+                let shifted: Vec<Term> = (0..cur.len())
+                    .map(|i: usize| cur.get(i + lane_shift).cloned().unwrap_or(Term::Const(0)))
+                    .collect();
+                regs.insert(dst, shifted);
             }
             "pshufd" => {
                 let (dst, src): (u8, u8) = (insn.xmm(0)?, insn.xmm(1)?);
@@ -984,8 +1008,14 @@ fn verify_epilog(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
                 regs.insert(dst, permuted);
             }
             other => {
-                let (ring, _): (RingOp, Option<ElemWidth>) = packed_op_ringop(other)?;
-                if ring != vloop.op {
+                let Some((ring, _)): Option<(RingOp, Option<ElemWidth>)> = packed_op_ringop(other)
+                else {
+                    if insn.xmm(0).is_some() || BRANCH_MNEMONICS.contains(&other) {
+                        return None;
+                    }
+                    continue;
+                };
+                if ring != op {
                     return None;
                 }
                 let (dst, src): (u8, u8) = (insn.xmm(0)?, insn.xmm(1)?);
@@ -997,7 +1027,7 @@ fn verify_epilog(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
                 let combined: Vec<Term> = dest
                     .into_iter()
                     .zip(source)
-                    .map(|(a, b): (Term, Term)| Term::app(vloop.op, vloop.width, vec![a, b]))
+                    .map(|(a, b): (Term, Term)| Term::app(op, width, vec![a, b]))
                     .collect();
                 regs.insert(dst, combined);
             }
@@ -1087,7 +1117,13 @@ fn recognize_reduction(insns: &[Insn]) -> Option<ReductionForm> {
     }
     verify_mask(insns, vloop.count_reg, rem.len_reg, vloop.step)?;
     verify_acc_init(insns, &vloop)?;
-    verify_epilog(insns, &vloop)?;
+    verify_epilog(
+        insns,
+        vloop.back_idx,
+        vloop.op,
+        vloop.width,
+        &vloop.accumulators,
+    )?;
     verify_zero_guard(insns, rem.len_reg)?;
     Some(ReductionForm {
         op: vloop.op,
@@ -1131,6 +1167,451 @@ fn emit_reduction(form: ReductionForm, abi: Abi, base_pos: usize, len_pos: usize
         call_targets: Vec::new(),
         sret: None,
     }
+}
+
+/// A gcc-style pointer-walk vector loop: single 16-byte accumulator advanced against an end pointer.
+#[derive(Debug, Clone)]
+struct PtrWalkLoop {
+    op: RingOp,
+    width: ElemWidth,
+    base_reg: Reg,
+    end_reg: Reg,
+    step_bytes: i64,
+    accumulators: Vec<u8>,
+    header_idx: usize,
+    back_idx: usize,
+}
+
+fn extract_width(mnem: &str) -> Option<ElemWidth> {
+    Some(match mnem {
+        "movd" | "pextrd" => ElemWidth::W32,
+        "movq" | "pextrq" => ElemWidth::W64,
+        "pextrw" => ElemWidth::W16,
+        "pextrb" => ElemWidth::W8,
+        _ => return None,
+    })
+}
+
+fn analyze_ptrwalk_loop(insns: &[Insn], header: usize, back: usize) -> Option<PtrWalkLoop> {
+    let body: &[Insn] = insns.get(header..=back)?;
+    let mut loads: BTreeMap<u8, (Reg, i64)> = BTreeMap::new();
+    for insn in body {
+        if matches!(insn.mnem.as_str(), "movdqu" | "movdqa")
+            && let (Some(dst), Some(mem)) = (insn.xmm(0), insn.mem(1))
+            && let Some(lbase) = mem.base
+            && mem.index.is_none()
+        {
+            loads.insert(dst, (lbase, mem.disp));
+        }
+    }
+    let mut op: Option<(RingOp, Option<ElemWidth>)> = None;
+    let mut accum_disp: BTreeMap<u8, i64> = BTreeMap::new();
+    let mut walk: Option<Reg> = None;
+    for insn in body {
+        let Some((ring, width_hint)) = packed_op_ringop(&insn.mnem) else {
+            continue;
+        };
+        let (Some(dst), Some(src)) = (insn.xmm(0), insn.xmm(1)) else {
+            continue;
+        };
+        let Some(&(lbase, disp)) = loads.get(&src) else {
+            continue;
+        };
+        if let Some((prev_op, prev_hint)) = op
+            && (prev_op != ring || prev_hint != width_hint)
+        {
+            return None;
+        }
+        op = Some((ring, width_hint));
+        if *walk.get_or_insert(lbase) != lbase {
+            return None;
+        }
+        accum_disp.insert(dst, disp);
+    }
+    let (op, width_hint): (RingOp, Option<ElemWidth>) = op?;
+    let walk_reg: Reg = walk?;
+    let step_bytes: i64 =
+        body.iter()
+            .find_map(|i: &Insn| match (i.mnem.as_str(), i.gpr(0), i.imm(1)) {
+                ("add", Some((r, _)), Some(v)) if r == walk_reg => Some(v),
+                _ => None,
+            })?;
+    if step_bytes <= 0 {
+        return None;
+    }
+    let end_reg: Reg = body.iter().rev().find_map(|i: &Insn| {
+        if i.mnem != "cmp" {
+            return None;
+        }
+        match (i.gpr(0), i.gpr(1)) {
+            (Some((a, _)), Some((b, _))) if a == walk_reg => Some(b),
+            (Some((a, _)), Some((b, _))) if b == walk_reg => Some(a),
+            _ => None,
+        }
+    })?;
+    if end_reg == walk_reg {
+        return None;
+    }
+    let prefix: &[Insn] = insns.get(..header)?;
+    let base_reg: Reg = prefix.iter().rev().find_map(|i: &Insn| {
+        (i.mnem == "mov" && i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(walk_reg))
+            .then(|| i.gpr(1))
+            .flatten()
+            .map(|(r, _): (Reg, u8)| r)
+    })?;
+    if base_reg == walk_reg || base_reg == end_reg {
+        return None;
+    }
+    let width: ElemWidth = insns
+        .get(back + 1..)?
+        .iter()
+        .find_map(|i: &Insn| extract_width(&i.mnem))?;
+    if let Some(hint) = width_hint
+        && hint != width
+    {
+        return None;
+    }
+    if accum_disp.len() != 1 || accum_disp.values().any(|d: &i64| *d != 0) {
+        return None;
+    }
+    let accumulators: Vec<u8> = accum_disp.keys().copied().collect();
+    Some(PtrWalkLoop {
+        op,
+        width,
+        base_reg,
+        end_reg,
+        step_bytes,
+        accumulators,
+        header_idx: header,
+        back_idx: back,
+    })
+}
+
+fn verify_ptrwalk_acc_init(insns: &[Insn], vloop: &PtrWalkLoop) -> Option<()> {
+    if vloop.op.identity(vloop.width) != 0 {
+        return None;
+    }
+    let prefix: &[Insn] = insns.get(..vloop.header_idx)?;
+    let acc: u8 = *vloop.accumulators.first()?;
+    prefix
+        .iter()
+        .any(|i: &Insn| i.mnem == "pxor" && i.xmm(0) == Some(acc) && i.xmm(1) == Some(acc))
+        .then_some(())
+}
+
+fn verify_ptrwalk_end(insns: &[Insn], vloop: &PtrWalkLoop) -> Option<Reg> {
+    let elem_bytes: u64 = vloop.width.bytes();
+    let per_iter: u64 = u64::try_from(vloop.step_bytes).ok()? / elem_bytes;
+    if !per_iter.is_power_of_two() || !vloop.step_bytes.cast_unsigned().is_power_of_two() {
+        return None;
+    }
+    let shr_k: i64 = i64::from(per_iter.trailing_zeros());
+    let shl_k: i64 = i64::from(vloop.step_bytes.cast_unsigned().trailing_zeros());
+    let prefix: &[Insn] = insns.get(..vloop.header_idx)?;
+    let writes: Vec<&Insn> = prefix
+        .iter()
+        .filter(|i: &&Insn| i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(vloop.end_reg))
+        .collect();
+    let [mov, shr, shl, add] = writes.as_slice() else {
+        return None;
+    };
+    if mov.mnem != "mov" || shr.mnem != "shr" || shl.mnem != "shl" || add.mnem != "add" {
+        return None;
+    }
+    let len_reg: Reg = mov.gpr(1)?.0;
+    if shr.imm(1)? != shr_k || shl.imm(1)? != shl_k {
+        return None;
+    }
+    (add.gpr(1).map(|(r, _): (Reg, u8)| r) == Some(vloop.base_reg)).then_some(len_reg)
+}
+
+/// A value tracked as `r * R + c`, where `R` is the peeled-remainder start index in elements.
+#[derive(Debug, Clone, Copy)]
+struct Aff {
+    r: i64,
+    c: i64,
+}
+
+fn lea_affine(aff: &BTreeMap<Reg, Aff>, m: Mem) -> Option<Aff> {
+    let mut r: i64 = 0;
+    let mut c: i64 = m.disp;
+    if let Some(b) = m.base {
+        let a: Aff = *aff.get(&b)?;
+        r = r.checked_add(a.r)?;
+        c = c.checked_add(a.c)?;
+    }
+    if let Some((idx, scale)) = m.index {
+        let a: Aff = *aff.get(&idx)?;
+        r = r.checked_add(a.r.checked_mul(i64::from(scale))?)?;
+        c = c.checked_add(a.c.checked_mul(i64::from(scale))?)?;
+    }
+    Some(Aff { r, c })
+}
+
+fn peeled_elem_index(
+    aff: &BTreeMap<Reg, Aff>,
+    m: Mem,
+    base_reg: Reg,
+    elem_bytes: i64,
+) -> Option<i64> {
+    if m.base? != base_reg {
+        return None;
+    }
+    let (idx, scale): (Reg, u8) = m.index?;
+    let a: Aff = *aff.get(&idx)?;
+    let scale_i: i64 = i64::from(scale);
+    if a.r.checked_mul(scale_i)? != elem_bytes {
+        return None;
+    }
+    let byte_const: i64 = a.c.checked_mul(scale_i)?.checked_add(m.disp)?;
+    if byte_const % elem_bytes != 0 {
+        return None;
+    }
+    let j: i64 = byte_const / elem_bytes;
+    (j >= 0).then_some(j)
+}
+
+fn is_store(insn: &Insn) -> bool {
+    matches!(
+        insn.mnem.as_str(),
+        "mov" | "movdqu" | "movdqa" | "movups" | "movaps" | "movq" | "movd"
+    ) && insn.mem(0).is_some()
+}
+
+fn zeroes_self(insn: &Insn, reg: Reg) -> bool {
+    insn.mnem == "xor"
+        && insn.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(reg)
+        && insn.gpr(1).map(|(r, _): (Reg, u8)| r) == Some(reg)
+}
+
+fn verify_scalar_only_seed(
+    region: &[Insn],
+    acc: Reg,
+    r_reg: Reg,
+    after: u64,
+    block_head: u64,
+) -> bool {
+    region.iter().enumerate().any(|(p, insn): (usize, &Insn)| {
+        if insn.mnem != "jmp" {
+            return false;
+        }
+        let Some(target) = insn.rel(0) else {
+            return false;
+        };
+        if target <= after || target > block_head || p < 2 {
+            return false;
+        }
+        let a: &Insn = &region[p - 1];
+        let b: &Insn = &region[p - 2];
+        (zeroes_self(a, acc) && zeroes_self(b, r_reg))
+            || (zeroes_self(a, r_reg) && zeroes_self(b, acc))
+    })
+}
+
+fn verify_peeled_remainder(
+    insns: &[Insn],
+    back_idx: usize,
+    base_reg: Reg,
+    len_reg: Reg,
+    op: RingOp,
+    width: ElemWidth,
+    vf: usize,
+) -> Option<u8> {
+    let region: &[Insn] = insns.get(back_idx + 1..)?;
+    let elem_bytes: i64 = i64::try_from(width.bytes()).ok()?;
+    let mask: i64 = -(i64::try_from(vf).ok()?);
+    let residue: i64 = i64::try_from(vf).ok()? - 1;
+    let mut aff: BTreeMap<Reg, Aff> = BTreeMap::new();
+    let mut holds_len: std::collections::BTreeSet<Reg> = std::collections::BTreeSet::new();
+    let mut r_reg: Option<Reg> = None;
+    let mut adds: Vec<(i64, Reg, u8, usize)> = Vec::new();
+    let mut idx_guards: Vec<(i64, usize)> = Vec::new();
+    let mut residue_guard: Option<usize> = None;
+    for (pos, insn) in region.iter().enumerate() {
+        if is_store(insn) {
+            return None;
+        }
+        match insn.mnem.as_str() {
+            "mov" => {
+                if let (Some((d, _)), Some((s, _))) = (insn.gpr(0), insn.gpr(1)) {
+                    match aff.get(&s).copied() {
+                        Some(a) => {
+                            aff.insert(d, a);
+                        }
+                        None => {
+                            aff.remove(&d);
+                        }
+                    }
+                    if s == len_reg {
+                        holds_len.insert(d);
+                    } else {
+                        holds_len.remove(&d);
+                    }
+                } else if let Some((d, _)) = insn.gpr(0) {
+                    aff.remove(&d);
+                    holds_len.remove(&d);
+                }
+            }
+            "and" => {
+                let (Some((d, _)), Some(imm)) = (insn.gpr(0), insn.imm(1)) else {
+                    continue;
+                };
+                if imm == mask && (holds_len.contains(&d) || d == len_reg) {
+                    aff.insert(d, Aff { r: 1, c: 0 });
+                    r_reg.get_or_insert(d);
+                } else if imm == residue && (holds_len.contains(&d) || sub_of(d, len_reg)) {
+                    residue_guard.get_or_insert(pos);
+                    aff.remove(&d);
+                    holds_len.remove(&d);
+                } else {
+                    aff.remove(&d);
+                    holds_len.remove(&d);
+                }
+            }
+            "test" => {
+                if let (Some((a, _)), Some(imm)) = (insn.gpr(0), insn.imm(1))
+                    && sub_of(a, len_reg)
+                    && imm == residue
+                {
+                    residue_guard.get_or_insert(pos);
+                }
+            }
+            "lea" => {
+                if let (Some((d, _)), Some(m)) = (insn.gpr(0), insn.mem(1)) {
+                    match lea_affine(&aff, m) {
+                        Some(a) => {
+                            aff.insert(d, a);
+                        }
+                        None => {
+                            aff.remove(&d);
+                        }
+                    }
+                    holds_len.remove(&d);
+                }
+            }
+            "cmp" => {
+                let compared: Option<i64> = match (insn.gpr(0), insn.gpr(1)) {
+                    (Some((a, _)), Some((b, _))) if a == len_reg => {
+                        aff.get(&b).filter(|x: &&Aff| x.r == 1).map(|x: &Aff| x.c)
+                    }
+                    (Some((a, _)), Some((b, _))) if b == len_reg => {
+                        aff.get(&a).filter(|x: &&Aff| x.r == 1).map(|x: &Aff| x.c)
+                    }
+                    _ => None,
+                };
+                if let Some(g) = compared {
+                    idx_guards.push((g, pos));
+                }
+            }
+            other => {
+                let ring: Option<RingOp> = scalar_op_ringop(other);
+                if let (Some(r), Some((d, bytes)), Some(m)) = (ring, insn.gpr(0), insn.mem(1))
+                    && r == op
+                    && let Some(j) = peeled_elem_index(&aff, m, base_reg, elem_bytes)
+                {
+                    adds.push((j, d, bytes, pos));
+                } else if let (Some(_), Some((d, _)), Some(imm)) = (ring, insn.gpr(0), insn.imm(1))
+                    && let Some(a) = aff.get(&d).copied()
+                {
+                    if other == "add" {
+                        aff.insert(
+                            d,
+                            Aff {
+                                r: a.r,
+                                c: a.c + imm,
+                            },
+                        );
+                    } else {
+                        aff.remove(&d);
+                    }
+                } else if let Some((d, _)) = insn.gpr(0)
+                    && !matches!(other, "jmp" | "je" | "jz" | "jle" | "jng" | "jl")
+                {
+                    aff.remove(&d);
+                }
+            }
+        }
+    }
+    let r_reg: Reg = r_reg?;
+    residue_guard?;
+    adds.sort_by_key(|t: &(i64, Reg, u8, usize)| t.3);
+    if adds.len() != vf - 1 {
+        return None;
+    }
+    let acc: Reg = adds.first()?.1;
+    if acc != Reg::Rax {
+        return None;
+    }
+    let ret_bytes: u8 = adds.first()?.2;
+    for (want_j, &(j, a, bytes, pos)) in adds.iter().enumerate() {
+        if j != i64::try_from(want_j).ok()? || a != acc || bytes != ret_bytes {
+            return None;
+        }
+        if want_j >= 1 {
+            let prev_pos: usize = adds[want_j - 1].3;
+            let guarded: bool = idx_guards
+                .iter()
+                .any(|&(g, gp): &(i64, usize)| g == j && gp > prev_pos && gp < pos);
+            if !guarded {
+                return None;
+            }
+        }
+    }
+    let first_add_addr: u64 = region.get(adds.first()?.3)?.addr;
+    let extract_addr: u64 = region
+        .iter()
+        .find_map(|i: &Insn| extract_width(&i.mnem).map(|_| i.addr))?;
+    if !verify_scalar_only_seed(region, acc, r_reg, extract_addr, first_add_addr) {
+        return None;
+    }
+    Some(ret_bytes)
+}
+
+fn sub_of(reg: Reg, full: Reg) -> bool {
+    reg == full
+}
+
+fn recognize_ptrwalk_reduction(insns: &[Insn]) -> Option<ReductionForm> {
+    let edges: Vec<(usize, usize)> = find_back_edges(insns);
+    let vloop: PtrWalkLoop = edges
+        .iter()
+        .find_map(|&(h, b): &(usize, usize)| analyze_ptrwalk_loop(insns, h, b))?;
+    if !vloop.op.is_associative_commutative() {
+        return None;
+    }
+    if vloop.op.identity(vloop.width) != 0 || vloop.op.c_infix().is_none() {
+        return None;
+    }
+    if vloop.accumulators.len() != 1 || vloop.step_bytes != 16 {
+        return None;
+    }
+    let vf: usize = (16 / vloop.width.bytes()) as usize;
+    verify_ptrwalk_acc_init(insns, &vloop)?;
+    verify_epilog(
+        insns,
+        vloop.back_idx,
+        vloop.op,
+        vloop.width,
+        &vloop.accumulators,
+    )?;
+    let len_reg: Reg = verify_ptrwalk_end(insns, &vloop)?;
+    let ret_bytes: u8 = verify_peeled_remainder(
+        insns,
+        vloop.back_idx,
+        vloop.base_reg,
+        len_reg,
+        vloop.op,
+        vloop.width,
+        vf,
+    )?;
+    verify_zero_guard(insns, len_reg)?;
+    Some(ReductionForm {
+        op: vloop.op,
+        width: vloop.width,
+        base_reg: vloop.base_reg,
+        len_reg,
+        ret_bytes,
+    })
 }
 
 fn term_to_c(term: &Term) -> String {
@@ -1613,7 +2094,13 @@ fn recognize_minmax(insns: &[Insn]) -> Option<MinMaxForm> {
         return None;
     }
     verify_minmax_seed(insns, &vloop)?;
-    verify_epilog(insns, &vloop)?;
+    verify_epilog(
+        insns,
+        vloop.back_idx,
+        vloop.op,
+        vloop.width,
+        &vloop.accumulators,
+    )?;
     let (rem_op, rem_width, len_reg, ret_bytes): (RingOp, ElemWidth, Reg, u8) =
         find_minmax_remainder(insns, vloop.base_reg)?;
     if rem_op != vloop.op || rem_width != vloop.width {
@@ -1681,6 +2168,15 @@ pub(crate) fn recover_vectorized_loop(
     let parsed: Vec<Insn> = raw.iter().map(parse_insn).collect();
     let insns: Vec<Insn> = collapse_blends(&parsed);
     if let Some(form) = recognize_reduction(&insns) {
+        let base_pos: usize = arg_index(abi, form.base_reg).ok_or_else(|| {
+            Error::LlvmIr("simd-devirt: base pointer is not an abi argument register".to_owned())
+        })?;
+        let len_pos: usize = arg_index(abi, form.len_reg).ok_or_else(|| {
+            Error::LlvmIr("simd-devirt: length is not an abi argument register".to_owned())
+        })?;
+        return Ok(emit_reduction(form, abi, base_pos, len_pos));
+    }
+    if let Some(form) = recognize_ptrwalk_reduction(&insns) {
         let base_pos: usize = arg_index(abi, form.base_reg).ok_or_else(|| {
             Error::LlvmIr("simd-devirt: base pointer is not an abi argument register".to_owned())
         })?;

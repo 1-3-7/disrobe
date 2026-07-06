@@ -197,7 +197,8 @@ fn ret_mask(bits: u32) -> String {
 }
 
 fn run_differential(cc: &str, opt: &str) -> bool {
-    let dir: PathBuf = scratch_dir();
+    let dir: PathBuf = scratch_dir().join(cc.replace(['/', '\\', '.', ':'], "_"));
+    std::fs::create_dir_all(&dir).expect("per-compiler scratch dir");
     let Some(obj): Option<Vec<u8>> = compile_object(cc, &dir, opt) else {
         return false;
     };
@@ -338,6 +339,38 @@ fn vectorized_integer_reductions_recompile_execute_equivalent() {
     }
     if !any {
         eprintln!("no optimization level produced a recoverable vectorized kernel; nothing proven");
+    }
+}
+
+fn find_gcc() -> Option<String> {
+    Command::new("gcc")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o: &std::process::Output| o.status.success())
+        .map(|_| "gcc".to_owned())
+}
+
+#[test]
+fn gcc_vectorized_integer_reductions_recompile_execute_equivalent() {
+    if cfg!(target_os = "macos") {
+        eprintln!("skipping: host is arm64 apple-clang, x86-64 codegen/execution unavailable");
+        return;
+    }
+    let Some(cc): Option<String> = find_gcc() else {
+        eprintln!("skipping: gcc not on PATH");
+        return;
+    };
+    let o2: bool = run_differential(&cc, "-O2");
+    let o3: bool = run_differential(&cc, "-O3");
+    assert!(
+        o3,
+        "gcc -O3 must recover and execute-prove at least one pointer-walk vectorized reduction"
+    );
+    if o2 {
+        eprintln!("gcc -O2 also produced a recoverable kernel (all execute-verified)");
+    } else {
+        eprintln!("gcc -O2 stayed scalar (nothing to recover); handled without wrong output");
     }
 }
 
