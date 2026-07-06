@@ -2,7 +2,7 @@
 
 - id: `dotnet-eazvm`
 - ecosystem: dotnet
-- claim: disrobe devirtualizes every method in a real Eazfuscator-VM-protected assembly back to CIL, graded against an independently compiled clean DLL by ordered instruction compare, and the recovered CIL re-injects to byte-identical stdout.
+- claim: disrobe devirtualizes every method of an in-repo reimplementation of Eazfuscator's EazVM scheme (the committed assembly is encoded by our own virtualizer, not the shipping Eazfuscator.NET product) back to CIL, graded against an independently compiled clean DLL by ordered instruction compare; the recovered CIL also re-injects to byte-identical stdout wherever a .NET runtime is on PATH.
 - measured: 3 reversed on real samples / 23 detected
 - oracle strength: strong
 - CI-attested: yes [CI]

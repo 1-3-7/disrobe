@@ -1167,6 +1167,9 @@ pub(crate) fn fold_null_coalesce(body: &MethodBody) -> MethodBody {
         nop_instruction(&mut out.instructions[window.dup]);
         nop_instruction(&mut out.instructions[window.brtrue]);
         nop_instruction(&mut out.instructions[window.pop]);
+        if let Some(throw_idx) = window.throw_alt {
+            throw_expression_instruction(&mut out.instructions[throw_idx]);
+        }
         out.instructions.insert(
             window.merge,
             coalesce_marker(out.instructions[window.merge].offset),
@@ -1181,6 +1184,7 @@ struct CoalesceWindow {
     brtrue: usize,
     pop: usize,
     merge: usize,
+    throw_alt: Option<usize>,
 }
 
 fn match_coalesce_window(instrs: &[Instruction], dup: usize) -> Option<CoalesceWindow> {
@@ -1207,7 +1211,11 @@ fn match_coalesce_window(instrs: &[Instruction], dup: usize) -> Option<CoalesceW
         return None;
     }
     let alt: &[Instruction] = &instrs[pop + 1..merge];
-    if alt.is_empty() || !alt_is_straight_line(alt) {
+    if alt.is_empty() {
+        return None;
+    }
+    let throw_alt: Option<usize> = alt_throw_expression(alt, pop + 1);
+    if throw_alt.is_none() && !alt_is_straight_line(alt) {
         return None;
     }
     consumes_single_value(&instrs[merge]).then_some(CoalesceWindow {
@@ -1215,6 +1223,7 @@ fn match_coalesce_window(instrs: &[Instruction], dup: usize) -> Option<CoalesceW
         brtrue,
         pop,
         merge,
+        throw_alt,
     })
 }
 
@@ -1225,6 +1234,14 @@ fn alt_is_straight_line(alt: &[Instruction]) -> bool {
             FlowControl::Next | FlowControl::Call | FlowControl::Meta
         )
     })
+}
+
+fn alt_throw_expression(alt: &[Instruction], base: usize) -> Option<usize> {
+    let (last, head): (&Instruction, &[Instruction]) = alt.split_last()?;
+    if last.name != "throw" || !alt_is_straight_line(head) {
+        return None;
+    }
+    Some(base + head.len())
 }
 
 fn consumes_single_value(merge: &Instruction) -> bool {
@@ -1251,6 +1268,13 @@ fn coalesce_marker(offset: u32) -> Instruction {
         operand: OperandValue::None,
         flow: FlowControl::Next,
     }
+}
+
+fn throw_expression_instruction(ins: &mut Instruction) {
+    ins.opcode = 0;
+    "__throw_expr".clone_into(&mut ins.name);
+    ins.operand = OperandValue::None;
+    ins.flow = FlowControl::Next;
 }
 
 #[cfg(test)]
@@ -1466,6 +1490,75 @@ mod tests {
                 .iter()
                 .all(|i: &Instruction| i.name != "__coalesce"),
             "a merge that pushes rather than consumes is not a coalesce sink"
+        );
+    }
+
+    fn coalesce_throw_body() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 12,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(1, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(2, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    3,
+                    "brtrue.s",
+                    OperandValue::BrTarget(6),
+                    FlowControl::CondBranch,
+                ),
+                ins(5, "pop", OperandValue::None, FlowControl::Next),
+                ins(
+                    6,
+                    "ldstr",
+                    OperandValue::Token(0x7000_0001),
+                    FlowControl::Next,
+                ),
+                ins(
+                    7,
+                    "newobj",
+                    OperandValue::Token(0x0A00_0001),
+                    FlowControl::Call,
+                ),
+                ins(8, "throw", OperandValue::None, FlowControl::Throw),
+                ins(
+                    9,
+                    "stfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(11, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_coalesce_folds_a_throw_expression_alternative() {
+        let folded: MethodBody = fold_null_coalesce(&coalesce_throw_body());
+        let names: Vec<&str> = folded
+            .instructions
+            .iter()
+            .map(|i: &Instruction| i.name.as_str())
+            .collect();
+        assert_eq!(
+            names.iter().filter(|n: &&&str| **n == "__coalesce").count(),
+            1,
+            "field = arg ?? throw new E() is a valid coalesce sink"
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|n: &&&str| **n == "__throw_expr")
+                .count(),
+            1,
+            "the trailing throw of the alternative becomes a throw expression"
+        );
+        assert!(
+            names.iter().all(|n: &&str| *n != "throw"),
+            "the raw throw must be consumed into the throw expression"
         );
     }
 }

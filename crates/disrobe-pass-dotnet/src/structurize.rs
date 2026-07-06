@@ -790,6 +790,17 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let primary: Expr = self.pop();
                 self.push(Expr::Coalesce(Box::new(primary), Box::new(alt)));
             }
+            "__throw_expr" => {
+                let exc: Expr = self.pop();
+                let keyword: &str = match self.lang {
+                    TargetLang::FSharp => "raise",
+                    _ => "throw",
+                };
+                self.push(Expr::Raw(format!(
+                    "{keyword} {}",
+                    exc.render(self.lang, self.names)
+                )));
+            }
             "dup" => {
                 let e: Expr = self.pop();
                 let r: String = e.render(self.lang, self.names);
@@ -1562,8 +1573,14 @@ pub fn decompile_method_named<N: TokenNamer>(
     names: &NameTable,
     lang: TargetLang,
 ) -> StructuredMethod {
+    let normalized: MethodBody = normalize_branches(body);
+    let prepared: MethodBody = if lang == TargetLang::CSharp {
+        crate::cil::fold_null_coalesce(&normalized)
+    } else {
+        normalized
+    };
     let recovered: crate::structure_emit::StructuredOutput =
-        crate::structure_emit::structure_method(&normalize_branches(body), namer, names, lang);
+        crate::structure_emit::structure_method(&prepared, namer, names, lang);
     finish_structured(signature, recovered, names, lang)
 }
 
