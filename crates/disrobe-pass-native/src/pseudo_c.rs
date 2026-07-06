@@ -1017,13 +1017,19 @@ fn drop_resolved_sibling_externs(source: &str, resolved_names: &[String]) -> Str
     joined
 }
 
-fn recover_leaf_function_calls_impl(
+struct LeafItems {
+    insns: Vec<DisasmInsn>,
+    items: Vec<Item>,
+    return_width: Width,
+    fp_return: Option<FpWidth>,
+}
+
+fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
-    calls: &[ResolvedCall],
-) -> Result<LeafRecovery> {
+) -> Result<LeafItems> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
@@ -1402,7 +1408,27 @@ fn recover_leaf_function_calls_impl(
             "no ret found; not a single-exit leaf".to_owned(),
         ));
     }
+    Ok(LeafItems {
+        insns,
+        items,
+        return_width,
+        fp_return,
+    })
+}
 
+fn recover_leaf_function_calls_impl(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    consts: &[FpConstant],
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    let LeafItems {
+        insns,
+        items,
+        mut return_width,
+        fp_return,
+    } = build_leaf_items(machine_code, base, abi, consts)?;
     let mut structured: Structured = structure_items(&items)?;
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
@@ -10835,5 +10861,354 @@ mod tests {
             "a 16-byte fill is SysV register class, not a hidden-pointer sret: {}",
             rec.source
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod structuring_corpus {
+    use super::{
+        Abi, BlockTerm, CfgBlock, Item, LeafItems, Stmt, build_blocks, build_leaf_items,
+        structure_items,
+    };
+    use crate::structuring;
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    pub(super) const HOST_ABI: Abi = if cfg!(windows) { Abi::MsX64 } else { Abi::SysV };
+
+    pub(super) struct CfShape {
+        pub(super) name: &'static str,
+        pub(super) source: &'static str,
+    }
+
+    pub(super) const CF_CORPUS: &[CfShape] = &[
+        CfShape {
+            name: "cf_straight",
+            source: "long long cf_straight(long long a){ return a * a + 1; }",
+        },
+        CfShape {
+            name: "cf_if_then",
+            source: "long long cf_if_then(long long a, long long b){ long long r = a + b; if (a > b) r += 10; return r; }",
+        },
+        CfShape {
+            name: "cf_if_else",
+            source: "long long cf_if_else(long long a, long long b){ long long r; if (a > b) r = a + b; else r = a - b; return r; }",
+        },
+        CfShape {
+            name: "cf_nested_if",
+            source: "long long cf_nested_if(long long a, long long b, long long c){ long long r = c; if (a > 0) if (b > 0) r = a + b; return r; }",
+        },
+        CfShape {
+            name: "cf_nested_if_else",
+            source: "long long cf_nested_if_else(long long a, long long b){ long long r = 0; if (a > 0) { if (b > 0) { r = a + b; } else { r = a - b; } } return r; }",
+        },
+        CfShape {
+            name: "cf_ifelse_chain",
+            source: "long long cf_ifelse_chain(long long a){ if (a > 100) return 3; else if (a > 10) return 2; else if (a > 0) return 1; else return 0; }",
+        },
+        CfShape {
+            name: "cf_while",
+            source: "long long cf_while(long long n){ long long s = 0; long long i = 0; while (i < n) { s += i; i++; } return s; }",
+        },
+        CfShape {
+            name: "cf_for",
+            source: "long long cf_for(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { s += i * i; } return s; }",
+        },
+        CfShape {
+            name: "cf_do_while",
+            source: "long long cf_do_while(long long n){ long long s = 0; long long i = 1; do { s += i; i++; } while (i <= n); return s; }",
+        },
+        CfShape {
+            name: "cf_nested_loop",
+            source: "long long cf_nested_loop(long long n, long long m){ long long s = 0; for (long long i = 0; i < n; i++) { for (long long j = 0; j < m; j++) { s += i + j; } } return s; }",
+        },
+        CfShape {
+            name: "cf_loop_break",
+            source: "long long cf_loop_break(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { if (i > 5) break; s += i; } return s; }",
+        },
+        CfShape {
+            name: "cf_loop_continue",
+            source: "long long cf_loop_continue(long long n){ long long s = 0; for (long long i = 0; i < n; i++) { if ((i & 1) == 0) continue; s += i; } return s; }",
+        },
+        CfShape {
+            name: "cf_multi_return",
+            source: "long long cf_multi_return(long long a, long long b){ if (a < 0) return -1; if (b < 0) return -2; if (a > b) return a - b; return b - a; }",
+        },
+        CfShape {
+            name: "cf_sc_and",
+            source: "long long cf_sc_and(long long a, long long b){ long long r = a - b; if (a > 0 && b > 0) { r = a + b; } return r; }",
+        },
+        CfShape {
+            name: "cf_sc_or",
+            source: "long long cf_sc_or(long long a, long long b){ long long r; if (a < 0 || b < 0) { r = a + b; } else { r = a - b; } return r; }",
+        },
+        CfShape {
+            name: "cf_sign",
+            source: "long long cf_sign(long long a){ if (a > 0) return 1; if (a < 0) return -1; return 0; }",
+        },
+        CfShape {
+            name: "cf_clamp",
+            source: "long long cf_clamp(long long a, long long lo, long long hi){ long long r = a; if (r < lo) r = lo; if (r > hi) r = hi; return r; }",
+        },
+    ];
+
+    pub(super) fn gcc() -> Option<String> {
+        for compiler in ["gcc", "cc", "clang"] {
+            if Command::new(compiler)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o: std::process::Output| o.status.success())
+            {
+                return Some(compiler.to_owned());
+            }
+        }
+        None
+    }
+
+    fn scratch_dir() -> PathBuf {
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("disrobe-structuring-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    pub(super) fn compile_corpus(compiler: &str) -> Option<Vec<u8>> {
+        let mut source: String = String::from("#include <stdint.h>\n");
+        for shape in CF_CORPUS {
+            source.push_str("__attribute__((noinline,noclone)) ");
+            source.push_str(shape.source);
+            source.push('\n');
+        }
+        let dir: PathBuf = scratch_dir();
+        let src: PathBuf = dir.join("cf_corpus.c");
+        let obj: PathBuf = dir.join("cf_corpus.o");
+        std::fs::write(&src, source.as_bytes()).expect("write corpus source");
+        let compiled: std::process::Output = Command::new(compiler)
+            .args([
+                "-O1",
+                "-fno-stack-protector",
+                "-fno-if-conversion",
+                "-fno-if-conversion2",
+                "-fno-tree-loop-if-convert",
+                "-c",
+                "-o",
+            ])
+            .arg(&obj)
+            .arg(&src)
+            .output()
+            .expect("invoke compiler for cf corpus");
+        if !compiled.status.success() {
+            eprintln!(
+                "cf corpus compile failed: {}",
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+            return None;
+        }
+        std::fs::read(&obj).ok()
+    }
+
+    pub(super) fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
+        let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
+        let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
+        let sym: object::Symbol<'_, '_> = file.symbols().find(|s: &object::Symbol<'_, '_>| {
+            s.name()
+                .is_ok_and(|n: &str| candidates.iter().any(|c: &String| c == n))
+        })?;
+        let section_index: object::SectionIndex = match sym.section() {
+            object::SymbolSection::Section(idx) => idx,
+            _ => return None,
+        };
+        let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
+        let data: &[u8] = section.data().ok()?;
+        let sym_addr: u64 = sym.address();
+        let start: usize = usize::try_from(sym_addr.saturating_sub(section.address())).ok()?;
+        let size: usize = usize::try_from(sym.size()).ok()?;
+        let end: usize = if size == 0 {
+            let next_off: usize = file
+                .symbols()
+                .filter(|s: &object::Symbol<'_, '_>| {
+                    matches!(s.section(), object::SymbolSection::Section(idx) if idx == section_index)
+                        && s.address() > sym_addr
+                        && s.kind() == object::SymbolKind::Text
+                        && s.name().is_ok_and(|n: &str| !n.is_empty())
+                })
+                .filter_map(|s: object::Symbol<'_, '_>| {
+                    usize::try_from(s.address().saturating_sub(section.address())).ok()
+                })
+                .min()
+                .unwrap_or(data.len());
+            next_off.min(data.len())
+        } else {
+            start.saturating_add(size).min(data.len())
+        };
+        let slice: &[u8] = data.get(start..end)?;
+        Some((slice.to_vec(), sym_addr))
+    }
+
+    pub(super) fn lift(object_bytes: &[u8], name: &str) -> Option<Vec<Item>> {
+        let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
+        build_leaf_items(&code, base, HOST_ABI, &[])
+            .ok()
+            .map(|leaf: LeafItems| leaf.items)
+    }
+
+    pub(super) fn golden_set(object_bytes: &[u8]) -> BTreeSet<&'static str> {
+        let mut golden: BTreeSet<&'static str> = BTreeSet::new();
+        for shape in CF_CORPUS {
+            if let Some(items) = lift(object_bytes, shape.name)
+                && structure_items(&items).is_ok()
+            {
+                golden.insert(shape.name);
+            }
+        }
+        golden
+    }
+
+    fn stmt_has_side_effect(stmt: &Stmt) -> bool {
+        matches!(
+            stmt,
+            Stmt::Store { .. }
+                | Stmt::MemRmw { .. }
+                | Stmt::FpStore { .. }
+                | Stmt::BlockMove { .. }
+                | Stmt::BlockFill { .. }
+                | Stmt::Call { .. }
+        )
+    }
+
+    fn cfg_from_blocks(blocks: &[CfgBlock]) -> Option<structuring::Cfg> {
+        let count: usize = blocks.len();
+        let mut nodes: Vec<structuring::CfgNode> = Vec::with_capacity(count);
+        for (idx, block) in blocks.iter().enumerate() {
+            let pure: bool = block.stmts.iter().all(|s: &Stmt| !stmt_has_side_effect(s));
+            let term: structuring::Terminator = match &block.term {
+                BlockTerm::Ret => structuring::Terminator::Return,
+                BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
+                    if *t >= count {
+                        return None;
+                    }
+                    structuring::Terminator::Goto(*t as u32)
+                }
+                BlockTerm::Branch {
+                    taken, fallthrough, ..
+                } => {
+                    if *taken >= count || *fallthrough >= count {
+                        return None;
+                    }
+                    structuring::Terminator::Branch {
+                        atom: idx as u32,
+                        taken: *taken as u32,
+                        not_taken: *fallthrough as u32,
+                    }
+                }
+            };
+            nodes.push(structuring::CfgNode { term, pure });
+        }
+        structuring::Cfg::new(0, nodes).ok()
+    }
+
+    fn region_structures(items: &[Item]) -> Option<bool> {
+        let blocks: Vec<CfgBlock> = build_blocks(items)?;
+        let cfg: structuring::Cfg = cfg_from_blocks(&blocks)?;
+        Some(structuring::structure(&cfg).is_complete())
+    }
+
+    #[test]
+    fn region_engine_subsumes_golden_ladder() {
+        let Some(compiler): Option<String> = gcc() else {
+            eprintln!("skipping region subsumption: no C compiler on PATH");
+            return;
+        };
+        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
+            eprintln!("skipping region subsumption: cf corpus did not compile");
+            return;
+        };
+        let mut ladder_total: usize = 0;
+        let mut region_covers: usize = 0;
+        let mut missed: Vec<&'static str> = Vec::new();
+        let mut headroom: Vec<&'static str> = Vec::new();
+        for shape in CF_CORPUS {
+            let Some(items): Option<Vec<Item>> = lift(&object, shape.name) else {
+                continue;
+            };
+            let ladder_ok: bool = structure_items(&items).is_ok();
+            let region_ok: bool = region_structures(&items).unwrap_or(false);
+            if ladder_ok {
+                ladder_total += 1;
+                if region_ok {
+                    region_covers += 1;
+                } else {
+                    missed.push(shape.name);
+                }
+            } else if region_ok {
+                headroom.push(shape.name);
+            }
+        }
+        eprintln!(
+            "region engine subsumes {region_covers}/{ladder_total} golden ladder shapes; headroom (engine structures, ladder rejects): {headroom:?}"
+        );
+        assert!(
+            missed.is_empty(),
+            "region engine failed to structure control-flow shapes the ladder already recovers: {missed:?}"
+        );
+        assert_eq!(
+            region_covers, ladder_total,
+            "the region engine must fully subsume the ladder on the golden set before any emission flip"
+        );
+        assert!(
+            ladder_total >= 11,
+            "expected at least the pinned golden floor of control-flow shapes, saw {ladder_total}"
+        );
+    }
+
+    #[test]
+    fn golden_control_flow_ladder_is_locked() {
+        let Some(compiler): Option<String> = gcc() else {
+            eprintln!("skipping golden lock: no C compiler on PATH");
+            return;
+        };
+        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
+            eprintln!("skipping golden lock: cf corpus did not compile");
+            return;
+        };
+        let golden: BTreeSet<&'static str> = golden_set(&object);
+        eprintln!(
+            "current ladder golden control-flow set ({}): {golden:?}",
+            golden.len()
+        );
+
+        let locked: BTreeSet<&'static str> = BTreeSet::from([
+            "cf_straight",
+            "cf_if_then",
+            "cf_if_else",
+            "cf_nested_if",
+            "cf_nested_if_else",
+            "cf_while",
+            "cf_for",
+            "cf_do_while",
+            "cf_nested_loop",
+            "cf_sign",
+            "cf_clamp",
+        ]);
+        let regressed: Vec<&&'static str> = locked.difference(&golden).collect();
+        assert!(
+            regressed.is_empty(),
+            "control-flow shapes that structure today regressed to reject: {regressed:?} (current golden: {golden:?})"
+        );
+
+        for shape in CF_CORPUS {
+            if let Some(items) = lift(&object, shape.name)
+                && structure_items(&items).is_ok()
+            {
+                assert!(
+                    build_blocks(&items).is_some(),
+                    "the block builder must accept every ladder-structured leaf ({}) so the region engine can consume it",
+                    shape.name
+                );
+            }
+        }
     }
 }

@@ -57,6 +57,9 @@ pub mod sigmaker;
 pub mod stack_frame;
 pub mod stack_string;
 pub mod stream_disasm;
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+mod structuring;
 pub mod stub_emu;
 #[cfg(test)]
 #[allow(clippy::redundant_pub_crate)]
