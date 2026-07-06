@@ -3803,9 +3803,25 @@ fn structure_pre311_try_except(
                 pre311_handler_swallow_target(stream, region.handler_start, jt).is_some_and(
                     |t: usize| pre311_skip_jumps(stream, t, region_bound) == else_start,
                 );
+            let handler_join: Option<usize> =
+                pre311_handler_swallow_target(stream, region.handler_start, jt)
+                    .map(|t: usize| pre311_skip_jumps(stream, t, region_bound))
+                    .filter(|&t: &usize| t > else_start && t <= region_bound);
             let real_else: bool = !pre311_enclosed_by_finally(stream, region)
                 && pre311_else_is_real(code, stream, else_start, else_end);
-            if pre311_region_has_real_stmt(stream, else_start, else_end)
+            if let Some(hj) = handler_join
+                && !pre311_enclosed_by_finally(stream, region)
+                && !pre311_span_is_implicit_none_exit(stream, hj, region_bound)
+                && pre311_region_has_real_stmt(stream, hj, region_bound)
+                && pre311_region_has_real_stmt(stream, else_start, hj)
+            {
+                let bounded_else_end: usize =
+                    pre311_else_end(stream, else_start, hj).max(else_start);
+                body_end = pb;
+                handler_region_end = jt;
+                else_region = Some((else_start, bounded_else_end));
+                consumed = hj;
+            } else if pre311_region_has_real_stmt(stream, else_start, else_end)
                 && !shared_with_handler
                 && (real_else || pre311_enclosed_by_finally(stream, region))
             {

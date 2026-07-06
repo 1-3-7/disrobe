@@ -3925,6 +3925,39 @@ fn significant_indices_back(stream: &DecodedStream, lo: usize, hi: usize) -> Vec
         .collect()
 }
 
+fn guard_head_and_test(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    jump_idx: usize,
+) -> Result<Option<(Vec<Stmt>, Expr)>> {
+    let test_start: usize = cond_expr_start(stream, jump_idx, lo);
+    let prefix_has_branch: bool = test_start > lo
+        && (lo..test_start).any(|i: usize| {
+            is_forward_cond_jump(&stream.ops[i])
+                && !is_chain_cond_jump(&stream.ops, i)
+                && !is_value_form_shortcircuit(&stream.ops, i)
+                && resolve_jump_target(stream, i, &stream.ops[i])
+                    .is_some_and(|t: usize| t > i && t <= test_start)
+        });
+    if prefix_has_branch {
+        let head: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+        let (extra, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[test_start..jump_idx])?;
+        if extra.is_empty()
+            && let Some(test) = residual.into_iter().next_back()
+        {
+            return Ok(Some((head, test)));
+        }
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
+    Ok(residual
+        .into_iter()
+        .next_back()
+        .map(|test: Expr| (head, test)))
+}
+
 fn structure_backward_continue_guard(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3946,9 +3979,9 @@ fn structure_backward_continue_guard(
     }) else {
         return Ok(None);
     };
-    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
-    let Some(test): Option<Expr> = residual.into_iter().next_back() else {
+    let Some((head, test)): Option<(Vec<Stmt>, Expr)> =
+        guard_head_and_test(code, stream, lo, jump_idx)?
+    else {
         return Ok(None);
     };
     let test: Expr = fallthrough_cond_test(stream, jump_idx, test);

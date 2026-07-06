@@ -12234,3 +12234,50 @@ fn sysv_object_dense_switch_recovers_bias_and_duplicates() {
         "sysv object-switch differential PASSED for {lifted_count} functions (SysV, full-domain sweep incl MIN-1/MAX+1)"
     );
 }
+
+#[test]
+fn sysv_object_dense_switch_o0_relative_jump_table_recompiles() {
+    if !sysv_host_can_run() {
+        return;
+    }
+    let mut battery_src: String = String::new();
+    for case in OBJ_SWITCH_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let Some(objs): Option<SysvCrossObjects> =
+        compile_sysv_cross_extra("obj_switch_o0", &battery_src, &["-O0"])
+    else {
+        return;
+    };
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+    for case in OBJ_SWITCH_BATTERY {
+        let Some((recovery, renamed)): Option<(LeafRecovery, String)> =
+            object_switch_lift(case, &objs.sysv_object, PseudoAbi::SysV)
+        else {
+            continue;
+        };
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        recovered_decls.push_str(&object_switch_extern(case));
+        recovered_decls.push('\n');
+        driver_body.push_str(&object_switch_snippet(case, &recovery));
+        lifted_count += 1;
+    }
+    assert!(
+        lifted_count >= 1,
+        "clang -O0 relative-jump-table oracle recovered no dense switch of {}",
+        OBJ_SWITCH_BATTERY.len()
+    );
+    let driver: String = build_object_switch_driver(&recovered_decls, &driver_body);
+    let stdout: String = link_and_run_sysv("obj_switch_o0", &driver, &objs.host_object, 30);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "clang -O0 relative-jump-table differential FAILED ({lifted_count} cases): {stdout}"
+    );
+    println!(
+        "clang -O0 relative-jump-table differential PASSED for {lifted_count} functions (single-lea movsxd, sub-checked memory-homed discriminant)"
+    );
+}

@@ -717,12 +717,21 @@ pub fn recover_leaf_function_in_object(
         }
     }
     match recover_o0_switch_in_object(object, machine_code, base, abi, calls) {
-        Ok(recovery) => Ok(recovery),
+        Ok(recovery) => return Ok(recovery),
         Err(o0_err) => {
-            if matches!(&o0_err, Error::LlvmIr(message) if message.contains("dispatch prologue")) {
+            if !matches!(&o0_err, Error::LlvmIr(message) if message.contains("dispatch prologue")) {
+                return Err(o0_err);
+            }
+        }
+    }
+    match recover_clang_o0_switch_in_object(object, machine_code, base, abi, calls) {
+        Ok(recovery) => Ok(recovery),
+        Err(clang_err) => {
+            if matches!(&clang_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
+            {
                 Err(straight_err)
             } else {
-                Err(o0_err)
+                Err(clang_err)
             }
         }
     }
@@ -1879,6 +1888,35 @@ fn recover_o0_switch_in_object(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
 }
 
+/// Recover a clang `-O0` dense jump-table switch (register-homed discriminant, `sub` range check, single relative table).
+fn recover_clang_o0_switch_in_object(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    if machine_code.is_empty() {
+        return Err(Error::LlvmIr("empty machine code".to_owned()));
+    }
+    let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
+    if insns.is_empty() {
+        return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    let by_addr: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &DisasmInsn)| (insn.address, i))
+        .collect();
+    let Some(dispatch): Option<SwitchDispatch> = detect_clang_o0_jump_dispatch(&insns) else {
+        return Err(Error::LlvmIr(
+            "no clang O0 jump-table dispatch prologue in leaf".to_owned(),
+        ));
+    };
+    let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
+    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+}
+
 /// Prove both rip-relative table `lea`s of an `-O0` dispatch name the same rodata table.
 fn verify_shared_table_lea(
     object: &[u8],
@@ -2467,6 +2505,12 @@ fn next_effective(insns: &[DisasmInsn], from: usize) -> Option<usize> {
     (from..insns.len()).find(|&i: &usize| !is_ignorable(&insns[i]))
 }
 
+fn prev_effective(insns: &[DisasmInsn], before: usize) -> Option<usize> {
+    (0..before)
+        .rev()
+        .find(|&i: &usize| !is_ignorable(&insns[i]))
+}
+
 /// The default value pre-loaded into `rax` immediately before a range check (`mov rax, imm`).
 fn preloaded_default(insns: &[DisasmInsn], cmp_idx: usize) -> Option<i64> {
     let idx: usize = (0..cmp_idx)
@@ -2636,6 +2680,138 @@ fn detect_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<(SwitchDispatch, usiz
         return Some((dispatch, base_lea_idx));
     }
     None
+}
+
+/// Match the clang `-O0` dense jump table: `sub`-checked register-homed discriminant, single table `lea`, `movsxd` entry load accumulated into the base register.
+fn detect_clang_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch> {
+    for chk_idx in 0..insns.len() {
+        let Some((reg_c, bound)): Option<(Reg, u64)> = parse_reg_bound_check(&insns[chk_idx])
+        else {
+            continue;
+        };
+        let Some(jump): Option<&DisasmInsn> = insns.get(chk_idx + 1) else {
+            continue;
+        };
+        if !matches!(jump.mnemonic.as_str(), "ja" | "jnbe" | "jae" | "jnb") {
+            continue;
+        }
+        let Some(default_addr): Option<u64> = parse_branch_target(&jump.operands) else {
+            continue;
+        };
+        let above: bool = matches!(jump.mnemonic.as_str(), "ja" | "jnbe");
+        let Some(effective_bound): Option<u64> = (if above {
+            Some(bound)
+        } else {
+            bound.checked_sub(1)
+        }) else {
+            continue;
+        };
+        let Some(store_idx): Option<usize> = prev_effective(insns, chk_idx) else {
+            continue;
+        };
+        let Some(slot): Option<MemRef> = parse_store_of_reg(&insns[store_idx], reg_c) else {
+            continue;
+        };
+        let Some(reload_idx): Option<usize> = next_effective(insns, chk_idx + 2) else {
+            continue;
+        };
+        let Some(index_reg): Option<Reg> = parse_load_reg_from(&insns[reload_idx], &slot) else {
+            continue;
+        };
+        let Some(lea_idx): Option<usize> = next_effective(insns, reload_idx + 1) else {
+            continue;
+        };
+        let Some((tbl_reg, table_va)): Option<(Reg, u64)> = parse_lea_rip(&insns[lea_idx]) else {
+            continue;
+        };
+        let Some(load_idx): Option<usize> = next_effective(insns, lea_idx + 1) else {
+            continue;
+        };
+        let Some((off_reg, load_index)): Option<(Reg, Reg)> =
+            parse_movsxd_table_load(&insns[load_idx], tbl_reg)
+        else {
+            continue;
+        };
+        if load_index != index_reg {
+            continue;
+        }
+        let Some(add_idx): Option<usize> = next_effective(insns, load_idx + 1) else {
+            continue;
+        };
+        let Some(target_reg): Option<Reg> = parse_add_target(&insns[add_idx], tbl_reg, off_reg)
+        else {
+            continue;
+        };
+        let Some(jmp_idx): Option<usize> = next_effective(insns, add_idx + 1) else {
+            continue;
+        };
+        if !is_indirect_jmp(&insns[jmp_idx], target_reg) {
+            continue;
+        }
+        return Some(SwitchDispatch {
+            disc: RegRef {
+                reg: index_reg,
+                width: Width::W64,
+            },
+            bound: effective_bound,
+            default_addr,
+            table_va,
+            bias: None,
+            entry_width: 4,
+            first_index: chk_idx,
+            inter_start: chk_idx + 2,
+            inter_end: lea_idx,
+        });
+    }
+    None
+}
+
+/// Parse a range check `cmp reg, imm` or `sub reg, imm` over a 64-bit register, returning the register and bound.
+fn parse_reg_bound_check(insn: &DisasmInsn) -> Option<(Reg, u64)> {
+    if !matches!(insn.mnemonic.as_str(), "cmp" | "sub") {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let disc: RegRef = parse_reg(lhs.trim())?;
+    if disc.width != Width::W64 {
+        return None;
+    }
+    let bound: i64 = parse_imm(rhs.trim())?;
+    if bound < 1 {
+        return None;
+    }
+    Some((disc.reg, bound as u64))
+}
+
+/// Parse `mov <slot>, reg` storing the given 64-bit register into a frame slot, returning the slot.
+fn parse_store_of_reg(insn: &DisasmInsn, reg: Reg) -> Option<MemRef> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    if !is_mem_token(lhs.trim()) {
+        return None;
+    }
+    let src: RegRef = parse_reg(rhs.trim())?;
+    if src.reg != reg || src.width != Width::W64 {
+        return None;
+    }
+    parse_mem_access(lhs.trim(), Some(Width::W64))
+}
+
+/// Parse `add dest, src` over two 64-bit registers whose set equals `{a, b}`, returning the destination.
+fn parse_add_target(insn: &DisasmInsn, a: Reg, b: Reg) -> Option<Reg> {
+    if insn.mnemonic != "add" || a == b {
+        return None;
+    }
+    let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
+    let dest: RegRef = parse_reg(lhs.trim())?;
+    let src: RegRef = parse_reg(rhs.trim())?;
+    if dest.width != Width::W64 || src.width != Width::W64 {
+        return None;
+    }
+    let pair: [Reg; 2] = [dest.reg, src.reg];
+    (pair.contains(&a) && pair.contains(&b)).then_some(dest.reg)
 }
 
 /// Parse `cmp <size> [frame + disp], imm`, returning the discriminant slot and the range bound.
@@ -3654,7 +3830,7 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
             lifted_loop: false,
         });
     }
-    if let Some(structured) = structure_via_regions(items) {
+    if let Some(structured) = structure_via_regions(items, false) {
         return Ok(structured);
     }
     if ret_pos + 1 == items.len()
@@ -3672,6 +3848,9 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
             lifted_split_return: false,
             lifted_loop: true,
         });
+    }
+    if let Some(structured) = structure_via_regions(items, true) {
+        return Ok(structured);
     }
     Err(Error::LlvmIr(
         "multiple/early returns not in forward-skip class".to_owned(),
@@ -3756,13 +3935,251 @@ fn cond_from_region(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SinkLabel {
+    Return,
+    Break,
+    Continue,
+}
+
+const TAIL_SPLIT_BLOCK_CAP: usize = 256;
+const TAIL_SUBTREE_CAP: usize = 32;
+
+fn private_tail_subtree(
+    root: usize,
+    blocks: &[CfgBlock],
+    preds: &[Vec<usize>],
+) -> Option<Vec<usize>> {
+    if root == 0 {
+        return None;
+    }
+    let mut order: Vec<usize> = vec![root];
+    let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([root]);
+    let mut cursor: usize = 0;
+    while cursor < order.len() {
+        let node: usize = order[cursor];
+        cursor += 1;
+        for succ in blocks[node].successors() {
+            if succ == root || !seen.insert(succ) {
+                return None;
+            }
+            order.push(succ);
+            if order.len() > TAIL_SUBTREE_CAP {
+                return None;
+            }
+        }
+    }
+    for &node in &order {
+        if node != root && preds[node].iter().any(|p: &usize| !seen.contains(p)) {
+            return None;
+        }
+        if blocks[node].successors().is_empty() && !matches!(blocks[node].term, BlockTerm::Ret) {
+            return None;
+        }
+    }
+    Some(order)
+}
+
+fn retarget_block(term: &mut BlockTerm, from: usize, to: usize) {
+    match term {
+        BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
+            if *t == from {
+                *t = to;
+            }
+        }
+        BlockTerm::Branch {
+            taken, fallthrough, ..
+        } => {
+            if *taken == from {
+                *taken = to;
+            }
+            if *fallthrough == from {
+                *fallthrough = to;
+            }
+        }
+        BlockTerm::Ret => {}
+    }
+}
+
+fn split_tail_regions(
+    mut blocks: Vec<CfgBlock>,
+    mut labels: std::collections::BTreeMap<usize, SinkLabel>,
+) -> Option<(Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>)> {
+    loop {
+        let preds: Vec<Vec<usize>> = block_predecessors(&blocks);
+        let mut chosen: Option<(usize, Vec<usize>)> = None;
+        for node in 0..blocks.len() {
+            if preds[node].len() < 2 {
+                continue;
+            }
+            if let Some(subtree) = private_tail_subtree(node, &blocks, &preds) {
+                chosen = Some((node, subtree));
+                break;
+            }
+        }
+        let Some((root, subtree)): Option<(usize, Vec<usize>)> = chosen else {
+            return Some((blocks, labels));
+        };
+        let extra_preds: Vec<usize> = preds[root].iter().skip(1).copied().collect();
+        for pred in extra_preds {
+            let base: usize = blocks.len();
+            let remap: std::collections::BTreeMap<usize, usize> = subtree
+                .iter()
+                .enumerate()
+                .map(|(offset, &orig): (usize, &usize)| (orig, base + offset))
+                .collect();
+            for &orig in &subtree {
+                let mut clone: CfgBlock = blocks[orig].clone();
+                for (&from, &to) in &remap {
+                    retarget_block(&mut clone.term, from, to);
+                }
+                if let Some(&label) = labels.get(&orig) {
+                    labels.insert(remap[&orig], label);
+                }
+                blocks.push(clone);
+            }
+            let copy_root: usize = remap[&root];
+            retarget_block(&mut blocks[pred].term, root, copy_root);
+            if blocks.len() > TAIL_SPLIT_BLOCK_CAP {
+                return None;
+            }
+        }
+    }
+}
+
 struct RegionRenderer<'a> {
     blocks: &'a [CfgBlock],
     result: &'a structuring::StructureResult,
+    labels: &'a std::collections::BTreeMap<usize, SinkLabel>,
+    forest: &'a structuring::LoopForest,
+    allow_loops: bool,
     consumed: std::collections::BTreeSet<usize>,
 }
 
 impl RegionRenderer<'_> {
+    fn render_sink(&self, entry: usize, out: &mut Block) {
+        match self
+            .labels
+            .get(&entry)
+            .copied()
+            .unwrap_or(SinkLabel::Return)
+        {
+            SinkLabel::Return => out.push(Node::Return),
+            SinkLabel::Break => out.push(Node::Break),
+            SinkLabel::Continue => out.push(Node::Continue),
+        }
+    }
+
+    fn render_loop(&mut self, header: usize, out: &mut Block) -> bool {
+        if !self.allow_loops {
+            return false;
+        }
+        let Some(natural): Option<&structuring::NaturalLoop> = self
+            .forest
+            .loops
+            .iter()
+            .find(|l: &&structuring::NaturalLoop| l.header as usize == header)
+        else {
+            return false;
+        };
+        let body: std::collections::BTreeSet<usize> =
+            natural.body.iter().map(|n: &u32| *n as usize).collect();
+        let mut follow: Option<usize> = None;
+        for &node in &body {
+            for succ in self.blocks[node].successors() {
+                if !body.contains(&succ) {
+                    match follow {
+                        None => follow = Some(succ),
+                        Some(f) if f == succ => {}
+                        Some(_) => return false,
+                    }
+                }
+            }
+        }
+        let mut order: Vec<usize> = vec![header];
+        order.extend(body.iter().copied().filter(|n: &usize| *n != header));
+        let sub_of: std::collections::BTreeMap<usize, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(idx, &node): (usize, &usize)| (node, idx))
+            .collect();
+        let cont_idx: usize = order.len();
+        let brk_idx: usize = order.len() + 1;
+        let remap = |target: usize| -> Option<usize> {
+            if target == header {
+                Some(cont_idx)
+            } else if let Some(&idx) = sub_of.get(&target) {
+                Some(idx)
+            } else if Some(target) == follow {
+                Some(brk_idx)
+            } else {
+                None
+            }
+        };
+        let mut sub_blocks: Vec<CfgBlock> = Vec::with_capacity(order.len() + 2);
+        for &node in &order {
+            let term: BlockTerm = match &self.blocks[node].term {
+                BlockTerm::Ret => BlockTerm::Ret,
+                BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
+                    let Some(target): Option<usize> = remap(*t) else {
+                        return false;
+                    };
+                    BlockTerm::Jump(target)
+                }
+                BlockTerm::Branch {
+                    kind,
+                    flags,
+                    taken,
+                    fallthrough,
+                } => {
+                    let (Some(taken), Some(fallthrough)): (Option<usize>, Option<usize>) =
+                        (remap(*taken), remap(*fallthrough))
+                    else {
+                        return false;
+                    };
+                    BlockTerm::Branch {
+                        kind: *kind,
+                        flags: flags.clone(),
+                        taken,
+                        fallthrough,
+                    }
+                }
+            };
+            sub_blocks.push(CfgBlock {
+                stmts: self.blocks[node].stmts.clone(),
+                term,
+            });
+        }
+        sub_blocks.push(CfgBlock {
+            stmts: Vec::new(),
+            term: BlockTerm::Ret,
+        });
+        sub_blocks.push(CfgBlock {
+            stmts: Vec::new(),
+            term: BlockTerm::Ret,
+        });
+        let mut sub_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            std::collections::BTreeMap::new();
+        sub_labels.insert(cont_idx, SinkLabel::Continue);
+        sub_labels.insert(brk_idx, SinkLabel::Break);
+        for &node in &order {
+            if matches!(self.blocks[node].term, BlockTerm::Ret)
+                && let Some(&label) = self.labels.get(&node)
+            {
+                sub_labels.insert(sub_of[&node], label);
+            }
+        }
+        let Some(loop_body): Option<Block> = render_cfg_blocks(&sub_blocks, &sub_labels, true)
+        else {
+            return false;
+        };
+        out.push(Node::While { body: loop_body });
+        for node in body {
+            self.consumed.insert(node);
+        }
+        true
+    }
+
     fn render(&mut self, id: structuring::RegionId, out: &mut Block) -> bool {
         let region: &structuring::Region = &self.result.regions[id as usize];
         let kind: structuring::RegionKind = region.kind;
@@ -3779,7 +4196,7 @@ impl RegionRenderer<'_> {
                     out.push(Node::Stmt(stmt.clone()));
                 }
                 if matches!(self.blocks[entry].term, BlockTerm::Ret) {
-                    out.push(Node::Return);
+                    self.render_sink(entry, out);
                 }
                 true
             }
@@ -3859,9 +4276,9 @@ impl RegionRenderer<'_> {
             }
             structuring::RegionKind::While
             | structuring::RegionKind::DoWhile
-            | structuring::RegionKind::Switch
             | structuring::RegionKind::NaturalLoop
-            | structuring::RegionKind::SelfLoop
+            | structuring::RegionKind::SelfLoop => self.render_loop(entry, out),
+            structuring::RegionKind::Switch
             | structuring::RegionKind::Proper
             | structuring::RegionKind::Irreducible => false,
         }
@@ -3923,36 +4340,67 @@ fn region_structuring_is_sound(
         .all(|block: &usize| pdom.immediate_post_dominator(*block as u32).is_some())
 }
 
-fn structure_via_regions(items: &[Item]) -> Option<Structured> {
-    let blocks: Vec<CfgBlock> = build_blocks(items)?;
-    let cfg: structuring::Cfg = cfg_from_leaf_blocks(&blocks)?;
+fn render_cfg_blocks_once(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    allow_loops: bool,
+) -> Option<Block> {
+    let cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
     let result: structuring::StructureResult = structuring::structure(&cfg);
     if !result.is_complete() {
         return None;
     }
-    if !region_structuring_is_sound(&blocks, &cfg, &result) {
+    if !region_structuring_is_sound(blocks, &cfg, &result) {
         return None;
     }
+    let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
     let root: structuring::RegionId = result.root?;
     let mut renderer: RegionRenderer<'_> = RegionRenderer {
-        blocks: &blocks,
+        blocks,
         result: &result,
+        labels,
+        forest: &forest,
+        allow_loops,
         consumed: std::collections::BTreeSet::new(),
     };
     let mut body: Block = Vec::new();
     if !renderer.render(root, &mut body) {
         return None;
     }
-    if renderer.consumed != reachable_blocks(&blocks) {
+    if renderer.consumed != reachable_blocks(blocks) {
         return None;
     }
+    Some(body)
+}
+
+fn render_cfg_blocks(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    allow_loops: bool,
+) -> Option<Block> {
+    if let Some(body) = render_cfg_blocks_once(blocks, labels, allow_loops) {
+        return Some(body);
+    }
+    let (eblocks, elabels): (Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>) =
+        split_tail_regions(blocks.to_vec(), labels.clone())?;
+    if eblocks.len() == blocks.len() {
+        return None;
+    }
+    render_cfg_blocks_once(&eblocks, &elabels, allow_loops)
+}
+
+fn structure_via_regions(items: &[Item], allow_loops: bool) -> Option<Structured> {
+    let blocks: Vec<CfgBlock> = build_blocks(items)?;
+    let labels: std::collections::BTreeMap<usize, SinkLabel> = std::collections::BTreeMap::new();
+    let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops)?;
     if matches!(body.last(), Some(Node::Return)) {
         body.pop();
     }
+    let lifted_loop: bool = loop_count(&body) > 0;
     Some(Structured {
         body,
         lifted_split_return: false,
-        lifted_loop: false,
+        lifted_loop,
     })
 }
 
@@ -5476,6 +5924,22 @@ fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec
     }
 }
 
+fn node_terminates(node: &Node) -> bool {
+    match node {
+        Node::Return | Node::Break | Node::Continue => true,
+        Node::If {
+            then_body,
+            else_body: Some(else_body),
+            ..
+        } => block_terminates(then_body) && block_terminates(else_body),
+        _ => false,
+    }
+}
+
+fn block_terminates(body: &Block) -> bool {
+    body.last().is_some_and(node_terminates)
+}
+
 fn scan_block_params(
     body: &Block,
     written: &mut BTreeMap<Reg, bool>,
@@ -5493,11 +5957,18 @@ fn scan_block_params(
                 cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
                     read_flags(flags, written, acc, note);
                 });
-                let mut branch_written: BTreeMap<Reg, bool> = written.clone();
-                scan_block_params(then_body, &mut branch_written, acc, note);
+                let then_terminal: bool = block_terminates(then_body);
+                let mut then_written: BTreeMap<Reg, bool> = written.clone();
+                scan_block_params(then_body, &mut then_written, acc, note);
                 if let Some(else_b) = else_body {
+                    let else_terminal: bool = block_terminates(else_b);
                     let mut else_written: BTreeMap<Reg, bool> = written.clone();
                     scan_block_params(else_b, &mut else_written, acc, note);
+                    if then_terminal && !else_terminal {
+                        *written = else_written;
+                    } else if else_terminal && !then_terminal {
+                        *written = then_written;
+                    }
                 }
             }
             Node::DoWhile { body, cond } => {
