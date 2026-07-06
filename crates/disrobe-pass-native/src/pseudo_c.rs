@@ -718,6 +718,15 @@ pub fn recover_leaf_function_with_calls(
 }
 
 /// Recover a leaf function, resolving a dense-switch jump table from the object's relocatable data.
+/// Recover an auto-vectorized integer reduction or elementwise map as a clean scalar loop, or error.
+pub fn recover_vectorized_reduction(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+) -> Result<LeafRecovery> {
+    crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi)
+}
+
 pub fn recover_leaf_function_in_object(
     object: &[u8],
     machine_code: &[u8],
@@ -725,6 +734,9 @@ pub fn recover_leaf_function_in_object(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
+    if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
+        return Ok(recovery);
+    }
     let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
     let straight_err: Error =
         match recover_leaf_function_calls_impl(machine_code, base, abi, &[], &packed_consts, calls)
