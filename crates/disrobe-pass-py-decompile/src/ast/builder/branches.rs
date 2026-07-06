@@ -1613,17 +1613,23 @@ fn build_return_ternary_expr(
     if !matches!(stream.ops[body_ret], CanonicalOp::Return) {
         return Ok(None);
     }
-    let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
-    if !head_stmts.is_empty() {
-        return Ok(None);
-    }
-    let Some(test_raw): Option<Expr> = head_residual.into_iter().next_back() else {
+    let last_test_jump: usize = ternary_test_chain_end(stream, lo, jump_idx, target);
+    let body_start: usize =
+        first_significant(stream, last_test_jump + 1, body_ret).unwrap_or(last_test_jump + 1);
+    let Some(test): Option<Expr> = build_return_ternary_test(
+        code,
+        stream,
+        lo,
+        jump_idx,
+        last_test_jump,
+        target,
+        body_start,
+    )?
+    else {
         return Ok(None);
     };
-    let test: Expr = none_jump_test(stream, jump_idx, test_raw.clone()).unwrap_or(test_raw);
     let Some(body_expr): Option<Expr> =
-        build_region_as_single_expr(code, stream, jump_idx + 1, body_ret)?
+        build_region_as_single_expr(code, stream, body_start, body_ret)?
     else {
         return Ok(None);
     };
@@ -1636,6 +1642,55 @@ fn build_return_ternary_expr(
         body: Box::new(body_expr),
         orelse: Box::new(else_expr),
     }))
+}
+
+fn build_return_ternary_test(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    first_jump: usize,
+    last_test_jump: usize,
+    else_target: usize,
+    body_start: usize,
+) -> Result<Option<Expr>> {
+    let jumps: Vec<usize> = (first_jump..=last_test_jump)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+        })
+        .collect();
+    let mut operands: Vec<CondOperand> = Vec::with_capacity(jumps.len());
+    let mut value_lo: usize = lo;
+    for &jump in &jumps {
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[value_lo..jump])?;
+        if !stmts.is_empty() {
+            return Ok(None);
+        }
+        let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        let is_jump_if_true: bool = matches!(
+            stream.ops[jump],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        );
+        let Some(jump_target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
+            .filter(|t: &usize| {
+                *t == body_start || *t == else_target || (*t > jump && *t < body_start)
+            })
+        else {
+            return Ok(None);
+        };
+        operands.push(CondOperand {
+            expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
+            is_jump_if_true,
+            target: jump_target,
+            value_lo,
+        });
+        value_lo = first_significant(stream, jump + 1, last_test_jump + 1).unwrap_or(jump + 1);
+    }
+    Ok(parse_cond_range(&operands, body_start, else_target))
 }
 
 fn region_return_or_nested(
