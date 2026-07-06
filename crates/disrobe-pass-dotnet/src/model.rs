@@ -453,7 +453,29 @@ impl Resolver {
     fn method_spec_name(&self, rid: u32) -> Option<String> {
         let row: &MethodSpecRow = self.tables.method_specs.get(rid.checked_sub(1)? as usize)?;
         let method: RowRef = row.method?;
-        Some(self.row_ref_name(method))
+        let base: String = self.row_ref_name(method);
+        if base.contains('<') {
+            return Some(base);
+        }
+        let inferable: bool = self
+            .callee_signature(row_ref_token(method))
+            .is_none_or(|sig: MethodSig| !sig.params.is_empty());
+        if inferable {
+            return Some(base);
+        }
+        let args: Vec<crate::signature::TypeSig> = self
+            .blob(row.instantiation)
+            .and_then(|blob: &[u8]| crate::signature::parse_method_spec_sig(blob).ok())
+            .unwrap_or_default();
+        if args.is_empty() {
+            return Some(base);
+        }
+        let rendered: String = args
+            .iter()
+            .map(|a: &crate::signature::TypeSig| self.substitute_type_tokens(&a.render()))
+            .collect::<Vec<String>>()
+            .join(", ");
+        Some(format!("{base}<{rendered}>"))
     }
 
     #[must_use]
@@ -665,7 +687,74 @@ impl Resolver {
 
     #[must_use]
     pub fn render_type(&self, sig: &TypeSig, lang: TargetLang) -> String {
+        if let TypeSig::GenericInst { base, args } = sig
+            && let TypeSig::NamedType { token, .. } = base.as_ref()
+            && let Some(rendered) = self.render_nested_generic_inst(*token, args, lang)
+        {
+            return rendered;
+        }
         self.substitute_type_tokens(&sig.render_in(lang))
+    }
+
+    fn type_ref_nesting_chain(&self, rid: u32) -> Option<Vec<(String, String)>> {
+        let mut chain: Vec<(String, String)> = Vec::new();
+        let mut cur: u32 = rid;
+        loop {
+            let row: &crate::tables::TypeRefRow =
+                self.tables.type_refs.get(cur.checked_sub(1)? as usize)?;
+            chain.push((self.string(row.namespace), self.string(row.name)));
+            match row.resolution_scope {
+                Some(scope) if scope.table == TableId::TypeRef => cur = scope.row,
+                _ => break,
+            }
+            if chain.len() > 16 {
+                break;
+            }
+        }
+        chain.reverse();
+        Some(chain)
+    }
+
+    fn render_nested_generic_inst(
+        &self,
+        token: u32,
+        args: &[TypeSig],
+        lang: TargetLang,
+    ) -> Option<String> {
+        if TableId::from_index(u8::try_from(token >> 24).unwrap_or(0xFF))? != TableId::TypeRef {
+            return None;
+        }
+        let chain: Vec<(String, String)> = self.type_ref_nesting_chain(token & 0x00FF_FFFF)?;
+        if chain.len() < 2 {
+            return None;
+        }
+        let mut parts: Vec<String> = Vec::with_capacity(chain.len());
+        let mut consumed: usize = 0;
+        for (idx, (ns, raw)) in chain.iter().enumerate() {
+            let arity: usize = generic_arity(raw);
+            let simple: String = strip_generic_arity(raw);
+            let name: String = if idx == 0 && !ns.is_empty() {
+                format!("{ns}.{simple}")
+            } else {
+                simple
+            };
+            let end: usize = consumed.checked_add(arity)?;
+            let seg: &[TypeSig] = args.get(consumed..end)?;
+            consumed = end;
+            if seg.is_empty() {
+                parts.push(name);
+            } else {
+                let rendered: Vec<String> = seg
+                    .iter()
+                    .map(|a: &TypeSig| self.render_type(a, lang))
+                    .collect();
+                match lang {
+                    TargetLang::VbNet => parts.push(format!("{name}(Of {})", rendered.join(", "))),
+                    _ => parts.push(format!("{name}<{}>", rendered.join(", "))),
+                }
+            }
+        }
+        (consumed == args.len()).then(|| parts.join("."))
     }
 
     #[must_use]
@@ -766,6 +855,13 @@ fn strip_generic_arity(name: &str) -> String {
     }
 }
 
+fn generic_arity(name: &str) -> usize {
+    match name.split_once('`') {
+        Some((_, rest)) => rest.parse::<usize>().unwrap_or(0),
+        None => 0,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -785,6 +881,14 @@ mod tests {
         let root: MetadataRoot =
             crate::metadata::parse_metadata_root(&bytes, &pe, &clr).expect("root");
         Resolver::build(&bytes, &pe, &clr, &root).expect("resolver")
+    }
+
+    #[test]
+    fn generic_arity_reads_backtick_suffix() {
+        assert_eq!(generic_arity("List`1"), 1);
+        assert_eq!(generic_arity("Dictionary`2"), 2);
+        assert_eq!(generic_arity("Enumerator"), 0);
+        assert_eq!(generic_arity("Weird`x"), 0);
     }
 
     #[test]

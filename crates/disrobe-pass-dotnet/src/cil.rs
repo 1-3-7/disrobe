@@ -1178,6 +1178,109 @@ pub(crate) fn fold_null_coalesce(body: &MethodBody) -> MethodBody {
     out
 }
 
+#[must_use]
+pub(crate) fn fold_null_conditional_call(body: &MethodBody) -> MethodBody {
+    let instrs: &[Instruction] = &body.instructions;
+    let mut windows: Vec<CondCallWindow> = Vec::new();
+    for j in 0..instrs.len() {
+        if let Some(window) = match_cond_call_window(instrs, j) {
+            windows.push(window);
+        }
+    }
+    if windows.is_empty() {
+        return body.clone();
+    }
+    let mut out: MethodBody = body.clone();
+    for window in windows.iter().rev() {
+        nop_instruction(&mut out.instructions[window.dup]);
+        nop_instruction(&mut out.instructions[window.brtrue]);
+        nop_instruction(&mut out.instructions[window.pop]);
+        nop_instruction(&mut out.instructions[window.br]);
+        out.instructions.insert(
+            window.call,
+            null_cond_marker(out.instructions[window.call].offset),
+        );
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CondCallWindow {
+    dup: usize,
+    brtrue: usize,
+    pop: usize,
+    br: usize,
+    call: usize,
+}
+
+fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCallWindow> {
+    if instrs.get(dup)?.name != "dup" || dup == 0 {
+        return None;
+    }
+    let brtrue: usize = dup + 1;
+    let cond: &Instruction = instrs.get(brtrue)?;
+    if !matches!(cond.name.as_str(), "brtrue" | "brtrue.s") {
+        return None;
+    }
+    let call_off: u32 = match cond.operand {
+        OperandValue::BrTarget(rel) => (i64::from(cond.offset) + i64::from(rel)) as u32,
+        _ => return None,
+    };
+    let pop: usize = brtrue + 1;
+    if instrs.get(pop)?.name != "pop" {
+        return None;
+    }
+    let br: usize = pop + 1;
+    let branch: &Instruction = instrs.get(br)?;
+    if !matches!(branch.name.as_str(), "br" | "br.s") {
+        return None;
+    }
+    let merge_off: u32 = match branch.operand {
+        OperandValue::BrTarget(rel) => (i64::from(branch.offset) + i64::from(rel)) as u32,
+        _ => return None,
+    };
+    let l1: usize = br + 1;
+    if instrs.get(l1)?.offset != call_off {
+        return None;
+    }
+    let merge: usize = instrs
+        .iter()
+        .position(|i: &Instruction| i.offset == merge_off)?;
+    if merge <= l1 {
+        return None;
+    }
+    let block: &[Instruction] = &instrs[l1..merge];
+    let (last, head): (&Instruction, &[Instruction]) = block.split_last()?;
+    if !matches!(last.name.as_str(), "call" | "callvirt" | "calli") {
+        return None;
+    }
+    if !head.iter().all(|ins: &Instruction| {
+        matches!(
+            ins.flow,
+            FlowControl::Next | FlowControl::Call | FlowControl::Meta
+        )
+    }) {
+        return None;
+    }
+    Some(CondCallWindow {
+        dup,
+        brtrue,
+        pop,
+        br,
+        call: merge - 1,
+    })
+}
+
+fn null_cond_marker(offset: u32) -> Instruction {
+    Instruction {
+        offset,
+        opcode: 0,
+        name: "__null_cond".to_owned(),
+        operand: OperandValue::None,
+        flow: FlowControl::Next,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CoalesceWindow {
     dup: usize,
@@ -1490,6 +1593,82 @@ mod tests {
                 .iter()
                 .all(|i: &Instruction| i.name != "__coalesce"),
             "a merge that pushes rather than consumes is not a coalesce sink"
+        );
+    }
+
+    fn cond_call_body() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 20,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(
+                    1,
+                    "ldfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(6, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    7,
+                    "brtrue.s",
+                    OperandValue::BrTarget(5),
+                    FlowControl::CondBranch,
+                ),
+                ins(9, "pop", OperandValue::None, FlowControl::Next),
+                ins(10, "br.s", OperandValue::BrTarget(8), FlowControl::Branch),
+                ins(12, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    13,
+                    "callvirt",
+                    OperandValue::Token(0x0A00_0002),
+                    FlowControl::Call,
+                ),
+                ins(18, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_collapses_dup_brtrue_pop_br_call_idiom() {
+        let folded: MethodBody = fold_null_conditional_call(&cond_call_body());
+        let names: Vec<&str> = folded
+            .instructions
+            .iter()
+            .map(|i: &Instruction| i.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "ldarg.0",
+                "ldfld",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "ldarg.1",
+                "__null_cond",
+                "callvirt",
+                "ret",
+            ],
+            "the dup/brtrue/pop/br guard collapses to straight-line with a __null_cond marker before the call"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_ignores_missing_trailing_branch() {
+        let mut body: MethodBody = cond_call_body();
+        body.instructions[5] = ins(10, "nop", OperandValue::None, FlowControl::Next);
+        let folded: MethodBody = fold_null_conditional_call(&body);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "without the br.s over the call the pattern is not a null-conditional call"
         );
     }
 

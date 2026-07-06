@@ -465,6 +465,23 @@ pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
     SigReader::new(blob).parse_method_inner()
 }
 
+pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
+    let mut r: SigReader<'_> = SigReader::new(blob);
+    let cc: u8 = r.byte()?;
+    if cc != 0x0A {
+        return Err(Error::BadCompressedUint(0));
+    }
+    let count: u32 = r.compressed()?;
+    let mut args: Vec<TypeSig> = Vec::with_capacity((count as usize).min(r.remaining()));
+    for _ in 0..count {
+        if r.peek().is_none() {
+            break;
+        }
+        args.push(r.type_sig()?);
+    }
+    Ok(args)
+}
+
 pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
     let mut r: SigReader<'_> = SigReader::new(blob);
     let cc: u8 = r.byte()?;
@@ -650,6 +667,18 @@ mod tests {
     #[test]
     fn local_sig_wrong_calling_convention_errors() {
         assert!(parse_local_sig(&[SIG_FIELD, element_type::I4]).is_err());
+    }
+
+    #[test]
+    fn method_spec_sig_reads_generic_instantiation() {
+        let blob: [u8; 4] = [0x0A, 0x01, element_type::MVAR, 0x00];
+        let args: Vec<TypeSig> = parse_method_spec_sig(&blob).expect("method spec sig");
+        assert_eq!(args, vec![TypeSig::MVar(0)]);
+    }
+
+    #[test]
+    fn method_spec_sig_wrong_calling_convention_errors() {
+        assert!(parse_method_spec_sig(&[SIG_FIELD, 0x01, element_type::I4]).is_err());
     }
 
     #[test]

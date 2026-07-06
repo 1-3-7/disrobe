@@ -463,6 +463,7 @@ struct Lifter<'a, N: TokenNamer> {
     stmts: Vec<Stmt>,
     locals_used: BTreeSet<u32>,
     locals_assigned: BTreeSet<u32>,
+    pending_null_cond: bool,
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
@@ -475,6 +476,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             stmts: Vec::new(),
             locals_used: BTreeSet::new(),
             locals_assigned: BTreeSet::new(),
+            pending_null_cond: false,
         }
     }
 
@@ -589,6 +591,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     }
 
     fn emit_call(&mut self, ins: &Instruction) {
+        let null_cond: bool = std::mem::take(&mut self.pending_null_cond);
         let raw: String = self.token_name(ins);
         let member: &str = raw.rsplit("::").next().unwrap_or(&raw);
         let is_ctor: bool = member == ".ctor" || member == ".cctor";
@@ -703,9 +706,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let call: Expr = if has_this && !rendered_args.is_empty() {
             let mut rendered_args: Vec<Expr> = rendered_args;
             let recv: Expr = rendered_args.remove(0);
+            let sep: &str = if null_cond && self.lang == TargetLang::CSharp {
+                "?."
+            } else {
+                "."
+            };
             Expr::Call {
                 target: format!(
-                    "{}.{}",
+                    "{}{sep}{}",
                     call_receiver(&recv, self.lang, self.names),
                     short(&raw)
                 ),
@@ -789,6 +797,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let alt: Expr = self.pop();
                 let primary: Expr = self.pop();
                 self.push(Expr::Coalesce(Box::new(primary), Box::new(alt)));
+            }
+            "__null_cond" => {
+                self.pending_null_cond = true;
             }
             "__throw_expr" => {
                 let exc: Expr = self.pop();
@@ -1575,7 +1586,7 @@ pub fn decompile_method_named<N: TokenNamer>(
 ) -> StructuredMethod {
     let normalized: MethodBody = normalize_branches(body);
     let prepared: MethodBody = if lang == TargetLang::CSharp {
-        crate::cil::fold_null_coalesce(&normalized)
+        crate::cil::fold_null_coalesce(&crate::cil::fold_null_conditional_call(&normalized))
     } else {
         normalized
     };
@@ -1593,7 +1604,9 @@ pub fn decompile_move_next_named<N: TokenNamer>(
     lang: TargetLang,
     is_async: bool,
 ) -> StructuredMethod {
-    let prepared: MethodBody = crate::cil::fold_null_coalesce(&normalize_branches(body));
+    let prepared: MethodBody = crate::cil::fold_null_coalesce(
+        &crate::cil::fold_null_conditional_call(&normalize_branches(body)),
+    );
     let recovered: crate::structure_emit::StructuredOutput =
         crate::structure_emit::structure_move_next(&prepared, namer, names, lang, is_async);
     finish_structured(signature, recovered, names, lang)
