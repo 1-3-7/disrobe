@@ -299,10 +299,9 @@ zstd = "0.13.3"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
 
 [profile.bench]
 inherits = "release"
