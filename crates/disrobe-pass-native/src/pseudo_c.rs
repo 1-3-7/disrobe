@@ -15,6 +15,7 @@ use disrobe_emit::rust::{
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
+use crate::structuring;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -383,6 +384,7 @@ enum Flags {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Cond {
     Leaf { kind: CondKind, flags: Flags },
+    And(Box<Self>, Box<Self>),
     Or(Box<Self>, Box<Self>),
 }
 
@@ -394,7 +396,7 @@ impl Cond {
     fn visit_leaves(&self, visit: &mut impl FnMut(CondKind, &Flags)) {
         match self {
             Self::Leaf { kind, flags } => visit(*kind, flags),
-            Self::Or(lhs, rhs) => {
+            Self::And(lhs, rhs) | Self::Or(lhs, rhs) => {
                 lhs.visit_leaves(visit);
                 rhs.visit_leaves(visit);
             }
@@ -3645,19 +3647,22 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
             lifted_loop: true,
         });
     }
+    if let Some(body) = structure_split_return(items, ret_pos)? {
+        return Ok(Structured {
+            body,
+            lifted_split_return: true,
+            lifted_loop: false,
+        });
+    }
+    if let Some(structured) = structure_via_regions(items) {
+        return Ok(structured);
+    }
     if ret_pos + 1 == items.len()
         && let Ok(body) = structure_range(items, 0, ret_pos)
     {
         return Ok(Structured {
             body,
             lifted_split_return: false,
-            lifted_loop: false,
-        });
-    }
-    if let Some(body) = structure_split_return(items, ret_pos)? {
-        return Ok(Structured {
-            body,
-            lifted_split_return: true,
             lifted_loop: false,
         });
     }
@@ -3671,6 +3676,284 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
     Err(Error::LlvmIr(
         "multiple/early returns not in forward-skip class".to_owned(),
     ))
+}
+
+fn reachable_blocks(blocks: &[CfgBlock]) -> std::collections::BTreeSet<usize> {
+    let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::from([0]);
+    let mut stack: Vec<usize> = vec![0];
+    while let Some(block) = stack.pop() {
+        for succ in blocks[block].successors() {
+            if succ < blocks.len() && seen.insert(succ) {
+                stack.push(succ);
+            }
+        }
+    }
+    seen
+}
+
+fn cfg_from_leaf_blocks(blocks: &[CfgBlock]) -> Option<structuring::Cfg> {
+    let count: usize = blocks.len();
+    let mut nodes: Vec<structuring::CfgNode> = Vec::with_capacity(count);
+    for (idx, block) in blocks.iter().enumerate() {
+        let pure: bool = block.stmts.is_empty();
+        let term: structuring::Terminator = match &block.term {
+            BlockTerm::Ret => structuring::Terminator::Return,
+            BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
+                if *t >= count {
+                    return None;
+                }
+                structuring::Terminator::Goto(*t as u32)
+            }
+            BlockTerm::Branch {
+                taken, fallthrough, ..
+            } => {
+                if *taken >= count || *fallthrough >= count {
+                    return None;
+                }
+                structuring::Terminator::Branch {
+                    atom: idx as u32,
+                    taken: *taken as u32,
+                    not_taken: *fallthrough as u32,
+                }
+            }
+        };
+        nodes.push(structuring::CfgNode { term, pure });
+    }
+    structuring::Cfg::new(0, nodes).ok()
+}
+
+fn atom_branch(blocks: &[CfgBlock], atom: structuring::Atom) -> Option<(CondKind, Flags)> {
+    match &blocks.get(atom as usize)?.term {
+        BlockTerm::Branch { kind, flags, .. } => Some((*kind, flags.clone())),
+        _ => None,
+    }
+}
+
+fn cond_from_region(
+    blocks: &[CfgBlock],
+    conds: &structuring::CondPool,
+    id: structuring::CondId,
+) -> Option<Cond> {
+    match conds.nodes().get(id as usize)? {
+        structuring::Cond::Leaf(atom) => {
+            let (kind, flags): (CondKind, Flags) = atom_branch(blocks, *atom)?;
+            Some(Cond::leaf(kind, flags))
+        }
+        structuring::Cond::NotLeaf(atom) => {
+            let (kind, flags): (CondKind, Flags) = atom_branch(blocks, *atom)?;
+            Some(Cond::leaf(kind.negate(), flags))
+        }
+        structuring::Cond::And(lhs, rhs) => {
+            let l: Cond = cond_from_region(blocks, conds, *lhs)?;
+            let r: Cond = cond_from_region(blocks, conds, *rhs)?;
+            Some(Cond::And(Box::new(l), Box::new(r)))
+        }
+        structuring::Cond::Or(lhs, rhs) => {
+            let l: Cond = cond_from_region(blocks, conds, *lhs)?;
+            let r: Cond = cond_from_region(blocks, conds, *rhs)?;
+            Some(Cond::Or(Box::new(l), Box::new(r)))
+        }
+    }
+}
+
+struct RegionRenderer<'a> {
+    blocks: &'a [CfgBlock],
+    result: &'a structuring::StructureResult,
+    consumed: std::collections::BTreeSet<usize>,
+}
+
+impl RegionRenderer<'_> {
+    fn render(&mut self, id: structuring::RegionId, out: &mut Block) -> bool {
+        let region: &structuring::Region = &self.result.regions[id as usize];
+        let kind: structuring::RegionKind = region.kind;
+        let entry: usize = region.entry as usize;
+        let cond: Option<structuring::CondId> = region.cond;
+        let head: Option<structuring::RegionId> = region.head;
+        let children: Vec<structuring::RegionId> = region.children.clone();
+        match kind {
+            structuring::RegionKind::Block if children.is_empty() => {
+                if entry >= self.blocks.len() || !self.consumed.insert(entry) {
+                    return false;
+                }
+                for stmt in &self.blocks[entry].stmts {
+                    out.push(Node::Stmt(stmt.clone()));
+                }
+                if matches!(self.blocks[entry].term, BlockTerm::Ret) {
+                    out.push(Node::Return);
+                }
+                true
+            }
+            structuring::RegionKind::Block => children
+                .iter()
+                .all(|&child: &structuring::RegionId| self.render(child, out)),
+            structuring::RegionKind::IfThen => {
+                let (Some(head), Some(cond_id), Some(&arm)) = (head, cond, children.first()) else {
+                    return false;
+                };
+                if !self.render(head, out) {
+                    return false;
+                }
+                let Some(cond): Option<Cond> =
+                    cond_from_region(self.blocks, &self.result.conds, cond_id)
+                else {
+                    return false;
+                };
+                let mut then_body: Block = Vec::new();
+                if !self.render(arm, &mut then_body) {
+                    return false;
+                }
+                out.push(Node::If {
+                    cond,
+                    then_body,
+                    else_body: None,
+                });
+                true
+            }
+            structuring::RegionKind::IfThenElse => {
+                let (Some(head), Some(cond_id)) = (head, cond) else {
+                    return false;
+                };
+                let [taken_id, not_taken_id]: [structuring::RegionId; 2] =
+                    children.as_slice().try_into().ok().unwrap_or([u32::MAX; 2]);
+                if taken_id == u32::MAX {
+                    return false;
+                }
+                if !self.render(head, out) {
+                    return false;
+                }
+                let fused: bool = matches!(
+                    self.result.conds.nodes().get(cond_id as usize),
+                    Some(structuring::Cond::And(_, _) | structuring::Cond::Or(_, _))
+                );
+                let Some(cond): Option<Cond> =
+                    cond_from_region(self.blocks, &self.result.conds, cond_id)
+                else {
+                    return false;
+                };
+                let (guard, then_id, else_id): (
+                    Cond,
+                    structuring::RegionId,
+                    structuring::RegionId,
+                ) = if fused {
+                    (cond, taken_id, not_taken_id)
+                } else {
+                    let Cond::Leaf { kind, flags } = cond else {
+                        return false;
+                    };
+                    (Cond::leaf(kind.negate(), flags), not_taken_id, taken_id)
+                };
+                let mut then_body: Block = Vec::new();
+                if !self.render(then_id, &mut then_body) {
+                    return false;
+                }
+                let mut else_body: Block = Vec::new();
+                if !self.render(else_id, &mut else_body) {
+                    return false;
+                }
+                out.push(Node::If {
+                    cond: guard,
+                    then_body,
+                    else_body: Some(else_body),
+                });
+                true
+            }
+            structuring::RegionKind::While
+            | structuring::RegionKind::DoWhile
+            | structuring::RegionKind::Switch
+            | structuring::RegionKind::NaturalLoop
+            | structuring::RegionKind::SelfLoop
+            | structuring::RegionKind::Proper
+            | structuring::RegionKind::Irreducible => false,
+        }
+    }
+}
+
+fn region_structuring_is_sound(
+    blocks: &[CfgBlock],
+    cfg: &structuring::Cfg,
+    result: &structuring::StructureResult,
+) -> bool {
+    if result.root_kind() == Some(structuring::RegionKind::Irreducible) {
+        return false;
+    }
+    let forest: structuring::LoopForest = structuring::loop_forest(cfg);
+    if forest.irreducible {
+        return false;
+    }
+    for natural in &forest.loops {
+        if !natural.body.contains(&natural.header) {
+            return false;
+        }
+        if natural
+            .latches
+            .iter()
+            .any(|latch: &u32| !natural.body.contains(latch))
+        {
+            return false;
+        }
+        if let Some(parent) = natural.parent {
+            let Some(outer): Option<&structuring::NaturalLoop> = forest.loops.get(parent) else {
+                return false;
+            };
+            if !natural.body.is_subset(&outer.body) {
+                return false;
+            }
+        }
+    }
+    let exit_sink: usize = blocks.len();
+    for region in &result.regions {
+        if region.scrutinee.is_some() && region.kind != structuring::RegionKind::Switch {
+            return false;
+        }
+        if region
+            .exits
+            .iter()
+            .any(|target: &u32| *target as usize > exit_sink)
+        {
+            return false;
+        }
+    }
+    let pdom: structuring::PostDominators = structuring::PostDominators::compute(cfg);
+    let exit: u32 = pdom.exit();
+    if !pdom.post_dominates(exit, 0) {
+        return false;
+    }
+    reachable_blocks(blocks)
+        .iter()
+        .all(|block: &usize| pdom.immediate_post_dominator(*block as u32).is_some())
+}
+
+fn structure_via_regions(items: &[Item]) -> Option<Structured> {
+    let blocks: Vec<CfgBlock> = build_blocks(items)?;
+    let cfg: structuring::Cfg = cfg_from_leaf_blocks(&blocks)?;
+    let result: structuring::StructureResult = structuring::structure(&cfg);
+    if !result.is_complete() {
+        return None;
+    }
+    if !region_structuring_is_sound(&blocks, &cfg, &result) {
+        return None;
+    }
+    let root: structuring::RegionId = result.root?;
+    let mut renderer: RegionRenderer<'_> = RegionRenderer {
+        blocks: &blocks,
+        result: &result,
+        consumed: std::collections::BTreeSet::new(),
+    };
+    let mut body: Block = Vec::new();
+    if !renderer.render(root, &mut body) {
+        return None;
+    }
+    if renderer.consumed != reachable_blocks(&blocks) {
+        return None;
+    }
+    if matches!(body.last(), Some(Node::Return)) {
+        body.pop();
+    }
+    Some(Structured {
+        body,
+        lifted_split_return: false,
+        lifted_loop: false,
+    })
 }
 
 fn flags_are_comparison(flags: &Flags) -> bool {
@@ -8717,6 +9000,11 @@ fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) ->
 fn if_cond_expr(cond: &Cond) -> String {
     match cond {
         Cond::Leaf { kind, flags } => cond_expr(*kind, flags),
+        Cond::And(lhs, rhs) => {
+            let l: String = if_cond_expr(lhs);
+            let r: String = if_cond_expr(rhs);
+            c_render(|cx| c_bin(BinaryOp::LogAnd, c_opaque(cx, &l), c_opaque(cx, &r)))
+        }
         Cond::Or(lhs, rhs) => {
             let l: String = if_cond_expr(lhs);
             let r: String = if_cond_expr(rhs);
@@ -9876,6 +10164,11 @@ fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
 fn rs_if_cond_expr(cond: &Cond) -> Option<String> {
     match cond {
         Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags),
+        Cond::And(lhs, rhs) => {
+            let a: String = rs_if_cond_expr(lhs)?;
+            let b: String = rs_if_cond_expr(rhs)?;
+            Some(rs_binary_text(&a, &b, RBinOp::And, "&&"))
+        }
         Cond::Or(lhs, rhs) => {
             let a: String = rs_if_cond_expr(lhs)?;
             let b: String = rs_if_cond_expr(rhs)?;
@@ -11599,6 +11892,7 @@ mod structuring_corpus {
     }
 
     pub(super) fn compile_corpus(compiler: &str) -> Option<Vec<u8>> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut source: String = String::from("#include <stdint.h>\n");
         for shape in CF_CORPUS {
             source.push_str("__attribute__((noinline,noclone)) ");
@@ -11606,8 +11900,9 @@ mod structuring_corpus {
             source.push('\n');
         }
         let dir: PathBuf = scratch_dir();
-        let src: PathBuf = dir.join("cf_corpus.c");
-        let obj: PathBuf = dir.join("cf_corpus.o");
+        let tag: u64 = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let src: PathBuf = dir.join(format!("cf_corpus_{tag}.c"));
+        let obj: PathBuf = dir.join(format!("cf_corpus_{tag}.o"));
         std::fs::write(&src, source.as_bytes()).expect("write corpus source");
         let compiled: std::process::Output = Command::new(compiler)
             .args([
@@ -11833,5 +12128,71 @@ mod structuring_corpus {
                 );
             }
         }
+    }
+
+    #[test]
+    fn region_engine_emits_fused_short_circuit_conditions() {
+        let Some(compiler): Option<String> = gcc() else {
+            eprintln!("skipping short-circuit fusion evidence: no C compiler on PATH");
+            return;
+        };
+        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
+            eprintln!("skipping short-circuit fusion evidence: cf corpus did not compile");
+            return;
+        };
+        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object, "cf_sc_and") else {
+            eprintln!("skipping short-circuit fusion evidence: cf_sc_and symbol not located");
+            return;
+        };
+        let rec: super::LeafRecovery =
+            super::recover_leaf_function_abi(&code, base, HOST_ABI).expect("short-circuit leaf");
+        assert!(
+            rec.source.contains("&&") || rec.source.contains("||"),
+            "the region engine must fuse the two branch-based predicates of cf_sc_and into one short-circuit guard rather than nesting: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn fused_conditions_render_logical_operators() {
+        use super::{
+            Cond, CondKind, Flags, Reg, RegRef, Source, Width, if_cond_expr, rs_if_cond_expr,
+        };
+        let leaf = |reg: Reg, kind: CondKind| -> Cond {
+            Cond::leaf(
+                kind,
+                Flags::Cmp {
+                    lhs: RegRef {
+                        reg,
+                        width: Width::W64,
+                    },
+                    rhs: Source::Imm(0),
+                },
+            )
+        };
+        let and: Cond = Cond::And(
+            Box::new(leaf(Reg::Rcx, CondKind::G)),
+            Box::new(leaf(Reg::Rdx, CondKind::G)),
+        );
+        let or: Cond = Cond::Or(
+            Box::new(leaf(Reg::Rcx, CondKind::L)),
+            Box::new(leaf(Reg::Rdx, CondKind::L)),
+        );
+        assert!(
+            if_cond_expr(&and).contains("&&"),
+            "fused AND must render `&&`"
+        );
+        assert!(
+            if_cond_expr(&or).contains("||"),
+            "fused OR must render `||`"
+        );
+        assert!(
+            rs_if_cond_expr(&and).is_some_and(|s: String| s.contains("&&")),
+            "fused AND must render `&&` in rust"
+        );
+        assert!(
+            rs_if_cond_expr(&or).is_some_and(|s: String| s.contains("||")),
+            "fused OR must render `||` in rust"
+        );
     }
 }

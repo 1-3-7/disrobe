@@ -11,6 +11,7 @@ pub(crate) type CondId = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Terminator {
     Return,
+    #[allow(dead_code)]
     Unreachable,
     Goto(NodeId),
     Branch {
@@ -18,6 +19,7 @@ pub(crate) enum Terminator {
         taken: NodeId,
         not_taken: NodeId,
     },
+    #[allow(dead_code)]
     Switch {
         atom: Atom,
         cases: Vec<(i64, NodeId)>,
@@ -434,6 +436,7 @@ pub(crate) struct Region {
     pub(crate) scrutinee: Option<Atom>,
     pub(crate) children: Vec<RegionId>,
     pub(crate) exits: Vec<NodeId>,
+    pub(crate) head: Option<RegionId>,
 }
 
 /// The outcome of running structural analysis over a CFG.
@@ -545,6 +548,7 @@ impl Collapse {
                 scrutinee: None,
                 children: Vec::new(),
                 exits,
+                head: None,
             });
             flow.push(kind_flow);
         }
@@ -724,6 +728,7 @@ impl Collapse {
             scrutinee: None,
             children,
             exits,
+            head: None,
         });
         self.flow[node as usize] = self.flow[succ as usize].clone();
         self.pure[node as usize] = self.pure[node as usize] && self.pure[succ as usize];
@@ -792,14 +797,16 @@ impl Collapse {
         }
         let then_region: RegionId = self.region_of[taken as usize];
         let else_region: RegionId = self.region_of[not_taken as usize];
+        let head: RegionId = self.region_of[node as usize];
         let join: Option<NodeId> = targets.first().copied();
         let region: RegionId = self.push_region(Region {
             kind: RegionKind::IfThenElse,
-            entry: self.regions[self.region_of[node as usize] as usize].entry,
+            entry: self.regions[head as usize].entry,
             cond: Some(cond),
             scrutinee: None,
             children: vec![then_region, else_region],
             exits: targets,
+            head: Some(head),
         });
         self.flow[node as usize] = AbFlow::Seq(join);
         self.region_of[node as usize] = region;
@@ -870,13 +877,15 @@ impl Collapse {
         }
         let cond_id: CondId = if negate { self.conds.not(cond) } else { cond };
         let arm_region: RegionId = self.region_of[arm as usize];
+        let head: RegionId = self.region_of[node as usize];
         Some(self.push_region(Region {
             kind: RegionKind::IfThen,
-            entry: self.regions[self.region_of[node as usize] as usize].entry,
+            entry: self.regions[head as usize].entry,
             cond: Some(cond_id),
             scrutinee: None,
             children: vec![arm_region],
             exits: vec![cont],
+            head: Some(head),
         }))
     }
 
@@ -952,6 +961,7 @@ impl Collapse {
             scrutinee: None,
             children,
             exits: vec![taken, not_taken],
+            head: None,
         });
         self.region_of[node as usize] = region;
         self.pure[node as usize] = self.pure[node as usize] && self.pure[second as usize];
@@ -1032,6 +1042,7 @@ impl Collapse {
             scrutinee: Some(atom),
             children,
             exits,
+            head: None,
         });
         self.flow[node as usize] = AbFlow::Seq(join);
         self.region_of[node as usize] = region;
@@ -1170,6 +1181,7 @@ impl Collapse {
             scrutinee: None,
             children,
             exits: exits.clone(),
+            head: None,
         });
         self.flow[header as usize] = match exits.len() {
             0 => AbFlow::Seq(None),
@@ -1254,6 +1266,7 @@ impl Collapse {
             scrutinee: None,
             children,
             exits: exits.clone(),
+            head: None,
         });
         self.flow[self.entry as usize] = match exits.len() {
             0 => AbFlow::Seq(None),
@@ -1326,6 +1339,7 @@ impl Collapse {
                 scrutinee: None,
                 children,
                 exits: Vec::new(),
+                head: None,
             });
             return StructureResult {
                 root: Some(region),

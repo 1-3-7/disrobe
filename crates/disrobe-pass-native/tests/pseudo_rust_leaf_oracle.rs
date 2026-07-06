@@ -14,9 +14,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_native::{
-    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, ResolvedCall, callee_int_arity,
-    disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
-    recover_leaf_function_switch_abi, recover_leaf_function_with_calls,
+    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType, ResolvedCall,
+    callee_int_arity, disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
+    recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
+    recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -1370,6 +1371,11 @@ const SWITCH_BATTERY: &[Case] = &[
         arity: 3,
         c_source: "long long sw_mix(long long x, long long a, long long b){ long long r; switch (x) { case 0: r = a + b + 1; break; case 1: r = a - b - 1; break; case 2: r = (a ^ b) + 3; break; case 3: r = (a | b) - 5; break; case 4: r = (a & b) * 2; break; default: r = a * b; break; } return r; }",
     },
+    Case {
+        name: "sw_dup",
+        arity: 2,
+        c_source: "long long sw_dup(long long x, long long a){ long long r; switch (x) { case 0: r = a + 7; break; case 1: r = a + 7; break; case 2: r = a + 7; break; case 3: r = a * a; break; case 4: r = a << 2; break; case 5: r = a << 2; break; case 6: r = a - 13; break; default: r = -1; break; } return r; }",
+    },
 ];
 
 const SWITCH_AB_PAIRS: &[[i64; 2]] = &[
@@ -1598,6 +1604,12 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         match_carriers >= 1,
         "the rust switch oracle has no teeth: not one recovered dense switch emitted a `match`, so the jump-table-to-match path was never graded"
     );
+    if let Some(dup) = prepared.iter().find(|p: &&Prepared| p.name == "sw_dup") {
+        assert!(
+            dup.rust.contains(" | "),
+            "sw_dup recovered but did not coalesce its duplicate case bodies into a `|` match arm; the multi-value switch path is not graded"
+        );
+    }
 
     let mut switch_inputs: Vec<[i64; 3]> = Vec::new();
     for disc in -2i64..=8 {
@@ -2237,5 +2249,350 @@ fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
         "scalar float rust bit-exact recompile-equivalence PASSED for {} leaf functions across {} input vectors",
         prepared.len(),
         FP_PAIRS.len()
+    );
+}
+
+struct FpSwitchCase {
+    name: &'static str,
+    ret: FpRet,
+    c_source: &'static str,
+}
+
+const FP_SWITCH_BATTERY: &[FpSwitchCase] = &[
+    FpSwitchCase {
+        name: "swf_d",
+        ret: FpRet::Double,
+        c_source: "double swf_d(long long x, double a, double b){ double r; switch (x) { case 0: r = a + b; break; case 1: r = a - b; break; case 2: r = a * b; break; case 3: r = a * 1.5; break; case 4: r = b + 2.0; break; case 5: r = a * b + 1.0; break; default: r = a - 3.0; break; } return r; }",
+    },
+    FpSwitchCase {
+        name: "swf_d2",
+        ret: FpRet::Double,
+        c_source: "double swf_d2(long long x, double a, double b){ double r; switch (x) { case 0: r = a * 2.0 + b; break; case 1: r = a - b * 0.5; break; case 2: r = (a + b) * 0.25; break; case 3: r = a * a; break; case 4: r = b * b - a; break; default: r = a + b + 7.0; break; } return r; }",
+    },
+    FpSwitchCase {
+        name: "swf_f",
+        ret: FpRet::Float,
+        c_source: "float swf_f(long long x, float a, float b){ float r; switch (x) { case 0: r = a + b; break; case 1: r = a - b; break; case 2: r = a * b; break; case 3: r = a * 3.0f; break; case 4: r = b + 1.0f; break; default: r = a + b + 9.0f; break; } return r; }",
+    },
+];
+
+const FP_SWITCH_PAIRS: &[[f64; 2]] = &[
+    [0.0, 1.0],
+    [1.0, 1.0],
+    [-1.0, 1.0],
+    [7.0, 3.0],
+    [-7.0, 3.0],
+    [7.0, -3.0],
+    [3.5, 2.25],
+    [-3.5, 2.25],
+    [100.0, 7.0],
+    [-100.0, -7.0],
+    [0.5, 0.25],
+    [12.75, 9.5],
+    [-8.0, 4.0],
+    [42.0, 42.0],
+    [5.0, 9.0],
+    [0.0, -7.0],
+    [-0.0, 4.0],
+];
+
+struct PreparedFpSwitch {
+    name: String,
+    ret: FpRet,
+    rust: String,
+}
+
+fn prepare_fp_switch(
+    case: &FpSwitchCase,
+    object_bytes: &[u8],
+    abi: PseudoAbi,
+) -> Option<PreparedFpSwitch> {
+    let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
+    let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
+    if tables.is_empty() {
+        eprintln!("skip {}: no jump table resolved this build", case.name);
+        return None;
+    }
+    let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
+    let rec: LeafRecovery =
+        match recover_leaf_function_switch_const_abi(&code, base, abi, &tables, &consts) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skip {}: not in dense fp-switch class ({e})", case.name);
+                return None;
+            }
+        };
+    if !rec.lifted_switch {
+        return None;
+    }
+    let expected: PseudoScalarType = match case.ret {
+        FpRet::Double => PseudoScalarType::Double,
+        FpRet::Float => PseudoScalarType::Float,
+        FpRet::LongLong => return None,
+    };
+    if rec.returns_fp != Some(expected) {
+        eprintln!(
+            "skip {}: switch did not type as {expected:?} fp return (got {:?})",
+            case.name, rec.returns_fp
+        );
+        return None;
+    }
+    let Some(rust): Option<String> = rec.rust_source else {
+        eprintln!(
+            "skip {}: dense fp switch but not pure-safe rust-emittable",
+            case.name
+        );
+        return None;
+    };
+    let renamed: String = rust.replacen(
+        "pub fn recovered(",
+        &format!("pub fn rec_{}(", case.name),
+        1,
+    );
+    Some(PreparedFpSwitch {
+        name: case.name.to_owned(),
+        ret: case.ret,
+        rust: renamed,
+    })
+}
+
+fn build_fp_switch_c_golden(prepared: &[PreparedFpSwitch]) -> String {
+    let mut decls: String = String::new();
+    for p in prepared {
+        let ty: &str = fp_c_ret(p.ret);
+        let _ = writeln!(decls, "extern {ty} {}(long long, {ty}, {ty});", p.name);
+    }
+    let mut body: String = String::new();
+    for p in prepared {
+        let (cast, bits): (&str, &str) = match p.ret {
+            FpRet::Double | FpRet::LongLong => ("(double)", "d_bits"),
+            FpRet::Float => ("(float)", "f_bits"),
+        };
+        let _ = writeln!(
+            body,
+            "            printf(\"{} %zu %llu\\n\", (size_t)((disc+2)*np+k), (unsigned long long){bits}({}(disc, {cast}pairs[k][0], {cast}pairs[k][1])));",
+            p.name, p.name
+        );
+    }
+    let mut arr: String = String::new();
+    for row in FP_SWITCH_PAIRS {
+        let _ = write!(arr, "{{{:e},{:e}}},", row[0], row[1]);
+    }
+    format!(
+        "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\n\
+         static uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         static uint64_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return (uint64_t)b; }}\n\
+         {decls}\n\
+         int main(void) {{\n\
+         \x20   double pairs[][2] = {{{arr}}};\n\
+         \x20   size_t np = sizeof(pairs)/sizeof(pairs[0]);\n\
+         \x20   for (long long disc = -2; disc <= 9; disc++) {{\n\
+         \x20       for (size_t k = 0; k < np; k++) {{\n\
+         {body}\
+         \x20       }}\n\
+         \x20   }}\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+fn build_fp_switch_rust_driver(prepared: &[PreparedFpSwitch]) -> String {
+    let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
+    for p in prepared {
+        out.push_str(&p.rust);
+        out.push('\n');
+    }
+    let mut body: String = String::new();
+    for p in prepared {
+        let call: String = match p.ret {
+            FpRet::Double | FpRet::LongLong => {
+                format!("rec_{}(a, b, disc as u64).to_bits()", p.name)
+            }
+            FpRet::Float => format!(
+                "(rec_{}(a as f32, b as f32, disc as u64).to_bits() as u64)",
+                p.name
+            ),
+        };
+        let _ = writeln!(
+            body,
+            "            println!(\"{} {{}} {{}}\", (disc + 2) as usize * pairs.len() + k, {call});",
+            p.name
+        );
+    }
+    let mut arr: String = String::new();
+    for row in FP_SWITCH_PAIRS {
+        let _ = write!(arr, "[{:e},{:e}],", row[0], row[1]);
+    }
+    let _ = write!(
+        out,
+        "fn main() {{\n\
+         \x20   let pairs: [[f64; 2]; {}] = [{arr}];\n\
+         \x20   for disc in -2i64..=9 {{\n\
+         \x20       for k in 0..pairs.len() {{\n\
+         \x20           let a: f64 = pairs[k][0];\n\
+         \x20           let b: f64 = pairs[k][1];\n\
+         {body}\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n",
+        FP_SWITCH_PAIRS.len()
+    );
+    out
+}
+
+#[test]
+fn fp_switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native rust fp-switch oracle on non-windows: the x86-64 ground-truth object requires the windows host"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = gcc() else {
+        eprintln!(
+            "skipping rust fp-switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
+        );
+        return;
+    };
+    let Some(rustc_bin): Option<String> = rustc() else {
+        eprintln!("skipping rust fp-switch oracle: rustc not on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+
+    let mut battery_src: String = String::new();
+    for case in FP_SWITCH_BATTERY {
+        battery_src.push_str(case.c_source);
+        battery_src.push('\n');
+    }
+    let battery_c: PathBuf = dir.join("rustfpswitch_battery.c");
+    std::fs::write(&battery_c, battery_src.as_bytes()).expect("write rustfpswitch_battery.c");
+    let battery_o: PathBuf = dir.join("rustfpswitch_battery.o");
+    let compile: std::process::Output = Command::new(&builder)
+        .args([
+            "-O1",
+            "-fno-stack-protector",
+            "-fno-if-conversion",
+            "-fno-if-conversion2",
+            "-fno-tree-loop-if-convert",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke gcc for fp switch battery");
+    assert!(
+        compile.status.success(),
+        "fp switch battery compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read rustfpswitch_battery.o");
+
+    let prepared: Vec<PreparedFpSwitch> = FP_SWITCH_BATTERY
+        .iter()
+        .filter_map(|case: &FpSwitchCase| prepare_fp_switch(case, &object_bytes, HOST_ABI))
+        .collect();
+    if prepared.is_empty() {
+        eprintln!(
+            "skipping rust fp-switch differential: this gcc build reconstructed none of the {} cases into a dense fp-returning jump-table switch",
+            FP_SWITCH_BATTERY.len()
+        );
+        return;
+    }
+
+    let match_carriers: usize = prepared
+        .iter()
+        .filter(|p: &&PreparedFpSwitch| p.rust.contains("match "))
+        .count();
+    assert!(
+        match_carriers >= 1,
+        "the rust fp-switch oracle has no teeth: not one recovered fp switch emitted a `match`, so the fp jump-table-to-match path was never graded"
+    );
+    let fp_carriers: usize = prepared
+        .iter()
+        .filter(|p: &&PreparedFpSwitch| {
+            p.rust.contains("f64::from_bits") || p.rust.contains("f32::from_bits")
+        })
+        .count();
+    assert!(
+        fp_carriers >= 1,
+        "the rust fp-switch oracle has no teeth: not one recovered fp switch emitted an `f64::from_bits`/`f32::from_bits`, so the fp value path was never graded"
+    );
+
+    let c_golden: String = build_fp_switch_c_golden(&prepared);
+    let c_golden_path: PathBuf = dir.join("rustfpswitch_ground.c");
+    std::fs::write(&c_golden_path, c_golden.as_bytes()).expect("write rustfpswitch ground");
+    let c_exe: PathBuf = dir.join("rustfpswitch_ground.exe");
+    let c_link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&c_exe)
+        .arg(&c_golden_path)
+        .arg(&battery_o)
+        .output()
+        .expect("link fp switch c ground-truth");
+    assert!(
+        c_link.status.success(),
+        "fp switch c ground-truth link failed: {}\n--- ground ---\n{c_golden}",
+        String::from_utf8_lossy(&c_link.stderr)
+    );
+    let c_run: std::process::Output = Command::new(&c_exe).output().expect("run fp switch ground");
+    assert!(
+        c_run.status.success(),
+        "fp switch c ground-truth run failed"
+    );
+    let golden: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&c_run.stdout));
+
+    let rust_driver: String = build_fp_switch_rust_driver(&prepared);
+    let rust_driver_path: PathBuf = dir.join("rustfpswitch_recovered.rs");
+    std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write rust fp switch driver");
+    let rust_exe: PathBuf = dir.join("rustfpswitch_recovered.exe");
+    let rust_build: std::process::Output = Command::new(&rustc_bin)
+        .args(["--edition", "2021", "-o"])
+        .arg(&rust_exe)
+        .arg(&rust_driver_path)
+        .output()
+        .expect("invoke rustc for recovered fp switch module");
+    assert!(
+        rust_build.status.success(),
+        "recovered rust fp switch compile failed: {}\n--- recovered.rs ---\n{rust_driver}",
+        String::from_utf8_lossy(&rust_build.stderr)
+    );
+    let rust_run: std::process::Output = Command::new(&rust_exe)
+        .output()
+        .expect("run recovered rust fp switch module");
+    assert!(
+        rust_run.status.success(),
+        "recovered rust fp switch run failed: {}",
+        String::from_utf8_lossy(&rust_run.stderr)
+    );
+    let got: BTreeMap<(String, u64), u64> =
+        parse_results(&String::from_utf8_lossy(&rust_run.stdout));
+
+    assert!(
+        !golden.is_empty(),
+        "fp switch produced no comparable results"
+    );
+    assert_eq!(
+        golden.len(),
+        got.len(),
+        "fp switch result-count mismatch: c {} vs rust {}",
+        golden.len(),
+        got.len()
+    );
+    for (key, want) in &golden {
+        let have: u64 = *got
+            .get(key)
+            .unwrap_or_else(|| panic!("fp switch rust missing result for {key:?}"));
+        assert_eq!(
+            *want, have,
+            "fp switch bit-exact differential MISMATCH for {key:?}: c={want} rust={have}"
+        );
+    }
+    println!(
+        "fp-switch rust bit-exact recompile-equivalence PASSED for {} fp-returning leaf functions across 12 discriminants x {} input vectors",
+        prepared.len(),
+        FP_SWITCH_PAIRS.len()
     );
 }
