@@ -631,6 +631,8 @@ enum Node {
     Break,
     Continue,
     Return,
+    Label(u32),
+    Goto(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3504,7 +3506,11 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
                 cur = cur.max(widest);
             }
             Node::Return => result = result.max(cur),
-            Node::Break | Node::CondSnapshot { .. } | Node::Continue => {}
+            Node::Break
+            | Node::CondSnapshot { .. }
+            | Node::Continue
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
     result.max(cur)
@@ -3708,7 +3714,12 @@ fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, ab
                 }
                 annotate_calls_block(default, map, abi);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -3735,7 +3746,12 @@ fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
                 }
                 collect_call_targets(default, acc);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -4065,6 +4081,7 @@ enum SinkLabel {
     Return,
     Break,
     Continue,
+    Goto(u32),
 }
 
 const TAIL_SPLIT_BLOCK_CAP: usize = 256;
@@ -4178,6 +4195,7 @@ struct RegionRenderer<'a> {
     labels: &'a std::collections::BTreeMap<usize, SinkLabel>,
     forest: &'a structuring::LoopForest,
     allow_loops: bool,
+    label_targets: &'a std::collections::BTreeMap<usize, u32>,
     consumed: std::collections::BTreeSet<usize>,
 }
 
@@ -4192,6 +4210,7 @@ impl RegionRenderer<'_> {
             SinkLabel::Return => out.push(Node::Return),
             SinkLabel::Break => out.push(Node::Break),
             SinkLabel::Continue => out.push(Node::Continue),
+            SinkLabel::Goto(id) => out.push(Node::Goto(id)),
         }
     }
 
@@ -4294,7 +4313,15 @@ impl RegionRenderer<'_> {
                 sub_labels.insert(sub_of[&node], label);
             }
         }
-        let Some(loop_body): Option<Block> = render_cfg_blocks(&sub_blocks, &sub_labels, true)
+        let mut sub_targets: std::collections::BTreeMap<usize, u32> =
+            std::collections::BTreeMap::new();
+        for (&node, &label) in self.label_targets {
+            if let Some(&idx) = sub_of.get(&node) {
+                sub_targets.insert(idx, label);
+            }
+        }
+        let Some(loop_body): Option<Block> =
+            render_cfg_blocks(&sub_blocks, &sub_labels, true, &sub_targets)
         else {
             return false;
         };
@@ -4316,6 +4343,9 @@ impl RegionRenderer<'_> {
             structuring::RegionKind::Block if children.is_empty() => {
                 if entry >= self.blocks.len() || !self.consumed.insert(entry) {
                     return false;
+                }
+                if let Some(&label) = self.label_targets.get(&entry) {
+                    out.push(Node::Label(label));
                 }
                 for stmt in &self.blocks[entry].stmts {
                     out.push(Node::Stmt(stmt.clone()));
@@ -4469,6 +4499,9 @@ fn render_cfg_blocks_once(
     blocks: &[CfgBlock],
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
+    label_targets: &std::collections::BTreeMap<usize, u32>,
+    original_blocks: &[CfgBlock],
+    residual: &std::collections::BTreeMap<usize, usize>,
 ) -> Option<Block> {
     let cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
     let result: structuring::StructureResult = structuring::structure(&cfg);
@@ -4476,6 +4509,14 @@ fn render_cfg_blocks_once(
         return None;
     }
     if !region_structuring_is_sound(blocks, &cfg, &result) {
+        return None;
+    }
+    let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(original_blocks)?;
+    let residual_nodes: std::collections::BTreeMap<u32, u32> = residual
+        .iter()
+        .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
+        .collect();
+    if !structuring::relowered_matches_original(&original_cfg, &cfg, &residual_nodes) {
         return None;
     }
     let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
@@ -4486,6 +4527,7 @@ fn render_cfg_blocks_once(
         labels,
         forest: &forest,
         allow_loops,
+        label_targets,
         consumed: std::collections::BTreeSet::new(),
     };
     let mut body: Block = Vec::new();
@@ -4502,22 +4544,130 @@ fn render_cfg_blocks(
     blocks: &[CfgBlock],
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
+    label_targets: &std::collections::BTreeMap<usize, u32>,
 ) -> Option<Block> {
-    if let Some(body) = render_cfg_blocks_once(blocks, labels, allow_loops) {
+    let no_residual: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    if let Some(body) = render_cfg_blocks_once(
+        blocks,
+        labels,
+        allow_loops,
+        label_targets,
+        blocks,
+        &no_residual,
+    ) {
         return Some(body);
     }
-    let (eblocks, elabels): (Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>) =
-        split_tail_regions(blocks.to_vec(), labels.clone())?;
-    if eblocks.len() == blocks.len() {
-        return None;
+    if let Some((eblocks, elabels)) = split_tail_regions(blocks.to_vec(), labels.clone())
+        && eblocks.len() != blocks.len()
+        && let Some(body) = render_cfg_blocks_once(
+            &eblocks,
+            &elabels,
+            allow_loops,
+            label_targets,
+            &eblocks,
+            &no_residual,
+        )
+    {
+        return Some(body);
     }
-    render_cfg_blocks_once(&eblocks, &elabels, allow_loops)
+    for plan in irreducible_lowering_candidates(blocks, labels) {
+        let mut merged: std::collections::BTreeMap<usize, u32> = label_targets.clone();
+        merged.extend(
+            plan.label_targets
+                .iter()
+                .map(|(k, v): (&usize, &u32)| (*k, *v)),
+        );
+        if let Some(body) = render_cfg_blocks_once(
+            &plan.blocks,
+            &plan.labels,
+            allow_loops,
+            &merged,
+            blocks,
+            &plan.residual,
+        ) {
+            return Some(body);
+        }
+    }
+    None
+}
+
+struct IrreduciblePlan {
+    blocks: Vec<CfgBlock>,
+    labels: std::collections::BTreeMap<usize, SinkLabel>,
+    label_targets: std::collections::BTreeMap<usize, u32>,
+    residual: std::collections::BTreeMap<usize, usize>,
+}
+
+fn irreducible_lowering_candidates(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Vec<IrreduciblePlan> {
+    let Some(cfg): Option<structuring::Cfg> = cfg_from_leaf_blocks(blocks) else {
+        return Vec::new();
+    };
+    let sccs: Vec<structuring::IrreducibleEntry> = structuring::multi_entry_irreducible_sccs(&cfg);
+    if sccs.len() != 1 {
+        return Vec::new();
+    }
+    let scc: &structuring::IrreducibleEntry = &sccs[0];
+    let candidate_headers: Vec<u32> = if scc.members.contains(&0) {
+        if scc.entries.contains(&0) {
+            vec![0]
+        } else {
+            return Vec::new();
+        }
+    } else {
+        scc.entries.clone()
+    };
+    let mut plans: Vec<IrreduciblePlan> = Vec::new();
+    for header in candidate_headers {
+        let mut tblocks: Vec<CfgBlock> = blocks.to_vec();
+        let mut tlabels: std::collections::BTreeMap<usize, SinkLabel> = labels.clone();
+        let mut label_targets: std::collections::BTreeMap<usize, u32> =
+            std::collections::BTreeMap::new();
+        let mut residual: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
+        let mut stub_of: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
+        for &(pred, target) in &scc.external_edges {
+            if target == header {
+                continue;
+            }
+            let target_idx: usize = target as usize;
+            let stub: usize = match stub_of.get(&target_idx) {
+                Some(&existing) => existing,
+                None => {
+                    let id: usize = tblocks.len();
+                    tblocks.push(CfgBlock {
+                        stmts: Vec::new(),
+                        term: BlockTerm::Ret,
+                    });
+                    tlabels.insert(id, SinkLabel::Goto(target));
+                    label_targets.insert(target_idx, target);
+                    residual.insert(id, target_idx);
+                    stub_of.insert(target_idx, id);
+                    id
+                }
+            };
+            retarget_block(&mut tblocks[pred as usize].term, target_idx, stub);
+        }
+        if !residual.is_empty() {
+            plans.push(IrreduciblePlan {
+                blocks: tblocks,
+                labels: tlabels,
+                label_targets,
+                residual,
+            });
+        }
+    }
+    plans
 }
 
 fn structure_via_regions(items: &[Item], allow_loops: bool) -> Option<Structured> {
     let blocks: Vec<CfgBlock> = build_blocks(items)?;
     let labels: std::collections::BTreeMap<usize, SinkLabel> = std::collections::BTreeMap::new();
-    let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops)?;
+    let targets: std::collections::BTreeMap<usize, u32> = std::collections::BTreeMap::new();
+    let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops, &targets)?;
     if matches!(body.last(), Some(Node::Return)) {
         body.pop();
     }
@@ -6044,14 +6194,14 @@ fn scan_fp_params(body: &Block, written: &mut BTreeMap<Xmm, bool>, acc: &mut Vec
                 scan_fp_params(default, &mut default_written, acc);
             }
             Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc),
-            Node::Break | Node::Continue | Node::Return => {}
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
 }
 
 fn node_terminates(node: &Node) -> bool {
     match node {
-        Node::Return | Node::Break | Node::Continue => true,
+        Node::Return | Node::Break | Node::Continue | Node::Goto(_) => true,
         Node::If {
             then_body,
             else_body: Some(else_body),
@@ -6121,7 +6271,7 @@ fn scan_block_params(
                 scan_block_params(default, &mut default_written, acc, note);
             }
             Node::CondSnapshot { flags, .. } => read_flags(flags, written, acc, note),
-            Node::Break | Node::Continue | Node::Return => {}
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
 }
@@ -7623,7 +7773,9 @@ fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
             | Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
-            | Node::Return => {}
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -7653,7 +7805,12 @@ fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
                 }
                 collect_snapshot_vars(default, acc);
             }
-            Node::Stmt(_) | Node::Break | Node::Continue | Node::Return => {}
+            Node::Stmt(_)
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -7868,7 +8025,12 @@ fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
                 }
                 collect_call_decls(default, acc);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -8121,7 +8283,7 @@ fn scan_frame_block(
                 scan_frame_block(ctx, default, slots, misuse);
             }
             Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, slots, misuse),
-            Node::Break | Node::Continue | Node::Return => {}
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
 }
@@ -8636,7 +8798,12 @@ fn block_string_ops_present(body: &Block) -> bool {
                 .any(|c: &SwitchCase| block_string_ops_present(&c.body))
                 || block_string_ops_present(default)
         }
-        Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => false,
+        Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => false,
     })
 }
 
@@ -8827,7 +8994,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 collect_block_regs(default, acc);
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue | Node::Return => {}
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
 }
@@ -8924,7 +9091,7 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 collect_block_xmm(default, acc);
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue | Node::Return => {}
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
 }
@@ -8980,7 +9147,12 @@ fn collect_block_packed_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 }
                 collect_block_packed_xmm(default, acc);
             }
-            Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {}
+            Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -9115,7 +9287,16 @@ fn node_to_cstmt(cx: &mut Cx<'_>, node: &Node, ret_expr: &str) -> CStmt {
         Node::Break => CStmt::Break,
         Node::Continue => CStmt::Continue,
         Node::Return => CStmt::Return(Some(cx.var(ret_expr))),
+        Node::Label(id) => CStmt::Label {
+            name: cx.sym(&label_name(*id)),
+            body: Box::new(CStmt::Empty),
+        },
+        Node::Goto(id) => CStmt::Goto(cx.sym(&label_name(*id))),
     }
+}
+
+fn label_name(id: u32) -> String {
+    format!("recover_L{id}")
 }
 
 fn block_to_cstmts(cx: &mut Cx<'_>, body: &Block, ret_expr: &str) -> Vec<CStmt> {
@@ -10365,6 +10546,7 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
             Node::Return => {
                 let _ = writeln!(out, "{indent}return {ret_expr};");
             }
+            Node::Label(_) | Node::Goto(_) => return None,
         }
     }
     Some(())
@@ -12127,6 +12309,112 @@ mod tests {
         assert!(
             out.is_none(),
             "an irreducible two-entry cycle must be soundly rejected, not misstructured"
+        );
+    }
+
+    fn body_has(body: &Block, want: &dyn Fn(&Node) -> bool) -> bool {
+        body.iter().any(|node: &Node| {
+            want(node)
+                || match node {
+                    Node::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        body_has(then_body, want)
+                            || else_body
+                                .as_ref()
+                                .is_some_and(|b: &Block| body_has(b, want))
+                    }
+                    Node::While { body } | Node::DoWhile { body, .. } => body_has(body, want),
+                    Node::Switch { cases, default, .. } => {
+                        cases.iter().any(|c: &SwitchCase| body_has(&c.body, want))
+                            || body_has(default, want)
+                    }
+                    _ => false,
+                }
+        })
+    }
+
+    #[test]
+    fn two_entry_irreducible_scc_structures_via_label_and_goto() {
+        let guard = |reg: Reg| -> Flags {
+            Flags::Test {
+                operand: RegRef {
+                    reg,
+                    width: Width::W64,
+                },
+            }
+        };
+        let blocks: Vec<CfgBlock> = vec![
+            CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Branch {
+                    kind: CondKind::E,
+                    flags: guard(Reg::Rcx),
+                    taken: 1,
+                    fallthrough: 2,
+                },
+            },
+            CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Jump(2),
+            },
+            CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Branch {
+                    kind: CondKind::E,
+                    flags: guard(Reg::Rcx),
+                    taken: 1,
+                    fallthrough: 3,
+                },
+            },
+            CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Ret,
+            },
+        ];
+        let cfg: structuring::Cfg = cfg_from_leaf_blocks(&blocks).expect("well-formed block cfg");
+        assert!(
+            structuring::loop_forest(&cfg).irreducible,
+            "fixture must be a genuine two-entry irreducible scc"
+        );
+        assert!(
+            !structuring::structure(&cfg).is_complete(),
+            "the region engine alone must still sound-reject the raw irreducible cfg"
+        );
+
+        let empty_labels: BTreeMap<usize, SinkLabel> = BTreeMap::new();
+        let candidates: Vec<IrreduciblePlan> =
+            irreducible_lowering_candidates(&blocks, &empty_labels);
+        assert!(!candidates.is_empty(), "a residual-goto plan must exist");
+        let plan: &IrreduciblePlan = &candidates[0];
+        let rendered_cfg: structuring::Cfg =
+            cfg_from_leaf_blocks(&plan.blocks).expect("rendered cfg");
+        let residual: BTreeMap<u32, u32> = plan
+            .residual
+            .iter()
+            .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
+            .collect();
+        assert!(
+            structuring::relowered_matches_original(&cfg, &rendered_cfg, &residual),
+            "the bisimulation guard must accept the residual-goto lowering"
+        );
+
+        let empty_targets: BTreeMap<usize, u32> = BTreeMap::new();
+        let body: Block = render_cfg_blocks(&blocks, &empty_labels, true, &empty_targets)
+            .expect("two-entry irreducible scc must structure via label+goto");
+        assert!(
+            body_has(&body, &|node: &Node| matches!(node, Node::While { .. })),
+            "expected a while loop on the elected header: {body:?}"
+        );
+        assert!(
+            body_has(&body, &|node: &Node| matches!(node, Node::Label(_))),
+            "expected a label at the secondary entry: {body:?}"
+        );
+        assert!(
+            body_has(&body, &|node: &Node| matches!(node, Node::Goto(_))),
+            "expected a goto mirroring the secondary entry edge: {body:?}"
         );
     }
 

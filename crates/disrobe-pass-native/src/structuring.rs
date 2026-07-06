@@ -350,6 +350,158 @@ fn predecessors(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     preds
 }
 
+/// Strongly connected components over the reachable subgraph (iterative Tarjan), each sorted ascending.
+pub(crate) fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
+    let count: usize = cfg.len();
+    let reach: Vec<bool> = reachable(cfg);
+    let mut index_of: Vec<u32> = vec![u32::MAX; count];
+    let mut lowlink: Vec<u32> = vec![0; count];
+    let mut on_stack: Vec<bool> = vec![false; count];
+    let mut tarjan_stack: Vec<NodeId> = Vec::new();
+    let mut call: Vec<(NodeId, Vec<NodeId>, usize)> = Vec::new();
+    let mut next_index: u32 = 0;
+    let mut result: Vec<Vec<NodeId>> = Vec::new();
+    for start in 0..count as NodeId {
+        if !reach[start as usize] || index_of[start as usize] != u32::MAX {
+            continue;
+        }
+        index_of[start as usize] = next_index;
+        lowlink[start as usize] = next_index;
+        next_index += 1;
+        tarjan_stack.push(start);
+        on_stack[start as usize] = true;
+        call.push((start, cfg.successors(start), 0));
+        while !call.is_empty() {
+            let top: usize = call.len() - 1;
+            let v: NodeId = call[top].0;
+            if call[top].2 < call[top].1.len() {
+                let w: NodeId = call[top].1[call[top].2];
+                call[top].2 += 1;
+                if !reach[w as usize] {
+                    continue;
+                }
+                if index_of[w as usize] == u32::MAX {
+                    index_of[w as usize] = next_index;
+                    lowlink[w as usize] = next_index;
+                    next_index += 1;
+                    tarjan_stack.push(w);
+                    on_stack[w as usize] = true;
+                    let succ_w: Vec<NodeId> = cfg.successors(w);
+                    call.push((w, succ_w, 0));
+                } else if on_stack[w as usize] {
+                    lowlink[v as usize] = lowlink[v as usize].min(index_of[w as usize]);
+                }
+            } else {
+                call.pop();
+                if let Some((parent, _, _)) = call.last() {
+                    let p: usize = *parent as usize;
+                    lowlink[p] = lowlink[p].min(lowlink[v as usize]);
+                }
+                if lowlink[v as usize] == index_of[v as usize] {
+                    let mut component: Vec<NodeId> = Vec::new();
+                    while let Some(node) = tarjan_stack.pop() {
+                        on_stack[node as usize] = false;
+                        component.push(node);
+                        if node == v {
+                            break;
+                        }
+                    }
+                    component.sort_unstable();
+                    result.push(component);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// A multi-entry irreducible strongly connected component with the external edges into it.
+#[derive(Debug, Clone)]
+pub(crate) struct IrreducibleEntry {
+    pub(crate) members: BTreeSet<NodeId>,
+    pub(crate) entries: Vec<NodeId>,
+    pub(crate) external_edges: Vec<(NodeId, NodeId)>,
+}
+
+/// Every reachable SCC made irreducible by two or more entry nodes, with each external in-edge recorded.
+pub(crate) fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
+    if !loop_forest(cfg).irreducible {
+        return Vec::new();
+    }
+    let preds: Vec<Vec<NodeId>> = predecessors(cfg);
+    let mut out: Vec<IrreducibleEntry> = Vec::new();
+    for component in strongly_connected_components(cfg) {
+        let members: BTreeSet<NodeId> = component.iter().copied().collect();
+        let is_cycle: bool = component.len() > 1
+            || (component.len() == 1 && cfg.successors(component[0]).contains(&component[0]));
+        if !is_cycle {
+            continue;
+        }
+        let mut entries: Vec<NodeId> = Vec::new();
+        let mut external_edges: Vec<(NodeId, NodeId)> = Vec::new();
+        for &node in &component {
+            let mut is_entry: bool = node == cfg.entry;
+            for &pred in &preds[node as usize] {
+                if !members.contains(&pred) {
+                    external_edges.push((pred, node));
+                    is_entry = true;
+                }
+            }
+            if is_entry {
+                entries.push(node);
+            }
+        }
+        entries.sort_unstable();
+        if entries.len() >= 2 {
+            out.push(IrreducibleEntry {
+                members,
+                entries,
+                external_edges,
+            });
+        }
+    }
+    out
+}
+
+/// True iff `rendered` (residual goto stubs mapped to their targets) reproduces `original`'s reachable successors.
+pub(crate) fn relowered_matches_original(
+    original: &Cfg,
+    rendered: &Cfg,
+    residual: &BTreeMap<NodeId, NodeId>,
+) -> bool {
+    let n: usize = original.len();
+    if rendered.len() < n {
+        return false;
+    }
+    let reach: Vec<bool> = reachable(original);
+    for node in 0..n as NodeId {
+        if !reach[node as usize] {
+            continue;
+        }
+        let mut effective: BTreeSet<NodeId> = BTreeSet::new();
+        for succ in rendered.successors(node) {
+            let mut cur: NodeId = succ;
+            let mut hops: usize = 0;
+            while let Some(&target) = residual.get(&cur) {
+                cur = target;
+                hops += 1;
+                if hops > rendered.len() {
+                    return false;
+                }
+            }
+            if (cur as usize) >= n {
+                return false;
+            }
+            effective.insert(cur);
+        }
+        let expected: BTreeSet<NodeId> = original.successors(node).into_iter().collect();
+        if effective != expected {
+            return false;
+        }
+    }
+    true
+}
+
 /// A hash-consed, negation-normal-form condition over opaque predicate atoms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Cond {
@@ -1567,6 +1719,65 @@ mod tests {
         assert!(!result.is_complete(), "{result:?}");
         assert!(result.irreducible);
         assert!(loop_forest(&cfg).irreducible);
+    }
+
+    #[test]
+    fn scc_finds_the_two_entry_body_cycle() {
+        let cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let cyclic: Vec<Vec<NodeId>> = strongly_connected_components(&cfg)
+            .into_iter()
+            .filter(|c: &Vec<NodeId>| c.len() > 1)
+            .collect();
+        assert_eq!(cyclic, vec![vec![1, 2]], "{cyclic:?}");
+    }
+
+    #[test]
+    fn multi_entry_scc_reports_both_entries_and_external_edges() {
+        let cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let sccs: Vec<IrreducibleEntry> = multi_entry_irreducible_sccs(&cfg);
+        assert_eq!(sccs.len(), 1, "{sccs:?}");
+        assert_eq!(sccs[0].entries, vec![1, 2]);
+        assert!(sccs[0].external_edges.contains(&(0, 1)));
+        assert!(sccs[0].external_edges.contains(&(0, 2)));
+    }
+
+    #[test]
+    fn reducible_graph_has_no_multi_entry_scc() {
+        let cfg: Cfg = Cfg::new(0, vec![goto(1), br(0, 2, 3), goto(1), ret()]).unwrap();
+        assert!(multi_entry_irreducible_sccs(&cfg).is_empty());
+    }
+
+    #[test]
+    fn bisimulation_guard_accepts_identity() {
+        let cfg: Cfg = Cfg::new(0, vec![goto(1), br(0, 2, 3), goto(1), ret()]).unwrap();
+        let empty: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        assert!(relowered_matches_original(&cfg, &cfg, &empty));
+    }
+
+    #[test]
+    fn bisimulation_guard_collapses_residual_goto_stub() {
+        let original: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let rendered: Cfg =
+            Cfg::new(0, vec![br(0, 1, 4), goto(2), br(1, 1, 3), ret(), ret()]).unwrap();
+        let residual: BTreeMap<NodeId, NodeId> = BTreeMap::from([(4, 2)]);
+        assert!(relowered_matches_original(&original, &rendered, &residual));
+    }
+
+    #[test]
+    fn bisimulation_guard_rejects_wrong_residual_target() {
+        let original: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let rendered: Cfg =
+            Cfg::new(0, vec![br(0, 1, 4), goto(2), br(1, 1, 3), ret(), ret()]).unwrap();
+        let residual: BTreeMap<NodeId, NodeId> = BTreeMap::from([(4, 3)]);
+        assert!(!relowered_matches_original(&original, &rendered, &residual));
+    }
+
+    #[test]
+    fn bisimulation_guard_rejects_dropped_edge() {
+        let original: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let rendered: Cfg = Cfg::new(0, vec![goto(1), goto(2), br(1, 1, 3), ret()]).unwrap();
+        let empty: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+        assert!(!relowered_matches_original(&original, &rendered, &empty));
     }
 
     #[test]
