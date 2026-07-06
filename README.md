@@ -69,6 +69,25 @@ cargo build --release
 
 A release build takes about 4-6 minutes on commodity hardware.
 
+### Slim build
+
+`cargo build --release` produces the full everything-binary: every language and format pass compiled in. For a smaller artifact, opt into a slim build that keeps the always-on core (Python bytecode, native PE / ELF / Mach-O, and the container and format layer) and drops the optional passes:
+
+```sh
+cargo build -p disrobe-cli --release --no-default-features
+# same build, shorter
+cargo build-slim
+```
+
+Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain, and with them large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. The `wasm` subcommand still parses in a slim binary and reports a clear message if you run it:
+
+```text
+$ disrobe wasm decompile app.wasm
+Error: the `wasm` pass is not compiled into this binary (slim build); rebuild with default features (feature `wasm`)
+```
+
+Layer specific passes back onto a slim base with `--features`, for example `--no-default-features --features wasm,jvm`.
+
 ### Per-OS notes
 
 - Windows: the binary is `disrobe.exe`. The musl Linux build is fully static; the glibc build needs a matching glibc.

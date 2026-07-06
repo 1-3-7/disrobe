@@ -101,8 +101,7 @@ use cli::strings as strings_cmd;
 use cli::swift::{self, SwiftCmd};
 use cli::taint;
 use cli::util::init_tracing;
-#[cfg(feature = "wasm")]
-use cli::wasm::{self, WasmCmd};
+use cli::wasm_cmd::WasmCmd;
 use cli::yara::{self, YaraCmd};
 
 const ABOUT: &str = "strip the obfuscation, read the source";
@@ -579,7 +578,6 @@ enum Cmd {
         #[command(subcommand)]
         action: JsCmd,
     },
-    #[cfg(feature = "wasm")]
     #[command(
         about = "WebAssembly analyze, decompile (Rust / TypeScript / WAT / C), deobfuscate, component / GC types"
     )]
@@ -1596,8 +1594,10 @@ fn main() -> miette::Result<()> {
         Cmd::Yara { action } => yara::run(action, fmt),
         #[cfg(feature = "js")]
         Cmd::Js { action } => js::run(action),
-        #[cfg(feature = "wasm")]
-        Cmd::Wasm { action } => wasm::run(action),
+        Cmd::Wasm { action } => crate::cli::pass_registry::WASM_RUN.map_or_else(
+            || Err(crate::cli::pass_registry::not_compiled("wasm", "wasm")),
+            |run| run(action),
+        ),
         Cmd::Native { action } => match action {
             NativeCmd::Decompile {
                 input,

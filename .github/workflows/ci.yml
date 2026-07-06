@@ -266,3 +266,48 @@ jobs:
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - run: cargo +1.95.0 check --workspace --all-features
+
+  slim:
+    name: slim (no-default-features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: slim compiles (lib, bin, tests)
+        run: cargo check -p disrobe-cli --no-default-features --all-targets
+      - name: slim is clippy-clean
+        run: cargo clippy -p disrobe-cli --no-default-features --all-targets -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+      - name: the graceful-bail seam fires when a pass is compiled out
+        run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
+      - name: build the slim release binary
+        run: cargo build -p disrobe-cli --release --no-default-features --bin disrobe
+      - name: the wasm decompiler tree is absent from the slim binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p disrobe-cli --no-default-features -e normal --prefix none | sort -u)"
+          for crate in walrus wasm-tools wasmtime; do
+            if printf '%s\n' "$tree" | grep -qE "(^| )${crate} v[0-9]"; then
+              echo "structural gate failed: ${crate} is in the slim disrobe-cli dependency tree" >&2
+              exit 1
+            fi
+            echo "ok: ${crate} absent from the slim disrobe-cli dependency tree"
+          done
+      - name: slim binary runs an always-on pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'hello\x00 disrobe SLIM_SMOKE_TOKEN world' > slim-smoke.bin
+          ./target/release/disrobe strings slim-smoke.bin | tee slim-smoke.out
+          grep -q "SLIM_SMOKE_TOKEN" slim-smoke.out

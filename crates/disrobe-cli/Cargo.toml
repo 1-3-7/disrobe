@@ -22,8 +22,44 @@ path = "src/main.rs"
 name = "self_refresh_check_only"
 path = "tests/self_update_check_only.rs"
 
+[[test]]
+name = "cli_wasm_target_wat"
+path = "tests/cli_wasm_target_wat.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "cli_wasm_target_rust"
+path = "tests/cli_wasm_target_rust.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "cli_wasm_target_ts"
+path = "tests/cli_wasm_target_ts.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "cli_wasm_target_c"
+path = "tests/cli_wasm_target_c.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "discord_e2e"
+path = "tests/discord_e2e.rs"
+required-features = ["mobile"]
+
+[[test]]
+name = "chain_real_extractors"
+path = "tests/chain_real_extractors.rs"
+required-features = ["full"]
+
+[[test]]
+name = "chain_goldens"
+path = "tests/chain_goldens.rs"
+required-features = ["full"]
+
 [features]
-default = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang"]
+default = ["full"]
+full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang"]
 
 py = []
 native = []

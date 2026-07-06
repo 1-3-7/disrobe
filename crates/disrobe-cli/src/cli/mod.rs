@@ -68,6 +68,7 @@ pub(crate) mod mobile;
 pub(crate) mod native;
 pub(crate) mod nuitka;
 pub(crate) mod output;
+pub(crate) mod pass_registry;
 #[cfg(feature = "chain")]
 pub(crate) mod path_ops;
 #[cfg(feature = "php")]
@@ -103,4 +104,5 @@ pub(crate) mod taint;
 pub(crate) mod util;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm;
+pub(crate) mod wasm_cmd;
 pub(crate) mod yara;
