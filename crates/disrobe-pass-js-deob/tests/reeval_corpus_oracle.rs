@@ -5,13 +5,13 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use common::eval_capture_with_argv;
+use common::{EvalOutcome, Terminal, eval_outcome, eval_outcome_bare, eval_outcome_with_argv};
 use disrobe_pass_js_deob::{
     DeobOptions, Detection, JsObfuscator, OBFUSCATOR_IO_MAX_PASS_CEILING, ObfuscatorIoControl,
     ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect, obfuscator_io_deobfuscate,
 };
 
-const DIFFERENTIAL_FLOOR: usize = 14;
+const DIFFERENTIAL_FLOOR: usize = 16;
 
 struct Sample {
     name: &'static str,
@@ -144,6 +144,18 @@ const SAMPLES: &[Sample] = &[
         src: "jsconfuser/recovery/src_statesum_loop.js",
         argv_battery: LOOP_BATTERY,
     },
+    Sample {
+        name: "javascript-obfuscator/browser-cff",
+        obf: "javascript-obfuscator/browser/obf_cff.js",
+        src: "javascript-obfuscator/browser/source.js",
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "javascript-obfuscator/browser-base64",
+        obf: "javascript-obfuscator/browser/obf_base64.js",
+        src: "javascript-obfuscator/browser/source.js",
+        argv_battery: NO_ARGS,
+    },
 ];
 
 enum Outcome {
@@ -186,17 +198,16 @@ fn check_sample(sample: &Sample) -> Outcome {
     let recovered: String = recover_full(sample, &obf_src);
 
     for argv in sample.argv_battery {
-        let want: String = match eval_capture_with_argv(&clean_src, argv) {
-            Some(trace) => trace,
+        let want: EvalOutcome = match eval_outcome_with_argv(&clean_src, argv) {
+            Some(outcome) => outcome,
             None => {
                 return Outcome::Skipped(format!(
-                    "{}: original clean source is not boa-executable for argv {argv:?} (engine gap, not a recovery defect)",
+                    "{}: original clean source is not boa-evaluable for argv {argv:?} (engine gap, not a recovery defect)",
                     sample.name
                 ));
             }
         };
-        let got: Option<String> = eval_capture_with_argv(&recovered, argv);
-        let Some(got) = got else {
+        let Some(got): Option<EvalOutcome> = eval_outcome_with_argv(&recovered, argv) else {
             return Outcome::Diverged(format!(
                 "{}: recovered source failed to evaluate under boa for argv {argv:?}; recovery emitted non-runnable code:\n{recovered}",
                 sample.name
@@ -204,7 +215,7 @@ fn check_sample(sample: &Sample) -> Outcome {
         };
         if want != got {
             return Outcome::Diverged(format!(
-                "{}: recovered behavior diverged from the clean source for argv {argv:?}\n--want--\n{want}\n--got--\n{got}\n--recovered--\n{recovered}",
+                "{}: recovered behavior diverged from the clean source for argv {argv:?}\n--want--\n{want:?}\n--got--\n{got:?}\n--recovered--\n{recovered}",
                 sample.name
             ));
         }
@@ -316,5 +327,54 @@ fn obfuscator_io_pipeline_is_bounded_on_integrity_trap() {
         out.passes_run <= OBFUSCATOR_IO_MAX_PASS_CEILING,
         "even under a hostile max_passes, the obfuscator.io pipeline must stay bounded by the pass ceiling {OBFUSCATOR_IO_MAX_PASS_CEILING}; ran {} passes",
         out.passes_run
+    );
+}
+
+const BROWSER_SAMPLES: &[&str] = &[
+    "javascript-obfuscator/browser-cff",
+    "javascript-obfuscator/browser-base64",
+];
+
+#[test]
+fn browser_host_samples_move_from_skipped_to_verified() {
+    let mut moved: usize = 0;
+    for name in BROWSER_SAMPLES {
+        let sample: &Sample = SAMPLES
+            .iter()
+            .find(|s: &&Sample| s.name == *name)
+            .unwrap_or_else(|| panic!("unknown browser sample {name}"));
+        let clean_src: String = load(sample.src);
+
+        let bare: Option<EvalOutcome> = eval_outcome_bare(&clean_src);
+        assert!(
+            !matches!(
+                bare,
+                Some(EvalOutcome {
+                    terminal: Terminal::Completed,
+                    ..
+                })
+            ),
+            "{name}: the clean source reads browser globals absent from the bare boa preamble, so the pre-shim oracle would SKIP it; bare outcome was {bare:?}"
+        );
+
+        let hosted: EvalOutcome = eval_outcome(&clean_src).unwrap_or_else(|| {
+            panic!("{name}: clean source must evaluate under the browser-host shim")
+        });
+        assert_eq!(
+            hosted.terminal,
+            Terminal::Completed,
+            "{name}: the browser-host shim must let the clean source run to completion; got {hosted:?}"
+        );
+
+        match check_sample(sample) {
+            Outcome::Verified => moved += 1,
+            Outcome::Skipped(reason) | Outcome::Diverged(reason) => panic!("{name}: {reason}"),
+        }
+    }
+    eprintln!("browser-host shim moved {moved} sample(s) from skipped to differential-verified");
+    assert_eq!(
+        moved,
+        BROWSER_SAMPLES.len(),
+        "every browser-targeted sample must move from skipped to differentially verified once the host shim is present"
     );
 }

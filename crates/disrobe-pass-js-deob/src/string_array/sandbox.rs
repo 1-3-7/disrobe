@@ -15,13 +15,53 @@ const DEFAULT_LOOP_ITERATION_LIMIT: u64 = 100_000;
 const DEFAULT_RECURSION_LIMIT: usize = 256;
 const DEFAULT_STACK_SIZE_LIMIT: usize = 8 * 1024;
 const WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
-const RUNTIME_PREAMBLE: &str = "
+const RUNTIME_PREAMBLE: &str = r"
 Math.random = function () { return 0.5; };
 Date.now = function () { return 1000; };
 performance = { now: function () { return 1000; } };
 delete globalThis.fetch;
-Function.prototype.toString = function () { return 'function (){\\n[native code]\\n}'; };
-Object.defineProperty(Function.prototype, 'toString', { value: function () { return 'function (){\\n[native code]\\n}'; }, writable: true, configurable: true });
+Function.prototype.toString = function () { return 'function (){\n[native code]\n}'; };
+Object.defineProperty(Function.prototype, 'toString', { value: function () { return 'function (){\n[native code]\n}'; }, writable: true, configurable: true });
+if (typeof globalThis.atob !== 'function') {
+  globalThis.atob = function (data) {
+    var input = String(data).replace(/[\t\n\f\r ]+/g, '');
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var padless = input.replace(/=+$/, '');
+    if (padless.length % 4 === 1) { throw new Error('atob: invalid length'); }
+    var output = '';
+    var acc = 0;
+    var bits = 0;
+    for (var i = 0; i < padless.length; i++) {
+      var code = chars.indexOf(padless.charAt(i));
+      if (code === -1) { throw new Error('atob: invalid base64'); }
+      acc = (acc << 6) | code;
+      bits += 6;
+      if (bits >= 8) { bits -= 8; output += String.fromCharCode((acc >> bits) & 255); }
+    }
+    return output;
+  };
+}
+if (typeof globalThis.btoa !== 'function') {
+  globalThis.btoa = function (data) {
+    var input = String(data);
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var output = '';
+    for (var i = 0; i < input.length; i += 3) {
+      var c0 = input.charCodeAt(i);
+      var c1 = input.charCodeAt(i + 1);
+      var c2 = input.charCodeAt(i + 2);
+      var hasC1 = i + 1 < input.length;
+      var hasC2 = i + 2 < input.length;
+      if (c0 > 255 || (hasC1 && c1 > 255) || (hasC2 && c2 > 255)) { throw new Error('btoa: invalid character'); }
+      var n0 = c0 >> 2;
+      var n1 = ((c0 & 3) << 4) | (hasC1 ? (c1 >> 4) : 0);
+      var n2 = hasC1 ? (((c1 & 15) << 2) | (hasC2 ? (c2 >> 6) : 0)) : 64;
+      var n3 = hasC2 ? (c2 & 63) : 64;
+      output += chars.charAt(n0) + chars.charAt(n1) + (n2 === 64 ? '=' : chars.charAt(n2)) + (n3 === 64 ? '=' : chars.charAt(n3));
+    }
+    return output;
+  };
+}
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -719,6 +759,33 @@ mod tests {
         assert_eq!(probe.successful, 3);
         assert_eq!(probe.samples[0].decoded, "x");
         assert_eq!(probe.samples[2].decoded, "z");
+    }
+
+    #[test]
+    fn probe_decodes_atob_base64_decoder() {
+        let arr: &str = "var _arr = ['aGVsbG8=', 'd29ybGQ=', 'bG9n'];";
+        let dec: &str = "function _decode(i) { return atob(_arr[i]); }";
+        let Some(probe): Option<DecoderProbe> = probe_decoder(dec, arr, "_decode", &[0, 1, 2])
+        else {
+            panic!("probe must lift a decoder that calls global atob on a non-literal argument");
+        };
+        assert_eq!(probe.successful, 3, "all three atob decodes must succeed");
+        assert_eq!(probe.samples[0].decoded, "hello");
+        assert_eq!(probe.samples[1].decoded, "world");
+        assert_eq!(probe.samples[2].decoded, "log");
+    }
+
+    #[test]
+    fn probe_btoa_atob_roundtrip_is_faithful() {
+        let arr: &str = "var _arr = ['console', 'log', 'prototype'];";
+        let dec: &str = "function _rt(i) { return atob(btoa(_arr[i])); }";
+        let Some(probe): Option<DecoderProbe> = probe_decoder(dec, arr, "_rt", &[0, 1, 2]) else {
+            panic!("btoa followed by atob must round-trip");
+        };
+        assert_eq!(probe.successful, 3);
+        assert_eq!(probe.samples[0].decoded, "console");
+        assert_eq!(probe.samples[1].decoded, "log");
+        assert_eq!(probe.samples[2].decoded, "prototype");
     }
 
     #[test]
