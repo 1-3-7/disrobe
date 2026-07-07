@@ -305,3 +305,60 @@ fn render_operand(op: &Operand, chunks: &Chunks) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::chunks::{AtomTable, MAX_FUN_ARITY};
+
+    fn empty_chunks(atoms: Vec<String>) -> Chunks {
+        Chunks {
+            atoms: AtomTable { atoms },
+            code: None,
+            strings: None,
+            attributes: None,
+            compile_info: None,
+            dbgi: None,
+            docs: None,
+            exports: Vec::new(),
+            imports: Vec::new(),
+            locals: Vec::new(),
+            literals: None,
+            line: None,
+            funs: Vec::new(),
+            other: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn collect_func_spans_clamps_adversarial_arity_operand() {
+        let instrs: Vec<Instruction> = vec![
+            Instruction {
+                offset: 0,
+                opcode: 2,
+                name: "func_info",
+                operands: vec![
+                    Operand::Atom(0),
+                    Operand::Atom(1),
+                    Operand::Literal(u64::from(u32::MAX)),
+                ],
+            },
+            Instruction {
+                offset: 1,
+                opcode: 999,
+                name: "int_code_end",
+                operands: Vec::new(),
+            },
+        ];
+        let chunks: Chunks = empty_chunks(vec!["mod_x".to_owned(), "fn_y".to_owned()]);
+        let spans: Vec<FuncSpan> = collect_func_spans(&instrs, &chunks);
+        let span: &FuncSpan = spans.first().expect("one function span recovered");
+        assert!(
+            span.arity <= MAX_FUN_ARITY,
+            "a func_info operand claiming u32::MAX arity must be clamped before it can drive \
+             a (0..arity) params loop, got {}",
+            span.arity
+        );
+    }
+}

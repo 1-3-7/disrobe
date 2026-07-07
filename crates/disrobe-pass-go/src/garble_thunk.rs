@@ -1627,8 +1627,9 @@ mod tests {
     use iced_x86::Register;
 
     use super::{
-        Emu, FAKE_ALLOC_STRIDE, FAKE_HEAP_BASE, Flags, GLOBAL_STEP_BUDGET, GoImage, RAM_HIGH,
-        RAM_LOW, THUNK_SCAN_BUDGET, THUNK_SCAN_CHECK_STRIDE, scan_deadline_hit,
+        Emu, FAKE_ALLOC_STRIDE, FAKE_HEAP_BASE, Flags, GLOBAL_STEP_BUDGET, GoImage,
+        MAX_EMU_MEM_BYTES, RAM_HIGH, RAM_LOW, THUNK_SCAN_BUDGET, THUNK_SCAN_CHECK_STRIDE,
+        scan_deadline_hit,
     };
     use crate::binary::{Endian, ImageKind};
     use crate::symbols::GoSymbols;
@@ -1689,6 +1690,21 @@ mod tests {
                 "fresh_heap must stay inside the tracked RAM band, got {ptr:#x}"
             );
         }
+    }
+
+    #[test]
+    fn zero_fill_never_exceeds_the_emulated_memory_cap() {
+        let raw: Vec<u8> = Vec::new();
+        let image: GoImage<'_> = empty_image(&raw);
+        let syms: GoSymbols = empty_symbols();
+        let mut e: Emu<'_, '_> = emu(&image, &syms);
+        e.zero_fill(FAKE_HEAP_BASE, usize::MAX);
+        assert!(
+            e.mem.len() <= MAX_EMU_MEM_BYTES,
+            "a newobject/newarray dispatch that ever requests an unbounded fill length \
+             must still be capped at MAX_EMU_MEM_BYTES, got {} tracked bytes",
+            e.mem.len()
+        );
     }
 
     #[test]

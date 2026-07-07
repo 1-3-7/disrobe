@@ -81,4 +81,18 @@ mod tests {
             read_to_vec_limited(&mut cursor, 4, 16).expect_err("must reject actual overrun");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
+
+    #[test]
+    fn limited_read_does_not_overallocate_on_lying_declared_size() {
+        let data: &[u8] = b"AAAA";
+        let mut cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(data);
+        let out: Vec<u8> = read_to_vec_limited(&mut cursor, u64::MAX, 256 * 1024 * 1024)
+            .expect("truncated body under the cap must still recover");
+        assert_eq!(out.len(), 4);
+        assert!(
+            out.capacity() <= MAX_PREALLOC,
+            "a header claiming u64::MAX must never drive preallocation, got capacity {}",
+            out.capacity()
+        );
+    }
 }

@@ -2195,6 +2195,19 @@ mod tests {
     }
 
     #[test]
+    fn decompress_rejects_copytoken_self_reference_expansion_past_cap() {
+        let data: &[u8] = &[0x01, 0x05, 0xB0, 0x08, b'a', b'b', b'c', 0x03, 0x20];
+        let Err(err): Result<Vec<u8>> = decompress_ovba_bounded(data, 5) else {
+            panic!(
+                "the same 3-byte-to-9-byte self-referential CopyToken expansion that \
+                 decompress_chunk_with_copytoken_roundtrip proves correct must be rejected, \
+                 not grown unbounded, once it crosses a 5-byte cap"
+            );
+        };
+        assert!(err.to_string().contains("decompressed VBA stream exceeds"));
+    }
+
+    #[test]
     fn decompress_chunk_with_copytoken_roundtrip() {
         let data: &[u8] = &[0x01, 0x05, 0xB0, 0x08, b'a', b'b', b'c', 0x03, 0x20];
         let out: Vec<u8> = decompress_ovba(data).expect("decompress");

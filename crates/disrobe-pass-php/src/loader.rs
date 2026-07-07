@@ -1704,6 +1704,17 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_parens_never_stack_overflow_the_expr_parser() {
+        const NESTING: usize = 50_000;
+        let mut src: Vec<u8> = b"<?php $a = ".to_vec();
+        src.extend(std::iter::repeat_n(b'(', NESTING));
+        src.push(b'1');
+        src.extend(std::iter::repeat_n(b')', NESTING));
+        src.push(b';');
+        let _: Option<LoaderReport> = peel_loader(&src, DEFAULT_LOADER_DEPTH);
+    }
+
+    #[test]
     fn depth_zero_resolves_nothing() {
         let blob: &[u8] = b"<?php $a = 'ZWNobyAxOw=='; $b = base64_decode($a); eval($b);";
         assert!(
