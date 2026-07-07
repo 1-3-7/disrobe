@@ -134,7 +134,6 @@ impl ArtifactSchema {
     }
 }
 
-/// Identifies which disrobe artifact schema a JSON document carries, by its `schema` tag first and its array shape (`findings` / `indicators` / `urls`) as a fallback.
 #[must_use]
 pub fn identify_schema(value: &Value) -> Option<ArtifactSchema> {
     if let Some(schema) = value.get("schema").and_then(Value::as_str) {
@@ -188,7 +187,6 @@ impl IndicatorAggregator {
         entry.sources.insert(source.to_owned());
     }
 
-    /// Ingests one JSON artifact (recon / ioc / prowl), merging its indicators into the running table with source provenance.
     pub fn ingest_json(&mut self, json: &str) -> Option<ArtifactSchema> {
         let value: Value = serde_json::from_str(json).ok()?;
         let schema: ArtifactSchema = identify_schema(&value)?;
@@ -283,7 +281,6 @@ impl IndicatorAggregator {
         }
     }
 
-    /// Pulls the bare follow-up targets (network indicators reduced to a host or address) out of the aggregated table, the same set prowl would re-harvest.
     #[must_use]
     pub fn network_values(&self) -> Vec<String> {
         let mut out: Vec<String> = self
@@ -298,7 +295,6 @@ impl IndicatorAggregator {
     }
 }
 
-/// Aggregates a set of disrobe artifact JSON documents into one versioned indicator bundle with per-indicator source provenance.
 #[must_use]
 pub fn aggregate(documents: &[&str]) -> IndicatorBundle {
     let mut agg: IndicatorAggregator = IndicatorAggregator::new();

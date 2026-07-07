@@ -29,7 +29,6 @@ impl Default for StreamDisasmLimits {
     }
 }
 
-/// Disassemble an x86/x86-64 `.text` slice straight to `sink`, one instruction at a time.
 pub fn stream_disasm_x86(
     sink: &mut dyn Write,
     text: &[u8],
@@ -101,7 +100,6 @@ pub struct RipRef {
 
 const MAX_RIP_REFS: usize = 200_000;
 
-/// Stream-scan an x86-64 `.text` slice for rip-relative `lea`/`mov` references.
 #[must_use]
 pub fn scan_rip_relative_refs(text: &[u8], base: u64, max_text_bytes: usize) -> Vec<RipRef> {
     let decode_len: usize = text.len().min(max_text_bytes);

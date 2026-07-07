@@ -119,7 +119,6 @@ impl LayeredRecovery {
     }
 }
 
-/// Classify a `.pye` container by body shape, not marker text.
 #[must_use]
 pub fn classify_container(input: &[u8]) -> Option<ContainerVariant> {
     let text: &str = core::str::from_utf8(input).ok()?;

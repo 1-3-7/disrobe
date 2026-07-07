@@ -1,5 +1,3 @@
-//! Recovery of the ConfuserEx Constants/Resources xorshift key seed by evaluating the bootstrap method's seed-initialisation expression with the CIL emulator.
-
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
 use crate::cil_emulator::{StubInput, StubOutput, emulate_stub};
 use crate::pe::PeImage;

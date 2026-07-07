@@ -1236,7 +1236,6 @@ fn copy_string(out: &mut Vec<u8>, length: u32, distance: u32, want: usize) -> Re
     Ok(())
 }
 
-/// Decode a rar 2.9/3.x ppmd (variant H, the `Ppmd7` model) compressed member body.
 pub fn unpack3_ppmd(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
     if unpacked_size > cap {
         return Err(Error::Decompression(format!(

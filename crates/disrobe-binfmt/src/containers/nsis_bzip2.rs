@@ -498,12 +498,10 @@ fn push_run(out: &mut Vec<u8>, byte: u8, count: i32, cap: usize) -> Result<()> {
     Ok(())
 }
 
-/// Decompress an NSIS modified-bzip2 stream to at most `cap` bytes.
 pub fn decompress(input: &[u8], cap: u64) -> Result<Vec<u8>> {
     Ok(decompress_counting(input, cap)?.0)
 }
 
-/// Like [`decompress`] but also returns the number of input bytes consumed.
 pub fn decompress_counting(input: &[u8], cap: u64) -> Result<(Vec<u8>, usize)> {
     let cap_usize: usize =
         usize::try_from(cap.min(u64::from(u32::MAX) * 4)).map_or(usize::MAX, |value: usize| value);

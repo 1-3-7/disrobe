@@ -1,5 +1,3 @@
-//! PACE JS / Fusion family detection and static guard-marker stripping.
-
 use core::ops::Range;
 use std::collections::BTreeSet;
 

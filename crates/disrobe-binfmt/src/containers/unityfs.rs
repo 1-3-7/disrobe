@@ -497,7 +497,6 @@ fn is_serialized_file(bytes: &[u8]) -> bool {
 const SERIALIZED_VERSION: u32 = 22;
 const SERIALIZED_HEADER_LEN_V22: usize = 0x30;
 
-/// Builds a minimal little-endian `serialized-file` (version 22) holding one `TextAsset` object.
 #[must_use]
 pub fn build_serialized_textasset(name: &str, script: &[u8]) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::new();
@@ -554,7 +553,6 @@ pub fn build_serialized_textasset(name: &str, script: &[u8]) -> Vec<u8> {
     file
 }
 
-/// Wraps already-assembled `node` data into a `UnityFS` (version 7) bundle with a single uncompressed block and a single directory `node`.
 #[must_use]
 pub fn build_bundle_uncompressed(node_path: &str, node_data: &[u8]) -> Vec<u8> {
     let mut info: Vec<u8> = Vec::new();

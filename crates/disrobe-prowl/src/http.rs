@@ -71,7 +71,6 @@ pub struct ReqwestFetcher {
 }
 
 impl ReqwestFetcher {
-    /// Builds a reqwest async client honoring the configured timeout, user-agent and proxy.
     pub fn new(config: &HttpConfig) -> Result<Self, FetchError> {
         let mut builder: reqwest::ClientBuilder = reqwest::Client::builder()
             .user_agent(config.user_agent.clone())

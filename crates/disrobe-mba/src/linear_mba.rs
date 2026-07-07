@@ -2,7 +2,6 @@ use crate::expr::{BinOp, Expr, UnOp, Width};
 
 const MAX_BASIS_VARS: u32 = 3;
 
-/// Recover the simplest linear-MBA form of `expr` over the multi-variable bitwise basis.
 #[must_use]
 pub fn synthesize_linear_basis(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_BASIS_VARS {

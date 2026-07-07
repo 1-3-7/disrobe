@@ -81,12 +81,10 @@ pub struct SluaParams {
 }
 
 impl SluaParams {
-    /// Builds the transform parameters for a single title from its embedded seed and opcode-permutation table, against the Lua 5.3 opcode space.
     pub fn new(seed: u64, perm: [u8; LUA53_OPCODE_COUNT]) -> Result<Self> {
         Self::new_for(LuaDialect::Lua53, seed, perm)
     }
 
-    /// Builds the transform parameters for a given Lua dialect.
     pub fn new_for(dialect: LuaDialect, seed: u64, perm: [u8; LUA53_OPCODE_COUNT]) -> Result<Self> {
         let active_count: usize = opcode_count_for(dialect);
         let mut perm_inv: [u8; LUA53_OPCODE_COUNT] = [0u8; LUA53_OPCODE_COUNT];
@@ -113,13 +111,11 @@ impl SluaParams {
         })
     }
 
-    /// Derives a deterministic permutation from the seed alone (a Fisher-Yates shuffle driven by the title LCG) over the Lua 5.3 opcode space.
     #[must_use]
     pub fn seed_derived(seed: u64) -> Self {
         Self::seed_derived_for(LuaDialect::Lua53, seed)
     }
 
-    /// Derives a deterministic seed-only permutation over a given dialect's opcode count.
     #[must_use]
     pub fn seed_derived_for(dialect: LuaDialect, seed: u64) -> Self {
         let active_count: usize = opcode_count_for(dialect);

@@ -26,7 +26,6 @@ impl Default for RateConfig {
     }
 }
 
-/// Per-host token-bucket limiter.
 #[derive(Debug, Clone)]
 pub struct HostRateLimiter {
     config: RateConfig,
@@ -58,7 +57,6 @@ impl HostRateLimiter {
             .to_ascii_lowercase()
     }
 
-    /// Blocks until a token is available for `host`, refilling at the configured per-host rate.
     pub async fn acquire(&self, host: &str) {
         if self.config.per_host_rps <= 0.0 {
             return;

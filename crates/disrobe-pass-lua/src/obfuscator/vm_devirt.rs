@@ -1115,7 +1115,6 @@ fn hex_nibble(c: u8) -> Option<u8> {
     }
 }
 
-/// Lift a `VMPAYLOAD=` blob encoded in disrobe's own `DVM1` reference container back to Lua.
 pub fn devirt_to_peel(src: &[u8], text: &str, payload: &[u8], tag: &str) -> Result<PeelResult> {
     dbg_kv("devirt_to_peel.tag", || tag.to_owned());
     let Ok(dv): Result<Devirtualized> = devirtualize(payload, text) else {

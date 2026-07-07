@@ -1,5 +1,3 @@
-//! Structural classification of encrypted blobs whose key lives only at runtime.
-
 use serde::{Deserialize, Serialize};
 
 const MAX_SCAN: usize = 1 << 20;
@@ -96,7 +94,6 @@ impl CryptoWall {
     }
 }
 
-/// Scan `data` for the first self-describing encrypted framing and, when one is present, return the structured [`CryptoWall`].
 #[must_use]
 pub fn classify(data: &[u8]) -> Option<CryptoWall> {
     let window: &[u8] = &data[..data.len().min(MAX_SCAN)];

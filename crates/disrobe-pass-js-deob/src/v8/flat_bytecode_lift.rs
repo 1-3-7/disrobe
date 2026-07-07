@@ -1,5 +1,3 @@
-//! Lifts a flat-`BytecodeArray` [`Disassembly`] to a JS surface.
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

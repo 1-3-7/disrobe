@@ -3622,7 +3622,6 @@ fn lift_raw(
     Ok((lifter.statements, dropped_opcodes, opaque_operands))
 }
 
-/// Lift a method body to flat goto-form statements with no restructuring.
 pub fn lift_body_raw(
     abc: &AbcFile,
     body: &MethodBody,

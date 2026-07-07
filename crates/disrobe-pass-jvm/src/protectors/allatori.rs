@@ -89,7 +89,6 @@ pub fn peel(cf: &ClassFile, _class_name: &str, _default_method: &str) -> Protect
     finish_allatori(cf, report)
 }
 
-/// Recovers Allatori-encrypted string literals by running the class's own injected decrypt method against every encrypted constant, not only the constants reached by a recognizable static call site.
 fn recover_via_char_array_scheme(cf: &ClassFile, report: &mut ProtectorPeelReport) -> usize {
     let methods: Vec<DecryptMethod> = char_array_decrypt_methods(cf);
     if methods.is_empty() {
@@ -155,7 +154,6 @@ fn char_array_decrypt_methods(cf: &ClassFile) -> Vec<DecryptMethod> {
         .collect()
 }
 
-/// Reports whether a method body carries the Allatori char-array decrypt shape.
 #[must_use]
 fn method_has_char_array_xor_shape(cf: &ClassFile, method_index: usize) -> bool {
     let Some(method): Option<&MethodInfo> = cf.methods.get(method_index) else {

@@ -717,8 +717,6 @@ pub fn recover_leaf_function_with_calls(
     recover_leaf_function_calls_impl(machine_code, base, abi, &[], &[], calls)
 }
 
-/// Recover a leaf function, resolving a dense-switch jump table from the object's relocatable data.
-/// Recover an auto-vectorized integer reduction or elementwise map as a clean scalar loop, or error.
 pub fn recover_vectorized_reduction(
     machine_code: &[u8],
     base: u64,
@@ -791,7 +789,6 @@ pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Optio
 
 const CALL_RESOLUTION_DEPTH: usize = 16;
 
-/// Integer arity of a callee, resolving nested outgoing calls bottom-up so a forwarder is not over-counted.
 pub fn resolved_int_arity_in_object(
     object: &[u8],
     callee_code: &[u8],
@@ -1703,7 +1700,6 @@ pub fn recover_leaf_function_switch_const_abi(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, consts, &[])
 }
 
-/// Reconstruct a dense-switch leaf from an already-resolved list of case-target addresses.
 fn build_switch_recovery(
     insns: &[DisasmInsn],
     by_addr: &BTreeMap<u64, usize>,
@@ -1924,7 +1920,6 @@ fn recover_switch_in_object(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
 }
 
-/// Recover an `-O0` dense jump-table switch (stack-homed discriminant, split index-scale, double table `lea`).
 fn recover_o0_switch_in_object(
     object: &[u8],
     machine_code: &[u8],
@@ -1956,7 +1951,6 @@ fn recover_o0_switch_in_object(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
 }
 
-/// Recover a clang `-O0` dense jump-table switch (register-homed discriminant, `sub` range check, single relative table).
 fn recover_clang_o0_switch_in_object(
     object: &[u8],
     machine_code: &[u8],
@@ -1985,7 +1979,6 @@ fn recover_clang_o0_switch_in_object(
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
 }
 
-/// Prove both rip-relative table `lea`s of an `-O0` dispatch name the same rodata table.
 fn verify_shared_table_lea(
     object: &[u8],
     base: u64,
@@ -2018,7 +2011,6 @@ fn verify_shared_table_lea(
     Ok(())
 }
 
-/// The section and in-section offset a table `lea` at `lea_idx` points at.
 fn lea_table_location<'data>(
     file: &object::File<'data>,
     code_section: &object::Section<'data, '_>,
@@ -2036,7 +2028,6 @@ fn lea_table_location<'data>(
     resolve_lea_table(file, code_section, disp_field_va)
 }
 
-/// Recover a return-value-data-table switch (a range-checked rodata result-table load) as a `switch`.
 fn recover_value_switch_in_object(
     object: &[u8],
     machine_code: &[u8],
@@ -2059,7 +2050,6 @@ fn recover_value_switch_in_object(
     build_value_switch_recovery(abi, &switch, &values)
 }
 
-/// Emit a leaf `switch` whose cases assign the resolved table values and default the fallback value.
 fn build_value_switch_recovery(
     abi: Abi,
     switch: &ValueTableSwitch,
@@ -2115,7 +2105,6 @@ fn build_value_switch_recovery(
     })
 }
 
-/// Read the constant result values a value-table switch loads, reusing the switch-lea resolver.
 fn object_value_table(
     object: &[u8],
     base: u64,
@@ -2202,7 +2191,6 @@ fn object_value_table(
     Ok(values)
 }
 
-/// The addend a relocation contributes: implicit in-field value plus its addend, or the explicit addend.
 fn reloc_effective_addend(
     reloc: &object::Relocation,
     section_data: &[u8],
@@ -2233,7 +2221,6 @@ fn reloc_effective_addend(
     Ok(stored.wrapping_add(reloc.addend()))
 }
 
-/// Resolve the section and in-section offset a switch `lea`'s rip-relative displacement points at.
 fn resolve_lea_table<'data>(
     file: &object::File<'data>,
     code_section: &object::Section<'data, '_>,
@@ -2344,7 +2331,6 @@ fn resolve_packed_constants(object: &[u8], machine_code: &[u8], base: u64) -> Ve
     resolved
 }
 
-/// Decode dense-switch case targets from the object's jump table via one relocation-aware reader.
 fn object_switch_case_targets(
     object: &[u8],
     base: u64,
@@ -2561,7 +2547,6 @@ struct ValueTableSwitch {
     signed_load: bool,
 }
 
-/// Match a range-checked rip-relative table load into the return register (default pre-loaded or in the out-of-range block).
 fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
     for cmp_idx in 0..insns.len() {
         let Some((disc, bound)): Option<(RegRef, u64)> = parse_cmp_bound(&insns[cmp_idx]) else {
@@ -2635,7 +2620,6 @@ fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
     None
 }
 
-/// The index of the next non-ignorable instruction at or after `from`.
 fn next_effective(insns: &[DisasmInsn], from: usize) -> Option<usize> {
     (from..insns.len()).find(|&i: &usize| !is_ignorable(&insns[i]))
 }
@@ -2646,7 +2630,6 @@ fn prev_effective(insns: &[DisasmInsn], before: usize) -> Option<usize> {
         .find(|&i: &usize| !is_ignorable(&insns[i]))
 }
 
-/// The default value pre-loaded into `rax` immediately before a range check (`mov rax, imm`).
 fn preloaded_default(insns: &[DisasmInsn], cmp_idx: usize) -> Option<i64> {
     let idx: usize = (0..cmp_idx)
         .rev()
@@ -2660,7 +2643,6 @@ fn preloaded_default(insns: &[DisasmInsn], cmp_idx: usize) -> Option<i64> {
     }
 }
 
-/// The default value supplied by an out-of-range branch target block (`mov rax, imm; ret`).
 fn default_block_value(insns: &[DisasmInsn], target: u64) -> Option<i64> {
     let start: usize = insns
         .iter()
@@ -2677,7 +2659,6 @@ fn default_block_value(insns: &[DisasmInsn], target: u64) -> Option<i64> {
     (insns[ret_idx].mnemonic == "ret").then_some(value)
 }
 
-/// Parse `mov/movsxd rax, [table + disc * width]`, returning the entry width and whether it sign-extends.
 fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Option<(u8, bool)> {
     let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
     let dest: RegRef = parse_reg(lhs.trim())?;
@@ -2715,7 +2696,6 @@ fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Opt
     }
 }
 
-/// Match the `-O0` dense jump-table dispatch, returning a `SwitchDispatch` and the second table `lea` index.
 fn detect_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<(SwitchDispatch, usize)> {
     for cmp_idx in 0..insns.len() {
         let Some((slot, bound)): Option<(MemRef, u64)> = parse_cmp_mem_bound(&insns[cmp_idx])
@@ -2817,7 +2797,6 @@ fn detect_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<(SwitchDispatch, usiz
     None
 }
 
-/// Match the clang `-O0` dense jump table: `sub`-checked register-homed discriminant, single table `lea`, `movsxd` entry load accumulated into the base register.
 fn detect_clang_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch> {
     for chk_idx in 0..insns.len() {
         let Some((reg_c, bound)): Option<(Reg, u64)> = parse_reg_bound_check(&insns[chk_idx])
@@ -2901,7 +2880,6 @@ fn detect_clang_o0_jump_dispatch(insns: &[DisasmInsn]) -> Option<SwitchDispatch>
     None
 }
 
-/// Parse a range check `cmp reg, imm` or `sub reg, imm` over a 64-bit register, returning the register and bound.
 fn parse_reg_bound_check(insn: &DisasmInsn) -> Option<(Reg, u64)> {
     if !matches!(insn.mnemonic.as_str(), "cmp" | "sub") {
         return None;
@@ -2918,7 +2896,6 @@ fn parse_reg_bound_check(insn: &DisasmInsn) -> Option<(Reg, u64)> {
     Some((disc.reg, bound as u64))
 }
 
-/// Parse `mov <slot>, reg` storing the given 64-bit register into a frame slot, returning the slot.
 fn parse_store_of_reg(insn: &DisasmInsn, reg: Reg) -> Option<MemRef> {
     if insn.mnemonic != "mov" {
         return None;
@@ -2934,7 +2911,6 @@ fn parse_store_of_reg(insn: &DisasmInsn, reg: Reg) -> Option<MemRef> {
     parse_mem_access(lhs.trim(), Some(Width::W64))
 }
 
-/// Parse `add dest, src` over two 64-bit registers whose set equals `{a, b}`, returning the destination.
 fn parse_add_target(insn: &DisasmInsn, a: Reg, b: Reg) -> Option<Reg> {
     if insn.mnemonic != "add" || a == b {
         return None;
@@ -2949,7 +2925,6 @@ fn parse_add_target(insn: &DisasmInsn, a: Reg, b: Reg) -> Option<Reg> {
     (pair.contains(&a) && pair.contains(&b)).then_some(dest.reg)
 }
 
-/// Parse `cmp <size> [frame + disp], imm`, returning the discriminant slot and the range bound.
 fn parse_cmp_mem_bound(insn: &DisasmInsn) -> Option<(MemRef, u64)> {
     if insn.mnemonic != "cmp" {
         return None;
@@ -2966,7 +2941,6 @@ fn parse_cmp_mem_bound(insn: &DisasmInsn) -> Option<(MemRef, u64)> {
     Some((mem, bound as u64))
 }
 
-/// Parse `mov <slot>, reg` storing a 64-bit register into the given frame slot.
 fn parse_store_reg_to(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
     if insn.mnemonic != "mov" {
         return None;
@@ -2983,7 +2957,6 @@ fn parse_store_reg_to(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
     (addr == *slot).then_some(src.reg)
 }
 
-/// Parse `mov reg, <slot>` reloading the given frame slot into a 64-bit register.
 fn parse_load_reg_from(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
     if insn.mnemonic != "mov" {
         return None;
@@ -2997,7 +2970,6 @@ fn parse_load_reg_from(insn: &DisasmInsn, slot: &MemRef) -> Option<Reg> {
     (mem == *slot).then_some(dest.reg)
 }
 
-/// Parse `lea reg, [index * scale]` (pure index scaling with no base or displacement).
 fn parse_scaled_index_lea(insn: &DisasmInsn) -> Option<(Reg, Reg, u8)> {
     if insn.mnemonic != "lea" {
         return None;
@@ -3015,7 +2987,6 @@ fn parse_scaled_index_lea(insn: &DisasmInsn) -> Option<(Reg, Reg, u8)> {
     Some((dest.reg, index_reg, scale))
 }
 
-/// Parse the `-O0` 32-bit table load `mov eax, [scale_reg + table_reg]` into the return register.
 fn parse_o0_table_load(insn: &DisasmInsn, scale_reg: Reg, tbl_reg: Reg) -> Option<()> {
     if insn.mnemonic != "mov" {
         return None;
@@ -3051,7 +3022,6 @@ fn parse_cmp_bound(insn: &DisasmInsn) -> Option<(RegRef, u64)> {
     Some((disc, bound as u64))
 }
 
-/// Recover the discriminant bias (`sub k, base`) so cases carry their source values, not table indices.
 fn parse_case_bias(insn: &DisasmInsn, disc: Reg) -> Option<i64> {
     let (lhs, rhs): (&str, &str) = insn.operands.split_once(',')?;
     if parse_reg(lhs.trim())?.reg != disc {
@@ -3467,7 +3437,6 @@ fn chain_terminal_fp(
     }
 }
 
-/// The width a statement writes to rax, if any; the return type must hold the widest write per path.
 fn rax_write_width(stmt: &Stmt) -> Option<Width> {
     match stmt {
         Stmt::Assign { dest, .. }
@@ -3528,7 +3497,6 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
     result.max(cur)
 }
 
-/// The terminal rax-write width along a switch body chain, used to size an integer switch's return.
 fn chain_terminal_int_width(
     bodies: &BTreeMap<u64, SwitchBody>,
     start: u64,

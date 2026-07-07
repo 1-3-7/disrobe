@@ -9,14 +9,12 @@ use super::git_history::{GitFinding, GitHistoryReport};
 
 const REDACT_KDF_CONTEXT: &str = "disrobe.frisk.redact v1 sentinel key";
 
-/// Rewrites detected secrets to non-reversible blake3 sentinels before serialization.
 #[derive(Debug, Clone)]
 pub struct Redactor {
     key: [u8; 32],
 }
 
 impl Redactor {
-    /// Per-run redactor keyed by random OS entropy (tokens differ every run).
     #[must_use]
     pub fn with_random_key() -> Self {
         use rand::RngExt as _;
@@ -24,7 +22,6 @@ impl Redactor {
         Self { key }
     }
 
-    /// Cross-run-stable redactor keyed from `user_key` via the blake3 KDF.
     #[must_use]
     pub fn with_key(user_key: &str) -> Self {
         Self {
@@ -41,7 +38,6 @@ impl Redactor {
         )
     }
 
-    /// Redacts a working-tree recon report in place.
     pub fn redact_report(&self, report: &mut ReconReport) {
         let scrubber: Scrubber = self.scrubber(secret_values(&report.findings));
         for finding in &mut report.findings {
@@ -49,7 +45,6 @@ impl Redactor {
         }
     }
 
-    /// Redacts a git-history recon report in place.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn redact_git_report(&self, report: &mut GitHistoryReport) {
         let secrets: BTreeSet<String> = report
@@ -97,7 +92,6 @@ fn secret_values(findings: &[ReconFinding]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Leftmost-longest Aho-Corasick replacer mapping each secret to its sentinel in one pass.
 struct Scrubber {
     automaton: Option<AhoCorasick>,
     patterns: Vec<String>,

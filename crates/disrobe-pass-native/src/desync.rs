@@ -17,7 +17,6 @@ pub struct VmwareBackdoorHit {
     pub io_address: u64,
 }
 
-/// Scan a decoded x86 code window for the hypervisor backdoor handshake.
 #[must_use]
 pub fn scan_vmware_backdoor(bitness: Bitness, base: u64, bytes: &[u8]) -> Vec<VmwareBackdoorHit> {
     let mut hits: Vec<VmwareBackdoorHit> = Vec::new();

@@ -1,5 +1,3 @@
-//! Framed transport codecs.
-
 use super::{DecodeError, bytes_to_string};
 
 const ASCII85_OFFSET: u8 = 33;
@@ -34,7 +32,6 @@ const fn invert85(alphabet: &[u8; 85]) -> [i16; 256] {
     table
 }
 
-/// Decode an Adobe ASCII85 stream.
 pub fn ascii85_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_FRAMED_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -90,7 +87,6 @@ fn push_ascii85_group(group: [u8; 5], count: usize, out: &mut Vec<u8>) -> Result
     Ok(())
 }
 
-/// Encode bytes as an Adobe ASCII85 stream, including the `<~`/`~>` framing.
 #[must_use]
 pub fn ascii85_encode(input: &[u8]) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 5 / 4 + 8);
@@ -116,7 +112,6 @@ pub fn ascii85_encode(input: &[u8]) -> String {
     bytes_to_string(out)
 }
 
-/// Decode a `ZeroMQ` Z85 string. The input length must be a multiple of five.
 pub fn z85_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_FRAMED_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -143,7 +138,6 @@ pub fn z85_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Encode bytes as a `ZeroMQ` Z85 string. The input length must be a multiple of four.
 pub fn z85_encode(input: &[u8]) -> Result<String, DecodeError> {
     if !input.len().is_multiple_of(4) {
         return Err(DecodeError::BadLength { len: input.len() });
@@ -162,12 +156,10 @@ pub fn z85_encode(input: &[u8]) -> Result<String, DecodeError> {
     Ok(bytes_to_string(out))
 }
 
-/// Decode a uuencoded stream framed by `begin <mode> <name>` and `end`.
 pub fn uudecode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     decode_uu_family(input, b"begin", UU_OFFSET, true)
 }
 
-/// Decode an xxencoded stream framed by `begin`/`end`.
 pub fn xxdecode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     decode_uu_family(input, b"begin", 0, false)
 }
@@ -268,13 +260,11 @@ const fn decode_uu_symbol(
     }
 }
 
-/// Encode bytes as a uuencoded stream named `name`.
 #[must_use]
 pub fn uuencode(input: &[u8], name: &str) -> String {
     encode_uu_family(input, name, UU_OFFSET, true)
 }
 
-/// Encode bytes as an xxencoded stream named `name`.
 #[must_use]
 pub fn xxencode(input: &[u8], name: &str) -> String {
     encode_uu_family(input, name, 0, false)
@@ -315,7 +305,6 @@ fn encode_uu_family(input: &[u8], name: &str, offset: u8, offset_based: bool) ->
     bytes_to_string(out)
 }
 
-/// Decode a yEnc stream.
 pub fn yenc_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_FRAMED_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -358,7 +347,6 @@ pub fn yenc_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Encode bytes as a single-part yEnc stream named `name`.
 #[must_use]
 pub fn yenc_encode(input: &[u8], name: &str) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 2 + 64);

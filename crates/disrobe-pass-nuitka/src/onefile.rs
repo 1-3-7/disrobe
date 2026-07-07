@@ -115,7 +115,6 @@ pub struct StreamedPayload {
     pub entry_count: usize,
 }
 
-/// Walk a Nuitka onefile payload and hand each entry to `sink` as a borrowed slice of the decoded stream, never collecting an owned `data: Vec<u8>` per entry.
 pub fn extract_onefile_streaming(
     image: &[u8],
     payload_offset: usize,

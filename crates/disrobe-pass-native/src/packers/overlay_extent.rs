@@ -57,7 +57,6 @@ const RAR4_FLAG_BIG_DATA: u16 = 0x0100;
 const RAR4_TYPE_ENDARC: u8 = 0x7b;
 const RAR4_MAX_BLOCKS: usize = 1_000_000;
 
-/// Computes the exact byte length of an appended archive starting at `window[0]`.
 #[must_use]
 pub fn archive_true_extent(window: &[u8], archive: ArchiveKind) -> Option<usize> {
     let extent: usize = match archive {

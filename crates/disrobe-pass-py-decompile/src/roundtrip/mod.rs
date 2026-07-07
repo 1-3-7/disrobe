@@ -77,7 +77,6 @@ impl From<Object> for ConstValue {
     }
 }
 
-/// Collapse every NaN payload to one representative bit pattern.
 #[must_use]
 fn canonical_float_bits(f: f64) -> u64 {
     if f.is_nan() {

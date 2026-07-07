@@ -30,7 +30,6 @@ fn header(module_name: &str, text_len: usize, bits: u32) -> String {
     )
 }
 
-/// Disassemble the compiled image's `.text` straight to `out_path`, streaming one instruction at a time through a `BufWriter`.
 pub fn disassemble_module_to_file(
     module_name: &str,
     image: &[u8],
@@ -102,7 +101,6 @@ pub fn disassemble_module_to_file(
     })
 }
 
-/// Stream the bounded disassembly into an in-memory buffer, for the chain (which hands child bytes to the driver to write).
 #[must_use]
 pub fn disassemble_module_to_vec(
     module_name: &str,
@@ -140,7 +138,6 @@ pub fn disassemble_module_to_vec(
     Some((disasm, buf))
 }
 
-/// Recover the same bounded stats as [`disassemble_module_to_file`] without writing a file.
 #[must_use]
 pub fn disassemble_module_stats(module_name: &str, image: &[u8]) -> Option<NativeDisasm> {
     let (address, bits, text): (u64, u32, &[u8]) = text_section_window(image)?;

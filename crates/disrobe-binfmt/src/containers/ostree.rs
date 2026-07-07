@@ -52,7 +52,6 @@ pub struct OstreeRepoLayout {
     pub commit_count: usize,
 }
 
-/// Abstraction over a source of raw `OSTree` objects keyed by `(checksum, extension)`.
 pub trait ObjectSource {
     fn read_object(&self, checksum: &str, extension: &str) -> Result<Vec<u8>>;
 }

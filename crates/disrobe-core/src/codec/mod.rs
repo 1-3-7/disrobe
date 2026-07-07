@@ -1,5 +1,3 @@
-//! Shared encoding, framing, and cipher recovery primitives reusable by every pass.
-
 pub mod alphabets;
 pub mod cipher;
 pub mod crypto_wall;
@@ -101,7 +99,6 @@ impl Scheme {
     }
 }
 
-/// Decode `input` under an explicitly chosen [`Scheme`].
 pub fn decode(input: &[u8], scheme: Scheme) -> Result<Vec<u8>, DecodeError> {
     match scheme {
         Scheme::Base58Bitcoin => alphabets::base58_decode(input, Base58Variant::Bitcoin),
@@ -190,7 +187,6 @@ fn nested_magic(bytes: &[u8]) -> bool {
         .any(|(magic, _): &(&[u8], &str)| bytes.starts_with(magic))
 }
 
-/// Reports whether `bytes` begins with a known nested-container or executable magic.
 #[must_use]
 pub fn nested_container_magic(bytes: &[u8]) -> bool {
     nested_magic(bytes) || bytes.starts_with(b"BZh") || bytes.starts_with(b"ustar")
@@ -255,7 +251,6 @@ const WORDS: &[&str] = &[
     "class",
 ];
 
-/// Try every text-and-frame [`Scheme`] over `input` and return each validated decode.
 #[must_use]
 pub fn blind_cascade(input: &[u8]) -> Vec<CascadeHit> {
     if input.len() < MIN_CASCADE_INPUT || input.len() > (1 << 24) {
@@ -284,7 +279,6 @@ pub fn blind_cascade(input: &[u8]) -> Vec<CascadeHit> {
     hits
 }
 
-/// Outcome of attempting codec/crypto recovery over a blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CascadeRecovery {
     Decoded(Vec<CascadeHit>),
@@ -292,7 +286,6 @@ pub enum CascadeRecovery {
     Nothing,
 }
 
-/// Run the blind decode cascade, falling back to a structured crypto wall.
 #[must_use]
 pub fn cascade_or_wall(input: &[u8]) -> CascadeRecovery {
     let hits: Vec<CascadeHit> = blind_cascade(input);

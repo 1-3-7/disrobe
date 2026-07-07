@@ -1,5 +1,3 @@
-//! Web escaping codecs: percent/URL encoding, HTML numeric and named entity decoding, and Punycode (`xn--`) label decoding per RFC 3492.
-
 use super::{DecodeError, bytes_to_string};
 
 const PUNY_BASE: u32 = 36;
@@ -11,7 +9,6 @@ const PUNY_INITIAL_BIAS: u32 = 72;
 const PUNY_INITIAL_N: u32 = 128;
 const MAX_WEB_INPUT: usize = 1 << 24;
 
-/// Decode a percent/URL-encoded string. Invalid escapes are rejected.
 pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -42,7 +39,6 @@ pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Percent-encode bytes, escaping everything outside the unreserved set.
 #[must_use]
 pub fn percent_encode(input: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -59,7 +55,6 @@ pub fn percent_encode(input: &[u8]) -> String {
     bytes_to_string(out)
 }
 
-/// Decode HTML numeric (`&#NN;`, `&#xHH;`) and the common named entities into a UTF-8 string.
 pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -121,7 +116,6 @@ fn decode_one_entity(entity: &str) -> Option<char> {
     }
 }
 
-/// Decode a single Punycode label (without the `xn--` prefix) per RFC 3492.
 pub fn punycode_decode_label(input: &str) -> Result<String, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -176,7 +170,6 @@ pub fn punycode_decode_label(input: &str) -> Result<String, DecodeError> {
     Ok(output.into_iter().collect())
 }
 
-/// Decode a full Punycode domain label that may carry the `xn--` ACE prefix.
 pub fn punycode_decode(input: &str) -> Result<String, DecodeError> {
     input
         .strip_prefix("xn--")

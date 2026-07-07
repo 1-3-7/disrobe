@@ -71,7 +71,6 @@ impl PassRegistry {
         out
     }
 
-    /// Detectors ordered so the cheap, format-defining wrapper/packer identifiers run before the generic, full-image scanners.
     fn iter_passes_priority(&self) -> impl Iterator<Item = &'static dyn Pass> + '_ {
         const FIRST: [&str; 6] = [
             "nuitka.extract",

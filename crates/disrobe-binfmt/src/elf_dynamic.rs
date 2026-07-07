@@ -176,7 +176,6 @@ fn read_cstr(bytes: &[u8], off: usize) -> Option<String> {
     Some(String::from_utf8_lossy(&tail[..end]).into_owned())
 }
 
-/// Parse the `PT_DYNAMIC` segment of an ELF image and surface its linkage metadata.
 #[must_use]
 pub fn parse_elf_dynamic(bytes: &[u8]) -> Option<ElfDynamic> {
     let class: ElfClass = detect_class(bytes)?;

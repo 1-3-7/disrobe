@@ -67,7 +67,6 @@ impl fmt::Display for ApiKey {
     }
 }
 
-/// Masks a key to `head...<redacted N chars>`, reusing the disrobe-core secret-shaped guard so every prowl key prints identically to the rest of the suite's debug output.
 #[must_use]
 pub fn redact(value: &str) -> String {
     let trimmed: &str = value.trim();
@@ -92,7 +91,6 @@ pub fn keyring_service(source: Source) -> String {
     format!("disrobe-prowl:{}", source.label())
 }
 
-/// Whether the source can authenticate with an API key, and whether that key is mandatory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthPolicy {
     None,
@@ -109,7 +107,6 @@ pub const fn auth_policy(source: Source) -> AuthPolicy {
     }
 }
 
-/// The conventional environment-variable name each service publishes, accepted in addition to the uniform `PROWL_<PROVIDER>_API_KEY`.
 #[must_use]
 pub const fn conventional_env(source: Source) -> Option<&'static str> {
     match source {
@@ -220,7 +217,6 @@ fn config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home: std::ffi::OsString| PathBuf::from(home).join(".config"))
 }
 
-/// Parses a `prowl.toml` whose `[keys]` table maps a source label to its key.
 pub fn config_keys_at(path: &PathBuf) -> Result<BTreeMap<Source, String>, KeyError> {
     if !path.exists() {
         return Ok(BTreeMap::new());
@@ -357,7 +353,6 @@ impl<'a> KeyResolver<'a> {
             .map(|v: String| v.trim().to_owned())
     }
 
-    /// Resolves a source's key by priority: flag > env > OS keyring > config file.
     pub fn resolve(&self, source: Source) -> Result<Option<ApiKey>, KeyError> {
         if let Some(v) = self
             .flags

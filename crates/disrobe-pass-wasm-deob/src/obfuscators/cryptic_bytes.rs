@@ -142,7 +142,6 @@ fn scan_keywords(haystack: &[u8], counts: &mut BTreeMap<String, u32>) {
     }
 }
 
-/// Peels one XOR layer from a cryptic-bytes wasm miner.
 pub fn peel_xor_layer(input: &[u8]) -> Result<CrypticBytesPeel> {
     let detection: CrypticBytesDetection = detect(input)?;
     if !detection.matched || detection.xor_keys.is_empty() {

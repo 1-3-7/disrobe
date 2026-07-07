@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// A format identified by self-consistent internal structure rather than by a magic byte, marker string, or section name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StructuralFormat {
@@ -132,7 +131,6 @@ fn read_u16(bytes: &[u8], off: usize, little: bool) -> Option<u16> {
     }
 }
 
-/// Identify a binary by structural self-consistency, ignoring its magic bytes entirely.
 #[must_use]
 pub fn identify_by_structure(bytes: &[u8]) -> Option<StructuralFormat> {
     if validate_elf(bytes) {
@@ -162,13 +160,11 @@ pub fn identify_by_structure(bytes: &[u8]) -> Option<StructuralFormat> {
     None
 }
 
-/// Structurally validate a PE image, ignoring whether the DOS `MZ` is intact.
 #[must_use]
 pub fn validate_pe(bytes: &[u8]) -> bool {
     locate_pe_header(bytes).is_some()
 }
 
-/// Locate the offset of the `PE\0\0` signature when the structure is self-consistent.
 #[must_use]
 pub fn locate_pe_header(bytes: &[u8]) -> Option<usize> {
     if let Some(e_lfanew) = read_u32_le(bytes, DOS_E_LFANEW_OFFSET)
@@ -234,7 +230,6 @@ fn pe_header_is_valid(bytes: &[u8], pe_off: usize) -> bool {
     needed <= bytes.len()
 }
 
-/// Structurally validate an ELF image, ignoring whether `\x7fELF` is intact.
 #[must_use]
 pub fn validate_elf(bytes: &[u8]) -> bool {
     if bytes.len() < ELF_HEADER_MIN {
@@ -348,7 +343,6 @@ fn elf_tables(bytes: &[u8], is_64: bool, little: bool) -> Option<ElfTables> {
     }
 }
 
-/// Structurally validate a single-arch Mach-O, ignoring whether the magic is intact.
 #[must_use]
 pub fn validate_macho(bytes: &[u8]) -> bool {
     if bytes.len() < MACHO_HEADER_MIN {
@@ -415,7 +409,6 @@ fn macho_header_walk(bytes: &[u8], little: bool, is_64: bool) -> bool {
     cursor == total
 }
 
-/// Structurally validate a fat (universal) Mach-O, ignoring whether the magic is intact.
 #[must_use]
 pub fn validate_macho_fat(bytes: &[u8]) -> bool {
     let Some(nfat): Option<u32> = read_u32_be(bytes, 4) else {
@@ -447,7 +440,6 @@ pub fn validate_macho_fat(bytes: &[u8]) -> bool {
     true
 }
 
-/// Structurally validate a wasm module, ignoring whether `\0asm` is intact.
 #[must_use]
 pub fn validate_wasm(bytes: &[u8]) -> bool {
     if bytes.len() < 8 {
@@ -508,7 +500,6 @@ fn read_uleb128(bytes: &[u8], off: usize) -> Option<(u64, usize)> {
     Some((result, consumed))
 }
 
-/// Structurally validate a DEX file, ignoring whether `dex\n0XX\0` is intact.
 #[must_use]
 pub fn validate_dex(bytes: &[u8]) -> bool {
     if bytes.len() < DEX_HEADER_MIN {
@@ -558,7 +549,6 @@ pub fn validate_dex(bytes: &[u8]) -> bool {
     consistent > 0
 }
 
-/// Structurally validate a Java class file, ignoring whether `0xCAFEBABE` is intact.
 #[must_use]
 pub fn validate_java_class(bytes: &[u8]) -> bool {
     if bytes.len() < CLASS_MIN {
@@ -611,13 +601,11 @@ pub fn validate_java_class(bytes: &[u8]) -> bool {
     read_u16_be(bytes, cursor).is_some()
 }
 
-/// Structurally validate a ZIP archive, ignoring whether a `PK\x03\x04` is intact.
 #[must_use]
 pub fn validate_zip(bytes: &[u8]) -> bool {
     locate_zip_central_directory(bytes).is_some()
 }
 
-/// Locate the central-directory start offset of a structurally valid ZIP.
 #[must_use]
 pub fn locate_zip_central_directory(bytes: &[u8]) -> Option<usize> {
     let eocd: usize = find_eocd(bytes)?;

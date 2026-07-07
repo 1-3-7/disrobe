@@ -67,7 +67,6 @@ impl KeySet {
     }
 }
 
-/// Computes the exponential backoff for `attempt` (0-based), honoring a server `Retry-After` hint when present, clamped to `max`.
 #[must_use]
 pub fn backoff_for(
     attempt: u32,
@@ -178,7 +177,6 @@ async fn harvest_one(
     }
 }
 
-/// Resolves the latest Common Crawl index id so harvests do not pin a stale collection.
 async fn resolve_commoncrawl_index(fetcher: &dyn Fetcher) -> Option<String> {
     let request: Request =
         Request::get(providers::url_archive::CommonCrawl::collinfo_url().to_owned());
@@ -186,7 +184,6 @@ async fn resolve_commoncrawl_index(fetcher: &dyn Fetcher) -> Option<String> {
     providers::url_archive::CommonCrawl::latest_index_from_collinfo(&resp.body)
 }
 
-/// Harvests every requested source for each target with no API keys (anonymous access only).
 pub async fn harvest(
     fetcher: Arc<dyn Fetcher>,
     targets: &[String],
@@ -205,7 +202,6 @@ struct ProviderAccumulator {
     note: Option<String>,
 }
 
-/// Harvests every requested source for each target, authenticating with `keys` where a service supports or requires an API key.
 pub async fn harvest_with_keys(
     fetcher: Arc<dyn Fetcher>,
     targets: &[String],

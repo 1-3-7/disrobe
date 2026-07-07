@@ -122,7 +122,6 @@ pub struct CustomPattern {
 }
 
 impl CustomPattern {
-    /// Compiles a user-supplied pattern with a bounded regex size so a pathological custom rule cannot exhaust memory.
     pub fn compile(name: &str, pattern: &str) -> Result<Self, ReconError> {
         let regex: Regex = RegexBuilder::new(pattern)
             .size_limit(REGEX_SIZE_LIMIT)
@@ -1030,7 +1029,6 @@ fn extract_utf16le_ascii_strings(bytes: &[u8]) -> String {
     out
 }
 
-/// Scans a single byte blob, returning the findings plus whether it was valid UTF-8.
 #[must_use]
 pub fn scan_bytes(
     bytes: &[u8],
@@ -1285,7 +1283,6 @@ fn codec_peel_token(
     }
 }
 
-/// Peels every static [`codec::Scheme`] off each printable run in `bytes`, rescanning each decode for indicators and recursing into further encoding layers.
 fn codec_cascade_findings(
     bytes: &[u8],
     uri: Option<&str>,
@@ -1321,7 +1318,6 @@ fn codec_cascade_findings(
     out
 }
 
-/// Scans one blob through the full detector set, each layer bounded by the decode-bomb budget.
 fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<ReconFinding>, bool) {
     let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_bytes(bytes, uri, config);
     findings.extend(base64_decode_findings(bytes, uri, config, 0));
@@ -1337,7 +1333,6 @@ fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<Reco
     (findings, valid_utf8)
 }
 
-/// Routes a blob to the matching container extractor by magic bytes, regardless of file extension.
 fn scan_container(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> Vec<ReconFinding> {
     if is_zip_container(bytes) {
         return scan_zip_bytes(bytes, uri, config);
@@ -1358,7 +1353,6 @@ fn scan_container(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> Vec<
     Vec::new()
 }
 
-/// Scans a single byte blob and returns a complete deduped report.
 #[must_use]
 pub fn report_bytes(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> ReconReport {
     let (findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_blob(bytes, uri, config);
@@ -1379,7 +1373,6 @@ fn is_zip_container(bytes: &[u8]) -> bool {
     bytes.starts_with(&ZIP_LOCAL_HEADER) || bytes.starts_with(&ZIP_EMPTY_HEADER)
 }
 
-/// Scans the entries of a ZIP/APK container, attributing each finding to a `outer!inner` path so the report names the file inside the archive.
 #[must_use]
 pub fn scan_zip_bytes(
     bytes: &[u8],
@@ -1496,7 +1489,6 @@ fn scan_decompressed(
     findings
 }
 
-/// Inflates a gzip stream under the zip-bomb budget and scans the inner blob.
 #[must_use]
 pub fn scan_gzip_bytes(
     bytes: &[u8],
@@ -1507,7 +1499,6 @@ pub fn scan_gzip_bytes(
     scan_decompressed(plain, outer, "gunzip", config)
 }
 
-/// Decompresses a bzip2 stream under the zip-bomb budget and scans the inner blob.
 #[must_use]
 pub fn scan_bzip2_bytes(
     bytes: &[u8],
@@ -1518,7 +1509,6 @@ pub fn scan_bzip2_bytes(
     scan_decompressed(plain, outer, "bunzip2", config)
 }
 
-/// Decompresses an xz stream under the zip-bomb budget and scans the inner blob.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn scan_xz_bytes(bytes: &[u8], outer: Option<&str>, config: &ReconConfig) -> Vec<ReconFinding> {
@@ -1526,7 +1516,6 @@ pub fn scan_xz_bytes(bytes: &[u8], outer: Option<&str>, config: &ReconConfig) ->
     scan_decompressed(plain, outer, "unxz", config)
 }
 
-/// Walks a tar archive under the zip-bomb budget, scanning each regular file and attributing findings to `outer!inner` paths.
 #[must_use]
 pub fn scan_tar_bytes(
     bytes: &[u8],
@@ -1644,7 +1633,6 @@ fn read_scan_file(path: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Recursively scans a directory tree, or a single file.
 pub fn report_tree(root: &Path, config: &ReconConfig) -> Result<ReconReport, ReconError> {
     let meta: std::fs::Metadata = std::fs::metadata(root).map_err(|e| ReconError::Io {
         path: root.display().to_string(),
@@ -1709,7 +1697,6 @@ pub fn categories(report: &ReconReport) -> BTreeSet<ReconCategory> {
         .collect()
 }
 
-/// Stable identity of a finding for baseline allow-listing: path, category, rule, value.
 #[must_use]
 pub fn fingerprint(finding: &ReconFinding) -> String {
     format!(

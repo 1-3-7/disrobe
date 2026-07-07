@@ -24,10 +24,8 @@ use crate::desync::{
 };
 use crate::error::{Error, Result};
 
-/// Hard ceiling on the executable bytes decoded per call to [`build_disasm_payload`].
 pub const MAX_DECODE_TEXT_BYTES: usize = 32 * 1024 * 1024;
 
-/// Hard ceiling on the number of [`DisasmInstruction`] values held in one payload.
 pub const MAX_PAYLOAD_INSTRUCTIONS: usize = 4_000_000;
 
 pub fn build_disasm_payload(bytes: &[u8]) -> Result<DisasmPayload> {
@@ -284,7 +282,6 @@ fn read_only_windows(bytes: &[u8]) -> Vec<ReadOnlyWindow<'_>> {
     out
 }
 
-/// The largest `.text` section as a zero-copy borrow of `bytes`, with its virtual address and bits.
 #[must_use]
 pub fn text_section_window(bytes: &[u8]) -> Option<(u64, u32, &[u8])> {
     let native: NativeFile = parse_native(bytes).ok()?;

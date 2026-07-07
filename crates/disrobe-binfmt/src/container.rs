@@ -289,7 +289,6 @@ impl ContainerKind {
         )
     }
 
-    /// Every real format variant (everything except [`ContainerKind::None`]), in declaration order.
     pub const ALL: [Self; 98] = [
         Self::Zip,
         Self::Tar,
@@ -391,7 +390,6 @@ impl ContainerKind {
         Self::FwAiroha,
     ];
 
-    /// How [`crate::extract::extract_to`] handles this format: whether it writes extracted member bytes to disk, emits only a parsed-layout summary, or needs an external tool.
     #[must_use]
     pub const fn extraction_mode(self) -> ExtractionMode {
         match self {
@@ -497,13 +495,11 @@ impl ContainerKind {
         }
     }
 
-    /// Count of real formats that detection recognizes (every variant except [`ContainerKind::None`]).
     #[must_use]
     pub const fn detected_format_count() -> usize {
         Self::ALL.len()
     }
 
-    /// Count of real formats whose in-tree extractor writes member/file bytes to disk (i.e. not metadata-summary-only and not external-tool-gated).
     #[must_use]
     pub fn extracted_in_tree_count() -> usize {
         Self::ALL
@@ -513,16 +509,11 @@ impl ContainerKind {
     }
 }
 
-/// The disposition of a [`ContainerKind`] inside the in-tree extractor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtractionMode {
-    /// The extractor walks the format and writes extracted member bytes to disk.
     Payload,
-    /// The extractor parses the format and emits a layout summary only (no member payloads).
     MetadataOnly,
-    /// Extraction is delegated to an external tool when one is installed.
     ExternalTool,
-    /// Not a real container ([`ContainerKind::None`]).
     Unsupported,
 }
 

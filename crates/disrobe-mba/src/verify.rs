@@ -250,7 +250,6 @@ impl Bdd {
         }
     }
 
-    /// A `Mem(addr, width)` read modeled as an uninterpreted term keyed structurally by its `(addr, width)` pair.
     fn mem_opaque_bits(&mut self, key: (String, Width), bits: usize) -> Option<Vec<NodeId>> {
         if let Some(existing) = self.mem_vars.get(&key) {
             return Some(existing.clone());

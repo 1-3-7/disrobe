@@ -71,7 +71,6 @@ impl Yield {
     }
 }
 
-/// A single OSINT data source.
 #[async_trait]
 pub trait Provider: Send + Sync + std::fmt::Debug {
     fn source(&self) -> Source;

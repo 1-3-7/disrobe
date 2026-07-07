@@ -1,5 +1,3 @@
-//! Disassembler for a flat V8 Ignition `BytecodeArray` (a contiguous opcode stream).
-
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

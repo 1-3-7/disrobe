@@ -88,7 +88,6 @@ pub struct ChildHandle {
     pub hint: Option<String>,
 }
 
-/// Hint sentinel marking a child the pass has fully handled.
 pub const TERMINAL_HINT: &str = "disrobe.terminal";
 
 impl ChildHandle {

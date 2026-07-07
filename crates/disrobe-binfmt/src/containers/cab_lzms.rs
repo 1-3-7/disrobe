@@ -190,7 +190,6 @@ fn decode_folder(bytes: &[u8], folder: Folder, header: &Header) -> Result<Vec<u8
     Ok(out)
 }
 
-/// Extract files from a cabinet whose folders use the LZMS compression type (`typeCompress & 0x0f == 5`).
 pub fn extract_cab_lzms(bytes: &[u8], cap: u64) -> Result<Vec<CabLzmsFile>> {
     let (header, folders, _): (Header, Vec<Folder>, usize) = parse_header_and_folders(bytes)?;
     let files: Vec<File> = parse_files(bytes, &header)?;
@@ -241,7 +240,6 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-/// Build a spec-conformant LZMS-compressed cabinet holding `files` in a single folder, each chunk compressed with the in-tree LZMS encoder.
 #[must_use]
 pub fn build_lzms_cab(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut folder_stream: Vec<u8> = Vec::new();

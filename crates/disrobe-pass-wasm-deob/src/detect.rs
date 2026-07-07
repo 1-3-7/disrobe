@@ -117,7 +117,6 @@ const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 const WASM_VERSION_1: u32 = 1;
 const WASM_MAX_SECTION_ID: u8 = 13;
 
-/// Return a copy with the `\0asm` magic restored when it is scrambled but the section id/size LEB128 stream validates end to end.
 fn magic_repaired_module(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.len() >= 4 && bytes[..4] == WASM_MAGIC {
         return None;

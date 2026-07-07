@@ -692,7 +692,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Parse a `HashLink` `.hl` bytecode image into its full structured form.
 pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
     if data.len() < 4 || &data[0..3] != HL_MAGIC {
         return Err(HlError::BadMagic);

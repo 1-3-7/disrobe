@@ -24,7 +24,6 @@ const MAX_PREVIOUS_CLONE_WEIGHT: usize = 128 * 1024;
 const MAX_WIDE_SCAN_BYTES: usize = 256 * 1024 * 1024;
 const MAX_TABLE_HEADER_HINTS: usize = 64;
 
-/// Constant-table value encodings tried per chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkValueLayout {
     ModernVarint,
@@ -889,7 +888,6 @@ pub fn parse_constants(image: &[u8]) -> NuitkaConstants {
     }
 }
 
-/// True when no plaintext Nuitka constants chunks parse out of `image`.
 #[must_use]
 pub fn constants_unparsable(image: &[u8]) -> bool {
     parse_constants(image).is_empty()
@@ -1005,7 +1003,6 @@ mod tests {
         image
     }
 
-    /// Round-trip only: the chunk is emitted by disrobe's own `legacy_*` helpers, so this proves the fixed32 decoder agrees with disrobe's encoder, NOT that the grammar matches a real legacy Nuitka byte layout (acquisition-gated).
     #[test]
     fn legacy_fixed32_roundtrips_disrobes_own_encoding() {
         let mut values: Vec<u8> = legacy_text("alpha");
@@ -1029,7 +1026,6 @@ mod tests {
         assert_eq!(module.value_count, 2);
     }
 
-    /// Round-trip only: same caveat as the fixed32 case.
     #[test]
     fn legacy_fixed64_roundtrips_disrobes_own_encoding() {
         let mut values: Vec<u8> = legacy_text("wide");

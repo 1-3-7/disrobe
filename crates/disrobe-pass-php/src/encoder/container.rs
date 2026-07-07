@@ -249,7 +249,6 @@ fn body_after_marker_line(
     Ok(at)
 }
 
-/// Reverses the statically-present ionCube transport into the opcode stream.
 pub fn reverse_ioncube_container(
     envelope: &[u8],
     marker_offset: usize,
@@ -311,7 +310,6 @@ pub fn reverse_ioncube_container(
     })
 }
 
-/// Reverses the statically-present `SourceGuardian` transport into the opcode stream.
 pub fn reverse_sourceguardian_container(envelope: &[u8]) -> Result<ContainerSurface> {
     const FAMILY: &str = "SourceGuardian";
     let decoded: Vec<u8> = if let Some(call_at) = memmem::find(envelope, b"sg_load('") {
@@ -455,7 +453,6 @@ fn build_container_body(
     Ok(body)
 }
 
-/// Builds an ionCube-shaped envelope around `opcode_stream`.
 pub fn build_ioncube_container(
     marker_line: &[u8],
     version: u32,
@@ -479,7 +476,6 @@ pub fn build_ioncube_container(
     Ok(out)
 }
 
-/// Builds a `SourceGuardian`-shaped `sg_load('<base64>')` envelope around `opcode_stream`.
 pub fn build_sourceguardian_container(
     version: u32,
     flags: u32,
@@ -524,7 +520,6 @@ fn zlib_compress(family: &'static str, data: &[u8]) -> Result<Vec<u8>> {
         })
 }
 
-/// Builds a Zend Guard `@Zend;` envelope whose opcode stream is XOR-obfuscated by a `ZOBF` key.
 pub fn build_zend_guard_obfuscated(
     version: u8,
     key: &[u8],
@@ -554,7 +549,6 @@ pub fn build_zend_guard_obfuscated(
 
 pub const SYNTHETIC_TRANSPORT_FRAME_MAGIC: [u8; 4] = *b"ICF1";
 
-/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `ionCube`-shaped envelope built around the disrobe-internal [`SYNTHETIC_TRANSPORT_FRAME_MAGIC`].
 pub fn synthetic_transport_surface_ioncube(
     envelope: &[u8],
     marker_offset: usize,
@@ -636,7 +630,6 @@ pub fn synthetic_transport_surface_ioncube(
     })
 }
 
-/// Strips the static base64 (then optional zlib) transport of a SYNTHETIC `SourceGuardian`-shaped `sg_load('<base64>')` envelope.
 pub fn synthetic_transport_surface_sourceguardian(envelope: &[u8]) -> Result<ContainerSurface> {
     const FAMILY: &str = "SourceGuardian";
     const NEEDLE: &[u8] = b"sg_load('";

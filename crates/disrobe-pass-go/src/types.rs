@@ -16,7 +16,6 @@ pub struct GoTypeRef {
     pub methods: Vec<GoMethod>,
 }
 
-/// One entry of a named type's method set, from the type's `abi.UncommonType`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GoMethod {
     pub name: Option<String>,
@@ -152,7 +151,6 @@ fn extract_typemeta_versioned(
     }
 }
 
-/// Cross-reference every reconstructed method against the pclntab function table by exact entry-VA match, filling `linker_name`.
 pub fn link_method_functions(meta: &mut GoTypeMeta, funcs: &[(u64, &str)], text_va: u64) {
     if funcs.is_empty() {
         return;

@@ -829,7 +829,6 @@ fn base32_decode_rfc4648(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Offline structural verification of a candidate secret.
 #[must_use]
 pub fn validate(kind: SecretKind, value: &str) -> Confidence {
     if is_allowlisted(value) {

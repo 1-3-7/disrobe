@@ -222,7 +222,6 @@ pub enum PickleValue {
     },
 }
 
-/// The pickle construction opcode that produced an [`PickleValue::Object`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjCtor {
@@ -823,7 +822,6 @@ impl Session {
         self.machine.memo.len()
     }
 
-    /// The final memo table, keyed by memo slot.
     #[must_use]
     #[inline]
     pub fn memo(&self) -> &BTreeMap<u64, PickleValue> {
@@ -836,7 +834,6 @@ impl Session {
         &self.machine.global_refs
     }
 
-    /// The top-level result's own memo key, when it is itself a shared or self-referential container.
     #[must_use]
     #[inline]
     pub fn root_memo_key(&self) -> Option<u64> {
@@ -848,7 +845,6 @@ pub fn execute(dis: &Disassembly) -> Result<VmTrace> {
     Ok(execute_full(dis)?.0)
 }
 
-/// Execute a disassembly, returning the trace alongside the final memo table.
 pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleValue>)> {
     crate::debug::dbg_section("pickle vm trace");
     crate::debug::dbg_kv("vm-input", || {

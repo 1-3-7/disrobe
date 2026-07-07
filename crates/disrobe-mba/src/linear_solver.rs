@@ -23,7 +23,6 @@ const MAX_SUBSET_SEARCH_VARS: u32 = 5;
 
 const MAX_SUBSET_COMBOS: usize = 60_000;
 
-/// Recover the simplest linear-MBA form of `expr`, or `None` when the expression is not a linear MBA over the variable set or exceeds [`MAX_SOLVER_VARS`].
 #[must_use]
 pub fn solve_linear_mba(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_SOLVER_VARS {
@@ -65,7 +64,6 @@ pub fn solve_linear_mba(expr: &Expr, width: Width, var_count: u32) -> Option<Exp
     best.map(|(_, candidate): (usize, Expr)| candidate)
 }
 
-/// Exact equivalence test for two truth-table columns of linear MBAs over Z/2^n.
 #[must_use]
 pub fn columns_equal_mod_width(left: &[i128], right: &[i128], width: Width) -> bool {
     if left.len() != right.len() {
@@ -77,7 +75,6 @@ pub fn columns_equal_mod_width(left: &[i128], right: &[i128], width: Width) -> b
         .all(|(a, b): (&i128, &i128)| (a - b).rem_euclid(modulus) == 0)
 }
 
-/// Whether the per-bit reconstruction is faithful for `expr` at `width`.
 #[must_use]
 pub fn is_column_faithful(expr: &Expr, width: Width) -> bool {
     faithful_value(expr, width)
@@ -129,7 +126,6 @@ fn faithful_bitwise(expr: &Expr, width: Width) -> bool {
     }
 }
 
-/// Compute the integer truth-table column of a linear-MBA `expr` over `var_count` boolean variables.
 #[must_use]
 pub fn truth_column(expr: &Expr, var_count: u32, rows: usize) -> Vec<i128> {
     let mut column: Vec<i128> = vec![0; rows];

@@ -1440,7 +1440,6 @@ fn lz_copy(out: &mut [u8], pos: usize, offset: u32, length: u32) -> Result<()> {
     Ok(())
 }
 
-/// Decompress a raw LZMS-compressed chunk to its known uncompressed size.
 pub fn lzms_decompress(input: &[u8], out_size: usize) -> Result<Vec<u8>> {
     if input.len() & 1 != 0 || input.len() < 4 {
         return Err(Error::Decompression(
@@ -1965,7 +1964,6 @@ fn enc_find_match(data: &[u8], pos: usize, head: &[i32], prev: &[i32]) -> Option
     }
 }
 
-/// Compress a raw byte buffer into a single LZMS chunk decodable by [`lzms_decompress`].
 pub fn lzms_compress(input: &[u8]) -> Vec<u8> {
     let out_size: usize = input.len();
     if out_size == 0 {

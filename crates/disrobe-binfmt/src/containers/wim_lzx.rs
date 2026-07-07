@@ -455,7 +455,6 @@ fn compress_block(
     writer.into_bytes()
 }
 
-/// Compress a raw byte buffer into a single LZX-compressed WIM chunk decodable by the in-tree LZX chunk decoder.
 pub fn lzx_compress_chunk(data: &[u8], aligned: bool) -> Result<Vec<u8>> {
     if data.len() > LZX_DEFAULT_BLOCK_SIZE {
         return Err(Error::Decompression(
@@ -481,7 +480,6 @@ pub fn lzx_compress_chunk(data: &[u8], aligned: bool) -> Result<Vec<u8>> {
     Ok(compress_block(&tokens, data.len(), window_size, block_type))
 }
 
-/// Concatenate per-chunk LZX streams and the WIM non-solid chunk-offset table into a single compressed resource body.
 #[must_use]
 pub fn lzx_build_resource_body(chunks: &[Vec<u8>]) -> Vec<u8> {
     let mut offsets: Vec<u8> = Vec::new();

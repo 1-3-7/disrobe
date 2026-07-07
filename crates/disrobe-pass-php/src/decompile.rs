@@ -4,13 +4,10 @@ use std::collections::BTreeMap;
 
 pub const OPARRAY_MAGIC: &[u8; 4] = b"DZOA";
 
-/// Container schema version stamped by the emitter on fresh dumps.
 pub const OPARRAY_VERSION: u8 = 2;
 
-/// Oldest container schema this parser decodes.
 pub const OPARRAY_MIN_VERSION: u8 = 1;
 
-/// Newest container schema this parser decodes.
 pub const OPARRAY_MAX_VERSION: u8 = 2;
 
 const SANE_OP_CAP: u32 = 4_000_000;
@@ -181,7 +178,6 @@ pub struct OpArray {
     pub literals: Vec<Literal>,
     pub ops: Vec<Op>,
     pub children: Vec<Self>,
-    /// Source names of compiled variables, indexed by `Cv` slot.
     pub var_names: Vec<Option<String>>,
 }
 

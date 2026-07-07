@@ -24,7 +24,6 @@ pub const MAX_BITWISE_SYNTH_VARS: u32 = 4;
 
 const BFS_TABLE_BUDGET: usize = 1usize << 14;
 
-/// Recover a minimal partial-mask bitwise form of `expr` at `width`.
 #[must_use]
 pub fn synthesize_bitwise_masked(expr: &Expr, width: Width, var_count: u32) -> Option<Expr> {
     if var_count == 0 || var_count > MAX_BITWISE_SYNTH_VARS || !is_pure_bitwise(expr) {

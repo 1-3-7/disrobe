@@ -338,7 +338,6 @@ fn find_infinite_while(
     None
 }
 
-/// Whether a `JUMP_BACKWARD` inside a `PUSH_EXC_INFO` handler cold-block re-loops an outer construct (a handler success-path continue) rather than opening a fresh infinite `while`.
 fn back_edge_inside_exc_handler_cold_block(
     stream: &DecodedStream,
     header: usize,
@@ -427,7 +426,6 @@ fn loop_has_jump_exit(stream: &DecodedStream, header: usize, back_edge: usize, h
     })
 }
 
-/// Whether a `while True:` wrapping a try or for-loop whose only exits are inner breaks is still an infinite loop.
 fn infinite_while_only_break_exits(
     stream: &DecodedStream,
     header: usize,

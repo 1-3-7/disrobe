@@ -20,7 +20,6 @@ const ORDINAL_FLAG_PE32: u32 = 0x8000_0000;
 const ORDINAL_FLAG_PE32_PLUS: u64 = 0x8000_0000_0000_0000;
 const MAX_RESOURCE_DEPTH: u32 = 8;
 
-/// One restoration step the unbind pass performed, tallied per directory so the residual is attributable to a concrete loader action rather than a single opaque percentage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UnbindReport {
     pub relocations_walked: usize,
@@ -300,7 +299,6 @@ fn restore_resource_data_entry(
     }
 }
 
-/// Roll a loaded-and-bound PE image back to its on-disk RVA-mapped form.
 pub fn unbind_pe(mapped: &mut [u8], load_base: u64) -> Result<UnbindReport> {
     let img: PeImage = parse_pe_image(mapped)?;
     let mut report: UnbindReport = UnbindReport::default();

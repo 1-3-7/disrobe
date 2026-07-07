@@ -1102,7 +1102,6 @@ fn descriptor_arg_slots(desc: &str) -> usize {
     slots
 }
 
-/// Evaluate a Stringer flow-mode decryptor's own `()J` self-tamper fold over an EMPTY input stream and return the resulting SipHash-2-4 value (`abs(fold(seed, seed, []))`).
 #[must_use]
 pub fn recover_reflective_self_hash_empty_fold(cf: &ClassFile) -> Option<i64> {
     let key_method: usize = (0..cf.methods.len()).find(|&idx: &usize| {

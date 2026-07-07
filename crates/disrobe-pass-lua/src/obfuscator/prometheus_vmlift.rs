@@ -338,7 +338,6 @@ const MAX_FOLD_TOKENS: usize = 4096;
 
 const NUMERIC_EXPR_BUDGET: usize = 1 << 24;
 
-/// Fold Prometheus `NumbersToExpressions` arithmetic wrappers back to plain numeric literals.
 #[derive(Debug, Clone)]
 struct FoldedSpan {
     start: usize,

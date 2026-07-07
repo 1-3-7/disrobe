@@ -9,7 +9,6 @@ const MAX_CYCLE_TARGETS: usize = 4_096;
 
 include!("compat_pickle.rs");
 
-/// Translate a legacy Python-2 `(module, name)` global to its Python-3 name.
 fn map_global(module: &str, name: &str) -> (String, String) {
     if let Some(&(_, _, new_module, new_name)) = NAME_MAPPING
         .iter()
@@ -26,7 +25,6 @@ fn map_global(module: &str, name: &str) -> (String, String) {
     (module.to_owned(), name.to_owned())
 }
 
-/// A re-executable `Python` reconstruction of a pickle object graph.
 #[derive(Debug, Clone)]
 pub struct Reconstruction {
     pub program: String,

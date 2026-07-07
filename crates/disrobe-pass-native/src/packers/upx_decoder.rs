@@ -74,7 +74,6 @@ impl UpxPackHeader {
         })
     }
 
-    /// Locate the `PackHeader` when UPX-Patcher-class tampering has stripped the `UPX!` magic, renamed the `UPX0`/`UPX1` sections, and perturbed the version/format bytes.
     fn locate_structural(packed: &[u8]) -> Option<Self> {
         if packed.len() < PACK_HEADER_LEN {
             return None;

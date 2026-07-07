@@ -9,8 +9,6 @@
     clippy::too_many_lines
 )]
 
-//! Spec-construct oracle for the emulated packer unpackers.
-
 const SEC_TABLE_OFFSET: usize = 0x80 + 4 + 20 + 0xE0;
 const FILE_ALIGN: u32 = 0x200;
 const SECT_ALIGN: u32 = 0x1000;
@@ -37,16 +35,8 @@ pub struct SectionSpec<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum StubKind {
     LzDecompress,
-    StreamDecrypt {
-        key0: u8,
-        key_step: u8,
-    },
-    /// A polymorphic stream-decrypt stub with seed-selected registers and a `push oep; ret` transfer to the original entry point.
-    StreamDecryptPoly {
-        key0: u8,
-        key_step: u8,
-        seed: u8,
-    },
+    StreamDecrypt { key0: u8, key_step: u8 },
+    StreamDecryptPoly { key0: u8, key_step: u8, seed: u8 },
 }
 
 fn align_up(v: u32, a: u32) -> u32 {

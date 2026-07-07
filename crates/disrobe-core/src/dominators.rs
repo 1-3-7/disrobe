@@ -1,16 +1,11 @@
 use std::collections::BTreeSet;
 
-/// Directed graph over dense `u32` nodes `0..node_count` with a single entry.
 pub trait DiGraph {
-    /// Number of nodes; valid ids are `0..node_count()`.
     fn node_count(&self) -> usize;
-    /// The unique entry node id.
     fn entry(&self) -> u32;
-    /// Report each direct successor of `node` to `visit`, in a deterministic order.
     fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32));
 }
 
-/// Owned adjacency-list graph, useful for reversed graphs, tests, and ad-hoc callers.
 #[derive(Debug, Clone)]
 pub struct AdjGraph {
     entry: u32,
@@ -18,7 +13,6 @@ pub struct AdjGraph {
 }
 
 impl AdjGraph {
-    /// Build a graph with `entry` and per-node successor lists (`succ[n]` for node `n`).
     #[must_use]
     pub const fn new(entry: u32, succ: Vec<Vec<u32>>) -> Self {
         Self { entry, succ }
@@ -96,7 +90,6 @@ fn predecessors<G: DiGraph>(graph: &G) -> Vec<Vec<u32>> {
     preds
 }
 
-/// Dominator tree of a [`DiGraph`], via the Cooper-Harvey-Kennedy iterative algorithm.
 #[derive(Debug, Clone)]
 pub struct Dominators {
     entry: u32,
@@ -105,7 +98,6 @@ pub struct Dominators {
 }
 
 impl Dominators {
-    /// Compute the unique dominator tree (Cooper-Harvey-Kennedy iterative dominance).
     #[must_use]
     pub fn compute<G: DiGraph>(graph: &G) -> Self {
         let count: usize = graph.node_count();
@@ -139,19 +131,16 @@ impl Dominators {
         Self { entry, idom, rpo }
     }
 
-    /// Reverse-postorder of the reachable nodes, entry first.
     #[must_use]
     pub fn reverse_postorder(&self) -> &[u32] {
         &self.rpo
     }
 
-    /// Whether `node` is reachable from the entry.
     #[must_use]
     pub fn is_reachable(&self, node: u32) -> bool {
         node == self.entry || self.idom.get(node as usize).copied().flatten().is_some()
     }
 
-    /// Immediate dominator of `node`: `None` for the entry and unreachable nodes.
     #[must_use]
     pub fn immediate_dominator(&self, node: u32) -> Option<u32> {
         if node == self.entry {
@@ -160,7 +149,6 @@ impl Dominators {
         self.idom.get(node as usize).copied().flatten()
     }
 
-    /// Whether `a` dominates `b` (every path from entry to `b` passes through `a`).
     #[must_use]
     pub fn dominates(&self, a: u32, b: u32) -> bool {
         let mut cur: u32 = b;
@@ -176,7 +164,6 @@ impl Dominators {
         }
     }
 
-    /// Full dominator set of `node` (itself plus every strict dominator), for reachable nodes.
     #[must_use]
     pub fn dominator_set(&self, node: u32) -> BTreeSet<u32> {
         let mut set: BTreeSet<u32> = BTreeSet::new();
@@ -194,7 +181,6 @@ impl Dominators {
         set
     }
 
-    /// Children of `node` in the dominator tree, in ascending id order.
     #[must_use]
     pub fn children(&self, node: u32) -> Vec<u32> {
         let mut kids: Vec<u32> = Vec::new();
@@ -225,7 +211,6 @@ fn intersect(mut a: u32, mut b: u32, idom: &[Option<u32>], rpo_num: &[u32]) -> u
     a
 }
 
-/// Classic maximum-fixed-point dominator sets (`set[n]` is `{n}` plus every dominator of `n`).
 #[must_use]
 pub fn dominator_sets<G: DiGraph>(graph: &G) -> Vec<BTreeSet<u32>> {
     let count: usize = graph.node_count();
@@ -261,7 +246,6 @@ pub fn dominator_sets<G: DiGraph>(graph: &G) -> Vec<BTreeSet<u32>> {
     dom
 }
 
-/// Immediate post-dominators via dominance on the reversed graph rooted at a synthetic exit (`node_count`); `None` when a node cannot reach exit.
 pub fn immediate_post_dominators(
     node_count: usize,
     mut successors_with_exit: impl FnMut(u32, &mut dyn FnMut(u32)),

@@ -1,5 +1,3 @@
-//! Radix-alphabet decoders: base58 (bitcoin + ripple), base62, base45 (RFC 9285), base91 (basE91), and base92.
-
 use super::{DecodeError, bytes_to_string};
 
 const BASE58_BITCOIN: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -105,7 +103,6 @@ fn encode_baseradix(input: &[u8], alphabet: &[u8], radix: u16) -> String {
     bytes_to_string(out)
 }
 
-/// Decode a base58 string in the given variant.
 pub fn base58_decode(input: &[u8], variant: Base58Variant) -> Result<Vec<u8>, DecodeError> {
     let alphabet: &[u8; 58] = match variant {
         Base58Variant::Bitcoin => BASE58_BITCOIN,
@@ -114,7 +111,6 @@ pub fn base58_decode(input: &[u8], variant: Base58Variant) -> Result<Vec<u8>, De
     decode_baseradix(input, alphabet, 58)
 }
 
-/// Encode bytes to a base58 string in the given variant.
 #[must_use]
 pub fn base58_encode(input: &[u8], variant: Base58Variant) -> String {
     let alphabet: &[u8; 58] = match variant {
@@ -124,18 +120,15 @@ pub fn base58_encode(input: &[u8], variant: Base58Variant) -> String {
     encode_baseradix(input, alphabet, 58)
 }
 
-/// Decode a base62 string.
 pub fn base62_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     decode_baseradix(input, BASE62_STANDARD, 62)
 }
 
-/// Encode bytes to a base62 string.
 #[must_use]
 pub fn base62_encode(input: &[u8]) -> String {
     encode_baseradix(input, BASE62_STANDARD, 62)
 }
 
-/// Decode a base45 string per RFC 9285.
 pub fn base45_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -172,7 +165,6 @@ pub fn base45_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Encode bytes to a base45 string per RFC 9285.
 #[must_use]
 pub fn base45_encode(input: &[u8]) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() / 2 * 3 + 2);
@@ -191,7 +183,6 @@ pub fn base45_encode(input: &[u8]) -> String {
     bytes_to_string(out)
 }
 
-/// Decode a basE91 string.
 pub fn base91_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -230,7 +221,6 @@ pub fn base91_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(out)
 }
 
-/// Encode bytes to a basE91 string.
 #[must_use]
 pub fn base91_encode(input: &[u8]) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(input.len() * 8 / 6 + 2);
@@ -262,7 +252,6 @@ pub fn base91_encode(input: &[u8]) -> String {
     bytes_to_string(out)
 }
 
-/// Decode a base92 string.
 pub fn base92_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -313,7 +302,6 @@ pub fn base92_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     Ok(bitstream)
 }
 
-/// Encode bytes to a base92 string.
 #[must_use]
 pub fn base92_encode(input: &[u8]) -> String {
     if input.is_empty() {

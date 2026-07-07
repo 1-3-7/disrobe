@@ -389,7 +389,6 @@ fn synthesize_bitwise_unary(expr: &Expr, width: Width) -> Expr {
     universal_bitwise_form(id_mask, not_mask, one_mask, mask)
 }
 
-/// The canonical minimal form of a single-variable bitwise function of `v0` at `width`.
 fn universal_bitwise_form(id_mask: u64, not_mask: u64, one_mask: u64, mask: u64) -> Expr {
     let keep_mask: u64 = id_mask | not_mask;
     if keep_mask == 0 {

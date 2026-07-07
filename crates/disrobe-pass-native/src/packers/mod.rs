@@ -305,7 +305,6 @@ impl Packer {
         )
     }
 
-    /// The native unpacker-catalog recovery status advertised for this packer family.
     #[must_use]
     pub const fn unpacker_status(self) -> UnpackerStatus {
         match self {
@@ -776,7 +775,6 @@ pub fn detect(bytes: &[u8]) -> Vec<Detection> {
     found.into_values().collect()
 }
 
-/// Detect UPX by its `PackHeader` structure when the `UPX!` marker is corrupted and the `UPX0`/`UPX1` section names are renamed.
 fn detect_upx_structural(bytes: &[u8]) -> Option<Detection> {
     let header: UpxPackHeader = UpxPackHeader::locate_and_parse(bytes).ok()?;
     Some(Detection {

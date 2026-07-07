@@ -77,7 +77,6 @@ fn target_scopes_url(host: &str, targets: &[String], subs: bool) -> bool {
     targets.is_empty() || targets.iter().any(|t: &String| host_matches(host, t, subs))
 }
 
-/// Applies the URL filters, scopes each URL to one of `targets`, and de-duplicates.
 #[must_use]
 pub fn apply_url_filters(
     urls: Vec<HarvestedUrl>,
@@ -159,7 +158,6 @@ pub fn apply_url_filters(
     out
 }
 
-/// De-duplicates indicators (by `kind`+`value`), keeps the first-seen source, applies any requested `ioc_kinds` allow-list, and sorts for stable output.
 #[must_use]
 pub fn apply_ioc_filters(iocs: Vec<Ioc>, filter: &Filter) -> Vec<Ioc> {
     let allow: BTreeSet<IocKind> = filter.ioc_kinds.iter().copied().collect();

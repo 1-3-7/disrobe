@@ -84,7 +84,6 @@ enum RftEdit {
     },
 }
 
-/// Neutralize the `PyArmor` 9.x / Python 3.11+ RFT wrap-mode armor in place.
 pub(crate) fn strip_rft_wrap(co: &mut CodeObject, py: PyVersion) -> usize {
     let Some(ops): Option<RftOpcodes> = RftOpcodes::for_version(py) else {
         return 0;

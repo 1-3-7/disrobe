@@ -7,7 +7,6 @@ pub(crate) type RegionId = u32;
 pub(crate) type Atom = u32;
 pub(crate) type CondId = u32;
 
-/// A block terminator in the structuring CFG; `Return`/`Unreachable` route to the unified exit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Terminator {
     Return,
@@ -27,14 +26,12 @@ pub(crate) enum Terminator {
     },
 }
 
-/// One CFG node: its terminator plus whether its body is side-effect free (fusable as a short-circuit predicate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CfgNode {
     pub(crate) term: Terminator,
     pub(crate) pure: bool,
 }
 
-/// Reason a [`Cfg`] failed validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CfgError {
     EmptyGraph,
@@ -42,7 +39,6 @@ pub(crate) enum CfgError {
     TargetOutOfRange,
 }
 
-/// A single-entry control-flow graph over dense `u32` node ids.
 #[derive(Debug, Clone)]
 pub(crate) struct Cfg {
     entry: NodeId,
@@ -50,7 +46,6 @@ pub(crate) struct Cfg {
 }
 
 impl Cfg {
-    /// Build and validate a CFG; every branch/switch target and the entry must be in range.
     pub(crate) fn new(entry: NodeId, nodes: Vec<CfgNode>) -> Result<Self, CfgError> {
         if nodes.is_empty() {
             return Err(CfgError::EmptyGraph);
@@ -78,7 +73,6 @@ impl Cfg {
         Ok(Self { entry, nodes })
     }
 
-    /// Number of nodes.
     pub(crate) fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -138,13 +132,11 @@ impl DiGraph for CfgGraph<'_> {
     }
 }
 
-/// Dominator tree of `cfg` (Cooper-Harvey-Kennedy, reused from `disrobe-core`).
 pub(crate) fn dominators(cfg: &Cfg) -> Dominators {
     let graph: CfgGraph<'_> = CfgGraph { cfg };
     Dominators::compute(&graph)
 }
 
-/// Immediate post-dominators over `cfg` with a single synthetic exit that every return and noreturn routes to.
 #[derive(Debug, Clone)]
 pub(crate) struct PostDominators {
     ipdom: Vec<Option<NodeId>>,
@@ -152,7 +144,6 @@ pub(crate) struct PostDominators {
 }
 
 impl PostDominators {
-    /// Compute post-dominators; the synthetic exit is node id `cfg.len()`.
     pub(crate) fn compute(cfg: &Cfg) -> Self {
         let count: usize = cfg.len();
         let exit: NodeId = count as NodeId;
@@ -168,17 +159,14 @@ impl PostDominators {
         Self { ipdom, exit }
     }
 
-    /// Immediate post-dominator of `node`, or `None` when it cannot reach the exit.
     pub(crate) fn immediate_post_dominator(&self, node: NodeId) -> Option<NodeId> {
         self.ipdom.get(node as usize).copied().flatten()
     }
 
-    /// The synthetic exit node id.
     pub(crate) fn exit(&self) -> NodeId {
         self.exit
     }
 
-    /// Whether `a` post-dominates `b` (every path from `b` to exit passes through `a`).
     pub(crate) fn post_dominates(&self, a: NodeId, b: NodeId) -> bool {
         if a == b {
             return true;
@@ -196,7 +184,6 @@ impl PostDominators {
     }
 }
 
-/// One natural loop: its header, the latch edges back to it, and its body node set.
 #[derive(Debug, Clone)]
 pub(crate) struct NaturalLoop {
     pub(crate) header: NodeId,
@@ -205,7 +192,6 @@ pub(crate) struct NaturalLoop {
     pub(crate) parent: Option<usize>,
 }
 
-/// The loop nesting forest of a CFG plus an explicit irreducibility verdict.
 #[derive(Debug, Clone)]
 pub(crate) struct LoopForest {
     pub(crate) loops: Vec<NaturalLoop>,
@@ -257,7 +243,6 @@ fn dfs_intervals(cfg: &Cfg) -> (Vec<u32>, Vec<u32>) {
     (discover, finish)
 }
 
-/// Compute the loop nesting forest and irreducibility verdict of `cfg`.
 pub(crate) fn loop_forest(cfg: &Cfg) -> LoopForest {
     let dom: Dominators = dominators(cfg);
     let reach: Vec<bool> = reachable(cfg);
@@ -350,7 +335,6 @@ fn predecessors(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     preds
 }
 
-/// Strongly connected components over the reachable subgraph (iterative Tarjan), each sorted ascending.
 pub(crate) fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     let count: usize = cfg.len();
     let reach: Vec<bool> = reachable(cfg);
@@ -415,7 +399,6 @@ pub(crate) fn strongly_connected_components(cfg: &Cfg) -> Vec<Vec<NodeId>> {
     result
 }
 
-/// A multi-entry irreducible strongly connected component with the external edges into it.
 #[derive(Debug, Clone)]
 pub(crate) struct IrreducibleEntry {
     pub(crate) members: BTreeSet<NodeId>,
@@ -423,7 +406,6 @@ pub(crate) struct IrreducibleEntry {
     pub(crate) external_edges: Vec<(NodeId, NodeId)>,
 }
 
-/// Every reachable SCC made irreducible by two or more entry nodes, with each external in-edge recorded.
 pub(crate) fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
     if !loop_forest(cfg).irreducible {
         return Vec::new();
@@ -463,7 +445,6 @@ pub(crate) fn multi_entry_irreducible_sccs(cfg: &Cfg) -> Vec<IrreducibleEntry> {
     out
 }
 
-/// True iff `rendered` (residual goto stubs mapped to their targets) reproduces `original`'s reachable successors.
 pub(crate) fn relowered_matches_original(
     original: &Cfg,
     rendered: &Cfg,
@@ -502,7 +483,6 @@ pub(crate) fn relowered_matches_original(
     true
 }
 
-/// A hash-consed, negation-normal-form condition over opaque predicate atoms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum Cond {
     Leaf(Atom),
@@ -511,7 +491,6 @@ pub(crate) enum Cond {
     Or(CondId, CondId),
 }
 
-/// Interning pool that keeps every [`Cond`] in NNF and structurally unique.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CondPool {
     nodes: Vec<Cond>,
@@ -558,13 +537,11 @@ impl CondPool {
         self.intern(Cond::Or(x, y))
     }
 
-    /// The interned conditions, indexable by [`CondId`].
     pub(crate) fn nodes(&self) -> &[Cond] {
         &self.nodes
     }
 }
 
-/// The structural class of a recovered region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RegionKind {
     Block,
@@ -579,7 +556,6 @@ pub(crate) enum RegionKind {
     Irreducible,
 }
 
-/// One node in the recovered region tree.
 #[derive(Debug, Clone)]
 pub(crate) struct Region {
     pub(crate) kind: RegionKind,
@@ -591,7 +567,6 @@ pub(crate) struct Region {
     pub(crate) head: Option<RegionId>,
 }
 
-/// The outcome of running structural analysis over a CFG.
 #[derive(Debug, Clone)]
 pub(crate) struct StructureResult {
     pub(crate) root: Option<RegionId>,
@@ -601,12 +576,10 @@ pub(crate) struct StructureResult {
 }
 
 impl StructureResult {
-    /// Whether the CFG collapsed to a single region with no irreducible residue.
     pub(crate) fn is_complete(&self) -> bool {
         self.root.is_some() && !self.irreducible
     }
 
-    /// The kind of the root region, if any.
     pub(crate) fn root_kind(&self) -> Option<RegionKind> {
         self.root.map(|r: RegionId| self.regions[r as usize].kind)
     }
@@ -639,7 +612,6 @@ struct Collapse {
     irreducible: bool,
 }
 
-/// Run schema-based structural analysis over `cfg`, collapsing it to a region tree.
 pub(crate) fn structure(cfg: &Cfg) -> StructureResult {
     let forest: LoopForest = loop_forest(cfg);
     let mut collapse: Collapse = Collapse::new(cfg);

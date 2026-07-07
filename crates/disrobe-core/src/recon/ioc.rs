@@ -450,7 +450,6 @@ fn keccak256(input: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Validates an Ethereum address: all-lowercase / all-uppercase hex is accepted (no checksum present), mixed case must satisfy the EIP-55 keccak checksum.
 fn eth_address_valid(address: &str) -> bool {
     let Some(hex): Option<&str> = address.strip_prefix("0x") else {
         return false;
@@ -599,7 +598,6 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     out
 }
 
-/// Validates a base58check address (BTC legacy, LTC legacy, Tron): the trailing four bytes are the first four bytes of double-SHA256 over the payload.
 fn base58check_valid(address: &str) -> bool {
     let Some(decoded): Option<Vec<u8>> = base58_decode(address) else {
         return false;

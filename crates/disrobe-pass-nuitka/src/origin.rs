@@ -325,7 +325,6 @@ const LIBRARY_PATH_MARKERS: &[&str] = &[
     "\\nuitka\\",
 ];
 
-/// Whether a recovered `co_filename` is the user's own source rather than a bundled library.
 #[must_use]
 pub fn filename_is_app_source(filename: &str) -> bool {
     if filename.is_empty() {
@@ -344,7 +343,6 @@ pub fn filename_is_app_source(filename: &str) -> bool {
     !absolute
 }
 
-/// Classify a module, using its recovered `co_filename` to refine the App/ThirdParty boundary.
 #[must_use]
 pub fn classify_with_filename(
     module_name: &str,
@@ -458,7 +456,6 @@ const KNOWN_THIRD_PARTY_TOP: &[&str] = &[
     "pkg_resources",
 ];
 
-/// The user's own top-level packages.
 #[must_use]
 pub fn infer_app_packages(entry_stem: Option<&str>, module_names: &[String]) -> Vec<String> {
     let stem: Option<String> = entry_stem.map(|s: &str| s.to_ascii_lowercase());

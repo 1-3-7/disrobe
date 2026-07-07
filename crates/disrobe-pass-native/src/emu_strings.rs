@@ -1132,7 +1132,6 @@ mod tests {
         build_elf64_exec(&code, &data, "unscramble")
     }
 
-    /// System V x86-64 `unscramble(rdi=enc, rsi=out, rdx=len)` that writes `out[i] = enc[i] - key[i & 3]` (wrapping), with the 4-byte key at `enc + len`.
     fn sysv64_sub_decoder() -> Vec<u8> {
         let plain_len: u8 = ADD_PLAINTEXT.len() as u8;
         let key_disp: u8 = ADD_PLAINTEXT.len() as u8;

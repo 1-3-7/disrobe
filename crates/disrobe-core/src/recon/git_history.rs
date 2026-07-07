@@ -57,7 +57,6 @@ struct CommitMeta {
     time_unix: i64,
 }
 
-/// Scans every reachable commit's added or changed blobs for the same secret, endpoint, and IOC signals as the working-tree scanner, attributing each finding to the commit SHA, author, and in-repo path.
 pub fn report_git(
     repo_path: &Path,
     opts: &GitHistoryOptions,
