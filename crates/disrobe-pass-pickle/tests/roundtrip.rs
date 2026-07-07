@@ -61,7 +61,7 @@ fn reconstruct_source(bytes: &[u8]) -> Value {
             return json!({"program": Value::Null, "reexecutable": false, "reason": format!("vm: {e}")});
         }
     };
-    let recon = reconstruct(&result, session.memo());
+    let recon = reconstruct(&result, session.memo(), session.root_memo_key());
     json!({
         "program": recon.program,
         "reexecutable": recon.reexecutable,

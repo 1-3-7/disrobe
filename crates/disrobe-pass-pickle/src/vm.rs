@@ -256,6 +256,7 @@ pub struct VmTrace {
     pub cyclic: bool,
     pub oob_buffer_count: usize,
     pub call_graph: Vec<CallSite>,
+    pub root_memo_key: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,7 +319,6 @@ struct Machine {
     global_refs: Vec<GlobalRef>,
     reduce_count: usize,
     materialized_nodes: u64,
-    cyclic: bool,
     oob_buffer_count: usize,
     call_graph: Vec<CallSite>,
 }
@@ -334,7 +334,6 @@ impl Machine {
             global_refs: Vec::new(),
             reduce_count: 0,
             materialized_nodes: 0,
-            cyclic: false,
             oob_buffer_count: 0,
             call_graph: Vec::new(),
         }
@@ -469,11 +468,12 @@ impl Machine {
             match self.stack.pop() {
                 Some(Slot::Value {
                     value,
+                    memo_key,
                     source_key,
                     depth,
-                    ..
                 }) => out.push(Placed {
                     value,
+                    memo_key,
                     source_key,
                     depth,
                 }),
@@ -497,11 +497,12 @@ impl Machine {
             .filter_map(|s: Slot| match s {
                 Slot::Value {
                     value,
+                    memo_key,
                     source_key,
                     depth,
-                    ..
                 } => Some(Placed {
                     value,
+                    memo_key,
                     source_key,
                     depth,
                 }),
@@ -512,32 +513,48 @@ impl Machine {
         Ok(items)
     }
 
-    fn resolve_cycle(&mut self, placed: Placed) -> (PickleValue, u32) {
-        let target_index: usize = self.stack.len().saturating_sub(1);
-        if let Placed {
-            source_key: Some(k),
-            ..
-        } = placed
-            && self.enclosing_container_keys(target_index).contains(&k)
-        {
-            self.cyclic = true;
-            return (PickleValue::MemoRef { key: k }, 1);
-        }
-        (placed.value, placed.depth)
-    }
-
-    fn enclosing_container_keys(&self, target_index: usize) -> Vec<u64> {
-        self.stack[..=target_index]
+    fn pop_to_mark_shared(&mut self, op: &'static str, offset: usize) -> Result<Vec<PickleValue>> {
+        let mark: usize = self
+            .stack
             .iter()
-            .filter_map(|s: &Slot| match s {
+            .rposition(|s: &Slot| matches!(s, Slot::Mark))
+            .ok_or(Error::NoMark { op, offset })?;
+        let items: Vec<PickleValue> = self
+            .stack
+            .drain(mark + 1..)
+            .filter_map(|s: Slot| match s {
                 Slot::Value {
                     value,
-                    memo_key: Some(k),
-                    ..
-                } if is_container(value) => Some(*k),
-                _ => None,
+                    memo_key,
+                    source_key,
+                    depth,
+                } => Some(
+                    resolve_shared(Placed {
+                        value,
+                        memo_key,
+                        source_key,
+                        depth,
+                    })
+                    .0,
+                ),
+                Slot::Mark => None,
             })
-            .collect()
+            .collect();
+        self.stack.pop();
+        Ok(items)
+    }
+
+    fn pop_final(&mut self, op: &'static str, offset: usize) -> Result<(PickleValue, Option<u64>)> {
+        match self.stack.pop() {
+            Some(Slot::Value {
+                value,
+                memo_key,
+                source_key,
+                ..
+            }) => Ok((value, memo_key.or(source_key))),
+            Some(Slot::Mark) => Err(Error::NoMark { op, offset }),
+            None => Err(Error::StackUnderflow { op, offset }),
+        }
     }
 
     fn record_call(
@@ -625,6 +642,7 @@ fn summarize_arg(v: &PickleValue) -> ArgSummary {
 #[derive(Debug)]
 struct Placed {
     value: PickleValue,
+    memo_key: Option<u64>,
     source_key: Option<u64>,
     depth: u32,
 }
@@ -741,6 +759,7 @@ fn push_bytearray(m: &mut Machine, arg: &DecodedArg, offset: usize) -> Result<()
 #[derive(Debug)]
 pub struct Session {
     machine: Machine,
+    root_memo_key: Option<u64>,
 }
 
 impl Default for Session {
@@ -756,6 +775,7 @@ impl Session {
     pub fn new() -> Self {
         Self {
             machine: Machine::new(),
+            root_memo_key: None,
         }
     }
 
@@ -769,15 +789,32 @@ impl Session {
             }
             step(&mut self.machine, insn)?;
         }
-        self.machine
-            .pop_value("STOP", dis.stop_offset.unwrap_or(0))
+        let (value, key): (PickleValue, Option<u64>) = self
+            .machine
+            .pop_final("STOP", dis.stop_offset.unwrap_or(0))
             .map_err(|e: Error| {
                 if matches!(e, Error::StackUnderflow { .. }) {
                     Error::EmptyResult
                 } else {
                     e
                 }
+            })?;
+        let cleaned_memo: BTreeMap<u64, PickleValue> = self
+            .machine
+            .memo
+            .iter()
+            .map(|(&k, v): (&u64, &PickleValue)| {
+                (
+                    k,
+                    inline_unused_refs(v, &self.machine.memo, &self.machine.memo_used),
+                )
             })
+            .collect();
+        let value: PickleValue =
+            inline_unused_refs(&value, &self.machine.memo, &self.machine.memo_used);
+        self.machine.memo = cleaned_memo;
+        self.root_memo_key = key.filter(|_| is_container(&value));
+        Ok(value)
     }
 
     #[must_use]
@@ -798,6 +835,13 @@ impl Session {
     pub fn global_refs(&self) -> &[GlobalRef] {
         &self.machine.global_refs
     }
+
+    /// The top-level result's own memo key, when it is itself a shared or self-referential container.
+    #[must_use]
+    #[inline]
+    pub fn root_memo_key(&self) -> Option<u64> {
+        self.root_memo_key
+    }
 }
 
 pub fn execute(dis: &Disassembly) -> Result<VmTrace> {
@@ -816,6 +860,7 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
     });
     let mut session: Session = Session::new();
     let result: PickleValue = session.run(dis)?;
+    let root_memo_key: Option<u64> = session.root_memo_key();
     let m: Machine = session.machine;
 
     let unused_memos: Vec<u64> = m
@@ -823,15 +868,17 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
         .iter()
         .filter_map(|(&k, &used): (&u64, &bool)| (!used).then_some(k))
         .collect();
+    let memo: BTreeMap<u64, PickleValue> = m.memo;
+    let cyclic: bool = detect_cycle(&memo);
 
     crate::debug::dbg_kv("vm-result", || {
         format!(
             "reduce_count={} max_stack_depth={} memo_count={} unused_memos={} cyclic={} oob_buffers={} call_sites={}",
             m.reduce_count,
             m.max_depth,
-            m.memo.len(),
+            memo.len(),
             unused_memos.len(),
-            m.cyclic,
+            cyclic,
             m.oob_buffer_count,
             m.call_graph.len()
         )
@@ -842,7 +889,6 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
         });
     }
 
-    let memo: BTreeMap<u64, PickleValue> = m.memo;
     let trace: VmTrace = VmTrace {
         protocol: dis.protocol,
         result,
@@ -851,9 +897,10 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
         global_refs: m.global_refs,
         reduce_count: m.reduce_count,
         unused_memos,
-        cyclic: m.cyclic,
+        cyclic,
         oob_buffer_count: m.oob_buffer_count,
         call_graph: m.call_graph,
+        root_memo_key,
     };
     Ok((trace, memo))
 }
@@ -910,11 +957,11 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
         "EMPTY_TUPLE" => m.push_new(PickleValue::Tuple(Vec::new()))?,
         "EMPTY_SET" => m.push_new(PickleValue::Set(Vec::new()))?,
         "LIST" => {
-            let items: Vec<PickleValue> = m.pop_to_mark("LIST", off)?;
+            let items: Vec<PickleValue> = m.pop_to_mark_shared("LIST", off)?;
             m.push_new(PickleValue::List(items))?;
         }
         "DICT" => {
-            let items: Vec<PickleValue> = m.pop_to_mark("DICT", off)?;
+            let items: Vec<PickleValue> = m.pop_to_mark_shared("DICT", off)?;
             m.push_new(PickleValue::Dict(pairs(items)))?;
         }
         "TUPLE" => {
@@ -937,7 +984,7 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
             m.push_new(PickleValue::Tuple(vec![a, b, c]))?;
         }
         "FROZENSET" => {
-            let items: Vec<PickleValue> = m.pop_to_mark("FROZENSET", off)?;
+            let items: Vec<PickleValue> = m.pop_to_mark_shared("FROZENSET", off)?;
             m.push_new(PickleValue::FrozenSet(items))?;
         }
         "APPEND" => {
@@ -1208,15 +1255,194 @@ fn pairs(items: Vec<PickleValue>) -> Vec<(PickleValue, PickleValue)> {
     out
 }
 
-fn resolve_all(m: &mut Machine, placed: Vec<Placed>) -> (Vec<PickleValue>, u32) {
+fn resolve_shared(placed: Placed) -> (PickleValue, u32) {
+    let key: Option<u64> = placed.memo_key.or(placed.source_key);
+    match key {
+        Some(k) if is_container(&placed.value) => (PickleValue::MemoRef { key: k }, 1),
+        _ => (placed.value, placed.depth),
+    }
+}
+
+fn resolve_all(placed: Vec<Placed>) -> (Vec<PickleValue>, u32) {
     let mut items: Vec<PickleValue> = Vec::with_capacity(placed.len());
     let mut deepest_child: u32 = 0;
     for p in placed {
-        let (value, depth): (PickleValue, u32) = m.resolve_cycle(p);
+        let (value, depth): (PickleValue, u32) = resolve_shared(p);
         deepest_child = deepest_child.max(depth);
         items.push(value);
     }
     (items, deepest_child)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisitMark {
+    Visiting,
+    Done,
+}
+
+fn detect_cycle(memo: &BTreeMap<u64, PickleValue>) -> bool {
+    fn reaches(
+        value: &PickleValue,
+        memo: &BTreeMap<u64, PickleValue>,
+        marks: &mut BTreeMap<u64, VisitMark>,
+    ) -> bool {
+        match value {
+            PickleValue::MemoRef { key } => walk(*key, memo, marks),
+            PickleValue::List(items)
+            | PickleValue::Tuple(items)
+            | PickleValue::Set(items)
+            | PickleValue::FrozenSet(items) => items
+                .iter()
+                .any(|item: &PickleValue| reaches(item, memo, marks)),
+            PickleValue::Dict(entries) => {
+                entries.iter().any(|(k, v): &(PickleValue, PickleValue)| {
+                    reaches(k, memo, marks) || reaches(v, memo, marks)
+                })
+            }
+            PickleValue::PersId { id } => reaches(id, memo, marks),
+            PickleValue::Reduce { callable, args } => {
+                reaches(callable, memo, marks) || reaches(args, memo, marks)
+            }
+            PickleValue::Object {
+                cls,
+                args,
+                kwargs,
+                state,
+                listitems,
+                dictitems,
+                ..
+            } => {
+                reaches(cls, memo, marks)
+                    || reaches(args, memo, marks)
+                    || kwargs
+                        .as_deref()
+                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks))
+                    || state
+                        .as_deref()
+                        .is_some_and(|v: &PickleValue| reaches(v, memo, marks))
+                    || listitems
+                        .iter()
+                        .any(|item: &PickleValue| reaches(item, memo, marks))
+                    || dictitems.iter().any(|(k, v): &(PickleValue, PickleValue)| {
+                        reaches(k, memo, marks) || reaches(v, memo, marks)
+                    })
+            }
+            _ => false,
+        }
+    }
+    fn walk(
+        key: u64,
+        memo: &BTreeMap<u64, PickleValue>,
+        marks: &mut BTreeMap<u64, VisitMark>,
+    ) -> bool {
+        match marks.get(&key) {
+            Some(VisitMark::Visiting) => return true,
+            Some(VisitMark::Done) => return false,
+            None => {}
+        }
+        marks.insert(key, VisitMark::Visiting);
+        let hit: bool = memo
+            .get(&key)
+            .is_some_and(|value: &PickleValue| reaches(value, memo, marks));
+        marks.insert(key, VisitMark::Done);
+        hit
+    }
+    let mut marks: BTreeMap<u64, VisitMark> = BTreeMap::new();
+    memo.keys().any(|&key: &u64| walk(key, memo, &mut marks))
+}
+
+fn inline_unused_refs(
+    value: &PickleValue,
+    memo: &BTreeMap<u64, PickleValue>,
+    memo_used: &BTreeMap<u64, bool>,
+) -> PickleValue {
+    match value {
+        PickleValue::MemoRef { key } => {
+            if memo_used.get(key).copied().unwrap_or(false) {
+                PickleValue::MemoRef { key: *key }
+            } else {
+                memo.get(key)
+                    .map_or(PickleValue::MemoRef { key: *key }, |v: &PickleValue| {
+                        inline_unused_refs(v, memo, memo_used)
+                    })
+            }
+        }
+        PickleValue::List(items) => PickleValue::List(
+            items
+                .iter()
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .collect(),
+        ),
+        PickleValue::Tuple(items) => PickleValue::Tuple(
+            items
+                .iter()
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .collect(),
+        ),
+        PickleValue::Set(items) => PickleValue::Set(
+            items
+                .iter()
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .collect(),
+        ),
+        PickleValue::FrozenSet(items) => PickleValue::FrozenSet(
+            items
+                .iter()
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .collect(),
+        ),
+        PickleValue::Dict(entries) => PickleValue::Dict(
+            entries
+                .iter()
+                .map(|(k, v): &(PickleValue, PickleValue)| {
+                    (
+                        inline_unused_refs(k, memo, memo_used),
+                        inline_unused_refs(v, memo, memo_used),
+                    )
+                })
+                .collect(),
+        ),
+        PickleValue::PersId { id } => PickleValue::PersId {
+            id: Box::new(inline_unused_refs(id, memo, memo_used)),
+        },
+        PickleValue::Reduce { callable, args } => PickleValue::Reduce {
+            callable: Box::new(inline_unused_refs(callable, memo, memo_used)),
+            args: Box::new(inline_unused_refs(args, memo, memo_used)),
+        },
+        PickleValue::Object {
+            ctor,
+            cls,
+            args,
+            kwargs,
+            state,
+            listitems,
+            dictitems,
+        } => PickleValue::Object {
+            ctor: *ctor,
+            cls: Box::new(inline_unused_refs(cls, memo, memo_used)),
+            args: Box::new(inline_unused_refs(args, memo, memo_used)),
+            kwargs: kwargs
+                .as_deref()
+                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used))),
+            state: state
+                .as_deref()
+                .map(|v: &PickleValue| Box::new(inline_unused_refs(v, memo, memo_used))),
+            listitems: listitems
+                .iter()
+                .map(|v: &PickleValue| inline_unused_refs(v, memo, memo_used))
+                .collect(),
+            dictitems: dictitems
+                .iter()
+                .map(|(k, v): &(PickleValue, PickleValue)| {
+                    (
+                        inline_unused_refs(k, memo, memo_used),
+                        inline_unused_refs(v, memo, memo_used),
+                    )
+                })
+                .collect(),
+        },
+        other => other.clone(),
+    }
 }
 
 fn deepen_top(depth: &mut u32, deepest_child: u32) -> Result<()> {
@@ -1260,7 +1486,7 @@ fn ensure_reduce_object(value: &mut PickleValue) -> bool {
 }
 
 fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
-    let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(m, placed);
+    let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     match m.stack.last_mut() {
         Some(Slot::Value {
             value: PickleValue::List(l),
@@ -1293,7 +1519,7 @@ fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
 }
 
 fn add_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
-    let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(m, placed);
+    let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     let top_is_value: bool = matches!(m.stack.last(), Some(Slot::Value { .. }));
     match m.stack.last_mut() {
         Some(Slot::Value {
@@ -1309,7 +1535,7 @@ fn add_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
 }
 
 fn set_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
-    let (values, deepest_child): (Vec<PickleValue>, u32) = resolve_all(m, placed);
+    let (values, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     let mut kvs: Vec<(PickleValue, PickleValue)> = pairs(values);
     match m.stack.last_mut() {
         Some(Slot::Value {
@@ -1783,18 +2009,40 @@ mod tests {
     }
 
     #[test]
-    fn shared_reference_stays_acyclic_and_inlines() {
+    fn shared_reference_stays_acyclic_and_shares_by_reference() {
         let t: VmTrace = run(b"\x80\x02]q\x00(]q\x01(K\x01K\x02K\x03eh\x01e.");
         assert!(!t.cyclic, "shared (non-cyclic) reuse must not flag cyclic");
-        let inner: PickleValue = PickleValue::List(vec![
-            PickleValue::Int(1),
-            PickleValue::Int(2),
-            PickleValue::Int(3),
-        ]);
         assert_eq!(
             t.result,
-            PickleValue::List(vec![inner.clone(), inner]),
-            "acyclic shared memo must inline the clone, no MemoRef"
+            PickleValue::List(vec![
+                PickleValue::MemoRef { key: 1 },
+                PickleValue::MemoRef { key: 1 },
+            ]),
+            "both occurrences must be memo references into the same shell, or the rebuilt object loses the original's shared identity"
+        );
+        assert_eq!(
+            t.memo_count, 2,
+            "the outer list and the shared inner list each keep a memo slot"
+        );
+    }
+
+    #[test]
+    fn three_way_shared_reference_through_a_nested_dict_all_alias_one_shell() {
+        let t: VmTrace = run(
+            b"\x80\x02]q\x00(]q\x01(K\x07K\x08K\teh\x01}q\x02X\x03\x00\x00\x00refq\x03h\x01se.",
+        );
+        assert!(!t.cyclic, "acyclic fan-out sharing must not flag cyclic");
+        assert_eq!(
+            t.result,
+            PickleValue::List(vec![
+                PickleValue::MemoRef { key: 1 },
+                PickleValue::MemoRef { key: 1 },
+                PickleValue::Dict(vec![(
+                    PickleValue::Str("ref".into()),
+                    PickleValue::MemoRef { key: 1 },
+                )]),
+            ]),
+            "all three occurrences (direct, direct, and nested in a dict value) must alias the same memo slot"
         );
     }
 

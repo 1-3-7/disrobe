@@ -152,7 +152,7 @@ fn decompile(input: PathBuf, json: bool, out: Option<PathBuf>) -> miette::Result
     let (trace, memo): (VmTrace, std::collections::BTreeMap<u64, PickleValue>) =
         execute_full(&dis).map_err(|e| miette::miette!("DR-CLI-0665: pickle vm: {e}"))?;
     let source: String = to_python_assignment(&trace.result);
-    let recovered: Reconstruction = reconstruct(&trace.result, &memo);
+    let recovered: Reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
     let stem: String = pickle_stem(&input);
     let out_path: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.py")));
     let body: String = if recovered.program.ends_with('\n') {

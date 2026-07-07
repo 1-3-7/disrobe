@@ -34,22 +34,15 @@ pub struct Reconstruction {
     pub unsupported: Vec<String>,
 }
 
-struct Ctx<'a> {
-    targets: Vec<(u64, &'a PickleValue)>,
-}
-
-impl Ctx<'_> {
-    fn cycle_target(&self, node: &PickleValue) -> Option<u64> {
-        self.targets
-            .iter()
-            .find_map(|(key, value): &(u64, &PickleValue)| (*value == node).then_some(*key))
-    }
-}
-
 #[must_use]
-pub fn reconstruct(value: &PickleValue, memo: &BTreeMap<u64, PickleValue>) -> Reconstruction {
+pub fn reconstruct(
+    value: &PickleValue,
+    memo: &BTreeMap<u64, PickleValue>,
+    root_memo_key: Option<u64>,
+) -> Reconstruction {
     let mut needed: BTreeSet<u64> = BTreeSet::new();
     collect_needed(value, memo, &mut needed);
+    let root_is_shared: bool = root_memo_key.is_some_and(|k: u64| needed.contains(&k));
 
     let mut reexecutable: bool = true;
     let mut reasons: Vec<String> = Vec::new();
@@ -80,12 +73,6 @@ pub fn reconstruct(value: &PickleValue, memo: &BTreeMap<u64, PickleValue>) -> Re
     reasons.sort_unstable();
     reasons.dedup();
 
-    let targets: Vec<(u64, &PickleValue)> = needed
-        .iter()
-        .filter_map(|key: &u64| memo.get(key).map(|value: &PickleValue| (*key, value)))
-        .collect();
-    let ctx: Ctx<'_> = Ctx { targets };
-
     let mut program: String = String::with_capacity(512);
     program.push_str(PREAMBLE);
     program.push('\n');
@@ -94,11 +81,15 @@ pub fn reconstruct(value: &PickleValue, memo: &BTreeMap<u64, PickleValue>) -> Re
     }
     program.push_str("_m = {}\n");
 
-    emit_shells(&ctx, memo, &needed, &mut program);
-    emit_fill(&ctx, memo, &needed, &mut program);
+    emit_shells(memo, &needed, &mut program);
+    emit_fill(memo, &needed, &mut program);
 
     let mut root: String = String::new();
-    render(&ctx, value, &mut root);
+    if root_is_shared {
+        root.push_str(&format!("_m[{}]", root_memo_key.unwrap_or_default()));
+    } else {
+        render(value, &mut root);
+    }
     program.push_str(&format!("result = {root}\n"));
 
     Reconstruction {
@@ -108,12 +99,7 @@ pub fn reconstruct(value: &PickleValue, memo: &BTreeMap<u64, PickleValue>) -> Re
     }
 }
 
-fn emit_shells(
-    ctx: &Ctx<'_>,
-    memo: &BTreeMap<u64, PickleValue>,
-    needed: &BTreeSet<u64>,
-    program: &mut String,
-) {
+fn emit_shells(memo: &BTreeMap<u64, PickleValue>, needed: &BTreeSet<u64>, program: &mut String) {
     for key in needed {
         if let Some(PickleValue::List(_)) = memo.get(key) {
             program.push_str(&format!("_m[{key}] = []\n"));
@@ -133,36 +119,39 @@ fn emit_shells(
         }) = memo.get(key)
         {
             let mut base: String = String::new();
-            render_object_base(ctx, *ctor, cls, args, kwargs.as_deref(), &mut base);
+            render_object_base(*ctor, cls, args, kwargs.as_deref(), &mut base);
             program.push_str(&format!("_m[{key}] = {base}\n"));
+        } else if let Some(PickleValue::FrozenSet(items)) = memo.get(key) {
+            let mut body: String = String::new();
+            render_seq_items(items, &mut body);
+            program.push_str(&format!("_m[{key}] = frozenset([{body}])\n"));
+        } else if let Some(PickleValue::Reduce { callable, args }) = memo.get(key) {
+            let mut expr: String = String::new();
+            render_call(callable, args, &mut expr);
+            program.push_str(&format!("_m[{key}] = {expr}\n"));
         }
     }
 }
 
-fn emit_fill(
-    ctx: &Ctx<'_>,
-    memo: &BTreeMap<u64, PickleValue>,
-    needed: &BTreeSet<u64>,
-    program: &mut String,
-) {
+fn emit_fill(memo: &BTreeMap<u64, PickleValue>, needed: &BTreeSet<u64>, program: &mut String) {
     for key in needed {
         match memo.get(key) {
             Some(PickleValue::List(items)) if !items.is_empty() => {
                 let mut body: String = String::new();
-                render_seq_items(ctx, items, &mut body);
+                render_seq_items(items, &mut body);
                 program.push_str(&format!("_m[{key}].extend([{body}])\n"));
             }
             Some(PickleValue::Set(items)) if !items.is_empty() => {
                 let mut body: String = String::new();
-                render_seq_items(ctx, items, &mut body);
+                render_seq_items(items, &mut body);
                 program.push_str(&format!("_m[{key}].update([{body}])\n"));
             }
             Some(PickleValue::Dict(pairs)) => {
                 for (dict_key, dict_val) in pairs {
                     let mut k: String = String::new();
                     let mut v: String = String::new();
-                    render(ctx, dict_key, &mut k);
-                    render(ctx, dict_val, &mut v);
+                    render(dict_key, &mut k);
+                    render(dict_val, &mut v);
                     program.push_str(&format!("_m[{key}][{k}] = {v}\n"));
                 }
             }
@@ -174,17 +163,17 @@ fn emit_fill(
             }) => {
                 if !listitems.is_empty() {
                     let mut body: String = String::new();
-                    render_seq_items(ctx, listitems, &mut body);
+                    render_seq_items(listitems, &mut body);
                     program.push_str(&format!("_extend(_m[{key}], [{body}])\n"));
                 }
                 if !dictitems.is_empty() {
                     let mut body: String = String::new();
-                    render_pair_tuples(ctx, dictitems, &mut body);
+                    render_pair_tuples(dictitems, &mut body);
                     program.push_str(&format!("_setitems(_m[{key}], [{body}])\n"));
                 }
                 if let Some(state) = state {
                     let mut rendered: String = String::new();
-                    render(ctx, state, &mut rendered);
+                    render(state, &mut rendered);
                     program.push_str(&format!("_apply_state(_m[{key}], {rendered})\n"));
                 }
             }
@@ -193,14 +182,8 @@ fn emit_fill(
     }
 }
 
-fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
+fn render(value: &PickleValue, out: &mut String) {
     if let PickleValue::MemoRef { key } = value {
-        out.push_str(&format!("_m[{key}]"));
-        return;
-    }
-    if is_target_kind(value)
-        && let Some(key) = ctx.cycle_target(value)
-    {
         out.push_str(&format!("_m[{key}]"));
         return;
     }
@@ -214,12 +197,12 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
         PickleValue::Bytes(b) => out.push_str(&py_repr_bytes(b)),
         PickleValue::List(items) => {
             out.push('[');
-            render_seq_items(ctx, items, out);
+            render_seq_items(items, out);
             out.push(']');
         }
         PickleValue::Tuple(items) => {
             out.push('(');
-            render_seq_items(ctx, items, out);
+            render_seq_items(items, out);
             if items.len() == 1 {
                 out.push(',');
             }
@@ -230,13 +213,13 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
                 out.push_str("set()");
             } else {
                 out.push('{');
-                render_seq_items(ctx, items, out);
+                render_seq_items(items, out);
                 out.push('}');
             }
         }
         PickleValue::FrozenSet(items) => {
             out.push_str("frozenset([");
-            render_seq_items(ctx, items, out);
+            render_seq_items(items, out);
             out.push_str("])");
         }
         PickleValue::Dict(pairs) => {
@@ -245,9 +228,9 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                render(ctx, k, out);
+                render(k, out);
                 out.push_str(": ");
-                render(ctx, v, out);
+                render(v, out);
             }
             out.push('}');
         }
@@ -255,7 +238,7 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
             let (module, name): (String, String) = map_global(module, name);
             out.push_str(&format!("{module}.{name}"));
         }
-        PickleValue::Reduce { callable, args } => render_call(ctx, callable, args, out),
+        PickleValue::Reduce { callable, args } => render_call(callable, args, out),
         PickleValue::Object {
             ctor,
             cls,
@@ -266,20 +249,20 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
             dictitems,
         } => {
             let mut expr: String = String::new();
-            render_object_base(ctx, *ctor, cls, args, kwargs.as_deref(), &mut expr);
+            render_object_base(*ctor, cls, args, kwargs.as_deref(), &mut expr);
             if !listitems.is_empty() {
                 let mut body: String = String::new();
-                render_seq_items(ctx, listitems, &mut body);
+                render_seq_items(listitems, &mut body);
                 expr = format!("_extend({expr}, [{body}])");
             }
             if !dictitems.is_empty() {
                 let mut body: String = String::new();
-                render_pair_tuples(ctx, dictitems, &mut body);
+                render_pair_tuples(dictitems, &mut body);
                 expr = format!("_setitems({expr}, [{body}])");
             }
             if let Some(state) = state {
                 let mut rendered: String = String::new();
-                render(ctx, state, &mut rendered);
+                render(state, &mut rendered);
                 expr = format!("_apply_state({expr}, {rendered})");
             }
             out.push_str(&expr);
@@ -298,7 +281,6 @@ fn render(ctx: &Ctx<'_>, value: &PickleValue, out: &mut String) {
 }
 
 fn render_object_base(
-    ctx: &Ctx<'_>,
     ctor: ObjCtor,
     cls: &PickleValue,
     args: &PickleValue,
@@ -307,89 +289,78 @@ fn render_object_base(
 ) {
     match ctor {
         ObjCtor::NewObj | ObjCtor::NewObjEx => {
-            render(ctx, cls, out);
+            render(cls, out);
             out.push_str(".__new__(");
-            render(ctx, cls, out);
-            render_positional_tail(ctx, args, out);
+            render(cls, out);
+            render_positional_tail(args, out);
             if let Some(kw) = kwargs {
                 out.push_str(", **");
-                render(ctx, kw, out);
+                render(kw, out);
             }
             out.push(')');
         }
         ObjCtor::Reduce | ObjCtor::Inst | ObjCtor::Obj => {
-            render(ctx, cls, out);
-            render_call_args(ctx, args, out);
+            render(cls, out);
+            render_call_args(args, out);
         }
     }
 }
 
-fn render_call(ctx: &Ctx<'_>, callable: &PickleValue, args: &PickleValue, out: &mut String) {
-    render(ctx, callable, out);
-    render_call_args(ctx, args, out);
+fn render_call(callable: &PickleValue, args: &PickleValue, out: &mut String) {
+    render(callable, out);
+    render_call_args(args, out);
 }
 
-fn render_call_args(ctx: &Ctx<'_>, args: &PickleValue, out: &mut String) {
+fn render_call_args(args: &PickleValue, out: &mut String) {
     match args {
         PickleValue::Tuple(items) => {
             out.push('(');
-            render_seq_items(ctx, items, out);
+            render_seq_items(items, out);
             out.push(')');
         }
         other => {
             out.push_str("(*");
-            render(ctx, other, out);
+            render(other, out);
             out.push(')');
         }
     }
 }
 
-fn render_positional_tail(ctx: &Ctx<'_>, args: &PickleValue, out: &mut String) {
+fn render_positional_tail(args: &PickleValue, out: &mut String) {
     match args {
         PickleValue::Tuple(items) => {
             for item in items {
                 out.push_str(", ");
-                render(ctx, item, out);
+                render(item, out);
             }
         }
         other => {
             out.push_str(", *");
-            render(ctx, other, out);
+            render(other, out);
         }
     }
 }
 
-fn render_seq_items(ctx: &Ctx<'_>, items: &[PickleValue], out: &mut String) {
+fn render_seq_items(items: &[PickleValue], out: &mut String) {
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
-        render(ctx, item, out);
+        render(item, out);
     }
 }
 
-fn render_pair_tuples(ctx: &Ctx<'_>, pairs: &[(PickleValue, PickleValue)], out: &mut String) {
+fn render_pair_tuples(pairs: &[(PickleValue, PickleValue)], out: &mut String) {
     for (i, (k, v)) in pairs.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
         out.push('(');
-        render(ctx, k, out);
+        render(k, out);
         out.push_str(", ");
-        render(ctx, v, out);
+        render(v, out);
         out.push(')');
     }
-}
-
-#[inline]
-fn is_target_kind(value: &PickleValue) -> bool {
-    matches!(
-        value,
-        PickleValue::List(_)
-            | PickleValue::Dict(_)
-            | PickleValue::Set(_)
-            | PickleValue::Object { .. }
-    )
 }
 
 fn collect_needed(
@@ -560,7 +531,7 @@ mod tests {
         let dis: Disassembly = disassemble(bytes).expect("disasm");
         let mut session: Session = Session::new();
         let result: PickleValue = session.run(&dis).expect("vm");
-        reconstruct(&result, session.memo())
+        reconstruct(&result, session.memo(), session.root_memo_key())
     }
 
     #[test]

@@ -1259,6 +1259,7 @@ mod tests {
             cyclic: false,
             oob_buffer_count: 0,
             call_graph: Vec::new(),
+            root_memo_key: None,
         }
     }
 

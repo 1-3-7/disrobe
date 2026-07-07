@@ -251,10 +251,15 @@ fn shared_ref_fixture_is_acyclic() {
         panic!("expected list");
     };
     assert_eq!(items.len(), 2);
-    assert_eq!(items[0], items[1], "both entries reference the same value");
+    assert_eq!(
+        items[0], items[1],
+        "both entries must alias the same memo slot, or pickle.loads's shared identity is lost"
+    );
     assert!(
-        !matches!(items[0], PickleValue::MemoRef { .. }),
-        "acyclic shared reuse must inline, not leave a back-edge"
+        matches!(items[0], PickleValue::MemoRef { .. }),
+        "real CPython shares this list by identity (a single PUT, reused via GET); the recovered \
+         graph must reference one memo slot from both call sites rather than deep-copy the value, \
+         or the rebuilt object silently loses `rebuilt[0] is rebuilt[1]`"
     );
 }
 

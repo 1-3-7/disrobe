@@ -44,7 +44,7 @@ impl LegacyPass for PickleLegacyPass {
         let (trace, memo): (VmTrace, BTreeMap<u64, PickleValue>) = execute_full(&dis)
             .map_err(|e| CoreError::PassFailure(format!("DR-PICKLE-PASS vm: {e}")))?;
         let source: String = to_python_assignment(&trace.result);
-        let recovered: Reconstruction = reconstruct(&trace.result, &memo);
+        let recovered: Reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
         let report: PicklePassReport = PicklePassReport {
             source_path: input.source_path,
             protocol: dis.protocol,

@@ -100,7 +100,7 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
         let _ = analyze_deep(&trace);
         let _ = analyze_with_policy(&trace, &Policy::default());
         let _ = analyze_with_options(&trace, &AnalysisOptions::default());
-        let _ = reconstruct(&trace.result, &memo);
+        let _ = reconstruct(&trace.result, &memo, trace.root_memo_key);
     });
     drive_ml(bytes, desc);
 }

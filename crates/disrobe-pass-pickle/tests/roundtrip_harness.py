@@ -14,6 +14,12 @@ comparator never sees disrobe's intermediate representation, so a green score
 cannot be circular. Fixture classes are defined at module scope, so when this
 file runs as ``__main__`` both the emit and grade phases resolve them and the
 disrobe program's ``import __main__`` references bind to the same classes.
+
+The comparator checks object identity as well as structural value: whenever
+two positions in the CPython-unpickled graph are the same object, the
+corresponding positions in disrobe's rebuilt graph must be too (and vice
+versa), so silently deep-copying a shared reference or fabricating a shared
+one that was not there originally both fail the oracle.
 """
 
 from __future__ import annotations
@@ -106,6 +112,21 @@ class CyclicObj:
         self.me: CyclicObj | None = None
 
 
+class KwArgsObj:
+    def __init__(self: KwArgsObj, a: int = 0, b: int = 0) -> None:
+        self.a: int = a
+        self.b: int = b
+
+    def __getnewargs_ex__(self: KwArgsObj) -> tuple[tuple[()], dict[str, int]]:
+        return ((), {"a": self.a, "b": self.b})
+
+    def __eq__(self: KwArgsObj, other: object) -> bool:
+        return isinstance(other, KwArgsObj) and (self.a, self.b) == (other.a, other.b)
+
+    def __hash__(self: KwArgsObj) -> int:
+        return hash((self.a, self.b))
+
+
 def _cyclic_list() -> list[Any]:
     box: list[Any] = [1, 2]
     box.append(box)
@@ -129,6 +150,25 @@ def _shared() -> list[Any]:
     return [inner, inner, {"ref": inner}]
 
 
+def _shared_object() -> list[Any]:
+    obj: GetSetState = GetSetState(99)
+    return [obj, obj]
+
+
+def _shared_frozenset() -> list[Any]:
+    fs: frozenset[int] = frozenset({10, 20, 30})
+    return [fs, fs, {"fs": fs}]
+
+
+def _shared_reduce_no_state() -> list[Any]:
+    rp: ReducePoint = ReducePoint(11, 22)
+    return [rp, rp]
+
+
+def _distinct_equal_lists() -> list[Any]:
+    return [[1, 2], [1, 2]]
+
+
 def _cyclic_deque() -> collections.deque[Any]:
     box: collections.deque[Any] = collections.deque([1, 2])
     box.append(box)
@@ -142,6 +182,8 @@ def cases() -> dict[str, Callable[[], Any]]:
         "zero": lambda: 0,
         "big_int": lambda: 2**128 + 1,
         "neg_big_int": lambda: -(2**200),
+        "mid_int_binint2": lambda: 1000,
+        "large_int_binint": lambda: 100_000,
         "float": lambda: 3.14159,
         "float_neg_zero": lambda: -0.0,
         "float_inf": lambda: math.inf,
@@ -198,6 +240,15 @@ def cases() -> dict[str, Callable[[], Any]]:
         "cyclic_dict": _cyclic_dict,
         "cyclic_obj": _cyclic_obj,
         "shared_ref": _shared,
+        "shared_object": _shared_object,
+        "shared_frozenset": _shared_frozenset,
+        "shared_reduce_no_state": _shared_reduce_no_state,
+        "distinct_equal_lists": _distinct_equal_lists,
+        "newobj_ex_kwargs": lambda: KwArgsObj(3, 4),
+        "shared_newobj_ex_kwargs": lambda: (lambda o: [o, o])(KwArgsObj(5, 6)),
+        "nan_keyed_dict": lambda: {math.nan: "nan-value", 1: "one"},
+        "nan_in_set": lambda: {math.nan, 1, 2},
+        "nan_in_frozenset": lambda: frozenset({math.nan, 3}),
     }
 
 
@@ -218,60 +269,103 @@ def emit(out_dir: str) -> None:
     print(f"emit: wrote {len(manifest)} pickle fixtures to {out_dir}")
 
 
-def deep_equal(a: Any, b: Any, seen: set[tuple[int, int]] | None = None) -> bool:
-    if seen is None:
-        seen = set()
-    if a is b:
-        return True
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, float):
-        if math.isnan(a) and math.isnan(b):
-            return True
-        return a == b
-    if a is None or isinstance(a, (int, str, bytes, bytearray, bool, complex)):
-        return a == b
-    key: tuple[int, int] = (id(a), id(b))
-    if key in seen:
-        return True
-    seen.add(key)
-    if isinstance(a, (list, tuple, collections.deque)):
-        return len(a) == len(b) and all(
-            deep_equal(x, y, seen) for x, y in zip(a, b)
+def compare(a: Any, b: Any) -> str | None:
+    """Structural-and-identity comparator: `None` on success, else a
+    human-readable path to the first divergence. Two positions that share
+    identity in `a` must share identity in `b` (aliasing preserved) and two
+    positions that do NOT share identity in `a` must not in `b` either
+    (no fabricated sharing), on top of ordinary structural equality.
+    """
+
+    a_to_b: dict[int, int] = {}
+    b_owner: dict[int, int] = {}
+
+    def trackable(x: Any) -> bool:
+        return not (
+            x is None or isinstance(x, (int, float, str, bytes, bytearray, bool, complex))
         )
-    if isinstance(a, dict):
-        if len(a) != len(b):
-            return False
-        for k in a:
-            if k not in b or not deep_equal(a[k], b[k], seen):
-                return False
-        return True
-    if isinstance(a, (set, frozenset)):
-        return a == b
-    if type(a).__eq__ is not object.__eq__:
-        try:
-            return bool(a == b)
-        except Exception:
-            pass
-    da: Any = getattr(a, "__dict__", None)
-    db: Any = getattr(b, "__dict__", None)
-    if (da is not None or db is not None) and not deep_equal(da or {}, db or {}, seen):
-        return False
-    slots: list[str] = []
-    for klass in type(a).__mro__:
-        raw: Any = klass.__dict__.get("__slots__")
-        if raw:
-            slots.extend((raw,) if isinstance(raw, str) else list(raw))
-    for attr in slots:
-        if attr in ("__dict__", "__weakref__"):
-            continue
-        has_a: bool = hasattr(a, attr)
-        has_b: bool = hasattr(b, attr)
-        if has_a != has_b:
-            return False
-        if has_a and not deep_equal(getattr(a, attr), getattr(b, attr), seen):
-            return False
-    return True
+
+    def rec(x: Any, y: Any, path: str) -> str | None:
+        if trackable(x) and trackable(y):
+            idx, idy = id(x), id(y)
+            prior_y: int | None = a_to_b.get(idx)
+            if prior_y is not None:
+                if prior_y != idy:
+                    return f"{path}: original object recurs but the rebuilt graph gives it a second, distinct object (lost sharing)"
+                return None
+            prior_owner: int | None = b_owner.get(idy)
+            if prior_owner is not None:
+                return f"{path}: rebuilt object is aliased to two different original objects (fabricated sharing)"
+            a_to_b[idx] = idy
+            b_owner[idy] = idx
+        if type(x) is not type(y):
+            return f"{path}: type {type(x).__name__} != {type(y).__name__}"
+        if isinstance(x, float):
+            if math.isnan(x) and math.isnan(y):
+                return None
+            return None if x == y else f"{path}: float {x!r} != {y!r}"
+        if x is None or isinstance(x, (int, str, bytes, bytearray, bool, complex)):
+            return None if x == y else f"{path}: value {x!r} != {y!r}"
+        if isinstance(x, (list, tuple, collections.deque)):
+            if len(x) != len(y):
+                return f"{path}: length {len(x)} != {len(y)}"
+            for i, (xi, yi) in enumerate(zip(x, y)):
+                err: str | None = rec(xi, yi, f"{path}[{i}]")
+                if err is not None:
+                    return err
+            return None
+        if isinstance(x, dict):
+            if len(x) != len(y):
+                return f"{path}: dict size {len(x)} != {len(y)}"
+            for i, ((xk, xv), (yk, yv)) in enumerate(zip(x.items(), y.items())):
+                err = rec(xk, yk, f"{path} key#{i}")
+                if err is not None:
+                    return err
+                err = rec(xv, yv, f"{path}[{xk!r}]")
+                if err is not None:
+                    return err
+            return None
+        if isinstance(x, (set, frozenset)):
+            if len(x) != len(y):
+                return f"{path}: size {len(x)} != {len(y)}"
+            is_nan: Callable[[Any], bool] = lambda v: isinstance(v, float) and math.isnan(v)
+            x_nan_count: int = sum(1 for v in x if is_nan(v))
+            y_nan_count: int = sum(1 for v in y if is_nan(v))
+            if x_nan_count != y_nan_count:
+                return f"{path}: nan-element count {x_nan_count} != {y_nan_count}"
+            x_rest: set[Any] = {v for v in x if not is_nan(v)}
+            y_rest: set[Any] = {v for v in y if not is_nan(v)}
+            return None if x_rest == y_rest else f"{path}: {x!r} != {y!r}"
+        if type(x).__eq__ is not object.__eq__:
+            try:
+                return None if bool(x == y) else f"{path}: {x!r} != {y!r}"
+            except Exception:
+                pass
+        dx: Any = getattr(x, "__dict__", None)
+        dy: Any = getattr(y, "__dict__", None)
+        if dx is not None or dy is not None:
+            err = rec(dx or {}, dy or {}, f"{path}.__dict__")
+            if err is not None:
+                return err
+        slots: list[str] = []
+        for klass in type(x).__mro__:
+            raw: Any = klass.__dict__.get("__slots__")
+            if raw:
+                slots.extend((raw,) if isinstance(raw, str) else list(raw))
+        for attr in slots:
+            if attr in ("__dict__", "__weakref__"):
+                continue
+            has_x: bool = hasattr(x, attr)
+            has_y: bool = hasattr(y, attr)
+            if has_x != has_y:
+                return f"{path}.{attr}: presence {has_x} != {has_y}"
+            if has_x:
+                err = rec(getattr(x, attr), getattr(y, attr), f"{path}.{attr}")
+                if err is not None:
+                    return err
+        return None
+
+    return rec(a, b, "root")
 
 
 def grade(out_dir: str, sources_path: str) -> None:
@@ -300,12 +394,13 @@ def grade(out_dir: str, sources_path: str) -> None:
         except Exception:
             results[rel] = {"status": "error", "detail": traceback.format_exc(limit=3)}
             continue
-        if deep_equal(rebuilt, original):
+        divergence: str | None = compare(original, rebuilt)
+        if divergence is None:
             results[rel] = {"status": "ok", "detail": ""}
         else:
             results[rel] = {
                 "status": "mismatch",
-                "detail": f"repr(original)={original!r} repr(rebuilt)={rebuilt!r}"[:400],
+                "detail": f"{divergence} | repr(original)={original!r} repr(rebuilt)={rebuilt!r}"[:500],
             }
     (root / "results.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
     print(f"grade: scored {len(results)} cases")
