@@ -5,7 +5,6 @@ use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
 use crate::pseudo_c::{Abi, LeafRecovery, Reg};
 
-/// Integer element width of a packed SIMD lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ElemWidth {
     W8,
@@ -70,7 +69,6 @@ impl ElemWidth {
     }
 }
 
-/// A binary operator that is associative and commutative over the ring `Z / 2^n` for every lane width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum RingOp {
     Add,
@@ -140,7 +138,6 @@ impl RingOp {
     }
 }
 
-/// A symbolic bit-vector term in the loop-body lane algebra used by the bisimulation gate.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Term {
     Var(u32),
@@ -157,7 +154,6 @@ impl Term {
         Self::App { op, width, args }
     }
 
-    /// Canonicalize this term: flatten AC chains, fold constants, drop identities, sort operands.
     pub(crate) fn normalize(&self) -> Self {
         match self {
             Self::Var(_) | Self::Const(_) => self.clone(),
@@ -209,7 +205,6 @@ impl Term {
     }
 }
 
-/// Fold a slice of lane terms with an AC operator, seeded by the operator identity.
 pub(crate) fn fold_terms(op: RingOp, width: ElemWidth, lanes: &[Term]) -> Term {
     let mut args: Vec<Term> = Vec::with_capacity(lanes.len() + 1);
     args.push(Term::Const(op.identity(width)));
@@ -217,12 +212,10 @@ pub(crate) fn fold_terms(op: RingOp, width: ElemWidth, lanes: &[Term]) -> Term {
     Term::app(op, width, args).normalize()
 }
 
-/// True when two lane terms are provably equal after AC normalization.
 pub(crate) fn terms_equivalent(left: &Term, right: &Term) -> bool {
     left.normalize() == right.normalize()
 }
 
-/// A memory operand `[base + index*scale + disp]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Mem {
     pub(crate) base: Option<Reg>,
@@ -230,7 +223,6 @@ pub(crate) struct Mem {
     pub(crate) disp: i64,
 }
 
-/// A parsed x86-64 instruction operand in the subset the SIMD recognizer models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Operand {
     Gpr { reg: Reg, bytes: u8 },
@@ -240,7 +232,6 @@ pub(crate) enum Operand {
     Rel(u64),
 }
 
-/// A decoded instruction: mnemonic plus its parsed operands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Insn {
     pub(crate) addr: u64,
@@ -652,6 +643,86 @@ fn match_blend_out(w: &[Insn]) -> Option<(Insn, Insn)> {
     ))
 }
 
+fn match_blend_movdqa_min(w: &[Insn]) -> Option<Insn> {
+    let [i0, i1, i2, i3, i4] = w else {
+        return None;
+    };
+    if i0.mnem != "movdqa" || i3.mnem != "pandn" || i4.mnem != "por" {
+        return None;
+    }
+    let width: ElemWidth = pcmpgt_width(&i1.mnem)?;
+    let (tmp, other): (u8, u8) = (i0.xmm(0)?, i0.xmm(1)?);
+    if i1.xmm(0)? != tmp {
+        return None;
+    }
+    let cmp_b: u8 = i1.xmm(1)?;
+    if i2.mnem != "pand" || i2.xmm(0)? != cmp_b || i2.xmm(1)? != tmp {
+        return None;
+    }
+    if i3.xmm(0)? != tmp || i3.xmm(1)? != other {
+        return None;
+    }
+    if i4.xmm(0)? != cmp_b || i4.xmm(1)? != tmp {
+        return None;
+    }
+    Some(virt(
+        i0.addr,
+        signed_minmax_mnemonic(false, width),
+        cmp_b,
+        other,
+    ))
+}
+
+fn match_blend_dup_load(w: &[Insn]) -> Option<(usize, Insn)> {
+    let i0: &Insn = w.first()?;
+    let i1: &Insn = w.get(1)?;
+    if !matches!(i0.mnem.as_str(), "movdqu" | "movdqa")
+        || !matches!(i1.mnem.as_str(), "movdqu" | "movdqa")
+    {
+        return None;
+    }
+    if i0.mem(1)? != i1.mem(1)? {
+        return None;
+    }
+    let (l1, l2): (u8, u8) = (i0.xmm(0)?, i1.xmm(0)?);
+    if l1 == l2 {
+        return None;
+    }
+    let rest: &[Insn] = w.get(2..)?;
+    let pcmpgtd_off: usize = rest
+        .iter()
+        .position(|insn: &Insn| pcmpgt_width(&insn.mnem).is_some())?;
+    if rest
+        .get(..pcmpgtd_off)?
+        .iter()
+        .any(|skipped: &Insn| skipped.xmm(0).is_some())
+    {
+        return None;
+    }
+    let [i2, i3, i4, i5] = rest.get(pcmpgtd_off..pcmpgtd_off + 4)? else {
+        return None;
+    };
+    let width: ElemWidth = pcmpgt_width(&i2.mnem)?;
+    let (mask, cmp_b): (u8, u8) = (i2.xmm(0)?, i2.xmm(1)?);
+    if mask != l1 {
+        return None;
+    }
+    if i3.mnem != "pand" || i3.xmm(0)? != cmp_b || i3.xmm(1)? != mask {
+        return None;
+    }
+    if i4.mnem != "pandn" || i4.xmm(0)? != mask || i4.xmm(1)? != l2 {
+        return None;
+    }
+    if i5.mnem != "por" || i5.xmm(0)? != cmp_b || i5.xmm(1)? != mask {
+        return None;
+    }
+    let consumed: usize = 2 + pcmpgtd_off + 4;
+    Some((
+        consumed,
+        virt(i2.addr, signed_minmax_mnemonic(false, width), cmp_b, l2),
+    ))
+}
+
 fn collapse_blends(insns: &[Insn]) -> Vec<Insn> {
     let mut out: Vec<Insn> = Vec::with_capacity(insns.len());
     let mut i: usize = 0;
@@ -663,11 +734,28 @@ fn collapse_blends(insns: &[Insn]) -> Vec<Insn> {
             i += 6;
             continue;
         }
+        if let Some(window) = insns.get(i..i + 9)
+            && let Some((consumed, folded)) = match_blend_dup_load(window)
+        {
+            out.push(window[0].clone());
+            out.push(window[1].clone());
+            out.extend_from_slice(&window[2..consumed - 4]);
+            out.push(folded);
+            i += consumed;
+            continue;
+        }
         if let Some(window) = insns.get(i..i + 5)
             && let Some((mov, op)) = match_blend_out(window)
         {
             out.push(mov);
             out.push(op);
+            i += 5;
+            continue;
+        }
+        if let Some(window) = insns.get(i..i + 5)
+            && let Some(folded) = match_blend_movdqa_min(window)
+        {
+            out.push(folded);
             i += 5;
             continue;
         }
@@ -706,8 +794,48 @@ fn pshufd_lane_perm(imm: u8, lanes: usize) -> Option<Vec<usize>> {
             }
             Some(perm)
         }
+        8 | 16 => {
+            let sub: usize = lanes / 4;
+            let mut perm: Vec<usize> = Vec::with_capacity(lanes);
+            for out_dword in 0..4 {
+                let src_dword: usize = usize::from((imm >> (2 * out_dword)) & 3);
+                for k in 0..sub {
+                    perm.push(src_dword * sub + k);
+                }
+            }
+            Some(perm)
+        }
         _ => None,
     }
+}
+
+fn shift_right_logical_lanes(
+    cur: &[Term],
+    dword_bits: u32,
+    width: ElemWidth,
+    shift_bits: u64,
+) -> Option<Vec<Term>> {
+    if shift_bits % u64::from(width.bits()) != 0 {
+        return None;
+    }
+    let shift_sub: usize = usize::try_from(shift_bits / u64::from(width.bits())).ok()?;
+    let dpl: usize = (dword_bits / width.bits()) as usize;
+    if dpl == 0 || shift_sub >= dpl || cur.len() % dpl != 0 {
+        return None;
+    }
+    let ngroups: usize = cur.len() / dpl;
+    let mut out: Vec<Term> = Vec::with_capacity(cur.len());
+    for g in 0..ngroups {
+        for i in 0..dpl {
+            let src_i: usize = i + shift_sub;
+            out.push(if src_i < dpl {
+                cur[g * dpl + src_i].clone()
+            } else {
+                Term::Const(0)
+            });
+        }
+    }
+    Some(out)
 }
 
 fn addr_index(insns: &[Insn], addr: u64) -> Option<usize> {
@@ -736,7 +864,6 @@ fn find_back_edges(insns: &[Insn]) -> Vec<(usize, usize)> {
     edges
 }
 
-/// The recognized packed vector loop: its AC operator, lane width, base pointer, and lane coverage.
 #[derive(Debug, Clone)]
 struct VectorLoop {
     op: RingOp,
@@ -853,7 +980,6 @@ fn cmp_other_reg(body: &[Insn], idx_reg: Reg) -> Option<Reg> {
     })
 }
 
-/// The recovered scalar remainder loop, which is the compiler-emitted original body verbatim.
 #[derive(Debug, Clone, Copy)]
 struct Remainder {
     op: RingOp,
@@ -1007,6 +1133,19 @@ fn verify_epilog(
                     .collect::<Option<Vec<Term>>>()?;
                 regs.insert(dst, permuted);
             }
+            "psrlw" | "psrld" | "psrlq" => {
+                let dst: u8 = insn.xmm(0)?;
+                let shift_bits: u64 = u64::try_from(insn.imm(1)? & 0xff).ok()?;
+                let dword_bits: u32 = match insn.mnem.as_str() {
+                    "psrlw" => 16,
+                    "psrld" => 32,
+                    _ => 64,
+                };
+                let cur: Vec<Term> = regs.get(&dst)?.clone();
+                let shifted: Vec<Term> =
+                    shift_right_logical_lanes(&cur, dword_bits, width, shift_bits)?;
+                regs.insert(dst, shifted);
+            }
             other => {
                 let Some((ring, _)): Option<(RingOp, Option<ElemWidth>)> = packed_op_ringop(other)
                 else {
@@ -1079,7 +1218,6 @@ fn verify_zero_guard(insns: &[Insn], len_reg: Reg) -> Option<()> {
     None
 }
 
-/// A proven vectorized integer reduction, sufficient to emit a clean scalar loop.
 #[derive(Debug, Clone, Copy)]
 struct ReductionForm {
     op: RingOp,
@@ -1169,7 +1307,6 @@ fn emit_reduction(form: ReductionForm, abi: Abi, base_pos: usize, len_pos: usize
     }
 }
 
-/// A gcc-style pointer-walk vector loop: single 16-byte accumulator advanced against an end pointer.
 #[derive(Debug, Clone)]
 struct PtrWalkLoop {
     op: RingOp,
@@ -1178,8 +1315,14 @@ struct PtrWalkLoop {
     end_reg: Reg,
     step_bytes: i64,
     accumulators: Vec<u8>,
+    elem_offset: i64,
     header_idx: usize,
     back_idx: usize,
+}
+
+fn writes_gpr(insn: &Insn, reg: Reg) -> bool {
+    !matches!(insn.mnem.as_str(), "cmp" | "test")
+        && insn.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(reg)
 }
 
 fn extract_width(mnem: &str) -> Option<ElemWidth> {
@@ -1271,7 +1414,16 @@ fn analyze_ptrwalk_loop(insns: &[Insn], header: usize, back: usize) -> Option<Pt
     {
         return None;
     }
-    if accum_disp.len() != 1 || accum_disp.values().any(|d: &i64| *d != 0) {
+    if accum_disp.len() != 1 {
+        return None;
+    }
+    let elem_bytes_i64: i64 = i64::try_from(width.bytes()).ok()?;
+    let disp: i64 = *accum_disp.values().next()?;
+    if disp % elem_bytes_i64 != 0 {
+        return None;
+    }
+    let elem_offset: i64 = disp / elem_bytes_i64;
+    if elem_offset < 0 {
         return None;
     }
     let accumulators: Vec<u8> = accum_disp.keys().copied().collect();
@@ -1282,6 +1434,7 @@ fn analyze_ptrwalk_loop(insns: &[Insn], header: usize, back: usize) -> Option<Pt
         end_reg,
         step_bytes,
         accumulators,
+        elem_offset,
         header_idx: header,
         back_idx: back,
     })
@@ -1310,9 +1463,10 @@ fn verify_ptrwalk_end(insns: &[Insn], vloop: &PtrWalkLoop) -> Option<Reg> {
     let prefix: &[Insn] = insns.get(..vloop.header_idx)?;
     let writes: Vec<&Insn> = prefix
         .iter()
-        .filter(|i: &&Insn| i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(vloop.end_reg))
+        .filter(|i: &&Insn| writes_gpr(i, vloop.end_reg))
         .collect();
-    let [mov, shr, shl, add] = writes.as_slice() else {
+    let last_four: &[&Insn] = writes.get(writes.len().checked_sub(4)?..)?;
+    let [mov, shr, shl, add] = last_four else {
         return None;
     };
     if mov.mnem != "mov" || shr.mnem != "shr" || shl.mnem != "shl" || add.mnem != "add" {
@@ -1325,7 +1479,50 @@ fn verify_ptrwalk_end(insns: &[Insn], vloop: &PtrWalkLoop) -> Option<Reg> {
     (add.gpr(1).map(|(r, _): (Reg, u8)| r) == Some(vloop.base_reg)).then_some(len_reg)
 }
 
-/// A value tracked as `r * R + c`, where `R` is the peeled-remainder start index in elements.
+fn traces_pristine_arg(insns: &[Insn], upto: usize, reg: Reg) -> Option<Reg> {
+    let prefix: &[Insn] = insns.get(..upto)?;
+    let writes: Vec<(usize, &Insn)> = prefix
+        .iter()
+        .enumerate()
+        .filter(|(_, i): &(usize, &Insn)| writes_gpr(i, reg))
+        .collect();
+    match writes.as_slice() {
+        [] => Some(reg),
+        [(pos, mov)] if mov.mnem == "mov" => {
+            let src: Reg = mov.gpr(1)?.0;
+            insns
+                .get(..*pos)?
+                .iter()
+                .all(|i: &Insn| !writes_gpr(i, src))
+                .then_some(src)
+        }
+        _ => None,
+    }
+}
+
+fn verify_ptrwalk_minmax_end(insns: &[Insn], vloop: &PtrWalkLoop) -> Option<Reg> {
+    let len_reg: Reg = verify_ptrwalk_end(insns, vloop)?;
+    let prefix: &[Insn] = insns.get(..vloop.header_idx)?;
+    let mov_pos: usize = prefix.iter().position(|i: &Insn| {
+        i.mnem == "mov"
+            && i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(vloop.end_reg)
+            && i.gpr(1).map(|(r, _): (Reg, u8)| r) == Some(len_reg)
+    })?;
+    let writes: Vec<&Insn> = prefix
+        .get(..mov_pos)?
+        .iter()
+        .filter(|i: &&Insn| writes_gpr(i, len_reg))
+        .collect();
+    let [lea] = writes.as_slice() else {
+        return None;
+    };
+    let is_self_decrement: bool = lea.mnem == "lea"
+        && lea
+            .mem(1)
+            .is_some_and(|m: Mem| m.base == Some(len_reg) && m.index.is_none() && m.disp == -1);
+    is_self_decrement.then_some(len_reg)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Aff {
     r: i64,
@@ -1571,6 +1768,132 @@ fn sub_of(reg: Reg, full: Reg) -> bool {
     reg == full
 }
 
+fn verify_ptrwalk_minmax_remainder(
+    insns: &[Insn],
+    back_idx: usize,
+    base_reg: Reg,
+    masked_reg: Reg,
+    op: RingOp,
+    elem_offset: i64,
+    width: ElemWidth,
+    vf: usize,
+) -> Option<u8> {
+    let region: &[Insn] = insns.get(back_idx + 1..)?;
+    let elem_bytes: i64 = i64::try_from(width.bytes()).ok()?;
+    let mask: i64 = -(i64::try_from(vf).ok()?);
+    let mut aff: BTreeMap<Reg, Aff> = BTreeMap::new();
+    let mut mask_established: bool = false;
+    let mut pending: Option<(i64, Reg, u8)> = None;
+    let mut steps: Vec<(i64, Reg, u8, usize)> = Vec::new();
+    let mut idx_guards: Vec<(i64, usize)> = Vec::new();
+    for (pos, insn) in region.iter().enumerate() {
+        if is_store(insn) {
+            return None;
+        }
+        if let Some((j, loaded, bytes)) = pending
+            && pos > 0
+            && insn.gpr(1).map(|(r, _): (Reg, u8)| r) == Some(loaded)
+            && scalar_cmp_cmov_op(&region[pos - 1], insn) == Some(op)
+        {
+            steps.push((j, insn.gpr(0)?.0, bytes, pos));
+            pending = None;
+        }
+        match insn.mnem.as_str() {
+            "and" => {
+                if let (Some((d, _)), Some(imm)) = (insn.gpr(0), insn.imm(1))
+                    && d == masked_reg
+                    && imm == mask
+                {
+                    aff.insert(d, Aff { r: 1, c: 0 });
+                    mask_established = true;
+                }
+            }
+            "add" => {
+                if let (Some((d, _)), Some(imm)) = (insn.gpr(0), insn.imm(1))
+                    && let Some(a) = aff.get(&d).copied()
+                {
+                    aff.insert(
+                        d,
+                        Aff {
+                            r: a.r,
+                            c: a.c + imm,
+                        },
+                    );
+                }
+            }
+            "lea" => {
+                if let (Some((d, _)), Some(m)) = (insn.gpr(0), insn.mem(1)) {
+                    match lea_affine(&aff, m) {
+                        Some(a) => {
+                            aff.insert(d, a);
+                        }
+                        None => {
+                            aff.remove(&d);
+                        }
+                    }
+                }
+            }
+            "mov" => {
+                if let (Some((d, dbytes)), Some(m)) = (insn.gpr(0), insn.mem(1)) {
+                    if let Some(j) = peeled_elem_index(&aff, m, base_reg, elem_bytes) {
+                        pending = Some((j, d, dbytes));
+                    }
+                } else if let (Some((d, _)), Some((s, _))) = (insn.gpr(0), insn.gpr(1)) {
+                    match aff.get(&s).copied() {
+                        Some(a) => {
+                            aff.insert(d, a);
+                        }
+                        None => {
+                            aff.remove(&d);
+                        }
+                    }
+                }
+            }
+            "cmp" => {
+                if let (Some((a, _)), Some((b, _))) = (insn.gpr(0), insn.gpr(1))
+                    && traces_pristine_arg(insns, back_idx + 1 + pos, a) == Some(masked_reg)
+                    && let Some(bound) = aff.get(&b).copied()
+                    && bound.r == 1
+                {
+                    idx_guards.push((bound.c, pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !mask_established {
+        return None;
+    }
+    steps.sort_by_key(|t: &(i64, Reg, u8, usize)| t.3);
+    if steps.len() != vf - 1 {
+        return None;
+    }
+    let acc: Reg = steps.first()?.1;
+    if acc != Reg::Rax {
+        return None;
+    }
+    let ret_bytes: u8 = steps.first()?.2;
+    let base_j: i64 = steps.first()?.0;
+    if base_j != elem_offset {
+        return None;
+    }
+    for (want_k, &(j, a, bytes, pos)) in steps.iter().enumerate() {
+        if j != base_j + i64::try_from(want_k).ok()? || a != acc || bytes != ret_bytes {
+            return None;
+        }
+        if want_k >= 1 {
+            let prev_pos: usize = steps[want_k - 1].3;
+            let guarded: bool = idx_guards
+                .iter()
+                .any(|&(g, gp): &(i64, usize)| g == j && gp > prev_pos && gp < pos);
+            if !guarded {
+                return None;
+            }
+        }
+    }
+    Some(ret_bytes)
+}
+
 fn recognize_ptrwalk_reduction(insns: &[Insn]) -> Option<ReductionForm> {
     let edges: Vec<(usize, usize)> = find_back_edges(insns);
     let vloop: PtrWalkLoop = edges
@@ -1582,7 +1905,7 @@ fn recognize_ptrwalk_reduction(insns: &[Insn]) -> Option<ReductionForm> {
     if vloop.op.identity(vloop.width) != 0 || vloop.op.c_infix().is_none() {
         return None;
     }
-    if vloop.accumulators.len() != 1 || vloop.step_bytes != 16 {
+    if vloop.accumulators.len() != 1 || vloop.step_bytes != 16 || vloop.elem_offset != 0 {
         return None;
     }
     let vf: usize = (16 / vloop.width.bytes()) as usize;
@@ -1609,6 +1932,49 @@ fn recognize_ptrwalk_reduction(insns: &[Insn]) -> Option<ReductionForm> {
         op: vloop.op,
         width: vloop.width,
         base_reg: vloop.base_reg,
+        len_reg,
+        ret_bytes,
+    })
+}
+
+fn recognize_ptrwalk_minmax(insns: &[Insn]) -> Option<MinMaxForm> {
+    let edges: Vec<(usize, usize)> = find_back_edges(insns);
+    let vloop: PtrWalkLoop = edges
+        .iter()
+        .find_map(|&(h, b): &(usize, usize)| analyze_ptrwalk_loop(insns, h, b))?;
+    if !matches!(vloop.op, RingOp::SMax | RingOp::SMin) || vloop.elem_offset != 1 {
+        return None;
+    }
+    if vloop.accumulators.len() != 1 || vloop.step_bytes != 16 {
+        return None;
+    }
+    let [acc]: [u8; 1] = vloop.accumulators.as_slice().try_into().ok()?;
+    verify_broadcast_seed(insns, vloop.header_idx, vloop.base_reg, acc)?;
+    verify_epilog(
+        insns,
+        vloop.back_idx,
+        vloop.op,
+        vloop.width,
+        &vloop.accumulators,
+    )?;
+    let len_reg: Reg = verify_ptrwalk_minmax_end(insns, &vloop)?;
+    verify_minmax_guard(insns, len_reg)?;
+    let vf: usize = (16 / vloop.width.bytes()) as usize;
+    let ret_bytes: u8 = verify_ptrwalk_minmax_remainder(
+        insns,
+        vloop.back_idx,
+        vloop.base_reg,
+        len_reg,
+        vloop.op,
+        vloop.elem_offset,
+        vloop.width,
+        vf,
+    )?;
+    let base_reg: Reg = traces_pristine_arg(insns, vloop.header_idx, vloop.base_reg)?;
+    Some(MinMaxForm {
+        op: vloop.op,
+        width: vloop.width,
+        base_reg,
         len_reg,
         ret_bytes,
     })
@@ -1645,7 +2011,6 @@ fn minmax_to_c(op: RingOp, _width: ElemWidth, args: &[Term]) -> String {
     acc
 }
 
-/// A proven vectorized elementwise map `out[i] = f(in[i])` over the integer ring.
 #[derive(Debug, Clone)]
 struct MapForm {
     transform: Term,
@@ -1767,18 +2132,31 @@ fn scalar_lane_value(
     vals.get(&store_reg).cloned()
 }
 
+const XMM_MOVE_MNEMONICS: [&str; 4] = ["movdqu", "movdqa", "movups", "movaps"];
+
+fn map_body_width_hint(body: &[Insn], load_pos: usize, store_pos: usize) -> Option<ElemWidth> {
+    body.get(load_pos + 1..store_pos)?
+        .iter()
+        .find_map(|insn: &Insn| match insn.mnem.as_str() {
+            "pslld" | "psrld" => Some(ElemWidth::W32),
+            "psllq" | "psrlq" => Some(ElemWidth::W64),
+            "psllw" | "psrlw" => Some(ElemWidth::W16),
+            other => packed_op_ringop(other).and_then(|(_, w): (RingOp, Option<ElemWidth>)| w),
+        })
+}
+
 fn analyze_map(insns: &[Insn], header: usize, back: usize) -> Option<(MapForm, Reg)> {
     let body: &[Insn] = insns.get(header..=back)?;
     let loads: Vec<(usize, u8, Mem)> = body
         .iter()
         .enumerate()
-        .filter(|(_, i): &(usize, &Insn)| matches!(i.mnem.as_str(), "movdqu" | "movdqa"))
+        .filter(|(_, i): &(usize, &Insn)| XMM_MOVE_MNEMONICS.contains(&i.mnem.as_str()))
         .filter_map(|(p, i): (usize, &Insn)| Some((p, i.xmm(0)?, i.mem(1)?)))
         .collect();
     let stores: Vec<(usize, u8, Mem)> = body
         .iter()
         .enumerate()
-        .filter(|(_, i): &(usize, &Insn)| matches!(i.mnem.as_str(), "movdqu" | "movdqa"))
+        .filter(|(_, i): &(usize, &Insn)| XMM_MOVE_MNEMONICS.contains(&i.mnem.as_str()))
         .filter_map(|(p, i): (usize, &Insn)| Some((p, i.xmm(1)?, i.mem(0)?)))
         .collect();
     if loads.len() != 1 || stores.len() != 1 {
@@ -1791,7 +2169,16 @@ fn analyze_map(insns: &[Insn], header: usize, back: usize) -> Option<(MapForm, R
     if in_idx != out_idx || scale != out_scale || lmem.disp != smem.disp || in_reg == out_reg {
         return None;
     }
-    let width: ElemWidth = ElemWidth::from_bytes(u64::from(scale))?;
+    let scale_width: Option<ElemWidth> = (scale != 1)
+        .then(|| ElemWidth::from_bytes(u64::from(scale)))
+        .flatten();
+    let hint_width: Option<ElemWidth> = map_body_width_hint(body, load_pos, store_pos);
+    let width: ElemWidth = match (hint_width, scale_width) {
+        (Some(h), Some(s)) if h == s => h,
+        (Some(h), None) => h,
+        (None, Some(s)) => s,
+        _ => return None,
+    };
     let step: i64 =
         body.iter()
             .find_map(|i: &Insn| match (i.mnem.as_str(), i.gpr(0), i.imm(1)) {
@@ -1947,7 +2334,6 @@ fn recognize_map(insns: &[Insn]) -> Option<MapForm> {
         })
 }
 
-/// A proven vectorized signed min/max reduction seeded from the first element.
 #[derive(Debug, Clone, Copy)]
 struct MinMaxForm {
     op: RingOp,
@@ -1957,47 +2343,95 @@ struct MinMaxForm {
     ret_bytes: u8,
 }
 
-fn verify_minmax_seed(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
-    let [acc]: [u8; 1] = vloop.accumulators.as_slice().try_into().ok()?;
-    let prefix: &[Insn] = insns.get(..vloop.header_idx)?;
-    let broadcast_pos: usize = prefix.iter().position(|i: &Insn| {
-        i.mnem == "pshufd" && i.xmm(0) == Some(acc) && i.xmm(1) == Some(acc) && i.imm(2) == Some(0)
-    })?;
+fn verify_broadcast_seed(insns: &[Insn], header_idx: usize, base_reg: Reg, acc: u8) -> Option<()> {
+    let prefix: &[Insn] = insns.get(..header_idx)?;
+    let broadcast_pos: usize = prefix
+        .iter()
+        .position(|i: &Insn| i.mnem == "pshufd" && i.xmm(0) == Some(acc) && i.imm(2) == Some(0))?;
+    let broadcast_src: u8 = prefix[broadcast_pos].xmm(1)?;
     let seed_gpr: Reg = prefix
         .get(..broadcast_pos)?
         .iter()
         .rev()
         .find_map(|i: &Insn| {
             (i.mnem == "movd" || i.mnem == "movq")
-                .then(|| (i.xmm(0) == Some(acc)).then(|| i.gpr(1))?)?
+                .then(|| (i.xmm(0) == Some(broadcast_src)).then(|| i.gpr(1))?)?
         })?
         .0;
-    let loads_first: bool = prefix.iter().any(|i: &Insn| {
-        i.mnem == "mov"
-            && i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(seed_gpr)
-            && i.mem(1).is_some_and(|m: Mem| {
-                m.base == Some(vloop.base_reg) && m.index.is_none() && m.disp == 0
-            })
+    let base_alias: Option<Reg> = prefix.iter().find_map(|i: &Insn| {
+        (i.mnem == "mov" && i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(base_reg))
+            .then(|| i.gpr(1))?
+            .map(|(r, _): (Reg, u8)| r)
     });
-    loads_first.then_some(())
+    prefix
+        .iter()
+        .any(|i: &Insn| {
+            i.mnem == "mov"
+                && i.gpr(0).map(|(r, _): (Reg, u8)| r) == Some(seed_gpr)
+                && i.mem(1).is_some_and(|m: Mem| {
+                    (m.base == Some(base_reg) || (m.base.is_some() && m.base == base_alias))
+                        && m.index.is_none()
+                        && m.disp == 0
+                })
+        })
+        .then_some(())
 }
 
-fn cmov_ringop(mnem: &str) -> Option<RingOp> {
+fn verify_minmax_seed(insns: &[Insn], vloop: &VectorLoop) -> Option<()> {
+    let [acc]: [u8; 1] = vloop.accumulators.as_slice().try_into().ok()?;
+    verify_broadcast_seed(insns, vloop.header_idx, vloop.base_reg, acc)
+}
+
+fn cmov_family(mnem: &str) -> Option<(bool, bool)> {
     Some(match mnem {
-        "cmovg" | "cmovnle" | "cmovge" | "cmovnl" => RingOp::SMax,
-        "cmovl" | "cmovnge" | "cmovle" | "cmovng" => RingOp::SMin,
+        "cmovg" | "cmovnle" | "cmovge" | "cmovnl" => (true, true),
+        "cmovl" | "cmovnge" | "cmovle" | "cmovng" => (false, true),
+        "cmova" | "cmovnbe" | "cmovae" | "cmovnb" => (true, false),
+        "cmovb" | "cmovnae" | "cmovbe" | "cmovna" => (false, false),
         _ => return None,
+    })
+}
+
+fn scalar_cmp_cmov_op(prev: &Insn, cmov: &Insn) -> Option<RingOp> {
+    let (greater, signed): (bool, bool) = cmov_family(&cmov.mnem)?;
+    if prev.mnem != "cmp" {
+        return None;
+    }
+    let (p, _): (Reg, u8) = prev.gpr(0)?;
+    let (q, _): (Reg, u8) = prev.gpr(1)?;
+    let (dst, _): (Reg, u8) = cmov.gpr(0)?;
+    let (src, _): (Reg, u8) = cmov.gpr(1)?;
+    if src == dst {
+        return None;
+    }
+    let dst_is_p: bool = if dst == p && src == q {
+        true
+    } else if dst == q && src == p {
+        false
+    } else {
+        return None;
+    };
+    Some(match (dst_is_p, greater, signed) {
+        (true, true, true) => RingOp::SMin,
+        (true, false, true) => RingOp::SMax,
+        (true, true, false) => RingOp::UMin,
+        (true, false, false) => RingOp::UMax,
+        (false, true, true) => RingOp::SMax,
+        (false, false, true) => RingOp::SMin,
+        (false, true, false) => RingOp::UMax,
+        (false, false, false) => RingOp::UMin,
     })
 }
 
 fn find_minmax_remainder(insns: &[Insn], base_reg: Reg) -> Option<(RingOp, ElemWidth, Reg, u8)> {
     for (header, back) in find_back_edges(insns) {
         let body: &[Insn] = insns.get(header..=back)?;
-        let Some((cmov_pos, op)) = body
-            .iter()
-            .enumerate()
-            .find_map(|(p, i): (usize, &Insn)| cmov_ringop(&i.mnem).map(|o: RingOp| (p, o)))
-        else {
+        let Some((cmov_pos, op)) = body.iter().enumerate().find_map(|(p, i): (usize, &Insn)| {
+            (p > 0)
+                .then(|| scalar_cmp_cmov_op(&body[p - 1], i))
+                .flatten()
+                .map(|o: RingOp| (p, o))
+        }) else {
             continue;
         };
         let (_acc, acc_bytes): (Reg, u8) = body[cmov_pos].gpr(0)?;
@@ -2158,7 +2592,6 @@ fn emit_minmax(form: MinMaxForm, abi: Abi, base_pos: usize, len_pos: usize) -> L
     }
 }
 
-/// Recover an auto-vectorized integer reduction or elementwise map as a clean scalar loop, or sound-reject.
 pub(crate) fn recover_vectorized_loop(
     machine_code: &[u8],
     base: u64,
@@ -2186,6 +2619,15 @@ pub(crate) fn recover_vectorized_loop(
         return Ok(emit_reduction(form, abi, base_pos, len_pos));
     }
     if let Some(form) = recognize_minmax(&insns) {
+        let base_pos: usize = arg_index(abi, form.base_reg).ok_or_else(|| {
+            Error::LlvmIr("simd-devirt: base pointer is not an abi argument register".to_owned())
+        })?;
+        let len_pos: usize = arg_index(abi, form.len_reg).ok_or_else(|| {
+            Error::LlvmIr("simd-devirt: length is not an abi argument register".to_owned())
+        })?;
+        return Ok(emit_minmax(form, abi, base_pos, len_pos));
+    }
+    if let Some(form) = recognize_ptrwalk_minmax(&insns) {
         let base_pos: usize = arg_index(abi, form.base_reg).ok_or_else(|| {
             Error::LlvmIr("simd-devirt: base pointer is not an abi argument register".to_owned())
         })?;
@@ -2354,6 +2796,22 @@ mod tests {
     }
 
     #[test]
+    fn map_body_width_hint_prefers_a_shift_over_a_byte_scaled_index() {
+        let body: Vec<Insn> = seq(&[
+            ("movdqu", "xmm0,[r9+rax*1]"),
+            ("pslld", "xmm0,1"),
+            ("movups", "[rcx+rax*1],xmm0"),
+        ]);
+        assert_eq!(map_body_width_hint(&body, 0, 2), Some(ElemWidth::W32));
+        let bitwise_only: Vec<Insn> = seq(&[
+            ("movdqu", "xmm0,[r9+rax*1]"),
+            ("pxor", "xmm0,xmm1"),
+            ("movups", "[rcx+rax*1],xmm0"),
+        ]);
+        assert_eq!(map_body_width_hint(&bitwise_only, 0, 2), None);
+    }
+
+    #[test]
     fn parses_packed_load_and_op() {
         let load: Insn = ins("movdqu", "xmm1,[rdi+rax*4]");
         assert_eq!(load.xmm(0), Some(1));
@@ -2455,6 +2913,59 @@ mod tests {
     }
 
     #[test]
+    fn collapses_gcc_dup_load_min_blend_across_an_interleaved_walk_advance() {
+        let body: Vec<Insn> = seq(&[
+            ("movdqu", "xmm1,[rax+4]"),
+            ("movdqu", "xmm3,[rax+4]"),
+            ("add", "rax,16"),
+            ("pcmpgtd", "xmm1,xmm0"),
+            ("pand", "xmm0,xmm1"),
+            ("pandn", "xmm1,xmm3"),
+            ("por", "xmm0,xmm1"),
+            ("cmp", "rax,rcx"),
+            ("jne", "short 0000000000000000h"),
+        ]);
+        let folded: Vec<Insn> = collapse_blends(&body);
+        assert_eq!(folded.len(), 6);
+        assert_eq!(folded[0].mnem, "movdqu");
+        assert_eq!(folded[1].mnem, "movdqu");
+        assert_eq!(folded[2].mnem, "add");
+        assert_eq!(folded[3].mnem, "vsmind");
+        assert_eq!((folded[3].xmm(0), folded[3].xmm(1)), (Some(0), Some(3)));
+    }
+
+    #[test]
+    fn dup_load_min_blend_requires_the_same_memory_operand_on_both_loads() {
+        let body: Vec<Insn> = seq(&[
+            ("movdqu", "xmm1,[rax+4]"),
+            ("movdqu", "xmm3,[rax+8]"),
+            ("pcmpgtd", "xmm1,xmm0"),
+            ("pand", "xmm0,xmm1"),
+            ("pandn", "xmm1,xmm3"),
+            ("por", "xmm0,xmm1"),
+            ("cmp", "rax,rcx"),
+            ("jne", "short 0000000000000000h"),
+        ]);
+        let folded: Vec<Insn> = collapse_blends(&body);
+        assert_eq!(folded.len(), body.len());
+    }
+
+    #[test]
+    fn collapses_movdqa_duplicate_min_blend() {
+        let body: Vec<Insn> = seq(&[
+            ("movdqa", "xmm1,xmm2"),
+            ("pcmpgtd", "xmm1,xmm0"),
+            ("pand", "xmm0,xmm1"),
+            ("pandn", "xmm1,xmm2"),
+            ("por", "xmm0,xmm1"),
+        ]);
+        let folded: Vec<Insn> = collapse_blends(&body);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].mnem, "vsmind");
+        assert_eq!((folded[0].xmm(0), folded[0].xmm(1)), (Some(0), Some(2)));
+    }
+
+    #[test]
     fn parses_store_extract_and_branches() {
         let store: Insn = ins("movdqu", "[rdi+rcx*4],xmm0");
         assert_eq!(store.mem(0).and_then(|m: Mem| m.base), Some(Reg::Rdi));
@@ -2475,5 +2986,113 @@ mod tests {
         let right: Term = fold_terms(RingOp::Add, w, &lanes[4..]);
         let combined: Term = Term::app(RingOp::Add, w, vec![left, right]);
         assert!(terms_equivalent(&whole, &combined));
+    }
+
+    #[test]
+    fn pshufd_lane_perm_expands_dword_permutation_to_narrower_lanes() {
+        assert_eq!(pshufd_lane_perm(0xee, 4), Some(vec![2, 3, 2, 3]));
+        assert_eq!(
+            pshufd_lane_perm(0xee, 8),
+            Some(vec![4, 5, 6, 7, 4, 5, 6, 7])
+        );
+        assert_eq!(
+            pshufd_lane_perm(0x55, 8),
+            Some(vec![2, 3, 2, 3, 2, 3, 2, 3])
+        );
+        assert_eq!(
+            pshufd_lane_perm(0xe4, 16),
+            Some(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        );
+        assert_eq!(pshufd_lane_perm(0, 32), None);
+    }
+
+    #[test]
+    fn shift_right_logical_lanes_matches_hardware_dword_semantics() {
+        let vars: Vec<Term> = (0..8).map(Term::Var).collect();
+        assert_eq!(
+            shift_right_logical_lanes(&vars, 32, ElemWidth::W16, 16),
+            Some(vec![
+                Term::Var(1),
+                Term::Const(0),
+                Term::Var(3),
+                Term::Const(0),
+                Term::Var(5),
+                Term::Const(0),
+                Term::Var(7),
+                Term::Const(0),
+            ])
+        );
+        assert!(shift_right_logical_lanes(&vars, 32, ElemWidth::W16, 3).is_none());
+        assert_eq!(
+            shift_right_logical_lanes(&vars, 32, ElemWidth::W16, 0),
+            Some(vars)
+        );
+    }
+
+    #[test]
+    fn cmp_cmov_op_matches_both_gcc_and_clang_orientations_for_max() {
+        let gcc_cmp: Insn = ins("cmp", "eax,ecx");
+        let gcc_cmov: Insn = ins("cmovl", "eax,ecx");
+        assert_eq!(scalar_cmp_cmov_op(&gcc_cmp, &gcc_cmov), Some(RingOp::SMax));
+
+        let clang_cmp: Insn = ins("cmp", "r9d,eax");
+        let clang_cmov: Insn = ins("cmovg", "eax,r9d");
+        assert_eq!(
+            scalar_cmp_cmov_op(&clang_cmp, &clang_cmov),
+            Some(RingOp::SMax)
+        );
+    }
+
+    #[test]
+    fn cmp_cmov_op_matches_both_gcc_and_clang_orientations_for_min() {
+        let gcc_cmp: Insn = ins("cmp", "eax,ecx");
+        let gcc_cmov: Insn = ins("cmovg", "eax,ecx");
+        assert_eq!(scalar_cmp_cmov_op(&gcc_cmp, &gcc_cmov), Some(RingOp::SMin));
+
+        let clang_cmp: Insn = ins("cmp", "r9d,eax");
+        let clang_cmov: Insn = ins("cmovl", "eax,r9d");
+        assert_eq!(
+            scalar_cmp_cmov_op(&clang_cmp, &clang_cmov),
+            Some(RingOp::SMin)
+        );
+    }
+
+    #[test]
+    fn cmp_cmov_op_derives_unsigned_variants_and_rejects_mismatched_operands() {
+        let cmp: Insn = ins("cmp", "eax,ecx");
+        assert_eq!(
+            scalar_cmp_cmov_op(&cmp, &ins("cmova", "eax,ecx")),
+            Some(RingOp::UMin)
+        );
+        assert_eq!(
+            scalar_cmp_cmov_op(&cmp, &ins("cmovb", "eax,ecx")),
+            Some(RingOp::UMax)
+        );
+        assert_eq!(scalar_cmp_cmov_op(&cmp, &ins("cmovl", "eax,edx")), None);
+        assert_eq!(
+            scalar_cmp_cmov_op(&ins("add", "eax,ecx"), &ins("cmovl", "eax,ecx")),
+            None
+        );
+    }
+
+    #[test]
+    fn broadcast_seed_accepts_gccs_two_register_chain_and_clangs_self_chain() {
+        let base: Insn = ins("mov", "eax,[rcx]");
+        let clang_seed: Vec<Insn> = vec![
+            base.clone(),
+            ins("movd", "xmm0,eax"),
+            ins("pshufd", "xmm0,xmm0,0"),
+        ];
+        assert!(verify_broadcast_seed(&clang_seed, 3, Reg::Rcx, 0).is_some());
+
+        let gcc_seed: Vec<Insn> = vec![base, ins("movd", "xmm3,eax"), ins("pshufd", "xmm0,xmm3,0")];
+        assert!(verify_broadcast_seed(&gcc_seed, 3, Reg::Rcx, 0).is_some());
+
+        let unrelated_seed: Vec<Insn> = vec![
+            ins("mov", "eax,[rdx]"),
+            ins("movd", "xmm3,eax"),
+            ins("pshufd", "xmm0,xmm3,0"),
+        ];
+        assert!(verify_broadcast_seed(&unrelated_seed, 3, Reg::Rcx, 0).is_none());
     }
 }
