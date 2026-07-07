@@ -2,7 +2,11 @@ use super::exprs::{
     DR_NULL_MARKER, StackSim, build_linear_stmts_sim, decode_kw_names, extract_tuple_of_strings,
     is_chain_compare_jump, load_common_constant, load_local, load_name, local_name_at,
 };
-use super::function_meta::{load_const, nested_code_index, nested_code_object_at, slice_bound};
+use super::function_meta::{
+    FunctionMeta, fold_set_function_attributes, load_const, make_function_meta,
+    make_function_meta_legacy, nested_code_index, nested_code_object_at, slice_bound,
+    try_build_lambda_expr,
+};
 use super::loops::{cond_expr_start, is_walrus_store_shape};
 use super::stmts::{
     PY_CO_FLAG_ASYNC_GENERATOR, PY_CO_FLAG_COROUTINE, first_significant, is_await_null_slot,
@@ -91,6 +95,23 @@ pub(super) fn try_build_comprehension_expr(
         }
     };
     Some(result)
+}
+
+fn pop_make_function_marker(sim: &mut StackSim) -> Option<Expr> {
+    let top: Expr = sim.try_pop()?;
+    if nested_code_index(&top).is_some() {
+        return Some(top);
+    }
+    let Some(under): Option<Expr> = sim.try_pop() else {
+        sim.push(top);
+        return None;
+    };
+    if nested_code_index(&under).is_some() {
+        return Some(under);
+    }
+    sim.push(under);
+    sim.push(top);
+    None
 }
 
 fn comprehension_generators(
@@ -967,23 +988,36 @@ fn extract_comprehension_parts(
                     operand: Box::new(operand),
                 });
             }
-            CanonicalOp::MakeFunction(_) | CanonicalOp::MakeFunctionLegacy(_) => {
-                let top: Option<Expr> = sim.try_pop();
-                match top {
-                    Some(t) if nested_code_index(&t).is_some() => sim.push(t),
-                    Some(t) => {
-                        let under: Option<Expr> = sim.try_pop();
-                        match under {
-                            Some(u) if nested_code_index(&u).is_some() => sim.push(u),
-                            other => {
-                                if let Some(u) = other {
-                                    sim.push(u);
-                                }
-                                sim.push(t);
-                            }
-                        }
+            CanonicalOp::MakeFunction(flags) => {
+                let code_marker: Option<Expr> = pop_make_function_marker(&mut sim);
+                let Some(marker): Option<Expr> = code_marker else {
+                    idx += 1;
+                    continue;
+                };
+                let mut meta: FunctionMeta = make_function_meta(*flags, &mut sim);
+                let after_attrs: usize =
+                    fold_set_function_attributes(nested, ops, idx + 1, &mut sim, &mut meta);
+                if let Some(const_idx) = nested_code_index(&marker)
+                    && let Some(lambda) = try_build_lambda_expr(nested, const_idx, &meta)
+                {
+                    sim.push(lambda);
+                } else {
+                    sim.push(marker);
+                }
+                idx = after_attrs;
+                continue;
+            }
+            CanonicalOp::MakeFunctionLegacy(packed) => {
+                let code_marker: Option<Expr> = pop_make_function_marker(&mut sim);
+                if let Some(marker) = code_marker {
+                    let meta: FunctionMeta = make_function_meta_legacy(*packed, &mut sim);
+                    if let Some(const_idx) = nested_code_index(&marker)
+                        && let Some(lambda) = try_build_lambda_expr(nested, const_idx, &meta)
+                    {
+                        sim.push(lambda);
+                    } else {
+                        sim.push(marker);
                     }
-                    None => {}
                 }
             }
             CanonicalOp::Dup => {

@@ -1330,6 +1330,54 @@ pub(super) fn make_function_meta(flags: u8, sim: &mut StackSim) -> FunctionMeta 
     meta
 }
 
+pub(super) fn fold_set_function_attributes(
+    code: &CodeObject,
+    ops: &[CanonicalOp],
+    from: usize,
+    sim: &mut StackSim,
+    meta: &mut FunctionMeta,
+) -> usize {
+    let mut cursor: usize = from;
+    while let Some(op) = ops.get(cursor) {
+        let flag: u8 = match op {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {
+                cursor += 1;
+                continue;
+            }
+            CanonicalOp::SetFunctionAttribute(flag) => *flag,
+            _ => break,
+        };
+        cursor += 1;
+        let Some(attr): Option<Expr> = sim.try_pop() else {
+            continue;
+        };
+        match flag {
+            1 => meta.defaults = defaults_from_expr(attr),
+            2 => meta.kw_defaults = kwdefaults_from_expr(attr),
+            4 => {
+                let (params, ret): (Vec<(String, Expr)>, Option<Expr>) =
+                    annotations_from_expr(attr);
+                meta.annotations = params;
+                meta.returns = ret;
+            }
+            16 => {
+                if let Some(dict) = annotate_codeobj_dict(code, &attr) {
+                    let (params, ret): (Vec<(String, Expr)>, Option<Expr>) =
+                        annotations_from_expr(dict);
+                    if !params.is_empty() {
+                        meta.annotations = params;
+                    }
+                    if ret.is_some() {
+                        meta.returns = ret;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    cursor
+}
+
 pub(super) fn make_function_meta_legacy(packed: u32, sim: &mut StackSim) -> FunctionMeta {
     let mut meta: FunctionMeta = FunctionMeta::default();
     let pos_defaults: usize = (packed & 0xFF) as usize;

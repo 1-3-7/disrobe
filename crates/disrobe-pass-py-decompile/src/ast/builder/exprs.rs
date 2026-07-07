@@ -2,9 +2,9 @@ use super::comprehensions::try_build_comprehension_expr;
 use super::function_meta::{
     FunctionMeta, TypeParamKind, annotate_codeobj_dict, annotations_from_expr, attach_fn_meta,
     build_legacy_call, build_nested_function_def, build_typevar_marker, call_ex_args,
-    call_ex_kwargs, defaults_from_expr, is_typevar_marker, kwdefaults_from_expr, load_const,
-    make_function_meta, make_function_meta_legacy, merge_extend, nested_code_index,
-    pop_legacy_slice_bounds, slice_bound, starred, try_build_class_def,
+    call_ex_kwargs, defaults_from_expr, fold_set_function_attributes, is_typevar_marker,
+    kwdefaults_from_expr, load_const, make_function_meta, make_function_meta_legacy, merge_extend,
+    nested_code_index, pop_legacy_slice_bounds, slice_bound, starred, try_build_class_def,
     try_build_decorated_class_def, try_build_decorated_function_def,
     try_build_decorated_generic_def, try_build_generic_def, try_build_generic_type_alias,
     try_build_lambda_expr, try_build_type_alias, type_alias_marker_call,
@@ -1427,7 +1427,10 @@ pub(super) fn build_linear_stmts_sim_seed(
                     None => None,
                 };
                 if let Some(marker) = code_marker {
-                    let meta: FunctionMeta = make_function_meta(*flags, &mut sim);
+                    let mut meta: FunctionMeta = make_function_meta(*flags, &mut sim);
+                    let after_attrs: usize =
+                        fold_set_function_attributes(code, ops, idx + 1, &mut sim, &mut meta);
+                    skip_next = after_attrs.saturating_sub(idx + 1);
                     if let Some(const_idx) = nested_code_index(&marker) {
                         if let Some(lambda) = try_build_lambda_expr(code, const_idx, &meta) {
                             sim.push(lambda);

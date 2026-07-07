@@ -5267,6 +5267,15 @@ fn structure_with_body(
         }
         return Ok((out, Vec::new()));
     }
+    if swap_present
+        && trailing_return
+        && let Some((prefix_end, value)) =
+            with_stashed_return_value(code, stream, body_start, trim_end)
+    {
+        let mut out: Vec<Stmt> = structure_stmts(code, stream, body_start, prefix_end)?;
+        out.push(Stmt::Return(Some(value)));
+        return Ok((out, Vec::new()));
+    }
     let body: Vec<Stmt> = if has_internal_control_flow
         && let Some(folded) = elide_inline_with_exits(stream, body_start, body_end)
     {
@@ -5280,6 +5289,30 @@ fn structure_with_body(
         with_post_cleanup_tail(code, stream, body_end, region_end)?
     };
     Ok((body, tail))
+}
+
+fn with_stashed_return_value(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    trim_end: usize,
+) -> Option<(usize, Expr)> {
+    let value_start: usize = (body_start..trim_end)
+        .rev()
+        .find(|&k: &usize| is_value_boundary_at(stream, k))
+        .map_or(body_start, |b: usize| b + 1);
+    if value_start >= trim_end {
+        return None;
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[value_start..trim_end]).ok()?;
+    if !head.is_empty() {
+        return None;
+    }
+    residual
+        .into_iter()
+        .next_back()
+        .map(|value: Expr| (value_start, value))
 }
 
 pub(super) fn offset_is_unprotected(stream: &DecodedStream, off: u32) -> bool {
