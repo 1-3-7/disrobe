@@ -130,6 +130,13 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
                 $cols.Count -ge 3 -and ($cols[$cols.Count - 2] -eq 'T' -or $cols[$cols.Count - 2] -eq 't')
             }
             [System.IO.File]::WriteAllLines(($binPath + '.nm.txt'), $crossSyms, $utf8NoBom)
+            $crossEq = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'type:.eq.*' } }
+            [System.IO.File]::WriteAllLines(($binPath + '.nm_eq.txt'), $crossEq, $utf8NoBom)
+            $crossItab = $rawCross | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'go:itab.*' } }
+            [System.IO.File]::WriteAllLines(($binPath + '.nm_itab.txt'), $crossItab, $utf8NoBom)
+            $crossVm = & go version -m $binPath
+            if ($LASTEXITCODE -ne 0) { throw ("go version -m (cross {0}/{1}) failed" -f $t.os, $t.arch) }
+            [System.IO.File]::WriteAllLines(($binPath + '.govm.txt'), $crossVm, $utf8NoBom)
         }
         $env:GOOS = $savedOs
         $env:GOARCH = $savedArch

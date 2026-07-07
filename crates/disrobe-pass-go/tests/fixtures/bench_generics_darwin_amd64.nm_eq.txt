@@ -1,0 +1,90 @@
+ 1083300 T type:.eq.[16]sync/atomic.Pointer[go.shape.struct { internal/sync.isEntry bool }]
+ 1083120 T type:.eq.[16]sync/atomic.Pointer[internal/sync.node[interface {},interface {}]]
+ 10ae240 T type:.eq.[2]main.Stringer
+ 107ed60 T type:.eq.[2]runtime.Frame
+ 1002e20 T type:.eq.[8]internal/cpu.option
+ 10aa260 T type:.eq.fmt.fmt
+ 10019e0 T type:.eq.internal/abi.ITab
+ 10019a0 T type:.eq.internal/abi.RegArgs
+ 1001960 T type:.eq.internal/abi.UncommonType
+ 108e500 T type:.eq.internal/bisect.cond
+ 100f8a0 T type:.eq.internal/chacha8rand.State
+ 1002da0 T type:.eq.internal/cpu.option
+ 108f520 T type:.eq.internal/godebug.Setting
+ 108f460 T type:.eq.internal/godebug.setting
+ 108f4c0 T type:.eq.internal/godebug.value
+ 1008d40 T type:.eq.internal/godebugs.Info
+ 109df20 T type:.eq.internal/poll.FD
+ 1003160 T type:.eq.internal/runtime/atomic.Int64
+ 1003180 T type:.eq.internal/runtime/atomic.Uint64
+ 1008c80 T type:.eq.internal/runtime/maps.Map
+ 1008ce0 T type:.eq.internal/runtime/maps.table
+ 1003100 T type:.eq.internal/runtime/sys.NotInHeap
+ 10831c0 T type:.eq.internal/sync.entry[go.shape.interface {},go.shape.interface {}]
+ 1083060 T type:.eq.internal/sync.entry[interface {},interface {}]
+ 1083280 T type:.eq.internal/sync.indirect[go.shape.interface {},go.shape.interface {}]
+ 1082fe0 T type:.eq.internal/sync.indirect[interface {},interface {}]
+ 109c280 T type:.eq.io/fs.PathError
+ 10adbc0 T type:.eq.main.Box[int]
+ 10adc20 T type:.eq.main.Box[string]
+ 10a1120 T type:.eq.os.LinkError
+ 10a13c0 T type:.eq.os.SyscallError
+ 10a1220 T type:.eq.os.file
+ 10a1080 T type:.eq.os.fileStat
+ 10a1300 T type:.eq.os.unixDirent
+ 1089920 T type:.eq.reflect.Method
+ 1089bc0 T type:.eq.reflect.ValueError
+ 1089c20 T type:.eq.reflect.makeFuncCtxt
+ 1089c60 T type:.eq.reflect.methodValue
+ 107ea20 T type:.eq.runtime.Frame
+ 107eae0 T type:.eq.runtime.PanicNilError
+ 107ec40 T type:.eq.runtime.TypeAssertionError
+ 107e1e0 T type:.eq.runtime._func
+ 107e160 T type:.eq.runtime._panic
+ 107e380 T type:.eq.runtime.bitvector
+ 107eb00 T type:.eq.runtime.boundsError
+ 107e8e0 T type:.eq.runtime.cleanupBlockHeader
+ 107eb40 T type:.eq.runtime.errorAddressString
+ 107e6a0 T type:.eq.runtime.gList
+ 107e460 T type:.eq.runtime.gTraceState
+ 107e640 T type:.eq.runtime.gcBits
+ 107e7c0 T type:.eq.runtime.gcWork
+ 107e3a0 T type:.eq.runtime.hchan
+ 107e7a0 T type:.eq.runtime.limiterEvent
+ 107e9c0 T type:.eq.runtime.mOS
+ 107e620 T type:.eq.runtime.mSpanList
+ 107e920 T type:.eq.runtime.mTraceState
+ 107e560 T type:.eq.runtime.mcache
+ 107e2e0 T type:.eq.runtime.modulehash
+ 107e5a0 T type:.eq.runtime.mspan
+ 107e780 T type:.eq.runtime.notInHeap
+ 107e6c0 T type:.eq.runtime.pTraceState
+ 107e240 T type:.eq.runtime.pcHeader
+ 107ecc0 T type:.eq.runtime.piController
+ 107e880 T type:.eq.runtime.spanSPMC
+ 107e660 T type:.eq.runtime.special
+ 107eba0 T type:.eq.runtime.synctestDeadlockError
+ 107e980 T type:.eq.runtime.traceBuf
+ 107e4e0 T type:.eq.runtime.traceSchedResourceState
+ 107ec00 T type:.eq.runtime.untracedG.7
+ 107e840 T type:.eq.runtime.workbuf
+ 107e420 T type:.eq.runtime.xRegState
+ 1082e40 T type:.eq.sync.Mutex
+ 1083180 T type:.eq.sync.Once
+ 1082fa0 T type:.eq.sync.poolChain
+ 1082e80 T type:.eq.sync.poolLocal
+ 1082f20 T type:.eq.sync.poolLocalInternal
+ 1080b60 T type:.eq.sync/atomic.Bool
+ 1083340 T type:.eq.sync/atomic.Pointer[go.shape.struct { internal/sync.isEntry bool }]
+ 108e540 T type:.eq.sync/atomic.Pointer[internal/bisect.dedup]
+ 108f4a0 T type:.eq.sync/atomic.Pointer[internal/godebug.value]
+ 1083260 T type:.eq.sync/atomic.Pointer[internal/sync.entry[go.shape.interface {},go.shape.interface {}]]
+ 1083100 T type:.eq.sync/atomic.Pointer[internal/sync.entry[interface {},interface {}]]
+ 1082fc0 T type:.eq.sync/atomic.Pointer[internal/sync.indirect[interface {},interface {}]]
+ 1083160 T type:.eq.sync/atomic.Pointer[internal/sync.node[interface {},interface {}]]
+ 10a12e0 T type:.eq.sync/atomic.Pointer[os.dirInfo]
+ 1082e60 T type:.eq.sync/atomic.Pointer[sync.poolChainElt]
+ 1080b80 T type:.eq.sync/atomic.Uint32
+ 1080ba0 T type:.eq.sync/atomic.Uint64
+ 109bb60 T type:.eq.time.zone
+ 109bbc0 T type:.eq.time.zoneTrans

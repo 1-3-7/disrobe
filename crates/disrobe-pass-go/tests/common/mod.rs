@@ -62,12 +62,20 @@ pub const BENCH_GENERICS_NM: &str = "bench_generics.nm.txt";
 
 pub const BENCH_LINUX_AMD64: &str = "bench_generics_linux_amd64";
 pub const BENCH_LINUX_AMD64_NM: &str = "bench_generics_linux_amd64.nm.txt";
+pub const BENCH_LINUX_AMD64_NM_EQ: &str = "bench_generics_linux_amd64.nm_eq.txt";
+pub const BENCH_LINUX_AMD64_NM_ITAB: &str = "bench_generics_linux_amd64.nm_itab.txt";
 pub const BENCH_LINUX_ARM64: &str = "bench_generics_linux_arm64";
 pub const BENCH_LINUX_ARM64_NM: &str = "bench_generics_linux_arm64.nm.txt";
+pub const BENCH_LINUX_ARM64_NM_EQ: &str = "bench_generics_linux_arm64.nm_eq.txt";
+pub const BENCH_LINUX_ARM64_NM_ITAB: &str = "bench_generics_linux_arm64.nm_itab.txt";
 pub const BENCH_DARWIN_AMD64: &str = "bench_generics_darwin_amd64";
 pub const BENCH_DARWIN_AMD64_NM: &str = "bench_generics_darwin_amd64.nm.txt";
+pub const BENCH_DARWIN_AMD64_NM_EQ: &str = "bench_generics_darwin_amd64.nm_eq.txt";
+pub const BENCH_DARWIN_AMD64_NM_ITAB: &str = "bench_generics_darwin_amd64.nm_itab.txt";
 pub const BENCH_DARWIN_ARM64: &str = "bench_generics_darwin_arm64";
 pub const BENCH_DARWIN_ARM64_NM: &str = "bench_generics_darwin_arm64.nm.txt";
+pub const BENCH_DARWIN_ARM64_NM_EQ: &str = "bench_generics_darwin_arm64.nm_eq.txt";
+pub const BENCH_DARWIN_ARM64_NM_ITAB: &str = "bench_generics_darwin_arm64.nm_itab.txt";
 
 const PCLNTAB_MAGICS: [[u8; 4]; 4] = [
     [0xfb, 0xff, 0xff, 0xff],
@@ -209,6 +217,17 @@ pub fn garble_build(scratch: &GoBuildScratch, out_name: &str, extra: &[&str]) ->
     Some(out)
 }
 
+pub fn parse_nm_text_symbols(text: &str) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 3 && matches!(cols[cols.len() - 2], "T" | "t") {
+            out.insert(cols[cols.len() - 1].to_owned());
+        }
+    }
+    out
+}
+
 pub fn nm_text_symbols(binary: &Path) -> Option<BTreeSet<String>> {
     let output: Output = Command::new("go")
         .args(["tool", "nm"])
@@ -218,15 +237,21 @@ pub fn nm_text_symbols(binary: &Path) -> Option<BTreeSet<String>> {
     if !output.status.success() {
         return None;
     }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
+    Some(parse_nm_text_symbols(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+pub fn parse_eq_type_names(text: &str) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     for line in text.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() >= 3 && matches!(cols[cols.len() - 2], "T" | "t") {
-            out.insert(cols[cols.len() - 1].to_owned());
+        for tok in line.split_whitespace() {
+            if let Some(rest) = tok.strip_prefix("type:.eq.") {
+                out.insert(normalize_type_name(rest));
+            }
         }
     }
-    Some(out)
+    out
 }
 
 pub fn nm_eq_type_names(binary: &Path) -> Option<BTreeSet<String>> {
@@ -238,16 +263,23 @@ pub fn nm_eq_type_names(binary: &Path) -> Option<BTreeSet<String>> {
     if !output.status.success() {
         return None;
     }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
-    let mut out: BTreeSet<String> = BTreeSet::new();
+    Some(parse_eq_type_names(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+pub fn parse_itab_pairs(text: &str) -> BTreeSet<(String, String)> {
+    let mut out: BTreeSet<(String, String)> = BTreeSet::new();
     for line in text.lines() {
         for tok in line.split_whitespace() {
-            if let Some(rest) = tok.strip_prefix("type:.eq.") {
-                out.insert(normalize_type_name(rest));
+            if let Some(rest) = tok.strip_prefix("go:itab.")
+                && let Some((concrete, iface)) = rest.split_once(',')
+            {
+                out.insert((normalize_type_name(concrete), normalize_type_name(iface)));
             }
         }
     }
-    Some(out)
+    out
 }
 
 pub fn nm_itab_pairs(binary: &Path) -> Option<BTreeSet<(String, String)>> {
@@ -259,25 +291,26 @@ pub fn nm_itab_pairs(binary: &Path) -> Option<BTreeSet<(String, String)>> {
     if !output.status.success() {
         return None;
     }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
-    let mut out: BTreeSet<(String, String)> = BTreeSet::new();
-    for line in text.lines() {
-        for tok in line.split_whitespace() {
-            if let Some(rest) = tok.strip_prefix("go:itab.")
-                && let Some((concrete, iface)) = rest.split_once(',')
-            {
-                out.insert((normalize_type_name(concrete), normalize_type_name(iface)));
-            }
+    Some(parse_itab_pairs(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn strip_linker_dedup_suffix(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(dot)
+            if !name[dot + 1..].is_empty()
+                && name[dot + 1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            &name[..dot]
         }
+        _ => name,
     }
-    Some(out)
 }
 
 pub fn normalize_type_name(raw: &str) -> String {
     let no_ptr: &str = raw.trim_start_matches('*');
     let base: &str = no_ptr.split(['[', '·']).next().unwrap_or(no_ptr);
     let last: &str = base.rsplit('/').next().unwrap_or(base);
-    last.trim_start_matches('*').to_owned()
+    strip_linker_dedup_suffix(last.trim_start_matches('*')).to_owned()
 }
 
 pub struct GoVersionM {

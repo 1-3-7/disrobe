@@ -96,10 +96,14 @@ fn typemeta_type_names_match_go_tool_nm_eq_oracle() {
     #[allow(clippy::cast_precision_loss)]
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&String> = truth.iter().filter(|n| !recovered.contains(*n)).collect();
+    eprintln!(
+        "windows/amd64 (pe): type-eq recovery {hit}/{total} = {ratio:.4}; missing={missing:?}"
+    );
     assert!(
-        ratio >= 0.90,
-        "type-name recovery vs the independent `go tool nm` type:.eq oracle must be >= 90%: \
-         {hit}/{total} = {ratio:.4}; missing {missing:?}"
+        ratio >= 1.0,
+        "type-name recovery vs the independent `go tool nm` type:.eq oracle must be 100% \
+         (measured ceiling on go1.26.3/windows-amd64): {hit}/{total} = {ratio:.4}; \
+         missing {missing:?}"
     );
     assert!(
         recovered.contains("fs.PathError") && recovered.contains("main.Widget"),
@@ -137,10 +141,12 @@ fn typemeta_itab_pairs_match_go_tool_nm_itab_oracle() {
     let ratio: f64 = hit as f64 / total.max(1) as f64;
     let missing: Vec<&(String, String)> =
         truth.iter().filter(|p| !recovered.contains(*p)).collect();
+    eprintln!("windows/amd64 (pe): itab recovery {hit}/{total} = {ratio:.4}; missing={missing:?}");
     assert!(
-        ratio >= 0.90,
+        ratio >= 1.0,
         "itab (concrete,interface) recovery vs the independent `go tool nm` go:itab oracle \
-         must be >= 90%: {hit}/{total} = {ratio:.4}; missing {missing:?}"
+         must be 100% (measured ceiling on go1.26.3/windows-amd64): {hit}/{total} = {ratio:.4}; \
+         missing {missing:?}"
     );
     assert!(
         recovered.contains(&("fs.PathError".to_owned(), "error".to_owned())),
