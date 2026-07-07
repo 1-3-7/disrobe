@@ -116,4 +116,7 @@ extend-exclude = [
     "**/*.dr",
     "**/*.lock",
     "**/*.nm.txt",
+    "**/*.nm_eq.txt",
+    "**/*.nm_itab.txt",
+    "**/*.govm.txt",
 ]
