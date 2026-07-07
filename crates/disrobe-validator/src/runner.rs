@@ -503,10 +503,13 @@ fn run_js(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMetric
         }];
     };
     let start: Instant = Instant::now();
-    let recovery: Option<disrobe_pass_js_deob::StringArrayRecovery> =
-        disrobe_pass_js_deob::recover_string_array(source)
-            .ok()
-            .flatten();
+    let mut pass_errors: Vec<String> = Vec::new();
+    let recovery: Option<disrobe_pass_js_deob::StringArrayRecovery> = record_js_stage_error(
+        &mut pass_errors,
+        "string_array",
+        disrobe_pass_js_deob::recover_string_array(source),
+    )
+    .flatten();
     let mid: String = recovery
         .as_ref()
         .map_or_else(|| source.to_owned(), |r| r.rewritten_source.clone());
@@ -515,7 +518,12 @@ fn run_js(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMetric
     let (after_rename, _r): (String, disrobe_pass_js_deob::RenameStats) =
         disrobe_pass_js_deob::rename_hex_idents(&after_unminify);
     let (final_source, _s): (String, disrobe_pass_js_deob::ScopeAwareStats) =
-        disrobe_pass_js_deob::rename_scope_aware(&after_rename).unwrap_or_else(|_| {
+        record_js_stage_error(
+            &mut pass_errors,
+            "scope_aware_rename",
+            disrobe_pass_js_deob::rename_scope_aware(&after_rename),
+        )
+        .unwrap_or_else(|| {
             (
                 after_rename.clone(),
                 disrobe_pass_js_deob::ScopeAwareStats::default(),
@@ -524,21 +532,55 @@ fn run_js(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMetric
     let micros: u128 = start.elapsed().as_micros();
     let blake_out: String = blake3::hash(final_source.as_bytes()).to_hex().to_string();
     let recovered: bool = final_source.as_str() != source;
+    let (ok, message): (bool, String) =
+        js_stage_outcome(recovery.is_some(), recovered, &pass_errors);
     vec![SampleMetrics {
         entry: entry.clone(),
         pass_name: "js-deob".to_owned(),
-        ok: true,
+        ok,
         recovered,
         input_bytes: bytes_len(bytes),
         output_bytes: len_u64(final_source.len()),
         micros,
         blake3_input: blake_in.to_owned(),
         blake3_output: Some(blake_out),
-        message: Some(format!(
-            "string_array={} rewrote={recovered}",
-            recovery.is_some()
-        )),
+        message: Some(message),
     }]
+}
+
+fn record_js_stage_error<T>(
+    errors: &mut Vec<String>,
+    stage: &str,
+    result: disrobe_pass_js_deob::Result<T>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(e) => {
+            errors.push(format!("{stage}: {e}"));
+            None
+        }
+    }
+}
+
+fn js_stage_outcome(
+    string_array_found: bool,
+    recovered: bool,
+    pass_errors: &[String],
+) -> (bool, String) {
+    if pass_errors.is_empty() {
+        (
+            true,
+            format!("string_array={string_array_found} rewrote={recovered}"),
+        )
+    } else {
+        (
+            false,
+            format!(
+                "string_array={string_array_found} rewrote={recovered} errors=[{}]",
+                pass_errors.join("; ")
+            ),
+        )
+    }
 }
 
 fn run_wasm(entry: &CorpusEntry, bytes: &[u8], blake_in: &str) -> Vec<SampleMetrics> {
@@ -693,5 +735,48 @@ mod tests {
     #[cfg(windows)]
     fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[test]
+    fn js_stage_error_is_recorded_not_silently_dropped() {
+        let mut errors: Vec<String> = Vec::new();
+        let ok_outcome: Option<disrobe_pass_js_deob::StringArrayRecovery> = record_js_stage_error(
+            &mut errors,
+            "string_array",
+            disrobe_pass_js_deob::recover_string_array("const x = 1;"),
+        )
+        .flatten();
+        assert!(ok_outcome.is_none());
+        assert!(
+            errors.is_empty(),
+            "a genuinely successful pass must not be reported as errored: {errors:?}"
+        );
+
+        let failing: disrobe_pass_js_deob::Result<(String, disrobe_pass_js_deob::ScopeAwareStats)> =
+            Err(disrobe_pass_js_deob::Error::NoFamilyMatched);
+        let failed_outcome: Option<(String, disrobe_pass_js_deob::ScopeAwareStats)> =
+            record_js_stage_error(&mut errors, "scope_aware_rename", failing);
+        assert!(
+            failed_outcome.is_none(),
+            "an errored pass must not be papered over with a silent fallback value"
+        );
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].starts_with("scope_aware_rename:"));
+        assert!(errors[0].contains("DR-JSDEOB-0001"));
+    }
+
+    #[test]
+    fn js_stage_outcome_reports_ok_false_when_a_pass_errored() {
+        let (ok, message): (bool, String) = js_stage_outcome(true, true, &[]);
+        assert!(ok, "no recorded errors must stay ok=true: {message}");
+        assert!(!message.contains("errors="));
+
+        let pass_errors: Vec<String> = vec!["scope_aware_rename: DR-JSDEOB-0001: boom".to_owned()];
+        let (ok, message): (bool, String) = js_stage_outcome(true, true, &pass_errors);
+        assert!(
+            !ok,
+            "a pass error must flip SampleMetrics::ok to false instead of silently passing"
+        );
+        assert!(message.contains("scope_aware_rename"));
     }
 }
