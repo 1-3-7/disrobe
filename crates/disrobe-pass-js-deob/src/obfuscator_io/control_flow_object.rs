@@ -98,7 +98,9 @@ pub(super) fn merge_control_flow_objects(source: &str) -> ControlFlowObjectResul
         if local_inlined == 0 {
             continue;
         }
-        let keep_decl: bool = unresolved > 0;
+        let overlap_dropped: usize = count_dropped_by_overlap(&local_edits);
+        let keep_decl: bool =
+            unresolved > 0 || overlap_dropped > 0 || has_unaccounted_reference(source, obj, &refs);
         edits.append(&mut local_edits);
         if !keep_decl {
             edits.push((obj.decl_range.clone(), Some(obj.decl_replacement.clone())));
@@ -718,6 +720,48 @@ const fn overlaps(range: &Range<usize>, pos: usize) -> bool {
     pos >= range.start && pos < range.end
 }
 
+fn count_dropped_by_overlap(edits: &[(Range<usize>, Option<String>)]) -> usize {
+    let mut starts: Vec<Range<usize>> = edits.iter().map(|(r, _)| r.clone()).collect();
+    starts.sort_by_key(|r: &Range<usize>| r.start);
+    let mut cursor: usize = 0;
+    let mut dropped: usize = 0;
+    for range in &starts {
+        if range.start < cursor {
+            dropped += 1;
+            continue;
+        }
+        cursor = range.end;
+    }
+    dropped
+}
+
+fn has_unaccounted_reference(source: &str, obj: &CfObject, refs: &[MemberRef]) -> bool {
+    let mut names: Vec<&str> = Vec::with_capacity(1 + obj.aliases.len());
+    names.push(obj.var.as_str());
+    names.extend(obj.aliases.iter().map(String::as_str));
+    let alternation: String = names
+        .iter()
+        .map(|n: &&str| regex::escape(n))
+        .collect::<Vec<String>>()
+        .join("|");
+    let Ok(re): Result<Regex, regex::Error> = Regex::new(&format!(r"\b(?:{alternation})\b")) else {
+        return true;
+    };
+    for m in re.find_iter(source) {
+        if overlaps(&obj.decl_range, m.start()) {
+            continue;
+        }
+        if refs
+            .iter()
+            .any(|r: &MemberRef| overlaps(&r.member_range, m.start()))
+        {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 fn reassigned_outside_decl(source: &str, obj: &CfObject) -> bool {
     let mut names: Vec<&str> = Vec::with_capacity(1 + obj.aliases.len());
     names.push(obj.var.as_str());
@@ -980,6 +1024,38 @@ mod tests {
             r.objects_merged >= 1,
             "class method CF object must be merged; got merged={} src:\n{}",
             r.objects_merged,
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn keeps_declaration_when_a_nested_call_argument_reference_would_be_dropped_by_overlap() {
+        let src: &str = "function greet(name){const alias=dec,obj={'GYyOK':'calculator ready','NedEc':function(a,b){return a+b;},'IWLsO':function(a,b){return a+b;},'QYFrd':' :: hello, '},extra=obj['GYyOK'];return obj['IWLsO'](obj['NedEc'](extra,obj['QYFrd']),name);}";
+        let r: ControlFlowObjectResult = merge_control_flow_objects(src);
+        assert!(
+            r.rewritten_source.contains("obj={"),
+            "the declaration must survive because the nested NedEc/QYFrd refs inside IWLsO's call argument are dropped by overlap resolution, not truly inlined; out:\n{}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("extra='calculator ready'"),
+            "the simple non-overlapping GYyOK read must still inline; out:\n{}",
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn keeps_declaration_when_a_computed_key_reference_is_still_unaccounted_for() {
+        let src: &str = "const obj={'AAAAA':'lit1','BBBBB':function(a,b){return a+b;}};function decode(n){return n===1?'AAAAA':'BBBBB';}console.log(obj['AAAAA']);console.log(obj[decode(2)](1,2));";
+        let r: ControlFlowObjectResult = merge_control_flow_objects(src);
+        assert!(
+            r.rewritten_source.contains("obj["),
+            "the declaration must survive because a computed-key reference to obj is still unaccounted for; out:\n{}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("const obj="),
+            "the object declaration itself must not be deleted while obj[decode(2)] still references it; out:\n{}",
             r.rewritten_source
         );
     }

@@ -36,6 +36,8 @@ pub struct UnminifyStats {
     pub self_defending_checkers_removed: usize,
     pub self_defending_wrappers_removed: usize,
     pub debug_protection_ratchets_removed: usize,
+    pub debug_ratchet_functions_removed: usize,
+    pub discarded_constructor_calls_removed: usize,
     pub control_flow_blocks_unflattened: usize,
     pub control_flow_cases_inlined: usize,
 }
@@ -106,6 +108,8 @@ pub fn unminify(source: &str) -> (String, UnminifyStats) {
         stats.self_defending_checkers_removed += sd_stats.checker_blocks;
         stats.self_defending_wrappers_removed += sd_stats.once_wrappers;
         stats.debug_protection_ratchets_removed += sd_stats.debug_ratchets;
+        stats.debug_ratchet_functions_removed += sd_stats.ratchet_functions;
+        stats.discarded_constructor_calls_removed += sd_stats.discarded_constructor_calls;
 
         let (next, cf_stats): (String, control_flow::UnflattenStats) =
             control_flow::unflatten(&out);

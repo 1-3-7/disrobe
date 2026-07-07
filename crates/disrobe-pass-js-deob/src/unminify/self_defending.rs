@@ -1,11 +1,184 @@
 use serde::Serialize;
 
-use crate::scan_utils::{find_paren_close, find_statement_end, skip_ws};
+use crate::scan_utils::{find_brace_close, find_paren_close, find_statement_end, skip_ws};
 
 const SELF_DEFENDING_REGEX: &str = "(((.+)+)+)+$";
+const CONSOLE_HIJACK_MARKER_CONSOLE: &str = ".console=";
+const CONSOLE_HIJACK_MARKER_PROTO: &str = ".__proto__=";
+const INTEGRITY_INVOCATION_MARKER_REGEXP: &str = "RegExp(";
+const INTEGRITY_INVOCATION_MARKER_TEST: &str = ".test(";
+const RATCHET_FUNCTION_MARKER_LOOP: &str = "while (true) {}";
+const RATCHET_FUNCTION_MARKER_CTOR: &str = "constructor";
 
 fn find_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     find_paren_close(bytes, open + 1)
+}
+
+fn is_protection_payload(statement: &str) -> bool {
+    statement.contains(SELF_DEFENDING_REGEX)
+        || (statement.contains(CONSOLE_HIJACK_MARKER_CONSOLE)
+            && statement.contains(CONSOLE_HIJACK_MARKER_PROTO))
+        || (statement.contains(INTEGRITY_INVOCATION_MARKER_REGEXP)
+            && statement.contains(INTEGRITY_INVOCATION_MARKER_TEST))
+}
+
+const RATCHET_RESIDUAL_MAX_LEN: usize = 220;
+
+fn is_ratchet_dispatcher_shape(
+    source: &str,
+    bytes: &[u8],
+    outer_brace_open: usize,
+    outer_brace_close: usize,
+) -> bool {
+    let mut search_from: usize = outer_brace_open + 1;
+    while search_from < outer_brace_close {
+        let Some(rel): Option<usize> = source[search_from..outer_brace_close].find("function ")
+        else {
+            return false;
+        };
+        let inner_kw_start: usize = search_from + rel;
+        search_from = inner_kw_start + "function ".len();
+        if is_ident_byte(bytes[inner_kw_start - 1]) {
+            continue;
+        }
+        let inner_name_start: usize = inner_kw_start + "function ".len();
+        let mut inner_name_end: usize = inner_name_start;
+        while inner_name_end < bytes.len() && is_ident_byte(bytes[inner_name_end]) {
+            inner_name_end += 1;
+        }
+        if inner_name_end == inner_name_start {
+            continue;
+        }
+        let inner_name: &str = &source[inner_name_start..inner_name_end];
+        let inner_paren_open: usize = skip_ws(bytes, inner_name_end);
+        if bytes.get(inner_paren_open) != Some(&b'(') {
+            continue;
+        }
+        let Some(inner_paren_close): Option<usize> = find_paren_close(bytes, inner_paren_open + 1)
+        else {
+            continue;
+        };
+        let inner_brace_open: usize = skip_ws(bytes, inner_paren_close + 1);
+        if bytes.get(inner_brace_open) != Some(&b'{') {
+            continue;
+        }
+        let Some(inner_brace_close): Option<usize> = find_brace_close(bytes, inner_brace_open + 1)
+        else {
+            continue;
+        };
+        if inner_brace_close >= outer_brace_close {
+            continue;
+        }
+        let inner_body: &str = &source[inner_brace_open..=inner_brace_close];
+        if !inner_body.contains(RATCHET_FUNCTION_MARKER_LOOP)
+            || !inner_body.contains(RATCHET_FUNCTION_MARKER_CTOR)
+            || !inner_body.contains(inner_name)
+        {
+            continue;
+        }
+        let residual_start: usize = inner_brace_close + 1;
+        if residual_start > outer_brace_close {
+            continue;
+        }
+        let residual: &str = source[residual_start..outer_brace_close].trim();
+        if residual.len() > RATCHET_RESIDUAL_MAX_LEN {
+            continue;
+        }
+        if (residual.starts_with("try{") || residual.starts_with("try {"))
+            && residual.contains("catch")
+            && residual.contains(inner_name)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+const RETURN_LITERALS: &[&str] = &["![]", "!![]", "true", "false"];
+
+fn remove_discarded_constructor_apply_statements(source: &str) -> (String, usize) {
+    let bytes: &[u8] = source.as_bytes();
+    let mut removals: Vec<(usize, usize)> = Vec::new();
+    let mut from: usize = 0;
+    while let Some(rel) = source[from..].find("(function(){return") {
+        let stmt_start: usize = from + rel;
+        let after_kw: usize = stmt_start + "(function(){return".len();
+        from = after_kw;
+        let after_return: usize = skip_ws(bytes, after_kw);
+        let Some(ret_lit_end): Option<usize> = RETURN_LITERALS.iter().find_map(|lit: &&str| {
+            source[after_return..]
+                .starts_with(*lit)
+                .then(|| after_return + lit.len())
+        }) else {
+            continue;
+        };
+        let semi: usize = skip_ws(bytes, ret_lit_end);
+        if bytes.get(semi) != Some(&b';') {
+            continue;
+        }
+        let close_fn_body: usize = skip_ws(bytes, semi + 1);
+        if bytes.get(close_fn_body) != Some(&b'}') {
+            continue;
+        }
+        let after_body: usize = close_fn_body + 1;
+        let ctor_start: usize = if source[after_body..].starts_with("['constructor']") {
+            after_body + "['constructor']".len()
+        } else if source[after_body..].starts_with(".constructor") {
+            after_body + ".constructor".len()
+        } else {
+            continue;
+        };
+        if bytes.get(ctor_start) != Some(&b'(') {
+            continue;
+        }
+        let Some(ctor_close): Option<usize> = find_paren_close(bytes, ctor_start + 1) else {
+            continue;
+        };
+        let after_ctor: usize = ctor_close + 1;
+        let invoke_start: usize = if source[after_ctor..].starts_with("['apply']") {
+            after_ctor + "['apply']".len()
+        } else if source[after_ctor..].starts_with(".apply") {
+            after_ctor + ".apply".len()
+        } else if source[after_ctor..].starts_with("['call']") {
+            after_ctor + "['call']".len()
+        } else if source[after_ctor..].starts_with(".call") {
+            after_ctor + ".call".len()
+        } else {
+            continue;
+        };
+        if bytes.get(invoke_start) != Some(&b'(') {
+            continue;
+        }
+        let Some(invoke_close): Option<usize> = find_paren_close(bytes, invoke_start + 1) else {
+            continue;
+        };
+        let after_invoke: usize = skip_ws(bytes, invoke_close + 1);
+        if bytes.get(after_invoke) != Some(&b')') {
+            continue;
+        }
+        let mut end: usize = after_invoke + 1;
+        if bytes.get(end) == Some(&b';') {
+            end += 1;
+        }
+        removals.push((stmt_start, end));
+    }
+    if removals.is_empty() {
+        return (source.to_owned(), 0);
+    }
+    let mut out: String = String::with_capacity(source.len());
+    let mut cursor: usize = 0;
+    let mut count: usize = 0;
+    for (start, end) in &removals {
+        if *start < cursor {
+            continue;
+        }
+        out.push_str(&source[cursor..*start]);
+        out.push(';');
+        cursor = *end;
+        count += 1;
+    }
+    out.push_str(&source[cursor..]);
+    (out, count)
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -13,6 +186,8 @@ pub(super) struct SelfDefendingStats {
     pub(super) checker_blocks: usize,
     pub(super) once_wrappers: usize,
     pub(super) debug_ratchets: usize,
+    pub(super) ratchet_functions: usize,
+    pub(super) discarded_constructor_calls: usize,
 }
 
 pub(super) fn strip_self_defending(source: &str) -> (String, SelfDefendingStats) {
@@ -22,9 +197,154 @@ pub(super) fn strip_self_defending(source: &str) -> (String, SelfDefendingStats)
     let (after_wrapper, wrapper_removed): (String, usize) =
         remove_once_wrappers(&after_checker, &checker_names);
     stats.once_wrappers = wrapper_removed;
-    let (after_debug, debug_removed): (String, usize) = remove_debug_ratchets(&after_wrapper);
+    let (after_iife, iife_removed): (String, usize) =
+        remove_integrity_invocation_iifes(&after_wrapper);
+    stats.checker_blocks += iife_removed;
+    let (after_ratchet_fn, ratchet_fn_removed): (String, usize) =
+        remove_ratchet_functions(&after_iife);
+    stats.ratchet_functions = ratchet_fn_removed;
+    let (after_ctor_call, ctor_call_removed): (String, usize) =
+        remove_discarded_constructor_apply_statements(&after_ratchet_fn);
+    stats.discarded_constructor_calls = ctor_call_removed;
+    let (after_debug, debug_removed): (String, usize) = remove_debug_ratchets(&after_ctor_call);
     stats.debug_ratchets = debug_removed;
     (after_debug, stats)
+}
+
+fn enclosing_bare_iife(source: &str, inner_pos: usize) -> Option<(usize, usize)> {
+    let bytes: &[u8] = source.as_bytes();
+    let outer_open: usize = source[..inner_pos].rfind("(function(")?;
+    let fn_paren: usize = outer_open + "(function".len();
+    if bytes.get(fn_paren) != Some(&b'(') {
+        return None;
+    }
+    let params_close: usize = find_paren_close(bytes, fn_paren + 1)?;
+    let brace_open: usize = skip_ws(bytes, params_close + 1);
+    if bytes.get(brace_open) != Some(&b'{') {
+        return None;
+    }
+    let brace_close: usize = find_brace_close(bytes, brace_open + 1)?;
+    if !(brace_open < inner_pos && inner_pos < brace_close) {
+        return None;
+    }
+    let after_body: usize = skip_ws(bytes, brace_close + 1);
+    let final_close: usize = if bytes.get(after_body) == Some(&b'(') {
+        let call_close: usize = find_paren_close(bytes, after_body + 1)?;
+        let wrap_close: usize = skip_ws(bytes, call_close + 1);
+        if bytes.get(wrap_close) != Some(&b')') {
+            return None;
+        }
+        wrap_close
+    } else if bytes.get(after_body) == Some(&b')') {
+        let call_open: usize = skip_ws(bytes, after_body + 1);
+        if bytes.get(call_open) != Some(&b'(') {
+            return None;
+        }
+        find_paren_close(bytes, call_open + 1)?
+    } else {
+        return None;
+    };
+    let mut end: usize = final_close + 1;
+    if bytes.get(end) == Some(&b';') {
+        end += 1;
+    }
+    Some((outer_open, end))
+}
+
+fn remove_integrity_invocation_iifes(source: &str) -> (String, usize) {
+    let mut removals: Vec<(usize, usize)> = Vec::new();
+    let mut from: usize = 0;
+    while let Some(rel) = source[from..].find("(this,") {
+        let call_open: usize = from + rel;
+        from = call_open + "(this,".len();
+        let Some((iife_start, iife_end)): Option<(usize, usize)> =
+            enclosing_bare_iife(source, call_open)
+        else {
+            continue;
+        };
+        let body: &str = &source[iife_start..iife_end];
+        if !is_protection_payload(body) {
+            continue;
+        }
+        removals.push((iife_start, iife_end));
+    }
+    if removals.is_empty() {
+        return (source.to_owned(), 0);
+    }
+    removals.sort_by_key(|r: &(usize, usize)| r.0);
+    removals.dedup();
+    let mut out: String = String::with_capacity(source.len());
+    let mut cursor: usize = 0;
+    let mut count: usize = 0;
+    for (start, end) in &removals {
+        if *start < cursor {
+            continue;
+        }
+        out.push_str(&source[cursor..*start]);
+        cursor = *end;
+        count += 1;
+    }
+    out.push_str(&source[cursor..]);
+    (out, count)
+}
+
+fn remove_ratchet_functions(source: &str) -> (String, usize) {
+    let bytes: &[u8] = source.as_bytes();
+    let mut removals: Vec<(usize, usize)> = Vec::new();
+    let mut from: usize = 0;
+    while let Some(rel) = source[from..].find("function ") {
+        let kw_start: usize = from + rel;
+        from = kw_start + "function ".len();
+        if kw_start != 0 && is_ident_byte(bytes[kw_start - 1]) {
+            continue;
+        }
+        let name_start: usize = kw_start + "function ".len();
+        let mut name_end: usize = name_start;
+        while name_end < bytes.len() && is_ident_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        if name_end == name_start {
+            continue;
+        }
+        let paren_open: usize = skip_ws(bytes, name_end);
+        if bytes.get(paren_open) != Some(&b'(') {
+            continue;
+        }
+        let Some(paren_close): Option<usize> = find_paren_close(bytes, paren_open + 1) else {
+            continue;
+        };
+        let brace_open: usize = skip_ws(bytes, paren_close + 1);
+        if bytes.get(brace_open) != Some(&b'{') {
+            continue;
+        }
+        let Some(brace_close): Option<usize> = find_brace_close(bytes, brace_open + 1) else {
+            continue;
+        };
+        if !is_ratchet_dispatcher_shape(source, bytes, brace_open, brace_close) {
+            continue;
+        }
+        let mut end: usize = brace_close + 1;
+        if bytes.get(end) == Some(&b';') {
+            end += 1;
+        }
+        removals.push((kw_start, end));
+    }
+    if removals.is_empty() {
+        return (source.to_owned(), 0);
+    }
+    let mut out: String = String::with_capacity(source.len());
+    let mut cursor: usize = 0;
+    let mut count: usize = 0;
+    for (start, end) in &removals {
+        if *start < cursor {
+            continue;
+        }
+        out.push_str(&source[cursor..*start]);
+        cursor = *end;
+        count += 1;
+    }
+    out.push_str(&source[cursor..]);
+    (out, count)
 }
 
 fn remove_checker_blocks(source: &str) -> (String, Vec<String>) {
@@ -84,7 +404,7 @@ fn locate_checker(source: &str, call_open: usize) -> Option<CheckerRemoval> {
         return None;
     }
     let stmt_semi: usize = find_statement_end(bytes, stmt_start)?;
-    if !source[stmt_start..stmt_semi].contains(SELF_DEFENDING_REGEX) {
+    if !is_protection_payload(&source[stmt_start..stmt_semi]) {
         return None;
     }
     let decl_terminator: usize = stmt_semi + 1;
@@ -360,6 +680,156 @@ mod tests {
     use super::*;
 
     const CHECKER: &str = "const _0xwrap=(function(){let _0xf=!![];return function(_0xa,_0xb){const _0xc=_0xf?function(){if(_0xb){const _0xd=_0xb['apply'](_0xa,arguments);return _0xb=null,_0xd;}}:function(){};return _0xf=![],_0xc;};}()),_0xck=_0xwrap(this,function(){return _0xck['toString']()['search']('(((.+)+)+)+$')['toString']()['constructor'](_0xck)['search']('(((.+)+)+)+$');});_0xck();const keep=1;";
+
+    const DEDUPED_SECOND_LITERAL_CHECKER: &str = "const var_60=(function(){let var_61=!![];return function(var_62,var_63){const var_64=var_61?function(){if(var_63){const var_65=var_63.apply(var_62,arguments);return var_63=null,var_65;}}:function(){};return var_61=![],var_64;};}()),var_66=var_60(this,function(){return var_66.toString().search('(((.+)+)+)+$').toString().constructor(var_66).search(var_33.EOhGV);});var_66();const keep=1;";
+
+    #[test]
+    fn checker_with_object_transform_deduped_second_literal_is_removed() {
+        let (out, names): (String, Vec<String>) =
+            remove_checker_blocks(DEDUPED_SECOND_LITERAL_CHECKER);
+        assert!(
+            !out.contains("(((.+)+)+)+$"),
+            "regex literal must be gone: {out}"
+        );
+        assert!(
+            out.contains("const keep=1;"),
+            "trailing code preserved: {out}"
+        );
+        assert_eq!(names, vec!["var_60".to_owned()]);
+    }
+
+    const CONSOLE_HIJACK: &str = "const _0xwrap=(function(){let _0xf=!![];return function(_0xa,_0xb){const _0xc=_0xf?function(){if(_0xb){const _0xd=_0xb.apply(_0xa,arguments);return _0xb=null,_0xd;}}:function(){};return _0xf=![],_0xc;};}()),_0xck=_0xwrap(this,function(){let _0xg;try{const _0xh=Function('return (function() {}.constructor(\"return this\")( ));');_0xg=_0xh();}catch(_0xi){_0xg=window;}const _0xj=_0xg.console=_0xg.console||{},_0xk=['log','warn','info','error','exception','table','trace'];for(let _0xl=0;_0xl<_0xk.length;_0xl++){const _0xm=_0xwrap.constructor.prototype.bind(_0xwrap),_0xn=_0xk[_0xl],_0xo=_0xj[_0xn]||_0xm;_0xm.__proto__=_0xwrap.bind(_0xwrap),_0xm.toString=_0xo.toString.bind(_0xo),_0xj[_0xn]=_0xm;}});_0xck();console.log('real');";
+
+    #[test]
+    fn console_output_hijack_payload_is_removed() {
+        let (out, stats): (String, SelfDefendingStats) = strip_self_defending(CONSOLE_HIJACK);
+        assert!(
+            !out.contains(".console="),
+            "console reassignment must be gone: {out}"
+        );
+        assert!(
+            !out.contains("__proto__"),
+            "prototype hijack must be gone: {out}"
+        );
+        assert!(
+            out.contains("console.log('real')"),
+            "real code must survive: {out}"
+        );
+        assert_eq!(
+            stats.checker_blocks, 1,
+            "the combined wrapper+hijack declarator statement is removed as one checker block"
+        );
+    }
+
+    const DISCARDED_CONSTRUCTOR_APPLY_WITH_DANGLING_PROXY_ARGS: &str = "function divide(a,b){const proxy={};proxy.op=function(x,y){return x===y;};if(proxy.op(b,0)){if(proxy.op('same','other'))(function(){return![];}['constructor'](KmPGMW.build(KmPGMW.debu,KmPGMW.gger)).apply(KmPGMW.target));else throw new Error('divide by zero');}return a/b;}console.log('real');";
+
+    #[test]
+    fn discarded_constructor_apply_call_is_removed_even_with_dangling_proxy_args() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(DISCARDED_CONSTRUCTOR_APPLY_WITH_DANGLING_PROXY_ARGS);
+        assert!(
+            !out.contains("KmPGMW"),
+            "the discarded constructor+apply statement and its dangling proxy args must be gone: {out}"
+        );
+        assert!(
+            out.contains("function divide(a,b)"),
+            "the real divide function must survive: {out}"
+        );
+        assert!(
+            out.contains("throw new Error('divide by zero')"),
+            "the real throw branch must survive: {out}"
+        );
+        assert!(
+            out.contains("console.log('real')"),
+            "real code after the function must survive: {out}"
+        );
+        assert_eq!(stats.discarded_constructor_calls, 1);
+    }
+
+    #[test]
+    fn discarded_constructor_apply_as_unbraced_if_branch_keeps_valid_syntax() {
+        let src: &str = "function f(cond){if(cond)(function(){return!![];}['constructor'](proxy.a(proxy.b,proxy.c)).call(proxy.d));else{real();}}";
+        let (out, stats): (String, SelfDefendingStats) = strip_self_defending(src);
+        assert!(
+            !out.contains("proxy"),
+            "the discarded statement must be gone: {out}"
+        );
+        assert!(
+            out.contains("if(cond);else{real();}") || out.contains("if(cond) ;else{real();}"),
+            "the if-branch slot must be replaced with an empty statement, not deleted outright, or the else becomes a syntax error: {out}"
+        );
+        assert_eq!(stats.discarded_constructor_calls, 1);
+    }
+
+    const NESTED_INTEGRITY_INVOCATION_AND_RATCHET_FUNCTION: &str = "function add(a,b){return a+b;}function greet(name){const wrap=(function(){let f=!![];return function(a,b){const c=f?function(){if(b){const d=b.apply(a,arguments);return b=null,d;}}:function(){};return f=![],c;};}());(function(){wrap(this,function(){const r1=new RegExp('function *\\\\( *\\\\)'),r2=new RegExp('\\\\+\\\\+ *(?:[a-zA-Z_$][0-9a-zA-Z_$]*)','i'),probe=ratchet('init');!r1.test(probe+'chain')||!r2.test(probe+'input')?probe('0'):ratchet();})();}());const banner='hi';return banner+' :: '+name;}function ratchet(seed){function tick(counter){if(typeof counter==='string')return function(){}['constructor']('while (true) {}').apply('counter');else(''+counter/counter).length!==1||counter%20===0?function(){return!![];}['constructor']('debugger').call('action'):function(){return![];}['constructor']('debugger').apply('stateObject');tick(++counter);}try{if(seed)return tick;else tick(0);}catch(e){}}console.log(greet('real'));";
+
+    #[test]
+    fn nested_integrity_invocation_and_ratchet_function_are_removed() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(NESTED_INTEGRITY_INVOCATION_AND_RATCHET_FUNCTION);
+        assert!(
+            !out.contains("while (true) {}"),
+            "ratchet loop must be gone: {out}"
+        );
+        assert!(
+            !out.contains("function ratchet"),
+            "ratchet function must be gone: {out}"
+        );
+        assert!(
+            !out.contains("RegExp("),
+            "integrity invocation must be gone: {out}"
+        );
+        assert!(
+            !out.contains("ratchet("),
+            "no dangling call site to the removed ratchet function may remain: {out}"
+        );
+        assert!(
+            out.contains("console.log(greet('real'))"),
+            "real code must survive: {out}"
+        );
+        assert!(
+            out.contains("function add(a,b){return a+b;}"),
+            "unrelated code preserved: {out}"
+        );
+        assert_eq!(stats.ratchet_functions, 1);
+    }
+
+    const RATCHET_FUNCTION_PRECEDED_BY_PROXY_TABLE: &str = "function ratchet(seed){const table={'a':function(x,y){return x===y;},'b':'divide by zero','c':function(x,y){return x/y;}};function tick(counter){if(typeof counter==='string')return function(){}['constructor']('while (true) {}').apply('counter');else(''+counter/counter).length!==1||counter%20===0?function(){return!![]}['constructor']('debugger').call('action'):function(){return![];}['constructor']('debugger').apply('stateObject');tick(++counter);}try{if(seed)return tick;else tick(0);}catch(e){}}console.log('real');";
+
+    #[test]
+    fn ratchet_function_preceded_by_object_transform_proxy_table_is_removed() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(RATCHET_FUNCTION_PRECEDED_BY_PROXY_TABLE);
+        assert!(
+            !out.contains("while (true) {}"),
+            "ratchet loop must be gone: {out}"
+        );
+        assert!(
+            !out.contains("function ratchet"),
+            "whole ratchet function must be gone: {out}"
+        );
+        assert!(
+            out.contains("console.log('real')"),
+            "real code must survive: {out}"
+        );
+        assert_eq!(stats.ratchet_functions, 1);
+    }
+
+    const REAL_FUNCTION_WITH_ANONYMOUS_ONCE_WRAPPERS_IS_NOT_A_RATCHET: &str = "function greet(name){const table={'a':function(x,y){return x+y;},'b':' :: hi, '};const once=(function(){let f=!![];return function(a,b){const c=f?function(){if(b){const d=b.apply(a,arguments);return b=null,d;}}:function(){};return f=![],c;};}());const guard=table.a(once,this,function(){return guard.toString();});table.a(guard);const banner=table.a('calc',table.b);return table.a(banner,name);}";
+
+    #[test]
+    fn real_function_with_only_anonymous_once_wrappers_is_not_removed_as_a_ratchet() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(REAL_FUNCTION_WITH_ANONYMOUS_ONCE_WRAPPERS_IS_NOT_A_RATCHET);
+        assert_eq!(
+            stats.ratchet_functions, 0,
+            "a function whose only nested closures are anonymous once-wrappers, not a named self-recursive dispatcher, must never be deleted whole: {out}"
+        );
+        assert!(
+            out.contains("function greet(name)"),
+            "the real function declaration must survive: {out}"
+        );
+    }
 
     #[test]
     fn removes_checker_invocation_and_decl() {

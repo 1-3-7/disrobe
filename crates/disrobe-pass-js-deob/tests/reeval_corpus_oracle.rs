@@ -4,6 +4,9 @@ mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use common::{EvalOutcome, Terminal, eval_outcome, eval_outcome_bare, eval_outcome_with_argv};
 use disrobe_pass_js_deob::{
@@ -11,7 +14,9 @@ use disrobe_pass_js_deob::{
     ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect, obfuscator_io_deobfuscate,
 };
 
-const DIFFERENTIAL_FLOOR: usize = 16;
+const DIFFERENTIAL_FLOOR: usize = 36;
+const EVAL_TIMEOUT: Duration = Duration::from_secs(12);
+const HIGH_CLEAN: &str = "src/javascript/obfuscator-io-high.js";
 
 struct Sample {
     name: &'static str,
@@ -62,98 +67,218 @@ const LOOP_BATTERY: &[&[&str]] = &[
 const SAMPLES: &[Sample] = &[
     Sample {
         name: "javascript-obfuscator/gauntlet",
-        obf: "javascript-obfuscator/gauntlet-obfuscated.js",
-        src: "javascript-obfuscator/gauntlet-source.js",
+        obf: "js/javascript-obfuscator/gauntlet-obfuscated.js",
+        src: "js/javascript-obfuscator/gauntlet-source.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/gauntlet",
-        obf: "jsconfuser/gauntlet-obfuscated.js",
-        src: "jsconfuser/gauntlet-source.js",
+        obf: "js/jsconfuser/gauntlet-obfuscated.js",
+        src: "js/jsconfuser/gauntlet-source.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/string-conceal",
-        obf: "jsconfuser/recovery/obf_checksum.stringconceal.js",
-        src: "jsconfuser/recovery/src_checksum.js",
+        obf: "js/jsconfuser/recovery/obf_checksum.stringconceal.js",
+        src: "js/jsconfuser/recovery/src_checksum.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/string-compression",
-        obf: "jsconfuser/recovery/obf_stringcompression.real.js",
-        src: "jsconfuser/recovery/src_stringcompression.js",
+        obf: "js/jsconfuser/recovery/obf_stringcompression.real.js",
+        src: "js/jsconfuser/recovery/src_stringcompression.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/rgf-eval",
-        obf: "jsconfuser/recovery/obf_tokenizer.rgf.js",
-        src: "jsconfuser/recovery/src_tokenizer.js",
+        obf: "js/jsconfuser/recovery/obf_tokenizer.rgf.js",
+        src: "js/jsconfuser/recovery/src_tokenizer.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/statesum-real",
-        obf: "jsconfuser/recovery/obf_statesum.real.js",
-        src: "jsconfuser/recovery/src_statesum.js",
+        obf: "js/jsconfuser/recovery/obf_statesum.real.js",
+        src: "js/jsconfuser/recovery/src_statesum.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/statesum-spec",
-        obf: "jsconfuser/recovery/obf_statesum.spec.js",
-        src: "jsconfuser/recovery/src_statesum.js",
+        obf: "js/jsconfuser/recovery/obf_statesum.spec.js",
+        src: "js/jsconfuser/recovery/src_statesum.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "jsconfuser/deadcode",
-        obf: "jsconfuser/recovery/obf_deadcode.real.js",
-        src: "jsconfuser/recovery/src_deadcode.js",
+        obf: "js/jsconfuser/recovery/obf_deadcode.real.js",
+        src: "js/jsconfuser/recovery/src_deadcode.js",
         argv_battery: CLASSIFY_BATTERY,
     },
     Sample {
         name: "jsconfuser/deadcode-cff",
-        obf: "jsconfuser/recovery/obf_deadcode_cff.real.js",
-        src: "jsconfuser/recovery/src_deadcode.js",
+        obf: "js/jsconfuser/recovery/obf_deadcode_cff.real.js",
+        src: "js/jsconfuser/recovery/src_deadcode.js",
         argv_battery: CLASSIFY_BATTERY,
     },
     Sample {
         name: "jsconfuser/integrity",
-        obf: "jsconfuser/recovery/obf_integrity.real.js",
-        src: "jsconfuser/recovery/src_integrity.js",
+        obf: "js/jsconfuser/recovery/obf_integrity.real.js",
+        src: "js/jsconfuser/recovery/src_integrity.js",
         argv_battery: INTEGRITY_BATTERY,
     },
     Sample {
         name: "jsconfuser/statesum-runtime",
-        obf: "jsconfuser/recovery/obf_statesum_runtime.real.js",
-        src: "jsconfuser/recovery/src_statesum_runtime.js",
+        obf: "js/jsconfuser/recovery/obf_statesum_runtime.real.js",
+        src: "js/jsconfuser/recovery/src_statesum_runtime.js",
         argv_battery: RUNTIME_BATTERY,
     },
     Sample {
         name: "jsconfuser/statesum-branch",
-        obf: "jsconfuser/recovery/obf_statesum_branch.real.js",
-        src: "jsconfuser/recovery/src_statesum_branch.js",
+        obf: "js/jsconfuser/recovery/obf_statesum_branch.real.js",
+        src: "js/jsconfuser/recovery/src_statesum_branch.js",
         argv_battery: CLASSIFY_BATTERY,
     },
     Sample {
         name: "jsconfuser/statesum-strings",
-        obf: "jsconfuser/recovery/obf_statesum_strings.real.js",
-        src: "jsconfuser/recovery/src_statesum_strings.js",
+        obf: "js/jsconfuser/recovery/obf_statesum_strings.real.js",
+        src: "js/jsconfuser/recovery/src_statesum_strings.js",
         argv_battery: STRINGS_BATTERY,
     },
     Sample {
         name: "jsconfuser/statesum-loop",
-        obf: "jsconfuser/recovery/obf_statesum_loop.real.js",
-        src: "jsconfuser/recovery/src_statesum_loop.js",
+        obf: "js/jsconfuser/recovery/obf_statesum_loop.real.js",
+        src: "js/jsconfuser/recovery/src_statesum_loop.js",
         argv_battery: LOOP_BATTERY,
     },
     Sample {
         name: "javascript-obfuscator/browser-cff",
-        obf: "javascript-obfuscator/browser/obf_cff.js",
-        src: "javascript-obfuscator/browser/source.js",
+        obf: "js/javascript-obfuscator/browser/obf_cff.js",
+        src: "js/javascript-obfuscator/browser/source.js",
         argv_battery: NO_ARGS,
     },
     Sample {
         name: "javascript-obfuscator/browser-base64",
-        obf: "javascript-obfuscator/browser/obf_base64.js",
-        src: "javascript-obfuscator/browser/source.js",
+        obf: "js/javascript-obfuscator/browser/obf_base64.js",
+        src: "js/javascript-obfuscator/browser/source.js",
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/hello",
+        obf: "js/javascript-obfuscator/obfuscated.js",
+        src: "js/javascript-obfuscator/hello.js",
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/preset/low",
+        obf: "src/javascript/obfuscator-io-samples/presets/low.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/preset/medium",
+        obf: "src/javascript/obfuscator-io-samples/presets/medium.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/booleans",
+        obf: "src/javascript/obfuscator-io-samples/controls/booleans.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/compact",
+        obf: "src/javascript/obfuscator-io-samples/controls/compact.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/controlFlowFlattening",
+        obf: "src/javascript/obfuscator-io-samples/controls/controlFlowFlattening.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/deadCodeInjection",
+        obf: "src/javascript/obfuscator-io-samples/controls/deadCodeInjection.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/debugProtection",
+        obf: "src/javascript/obfuscator-io-samples/controls/debugProtection.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/identifiersHexadecimal",
+        obf: "src/javascript/obfuscator-io-samples/controls/identifiersHexadecimal.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/identifiersMangled",
+        obf: "src/javascript/obfuscator-io-samples/controls/identifiersMangled.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/numbersToExpressions",
+        obf: "src/javascript/obfuscator-io-samples/controls/numbersToExpressions.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/objectTransform",
+        obf: "src/javascript/obfuscator-io-samples/controls/objectTransform.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/renameProperties",
+        obf: "src/javascript/obfuscator-io-samples/controls/renameProperties.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/selfDefending",
+        obf: "src/javascript/obfuscator-io-samples/controls/selfDefending.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/splitStrings",
+        obf: "src/javascript/obfuscator-io-samples/controls/splitStrings.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/stringArrayBase64",
+        obf: "src/javascript/obfuscator-io-samples/controls/stringArrayBase64.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/stringArrayRc4",
+        obf: "src/javascript/obfuscator-io-samples/controls/stringArrayRc4.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/stringArrayRotate",
+        obf: "src/javascript/obfuscator-io-samples/controls/stringArrayRotate.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/stringArrayShuffle",
+        obf: "src/javascript/obfuscator-io-samples/controls/stringArrayShuffle.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/control/unicodeEscape",
+        obf: "src/javascript/obfuscator-io-samples/controls/unicodeEscape.js",
+        src: HIGH_CLEAN,
         argv_battery: NO_ARGS,
     },
 ];
@@ -169,7 +294,6 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join("..")
         .join("..")
         .join("corpus")
-        .join("js")
         .join(rel)
 }
 
@@ -181,7 +305,7 @@ fn load(rel: &str) -> String {
 }
 
 fn recover_full(sample: &Sample, obf_src: &str) -> String {
-    if sample.obf.starts_with("jsconfuser/") {
+    if sample.obf.starts_with("js/jsconfuser/") {
         let opts: DeobOptions = DeobOptions::all();
         deobfuscate_all(obf_src, &opts).source
     } else {
@@ -192,24 +316,39 @@ fn recover_full(sample: &Sample, obf_src: &str) -> String {
     }
 }
 
+fn eval_outcome_guarded(program: &str, argv: &[&str]) -> Option<EvalOutcome> {
+    let owned_program: String = program.to_owned();
+    let owned_argv: Vec<String> = argv.iter().map(|arg: &&str| (*arg).to_owned()).collect();
+    let (tx, rx): (
+        mpsc::Sender<Option<EvalOutcome>>,
+        mpsc::Receiver<Option<EvalOutcome>>,
+    ) = mpsc::channel();
+    thread::spawn(move || {
+        let argv_refs: Vec<&str> = owned_argv.iter().map(String::as_str).collect();
+        let outcome: Option<EvalOutcome> = eval_outcome_with_argv(&owned_program, &argv_refs);
+        let _ = tx.send(outcome);
+    });
+    rx.recv_timeout(EVAL_TIMEOUT).ok().flatten()
+}
+
 fn check_sample(sample: &Sample) -> Outcome {
     let obf_src: String = load(sample.obf);
     let clean_src: String = load(sample.src);
     let recovered: String = recover_full(sample, &obf_src);
 
     for argv in sample.argv_battery {
-        let want: EvalOutcome = match eval_outcome_with_argv(&clean_src, argv) {
+        let want: EvalOutcome = match eval_outcome_guarded(&clean_src, argv) {
             Some(outcome) => outcome,
             None => {
                 return Outcome::Skipped(format!(
-                    "{}: original clean source is not boa-evaluable for argv {argv:?} (engine gap, not a recovery defect)",
+                    "{}: original clean source is not boa-evaluable for argv {argv:?} within {EVAL_TIMEOUT:?} (engine gap, not a recovery defect)",
                     sample.name
                 ));
             }
         };
-        let Some(got): Option<EvalOutcome> = eval_outcome_with_argv(&recovered, argv) else {
+        let Some(got): Option<EvalOutcome> = eval_outcome_guarded(&recovered, argv) else {
             return Outcome::Diverged(format!(
-                "{}: recovered source failed to evaluate under boa for argv {argv:?}; recovery emitted non-runnable code:\n{recovered}",
+                "{}: recovered source failed to evaluate under boa for argv {argv:?} within {EVAL_TIMEOUT:?}; recovery emitted non-runnable or non-terminating code:\n{recovered}",
                 sample.name
             ));
         };
@@ -292,9 +431,9 @@ const fn routes_to_jsconfuser_full(family: JsObfuscator) -> bool {
 #[test]
 fn deadcode_and_integrity_detect_as_jsconfuser_and_route_through_full() {
     const CASES: &[&str] = &[
-        "jsconfuser/recovery/obf_deadcode.real.js",
-        "jsconfuser/recovery/obf_deadcode_cff.real.js",
-        "jsconfuser/recovery/obf_integrity.real.js",
+        "js/jsconfuser/recovery/obf_deadcode.real.js",
+        "js/jsconfuser/recovery/obf_deadcode_cff.real.js",
+        "js/jsconfuser/recovery/obf_integrity.real.js",
     ];
     for rel in CASES {
         let src: String = load(rel);
@@ -314,7 +453,7 @@ fn deadcode_and_integrity_detect_as_jsconfuser_and_route_through_full() {
 
 #[test]
 fn obfuscator_io_pipeline_is_bounded_on_integrity_trap() {
-    let src: String = load("jsconfuser/recovery/obf_integrity.real.js");
+    let src: String = load("js/jsconfuser/recovery/obf_integrity.real.js");
     let controls: BTreeSet<ObfuscatorIoControl> =
         ObfuscatorIoControl::ALL.iter().copied().collect();
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions {

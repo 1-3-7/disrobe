@@ -302,8 +302,7 @@ fn run_unminify_block(mut current: String, opts: &Options, out: &mut Output) -> 
         return current;
     }
     let (next, stats): (String, UnminifyStats) = unminify(&current);
-    let delta: u64 = unminify_delta(&stats).saturating_sub(unminify_delta(&out.unminify_stats));
-    if delta == 0 {
+    if next == current {
         return current;
     }
     if opts.controls.contains(&ObfControl::Booleans) {
@@ -315,10 +314,39 @@ fn run_unminify_block(mut current: String, opts: &Options, out: &mut Output) -> 
     if opts.controls.contains(&ObfControl::Minification) {
         out.controls_applied.insert(ObfControl::Minification);
     }
+    let delta: u64 = unminify_delta(&stats);
     bump_unminify(&mut out.per_control_stats, &opts.controls, delta);
     current = next;
-    out.unminify_stats = stats;
+    merge_unminify_stats(&mut out.unminify_stats, &stats);
     current
+}
+
+const fn merge_unminify_stats(base: &mut UnminifyStats, pass: &UnminifyStats) {
+    base.bool_shorthand_reversed += pass.bool_shorthand_reversed;
+    base.void_undefined_reversed += pass.void_undefined_reversed;
+    base.double_not_reversed += pass.double_not_reversed;
+    base.member_access_dotted += pass.member_access_dotted;
+    base.merged_string_concat += pass.merged_string_concat;
+    base.string_split_literals_merged += pass.string_split_literals_merged;
+    base.arithmetic_folded += pass.arithmetic_folded;
+    base.radix_literals_decimalized += pass.radix_literals_decimalized;
+    base.function_call_reversed += pass.function_call_reversed;
+    base.globals_call_sites += pass.globals_call_sites;
+    base.globals_evaluated += pass.globals_evaluated;
+    base.globals_failed += pass.globals_failed;
+    base.if_true_inlined += pass.if_true_inlined;
+    base.if_false_eliminated += pass.if_false_eliminated;
+    base.debugger_loops_removed += pass.debugger_loops_removed;
+    base.set_interval_watchdogs_removed += pass.set_interval_watchdogs_removed;
+    base.function_debugger_removed += pass.function_debugger_removed;
+    base.self_defending_iifes_removed += pass.self_defending_iifes_removed;
+    base.self_defending_checkers_removed += pass.self_defending_checkers_removed;
+    base.self_defending_wrappers_removed += pass.self_defending_wrappers_removed;
+    base.debug_protection_ratchets_removed += pass.debug_protection_ratchets_removed;
+    base.debug_ratchet_functions_removed += pass.debug_ratchet_functions_removed;
+    base.discarded_constructor_calls_removed += pass.discarded_constructor_calls_removed;
+    base.control_flow_blocks_unflattened += pass.control_flow_blocks_unflattened;
+    base.control_flow_cases_inlined += pass.control_flow_cases_inlined;
 }
 
 fn run_identifiers(mut current: String, opts: &Options, out: &mut Output) -> String {
@@ -366,7 +394,12 @@ const fn unminify_delta(s: &UnminifyStats) -> u64 {
         + s.self_defending_checkers_removed
         + s.self_defending_wrappers_removed
         + s.debug_protection_ratchets_removed
-        + s.control_flow_blocks_unflattened;
+        + s.debug_ratchet_functions_removed
+        + s.discarded_constructor_calls_removed
+        + s.control_flow_blocks_unflattened
+        + s.control_flow_cases_inlined
+        + s.globals_evaluated
+        + s.globals_failed;
     total as u64
 }
 
