@@ -10,6 +10,7 @@ const MAX_REGS: usize = 4096;
 const MAX_LIFT_DEPTH: u32 = 64;
 const MAX_LIFT_OUTPUT_PREALLOC: usize = 1 << 20;
 const INDENT: &str = "  ";
+const CALL_MAXARGS: u32 = 15;
 
 fn push_line(out: &mut String, args: Arguments<'_>) {
     match core::fmt::write(out, args) {
@@ -33,6 +34,8 @@ enum RegVal {
     Local(String),
     MethodProc(u32),
     BlockProc(u32),
+    ArgForward,
+    BlockYield,
     Unknown,
 }
 
@@ -51,6 +54,8 @@ impl RegVal {
             Self::Expr(s) | Self::Local(s) => s.clone(),
             Self::MethodProc(idx) => format!("<proc irep[{idx}]>"),
             Self::BlockProc(_) => "proc {}".to_owned(),
+            Self::ArgForward => "<super args>".to_owned(),
+            Self::BlockYield => "<block>".to_owned(),
             Self::Unknown => "_".to_owned(),
         }
     }
@@ -310,12 +315,8 @@ impl Lifter<'_> {
                     out,
                 );
             }
-            MrubyOp::GetIv => {
-                let v: RegVal = RegVal::Expr(format!("@{}", symbol(rec, b)));
-                place(regs, frame, i, a, v, false, out);
-            }
-            MrubyOp::GetCv => {
-                let v: RegVal = RegVal::Expr(format!("@@{}", symbol(rec, b)));
+            MrubyOp::GetIv | MrubyOp::GetCv => {
+                let v: RegVal = RegVal::Expr(symbol(rec, b));
                 place(regs, frame, i, a, v, false, out);
             }
             MrubyOp::GetGv | MrubyOp::GetSv => {
@@ -340,16 +341,10 @@ impl Lifter<'_> {
                 out,
             ),
             MrubyOp::TClass => place(regs, frame, i, a, RegVal::SelfRef, false, out),
-            MrubyOp::SetIv => {
+            MrubyOp::SetIv | MrubyOp::SetCv => {
                 push_line(
                     out,
-                    format_args!("{pad}@{} = {}", symbol(rec, b), regs.get(a).render()),
-                );
-            }
-            MrubyOp::SetCv => {
-                push_line(
-                    out,
-                    format_args!("{pad}@@{} = {}", symbol(rec, b), regs.get(a).render()),
+                    format_args!("{pad}{} = {}", symbol(rec, b), regs.get(a).render()),
                 );
             }
             MrubyOp::SetGv | MrubyOp::SetSv => {
@@ -430,14 +425,19 @@ impl Lifter<'_> {
             MrubyOp::Send | MrubyOp::SSend => {
                 let is_self: bool = matches!(instr.op, MrubyOp::SSend);
                 let argc: u32 = c & 0x0f;
-                let call: String = render_call(rec, regs, a, b, argc, is_self);
+                let kwargc: u32 = (c >> 4) & 0x0f;
+                let call: String = render_call(rec, regs, a, b, argc, kwargc, is_self, true);
                 place(regs, frame, i, a, RegVal::Expr(call), true, out);
             }
             MrubyOp::SendB | MrubyOp::SSendB => {
                 let is_self: bool = matches!(instr.op, MrubyOp::SSendB);
                 let argc: u32 = c & 0x0f;
-                let head: String = render_call(rec, regs, a, b, argc, is_self);
-                let block_reg: u32 = a.saturating_add(argc).saturating_add(1);
+                let kwargc: u32 = (c >> 4) & 0x0f;
+                let head: String = render_call(rec, regs, a, b, argc, kwargc, is_self, false);
+                let block_reg: u32 = a
+                    .saturating_add(argc)
+                    .saturating_add(kwargc.saturating_mul(2))
+                    .saturating_add(1);
                 let child: u32 = match regs.get(block_reg) {
                     RegVal::BlockProc(idx) | RegVal::MethodProc(idx) => idx,
                     _ => u32::MAX,
@@ -611,14 +611,21 @@ impl Lifter<'_> {
                 place(regs, frame, i, a, RegVal::Expr(sym), false, out);
             }
             MrubyOp::Super => {
-                let args: String = render_consecutive(regs, a.saturating_add(1), b);
-                let call: String = if b == 0 {
+                let argc: u32 = b & 0x0f;
+                let kwargc: u32 = (b >> 4) & 0x0f;
+                let forwarded: bool = argc == CALL_MAXARGS
+                    && matches!(regs.get(a.saturating_add(1)), RegVal::ArgForward);
+                let call: String = if b == 0 || forwarded {
                     "super".to_owned()
                 } else {
-                    format!("super({args})")
+                    let joined: String =
+                        join_args_and_kwargs(regs, a.saturating_add(1), argc, kwargc);
+                    format!("super({joined})")
                 };
                 place(regs, frame, i, a, RegVal::Expr(call), true, out);
             }
+            MrubyOp::ArgAry => regs.set(a, RegVal::ArgForward),
+            MrubyOp::BlkPush => regs.set(a, RegVal::BlockYield),
             MrubyOp::Call => {
                 place(
                     regs,
@@ -657,6 +664,50 @@ impl Lifter<'_> {
             MrubyOp::Err => {
                 push_line(out, format_args!("{pad}raise LocalJumpError"));
             }
+            MrubyOp::Except => {
+                place(regs, frame, i, a, RegVal::Expr("$!".to_owned()), false, out);
+            }
+            MrubyOp::Rescue => {
+                let exc: String = regs.get(a).render();
+                let class: String = regs.get(b).render();
+                place(
+                    regs,
+                    frame,
+                    i,
+                    b,
+                    RegVal::Expr(format!("{exc}.is_a?({class})")),
+                    false,
+                    out,
+                );
+            }
+            MrubyOp::RaiseIf => match regs.get(a) {
+                RegVal::Expr(v) if v == "$!" => {
+                    push_line(out, format_args!("{pad}raise({v}) if {v}"));
+                }
+                _ => self.mark(instr, &pad, out),
+            },
+            MrubyOp::Karg => regs.set(a, RegVal::Local(symbol(rec, b))),
+            MrubyOp::Apost => {
+                let pre: u32 = b;
+                let post: u32 = c;
+                let source: String = regs.get(a).render();
+                let sliced: String = if pre == 0 {
+                    source
+                } else {
+                    format!("{source}[{pre}..]")
+                };
+                let rest_name: String = local_name(a, frame.nargs);
+                let mut targets: Vec<String> = vec![format!("*{rest_name}")];
+                for k in 1..=post {
+                    targets.push(local_name(a.saturating_add(k), frame.nargs));
+                }
+                push_line(out, format_args!("{pad}{} = {sliced}", targets.join(", ")));
+                regs.set(a, RegVal::Local(rest_name));
+                for k in 1..=post {
+                    let reg: u32 = a.saturating_add(k);
+                    regs.set(reg, RegVal::Local(local_name(reg, frame.nargs)));
+                }
+            }
             MrubyOp::Nop
             | MrubyOp::Enter
             | MrubyOp::KeyEnd
@@ -680,8 +731,12 @@ impl Lifter<'_> {
             }
             MrubyOp::Class => {
                 let name: String = symbol(rec, b);
-                regs.set(a, RegVal::Expr(format!("<class {name}>")));
-                pending.set_pending(a, "class", name);
+                let label: String = match regs.get(a.saturating_add(1)) {
+                    RegVal::Nil => name,
+                    superclass => format!("{name} < {}", superclass.render()),
+                };
+                regs.set(a, RegVal::Expr(format!("<class {label}>")));
+                pending.set_pending(a, "class", label);
             }
             MrubyOp::Module => {
                 let name: String = symbol(rec, b);
@@ -793,12 +848,36 @@ impl Lifter<'_> {
             return String::new();
         };
         let nargs: u32 = arg_count(rec);
-        if nargs == 0 {
-            return String::new();
+        let mut names: Vec<String> = (0..nargs).map(|i| format!("arg{i}")).collect();
+        if let Ok(ins) = disassemble_iseq(&rec.iseq) {
+            for kw in required_kwarg_names(&ins, rec) {
+                names.push(format!("{kw}:"));
+            }
         }
-        let names: Vec<String> = (0..nargs).map(|i| format!("arg{i}")).collect();
-        format!("({})", names.join(", "))
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!("({})", names.join(", "))
+        }
     }
+}
+
+fn required_kwarg_names(ins: &[MrubyInstruction], rec: &IrepRecord) -> Vec<String> {
+    let Some(enter_idx): Option<usize> = ins.iter().position(|i| i.op == MrubyOp::Enter) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for instr in ins.iter().skip(enter_idx.saturating_add(1)) {
+        match instr.op {
+            MrubyOp::Karg => {
+                let sym_idx: u32 = instr.operands.get(1).copied().unwrap_or(0);
+                names.push(symbol(rec, sym_idx));
+            }
+            MrubyOp::KeyP => return Vec::new(),
+            _ => break,
+        }
+    }
+    names
 }
 
 fn place(
@@ -913,7 +992,9 @@ fn effect(instr: &MrubyInstruction) -> (Option<u32>, Vec<u32>) {
         | MrubyOp::HashCat
         | MrubyOp::RangeInc
         | MrubyOp::RangeExc => (Some(a), vec![a, a.saturating_add(1)]),
-        MrubyOp::AddI | MrubyOp::SubI | MrubyOp::ArySplat | MrubyOp::Intern => (Some(a), vec![a]),
+        MrubyOp::AddI | MrubyOp::SubI | MrubyOp::ArySplat | MrubyOp::Intern | MrubyOp::Apost => {
+            (Some(a), vec![a])
+        }
         MrubyOp::AryPush => (Some(a), range_regs(a, b.saturating_add(1))),
         MrubyOp::Array => (Some(a), range_regs(a, b)),
         MrubyOp::Array2 => (Some(a), range_regs(b, c)),
@@ -960,7 +1041,6 @@ fn effect(instr: &MrubyInstruction) -> (Option<u32>, Vec<u32>) {
         | MrubyOp::Nop
         | MrubyOp::Stop
         | MrubyOp::Enter
-        | MrubyOp::Apost
         | MrubyOp::Ext1
         | MrubyOp::Ext2
         | MrubyOp::Ext3 => (None, vec![]),
@@ -978,10 +1058,23 @@ fn render_call(
     recv_reg: u32,
     method_sym: u32,
     argc: u32,
+    kwargc: u32,
     is_self_send: bool,
+    allow_yield: bool,
 ) -> String {
     let method: String = symbol(rec, method_sym);
-    let args: String = render_consecutive(regs, recv_reg.saturating_add(1), argc);
+    let joined: String = join_args_and_kwargs(regs, recv_reg.saturating_add(1), argc, kwargc);
+    if allow_yield
+        && !is_self_send
+        && method == "call"
+        && matches!(regs.get(recv_reg), RegVal::BlockYield)
+    {
+        return if joined.is_empty() {
+            "yield".to_owned()
+        } else {
+            format!("yield({joined})")
+        };
+    }
     let prefix: String = if is_self_send {
         String::new()
     } else {
@@ -990,10 +1083,21 @@ fn render_call(
             other => format!("{}.", other.render()),
         }
     };
-    if argc == 0 {
+    if joined.is_empty() {
         format!("{prefix}{method}")
     } else {
-        format!("{prefix}{method}({args})")
+        format!("{prefix}{method}({joined})")
+    }
+}
+
+fn join_args_and_kwargs(regs: &Regs, start: u32, argc: u32, kwargc: u32) -> String {
+    let args: String = render_consecutive(regs, start, argc);
+    let kwargs: String = render_pairs(regs, start.saturating_add(argc), kwargc);
+    match (args.is_empty(), kwargs.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => args,
+        (true, false) => kwargs,
+        (false, false) => format!("{args}, {kwargs}"),
     }
 }
 
@@ -1301,6 +1405,101 @@ mod tests {
         let symbols: Vec<String> = vec!["gone".to_owned()];
         let src: String = lift_single(iseq, vec![], symbols);
         assert!(src.contains("undef gone"), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_reraise_from_except_and_raiseif() {
+        let iseq: Vec<u8> = asm(&[("EXCEPT", &[1]), ("RAISEIF", &[1]), ("RETURN", &[0])]);
+        let src: String = lift_single(iseq, vec![], vec![]);
+        assert!(src.contains("raise($!) if $!"), "got: {src}");
+    }
+
+    #[test]
+    fn raiseif_sound_rejects_when_register_was_overwritten() {
+        let iseq: Vec<u8> = asm(&[
+            ("EXCEPT", &[1]),
+            ("LOADI__1", &[1]),
+            ("RAISEIF", &[1]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let out: LiftOutput = lift_tree(&tree).expect("lift");
+        assert!(
+            out.source.contains("# unmodeled RAISEIF"),
+            "a raiseif over a clobbered register must not fabricate a raise: got {}",
+            out.source
+        );
+        assert!(!out.source.contains("raise(-1)"), "got: {}", out.source);
+    }
+
+    #[test]
+    fn lifts_rescue_as_class_membership_check() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADSELF", &[1]),
+            ("GETCONST", &[2, 0]),
+            ("RESCUE", &[1, 2]),
+            ("RETURN", &[2]),
+        ]);
+        let symbols: Vec<String> = vec!["StandardError".to_owned()];
+        let src: String = lift_single(iseq, vec![], symbols);
+        assert!(src.contains("self.is_a?(StandardError)"), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_keyword_arg_value_via_karg() {
+        let iseq: Vec<u8> = asm(&[("KARG", &[1, 0]), ("RETURN", &[1])]);
+        let symbols: Vec<String> = vec!["amount".to_owned()];
+        let src: String = lift_single(iseq, vec![], symbols);
+        assert!(src.contains("amount"), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_bare_super_from_argary_forwarding() {
+        let iseq: Vec<u8> = asm(&[("ARGARY", &[2, 0]), ("SUPER", &[1, 15]), ("RETURN", &[1])]);
+        let src: String = lift_single(iseq, vec![], vec![]);
+        assert!(src.contains("super"), "got: {src}");
+        assert!(!src.contains("super("), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_yield_from_blkpush_and_send_call() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADI_1", &[2]),
+            ("BLKPUSH", &[1, 0]),
+            ("SEND", &[1, 0, 1]),
+            ("RETURN", &[1]),
+        ]);
+        let symbols: Vec<String> = vec!["call".to_owned()];
+        let src: String = lift_single(iseq, vec![], symbols);
+        assert!(src.contains("yield(1)"), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_post_splat_destructure_from_apost() {
+        let iseq: Vec<u8> = asm(&[("LOADSELF", &[1]), ("APOST", &[1, 1, 1]), ("RETURN", &[2])]);
+        let src: String = lift_single(iseq, vec![], vec![]);
+        assert!(src.contains("*t1, t2 = self[1..]"), "got: {src}");
+    }
+
+    #[test]
+    fn def_params_recovers_required_keyword_argument() {
+        let child_iseq: Vec<u8> = asm(&[("ENTER", &[0]), ("KARG", &[1, 0]), ("RETURN", &[1])]);
+        let parent_iseq: Vec<u8> = asm(&[("METHOD", &[1, 0]), ("DEF", &[0, 0]), ("RETURN", &[0])]);
+        let parent: IrepRecord = rec(parent_iseq, vec![], vec!["greet".to_owned()], vec![1]);
+        let child: IrepRecord = rec(child_iseq, vec![], vec!["amount".to_owned()], vec![]);
+        let tree: IrepTree = IrepTree {
+            records: vec![parent, child],
+            total_insn_bytes: 0,
+            total_symbols: 2,
+            total_pool_entries: 0,
+        };
+        let src: String = lift_tree(&tree).expect("lift").source;
+        assert!(src.contains("def greet(amount:)"), "got: {src}");
     }
 
     #[test]

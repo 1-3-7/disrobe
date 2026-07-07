@@ -11,8 +11,8 @@ use std::process::Command;
 
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
 
-const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass"];
-const EQUIVALENT_SET: &[&str] = &["arith", "strings", "coll", "klass", "blocks"];
+const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
+const EQUIVALENT_SET: &[&str] = &["arith", "strings", "coll", "klass", "blocks", "advanced"];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -21,6 +21,7 @@ const BREADTH_SET: &[&str] = &[
     "control",
     "blocks",
     "exceptions",
+    "advanced",
 ];
 
 fn corpus_path(name: &str, ext: &str) -> PathBuf {
@@ -199,11 +200,11 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
     }
 
     assert!(
-        recompiled >= 7,
+        recompiled >= 8,
         "every recovered program must be valid, mrbc-recompilable ruby, got {recompiled}/{total}"
     );
     assert!(
-        equivalent >= 5,
+        equivalent >= 6,
         "the straight-line and block programs must be semantically equivalent, got {equivalent}/{total}"
     );
 }
