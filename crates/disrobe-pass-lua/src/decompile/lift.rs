@@ -4,6 +4,7 @@ use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto};
 
 const MAX_LIFT_DEPTH: usize = 200;
+const LFIELDS_PER_FLUSH: u32 = 50;
 
 #[derive(Debug, Clone, Default)]
 struct LocalScopes {
@@ -120,6 +121,20 @@ impl LiftState {
     fn push(&mut self, stmt: &str) {
         let pad: String = "  ".repeat(self.indent);
         self.lines.push(format!("{pad}{stmt}"));
+    }
+}
+
+#[inline]
+fn define(state: &mut LiftState, slot: u32, value: String) {
+    match state.scopes.name_at(state.pc, slot) {
+        Some(name) => {
+            let name: String = name.to_owned();
+            if value != name {
+                state.push(&format!("{name} = {value}"));
+            }
+            state.set_reg(slot, name);
+        }
+        None => state.set_reg(slot, value),
     }
 }
 
@@ -335,10 +350,10 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
         match d.op {
             Op::Move => {
                 let src: String = state.reg(d.b);
-                state.set_reg(d.a, src);
+                define(&mut state, d.a, src);
             }
             Op::LoadK => {
-                state.set_reg(d.a, kconst(p, d.bx));
+                define(&mut state, d.a, kconst(p, d.bx));
             }
             Op::LoadKx => {
                 let extra: Option<u32> = p.code.get(pc + 1).map(|raw2: &u32| {
@@ -347,33 +362,45 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 });
                 match extra {
                     Some(ax) => {
-                        state.set_reg(d.a, kconst(p, ax));
+                        define(&mut state, d.a, kconst(p, ax));
                         pc += 1;
                     }
-                    None => state.set_reg(d.a, format!("K{}", d.bx)),
+                    None => define(&mut state, d.a, format!("K{}", d.bx)),
                 }
             }
             Op::LoadI => {
-                state.set_reg(d.a, d.sbx.to_string());
+                define(&mut state, d.a, d.sbx.to_string());
             }
             Op::LoadF => {
-                state.set_reg(d.a, format!("{}", f64::from(d.sbx)));
+                define(&mut state, d.a, format!("{}", f64::from(d.sbx)));
             }
             Op::LoadBool => {
-                state.set_reg(d.a, if d.b != 0 { "true" } else { "false" }.to_owned());
+                define(
+                    &mut state,
+                    d.a,
+                    if d.b != 0 { "true" } else { "false" }.to_owned(),
+                );
                 if d.c != 0 {
-                    pc += 1;
+                    fully_structured = false;
+                    state
+                        .warnings
+                        .push("relational boolean materialization not fully recovered".to_owned());
+                    skip_and_preserve_label(&mut state, &mut pc, &jump_targets);
                 }
             }
             Op::LoadTrue => {
-                state.set_reg(d.a, "true".to_owned());
+                define(&mut state, d.a, "true".to_owned());
             }
             Op::LoadFalse => {
-                state.set_reg(d.a, "false".to_owned());
+                define(&mut state, d.a, "false".to_owned());
             }
             Op::LFalseSkip => {
-                state.set_reg(d.a, "false".to_owned());
-                pc += 1;
+                define(&mut state, d.a, "false".to_owned());
+                fully_structured = false;
+                state
+                    .warnings
+                    .push("relational boolean materialization not fully recovered".to_owned());
+                skip_and_preserve_label(&mut state, &mut pc, &jump_targets);
             }
             Op::LoadNil => {
                 let span: u32 = if matches!(dialect, LuaDialect::Lua54) {
@@ -382,11 +409,11 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                     d.b
                 };
                 for r in d.a..=span {
-                    state.set_reg(r, "nil".to_owned());
+                    define(&mut state, r, "nil".to_owned());
                 }
             }
             Op::GetUpval => {
-                state.set_reg(d.a, upval_name(p, d.b));
+                define(&mut state, d.a, upval_name(p, d.b));
             }
             Op::SetUpval => {
                 let name: String = upval_name(p, d.b);
@@ -394,7 +421,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 state.push(&format!("{name} = {val}"));
             }
             Op::GetGlobal => {
-                state.set_reg(d.a, kstr(p, d.bx));
+                define(&mut state, d.a, kstr(p, d.bx));
             }
             Op::SetGlobal => {
                 let name: String = kstr(p, d.bx);
@@ -409,7 +436,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 } else {
                     index_expr_with_key(&up, field.as_deref(), &raw_key)
                 };
-                state.set_reg(d.a, expr);
+                define(&mut state, d.a, expr);
             }
             Op::SetTabUp => {
                 let up: String = upval_name(p, d.a);
@@ -426,17 +453,25 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 let table: String = state.reg(d.b);
                 let raw_key: String = rk(&state, p, d.c);
                 let field: Option<String> = const_str_key(p, d.c);
-                state.set_reg(d.a, index_expr_with_key(&table, field.as_deref(), &raw_key));
+                define(
+                    &mut state,
+                    d.a,
+                    index_expr_with_key(&table, field.as_deref(), &raw_key),
+                );
             }
             Op::GetField => {
                 let table: String = state.reg(d.b);
                 let field: Option<String> = const_str_key_direct(p, d.c);
                 let raw_key: String = kconst(p, d.c);
-                state.set_reg(d.a, index_expr_with_key(&table, field.as_deref(), &raw_key));
+                define(
+                    &mut state,
+                    d.a,
+                    index_expr_with_key(&table, field.as_deref(), &raw_key),
+                );
             }
             Op::GetI => {
                 let table: String = state.reg(d.b);
-                state.set_reg(d.a, format!("{table}[{}]", d.c));
+                define(&mut state, d.a, format!("{table}[{}]", d.c));
             }
             Op::SetTable => {
                 let table: String = state.reg(d.a);
@@ -507,7 +542,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                     rk(&state, p, d.c)
                 };
                 if let Some(e) = arith(d.op, &lhs, &rhs) {
-                    state.set_reg(d.a, e);
+                    define(&mut state, d.a, e);
                 }
                 skip_mmbin(p, &mut pc, dialect);
             }
@@ -524,44 +559,44 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 let lhs: String = state.reg(d.b);
                 let rhs: String = kconst(p, d.c);
                 if let Some(e) = arith(d.op, &lhs, &rhs) {
-                    state.set_reg(d.a, e);
+                    define(&mut state, d.a, e);
                 }
                 skip_mmbin(p, &mut pc, dialect);
             }
             Op::AddI => {
                 let lhs: String = state.reg(d.b);
                 let imm: i32 = d.c as i32 - 127;
-                state.set_reg(d.a, format!("({lhs} + {imm})"));
+                define(&mut state, d.a, format!("({lhs} + {imm})"));
                 skip_mmbin(p, &mut pc, dialect);
             }
             Op::ShrI => {
                 let lhs: String = state.reg(d.b);
                 let imm: i32 = d.c as i32 - 127;
-                state.set_reg(d.a, format!("({lhs} >> {imm})"));
+                define(&mut state, d.a, format!("({lhs} >> {imm})"));
                 skip_mmbin(p, &mut pc, dialect);
             }
             Op::ShlI => {
                 let rhs: String = state.reg(d.b);
                 let imm: i32 = d.c as i32 - 127;
-                state.set_reg(d.a, format!("({imm} << {rhs})"));
+                define(&mut state, d.a, format!("({imm} << {rhs})"));
                 skip_mmbin(p, &mut pc, dialect);
             }
             Op::MmBin | Op::MmBinI | Op::MmBinK => {}
             Op::Unm => {
                 let v: String = state.reg(d.b);
-                state.set_reg(d.a, format!("-({v})"));
+                define(&mut state, d.a, format!("-({v})"));
             }
             Op::BNot => {
                 let v: String = state.reg(d.b);
-                state.set_reg(d.a, format!("~({v})"));
+                define(&mut state, d.a, format!("~({v})"));
             }
             Op::Not => {
                 let v: String = state.reg(d.b);
-                state.set_reg(d.a, format!("(not {v})"));
+                define(&mut state, d.a, format!("(not {v})"));
             }
             Op::Len => {
                 let v: String = state.reg(d.b);
-                state.set_reg(d.a, format!("#{v}"));
+                define(&mut state, d.a, format!("#{v}"));
             }
             Op::Concat => {
                 let end: u32 = if matches!(dialect, LuaDialect::Lua54) {
@@ -575,7 +610,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                     d.b
                 };
                 let parts: Vec<String> = (start..=end).map(|r: u32| state.reg(r)).collect();
-                state.set_reg(d.a, format!("({})", parts.join(" .. ")));
+                define(&mut state, d.a, format!("({})", parts.join(" .. ")));
             }
             Op::Jmp => {
                 let target: i64 = jump_target(pc, &d, dialect);
@@ -619,12 +654,20 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::Test => {
                 let v: String = state.reg(d.a);
-                let neg: &str = if d.k || (!matches!(dialect, LuaDialect::Lua54) && d.c != 0) {
-                    "not "
+                let jump_when_truthy: bool = if matches!(dialect, LuaDialect::Lua54) {
+                    d.k
                 } else {
-                    ""
+                    d.c != 0
                 };
-                state.push(&format!("if {neg}{v} then -- skip next"));
+                let cond: String = if jump_when_truthy {
+                    v
+                } else {
+                    format!("not {v}")
+                };
+                emit_cond_jump_lit(&mut state, p, pc, dialect, &cond);
+                if next_is_jmp(p, pc, dialect) {
+                    pc += 1;
+                }
                 fully_structured = false;
             }
             Op::TestSet => {
@@ -637,20 +680,25 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::TailCall => {
                 emit_call(&mut state, &d, true, dialect);
+                suppress_dead_jmp_after_return(p, &mut pc, dialect, &jump_targets);
             }
             Op::Return => {
                 let is_last: bool = pc + 1 == n;
                 if !(is_last && d.b == 1) {
                     emit_return(&mut state, &d);
                 }
+                suppress_dead_jmp_after_return(p, &mut pc, dialect, &jump_targets);
             }
             Op::Return0 => {
                 if pc + 1 != n {
-                    state.push("return");
+                    push_return(&mut state, "");
                 }
+                suppress_dead_jmp_after_return(p, &mut pc, dialect, &jump_targets);
             }
             Op::Return1 => {
-                state.push(&format!("return {}", state.reg(d.a)));
+                let val: String = state.reg(d.a);
+                push_return(&mut state, &val);
+                suppress_dead_jmp_after_return(p, &mut pc, dialect, &jump_targets);
             }
             Op::ForPrep => {
                 let init: String = state.reg(d.a);
@@ -716,15 +764,23 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::SetList => {
                 let table: String = state.reg(d.a);
-                let count: u32 = if d.b == 0 { 0 } else { d.b };
-                let elems: Vec<String> = (1..=count).map(|i: u32| state.reg(d.a + i)).collect();
+                let count: u32 = d.b;
                 if matches!(dialect, LuaDialect::Lua54) && d.k {
                     pc += 1;
                 }
-                if elems.is_empty() {
-                    state.push(&format!("-- setlist {table} (vararg span)"));
+                if count == 0 {
+                    fully_structured = false;
+                    state
+                        .warnings
+                        .push("vararg/multi-value table elements not fully recovered".to_owned());
                 } else {
-                    state.push(&format!("-- {table} = {{ {} }}", elems.join(", ")));
+                    let block: u32 = d.c.max(1);
+                    let base_index: u32 = (block - 1).saturating_mul(LFIELDS_PER_FLUSH);
+                    for i in 1..=count {
+                        let elem: String = state.reg(d.a + i);
+                        let index: u32 = base_index + i;
+                        state.push(&format!("{table}[{index}] = {elem}"));
+                    }
                 }
             }
             Op::Close => {
@@ -737,7 +793,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 emit_closure(&mut state, p, &d, dialect, depth, &mut fully_structured);
             }
             Op::Vararg => {
-                state.set_reg(d.a, "...".to_owned());
+                define(&mut state, d.a, "...".to_owned());
             }
             Op::VarargPrep => {}
             Op::ExtraArg => {}
@@ -850,6 +906,40 @@ fn next_is_jmp(p: &LuaProto, pc: usize, dialect: LuaDialect) -> bool {
 }
 
 #[inline]
+fn push_return(state: &mut LiftState, values: &str) {
+    if values.is_empty() {
+        state.push("do return end");
+    } else {
+        state.push(&format!("do return {values} end"));
+    }
+}
+
+#[inline]
+fn skip_and_preserve_label(state: &mut LiftState, pc: &mut usize, jump_targets: &[bool]) {
+    *pc += 1;
+    if jump_targets.get(*pc).copied().unwrap_or(false) {
+        state.push(&format!("::lbl_{}::", *pc));
+    }
+}
+
+#[inline]
+fn suppress_dead_jmp_after_return(
+    p: &LuaProto,
+    pc: &mut usize,
+    dialect: LuaDialect,
+    jump_targets: &[bool],
+) {
+    let Some(raw2) = p.code.get(*pc + 1) else {
+        return;
+    };
+    let is_unreachable_jmp: bool = decode(*raw2, dialect).op == Op::Jmp
+        && !jump_targets.get(*pc + 1).copied().unwrap_or(false);
+    if is_unreachable_jmp {
+        *pc += 1;
+    }
+}
+
+#[inline]
 fn jump_target(pc: usize, d: &Decoded, dialect: LuaDialect) -> i64 {
     let off: i64 = if matches!(dialect, LuaDialect::Lua54) {
         i64::from(d.sj)
@@ -885,6 +975,16 @@ fn emit_cond_jump(
     sym: &str,
     rhs: &str,
 ) {
+    emit_cond_jump_lit(state, p, pc, dialect, &format!("{lhs} {sym} {rhs}"));
+}
+
+fn emit_cond_jump_lit(
+    state: &mut LiftState,
+    p: &LuaProto,
+    pc: usize,
+    dialect: LuaDialect,
+    cond: &str,
+) {
     let next_jmp: Option<i64> = p.code.get(pc + 1).and_then(|raw2: &u32| {
         let dj: Decoded = decode(*raw2, dialect);
         if dj.op == Op::Jmp {
@@ -895,10 +995,10 @@ fn emit_cond_jump(
     });
     match next_jmp {
         Some(t) if t >= 0 => {
-            state.push(&format!("if {lhs} {sym} {rhs} then goto lbl_{t} end"));
+            state.push(&format!("if {cond} then goto lbl_{t} end"));
         }
         _ => {
-            state.push(&format!("-- cmp {lhs} {sym} {rhs}"));
+            state.push(&format!("-- cmp {cond}"));
         }
     }
 }
@@ -912,22 +1012,22 @@ fn emit_compare(
     fully_structured: &mut bool,
 ) {
     let (lhs, rhs): (String, String) = if matches!(dialect, LuaDialect::Lua54) {
-        (state.reg(d.b), state.reg(d.c))
+        (state.reg(d.a), state.reg(d.b))
     } else {
         (rk(state, p, d.b), rk(state, p, d.c))
     };
-    let expect_true: bool = if matches!(dialect, LuaDialect::Lua54) {
-        d.k
+    let then_branch_on_true: bool = if matches!(dialect, LuaDialect::Lua54) {
+        !d.k
     } else {
         d.a == 0
     };
-    let sym: &str = match (d.op, expect_true) {
-        (Op::Eq, true) => "==",
-        (Op::Eq, false) => "~=",
-        (Op::Lt, true) => "<",
-        (Op::Lt, false) => ">=",
-        (Op::Le, true) => "<=",
-        (Op::Le, false) => ">",
+    let sym: &str = match (d.op, then_branch_on_true) {
+        (Op::Eq, true) => "~=",
+        (Op::Eq, false) => "==",
+        (Op::Lt, true) => ">=",
+        (Op::Lt, false) => "<",
+        (Op::Le, true) => ">",
+        (Op::Le, false) => "<=",
         _ => "==",
     };
     emit_cond_jump(state, p, pc, dialect, &lhs, sym, &rhs);
@@ -966,14 +1066,15 @@ fn emit_closure(
                 block.push('\n');
             }
             block.push_str("end");
-            state.set_reg(d.a, block);
+            define(state, d.a, block);
             state.warnings.extend(lifted.warnings);
             if !lifted.fully_structured {
                 *fully_structured = false;
             }
         }
         None => {
-            state.set_reg(
+            define(
+                state,
                 d.a,
                 format!("function() --[[ missing proto {child_idx} ]] end"),
             );
@@ -997,14 +1098,16 @@ fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool, dialect: LuaDialect
     };
     let call: String = format!("{func}({})", args.join(", "));
     if tail {
-        state.push(&format!("return {call}"));
+        push_return(state, &call);
         return;
     }
     let nresults: u32 = d.c;
     let _ = dialect;
     if nresults == 1 {
         state.push(&call);
-    } else if nresults >= 2 {
+    } else if nresults == 2 {
+        define(state, d.a, call);
+    } else if nresults > 2 {
         let next_pc: usize = state.pc + 1;
         let targets: Vec<String> = (0..nresults - 1)
             .map(|i: u32| {
@@ -1030,7 +1133,7 @@ fn emit_call(state: &mut LiftState, d: &Decoded, tail: bool, dialect: LuaDialect
 
 fn emit_return(state: &mut LiftState, d: &Decoded) {
     if d.b == 1 {
-        state.push("return");
+        push_return(state, "");
     } else if d.b == 0 {
         let mut vals: Vec<String> = Vec::new();
         let mut r: u32 = d.a;
@@ -1038,10 +1141,10 @@ fn emit_return(state: &mut LiftState, d: &Decoded) {
             vals.push(state.reg(r));
             r += 1;
         }
-        state.push(&format!("return {}", vals.join(", ")));
+        push_return(state, &vals.join(", "));
     } else {
         let vals: Vec<String> = (0..d.b - 1).map(|i: u32| state.reg(d.a + i)).collect();
-        state.push(&format!("return {}", vals.join(", ")));
+        push_return(state, &vals.join(", "));
     }
 }
 
@@ -1304,5 +1407,129 @@ mod tests {
         let p: LuaProto = proto(vec![band, ret], Vec::new(), 4);
         let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua53, 0);
         assert!(out.source.contains("(loc0 & loc1)"), "got: {}", out.source);
+    }
+
+    #[test]
+    fn lift_loadbool_skip_of_hidden_jmp_marks_unstructured() {
+        let loadbool_skip: u32 = enc_abc(2, 0, 1, 1);
+        let hidden_jmp: u32 = enc_abx(22, 0, (1i32 + 0x1FFFF) as u32);
+        let ret: u32 = enc_abc(30, 0, 2, 0);
+        let p: LuaProto = proto(vec![loadbool_skip, hidden_jmp, ret], Vec::new(), 2);
+        let out: LiftedProto = lift_proto(&p, 0);
+        assert!(
+            !out.fully_structured,
+            "a LOADBOOL boolean-materialization skip elides whatever instruction follows \
+             (potentially a Jmp); it must never report fully_structured=true, got: {}",
+            out.source
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w: &String| w.contains("boolean materialization")),
+            "must warn about the lossy boolean-skip recovery; got: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn lift_lfalseskip_of_hidden_jmp_marks_unstructured() {
+        let lfalseskip: u32 = enc54_abc(6, 0, 0, 0, 0);
+        let sj_bias: i64 = 0x00FF_FFFF;
+        let ax: u32 = (1i64 + sj_bias) as u32;
+        let hidden_jmp: u32 = 0x38_u32 | (ax << 7);
+        let ret1: u32 = enc54_abc(72, 0, 0, 0, 0);
+        let p: LuaProto = proto(vec![lfalseskip, hidden_jmp, ret1], Vec::new(), 2);
+        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua54, 0);
+        assert!(
+            !out.fully_structured,
+            "LFALSESKIP unconditionally elides the next instruction (potentially a Jmp); \
+             it must never report fully_structured=true, got: {}",
+            out.source
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w: &String| w.contains("boolean materialization")),
+            "must warn about the lossy skip recovery; got: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn lift_test_opcode_closes_its_if_on_one_line() {
+        let test_op: u32 = enc_abc(26, 0, 0, 1);
+        let jmp: u32 = enc_abx(22, 0, 0x1FFFF);
+        let ret: u32 = enc_abc(30, 0, 2, 0);
+        let p: LuaProto = proto(vec![test_op, jmp, ret], Vec::new(), 2);
+        let out: LiftedProto = lift_proto(&p, 0);
+        assert!(
+            out.source.contains("if loc0 then goto lbl_2 end"),
+            "TEST must combine with its paired JMP into one self-closed if/goto/end \
+             statement, got: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("skip next"),
+            "must not leave a dangling if-without-end that swallows the rest of the \
+             function body, got: {}",
+            out.source
+        );
+        assert!(
+            !out.source
+                .lines()
+                .any(|l: &str| l.trim_start().starts_with("if ") && !l.trim_end().ends_with("end")),
+            "every emitted if-statement must be self-closed on its own line, got: {}",
+            out.source
+        );
+        assert!(!out.fully_structured);
+    }
+
+    #[test]
+    fn lift_setlist_emits_real_indexed_assignments_not_a_dead_comment() {
+        let consts: Vec<LuaConstant> = vec![LuaConstant::Str("x".to_owned())];
+        let code: Vec<u32> = vec![
+            enc_abc(10, 0, 0, 0),
+            enc_abx(1, 1, 0),
+            enc_abc(34, 0, 1, 1),
+            enc_abc(30, 0, 2, 0),
+        ];
+        let p: LuaProto = proto(code, consts, 3);
+        let out: LiftedProto = lift_proto(&p, 0);
+        assert!(
+            out.source.contains("[1] = \"x\""),
+            "SETLIST must emit a real indexed assignment so the table is actually \
+             populated at runtime, got: {}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("-- tbl_0 = {"),
+            "must not silently drop the array literal into a dead, non-executed comment, \
+             got: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn lift_setlist_vararg_span_marks_unstructured() {
+        let code: Vec<u32> = vec![
+            enc_abc(10, 0, 0, 0),
+            enc_abc(34, 0, 0, 1),
+            enc_abc(30, 0, 2, 0),
+        ];
+        let p: LuaProto = proto(code, Vec::new(), 3);
+        let out: LiftedProto = lift_proto(&p, 0);
+        assert!(
+            !out.fully_structured,
+            "a B=0 (top-of-stack span) SETLIST cannot statically recover its element \
+             count/values; it must never report fully_structured=true, got: {}",
+            out.source
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w: &String| w.contains("multi-value table elements")),
+            "must warn about the unresolved vararg/multi-value span; got: {:?}",
+            out.warnings
+        );
     }
 }
