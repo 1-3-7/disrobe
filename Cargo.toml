@@ -308,6 +308,8 @@ strip = "symbols"
 inherits = "release"
 debug = true
 strip = "none"
+lto = false
+codegen-units = 16
 
 [profile.dev]
 opt-level = 1
