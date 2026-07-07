@@ -336,13 +336,77 @@ fn swift_driver_symbols_match_reference_demangler_exactly() {
         .filter(|(r, o): &(&String, &String)| r == o)
         .count();
     let ratio: f64 = matched as f64 / symbols.len() as f64;
+    if ratio < 0.95 {
+        let mut mismatches: Vec<(&String, &String, &String)> = reference
+            .iter()
+            .zip(ours.iter())
+            .zip(symbols.iter())
+            .filter(|((r, o), _)| r != o)
+            .map(|((r, o), s)| (s, r, o))
+            .collect();
+        mismatches.sort_by_key(|(s, _, _): &(&String, &String, &String)| s.len());
+        for (sym, r, o) in &mismatches {
+            eprintln!("mismatch sym={sym}\n  ref={r}\n  our={o}");
+        }
+    }
     assert!(
-        ratio >= 0.75,
-        "demangler must byte-match the real swift-demangle on >=75% of the binary's own \
-         symbols, got {matched}/{} = {:.2}%",
+        ratio >= 0.95,
+        "demangler must byte-match the real swift-demangle on >=95% of the binary's own \
+         symbols (swift 6.x generic specialization, concurrency, opaque return type, and \
+         substitution-table coverage), got {matched}/{} = {:.2}%",
         symbols.len(),
         ratio * 100.0
     );
+}
+
+#[test]
+fn swift_driver_swift6_feature_symbols_match_reference_exactly() {
+    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
+        eprintln!("skip: swift-demangle not on PATH (reference oracle absent on this host)");
+        return;
+    };
+    let Some((slice, parsed)): Option<(Vec<u8>, ParsedSlice)> = driver_arm64_slice() else {
+        eprintln!("skip: macho-mac/swift-driver fixture absent or not universal");
+        return;
+    };
+    let all_symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
+    let curated: [&str; 7] = [
+        "_$sSa034_makeUniqueAndReserveCapacityIfNotB0yyFyXl_Ts5",
+        "_$ss31withCheckedThrowingContinuation9isolation8function_xScA_pSgYi_SSyScCyxs5Error_pGXEtYaKlFTu",
+        "_$ss12IdentifiableP2IDAB_SHTn",
+        "_$ss5SliceVyxGSlsMc",
+        "_$ss9CodingKeyP8intValuexSgSi_tcfCTq",
+        "_$ss6HasherV5_hash4seed5bytes5countS2i_s6UInt64VSitFZ",
+        "_$ss5ErrorWS",
+    ];
+    let symbols: Vec<String> = curated
+        .into_iter()
+        .filter(|s: &&str| all_symbols.iter().any(|sym: &String| sym == s))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        symbols.len(),
+        curated.len(),
+        "all curated swift 6 feature symbols must actually be present in swift-driver's own \
+         symbol table, found {}/{}",
+        symbols.len(),
+        curated.len()
+    );
+
+    let Some(reference): Option<Vec<String>> = reference_demangle(&tool, &symbols) else {
+        eprintln!("skip: reference swift-demangle produced no comparable output");
+        return;
+    };
+    let ours: Vec<String> = symbols
+        .iter()
+        .map(|s: &String| demangle::demangle(s).unwrap_or_else(|_| s.clone()))
+        .collect();
+    for ((sym, ref_text), our_text) in symbols.iter().zip(reference.iter()).zip(ours.iter()) {
+        assert_eq!(
+            ref_text, our_text,
+            "mismatch for curated swift 6 symbol {sym}"
+        );
+    }
 }
 
 #[test]

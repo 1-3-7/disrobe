@@ -150,6 +150,20 @@ enum Kind {
     AsyncAnnotation,
     ConventionAnnotation,
     ValueWitness,
+    ProtocolSelfConformanceWitnessTable,
+    PropertyDescriptor,
+    GenericSpecialization,
+    IsolatedAnyAnnotation,
+    GlobalActorAnnotation,
+    NonisolatedCallerAnnotation,
+    TypedThrowsAnnotation,
+    SendingResultAnnotation,
+    Isolated,
+    Sending,
+    Variadic,
+    OpaqueReturnType,
+    MacroExpansion,
+    AsyncFunctionPointer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +223,14 @@ impl Node {
             kind,
             text: None,
             children: vec![child],
+        })
+    }
+
+    fn branch_with_text(kind: Kind, text: String, children: Vec<NodeRef>) -> NodeRef {
+        Rc::new(Self {
+            kind,
+            text: Some(text),
+            children,
         })
     }
 
@@ -446,10 +468,36 @@ impl<'a> Demangler<'a> {
                 if let Some(node) = self.try_demangle_anonymous_entity(&context) {
                     return Some(node);
                 }
+                if let Some(node) = self.try_demangle_bound_generic_subject(&context) {
+                    return Some(node);
+                }
                 Some(context)
             }
             _ => Some(context),
         }
+    }
+
+    fn try_demangle_bound_generic_subject(&mut self, context: &NodeRef) -> Option<NodeRef> {
+        if self.peek() != Some(b'y') || !is_conformance_subject_kind(context.kind) {
+            return None;
+        }
+        let cp: Checkpoint = self.checkpoint();
+        let Some(bound): Option<NodeRef> = self.apply_type_suffixes(context.clone()) else {
+            self.restore(cp);
+            return None;
+        };
+        if self.pos == cp.pos {
+            self.restore(cp);
+            return None;
+        }
+        if let Some(conf) = self.try_demangle_conformance_descriptor(&bound) {
+            return Some(conf);
+        }
+        if let Some(wtable) = self.try_demangle_protocol_conformance_record(&bound) {
+            return Some(wtable);
+        }
+        self.restore(cp);
+        None
     }
 
     fn try_demangle_extension_then_entity(&mut self, base: &NodeRef) -> Option<NodeRef> {
@@ -526,24 +574,7 @@ impl<'a> Demangler<'a> {
         let cp: Checkpoint = self.checkpoint();
         let result: NodeRef = self.demangle_result_type_no_funckind()?;
         let params: NodeRef = self.demangle_params()?;
-        let mut annotations: Vec<NodeRef> = Vec::new();
-        loop {
-            match self.peek() {
-                Some(b'K') => {
-                    self.pos += 1;
-                    annotations.push(Node::leaf(Kind::ThrowsAnnotation, "throws".to_owned()));
-                }
-                Some(b'Y') => {
-                    self.pos += 1;
-                    if self.next_if(b'a') {
-                        annotations.push(Node::leaf(Kind::AsyncAnnotation, "async".to_owned()));
-                    } else {
-                        self.next_if(b'b');
-                    }
-                }
-                _ => break,
-            }
-        }
+        let annotations: Vec<NodeRef> = self.consume_function_annotations();
         if !self.next_if(b'c') {
             self.restore(cp);
             return None;
@@ -554,6 +585,74 @@ impl<'a> Demangler<'a> {
         ];
         children.extend(annotations);
         Some(Node::branch(Kind::FunctionType, children))
+    }
+
+    fn consume_function_annotations(&mut self) -> Vec<NodeRef> {
+        let mut annotations: Vec<NodeRef> = Vec::new();
+        loop {
+            if self.next_if(b'K') {
+                annotations.push(Node::leaf(Kind::ThrowsAnnotation, "throws".to_owned()));
+                continue;
+            }
+            if self.peek() == Some(b'Y') {
+                match self.peek_at(1) {
+                    Some(b'a') => {
+                        self.pos += 2;
+                        annotations.push(Node::leaf(Kind::AsyncAnnotation, "async".to_owned()));
+                        continue;
+                    }
+                    Some(b'b') => {
+                        self.pos += 2;
+                        continue;
+                    }
+                    Some(b'A') => {
+                        self.pos += 2;
+                        annotations.push(Node::branch(Kind::IsolatedAnyAnnotation, Vec::new()));
+                        continue;
+                    }
+                    Some(b'C') => {
+                        self.pos += 2;
+                        annotations
+                            .push(Node::branch(Kind::NonisolatedCallerAnnotation, Vec::new()));
+                        continue;
+                    }
+                    Some(b'T') => {
+                        self.pos += 2;
+                        annotations.push(Node::branch(Kind::SendingResultAnnotation, Vec::new()));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            match self.try_demangle_type_prefixed_function_annotation() {
+                Some(node) => annotations.push(node),
+                None => break,
+            }
+        }
+        annotations
+    }
+
+    fn try_demangle_type_prefixed_function_annotation(&mut self) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let ty: NodeRef = self.try_demangle_type()?;
+        if self.peek() != Some(b'Y') {
+            self.restore(cp);
+            return None;
+        }
+        match self.peek_at(1) {
+            Some(b'c') => {
+                self.pos += 2;
+                Some(Node::unary(Kind::GlobalActorAnnotation, ty))
+            }
+            Some(b'K') => {
+                self.pos += 2;
+                Some(Node::unary(Kind::TypedThrowsAnnotation, ty))
+            }
+            _ => {
+                self.restore(cp);
+                None
+            }
+        }
     }
 
     fn demangle_result_type_no_funckind(&mut self) -> Option<NodeRef> {
@@ -570,6 +669,9 @@ impl<'a> Demangler<'a> {
     fn demangle_named_entity_spec(&mut self, context: NodeRef, name: NodeRef) -> NodeRef {
         self.add_substitution(&name);
         let name: NodeRef = self.maybe_operator_name(name);
+        if let Some(node) = self.try_demangle_macro_expansion(&context, &name) {
+            return node;
+        }
         if let Some(c) = self.peek()
             && matches!(c, b'C' | b'V' | b'O' | b'a')
         {
@@ -605,6 +707,47 @@ impl<'a> Demangler<'a> {
         } else {
             func
         }
+    }
+
+    fn try_demangle_macro_expansion(
+        &mut self,
+        context: &NodeRef,
+        attached_name: &NodeRef,
+    ) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let macro_name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
+        if !(self.next_if(b'f') && self.next_if(b'M')) {
+            self.restore(cp);
+            return None;
+        }
+        let role: &'static str = match self.next() {
+            Some(b'a') => "accessor",
+            Some(b'r') => "memberAttribute",
+            Some(b'm') => "member",
+            Some(b'p') => "peer",
+            Some(b'c') => "conformance",
+            Some(b'e') => "extension",
+            Some(b'q') => "preamble",
+            Some(b'b') => "body",
+            _ => {
+                self.restore(cp);
+                return None;
+            }
+        };
+        let discriminator: u32 = self.demangle_natural();
+        Some(Node::branch_with_text(
+            Kind::MacroExpansion,
+            role.to_owned(),
+            vec![
+                context.clone(),
+                attached_name.clone(),
+                macro_name,
+                Node::leaf(
+                    Kind::Identifier,
+                    discriminator.saturating_add(1).to_string(),
+                ),
+            ],
+        ))
     }
 
     fn consume_function_terminator(&mut self) -> bool {
@@ -684,12 +827,57 @@ impl<'a> Demangler<'a> {
                     self.pos += 1;
                     self.demangle_value_witness(node.clone())
                 }
-                _ => None,
+                _ => self.try_demangle_specialization(&node),
             };
             match consumed {
                 Some(next) => node = next,
                 None => return Some(node),
             }
+        }
+    }
+
+    fn try_demangle_specialization(&mut self, base: &NodeRef) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let mut params: Vec<NodeRef> = Vec::new();
+        while let Some(ty) = self.try_demangle_type() {
+            params.push(ty);
+            if !self.next_if(b'_') {
+                break;
+            }
+        }
+        if params.is_empty() || !self.next_if(b'T') {
+            self.restore(cp);
+            return None;
+        }
+        let Some(desc): Option<&'static str> = self.demangle_specialization_kind() else {
+            self.restore(cp);
+            return None;
+        };
+        self.next_if(b'q');
+        self.next_if(b'a');
+        self.next_if(b'r');
+        if !self.peek().is_some_and(|c: u8| c.is_ascii_digit()) {
+            self.restore(cp);
+            return None;
+        }
+        let _pass_id: u32 = self.demangle_natural();
+        let mut children: Vec<NodeRef> = Vec::with_capacity(params.len() + 1);
+        children.push(base.clone());
+        children.extend(params);
+        Some(Node::branch_with_text(
+            Kind::GenericSpecialization,
+            desc.to_owned(),
+            children,
+        ))
+    }
+
+    fn demangle_specialization_kind(&mut self) -> Option<&'static str> {
+        match self.next()? {
+            b'g' | b'B' => Some("generic specialization"),
+            b'G' => Some("generic specialization (not reabstracted)"),
+            b's' => Some("generic pre-specialization"),
+            b'i' => Some("inlined generic function"),
+            _ => None,
         }
     }
 
@@ -705,6 +893,7 @@ impl<'a> Demangler<'a> {
             b'F' => Node::unary(Kind::ReflectionMetadataFieldDescriptor, base),
             b'o' => Node::unary(Kind::ClassMetadataBaseOffset, base),
             b'P' => Node::unary(Kind::GenericTypeMetadataPattern, base),
+            b'V' => Node::unary(Kind::PropertyDescriptor, base),
             b'L' | b'K' | b'I' | b'i' | b'r' | b'u' | b'U' | b'C' | b'B' | b'l' | b'z' | b'J'
             | b'N' | b'q' => Node::unary(Kind::TypeMetadata, base),
             b'X' => {
@@ -730,7 +919,8 @@ impl<'a> Demangler<'a> {
                 Node::unary(Kind::FieldOffset, base)
             }
             b'C' => Node::unary(Kind::EnumCase, base),
-            b'a' | b'G' | b'I' | b'l' | b'L' | b'S' | b'b' | b'T' | b't' | b'r' | b'O' => {
+            b'S' => Node::unary(Kind::ProtocolSelfConformanceWitnessTable, base),
+            b'a' | b'G' | b'I' | b'l' | b'L' | b'b' | b'T' | b't' | b'r' | b'O' => {
                 Node::unary(Kind::ProtocolWitnessTable, base)
             }
             _ => return None,
@@ -750,7 +940,8 @@ impl<'a> Demangler<'a> {
             b'q' => Some(Node::unary(Kind::MethodDescriptor, base)),
             b'j' => Some(Node::unary(Kind::DispatchThunk, base)),
             b'L' => Some(Node::unary(Kind::ProtocolRequirementsBaseDescriptor, base)),
-            b'D' | b'd' | b'O' | b'o' | b'V' | b'I' | b'X' | b'u' | b'E' | b'F' | b'c' | b'm' => {
+            b'u' => Some(Node::unary(Kind::AsyncFunctionPointer, base)),
+            b'D' | b'd' | b'O' | b'o' | b'V' | b'I' | b'X' | b'E' | b'F' | b'c' | b'm' => {
                 Some(base)
             }
             _ => {
@@ -945,6 +1136,9 @@ impl<'a> Demangler<'a> {
         let context: NodeRef = extension.unwrap_or(protocol);
         match self.peek() {
             Some(c) if c.is_ascii_digit() => {
+                if let Some(node) = self.try_demangle_anonymous_entity(&context) {
+                    return Some(node);
+                }
                 let name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
                 Some(self.demangle_named_entity_spec(context, name))
             }
@@ -1053,6 +1247,7 @@ impl<'a> Demangler<'a> {
             b's' => {
                 self.pos += 1;
                 let module: NodeRef = Node::leaf(Kind::Module, "Swift".to_owned());
+                self.add_substitution(&module);
                 self.demangle_protocol_in_context(module)
             }
             c if c.is_ascii_digit() => {
@@ -1086,7 +1281,11 @@ impl<'a> Demangler<'a> {
                 self.pos += 1;
                 Node::leaf(Kind::Module, "Swift".to_owned())
             }
-            c if c.is_ascii_digit() => self.demangle_identifier(Kind::Module)?,
+            c if c.is_ascii_digit() => {
+                let module: NodeRef = self.demangle_identifier(Kind::Module)?;
+                self.add_substitution(&module);
+                module
+            }
             _ => return None,
         };
         if !self.next_if(b'E') {
@@ -1295,7 +1494,7 @@ impl<'a> Demangler<'a> {
     }
 
     fn demangle_label_list(&mut self) -> Option<NodeRef> {
-        if self.next_if(b'y') {
+        if self.pending_substitutions.is_empty() && self.next_if(b'y') {
             return Some(Node::branch(Kind::LabelList, Vec::new()));
         }
         let mut labels: Vec<NodeRef> = Vec::new();
@@ -1345,24 +1544,7 @@ impl<'a> Demangler<'a> {
     fn demangle_function_signature_with(&mut self, single_result: bool) -> Option<NodeRef> {
         let result: NodeRef = self.demangle_result_type(single_result)?;
         let params: NodeRef = self.demangle_params()?;
-        let mut annotations: Vec<NodeRef> = Vec::new();
-        loop {
-            match self.peek() {
-                Some(b'K') => {
-                    self.pos += 1;
-                    annotations.push(Node::leaf(Kind::ThrowsAnnotation, "throws".to_owned()));
-                }
-                Some(b'Y') => {
-                    self.pos += 1;
-                    if self.next_if(b'a') {
-                        annotations.push(Node::leaf(Kind::AsyncAnnotation, "async".to_owned()));
-                    } else {
-                        self.next_if(b'b');
-                    }
-                }
-                _ => break,
-            }
-        }
+        let annotations: Vec<NodeRef> = self.consume_function_annotations();
         let mut children: Vec<NodeRef> = vec![
             Node::unary(Kind::ArgumentTuple, params),
             Node::unary(Kind::ReturnType, result),
@@ -1435,37 +1617,35 @@ impl<'a> Demangler<'a> {
                 return Some(first);
             };
             elements.push(element);
-            match self.peek() {
-                Some(b't') => {
-                    self.pos += 1;
-                    return Some(Node::branch(Kind::Tuple, elements));
-                }
-                Some(b'_') => {
-                    self.pos += 1;
-                }
-                _ => {
-                    self.restore(cp);
-                    return Some(first);
-                }
-            }
         }
     }
 
     fn apply_param_flags(&mut self, ty: NodeRef) -> NodeRef {
-        match self.peek() {
-            Some(b'z') => {
-                self.pos += 1;
-                Node::unary(Kind::InOut, ty)
-            }
-            Some(b'h') => {
-                self.pos += 1;
-                Node::unary(Kind::Shared, ty)
-            }
-            Some(b'n') => {
-                self.pos += 1;
-                Node::unary(Kind::Owned, ty)
-            }
-            _ => ty,
+        let mut ty: NodeRef = ty;
+        loop {
+            ty = match self.peek() {
+                Some(b'z') => {
+                    self.pos += 1;
+                    Node::unary(Kind::InOut, ty)
+                }
+                Some(b'h') => {
+                    self.pos += 1;
+                    Node::unary(Kind::Shared, ty)
+                }
+                Some(b'n') => {
+                    self.pos += 1;
+                    Node::unary(Kind::Owned, ty)
+                }
+                Some(b'd') => {
+                    self.pos += 1;
+                    Node::unary(Kind::Variadic, ty)
+                }
+                Some(b'Y') if self.peek_at(1) == Some(b'i') => {
+                    self.pos += 2;
+                    Node::unary(Kind::Isolated, ty)
+                }
+                _ => return ty,
+            };
         }
     }
 
@@ -1487,7 +1667,11 @@ impl<'a> Demangler<'a> {
         self.suppress_result_function = false;
         if !self.pending_substitutions.is_empty() {
             let node: NodeRef = self.pending_substitutions.remove(0);
-            return self.apply_type_suffixes(node);
+            return if suppress_funckind {
+                self.apply_type_suffixes_no_funckind(node)
+            } else {
+                self.apply_type_suffixes(node)
+            };
         }
         if self.peek() == Some(b'y') {
             match self.peek_at(1) {
@@ -1521,14 +1705,13 @@ impl<'a> Demangler<'a> {
             return self.apply_type_suffixes(tuple);
         }
         let base: NodeRef = self.demangle_type_base()?;
-        let restore_result: bool = self.suppress_result_function;
         self.suppress_result_function = suppress_result_fn;
         let suffixed: Option<NodeRef> = if suppress_funckind {
             self.apply_type_suffixes_no_funckind(base)
         } else {
             self.apply_type_suffixes(base)
         };
-        self.suppress_result_function = restore_result;
+        self.suppress_result_function = suppress_result_fn;
         suffixed
     }
 
@@ -1581,33 +1764,15 @@ impl<'a> Demangler<'a> {
             self.restore(cp);
             return None;
         }
-        let restore_suppress: bool = self.suppress_tuple;
-        self.suppress_tuple = true;
-        let params: Option<NodeRef> = self.demangle_type();
-        self.suppress_tuple = restore_suppress;
+        let params: Option<NodeRef> = self.demangle_params();
         if let Some(params) = params {
-            let mut throws: bool = false;
-            let mut is_async: bool = false;
-            loop {
-                match self.peek() {
-                    Some(b'K') => {
-                        self.pos += 1;
-                        throws = true;
-                    }
-                    Some(b'Y') => {
-                        self.pos += 1;
-                        if self.next_if(b'a') {
-                            is_async = true;
-                        } else {
-                            self.next_if(b'b');
-                        }
-                    }
-                    _ => break,
-                }
-            }
+            let annotations: Vec<NodeRef> = self.consume_function_annotations();
             if let Some(convention) = self.consume_extended_function_kind() {
                 return Some(make_function_type_full(
-                    params, result, convention, throws, is_async,
+                    params,
+                    result,
+                    convention,
+                    annotations,
                 ));
             }
         }
@@ -1616,7 +1781,10 @@ impl<'a> Demangler<'a> {
     }
 
     fn try_demangle_top_level_tuple(&mut self) -> Option<NodeRef> {
-        if !matches!(self.peek(), Some(b'S' | b's' | b'B' | b'A' | b'x' | b'q')) {
+        if !matches!(
+            self.peek(),
+            Some(b'S' | b's' | b'B' | b'A' | b'x' | b'q' | b'y' | b'Q' | b'0'..=b'9')
+        ) {
             return None;
         }
         if self.peek() == Some(b'S') && self.peek_at(1).is_some_and(|d: u8| d.is_ascii_digit()) {
@@ -1701,6 +1869,19 @@ impl<'a> Demangler<'a> {
                 Some(make_generic_param(depth, idx))
             }
             b'B' => self.demangle_builtin_type(),
+            b'Q' => self.demangle_opaque_return_type(),
+            _ => None,
+        }
+    }
+
+    fn demangle_opaque_return_type(&mut self) -> Option<NodeRef> {
+        self.pos += 1;
+        match self.next()? {
+            b'r' => Some(Node::branch(Kind::OpaqueReturnType, Vec::new())),
+            b'R' => {
+                let _ordinal: u32 = self.demangle_index()?;
+                Some(Node::branch(Kind::OpaqueReturnType, Vec::new()))
+            }
             _ => None,
         }
     }
@@ -1829,6 +2010,10 @@ impl<'a> Demangler<'a> {
                     }
                     _ => break,
                 },
+                Some(b'Y') if self.peek_at(1) == Some(b'u') => {
+                    self.pos += 2;
+                    node = Node::unary(Kind::Sending, node);
+                }
                 Some(b'A' | b's' | b'0'..=b'9')
                     if is_context_kind(node.kind) && self.peek_is_type_extension() =>
                 {
@@ -1902,33 +2087,15 @@ impl<'a> Demangler<'a> {
 
     fn try_demangle_function_from_result(&mut self, result: NodeRef) -> Option<NodeRef> {
         let cp: Checkpoint = self.checkpoint();
-        let restore_suppress: bool = self.suppress_tuple;
-        self.suppress_tuple = true;
-        let arg: Option<NodeRef> = self.demangle_type();
-        self.suppress_tuple = restore_suppress;
+        let arg: Option<NodeRef> = self.demangle_params();
         if let Some(arg) = arg {
-            let mut throws: bool = false;
-            let mut is_async: bool = false;
-            loop {
-                match self.peek() {
-                    Some(b'K') => {
-                        self.pos += 1;
-                        throws = true;
-                    }
-                    Some(b'Y') => {
-                        self.pos += 1;
-                        if self.next_if(b'a') {
-                            is_async = true;
-                        } else {
-                            self.next_if(b'b');
-                        }
-                    }
-                    _ => break,
-                }
-            }
+            let annotations: Vec<NodeRef> = self.consume_function_annotations();
             if let Some(convention) = self.consume_extended_function_kind() {
                 return Some(make_function_type_full(
-                    arg, result, convention, throws, is_async,
+                    arg,
+                    result,
+                    convention,
+                    annotations,
                 ));
             }
         }
@@ -1939,29 +2106,14 @@ impl<'a> Demangler<'a> {
     fn try_demangle_empty_param_function(&mut self, result: NodeRef) -> Option<NodeRef> {
         let cp: Checkpoint = self.checkpoint();
         self.pos += 1;
-        let mut throws: bool = false;
-        let mut is_async: bool = false;
-        loop {
-            match self.peek() {
-                Some(b'K') => {
-                    self.pos += 1;
-                    throws = true;
-                }
-                Some(b'Y') => {
-                    self.pos += 1;
-                    if self.next_if(b'a') {
-                        is_async = true;
-                    } else {
-                        self.next_if(b'b');
-                    }
-                }
-                _ => break,
-            }
-        }
+        let annotations: Vec<NodeRef> = self.consume_function_annotations();
         if let Some(convention) = self.consume_extended_function_kind() {
             let params: NodeRef = Node::branch(Kind::Tuple, Vec::new());
             return Some(make_function_type_full(
-                params, result, convention, throws, is_async,
+                params,
+                result,
+                convention,
+                annotations,
             ));
         }
         self.restore(cp);
@@ -2352,10 +2504,15 @@ impl<'a> Demangler<'a> {
                 _ => {
                     if constraint.is_some() {
                         let cp: Checkpoint = self.checkpoint();
-                        if let Some(name) = self.demangle_identifier(Kind::Identifier)
-                            && self.peek() == Some(b'R')
-                        {
-                            associated_name = Some(name);
+                        let candidate: Option<NodeRef> = match self.peek() {
+                            Some(c) if c.is_ascii_digit() => {
+                                self.demangle_identifier(Kind::Identifier)
+                            }
+                            Some(b'A') => self.demangle_substitution(),
+                            _ => None,
+                        };
+                        if candidate.is_some() && self.peek() == Some(b'R') {
+                            associated_name = candidate;
                             continue;
                         }
                         self.restore(cp);
@@ -2380,6 +2537,13 @@ impl<'a> Demangler<'a> {
     fn demangle_constraint(&mut self) -> Option<NodeRef> {
         match self.peek()? {
             b'0'..=b'9' => {
+                let cp: Checkpoint = self.checkpoint();
+                if self.demangle_identifier(Kind::Identifier).is_some() && self.peek() == Some(b'Q')
+                {
+                    self.restore(cp);
+                    return self.demangle_type();
+                }
+                self.restore(cp);
                 let module: NodeRef = self.demangle_identifier(Kind::Module)?;
                 self.add_substitution(&module);
                 self.demangle_constraint_in_context(module)
@@ -2391,6 +2555,9 @@ impl<'a> Demangler<'a> {
             }
             b'A' => {
                 let base: NodeRef = self.demangle_substitution()?;
+                if self.peek() == Some(b'Q') {
+                    return self.demangle_associated_type_standalone(base);
+                }
                 if matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
                     self.demangle_protocol_in_context(base)
                 } else {
@@ -2502,6 +2669,22 @@ impl<'a> Demangler<'a> {
                 Some(Node::branch(
                     Kind::DependentGenericConformanceRequirement,
                     vec![member, lhs],
+                ))
+            }
+            b'S' if self.peek_at(1) == Some(b'A') => {
+                self.pos += 1;
+                let rhs: NodeRef = self.demangle_substitution()?;
+                Some(Node::branch(
+                    Kind::DependentGenericSameTypeRequirement,
+                    vec![rhs, lhs],
+                ))
+            }
+            b'B' if self.peek_at(1) == Some(b'A') => {
+                self.pos += 1;
+                let rhs: NodeRef = self.demangle_substitution()?;
+                Some(Node::branch(
+                    Kind::DependentGenericConformanceRequirement,
+                    vec![rhs, lhs],
                 ))
             }
             _ => {
@@ -3006,10 +3189,9 @@ fn make_function_type_full(
     params: NodeRef,
     result: NodeRef,
     convention: FunctionConvention,
-    throws: bool,
-    is_async: bool,
+    annotations: Vec<NodeRef>,
 ) -> NodeRef {
-    let mut children: Vec<NodeRef> = Vec::with_capacity(5);
+    let mut children: Vec<NodeRef> = Vec::with_capacity(3 + annotations.len());
     if let Some(annotation) = convention.annotation() {
         children.push(Node::leaf(
             Kind::ConventionAnnotation,
@@ -3018,12 +3200,7 @@ fn make_function_type_full(
     }
     children.push(Node::unary(Kind::ArgumentTuple, params));
     children.push(Node::unary(Kind::ReturnType, result));
-    if is_async {
-        children.push(Node::leaf(Kind::AsyncAnnotation, "async".to_owned()));
-    }
-    if throws {
-        children.push(Node::leaf(Kind::ThrowsAnnotation, "throws".to_owned()));
-    }
+    children.extend(annotations);
     Node::branch(Kind::FunctionType, children)
 }
 
@@ -3305,7 +3482,73 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::FieldOffset => format!("field offset for {}", print_child(node, 0)),
         Kind::MethodDescriptor => format!("method descriptor for {}", print_child(node, 0)),
         Kind::ModuleDescriptor => format!("module descriptor {}", print_child(node, 0)),
+        Kind::ProtocolSelfConformanceWitnessTable => {
+            format!(
+                "protocol self-conformance witness table for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::PropertyDescriptor => format!("property descriptor for {}", print_child(node, 0)),
+        Kind::GenericSpecialization => print_generic_specialization(node),
+        Kind::IsolatedAnyAnnotation => "@isolated(any) ".to_owned(),
+        Kind::GlobalActorAnnotation => format!("@{} ", print_child(node, 0)),
+        Kind::NonisolatedCallerAnnotation => "nonisolated(nonsending) ".to_owned(),
+        Kind::TypedThrowsAnnotation => format!(" throws({})", print_child(node, 0)),
+        Kind::SendingResultAnnotation => "sending ".to_owned(),
+        Kind::Isolated => format!("isolated {}", print_child(node, 0)),
+        Kind::Sending => format!("sending {}", print_child(node, 0)),
+        Kind::Variadic => format!("{}...", print_child(node, 0)),
+        Kind::OpaqueReturnType => "some".to_owned(),
+        Kind::MacroExpansion => print_macro_expansion(node),
+        Kind::AsyncFunctionPointer => {
+            format!("async function pointer to {}", print_child(node, 0))
+        }
     }
+}
+
+fn print_generic_specialization(node: &Node) -> String {
+    let desc: &str = node.text.as_deref().unwrap_or("generic specialization");
+    let Some(base): Option<&NodeRef> = node.children.first() else {
+        return desc.to_owned();
+    };
+    let params: Vec<String> = node
+        .children
+        .iter()
+        .skip(1)
+        .map(|c: &NodeRef| print_node(c, Mode::Type))
+        .collect();
+    format!(
+        "{desc} <{}> of {}",
+        params.join(", "),
+        print_node(base, Mode::Symbol)
+    )
+}
+
+fn print_macro_expansion(node: &Node) -> String {
+    let role: &str = node.text.as_deref().unwrap_or("macro");
+    let context: String = node
+        .children
+        .first()
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let attached_name: String = node
+        .children
+        .get(1)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let macro_name: String = node
+        .children
+        .get(2)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let discriminator: &str = node
+        .children
+        .get(3)
+        .and_then(|c: &NodeRef| c.text.as_deref())
+        .unwrap_or("1");
+    let entity: String = if context.is_empty() {
+        attached_name
+    } else {
+        format!("{context}.{attached_name}")
+    };
+    format!("{entity} {role} macro @{macro_name} expansion #{discriminator}")
 }
 
 fn entity_path(node: &Node) -> String {
@@ -3529,19 +3772,12 @@ fn print_function_type_with_labels(node: &Node, labels: Option<&NodeRef>) -> Str
             |c: &NodeRef| print_argument_tuple_with_labels(c, &label_list.children),
         );
     let trailing: String = function_type_trailing(node);
-    format!("{args}{trailing}")
+    let prefix: String = function_type_isolation_prefix(node);
+    format!("{prefix}{args}{trailing}")
 }
 
 fn function_type_trailing(node: &Node) -> String {
-    let ret: String = node
-        .children
-        .iter()
-        .find(|c: &&NodeRef| c.kind == Kind::ReturnType)
-        .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Type));
-    let throws: bool = node
-        .children
-        .iter()
-        .any(|c: &NodeRef| c.kind == Kind::ThrowsAnnotation);
+    let ret: String = function_type_return(node);
     let is_async: bool = node
         .children
         .iter()
@@ -3550,10 +3786,72 @@ fn function_type_trailing(node: &Node) -> String {
     if is_async {
         middle.push_str(" async");
     }
-    if throws {
-        middle.push_str(" throws");
-    }
+    middle.push_str(&function_type_throws_clause(node));
     format!("{middle} -> {ret}")
+}
+
+fn function_type_isolation_prefix(node: &Node) -> String {
+    let mut prefix: String = String::new();
+    if node
+        .children
+        .iter()
+        .any(|c: &NodeRef| c.kind == Kind::IsolatedAnyAnnotation)
+    {
+        prefix.push_str("@isolated(any) ");
+    }
+    if node
+        .children
+        .iter()
+        .any(|c: &NodeRef| c.kind == Kind::NonisolatedCallerAnnotation)
+    {
+        prefix.push_str("nonisolated(nonsending) ");
+    }
+    if let Some(actor) = node
+        .children
+        .iter()
+        .find(|c: &&NodeRef| c.kind == Kind::GlobalActorAnnotation)
+    {
+        prefix.push_str(&print_node(actor, Mode::Type));
+    }
+    prefix
+}
+
+fn function_type_throws_clause(node: &Node) -> String {
+    let typed: Option<&NodeRef> = node
+        .children
+        .iter()
+        .find(|c: &&NodeRef| c.kind == Kind::TypedThrowsAnnotation);
+    let bare_throws: bool = node
+        .children
+        .iter()
+        .any(|c: &NodeRef| c.kind == Kind::ThrowsAnnotation);
+    typed.map_or_else(
+        || {
+            if bare_throws {
+                " throws".to_owned()
+            } else {
+                String::new()
+            }
+        },
+        |t: &NodeRef| print_node(t, Mode::Type),
+    )
+}
+
+fn function_type_return(node: &Node) -> String {
+    let ret: String = node
+        .children
+        .iter()
+        .find(|c: &&NodeRef| c.kind == Kind::ReturnType)
+        .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Type));
+    if node
+        .children
+        .iter()
+        .any(|c: &NodeRef| c.kind == Kind::SendingResultAnnotation)
+    {
+        format!("sending {ret}")
+    } else {
+        ret
+    }
 }
 
 fn print_argument_tuple_with_labels(node: &Node, labels: &[NodeRef]) -> String {
@@ -3629,15 +3927,7 @@ fn print_function_type(node: &Node) -> String {
         .iter()
         .find(|c: &&NodeRef| c.kind == Kind::ArgumentTuple)
         .map_or_else(|| "()".to_owned(), |c: &NodeRef| print_node(c, Mode::Type));
-    let ret: String = node
-        .children
-        .iter()
-        .find(|c: &&NodeRef| c.kind == Kind::ReturnType)
-        .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Type));
-    let throws: bool = node
-        .children
-        .iter()
-        .any(|c: &NodeRef| c.kind == Kind::ThrowsAnnotation);
+    let ret: String = function_type_return(node);
     let is_async: bool = node
         .children
         .iter()
@@ -3647,14 +3937,13 @@ fn print_function_type(node: &Node) -> String {
         .iter()
         .find(|c: &&NodeRef| c.kind == Kind::ConventionAnnotation)
         .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Type));
+    let prefix: String = function_type_isolation_prefix(node);
     let mut middle: String = String::new();
     if is_async {
         middle.push_str(" async");
     }
-    if throws {
-        middle.push_str(" throws");
-    }
-    format!("{convention}{args}{middle} -> {ret}")
+    middle.push_str(&function_type_throws_clause(node));
+    format!("{convention}{prefix}{args}{middle} -> {ret}")
 }
 
 fn print_argument_tuple(node: &Node) -> String {
