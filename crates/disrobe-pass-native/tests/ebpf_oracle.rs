@@ -6,14 +6,7 @@ use std::process::Command;
 use disrobe_pass_native::{EbpfRecovery, recover_ebpf_program};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
-fn clang_supports_bpf(path: &Path) -> bool {
-    let Ok(output) = Command::new(path).arg("-print-targets").output() else {
-        return false;
-    };
-    output.status.success() && String::from_utf8_lossy(&output.stdout).contains("bpf")
-}
-
-fn find_bpf_clang() -> Option<PathBuf> {
+fn clang_candidates() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = vec![PathBuf::from("clang")];
     if let Ok(program_files) = std::env::var("ProgramFiles") {
         candidates.push(
@@ -30,8 +23,50 @@ fn find_bpf_clang() -> Option<PathBuf> {
     }
     candidates.push(PathBuf::from("/usr/bin/clang"));
     candidates
+}
+
+fn clang_supports_bpf(path: &Path) -> bool {
+    let Ok(output) = Command::new(path).arg("-print-targets").output() else {
+        return false;
+    };
+    output.status.success() && String::from_utf8_lossy(&output.stdout).contains("bpf")
+}
+
+fn clang_invokes(path: &Path) -> bool {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output: std::process::Output| output.status.success())
+}
+
+fn find_bpf_clang() -> Option<PathBuf> {
+    clang_candidates()
         .into_iter()
         .find(|c: &PathBuf| clang_supports_bpf(c))
+}
+
+fn find_host_clang() -> Option<PathBuf> {
+    clang_candidates()
+        .into_iter()
+        .find(|c: &PathBuf| clang_invokes(c))
+}
+
+fn compile_host_object(clang: &Path, dir: &Path, name: &str, source: &str) -> PathBuf {
+    let c_path: PathBuf = dir.join(format!("{name}.c"));
+    std::fs::write(&c_path, source).expect("write recovered source");
+    let o_path: PathBuf = dir.join(format!("{name}.o"));
+    let status = Command::new(clang)
+        .arg("-c")
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&o_path)
+        .status()
+        .expect("invoke host clang");
+    assert!(
+        status.success(),
+        "host clang failed to compile the recovered source for {name}"
+    );
+    o_path
 }
 
 fn compile_bpf(clang: &Path, dir: &Path, name: &str, opt: &str, source: &str) -> PathBuf {
@@ -419,4 +454,47 @@ fn ebpf_oracle_battery() {
         loop_expected, loop_native,
         "bounded-loop differential execution must match the interpreted original bytecode"
     );
+}
+
+#[test]
+fn ebpf_degraded_marker_functions_compile_on_host() {
+    let Some(clang) = find_host_clang() else {
+        eprintln!("skipping ebpf marker-compile check: no invocable host clang was found");
+        return;
+    };
+    let dir = tempfile::tempdir().expect("scratch dir");
+
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(&[0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    bytes.extend_from_slice(&[0x85, 0x50, 0x00, 0x00, 0x2a, 0x00, 0x00, 0x00]);
+    bytes.extend_from_slice(&[0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+    let recovery: EbpfRecovery =
+        recover_ebpf_program(&bytes, "prog").expect("recover degraded program");
+    assert!(
+        recovery.source.contains("ebpf_unrecognized_opcode_0xff("),
+        "expected an unrecognized-opcode marker call in the recovered source: {}",
+        recovery.source
+    );
+    assert!(
+        recovery.source.contains("call_unknown_src5_42("),
+        "expected an unknown-call-source marker call in the recovered source: {}",
+        recovery.source
+    );
+    assert!(
+        recovery
+            .source
+            .contains("extern void ebpf_unrecognized_opcode_0xff("),
+        "expected an extern declaration for the unrecognized-opcode marker: {}",
+        recovery.source
+    );
+    assert!(
+        recovery
+            .source
+            .contains("extern uint64_t call_unknown_src5_42("),
+        "expected an extern declaration for the unknown-call-source marker: {}",
+        recovery.source
+    );
+
+    compile_host_object(&clang, dir.path(), "markers", &recovery.source);
 }

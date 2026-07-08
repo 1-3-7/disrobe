@@ -178,32 +178,23 @@ enum EReg {
     R8,
     R9,
     R10,
-    R11,
-    R12,
-    R13,
-    R14,
-    R15,
 }
 
 impl EReg {
-    const fn from_nibble(n: u8) -> Self {
-        match n & 0x0f {
-            0 => Self::R0,
-            1 => Self::R1,
-            2 => Self::R2,
-            3 => Self::R3,
-            4 => Self::R4,
-            5 => Self::R5,
-            6 => Self::R6,
-            7 => Self::R7,
-            8 => Self::R8,
-            9 => Self::R9,
-            10 => Self::R10,
-            11 => Self::R11,
-            12 => Self::R12,
-            13 => Self::R13,
-            14 => Self::R14,
-            _ => Self::R15,
+    const fn from_nibble(n: u8) -> Option<Self> {
+        match n {
+            0 => Some(Self::R0),
+            1 => Some(Self::R1),
+            2 => Some(Self::R2),
+            3 => Some(Self::R3),
+            4 => Some(Self::R4),
+            5 => Some(Self::R5),
+            6 => Some(Self::R6),
+            7 => Some(Self::R7),
+            8 => Some(Self::R8),
+            9 => Some(Self::R9),
+            10 => Some(Self::R10),
+            _ => None,
         }
     }
 
@@ -220,11 +211,6 @@ impl EReg {
             Self::R8 => "r8",
             Self::R9 => "r9",
             Self::R10 => "r10",
-            Self::R11 => "r11",
-            Self::R12 => "r12",
-            Self::R13 => "r13",
-            Self::R14 => "r14",
-            Self::R15 => "r15",
         }
     }
 }
@@ -475,18 +461,28 @@ fn lower(raw: &[RawInsn]) -> Vec<Option<LoweredInsn>> {
         if cls == CLASS_LD && mem_mode(insn.opcode) == MODE_IMM && mem_size_bits(insn.opcode) == 3 {
             if i + 1 < raw.len() {
                 let hi: RawInsn = raw[i + 1];
-                let dst: EReg = EReg::from_nibble(insn.dst_reg);
-                let value: u64 = u64::from(insn.imm as u32) | (u64::from(hi.imm as u32) << 32);
-                let lowered: LoweredInsn = if insn.src_reg == PSEUDO_MAP_FD {
-                    LoweredInsn::MapFdLoad {
-                        dst,
-                        fd: insn.imm as u32,
+                let second_slot_well_formed: bool =
+                    hi.opcode == 0 && hi.dst_reg == 0 && hi.src_reg == 0 && hi.off == 0;
+                match (EReg::from_nibble(insn.dst_reg), second_slot_well_formed) {
+                    (Some(dst), true) => {
+                        let value: u64 =
+                            u64::from(insn.imm as u32) | (u64::from(hi.imm as u32) << 32);
+                        let lowered: LoweredInsn = if insn.src_reg == PSEUDO_MAP_FD {
+                            LoweredInsn::MapFdLoad {
+                                dst,
+                                fd: insn.imm as u32,
+                            }
+                        } else {
+                            LoweredInsn::LoadImm64 { dst, value }
+                        };
+                        out.push(Some(lowered));
+                        out.push(None);
                     }
-                } else {
-                    LoweredInsn::LoadImm64 { dst, value }
-                };
-                out.push(Some(lowered));
-                out.push(None);
+                    _ => {
+                        out.push(Some(LoweredInsn::Unknown { raw: insn }));
+                        out.push(Some(LoweredInsn::Unknown { raw: hi }));
+                    }
+                }
                 i += 2;
                 continue;
             }
@@ -501,8 +497,12 @@ fn lower(raw: &[RawInsn]) -> Vec<Option<LoweredInsn>> {
 }
 
 fn lower_single(insn: RawInsn) -> LoweredInsn {
-    let dst: EReg = EReg::from_nibble(insn.dst_reg);
-    let src_reg: EReg = EReg::from_nibble(insn.src_reg);
+    let (Some(dst), Some(src_reg)): (Option<EReg>, Option<EReg>) = (
+        EReg::from_nibble(insn.dst_reg),
+        EReg::from_nibble(insn.src_reg),
+    ) else {
+        return LoweredInsn::Unknown { raw: insn };
+    };
     match insn_class(insn.opcode) {
         CLASS_ALU => lower_alu(insn, dst, src_reg, false),
         CLASS_ALU64 => lower_alu(insn, dst, src_reg, true),
@@ -1203,6 +1203,8 @@ struct BuildReport {
     map_fds: Vec<u32>,
     pseudo_targets: Vec<i64>,
     kfunc_ids: Vec<u32>,
+    unknown_call_sources: Vec<(u8, i32)>,
+    out_of_bounds_jumps: Vec<usize>,
 }
 
 enum SlotEffect {
@@ -1247,7 +1249,10 @@ fn call_stmt(
             report.kfunc_ids.push(*id);
             format!("kfunc_{id}")
         }
-        CallKind::Unknown(sr, imm) => format!("call_unknown_src{sr}_{imm}"),
+        CallKind::Unknown(sr, imm) => {
+            report.unknown_call_sources.push((*sr, *imm));
+            format!("call_unknown_src{sr}_{imm}")
+        }
     };
     let call: CExpr = call_expr(interner, &name, args);
     let dst_ident: CExpr = reg_ident(interner, EReg::R0);
@@ -1419,14 +1424,6 @@ fn build_blocks(
     }
     let sink_block: usize = block_count;
 
-    let resolve = |target: i64| -> usize {
-        let c: usize = clip(target, len);
-        if c >= len {
-            sink_block
-        } else {
-            slot_to_block[c]
-        }
-    };
     let resolve_slot = |slot: usize| -> usize {
         if slot >= len {
             sink_block
@@ -1453,16 +1450,34 @@ fn build_blocks(
         }
         let term: ETerm = match &effects[i] {
             SlotEffect::Exit(e) => ETerm::Return(e.clone()),
-            SlotEffect::Jump(t) => ETerm::Jump(resolve(*t)),
+            SlotEffect::Jump(t) => {
+                let c: usize = clip(*t, len);
+                let target_block: usize = if c >= len {
+                    report.out_of_bounds_jumps.push(i);
+                    sink_block
+                } else {
+                    slot_to_block[c]
+                };
+                ETerm::Jump(target_block)
+            }
             SlotEffect::Branch {
                 cond,
                 taken,
                 fallthrough,
-            } => ETerm::Branch {
-                cond: cond.clone(),
-                taken: resolve(*taken),
-                fallthrough: resolve_slot(*fallthrough),
-            },
+            } => {
+                let ct: usize = clip(*taken, len);
+                let taken_block: usize = if ct >= len {
+                    report.out_of_bounds_jumps.push(i);
+                    sink_block
+                } else {
+                    slot_to_block[ct]
+                };
+                ETerm::Branch {
+                    cond: cond.clone(),
+                    taken: taken_block,
+                    fallthrough: resolve_slot(*fallthrough),
+                }
+            }
             SlotEffect::Stmt(_) | SlotEffect::Nop => ETerm::Jump(resolve_slot(i + 1)),
         };
         let _ = start;
@@ -1903,6 +1918,18 @@ fn assemble_source(
             "extern uint64_t subprog_0x{target:x}(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);"
         );
     }
+    for (sr, imm) in dedup_sorted(report.unknown_call_sources.clone()) {
+        let _ = writeln!(
+            preamble,
+            "extern uint64_t call_unknown_src{sr}_{imm}(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);"
+        );
+    }
+    for opcode in dedup_sorted(report.unknown_opcodes.clone()) {
+        let _ = writeln!(
+            preamble,
+            "extern void ebpf_unrecognized_opcode_0x{opcode:02x}(int64_t, int64_t, int64_t, int64_t);"
+        );
+    }
 
     let param_names: [&str; 5] = ["r1", "r2", "r3", "r4", "r5"];
     let params: Vec<CParam> = param_names
@@ -1957,6 +1984,7 @@ pub struct EbpfRecovery {
     pub unknown_opcodes: Vec<u8>,
     pub unresolved_helper_ids: Vec<u32>,
     pub map_fds: Vec<u32>,
+    pub out_of_bounds_jumps: Vec<usize>,
 }
 
 pub fn recover_ebpf_program(bytes: &[u8], func_name: &str) -> Result<EbpfRecovery> {
@@ -1978,6 +2006,7 @@ pub fn recover_ebpf_program(bytes: &[u8], func_name: &str) -> Result<EbpfRecover
         unknown_opcodes: dedup_sorted(report.unknown_opcodes),
         unresolved_helper_ids: dedup_sorted(report.unresolved_helper_ids),
         map_fds: dedup_sorted(report.map_fds),
+        out_of_bounds_jumps: dedup_sorted(report.out_of_bounds_jumps),
     })
 }
 
@@ -2091,6 +2120,55 @@ mod tests {
                 fd: 3
             })
         ));
+    }
+
+    #[test]
+    fn lddw_with_nonzero_second_slot_opcode_degrades_to_unknown() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&insn(0x18, 1, 0, 0, 0x1122_3344u32 as i32));
+        bytes.extend_from_slice(&insn(0x07, 0, 0, 0, 0x5566_7788u32 as i32));
+        let raw: Vec<RawInsn> = decode_raw(&bytes).expect("decode");
+        let lowered: Vec<Option<LoweredInsn>> = lower(&raw);
+        assert_eq!(lowered.len(), 2);
+        assert!(
+            matches!(lowered[0], Some(LoweredInsn::Unknown { .. })),
+            "malformed second slot must not be silently folded into a 64-bit immediate: {lowered:?}"
+        );
+        assert!(matches!(lowered[1], Some(LoweredInsn::Unknown { .. })));
+
+        let recovery: EbpfRecovery = recover_ebpf_program(&bytes, "prog").expect("recover");
+        assert_eq!(recovery.unknown_opcodes, vec![0x07, 0x18]);
+    }
+
+    #[test]
+    fn register_nibble_above_ten_degrades_to_unknown() {
+        let bytes: [u8; 8] = insn(0xbf, 11, 0, 0, 0);
+        let raw: Vec<RawInsn> = decode_raw(&bytes).expect("decode");
+        assert!(matches!(lower_single(raw[0]), LoweredInsn::Unknown { .. }));
+
+        let recovery: EbpfRecovery = recover_ebpf_program(&bytes, "prog").expect("recover");
+        assert!(recovery.unknown_opcodes.contains(&0xbf));
+        assert!(
+            !recovery.source.contains("r11"),
+            "an out-of-range register nibble must never reach C emission as an identifier: {}",
+            recovery.source
+        );
+    }
+
+    #[test]
+    fn jump_target_outside_instruction_range_is_recorded_in_report() {
+        let bytes: [u8; 8] = insn(0x05, 0, 0, 100, 0);
+        let recovery: EbpfRecovery = recover_ebpf_program(&bytes, "prog").expect("recover");
+        assert_eq!(recovery.out_of_bounds_jumps, vec![0]);
+    }
+
+    #[test]
+    fn branch_target_outside_instruction_range_is_recorded_in_report() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&insn(0x1d, 1, 2, 200, 0));
+        bytes.extend_from_slice(&insn(0x95, 0, 0, 0, 0));
+        let recovery: EbpfRecovery = recover_ebpf_program(&bytes, "prog").expect("recover");
+        assert_eq!(recovery.out_of_bounds_jumps, vec![0]);
     }
 
     #[test]
