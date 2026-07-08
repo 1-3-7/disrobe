@@ -17,6 +17,7 @@
 
 pub mod api_hash;
 pub mod arch;
+pub mod authenticode;
 pub mod backend_export;
 pub mod bindiff;
 #[cfg(feature = "chain")]
@@ -75,6 +76,9 @@ pub use api_hash::{
     resolve_imports_by_hash,
 };
 pub use arch::{Arch, DisasmInsn, Syntax, disassemble, disassemble_x86};
+pub use authenticode::{
+    AuthenticodeReport, AuthenticodeVerdict, CertInfo, TimestampInfo, verify as verify_authenticode,
+};
 pub use backend_export::{
     ExportFormat, RebuildLayout, RebuiltImage, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass,
     SymbolMap, SymbolOrigin, collect_recovered_symbols, collect_recovered_symbols_with_oep,

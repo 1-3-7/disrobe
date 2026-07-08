@@ -43,6 +43,17 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wait-timeout = { workspace = true }
+der = { version = "0.7", features = ["derive", "alloc", "oid"] }
+const-oid = "0.9"
+spki = { version = "0.7", features = ["alloc"] }
+cms = "0.2"
+x509-cert = "0.2"
+rsa = "0.9"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+signature = "2.2"
+sha1 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]

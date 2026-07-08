@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::authenticode::AuthenticodeReport;
+
 const PE_MAGIC: &[u8; 2] = b"MZ";
 const ELF_MAGIC: &[u8; 4] = &[0x7F, b'E', b'L', b'F'];
 const MACHO_LE: &[u8; 4] = &[0xCF, 0xFA, 0xED, 0xFE];
@@ -71,6 +73,8 @@ pub struct IdentityHit {
 pub struct IdentityReport {
     pub format: String,
     pub hits: Vec<IdentityHit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticode: Option<AuthenticodeReport>,
 }
 
 struct ByteSig {
@@ -1047,9 +1051,29 @@ pub fn detect(bytes: &[u8]) -> IdentityReport {
         });
     }
     dedup_hits(&mut hits);
+    let authenticode: Option<AuthenticodeReport> = if format == "pe"
+        && hits
+            .iter()
+            .any(|h: &IdentityHit| h.kind == IdentityKind::Sign)
+    {
+        let report: AuthenticodeReport = crate::authenticode::verify(bytes);
+        for hit in &mut hits {
+            if hit.kind == IdentityKind::Sign {
+                hit.detail = format!(
+                    "{}; Authenticode verdict: {}",
+                    hit.detail,
+                    report.verdict.label()
+                );
+            }
+        }
+        Some(report)
+    } else {
+        None
+    };
     IdentityReport {
         format: format.to_owned(),
         hits,
+        authenticode,
     }
 }
 
