@@ -1,0 +1,10 @@
+pub const MAX_RECORDS: usize = 1 << 20;
+pub const MAX_RECORD_BODY: usize = 4 * 1024 * 1024;
+pub const MAX_SHEETS: usize = 4096;
+pub const MAX_RGCE: usize = 512 * 1024;
+pub const MAX_STACK_DEPTH: usize = 4096;
+pub const MAX_TOKENS: usize = 1 << 18;
+pub const MAX_STRING_CHARS: usize = 1 << 20;
+pub const MAX_WORKBOOK_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_ZIP_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_ZIP_ENTRIES: usize = 8192;

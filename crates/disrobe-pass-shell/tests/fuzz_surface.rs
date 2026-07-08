@@ -7,9 +7,10 @@ use std::sync::Once;
 use disrobe_pass_shell::{
     BashfuscatorLevel, DynamicPolicy, EmuState, Lexer, analyze_stomp, deobfuscate_batch,
     deobfuscate_vbs, detect, disassemble_pcode, disassemble_pcode_real, emulate, eval_if,
-    expand_line, extract_embedded, extract_from_bytes, is_node_bash_obfuscate, normalize_batch,
-    obfuscator_detect, parse_ast, parse_bible, parse_for_f_string, parse_for_l, peel_indirection,
-    peel_indirection_with_policy, recover_stages, resolve_cfg, reverse_ast, reverse_bashfuscator,
+    expand_line, extract_embedded, extract_from_bytes, is_node_bash_obfuscate,
+    is_xlm_macro_document, normalize_batch, obfuscator_detect, parse_ast, parse_bible,
+    parse_for_f_string, parse_for_l, peel_indirection, peel_indirection_with_policy,
+    recover_stages, recover_xlm, resolve_cfg, reverse_ast, reverse_bashfuscator,
     reverse_bashfuscator_auto, reverse_batch, reverse_chameleon, reverse_compress,
     reverse_encoding, reverse_invoke_stealth, reverse_isesteroids, reverse_launcher,
     reverse_node_bash_obfuscate, reverse_powerhell, reverse_psobf, reverse_string, reverse_token,
@@ -155,6 +156,8 @@ fn exercise_binary(bytes: &[u8]) {
     let _ = analyze_stomp(bytes);
     let _ = extract_from_bytes(bytes);
     let _ = vba_project_bin_from_bytes(bytes);
+    let _ = recover_xlm(bytes);
+    let _ = is_xlm_macro_document(bytes);
 }
 
 fn exercise_text(text: &str) {

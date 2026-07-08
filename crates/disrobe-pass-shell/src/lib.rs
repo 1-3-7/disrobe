@@ -39,6 +39,7 @@ pub mod policy;
 pub mod powershell;
 pub mod provenance_header;
 pub mod vba;
+pub mod xlm;
 
 pub use bash::{
     BashToken, BashTokenKind, BashfuscatorLevel, BashfuscatorReport, IndirectionReport,
@@ -79,5 +80,9 @@ pub use vba::{
     vba_project_bin_from_bytes,
 };
 pub use vba::{PCodeStreamHeader, PCodeWall, PCodeWallDetail};
+pub use xlm::{
+    XlmCell, XlmContainerKind, XlmDefinedName, XlmEntryPoint, XlmRecovery, XlmSheet,
+    is_xlm_macro_document, recover_xlm,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

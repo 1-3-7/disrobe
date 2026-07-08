@@ -12,6 +12,7 @@ pub enum Dialect {
     Zsh,
     Batch,
     Vba,
+    Xlm,
     Vbs,
     Wsh,
     Unknown,
@@ -145,12 +146,22 @@ fn detect_dialect(raw: &[u8], head: &str, markers: &mut Vec<String>) -> Dialect 
         return Dialect::Zsh;
     }
     if raw.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+        if crate::xlm::is_xlm_macro_document(raw) {
+            markers.push("xlm-macro-sheet".to_owned());
+            return Dialect::Xlm;
+        }
         markers.push("ole-cfb-header".to_owned());
         return Dialect::Vba;
     }
-    if raw.starts_with(b"PK\x03\x04") && raw.len() > 30 && ooxml_has_vba_project(raw) {
-        markers.push("ooxml-vba-project".to_owned());
-        return Dialect::Vba;
+    if raw.starts_with(b"PK\x03\x04") && raw.len() > 30 {
+        if crate::xlm::is_xlm_macro_document(raw) {
+            markers.push("xlm-macro-sheet".to_owned());
+            return Dialect::Xlm;
+        }
+        if ooxml_has_vba_project(raw) {
+            markers.push("ooxml-vba-project".to_owned());
+            return Dialect::Vba;
+        }
     }
     let lower: String = head.to_ascii_lowercase();
     if lower.contains("attribute vb_name")
@@ -248,6 +259,7 @@ fn detect_family(dialect: Dialect, head: &str, markers: &mut Vec<String>) -> Fam
         }
         Dialect::Batch => detect_batch_family(head, markers),
         Dialect::Vba | Dialect::Vbs | Dialect::Wsh => detect_vba_family(head, markers),
+        Dialect::Xlm => Family::Plain,
         Dialect::Unknown => Family::Unknown,
     }
 }

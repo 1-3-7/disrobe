@@ -305,6 +305,7 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         Dialect::Zsh => (TAG_ZSH, "zsh-dialect"),
         Dialect::Batch => (TAG_BATCH, "batch-dialect"),
         Dialect::Vba => (TAG_VBA, "vba-dialect"),
+        Dialect::Xlm => (TAG_VBA, "xlm-dialect"),
         Dialect::Vbs => (TAG_VBS, "vbs-dialect"),
         Dialect::Wsh => (TAG_WSH, "wsh-dialect"),
         Dialect::Unknown => return None,

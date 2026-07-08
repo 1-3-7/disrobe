@@ -10,6 +10,7 @@ use crate::bash::{
 };
 use crate::detect::{Detection, Dialect, Family, detect};
 use crate::format_wire::format_identity;
+use crate::xlm::{XlmRecovery, XlmSheet};
 
 pub const PASS_INPUT_PATH_CAP: &str = "raw.shell";
 
@@ -100,6 +101,19 @@ impl LegacyPass for ShellPass {
             }
             _ => (None, Vec::new(), Vec::new()),
         };
+        let xlm: Option<XlmRecovery> = if detection.dialect == Dialect::Xlm {
+            crate::xlm::recover_xlm(&input.bytes)
+        } else {
+            None
+        };
+        let (recovered, recovery_steps): (Option<String>, Vec<String>) = match &xlm {
+            Some(report) => {
+                let mut steps: Vec<String> = recovery_steps;
+                steps.push(format!("xlm.formulas={}", report.total_formulas()));
+                (Some(render_xlm(report)), steps)
+            }
+            None => (recovered, recovery_steps),
+        };
         dbg.kv("recovery_steps", || recovery_steps.len().to_string());
         dbg.kv("recovered", || recovered.is_some().to_string());
         let report: ShellPassReport = ShellPassReport {
@@ -111,6 +125,7 @@ impl LegacyPass for ShellPass {
             recovered,
             recovery_steps,
             recovery_walls,
+            xlm,
         };
         let payload: Vec<u8> = serde_json::to_vec(&report)
             .map_err(|e| CoreError::PassFailure(format!("DR-SHELL-PASS encode: {e}")))?;
@@ -163,6 +178,35 @@ pub struct ShellPassReport {
     pub recovery_steps: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub recovery_walls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub xlm: Option<XlmRecovery>,
+}
+
+fn render_xlm(report: &XlmRecovery) -> String {
+    let mut out: String = String::new();
+    for entry in &report.entry_points {
+        out.push_str(&format!("' entry: {} -> {}\n", entry.name, entry.target));
+    }
+    for sheet in &report.sheets {
+        out.push_str(&format!(
+            "' ===== {} sheet: {} =====\n",
+            sheet.kind, sheet.name
+        ));
+        render_sheet(sheet, &mut out);
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
+fn render_sheet(sheet: &XlmSheet, out: &mut String) {
+    for cell in &sheet.cells {
+        out.push_str(&sheet.name);
+        out.push('!');
+        out.push_str(&cell.cell);
+        out.push('\t');
+        out.push_str(&cell.formula);
+        out.push('\n');
+    }
 }
 
 #[cfg(test)]
