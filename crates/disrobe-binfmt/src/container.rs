@@ -103,6 +103,7 @@ pub enum ContainerKind {
     FwInstarBneg,
     FwInstarHd,
     FwAiroha,
+    Minidump,
     None,
 }
 
@@ -267,6 +268,7 @@ impl ContainerKind {
             Self::FwInstarBneg => "instar-bneg",
             Self::FwInstarHd => "instar-hd",
             Self::FwAiroha => "airoha",
+            Self::Minidump => "minidump",
             Self::None => "none",
         }
     }
@@ -289,7 +291,7 @@ impl ContainerKind {
         )
     }
 
-    pub const ALL: [Self; 98] = [
+    pub const ALL: [Self; 99] = [
         Self::Zip,
         Self::Tar,
         Self::TarGz,
@@ -388,6 +390,7 @@ impl ContainerKind {
         Self::FwInstarBneg,
         Self::FwInstarHd,
         Self::FwAiroha,
+        Self::Minidump,
     ];
 
     #[must_use]
@@ -490,6 +493,7 @@ impl ContainerKind {
             | Self::FwInstarBneg
             | Self::FwInstarHd
             | Self::FwAiroha
+            | Self::Minidump
             | Self::InstallShield => ExtractionMode::Payload,
             Self::None => ExtractionMode::Unsupported,
         }
@@ -768,6 +772,9 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     }
     if bytes.starts_with(VHDX_MAGIC) {
         return Some(ContainerKind::Vhdx);
+    }
+    if crate::containers::minidump::detect_minidump(bytes) {
+        return Some(ContainerKind::Minidump);
     }
     if crate::containers::bare_stream::detect_zlib(bytes) {
         return Some(ContainerKind::Zlib);
@@ -1415,14 +1422,14 @@ mod tests {
     }
 
     #[test]
-    fn detected_count_is_ninety_eight() {
-        assert_eq!(ContainerKind::detected_format_count(), 98);
-        assert_eq!(ContainerKind::ALL.len(), 98);
+    fn detected_count_is_ninety_nine() {
+        assert_eq!(ContainerKind::detected_format_count(), 99);
+        assert_eq!(ContainerKind::ALL.len(), 99);
     }
 
     #[test]
     fn every_real_format_extracts_in_tree() {
-        assert_eq!(ContainerKind::extracted_in_tree_count(), 98);
+        assert_eq!(ContainerKind::extracted_in_tree_count(), 99);
         let metadata_only: usize = ContainerKind::ALL
             .iter()
             .filter(|k: &&ContainerKind| {
@@ -1439,7 +1446,7 @@ mod tests {
         assert_eq!(external, 0);
         assert_eq!(
             ContainerKind::extracted_in_tree_count() + metadata_only + external,
-            98
+            99
         );
     }
 

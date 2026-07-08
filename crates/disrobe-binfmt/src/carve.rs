@@ -536,6 +536,13 @@ const MAGIC_SIGNATURES: &[MagicSig] = &[
         expected_offset_lo: 0,
         expected_offset_hi: usize::MAX,
     },
+    MagicSig {
+        magic: b"MDMP",
+        kind: ContainerKind::Minidump,
+        magic_offset_in_format: 0,
+        expected_offset_lo: 0,
+        expected_offset_hi: usize::MAX,
+    },
 ];
 
 fn validated_extent(bytes: &[u8], hit: &MagicHit) -> Option<usize> {
@@ -551,6 +558,7 @@ fn validated_extent(bytes: &[u8], hit: &MagicHit) -> Option<usize> {
         ContainerKind::Bzip2 => stream_extent(tail, StreamKind::Bzip2)?,
         ContainerKind::Tar => tar_extent(tail)?,
         ContainerKind::Squashfs => squashfs_extent(tail)?,
+        ContainerKind::Minidump => crate::containers::minidump::minidump_extent(tail)?,
         _ => trial_parse_extent(tail, hit.kind)?,
     };
     if extent < MIN_VALID_EXTENT || extent > tail.len() {

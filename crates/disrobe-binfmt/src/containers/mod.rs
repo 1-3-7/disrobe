@@ -33,6 +33,7 @@ pub mod lz4_block;
 pub mod lzh;
 pub mod lzms;
 pub mod lzop;
+pub mod minidump;
 pub mod minixfs;
 pub mod msi;
 pub mod msix;
@@ -153,6 +154,11 @@ pub use legacy_detect::{
 pub use lzh::{LzhArchive, LzhFile, detect_lzh, parse_lzh};
 pub use lzms::{lzms_compress, lzms_decompress};
 pub use lzop::{LzopFile, detect_lzop, parse_lzop};
+pub use minidump::{
+    AbsentRange, AbsentReason, CarvedModule, CoverageReport, CvKind, CvRecord, MemorySource,
+    MinidumpFile, MinidumpMemoryRegion, MinidumpModule, PeEmitReport, ProcessorArch,
+    StreamDirEntry, carve_module, detect_minidump, minidump_extent, parse_minidump,
+};
 pub use minixfs::{
     MinixFile, MinixSuperblock, MinixVersion, MinixWalk, detect_minixfs, walk_minixfs,
 };

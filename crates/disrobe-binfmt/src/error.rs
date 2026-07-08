@@ -193,4 +193,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0067: cython extension recovery failed: {0}")]
     Cython(String),
+
+    #[error("DR-BINFMT-0068: minidump parse failed: {0}")]
+    Minidump(String),
 }

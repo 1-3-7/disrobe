@@ -195,6 +195,7 @@ pub fn extract_to_with_quota(
         ContainerKind::Fat => extract_fat(bytes, out_dir, quota),
         ContainerKind::BunStandalone => extract_bun(bytes, out_dir, quota),
         ContainerKind::UnityFs => extract_unityfs(bytes, out_dir, quota),
+        ContainerKind::Minidump => extract_minidump(bytes, out_dir, quota),
         ContainerKind::FwDlinkShrs
         | ContainerKind::FwDlinkEncrptedImg
         | ContainerKind::FwDlinkAlphaV1
@@ -1125,6 +1126,185 @@ fn extract_fat(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     );
     Ok(ExtractionResult {
         kind: ContainerKind::Fat,
+        entries: entries_out,
+        encoding,
+        integrity_violations: violations,
+        quota: QuotaSummary::from(guard.report()),
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct MinidumpSummary<'a> {
+    version: u32,
+    architecture: &'static str,
+    pointer_width: u8,
+    module_count: usize,
+    memory_region_count: usize,
+    modules: &'a [MinidumpModuleSummary],
+    notes: &'a [String],
+}
+
+#[derive(Debug, Serialize)]
+struct MinidumpModuleSummary {
+    name: String,
+    base_of_image: u64,
+    size_of_image: u64,
+    status: &'static str,
+    coverage_ratio: f64,
+    complete: bool,
+    headers_present: bool,
+    covered_bytes: u64,
+    truncated_bytes: u64,
+    absent_bytes: u64,
+    absent_range_count: usize,
+    overlap_detected: bool,
+    structurally_valid_pe: bool,
+    import_dll_count: Option<usize>,
+    pdb_guid: Option<String>,
+    pdb_age: Option<u32>,
+    pdb_path: Option<String>,
+    written_file: Option<String>,
+}
+
+const fn minidump_module_status(carved: &crate::containers::CarvedModule) -> &'static str {
+    if !carved.coverage.headers_present {
+        "headers-absent"
+    } else if carved.coverage.complete {
+        "complete"
+    } else {
+        "partial"
+    }
+}
+
+fn extract_minidump(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    let dump: crate::containers::MinidumpFile = crate::containers::parse_minidump(bytes)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
+        max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
+        max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
+        ..quota
+    });
+    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    let mut violations: Vec<String> = dump.notes.clone();
+    let mut module_summaries: Vec<MinidumpModuleSummary> = Vec::with_capacity(dump.modules.len());
+    let mut used_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for module in &dump.modules {
+        let carved: crate::containers::CarvedModule = match crate::containers::carve_module(
+            &dump,
+            bytes,
+            module,
+            quota.max_per_entry_uncompressed,
+        ) {
+            Ok(carved) => carved,
+            Err(e) => {
+                violations.push(format!("minidump-module `{}`: {e}", module.file_name()));
+                continue;
+            }
+        };
+        for note in &carved.notes {
+            violations.push(format!("minidump `{}`: {note}", carved.module_name));
+        }
+        let (structurally_valid, import_dll_count): (bool, Option<usize>) = carved
+            .pe_emit
+            .as_ref()
+            .map_or((false, None), |report: &crate::containers::PeEmitReport| {
+                (report.structurally_valid, report.import_dll_count)
+            });
+
+        let mut written_file: Option<String> = None;
+        if carved.coverage.headers_present {
+            let base_name: String = match sanitize_entry_path(&carved.module_name) {
+                Ok(name) => name,
+                Err(_) => format!("module_{:016x}.bin", carved.base_of_image),
+            };
+            let label: String = if used_names.contains(&base_name) {
+                format!("{base_name}.{:016x}", carved.base_of_image)
+            } else {
+                base_name
+            };
+            let size: u64 = carved.image.len() as u64;
+            if let Err(e) = guard.admit_entry(&label, size, size) {
+                violations.push(format!("minidump-quota `{label}`: {e}"));
+            } else {
+                used_names.insert(label.clone());
+                let disk_path: PathBuf = out_dir.join(&label);
+                std::fs::write(&disk_path, &carved.image)?;
+                encoding.insert(label.clone(), EntryCompression::Stored);
+                entries_out.push(ExtractedEntry {
+                    name: label.clone(),
+                    disk_path: Some(disk_path),
+                    uncompressed_size: size,
+                    compressed_size: size,
+                    compression: EntryCompression::Stored,
+                    is_executable: true,
+                });
+                written_file = Some(label);
+            }
+        }
+
+        module_summaries.push(MinidumpModuleSummary {
+            name: carved.module_name.clone(),
+            base_of_image: carved.base_of_image,
+            size_of_image: carved.size_of_image,
+            status: minidump_module_status(&carved),
+            coverage_ratio: carved.coverage.coverage_ratio,
+            complete: carved.coverage.complete,
+            headers_present: carved.coverage.headers_present,
+            covered_bytes: carved.coverage.covered_bytes,
+            truncated_bytes: carved.coverage.truncated_bytes,
+            absent_bytes: carved.coverage.absent_bytes,
+            absent_range_count: carved.absent_ranges.len(),
+            overlap_detected: carved.coverage.overlap_detected,
+            structurally_valid_pe: structurally_valid,
+            import_dll_count,
+            pdb_guid: module
+                .cv_record
+                .as_ref()
+                .map(crate::containers::CvRecord::guid_string),
+            pdb_age: module
+                .cv_record
+                .as_ref()
+                .map(|cv: &crate::containers::CvRecord| cv.age),
+            pdb_path: module
+                .cv_record
+                .as_ref()
+                .map(|cv: &crate::containers::CvRecord| cv.pdb_path.clone()),
+            written_file,
+        });
+    }
+
+    let summary: MinidumpSummary = MinidumpSummary {
+        version: dump.version,
+        architecture: dump.arch.label(),
+        pointer_width: dump.pointer_width,
+        module_count: dump.modules.len(),
+        memory_region_count: dump.memory_regions.len(),
+        modules: &module_summaries,
+        notes: &dump.notes,
+    };
+    let summary_json: String =
+        serde_json::to_string_pretty(&summary).unwrap_or_else(|_: serde_json::Error| String::new());
+    let summary_name: String = ".disrobe-minidump.json".to_owned();
+    let summary_path: PathBuf = out_dir.join(&summary_name);
+    std::fs::write(&summary_path, summary_json.as_bytes())?;
+    encoding.insert(summary_name.clone(), EntryCompression::Stored);
+    entries_out.push(ExtractedEntry {
+        name: summary_name,
+        disk_path: Some(summary_path),
+        uncompressed_size: summary_json.len() as u64,
+        compressed_size: summary_json.len() as u64,
+        compression: EntryCompression::Stored,
+        is_executable: false,
+    });
+
+    Ok(ExtractionResult {
+        kind: ContainerKind::Minidump,
         entries: entries_out,
         encoding,
         integrity_violations: violations,
