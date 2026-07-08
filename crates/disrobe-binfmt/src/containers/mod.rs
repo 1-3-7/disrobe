@@ -95,9 +95,9 @@ pub use bare_stream::{
     try_decompress_lznt1_oracle,
 };
 pub use blazor_webcil::{
-    BlazorAssemblyKind, BlazorAssemblyRef, BlazorBoot, BlazorFile, WebcilHeader, WebcilSection,
-    detect_blazor_boot, extract_blazor_bundle, parse_blazor_boot, parse_webcil_header,
-    unwrap_webcil,
+    BlazorAssemblyKind, BlazorAssemblyRef, BlazorBoot, BlazorFile, BlazorIntegrity, WebcilHeader,
+    WebcilSection, detect_blazor_boot, detect_blazor_bundle, extract_blazor_bundle,
+    parse_blazor_boot, parse_webcil_header, unwrap_webcil,
 };
 pub use btrfs_send::{
     BtrfsSendFile, BtrfsSendHeader, BtrfsSendReplay, detect_btrfs_send, replay_btrfs_send,

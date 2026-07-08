@@ -76,10 +76,16 @@ pub enum BlazorAssemblyKind {
     Lazy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlazorIntegrity {
+    Sha256([u8; 32]),
+    Unparseable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlazorAssemblyRef {
     pub manifest_key: String,
-    pub integrity: Option<[u8; 32]>,
+    pub integrity: BlazorIntegrity,
     pub kind: BlazorAssemblyKind,
 }
 
@@ -619,12 +625,15 @@ struct RawResources {
     fingerprinting: BTreeMap<String, String>,
 }
 
-fn parse_integrity(value: &str) -> Option<[u8; 32]> {
-    let encoded: &str = value.strip_prefix(SHA256_PREFIX)?;
-    let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
+fn parse_integrity(value: &str) -> BlazorIntegrity {
+    let Some(encoded): Option<&str> = value.strip_prefix(SHA256_PREFIX) else {
+        return BlazorIntegrity::Unparseable;
+    };
+    base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .ok()?;
-    <[u8; 32]>::try_from(decoded.as_slice()).ok()
+        .ok()
+        .and_then(|decoded: Vec<u8>| <[u8; 32]>::try_from(decoded.as_slice()).ok())
+        .map_or(BlazorIntegrity::Unparseable, BlazorIntegrity::Sha256)
 }
 
 fn push_assemblies(
@@ -790,10 +799,13 @@ fn carve_assembly(
         return Ok(None);
     };
     let uncompressed: Vec<u8> = maybe_decompress(raw_bytes, cap)?;
-    if let Some(expected) = assembly.integrity
-        && sha256(&uncompressed) != expected
-    {
-        return Ok(None);
+    match assembly.integrity {
+        BlazorIntegrity::Sha256(expected) => {
+            if sha256(&uncompressed) != expected {
+                return Ok(None);
+            }
+        }
+        BlazorIntegrity::Unparseable => return Ok(None),
     }
     let image: Vec<u8> = unwrap_webcil(&uncompressed)?;
     let logical: String = boot
@@ -842,6 +854,11 @@ pub fn extract_blazor_bundle(
         });
     }
     Ok(out)
+}
+
+#[must_use]
+pub fn detect_blazor_bundle(files: &[BlazorFile<'_>]) -> bool {
+    locate_boot_manifest(files).is_ok_and(|manifest: Vec<u8>| detect_blazor_boot(&manifest))
 }
 
 #[cfg(test)]
@@ -1192,21 +1209,27 @@ mod tests {
         }
     }
 
+    fn blazor_fixture_dir() -> std::path::PathBuf {
+        let mut dir: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.pop();
+        dir.push("corpus");
+        dir.push("binfmt");
+        dir.push("blazor");
+        dir
+    }
+
+    const BLAZOR_WEBCIL_FIXTURE: &str = "Bz.belq8bx71h.wasm";
+    const BLAZOR_RAWDLL_FIXTURE: &str = "Bz.di7szpefj3.dll";
+
     #[test]
     fn real_sdk_metadata_streams_match_raw_dll() {
-        let webcil_path: Option<String> = std::env::var("DISROBE_BLAZOR_WEBCIL").ok();
-        let rawdll_path: Option<String> = std::env::var("DISROBE_BLAZOR_RAWDLL").ok();
-        let (Some(webcil_path), Some(rawdll_path)): (Option<String>, Option<String>) =
-            (webcil_path, rawdll_path)
-        else {
-            return;
-        };
-        let webcil_bytes: Vec<u8> = std::fs::read(&webcil_path).expect("read webcil asset");
-        let rawdll_bytes: Vec<u8> = std::fs::read(&rawdll_path).expect("read raw dll");
+        let dir: std::path::PathBuf = blazor_fixture_dir();
+        let webcil_bytes: Vec<u8> =
+            std::fs::read(dir.join(BLAZOR_WEBCIL_FIXTURE)).expect("read committed webcil fixture");
+        let rawdll_bytes: Vec<u8> =
+            std::fs::read(dir.join(BLAZOR_RAWDLL_FIXTURE)).expect("read committed raw dll fixture");
         let synthesized: Vec<u8> = unwrap_webcil(&webcil_bytes).expect("unwrap real webcil");
-        if let Ok(dump_path) = std::env::var("DISROBE_BLAZOR_DUMP") {
-            std::fs::write(&dump_path, &synthesized).expect("write synthesized pe");
-        }
         let synth_streams: BTreeMap<String, Vec<u8>> = read_streams(&synthesized);
         let raw_streams: BTreeMap<String, Vec<u8>> = read_streams(&rawdll_bytes);
         assert_eq!(
@@ -1214,5 +1237,68 @@ mod tests {
             "carved metadata streams must be byte-identical to the sdk raw dll"
         );
         assert!(synth_streams.contains_key("#~"));
+        assert!(synth_streams.contains_key("#Strings"));
+    }
+
+    #[test]
+    fn real_sdk_bundle_carves_and_integrity_verifies_app_assembly() {
+        let dir: std::path::PathBuf = blazor_fixture_dir();
+        let boot: Vec<u8> =
+            std::fs::read(dir.join("blazor.boot.json")).expect("read committed boot manifest");
+        let webcil: Vec<u8> =
+            std::fs::read(dir.join(BLAZOR_WEBCIL_FIXTURE)).expect("read committed webcil fixture");
+        let webcil_name: String = format!("_framework/{BLAZOR_WEBCIL_FIXTURE}");
+        let files: Vec<BlazorFile<'_>> = vec![
+            BlazorFile {
+                name: "_framework/blazor.boot.json",
+                data: &boot,
+            },
+            BlazorFile {
+                name: &webcil_name,
+                data: &webcil,
+            },
+        ];
+        assert!(detect_blazor_bundle(&files), "must recognise a real bundle");
+        let boot_parsed: BlazorBoot = parse_blazor_boot(&boot).expect("parse real boot manifest");
+        assert_eq!(boot_parsed.main_assembly_name.as_deref(), Some("Bz"));
+        let entries: Vec<DotnetBundleEntry> =
+            extract_blazor_bundle(&files, ExtractionQuota::default_safe()).expect("extract bundle");
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the committed app assembly resolves; runtime assemblies are absent and skipped"
+        );
+        assert_eq!(entries[0].relative_path, "Bz.dll");
+        assert_eq!(entries[0].file_type, BundleFileType::Assembly);
+        validate_managed_pe(&entries[0].data).expect("carved app assembly is a valid managed pe");
+    }
+
+    #[test]
+    fn rejects_assembly_with_unparseable_integrity() {
+        let payload: Vec<u8> = build_webcil_payload();
+        let wasm: Vec<u8> = wrap_in_wasm(&payload);
+        let boot: String = format!(
+            "{{\"resources\":{{\"assembly\":{{\"Sample.aaaa1111.wasm\":\"{SHA256_PREFIX}not-valid-base64-@@@\"}}}}}}"
+        );
+        assert_eq!(
+            parse_integrity(&format!("{SHA256_PREFIX}not-valid-base64-@@@")),
+            BlazorIntegrity::Unparseable
+        );
+        let files: Vec<BlazorFile<'_>> = vec![
+            BlazorFile {
+                name: "blazor.boot.json",
+                data: boot.as_bytes(),
+            },
+            BlazorFile {
+                name: "Sample.aaaa1111.wasm",
+                data: &wasm,
+            },
+        ];
+        let entries: Vec<DotnetBundleEntry> =
+            extract_blazor_bundle(&files, ExtractionQuota::default_safe()).expect("extract");
+        assert!(
+            entries.is_empty(),
+            "an entry whose declared integrity string cannot be parsed must be rejected, not trusted"
+        );
     }
 }

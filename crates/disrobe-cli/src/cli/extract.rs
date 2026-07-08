@@ -1,12 +1,19 @@
 use std::path::{Path, PathBuf};
 
-use disrobe_binfmt::{
-    CarveConfig, CarveNode, CarveReport, CarvedChunk, ChunkClass, ContainerKind, ExtractionResult,
-    carve_recursive, detect_and_extract_with_hint,
+use disrobe_binfmt::containers::{
+    BlazorFile, DotnetBundleEntry, detect_blazor_bundle, extract_blazor_bundle,
 };
+use disrobe_binfmt::{
+    CarveConfig, CarveNode, CarveReport, CarvedChunk, ChunkClass, ContainerKind, ExtractionQuota,
+    ExtractionResult, carve_recursive, detect_and_extract_with_hint, sanitize_entry_path,
+};
+use serde::Serialize;
+use walkdir::WalkDir;
 
 use crate::cli::output::{self, OutputFormat};
 use crate::cli::progress_ui::StageSpinner;
+
+const BLAZOR_DIR_MAX_DEPTH: usize = 16;
 
 pub(crate) fn run(
     input: PathBuf,
@@ -15,6 +22,9 @@ pub(crate) fn run(
     max_depth: u32,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
+    if input.is_dir() {
+        return run_blazor_dir(&input, out, fmt);
+    }
     let bytes: Vec<u8> = std::fs::read(&input).map_err(|e| {
         miette::miette!(
             "DR-EXTRACT-0050: cannot read input {}: {e}",
@@ -25,6 +35,135 @@ pub(crate) fn run(
         run_recursive(&input, &bytes, out, max_depth, fmt)
     } else {
         run_flat(&input, &bytes, out, fmt)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct BlazorBundleReport {
+    format: &'static str,
+    out_dir: String,
+    assemblies: Vec<BlazorAssemblyOut>,
+    files_scanned: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct BlazorAssemblyOut {
+    name: String,
+    bytes: u64,
+}
+
+fn collect_bundle_files(
+    dir: &Path,
+    quota: ExtractionQuota,
+) -> miette::Result<Vec<(String, Vec<u8>)>> {
+    let mut collected: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in WalkDir::new(dir)
+        .follow_links(false)
+        .max_depth(BLAZOR_DIR_MAX_DEPTH)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if collected.len() >= quota.max_entries {
+            break;
+        }
+        let path: &Path = entry.path();
+        let Ok(meta): Result<std::fs::Metadata, walkdir::Error> = entry.metadata() else {
+            continue;
+        };
+        if meta.len() > quota.max_per_entry_uncompressed {
+            continue;
+        }
+        total = total.saturating_add(meta.len());
+        if total > quota.max_total_uncompressed {
+            break;
+        }
+        let relative: &Path = path.strip_prefix(dir).unwrap_or(path);
+        let name: String = relative.to_string_lossy().replace('\\', "/");
+        let data: Vec<u8> = std::fs::read(path).map_err(|e| {
+            miette::miette!(
+                "DR-EXTRACT-0056: cannot read bundle file {}: {e}",
+                path.display()
+            )
+        })?;
+        collected.push((name, data));
+    }
+    Ok(collected)
+}
+
+fn run_blazor_dir(input: &Path, out: Option<PathBuf>, fmt: OutputFormat) -> miette::Result<()> {
+    let quota: ExtractionQuota = ExtractionQuota::default_safe();
+    let raw_files: Vec<(String, Vec<u8>)> = collect_bundle_files(input, quota)?;
+    let bundle_files: Vec<BlazorFile<'_>> = raw_files
+        .iter()
+        .map(|(name, data): &(String, Vec<u8>)| BlazorFile {
+            name: name.as_str(),
+            data: data.as_slice(),
+        })
+        .collect();
+    if !detect_blazor_bundle(&bundle_files) {
+        return Err(miette::miette!(
+            "DR-EXTRACT-0057: {} is a directory but is not a recognized Blazor WebAssembly bundle (no blazor.boot.json). Point at a published `wwwroot`/`_framework` folder, or pass a single-file container.",
+            input.display()
+        ));
+    }
+    let out_dir: PathBuf = out.unwrap_or_else(|| default_out_dir(input));
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        miette::miette!(
+            "DR-EXTRACT-0058: cannot create out dir {}: {e}",
+            out_dir.display()
+        )
+    })?;
+    let label: String = input.display().to_string();
+    let spinner: StageSpinner = StageSpinner::start(
+        &label,
+        &format!("carving blazor bundle from {} files", raw_files.len()),
+    );
+    let entries: Vec<DotnetBundleEntry> = extract_blazor_bundle(&bundle_files, quota)
+        .map_err(|e| miette::miette!("DR-EXTRACT-0059: blazor carve failed: {e}"))?;
+    spinner.finish(&format!("{} assemblies recovered", entries.len()));
+
+    let mut assemblies: Vec<BlazorAssemblyOut> = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let safe: String = sanitize_entry_path(&entry.relative_path)
+            .map_err(|e| miette::miette!("DR-EXTRACT-0060: unsafe entry path: {e}"))?;
+        let disk_path: PathBuf = out_dir.join(&safe);
+        if let Some(parent) = disk_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                miette::miette!("DR-EXTRACT-0061: cannot create {}: {e}", parent.display())
+            })?;
+        }
+        std::fs::write(&disk_path, &entry.data).map_err(|e| {
+            miette::miette!("DR-EXTRACT-0062: cannot write {}: {e}", disk_path.display())
+        })?;
+        assemblies.push(BlazorAssemblyOut {
+            name: safe,
+            bytes: entry.data.len() as u64,
+        });
+    }
+
+    let report: BlazorBundleReport = BlazorBundleReport {
+        format: "blazor-webassembly",
+        out_dir: out_dir.display().to_string(),
+        assemblies,
+        files_scanned: raw_files.len(),
+    };
+    output::emit(fmt, &report, || render_blazor(&report))
+}
+
+fn render_blazor(report: &BlazorBundleReport) {
+    println!("format: {}", report.format);
+    println!("output: {}", report.out_dir);
+    println!(
+        "assemblies: {} (from {} scanned files)",
+        report.assemblies.len(),
+        report.files_scanned
+    );
+    for asm in &report.assemblies {
+        println!("  {} ({} bytes)", asm.name, asm.bytes);
     }
 }
 
