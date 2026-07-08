@@ -1,4 +1,6 @@
-use iced_x86::code_asm::{CodeAssembler, CodeLabel, eax, ecx};
+use std::collections::BTreeMap;
+
+use iced_x86::code_asm::{CodeAssembler, CodeLabel, eax, ecx, rax};
 use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic};
 
 use super::*;
@@ -148,4 +150,124 @@ fn composed_entrypoint_escalates_to_the_deep_pass_when_the_fast_pass_cannot_reso
         defeat_bogus_control_flow_deep(Bits::Bits64, BASE, &bytes, branch_address)
             .expect("the deep backward+SMT pass resolves what the single-block matcher cannot");
     assert_eq!(result.result, OpaqueResult::AlwaysNotTaken);
+}
+
+#[test]
+fn an_unresolved_indirect_branch_elsewhere_in_the_section_suppresses_the_single_predecessor_fold() {
+    let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
+    let mut mid: CodeLabel = asm.create_label();
+    let mut real: CodeLabel = asm.create_label();
+    let mut dead: CodeLabel = asm.create_label();
+    asm.mov(eax, 5i32).unwrap();
+    asm.jmp(mid).unwrap();
+    asm.set_label(&mut mid).unwrap();
+    asm.cmp(eax, 5i32).unwrap();
+    asm.je(real).unwrap();
+    asm.jmp(dead).unwrap();
+    asm.set_label(&mut real).unwrap();
+    asm.nop().unwrap();
+    asm.set_label(&mut dead).unwrap();
+    asm.ret().unwrap();
+    asm.jmp(rax)
+        .expect("register-indirect jmp elsewhere in the same section");
+    let bytes: Vec<u8> = assemble(&mut asm);
+    let branch_address: u64 = find_ip(&bytes, Mnemonic::Je);
+
+    let result: BogusBranch = analyze_branch_backward(64, BASE, &bytes, branch_address)
+        .expect("a genuine predicate is still built even though the fold is suppressed");
+    assert_eq!(
+        result.result,
+        OpaqueResult::DataDependent,
+        "the mov eax,5 predecessor can no longer be folded in as a mandatory path constraint \
+         once the section also contains an indirect branch that could plausibly target the \
+         same block from somewhere the direct-edge view cannot see, so eax must stay \
+         unconstrained instead of proving a false AlwaysTaken"
+    );
+    assert!(result.dead_target.is_none());
+    assert!(result.live_target.is_none());
+}
+
+#[test]
+fn section_has_unresolved_edges_is_false_for_a_fully_direct_edge_section() {
+    let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
+    let mut mid: CodeLabel = asm.create_label();
+    let mut real: CodeLabel = asm.create_label();
+    let mut dead: CodeLabel = asm.create_label();
+    asm.mov(eax, 5i32).unwrap();
+    asm.jmp(mid).unwrap();
+    asm.set_label(&mut mid).unwrap();
+    asm.cmp(eax, 5i32).unwrap();
+    asm.je(real).unwrap();
+    asm.jmp(dead).unwrap();
+    asm.set_label(&mut real).unwrap();
+    asm.nop().unwrap();
+    asm.set_label(&mut dead).unwrap();
+    asm.ret().unwrap();
+    let bytes: Vec<u8> = assemble(&mut asm);
+
+    let insns: Vec<Instruction> = decode_all(64, BASE, &bytes);
+    let index: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &Instruction)| (insn.ip(), i))
+        .collect();
+    assert!(
+        !section_has_unresolved_edges(&insns, &index),
+        "every branch in this section has a near target that lands on a decoded instruction"
+    );
+}
+
+#[test]
+fn section_has_unresolved_edges_is_true_for_an_indirect_branch() {
+    let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
+    asm.mov(eax, 5i32).unwrap();
+    asm.jmp(rax).expect("register-indirect jmp");
+    let bytes: Vec<u8> = assemble(&mut asm);
+
+    let insns: Vec<Instruction> = decode_all(64, BASE, &bytes);
+    let index: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &Instruction)| (insn.ip(), i))
+        .collect();
+    assert!(
+        section_has_unresolved_edges(&insns, &index),
+        "an indirect branch can target anywhere in the section, so no block's predecessor \
+         set can be trusted as complete purely from the direct-edge view"
+    );
+}
+
+#[test]
+fn section_has_unresolved_edges_is_true_for_a_direct_branch_whose_target_misses_the_decode() {
+    let mut asm: CodeAssembler = CodeAssembler::new(64).expect("assembler");
+    let mut target: CodeLabel = asm.create_label();
+    asm.jmp(target).unwrap();
+    asm.nop().unwrap();
+    asm.set_label(&mut target).unwrap();
+    asm.ret().unwrap();
+    let full_bytes: Vec<u8> = assemble(&mut asm);
+
+    let mut decoder: Decoder<'_> = Decoder::with_ip(64, &full_bytes, BASE, DecoderOptions::NONE);
+    let mut insn: Instruction = Instruction::default();
+    decoder.decode_out(&mut insn);
+    assert_eq!(
+        insn.mnemonic(),
+        Mnemonic::Jmp,
+        "the jmp is the first assembled instruction"
+    );
+    let truncated_len: usize = decoder.position();
+    assert!(truncated_len > 0 && truncated_len < full_bytes.len());
+    let truncated: &[u8] = &full_bytes[..truncated_len];
+
+    let insns: Vec<Instruction> = decode_all(64, BASE, truncated);
+    let index: BTreeMap<u64, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, insn): (usize, &Instruction)| (insn.ip(), i))
+        .collect();
+    assert!(
+        section_has_unresolved_edges(&insns, &index),
+        "the jmp's near target falls past the end of the decoded stream, so it cannot be \
+         mapped to any known block and must not be silently dropped"
+    );
 }

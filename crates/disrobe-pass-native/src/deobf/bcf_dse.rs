@@ -135,12 +135,14 @@ pub fn analyze_branch_backward_bounded(
     }
 
     let predecessors: Vec<Vec<usize>> = compute_predecessors(&insns, &blocks, &index);
+    let has_unresolved_edges: bool = section_has_unresolved_edges(&insns, &index);
     let chain: Vec<usize> = backward_chain(
         containing,
         &predecessors,
         &blocks,
         budget.max_blocks,
         budget.max_instructions,
+        has_unresolved_edges,
     );
 
     let (path, mut regs): (PathCondition, RegFile) =
@@ -250,12 +252,13 @@ fn backward_chain(
     blocks: &[Block],
     max_blocks: usize,
     max_instructions: usize,
+    has_unresolved_edges: bool,
 ) -> Vec<usize> {
     let mut chain_reversed: Vec<usize> = vec![start_block];
     let mut visited: BTreeSet<usize> = BTreeSet::from([start_block]);
     let mut instruction_total: usize = block_len(blocks[start_block]);
     let mut current: usize = start_block;
-    while chain_reversed.len() < max_blocks {
+    while !has_unresolved_edges && chain_reversed.len() < max_blocks {
         let preds: &Vec<usize> = &predecessors[current];
         let [only_pred]: [usize; 1] = match preds.as_slice() {
             [single] => [*single],
@@ -387,6 +390,18 @@ fn successors(
         }
     }
     out
+}
+
+fn section_has_unresolved_edges(insns: &[Instruction], index: &BTreeMap<u64, usize>) -> bool {
+    insns
+        .iter()
+        .any(|insn: &Instruction| match insn.flow_control() {
+            FlowControl::IndirectBranch | FlowControl::IndirectCall => true,
+            FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch => {
+                !index.contains_key(&insn.near_branch_target())
+            }
+            _ => false,
+        })
 }
 
 fn build_predicate(
