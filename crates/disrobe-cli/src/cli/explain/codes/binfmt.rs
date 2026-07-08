@@ -14,7 +14,9 @@ pub(super) const BINFMT: &[CodeEntry] = &[
         title: ".NET single-file bundle parse failed",
         description: "the .NET single-file bundle manifest did not parse.",
         common_causes: &["truncated bundle", "unsupported bundle version"],
-        common_fixes: &["confirm the input is a .NET single-file bundle (major version 1, 2, or 6 and up)"],
+        common_fixes: &[
+            "confirm the input is a .NET single-file bundle (major version 1, 2, or 6 and up)",
+        ],
         crate_path: "crates/disrobe-binfmt/src/error.rs",
     },
     CodeEntry {
