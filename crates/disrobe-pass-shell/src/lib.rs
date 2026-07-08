@@ -35,6 +35,7 @@ pub mod detect;
 pub mod error;
 pub mod format_wire;
 pub mod pass;
+pub mod pdf;
 pub mod policy;
 pub mod powershell;
 pub mod provenance_header;
@@ -58,6 +59,10 @@ pub use batch::{
 pub use detect::{Detection, Dialect, Family, detect};
 pub use error::{Error, Result};
 pub use format_wire::format_identity;
+pub use pdf::{
+    ActionFinding, EmbeddedFileFinding, EncryptionInfo, JsFinding, NameObfuscation, PdfReport,
+    analyze_pdf, is_pdf_document,
+};
 pub use policy::{DynamicPolicy, STATIC_EVAL_DEPTH_CAP};
 pub use powershell::{
     Ast, AstNode, InvokeObfuscationLevel, Lexer, ObfTechnique, ObfuscatorDetection, PsObfuscator,

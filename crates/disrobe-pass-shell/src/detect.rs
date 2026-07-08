@@ -15,6 +15,7 @@ pub enum Dialect {
     Xlm,
     Vbs,
     Wsh,
+    Pdf,
     Unknown,
 }
 
@@ -145,6 +146,11 @@ fn detect_dialect(raw: &[u8], head: &str, markers: &mut Vec<String>) -> Dialect 
         markers.push("shebang-zsh".to_owned());
         return Dialect::Zsh;
     }
+    let pdf_scan: &[u8] = &raw[..raw.len().min(1024)];
+    if pdf_scan.windows(5).any(|window: &[u8]| window == b"%PDF-") {
+        markers.push("pdf-header".to_owned());
+        return Dialect::Pdf;
+    }
     if raw.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
         if crate::xlm::is_xlm_macro_document(raw) {
             markers.push("xlm-macro-sheet".to_owned());
@@ -259,7 +265,7 @@ fn detect_family(dialect: Dialect, head: &str, markers: &mut Vec<String>) -> Fam
         }
         Dialect::Batch => detect_batch_family(head, markers),
         Dialect::Vba | Dialect::Vbs | Dialect::Wsh => detect_vba_family(head, markers),
-        Dialect::Xlm => Family::Plain,
+        Dialect::Xlm | Dialect::Pdf => Family::Plain,
         Dialect::Unknown => Family::Unknown,
     }
 }

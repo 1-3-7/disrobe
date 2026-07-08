@@ -10,6 +10,7 @@ use crate::bash::{
 };
 use crate::detect::{Detection, Dialect, Family, detect};
 use crate::format_wire::format_identity;
+use crate::pdf::PdfReport;
 use crate::xlm::{XlmRecovery, XlmSheet};
 
 pub const PASS_INPUT_PATH_CAP: &str = "raw.shell";
@@ -114,6 +115,31 @@ impl LegacyPass for ShellPass {
             }
             None => (recovered, recovery_steps),
         };
+        let pdf: Option<PdfReport> = if detection.dialect == Dialect::Pdf {
+            crate::pdf::analyze_pdf(&input.bytes)
+        } else {
+            None
+        };
+        let (recovered, recovery_steps): (Option<String>, Vec<String>) = match &pdf {
+            Some(report) => {
+                let mut steps: Vec<String> = recovery_steps;
+                steps.push(format!("pdf.objects={}", report.object_count));
+                if !report.javascript.is_empty() {
+                    steps.push(format!("pdf.javascript={}", report.javascript.len()));
+                }
+                if !report.actions.is_empty() {
+                    steps.push(format!("pdf.actions={}", report.actions.len()));
+                }
+                if !report.embedded_files.is_empty() {
+                    steps.push(format!(
+                        "pdf.embedded_files={}",
+                        report.embedded_files.len()
+                    ));
+                }
+                (Some(render_pdf(report)), steps)
+            }
+            None => (recovered, recovery_steps),
+        };
         dbg.kv("recovery_steps", || recovery_steps.len().to_string());
         dbg.kv("recovered", || recovered.is_some().to_string());
         let report: ShellPassReport = ShellPassReport {
@@ -126,6 +152,7 @@ impl LegacyPass for ShellPass {
             recovery_steps,
             recovery_walls,
             xlm,
+            pdf,
         };
         let payload: Vec<u8> = serde_json::to_vec(&report)
             .map_err(|e| CoreError::PassFailure(format!("DR-SHELL-PASS encode: {e}")))?;
@@ -180,6 +207,8 @@ pub struct ShellPassReport {
     pub recovery_walls: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub xlm: Option<XlmRecovery>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pdf: Option<PdfReport>,
 }
 
 fn render_xlm(report: &XlmRecovery) -> String {
@@ -193,6 +222,61 @@ fn render_xlm(report: &XlmRecovery) -> String {
             sheet.kind, sheet.name
         ));
         render_sheet(sheet, &mut out);
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
+fn render_pdf(report: &PdfReport) -> String {
+    let mut out: String = String::new();
+    let version: String = report.pdf_version.clone().unwrap_or_else(|| "?".to_owned());
+    out.push_str(&format!(
+        "%PDF-{version} objects={} xref={}{} recovered_by_scan={}\n",
+        report.object_count,
+        if report.xref_table { "table" } else { "" },
+        if report.xref_stream { "stream" } else { "" },
+        report.recovered_by_scan,
+    ));
+    if let Some(encryption) = &report.encryption {
+        out.push_str(&format!(
+            "encrypted: {} decrypted={}\n",
+            encryption.handler, encryption.decrypted
+        ));
+    }
+    if report.open_action {
+        out.push_str("open-action: present\n");
+    }
+    for entry in &report.name_obfuscation {
+        out.push_str(&format!(
+            "name-obfuscation: {} -> {}\n",
+            entry.raw, entry.decoded
+        ));
+    }
+    for finding in &report.javascript {
+        out.push_str(&format!("== javascript [{}]", finding.origin));
+        if !finding.deobfuscation.is_empty() {
+            out.push_str(&format!(" ({})", finding.deobfuscation.join(",")));
+        }
+        out.push('\n');
+        out.push_str(&finding.script);
+        out.push('\n');
+    }
+    for action in &report.actions {
+        out.push_str(&format!("== action {} [{}]", action.kind, action.origin));
+        if !action.target.is_empty() {
+            out.push_str(&format!(" -> {}", action.target));
+        }
+        out.push('\n');
+    }
+    for file in &report.embedded_files {
+        out.push_str(&format!(
+            "== embedded-file {} ({} bytes) sha256={}",
+            file.name, file.bytes, file.sha256
+        ));
+        if let Some(subtype) = &file.subtype {
+            out.push_str(&format!(" subtype={subtype}"));
+        }
+        out.push('\n');
     }
     out.truncate(out.trim_end().len());
     out
@@ -310,6 +394,30 @@ mod tests {
             "steps={:?}",
             report.recovery_steps
         );
+    }
+
+    #[test]
+    fn pass_surfaces_pdf_javascript_and_report() {
+        let body: &[u8] = include_bytes!("../../../corpus/shell/pdf/openaction_table.pdf");
+        let bytes: Vec<u8> = synth_envelope("sample.pdf", body);
+        let input: Artifact = Artifact::with_capabilities(
+            Rung::Raw,
+            bytes,
+            [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
+            [7u8; 32],
+        );
+        let out: Artifact = ShellPass.run(&input).expect("run");
+        let report: ShellPassReport = serde_json::from_slice(&out.envelope).expect("decode report");
+        assert_eq!(report.dialect, "Pdf");
+        let pdf: &crate::pdf::PdfReport = report.pdf.as_ref().expect("pdf report present");
+        assert!(
+            pdf.javascript
+                .iter()
+                .any(|f: &crate::pdf::JsFinding| f.script.contains("OPENACTION_TABLE_MARKER")),
+            "javascript surfaced"
+        );
+        let recovered: String = report.recovered.expect("rendered recovery");
+        assert!(recovered.contains("OPENACTION_TABLE_MARKER"));
     }
 
     #[test]
