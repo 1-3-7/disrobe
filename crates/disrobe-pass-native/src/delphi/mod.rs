@@ -1,0 +1,202 @@
+mod dfm;
+mod image;
+mod resource;
+mod vmt;
+
+#[cfg(test)]
+mod tests;
+
+use serde::{Deserialize, Serialize};
+
+use image::PeView;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DelphiEra {
+    Legacy32,
+    Modern32,
+    Modern64,
+}
+
+impl DelphiEra {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Legacy32 => "pre-2009 32-bit VMT layout",
+            Self::Modern32 => "Delphi 2009+ 32-bit VMT layout",
+            Self::Modern64 => "64-bit VMT layout",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiProperty {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiMethod {
+    pub name: String,
+    pub address: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiClass {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit_name: Option<String>,
+    pub era: DelphiEra,
+    pub instance_size: u32,
+    pub vmt_va: u64,
+    pub properties: Vec<DelphiProperty>,
+    pub methods: Vec<DelphiMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiForm {
+    pub resource_name: String,
+    pub root_class: String,
+    pub text: String,
+    pub object_count: usize,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelphiReport {
+    pub is_delphi: bool,
+    pub rtti_present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub era: Option<DelphiEra>,
+    pub classes: Vec<DelphiClass>,
+    pub forms: Vec<DelphiForm>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+const MARKERS: &[&[u8]] = &[
+    b"Borland Delphi",
+    b"Embarcadero Delphi",
+    b"Embarcadero\\Studio",
+    b"SOFTWARE\\Borland\\Delphi",
+    b"Software\\Embarcadero\\",
+    b"System.SysUtils",
+    b"TObject",
+];
+
+fn scan_window(bytes: &[u8]) -> &[u8] {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    &bytes[..bytes.len().min(LIMIT)]
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
+}
+
+fn has_markers(bytes: &[u8]) -> bool {
+    let window: &[u8] = scan_window(bytes);
+    MARKERS.iter().any(|m: &&[u8]| contains(window, m))
+}
+
+#[must_use]
+pub fn recover_delphi_classes(bytes: &[u8]) -> Vec<DelphiClass> {
+    PeView::parse(bytes).map_or_else(Vec::new, |view: PeView<'_>| {
+        vmt::scan_classes(&view).classes
+    })
+}
+
+#[must_use]
+pub fn recover_dfm_resources(bytes: &[u8]) -> Vec<DelphiForm> {
+    let Some(view): Option<PeView<'_>> = PeView::parse(bytes) else {
+        return Vec::new();
+    };
+    decode_forms(&view)
+}
+
+fn decode_forms(view: &PeView<'_>) -> Vec<DelphiForm> {
+    let mut forms: Vec<DelphiForm> = Vec::new();
+    for res in resource::collect_rcdata(view) {
+        let Some(decoded): Option<dfm::DfmDecoded> = dfm::decode(&res.data) else {
+            continue;
+        };
+        forms.push(DelphiForm {
+            resource_name: res.name,
+            root_class: decoded.root_class,
+            text: decoded.text,
+            object_count: decoded.object_count,
+            truncated: decoded.truncated,
+            notes: decoded.notes,
+        });
+    }
+    forms
+}
+
+#[must_use]
+pub fn detect_delphi(bytes: &[u8]) -> bool {
+    if has_markers(bytes) {
+        return true;
+    }
+    PeView::parse(bytes).is_some_and(|view: PeView<'_>| {
+        !vmt::scan_classes(&view).classes.is_empty() || !resource::collect_rcdata(&view).is_empty()
+    })
+}
+
+#[must_use]
+pub fn analyze(bytes: &[u8]) -> DelphiReport {
+    let markers: bool = has_markers(bytes);
+    let Some(view): Option<PeView<'_>> = PeView::parse(bytes) else {
+        return DelphiReport {
+            is_delphi: markers,
+            rtti_present: false,
+            era: None,
+            classes: Vec::new(),
+            forms: Vec::new(),
+            notes: if markers {
+                vec!["Delphi marker present but the input is not a PE image".to_owned()]
+            } else {
+                Vec::new()
+            },
+        };
+    };
+
+    let outcome: vmt::ScanOutcome = vmt::scan_classes(&view);
+    let forms: Vec<DelphiForm> = decode_forms(&view);
+    let rtti_present: bool = !outcome.classes.is_empty();
+    let mut notes: Vec<String> = Vec::new();
+    if !rtti_present {
+        if outcome.anchor_count > 0 {
+            notes.push(
+                "VMT self-pointer anchors were found but no class validated (RTTI present but not parseable)".to_owned(),
+            );
+        } else {
+            notes.push("no Delphi RTTI virtual method tables present".to_owned());
+        }
+    }
+    for form in &forms {
+        if form.truncated {
+            notes.push(format!(
+                "form resource {} decoded partially",
+                form.resource_name
+            ));
+        }
+    }
+
+    DelphiReport {
+        is_delphi: markers || rtti_present || !forms.is_empty(),
+        rtti_present,
+        era: outcome.era,
+        classes: outcome.classes,
+        forms,
+        notes,
+    }
+}

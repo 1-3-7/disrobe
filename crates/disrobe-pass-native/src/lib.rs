@@ -27,6 +27,7 @@ pub mod cxx_recovery;
 pub mod debug;
 pub mod debug_info;
 pub mod decompile;
+pub mod delphi;
 pub mod deobf;
 pub mod desync;
 pub mod disasm_ir;
@@ -105,6 +106,10 @@ pub use debug_info::{
 };
 pub use decompile::{
     DecompileOutput, DecompilerBackend, Probe, lift_llvm_ir_to_pseudo_c, probe, probe_all, run,
+};
+pub use delphi::{
+    DelphiClass, DelphiEra, DelphiForm, DelphiMethod, DelphiProperty, DelphiReport,
+    analyze as analyze_delphi, detect_delphi, recover_delphi_classes, recover_dfm_resources,
 };
 pub use deobf::{
     AbiInference, ArgCount, Bits as DeobfBits, BlockCopyProp, BlockDeadFlags, BogusBranch,
