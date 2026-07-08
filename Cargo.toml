@@ -234,6 +234,7 @@ oxc_codegen = "0.40.1"
 oxc_parser = "0.40.1"
 oxc_semantic = "0.40.1"
 oxc_span = "0.40.1"
+oxiz = { version = "0.2.3", default-features = false, features = ["std"] }
 pbkdf2 = "0.12.2"
 pdb = "0.8.0"
 plist = "1.9.0"

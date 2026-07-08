@@ -34,6 +34,8 @@ pub mod opaque;
 pub mod rewrite;
 pub mod rules;
 pub mod simplify;
+#[cfg(feature = "smt-solver")]
+pub mod smt;
 #[cfg(feature = "smt-verify")]
 pub mod verify;
 
@@ -50,6 +52,8 @@ pub use rules::{
     Template, Unary, apply_root, load_str, mba_peephole_rules, rewrite_fixpoint,
 };
 pub use simplify::{Simplification, Verification, simplify};
+#[cfg(feature = "smt-solver")]
+pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 #[cfg(feature = "smt-verify")]
 pub use verify::{Equivalence, verify_equivalent, verify_equivalent_budgeted};
 

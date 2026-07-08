@@ -934,20 +934,70 @@ fn scan_bogus_branches(bits: DeobfBits, sections: &[CodeSection]) -> Vec<BogusBr
             if out.len() >= DEOBF_MAX_FINDINGS {
                 return out;
             }
-            let Some(found): Option<BogusBranch> =
-                defeat_bogus_control_flow(bits, block.va, block.bytes)
-            else {
-                continue;
-            };
-            if matches!(
-                found.result,
-                OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
-            ) {
+            let fast: Option<BogusBranch> = defeat_bogus_control_flow(bits, block.va, block.bytes);
+            let resolved: Option<BogusBranch> = fast
+                .filter(|found: &BogusBranch| {
+                    matches!(
+                        found.result,
+                        OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
+                    )
+                })
+                .or_else(|| escalate_bogus_branch(bits, section, block.va, block.bytes));
+            if let Some(found) = resolved {
                 out.push(found);
             }
         }
     }
     out
+}
+
+#[cfg(feature = "smt-solver")]
+fn escalate_bogus_branch(
+    bits: DeobfBits,
+    section: &CodeSection,
+    block_va: u64,
+    block_bytes: &[u8],
+) -> Option<BogusBranch> {
+    let branch_address: u64 = last_conditional_branch_ip(bits, block_va, block_bytes)?;
+    let found: BogusBranch = crate::deobf::defeat_bogus_control_flow_deep(
+        bits,
+        section.va,
+        &section.bytes,
+        branch_address,
+    )?;
+    matches!(
+        found.result,
+        OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
+    )
+    .then_some(found)
+}
+
+#[cfg(not(feature = "smt-solver"))]
+const fn escalate_bogus_branch(
+    _bits: DeobfBits,
+    _section: &CodeSection,
+    _block_va: u64,
+    _block_bytes: &[u8],
+) -> Option<BogusBranch> {
+    None
+}
+
+#[cfg(feature = "smt-solver")]
+fn last_conditional_branch_ip(bits: DeobfBits, va: u64, bytes: &[u8]) -> Option<u64> {
+    use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction};
+    let mut decoder: Decoder<'_> = Decoder::with_ip(bits.value(), bytes, va, DecoderOptions::NONE);
+    let mut insn: Instruction = Instruction::default();
+    let mut last_conditional: Option<u64> = None;
+    while decoder.can_decode() {
+        decoder.decode_out(&mut insn);
+        if insn.is_invalid() {
+            break;
+        }
+        if insn.flow_control() == FlowControl::ConditionalBranch {
+            last_conditional = Some(insn.ip());
+        }
+    }
+    last_conditional
 }
 
 fn scan_substitutions(bits: DeobfBits, sections: &[CodeSection]) -> Vec<SubstitutionResult> {

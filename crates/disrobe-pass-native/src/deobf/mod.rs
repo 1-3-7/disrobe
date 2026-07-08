@@ -8,6 +8,8 @@
 
 pub mod abi;
 pub mod bcf;
+#[cfg(feature = "smt-solver")]
+pub mod bcf_dse;
 pub mod branchfold;
 pub mod cff;
 pub mod copyprop;
@@ -22,6 +24,11 @@ use serde::{Deserialize, Serialize};
 
 pub use abi::{AbiInference, ArgCount, CallingConvention, ReturnKind, infer as infer_function_abi};
 pub use bcf::{BogusBranch, OpaqueResult, analyze_block as analyze_bogus_branch};
+#[cfg(feature = "smt-solver")]
+pub use bcf_dse::{
+    BackwardBudget, analyze_branch_backward as analyze_bogus_branch_deep,
+    analyze_branch_backward_bounded as analyze_bogus_branch_deep_bounded, locate_containing_block,
+};
 pub use branchfold::{
     BranchFoldFinding, BranchFoldOutcome, FoldKind, FoldVerdict, fold_block as fold_branch_block,
 };
@@ -123,6 +130,31 @@ pub fn defeat_cff(bits: Bits, base: u64, code: &[u8], entry: u64) -> CffOutcome 
 #[must_use]
 pub fn defeat_bogus_control_flow(bits: Bits, base: u64, block: &[u8]) -> Option<BogusBranch> {
     bcf::analyze_block(bits.value(), base, block)
+}
+
+#[cfg(feature = "smt-solver")]
+#[must_use]
+pub fn defeat_bogus_control_flow_deep(
+    bits: Bits,
+    base: u64,
+    code: &[u8],
+    branch_address: u64,
+) -> Option<BogusBranch> {
+    let fast: Option<BogusBranch> =
+        bcf_dse::locate_containing_block(bits.value(), base, code, branch_address).and_then(
+            |(block_addr, range): (u64, std::ops::Range<usize>)| {
+                bcf::analyze_block(bits.value(), block_addr, &code[range])
+            },
+        );
+    if let Some(found) = &fast
+        && matches!(
+            found.result,
+            OpaqueResult::AlwaysTaken | OpaqueResult::AlwaysNotTaken
+        )
+    {
+        return fast;
+    }
+    bcf_dse::analyze_branch_backward(bits.value(), base, code, branch_address).or(fast)
 }
 
 #[must_use]

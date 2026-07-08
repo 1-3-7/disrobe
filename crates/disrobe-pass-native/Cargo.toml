@@ -61,6 +61,7 @@ default = []
 chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 stub-emulation = []
+smt-solver = ["disrobe-mba/smt-solver"]
 
 [dev-dependencies]
 disrobe-query = { workspace = true }
