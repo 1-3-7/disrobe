@@ -32,6 +32,7 @@ pub mod deobf;
 pub mod desync;
 pub mod disasm_ir;
 pub mod dwarf_sourcemap;
+pub mod ebpf;
 pub mod elf;
 pub mod emu_strings;
 pub mod encode;
@@ -137,6 +138,7 @@ pub use dwarf_sourcemap::{
     CompileUnit, CoverageScore, DwarfSourcemap, LineRow, ReconstructedType, SplitDwarfInfo,
     TypeKind, TypeMember, TypeReconstruction, reconstruct_dwarf_types, synthesize_dwarf_sourcemap,
 };
+pub use ebpf::{EBPF_INSN_SIZE, EbpfRecovery, ebpf_helper_name, recover_ebpf_program};
 pub use elf::{
     DynamicSymbol, ElfClass, ElfData, ElfDynamicReport, RelocSource, Relocation, SegmentMapping,
     SymbolBind, SymbolCountSource, SymbolType, analyze as analyze_elf_dynamic,

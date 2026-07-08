@@ -97,4 +97,7 @@ pub enum Error {
 
     #[error("DR-NATIVE-0024: x86 re-encode failure ({stage}): {detail}")]
     Encode { stage: &'static str, detail: String },
+
+    #[error("DR-NATIVE-0025: eBPF decode failure: {0}")]
+    EbpfDecode(String),
 }

@@ -76,3 +76,4 @@ sevenz-rust2 = { workspace = true }
 cab = { workspace = true }
 crc32fast = { workspace = true }
 tempfile = "3"
+rbpf = "0.4"
