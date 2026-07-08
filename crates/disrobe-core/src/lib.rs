@@ -28,6 +28,7 @@ pub mod strings;
 pub mod time;
 pub mod yara;
 pub mod yara_gen;
+pub mod yara_match;
 
 pub use anti_analysis::{
     ANTI_ANALYSIS_SCHEMA, AntiAnalysisFinding, AntiAnalysisReport,
@@ -120,6 +121,10 @@ pub use yara::{
 pub use yara_gen::{
     GenerateOptions as YaraGenerateOptions, GeneratedRule, YARA_GEN_SCHEMA, YaraGenError,
     generate as generate_yara_rule,
+};
+pub use yara_match::{
+    CompiledRuleset, RuleMatch, ScanReport, StringMatch, UnevaluatedRule, YARA_MATCH_SCHEMA,
+    YaraMatchError,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
