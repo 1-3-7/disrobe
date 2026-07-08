@@ -184,4 +184,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0064: qnx image parse failed: {0}")]
     Qnx(String),
+
+    #[error("DR-BINFMT-0065: eszip module-graph archive parse failed: {0}")]
+    Eszip(String),
 }

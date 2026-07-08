@@ -14,6 +14,7 @@ pub mod dmg;
 pub mod docker;
 pub mod elf_overlay;
 pub mod erofs;
+pub mod eszip;
 pub mod ext4;
 pub mod fat;
 pub mod firmware;
@@ -104,6 +105,11 @@ pub use elf_overlay::{
     ElfOverlay, ElfOverlayCarve, carve_elf_overlay, detect_elf_overlay, elf_image_end,
 };
 pub use erofs::{ErofsFile, ErofsSuperblock, ErofsWalk, detect_erofs, walk_erofs};
+pub use eszip::{
+    EszipArchive, EszipChecksum, EszipExtractedModule, EszipModuleEntry, EszipModuleKind,
+    EszipNpmSpecifier, EszipRedirect, EszipVersion, detect_eszip, extract_eszip, module_source,
+    module_source_map, parse_eszip, parse_eszip_at, sanitize_eszip_specifier,
+};
 pub use ext4::{Ext4File, Ext4Walk, detect_ext4, walk_ext4};
 pub use fat::{
     FatBpb, FatFile, FatKind, FatVolume, detect_fat, file_data as fat_file_data, parse_bpb,
