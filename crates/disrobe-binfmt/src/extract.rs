@@ -166,6 +166,7 @@ pub fn extract_to_with_quota(
         ContainerKind::Partclone => extract_partclone(bytes, out_dir, quota),
         ContainerKind::StuffIt => extract_stuffit(bytes, out_dir, quota),
         ContainerKind::Qnx => extract_qnx(bytes, out_dir, quota),
+        ContainerKind::UefiFv => extract_uefi_firmware_volume(bytes, out_dir, quota),
         ContainerKind::Xz => extract_bare_xz(bytes, out_dir, quota),
         ContainerKind::Gzip => extract_bare_gzip(bytes, out_dir, quota),
         ContainerKind::Bzip2 => {
@@ -3801,6 +3802,124 @@ fn extract_qnx(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             "qnx {kind:?} image carved verbatim: no nrv2b/nrv2d/nrv2e compressed-segment stream was located after the startup header (an uncompressed or qnx6-fs image needs no decompression)"
         ),
     )
+}
+
+#[derive(Debug, Serialize)]
+struct UefiFvSummary<'a> {
+    volumes_walked: usize,
+    file_count: usize,
+    files: &'a [UefiFvFileSummary],
+    notes: &'a [String],
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UefiFvFileSummary {
+    guid: String,
+    file_type: String,
+    depth: usize,
+    name: Option<String>,
+    size: u64,
+    section_count: usize,
+    written_file: Option<String>,
+}
+
+fn extract_uefi_firmware_volume(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    let extraction: crate::containers::FvExtraction =
+        crate::containers::extract_uefi_fv(bytes, quota)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
+        max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
+        max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
+        ..quota
+    });
+    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    let mut violations: Vec<String> = extraction.notes.clone();
+    let mut file_summaries: Vec<UefiFvFileSummary> = Vec::with_capacity(extraction.files.len());
+    let mut used_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for file in &extraction.files {
+        let guid_string: String = crate::containers::guid_to_string(&file.guid);
+        let pe_image: Option<&crate::containers::FvPeImage> = extraction
+            .pe_images
+            .iter()
+            .find(|p: &&crate::containers::FvPeImage| p.file_guid == file.guid);
+        let mut written_file: Option<String> = None;
+        if let Some(pe) = pe_image {
+            let base_name: String = pe
+                .name
+                .clone()
+                .and_then(|n: String| sanitize_entry_path(&n).ok())
+                .unwrap_or_else(|| format!("{guid_string}.efi"));
+            let label: String = if used_names.contains(&base_name) {
+                format!("{guid_string}.{base_name}")
+            } else {
+                base_name
+            };
+            let size: u64 = pe.data.len() as u64;
+            if let Err(e) = guard.admit_entry(&label, size, size) {
+                violations.push(format!("uefi-fv-quota `{label}`: {e}"));
+            } else {
+                used_names.insert(label.clone());
+                let disk_path: PathBuf = out_dir.join(&label);
+                std::fs::write(&disk_path, &pe.data)?;
+                encoding.insert(label.clone(), EntryCompression::Stored);
+                entries_out.push(ExtractedEntry {
+                    name: label.clone(),
+                    disk_path: Some(disk_path),
+                    uncompressed_size: size,
+                    compressed_size: size,
+                    compression: EntryCompression::Stored,
+                    is_executable: true,
+                });
+                written_file = Some(label);
+            }
+        }
+        file_summaries.push(UefiFvFileSummary {
+            guid: guid_string,
+            file_type: format!("{:?}", file.file_type),
+            depth: file.depth,
+            name: file.name.clone(),
+            size: file.size,
+            section_count: file.sections.len(),
+            written_file,
+        });
+    }
+
+    let summary: UefiFvSummary = UefiFvSummary {
+        volumes_walked: extraction.volumes_walked,
+        file_count: extraction.files.len(),
+        files: &file_summaries,
+        notes: &extraction.notes,
+        truncated: extraction.truncated,
+    };
+    let summary_json: String =
+        serde_json::to_string_pretty(&summary).unwrap_or_else(|_: serde_json::Error| String::new());
+    let summary_name: String = ".disrobe-uefi-fv.json".to_owned();
+    let summary_path: PathBuf = out_dir.join(&summary_name);
+    std::fs::write(&summary_path, summary_json.as_bytes())?;
+    encoding.insert(summary_name.clone(), EntryCompression::Stored);
+    entries_out.push(ExtractedEntry {
+        name: summary_name,
+        disk_path: Some(summary_path),
+        uncompressed_size: summary_json.len() as u64,
+        compressed_size: summary_json.len() as u64,
+        compression: EntryCompression::Stored,
+        is_executable: false,
+    });
+
+    Ok(ExtractionResult {
+        kind: ContainerKind::UefiFv,
+        entries: entries_out,
+        encoding,
+        integrity_violations: violations,
+        quota: QuotaSummary::from(guard.report()),
+    })
 }
 
 fn qnx_try_ucl(

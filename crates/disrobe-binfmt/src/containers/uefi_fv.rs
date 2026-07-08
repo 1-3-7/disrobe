@@ -414,6 +414,13 @@ fn process_section_stream(
     file: &mut FvFileRecord,
     out: &mut FvExtraction,
 ) -> Result<()> {
+    if depth > MAX_FV_DEPTH {
+        out.truncated = true;
+        out.notes.push(format!(
+            "section stream recursion exceeded max depth {MAX_FV_DEPTH}, stopped"
+        ));
+        return Ok(());
+    }
     let mut offset: usize = 0;
     let mut count: usize = 0;
     while offset + SECTION_HEADER_LEN <= payload.len() {
@@ -956,5 +963,96 @@ mod tests {
         let result: FvExtraction = extract_uefi_fv(&corrupted, ExtractionQuota::default_safe())
             .expect("a zero-length file yields an honest truncated report, not an error");
         assert!(result.truncated);
+    }
+
+    fn nest_compression_type_none_sections(layers: usize) -> Vec<u8> {
+        let mut stream: Vec<u8> = Vec::new();
+        for _ in 0..layers {
+            let mut body: Vec<u8> = Vec::new();
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.push(COMPRESSION_TYPE_NONE);
+            body.extend_from_slice(&stream);
+            let total_size: usize = SECTION_HEADER_LEN + body.len();
+            let mut section: Vec<u8> = Vec::with_capacity(total_size);
+            section.extend_from_slice(&(total_size as u32).to_le_bytes()[..3]);
+            section.push(SECTION_COMPRESSION);
+            section.extend_from_slice(&body);
+            let padded_len: usize = align_up_usize(section.len(), SECTION_ALIGN);
+            section.resize(padded_len, 0u8);
+            stream = section;
+        }
+        stream
+    }
+
+    #[test]
+    fn nested_compression_none_sections_beyond_the_depth_ceiling_are_bounded_not_unbounded() {
+        let layers: usize = MAX_FV_DEPTH + 24;
+        let payload: Vec<u8> = nest_compression_type_none_sections(layers);
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), payload.len() as u64);
+        let mut file: FvFileRecord = FvFileRecord {
+            guid: [0u8; 16],
+            file_type: FvFileType::Driver,
+            depth: 0,
+            name: None,
+            size: payload.len() as u64,
+            sections: Vec::new(),
+        };
+        let mut out: FvExtraction = FvExtraction::default();
+        process_section_stream(&payload, 0, &mut budget, &mut file, &mut out).expect(
+            "depth-capped recursion through the compression-type-none branch reports truncation, it never errors or panics",
+        );
+        assert!(out.truncated);
+        assert_eq!(file.sections.len(), MAX_FV_DEPTH + 1);
+        assert!(
+            out.notes
+                .iter()
+                .any(|n: &String| n.contains("section stream recursion exceeded max depth"))
+        );
+    }
+
+    #[test]
+    fn nested_crc32_guided_sections_beyond_the_depth_ceiling_are_bounded_not_unbounded() {
+        let mut inner: Vec<u8> = Vec::new();
+        for _ in 0..(MAX_FV_DEPTH + 24) {
+            let mut guid_defined_body: Vec<u8> = Vec::new();
+            guid_defined_body.extend_from_slice(&GUID_CRC32_SECTION);
+            let data_offset: u16 = (SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN) as u16;
+            guid_defined_body.extend_from_slice(&data_offset.to_le_bytes());
+            guid_defined_body.extend_from_slice(&[0u8; 2]);
+            let stored_crc: u32 = crc32fast::hash(&inner);
+            guid_defined_body.extend_from_slice(&stored_crc.to_le_bytes());
+            guid_defined_body.extend_from_slice(&inner);
+            let total_size: usize = SECTION_HEADER_LEN + guid_defined_body.len();
+            let mut section: Vec<u8> = Vec::with_capacity(total_size);
+            section.extend_from_slice(&(total_size as u32).to_le_bytes()[..3]);
+            section.push(SECTION_GUID_DEFINED);
+            section.extend_from_slice(&guid_defined_body);
+            let padded_len: usize = align_up_usize(section.len(), SECTION_ALIGN);
+            section.resize(padded_len, 0u8);
+            inner = section;
+        }
+        let payload: Vec<u8> = inner;
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), payload.len() as u64);
+        let mut file: FvFileRecord = FvFileRecord {
+            guid: [0u8; 16],
+            file_type: FvFileType::Driver,
+            depth: 0,
+            name: None,
+            size: payload.len() as u64,
+            sections: Vec::new(),
+        };
+        let mut out: FvExtraction = FvExtraction::default();
+        process_section_stream(&payload, 0, &mut budget, &mut file, &mut out).expect(
+            "depth-capped recursion through the crc32 guided-section branch reports truncation, it never errors or panics",
+        );
+        assert!(out.truncated);
+        assert_eq!(file.sections.len(), MAX_FV_DEPTH + 1);
+        assert!(
+            out.notes
+                .iter()
+                .any(|n: &String| n.contains("section stream recursion exceeded max depth"))
+        );
     }
 }
