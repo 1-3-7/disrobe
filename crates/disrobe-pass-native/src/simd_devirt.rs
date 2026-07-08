@@ -3365,6 +3365,10 @@ fn recognize_ptrwalk_map(insns: &[Insn]) -> Option<MapForm> {
     let abi_in_reg: Reg = traces_pristine_arg(insns, pmap.header_idx, pmap.in_reg)?;
     let abi_out_reg: Reg = traces_pristine_arg(insns, pmap.header_idx, pmap.out_reg)?;
     let len_reg: Reg = verify_ptrwalk_map_bound(insns, &pmap)?;
+    let abi_len_reg: Reg = traces_pristine_arg(insns, pmap.header_idx, len_reg)?;
+    if abi_len_reg == abi_in_reg || abi_len_reg == abi_out_reg {
+        return None;
+    }
     let vf: usize = (16 / pmap.width.bytes()) as usize;
     if vf < 2 {
         return None;
@@ -3409,7 +3413,7 @@ fn recognize_ptrwalk_map(insns: &[Insn]) -> Option<MapForm> {
             width: pmap.width,
             in_reg: abi_in_reg,
             out_reg: abi_out_reg,
-            len_reg,
+            len_reg: abi_len_reg,
         });
     }
 
@@ -3420,7 +3424,7 @@ fn recognize_ptrwalk_map(insns: &[Insn]) -> Option<MapForm> {
         width: pmap.width,
         in_reg: abi_in_reg,
         out_reg: abi_out_reg,
-        len_reg,
+        len_reg: abi_len_reg,
     })
 }
 
@@ -4451,6 +4455,83 @@ mod tests {
             assert_eq!(form.in_reg, Reg::Rdx);
             assert_eq!(form.out_reg, Reg::Rcx);
             assert_eq!(form.len_reg, Reg::R8);
+        }
+    }
+
+    #[test]
+    fn recovers_gcc_sysv_map_when_entry_swaps_length_into_the_output_arg_register() {
+        let insns: Vec<Insn> = vec![
+            insn_at(0x650, "mov", "rcx,rdi"),
+            insn_at(0x653, "mov", "rdi,rdx"),
+            insn_at(0x656, "test", "rdx,rdx"),
+            insn_at(0x659, "jle", "short 0000000000000692h"),
+            insn_at(0x65b, "lea", "rax,[rdx-1]"),
+            insn_at(0x65f, "cmp", "rax,2"),
+            insn_at(0x663, "jbe", "near 0000000000000710h"),
+            insn_at(0x669, "lea", "rax,[rsi+4]"),
+            insn_at(0x66d, "mov", "rdx,rcx"),
+            insn_at(0x670, "sub", "rdx,rax"),
+            insn_at(0x673, "xor", "eax,eax"),
+            insn_at(0x675, "cmp", "rdx,8"),
+            insn_at(0x679, "ja", "short 0000000000000698h"),
+            insn_at(0x67b, "nop", "dword [rax+rax]"),
+            insn_at(0x680, "mov", "edx,[rsi+rax*4]"),
+            insn_at(0x683, "shl", "edx,3"),
+            insn_at(0x686, "mov", "[rcx+rax*4],edx"),
+            insn_at(0x689, "add", "rax,1"),
+            insn_at(0x68d, "cmp", "rdi,rax"),
+            insn_at(0x690, "jne", "short 0000000000000680h"),
+            insn_at(0x692, "ret", ""),
+            insn_at(0x693, "nop", "dword [rax+rax]"),
+            insn_at(0x698, "mov", "rdx,rdi"),
+            insn_at(0x69b, "shr", "rdx,2"),
+            insn_at(0x69f, "shl", "rdx,4"),
+            insn_at(0x6a3, "nop", "dword [rax+rax]"),
+            insn_at(0x6a8, "movdqu", "xmm0,[rsi+rax]"),
+            insn_at(0x6ad, "pslld", "xmm0,3"),
+            insn_at(0x6b2, "movups", "[rcx+rax],xmm0"),
+            insn_at(0x6b6, "add", "rax,10h"),
+            insn_at(0x6ba, "cmp", "rdx,rax"),
+            insn_at(0x6bd, "jne", "short 00000000000006A8h"),
+            insn_at(0x6bf, "mov", "rax,rdi"),
+            insn_at(0x6c2, "and", "rax,0FFFFFFFFFFFFFFFCh"),
+            insn_at(0x6c6, "test", "dil,3"),
+            insn_at(0x6ca, "je", "short 0000000000000692h"),
+            insn_at(0x6cc, "mov", "edx,[rsi+rax*4]"),
+            insn_at(0x6cf, "shl", "edx,3"),
+            insn_at(0x6d2, "mov", "[rcx+rax*4],edx"),
+            insn_at(0x6d5, "lea", "rdx,[rax+1]"),
+            insn_at(0x6d9, "cmp", "rdi,rdx"),
+            insn_at(0x6dc, "jle", "short 0000000000000692h"),
+            insn_at(0x6de, "mov", "r10d,[rsi+rdx*4]"),
+            insn_at(0x6e2, "add", "rax,2"),
+            insn_at(0x6e6, "lea", "r9,[rdx*4]"),
+            insn_at(0x6ee, "lea", "r8d,[r10*8]"),
+            insn_at(0x6f6, "mov", "[rcx+rdx*4],r8d"),
+            insn_at(0x6fa, "cmp", "rdi,rax"),
+            insn_at(0x6fd, "jle", "short 0000000000000692h"),
+            insn_at(0x6ff, "mov", "eax,[rsi+r9+4]"),
+            insn_at(0x704, "shl", "eax,3"),
+            insn_at(0x707, "mov", "[rcx+r9+4],eax"),
+            insn_at(0x70c, "ret", ""),
+            insn_at(0x70d, "nop", "dword [rax]"),
+            insn_at(0x710, "xor", "eax,eax"),
+            insn_at(0x712, "jmp", "0000000000000680h"),
+        ];
+        let recognized: Option<MapForm> = recognize_ptrwalk_map(&insns);
+        assert!(
+            recognized.is_some(),
+            "expected the ptrwalk map to recover despite the entry mov rcx,rdi / mov rdi,rdx swap"
+        );
+        if let Some(form) = recognized {
+            assert_eq!(form.width, ElemWidth::W32);
+            assert_eq!(form.in_reg, Reg::Rsi);
+            assert_eq!(form.out_reg, Reg::Rdi);
+            assert_eq!(
+                form.len_reg,
+                Reg::Rdx,
+                "length must resolve to the pristine third argument, not the loop-local rdi that aliases the output pointer register"
+            );
         }
     }
 }
