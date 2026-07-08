@@ -2,6 +2,7 @@ use disrobe_nir::{NirModule, SourceLang};
 use serde::{Deserialize, Serialize};
 
 use crate::macho::ParsedSlice;
+use crate::objc_dispatch::ObjcMessageSend;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
@@ -84,6 +85,7 @@ pub struct FunctionBody {
     pub source_lines: Vec<SourceLine>,
     pub instructions: Vec<DisasmInstruction>,
     pub truncated: bool,
+    pub objc_sends: Vec<ObjcMessageSend>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,8 +198,9 @@ pub fn recover_native_bodies(slice: &[u8], parsed: &ParsedSlice) -> NativeBodyRe
     let grade: SourceGrade = grade_for(named_type_count, line_coverage_pct, has_symbols);
 
     let arch: Option<Arch> = map_arch(parsed.header.cpu);
-    let functions: Vec<FunctionBody> =
+    let mut functions: Vec<FunctionBody> =
         build_function_bodies(slice, parsed, &symbols, sourcemap.as_ref(), arch);
+    annotate_objc_sends(slice, parsed, &mut functions);
     let nir: NirModule = lift_native_nir(slice, parsed.header.cpu, &symbols, &functions);
 
     NativeBodyReport {
@@ -217,6 +220,26 @@ pub fn recover_native_bodies(slice: &[u8], parsed: &ParsedSlice) -> NativeBodyRe
         function_count: u32::try_from(functions.len()).unwrap_or(u32::MAX),
         functions,
         reconstructed_types,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn annotate_objc_sends(slice: &[u8], parsed: &ParsedSlice, functions: &mut [FunctionBody]) {
+    use crate::objc_dispatch::{
+        DispatchArch, DispatchMaps, annotate_instructions, build_dispatch_maps,
+    };
+
+    let arch: DispatchArch = match parsed.header.cpu {
+        CpuKind::X86_64 => DispatchArch::X86_64,
+        CpuKind::Arm64 | CpuKind::Arm64_32 => DispatchArch::Arm64,
+        _ => return,
+    };
+    let maps: DispatchMaps = build_dispatch_maps(slice, parsed, arch);
+    if maps.is_empty() {
+        return;
+    }
+    for function in functions.iter_mut() {
+        function.objc_sends = annotate_instructions(&function.instructions, arch, &maps);
     }
 }
 
@@ -544,6 +567,7 @@ fn build_function_bodies(
             source_lines,
             instructions,
             truncated,
+            objc_sends: Vec::new(),
         });
     }
     bodies
@@ -792,6 +816,7 @@ mod tests {
                 instruction(0x1008, "ret", "", "d65f03c0"),
             ],
             truncated: false,
+            objc_sends: Vec::new(),
         };
         let function: NirFunction = lift_function(SourceLang::NativeArm, &body);
         assert_eq!(function.name, "greet");

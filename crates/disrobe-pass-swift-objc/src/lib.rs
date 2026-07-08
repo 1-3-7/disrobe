@@ -10,6 +10,7 @@ pub mod ipa;
 pub mod macho;
 pub mod native_bodies;
 pub mod objc;
+pub mod objc_dispatch;
 pub mod objc_records;
 pub mod pass;
 pub mod plist_decode;
@@ -38,6 +39,10 @@ pub use native_bodies::{
 pub use objc::{
     ObjcClassDump, ObjcPointerList, ObjcStringTable, SelectorIndex, class_dump as objc_class_dump,
     index_selectors,
+};
+pub use objc_dispatch::{
+    DispatchArch, DispatchMaps, ObjcMessageSend, ObjcSend, annotate_instructions,
+    build_dispatch_maps,
 };
 pub use objc_records::{
     ObjcInterface, ObjcIvar, ObjcMethod, ObjcProperty,
