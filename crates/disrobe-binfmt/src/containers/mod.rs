@@ -10,6 +10,7 @@ pub mod bun;
 pub mod cab_lzms;
 pub mod cpio;
 pub mod cramfs;
+pub mod cython;
 pub mod dmg;
 pub mod docker;
 pub mod dotnet_bundle;
@@ -100,6 +101,10 @@ pub use bun::{
 pub use cab_lzms::{CabLzmsFile, build_lzms_cab, cab_uses_lzms, extract_cab_lzms};
 pub use cpio::{CpioArchive, CpioEntry, CpioVariant, detect_cpio_variant, parse_cpio};
 pub use cramfs::{CramfsFile, CramfsWalk, detect_cramfs, walk_cramfs};
+pub use cython::{
+    CythonClass, CythonFunction, CythonIdentity, CythonModule, RecoverySource, detect_cython,
+    recover_cython,
+};
 pub use dmg::{DmgSummary, KolyTrailer, detect_dmg, parse_koly, reconstruct_image};
 pub use docker::{DockerManifest, parse_docker_manifest};
 pub use dotnet_bundle::{

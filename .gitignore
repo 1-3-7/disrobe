@@ -382,6 +382,8 @@ scripts/*
 !corpus/python/pyarmor/**/*.pyd
 !corpus/python/pyarmor/**/*.so
 
+!corpus/binfmt/cython/**/*.pyd
+
 !corpus/mobile/flutter/disrobe_sample/disrobe_aot_sample.dart
 !corpus/mobile/flutter/disrobe_sample/disrobe_aot_sample.app.dill
 !corpus/mobile/flutter/disrobe_sample/libapp_arm64.so

@@ -190,4 +190,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0066: .net single-file bundle parse failed: {0}")]
     DotnetBundle(String),
+
+    #[error("DR-BINFMT-0067: cython extension recovery failed: {0}")]
+    Cython(String),
 }
