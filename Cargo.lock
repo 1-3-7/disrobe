@@ -2975,6 +2975,9 @@ version = "0.10.4"
 dependencies = [
  "disrobe-nir",
  "disrobe-nir-lift",
+ "disrobe-pass-native",
+ "disrobe-query",
+ "object",
  "serde",
  "wat",
 ]
