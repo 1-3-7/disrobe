@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use crate::scan_utils::{find_brace_close, find_paren_close, find_statement_end, skip_ws};
+use crate::scan_utils::{
+    find_brace_close, find_paren_close, find_statement_end, skip_string, skip_ws,
+};
 
 const SELF_DEFENDING_REGEX: &str = "(((.+)+)+)+$";
 const CONSOLE_HIJACK_MARKER_CONSOLE: &str = ".console=";
@@ -327,6 +329,10 @@ fn remove_ratchet_functions(source: &str) -> (String, usize) {
         if bytes.get(end) == Some(&b';') {
             end += 1;
         }
+        let outer_name: &str = &source[name_start..name_end];
+        if identifier_referenced_outside(source, outer_name, kw_start, end) {
+            continue;
+        }
         removals.push((kw_start, end));
     }
     if removals.is_empty() {
@@ -345,6 +351,33 @@ fn remove_ratchet_functions(source: &str) -> (String, usize) {
     }
     out.push_str(&source[cursor..]);
     (out, count)
+}
+
+fn identifier_referenced_outside(
+    source: &str,
+    name: &str,
+    excl_start: usize,
+    excl_end: usize,
+) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let bytes: &[u8] = source.as_bytes();
+    let mut search_from: usize = 0;
+    while let Some(rel) = source[search_from..].find(name) {
+        let match_start: usize = search_from + rel;
+        let match_end: usize = match_start + name.len();
+        search_from = match_end;
+        if match_start >= excl_start && match_end <= excl_end {
+            continue;
+        }
+        let before_is_boundary: bool = match_start == 0 || !is_ident_byte(bytes[match_start - 1]);
+        let after_is_boundary: bool = match_end >= bytes.len() || !is_ident_byte(bytes[match_end]);
+        if before_is_boundary && after_is_boundary {
+            return true;
+        }
+    }
+    false
 }
 
 fn remove_checker_blocks(source: &str) -> (String, Vec<String>) {
@@ -410,11 +443,79 @@ fn locate_checker(source: &str, call_open: usize) -> Option<CheckerRemoval> {
     let decl_terminator: usize = stmt_semi + 1;
     let end: usize =
         find_bare_invocation(bytes, stmt_semi, &checker_name).unwrap_or(decl_terminator);
+    if any_declared_name_escapes(source, stmt_start, end) {
+        return None;
+    }
     Some(CheckerRemoval {
         start: stmt_start,
         end,
         wrapper_name,
     })
+}
+
+fn any_declared_name_escapes(source: &str, start: usize, end: usize) -> bool {
+    declared_names_in_range(source, start, end)
+        .iter()
+        .any(|name: &String| identifier_referenced_outside(source, name, start, end))
+}
+
+fn declared_names_in_range(source: &str, start: usize, end: usize) -> Vec<String> {
+    let bytes: &[u8] = source.as_bytes();
+    let mut names: Vec<String> = Vec::new();
+    let Some(kw_len): Option<usize> = ["const ", "let ", "var "]
+        .iter()
+        .find(|kw: &&&str| source[start..end.min(source.len())].starts_with(*kw))
+        .map(|kw: &&str| kw.len())
+    else {
+        return names;
+    };
+    let mut cursor: usize = skip_ws(bytes, start + kw_len);
+    loop {
+        let name_start: usize = cursor;
+        let mut name_end: usize = name_start;
+        while name_end < end && name_end < bytes.len() && is_ident_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        if name_end == name_start {
+            break;
+        }
+        names.push(source[name_start..name_end].to_owned());
+        let after_name: usize = skip_ws(bytes, name_end);
+        if bytes.get(after_name) != Some(&b'=') {
+            break;
+        }
+        let Some(comma): Option<usize> = find_top_level_comma(bytes, after_name + 1, end) else {
+            break;
+        };
+        cursor = skip_ws(bytes, comma + 1);
+        if cursor >= end {
+            break;
+        }
+    }
+    names
+}
+
+fn find_top_level_comma(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
+    let mut i: usize = start;
+    let (mut paren, mut bracket, mut brace): (i32, i32, i32) = (0, 0, 0);
+    while i < limit && i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                i = skip_string(bytes, i, bytes[i])?;
+                continue;
+            }
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            b'{' => brace += 1,
+            b'}' => brace -= 1,
+            b',' if paren == 0 && bracket == 0 && brace == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn backtrack_to_decl_start(bytes: &[u8], pos: usize) -> usize {
@@ -681,6 +782,26 @@ mod tests {
 
     const CHECKER: &str = "const _0xwrap=(function(){let _0xf=!![];return function(_0xa,_0xb){const _0xc=_0xf?function(){if(_0xb){const _0xd=_0xb['apply'](_0xa,arguments);return _0xb=null,_0xd;}}:function(){};return _0xf=![],_0xc;};}()),_0xck=_0xwrap(this,function(){return _0xck['toString']()['search']('(((.+)+)+)+$')['toString']()['constructor'](_0xck)['search']('(((.+)+)+)+$');});_0xck();const keep=1;";
 
+    const CHECKER_SHARING_CONST_WITH_A_DATA_TABLE_SIBLING: &str = "const bigTable={'a':1,'b':2},wrap=(function(){let f=!![];return function(a,b){const c=f?function(){if(b){const d=b.apply(a,arguments);return b=null,d;}}:function(){};return f=![],c;};}()),ck=wrap(this,function(){return ck.toString().search('(((.+)+)+)+$');});ck();console.log(bigTable.a);";
+
+    #[test]
+    fn checker_sharing_a_const_statement_with_a_live_sibling_table_is_kept() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(CHECKER_SHARING_CONST_WITH_A_DATA_TABLE_SIBLING);
+        assert!(
+            out.contains("bigTable={"),
+            "the sibling data table sharing the const keyword must survive because it is used after the checker: {out}"
+        );
+        assert!(
+            out.contains("console.log(bigTable.a)"),
+            "the real usage site must remain resolvable, not dangling: {out}"
+        );
+        assert_eq!(
+            stats.checker_blocks, 0,
+            "removing the checker here would delete bigTable's own declaration and leave console.log(bigTable.a) dangling"
+        );
+    }
+
     const DEDUPED_SECOND_LITERAL_CHECKER: &str = "const var_60=(function(){let var_61=!![];return function(var_62,var_63){const var_64=var_61?function(){if(var_63){const var_65=var_63.apply(var_62,arguments);return var_63=null,var_65;}}:function(){};return var_61=![],var_64;};}()),var_66=var_60(this,function(){return var_66.toString().search('(((.+)+)+)+$').toString().constructor(var_66).search(var_33.EOhGV);});var_66();const keep=1;";
 
     #[test]
@@ -813,6 +934,30 @@ mod tests {
             "real code must survive: {out}"
         );
         assert_eq!(stats.ratchet_functions, 1);
+    }
+
+    const RATCHET_FUNCTION_REFERENCED_BY_EXTERNAL_SETINTERVAL_CALLBACK: &str = "(function(){const timer=makeTimer();timer.setInterval(watchdog,4000);}());function watchdog(seed){function tick(counter){if(typeof counter==='string')return function(){}['constructor']('while (true) {}').apply('counter');else(''+counter/counter).length!==1||counter%20===0?function(){return!![]}['constructor']('debugger').call('action'):function(){return![];}['constructor']('debugger').apply('stateObject');tick(++counter);}try{if(seed)return tick;else tick(0);}catch(e){}}console.log('real');";
+
+    #[test]
+    fn ratchet_function_referenced_by_external_setinterval_callback_is_kept() {
+        let (out, stats): (String, SelfDefendingStats) =
+            strip_self_defending(RATCHET_FUNCTION_REFERENCED_BY_EXTERNAL_SETINTERVAL_CALLBACK);
+        assert!(
+            out.contains("function watchdog"),
+            "the outer ratchet-shaped function must survive because setInterval still holds a live reference to it by name: {out}"
+        );
+        assert!(
+            out.contains("timer.setInterval(watchdog,4000)"),
+            "the external callback reference must remain resolvable, not dangling: {out}"
+        );
+        assert!(
+            out.contains("console.log('real')"),
+            "real code must survive: {out}"
+        );
+        assert_eq!(
+            stats.ratchet_functions, 0,
+            "deleting watchdog here would leave the setInterval callback argument dangling"
+        );
     }
 
     const REAL_FUNCTION_WITH_ANONYMOUS_ONCE_WRAPPERS_IS_NOT_A_RATCHET: &str = "function greet(name){const table={'a':function(x,y){return x+y;},'b':' :: hi, '};const once=(function(){let f=!![];return function(a,b){const c=f?function(){if(b){const d=b.apply(a,arguments);return b=null,d;}}:function(){};return f=![],c;};}());const guard=table.a(once,this,function(){return guard.toString();});table.a(guard);const banner=table.a('calc',table.b);return table.a(banner,name);}";

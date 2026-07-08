@@ -14,7 +14,7 @@ use disrobe_pass_js_deob::{
     ObfuscatorIoOptions, ObfuscatorIoOutput, deobfuscate_all, detect, obfuscator_io_deobfuscate,
 };
 
-const DIFFERENTIAL_FLOOR: usize = 36;
+const DIFFERENTIAL_FLOOR: usize = 37;
 const EVAL_TIMEOUT: Duration = Duration::from_secs(12);
 const HIGH_CLEAN: &str = "src/javascript/obfuscator-io-high.js";
 
@@ -176,6 +176,12 @@ const SAMPLES: &[Sample] = &[
     Sample {
         name: "obfuscator.io/preset/medium",
         obf: "src/javascript/obfuscator-io-samples/presets/medium.js",
+        src: HIGH_CLEAN,
+        argv_battery: NO_ARGS,
+    },
+    Sample {
+        name: "obfuscator.io/preset/high",
+        obf: "src/javascript/obfuscator-io-samples/presets/high.js",
         src: HIGH_CLEAN,
         argv_battery: NO_ARGS,
     },

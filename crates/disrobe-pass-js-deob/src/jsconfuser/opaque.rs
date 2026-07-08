@@ -4,7 +4,9 @@ use regex::Regex;
 use serde::Serialize;
 
 use super::algebraic_opaque::{AlgebraicOpaqueResult, fold_algebraic_opaque};
-use super::scanner::{apply_splice_edits, find_paren_close, scan_balanced_brace, skip_whitespace};
+use super::scanner::{
+    apply_splice_edits, find_paren_close, scan_balanced_brace, skip_string_literal, skip_whitespace,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PredicateValue {
@@ -265,6 +267,13 @@ fn find_simple_statement_end(bytes: &[u8], start: usize) -> usize {
     let mut bracket: i32 = 0;
     while i < bytes.len() {
         match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let Some(after): Option<usize> = skip_string_literal(bytes, i, bytes[i]) else {
+                    return bytes.len();
+                };
+                i = after;
+                continue;
+            }
             b'(' => paren += 1,
             b')' => paren -= 1,
             b'{' => brace += 1,

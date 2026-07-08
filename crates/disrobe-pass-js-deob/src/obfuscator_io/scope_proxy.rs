@@ -167,20 +167,36 @@ fn find_declarator<'a>(
         let AstKind::VariableDeclaration(declaration): AstKind<'_> = node.kind() else {
             return None;
         };
-        if declaration.declarations.len() != 1 {
-            return None;
-        }
-        let declarator: &oxc_ast::ast::VariableDeclarator<'a> = &declaration.declarations[0];
-        let oxc_ast::ast::BindingPatternKind::BindingIdentifier(ident): &oxc_ast::ast::BindingPatternKind<'_> =
-            &declarator.id.kind
-        else {
-            return None;
-        };
-        if ident.span != decl_span {
-            return None;
-        }
-        Some((declarator, declaration.span))
+        let index: usize = declaration.declarations.iter().position(
+            |candidate: &oxc_ast::ast::VariableDeclarator<'_>| {
+                let oxc_ast::ast::BindingPatternKind::BindingIdentifier(ident): &oxc_ast::ast::BindingPatternKind<'_> =
+                    &candidate.id.kind
+                else {
+                    return false;
+                };
+                ident.span == decl_span
+            },
+        )?;
+        let declarator: &oxc_ast::ast::VariableDeclarator<'a> = &declaration.declarations[index];
+        Some((declarator, declarator_removal_span(declaration, index)))
     })
+}
+
+fn declarator_removal_span(
+    declaration: &oxc_ast::ast::VariableDeclaration<'_>,
+    index: usize,
+) -> Span {
+    if declaration.declarations.len() == 1 {
+        return declaration.span;
+    }
+    let this_span: Span = declaration.declarations[index].span;
+    if index == 0 {
+        let next_start: u32 = declaration.declarations[1].span.start;
+        Span::new(this_span.start, next_start)
+    } else {
+        let prev_end: u32 = declaration.declarations[index - 1].span.end;
+        Span::new(prev_end, this_span.end)
+    }
 }
 
 fn property_key_name(key: &PropertyKey<'_>) -> Option<String> {
@@ -552,6 +568,67 @@ mod tests {
         assert!(
             r.rewritten_source.contains("(flag || fallback)"),
             "pure args are safe to fold under ||: {}",
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn merges_object_from_multi_declarator_statement_when_fully_resolved() {
+        let src: &str = "function f(){const _0x8={'WOfoz':function(a,b){return a+b;}},sibling=1;return _0x8['WOfoz'](x,y)+sibling;}";
+        let r: ScopeProxyResult = merge_scope_proxies(src);
+        assert_eq!(r.objects_merged, 1, "got: {}", r.rewritten_source);
+        assert!(
+            r.rewritten_source.contains("(x + y)"),
+            "got: {}",
+            r.rewritten_source
+        );
+        assert!(
+            !r.rewritten_source.contains("_0x8"),
+            "the fully-resolved declarator must be dropped: {}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("const sibling=1;"),
+            "the sibling declarator sharing the same const keyword must survive intact: {}",
+            r.rewritten_source
+        );
+        let allocator: Allocator = Allocator::default();
+        let st: SourceType = SourceType::from_path("o.js").unwrap_or_default();
+        let reparsed: oxc_parser::ParserReturn<'_> =
+            Parser::new(&allocator, &r.rewritten_source, st).parse();
+        assert!(
+            reparsed.errors.is_empty() && !reparsed.panicked,
+            "merged output must reparse cleanly: {}",
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn preserves_sibling_declarator_when_multi_declarator_object_is_only_partially_resolved() {
+        let src: &str = "function f(){const _0x9={'WOfoz':function(a,b){return a+b;}},sibling=2;return _0x9['WOfoz'](x,y)+_0x9['other'](z)+sibling;}";
+        let r: ScopeProxyResult = merge_scope_proxies(src);
+        assert!(
+            r.rewritten_source.contains("(x + y)"),
+            "the resolvable call site must still inline: {}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("_0x9={"),
+            "the declaration must survive because 'other' has no matching property: {}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("sibling=2"),
+            "the sibling declarator must remain valid: {}",
+            r.rewritten_source
+        );
+        let allocator: Allocator = Allocator::default();
+        let st: SourceType = SourceType::from_path("o.js").unwrap_or_default();
+        let reparsed: oxc_parser::ParserReturn<'_> =
+            Parser::new(&allocator, &r.rewritten_source, st).parse();
+        assert!(
+            reparsed.errors.is_empty() && !reparsed.panicked,
+            "partially-merged output must still reparse cleanly: {}",
             r.rewritten_source
         );
     }
