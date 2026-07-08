@@ -13,7 +13,7 @@ disrobe query app.exe complexity-over 20        # functions over a cyclomatic th
 disrobe query app.exe capability network        # instructions tied to a capability
 ```
 
-The query layer is built on the same function discovery the disassembler uses (call-target and prologue scanning), so it works without a symbol table. The six verbs are:
+The query layer is built on the same function discovery the disassembler uses (call-target and prologue scanning), so it works without a symbol table. It accepts a `.dr` envelope at the Disasm or Mir rung; an envelope at any other rung is rejected with an explicit unsupported-rung error rather than silently returning empty or wrong results. The six verbs are:
 
 | Verb | Returns |
 |---|---|
