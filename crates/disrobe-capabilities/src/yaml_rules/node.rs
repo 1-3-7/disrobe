@@ -1,3 +1,4 @@
+use crate::eval::CapabilityMatch;
 use crate::feature::{Feature, Scope};
 use crate::rule::CountBound;
 
@@ -37,4 +38,20 @@ pub struct UnsupportedRule {
 pub struct LoadedRuleSet {
     pub rules: Vec<LoadedRule>,
     pub unsupported: Vec<UnsupportedRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndeterminateMatch {
+    pub rule: String,
+    pub namespace: String,
+    pub scope: Scope,
+    pub function: Option<String>,
+    pub function_address: Option<u64>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationOutcome {
+    pub matches: Vec<CapabilityMatch>,
+    pub indeterminate: Vec<IndeterminateMatch>,
 }

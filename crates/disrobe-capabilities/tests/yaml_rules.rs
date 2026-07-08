@@ -4,7 +4,7 @@
 use disrobe_capabilities::eval::CapabilityMatch;
 use disrobe_capabilities::extract::ScopedFeatures;
 use disrobe_capabilities::imports::ImportMap;
-use disrobe_capabilities::yaml_rules::{LoadedRuleSet, load_rules};
+use disrobe_capabilities::yaml_rules::{EvaluationOutcome, LoadedRuleSet, load_rules};
 use disrobe_ir::payload::{
     DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnFlow,
 };
@@ -43,9 +43,10 @@ fn run_rule_names(sources: &[&str], module: &Module, scoped: &ScopedFeatures) ->
         "unexpected unsupported rules: {:?}",
         ruleset.unsupported
     );
-    let matches: Vec<CapabilityMatch> =
+    let outcome: EvaluationOutcome =
         disrobe_capabilities::yaml_rules::evaluate(&ruleset, module, scoped);
-    let mut names: Vec<String> = matches
+    let mut names: Vec<String> = outcome
+        .matches
         .into_iter()
         .map(|m: CapabilityMatch| m.rule)
         .collect();
@@ -60,9 +61,10 @@ fn function_names_matching(
     rule: &str,
 ) -> Vec<String> {
     let ruleset: LoadedRuleSet = load_rules(sources).expect("rules load");
-    let matches: Vec<CapabilityMatch> =
+    let outcome: EvaluationOutcome =
         disrobe_capabilities::yaml_rules::evaluate(&ruleset, module, scoped);
-    let mut names: Vec<String> = matches
+    let mut names: Vec<String> = outcome
+        .matches
         .into_iter()
         .filter(|m: &CapabilityMatch| m.rule == rule)
         .filter_map(|m: CapabilityMatch| m.function)
@@ -93,10 +95,10 @@ fn scope_descent_negative_control_rejects_the_cross_block_union() {
 fn scope_descent_positive_control_accepts_the_real_single_block_cooccurrence() {
     let (module, scoped): (Module, ScopedFeatures) = load_scoped(YAML_SCOPE);
     let ruleset: LoadedRuleSet = load_rules(&[SCOPE_DESCENT_POSITIVE]).expect("rules load");
-    let matches: Vec<CapabilityMatch> =
+    let outcome: EvaluationOutcome =
         disrobe_capabilities::yaml_rules::evaluate(&ruleset, &module, &scoped);
-    assert_eq!(matches.len(), 1, "{matches:?}");
-    let hit: &CapabilityMatch = &matches[0];
+    assert_eq!(outcome.matches.len(), 1, "{:?}", outcome.matches);
+    let hit: &CapabilityMatch = &outcome.matches[0];
     assert_eq!(hit.function.as_deref(), Some("sub_140001020"));
     assert_eq!(hit.address, 5_368_713_356);
 }
@@ -127,10 +129,10 @@ fn calls_to_and_calls_from_each_resolve_a_distinct_function() {
 fn os_arch_format_and_section_fire_once_at_file_scope() {
     let (module, scoped): (Module, ScopedFeatures) = load_scoped(YAML_SCOPE);
     let ruleset: LoadedRuleSet = load_rules(&[OS_ARCH_FORMAT]).expect("rules load");
-    let matches: Vec<CapabilityMatch> =
+    let outcome: EvaluationOutcome =
         disrobe_capabilities::yaml_rules::evaluate(&ruleset, &module, &scoped);
-    assert_eq!(matches.len(), 1, "{matches:?}");
-    assert_eq!(matches[0].function, None);
+    assert_eq!(outcome.matches.len(), 1, "{:?}", outcome.matches);
+    assert_eq!(outcome.matches[0].function, None);
 }
 
 #[test]

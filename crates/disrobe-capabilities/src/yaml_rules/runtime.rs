@@ -8,7 +8,7 @@ use crate::feature::{Feature, FeatureSet, Scope};
 use crate::rule::{CountBound, Evidence};
 
 use super::callgraph::CallIndex;
-use super::node::{LoadedRule, Node};
+use super::node::{EvaluationOutcome, IndeterminateMatch, LoadedRule, Node};
 
 struct EvalCaps {
     steps: usize,
@@ -25,6 +25,11 @@ impl EvalCaps {
         }
     }
 }
+
+const DESCENT_TRUNCATED_REASON: &str =
+    "scope descent exceeded the instance visit cap before every real instance was visited";
+const EVAL_BUDGET_EXHAUSTED_REASON: &str =
+    "rule evaluation exceeded its step or work budget before reaching a verdict";
 
 #[derive(Clone, Copy)]
 enum Position<'a> {
@@ -69,13 +74,14 @@ impl<'a> Position<'a> {
         }
     }
 
-    fn descend(self, target: Scope, cap: usize) -> Vec<Self> {
-        match (self, target) {
+    fn descend(self, target: Scope, cap: usize) -> (Vec<Self>, bool) {
+        let probe_cap: usize = cap.saturating_add(1);
+        let mut instances: Vec<Self> = match (self, target) {
             (Self::File(s), Scope::Function) => s
                 .functions
                 .iter()
                 .map(Position::Function)
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             (Self::File(s), Scope::BasicBlock) => s
                 .functions
@@ -85,7 +91,7 @@ impl<'a> Position<'a> {
                         .iter()
                         .map(move |b: &'a BlockFeatures| Position::Block(f, b))
                 })
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             (Self::File(s), Scope::Instruction) => s
                 .functions
@@ -97,13 +103,13 @@ impl<'a> Position<'a> {
                             .map(move |i: &'a InstructionFeatures| Position::Instruction(f, i))
                     })
                 })
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             (Self::Function(f), Scope::BasicBlock) => f
                 .blocks
                 .iter()
                 .map(|b: &'a BlockFeatures| Position::Block(f, b))
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             (Self::Function(f), Scope::Instruction) => f
                 .blocks
@@ -113,16 +119,21 @@ impl<'a> Position<'a> {
                         .iter()
                         .map(move |i: &'a InstructionFeatures| Position::Instruction(f, i))
                 })
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             (Self::Block(f, b), Scope::Instruction) => b
                 .instructions
                 .iter()
                 .map(|i: &'a InstructionFeatures| Position::Instruction(f, i))
-                .take(cap)
+                .take(probe_cap)
                 .collect(),
             _ => Vec::new(),
+        };
+        let truncated: bool = instances.len() > cap;
+        if truncated {
+            instances.truncate(cap);
         }
+        (instances, truncated)
     }
 }
 
@@ -163,12 +174,18 @@ impl MatchIndex {
     }
 }
 
-type Outcome = Option<Vec<Evidence>>;
+#[derive(Debug)]
+enum Outcome {
+    Match(Vec<Evidence>),
+    NoMatch,
+    Indeterminate(&'static str),
+}
 
 enum Task<'a> {
     Eval(&'a Node, Position<'a>),
     CombineAnd(usize),
     CombineOr(usize),
+    CombineDescend(usize, bool),
     CombineNot,
     CombineNOf(usize, usize),
     CombineOptional,
@@ -181,41 +198,92 @@ fn pop_results(results: &mut Vec<Outcome>, n: usize) -> Vec<Outcome> {
 
 fn combine_and(parts: Vec<Outcome>) -> Outcome {
     let mut evidence: Vec<Evidence> = Vec::new();
+    let mut indeterminate_reason: Option<&'static str> = None;
     for part in parts {
         match part {
-            Some(e) => evidence.extend(e),
-            None => return None,
+            Outcome::Match(e) => evidence.extend(e),
+            Outcome::NoMatch => return Outcome::NoMatch,
+            Outcome::Indeterminate(reason) => {
+                indeterminate_reason.get_or_insert(reason);
+            }
         }
     }
-    Some(evidence)
+    indeterminate_reason.map_or_else(|| Outcome::Match(evidence), Outcome::Indeterminate)
 }
 
 fn combine_or(parts: Vec<Outcome>) -> Outcome {
-    let mut any: bool = false;
     let mut evidence: Vec<Evidence> = Vec::new();
-    for e in parts.into_iter().flatten() {
-        any = true;
-        evidence.extend(e);
+    let mut any_match: bool = false;
+    let mut indeterminate_reason: Option<&'static str> = None;
+    for part in parts {
+        match part {
+            Outcome::Match(e) => {
+                any_match = true;
+                evidence.extend(e);
+            }
+            Outcome::NoMatch => {}
+            Outcome::Indeterminate(reason) => {
+                indeterminate_reason.get_or_insert(reason);
+            }
+        }
     }
-    any.then_some(evidence)
+    if any_match {
+        Outcome::Match(evidence)
+    } else if let Some(reason) = indeterminate_reason {
+        Outcome::Indeterminate(reason)
+    } else {
+        Outcome::NoMatch
+    }
 }
 
 fn combine_n_of(parts: Vec<Outcome>, n: usize) -> Outcome {
-    let mut satisfied: usize = 0;
     let mut evidence: Vec<Evidence> = Vec::new();
-    for e in parts.into_iter().flatten() {
-        satisfied += 1;
-        evidence.extend(e);
+    let mut satisfied: usize = 0;
+    let mut unknown: usize = 0;
+    let mut indeterminate_reason: Option<&'static str> = None;
+    for part in parts {
+        match part {
+            Outcome::Match(e) => {
+                satisfied += 1;
+                evidence.extend(e);
+            }
+            Outcome::NoMatch => {}
+            Outcome::Indeterminate(reason) => {
+                unknown += 1;
+                indeterminate_reason.get_or_insert(reason);
+            }
+        }
     }
-    (satisfied >= n).then_some(evidence)
+    if satisfied >= n {
+        Outcome::Match(evidence)
+    } else if satisfied + unknown >= n {
+        Outcome::Indeterminate(indeterminate_reason.unwrap_or(EVAL_BUDGET_EXHAUSTED_REASON))
+    } else {
+        Outcome::NoMatch
+    }
+}
+
+fn combine_not(inner: Outcome) -> Outcome {
+    match inner {
+        Outcome::Match(_) => Outcome::NoMatch,
+        Outcome::NoMatch => Outcome::Match(Vec::new()),
+        Outcome::Indeterminate(reason) => Outcome::Indeterminate(reason),
+    }
+}
+
+fn combine_optional(inner: Outcome) -> Outcome {
+    match inner {
+        Outcome::Match(e) => Outcome::Match(e),
+        Outcome::NoMatch | Outcome::Indeterminate(_) => Outcome::Match(Vec::new()),
+    }
 }
 
 fn eval_feature(feature: &Feature, pos: Position<'_>) -> Outcome {
     let addrs: Vec<u64> = pos.features().matches(feature);
     if addrs.is_empty() {
-        return None;
+        return Outcome::NoMatch;
     }
-    Some(
+    Outcome::Match(
         addrs
             .into_iter()
             .map(|address: u64| Evidence {
@@ -229,9 +297,9 @@ fn eval_feature(feature: &Feature, pos: Position<'_>) -> Outcome {
 fn eval_count(feature: &Feature, bound: CountBound, pos: Position<'_>) -> Outcome {
     let addrs: Vec<u64> = pos.features().matches(feature);
     if !bound.satisfied_by(addrs.len()) {
-        return None;
+        return Outcome::NoMatch;
     }
-    Some(vec![Evidence {
+    Outcome::Match(vec![Evidence {
         feature: format!("count({} {})", feature.render(), bound.render()),
         address: addrs.first().copied().unwrap_or_default(),
     }])
@@ -239,36 +307,34 @@ fn eval_count(feature: &Feature, bound: CountBound, pos: Position<'_>) -> Outcom
 
 fn eval_calls_to(pattern: &str, pos: Position<'_>, call_index: &CallIndex) -> Outcome {
     let fa: Option<u64> = pos.enclosing_function_address();
-    call_index
-        .calls_to(fa, pattern)
-        .map(|(address, callee): (u64, String)| {
-            vec![Evidence {
-                feature: format!("calls-to({callee})"),
-                address,
-            }]
-        })
+    match call_index.calls_to(fa, pattern) {
+        Some((address, callee)) => Outcome::Match(vec![Evidence {
+            feature: format!("calls-to({callee})"),
+            address,
+        }]),
+        None => Outcome::NoMatch,
+    }
 }
 
 fn eval_calls_from(pattern: &str, pos: Position<'_>, call_index: &CallIndex) -> Outcome {
     let fa: Option<u64> = pos.enclosing_function_address();
-    call_index
-        .calls_from(fa, pattern)
-        .map(|(address, caller): (u64, String)| {
-            vec![Evidence {
-                feature: format!("calls-from({caller})"),
-                address,
-            }]
-        })
+    match call_index.calls_from(fa, pattern) {
+        Some((address, caller)) => Outcome::Match(vec![Evidence {
+            feature: format!("calls-from({caller})"),
+            address,
+        }]),
+        None => Outcome::NoMatch,
+    }
 }
 
 fn eval_match(name: &str, pos: Position<'_>, match_index: &MatchIndex) -> Outcome {
     if match_index.resolves(name, pos.enclosing_function_address()) {
-        Some(vec![Evidence {
+        Outcome::Match(vec![Evidence {
             feature: format!("match({name})"),
             address: 0,
         }])
     } else {
-        None
+        Outcome::NoMatch
     }
 }
 
@@ -286,7 +352,7 @@ fn evaluate_at<'a>(
     while let Some(task) = work.pop() {
         steps += 1;
         if steps > caps.steps || work.len() > caps.work {
-            return None;
+            return Outcome::Indeterminate(EVAL_BUDGET_EXHAUSTED_REASON);
         }
         match task {
             Task::Eval(node, pos) => match node {
@@ -322,8 +388,9 @@ fn evaluate_at<'a>(
                     work.push(Task::Eval(child, pos));
                 }
                 Node::Descend { at, of } => {
-                    let instances: Vec<Position<'a>> = pos.descend(*at, caps.descend_instances);
-                    work.push(Task::CombineOr(instances.len()));
+                    let (instances, truncated): (Vec<Position<'a>>, bool) =
+                        pos.descend(*at, caps.descend_instances);
+                    work.push(Task::CombineDescend(instances.len(), truncated));
                     for instance in instances {
                         work.push(Task::CombineAnd(of.len()));
                         for child in of.iter().rev() {
@@ -340,25 +407,34 @@ fn evaluate_at<'a>(
                 let parts: Vec<Outcome> = pop_results(&mut results, n);
                 results.push(combine_or(parts));
             }
+            Task::CombineDescend(n, truncated) => {
+                let mut parts: Vec<Outcome> = pop_results(&mut results, n);
+                if truncated {
+                    parts.push(Outcome::Indeterminate(DESCENT_TRUNCATED_REASON));
+                }
+                results.push(combine_or(parts));
+            }
             Task::CombineNot => {
-                let inner: Outcome = results.pop().flatten();
-                results.push(if inner.is_some() {
-                    None
-                } else {
-                    Some(Vec::new())
-                });
+                let inner: Outcome = results.pop().unwrap_or(Outcome::NoMatch);
+                results.push(combine_not(inner));
             }
             Task::CombineNOf(total, n) => {
                 let parts: Vec<Outcome> = pop_results(&mut results, total);
                 results.push(combine_n_of(parts, n));
             }
             Task::CombineOptional => {
-                let inner: Outcome = results.pop().flatten();
-                results.push(Some(inner.unwrap_or_default()));
+                let inner: Outcome = results.pop().unwrap_or(Outcome::NoMatch);
+                results.push(combine_optional(inner));
             }
         }
     }
-    results.pop().flatten()
+    results.pop().unwrap_or(Outcome::NoMatch)
+}
+
+enum RuleVerdict {
+    Match(CapabilityMatch),
+    NoMatch,
+    Indeterminate(&'static str),
 }
 
 fn fire(
@@ -367,31 +443,57 @@ fn fire(
     call_index: &CallIndex,
     match_index: &MatchIndex,
     caps: &EvalCaps,
-) -> Option<CapabilityMatch> {
-    let mut evidence: Vec<Evidence> = evaluate_at(&rule.root, pos, call_index, match_index, caps)?;
-    evidence.sort_by(|a: &Evidence, b: &Evidence| {
-        a.address
-            .cmp(&b.address)
-            .then_with(|| a.feature.cmp(&b.feature))
-    });
-    evidence.dedup();
-    let address: u64 = evidence
-        .iter()
-        .map(|e: &Evidence| e.address)
-        .min()
-        .unwrap_or_else(|| pos.anchor());
-    Some(CapabilityMatch {
-        rule: rule.name.clone(),
-        namespace: rule.namespace.clone(),
-        scope: rule.scope,
-        function: pos.enclosing_function_name().map(str::to_owned),
-        function_address: pos.enclosing_function_address(),
-        address,
-        attack: rule.attack.clone(),
-        mbc: rule.mbc.clone(),
-        description: rule.description.clone(),
-        evidence,
-    })
+) -> RuleVerdict {
+    match evaluate_at(&rule.root, pos, call_index, match_index, caps) {
+        Outcome::Match(mut evidence) => {
+            evidence.sort_by(|a: &Evidence, b: &Evidence| {
+                a.address
+                    .cmp(&b.address)
+                    .then_with(|| a.feature.cmp(&b.feature))
+            });
+            evidence.dedup();
+            let address: u64 = evidence
+                .iter()
+                .map(|e: &Evidence| e.address)
+                .min()
+                .unwrap_or_else(|| pos.anchor());
+            RuleVerdict::Match(CapabilityMatch {
+                rule: rule.name.clone(),
+                namespace: rule.namespace.clone(),
+                scope: rule.scope,
+                function: pos.enclosing_function_name().map(str::to_owned),
+                function_address: pos.enclosing_function_address(),
+                address,
+                attack: rule.attack.clone(),
+                mbc: rule.mbc.clone(),
+                description: rule.description.clone(),
+                evidence,
+            })
+        }
+        Outcome::NoMatch => RuleVerdict::NoMatch,
+        Outcome::Indeterminate(reason) => RuleVerdict::Indeterminate(reason),
+    }
+}
+
+fn record_verdict(
+    rule: &LoadedRule,
+    pos: Position<'_>,
+    verdict: RuleVerdict,
+    matches: &mut Vec<CapabilityMatch>,
+    indeterminate: &mut Vec<IndeterminateMatch>,
+) {
+    match verdict {
+        RuleVerdict::Match(hit) => matches.push(hit),
+        RuleVerdict::NoMatch => {}
+        RuleVerdict::Indeterminate(reason) => indeterminate.push(IndeterminateMatch {
+            rule: rule.name.clone(),
+            namespace: rule.namespace.clone(),
+            scope: rule.scope,
+            function: pos.enclosing_function_name().map(str::to_owned),
+            function_address: pos.enclosing_function_address(),
+            reason: reason.to_owned(),
+        }),
+    }
 }
 
 fn evaluate_rule(
@@ -400,46 +502,42 @@ fn evaluate_rule(
     call_index: &CallIndex,
     match_index: &MatchIndex,
     caps: &EvalCaps,
-) -> Vec<CapabilityMatch> {
+    matches: &mut Vec<CapabilityMatch>,
+    indeterminate: &mut Vec<IndeterminateMatch>,
+) {
     match rule.scope {
-        Scope::File => fire(rule, Position::File(scoped), call_index, match_index, caps)
-            .into_iter()
-            .collect(),
-        Scope::Function => scoped
-            .functions
-            .iter()
-            .filter_map(|f: &FunctionFeatures| {
-                fire(rule, Position::Function(f), call_index, match_index, caps)
-            })
-            .collect(),
-        Scope::BasicBlock => scoped
-            .functions
-            .iter()
-            .flat_map(|f: &FunctionFeatures| {
-                f.blocks.iter().filter_map(move |b: &BlockFeatures| {
-                    fire(rule, Position::Block(f, b), call_index, match_index, caps)
-                })
-            })
-            .collect(),
-        Scope::Instruction => scoped
-            .functions
-            .iter()
-            .flat_map(|f: &FunctionFeatures| {
-                f.blocks.iter().flat_map(move |b: &BlockFeatures| {
-                    b.instructions
-                        .iter()
-                        .filter_map(move |i: &InstructionFeatures| {
-                            fire(
-                                rule,
-                                Position::Instruction(f, i),
-                                call_index,
-                                match_index,
-                                caps,
-                            )
-                        })
-                })
-            })
-            .collect(),
+        Scope::File => {
+            let pos: Position<'_> = Position::File(scoped);
+            let verdict: RuleVerdict = fire(rule, pos, call_index, match_index, caps);
+            record_verdict(rule, pos, verdict, matches, indeterminate);
+        }
+        Scope::Function => {
+            for f in &scoped.functions {
+                let pos: Position<'_> = Position::Function(f);
+                let verdict: RuleVerdict = fire(rule, pos, call_index, match_index, caps);
+                record_verdict(rule, pos, verdict, matches, indeterminate);
+            }
+        }
+        Scope::BasicBlock => {
+            for f in &scoped.functions {
+                for b in &f.blocks {
+                    let pos: Position<'_> = Position::Block(f, b);
+                    let verdict: RuleVerdict = fire(rule, pos, call_index, match_index, caps);
+                    record_verdict(rule, pos, verdict, matches, indeterminate);
+                }
+            }
+        }
+        Scope::Instruction => {
+            for f in &scoped.functions {
+                for b in &f.blocks {
+                    for i in &b.instructions {
+                        let pos: Position<'_> = Position::Instruction(f, i);
+                        let verdict: RuleVerdict = fire(rule, pos, call_index, match_index, caps);
+                        record_verdict(rule, pos, verdict, matches, indeterminate);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -448,23 +546,39 @@ pub(super) fn run(
     rules: &[LoadedRule],
     module: &Module,
     scoped: &ScopedFeatures,
-) -> Vec<CapabilityMatch> {
+) -> EvaluationOutcome {
     let call_index: CallIndex = CallIndex::build(module);
     let caps: EvalCaps = EvalCaps::production();
     let mut match_index: MatchIndex = MatchIndex::default();
-    let mut out: Vec<CapabilityMatch> = Vec::new();
+    let mut matches: Vec<CapabilityMatch> = Vec::new();
+    let mut indeterminate: Vec<IndeterminateMatch> = Vec::new();
 
     for rule in rules {
-        let hits: Vec<CapabilityMatch> =
-            evaluate_rule(rule, scoped, &call_index, &match_index, &caps);
-        for hit in &hits {
+        let before: usize = matches.len();
+        evaluate_rule(
+            rule,
+            scoped,
+            &call_index,
+            &match_index,
+            &caps,
+            &mut matches,
+            &mut indeterminate,
+        );
+        for hit in &matches[before..] {
             match_index.record(&rule.name, rule.scope, hit.function_address);
         }
-        out.extend(hits);
     }
 
-    out.sort_by(|a: &CapabilityMatch, b: &CapabilityMatch| {
+    matches.sort_by(|a: &CapabilityMatch, b: &CapabilityMatch| {
         a.address.cmp(&b.address).then_with(|| a.rule.cmp(&b.rule))
     });
-    out
+    indeterminate.sort_by(|a: &IndeterminateMatch, b: &IndeterminateMatch| {
+        a.rule
+            .cmp(&b.rule)
+            .then_with(|| a.function_address.cmp(&b.function_address))
+    });
+    EvaluationOutcome {
+        matches,
+        indeterminate,
+    }
 }

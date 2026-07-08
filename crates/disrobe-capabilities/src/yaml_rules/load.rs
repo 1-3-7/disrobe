@@ -470,6 +470,11 @@ fn lower_visit(
             if v.len() > MAX_REGEX_PATTERN_LEN {
                 return Err(LoadError::RegexTooLong(MAX_REGEX_PATTERN_LEN));
             }
+            if let Err(compile_error) = regex::Regex::new(&v) {
+                unsupported.push(format!(
+                    "string-regex pattern does not compile: {compile_error}"
+                ));
+            }
             out.push(Node::Feature(Feature::StringRegex(v)));
         }
         RawNode::Bytes { bytes: hex } => {
