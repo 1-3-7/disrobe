@@ -156,6 +156,10 @@ The condition combines an anchored magic check (when a format was recognized) wi
 
 Every generated rule is parsed back through the in-house YARA parser (the same one behind `disrobe yara parse`) before it is returned. If the emitter ever produced something the parser could not read, generation fails loudly with `DR-YARAGEN-0001` rather than emitting a broken rule. The library logic lives in `disrobe_core::yara_gen`.
 
+### Rule matching
+
+Beyond generating and parsing rules, `disrobe_core::yara_match` evaluates a parsed ruleset against a byte buffer. It compiles the rule strings into an Aho-Corasick atom prefilter, then checks each rule's condition. It supports text strings (`nocase`, `fullword`, `ascii`, `wide`), hex strings (nibble wildcards, jumps, and alternation), a subset of regular expressions, and the common condition forms (`$s` at an offset or in a range, `#s` counts, `N of`, `all` / `any` / `none of`, `filesize`, and boolean and arithmetic operators). A rule that uses a feature outside that set is returned as unevaluated with a reason rather than reported as a false match or a false miss. The matcher is a library capability today with no CLI verb; it is graded by differential testing against the real `yara` command-line tool across a battery of text, hex, regex, and condition cases (`yara_match_oracle.rs`).
+
 ## Behavior summary
 
 ```bash

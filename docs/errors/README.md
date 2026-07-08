@@ -4,6 +4,10 @@ Each `DR-<DOMAIN>-<NNNN>` code in the in-tree registry (`crates/disrobe-cli/src/
 
 | Code | Title |
 |---|---|
+| [DR-BINFMT-0065](./DR-BINFMT-0065.md) | eszip module-graph archive parse failed |
+| [DR-BINFMT-0066](./DR-BINFMT-0066.md) | .NET single-file bundle parse failed |
+| [DR-BINFMT-0067](./DR-BINFMT-0067.md) | cython extension recovery failed |
+| [DR-BINFMT-0068](./DR-BINFMT-0068.md) | minidump parse failed |
 | [DR-CLI-0001](./DR-CLI-0001.md) | cannot read pyarmor wrapper file |
 | [DR-CLI-0002](./DR-CLI-0002.md) | cannot create pyarmor output directory |
 | [DR-CLI-0003](./DR-CLI-0003.md) | cannot write pyarmor manifest |

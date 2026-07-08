@@ -308,7 +308,7 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         Dialect::Xlm => (TAG_VBA, "xlm-dialect"),
         Dialect::Vbs => (TAG_VBS, "vbs-dialect"),
         Dialect::Wsh => (TAG_WSH, "wsh-dialect"),
-        Dialect::Unknown => return None,
+        Dialect::Pdf | Dialect::Unknown => return None,
     };
     Some(DetectVerdict::new(
         PASS_ID,

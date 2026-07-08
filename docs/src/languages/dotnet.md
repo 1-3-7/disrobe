@@ -21,6 +21,10 @@ disrobe dotnet backends                  # report available .NET backends on PAT
 
 `analyze` reports the PE header, CLR metadata, protector detection, and probes for ReadyToRun (R2R) and Native AOT images, with symbol recovery on AOT builds.
 
+## Single-file bundles
+
+A .NET single-file deployment packs the managed assemblies and their native runtime into one host executable. The `disrobe-binfmt` bundle reader (`disrobe_binfmt::containers::dotnet_bundle`) locates the bundle marker inside an MZ, ELF, or Mach-O host, parses the manifest, and extracts each embedded member (managed assemblies, native libraries, `deps.json`, `runtimeconfig.json`, and symbol files) to its recorded relative path, raw-inflating the deflate-compressed members that version 6 and later carry. Manifest major versions 1, 2, and 6 through 64 are read; the intermediate 3 to 5 range, which no shipping SDK emits, is rejected. Extraction is exercised by a round-trip that reconstructs every member byte-for-byte, and a declared member size that runs past the buffer is rejected rather than read out of bounds.
+
 ## Obfuscator reversal
 
 **disrobe** detects <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The model for in-house recovery is the same one used by the JVM and Lua passes: locate the decryptor method or key inside the assembly and emulate it over the encrypted data through the in-house CIL stack-machine, never a re-derived or hard-coded key.

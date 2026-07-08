@@ -40,7 +40,7 @@ The recover tier is scored byte-for-byte against real committed originals: UPX `
 | **Protector (PyArmor)** | 7 versions | PyArmor v6-v9-pro (default / super / no-wrap); recovered <!-- m:pyarmor_samples -->72<!-- /m --> of 72 real-corpus samples. The v3-v5 RSA-wrapped-key tier is a runtime-key wall. |
 | **Source obfuscators (AST-evaluator)** | 20 | Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, pyobfuscate.com (2026 XOR/lambda), PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online-obfuscator family, Xindex, pyobfus, Pypacker, Patchwork, pyc-zipper |
 
-Jawbreaker's b16/b32/b64 loader shell is decoded statically, but a payload it fetches from a remote paste at run time is absent from the file. ObfuXtreme's AES-CBC/b85/xor static body is recovered; its runtime-payload segment is not in the artifact. python-obfuscator (PyPI), pyobfus, and Pypacker are detect plus partial-peel. See the [Python guide](./languages/python.md).
+Jawbreaker's b16/b32/b64 loader shell is decoded statically, but a payload it fetches from a remote paste at run time is absent from the file. ObfuXtreme's AES-CBC/b85/xor static body is recovered; its runtime-payload segment is not in the artifact. python-obfuscator (PyPI), pyobfus, and Pypacker are detect plus partial-peel. Compiled Cython extensions (`.pyd` / `.so`) have their Python-visible surface (function and class names, docstrings, signatures) recovered from the module's symbol tables, with a structural fallback when the binary is stripped. See the [Python guide](./languages/python.md).
 
 ## JavaScript / TypeScript / WebAssembly
 
@@ -80,7 +80,7 @@ IronBrew2 2.7.0 is reversed on real committed output in standard and MAX mode, v
 |---|---|---|
 | **Shell obfuscators** | 20 (catalog) | PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids; Bashfuscator (Token, String, Obfuscate, Compress), bash IFS/eval indirection, and node-bash-obfuscate; Batch `%random%` and set-indirection |
 
-Full VBA p-code decompile (264-opcode table, VBA3/5/6/7) with VBA-stomping detection rounds out the shell pass. See the [shell guide](./languages/shell.md).
+Full VBA p-code decompile (264-opcode table, VBA3/5/6/7) with VBA-stomping detection rounds out the shell pass, alongside Excel 4.0 (XLM) macro-formula recovery (BIFF8/BIFF12 Ptg decode, shared-formula and `Auto_Open` resolution) and PDF maldoc analysis (embedded JavaScript, launch and embedded-file actions, both xref forms, RC4/AESV2 empty-password decrypt). See the [shell guide](./languages/shell.md).
 
 ## PHP
 
@@ -97,7 +97,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 | **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names resolved above an <!-- m:go_typename_pct -->85%<!-- /m --> floor on the committed go1.26.3 fixture. |
 | **Ruby** | MRI/YARV 2.6-3.4 and mruby recompile-equivalence decompile; Ruby2Exe and Ocra freezers detected; JRuby and TruffleRuby AOT classified. |
 | **BEAM** | `.beam` and `.ez` chunk parse, Core Erlang lift, Elixir `Dbgi` quoted-AST recovery. |
-| **Swift / Obj-C** | Mach-O class-dump plus SwiftConfidential and SwiftShield rename-undo. |
+| **Swift / Obj-C** | Mach-O class-dump plus SwiftConfidential and SwiftShield rename-undo; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 lift; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm. |
 | **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->98<!-- /m --> formats detected, all <!-- m:containers_formats -->98<!-- /m --> with in-tree extractors that write member bytes. |

@@ -1,5 +1,6 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -257,12 +258,12 @@ fn recover_xlm_text(bytes: &[u8]) -> Option<String> {
     }
     let mut out: String = String::new();
     for entry in &report.entry_points {
-        out.push_str(&format!("' entry: {} -> {}\n", entry.name, entry.target));
+        let _ = writeln!(out, "' entry: {} -> {}", entry.name, entry.target);
     }
     for sheet in &report.sheets {
-        out.push_str(&format!("' ===== {} sheet: {} =====\n", sheet.kind, sheet.name));
+        let _ = writeln!(out, "' ===== {} sheet: {} =====", sheet.kind, sheet.name);
         for cell in &sheet.cells {
-            out.push_str(&format!("{}!{}\t{}\n", sheet.name, cell.cell, cell.formula));
+            let _ = writeln!(out, "{}!{}\t{}", sheet.name, cell.cell, cell.formula);
         }
     }
     out.truncate(out.trim_end().len());
@@ -276,6 +277,7 @@ const fn dialect_ext(dialect: Dialect) -> &'static str {
         Dialect::Batch => "bat",
         Dialect::Vba => "bas",
         Dialect::Xlm => "xlm.txt",
+        Dialect::Pdf => "txt",
         Dialect::Vbs | Dialect::Wsh => "vbs",
     }
 }

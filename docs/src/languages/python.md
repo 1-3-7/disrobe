@@ -61,6 +61,12 @@ disrobe nuitka symbols app.exe                           # impl_* + module-init 
 disrobe py sourcedefender app.pye --out app.msgpack      # SourceDefender .pye decrypt
 ```
 
+## Cython compiled extensions
+
+A Cython module compiles to a native `.pyd` / `.so`, so the Python source is gone, but the module still exposes the surface CPython needs to import it. The `disrobe-binfmt` Cython reader (`disrobe_binfmt::containers::cython`) recovers that surface from the compiled ELF, PE, or Mach-O: function names, qualified names, docstrings, calling-convention flags, per-class method groupings, and the original `.pyx` / `.pxd` source filenames. It walks the `PyMethodDef` and `PyTypeObject` tables through the module's symbols when they survive, and falls back to a bounded structural scan of the readable data sections for `PyMethodDef`-shaped records when the binary is stripped, resolving data pointers through both static section relocations and ELF dynamic relocations.
+
+Recovery is graded against real compiled Cython fixtures (unstripped, stripped, and separately linked) with a known ground-truth `.pyx`: the expected functions recover with their exact docstrings and signatures, and the report records whether each name came from a symbol or from the structural fallback (`real_cython.rs`).
+
 ## PyArmor
 
 ```sh

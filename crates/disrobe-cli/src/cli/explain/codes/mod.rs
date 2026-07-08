@@ -1,5 +1,6 @@
 use super::CodeEntry;
 
+mod binfmt;
 mod cli_a;
 mod cli_b;
 mod misc;
@@ -12,4 +13,5 @@ pub(super) const CODE_SLICES: &[&[CodeEntry]] = &[
     python_a::PYTHON_A,
     python_b::PYTHON_B,
     misc::MISC,
+    binfmt::BINFMT,
 ];

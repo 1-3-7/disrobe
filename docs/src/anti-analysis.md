@@ -15,6 +15,10 @@ Identification never trusts a single magic byte. A zeroed or flipped magic, rena
 
 A real UPX executable with a flipped `MZ` and renamed sections still unpacks byte-identically, because the structural `PackHeader` (method id, self-consistent compressed and uncompressed lengths, plausible version) is the signal a scrambler cannot remove without breaking the stub's own ability to self-extract.
 
+## Code-signing verification
+
+Malware often ships with a broken, expired, self-signed, or mismatched Authenticode signature to look trustworthy at a glance. For a signed PE, `disrobe native identify` verifies the signature end to end rather than trusting its presence: it recomputes the Authenticode hash and compares it to the claimed digest, walks the PKCS#7/CMS certificate chain to an embedded bundle of trusted code-signing roots, requires the code-signing extended key usage on the leaf, and cryptographically verifies any RFC 3161 timestamp before letting it extend validity. The result is a single verdict (Valid, HashMismatch, Expired, SelfSigned, UntrustedChain, WrongKeyUsage, and the rest), so a tampered `.text`, a forged timestamp, or a chain that does not reach a trusted root is surfaced instead of silently accepted. The [native guide](./languages/native.md) lists the signed-fixture and `osslsigncode` cross-checks behind it.
+
 ## String and data encryption
 
 | Scheme | What **disrobe** does |
