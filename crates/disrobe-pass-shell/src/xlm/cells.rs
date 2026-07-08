@@ -130,11 +130,11 @@ fn parse_formula_biff8(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 fn parse_shrfmla_biff8(data: &[u8]) -> Option<Shared> {
     let row_first: u32 = u32::from(read_u16(data, 0)?);
     let col_first: u32 = u32::from(*data.get(4)?);
-    let cce: usize = read_u16(data, 7)? as usize;
+    let cce: usize = read_u16(data, 8)? as usize;
     if cce > MAX_RGCE {
         return None;
     }
-    let rgce: &[u8] = data.get(9..9usize.checked_add(cce)?)?;
+    let rgce: &[u8] = data.get(10..10usize.checked_add(cce)?)?;
     Some(Shared {
         row_first,
         col_first,
@@ -216,23 +216,29 @@ fn collect_global_names(
     (names, entry_points, defined_names)
 }
 
+const LBL_GRBIT_FBUILTIN: u16 = 0x0020;
+
 fn parse_lbl(data: &[u8]) -> Option<(String, Vec<u8>)> {
+    let record_grbit: u16 = read_u16(data, 0)?;
     let cch: usize = *data.get(3)? as usize;
     let cce: usize = read_u16(data, 4)? as usize;
-    let grbit: u8 = *data.get(14)?;
-    let high_byte: bool = grbit & 0x01 != 0;
+    let name_grbit: u8 = *data.get(14)?;
+    let high_byte: bool = name_grbit & 0x01 != 0;
     let char_bytes: usize = if high_byte { cch.checked_mul(2)? } else { cch };
     let name_start: usize = 15;
     let name_end: usize = name_start.checked_add(char_bytes)?;
     let name_slice: &[u8] = data.get(name_start..name_end)?;
-    let name: String = if high_byte {
-        let units: Vec<u16> = name_slice
-            .chunks_exact(2)
-            .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        String::from_utf16_lossy(&units)
-    } else {
-        name_slice.iter().map(|b: &u8| char::from(*b)).collect()
+    let builtin: bool = record_grbit & LBL_GRBIT_FBUILTIN != 0;
+    let name: String = match builtin_name(builtin, cch, name_slice) {
+        Some(resolved) => resolved.to_owned(),
+        None if high_byte => {
+            let units: Vec<u16> = name_slice
+                .chunks_exact(2)
+                .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            String::from_utf16_lossy(&units)
+        }
+        None => name_slice.iter().map(|b: &u8| char::from(*b)).collect(),
     };
     if cce > MAX_RGCE {
         return Some((name, Vec::new()));
@@ -242,6 +248,30 @@ fn parse_lbl(data: &[u8]) -> Option<(String, Vec<u8>)> {
         .map(<[u8]>::to_vec)
         .unwrap_or_default();
     Some((name, rgce))
+}
+
+fn builtin_name(builtin: bool, cch: usize, name_slice: &[u8]) -> Option<&'static str> {
+    if !builtin || cch != 1 {
+        return None;
+    }
+    let name: &'static str = match *name_slice.first()? {
+        0x00 => "Consolidate_Area",
+        0x01 => "Auto_Open",
+        0x02 => "Auto_Close",
+        0x03 => "Extract",
+        0x04 => "Database",
+        0x05 => "Criteria",
+        0x06 => "Print_Area",
+        0x07 => "Print_Titles",
+        0x08 => "Recorder",
+        0x09 => "Data_Form",
+        0x0A => "Auto_Activate",
+        0x0B => "Auto_Deactivate",
+        0x0C => "Sheet_Title",
+        0x0D => "_FilterDatabase",
+        _ => return None,
+    };
+    Some(name)
 }
 
 fn is_auto_entry(name: &str) -> bool {

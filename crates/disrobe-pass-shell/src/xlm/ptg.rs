@@ -38,6 +38,20 @@ impl BiffVersion {
             Self::Biff12 => 12,
         }
     }
+
+    fn row_count(self) -> u32 {
+        match self {
+            Self::Biff8 => 0x0001_0000,
+            Self::Biff12 => 0x0010_0000,
+        }
+    }
+
+    fn col_count(self) -> u32 {
+        match self {
+            Self::Biff8 => 0x0000_0100,
+            Self::Biff12 => 0x0000_4000,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -527,8 +541,8 @@ fn format_ref(row: u32, col_field: u16, ctx: &PtgContext<'_>, relative: bool) ->
     let col_raw: u32 = u32::from(col_field & COL_MASK);
     let (abs_row, abs_col): (u32, u32) = if relative {
         (
-            resolve_relative(ctx.base_row, row, row_rel),
-            resolve_relative(ctx.base_col, col_raw, col_rel),
+            resolve_relative(ctx.base_row, row, row_rel, ctx.version.row_count()),
+            resolve_relative(ctx.base_col, col_raw, col_rel, ctx.version.col_count()),
         )
     } else {
         (row, col_raw)
@@ -542,12 +556,12 @@ fn format_ref(row: u32, col_field: u16, ctx: &PtgContext<'_>, relative: bool) ->
     )
 }
 
-fn resolve_relative(base: u32, stored: u32, is_relative: bool) -> u32 {
-    if is_relative {
-        base.wrapping_add(stored)
-    } else {
-        stored
+fn resolve_relative(base: u32, stored: u32, is_relative: bool, dimension: u32) -> u32 {
+    if !is_relative {
+        return stored;
     }
+    let sum: u64 = u64::from(base) + u64::from(stored);
+    (sum % u64::from(dimension)) as u32
 }
 
 pub fn column_letters(col: u32) -> String {

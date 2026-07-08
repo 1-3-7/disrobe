@@ -170,8 +170,7 @@ fn build_workbook_stream() -> Vec<u8> {
     stream
 }
 
-fn build_xls() -> Vec<u8> {
-    let workbook: Vec<u8> = build_workbook_stream();
+fn to_cfb(workbook: &[u8]) -> Vec<u8> {
     let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
     let mut comp: cfb::CompoundFile<Cursor<Vec<u8>>> =
         cfb::CompoundFile::create_with_version(cfb::Version::V3, cursor).expect("create cfb");
@@ -179,10 +178,119 @@ fn build_xls() -> Vec<u8> {
         let mut stream: cfb::Stream<Cursor<Vec<u8>>> = comp
             .create_stream("Workbook")
             .expect("create workbook stream");
-        stream.write_all(&workbook).expect("write workbook");
+        stream.write_all(workbook).expect("write workbook");
         stream.flush().expect("flush stream");
     }
     comp.into_inner().into_inner()
+}
+
+fn build_xls() -> Vec<u8> {
+    to_cfb(&build_workbook_stream())
+}
+
+fn ptg_exp(row: u16, col: u16) -> Vec<u8> {
+    let mut b: Vec<u8> = vec![0x01];
+    b.extend_from_slice(&row.to_le_bytes());
+    b.extend_from_slice(&col.to_le_bytes());
+    b
+}
+
+fn ptg_refn(row_stored: u16, col_field: u16) -> Vec<u8> {
+    let mut b: Vec<u8> = vec![0x2C];
+    b.extend_from_slice(&row_stored.to_le_bytes());
+    b.extend_from_slice(&col_field.to_le_bytes());
+    b
+}
+
+fn shrfmla(
+    row_first: u16,
+    row_last: u16,
+    col_first: u8,
+    col_last: u8,
+    cuse: u8,
+    rgce: &[u8],
+) -> Vec<u8> {
+    let mut data: Vec<u8> = Vec::new();
+    data.extend_from_slice(&row_first.to_le_bytes());
+    data.extend_from_slice(&row_last.to_le_bytes());
+    data.push(col_first);
+    data.push(col_last);
+    data.push(0x00);
+    data.push(cuse);
+    data.extend_from_slice(&(rgce.len() as u16).to_le_bytes());
+    data.extend_from_slice(rgce);
+    record(0x04BC, &data)
+}
+
+fn lbl_builtin(index: u8, rgce: &[u8]) -> Vec<u8> {
+    let mut data: Vec<u8> = Vec::new();
+    data.extend_from_slice(&0x002Au16.to_le_bytes());
+    data.push(0x00);
+    data.push(0x01);
+    data.extend_from_slice(&(rgce.len() as u16).to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&[0u8; 4]);
+    data.push(0x00);
+    data.push(index);
+    data.extend_from_slice(rgce);
+    record(0x0018, &data)
+}
+
+fn build_xls_shared() -> Vec<u8> {
+    let mut globals: Vec<u8> = Vec::new();
+    globals.extend_from_slice(&bof(0x0005));
+    globals.extend_from_slice(&record(0x0042, &0x04B0u16.to_le_bytes()));
+    let placeholder: Vec<u8> = boundsheet(0, "Macro1");
+    globals.extend_from_slice(&placeholder);
+    globals.extend_from_slice(&eof());
+
+    let boundsheet_pos: usize = bof(0x0005).len() + record(0x0042, &0x04B0u16.to_le_bytes()).len();
+    let lb_ply_pos: u32 = globals.len() as u32;
+    let fixed: Vec<u8> = boundsheet(lb_ply_pos, "Macro1");
+    globals.splice(boundsheet_pos..boundsheet_pos + placeholder.len(), fixed);
+
+    let shared_rgce: Vec<u8> = ptg_refn(0xFFFF, 0xC000);
+    let mut sheet: Vec<u8> = Vec::new();
+    sheet.extend_from_slice(&bof(0x0040));
+    sheet.extend_from_slice(&dimensions());
+    sheet.extend_from_slice(&formula(6, 0, &ptg_exp(6, 0)));
+    sheet.extend_from_slice(&shrfmla(6, 7, 0, 0, 2, &shared_rgce));
+    sheet.extend_from_slice(&formula(7, 0, &ptg_exp(6, 0)));
+    sheet.extend_from_slice(&eof());
+
+    let mut stream: Vec<u8> = globals;
+    stream.extend_from_slice(&sheet);
+    to_cfb(&stream)
+}
+
+fn build_xls_builtin_auto_open() -> Vec<u8> {
+    let mut globals: Vec<u8> = Vec::new();
+    globals.extend_from_slice(&bof(0x0005));
+    globals.extend_from_slice(&record(0x0042, &0x04B0u16.to_le_bytes()));
+    let placeholder: Vec<u8> = boundsheet(0, "Macro1");
+    globals.extend_from_slice(&placeholder);
+    globals.extend_from_slice(&lbl_builtin(0x01, &[0x24, 0x00, 0x00, 0x00, 0x00]));
+    globals.extend_from_slice(&eof());
+
+    let boundsheet_pos: usize = bof(0x0005).len() + record(0x0042, &0x04B0u16.to_le_bytes()).len();
+    let lb_ply_pos: u32 = globals.len() as u32;
+    let fixed: Vec<u8> = boundsheet(lb_ply_pos, "Macro1");
+    globals.splice(boundsheet_pos..boundsheet_pos + placeholder.len(), fixed);
+
+    let mut sheet: Vec<u8> = Vec::new();
+    sheet.extend_from_slice(&bof(0x0040));
+    sheet.extend_from_slice(&dimensions());
+    sheet.extend_from_slice(&formula(
+        0,
+        0,
+        &concat(&[&p_str("calc.exe"), &p_funcvar(1, 0x006E, false)]),
+    ));
+    sheet.extend_from_slice(&eof());
+
+    let mut stream: Vec<u8> = globals;
+    stream.extend_from_slice(&sheet);
+    to_cfb(&stream)
 }
 
 const EXPECTED: [(&str, &str); 11] = [
@@ -266,6 +374,88 @@ fn biff12_ref_uses_four_byte_row() {
         decoded.text
     );
     assert_eq!(decoded.text, "SQRT(B5*2)");
+}
+
+#[test]
+fn biff8_ptg_refn_negative_row_offset_resolves_absolute() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 6,
+        base_col: 0,
+        names: &[],
+    };
+    let rgce: [u8; 5] = [0x2C, 0xFF, 0xFF, 0x00, 0xC0];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert!(
+        !decoded.unknown,
+        "relative reference must resolve, not fall back: {}",
+        decoded.text
+    );
+    assert_eq!(decoded.text, "A6");
+}
+
+#[test]
+fn biff8_ptg_refn_negative_column_offset_resolves_absolute() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 6,
+        base_col: 3,
+        names: &[],
+    };
+    let rgce: [u8; 5] = [0x2C, 0x00, 0x00, 0xFF, 0xFF];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert!(
+        !decoded.unknown,
+        "relative reference must resolve, not fall back: {}",
+        decoded.text
+    );
+    assert_eq!(decoded.text, "C7");
+}
+
+#[test]
+fn xls_shared_formula_relative_recovers_absolute_refs() {
+    let xls: Vec<u8> = build_xls_shared();
+    let report: XlmRecovery = recover_xlm(&xls).expect("recover xlm");
+    let sheet: &disrobe_pass_shell::XlmSheet = report
+        .sheets
+        .iter()
+        .find(|s: &&disrobe_pass_shell::XlmSheet| s.kind == "macro")
+        .expect("macro sheet present");
+    let a7: &disrobe_pass_shell::XlmCell = sheet
+        .cells
+        .iter()
+        .find(|c: &&disrobe_pass_shell::XlmCell| c.cell == "A7")
+        .expect("A7 present");
+    assert!(!a7.unknown, "A7 must resolve, got {}", a7.formula);
+    assert_eq!(a7.formula, "=A6");
+    let a8: &disrobe_pass_shell::XlmCell = sheet
+        .cells
+        .iter()
+        .find(|c: &&disrobe_pass_shell::XlmCell| c.cell == "A8")
+        .expect("A8 present");
+    assert!(!a8.unknown, "A8 must resolve, got {}", a8.formula);
+    assert_eq!(a8.formula, "=A7");
+}
+
+#[test]
+fn xls_builtin_auto_open_name_is_entry_point() {
+    let xls: Vec<u8> = build_xls_builtin_auto_open();
+    let report: XlmRecovery = recover_xlm(&xls).expect("recover xlm");
+    assert!(
+        report
+            .entry_points
+            .iter()
+            .any(|e: &disrobe_pass_shell::XlmEntryPoint| e.name == "Auto_Open"),
+        "built-in Auto_Open must be recognized as an entry point: {:?}",
+        report.entry_points
+    );
+    assert!(
+        report
+            .defined_names
+            .iter()
+            .any(|n: &disrobe_pass_shell::XlmDefinedName| n.name == "Auto_Open"),
+        "built-in Auto_Open must appear in defined names"
+    );
 }
 
 #[test]
