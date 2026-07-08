@@ -63,6 +63,47 @@ fn committed_corpus_verdicts_are_correct() {
 }
 
 #[test]
+fn wrong_eku_leaf_never_reaches_valid() {
+    let bytes: Vec<u8> = read_fixture("wrong_eku.exe").expect("wrong-eku fixture present");
+    let report: AuthenticodeReport = verify_authenticode(&bytes);
+    assert_ne!(
+        report.verdict,
+        AuthenticodeVerdict::Valid,
+        "a leaf whose ExtendedKeyUsage lacks codeSigning must never be trusted"
+    );
+    assert_eq!(
+        report.verdict,
+        AuthenticodeVerdict::WrongKeyUsage,
+        "a present EKU without codeSigning or anyExtendedKeyUsage is a key-usage failure"
+    );
+    assert_eq!(
+        report.computed_hash, report.claimed_hash,
+        "the sample's Authenticode hash is intact; only the key usage disqualifies it"
+    );
+}
+
+#[test]
+fn injected_timestamp_cannot_unexpire_a_signature() {
+    let bytes: Vec<u8> =
+        read_fixture("timestamp_forged_expired.exe").expect("forged-timestamp fixture present");
+    let report: AuthenticodeReport = verify_authenticode(&bytes);
+    assert_ne!(
+        report.verdict,
+        AuthenticodeVerdict::Valid,
+        "an unverifiable RFC3161 genTime must never flip a verdict to Valid"
+    );
+    assert_eq!(
+        report.verdict,
+        AuthenticodeVerdict::Expired,
+        "the injected in-window genTime must not override the expired signing certificate"
+    );
+    assert_eq!(
+        report.computed_hash, report.claimed_hash,
+        "the file hash is untouched; the injected genTime lives in the certificate table"
+    );
+}
+
+#[test]
 fn real_binary_rfc3161_timestamp_is_extracted() {
     let candidates: &[&str] = &[
         "advapi32.dll",

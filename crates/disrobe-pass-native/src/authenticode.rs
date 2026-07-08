@@ -24,6 +24,11 @@ const OID_COUNTER_SIGNATURE: ObjectIdentifier =
 const OID_RFC3161_TIMESTAMP: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.3.3.1");
 const OID_BASIC_CONSTRAINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
+const OID_EXT_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37");
+const OID_EKU_CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");
+const OID_EKU_ANY: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37.0");
+const OID_SUBJECT_KEY_IDENTIFIER: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.14");
+const OID_CT_TST_INFO: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.1.4");
 
 const OID_SHA1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.14.3.2.26");
 const OID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
@@ -72,6 +77,7 @@ pub enum AuthenticodeVerdict {
     Expired,
     SelfSigned,
     UntrustedChain,
+    WrongKeyUsage,
     UnsupportedAlgorithm,
     Valid,
 }
@@ -86,6 +92,7 @@ impl AuthenticodeVerdict {
             Self::Expired => "expired signing certificate",
             Self::SelfSigned => "self-signed signing certificate",
             Self::UntrustedChain => "certificate chain not anchored to a bundled root",
+            Self::WrongKeyUsage => "signing certificate not valid for code signing",
             Self::UnsupportedAlgorithm => "unsupported signature algorithm",
             Self::Valid => "valid",
         }
@@ -306,11 +313,7 @@ fn verify_signed(
         SignerVerification::Ok | SignerVerification::Unsupported => {}
     }
 
-    let reference_time: i64 = report
-        .timestamp
-        .as_ref()
-        .and_then(|t: &TimestampInfo| parse_iso_to_unix(&t.signing_time))
-        .unwrap_or_else(now_unix);
+    let reference_time: i64 = verified_timestamp_time(signer).unwrap_or_else(now_unix);
 
     let Some(leaf): Option<&Certificate> = chain.first() else {
         report.verdict = AuthenticodeVerdict::MalformedSignature;
@@ -324,6 +327,11 @@ fn verify_signed(
 
     if name_eq(&leaf.tbs_certificate.subject, &leaf.tbs_certificate.issuer) {
         report.verdict = AuthenticodeVerdict::SelfSigned;
+        return Ok(report);
+    }
+
+    if !leaf_permits_code_signing(leaf) {
+        report.verdict = AuthenticodeVerdict::WrongKeyUsage;
         return Ok(report);
     }
 
@@ -458,7 +466,8 @@ fn hash_regions<D: Digest>(bytes: &[u8], geom: &HashGeometry) -> Vec<u8> {
 }
 
 fn collect_certificates(signed_data: &SignedData) -> Vec<Certificate> {
-    let Some(set) = signed_data.certificates.as_ref() else {
+    let Some(set): Option<&cms::signed_data::CertificateSet> = signed_data.certificates.as_ref()
+    else {
         return Vec::new();
     };
     let mut out: Vec<Certificate> = Vec::new();
@@ -525,8 +534,48 @@ fn find_signer_cert<'a>(certs: &'a [Certificate], signer: &SignerInfo) -> Option
             name_eq(&cert.tbs_certificate.issuer, &ias.issuer)
                 && cert.tbs_certificate.serial_number.as_bytes() == ias.serial_number.as_bytes()
         }),
-        SignerIdentifier::SubjectKeyIdentifier(_) => certs.first(),
+        SignerIdentifier::SubjectKeyIdentifier(ski) => {
+            let target: &[u8] = ski.0.as_bytes();
+            certs
+                .iter()
+                .find(|cert: &&Certificate| cert_ski(cert).is_some_and(|id: Vec<u8>| id == target))
+        }
     }
+}
+
+fn cert_ski(cert: &Certificate) -> Option<Vec<u8>> {
+    let extensions: &Vec<x509_cert::ext::Extension> = cert.tbs_certificate.extensions.as_ref()?;
+    for ext in extensions {
+        if ext.extn_id == OID_SUBJECT_KEY_IDENTIFIER
+            && let Ok(ski) =
+                x509_cert::ext::pkix::SubjectKeyIdentifier::from_der(ext.extn_value.as_bytes())
+        {
+            return Some(ski.0.as_bytes().to_vec());
+        }
+    }
+    None
+}
+
+fn leaf_permits_code_signing(cert: &Certificate) -> bool {
+    let Some(extensions): Option<&Vec<x509_cert::ext::Extension>> =
+        cert.tbs_certificate.extensions.as_ref()
+    else {
+        return true;
+    };
+    let Some(eku_ext): Option<&x509_cert::ext::Extension> = extensions
+        .iter()
+        .find(|ext: &&x509_cert::ext::Extension| ext.extn_id == OID_EXT_KEY_USAGE)
+    else {
+        return true;
+    };
+    let Ok(eku): Result<x509_cert::ext::pkix::ExtendedKeyUsage, _> =
+        x509_cert::ext::pkix::ExtendedKeyUsage::from_der(eku_ext.extn_value.as_bytes())
+    else {
+        return false;
+    };
+    eku.0
+        .iter()
+        .any(|oid: &ObjectIdentifier| *oid == OID_EKU_CODE_SIGNING || *oid == OID_EKU_ANY)
 }
 
 fn links_verify(chain: &[Certificate]) -> bool {
@@ -573,7 +622,9 @@ fn verify_signer(
     let Some(leaf): Option<&Certificate> = leaf else {
         return SignerVerification::Failed;
     };
-    let Some(signed_attrs) = signer.signed_attrs.as_ref() else {
+    let Some(signed_attrs): Option<&cms::signed_data::SignedAttributes> =
+        signer.signed_attrs.as_ref()
+    else {
         return SignerVerification::Failed;
     };
     let digest_kind: Option<DigestKind> = DigestKind::from_oid(&signer.digest_alg.oid);
@@ -626,7 +677,7 @@ fn signed_attr_octets(
     attrs: &cms::signed_data::SignedAttributes,
     oid: &ObjectIdentifier,
 ) -> Option<Vec<u8>> {
-    let attr = attrs
+    let attr: &x509_cert::attr::Attribute = attrs
         .iter()
         .find(|a: &&x509_cert::attr::Attribute| a.oid == *oid)?;
     let value: &Any = attr.values.iter().next()?;
@@ -803,7 +854,9 @@ fn cert_info(cert: &Certificate) -> CertInfo {
 }
 
 fn cert_is_ca(cert: &Certificate) -> bool {
-    let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
+    let Some(extensions): Option<&Vec<x509_cert::ext::Extension>> =
+        cert.tbs_certificate.extensions.as_ref()
+    else {
         return false;
     };
     for ext in extensions {
@@ -829,7 +882,7 @@ fn time_to_unix(time: &x509_cert::time::Time) -> i64 {
 }
 
 fn extract_timestamp(signer: &SignerInfo) -> Option<TimestampInfo> {
-    let unsigned = signer.unsigned_attrs.as_ref()?;
+    let unsigned: &cms::signed_data::UnsignedAttributes = signer.unsigned_attrs.as_ref()?;
     for attr in unsigned.iter() {
         if attr.oid == OID_RFC3161_TIMESTAMP
             && let Some(value) = attr.values.iter().next()
@@ -845,6 +898,148 @@ fn extract_timestamp(signer: &SignerInfo) -> Option<TimestampInfo> {
         }
     }
     None
+}
+
+struct MessageImprint {
+    digest_kind: DigestKind,
+    hashed_message: Vec<u8>,
+}
+
+fn verified_timestamp_time(primary: &SignerInfo) -> Option<i64> {
+    let unsigned: &cms::signed_data::UnsignedAttributes = primary.unsigned_attrs.as_ref()?;
+    let primary_signature: &[u8] = primary.signature.as_bytes();
+    for attr in unsigned.iter() {
+        if attr.oid == OID_RFC3161_TIMESTAMP
+            && let Some(value) = attr.values.iter().next()
+            && let Some(time) = verify_rfc3161_token(value, primary_signature)
+        {
+            return Some(time);
+        }
+    }
+    None
+}
+
+fn verify_rfc3161_token(value: &Any, primary_signature: &[u8]) -> Option<i64> {
+    let der: Vec<u8> = value.to_der().ok()?;
+    let content_info_body: &[u8] = child_with_tag(&der_children(&der)?, 0x30)?;
+    let ci_fields: Vec<(u8, &[u8])> = der_children(content_info_body)?;
+    if oid_from_bytes(child_with_tag(&ci_fields, 0x06)?)? != OID_SIGNED_DATA {
+        return None;
+    }
+    let signed_data_wrapped: &[u8] = child_with_tag(&ci_fields, 0xA0)?;
+    let signed_data_body: &[u8] = child_with_tag(&der_children(signed_data_wrapped)?, 0x30)?;
+    let sd_fields: Vec<(u8, &[u8])> = der_children(signed_data_body)?;
+
+    let eci_body: &[u8] = child_with_tag(&sd_fields, 0x30)?;
+    let eci_fields: Vec<(u8, &[u8])> = der_children(eci_body)?;
+    if oid_from_bytes(child_with_tag(&eci_fields, 0x06)?)? != OID_CT_TST_INFO {
+        return None;
+    }
+    let econtent_explicit: &[u8] = child_with_tag(&eci_fields, 0xA0)?;
+    let octet_tlv: &[u8] = der_tlv_slices(econtent_explicit)?
+        .into_iter()
+        .find(|slice: &&[u8]| slice.first() == Some(&0x04))?;
+    let econtent: Any = Any::from_der(octet_tlv).ok()?;
+    let tst_der: &[u8] = econtent.value();
+    let (imprint, gen_time): (MessageImprint, i64) = parse_tst_details(tst_der)?;
+    if imprint.digest_kind.digest(primary_signature) != imprint.hashed_message {
+        return None;
+    }
+
+    let certs_body: &[u8] = child_with_tag(&sd_fields, 0xA0)?;
+    let certs: Vec<Certificate> = der_tlv_slices(certs_body)?
+        .into_iter()
+        .filter(|slice: &&[u8]| slice.first() == Some(&0x30))
+        .filter_map(|slice: &[u8]| Certificate::from_der(slice).ok())
+        .collect();
+    let signer_infos_body: &[u8] = sd_fields
+        .iter()
+        .rev()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x31)
+        .map(|(_, body): &(u8, &[u8])| *body)?;
+    let signer_tlv: &[u8] = der_tlv_slices(signer_infos_body)?
+        .into_iter()
+        .find(|slice: &&[u8]| slice.first() == Some(&0x30))?;
+    let tsa_signer: SignerInfo = SignerInfo::from_der(signer_tlv).ok()?;
+
+    let econtent_der: Vec<u8> = octet_tlv.to_vec();
+    let chain: Vec<Certificate> = build_chain(&certs, &tsa_signer);
+    let leaf: &Certificate = chain.first()?;
+    if !matches!(
+        verify_signer(&tsa_signer, Some(leaf), &econtent, &econtent_der),
+        SignerVerification::Ok
+    ) {
+        return None;
+    }
+    if !links_verify(&chain) || !chain_is_anchored(&chain) {
+        return None;
+    }
+    if cert_is_expired(leaf, gen_time) {
+        return None;
+    }
+    Some(gen_time)
+}
+
+fn der_tlv_slices(body: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut out: Vec<&[u8]> = Vec::new();
+    let mut pos: usize = 0;
+    while pos < body.len() {
+        let remaining: &[u8] = body.get(pos..)?;
+        let len: usize = der_tlv_total_len(remaining)?;
+        let end: usize = pos.checked_add(len)?;
+        out.push(body.get(pos..end)?);
+        pos = end;
+    }
+    Some(out)
+}
+
+fn oid_from_bytes(oid_bytes: &[u8]) -> Option<ObjectIdentifier> {
+    if oid_bytes.len() > 0x7F {
+        return None;
+    }
+    let mut der: Vec<u8> = Vec::with_capacity(oid_bytes.len() + 2);
+    der.push(0x06);
+    der.push(u8::try_from(oid_bytes.len()).ok()?);
+    der.extend_from_slice(oid_bytes);
+    ObjectIdentifier::from_der(&der).ok()
+}
+
+fn parse_tst_details(tst_der: &[u8]) -> Option<(MessageImprint, i64)> {
+    let outer: Vec<(u8, &[u8])> = der_children(tst_der)?;
+    let (seq_tag, seq_body): (u8, &[u8]) = outer.first().copied()?;
+    if seq_tag != 0x30 {
+        return None;
+    }
+    let fields: Vec<(u8, &[u8])> = der_children(seq_body)?;
+    let mi_body: &[u8] = fields
+        .iter()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x30)
+        .map(|(_, body): &(u8, &[u8])| *body)?;
+    let mi_fields: Vec<(u8, &[u8])> = der_children(mi_body)?;
+    let alg_body: &[u8] = mi_fields
+        .iter()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x30)
+        .map(|(_, body): &(u8, &[u8])| *body)?;
+    let alg_oid_bytes: &[u8] = der_children(alg_body)?
+        .iter()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x06)
+        .map(|(_, body): &(u8, &[u8])| *body)?;
+    let digest_kind: DigestKind = oid_to_digest_kind(alg_oid_bytes)?;
+    let hashed_message: &[u8] = mi_fields
+        .iter()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x04)
+        .map(|(_, body): &(u8, &[u8])| *body)?;
+    let gen_time: i64 = fields
+        .iter()
+        .find(|(tag, _): &&(u8, &[u8])| *tag == 0x18)
+        .and_then(|(_, body): &(u8, &[u8])| generalized_time_to_unix(body))?;
+    Some((
+        MessageImprint {
+            digest_kind,
+            hashed_message: hashed_message.to_vec(),
+        },
+        gen_time,
+    ))
 }
 
 fn parse_rfc3161(value: &Any) -> Option<TimestampInfo> {
@@ -885,7 +1080,7 @@ fn child_with_tag<'a>(children: &[(u8, &'a [u8])], tag: u8) -> Option<&'a [u8]> 
 fn parse_counter_signature(value: &Any) -> Option<TimestampInfo> {
     let der: Vec<u8> = value.to_der().ok()?;
     let signer: SignerInfo = SignerInfo::from_der(&der).ok()?;
-    let signed_attrs = signer.signed_attrs.as_ref()?;
+    let signed_attrs: &cms::signed_data::SignedAttributes = signer.signed_attrs.as_ref()?;
     let signing_time: String = signed_attr_time(signed_attrs, &OID_SIGNING_TIME)?;
     let hash_algorithm: String = DigestKind::from_oid(&signer.digest_alg.oid)
         .map(|d: DigestKind| d.label().to_owned())
@@ -901,7 +1096,7 @@ fn signed_attr_time(
     attrs: &cms::signed_data::SignedAttributes,
     oid: &ObjectIdentifier,
 ) -> Option<String> {
-    let attr = attrs
+    let attr: &x509_cert::attr::Attribute = attrs
         .iter()
         .find(|a: &&x509_cert::attr::Attribute| a.oid == *oid)?;
     let value: &Any = attr.values.iter().next()?;
@@ -950,16 +1145,15 @@ fn parse_tst_info(der: &[u8]) -> Option<(String, String)> {
     Some((gen_time, hash_algorithm))
 }
 
-fn oid_to_digest_label(oid_bytes: &[u8]) -> Option<String> {
-    let mut der: Vec<u8> = Vec::with_capacity(oid_bytes.len() + 2);
-    der.push(0x06);
-    der.push(u8::try_from(oid_bytes.len()).ok()?);
-    der.extend_from_slice(oid_bytes);
-    let oid: ObjectIdentifier = ObjectIdentifier::from_der(&der).ok()?;
-    DigestKind::from_oid(&oid).map(|d: DigestKind| d.label().to_owned())
+fn oid_to_digest_kind(oid_bytes: &[u8]) -> Option<DigestKind> {
+    DigestKind::from_oid(&oid_from_bytes(oid_bytes)?)
 }
 
-fn generalized_time_to_iso(body: &[u8]) -> Option<String> {
+fn oid_to_digest_label(oid_bytes: &[u8]) -> Option<String> {
+    oid_to_digest_kind(oid_bytes).map(|d: DigestKind| d.label().to_owned())
+}
+
+fn generalized_time_to_unix(body: &[u8]) -> Option<i64> {
     if body.len() < 14 {
         return None;
     }
@@ -967,15 +1161,17 @@ fn generalized_time_to_iso(body: &[u8]) -> Option<String> {
     if !text.bytes().all(|b: u8| b.is_ascii_digit()) {
         return None;
     }
-    Some(format!(
-        "{}-{}-{}T{}:{}:{}Z",
-        &text[0..4],
-        &text[4..6],
-        &text[6..8],
-        &text[8..10],
-        &text[10..12],
-        &text[12..14],
-    ))
+    let year: i64 = text.get(0..4)?.parse().ok()?;
+    let month: i64 = text.get(4..6)?.parse().ok()?;
+    let day: i64 = text.get(6..8)?.parse().ok()?;
+    let hour: i64 = text.get(8..10)?.parse().ok()?;
+    let minute: i64 = text.get(10..12)?.parse().ok()?;
+    let second: i64 = text.get(12..14)?.parse().ok()?;
+    Some(civil_to_unix(year, month, day, hour, minute, second))
+}
+
+fn generalized_time_to_iso(body: &[u8]) -> Option<String> {
+    Some(unix_to_iso(generalized_time_to_unix(body)?))
 }
 
 fn der_tlv_total_len(bytes: &[u8]) -> Option<usize> {
@@ -1055,20 +1251,6 @@ fn now_unix() -> i64 {
     i64::try_from(disrobe_core::time::now_secs()).unwrap_or(i64::MAX)
 }
 
-fn parse_iso_to_unix(iso: &str) -> Option<i64> {
-    let bytes: &[u8] = iso.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let year: i64 = iso.get(0..4)?.parse().ok()?;
-    let month: i64 = iso.get(5..7)?.parse().ok()?;
-    let day: i64 = iso.get(8..10)?.parse().ok()?;
-    let hour: i64 = iso.get(11..13)?.parse().ok()?;
-    let minute: i64 = iso.get(14..16)?.parse().ok()?;
-    let second: i64 = iso.get(17..19)?.parse().ok()?;
-    Some(civil_to_unix(year, month, day, hour, minute, second))
-}
-
 fn civil_to_unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
     let y: i64 = if month <= 2 { year - 1 } else { year };
     let era: i64 = if y >= 0 { y } else { y - 399 } / 400;
@@ -1144,13 +1326,14 @@ mod tests {
         assert_eq!(unix_to_iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(unix_to_iso(1_700_000_000), "2023-11-14T22:13:20Z");
         assert_eq!(
-            parse_iso_to_unix("2023-11-14T22:13:20Z"),
+            generalized_time_to_unix(b"20231114221320"),
             Some(1_700_000_000)
         );
         assert_eq!(
-            parse_iso_to_unix(&unix_to_iso(1_600_000_000)),
+            generalized_time_to_unix(b"20200913122640"),
             Some(1_600_000_000)
         );
+        assert_eq!(generalized_time_to_unix(b"2020"), None);
     }
 
     #[test]
