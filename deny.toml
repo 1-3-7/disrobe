@@ -13,6 +13,7 @@ ignore = [
     { id = "RUSTSEC-2026-0186", reason = "memmap2 unsound unchecked pointer offset; disrobe memory-maps input files read-only for parsing and never exposes the unchecked-offset API to attacker-controlled arithmetic; no upstream fix released yet" },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic-runtime DoS reached only transitively through plist's XML property-list reader; plist 1.9.0 is the latest release and pins quick-xml ^0.39.2, below the fixed 0.41.0, so no upstream-installable fix exists; disrobe parses plists in a bounded, killable CLI pass" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader unbounded namespace allocation reached only transitively through plist's XML property-list reader; same plist ^0.39.2 pin blocks the fixed quick-xml 0.41.0; bounded killable CLI parse, no attacker-persistent process" },
+    { id = "RUSTSEC-2023-0071", reason = "Marvin Attack timing sidechannel leaks a PRIVATE key during RSA decrypt/sign; no safe upgrade exists upstream (rsa maintainers confirm no patch yet). disrobe's Authenticode module only verifies a signer's PKCS#7 signature against their public key extracted from the certificate chain, it never holds or operates on a private key, so the leaked-secret threat model does not apply to this usage" },
 ]
 unmaintained = "workspace"
 yanked = "deny"
@@ -134,6 +135,8 @@ skip = [
     { crate = "r-efi", reason = "1.x vs 5.x via getrandom uefi backend majors" },
     { crate = "heapless", reason = "0.7 via postcard vs 0.8 via gix's faster-hex git-history scanner dep" },
     { crate = "hash32", reason = "matched majors of the heapless straddle (0.2 vs 0.3)" },
+    { crate = "egg", reason = "0.6 via wasm-tools' wasm-mutate vs 0.11 via oxiz's own e-graph equality-saturation theory solver" },
+    { crate = "env_logger", reason = "0.9 transitive via oxiz vs 0.11 via wasm-tools" },
 ]
 skip-tree = []
 
