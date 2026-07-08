@@ -173,10 +173,15 @@ pub fn analyze(bytes: &[u8]) -> DelphiReport {
     let forms: Vec<DelphiForm> = decode_forms(&view);
     let rtti_present: bool = !outcome.classes.is_empty();
     let mut notes: Vec<String> = Vec::new();
+    if outcome.scan_truncated {
+        notes.push(
+            "VMT scan reached an internal position or count cap before covering the whole image; class results may be incomplete".to_owned(),
+        );
+    }
     if !rtti_present {
         if outcome.anchor_count > 0 {
             notes.push(
-                "VMT self-pointer anchors were found but no class validated (RTTI present but not parseable)".to_owned(),
+                "possible VMT anchor pattern(s) found, none validated as a Delphi class".to_owned(),
             );
         } else {
             notes.push("no Delphi RTTI virtual method tables present".to_owned());

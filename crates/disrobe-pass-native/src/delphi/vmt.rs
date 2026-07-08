@@ -92,6 +92,7 @@ pub(super) struct ScanOutcome {
     pub classes: Vec<DelphiClass>,
     pub era: Option<DelphiEra>,
     pub anchor_count: usize,
+    pub scan_truncated: bool,
 }
 
 pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
@@ -101,6 +102,7 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
     let mut raw: BTreeMap<u64, RawClass> = BTreeMap::new();
     let mut anchor_count: usize = 0;
     let mut scanned: usize = 0;
+    let mut scan_truncated: bool = false;
     let mut era_votes: BTreeMap<DelphiEra, usize> = BTreeMap::new();
 
     'outer: for sec in &view.image.sections {
@@ -112,6 +114,7 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
         let end_rva: u64 = u64::from(sec.virtual_address) + u64::from(span) - ptr_size as u64;
         while u64::from(rva) <= end_rva {
             if scanned >= MAX_SCAN_POSITIONS || raw.len() >= MAX_CLASSES {
+                scan_truncated = true;
                 break 'outer;
             }
             scanned += 1;
@@ -149,6 +152,7 @@ pub(super) fn scan_classes(view: &PeView<'_>) -> ScanOutcome {
         classes,
         era,
         anchor_count,
+        scan_truncated,
     }
 }
 

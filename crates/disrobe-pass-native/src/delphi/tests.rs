@@ -224,6 +224,31 @@ fn analyze_reports_no_rtti_when_absent() {
 }
 
 #[test]
+#[cfg(windows)]
+fn no_validated_classes_on_real_system_dlls() {
+    let candidates: [&str; 3] = [
+        r"C:\Windows\System32\kernel32.dll",
+        r"C:\Windows\System32\ntdll.dll",
+        r"C:\Windows\System32\user32.dll",
+    ];
+    let mut checked: usize = 0;
+    for path in candidates {
+        let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
+            continue;
+        };
+        checked += 1;
+        let report: DelphiReport = analyze(&bytes);
+        assert!(
+            report.classes.is_empty(),
+            "{path} unexpectedly produced validated Delphi classes: {}",
+            report.classes.len()
+        );
+        assert!(!report.rtti_present, "{path} unexpectedly reported RTTI");
+    }
+    assert!(checked > 0, "no real system DLL was readable for the check");
+}
+
+#[test]
 fn detect_delphi_marker_in_bytes() {
     let mut buf: Vec<u8> = b"MZ".to_vec();
     buf.extend(std::iter::repeat_n(0u8, 128));
@@ -247,6 +272,40 @@ fn dfm_deep_value_nesting_is_bounded_not_stack_overflow() {
             .notes
             .iter()
             .any(|n: &String| n.contains("nesting exceeded the depth cap"))
+    );
+}
+
+fn build_deep_property_bomb(levels: usize, props_at_leaf: usize) -> Vec<u8> {
+    let mut dfm: Vec<u8> = b"TPF0".to_vec();
+    for _ in 0..levels {
+        dfm.extend([1u8, b'T', 0u8, 0u8]);
+    }
+    dfm.extend([1u8, b'T', 0u8]);
+    for _ in 0..props_at_leaf {
+        dfm.extend([1u8, b'p', 8u8]);
+    }
+    dfm.extend([0u8, 0u8]);
+    dfm.extend(std::iter::repeat_n(0u8, levels));
+    dfm
+}
+
+#[test]
+fn dfm_deep_nesting_output_is_capped_not_gigabytes() {
+    let dfm: Vec<u8> = build_deep_property_bomb(300, 40_000);
+    assert!(
+        dfm.len() < 256 * 1024,
+        "crafted input stays small: {} bytes",
+        dfm.len()
+    );
+    let decoded: super::dfm::DfmDecoded = super::dfm::decode(&dfm).expect("still a TPF0 stream");
+    assert!(decoded.truncated);
+    assert!(decoded.text.len() <= super::dfm::MAX_OUTPUT_BYTES);
+    assert!(decoded.text.len() > 1024 * 1024);
+    assert!(
+        decoded
+            .notes
+            .iter()
+            .any(|n: &String| n.contains("output size"))
     );
 }
 

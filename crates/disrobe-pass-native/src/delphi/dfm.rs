@@ -23,6 +23,7 @@ const VA_DOUBLE: u8 = 21;
 
 const MAX_DEPTH: usize = 512;
 const MAX_OBJECTS: usize = 200_000;
+pub(super) const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(super) struct DfmDecoded {
@@ -103,6 +104,7 @@ struct State {
     out: String,
     object_count: usize,
     truncated: bool,
+    capped: bool,
     notes: Vec<String>,
     root_class: String,
 }
@@ -113,6 +115,30 @@ impl State {
         if !self.notes.iter().any(|n: &String| n == note) {
             self.notes.push(note.to_owned());
         }
+    }
+
+    fn emit(&mut self, s: &str) {
+        if self.capped {
+            return;
+        }
+        if self.out.len().saturating_add(s.len()) > MAX_OUTPUT_BYTES {
+            self.capped = true;
+            self.flag("output size reached the cap before decoding finished");
+            return;
+        }
+        self.out.push_str(s);
+    }
+
+    fn emit_char(&mut self, c: char) {
+        if self.capped {
+            return;
+        }
+        if self.out.len().saturating_add(c.len_utf8()) > MAX_OUTPUT_BYTES {
+            self.capped = true;
+            self.flag("output size reached the cap before decoding finished");
+            return;
+        }
+        self.out.push(c);
     }
 }
 
@@ -126,10 +152,11 @@ pub(super) fn decode(data: &[u8]) -> Option<DfmDecoded> {
         out: String::new(),
         object_count: 0,
         truncated: false,
+        capped: false,
         notes: Vec::new(),
         root_class: String::new(),
     };
-    if read_object(&mut cur, &mut state, "", 0).is_none() {
+    if read_object(&mut cur, &mut state, "", 0).is_none() && !state.capped {
         state.flag("stream ended before a complete object");
     }
     Some(DfmDecoded {
@@ -148,6 +175,9 @@ fn read_object(cur: &mut Cursor<'_>, st: &mut State, indent: &str, depth: usize)
     }
     if st.object_count >= MAX_OBJECTS {
         st.flag("object count exceeded the cap");
+        return None;
+    }
+    if st.capped {
         return None;
     }
 
@@ -173,31 +203,34 @@ fn read_object(cur: &mut Cursor<'_>, st: &mut State, indent: &str, depth: usize)
     }
     st.object_count += 1;
 
-    st.out.push_str(indent);
+    st.emit(indent);
     if flags & 0x01 != 0 {
-        st.out.push_str("inherited");
+        st.emit("inherited");
     } else if flags & 0x04 != 0 {
-        st.out.push_str("inline");
+        st.emit("inline");
     } else {
-        st.out.push_str("object");
+        st.emit("object");
     }
-    st.out.push(' ');
+    st.emit_char(' ');
     if !name_str.is_empty() {
-        st.out.push_str(&name_str);
-        st.out.push_str(": ");
+        st.emit(&name_str);
+        st.emit(": ");
     }
-    st.out.push_str(&class_str);
+    st.emit(&class_str);
     if let Some(pos) = child_pos {
-        st.out.push('[');
-        st.out.push_str(&pos.to_string());
-        st.out.push(']');
+        st.emit_char('[');
+        st.emit(&pos.to_string());
+        st.emit_char(']');
     }
-    st.out.push('\n');
+    st.emit_char('\n');
 
     let child_indent: String = format!("{indent}  ");
     read_prop_list(cur, st, &child_indent, depth)?;
 
     loop {
+        if st.capped {
+            return None;
+        }
         let b: u8 = cur.u8()?;
         if b == 0 {
             break;
@@ -206,8 +239,8 @@ fn read_object(cur: &mut Cursor<'_>, st: &mut State, indent: &str, depth: usize)
         read_object(cur, st, &child_indent, depth + 1)?;
     }
 
-    st.out.push_str(indent);
-    st.out.push_str("end\n");
+    st.emit(indent);
+    st.emit("end\n");
     Some(())
 }
 
@@ -217,15 +250,18 @@ fn read_prop_list(cur: &mut Cursor<'_>, st: &mut State, indent: &str, depth: usi
         return None;
     }
     loop {
+        if st.capped {
+            return None;
+        }
         let b: u8 = cur.u8()?;
         if b == 0 {
             break;
         }
         cur.unread();
         let name: Vec<u8> = cur.shortstring()?;
-        st.out.push_str(indent);
-        st.out.push_str(&String::from_utf8_lossy(&name));
-        st.out.push_str(" = ");
+        st.emit(indent);
+        st.emit(&String::from_utf8_lossy(&name));
+        st.emit(" = ");
         let vt: u8 = cur.u8()?;
         process_value(cur, st, indent, vt, depth)?;
     }
@@ -258,25 +294,31 @@ fn process_value(
         st.flag("value nesting exceeded the depth cap");
         return None;
     }
+    if st.capped {
+        return None;
+    }
     match vt {
         VA_LIST => {
-            st.out.push('(');
+            st.emit_char('(');
             let mut first: bool = true;
             let inner: String = format!("{indent}  ");
             loop {
+                if st.capped {
+                    return None;
+                }
                 let ivt: u8 = cur.u8()?;
                 if ivt == VA_NULL {
                     break;
                 }
                 if first {
-                    st.out.push('\n');
+                    st.emit_char('\n');
                     first = false;
                 }
-                st.out.push_str(&inner);
+                st.emit(&inner);
                 process_value(cur, st, &inner, ivt, depth + 1)?;
             }
-            st.out.push_str(indent);
-            st.out.push_str(")\n");
+            st.emit(indent);
+            st.emit(")\n");
         }
         VA_INT8 => push_line(st, &i64::from(cur.u8()? as i8).to_string()),
         VA_INT16 => push_line(st, &i64::from(cur.u16le()? as i16).to_string()),
@@ -329,60 +371,69 @@ fn process_value(
         VA_BINARY => {
             let len: usize = cur.u32le()? as usize;
             let bytes: &[u8] = cur.take(len)?;
-            st.out.push_str("{\n");
+            st.emit("{\n");
             for chunk in bytes.chunks(32) {
-                st.out.push_str(indent);
-                st.out.push_str("  ");
-                for byte in chunk {
-                    st.out.push_str(&format!("{byte:02X}"));
+                if st.capped {
+                    return None;
                 }
-                st.out.push('\n');
+                st.emit(indent);
+                st.emit("  ");
+                for byte in chunk {
+                    st.emit(&format!("{byte:02X}"));
+                }
+                st.emit_char('\n');
             }
-            st.out.push_str(indent);
-            st.out.push_str("}\n");
+            st.emit(indent);
+            st.emit("}\n");
         }
         VA_SET => {
-            st.out.push('[');
+            st.emit_char('[');
             let mut first: bool = true;
             loop {
+                if st.capped {
+                    return None;
+                }
                 let elem: Vec<u8> = cur.shortstring()?;
                 if elem.is_empty() {
                     break;
                 }
                 if !first {
-                    st.out.push_str(", ");
+                    st.emit(", ");
                 }
                 first = false;
-                st.out.push_str(&String::from_utf8_lossy(&elem));
+                st.emit(&String::from_utf8_lossy(&elem));
             }
-            st.out.push_str("]\n");
+            st.emit("]\n");
         }
         VA_COLLECTION => {
-            st.out.push('<');
+            st.emit_char('<');
             let item_indent: String = format!("{indent}    ");
             loop {
+                if st.capped {
+                    return None;
+                }
                 let b: u8 = cur.u8()?;
                 if b == 0 {
                     break;
                 }
                 cur.unread();
-                st.out.push_str(indent);
-                st.out.push('\n');
-                st.out.push_str(indent);
-                st.out.push_str("  item");
+                st.emit(indent);
+                st.emit_char('\n');
+                st.emit(indent);
+                st.emit("  item");
                 let ivt: u8 = cur.u8()?;
                 if ivt != VA_LIST {
                     let idx: i64 = read_int_typed(cur, ivt)?;
-                    st.out.push('[');
-                    st.out.push_str(&idx.to_string());
-                    st.out.push(']');
+                    st.emit_char('[');
+                    st.emit(&idx.to_string());
+                    st.emit_char(']');
                 }
-                st.out.push('\n');
+                st.emit_char('\n');
                 read_prop_list(cur, st, &item_indent, depth + 1)?;
-                st.out.push_str(indent);
-                st.out.push_str("  end");
+                st.emit(indent);
+                st.emit("  end");
             }
-            st.out.push_str(">\n");
+            st.emit(">\n");
         }
         _ => {
             st.flag(&format!("unrecognized value type byte {vt}"));
@@ -393,8 +444,8 @@ fn process_value(
 }
 
 fn push_line(st: &mut State, s: &str) {
-    st.out.push_str(s);
-    st.out.push('\n');
+    st.emit(s);
+    st.emit_char('\n');
 }
 
 fn encode_bytes(bytes: &[u8]) -> String {

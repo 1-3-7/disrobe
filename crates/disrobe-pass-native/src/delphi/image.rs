@@ -94,9 +94,15 @@ impl<'a> PeView<'a> {
 }
 
 pub(super) fn is_plausible_symbol(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_SHORTSTRING_LEN
-        && name
-            .bytes()
-            .all(|b: u8| b == b'.' || b == b'_' || b == b'$' || b.is_ascii_alphanumeric())
+    let bytes: &[u8] = name.as_bytes();
+    if bytes.len() < 2 || bytes.len() > MAX_SHORTSTRING_LEN {
+        return false;
+    }
+    let first: u8 = bytes[0];
+    if first != b'_' && !first.is_ascii_alphabetic() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b: &u8| *b == b'.' || *b == b'_' || *b == b'$' || b.is_ascii_alphanumeric())
 }
