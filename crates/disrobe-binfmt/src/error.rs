@@ -187,4 +187,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0065: eszip module-graph archive parse failed: {0}")]
     Eszip(String),
+
+    #[error("DR-BINFMT-0066: .net single-file bundle parse failed: {0}")]
+    DotnetBundle(String),
 }

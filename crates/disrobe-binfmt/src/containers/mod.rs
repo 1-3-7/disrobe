@@ -12,6 +12,7 @@ pub mod cpio;
 pub mod cramfs;
 pub mod dmg;
 pub mod docker;
+pub mod dotnet_bundle;
 pub mod elf_overlay;
 pub mod erofs;
 pub mod eszip;
@@ -101,6 +102,10 @@ pub use cpio::{CpioArchive, CpioEntry, CpioVariant, detect_cpio_variant, parse_c
 pub use cramfs::{CramfsFile, CramfsWalk, detect_cramfs, walk_cramfs};
 pub use dmg::{DmgSummary, KolyTrailer, detect_dmg, parse_koly, reconstruct_image};
 pub use docker::{DockerManifest, parse_docker_manifest};
+pub use dotnet_bundle::{
+    BundleFileType, BundleLocation, DotnetBundle, DotnetBundleEntry, DotnetBundleFile,
+    bundle_file_bytes, detect_dotnet_bundle, extract_dotnet_bundle, parse_dotnet_bundle,
+};
 pub use elf_overlay::{
     ElfOverlay, ElfOverlayCarve, carve_elf_overlay, detect_elf_overlay, elf_image_end,
 };
