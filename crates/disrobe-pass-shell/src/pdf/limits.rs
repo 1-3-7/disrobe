@@ -11,6 +11,7 @@ pub const MAX_ACTION_DEPTH: usize = 64;
 pub const MAX_NAME_TREE_NODES: usize = 1 << 16;
 pub const MAX_XREF_CHAIN: usize = 1024;
 pub const MAX_XREF_ENTRIES: usize = 1 << 21;
+pub const MAX_XREF_FIELD_WIDTH: usize = 8;
 pub const MAX_OBJSTM_OBJECTS: usize = 1 << 20;
 pub const MAX_FILTER_CHAIN: usize = 8;
 pub const MAX_STREAM_OUTPUT: usize = 64 * 1024 * 1024;

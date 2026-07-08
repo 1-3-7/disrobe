@@ -15,6 +15,14 @@ pub struct Decoded {
 
 #[must_use]
 pub fn decode_stream(doc: &PdfDocument, stream: &PdfStream) -> Decoded {
+    if doc.total_decoded.get() >= limits::MAX_TOTAL_OUTPUT {
+        return Decoded {
+            data: Vec::new(),
+            filters: Vec::new(),
+            capped: true,
+            image_filter: None,
+        };
+    }
     let stages: Vec<(Vec<u8>, Option<PdfDict>)> = filter_stages(doc, &stream.dict);
     let mut data: Vec<u8> = stream.raw.clone();
     let mut applied: Vec<String> = Vec::new();
@@ -65,6 +73,12 @@ pub fn decode_stream(doc: &PdfDocument, stream: &PdfStream) -> Decoded {
             data.truncate(limits::MAX_STREAM_OUTPUT);
         }
     }
+    let running_total: usize = doc
+        .total_decoded
+        .get()
+        .saturating_add(data.len())
+        .min(limits::MAX_TOTAL_OUTPUT);
+    doc.total_decoded.set(running_total);
     Decoded {
         data,
         filters: applied,
@@ -444,5 +458,51 @@ mod tests {
     fn png_up_predictor_reconstructs_rows() {
         let input: [u8; 8] = [0, 10, 20, 30, 2, 1, 1, 1];
         assert_eq!(png_predictor(&input, 3, 1), &[10, 20, 30, 11, 21, 31]);
+    }
+
+    fn deflate_zeros(len: usize) -> Option<Vec<u8>> {
+        use std::io::Write;
+
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+
+        let zeros: Vec<u8> = vec![0u8; len];
+        let mut encoder: ZlibEncoder<Vec<u8>> = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&zeros).ok()?;
+        encoder.finish().ok()
+    }
+
+    #[test]
+    fn cumulative_output_cap_halts_further_streams() {
+        let compressed: Vec<u8> = deflate_zeros(limits::MAX_STREAM_OUTPUT).unwrap_or_default();
+        assert!(
+            !compressed.is_empty(),
+            "compressible fixture must produce input bytes"
+        );
+
+        let mut dict: PdfDict = PdfDict::new();
+        dict.push(b"Filter".to_vec(), PdfObject::Name(b"FlateDecode".to_vec()));
+        let stream: PdfStream = PdfStream {
+            dict,
+            raw: compressed,
+        };
+
+        let doc: PdfDocument = PdfDocument::default();
+        let budgeted_streams: usize = limits::MAX_TOTAL_OUTPUT / limits::MAX_STREAM_OUTPUT;
+        for _ in 0..budgeted_streams {
+            let decoded: Decoded = decode_stream(&doc, &stream);
+            assert_eq!(decoded.data.len(), limits::MAX_STREAM_OUTPUT);
+        }
+        assert_eq!(doc.total_decoded.get(), limits::MAX_TOTAL_OUTPUT);
+
+        for _ in 0..4 {
+            let decoded: Decoded = decode_stream(&doc, &stream);
+            assert!(
+                decoded.data.is_empty(),
+                "stream past the cap must not decode"
+            );
+            assert!(decoded.capped);
+        }
+        assert_eq!(doc.total_decoded.get(), limits::MAX_TOTAL_OUTPUT);
     }
 }

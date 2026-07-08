@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 pub type ObjId = (u32, u16);
@@ -155,6 +156,7 @@ pub struct PdfDocument {
     pub xref_stream_seen: bool,
     pub xref_table_seen: bool,
     pub encryption: Option<EncryptionStatus>,
+    pub(crate) total_decoded: Cell<usize>,
 }
 
 impl PdfDocument {

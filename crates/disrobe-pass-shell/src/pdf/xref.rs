@@ -290,7 +290,11 @@ fn parse_xref_stream(buf: &[u8], doc: &mut PdfDocument, stream: &super::object::
             .collect(),
         _ => return,
     };
-    if widths.len() != 3 {
+    if widths.len() != 3
+        || widths
+            .iter()
+            .any(|width: &usize| *width > limits::MAX_XREF_FIELD_WIDTH)
+    {
         return;
     }
     let size: i64 = doc
@@ -305,10 +309,13 @@ fn parse_xref_stream(buf: &[u8], doc: &mut PdfDocument, stream: &super::object::
         _ => vec![0, size],
     };
     let decoded: Decoded = decode_stream(doc, stream);
-    let row_width: usize = widths[0] + widths[1] + widths[2];
-    if row_width == 0 {
+    let Some(row_width): Option<usize> = widths[0]
+        .checked_add(widths[1])
+        .and_then(|partial: usize| partial.checked_add(widths[2]))
+        .filter(|width: &usize| *width != 0)
+    else {
         return;
-    }
+    };
     let mut located: Vec<(u32, usize)> = Vec::new();
     let mut cursor: usize = 0;
     for pair in index.chunks(2) {
@@ -317,17 +324,20 @@ fn parse_xref_stream(buf: &[u8], doc: &mut PdfDocument, stream: &super::object::
             .unwrap_or(0)
             .min(limits::MAX_XREF_ENTRIES);
         for delta in 0..count {
-            let Some(row): Option<&[u8]> = decoded.data.get(cursor..cursor + row_width) else {
+            let Some(end): Option<usize> = cursor.checked_add(row_width) else {
                 break;
             };
-            cursor += row_width;
+            let Some(row): Option<&[u8]> = decoded.data.get(cursor..end) else {
+                break;
+            };
+            cursor = end;
             let number: i64 = start.wrapping_add(delta as i64);
             let kind: u64 = if widths[0] == 0 {
                 1
             } else {
-                read_be(&row[..widths[0]])
+                read_field(row, 0, widths[0])
             };
-            let field2: u64 = read_be(&row[widths[0]..widths[0] + widths[1]]);
+            let field2: u64 = read_field(row, widths[0], widths[1]);
             if kind == 1
                 && let Ok(target) = u32::try_from(number)
                 && let Ok(offset) = usize::try_from(field2)
@@ -337,6 +347,14 @@ fn parse_xref_stream(buf: &[u8], doc: &mut PdfDocument, stream: &super::object::
         }
     }
     recover_located(buf, doc, &located);
+}
+
+fn read_field(row: &[u8], offset: usize, width: usize) -> u64 {
+    offset
+        .checked_add(width)
+        .and_then(|end: usize| row.get(offset..end))
+        .map(read_be)
+        .unwrap_or(0)
 }
 
 fn recover_located(buf: &[u8], doc: &mut PdfDocument, located: &[(u32, usize)]) {
@@ -409,4 +427,55 @@ fn scan_trailer_keyword(buf: &[u8]) -> Option<PdfDict> {
         from = position + 7;
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::object::PdfStream;
+    use super::*;
+
+    fn crafted_xref_stream(widths: Vec<PdfObject>) -> PdfStream {
+        let mut dict: PdfDict = PdfDict::new();
+        dict.push(b"Type".to_vec(), PdfObject::Name(b"XRef".to_vec()));
+        dict.push(b"W".to_vec(), PdfObject::Array(widths));
+        dict.push(b"Size".to_vec(), PdfObject::Integer(4));
+        dict.push(
+            b"Index".to_vec(),
+            PdfObject::Array(vec![PdfObject::Integer(0), PdfObject::Integer(4)]),
+        );
+        PdfStream {
+            dict,
+            raw: vec![0u8; 64],
+        }
+    }
+
+    #[test]
+    fn absurd_xref_widths_recover_nothing_without_panicking() {
+        let cases: Vec<Vec<PdfObject>> = vec![
+            vec![
+                PdfObject::Integer(i64::MAX),
+                PdfObject::Integer(i64::MAX),
+                PdfObject::Integer(i64::MAX),
+            ],
+            vec![
+                PdfObject::Integer(i64::MAX),
+                PdfObject::Integer(i64::MAX),
+                PdfObject::Integer(3),
+            ],
+            vec![
+                PdfObject::Integer(9),
+                PdfObject::Integer(9),
+                PdfObject::Integer(9),
+            ],
+        ];
+        for widths in cases {
+            let stream: PdfStream = crafted_xref_stream(widths);
+            let mut doc: PdfDocument = PdfDocument::default();
+            parse_xref_stream(b"", &mut doc, &stream);
+            assert!(
+                doc.objects.is_empty(),
+                "crafted xref widths must recover nothing"
+            );
+        }
+    }
 }
