@@ -7,15 +7,6 @@ use disrobe_nir::{NirBlock, NirFunction, NirInstr, NirModule, NirOp, basic_block
 pub const MAX_FUNCTIONS_PER_MODULE: usize = 50_000;
 pub const MAX_PROPAGATION_ROUNDS: u32 = 8;
 
-const PRIME_TABLE: [u64; 64] = [
-    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
-    101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
-    197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307,
-    311,
-];
-
-const SPLITMIX64_CONSTANT: u64 = 0x9E37_79B9_7F4A_7C15;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchTier {
     LeafExact,
@@ -28,6 +19,7 @@ pub enum Indeterminate {
     Ambiguous { base_side: usize, other_side: usize },
     RoundBudgetExhausted,
     FunctionCountCapExceeded,
+    DuplicateAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,11 +59,11 @@ struct LeafSignature {
     external_edges: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct CfgShapeKey {
     block_count: usize,
     edge_count: usize,
-    product: u128,
+    block_invariants: Vec<(u8, u64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -181,13 +173,8 @@ fn block_content_hash(block: &NirBlock) -> u64 {
     hasher.finish()
 }
 
-fn invariant_prime(in_degree: usize, out_degree: usize, content_hash: u64) -> u64 {
-    let degree_component: u64 = (in_degree.min(15) as u64) * 16 + (out_degree.min(15) as u64);
-    let mixed: u64 = degree_component
-        .wrapping_mul(SPLITMIX64_CONSTANT)
-        .wrapping_add(content_hash);
-    let index: usize = (mixed % PRIME_TABLE.len() as u64) as usize;
-    PRIME_TABLE[index]
+fn degree_nibble(in_degree: usize, out_degree: usize) -> u8 {
+    (in_degree.min(15) as u8) * 16 + (out_degree.min(15) as u8)
 }
 
 fn cfg_shape_key(function: &NirFunction) -> CfgShapeKey {
@@ -196,7 +183,7 @@ fn cfg_shape_key(function: &NirFunction) -> CfgShapeKey {
         return CfgShapeKey {
             block_count: 0,
             edge_count: 0,
-            product: 1,
+            block_invariants: Vec::new(),
         };
     }
     let start_index: BTreeMap<u64, usize> = blocks
@@ -216,16 +203,21 @@ fn cfg_shape_key(function: &NirFunction) -> CfgShapeKey {
             }
         }
     }
-    let mut product: u128 = 1;
-    for (idx, block) in blocks.iter().enumerate() {
-        let content_hash: u64 = block_content_hash(block);
-        let prime: u64 = invariant_prime(in_degree[idx], out_degree[idx], content_hash);
-        product = product.wrapping_mul(u128::from(prime));
-    }
+    let mut block_invariants: Vec<(u8, u64)> = blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, block): (usize, &NirBlock)| {
+            (
+                degree_nibble(in_degree[idx], out_degree[idx]),
+                block_content_hash(block),
+            )
+        })
+        .collect();
+    block_invariants.sort_unstable();
     CfgShapeKey {
         block_count: blocks.len(),
         edge_count,
-        product,
+        block_invariants,
     }
 }
 
@@ -275,12 +267,15 @@ fn callee_tokens(
     tokens
 }
 
-fn index_functions(module: &NirModule) -> BTreeMap<u64, &NirFunction> {
-    module
-        .functions
-        .iter()
-        .map(|function: &NirFunction| (function.address, function))
-        .collect()
+fn index_functions(module: &NirModule) -> (BTreeMap<u64, &NirFunction>, Vec<u64>) {
+    let mut index: BTreeMap<u64, &NirFunction> = BTreeMap::new();
+    let mut collided_addresses: Vec<u64> = Vec::new();
+    for function in &module.functions {
+        if index.insert(function.address, function).is_some() {
+            collided_addresses.push(function.address);
+        }
+    }
+    (index, collided_addresses)
 }
 
 struct MatchState {
@@ -375,17 +370,24 @@ fn classify_unmatched(
     address: u64,
     ambiguous: &BTreeMap<u64, (usize, usize)>,
     exhausted_by_cap: bool,
+    has_pending_callee: bool,
 ) -> Indeterminate {
     if let Some(&(own_side, other_side)) = ambiguous.get(&address) {
         Indeterminate::Ambiguous {
             base_side: own_side,
             other_side,
         }
-    } else if exhausted_by_cap {
+    } else if exhausted_by_cap && has_pending_callee {
         Indeterminate::RoundBudgetExhausted
     } else {
         Indeterminate::NoCandidate
     }
+}
+
+fn has_unresolved_internal_call(tokens: &[CalleeToken]) -> bool {
+    tokens
+        .iter()
+        .any(|token: &CalleeToken| matches!(token, CalleeToken::Unresolved))
 }
 
 #[must_use]
@@ -396,8 +398,10 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
         return capped_report(base, other);
     }
 
-    let base_functions: BTreeMap<u64, &NirFunction> = index_functions(base);
-    let other_functions: BTreeMap<u64, &NirFunction> = index_functions(other);
+    let (base_functions, base_collided_addresses): (BTreeMap<u64, &NirFunction>, Vec<u64>) =
+        index_functions(base);
+    let (other_functions, other_collided_addresses): (BTreeMap<u64, &NirFunction>, Vec<u64>) =
+        index_functions(other);
 
     let mut state: MatchState = MatchState::new();
 
@@ -434,6 +438,8 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
     let mut last_round_promoted: usize = 0;
     while rounds_run < MAX_PROPAGATION_ROUNDS {
         rounds_run += 1;
+        state.ambiguous_base.clear();
+        state.ambiguous_other.clear();
 
         let round_base: BTreeMap<u64, RoundSignature> = base_functions
             .iter()
@@ -442,7 +448,7 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
             })
             .map(|(&addr, function): (&u64, &&NirFunction)| {
                 let signature: RoundSignature = RoundSignature {
-                    cfg: cfg_key_base[&addr],
+                    cfg: cfg_key_base[&addr].clone(),
                     callees: callee_tokens(function, &base_functions, &state.match_id_of_base),
                     histogram: histogram_base[&addr].clone(),
                 };
@@ -456,7 +462,7 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
             })
             .map(|(&addr, function): (&u64, &&NirFunction)| {
                 let signature: RoundSignature = RoundSignature {
-                    cfg: cfg_key_other[&addr],
+                    cfg: cfg_key_other[&addr].clone(),
                     callees: callee_tokens(function, &other_functions, &state.match_id_of_other),
                     histogram: histogram_other[&addr].clone(),
                 };
@@ -484,26 +490,60 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
             tier,
         })
         .collect();
-    let unmatched_base: Vec<(u64, Indeterminate)> = base_functions
-        .keys()
-        .filter(|addr: &&u64| !state.confirmed_base_to_other.contains_key(addr))
-        .map(|&addr: &u64| {
+    let mut unmatched_base: Vec<(u64, Indeterminate)> = base_functions
+        .iter()
+        .filter(|(addr, _): &(&u64, &&NirFunction)| {
+            !state.confirmed_base_to_other.contains_key(addr)
+        })
+        .map(|(&addr, function): (&u64, &&NirFunction)| {
+            let has_pending_callee: bool = has_unresolved_internal_call(&callee_tokens(
+                function,
+                &base_functions,
+                &state.match_id_of_base,
+            ));
             (
                 addr,
-                classify_unmatched(addr, &state.ambiguous_base, exhausted_by_cap),
+                classify_unmatched(
+                    addr,
+                    &state.ambiguous_base,
+                    exhausted_by_cap,
+                    has_pending_callee,
+                ),
             )
         })
         .collect();
-    let unmatched_other: Vec<(u64, Indeterminate)> = other_functions
-        .keys()
-        .filter(|addr: &&u64| !state.confirmed_other_to_base.contains_key(addr))
-        .map(|&addr: &u64| {
+    let mut unmatched_other: Vec<(u64, Indeterminate)> = other_functions
+        .iter()
+        .filter(|(addr, _): &(&u64, &&NirFunction)| {
+            !state.confirmed_other_to_base.contains_key(addr)
+        })
+        .map(|(&addr, function): (&u64, &&NirFunction)| {
+            let has_pending_callee: bool = has_unresolved_internal_call(&callee_tokens(
+                function,
+                &other_functions,
+                &state.match_id_of_other,
+            ));
             (
                 addr,
-                classify_unmatched(addr, &state.ambiguous_other, exhausted_by_cap),
+                classify_unmatched(
+                    addr,
+                    &state.ambiguous_other,
+                    exhausted_by_cap,
+                    has_pending_callee,
+                ),
             )
         })
         .collect();
+    unmatched_base.extend(
+        base_collided_addresses
+            .into_iter()
+            .map(|addr: u64| (addr, Indeterminate::DuplicateAddress)),
+    );
+    unmatched_other.extend(
+        other_collided_addresses
+            .into_iter()
+            .map(|addr: u64| (addr, Indeterminate::DuplicateAddress)),
+    );
 
     StructuralMatchReport {
         matches,
@@ -682,6 +722,302 @@ mod tests {
                 .unmatched_base
                 .iter()
                 .all(|(_, reason)| matches!(reason, Indeterminate::FunctionCountCapExceeded))
+        );
+    }
+
+    #[test]
+    fn cfg_shape_key_distinguishes_blocks_that_collided_under_the_retired_prime_bucket() {
+        const RETIRED_PRIME_BUCKET_COUNT: u64 = 64;
+
+        fn single_block_function(address: u64, ops: &[NirOp]) -> NirFunction {
+            let mut instructions: Vec<NirInstr> = ops
+                .iter()
+                .enumerate()
+                .map(|(offset, op): (usize, &NirOp)| instr(address + offset as u64, op.clone()))
+                .collect();
+            instructions.push(instr(address + ops.len() as u64, NirOp::Return));
+            NirFunction {
+                name: String::new(),
+                address,
+                end: address + ops.len() as u64 + 1,
+                is_export: false,
+                instructions,
+                source: SourceRef::new(SourceLang::NativeX86, address),
+            }
+        }
+
+        fn retired_bucket_index(content_hash: u64) -> u64 {
+            content_hash % RETIRED_PRIME_BUCKET_COUNT
+        }
+
+        let binary_ops: [BinaryOp; 14] = [
+            BinaryOp::Add,
+            BinaryOp::Sub,
+            BinaryOp::Mul,
+            BinaryOp::Div,
+            BinaryOp::Rem,
+            BinaryOp::And,
+            BinaryOp::Or,
+            BinaryOp::Xor,
+            BinaryOp::Shl,
+            BinaryOp::Shr,
+            BinaryOp::Rol,
+            BinaryOp::Ror,
+            BinaryOp::Not,
+            BinaryOp::Neg,
+        ];
+        let mut candidate_bodies: Vec<Vec<NirOp>> = Vec::new();
+        for padding in 0..10usize {
+            for op in binary_ops {
+                let mut body: Vec<NirOp> = vec![NirOp::Nop; padding];
+                body.push(NirOp::BinOp { op });
+                candidate_bodies.push(body);
+            }
+        }
+
+        let mut collision: Option<(NirFunction, NirFunction)> = None;
+        'search: for (index, body_a) in candidate_bodies.iter().enumerate() {
+            for body_b in candidate_bodies.iter().skip(index + 1) {
+                let function_a: NirFunction = single_block_function(0x1000, body_a);
+                let function_b: NirFunction = single_block_function(0x2000, body_b);
+                let block_a: NirBlock = basic_blocks(&function_a)
+                    .into_iter()
+                    .next()
+                    .expect("single block a");
+                let block_b: NirBlock = basic_blocks(&function_b)
+                    .into_iter()
+                    .next()
+                    .expect("single block b");
+                let hash_a: u64 = block_content_hash(&block_a);
+                let hash_b: u64 = block_content_hash(&block_b);
+                if hash_a != hash_b && retired_bucket_index(hash_a) == retired_bucket_index(hash_b)
+                {
+                    collision = Some((function_a, function_b));
+                    break 'search;
+                }
+            }
+        }
+
+        let (function_a, function_b): (NirFunction, NirFunction) = collision.expect(
+            "the candidate block bodies must contain a pair that collided under the retired 64-bucket prime index",
+        );
+        assert_ne!(
+            cfg_shape_key(&function_a),
+            cfg_shape_key(&function_b),
+            "the strengthened key must not collapse two distinct block contents that shared a retired 64-bucket prime index"
+        );
+    }
+
+    #[test]
+    fn stale_round_ambiguity_is_cleared_once_the_true_final_state_has_no_candidate() {
+        let helper_add_base: NirFunction = leaf_function("helper_add", 0x1000, BinaryOp::Add);
+        let helper_sub_base: NirFunction = leaf_function("helper_sub", 0x1010, BinaryOp::Sub);
+        let p_base: NirFunction = NirFunction {
+            name: "p".to_owned(),
+            address: 0x1020,
+            end: 0x1024,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x1020,
+                    NirOp::Call {
+                        target: Some(0x1000),
+                    },
+                ),
+                instr(0x1022, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x1020),
+        };
+        let q_base: NirFunction = NirFunction {
+            name: "q".to_owned(),
+            address: 0x1030,
+            end: 0x1034,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x1030,
+                    NirOp::Call {
+                        target: Some(0x1010),
+                    },
+                ),
+                instr(0x1032, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x1030),
+        };
+        let twin_a_base: NirFunction = NirFunction {
+            name: "twin_a".to_owned(),
+            address: 0x1040,
+            end: 0x1044,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x1040,
+                    NirOp::Call {
+                        target: Some(0xFFFF_0000),
+                    },
+                ),
+                instr(0x1042, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x1040),
+        };
+
+        let helper_add_other: NirFunction = leaf_function("helper_add", 0x9000, BinaryOp::Add);
+        let helper_sub_other: NirFunction = leaf_function("helper_sub", 0x9010, BinaryOp::Sub);
+        let p_other: NirFunction = NirFunction {
+            name: "p".to_owned(),
+            address: 0x9020,
+            end: 0x9024,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x9020,
+                    NirOp::Call {
+                        target: Some(0x9000),
+                    },
+                ),
+                instr(0x9022, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x9020),
+        };
+        let q_other: NirFunction = NirFunction {
+            name: "q".to_owned(),
+            address: 0x9030,
+            end: 0x9034,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x9030,
+                    NirOp::Call {
+                        target: Some(0x9010),
+                    },
+                ),
+                instr(0x9032, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x9030),
+        };
+        let candidate_x_other: NirFunction = NirFunction {
+            name: "candidate_x".to_owned(),
+            address: 0x9040,
+            end: 0x9044,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x9040,
+                    NirOp::Call {
+                        target: Some(0x9020),
+                    },
+                ),
+                instr(0x9042, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x9040),
+        };
+        let candidate_y_other: NirFunction = NirFunction {
+            name: "candidate_y".to_owned(),
+            address: 0x9050,
+            end: 0x9054,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0x9050,
+                    NirOp::Call {
+                        target: Some(0x9030),
+                    },
+                ),
+                instr(0x9052, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x9050),
+        };
+
+        let base: NirModule = module_of(vec![
+            helper_add_base,
+            helper_sub_base,
+            p_base,
+            q_base,
+            twin_a_base,
+        ]);
+        let other: NirModule = module_of(vec![
+            helper_add_other,
+            helper_sub_other,
+            p_other,
+            q_other,
+            candidate_x_other,
+            candidate_y_other,
+        ]);
+        let report: StructuralMatchReport = structural_match(&base, &other);
+
+        assert_eq!(report.matched_partner(0x1020), Some(0x9020));
+        assert_eq!(report.matched_partner(0x1030), Some(0x9030));
+
+        let twin_a_reason: Indeterminate = report
+            .unmatched_base
+            .iter()
+            .find(|&&(addr, _): &&(u64, Indeterminate)| addr == 0x1040)
+            .map(|&(_, reason): &(u64, Indeterminate)| reason)
+            .expect("twin_a must appear in unmatched_base");
+        assert_eq!(
+            twin_a_reason,
+            Indeterminate::NoCandidate,
+            "twin_a had zero real candidates by the final round and must not report a stale early-round ambiguity"
+        );
+
+        for target in [0x9040, 0x9050] {
+            let reason: Indeterminate = report
+                .unmatched_other
+                .iter()
+                .find(|&&(addr, _): &&(u64, Indeterminate)| addr == target)
+                .map_or_else(
+                    || panic!("{target:#x} must appear in unmatched_other"),
+                    |&(_, reason): &(u64, Indeterminate)| reason,
+                );
+            assert_eq!(
+                reason,
+                Indeterminate::NoCandidate,
+                "candidate at {target:#x} diverged away from the ambiguous group by the final round"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_unmatched_only_blames_the_round_budget_when_a_callee_could_still_resolve() {
+        assert_eq!(
+            classify_unmatched(0x1000, &BTreeMap::new(), true, true),
+            Indeterminate::RoundBudgetExhausted
+        );
+        assert_eq!(
+            classify_unmatched(0x1000, &BTreeMap::new(), true, false),
+            Indeterminate::NoCandidate
+        );
+        assert_eq!(
+            classify_unmatched(0x1000, &BTreeMap::new(), false, true),
+            Indeterminate::NoCandidate
+        );
+        let mut ambiguous: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
+        ambiguous.insert(0x1000, (2, 3));
+        assert_eq!(
+            classify_unmatched(0x1000, &ambiguous, true, true),
+            Indeterminate::Ambiguous {
+                base_side: 2,
+                other_side: 3
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_function_address_is_reported_not_dropped() {
+        let base: NirModule = module_of(vec![
+            leaf_function("first_at_addr", 0x1000, BinaryOp::Add),
+            leaf_function("second_at_addr", 0x1000, BinaryOp::Xor),
+        ]);
+        let other: NirModule = module_of(vec![leaf_function("only", 0x2000, BinaryOp::Add)]);
+        let report: StructuralMatchReport = structural_match(&base, &other);
+        assert!(
+            report
+                .unmatched_base
+                .iter()
+                .any(|&(addr, reason): &(u64, Indeterminate)| addr == 0x1000
+                    && reason == Indeterminate::DuplicateAddress),
+            "the address collision loser must surface in the unmatched report instead of vanishing: {:?}",
+            report.unmatched_base
         );
     }
 }

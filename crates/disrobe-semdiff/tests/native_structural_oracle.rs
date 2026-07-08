@@ -130,13 +130,16 @@ fn named_addresses(bytes: &[u8]) -> BTreeMap<String, u64> {
         return BTreeMap::new();
     };
     file.symbols()
+        .filter(|sym: &object::Symbol<'_, '_>| {
+            sym.is_definition() && sym.kind() == object::SymbolKind::Text
+        })
         .filter_map(|sym: object::Symbol<'_, '_>| {
             let name: &str = sym.name().ok()?;
             let bare: &str = name.trim_start_matches('_');
-            TRACKED_NAMES
-                .iter()
-                .find(|tracked: &&&str| **tracked == bare)
-                .map(|tracked: &&str| ((*tracked).to_owned(), sym.address()))
+            if bare.is_empty() {
+                return None;
+            }
+            Some((bare.to_owned(), sym.address()))
         })
         .collect()
 }
@@ -159,6 +162,8 @@ struct CaseResult {
     ground_truth_pairs: usize,
     predicted_pairs: usize,
     true_positive_pairs: usize,
+    tracked_ground_truth_pairs: usize,
+    tracked_true_positive_pairs: usize,
 }
 
 impl CaseResult {
@@ -174,6 +179,13 @@ impl CaseResult {
             return 1.0;
         }
         self.true_positive_pairs as f64 / self.ground_truth_pairs as f64
+    }
+
+    fn tracked_recall(&self) -> f64 {
+        if self.tracked_ground_truth_pairs == 0 {
+            return 1.0;
+        }
+        self.tracked_true_positive_pairs as f64 / self.tracked_ground_truth_pairs as f64
     }
 }
 
@@ -214,22 +226,29 @@ fn grade_pair(
                 .map(|&target_addr: &u64| (ref_addr, (target_addr, name.as_str())))
         })
         .collect();
+    let tracked_ground_truth_pairs: usize = ground_truth
+        .values()
+        .filter(|&&(_, name): &&(u64, &str)| TRACKED_NAMES.contains(&name))
+        .count();
 
     let report: StructuralMatchReport = structural_match(&ref_module, &stripped_module);
-    let tracked_ref_addresses: BTreeSet<u64> = ref_named.values().copied().collect();
+    let all_named_ref_addresses: BTreeSet<u64> = ref_named.values().copied().collect();
 
     let mut predicted_pairs: usize = 0;
     let mut true_positive_pairs: usize = 0;
+    let mut tracked_true_positive_pairs: usize = 0;
     for pair in &report.matches {
-        if !tracked_ref_addresses.contains(&pair.base_address) {
+        if !all_named_ref_addresses.contains(&pair.base_address) {
             continue;
         }
         predicted_pairs += 1;
-        if ground_truth
-            .get(&pair.base_address)
-            .is_some_and(|&(expected, _): &(u64, &str)| expected == pair.other_address)
+        if let Some(&(expected, name)) = ground_truth.get(&pair.base_address)
+            && expected == pair.other_address
         {
             true_positive_pairs += 1;
+            if TRACKED_NAMES.contains(&name) {
+                tracked_true_positive_pairs += 1;
+            }
         }
     }
 
@@ -238,6 +257,8 @@ fn grade_pair(
         ground_truth_pairs: ground_truth.len(),
         predicted_pairs,
         true_positive_pairs,
+        tracked_ground_truth_pairs,
+        tracked_true_positive_pairs,
     }
 }
 
@@ -272,10 +293,15 @@ fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
     );
     let reference_bytes: Vec<u8> = std::fs::read(&reference_path).expect("read reference");
     let reference_named: BTreeMap<String, u64> = named_addresses(&reference_bytes);
-    assert_eq!(
-        reference_named.len(),
-        TRACKED_NAMES.len(),
+    assert!(
+        TRACKED_NAMES
+            .iter()
+            .all(|tracked: &&str| reference_named.contains_key(*tracked)),
         "reference build must expose every tracked symbol"
+    );
+    assert!(
+        reference_named.len() >= TRACKED_NAMES.len(),
+        "reference build must expose every tracked symbol plus whatever else the compiler names"
     );
 
     let mut results: Vec<CaseResult> = Vec::new();
@@ -305,19 +331,22 @@ fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
 
     assert!(!results.is_empty(), "at least one comparison must run");
 
-    eprintln!("case,ground_truth_pairs,predicted_pairs,true_positive_pairs,precision,recall");
+    eprintln!(
+        "case,ground_truth_pairs,predicted_pairs,true_positive_pairs,precision,recall,tracked_recall"
+    );
     let mut total_ground_truth: usize = 0;
     let mut total_predicted: usize = 0;
     let mut total_true_positive: usize = 0;
     for result in &results {
         eprintln!(
-            "{},{},{},{},{:.3},{:.3}",
+            "{},{},{},{},{:.3},{:.3},{:.3}",
             result.label,
             result.ground_truth_pairs,
             result.predicted_pairs,
             result.true_positive_pairs,
             result.precision(),
-            result.recall()
+            result.recall(),
+            result.tracked_recall()
         );
         total_ground_truth += result.ground_truth_pairs;
         total_predicted += result.predicted_pairs;
@@ -354,8 +383,8 @@ fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
         })
         .expect("same-compiler same-optimization-level case must exist");
     assert!(
-        same_compiler_same_opt.recall() >= 0.9,
-        "identical compiler and optimization level must recover almost every function: recall {:.3}",
-        same_compiler_same_opt.recall()
+        same_compiler_same_opt.tracked_recall() >= 0.9,
+        "identical compiler and optimization level must recover almost every curated battery function: tracked recall {:.3}",
+        same_compiler_same_opt.tracked_recall()
     );
 }
