@@ -59,6 +59,7 @@ pub mod squirrel;
 pub mod stuffit;
 pub mod ubifs;
 pub mod ucl;
+pub mod uefi_fv;
 pub mod unityfs;
 pub mod uzip;
 pub mod vhd;
@@ -211,6 +212,11 @@ pub use stuffit::{
 };
 pub use ubifs::{UbiVolume, UbifsFile, UbifsWalk, detect_ubi, detect_ubifs, walk_ubifs};
 pub use ucl::{NrvVariant, decompress as ucl_decompress};
+pub use uefi_fv::{
+    FvCodecOutcome, FvCompressionCodec, FvExtraction, FvFileRecord, FvFileSystemKind, FvFileType,
+    FvHeader, FvPeImage, FvSectionRecord, detect_uefi_fv, extract_uefi_fv, guid_to_string,
+    parse_fv_header,
+};
 pub use unityfs::{
     UnityBlockInfo, UnityCompression, UnityExtractedNode, UnityFsArchive, UnityFsHeader, UnityNode,
     UnityTextAsset, assemble_data as unityfs_assemble_data,

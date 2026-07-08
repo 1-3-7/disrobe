@@ -199,4 +199,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0069: blazor webassembly / webcil carve failed: {0}")]
     BlazorWebcil(String),
+
+    #[error("DR-BINFMT-0070: uefi firmware volume parse failed: {0}")]
+    UefiFirmwareVolume(String),
 }
