@@ -6,6 +6,8 @@ pub mod feature;
 pub mod imports;
 pub mod rule;
 pub mod ruleset;
+#[cfg(feature = "yaml_rules")]
+pub mod yaml_rules;
 
 use std::collections::BTreeSet;
 

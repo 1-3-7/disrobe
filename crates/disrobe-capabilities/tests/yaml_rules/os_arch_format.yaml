@@ -1,0 +1,12 @@
+rule:
+  meta:
+    name: tag-delta file globals
+    namespace: internal/example
+    scope: file
+    description: placeholder fixture exercising os, arch, format, and section file-scope tags
+  features:
+    - and:
+        - os: windows
+        - arch: amd64
+        - format: pe
+        - section: ".text"

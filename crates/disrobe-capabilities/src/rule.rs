@@ -23,7 +23,7 @@ impl CountBound {
         }
     }
 
-    fn render(self) -> String {
+    pub(crate) fn render(self) -> String {
         match self {
             Self::Exact(want) => format!("= {want}"),
             Self::AtLeast(lo) => format!(">= {lo}"),

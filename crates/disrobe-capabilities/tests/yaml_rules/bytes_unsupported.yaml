@@ -1,0 +1,8 @@
+rule:
+  meta:
+    name: tag-lambda unsupported bytes
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture referencing a feature kind the static extractor never produces
+  features:
+    - bytes: "9090c3"

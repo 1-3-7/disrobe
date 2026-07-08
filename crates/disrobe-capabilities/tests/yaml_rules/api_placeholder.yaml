@@ -1,0 +1,8 @@
+rule:
+  meta:
+    name: tag-theta api placeholder
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture exercising the api tag against a hand-built symbol table
+  features:
+    - api: "ExampleLibrary.ExampleFunction"

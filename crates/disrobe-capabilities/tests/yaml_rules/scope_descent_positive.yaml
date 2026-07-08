@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: tag-alpha descent positive control
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture proving per-instance scope descent accepts a real single-block co-occurrence
+  features:
+    - scope:
+        at: basic-block
+        of:
+          - mnemonic: xor
+          - characteristic: non-zeroing-xor
+          - offset: 5368713356

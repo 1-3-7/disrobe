@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: tag-zeta optional node
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture proving optional never gates the surrounding and
+  features:
+    - and:
+        - mnemonic: inc
+        - optional:
+            - characteristic: non-zeroing-xor

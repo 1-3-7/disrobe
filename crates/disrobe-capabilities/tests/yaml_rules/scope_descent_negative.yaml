@@ -1,0 +1,12 @@
+rule:
+  meta:
+    name: tag-alpha descent negative control
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture proving per-instance scope descent rejects a cross-block union
+  features:
+    - scope:
+        at: basic-block
+        of:
+          - mnemonic: xor
+          - number: 42
