@@ -196,4 +196,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0068: minidump parse failed: {0}")]
     Minidump(String),
+
+    #[error("DR-BINFMT-0069: blazor webassembly / webcil carve failed: {0}")]
+    BlazorWebcil(String),
 }

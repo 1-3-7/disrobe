@@ -5,6 +5,7 @@ pub mod arc;
 pub mod arc_codec;
 pub mod arj;
 pub mod bare_stream;
+pub mod blazor_webcil;
 pub mod btrfs_send;
 pub mod bun;
 pub mod cab_lzms;
@@ -92,6 +93,11 @@ pub use bare_stream::{
     detect_lz4, detect_lzip, detect_lzma_alone, detect_lznt1, detect_zlib, detect_zstd,
     inflate_zlib_verified, lzma_alone_header_is_valid, try_decompress_brotli_oracle,
     try_decompress_lznt1_oracle,
+};
+pub use blazor_webcil::{
+    BlazorAssemblyKind, BlazorAssemblyRef, BlazorBoot, BlazorFile, WebcilHeader, WebcilSection,
+    detect_blazor_boot, extract_blazor_bundle, parse_blazor_boot, parse_webcil_header,
+    unwrap_webcil,
 };
 pub use btrfs_send::{
     BtrfsSendFile, BtrfsSendHeader, BtrfsSendReplay, detect_btrfs_send, replay_btrfs_send,
