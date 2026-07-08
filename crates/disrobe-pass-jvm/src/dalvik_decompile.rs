@@ -288,6 +288,25 @@ struct MethodBody {
     fully_lifted: bool,
 }
 
+fn register_mention_blocks(
+    cfg: &Cfg,
+    insns: &[DalvikInsn],
+) -> BTreeMap<u16, std::collections::BTreeSet<BlockId>> {
+    let mut out: BTreeMap<u16, std::collections::BTreeSet<BlockId>> = BTreeMap::new();
+    for block in &cfg.blocks {
+        let (start, end): (usize, usize) = block.insn_range;
+        let Some(slice): Option<&[DalvikInsn]> = insns.get(start..end) else {
+            continue;
+        };
+        for insn in slice {
+            for &reg in &insn.regs {
+                out.entry(reg).or_default().insert(block.id);
+            }
+        }
+    }
+    out
+}
+
 fn lift_method(dex: &DexFile, item: &CodeItem, is_static: bool) -> MethodBody {
     if item.insns.is_empty() {
         return MethodBody {
@@ -316,12 +335,15 @@ fn lift_method(dex: &DexFile, item: &CodeItem, is_static: bool) -> MethodBody {
         &item.method_descriptor,
         is_static,
     );
+    let register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>> =
+        register_mention_blocks(&built.cfg, &built.insns);
     let mut render: RenderState<'_> = RenderState {
         ctx: &ctx,
         cfg: &built.cfg,
         insns: &built.insns,
         rendered_blocks: std::collections::BTreeSet::new(),
         fully_lifted: !structurer.had_irreducible,
+        register_blocks,
     };
     let mut out: String = String::new();
     render_region(&mut render, &root, &mut out, 2);
@@ -367,6 +389,7 @@ struct RenderState<'a> {
     insns: &'a [DalvikInsn],
     rendered_blocks: std::collections::BTreeSet<BlockId>,
     fully_lifted: bool,
+    register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -554,6 +577,37 @@ fn block_insn_range(state: &RenderState<'_>, bid: BlockId) -> (usize, usize) {
     block.insn_range
 }
 
+fn materialize_pending(
+    state: &RenderState<'_>,
+    file: &RegisterFile,
+    here: BlockId,
+    out: &mut String,
+    level: usize,
+) {
+    let falls_through: bool = !state.cfg.blocks[here.0 as usize].successors.is_empty();
+    if !falls_through {
+        return;
+    }
+    let pad: String = indent_string(level);
+    for reg in file.pending_registers() {
+        let live_elsewhere: bool = state.register_blocks.get(&reg).is_some_and(
+            |blocks: &std::collections::BTreeSet<BlockId>| {
+                blocks.iter().any(|&b: &BlockId| b != here)
+            },
+        );
+        if !live_elsewhere {
+            continue;
+        }
+        let expr: crate::decompile::Expr = file.current(state.ctx, reg);
+        let rendered: String = expr.render();
+        let lvalue: String = state.ctx.register_lvalue(reg);
+        if rendered == lvalue {
+            continue;
+        }
+        let _ = writeln!(out, "{pad}{lvalue} = {rendered};");
+    }
+}
+
 fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, level: usize) {
     if !state.rendered_blocks.insert(bid) {
         return;
@@ -568,6 +622,7 @@ fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, lev
         }
         emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
     }
+    materialize_pending(state, &file, bid, out, level);
 }
 
 fn render_head_condition(
@@ -591,6 +646,9 @@ fn render_head_condition(
         } else {
             emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
         }
+    }
+    if !already {
+        materialize_pending(state, &file, head, out, level);
     }
     let term: &DalvikInsn = &state.insns[body_end];
     render_branch_condition(state.ctx, &file, term)
@@ -617,6 +675,9 @@ fn render_switch_subject(
         } else {
             emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
         }
+    }
+    if !already {
+        materialize_pending(state, &file, head, out, level);
     }
     let term: &DalvikInsn = &state.insns[body_end];
     term.regs

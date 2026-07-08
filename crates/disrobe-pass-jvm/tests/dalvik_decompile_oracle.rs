@@ -312,7 +312,7 @@ fn ground_truth_java_declares_the_checked_leaf_methods() {
     }
 }
 
-const CALLSITE_RECONSTRUCTION_FLOOR: usize = 4;
+const CALLSITE_RECONSTRUCTION_FLOOR: usize = 8;
 
 #[test]
 fn leaf_methods_match_real_java_structure() {
@@ -388,7 +388,7 @@ fn leaf_methods_match_real_java_structure() {
 
     assert!(
         full_correct >= CALLSITE_RECONSTRUCTION_FLOOR,
-        "callsite reconstruction regressed below the measured floor {CALLSITE_RECONSTRUCTION_FLOOR}/{total}; got {full_correct}/{total}. array-length (reverseArray/dotInt) and folded Math.abs (countDigits/sumDigits) are the two known unrecovered source-level callsites; this floor pins that honest gap and fails on regression"
+        "callsite reconstruction regressed below the measured floor {CALLSITE_RECONSTRUCTION_FLOOR}/{total}; got {full_correct}/{total}. array-length and Math.abs callsites both cross a basic-block boundary between where the value is computed and where it is read; this floor pins full recovery of all 8 leaf methods and fails on regression"
     );
 }
 

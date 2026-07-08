@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dalvik::DalvikInsn;
 use crate::decompile::{Expr, MAX_DUP_EXPR_NODES, expr_node_count_capped};
@@ -84,12 +84,14 @@ impl<'a> MethodContext<'a> {
 
 pub(crate) struct RegisterFile {
     slots: BTreeMap<u16, Expr>,
+    pending: BTreeSet<u16>,
 }
 
 impl RegisterFile {
     pub(crate) const fn new() -> Self {
         Self {
             slots: BTreeMap::new(),
+            pending: BTreeSet::new(),
         }
     }
 
@@ -105,10 +107,25 @@ impl RegisterFile {
 
     fn write(&mut self, reg: u16, expr: Expr) {
         self.slots.insert(reg, expr);
+        self.pending.insert(reg);
+    }
+
+    fn write_materialized(&mut self, reg: u16, expr: Expr) {
+        self.slots.insert(reg, expr);
+        self.pending.remove(&reg);
     }
 
     fn seed_register_with_name(&mut self, ctx: &MethodContext<'_>, reg: u16) {
         self.slots.insert(reg, ctx.register_name(reg));
+        self.pending.remove(&reg);
+    }
+
+    pub(crate) fn current(&self, ctx: &MethodContext<'_>, reg: u16) -> Expr {
+        self.read(ctx, reg)
+    }
+
+    pub(crate) fn pending_registers(&self) -> impl Iterator<Item = u16> + '_ {
+        self.pending.iter().copied()
     }
 }
 
@@ -190,7 +207,7 @@ fn move_register(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16])
     };
     let value: Expr = file.read(ctx, src);
     let rendered: String = value.render();
-    file.write(dest, value);
+    file.write_materialized(dest, value);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
@@ -205,7 +222,7 @@ fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> Lift
     } else {
         value.to_string()
     };
-    file.write(dest, Expr::Const(literal.clone()));
+    file.write_materialized(dest, Expr::Const(literal.clone()));
     LiftOutcome::Statement(format!("{} = {literal}", lvalue(dest)))
 }
 
@@ -222,7 +239,7 @@ fn const_string(
         .index
         .and_then(|i| ctx.string_at(i))
         .map_or_else(|| "\"\"".to_string(), |s| format!("{s:?}"));
-    file.write(dest, Expr::Const(text.clone()));
+    file.write_materialized(dest, Expr::Const(text.clone()));
     LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
 }
 
@@ -240,7 +257,7 @@ fn const_class(
         .and_then(|i| ctx.type_at(i))
         .map_or_else(|| "Object".to_string(), descriptor::binary_to_source);
     let text: String = format!("{ty}.class");
-    file.write(dest, Expr::Const(text.clone()));
+    file.write_materialized(dest, Expr::Const(text.clone()));
     LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
 }
 
@@ -490,12 +507,6 @@ fn invoke(
     let is_direct: bool = matches!(insn.op, 0x70 | 0x76);
     let owner: String = descriptor::binary_to_source(&method.class);
     let name: String = method.name.clone();
-    let param_count: usize = method
-        .proto
-        .parameters
-        .iter()
-        .map(|p| usize::from(is_category_two(p)) + 1)
-        .sum();
     let returns_void: bool = method.proto.return_type == "V";
 
     let mut reg_iter: std::slice::Iter<'_, u16> = insn.regs.iter();
@@ -505,14 +516,13 @@ fn invoke(
         reg_iter.next().map(|&r| file.read(ctx, r))
     };
     let mut args: Vec<Expr> = Vec::new();
-    let mut taken: usize = 0;
-    while taken < param_count {
-        match reg_iter.next() {
-            Some(&r) => {
-                args.push(file.read(ctx, r));
-                taken += 1;
-            }
-            None => break,
+    for param in &method.proto.parameters {
+        let Some(&r): Option<&u16> = reg_iter.next() else {
+            break;
+        };
+        args.push(file.read(ctx, r));
+        if is_category_two(param) {
+            let _: Option<&u16> = reg_iter.next();
         }
     }
 
@@ -562,7 +572,7 @@ fn unary(
         value: Box::new(value),
     };
     let rendered: String = result.render();
-    file.write(dest, result);
+    file.write_materialized(dest, result);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
@@ -583,7 +593,7 @@ fn numeric_cast(
         value: Box::new(value),
     };
     let rendered: String = result.render();
-    file.write(dest, result);
+    file.write_materialized(dest, result);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
@@ -606,7 +616,7 @@ fn binary_three(
         rhs: Box::new(rhs_expr),
     };
     let rendered: String = result.render();
-    file.write(dest, result);
+    file.write_materialized(dest, result);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
@@ -628,7 +638,7 @@ fn binary_2addr(
         rhs: Box::new(rhs_expr),
     };
     let rendered: String = result.render();
-    file.write(dest, result);
+    file.write_materialized(dest, result);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
@@ -659,7 +669,7 @@ fn binary_lit(
         }
     };
     let rendered: String = result.render();
-    file.write(dest, result);
+    file.write_materialized(dest, result);
     LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
 }
 
