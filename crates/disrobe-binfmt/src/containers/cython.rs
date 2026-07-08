@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use object::read::{Object, ObjectSection, ObjectSymbol};
+use object::read::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable};
 use object::{File as ObjFile, RelocationTarget, SectionKind};
 use serde::{Deserialize, Serialize};
 
+use crate::container::memchr_find;
 use crate::error::{Error, Result};
 
 const INIT_PREFIX: &[u8] = b"PyInit_";
@@ -21,6 +22,7 @@ const MARKER_REDUCE: &[u8] = b"__reduce_cython__";
 
 const MAX_TABLE_ENTRIES: usize = 8192;
 const MAX_STRUCTURAL_RECORDS: usize = 65536;
+const MAX_STRUCTURAL_SCAN_ATTEMPTS: usize = 2_000_000;
 const MAX_NAME_LEN: usize = 256;
 const MAX_DOC_LEN: usize = 16384;
 const MAX_SOURCE_FILES: usize = 512;
@@ -171,9 +173,9 @@ impl<'d> AddressSpace<'d> {
     }
 
     fn scan_for_marker(&self, needle: &[u8]) -> bool {
-        self.sections
-            .iter()
-            .any(|sec: &LoadedSection<'d>| sec.readable && contains_subslice(sec.data, needle))
+        self.sections.iter().any(|sec: &LoadedSection<'d>| {
+            sec.readable && memchr_find(sec.data, needle, 0).is_some()
+        })
     }
 }
 
@@ -303,11 +305,22 @@ fn build_address_space<'d>(file: &ObjFile<'d>) -> AddressSpace<'d> {
                     .map(|sym| sym.address().wrapping_add(reloc.addend() as u64)),
                 _ => None,
             };
-            if let Some(value) = target
-                && value != 0
-            {
-                reloc_targets.entry(site).or_insert(value);
-            }
+            insert_reloc_target(&mut reloc_targets, site, target);
+        }
+    }
+
+    if let Some(dynamic) = file.dynamic_relocations() {
+        let dynamic_symbols: Option<_> = file.dynamic_symbol_table();
+        for (site, reloc) in dynamic {
+            let target: Option<u64> = match reloc.target() {
+                RelocationTarget::Absolute => u64::try_from(reloc.addend()).ok(),
+                RelocationTarget::Symbol(index) => dynamic_symbols
+                    .as_ref()
+                    .and_then(|table| table.symbol_by_index(index).ok())
+                    .map(|sym| sym.address().wrapping_add(reloc.addend() as u64)),
+                _ => None,
+            };
+            insert_reloc_target(&mut reloc_targets, site, target);
         }
     }
 
@@ -316,6 +329,12 @@ fn build_address_space<'d>(file: &ObjFile<'d>) -> AddressSpace<'d> {
         pointer_width,
         little_endian,
         reloc_targets,
+    }
+}
+
+fn insert_reloc_target(targets: &mut BTreeMap<u64, u64>, site: u64, value: Option<u64>) {
+    if let Some(resolved) = value.filter(|v: &u64| *v != 0) {
+        targets.entry(site).or_insert(resolved);
     }
 }
 
@@ -444,6 +463,7 @@ fn recover_structural(
 ) {
     let record_size: usize = space.record_size();
     let mut emitted: usize = 0;
+    let mut attempts: usize = 0;
     for sec_index in 0..space.sections.len() {
         let (base, len, readable, executable): (u64, usize, bool, bool) = {
             let sec: &LoadedSection<'_> = &space.sections[sec_index];
@@ -454,6 +474,10 @@ fn recover_structural(
         }
         let mut offset: usize = 0;
         while offset + record_size <= len {
+            if attempts >= MAX_STRUCTURAL_SCAN_ATTEMPTS {
+                return;
+            }
+            attempts += 1;
             let va: u64 = base.wrapping_add(offset as u64);
             if let Some(record) = read_method_def(space, va, RecoverySource::Structural) {
                 functions
@@ -641,7 +665,7 @@ fn find_doc_starting_with(space: &AddressSpace<'_>, prefix: &[u8]) -> Option<Str
             continue;
         }
         let mut from: usize = 0;
-        while let Some(start) = find_subslice_from(sec.data, prefix, from) {
+        while let Some(start) = memchr_find(sec.data, prefix, from) {
             let at_string_start: bool = start == 0 || sec.data.get(start - 1) == Some(&0);
             if at_string_start {
                 let tail: &[u8] = &sec.data[start..];
@@ -741,29 +765,6 @@ fn filetable_address(file: &ObjFile<'_>) -> Option<u64> {
 fn has_section_named(file: &ObjFile<'_>, name: &str) -> bool {
     file.sections()
         .any(|sec| sec.name().is_ok_and(|n: &str| n == name))
-}
-
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    find_subslice_from(haystack, needle, 0).is_some()
-}
-
-fn find_subslice_from(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || from >= haystack.len() || haystack.len() - from < needle.len() {
-        return None;
-    }
-    let first: u8 = needle[0];
-    let mut cursor: usize = from;
-    while let Some(rel) = haystack[cursor..].iter().position(|&b: &u8| b == first) {
-        let at: usize = cursor + rel;
-        if haystack[at..].starts_with(needle) {
-            return Some(at);
-        }
-        cursor = at + 1;
-        if cursor >= haystack.len() {
-            break;
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1110,6 +1111,330 @@ mod tests {
         assert!(
             module.functions.is_empty(),
             "a meth pointer outside any executable section must be rejected"
+        );
+    }
+
+    fn rela_entry(offset: u64, sym: u32, r_type: u32, addend: i64) -> Vec<u8> {
+        let mut rec: Vec<u8> = Vec::with_capacity(24);
+        push_u64(&mut rec, offset);
+        push_u64(&mut rec, (u64::from(sym) << 32) | u64::from(r_type));
+        rec.extend_from_slice(&addend.to_le_bytes());
+        rec
+    }
+
+    fn sym_entry(name_off: u32, info: u8, shndx: u16, value: u64) -> Vec<u8> {
+        let mut rec: Vec<u8> = Vec::with_capacity(24);
+        push_u32(&mut rec, name_off);
+        rec.push(info);
+        rec.push(0);
+        push_u16(&mut rec, shndx);
+        push_u64(&mut rec, value);
+        push_u64(&mut rec, 0);
+        rec
+    }
+
+    fn build_reloc_elf() -> Vec<u8> {
+        const R_X86_64_64: u32 = 1;
+        const R_X86_64_RELATIVE: u32 = 8;
+        let text_base: u64 = 0x1000;
+        let data_base: u64 = 0x3000;
+
+        let mut img: ElfImage = ElfImage::new();
+        let foo_name: u64 = img.intern(b"foo");
+        let foo_doc: u64 = img.intern(b"foo(x, y) -> int\n\nCompute foo.");
+        let bar_name: u64 = img.intern(b"bar");
+        let bar_doc: u64 = img.intern(b"bar(a) -> int\n\nCompute bar.");
+        let src_name: u64 = img.intern(b"relocmod.pyx");
+        let _marker: u64 = img.intern(b"__pyx_reloc_marker");
+
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&method_def_bytes(0, 0, 0x0001, 0));
+        data.extend_from_slice(&method_def_bytes(0, 0, 0x0001, 0));
+        data.extend_from_slice(&[0u8; 32]);
+        let filetable_va: u64 = data_base + data.len() as u64;
+        push_u64(&mut data, 0);
+        push_u64(&mut data, 0);
+
+        let text: Vec<u8> = vec![0x90u8; 16];
+
+        let mut dynstr: Vec<u8> = vec![0u8];
+        let foo_impl_name: u32 = dynstr.len() as u32;
+        dynstr.extend_from_slice(b"foo_impl");
+        dynstr.push(0);
+
+        let mut dynsym: Vec<u8> = sym_entry(0, 0, 0, 0);
+        dynsym.extend_from_slice(&sym_entry(foo_impl_name, (1 << 4) | 2, 1, text_base));
+
+        let mut rela: Vec<u8> = Vec::new();
+        rela.extend_from_slice(&rela_entry(
+            data_base,
+            0,
+            R_X86_64_RELATIVE,
+            foo_name as i64,
+        ));
+        rela.extend_from_slice(&rela_entry(data_base + 8, 1, R_X86_64_64, 0));
+        rela.extend_from_slice(&rela_entry(
+            data_base + 24,
+            0,
+            R_X86_64_RELATIVE,
+            foo_doc as i64,
+        ));
+        rela.extend_from_slice(&rela_entry(
+            data_base + 32,
+            0,
+            R_X86_64_RELATIVE,
+            bar_name as i64,
+        ));
+        rela.extend_from_slice(&rela_entry(data_base + 40, 1, R_X86_64_64, 0));
+        rela.extend_from_slice(&rela_entry(
+            data_base + 56,
+            0,
+            R_X86_64_RELATIVE,
+            bar_doc as i64,
+        ));
+        rela.extend_from_slice(&rela_entry(
+            filetable_va,
+            0,
+            R_X86_64_RELATIVE,
+            src_name as i64,
+        ));
+
+        let mut strtab: Vec<u8> = vec![0u8];
+        let pyinit_name: u32 = strtab.len() as u32;
+        strtab.extend_from_slice(b"PyInit_relocmod");
+        strtab.push(0);
+        let mdef_name: u32 = strtab.len() as u32;
+        strtab.extend_from_slice(b"__pyx_mdef_8relocmod_3foo");
+        strtab.push(0);
+        let filetable_sym: u32 = strtab.len() as u32;
+        strtab.extend_from_slice(b"__pyx_f");
+        strtab.push(0);
+
+        let mut symtab: Vec<u8> = sym_entry(0, 0, 0, 0);
+        symtab.extend_from_slice(&sym_entry(pyinit_name, (1 << 4) | 2, 1, text_base));
+        symtab.extend_from_slice(&sym_entry(mdef_name, (1 << 4) | 1, 3, data_base));
+        symtab.extend_from_slice(&sym_entry(filetable_sym, (1 << 4) | 1, 3, filetable_va));
+
+        let mut shstr: Vec<u8> = vec![0u8];
+        let name_off = |s: &mut Vec<u8>, n: &str| -> u32 {
+            let off: u32 = s.len() as u32;
+            s.extend_from_slice(n.as_bytes());
+            s.push(0);
+            off
+        };
+        let n_text: u32 = name_off(&mut shstr, ".text");
+        let n_rodata: u32 = name_off(&mut shstr, ".rodata");
+        let n_data: u32 = name_off(&mut shstr, ".data");
+        let n_dynsym: u32 = name_off(&mut shstr, ".dynsym");
+        let n_dynstr: u32 = name_off(&mut shstr, ".dynstr");
+        let n_rela: u32 = name_off(&mut shstr, ".rela.dyn");
+        let n_symtab: u32 = name_off(&mut shstr, ".symtab");
+        let n_strtab: u32 = name_off(&mut shstr, ".strtab");
+        let n_shstr: u32 = name_off(&mut shstr, ".shstrtab");
+
+        let header_len: u64 = 64;
+        let text_off: u64 = header_len;
+        let rodata_off: u64 = text_off + text.len() as u64;
+        let data_off: u64 = rodata_off + img.rodata.len() as u64;
+        let dynsym_off: u64 = data_off + data.len() as u64;
+        let dynstr_off: u64 = dynsym_off + dynsym.len() as u64;
+        let rela_off: u64 = dynstr_off + dynstr.len() as u64;
+        let symtab_off: u64 = rela_off + rela.len() as u64;
+        let strtab_off: u64 = symtab_off + symtab.len() as u64;
+        let shstr_off: u64 = strtab_off + strtab.len() as u64;
+        let shoff: u64 = shstr_off + shstr.len() as u64;
+
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0]);
+        out.extend_from_slice(&[0u8; 8]);
+        push_u16(&mut out, 3);
+        push_u16(&mut out, 62);
+        push_u32(&mut out, 1);
+        push_u64(&mut out, 0);
+        push_u64(&mut out, 0);
+        push_u64(&mut out, shoff);
+        push_u32(&mut out, 0);
+        push_u16(&mut out, 64);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 64);
+        push_u16(&mut out, 10);
+        push_u16(&mut out, 9);
+
+        out.extend_from_slice(&text);
+        out.extend_from_slice(&img.rodata);
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&dynsym);
+        out.extend_from_slice(&dynstr);
+        out.extend_from_slice(&rela);
+        out.extend_from_slice(&symtab);
+        out.extend_from_slice(&strtab);
+        out.extend_from_slice(&shstr);
+
+        let sht_progbits: u32 = 1;
+        let sht_symtab: u32 = 2;
+        let sht_strtab: u32 = 3;
+        let sht_rela: u32 = 4;
+        let sht_dynsym: u32 = 11;
+        let shf_alloc: u64 = 2;
+        let shf_exec: u64 = 4;
+        let shf_write: u64 = 1;
+
+        let mut sh = |name: u32,
+                      typ: u32,
+                      flags: u64,
+                      addr: u64,
+                      off: u64,
+                      size: u64,
+                      link: u32,
+                      info: u32,
+                      entsize: u64| {
+            push_u32(&mut out, name);
+            push_u32(&mut out, typ);
+            push_u64(&mut out, flags);
+            push_u64(&mut out, addr);
+            push_u64(&mut out, off);
+            push_u64(&mut out, size);
+            push_u32(&mut out, link);
+            push_u32(&mut out, info);
+            push_u64(&mut out, 8);
+            push_u64(&mut out, entsize);
+        };
+        sh(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        sh(
+            n_text,
+            sht_progbits,
+            shf_alloc | shf_exec,
+            text_base,
+            text_off,
+            text.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_rodata,
+            sht_progbits,
+            shf_alloc,
+            img.rodata_base,
+            rodata_off,
+            img.rodata.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_data,
+            sht_progbits,
+            shf_alloc | shf_write,
+            data_base,
+            data_off,
+            data.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_dynsym,
+            sht_dynsym,
+            0,
+            0,
+            dynsym_off,
+            dynsym.len() as u64,
+            5,
+            1,
+            24,
+        );
+        sh(
+            n_dynstr,
+            sht_strtab,
+            0,
+            0,
+            dynstr_off,
+            dynstr.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_rela,
+            sht_rela,
+            0,
+            0,
+            rela_off,
+            rela.len() as u64,
+            4,
+            3,
+            24,
+        );
+        sh(
+            n_symtab,
+            sht_symtab,
+            0,
+            0,
+            symtab_off,
+            symtab.len() as u64,
+            8,
+            1,
+            24,
+        );
+        sh(
+            n_strtab,
+            sht_strtab,
+            0,
+            0,
+            strtab_off,
+            strtab.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_shstr,
+            sht_strtab,
+            0,
+            0,
+            shstr_off,
+            shstr.len() as u64,
+            0,
+            0,
+            0,
+        );
+
+        out
+    }
+
+    #[test]
+    fn recovers_from_hand_built_elf_via_dynamic_relocations() {
+        let bytes: Vec<u8> = build_reloc_elf();
+
+        let identity: CythonIdentity = detect_cython(&bytes).expect("reloc elf detected as cython");
+        assert_eq!(identity.module_name, "relocmod");
+        assert_eq!(identity.init_symbol, "PyInit_relocmod");
+
+        let module: CythonModule = recover_cython(&bytes).expect("recover reloc elf");
+        assert_eq!(module.module_name, "relocmod");
+
+        let foo: &CythonFunction = module
+            .functions
+            .iter()
+            .find(|f: &&CythonFunction| f.name == "foo")
+            .expect("foo recovered through R_X86_64_RELATIVE and R_X86_64_64 dynamic relocations");
+        assert_eq!(foo.doc.as_deref(), Some("foo(x, y) -> int\n\nCompute foo."));
+        assert_eq!(foo.signature.as_deref(), Some("foo(x, y) -> int"));
+
+        let bar: &CythonFunction = module
+            .functions
+            .iter()
+            .find(|f: &&CythonFunction| f.name == "bar")
+            .expect("bar recovered through dynamic relocations");
+        assert_eq!(bar.doc.as_deref(), Some("bar(a) -> int\n\nCompute bar."));
+
+        assert!(
+            module
+                .source_files
+                .iter()
+                .any(|s: &String| s == "relocmod.pyx")
         );
     }
 

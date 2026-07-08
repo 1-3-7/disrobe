@@ -126,6 +126,34 @@ fn stripped_recovers_surface_structurally() {
 }
 
 #[test]
+fn linked_elf_resolves_pointers_through_dynamic_relocations() {
+    let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "cymod.linux.so") else {
+        eprintln!("skip: missing corpus/binfmt/cython/cymod.linux.so");
+        return;
+    };
+
+    let identity = detect_cython(&bytes).expect("linked cython so detected");
+    assert_eq!(identity.module_name, "cymod");
+    assert_eq!(identity.init_symbol, "PyInit_cymod");
+
+    let module: CythonModule = recover_cython(&bytes).expect("recover linked cython so");
+    assert_eq!(module.module_name, "cymod");
+
+    for name in ["foo", "bar"] {
+        assert!(
+            find(&module, name).is_some(),
+            "function `{name}` not recovered from linked so; dynamic relocations unresolved"
+        );
+    }
+    assert_eq!(doc_of(&module, "foo"), "foo(x, y) -> int\n\nCompute foo.");
+    assert_eq!(doc_of(&module, "bar"), "bar(a) -> int\n\nCompute bar.");
+    assert_eq!(
+        find(&module, "foo").and_then(|f: &CythonFunction| f.signature.clone()),
+        Some("foo(x, y) -> int".to_owned())
+    );
+}
+
+#[test]
 fn truncated_module_does_not_panic() {
     let Some(bytes): Option<Vec<u8>> = common::load_fixture(FORMAT_DIR, "mod.stripped.pyd") else {
         return;

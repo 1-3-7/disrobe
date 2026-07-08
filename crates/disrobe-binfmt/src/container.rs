@@ -870,21 +870,24 @@ fn smells_like_nsis(bytes: &[u8]) -> bool {
     if !bytes.starts_with(b"MZ") {
         return false;
     }
-    memchr_find(bytes, &NSIS_FIRSTHEADER_MAGIC).is_some()
+    memchr_find(bytes, &NSIS_FIRSTHEADER_MAGIC, 0).is_some()
 }
 
-fn memchr_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
+pub(crate) fn memchr_find(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() || haystack.len() - from < needle.len() {
         return None;
     }
     let first: u8 = needle[0];
-    let mut from: usize = 0;
-    while let Some(rel) = haystack[from..].iter().position(|&b: &u8| b == first) {
-        let at: usize = from + rel;
+    let mut cursor: usize = from;
+    while let Some(rel) = haystack[cursor..].iter().position(|&b: &u8| b == first) {
+        let at: usize = cursor + rel;
         if haystack[at..].starts_with(needle) {
             return Some(at);
         }
-        from = at + 1;
+        cursor = at + 1;
+        if cursor >= haystack.len() {
+            break;
+        }
     }
     None
 }
