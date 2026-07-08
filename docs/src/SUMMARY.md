@@ -16,6 +16,7 @@
 - [The chain runner](./chain.md)
 - [The .dr envelope](./envelope.md)
 - [Metadata sidecar and provenance](./llm-sidecar.md)
+- [Architecture decisions](./decisions.md)
 
 # Reverse-engineering toolkit
 

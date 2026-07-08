@@ -14,6 +14,12 @@ The same flag unlocks the `decryption-keys` category of the `--llm` sidecar; wit
 - Grey-zone protectors ship recognizers first; escalation to a full peel only happens after a written legal-posture review committed to `docs/legal/<protector>-stance.md`.
 - It does not phone home. The only documented network endpoint is `disrobe self-update --check-only`, and the binary is distributed source-and-release-only.
 
+## Per-protector stances on file
+
+- [Digital.ai / Arxan (JS)](../legal/digital-ai-arxan-stance.md)
+- [PACE (JS)](../legal/pace-js-stance.md)
+- [PyArmor](../legal/pyarmor-stance.md)
+
 ## License
 
 **disrobe** is licensed under the [Elastic License 2.0](https://github.com/1-3-7/disrobe/blob/main/LICENSE). Companies and security researchers may use, copy, modify, and distribute it for free; attribution is required, so keep the author, copyright, and licensing notices intact. You may not provide `disrobe` to third parties as a hosted or managed service, and you may not remove or obscure any licensing, copyright, or other notices. The "disrobe" name and marks are reserved; the license grants no trademark rights. See [LICENSE](https://github.com/1-3-7/disrobe/blob/main/LICENSE) and [NOTICE](https://github.com/1-3-7/disrobe/blob/main/NOTICE).
