@@ -9,6 +9,7 @@ const LC_DYLD_INFO: u32 = 0x22;
 const PTR_SIZE_64: u64 = 8;
 const MAX_BIND_OPS: usize = 1 << 20;
 const MAX_SLOTS: usize = 1 << 20;
+const MAX_TOTAL_BINDS: usize = 1 << 20;
 const MAX_STUB_ENTRIES: usize = 1 << 16;
 const MAX_CALL_SITES: usize = 1 << 14;
 const BACKWARD_WINDOW: usize = 24;
@@ -247,8 +248,16 @@ fn parse_binds(slice: &[u8], parsed: &ParsedSlice, view: &SliceView<'_>) -> BTre
         (read_lc_u32(view, base, 24), read_lc_u32(view, base, 28)),
         (read_lc_u32(view, base, 32), read_lc_u32(view, base, 36)),
     ];
+    let mut total: usize = 0;
     for (off, size) in streams {
-        interpret_bind(slice, parsed, off as usize, size as usize, &mut out);
+        interpret_bind(
+            slice,
+            parsed,
+            off as usize,
+            size as usize,
+            &mut out,
+            &mut total,
+        );
     }
     out
 }
@@ -263,6 +272,7 @@ fn interpret_bind(
     start: usize,
     size: usize,
     out: &mut BTreeMap<u64, String>,
+    total: &mut usize,
 ) {
     let end: usize = start.saturating_add(size).min(slice.len());
     let Some(stream): Option<&[u8]> = slice.get(start..end) else {
@@ -273,7 +283,7 @@ fn interpret_bind(
     let mut seg_off: u64 = 0;
     let mut symbol: String = String::new();
     let mut ops: usize = 0;
-    while cursor < stream.len() && ops < MAX_BIND_OPS {
+    while cursor < stream.len() && ops < MAX_BIND_OPS && *total < MAX_TOTAL_BINDS {
         ops += 1;
         let byte: u8 = stream[cursor];
         cursor += 1;
@@ -299,16 +309,19 @@ fn interpret_bind(
             }
             0x90 => {
                 bind_one(parsed, seg_index, seg_off, &symbol, out);
+                *total += 1;
                 seg_off = seg_off.wrapping_add(PTR_SIZE_64);
             }
             0xA0 => {
                 bind_one(parsed, seg_index, seg_off, &symbol, out);
+                *total += 1;
                 let (value, next): (u64, usize) = read_uleb(stream, cursor);
                 cursor = next;
                 seg_off = seg_off.wrapping_add(PTR_SIZE_64).wrapping_add(value);
             }
             0xB0 => {
                 bind_one(parsed, seg_index, seg_off, &symbol, out);
+                *total += 1;
                 seg_off = seg_off
                     .wrapping_add(PTR_SIZE_64)
                     .wrapping_add((imm as u64).wrapping_mul(PTR_SIZE_64));
@@ -319,7 +332,11 @@ fn interpret_bind(
                 cursor = next2;
                 let bounded: u64 = count.min(MAX_SLOTS as u64);
                 for _ in 0..bounded {
+                    if *total >= MAX_TOTAL_BINDS {
+                        break;
+                    }
                     bind_one(parsed, seg_index, seg_off, &symbol, out);
+                    *total += 1;
                     seg_off = seg_off.wrapping_add(PTR_SIZE_64).wrapping_add(skip);
                 }
             }
@@ -976,5 +993,80 @@ const fn hex_nibble(byte: u8) -> u8 {
         b'a'..=b'f' => byte - b'a' + 10,
         b'A'..=b'F' => byte - b'A' + 10,
         _ => 0xFF,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::macho::{Bitness, CpuKind, Endian, SliceHeader};
+    use std::time::{Duration, Instant};
+
+    fn wide_data_segment() -> ParsedSlice {
+        ParsedSlice {
+            header: SliceHeader {
+                cpu: CpuKind::Arm64,
+                bitness: Bitness::Bits64,
+                endian: Endian::Little,
+                ncmds: 0,
+                sizeofcmds: 0,
+                filetype: 0,
+                flags: 0,
+            },
+            segments: vec![macho::Segment {
+                name: SEG_DATA.to_owned(),
+                vmaddr: 0x1000,
+                vmsize: 0x1_0000_0000,
+                fileoff: 0,
+                filesize: 0x1_0000_0000,
+                sections: Vec::<Section>::new(),
+            }],
+            load_commands: Vec::new(),
+            encryption: None,
+            code_signature_off: None,
+            code_signature_size: None,
+            symtab: None,
+        }
+    }
+
+    fn push_uleb(buf: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte: u8 = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_uleb_times_skipping_cannot_exceed_shared_cap() {
+        let parsed: ParsedSlice = wide_data_segment();
+        let mut stream: Vec<u8> = Vec::new();
+        stream.push(0x40);
+        stream.extend_from_slice(b"_s\0");
+        stream.push(0x70);
+        push_uleb(&mut stream, 0);
+        for _ in 0..8u32 {
+            stream.push(0xC0);
+            push_uleb(&mut stream, MAX_SLOTS as u64);
+            push_uleb(&mut stream, 0);
+        }
+        let mut out: BTreeMap<u64, String> = BTreeMap::new();
+        let mut total: usize = 0;
+        let started: Instant = Instant::now();
+        interpret_bind(&stream, &parsed, 0, stream.len(), &mut out, &mut total);
+        let elapsed: Duration = started.elapsed();
+        assert_eq!(total, MAX_TOTAL_BINDS);
+        assert_eq!(out.len(), MAX_TOTAL_BINDS);
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "bind parse took {elapsed:?}"
+        );
     }
 }
