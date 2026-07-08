@@ -4,6 +4,8 @@
 
 One static Rust binary that decompiles, deobfuscates, and unpacks software across 20+ ecosystems and proves what it recovered against an independent oracle. Deterministic, no execution of the sample, no model. Built for malware analysis, CTFs, IP recovery, and security research.
 
+The differentiator is the pipeline, not any single pass: one deterministic chain runner carries every input end to end, and every recovered output is persisted as a content-addressed `.dr` envelope with its own provenance and oracle grade, so a result is never a bare score with no trail back to how it was produced.
+
 [![CI](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml/badge.svg)](https://github.com/1-3-7/disrobe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/1-3-7/disrobe?sort=semver)](https://github.com/1-3-7/disrobe/releases)
 [![License: Elastic 2.0](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
@@ -18,6 +20,7 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 
 ## Table of contents
 
+- [What this is / what this is not](#what-this-is--what-this-is-not)
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Usage](#usage)
@@ -25,6 +28,7 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 - [Anti-analysis defeat](#anti-analysis-defeat)
 - [Comparison](#comparison)
 - [Benchmarks](#benchmarks)
+- [Ecosystem maturity matrix](#ecosystem-maturity-matrix)
 - [Architecture](#architecture)
 - [Limits and honest walls](#limits-and-honest-walls)
 - [Documentation](#documentation)
@@ -38,9 +42,34 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 
 ![Python decompilation coverage by version against competing tools](docs/assets/python-versions.svg)
 
+## What this is / what this is not
+
+**Is:**
+
+- A static, deterministic Rust binary that decompiles, deobfuscates, and unpacks across 20+ ecosystems, with identical input yielding byte-identical output on every machine.
+- Graded per recovery against an independent oracle (a real compiler, verifier, interpreter, or execution differential), never against its own output.
+- A CLI, a set of Rust library crates, Python bindings, and a daemon (`disrobe serve`, HTTP/gRPC/LSP/MCP), so the same passes drive automation and other tools.
+- A recon and IOC engine (`frisk`, `prowl`, `indicators`) alongside decompilation, for secrets, endpoints, and threat-intel enrichment.
+- Format-breadth-first: `disrobe identify`/`catalog` cover 20+ ecosystems, but the recovery depth per family ranges from full source recovery to detect-only; see [Capabilities by ecosystem](#capabilities-by-ecosystem) for the honest level per family.
+
+**Is not:**
+
+- Not a guaranteed full-recovery tool for every family: several catalog entries are Partial (structural peel or constants only, stated residual) or Detect-only (identification plus a stated absent-data reason).
+- Not a virtualizing-protector devirtualizer for VMProtect, Themida, Enigma, and comparable runtime-keyed VMs: those are detect and carve only, see [Limits and honest walls](#limits-and-honest-walls).
+- Not a sample-execution sandbox: the default path never runs the sample; the only two code-execution paths (the PyArmor v6/v7 dynamic hook and the BCC native lift) sit behind explicit `--allow-dynamic`/`--allow-bcc` flags.
+- Not model-backed or heuristic-guessing: there is no LLM anywhere in the pipeline, and an absent runtime key is reported as a wall rather than guessed past.
+- Not a Ghidra/IDA replacement on large, deeply nested native binaries: `disrobe` unpacks, recovers symbols, and exports straight into them instead of competing there on that surface.
+
 ## Install
 
 A release build needs only Rust 1.95+ stable. `cargo build --release` produces one binary, and `disrobe` links or invokes no Python, Node, JVM, wasmtime, Lua, or external tool at run time. The oracles and competing tools used for [Benchmarks](#benchmarks) are a separate CI-validation dependency set, listed in [evidence/README.md](evidence/README.md).
+
+| Category | What's in it | What breaks without it |
+|---|---|---|
+| Core (build and run) | Rust 1.95+ stable, nothing else | Nothing; `cargo build --release` produces the full binary |
+| Optional backend | `Ghidra`, `CFR`, `jadx`, `ILSpy`, `de4dot`, and others, selected with `--backend <tool>` (`disrobe install --list` lists them, `disrobe doctor` probes your `PATH`) | One feature: that pass falls back to the in-house default, which still runs |
+| Oracle-verification-only | CPython, `javac`, the real JVM verifier, wasmtime, `lua`/`luac`, MRI, the .NET SDK, and the Go toolchain, listed per ecosystem in [evidence/README.md](evidence/README.md) | One grade: the recovery itself is unaffected, but that ecosystem's number can't be graded or regenerated locally |
+| Benchmark-repro-only | The leading competing tools pinned in [`evidence/competitors/`](evidence/competitors/) and named per row in [Comparison](#comparison) (JADX, CFR, apkleaks, and the rest) | One number: the head-to-head row can't be reproduced; `disrobe`'s own recovery is unaffected |
 
 ### Prebuilt binaries
 
@@ -468,15 +497,24 @@ Missing rows are not implied wins. They stay in the edge table until the same-in
 
 ## Benchmarks
 
-Every number below is either graded by an oracle that can reject a wrong answer or explicitly labeled as self-reported coverage or parse scale. `[CI]` is reproduced by a committed test gate in this repo; `[local]` is measured against a sample that license or size keeps out of the tree. Lossy results carry the measured score, never rounded in `disrobe`'s favor.
+Every number below is either graded by an oracle that can reject a wrong answer or explicitly labeled as self-reported coverage or parse scale. Lossy results carry the measured score, never rounded in `disrobe`'s favor.
 
-Oracle strength: `strong` means external-equivalence, execution, or byte-identity; `recompile-only` means the recovered source compiles but byte-equivalence is not asserted; `coverage-self-reported` means a coverage count graded against nothing external. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
+**Legend**
+
+- `[CI]`: reproduced by a committed test gate in this repo, on every run.
+- `[local]`: measured against a sample that license or size keeps out of the tree; the command still reproduces the number, just not inside CI.
+- Oracle strength `strong`: external-equivalence, execution, or byte-identity, the tier the word "proves" is reserved for in this README.
+- Oracle strength `recompile-only`: the recovered source compiles but byte-equivalence is not asserted.
+- Oracle strength `coverage-self-reported`: a coverage count graded against nothing external; treated as a lower-confidence tier, never blended into a `strong` figure.
+- The [Capabilities by ecosystem](#capabilities-by-ecosystem) tables use a parallel tier per family: `Recover` (real output), `Partial` (structural peel or constants with a stated residual), `Detect-only` (identification plus a stated absent-data reason). Detect-only is a legitimate triage result, not a failure.
+
+Every measured number below links to a committed corpus or fixture, a runnable reproduce command, and a public CI log: the descriptors and rendered results live under [`evidence/`](evidence/), and [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [`.github/workflows/evidence.yml`](.github/workflows/evidence.yml) run the gates that produce them. The evidence harness in [`evidence/`](evidence/) renders this table from committed descriptors, `xtask/data/recovery.json`, and measured JSON.
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
 | Python `.pyc`, full CPython 3.14 stdlib | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object (16880 / 18262, 571 modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
 | Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> per-code-object (5920 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
-| Python legacy 1.0-3.7 | 150 / 191 proven-correct floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
+| Python legacy 1.0-3.7 | 150 / 191 gate-verified floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | JVM classfile | 131 / 131 methods recompile error-free, floor 131 `[CI]` `recompile-only` | real `javac` (JDK 25); recompile-only, not yet bytecode-equivalence | `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` |
 | Android DEX, committed corpus | 102 / 103 verifiable classes clean, 307 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | Android DEX, real APKs | transmissionic <!-- m:dalvik_body_pct -->92.5%<!-- /m --> / enrecipes 90.7% / rustdesk 89.0% of methods recover a body, >= 20k methods each `[local]` `coverage-self-reported` | per-method body-recovery count, self-reported (NOT verifier-attested); the verifier-attested number is the committed-corpus row above | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
@@ -529,6 +567,28 @@ The build/runtime dependency boundary and the offline-vs-network reproducibility
 
 </details>
 
+## Ecosystem maturity matrix
+
+The rows below are the families with a committed evidence descriptor under [`evidence/descriptors/`](evidence/descriptors/), so every column is read straight from that descriptor plus the matching row in [Benchmarks](#benchmarks) and [Capabilities by ecosystem](#capabilities-by-ecosystem), not asserted independently. Maturity is derived, not self-graded: `established` = a `[CI]`-gated descriptor at or near its stated floor; `developing` = the same family's strongest evidence is `[local]`-only or below its floor. A family not listed here still has a stated Recover/Partial/Detect-only level in [Capabilities by ecosystem](#capabilities-by-ecosystem); it just has no standalone evidence descriptor yet.
+
+| Family | Detect-only tier exists | Recover | Oracle strength | CI-covered | External backend | Maturity |
+|---|---|---|---|---|---|---|
+| Python `.pyc` | No | Yes | strong | Yes (pinned + legacy corpus); full stdlib is `[local]` | No | established |
+| PyArmor | Yes (v3-v5 runtime-key tier) | Yes (v6-v9-pro) | strong | No (`[local]` corpus only) | No | developing |
+| Pickle | No | Yes | strong | Yes | No | established |
+| JVM classfile | No | Yes | recompile-only | Yes | Optional (`--backend cfr\|vineflower\|procyon\|jadx`) | established |
+| Android / DEX | No | Yes | strong (committed corpus); coverage-self-reported (real APKs, `[local]`) | Yes (verifier + head-to-head); real-APK number is `[local]` | No | established |
+| .NET (Eazfuscator VM, KoiVM) | Yes (ILProtector/MaxToCode/Themida-.NET) | Yes | strong | Yes | No | established for the two flagship VM protectors; the remaining 21 classified protectors are Partial/Detect-only |
+| WebAssembly | Yes (wasm-name-obfuscator) | Yes | strong | Yes | No | established |
+| Go | No | Yes | strong | Yes | No | established |
+| Lua | No | Yes (IronBrew2 devirt) | strong | Yes (IronBrew2); the other 13 catalog entries are Partial with no standalone descriptor | No | established for IronBrew2; developing for the rest of the catalog |
+| Ruby YARV | No | Yes | strong | Yes | No | established |
+| Swift / ObjC | No | Yes | strong | No (`[local]`) | No | developing |
+| Native packers | Yes (WinLicense/Enigma/Armadillo/Obsidium/PE-Protector/PELock; VMProtect/Themida/Yoda's Protector are detect + carve) | Yes (UPX, MPRESS, Yoda's Crypter, ASPack/PECompact/MEW) | strong | Yes for the byte-identity rows; petite/fsg/nspack/kkrunchy are `[local]` | No | established for the `[CI]` packer set; developing for the `[local]` set; hard wall for the VM-protector/detect-only set |
+| Hermes HBC | No | Yes | strong | Yes (CI fixture); the 122,633-function production bundle is `[local]` parse-scale only | No | established for the fixture; developing/local for production scale |
+| Containers / archives / firmware | Partial (a few heavy codecs are carved, not decoded) | Yes | strong | Yes | No | established |
+| Recon / secrets (frisk) | No | Yes | strong | Yes | No | established |
+
 ## Architecture
 
 ![Chain runner stages from raw bytes through the IR ladder to verified source](docs/assets/ir-ladder.svg)
@@ -560,13 +620,16 @@ For the methodology in depth, the [architecture whitepaper](https://1-3-7.github
 
 ## Limits and honest walls
 
-Recovery is bounded by what the compiler or protector left in the artifact. `disrobe` reports those bounds rather than rounding them away. The remaining hard limits are:
+Recovery is bounded by what the compiler or protector left in the artifact. `disrobe` reports those bounds rather than rounding them away. The consolidated hard limits, one line each:
 
-- Native VM devirtualization for VMProtect, Themida, Enigma, and comparable virtualizing protectors is detect + carve only: the handler stream is assembled at run time from a per-machine key absent from the file.
-- Runtime-only keys block full decrypt where the key was never written into the artifact: PyArmor v3-v5, ionCube, SourceGuardian, modern Zend Guard, ILProtector, and MaxToCode derive their key in a native loader or live process, and AEAD/RSA/env-derived keys are not present statically.
-- PyArmor BCC and super mode lower the body into native machine code. That machine code is present in the artifact (not absent), so it is not a wall: disrobe carves it and lifts it to pseudo-C with its in-house x86-64 decompiler (`native decompile --backend native`), leaf functions today and whole-function lifting in progress. The surrounding metadata recovers fully.
-- Nuitka, Nim, Zig, and Crystal compile to native machine code, so the original high-level source does not survive compilation; disrobe recovers symbols, types, and demangled names, and the native bodies are recoverable to pseudo-C / pseudo-Rust with the same in-house decompiler (leaf-strong today, whole-function in progress). Nuitka additionally reconstructs bodies from the higher form (generated module C or the constants blob) whenever the build ships it.
-- One-way name hashing erases identifiers: garble name-hashing is `base64(hmac-sha256(name, seed))` with the seed absent in `-trimpath` builds, so names are canonicalized, not restored, while structure, types, and control flow recover regardless.
+| Wall | Why the data is absent | What `disrobe` still surfaces at that boundary |
+|---|---|---|
+| Native VM-protector devirtualization (VMProtect, Themida, Yoda's Protector, and the same class of native packers: WinLicense, Enigma, Armadillo, Obsidium, PE-Protector, PELock) | The handler stream is assembled at run time from a per-machine key that is not present in the file | Detection for all of them, plus a structural carve of the handler stream for VMProtect, Themida, and Yoda's Protector |
+| Runtime-only decrypt keys (PyArmor v3-v5, ionCube, SourceGuardian, modern Zend Guard, ILProtector, MaxToCode, Themida-.NET) | The key is derived in a native loader or a live process and was never written into the artifact | Detection and envelope identification for all of them, plus a partial `op_array` skeleton for the products with a statically-keyed legacy tier (ionCube, SourceGuardian, Zend Guard) |
+| One-way name hashing (seedless garble) | `base64(hmac-sha256(name, seed))` with the seed absent in `-trimpath` builds | Structure, types, and control flow recover regardless; names are canonicalized, not restored |
+| Vendor-firmware runtime key (Airoha OTP-AES) | The key is not present in the carved firmware image | Container and format detection, and the member carve |
+
+Two things that look like walls but are not: PyArmor BCC/super-mode bodies and Nuitka/Nim/Zig/Crystal native bodies are compiled machine code, which is present in the artifact, not absent, so `disrobe` carves and lifts them to pseudo-C / pseudo-Rust with its in-house x86-64 decompiler (leaf functions today, whole-function lifting in progress); the surrounding metadata, symbols, and names still recover fully.
 
 Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting.
 
