@@ -38,6 +38,8 @@ pub mod dalvik_cfg;
 pub mod dalvik_decompile;
 pub mod dalvik_dexguard;
 pub mod dalvik_lift;
+pub mod dalvik_pack_recover;
+pub mod dalvik_pack_stub_loader;
 pub(crate) mod dalvik_split;
 pub mod dalvik_strdec;
 pub mod dalvik_to_jvm;
@@ -133,6 +135,13 @@ pub use dalvik_decompile::{
 };
 pub use dalvik_dexguard::{
     DalvikCffReport, DalvikMethodCff, unflatten_code_item, unflatten_dex_methods,
+};
+pub use dalvik_pack_recover::{
+    LocatedPayload, PackageRecoveryReport, PackingScheme, PackingSchemeKind, RecoveryOutcome,
+    SchemeCandidate, VerificationSignals, recover_packed_dex,
+};
+pub use dalvik_pack_stub_loader::{
+    StubLoaderKeystreamScheme, encode_container as encode_stub_loader_container,
 };
 pub use dalvik_strdec::{
     DecryptedString, DexStringRecovery, NativeIntKey, ReflectiveCallSite,

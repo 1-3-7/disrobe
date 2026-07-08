@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+pub const DEX_NO_INDEX: u32 = 0xFFFF_FFFF;
 
 pub const DEX_MAGIC_PREFIX: [u8; 4] = [b'd', b'e', b'x', b'\n'];
 pub const DEX_ENDIAN_TAG: u32 = 0x1234_5678;
@@ -182,6 +186,7 @@ pub struct DexFile {
     pub strings: Vec<String>,
     pub type_names: Vec<String>,
     pub class_descriptors: Vec<String>,
+    pub class_super_descriptors: BTreeMap<String, String>,
     pub proto_ids: Vec<ProtoId>,
     pub field_ids: Vec<FieldId>,
     pub method_ids: Vec<MethodId>,
@@ -269,10 +274,11 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
     }
     let mut class_descriptors: Vec<String> =
         Vec::with_capacity(cap_hint(header.class_defs_size, bytes.len()));
+    let mut class_super_descriptors: BTreeMap<String, String> = BTreeMap::new();
     let class_def_size: usize = 32;
     for i in 0..count_cap(header.class_defs_size, class_def_size, bytes.len()) {
         let cd_off: usize = header.class_defs_off as usize + i * class_def_size;
-        if cd_off + 4 > bytes.len() {
+        if cd_off + 8 > bytes.len() {
             break;
         }
         let class_idx: u32 = u32::from_le_bytes([
@@ -281,9 +287,21 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
             bytes[cd_off + 2],
             bytes[cd_off + 3],
         ]);
+        let superclass_idx: u32 = u32::from_le_bytes([
+            bytes[cd_off + 4],
+            bytes[cd_off + 5],
+            bytes[cd_off + 6],
+            bytes[cd_off + 7],
+        ]);
         let idx: usize = class_idx as usize;
         if idx < type_names.len() {
-            class_descriptors.push(type_names[idx].clone());
+            let class_name: String = type_names[idx].clone();
+            if superclass_idx != DEX_NO_INDEX
+                && let Some(super_name) = type_names.get(superclass_idx as usize)
+            {
+                class_super_descriptors.insert(class_name.clone(), super_name.clone());
+            }
+            class_descriptors.push(class_name);
         }
     }
     let proto_ids: Vec<ProtoId> = parse_proto_ids(bytes, &header, &strings, &type_names);
@@ -295,6 +313,7 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
         strings,
         type_names,
         class_descriptors,
+        class_super_descriptors,
         proto_ids,
         field_ids,
         method_ids,

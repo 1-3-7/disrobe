@@ -949,7 +949,7 @@ fn mutf8_unit_len(s: &str) -> u32 {
         .sum()
 }
 
-fn adler32(data: &[u8]) -> u32 {
+pub(crate) fn adler32(data: &[u8]) -> u32 {
     let mut a: u32 = 1;
     let mut b: u32 = 0;
     for &byte in data {
@@ -960,7 +960,7 @@ fn adler32(data: &[u8]) -> u32 {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn sha1(data: &[u8]) -> [u8; 20] {
+pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x6745_2301;
     let mut h1: u32 = 0xEFCD_AB89;
     let mut h2: u32 = 0x98BA_DCFE;

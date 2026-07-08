@@ -197,6 +197,7 @@ mod tests {
             strings: Vec::new(),
             type_names: Vec::new(),
             class_descriptors: Vec::new(),
+            class_super_descriptors: std::collections::BTreeMap::new(),
             proto_ids: Vec::new(),
             field_ids: Vec::new(),
             method_ids: Vec::new(),
