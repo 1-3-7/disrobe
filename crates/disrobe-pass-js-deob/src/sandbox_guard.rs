@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn long_operator_chain_is_unsafe() {
-        let chain: String = "1".to_owned() + &"+1".repeat(MAX_OPERATOR_CHAIN + 50);
+        let chain: String = "1".to_owned() + "+1".repeat(MAX_OPERATOR_CHAIN + 50).as_str();
         assert!(max_operator_chain(&chain) > MAX_OPERATOR_CHAIN);
         assert!(!nesting_is_safe(&chain));
     }

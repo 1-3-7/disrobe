@@ -53,7 +53,7 @@ fn locate_python() -> Option<(String, Vec<String>)> {
             continue;
         }
         let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + &String::from_utf8_lossy(&output.stderr);
+            + String::from_utf8_lossy(&output.stderr).as_ref();
         if banner.contains("3.1") {
             return Some((
                 cmd.to_owned(),

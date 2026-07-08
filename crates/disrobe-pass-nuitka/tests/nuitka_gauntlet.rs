@@ -401,7 +401,7 @@ fn locate_python_314() -> Option<String> {
             continue;
         }
         let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + &String::from_utf8_lossy(&output.stderr);
+            + String::from_utf8_lossy(&output.stderr).as_ref();
         if banner.contains("3.14") || banner.contains("3.15") {
             return Some(cmd.to_owned());
         }

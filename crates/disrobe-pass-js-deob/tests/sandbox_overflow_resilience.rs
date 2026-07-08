@@ -59,7 +59,8 @@ fn jsfuck_megafile_does_not_overflow_process() {
 
 #[test]
 fn adversarial_deep_concat_chain_is_bounded() {
-    let payload: String = "(function(){return ".to_owned() + &"'a'+".repeat(50_000) + "'b';})()";
+    let payload: String =
+        "(function(){return ".to_owned() + "'a'+".repeat(50_000).as_str() + "'b';})()";
     let decoded = decode_jjencode(&payload);
     let _ = decoded.recovered;
 }
@@ -99,7 +100,7 @@ fn modern_recovery_bounded_on_massive_call_site_count() {
 #[test]
 fn modern_recovery_handles_deeply_nested_function_body() {
     use disrobe_pass_js_deob::recover_string_array;
-    let nested: String = "{".repeat(5_000) + &"}".repeat(5_000);
+    let nested: String = "{".repeat(5_000) + "}".repeat(5_000).as_str();
     let src: String = format!("function p(){nested}function d(i){{return p()[i];}}d(0x0);");
     let _ = recover_string_array(&src);
 }
