@@ -92,6 +92,7 @@ enum Expr {
     StrLit(Vec<u8>),
     IntLit(i64),
     Var(Vec<u8>),
+    DynVar(Box<Self>),
     Index {
         name: Vec<u8>,
         idx: i64,
@@ -122,13 +123,33 @@ enum CallName {
     Ident(Vec<u8>),
     DynVar(Vec<u8>),
     DynIndex { name: Vec<u8>, idx: i64 },
+    DynExpr(Box<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AssignTarget {
+    Name(Vec<u8>),
+    Dynamic(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stmt {
-    Assign { name: Vec<u8>, value: Expr },
+    Assign { target: AssignTarget, value: Expr },
     Expression(Expr),
     ControlBlock { raw: Vec<u8> },
+}
+
+#[derive(Debug)]
+enum VarRef {
+    Name(Vec<u8>),
+    Dynamic(Expr),
+}
+
+fn var_ref_to_expr(var_ref: VarRef) -> Expr {
+    match var_ref {
+        VarRef::Name(name) => Expr::Var(name),
+        VarRef::Dynamic(name_expr) => Expr::DynVar(Box::new(name_expr)),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,13 +367,17 @@ impl<'a> Parser<'a> {
         }
         if self.peek() == Some(b'$') {
             let save: usize = self.pos;
-            if let Some(name) = self.parse_var_name() {
+            if let Some(var_ref) = self.parse_var_ref() {
                 self.skip_trivia();
                 if self.peek() == Some(b'=') && self.buf.get(self.pos + 1) != Some(&b'=') {
                     self.pos += 1;
                     let value: Expr = self.parse_expr()?;
                     self.expect_semicolon();
-                    return Some(Stmt::Assign { name, value });
+                    let target: AssignTarget = match var_ref {
+                        VarRef::Name(name) => AssignTarget::Name(name),
+                        VarRef::Dynamic(name_expr) => AssignTarget::Dynamic(Box::new(name_expr)),
+                    };
+                    return Some(Stmt::Assign { target, value });
                 }
             }
             self.pos = save;
@@ -369,13 +394,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_var_name(&mut self) -> Option<Vec<u8>> {
+    fn parse_var_ref(&mut self) -> Option<VarRef> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
         if self.peek() != Some(b'$') {
             return None;
         }
         self.pos += 1;
+        if self.peek() == Some(b'$') {
+            self.depth += 1;
+            let inner: Option<VarRef> = self.parse_var_ref();
+            self.depth -= 1;
+            return Some(VarRef::Dynamic(var_ref_to_expr(inner?)));
+        }
         if self.peek() == Some(b'{') {
-            return self.parse_curly_var_name();
+            return self.parse_curly_var_ref();
         }
         let start: usize = self.pos;
         while let Some(c) = self.peek() {
@@ -392,16 +426,16 @@ impl<'a> Parser<'a> {
         if base == b"GLOBALS"
             && let Some(key) = self.parse_globals_subscript()
         {
-            return Some(key);
+            return Some(VarRef::Name(key));
         }
-        Some(base.to_vec())
+        Some(VarRef::Name(base.to_vec()))
     }
 
-    fn parse_curly_var_name(&mut self) -> Option<Vec<u8>> {
+    fn parse_curly_var_ref(&mut self) -> Option<VarRef> {
         let save: usize = self.pos;
         self.pos += 1;
         self.skip_trivia();
-        let Some(Expr::StrLit(name)): Option<Expr> = self.parse_string_literal() else {
+        let Some(inner): Option<Expr> = self.parse_expr() else {
             self.pos = save;
             return None;
         };
@@ -411,12 +445,15 @@ impl<'a> Parser<'a> {
             return None;
         }
         self.pos += 1;
-        if name == b"GLOBALS"
-            && let Some(key) = self.parse_globals_subscript()
-        {
-            return Some(key);
+        if let Expr::StrLit(name) = inner {
+            if name == b"GLOBALS"
+                && let Some(key) = self.parse_globals_subscript()
+            {
+                return Some(VarRef::Name(key));
+            }
+            return Some(VarRef::Name(name));
         }
-        Some(name)
+        Some(VarRef::Dynamic(inner))
     }
 
     fn parse_globals_subscript(&mut self) -> Option<Vec<u8>> {
@@ -575,7 +612,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_var_or_dyn_call(&mut self) -> Option<Expr> {
-        let name: Vec<u8> = self.parse_var_name()?;
+        match self.parse_var_ref()? {
+            VarRef::Name(name) => self.finish_static_var_call(name),
+            VarRef::Dynamic(name_expr) => self.finish_dynamic_var_call(name_expr),
+        }
+    }
+
+    fn finish_static_var_call(&mut self, name: Vec<u8>) -> Option<Expr> {
         self.skip_trivia();
         if self.peek() == Some(b'[')
             && let Some(idx) = self.parse_int_subscript()
@@ -598,6 +641,19 @@ impl<'a> Parser<'a> {
             });
         }
         Some(Expr::Var(name))
+    }
+
+    fn finish_dynamic_var_call(&mut self, name_expr: Expr) -> Option<Expr> {
+        self.skip_trivia();
+        let read: Expr = Expr::DynVar(Box::new(name_expr));
+        if self.peek() == Some(b'(') {
+            let args: Vec<Expr> = self.parse_arg_list()?;
+            return Some(Expr::Call {
+                name: CallName::DynExpr(Box::new(read)),
+                args,
+            });
+        }
+        Some(read)
     }
 
     fn parse_int_subscript(&mut self) -> Option<i64> {
@@ -799,15 +855,18 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut loop_src: Vec<u8> = Vec::new();
     for stmt in &stmts {
         match stmt {
-            Stmt::Assign { name, value } => {
+            Stmt::Assign { target, value } => {
+                let Some(name): Option<Vec<u8>> = resolve_assign_target(target, &env, depth) else {
+                    continue;
+                };
                 if let Some(body) = create_function_body(value, &env, depth) {
-                    env.set_code(name.clone(), Value::Str(body));
+                    env.set_code(name, Value::Str(body));
                     bound += 1;
                 } else if let Some(elements) = inline_array_elements(value, &env, depth) {
-                    env.set_array(name.clone(), elements);
+                    env.set_array(name, elements);
                     bound += 1;
                 } else if let Some(v) = eval_expr(value, &env, depth) {
-                    env.set(name.clone(), v);
+                    env.set(name, v);
                     bound += 1;
                 }
             }
@@ -836,6 +895,16 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     sink_result
 }
 
+fn resolve_assign_target(target: &AssignTarget, env: &Env, depth: u32) -> Option<Vec<u8>> {
+    match target {
+        AssignTarget::Name(name) => Some(name.clone()),
+        AssignTarget::Dynamic(name_expr) => {
+            let Value::Str(name): Value = eval_expr(name_expr, env, depth)?;
+            (!name.is_empty()).then_some(name)
+        }
+    }
+}
+
 fn create_function_body(value: &Expr, env: &Env, depth: u32) -> Option<Vec<u8>> {
     let Expr::Call { name, args } = value else {
         return None;
@@ -859,7 +928,7 @@ fn is_loader_owned_single(stmt: &Stmt) -> bool {
         return false;
     };
     match name {
-        CallName::DynVar(_) | CallName::DynIndex { .. } => true,
+        CallName::DynVar(_) | CallName::DynIndex { .. } | CallName::DynExpr(_) => true,
         CallName::Ident(ident) => {
             if (ident.eq_ignore_ascii_case(b"eval") || ident.eq_ignore_ascii_case(b"assert"))
                 && args.first().is_some_and(arg_needs_loader)
@@ -886,7 +955,7 @@ fn expr_has_decode_call(expr: &Expr) -> bool {
             args,
         } => !ident.eq_ignore_ascii_case(b"chr") || args.iter().any(expr_has_decode_call),
         Expr::Call {
-            name: CallName::DynVar(_) | CallName::DynIndex { .. },
+            name: CallName::DynVar(_) | CallName::DynIndex { .. } | CallName::DynExpr(_),
             ..
         } => true,
         Expr::Concat(parts) => parts.iter().any(expr_has_decode_call),
@@ -911,6 +980,10 @@ fn eval_sink(expr: &Expr, env: &Env, depth: u32) -> Option<(LoaderSink, Vec<u8>)
         CallName::DynVar(var) => eval_dynvar_sink(var, args, env, depth),
         CallName::DynIndex { name, idx } => {
             let callee: Vec<u8> = env.array_element(name, *idx)?;
+            eval_indirect_sink(&callee, args, env, depth)
+        }
+        CallName::DynExpr(expr) => {
+            let Value::Str(callee): Value = eval_expr(expr, env, depth)?;
             eval_indirect_sink(&callee, args, env, depth)
         }
     }
@@ -1007,6 +1080,10 @@ fn eval_expr(expr: &Expr, env: &Env, depth: u32) -> Option<Value> {
         Expr::StrLit(s) => Some(Value::Str(s.clone())),
         Expr::IntLit(n) => Some(Value::Str(n.to_string().into_bytes())),
         Expr::Var(name) => env.get(name).cloned(),
+        Expr::DynVar(inner) => {
+            let Value::Str(name): Value = eval_expr(inner, env, depth - 1)?;
+            env.get(&name).cloned()
+        }
         Expr::Index { name, idx } => env.array_element(name, *idx).map(Value::Str),
         Expr::Concat(parts) => {
             let mut out: Vec<u8> = Vec::new();
@@ -1047,6 +1124,10 @@ fn eval_call(name: &CallName, args: &[Expr], env: &Env, depth: u32) -> Option<Va
             callee
         }
         CallName::DynIndex { name, idx } => env.array_element(name, *idx)?,
+        CallName::DynExpr(expr) => {
+            let Value::Str(callee): Value = eval_expr(expr, env, depth)?;
+            callee
+        }
     };
     let lower: Vec<u8> = resolved.to_ascii_lowercase();
     if lower == b"chr" {
@@ -1773,6 +1854,57 @@ mod tests {
             b"<?php ${'GLOBALS'}['fn'] = 'base64_decode'; $f = $GLOBALS['fn']; eval($f('ZWNobyAxOw=='));";
         let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
         assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn dollar_dollar_assignment_target_resolves_indirect_variable() {
+        let blob: &[u8] =
+            b"<?php $k = 'payload'; $$k = 'ZWNobyAxOw=='; eval(base64_decode($payload));";
+        let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn curly_dynamic_assignment_target_resolves_indirect_variable() {
+        let blob: &[u8] =
+            b"<?php $k = 'payload'; ${$k} = 'ZWNobyAxOw=='; eval(base64_decode($payload));";
+        let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn dollar_dollar_call_site_indirection_resolves_eval_sink() {
+        let blob: &[u8] = b"<?php $k = 'x'; $x = 'assert'; $$k(base64_decode('ZWNobyAxOw=='));";
+        let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.sink, LoaderSink::VariableFunction);
+        assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn triple_dollar_variable_variable_reads_through_two_levels_of_indirection() {
+        let blob: &[u8] =
+            b"<?php $a = 'b'; $b = 'c'; $c = 'ZWNobyAxOw=='; eval(base64_decode($$$a));";
+        let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn dynamic_target_from_runtime_source_is_never_bound() {
+        let blob: &[u8] =
+            b"<?php $k = $_GET['k']; $$k = 'ZWNobyAxOw=='; eval(base64_decode($payload));";
+        assert!(
+            peel_loader(blob, DEFAULT_LOADER_DEPTH).is_none(),
+            "a request-sourced variable-variable name must never be fabricated"
+        );
+    }
+
+    #[test]
+    fn deeply_chained_dollar_signs_never_stack_overflow_the_var_ref_parser() {
+        const CHAIN: usize = 50_000;
+        let mut src: Vec<u8> = b"<?php eval(".to_vec();
+        src.extend(std::iter::repeat_n(b'$', CHAIN));
+        src.extend_from_slice(b"a);");
+        let _: Option<LoaderReport> = peel_loader(&src, DEFAULT_LOADER_DEPTH);
     }
 
     #[test]
