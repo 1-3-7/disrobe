@@ -7,7 +7,6 @@ pub mod byte_search;
 #[cfg(feature = "cache")]
 pub mod cache;
 pub mod capability;
-#[cfg(feature = "chain")]
 pub mod chain;
 pub mod codec;
 pub mod complexity;
@@ -75,9 +74,7 @@ pub use ioc::{
     extract as ioc_extract, extract_with_extra as ioc_extract_with_extra, report as ioc_report,
     report_with_extra as ioc_report_with_extra,
 };
-#[cfg(feature = "chain")]
-pub use pass::Pass;
-pub use pass::{LegacyPass, PassId, PassMetadata};
+pub use pass::{Pass, PassId};
 pub use progress::{CapturingProgress, NoopProgress, Progress, ProgressEvent};
 pub use provenance::{
     CommentStyle, Language, PROVENANCE_JSON_KEY, PROVENANCE_SCHEMA, Protocol, ProvenanceHeader,

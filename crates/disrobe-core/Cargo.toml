@@ -16,9 +16,9 @@ workspace = true
 
 [features]
 default = []
-chain = ["dep:blake3"]
-cache = ["dep:blake3"]
-redact = ["dep:blake3"]
+chain = []
+cache = []
+redact = []
 
 [dependencies]
 miette = { workspace = true }
@@ -33,7 +33,7 @@ aho-corasick = { version = "1.1" }
 base64 = { workspace = true }
 camino = { workspace = true }
 rand = { workspace = true }
-blake3 = { workspace = true, optional = true }
+blake3 = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 cipher = { version = "0.4", features = ["block-padding"] }
