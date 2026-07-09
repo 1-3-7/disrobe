@@ -12,7 +12,9 @@ use disrobe_core::pass::PassId;
 use serde::{Deserialize, Serialize};
 
 use crate::Instruction;
-use crate::alt_runtimes::recover::{AltRecovery, RecoveredSource, SourceLanguage, alt_label, recover};
+use crate::alt_runtimes::recover::{
+    AltRecovery, RecoveredSource, SourceLanguage, alt_label, recover,
+};
 use crate::alt_runtimes::{AltRuntime, detect_runtime};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 
@@ -102,7 +104,9 @@ impl Pass for PyDisasmPass {
         ) = extract_for(bytes)?;
         crate::debug::dbg_kv("runtime", || extract.runtime.clone());
         crate::debug::dbg_kv("py-version", || format!("{:?}", extract.py_version));
-        crate::debug::dbg_kv("instruction-count", || extract.instruction_count.to_string());
+        crate::debug::dbg_kv("instruction-count", || {
+            extract.instruction_count.to_string()
+        });
         Ok(Artifact::new(
             Rung::Disasm,
             extract.disasm_text.into_bytes(),
@@ -202,7 +206,9 @@ fn extract_for(
         return Ok((extract, Vec::new(), recovery.source));
     }
     let first4: &[u8] = bytes.get(0..4).ok_or_else(|| {
-        CoreError::PassFailure("DR-PYDIS-0906: py.disasm: input too short for pyc header".to_owned())
+        CoreError::PassFailure(
+            "DR-PYDIS-0906: py.disasm: input too short for pyc header".to_owned(),
+        )
     })?;
     let magic: u32 = u32::from_le_bytes([first4[0], first4[1], first4[2], first4[3]]);
     let version: PyVersion = pyversion_from_magic(magic).ok_or_else(|| {

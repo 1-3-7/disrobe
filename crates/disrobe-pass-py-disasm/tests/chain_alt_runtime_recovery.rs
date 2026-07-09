@@ -136,5 +136,8 @@ fn chain_ironpython_dll_emits_recovered_csharp_source_child() {
         .expect(
             "chain must recover the embedded ironpython assembly as real c# source, not drop it",
         );
-    assert!(!cs.bytes.is_empty(), "recovered c# source must be non-empty");
+    assert!(
+        !cs.bytes.is_empty(),
+        "recovered c# source must be non-empty"
+    );
 }
