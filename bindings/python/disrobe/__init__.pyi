@@ -1035,7 +1035,7 @@ class Symbol:
 class CodeObject:
     """A mutable, re-serializable recovered code object backed by a .dr envelope.
 
-    Load an existing Disasm-rung .dr envelope, edit its instructions, symbols,
+    Load an existing Disasm- or Raw-rung .dr envelope, edit its instructions, symbols,
     provenance metadata, capabilities, or attached LLM sidecar, then call
     ``to_dr()`` to produce a fresh, integrity-hashed .dr envelope.
     """

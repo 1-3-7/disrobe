@@ -1424,8 +1424,8 @@ embedded_count: int = ml_report.embedded_count
 
 ## Editable IR objects
 
-`CodeObject`, `Instruction`, and `Symbol` let you load a Disasm-rung `.dr`
-envelope, modify it in Python, and write a fresh integrity-hashed `.dr`.
+`CodeObject`, `Instruction`, and `Symbol` let you load a Disasm- or Raw-rung
+`.dr` envelope, modify it in Python, and write a fresh integrity-hashed `.dr`.
 
 ### `Instruction`
 
@@ -1499,7 +1499,7 @@ with open("module_patched.dr", "wb") as fh:
     fh.write(fresh_dr)
 ```
 
-`CodeObject.from_dr` parses a Disasm-rung `.dr` envelope. `to_dr` produces a
+`CodeObject.from_dr` parses a Disasm- or Raw-rung `.dr` envelope. `to_dr` produces a
 fresh envelope with a recomputed integrity hash. The `set_instructions` and
 `set_symbols` methods replace the full list; `add_instruction` / `add_symbol`
 append. `set_metadata(key, value)` sets a single string key; `clear_metadata`
