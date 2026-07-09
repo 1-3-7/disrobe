@@ -70,7 +70,7 @@ fn fixture_plan() -> ChainPlan {
             formatted: true,
         }),
         Verdict::Complete {
-            format: "Python".to_string(),
+            formats: vec!["Python".to_string()],
         },
     );
     let bytes: Node = node(
@@ -102,7 +102,7 @@ fn fixture_plan() -> ChainPlan {
         total: Duration::from_millis(42),
         detector_calls: 3,
         rejected_passes: 0,
-        topology_is_tree: false,
+        has_multiple_branches: false,
         extracted: Vec::new(),
     }
 }

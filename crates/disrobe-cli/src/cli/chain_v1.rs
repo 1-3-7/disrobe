@@ -991,7 +991,7 @@ mod tests {
             total: std::time::Duration::ZERO,
             detector_calls: 0,
             rejected_passes: 0,
-            topology_is_tree: true,
+            has_multiple_branches: true,
             extracted: Vec::new(),
         }
     }

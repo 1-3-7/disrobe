@@ -159,7 +159,7 @@ impl ChainDocument {
         input_path: Option<String>,
     ) -> Self {
         let root: &Node = plan.root();
-        let topology: Topology = if plan.topology_is_tree {
+        let topology: Topology = if plan.has_multiple_branches {
             Topology::Tree
         } else {
             Topology::Linear
@@ -360,7 +360,7 @@ mod tests {
             total: Duration::from_millis(0),
             detector_calls: 0,
             rejected_passes: 0,
-            topology_is_tree: false,
+            has_multiple_branches: false,
             extracted: Vec::new(),
         };
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
@@ -370,8 +370,55 @@ mod tests {
         assert!(matches!(doc.topology, Topology::Linear));
         assert_eq!(doc.verdict, VerdictDoc::Stalled);
         let j: String = serde_json::to_string(&doc).unwrap();
+        assert!(
+            j.contains("\"topology\":\"linear\""),
+            "the topology JSON key and Linear text must be byte-for-byte unchanged: {j}"
+        );
         let parsed: ChainDocument = serde_json::from_str(&j).unwrap();
         assert_eq!(parsed.schema, "disrobe.chain/v1");
+    }
+
+    #[test]
+    fn chain_document_topology_is_tree_for_multiple_branches() {
+        use super::super::spec::ChainSpec;
+        let node: Node = Node {
+            id: 0,
+            parent_id: None,
+            depth: 0,
+            branch_id: "a".to_string(),
+            pass_id: None,
+            format_tag_in: None,
+            input_blake3: [0u8; 32],
+            input_size: 0,
+            output_kind: None,
+            output_blake3: None,
+            output_size: None,
+            output_bytes: None,
+            duration: None,
+            picks: vec![],
+            artifacts: vec![],
+            metadata: BTreeMap::new(),
+            verdict: Verdict::Ok,
+        };
+        let plan: ChainPlan = ChainPlan {
+            nodes: vec![node],
+            root_id: 0,
+            verdict: Verdict::Ok,
+            final_format: None,
+            total: Duration::from_millis(0),
+            detector_calls: 0,
+            rejected_passes: 0,
+            has_multiple_branches: true,
+            extracted: Vec::new(),
+        };
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None);
+        assert!(matches!(doc.topology, Topology::Tree));
+        let j: String = serde_json::to_string(&doc).unwrap();
+        assert!(
+            j.contains("\"topology\":\"tree\""),
+            "the topology JSON key and Tree text must be byte-for-byte unchanged: {j}"
+        );
     }
 
     #[test]

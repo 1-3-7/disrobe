@@ -208,7 +208,7 @@ mod tests {
             total: Duration::from_millis(42),
             detector_calls: 0,
             rejected_passes: 0,
-            topology_is_tree: false,
+            has_multiple_branches: false,
             extracted: Vec::new(),
         }
     }
@@ -223,7 +223,7 @@ mod tests {
         let cases: [(Verdict, RecoveryStatus); 9] = [
             (
                 Verdict::Complete {
-                    format: "Python".to_string(),
+                    formats: vec!["Python".to_string()],
                 },
                 RecoveryStatus::Recovered,
             ),
@@ -262,7 +262,7 @@ mod tests {
                 formatted: true,
             }),
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         assert_eq!(tier_from_node(&n), ConfidenceTier::Semantic);
@@ -280,7 +280,7 @@ mod tests {
                 formatted: true,
             }),
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         assert_eq!(tier_from_node(&passthrough), ConfidenceTier::Semantic);
@@ -294,7 +294,7 @@ mod tests {
                 formatted: false,
             }),
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         assert_eq!(tier_from_node(&unformatted), ConfidenceTier::Semantic);
@@ -353,7 +353,7 @@ mod tests {
                 formatted: true,
             }),
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         let bytes: Node = pass_node(
@@ -403,13 +403,13 @@ mod tests {
                 formatted: true,
             }),
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         let plan: ChainPlan = plan_with(
             vec![root, source],
             Verdict::Complete {
-                format: "Python".to_string(),
+                formats: vec!["Python".to_string()],
             },
         );
         let report: ChainRecoveryReport =

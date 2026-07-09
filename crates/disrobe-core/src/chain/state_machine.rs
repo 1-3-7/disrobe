@@ -13,7 +13,7 @@ pub type NodeId = u32;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Verdict {
     Ok,
-    Complete { format: String },
+    Complete { formats: Vec<String> },
     FanOut { count: u32 },
     FanOutPartial { ok: u32, total: u32 },
     Stalled,
@@ -92,7 +92,7 @@ pub struct ChainPlan {
     pub total: Duration,
     pub detector_calls: u32,
     pub rejected_passes: u32,
-    pub topology_is_tree: bool,
+    pub has_multiple_branches: bool,
     pub extracted: Vec<ExtractedArtifact>,
 }
 
@@ -200,7 +200,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 total: started.elapsed(),
                 detector_calls: 0,
                 rejected_passes: 0,
-                topology_is_tree: false,
+                has_multiple_branches: false,
                 extracted: Vec::new(),
             };
             return plan;
@@ -330,7 +330,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             artifacts: Vec::new(),
                             metadata: outcome.metadata,
                             verdict: Verdict::Complete {
-                                format: language.label().to_string(),
+                                formats: vec![language.label().to_string()],
                             },
                         });
                     }
@@ -532,7 +532,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 },
             }
         }
-        let topology_is_tree: bool = {
+        let has_multiple_branches: bool = {
             let mut s: BTreeSet<&str> = BTreeSet::new();
             for n in &nodes {
                 s.insert(n.branch_id.as_str());
@@ -541,7 +541,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         };
         let final_verdict: Verdict = aggregate_verdict(&nodes);
         let final_format: Option<String> = nodes.iter().find_map(|n: &Node| match &n.verdict {
-            Verdict::Complete { format } => Some(format.clone()),
+            Verdict::Complete { formats } => formats.first().cloned(),
             _ => None,
         });
         ChainPlan {
@@ -552,7 +552,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             total: started.elapsed(),
             detector_calls,
             rejected_passes: rejected,
-            topology_is_tree,
+            has_multiple_branches,
             extracted,
         }
     }
@@ -569,10 +569,20 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
     let mut cap: bool = false;
     let mut error: bool = false;
     let mut stalled: bool = false;
+    let mut formats: Vec<String> = Vec::new();
     for leaf in &leaves {
         total = total.saturating_add(1);
         match &leaf.verdict {
-            Verdict::Complete { .. } => complete = complete.saturating_add(1),
+            Verdict::Complete {
+                formats: leaf_formats,
+            } => {
+                complete = complete.saturating_add(1);
+                for f in leaf_formats {
+                    if !formats.contains(f) {
+                        formats.push(f.clone());
+                    }
+                }
+            }
             Verdict::Cycle => cycle = true,
             Verdict::CapReached => cap = true,
             Verdict::Error { .. } => error = true,
@@ -581,9 +591,7 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
         }
     }
     if complete == total {
-        Verdict::Complete {
-            format: String::new(),
-        }
+        Verdict::Complete { formats }
     } else if complete > 0 {
         Verdict::FanOutPartial {
             ok: complete,
@@ -674,7 +682,7 @@ fn blake3_of(bytes: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::artifact::Artifact;
@@ -1024,6 +1032,75 @@ mod tests {
         assert_eq!(plan.final_format.as_deref(), Some("Python"));
     }
 
+    fn stub_leaf(id: NodeId, branch_id: &str, verdict: Verdict) -> Node {
+        Node {
+            id,
+            parent_id: Some(0),
+            depth: 1,
+            branch_id: branch_id.to_string(),
+            pass_id: Some("stub.a".to_string()),
+            format_tag_in: Some("tag".to_string()),
+            input_blake3: [0u8; 32],
+            input_size: 16,
+            output_kind: None,
+            output_blake3: None,
+            output_size: None,
+            output_bytes: None,
+            duration: None,
+            picks: Vec::new(),
+            artifacts: Vec::new(),
+            metadata: BTreeMap::new(),
+            verdict,
+        }
+    }
+
+    #[test]
+    fn aggregate_verdict_carries_every_leaf_real_format() {
+        let root: Node = Node {
+            id: 0,
+            parent_id: None,
+            depth: 0,
+            branch_id: "a".to_string(),
+            pass_id: None,
+            format_tag_in: None,
+            input_blake3: [0u8; 32],
+            input_size: 16,
+            output_kind: None,
+            output_blake3: None,
+            output_size: None,
+            output_bytes: None,
+            duration: None,
+            picks: Vec::new(),
+            artifacts: Vec::new(),
+            metadata: BTreeMap::new(),
+            verdict: Verdict::FanOut { count: 2 },
+        };
+        let leaf_a: Node = stub_leaf(
+            1,
+            "b",
+            Verdict::Complete {
+                formats: vec!["Python".to_string()],
+            },
+        );
+        let leaf_b: Node = stub_leaf(
+            2,
+            "c",
+            Verdict::Complete {
+                formats: vec!["Manifest".to_string()],
+            },
+        );
+        let nodes: Vec<Node> = vec![root, leaf_a, leaf_b];
+        let aggregated: Verdict = aggregate_verdict(&nodes);
+        let Verdict::Complete { formats } = aggregated else {
+            panic!("expected an aggregate Complete verdict, got {aggregated:?}");
+        };
+        assert_eq!(
+            formats,
+            vec!["Python".to_string(), "Manifest".to_string()],
+            "aggregate must carry each completed leaf's real format, not an empty placeholder"
+        );
+    }
+
     #[test]
     fn fan_out_creates_branches() {
         let r: PassRegistry = registry_with_a();
@@ -1074,7 +1151,7 @@ mod tests {
             .iter()
             .any(|n: &Node| matches!(n.verdict, Verdict::FanOut { count: 2 }));
         assert!(fan);
-        assert!(plan.topology_is_tree);
+        assert!(plan.has_multiple_branches);
         assert!(plan.branch_count() >= 3);
         let fan_node_id: NodeId = plan
             .nodes
