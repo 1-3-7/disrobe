@@ -1044,6 +1044,20 @@ fn d_object_recovers_class_type_with_field_and_base_from_dwarf() {
             .any(|m: &DwarfMember| { m.name == "msg" && m.type_name.as_deref() == Some("string") }),
         "Throwable.msg:string must be recovered, not the producer string"
     );
+    for field in ["infoDeallocator", "nextInChain", "_refcount"] {
+        assert!(
+            throwable
+                .members
+                .iter()
+                .any(|member: &DwarfMember| member.name == field),
+            "Throwable member {field} after nested TraceInfo must be recovered; got {:?}",
+            throwable
+                .members
+                .iter()
+                .map(|member: &DwarfMember| member.name.as_str())
+                .collect::<Vec<&str>>()
+        );
+    }
 
     let blkattr: &DwarfAggregate =
         find_aggregate(&analysis.dwarf.aggregates, "BlkAttr").expect("BlkAttr enum recovered");

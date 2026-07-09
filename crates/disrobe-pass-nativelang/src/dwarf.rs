@@ -72,10 +72,89 @@ impl DwarfReport {
 const ZLIB_MAGIC: &[u8; 4] = b"ZLIB";
 const MAX_DWARF_FUNCS: usize = 1 << 18;
 const MAX_DWARF_AGGREGATES: usize = 1 << 16;
+const MAX_DWARF_AGGREGATE_DEPTH: usize = 1 << 8;
+const MAX_DWARF_AGGREGATE_ITEMS: usize = 1 << 16;
+const MAX_DWARF_FUNCTION_PARAMS: usize = 1 << 16;
+const MAX_DWARF_DIE_VISITS: usize = 1 << 22;
+const MAX_DWARF_STRING_LEN: usize = 1 << 14;
+const MAX_DWARF_STRING_BYTES: usize = 1 << 26;
 const MAX_LINE_ROWS: u64 = 1 << 24;
 const MAX_UNCOMPRESSED: usize = 1 << 30;
 const MAX_INFLATE_READ: u64 = MAX_UNCOMPRESSED as u64 + 1;
 const INITIAL_INFLATE_CAP: usize = 64 * 1024;
+
+#[derive(Debug)]
+struct DwarfBudget {
+    aggregate_items: usize,
+    function_params: usize,
+    die_visits: usize,
+    string_bytes: usize,
+    string_limit_hit: bool,
+}
+
+impl DwarfBudget {
+    const fn new() -> Self {
+        Self {
+            aggregate_items: 0,
+            function_params: 0,
+            die_visits: 0,
+            string_bytes: 0,
+            string_limit_hit: false,
+        }
+    }
+
+    const fn visit_die(&mut self) -> bool {
+        if self.die_visits >= MAX_DWARF_DIE_VISITS {
+            return false;
+        }
+        self.die_visits += 1;
+        true
+    }
+
+    const fn take_aggregate_item(&mut self) -> bool {
+        if self.aggregate_items >= MAX_DWARF_AGGREGATE_ITEMS {
+            return false;
+        }
+        self.aggregate_items += 1;
+        true
+    }
+
+    const fn take_function_param(&mut self) -> bool {
+        if self.function_params >= MAX_DWARF_FUNCTION_PARAMS {
+            return false;
+        }
+        self.function_params += 1;
+        true
+    }
+
+    const fn reserve_string(&mut self, len: usize) -> bool {
+        if len == 0 {
+            return false;
+        }
+        if len > MAX_DWARF_STRING_LEN {
+            self.string_limit_hit = true;
+            return false;
+        }
+        self.reserve_string_bytes(len)
+    }
+
+    const fn exhausted(&self) -> bool {
+        self.die_visits >= MAX_DWARF_DIE_VISITS || self.string_limit_hit
+    }
+
+    const fn reserve_string_bytes(&mut self, len: usize) -> bool {
+        let Some(next): Option<usize> = self.string_bytes.checked_add(len) else {
+            self.string_limit_hit = true;
+            return false;
+        };
+        if next > MAX_DWARF_STRING_BYTES {
+            self.string_limit_hit = true;
+            return false;
+        }
+        self.string_bytes = next;
+        true
+    }
+}
 
 #[must_use]
 pub fn recover_dwarf(image: &NativeImage<'_>) -> DwarfReport {
@@ -210,6 +289,7 @@ fn apply_one_relocation<'data>(
 fn walk_dwarf(dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>, compressed: bool) -> DwarfReport {
     let mut functions: Vec<DwarfFunction> = Vec::new();
     let mut aggregates: Vec<DwarfAggregate> = Vec::new();
+    let mut budget: DwarfBudget = DwarfBudget::new();
     let mut compile_units: u32 = 0;
     let mut dwarf_version: Option<u16> = None;
 
@@ -222,9 +302,15 @@ fn walk_dwarf(dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>, compressed: bool) -
         };
         compile_units = compile_units.saturating_add(1);
         dwarf_version.get_or_insert_with(|| unit.header.version());
-        collect_unit(dwarf, &unit, &mut functions);
-        collect_aggregates(dwarf, &unit, &mut aggregates);
+        collect_unit(dwarf, &unit, &mut functions, &mut budget);
+        if budget.exhausted() {
+            break;
+        }
+        collect_aggregates(dwarf, &unit, &mut aggregates, &mut budget);
         if functions.len() >= MAX_DWARF_FUNCS && aggregates.len() >= MAX_DWARF_AGGREGATES {
+            break;
+        }
+        if budget.exhausted() {
             break;
         }
     }
@@ -250,64 +336,124 @@ fn collect_aggregates(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     aggregates: &mut Vec<DwarfAggregate>,
+    budget: &mut DwarfBudget,
 ) {
     let mut entries: gimli::EntriesCursor<'_, '_, EndianSlice<'_, RunTimeEndian>> = unit.entries();
-    let mut current: Option<DwarfAggregate> = None;
-    let mut agg_depth: isize = isize::MIN;
+    let mut pending: Vec<(isize, DwarfAggregate)> = Vec::new();
     let mut depth: isize = 0;
+    let mut seen_entry: bool = false;
+    let mut cursor_exhausted: bool = false;
 
-    while let Ok(Some((delta, entry))) = entries.next_dfs() {
-        depth += delta;
-        if current.is_some() && depth <= agg_depth {
-            if let Some(done) = current.take() {
-                push_aggregate(aggregates, done);
+    loop {
+        if !budget.visit_die() {
+            break;
+        }
+        let (delta, entry): (
+            isize,
+            &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+        ) = match entries.next_dfs() {
+            Ok(Some(item)) => item,
+            Ok(None) => {
+                cursor_exhausted = true;
+                break;
             }
-            agg_depth = isize::MIN;
+            Err(_) => break,
+        };
+        if (!seen_entry && delta != 0) || delta > 1 {
+            break;
+        }
+        let Some(next_depth): Option<isize> = depth.checked_add(delta) else {
+            break;
+        };
+        if next_depth < 0 {
+            break;
+        }
+        depth = next_depth;
+        seen_entry = true;
+        while pending
+            .last()
+            .is_some_and(|(start_depth, _): &(isize, DwarfAggregate)| depth <= *start_depth)
+        {
+            let Some((_, done)): Option<(isize, DwarfAggregate)> = pending.pop() else {
+                break;
+            };
+            push_aggregate(aggregates, done);
         }
         let tag: gimli::DwTag = entry.tag();
         if let Some(kind) = aggregate_kind(tag) {
-            if let Some(done) = current.take() {
-                push_aggregate(aggregates, done);
+            if pending.len() < MAX_DWARF_AGGREGATE_DEPTH
+                && aggregates.len().saturating_add(pending.len()) < MAX_DWARF_AGGREGATES
+                && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget)
+            {
+                pending.push((
+                    depth,
+                    DwarfAggregate {
+                        name,
+                        kind,
+                        byte_size: attr_udata(entry, gimli::DW_AT_byte_size),
+                        members: Vec::new(),
+                        bases: Vec::new(),
+                        enumerators: Vec::new(),
+                    },
+                ));
             }
-            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
-                current = Some(DwarfAggregate {
-                    name,
-                    kind,
-                    byte_size: attr_udata(entry, gimli::DW_AT_byte_size),
-                    members: Vec::new(),
-                    bases: Vec::new(),
-                    enumerators: Vec::new(),
-                });
-                agg_depth = depth;
+            if budget.string_limit_hit {
+                return;
             }
             continue;
         }
-        let Some(agg): Option<&mut DwarfAggregate> = current.as_mut() else {
+        let Some((aggregate_depth, agg)): Option<&mut (isize, DwarfAggregate)> = pending.last_mut()
+        else {
             continue;
         };
-        if depth != agg_depth + 1 {
+        if aggregate_depth.checked_add(1) != Some(depth) {
             continue;
         }
         if tag == gimli::DW_TAG_member {
-            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
+            if budget.aggregate_items >= MAX_DWARF_AGGREGATE_ITEMS {
+                return;
+            }
+            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget) {
+                let type_name: Option<String> = type_ref_name(dwarf, unit, entry, budget);
+                if budget.exhausted() || !budget.take_aggregate_item() {
+                    return;
+                }
                 agg.members.push(DwarfMember {
                     name,
-                    type_name: type_ref_name(dwarf, unit, entry),
+                    type_name,
                     byte_offset: attr_udata(entry, gimli::DW_AT_data_member_location),
                 });
             }
         } else if tag == gimli::DW_TAG_inheritance {
-            if let Some(base) = type_ref_name(dwarf, unit, entry) {
+            if budget.aggregate_items >= MAX_DWARF_AGGREGATE_ITEMS {
+                return;
+            }
+            if let Some(base) = type_ref_name(dwarf, unit, entry, budget) {
+                if budget.exhausted() || !budget.take_aggregate_item() {
+                    return;
+                }
                 agg.bases.push(base);
             }
         } else if tag == gimli::DW_TAG_enumerator
-            && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
+            && budget.aggregate_items >= MAX_DWARF_AGGREGATE_ITEMS
         {
+            return;
+        } else if tag == gimli::DW_TAG_enumerator
+            && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget)
+        {
+            if !budget.take_aggregate_item() {
+                return;
+            }
             agg.enumerators.push(name);
         }
+        if budget.string_limit_hit {
+            return;
+        }
     }
-    if let Some(done) = current.take() {
-        push_aggregate(aggregates, done);
+    if cursor_exhausted {
+        while let Some((_, done)) = pending.pop() {
+            push_aggregate(aggregates, done);
+        }
     }
 }
 
@@ -325,6 +471,7 @@ fn type_ref_name(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    budget: &mut DwarfBudget,
 ) -> Option<String> {
     let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
         entry.attr_value(gimli::DW_AT_type).ok()??;
@@ -332,7 +479,7 @@ fn type_ref_name(
         gimli::AttributeValue::UnitRef(o) => o,
         _ => return None,
     };
-    resolve_type_name(dwarf, unit, offset, 0)
+    resolve_type_name(dwarf, unit, offset, 0, budget)
 }
 
 fn resolve_type_name(
@@ -340,13 +487,17 @@ fn resolve_type_name(
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     offset: gimli::UnitOffset,
     depth: u8,
+    budget: &mut DwarfBudget,
 ) -> Option<String> {
     if depth > 8 {
         return None;
     }
+    if !budget.visit_die() {
+        return None;
+    }
     let target: gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>> =
         unit.entry(offset).ok()?;
-    if let Some(name) = attr_string(dwarf, unit, &target, gimli::DW_AT_name) {
+    if let Some(name) = attr_string(dwarf, unit, &target, gimli::DW_AT_name, budget) {
         return Some(name);
     }
     let inner: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
@@ -359,7 +510,18 @@ fn resolve_type_name(
         gimli::DW_TAG_pointer_type => "ptr ",
         _ => "",
     };
-    let name: String = resolve_type_name(dwarf, unit, inner_offset, depth + 1)?;
+    let name: String = resolve_type_name(dwarf, unit, inner_offset, depth + 1, budget)?;
+    if prefix.is_empty() {
+        return Some(name);
+    }
+    let rendered_len: usize = prefix.len().checked_add(name.len())?;
+    if rendered_len > MAX_DWARF_STRING_LEN {
+        budget.string_limit_hit = true;
+        return None;
+    }
+    if !budget.reserve_string_bytes(prefix.len()) {
+        return None;
+    }
     Some(format!("{prefix}{name}"))
 }
 
@@ -367,14 +529,41 @@ fn collect_unit(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     functions: &mut Vec<DwarfFunction>,
+    budget: &mut DwarfBudget,
 ) {
     let mut entries: gimli::EntriesCursor<'_, '_, EndianSlice<'_, RunTimeEndian>> = unit.entries();
     let mut current: Option<DwarfFunction> = None;
     let mut func_depth: isize = isize::MIN;
     let mut depth: isize = 0;
+    let mut seen_entry: bool = false;
+    let mut cursor_exhausted: bool = false;
 
-    while let Ok(Some((delta, entry))) = entries.next_dfs() {
-        depth += delta;
+    loop {
+        if !budget.visit_die() {
+            break;
+        }
+        let (delta, entry): (
+            isize,
+            &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+        ) = match entries.next_dfs() {
+            Ok(Some(item)) => item,
+            Ok(None) => {
+                cursor_exhausted = true;
+                break;
+            }
+            Err(_) => break,
+        };
+        if (!seen_entry && delta != 0) || delta > 1 {
+            break;
+        }
+        let Some(next_depth): Option<isize> = depth.checked_add(delta) else {
+            break;
+        };
+        if next_depth < 0 {
+            break;
+        }
+        depth = next_depth;
+        seen_entry = true;
         if current.is_some() && depth <= func_depth {
             if let Some(done) = current.take() {
                 push_function(functions, done);
@@ -386,15 +575,22 @@ fn collect_unit(
             if let Some(done) = current.take() {
                 push_function(functions, done);
             }
+            if functions.len() >= MAX_DWARF_FUNCS {
+                return;
+            }
             let low_pc: Option<u64> = attr_low_pc(dwarf, unit, entry);
-            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
-                && low_pc.is_some()
+            if low_pc.is_some()
+                && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget)
             {
+                let decl_file: Option<String> = attr_decl_file(dwarf, unit, entry, budget);
+                if budget.string_limit_hit {
+                    return;
+                }
                 current = Some(DwarfFunction {
                     name,
                     high_pc: attr_high_pc(entry, low_pc),
                     low_pc,
-                    decl_file: attr_decl_file(dwarf, unit, entry),
+                    decl_file,
                     decl_line: attr_udata(entry, gimli::DW_AT_decl_line),
                     line_lo: None,
                     line_hi: None,
@@ -402,17 +598,30 @@ fn collect_unit(
                 });
                 func_depth = depth;
             }
+            if budget.string_limit_hit {
+                return;
+            }
             continue;
         }
         if let Some(func) = current.as_mut()
-            && depth == func_depth + 1
+            && func_depth.checked_add(1) == Some(depth)
             && tag == gimli::DW_TAG_formal_parameter
-            && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name)
         {
-            func.params.push(name);
+            if budget.function_params >= MAX_DWARF_FUNCTION_PARAMS {
+                return;
+            }
+            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget) {
+                if !budget.take_function_param() {
+                    return;
+                }
+                func.params.push(name);
+            }
+            if budget.string_limit_hit {
+                return;
+            }
         }
     }
-    if let Some(done) = current.take() {
+    if cursor_exhausted && let Some(done) = current.take() {
         push_function(functions, done);
     }
 }
@@ -503,16 +712,24 @@ fn attr_string(
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
     attr: gimli::DwAt,
+    budget: &mut DwarfBudget,
 ) -> Option<String> {
     let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
         entry.attr_value(attr).ok()??;
     let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, value).ok()?;
-    let text: &str = std::str::from_utf8(slice.slice()).ok()?;
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_owned())
+    decode_dwarf_string(slice, budget)
+}
+
+fn decode_dwarf_string(
+    slice: EndianSlice<'_, RunTimeEndian>,
+    budget: &mut DwarfBudget,
+) -> Option<String> {
+    let raw: &[u8] = slice.slice();
+    if !budget.reserve_string(raw.len()) {
+        return None;
     }
+    let text: &str = std::str::from_utf8(raw).ok()?;
+    Some(text.to_owned())
 }
 
 fn attr_low_pc(
@@ -561,6 +778,7 @@ fn attr_decl_file(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    budget: &mut DwarfBudget,
 ) -> Option<String> {
     let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
         entry.attr_value(gimli::DW_AT_decl_file).ok()??;
@@ -574,12 +792,7 @@ fn attr_decl_file(
     let file: &gimli::FileEntry<EndianSlice<'_, RunTimeEndian>> = header.file(index)?;
     let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> = file.path_name();
     let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, value).ok()?;
-    let text: &str = std::str::from_utf8(slice.slice()).ok()?;
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_owned())
-    }
+    decode_dwarf_string(slice, budget)
 }
 
 fn canonical_debug_name(name: &str) -> Option<&'static str> {
@@ -671,13 +884,211 @@ fn inflate_capped(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write as _;
+
+    use gimli::write::{
+        AttributeValue as WriteAttributeValue, DwarfUnit, EndianVec, Sections, UnitEntryId,
+    };
+    use gimli::{Encoding, Format, LittleEndian, SectionId};
 
     fn zlib(data: &[u8]) -> Vec<u8> {
         let mut encoder: flate2::write::ZlibEncoder<Vec<u8>> =
             flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(data).expect("zlib input must encode");
         encoder.finish().expect("zlib stream must finish")
+    }
+
+    fn add_named_die(
+        dwarf: &mut DwarfUnit,
+        parent: UnitEntryId,
+        tag: gimli::DwTag,
+        name: &str,
+    ) -> UnitEntryId {
+        let name_id: gimli::write::StringId = dwarf.strings.add(name.as_bytes().to_vec());
+        let entry_id: UnitEntryId = dwarf.unit.add(parent, tag);
+        dwarf
+            .unit
+            .get_mut(entry_id)
+            .set(gimli::DW_AT_name, WriteAttributeValue::StringRef(name_id));
+        entry_id
+    }
+
+    fn serialize_dwarf(dwarf: &mut DwarfUnit) -> BTreeMap<SectionId, Vec<u8>> {
+        let mut sections: Sections<EndianVec<LittleEndian>> =
+            Sections::new(EndianVec::new(LittleEndian));
+        dwarf.write(&mut sections).expect("dwarf write succeeds");
+        let mut serialized: BTreeMap<SectionId, Vec<u8>> = BTreeMap::new();
+        sections
+            .for_each(
+                |id: SectionId, data: &EndianVec<LittleEndian>| -> gimli::write::Result<()> {
+                    serialized.insert(id, data.clone().into_vec());
+                    Ok(())
+                },
+            )
+            .expect("dwarf sections serialize");
+        serialized
+    }
+
+    fn report_from_sections(sections: &BTreeMap<SectionId, Vec<u8>>) -> DwarfReport {
+        let empty: Vec<u8> = Vec::new();
+        let endian: RunTimeEndian = RunTimeEndian::Little;
+        let load =
+            |id: SectionId| -> std::result::Result<EndianSlice<'_, RunTimeEndian>, gimli::Error> {
+                let data: &[u8] = sections.get(&id).unwrap_or(&empty);
+                Ok(EndianSlice::new(data, endian))
+            };
+        let dwarf: Dwarf<EndianSlice<'_, RunTimeEndian>> =
+            Dwarf::load(load).expect("dwarf sections load");
+        walk_dwarf(&dwarf, false)
+    }
+
+    fn dwarf_unit() -> DwarfUnit {
+        DwarfUnit::new(Encoding {
+            format: Format::Dwarf32,
+            version: 4,
+            address_size: 8,
+        })
+    }
+
+    #[test]
+    fn dwarf_budget_enforces_each_limit() {
+        let mut dies: DwarfBudget = DwarfBudget::new();
+        dies.die_visits = MAX_DWARF_DIE_VISITS - 1;
+        assert!(dies.visit_die());
+        assert!(!dies.visit_die());
+
+        let mut aggregates: DwarfBudget = DwarfBudget::new();
+        aggregates.aggregate_items = MAX_DWARF_AGGREGATE_ITEMS - 1;
+        assert!(aggregates.take_aggregate_item());
+        assert!(!aggregates.take_aggregate_item());
+
+        let mut params: DwarfBudget = DwarfBudget::new();
+        params.function_params = MAX_DWARF_FUNCTION_PARAMS - 1;
+        assert!(params.take_function_param());
+        assert!(!params.take_function_param());
+
+        let mut strings: DwarfBudget = DwarfBudget::new();
+        strings.string_bytes = MAX_DWARF_STRING_BYTES - 3;
+        assert!(strings.reserve_string(3));
+        assert!(!strings.reserve_string(1));
+        assert!(strings.string_limit_hit);
+        let mut oversized: DwarfBudget = DwarfBudget::new();
+        assert!(!oversized.reserve_string(MAX_DWARF_STRING_LEN + 1));
+        assert!(oversized.string_limit_hit);
+    }
+
+    #[test]
+    fn nested_aggregates_keep_inner_and_outer_members() {
+        let mut dwarf: DwarfUnit = dwarf_unit();
+        let root: UnitEntryId = dwarf.unit.root();
+        let scalar: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_base_type, "Scalar");
+        let outer: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_structure_type, "Outer");
+        let before: UnitEntryId = add_named_die(&mut dwarf, outer, gimli::DW_TAG_member, "before");
+        dwarf
+            .unit
+            .get_mut(before)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(scalar));
+        let inner: UnitEntryId =
+            add_named_die(&mut dwarf, outer, gimli::DW_TAG_structure_type, "Inner");
+        let _: UnitEntryId = add_named_die(&mut dwarf, inner, gimli::DW_TAG_member, "inside");
+        let _: UnitEntryId = add_named_die(&mut dwarf, outer, gimli::DW_TAG_member, "after");
+
+        let sections: BTreeMap<SectionId, Vec<u8>> = serialize_dwarf(&mut dwarf);
+        let report: DwarfReport = report_from_sections(&sections);
+        let outer: &DwarfAggregate = report
+            .aggregates
+            .iter()
+            .find(|aggregate: &&DwarfAggregate| aggregate.name == "Outer")
+            .expect("outer aggregate recovered");
+        let inner: &DwarfAggregate = report
+            .aggregates
+            .iter()
+            .find(|aggregate: &&DwarfAggregate| aggregate.name == "Inner")
+            .expect("inner aggregate recovered");
+        assert_eq!(
+            outer
+                .members
+                .iter()
+                .map(|member: &DwarfMember| member.name.as_str())
+                .collect::<Vec<&str>>(),
+            ["before", "after"]
+        );
+        assert_eq!(outer.members[0].type_name.as_deref(), Some("Scalar"));
+        assert_eq!(
+            inner
+                .members
+                .iter()
+                .map(|member: &DwarfMember| member.name.as_str())
+                .collect::<Vec<&str>>(),
+            ["inside"]
+        );
+    }
+
+    #[test]
+    fn aggregate_nesting_stops_at_depth_limit() {
+        let mut dwarf: DwarfUnit = dwarf_unit();
+        let mut parent: UnitEntryId = dwarf.unit.root();
+        let mut aggregate_ids: Vec<UnitEntryId> = Vec::new();
+        for index in 0..MAX_DWARF_AGGREGATE_DEPTH + 2 {
+            let name: String = format!("Type{index}");
+            let aggregate: UnitEntryId =
+                add_named_die(&mut dwarf, parent, gimli::DW_TAG_structure_type, &name);
+            aggregate_ids.push(aggregate);
+            parent = aggregate;
+        }
+        for (index, aggregate) in aggregate_ids.into_iter().enumerate() {
+            let name: String = format!("member{index}");
+            let _: UnitEntryId = add_named_die(&mut dwarf, aggregate, gimli::DW_TAG_member, &name);
+        }
+
+        let sections: BTreeMap<SectionId, Vec<u8>> = serialize_dwarf(&mut dwarf);
+        let report: DwarfReport = report_from_sections(&sections);
+        assert_eq!(report.aggregates.len(), MAX_DWARF_AGGREGATE_DEPTH);
+        assert!(
+            report
+                .aggregates
+                .iter()
+                .any(|aggregate: &DwarfAggregate| aggregate.name == "Type255")
+        );
+        assert!(
+            report
+                .aggregates
+                .iter()
+                .all(|aggregate: &DwarfAggregate| aggregate.name != "Type256")
+        );
+    }
+
+    #[test]
+    fn composed_type_name_above_limit_rejects_open_aggregate() {
+        let mut dwarf: DwarfUnit = dwarf_unit();
+        let root: UnitEntryId = dwarf.unit.root();
+        let long_name: String = "x".repeat(MAX_DWARF_STRING_LEN);
+        let base: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_base_type, &long_name);
+        let pointer: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_pointer_type);
+        dwarf
+            .unit
+            .get_mut(pointer)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(base));
+        let outer: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_structure_type, "Outer");
+        let member: UnitEntryId = add_named_die(&mut dwarf, outer, gimli::DW_TAG_member, "value");
+        dwarf
+            .unit
+            .get_mut(member)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(pointer));
+
+        let sections: BTreeMap<SectionId, Vec<u8>> = serialize_dwarf(&mut dwarf);
+        let report: DwarfReport = report_from_sections(&sections);
+        assert!(
+            report
+                .aggregates
+                .iter()
+                .all(|aggregate: &DwarfAggregate| aggregate.name != "Outer")
+        );
     }
 
     #[test]
