@@ -1,11 +1,13 @@
+#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
-use disrobe_pass_beam::{BeamPass, PASS_INPUT_PATH_CAP};
+use disrobe_core::Rung;
+use disrobe_core::chain::Pass;
+use disrobe_core::{Artifact, CoreError};
+use disrobe_pass_beam::chain_detector::BEAM_PASS;
 
 const HARNESS_ENV: &str = "DISROBE_BEAM_DEBUG_HARNESS";
 
@@ -23,17 +25,12 @@ fn fixture_bytes() -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-fn synth_envelope(source_path: &str, body: &[u8]) -> Vec<u8> {
-    let raw: RawPayload = RawPayload {
-        source_path: source_path.to_owned(),
-        source_bytes: body.to_vec(),
-        source_hash: [0u8; 32],
-        detected_format: None,
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope")
+fn run_chain(body: &[u8]) -> String {
+    let input: Artifact = Artifact::new(Rung::Raw, body.to_vec(), [7u8; 32]);
+    let out: Artifact = BEAM_PASS
+        .run(&input)
+        .unwrap_or_else(|e: CoreError| panic!("run beam pass on real fixture: {e}"));
+    String::from_utf8(out.envelope).expect("recovered source is utf8")
 }
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
@@ -63,15 +60,8 @@ fn harness_entrypoint() {
     if std::env::var_os(HARNESS_ENV).is_none() {
         return;
     }
-    let bytes: Vec<u8> = synth_envelope("raw.beam", &fixture_bytes());
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        bytes,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [7u8; 32],
-    );
-    let out: Artifact = BeamPass.run(&input).expect("run beam pass on real fixture");
-    assert_eq!(out.rung, Rung::Disasm);
+    let source: String = run_chain(&fixture_bytes());
+    assert!(!source.is_empty());
 }
 
 fn child_stderr(out: &Output) -> String {

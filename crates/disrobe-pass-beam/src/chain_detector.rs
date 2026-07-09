@@ -12,7 +12,7 @@ use disrobe_core::provenance::Language;
 
 use crate::ez::EzArchive;
 use crate::file::BeamFile;
-use crate::surface;
+use crate::surface::{self, ErlangSurface};
 
 pub const PASS_ID: PassId = "beam.classify";
 
@@ -92,14 +92,67 @@ impl Pass for BeamPass {
 }
 
 fn recover_beam_source(bytes: &[u8]) -> CoreResult<String> {
+    crate::debug::dbg_section("beam analyze");
+    crate::debug::dbg_kv("input_len", || bytes.len().to_string());
+    crate::debug::dbg_hex("input_magic", bytes, 12);
+    crate::debug::dbg_kv("classify", || match bytes.first_chunk::<4>() {
+        Some(b"FOR1") => "beam (FOR1/BEAM IFF container)".to_owned(),
+        Some(other) => format!("unrecognized magic {other:02x?}"),
+        None => "truncated: fewer than 4 bytes".to_owned(),
+    });
     let beam: BeamFile = BeamFile::parse(bytes).map_err(|e: crate::error::Error| {
         CoreError::PassFailure(format!("DR-BEAM-0903: beam parse: {e}"))
     })?;
-    surface::recover(&beam)
-        .map(|s: surface::ErlangSurface| s.source)
-        .map_err(|e: crate::error::Error| {
-            CoreError::PassFailure(format!("DR-BEAM-0904: beam recover: {e}"))
+    crate::debug::dbg_kv("chunks", || {
+        format!(
+            "atoms={} exports={} imports={} locals={} funs={} code={} dbgi={} docs={} attrs={} literals={} line={}",
+            beam.chunks.atoms.atoms.len(),
+            beam.chunks.exports.len(),
+            beam.chunks.imports.len(),
+            beam.chunks.locals.len(),
+            beam.chunks.funs.len(),
+            beam.chunks.code.is_some(),
+            beam.chunks.dbgi.is_some(),
+            beam.chunks.docs.is_some(),
+            beam.chunks.attributes.is_some(),
+            beam.chunks.literals.is_some(),
+            beam.chunks.line.is_some(),
+        )
+    });
+    let instruction_count: u32 = beam
+        .chunks
+        .code
+        .as_ref()
+        .and_then(|c| match crate::disassemble(c) {
+            Ok(d) => Some(u32::try_from(d.instructions.len()).unwrap_or(u32::MAX)),
+            Err(e) => {
+                crate::debug::dbg_line(|| format!("beam disassemble failed: {e}"));
+                None
+            }
         })
+        .unwrap_or(0);
+    crate::debug::dbg_kv("instruction_count", || instruction_count.to_string());
+    let symbolic_disasm: Option<String> = beam.chunks.code.as_ref().and_then(|_| {
+        crate::symbolic::symbolic_disassemble(&beam)
+            .map(|m| crate::symbolic::render_symbolic(&m))
+            .ok()
+    });
+    crate::debug::dbg_kv("symbolic_disasm", || match &symbolic_disasm {
+        Some(s) => format!("bytes={}", s.len()),
+        None => "none".to_owned(),
+    });
+    let recovered: ErlangSurface = surface::recover(&beam).map_err(|e: crate::error::Error| {
+        CoreError::PassFailure(format!("DR-BEAM-0904: beam recover: {e}"))
+    })?;
+    crate::debug::dbg_kv("recovered", || {
+        format!(
+            "module={} from={:?} source_bytes={}",
+            recovered.module,
+            recovered.recovered_from,
+            recovered.source.len()
+        )
+    });
+    Ok(recovered.source)
 }
 
 fn recover_ez_source(bytes: &[u8]) -> CoreResult<String> {
