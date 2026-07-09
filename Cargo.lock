@@ -2521,7 +2521,6 @@ dependencies = [
  "cbc",
  "cipher 0.4.4",
  "disrobe-core",
- "disrobe-ir",
  "flate2",
  "insta",
  "memchr",

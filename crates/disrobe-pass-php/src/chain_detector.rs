@@ -15,6 +15,7 @@ use disrobe_core::provenance::Language;
 use crate::detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
 use crate::peel::{PeelOptions, PeelReport, PeelTrace, peel as peel_php};
 use crate::phar::{PharArchive, PharEntry, extract_entry, parse as parse_phar};
+use crate::pipeline::{RecoveryReport, recover as recover_php};
 use crate::protectors::{ProtectorFamily, ioncube, sourceguardian, zend_guard};
 
 pub const PASS_ID: PassId = "php.peel";
@@ -114,7 +115,7 @@ impl Pass for PhpPass {
         let bytes: &[u8] = input.envelope.as_slice();
         let detection: PhpDetection = detect_php(bytes);
         if !matches!(detection.kind, PhpKind::PharStub | PhpKind::PharArchive) {
-            return Ok(peel_manifest_child(bytes).into_iter().collect());
+            return Ok(peel_manifest_child(bytes, &detection).into_iter().collect());
         }
         let archive: PharArchive = parse_phar(bytes).map_err(|e: crate::error::Error| {
             CoreError::PassFailure(format!("DR-PHP-0905: parse phar children: {e}"))
@@ -141,8 +142,8 @@ impl Pass for PhpPass {
     }
 }
 
-fn peel_manifest_child(bytes: &[u8]) -> Option<ChildArtifact> {
-    let manifest: serde_json::Value = build_peel_manifest(bytes)?;
+fn peel_manifest_child(bytes: &[u8], detection: &PhpDetection) -> Option<ChildArtifact> {
+    let manifest: serde_json::Value = build_peel_manifest(bytes, detection)?;
     let json: Vec<u8> = serde_json::to_vec_pretty(&manifest).ok()?;
     Some(ChildArtifact {
         handle: ChildHandle {
@@ -154,12 +155,15 @@ fn peel_manifest_child(bytes: &[u8]) -> Option<ChildArtifact> {
     })
 }
 
-fn build_peel_manifest(bytes: &[u8]) -> Option<serde_json::Value> {
+fn build_peel_manifest(bytes: &[u8], detection: &PhpDetection) -> Option<serde_json::Value> {
     let protector: Option<(ProtectorFamily, f32, Vec<String>)> = detect_protector(bytes);
     let report: Option<PeelReport> = peel_php(bytes, PeelOptions::default()).ok();
     if report.is_none() && protector.is_none() {
         return None;
     }
+    let recovery: Option<RecoveryReport> = recover_php(bytes, None).ok();
+    let recovery_json: Option<serde_json::Value> =
+        recovery.and_then(|r: RecoveryReport| serde_json::to_value(&r).ok());
     let steps: Vec<serde_json::Value> = report.as_ref().map_or_else(Vec::new, |r: &PeelReport| {
         r.layers
             .iter()
@@ -208,6 +212,9 @@ fn build_peel_manifest(bytes: &[u8]) -> Option<serde_json::Value> {
         "families": families,
         "residual_eval": residual_eval,
         "walls": walls,
+        "has_halt_compiler": detection.has_halt_compiler,
+        "open_tag_offset": detection.open_tag_offset,
+        "recovery": recovery_json,
     }))
 }
 
@@ -578,6 +585,17 @@ mod tests {
             "manifest must record the decoder families applied: {parsed}",
         );
         assert_eq!(parsed["residual_eval"], false);
+        assert_eq!(parsed["has_halt_compiler"], false);
+        assert_eq!(parsed["open_tag_offset"], 0);
+        let recovery: &serde_json::Value = &parsed["recovery"];
+        assert!(!recovery.is_null(), "recovery report must embed: {parsed}");
+        assert_eq!(recovery["stage"], "EvalChainPeeled");
+        assert!(
+            recovery["output"]
+                .as_str()
+                .is_some_and(|s: &str| s.contains("echo 'recovered'")),
+            "recovery.output must carry the peeled php source: {recovery}",
+        );
     }
 
     #[test]
@@ -604,6 +622,14 @@ mod tests {
                 .any(|w: &serde_json::Value| w["kind"] == "commercial-encoder"),
             "ionCube/SourceGuardian/ZendGuard wall must be recorded: {parsed}",
         );
+        assert_eq!(parsed["has_halt_compiler"], false);
+        assert_eq!(parsed["open_tag_offset"], 0);
+        let recovery: &serde_json::Value = &parsed["recovery"];
+        assert!(
+            !recovery.is_null(),
+            "recovery report must embed for a detected commercial encoder: {parsed}",
+        );
+        assert_eq!(recovery["encoder"], "IonCube");
     }
 
     #[test]

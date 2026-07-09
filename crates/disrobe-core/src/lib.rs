@@ -21,7 +21,6 @@ pub mod provenance;
 pub mod provenance_map;
 pub mod recon;
 pub mod recovery;
-pub mod resolver;
 pub mod rng;
 pub mod rung;
 pub mod strings;
@@ -97,9 +96,6 @@ pub use recon::{
 pub use recovery::{
     ConfidenceTier, PassRecovery, RECOVERY_SCHEMA, RecoveryReport, RecoverySignal, TierHistogram,
     assign_tier,
-};
-pub use resolver::{
-    CapabilityResolver, MigrationShim, MigrationShimRegistry, ShimStep, ShimTransform,
 };
 pub use rng::{SeededRng, os as rng_os, seeded as rng_seeded};
 pub use rung::Rung;

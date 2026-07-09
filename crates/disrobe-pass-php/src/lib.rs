@@ -18,7 +18,6 @@ pub mod error;
 pub mod format_wire;
 pub mod key_extractor;
 pub mod loader;
-pub mod pass;
 pub mod peel;
 pub mod phar;
 pub mod pipeline;
@@ -52,7 +51,6 @@ pub use key_extractor::{
 pub use loader::{
     DEFAULT_LOADER_DEPTH, LoaderReport, LoaderSink, peel_loader as peel_modern_loader,
 };
-pub use pass::{PASS_INPUT_PATH_CAP, PassInput, PhpPass, PhpPassReport, decode_pass_input};
 pub use peel::{
     DEFAULT_MAX_DEPTH, PeelLayer, PeelOptions, PeelReport, PeelTrace, peel as peel_eval_chain,
 };
