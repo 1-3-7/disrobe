@@ -11,6 +11,7 @@ mod codegen;
 mod demo;
 mod errdocs;
 mod evidence;
+mod evidence_tiers;
 mod fileio;
 mod fuzz_scope;
 mod graphs;

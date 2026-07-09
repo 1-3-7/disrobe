@@ -39,11 +39,17 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::fuzz_scope::run(root),
         &mut stale,
     );
+    run_one(
+        "tiered-results",
+        check,
+        || crate::evidence_tiers::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check, attack-surface cross-check, fuzz-scope cross-check)"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check, attack-surface cross-check, fuzz-scope cross-check, tiered-results cross-check)"
             );
             Ok(())
         } else {
@@ -55,7 +61,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
     } else {
         println!(
-            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, and evidence regenerated; README stat, attack-surface, and fuzz-scope cross-checks ok"
+            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, and evidence regenerated; README stat, attack-surface, fuzz-scope, and tiered-results cross-checks ok"
         );
         Ok(())
     }
