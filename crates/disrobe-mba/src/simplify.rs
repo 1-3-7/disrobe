@@ -13,6 +13,7 @@ pub enum Verification {
     LinearLiftedFrom(Width),
     LinearColumnIdentity(Width),
     AlgebraicIdentity,
+    PolynomialNormalForm(Width),
     #[cfg(feature = "smt-verify")]
     SmtProvenAtWidth(Width),
 }
@@ -116,6 +117,12 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         && let Some(synth) = synthesize_bitwise_masked(expr, width, var_count)
     {
         consider(synth, Verification::Unverified);
+    }
+    if !original_is_mba
+        && (1..=crate::poly_mba::MAX_POLY_MBA_VARS).contains(&var_count)
+        && let Some(reduced) = crate::poly_mba::solve_polynomial_mba(expr, width, var_count)
+    {
+        consider(reduced, Verification::PolynomialNormalForm(width));
     }
 
     let (simplified, verification): (Expr, Verification) = best;

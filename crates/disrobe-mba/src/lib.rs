@@ -32,6 +32,7 @@ pub mod expr;
 pub mod linear_mba;
 pub mod linear_solver;
 pub mod opaque;
+pub mod poly_mba;
 pub mod rewrite;
 pub mod rules;
 pub mod simplify;
@@ -47,6 +48,7 @@ pub use linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
 pub use opaque::{BranchFold, CmpOp, OpaqueVerdict, Predicate, classify, fold_branch};
+pub use poly_mba::{MAX_POLY_MBA_VARS, solve_polynomial_mba};
 pub use rewrite::canonicalize;
 pub use rules::{
     ApplyError, Binary, Condition, LoadError, MBA_PEEPHOLE_RULES, Pattern, Rule, RuleHit, RuleSet,

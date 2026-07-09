@@ -84,6 +84,47 @@ proptest! {
     }
 }
 
+fn leaf_poly() -> impl Strategy<Value = Expr> {
+    prop_oneof![
+        (0u32..2).prop_map(Expr::var),
+        (0u64..4).prop_map(Expr::konst),
+    ]
+}
+
+fn expr_poly_strategy() -> impl Strategy<Value = Expr> {
+    leaf_poly().prop_recursive(3, 24, 2, |inner| {
+        prop_oneof![
+            inner.clone().prop_map(Expr::not),
+            inner.clone().prop_map(Expr::neg),
+            (inner.clone(), inner.clone()).prop_map(|(a, b): (Expr, Expr)| Expr::add(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b): (Expr, Expr)| Expr::sub(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b): (Expr, Expr)| Expr::mul(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b): (Expr, Expr)| Expr::and(a, b)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b): (Expr, Expr)| Expr::or(a, b)),
+            (inner.clone(), inner).prop_map(|(a, b): (Expr, Expr)| Expr::xor(a, b)),
+        ]
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn simplifier_preserves_semantics_polynomial(expr in expr_poly_strategy()) {
+        let result: Simplification = simplify(&expr, Width::W8);
+        prop_assert!(
+            equivalent_exhaustive(&expr, &result.simplified, Width::W8, 2),
+            "polynomial simplified `{}` is not equivalent to original `{}`",
+            result.simplified,
+            expr
+        );
+        if result.changed() {
+            prop_assert!(result.verification.is_proven());
+            prop_assert!(result.simplified_nodes < result.original_nodes);
+        }
+    }
+}
+
 fn leaf4() -> impl Strategy<Value = Expr> {
     prop_oneof![
         (0u32..4).prop_map(Expr::var),

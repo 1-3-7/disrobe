@@ -512,7 +512,21 @@ fn push_scaled(terms: &mut Vec<Expr>, signed: &SignedCoeff, basis: Expr) {
     }
 }
 
-fn sum_terms(terms: Vec<Expr>) -> Expr {
+#[must_use]
+pub(crate) fn scaled_atom_term(coeff: i128, atom: Option<Expr>, width: Width) -> Option<Expr> {
+    let signed: SignedCoeff = reduce_mod_width(coeff, width);
+    if signed.magnitude == 0 {
+        return None;
+    }
+    let mut terms: Vec<Expr> = Vec::with_capacity(1);
+    match atom {
+        None => push_const(&mut terms, &signed),
+        Some(basis) => push_scaled(&mut terms, &signed, basis),
+    }
+    terms.into_iter().next()
+}
+
+pub(crate) fn sum_terms(terms: Vec<Expr>) -> Expr {
     let mut iter: std::vec::IntoIter<Expr> = terms.into_iter();
     let Some(first): Option<Expr> = iter.next() else {
         return Expr::konst(0);
