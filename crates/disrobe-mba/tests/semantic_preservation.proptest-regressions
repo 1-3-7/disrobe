@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc afcbad3c1edb2d645e0f8fb40efa662136dad0538acbd158a83a29c2e4152ae3 # shrinks to expr = Binary(And, Binary(And, Unary(Neg, Var(0)), Binary(Xor, Const(0), Var(0))), Unary(Neg, Unary(Not, Var(0))))
+cc 5c4e3bb5f0348259f998694759f7f1256d63b8395cb9bc88111226bdf1039599 # shrinks to expr = Binary(Add, Const(2), Unary(Not, Var(0)))

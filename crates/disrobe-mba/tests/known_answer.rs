@@ -216,6 +216,49 @@ fn solver_recovers_five_var_xor_chain_at_w32() {
 }
 
 #[test]
+fn solver_recovers_three_var_affine_constant_form_at_w64() {
+    let obfuscated: Expr = Expr::add(
+        Expr::add(Expr::add(var(0), Expr::not(var(1))), Expr::konst(1)),
+        var(2),
+    );
+    let result: Simplification = simplify(&obfuscated, Width::W64);
+    assert!(
+        result.changed(),
+        "the affine linear MBA must reduce beyond the two-variable template set"
+    );
+    assert_eq!(
+        result.verification,
+        Verification::LinearLiftedFrom(Width::W4)
+    );
+    let clean: Expr = Expr::add(Expr::sub(var(0), var(1)), var(2));
+    assert!(equivalent_exhaustive(
+        &result.simplified,
+        &clean,
+        Width::W8,
+        3
+    ));
+    let environments: [[u64; 3]; 6] = [
+        [0, 0, 0],
+        [1, 1, 1],
+        [u64::MAX, 0, 1],
+        [0, u64::MAX, u64::MAX],
+        [1u64 << 63, 1, u64::MAX],
+        [u64::MAX - 1, 1u64 << 63, 2],
+    ];
+    for environment in environments {
+        assert_eq!(
+            obfuscated.eval(&environment, Width::W64),
+            clean.eval(&environment, Width::W64)
+        );
+        assert_eq!(
+            result.simplified.eval(&environment, Width::W64),
+            clean.eval(&environment, Width::W64)
+        );
+    }
+    assert!(result.simplified_nodes < result.original_nodes);
+}
+
+#[test]
 fn solver_negative_genuine_addition_at_w32_not_collapsed_to_difference() {
     let genuine: Expr = Expr::add(var(0), var(1));
     let result: Simplification = simplify(&genuine, Width::W32);

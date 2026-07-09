@@ -102,7 +102,6 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         consider(synth, Verification::Unverified);
     }
     if (1..=MAX_SOLVER_VARS).contains(&var_count)
-        && original_is_mba
         && let Some(solved) = solve_linear_mba(expr, width, var_count)
     {
         consider(solved, Verification::Unverified);

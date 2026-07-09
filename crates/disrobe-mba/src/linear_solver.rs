@@ -1,13 +1,13 @@
-#![doc = "Polynomial / affine linear-MBA solver over Z/2^n with an exact algebraic proof."]
+#![doc = "Polynomial / affine linear MBA solver over Z/2^n with an exact algebraic proof."]
 #![doc = ""]
-#![doc = "A linear mixed-boolean-arithmetic expression is a sum `Σ a_i · f_i(x⃗)` of"]
-#![doc = "integer-scaled bitwise terms `f_i` over a variable set. Every bitwise term"]
-#![doc = "acts independently per bit, so the word-level value of the whole expression at"]
-#![doc = "width `n` is `Σ_j 2^j · T(x⃗[j])`, where `T` is the truth-table column of the"]
-#![doc = "linear MBA evaluated on the one-bit slice `x⃗[j]`. Two linear MBAs are therefore"]
-#![doc = "equal over Z/2^n exactly when their truth-table columns are equal mod 2^n: if"]
-#![doc = "`D(b⃗) = T1(b⃗) - T2(b⃗) ≡ 0 (mod 2^n)` for every boolean row `b⃗`, then each"]
-#![doc = "`2^j · D(x⃗[j]) ≡ 0 (mod 2^n)` and the full difference vanishes for all inputs."]
+#![doc = "A linear mixed Boolean-arithmetic expression is an affine sum of"]
+#![doc = "integer-scaled, width-uniform bitwise terms over a variable set. The `SiMBA`"]
+#![doc = "signature evaluates the whole fixed-width expression on every assignment of"]
+#![doc = "numeric zero and one to those variables. Two linear MBAs are equal over"]
+#![doc = "Z/2^n exactly when these signatures are equal modulo 2^n. Whole-expression"]
+#![doc = "evaluation handles arithmetic constants and bitwise negation without replacing"]
+#![doc = "them by one-bit logical values. Partial masks and cross-bit operations remain"]
+#![doc = "outside the proof grammar."]
 #![doc = ""]
 #![doc = "This module recovers the simplest linear form of an expression by solving for"]
 #![doc = "its coefficient vector over the canonical minterm basis, then proves the result"]
@@ -28,18 +28,18 @@ pub fn solve_linear_mba(expr: &Expr, width: Width, var_count: u32) -> Option<Exp
     if var_count == 0 || var_count > MAX_SOLVER_VARS {
         return None;
     }
-    if !expr.is_linear_mba() || !is_column_faithful(expr, width) {
+    if !is_affine_signature_faithful(expr, width) {
         return None;
     }
     let rows: usize = 1usize << var_count;
-    let target: Vec<i128> = truth_column(expr, var_count, rows);
+    let target: Vec<i128> = affine_signature(expr, var_count, rows);
 
     let mut best: Option<(usize, Expr)> = None;
     let mut consider = |candidate: Expr| {
-        if !is_column_faithful(&candidate, width) {
+        if !is_affine_signature_faithful(&candidate, width) {
             return;
         }
-        let candidate_column: Vec<i128> = truth_column(&candidate, var_count, rows);
+        let candidate_column: Vec<i128> = affine_signature(&candidate, var_count, rows);
         if !columns_equal_mod_width(&target, &candidate_column, width) {
             return;
         }
@@ -77,20 +77,25 @@ pub fn columns_equal_mod_width(left: &[i128], right: &[i128], width: Width) -> b
 
 #[must_use]
 pub fn is_column_faithful(expr: &Expr, width: Width) -> bool {
-    faithful_value(expr, width)
+    faithful_value(expr, width, false)
 }
 
-fn faithful_value(expr: &Expr, width: Width) -> bool {
+fn is_affine_signature_faithful(expr: &Expr, width: Width) -> bool {
+    faithful_value(expr, width, true)
+}
+
+fn faithful_value(expr: &Expr, width: Width, affine_constants: bool) -> bool {
     match expr {
         Expr::Const(value) => {
             let masked: u64 = value & width.mask();
-            masked == 0 || masked == width.mask()
+            affine_constants || masked == 0 || masked == width.mask()
         }
         Expr::Var(_) => true,
         Expr::Unary(UnOp::Not, inner) => faithful_bitwise(inner, width),
-        Expr::Unary(UnOp::Neg, inner) => faithful_value(inner, width),
+        Expr::Unary(UnOp::Neg, inner) => faithful_value(inner, width, affine_constants),
         Expr::Binary(BinOp::Add | BinOp::Sub, left, right) => {
-            faithful_value(left, width) && faithful_value(right, width)
+            faithful_value(left, width, affine_constants)
+                && faithful_value(right, width, affine_constants)
         }
         Expr::Binary(BinOp::Mul, left, right) => match (&**left, &**right) {
             (Expr::Const(_), other) | (other, Expr::Const(_)) => faithful_bitwise(other, width),
@@ -135,6 +140,18 @@ pub fn truth_column(expr: &Expr, var_count: u32, rows: usize) -> Vec<i128> {
             *bit = ((row >> index) & 1) as u8;
         }
         *slot = expr.eval_truth_row(&bits);
+    }
+    column
+}
+
+fn affine_signature(expr: &Expr, var_count: u32, rows: usize) -> Vec<i128> {
+    let mut column: Vec<i128> = vec![0; rows];
+    let mut inputs: Vec<u64> = vec![0; var_count as usize];
+    for (row, slot) in column.iter_mut().enumerate() {
+        for (index, input) in inputs.iter_mut().enumerate() {
+            *input = ((row >> index) & 1) as u64;
+        }
+        *slot = i128::from(expr.eval(&inputs, Width::W64));
     }
     column
 }
@@ -215,7 +232,7 @@ fn solve_over_subset_basis(
             continue;
         };
         let candidate: Expr = reconstruct_subset(&combo, &coeffs, &library, width);
-        let reconstructed: Vec<i128> = truth_column(&candidate, var_count, rows);
+        let reconstructed: Vec<i128> = affine_signature(&candidate, var_count, rows);
         if !columns_equal_mod_width(target, &reconstructed, width) {
             continue;
         }
@@ -571,6 +588,18 @@ mod tests {
             &column_clean,
             Width::W32
         ));
+    }
+
+    #[test]
+    fn solves_w4_affine_form_with_native_all_ones_mask() {
+        let obfuscated: Expr = Expr::add(
+            Expr::xor(var(0), Expr::konst(Width::W4.mask())),
+            Expr::konst(1),
+        );
+        let solved: Expr =
+            solve_linear_mba(&obfuscated, Width::W4, 1).expect("must solve W4 affine form");
+        assert!(equivalent_exhaustive(&obfuscated, &solved, Width::W4, 1));
+        assert!(solved.node_count() <= Expr::neg(var(0)).node_count());
     }
 
     #[test]

@@ -127,19 +127,38 @@ proptest! {
                 expr
             );
             prop_assert!(result.simplified_nodes < result.original_nodes);
+            let high_bit: u64 = 1u64 << (width.bits() - 1);
+            let mask: u64 = width.mask();
+            let environments: [[u64; 4]; 5] = [
+                [0, 0, 0, 0],
+                [mask, mask, mask, mask],
+                [high_bit, 1, mask, 0],
+                [mask - 1, high_bit, 2, mask],
+                [0xA5A5_A5A5, 0x5A5A_5A5A, mask, high_bit],
+            ];
+            for environment in environments {
+                prop_assert_eq!(
+                    expr.eval(&environment, width),
+                    result.simplified.eval(&environment, width),
+                    "target-width evaluation differs for `{}` vs `{}` at {:?}",
+                    expr,
+                    result.simplified,
+                    width
+                );
+            }
             if let Verification::LinearColumnIdentity(proven_width) = result.verification {
                 prop_assert_eq!(proven_width, width);
                 prop_assert!(is_column_faithful(&expr, width));
                 prop_assert!(is_column_faithful(&result.simplified, width));
                 prop_assert!(
                     columns_match(&expr, &result.simplified, 4, width),
-                    "column-identity proof claimed but columns differ for `{}` vs `{}`",
+                    "logical-column proof claimed but columns differ for `{}` vs `{}`",
                     expr,
                     result.simplified
                 );
                 prop_assert!(
                     equivalent_exhaustive(&expr, &result.simplified, Width::W4, 4),
-                    "a column-faithful Z/2^n equivalence must also hold at the runnable W4 check: `{}` vs `{}`",
+                    "an exact affine signature over Z/2^n must also hold at the runnable W4 check: `{}` vs `{}`",
                     expr,
                     result.simplified
                 );
