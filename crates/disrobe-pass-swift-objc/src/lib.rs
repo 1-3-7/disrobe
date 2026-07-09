@@ -5,6 +5,7 @@
 pub mod chain_detector;
 pub(crate) mod debug;
 pub mod demangle;
+pub mod dyld_cache;
 pub mod error;
 pub mod fairplay;
 pub mod ipa;
@@ -23,6 +24,12 @@ pub mod swift_typedump;
 pub mod swiftinterface;
 pub mod swiftmodule;
 
+pub use dyld_cache::{
+    DyldImage, DyldMapping, DyldSharedCache, ReconstructedDylib, is_dyld_shared_cache,
+    parse as parse_dyld_cache, reconstruct_all as reconstruct_dyld_images,
+    reconstruct_by_name as reconstruct_dyld_image_by_name,
+    reconstruct_image as reconstruct_dyld_image,
+};
 pub use error::{Error, Result};
 pub use fairplay::{FairPlayStatus, detect as detect_fairplay};
 pub use ipa::{

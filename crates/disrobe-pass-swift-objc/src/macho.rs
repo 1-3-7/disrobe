@@ -160,7 +160,7 @@ pub struct ParsedSlice {
 }
 
 #[inline]
-fn u32_le(bytes: &[u8], off: usize) -> Result<u32> {
+pub(crate) fn u32_le(bytes: &[u8], off: usize) -> Result<u32> {
     let end: usize = off.checked_add(4).ok_or(Error::Truncated(off))?;
     let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
     let arr: [u8; 4] = [slice[0], slice[1], slice[2], slice[3]];
@@ -176,7 +176,7 @@ fn u32_be(bytes: &[u8], off: usize) -> Result<u32> {
 }
 
 #[inline]
-fn u64_le(bytes: &[u8], off: usize) -> Result<u64> {
+pub(crate) fn u64_le(bytes: &[u8], off: usize) -> Result<u64> {
     let end: usize = off.checked_add(8).ok_or(Error::Truncated(off))?;
     let slice: &[u8] = bytes.get(off..end).ok_or(Error::Truncated(off))?;
     let mut arr: [u8; 8] = [0u8; 8];
@@ -544,7 +544,7 @@ pub fn symbol_names(slice: &[u8], parsed: &ParsedSlice) -> Vec<String> {
     out
 }
 
-fn read_cstr_bounded(slice: &[u8], start: usize, hard_end: usize) -> Option<String> {
+pub(crate) fn read_cstr_bounded(slice: &[u8], start: usize, hard_end: usize) -> Option<String> {
     let cap: usize = start.checked_add(MAX_SYMBOL_LEN)?.min(hard_end);
     let window: &[u8] = slice.get(start..cap)?;
     let nul: usize = window.iter().position(|b: &u8| *b == 0)?;

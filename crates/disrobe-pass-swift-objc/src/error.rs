@@ -48,4 +48,10 @@ pub enum Error {
 
     #[error("DR-IOS-0014: Swift module bitstream malformed: {0}")]
     BadBitstream(String),
+
+    #[error("DR-IOS-0015: input is not a dyld shared cache (magic 'dyld_v1' prefix absent)")]
+    NotDyldCache,
+
+    #[error("DR-IOS-0016: dyld shared cache malformed: {0}")]
+    BadDyldCache(String),
 }
