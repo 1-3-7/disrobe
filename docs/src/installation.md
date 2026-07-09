@@ -4,7 +4,7 @@
 
 ## Prebuilt binaries (recommended)
 
-Each tagged release attaches prebuilt, statically-linkable binaries for the common targets, alongside `SHA256SUMS` and a cosign keyless signature bundle per archive.
+Each tagged release attaches prebuilt, statically-linkable binaries for the common targets, alongside `SHA256SUMS`, a cosign keyless signature bundle per archive, a GitHub build-provenance attestation, and a CycloneDX SBOM. See [Security](security.md#verifying-release-artifacts) for the full verification story.
 
 | OS | Architectures |
 |---|---|

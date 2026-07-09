@@ -19,6 +19,9 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -80,10 +83,16 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: install cargo-auditable
+        if: matrix.cross == false
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable
+
       - name: build (native)
         if: matrix.cross == false
         shell: bash
-        run: cargo build --release --bin disrobe --target ${{ matrix.target }}
+        run: cargo auditable build --release --bin disrobe --target ${{ matrix.target }}
 
       - name: build (cross)
         if: matrix.cross == true
@@ -167,12 +176,78 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: compute release tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "REL_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "REL_TAG=latest" >> "$GITHUB_ENV"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sbom
+
+      - name: install cargo-cyclonedx
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+
+      - name: generate SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo cyclonedx --describe binaries --format json --spec-version 1.5 --target all
+          mkdir -p dist
+          cp crates/disrobe-cli/disrobe_bin.cdx.json "dist/disrobe-${REL_TAG}.cyclonedx.json"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "disrobe-${REL_TAG}.cyclonedx.json" > "disrobe-${REL_TAG}.cyclonedx.json.sha256"
+          else
+            shasum -a 256 "disrobe-${REL_TAG}.cyclonedx.json" > "disrobe-${REL_TAG}.cyclonedx.json.sha256"
+          fi
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          cosign sign-blob --yes \
+            --bundle "disrobe-${REL_TAG}.cyclonedx.json.cosign.bundle" \
+            "disrobe-${REL_TAG}.cyclonedx.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-sbom
+          path: |
+            dist/disrobe-*.cyclonedx.json
+            dist/disrobe-*.cyclonedx.json.sha256
+            dist/disrobe-*.cyclonedx.json.cosign.bundle
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, sbom]
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v6
 
@@ -209,6 +284,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
 
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/disrobe-*.tar.zst
+            dist/disrobe-*.zip
+            dist/disrobe-*.cyclonedx.json
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.REL_TAG }}
@@ -221,4 +304,5 @@ jobs:
             dist/disrobe-*.tar.zst
             dist/disrobe-*.zip
             dist/disrobe-*.cosign.bundle
+            dist/disrobe-*.cyclonedx.json
             dist/SHA256SUMS

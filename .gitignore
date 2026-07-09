@@ -7,6 +7,7 @@ Cargo.lock.bak
 .cargo/.package-cache
 **/*.gcda
 **/*.gcno
+**/*.cdx.json
 
 .DS_Store
 .AppleDouble

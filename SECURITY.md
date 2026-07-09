@@ -40,7 +40,7 @@ The reporting channel covers any issue in the `disrobe` source tree that affects
 - **LSP-stdio input handling.** The `disrobe/analyze` LSP method also takes `bytes_b64` only with `deny_unknown_fields`. Same posture as HTTP.
 - **Subprocess invocation.** `disrobe install`, `disrobe doctor --auto-install`, and backends that wrap external tools (CFR, Vineflower, jadx, ILSpy, dnSpy, de4dot, Ghidra, Rizin, ...) construct command lines from configuration and sometimes from user input. Command injection or argument smuggling is in scope.
 - **`.dr` envelope handling.** `crates/disrobe-ir/src/envelope.rs` decodes a content-addressed binary format. Adversarial envelopes that cause read-past-end, integer overflow, or BLAKE3-mismatch acceptance are in scope.
-- **Supply chain.** Tampering with our published binaries (when those land via `release.yml`) including signature-bypass, replay, or cosign-bundle manipulation.
+- **Supply chain.** Tampering with our published binaries (when those land via `release.yml`) including signature-bypass, replay, cosign-bundle manipulation, or a forged build-provenance attestation.
 
 ## Out of scope
 
@@ -133,18 +133,39 @@ None of the parser crates in the first table above link `reqwest`, `axum`, `hype
 
 ## Sigstore transparency log
 
-Release artifacts published via the `release.yml` workflow are signed with cosign keyless. Every signature is recorded in the [Rekor public transparency log](https://search.sigstore.dev/). To verify a downloaded binary:
+Release artifacts published via the `release.yml` workflow are signed with cosign keyless. Every signature is recorded in the [Rekor public transparency log](https://search.sigstore.dev/). To verify a downloaded binary, the bundle already carries the certificate and signature, so `--bundle` alone is enough (there is no separate `.sig` file):
 
 ```sh
 cosign verify-blob \
+  --bundle disrobe-v0.10.4-<target>.tar.zst.cosign.bundle \
   --certificate-identity-regexp '^https://github.com/1-3-7/disrobe/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  --signature disrobe-v0.10.4-<target>.tar.zst.sig \
-  --bundle    disrobe-v0.10.4-<target>.tar.zst.cosign.bundle \
   disrobe-v0.10.4-<target>.tar.zst
 ```
 
-Or via `slsa-verifier` against the SLSA provenance attached to each release.
+## Build provenance and SBOM
+
+Every release ships three additional pieces of supply-chain evidence beyond the cosign signature:
+
+- **GitHub-native build provenance.** `release.yml`'s `release` job calls [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance) once, over every platform archive, after they are aggregated from the build matrix. This produces a signed [SLSA](https://slsa.dev/) provenance predicate (source commit, builder identity, workflow ref) recorded through GitHub's Artifact Attestations API, distinct from the cosign signature: cosign proves the bytes were signed by this repository's GitHub Actions OIDC identity, the attestation additionally proves which workflow run, commit, and trigger produced them. Verify with:
+
+  ```sh
+  gh attestation verify disrobe-v0.10.4-<target>.tar.zst --repo 1-3-7/disrobe
+  ```
+
+- **SBOM (dependency manifest embedded in the binary).** Every platform binary is built with `cargo auditable build` instead of a plain `cargo build`, which embeds a compact JSON dependency manifest into a linker section of the compiled executable. This survives even if the binary is separated from any release page, and can be read back with [`cargo-audit`](https://github.com/rustsec/rustsec):
+
+  ```sh
+  cargo audit bin disrobe
+  ```
+
+  This covers five of the seven release targets: `x86_64-unknown-linux-gnu` and both macOS and Windows targets build natively with `cargo auditable build` directly. The two cross-compiled targets (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`) go through `houseabsolute/actions-rust-cross`, which wraps [`cross`](https://github.com/cross-rs/cross); that action's `determine-cargo-commands.sh` receives its `command` input unquoted in a plain `run:` line, so a two-word custom command like `auditable build` collapses to just `auditable` (only `$1` is read, everything after the first word is silently dropped) and cargo-auditable's own CLI then fails without its `build` verb. This is a real limitation in the wrapping action, confirmed by reading its source, not a guess. The musl and aarch64-gnu binaries therefore still ship without an embedded manifest; `cargo-audit` coverage of those two is a disclosed gap, not silently claimed.
+
+- **SBOM (CycloneDX file, release asset).** A separate `sbom` job generates one [CycloneDX](https://cyclonedx.org/) 1.5 JSON SBOM describing the `disrobe` binary's full dependency closure across every shipped target platform (`cargo cyclonedx --target all`), published as `disrobe-<tag>.cyclonedx.json` alongside the binaries. This is the machine-readable format that scanners such as Grype, Dependency-Track, and OSV ingest directly. It gets the same protection as every other release asset: a `SHA256SUMS` entry, its own cosign bundle, and coverage under the build-provenance attestation.
+
+## Independent release verification
+
+`.github/workflows/verify-release.yml` is a separate workflow, triggered by `release: published` (and manually via `workflow_dispatch` with a `tag` input for re-checking an older release), that re-verifies a published release the way an outside stranger would: `contents: read` only, no signing credentials. It downloads the public release assets with `gh release download`, checks every archive and the SBOM against `SHA256SUMS`, verifies every cosign bundle with `cosign verify-blob`, and verifies the build-provenance attestation on each archive and the SBOM with `gh attestation verify`. Because it runs as its own separately-triggered job rather than a step appended to the `release.yml` run, it exercises the actual downloadable, publicly-verifiable artifacts, not the same run's internal runner state and credentials.
 
 ## Acknowledgements
 

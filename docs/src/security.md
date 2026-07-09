@@ -18,7 +18,7 @@ Include a description and impact, a minimal reproducer (input bytes, command lin
 - **Server input handling.** `disrobe serve` (HTTP/gRPC/LSP/MCP) accepts `bytes_b64` only; any way to make it read a file via a client-controlled string is high severity.
 - **Subprocess invocation.** Command injection or argument smuggling in backend invocation.
 - **`.dr` envelope handling.** Read-past-end, integer overflow, or BLAKE3-mismatch acceptance.
-- **Supply chain.** Tampering with published binaries, signature bypass, replay, cosign-bundle manipulation.
+- **Supply chain.** Tampering with published binaries, signature bypass, replay, cosign-bundle manipulation, or a forged build-provenance attestation.
 
 ## Out of scope
 
@@ -41,3 +41,5 @@ cosign verify-blob \
   --bundle    disrobe-<version>-<target>.tar.zst.cosign.bundle \
   disrobe-<version>-<target>.tar.zst
 ```
+
+Each binary is also built with `cargo auditable`, which embeds a dependency manifest readable with `cargo audit bin disrobe` (five of seven targets; the two cross-compiled Linux targets are a disclosed gap, see [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md#build-provenance-and-sbom)). A CycloneDX SBOM ships as a release asset. GitHub build-provenance attestations are verifiable with `gh attestation verify disrobe-<version>-<target>.tar.zst --repo 1-3-7/disrobe`. `.github/workflows/verify-release.yml` independently re-checks all of this against every published release.
