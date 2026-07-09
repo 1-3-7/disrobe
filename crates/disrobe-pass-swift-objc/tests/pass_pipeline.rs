@@ -1,8 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod fixtures;
 
-use disrobe_core::{Artifact, LegacyPass, Rung};
-use disrobe_pass_swift_objc::pass::{ContainerKind, SwiftObjcPass, SwiftObjcReport};
+use disrobe_pass_swift_objc::pass::{ContainerKind, SwiftObjcReport, analyze};
 
 use crate::fixtures::{
     MachoSectionSpec, MachoSegmentSpec, MachoSliceBuilder, build_binary_info_plist,
@@ -48,13 +47,9 @@ fn rich_slice() -> Vec<u8> {
 }
 
 #[test]
-fn pass_runs_on_macho_artifact_and_emits_disasm_rung() {
+fn analyze_recovers_swift_and_objc_metadata_from_a_macho_slice() {
     let slice: Vec<u8> = rich_slice();
-    let artifact: Artifact = Artifact::new(Rung::Raw, slice, [0u8; 32]);
-    let pass: SwiftObjcPass = SwiftObjcPass;
-    let out: Artifact = pass.run(&artifact).expect("pass runs");
-    assert_eq!(out.rung, Rung::Disasm);
-    let report: SwiftObjcReport = serde_json::from_slice(&out.envelope).expect("decode report");
+    let report: SwiftObjcReport = analyze(&slice).expect("analyze runs");
     assert_eq!(report.container, ContainerKind::MachO);
     assert_eq!(report.slices.len(), 1);
     let slice_report: &disrobe_pass_swift_objc::pass::SliceReport = &report.slices[0];
@@ -67,14 +62,11 @@ fn pass_runs_on_macho_artifact_and_emits_disasm_rung() {
 }
 
 #[test]
-fn pass_runs_on_ipa_artifact() {
+fn analyze_extracts_the_main_binary_from_an_ipa_artifact() {
     let main_bin: Vec<u8> = rich_slice();
     let plist: Vec<u8> = build_binary_info_plist();
     let ipa: Vec<u8> = build_ipa_with_main_binary("Example", &main_bin, &plist);
-    let artifact: Artifact = Artifact::new(Rung::Raw, ipa, [0u8; 32]);
-    let pass: SwiftObjcPass = SwiftObjcPass;
-    let out: Artifact = pass.run(&artifact).expect("pass runs");
-    let report: SwiftObjcReport = serde_json::from_slice(&out.envelope).expect("decode report");
+    let report: SwiftObjcReport = analyze(&ipa).expect("analyze runs");
     assert_eq!(report.container, ContainerKind::Ipa);
     assert!(report.ipa.is_some());
     assert_eq!(report.slices.len(), 1);

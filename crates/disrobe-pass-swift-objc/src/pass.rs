@@ -1,4 +1,3 @@
-use disrobe_core::{Artifact, Capability, LegacyPass, PassId, Result as CoreResult, Rung};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -11,9 +10,6 @@ use crate::objc_records;
 use crate::swift::{self, SwiftClassDump};
 use crate::swift_reflect;
 use crate::swiftmodule::{self, SwiftModuleDecls};
-
-#[derive(Debug, Default)]
-pub struct SwiftObjcPass;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwiftObjcReport {
@@ -60,32 +56,6 @@ pub struct MetadataSummary {
     pub swift_associated_types: usize,
     pub swift_mangled_symbols: usize,
     pub swift_demangled_symbols: usize,
-}
-
-pub const PASS_ID: PassId = "ios.swift_objc";
-
-impl LegacyPass for SwiftObjcPass {
-    const CONSUMES: &'static [Rung] = &[Rung::Raw];
-    const EMITS: &'static [Rung] = &[Rung::Disasm];
-    const REQUIRES: &'static [fn() -> Capability] = &[];
-    const PRODUCES: &'static [fn() -> Capability] =
-        &[|| Capability::produces("ios.swift_objc.dump", 1)];
-
-    fn id(&self) -> PassId {
-        PASS_ID
-    }
-
-    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let report: SwiftObjcReport = analyze(&artifact.envelope)
-            .map_err(|e: Error| disrobe_core::CoreError::PassFailure(e.to_string()))?;
-        let envelope: Vec<u8> = serde_json::to_vec(&report)
-            .map_err(|e: serde_json::Error| disrobe_core::CoreError::PassFailure(e.to_string()))?;
-        let mut next: Artifact = Artifact::new(Rung::Disasm, envelope, artifact.root_hash);
-        for emitter in <Self as LegacyPass>::PRODUCES {
-            next.add_capability(emitter());
-        }
-        Ok(next)
-    }
 }
 
 pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
@@ -400,14 +370,6 @@ fn read_zip_entry_bytes(image: &[u8], name: &str) -> crate::error::Result<Option
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use disrobe_core::PassMetadata;
-
-    #[test]
-    fn pass_metadata_advertises_capability() {
-        let p: SwiftObjcPass = SwiftObjcPass;
-        assert_eq!(PassMetadata::id(&p), PASS_ID);
-        assert_eq!(p.produced_capabilities().len(), 1);
-    }
 
     #[test]
     fn analyze_unknown_returns_other() {

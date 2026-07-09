@@ -49,9 +49,7 @@ pub use objc_records::{
     ObjcInterface, ObjcIvar, ObjcMethod, ObjcProperty,
     recover_interfaces as recover_objc_interfaces,
 };
-pub use pass::{
-    ContainerKind, MetadataSummary, PASS_ID, SliceReport, SwiftObjcPass, SwiftObjcReport, analyze,
-};
+pub use pass::{ContainerKind, MetadataSummary, SliceReport, SwiftObjcReport, analyze};
 pub use plist_decode::{
     EntitlementValue, EntitlementsDecode, InfoPlistSummary,
     decode_entitlements_from_code_signature, decode_entitlements_xml, parse_info_plist,
