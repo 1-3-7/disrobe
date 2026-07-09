@@ -2,6 +2,7 @@ pub mod chain_json;
 pub mod detection;
 pub mod detector;
 pub mod ecosystem;
+pub mod metadata_keys;
 pub mod obfuscator_catalog;
 pub mod precedence;
 pub mod recovery;

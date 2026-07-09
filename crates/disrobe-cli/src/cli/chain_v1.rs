@@ -21,7 +21,7 @@ use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
 
-const ANTI_RECOVERED_TECHNIQUES_KEY: &str = "anti.recovered_techniques";
+use disrobe_core::chain::metadata_keys::keys::ANTI_RECOVERED_TECHNIQUES as ANTI_RECOVERED_TECHNIQUES_KEY;
 
 #[derive(Debug)]
 struct ChainPassRunner<'p> {
