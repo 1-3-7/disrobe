@@ -6,16 +6,19 @@ use disrobe_binfmt::containers::{
     CarvedModule, MinidumpFile, MinidumpModule, carve_module, detect_minidump, parse_minidump,
 };
 
+#[cfg(windows)]
 fn u32_le(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
 
+#[cfg(windows)]
 fn image_size_and_headers(pe: &[u8]) -> (u32, u32) {
     let pe_off: usize = disrobe_binfmt::locate_pe_header(pe).expect("pe header");
     let opt: usize = pe_off + 4 + 20;
     (u32_le(pe, opt + 56), u32_le(pe, opt + 60))
 }
 
+#[cfg(windows)]
 fn map_on_disk_pe(on_disk: &[u8]) -> (u64, u32, Vec<u8>) {
     let file: object::read::File<'_> = object::read::File::parse(on_disk).expect("parse pe");
     assert!(matches!(file.format(), object::BinaryFormat::Pe));
@@ -43,6 +46,7 @@ fn map_on_disk_pe(on_disk: &[u8]) -> (u64, u32, Vec<u8>) {
     (image_base, size_of_image, image)
 }
 
+#[cfg(windows)]
 fn minidump_string(name: &str) -> Vec<u8> {
     let units: Vec<u16> = name.encode_utf16().collect();
     let mut blob: Vec<u8> = Vec::new();
@@ -54,6 +58,7 @@ fn minidump_string(name: &str) -> Vec<u8> {
     blob
 }
 
+#[cfg(windows)]
 fn build_dump(
     image_base: u64,
     size_of_image: u32,
@@ -117,6 +122,7 @@ fn build_dump(
     buf
 }
 
+#[cfg(windows)]
 fn put_dir(buf: &mut [u8], at: usize, stream_type: u32, data_size: u32, rva: u32) {
     buf[at..at + 4].copy_from_slice(&stream_type.to_le_bytes());
     buf[at + 4..at + 8].copy_from_slice(&data_size.to_le_bytes());

@@ -601,7 +601,7 @@ The rows below are the families with a committed evidence descriptor under [`evi
 | .NET (Eazfuscator VM, KoiVM) | Yes (ILProtector/MaxToCode/Themida-.NET) | Yes | strong | Yes | No | established for the two flagship VM protectors; the remaining 21 classified protectors are Partial/Detect-only |
 | WebAssembly | Yes (wasm-name-obfuscator) | Yes | strong | Yes | No | established |
 | Go | No | Yes | strong | Yes | No | established |
-| Lua | No | Yes (IronBrew2 devirt) | strong | Yes (IronBrew2); the other 13 catalog entries are Partial with no standalone descriptor | No | established for IronBrew2; developing for the rest of the catalog |
+| Lua | No | Yes (IronBrew2 devirt) | strong | Yes (IronBrew2); the other catalog entries are Partial with no standalone descriptor | No | established for IronBrew2; developing for the rest of the catalog |
 | Ruby YARV | No | Yes | strong | Yes | No | established |
 | Swift / ObjC | No | Yes | strong | No (`[local]`) | No | developing |
 | Native packers | Yes (WinLicense/Enigma/Armadillo/Obsidium/PE-Protector/PELock; VMProtect/Themida/Yoda's Protector are detect + carve) | Yes (UPX, MPRESS, Yoda's Crypter, ASPack/PECompact/MEW) | strong | Yes for the byte-identity rows; petite/fsg/nspack/kkrunchy are `[local]` | No | established for the `[CI]` packer set; developing for the `[local]` set; hard wall for the VM-protector/detect-only set |
