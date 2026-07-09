@@ -85,7 +85,7 @@ impl Pass for ContainerPass {
                 CoreError::PassFailure(msg) => CoreError::PassFailure(format!(
                     "DR-BINFMT-0903: binfmt.container extract: {msg}"
                 )),
-                other => other,
+                other @ CoreError::RungMismatch { .. } => other,
             })?;
         let children: Vec<ChildArtifact> = members
             .into_iter()

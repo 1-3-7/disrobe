@@ -1,9 +1,14 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use clap::Subcommand;
 
+use crate::cli::process_capture::{CapturedOutput, wait_with_output_timeout};
 use crate::cli::progress_ui::StageSpinner;
+
+const CPYTHON_PROBE_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum NuitkaCmd {
@@ -489,16 +494,27 @@ fn measure_frozen_recompile(result: &mut disrobe_pass_nuitka::NuitkaDecompilatio
 fn locate_cpython(major: u8, minor: u8) -> Option<PathBuf> {
     let exact: String = format!("python{major}.{minor}");
     for name in [exact.as_str(), "python3", "python"] {
-        if let Ok(output) = std::process::Command::new(name)
+        let spawned: Result<std::process::Child, std::io::Error> = Command::new(name)
             .arg("-c")
             .arg("import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-            .output()
-            && output.status.success()
-        {
-            let reported: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if reported == format!("{major}.{minor}") {
-                return Some(PathBuf::from(name));
-            }
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let Ok(child): Result<std::process::Child, std::io::Error> = spawned else {
+            continue;
+        };
+        let Some(captured): Option<CapturedOutput> =
+            wait_with_output_timeout(child, Duration::from_secs(CPYTHON_PROBE_TIMEOUT_SECS))
+        else {
+            continue;
+        };
+        if captured.exit_code != Some(0) {
+            continue;
+        }
+        let reported: String = String::from_utf8_lossy(&captured.stdout).trim().to_owned();
+        if reported == format!("{major}.{minor}") {
+            return Some(PathBuf::from(name));
         }
     }
     None

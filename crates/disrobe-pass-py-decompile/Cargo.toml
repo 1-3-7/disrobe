@@ -31,6 +31,10 @@ disrobe-pass-py-disasm = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", version = "0.10.0", default-features = false }
 
+[[bin]]
+name = "disrobe-pass-py-decompile-mock-proc"
+path = "src/bin/mock_proc.rs"
+
 [features]
 default = []
 chain = ["disrobe-core/chain"]

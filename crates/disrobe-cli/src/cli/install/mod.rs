@@ -3,13 +3,17 @@ use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::Serialize;
 
 use super::output::{OutputFormat, emit};
+use super::process_capture::{CapturedOutput, wait_with_output_timeout};
 pub(crate) use actions::install_action_map;
 
 mod actions;
+
+const INSTALL_TIMEOUT_SECS: u64 = 600;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Platform {
@@ -292,24 +296,38 @@ fn execute_action(action: &InstallAction) -> ExecResult {
     } else {
         (action.cmd, &[])
     };
-    let spawn: Result<std::process::Output, std::io::Error> = Command::new(program)
+    let spawn: Result<std::process::Child, std::io::Error> = Command::new(program)
         .args(leading_args)
         .args(&action.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output();
-    match spawn {
-        Ok(o) => ExecResult {
-            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
-            exit_code: o.status.code(),
-        },
-        Err(e) => ExecResult {
+        .spawn();
+    let child: std::process::Child = match spawn {
+        Ok(child) => child,
+        Err(e) => {
+            return ExecResult {
+                stdout: String::new(),
+                stderr: format!("spawn error: {e}"),
+                exit_code: None,
+            };
+        }
+    };
+    let Some(captured): Option<CapturedOutput> =
+        wait_with_output_timeout(child, Duration::from_secs(INSTALL_TIMEOUT_SECS))
+    else {
+        return ExecResult {
             stdout: String::new(),
-            stderr: format!("spawn error: {e}"),
+            stderr: format!(
+                "install command timed out after {INSTALL_TIMEOUT_SECS}s and was killed"
+            ),
             exit_code: None,
-        },
+        };
+    };
+    ExecResult {
+        stdout: String::from_utf8_lossy(&captured.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
+        exit_code: captured.exit_code,
     }
 }
 

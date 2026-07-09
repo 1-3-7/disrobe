@@ -9,6 +9,7 @@ use crate::{MAX_JSON_FILE_BYTES, read_file_bounded};
 
 const HELPER_SCRIPT: &str = include_str!("v6v7_dynamic_hook.py");
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const PROBE_TIMEOUT_SECS: u64 = 10;
 const MIN_PYTHON: (u8, u8, u8) = (3, 9, 7);
 const MAX_DYNAMIC_CAPTURE: usize = 4 * 1024 * 1024;
 const CAPTURE_READ_CHUNK: usize = 8192;
@@ -318,7 +319,12 @@ fn probe(spec: &InterpreterSpec, searched: &mut Vec<String>) -> bool {
         cmd.arg(arg);
     }
     cmd.arg("-c").arg("print(0)");
-    matches!(cmd.output(), Ok(out) if out.status.success())
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS)).is_some_and(
+        |(status, _stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>)| status.success(),
+    )
 }
 
 fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
@@ -329,15 +335,61 @@ fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
     cmd.arg("-c").arg(
         "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
     );
-    let output: std::process::Output = cmd.output()?;
-    if !output.status.success() {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+        run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS)).ok_or_else(|| {
+            Error::KeyExtraction(format!(
+                "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
+            ))
+        })?;
+    if !status.success() {
         return Err(Error::KeyExtraction(
             "could not query python version".to_owned(),
         ));
     }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&stdout);
     parse_version(text.trim())
         .ok_or_else(|| Error::KeyExtraction(format!("could not parse python version: {text:?}")))
+}
+
+fn run_probe_capped(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Option<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
+    let mut child: std::process::Child = cmd.spawn().ok()?;
+    let stdout_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
+        spawn_capture_reader(child.stdout.take());
+    let stderr_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
+        spawn_capture_reader(child.stderr.take());
+    let start: Instant = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout: Vec<u8> = join_capture_reader(stdout_reader, "stdout").ok()?;
+                let stderr: Vec<u8> = join_capture_reader(stderr_reader, "stderr").ok()?;
+                return Some((status, stdout, stderr));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _: std::io::Result<()> = child.kill();
+                    let _: std::io::Result<std::process::ExitStatus> = child.wait();
+                    drop(join_capture_reader(stdout_reader, "stdout"));
+                    drop(join_capture_reader(stderr_reader, "stderr"));
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _: std::io::Result<()> = child.kill();
+                let _: std::io::Result<std::process::ExitStatus> = child.wait();
+                drop(join_capture_reader(stdout_reader, "stdout"));
+                drop(join_capture_reader(stderr_reader, "stderr"));
+                return None;
+            }
+        }
+    }
 }
 
 fn parse_version(s: &str) -> Option<(u8, u8, u8)> {
@@ -414,6 +466,139 @@ fn dynamic_hook_manifest_read_error(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn mock_bin_path() -> PathBuf {
+        static RESOLVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        if let Ok(p) = std::env::var("CARGO_BIN_EXE_disrobe-pass-pyarmor-mock-proc") {
+            let p_buf: PathBuf = PathBuf::from(p);
+            if p_buf.is_file() {
+                return p_buf;
+            }
+        }
+        let _resolve_guard: std::sync::MutexGuard<'_, ()> = RESOLVE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let exe_name: &str = if cfg!(windows) {
+            "disrobe-pass-pyarmor-mock-proc.exe"
+        } else {
+            "disrobe-pass-pyarmor-mock-proc"
+        };
+        let target_dir: PathBuf = std::env::current_exe()
+            .ok()
+            .and_then(|p: PathBuf| {
+                p.parent()
+                    .and_then(|d: &Path| d.parent())
+                    .map(Path::to_path_buf)
+            })
+            .unwrap_or_else(|| PathBuf::from("target/debug"));
+        let candidate: PathBuf = target_dir.join(exe_name);
+        if candidate.is_file() {
+            return candidate;
+        }
+        let alt: PathBuf = target_dir.join("deps").join(exe_name);
+        if alt.is_file() {
+            return alt;
+        }
+        let status: std::process::ExitStatus = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "disrobe-pass-pyarmor",
+                "--bin",
+                "disrobe-pass-pyarmor-mock-proc",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn cargo build for mock-proc");
+        assert!(status.success(), "cargo build mock-proc failed");
+        assert!(candidate.is_file(), "mock-proc binary not at expected path");
+        candidate
+    }
+
+    fn mock_cmd(args: &[&str]) -> Command {
+        let mut cmd: Command = Command::new(mock_bin_path());
+        cmd.args(args);
+        cmd
+    }
+
+    #[test]
+    fn probe_capped_timeout_actually_kills_a_sleeping_child() {
+        let mut cmd: Command = mock_cmd(&["sleep", "5"]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start: Instant = Instant::now();
+        let result: Option<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> =
+            run_probe_capped(&mut cmd, Duration::from_millis(300));
+        let elapsed: Duration = start.elapsed();
+        eprintln!(
+            "[evidence] pyarmor timeout test: elapsed={elapsed:?} deadline=300ms sleep_requested=5s killed={}",
+            result.is_none()
+        );
+        assert!(
+            result.is_none(),
+            "child sleeping 5s must be killed, not exit cleanly"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "wait must return near the 300ms deadline, not the 5s sleep; took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn probe_capped_output_cap_truncates_a_flooding_child() {
+        let flood_bytes: usize = MAX_DYNAMIC_CAPTURE * 2;
+        let mut cmd: Command = mock_cmd(&["flood", &flood_bytes.to_string()]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+            run_probe_capped(&mut cmd, Duration::from_secs(20))
+                .expect("flood child must complete within timeout");
+        assert!(status.success());
+        eprintln!(
+            "[evidence] pyarmor cap test: child_wrote={flood_bytes} captured={} cap={MAX_DYNAMIC_CAPTURE}",
+            stdout.len()
+        );
+        assert_eq!(
+            stdout.len(),
+            MAX_DYNAMIC_CAPTURE,
+            "captured stdout must be truncated to the cap, not the full {flood_bytes} bytes written"
+        );
+    }
+
+    #[test]
+    fn probe_capped_metacharacter_argv_passes_through_literally() {
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("disrobe-pyarmor-metachar-{}", std::process::id()));
+        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir metachar dir");
+        let weird_name: &str = "disrobe-metachar-'; & $HOME `id` (test) !bang %VAR% done.txt";
+        let weird_path: PathBuf = dir.join(weird_name);
+        std::fs::write(&weird_path, b"payload").expect("write metachar file");
+
+        let mut cmd: Command = mock_cmd(&["echo-args", &weird_path.to_string_lossy()]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+            run_probe_capped(&mut cmd, Duration::from_secs(5))
+                .expect("echo-args child must complete");
+        assert!(status.success());
+        let reported: String = String::from_utf8_lossy(&stdout).trim_end().to_owned();
+        eprintln!(
+            "[evidence] pyarmor metachar test: sent={:?} received={reported:?}",
+            weird_path.to_string_lossy()
+        );
+        assert_eq!(
+            reported,
+            weird_path.to_string_lossy(),
+            "the child must receive the metacharacter-laden path as a single literal argv element"
+        );
+        let _: std::io::Result<()> = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_version_handles_three_parts() {

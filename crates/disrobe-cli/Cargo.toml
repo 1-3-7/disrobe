@@ -18,6 +18,10 @@ workspace = true
 name = "disrobe"
 path = "src/main.rs"
 
+[[bin]]
+name = "disrobe-cli-mock-proc"
+path = "src/bin/mock_proc.rs"
+
 [[test]]
 name = "self_refresh_check_only"
 path = "tests/self_update_check_only.rs"
