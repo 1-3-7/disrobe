@@ -63,7 +63,7 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang"]
+full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang"]
 
 py = []
 native = []
@@ -85,6 +85,7 @@ go = ["dep:disrobe-pass-go"]
 shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain"]
 pickle = ["dep:disrobe-pass-pickle"]
 scriptlang = ["dep:disrobe-pass-scriptlang"]
+nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
 
 chain = [
     "disrobe-core/chain",
@@ -113,6 +114,7 @@ chain = [
     "disrobe-pass-as3?/chain",
     "disrobe-pass-pickle?/chain",
     "disrobe-pass-scriptlang?/chain",
+    "disrobe-pass-nativelang?/chain",
 ]
 
 [dependencies]
@@ -144,6 +146,7 @@ disrobe-pass-beam = { workspace = true, optional = true }
 disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
+disrobe-pass-nativelang = { workspace = true, optional = true }
 disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }

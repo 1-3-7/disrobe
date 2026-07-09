@@ -175,6 +175,7 @@ disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.3" }
 disrobe-pass-lua = { path = "crates/disrobe-pass-lua", version = "0.10.3" }
 disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.3" }
 disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.3" }
+disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "0.10.3" }
 disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.3" }
 disrobe-pass-php = { path = "crates/disrobe-pass-php", version = "0.10.3" }
 disrobe-pass-pickle = { path = "crates/disrobe-pass-pickle", version = "0.10.3" }

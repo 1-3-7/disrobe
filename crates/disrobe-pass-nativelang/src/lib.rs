@@ -2,6 +2,8 @@
 #![deny(unreachable_pub)]
 #![deny(missing_debug_implementations)]
 #![allow(clippy::redundant_pub_crate)]
+#[cfg(feature = "chain")]
+pub mod chain_detector;
 pub(crate) mod d_mangle;
 pub(crate) mod debug;
 pub mod demangle;
@@ -19,6 +21,8 @@ pub mod recover;
 use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "chain")]
+pub use chain_detector::{NATIVELANG_PASS, NativeLangDetector, NativeLangPassAdapter};
 pub use demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
 pub use detect::{LangFingerprint, NativeLang, fingerprint};
 pub use disasm::{DisasmInstruction, DisasmListing, FunctionListing, disassemble_functions};
@@ -34,9 +38,7 @@ pub use functions::{
 };
 pub use image::{CodeArch, FuncSymbol, ImageKind, NativeImage, Section};
 pub use nir::lift_native_nir;
-pub use pass::{
-    NativeLangPass, NativeLangPassReport, PASS_INPUT_PATH_CAP, PassInput, decode_pass_input,
-};
+pub use pass::{NativeLangPassReport, build_report};
 pub use recover::{GcMetadata, Recovery, module_histogram, recover};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

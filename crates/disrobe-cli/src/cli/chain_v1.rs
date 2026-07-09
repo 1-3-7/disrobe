@@ -345,6 +345,8 @@ fn build_registry() -> PassRegistry {
     r.register(&disrobe_pass_as3::chain_detector::AS3_PASS);
     #[cfg(feature = "scriptlang")]
     r.register(&disrobe_pass_scriptlang::chain_detector::SCRIPTLANG_PASS);
+    #[cfg(feature = "nativelang")]
+    r.register(&disrobe_pass_nativelang::chain_detector::NATIVELANG_PASS);
     r
 }
 

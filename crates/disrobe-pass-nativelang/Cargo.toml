@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-ir = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-pass-native = { workspace = true }
 blake3 = { workspace = true }

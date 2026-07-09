@@ -1989,6 +1989,7 @@ dependencies = [
  "disrobe-pass-lua",
  "disrobe-pass-mobile",
  "disrobe-pass-native",
+ "disrobe-pass-nativelang",
  "disrobe-pass-nuitka",
  "disrobe-pass-php",
  "disrobe-pass-pickle",
@@ -2464,7 +2465,6 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-nir",
  "disrobe-pass-native",
  "flate2",

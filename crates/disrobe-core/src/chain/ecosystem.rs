@@ -135,7 +135,7 @@ pub fn ecosystem_for(pass_id: PassId) -> Ecosystem {
         "wasm" => Ecosystem::Wasm,
         "jvm" => Ecosystem::Jvm,
         "dotnet" => Ecosystem::Dotnet,
-        "native" => Ecosystem::Native,
+        "native" | "nativelang" => Ecosystem::Native,
         "go" => Ecosystem::Go,
         "lua" => Ecosystem::Lua,
         "php" => Ecosystem::Php,
@@ -172,6 +172,7 @@ mod tests {
         assert_eq!(ecosystem_for("py.deob"), Ecosystem::Python);
         assert_eq!(ecosystem_for("js.deob"), Ecosystem::JavaScript);
         assert_eq!(ecosystem_for("native.packer-unpack"), Ecosystem::Native);
+        assert_eq!(ecosystem_for("nativelang.classify"), Ecosystem::Native);
         assert_eq!(ecosystem_for("dotnet.classify"), Ecosystem::Dotnet);
         assert_eq!(ecosystem_for("shell.deob"), Ecosystem::Shell);
         assert_eq!(ecosystem_for("binfmt.container"), Ecosystem::Container);
