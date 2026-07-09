@@ -5,6 +5,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STD;
 use flate2::read::GzDecoder;
 
+use super::param_expand::{self, Anchor};
+
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
 const MAX_INFLATE: u64 = 8 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
@@ -516,43 +518,384 @@ fn is_var_start(b: Option<&u8>) -> bool {
 
 fn read_var(bytes: &[u8], start: usize, env: &mut EvalEnv) -> (String, usize, bool) {
     if bytes.get(start) == Some(&b'{') {
-        let mut j: usize = start + 1;
-        while j < bytes.len() && bytes[j] != b'}' {
-            j += 1;
-        }
-        let name: &str = std::str::from_utf8(&bytes[start + 1..j]).unwrap_or("");
-        let end: usize = if j < bytes.len() { j + 1 } else { j };
-        return resolve_var(name, env, end, bytes);
+        let close: usize = find_brace_close(bytes, start);
+        let inner: &str = std::str::from_utf8(&bytes[start + 1..close]).unwrap_or("");
+        let end: usize = if close < bytes.len() {
+            close + 1
+        } else {
+            close
+        };
+        return resolve_param_expansion(inner, env, end);
     }
     let mut j: usize = start;
     while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
         j += 1;
     }
     let name: &str = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
-    resolve_var(name, env, j, bytes)
+    resolve_var(name, env, j)
 }
 
-fn resolve_var(name: &str, env: &mut EvalEnv, end: usize, bytes: &[u8]) -> (String, usize, bool) {
-    let _ = bytes;
+fn resolve_var(name: &str, env: &mut EvalEnv, end: usize) -> (String, usize, bool) {
     if let Some(value) = env.vars.get(name).cloned() {
         env.note("expand-variable");
         return (value, end, false);
     }
-    if is_runtime_var(name) {
-        return (format!("${{{name}}}"), end, true);
-    }
     (format!("${{{name}}}"), end, true)
 }
 
-fn is_runtime_var(name: &str) -> bool {
-    matches!(
-        name,
-        "RANDOM" | "SECONDS" | "LINENO" | "BASHPID" | "PPID" | "UID" | "EUID" | "HOSTNAME"
-    ) || name.chars().all(|c: char| c.is_ascii_digit())
-        || name == "@"
-        || name == "*"
-        || name == "#"
-        || name == "?"
+fn find_brace_close(bytes: &[u8], open: usize) -> usize {
+    let mut depth: usize = 1;
+    let mut j: usize = open + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' if j + 1 < bytes.len() => {
+                j += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    bytes.len()
+}
+
+fn identifier_prefix_len(s: &str) -> usize {
+    let bytes: &[u8] = s.as_bytes();
+    if bytes.is_empty() || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
+        return 0;
+    }
+    let mut i: usize = 1;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    i
+}
+
+fn is_plain_identifier(s: &str) -> bool {
+    !s.is_empty() && identifier_prefix_len(s) == s.len()
+}
+
+fn split_unescaped_slash(s: &str) -> (&str, Option<&str>) {
+    let bytes: &[u8] = s.as_bytes();
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'/' {
+            return (&s[..i], Some(&s[i + 1..]));
+        }
+        i += 1;
+    }
+    (s, None)
+}
+
+#[derive(Debug)]
+enum ParamOp<'a> {
+    Default {
+        colon: bool,
+        op: char,
+        word: &'a str,
+    },
+    Substring {
+        spec: &'a str,
+    },
+    TrimPrefix {
+        longest: bool,
+        pattern: &'a str,
+    },
+    TrimSuffix {
+        longest: bool,
+        pattern: &'a str,
+    },
+    Substitute {
+        all: bool,
+        anchor: Anchor,
+        spec: &'a str,
+    },
+    Case {
+        upper: bool,
+        all: bool,
+    },
+    Unknown,
+}
+
+fn classify_param_op(rest: &str) -> ParamOp<'_> {
+    let bytes: &[u8] = rest.as_bytes();
+    match bytes[0] {
+        b':' => {
+            if let Some(&c2) = bytes.get(1)
+                && matches!(c2, b'-' | b'=' | b'+' | b'?')
+            {
+                return ParamOp::Default {
+                    colon: true,
+                    op: c2 as char,
+                    word: &rest[2..],
+                };
+            }
+            ParamOp::Substring { spec: &rest[1..] }
+        }
+        b'-' | b'=' | b'+' | b'?' => ParamOp::Default {
+            colon: false,
+            op: bytes[0] as char,
+            word: &rest[1..],
+        },
+        b'#' if bytes.get(1) == Some(&b'#') => ParamOp::TrimPrefix {
+            longest: true,
+            pattern: &rest[2..],
+        },
+        b'#' => ParamOp::TrimPrefix {
+            longest: false,
+            pattern: &rest[1..],
+        },
+        b'%' if bytes.get(1) == Some(&b'%') => ParamOp::TrimSuffix {
+            longest: true,
+            pattern: &rest[2..],
+        },
+        b'%' => ParamOp::TrimSuffix {
+            longest: false,
+            pattern: &rest[1..],
+        },
+        b'/' if bytes.get(1) == Some(&b'/') => ParamOp::Substitute {
+            all: true,
+            anchor: Anchor::None,
+            spec: &rest[2..],
+        },
+        b'/' if bytes.get(1) == Some(&b'#') => ParamOp::Substitute {
+            all: false,
+            anchor: Anchor::Start,
+            spec: &rest[2..],
+        },
+        b'/' if bytes.get(1) == Some(&b'%') => ParamOp::Substitute {
+            all: false,
+            anchor: Anchor::End,
+            spec: &rest[2..],
+        },
+        b'/' => ParamOp::Substitute {
+            all: false,
+            anchor: Anchor::None,
+            spec: &rest[1..],
+        },
+        b'^' if bytes.len() == 2 && bytes[1] == b'^' => ParamOp::Case {
+            upper: true,
+            all: true,
+        },
+        b'^' if bytes.len() == 1 => ParamOp::Case {
+            upper: true,
+            all: false,
+        },
+        b',' if bytes.len() == 2 && bytes[1] == b',' => ParamOp::Case {
+            upper: false,
+            all: true,
+        },
+        b',' if bytes.len() == 1 => ParamOp::Case {
+            upper: false,
+            all: false,
+        },
+        _ => ParamOp::Unknown,
+    }
+}
+
+fn resolve_param_expansion(inner: &str, env: &mut EvalEnv, end: usize) -> (String, usize, bool) {
+    let unresolved =
+        |inner: &str| -> (String, usize, bool) { (format!("${{{inner}}}"), end, true) };
+    if inner.is_empty() {
+        return unresolved(inner);
+    }
+    if let Some(len_name) = inner.strip_prefix('#')
+        && is_plain_identifier(len_name)
+    {
+        return match env.vars.get(len_name).cloned() {
+            Some(value) => {
+                env.note("param-expand-length");
+                (value.chars().count().to_string(), end, false)
+            }
+            None => unresolved(inner),
+        };
+    }
+    let name_len: usize = identifier_prefix_len(inner);
+    if name_len == 0 {
+        return unresolved(inner);
+    }
+    let name: &str = &inner[..name_len];
+    let rest: &str = &inner[name_len..];
+    if rest.is_empty() {
+        return resolve_var(name, env, end);
+    }
+    let known: Option<String> = env.vars.get(name).cloned();
+    match classify_param_op(rest) {
+        ParamOp::Default { colon, op, word } => {
+            let ctx: DefaultFamilyOp<'_> = DefaultFamilyOp {
+                name,
+                inner,
+                colon,
+                op,
+                word,
+            };
+            resolve_default_family(ctx, known.as_ref(), env, end)
+        }
+        ParamOp::Substring { spec } => {
+            let Some(value) = known else {
+                return unresolved(inner);
+            };
+            let sliced: Option<String> = param_expand::parse_substring_spec(spec).and_then(
+                |(off, len): (i64, Option<i64>)| param_expand::substring(&value, off, len),
+            );
+            match sliced {
+                Some(sliced) => {
+                    env.note("param-expand-substring");
+                    (sliced, end, false)
+                }
+                None => unresolved(inner),
+            }
+        }
+        ParamOp::TrimPrefix { longest, pattern } => {
+            let Some(value) = known else {
+                return unresolved(inner);
+            };
+            let Resolved::Value(pat) = expand_word(pattern, env) else {
+                return unresolved(inner);
+            };
+            match param_expand::trim_prefix(&value, &pat, longest) {
+                Some(trimmed) => {
+                    env.note("param-expand-trim-prefix");
+                    (trimmed, end, false)
+                }
+                None => unresolved(inner),
+            }
+        }
+        ParamOp::TrimSuffix { longest, pattern } => {
+            let Some(value) = known else {
+                return unresolved(inner);
+            };
+            let Resolved::Value(pat) = expand_word(pattern, env) else {
+                return unresolved(inner);
+            };
+            match param_expand::trim_suffix(&value, &pat, longest) {
+                Some(trimmed) => {
+                    env.note("param-expand-trim-suffix");
+                    (trimmed, end, false)
+                }
+                None => unresolved(inner),
+            }
+        }
+        ParamOp::Substitute { all, anchor, spec } => {
+            let Some(value) = known else {
+                return unresolved(inner);
+            };
+            let (pattern_raw, replacement_raw): (&str, Option<&str>) = split_unescaped_slash(spec);
+            let Resolved::Value(pat) = expand_word(pattern_raw, env) else {
+                return unresolved(inner);
+            };
+            let replacement: String = match replacement_raw {
+                Some(r) => {
+                    let Resolved::Value(v) = expand_word(r, env) else {
+                        return unresolved(inner);
+                    };
+                    v
+                }
+                None => String::new(),
+            };
+            match param_expand::substitute(&value, &pat, &replacement, all, anchor) {
+                Some(subst) => {
+                    env.note("param-expand-substitute");
+                    (subst, end, false)
+                }
+                None => unresolved(inner),
+            }
+        }
+        ParamOp::Case { upper, all } => {
+            let Some(value) = known else {
+                return unresolved(inner);
+            };
+            env.note("param-expand-case");
+            (param_expand::case_convert(&value, upper, all), end, false)
+        }
+        ParamOp::Unknown => unresolved(inner),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DefaultFamilyOp<'a> {
+    name: &'a str,
+    inner: &'a str,
+    colon: bool,
+    op: char,
+    word: &'a str,
+}
+
+fn resolve_default_family(
+    ctx: DefaultFamilyOp<'_>,
+    known: Option<&String>,
+    env: &mut EvalEnv,
+    end: usize,
+) -> (String, usize, bool) {
+    let unresolved: (String, usize, bool) = (format!("${{{}}}", ctx.inner), end, true);
+    let triggers: bool = match known {
+        None => true,
+        Some(v) => ctx.colon && v.is_empty(),
+    };
+    match ctx.op {
+        '-' => {
+            if triggers {
+                match expand_word(ctx.word, env) {
+                    Resolved::Value(v) => {
+                        env.note("param-expand-default");
+                        (v, end, false)
+                    }
+                    Resolved::Runtime(_) => unresolved,
+                }
+            } else {
+                env.note("param-expand-default");
+                (known.cloned().unwrap_or_default(), end, false)
+            }
+        }
+        '=' => {
+            if triggers {
+                match expand_word(ctx.word, env) {
+                    Resolved::Value(v) => {
+                        env.note("param-expand-assign-default");
+                        env.vars.insert(ctx.name.to_owned(), v.clone());
+                        (v, end, false)
+                    }
+                    Resolved::Runtime(_) => unresolved,
+                }
+            } else {
+                env.note("param-expand-default");
+                (known.cloned().unwrap_or_default(), end, false)
+            }
+        }
+        '+' => {
+            if triggers {
+                (String::new(), end, false)
+            } else {
+                match expand_word(ctx.word, env) {
+                    Resolved::Value(v) => {
+                        env.note("param-expand-alt");
+                        (v, end, false)
+                    }
+                    Resolved::Runtime(_) => unresolved,
+                }
+            }
+        }
+        '?' => {
+            if triggers {
+                unresolved
+            } else {
+                env.note("param-expand-default");
+                (known.cloned().unwrap_or_default(), end, false)
+            }
+        }
+        _ => unresolved,
+    }
 }
 
 fn read_ansi_c(bytes: &[u8], start: usize) -> (String, usize) {
@@ -1070,6 +1413,94 @@ mod tests {
     #[test]
     fn eval_concatenated_strings() {
         let (out, _): (String, EvalEnv) = run(r#"a=who; b=ami; eval "$a$b""#);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_default_value_resolves_in_eval() {
+        let src: String = r#"a=who; b=; eval "$a${b"#.to_owned() + r#":-ami}""#;
+        let (out, _): (String, EvalEnv) = run(&src);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_alt_value_only_fires_when_set() {
+        let src: String = r#"a=who; b=ami; eval "$a${b"#.to_owned() + r#":+ami}""#;
+        let (out, _): (String, EvalEnv) = run(&src);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_trim_prefix_resolves_in_eval() {
+        let (out, _): (String, EvalEnv) = run(r#"a=xxxwhoami; eval "${a#xxx}""#);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_trim_suffix_glob_resolves_in_eval() {
+        let (out, _): (String, EvalEnv) = run(r#"a=whoami123; eval "${a%%[0-9]*}""#);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_substring_resolves_in_eval() {
+        let (out, _): (String, EvalEnv) = run(r#"a=xxwhoamixx; eval "${a:2:6}""#);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_case_conversion_resolves_in_eval() {
+        let (out, _): (String, EvalEnv) = run(r#"a=WHOAMI; eval "${a,,}""#);
+        assert!(out.contains("whoami"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_length_resolves_in_eval() {
+        let (out, _): (String, EvalEnv) = run(r#"a=whoami; b=${#a}; echo $b"#);
+        assert!(out.contains('6'), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_replace_all_fixes_base64url_before_decode() {
+        let payload: Vec<u8> = vec![
+            b'M', b'A', b'R', b'K', b'E', b'R', b'_', 0xfb, 0xff, 0xef, b'_', b'E', b'N', b'D',
+        ];
+        let std_b64: String = BASE64_STD.encode(&payload);
+        assert!(
+            std_b64.contains('/'),
+            "fixture must exercise a real '/' byte: {std_b64}"
+        );
+        let obfuscated: String = std_b64.replace('/', "_");
+        let src: String =
+            format!("B64='{obfuscated}'; F=${{B64//_/\\/}}; echo $F | base64 -d | bash");
+        let (out, env): (String, EvalEnv) = run(&src);
+        assert!(out.contains("MARKER_"), "out={out:?}");
+        assert!(out.contains("_END"), "out={out:?}");
+        assert!(
+            env.steps
+                .iter()
+                .any(|s: &String| s == "param-expand-substitute"),
+            "steps={:?}",
+            env.steps
+        );
+    }
+
+    #[test]
+    fn param_expansion_default_value_for_truly_unset_var() {
+        let (out, _): (String, EvalEnv) = run(r#"eval "${UNSET_VAR:-fallback}""#);
+        assert!(out.contains("fallback"), "out={out}");
+    }
+
+    #[test]
+    fn param_expansion_leaves_unknown_var_symbolic() {
+        let (out, env): (String, EvalEnv) = run(r#"eval "${UNSET_VAR}""#);
+        assert!(out.contains("UNSET_VAR"), "out={out}");
+        assert!(!env.walls.is_empty(), "walls={:?}", env.walls);
+    }
+
+    #[test]
+    fn param_expansion_nested_brace_in_default_word() {
+        let (out, _): (String, EvalEnv) = run(r#"a=who; c=ami; b=; eval "$a${b:-${c}}""#);
         assert!(out.contains("whoami"), "out={out}");
     }
 

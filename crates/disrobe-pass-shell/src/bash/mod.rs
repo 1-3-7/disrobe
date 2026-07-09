@@ -5,6 +5,7 @@ pub(crate) mod decode;
 pub mod indirect;
 pub mod lexer;
 pub mod node_bash_obfuscate;
+pub(crate) mod param_expand;
 
 pub use bashfuscator::{
     BashfuscatorLevel, BashfuscatorReport, reverse_bashfuscator, reverse_bashfuscator_auto,
