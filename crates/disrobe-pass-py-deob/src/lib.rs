@@ -21,7 +21,6 @@ mod layered_peel;
 pub mod llm;
 pub mod marshal;
 pub mod obfuscators;
-pub mod pass;
 mod peel;
 mod provenance_header;
 mod pyrandom;
@@ -58,7 +57,6 @@ pub use obfuscators::{
     DetectReport as ObfuscatorDetectReport, Obfuscator, ObfuscatorPass,
     PeelOutcome as ObfuscatorPeelOutcome, Quality as ObfuscatorQuality, iter_passes,
 };
-pub use pass::PyDeobLegacyPass;
 pub use peel::{ObfuscatorPeelSummary, PeelResult, PeelStep, peel, peel_with_pyver};
 pub use provenance_header::{python_deobfuscated_header, render_deobfuscated_with_header};
 pub use source_cleanup::{CleanupStats, cleanup_source};
