@@ -74,7 +74,6 @@ pub mod llm;
 mod mix_string;
 mod mode_class;
 mod nine_pro;
-mod pass;
 mod provenance;
 mod provenance_header;
 mod runtime;
@@ -114,10 +113,6 @@ pub use mode_class::{
     BootstrapImport, ModeClassification, RecoveryDisposition, ScriptType, classify_modes,
 };
 pub use nine_pro::{NineProBindMode, NineProDetection, detect_nine_pro};
-pub use pass::{
-    PASS_INPUT_PATH_CAP, PassInput, PyarmorPass, UnpackSummary, decode_pass_input,
-    encode_pass_output,
-};
 pub use provenance::{ProvenanceRegion, ProvenanceStage, PyarmorProvenance};
 pub use provenance_header::{
     python_disasm_header, python_unpacked_header, render_disasm_with_header,

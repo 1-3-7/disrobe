@@ -2622,7 +2622,6 @@ dependencies = [
  "ciborium",
  "ctr",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-pass-native",
  "disrobe-py-marshal",
