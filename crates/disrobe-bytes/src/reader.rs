@@ -252,6 +252,25 @@ mod tests {
     }
 
     #[test]
+    fn read_bytes_overflow_does_not_advance_position() {
+        let data: [u8; 2] = [0, 1];
+        let mut reader: ByteReader<'_> = ByteReader::new(&data);
+        reader.seek(1).unwrap();
+
+        let error: ByteReadError = reader.read_bytes(usize::MAX).unwrap_err();
+
+        assert_eq!(
+            error,
+            ByteReadError {
+                offset: 1,
+                needed: usize::MAX,
+                available: 1,
+            }
+        );
+        assert_eq!(reader.position(), 1);
+    }
+
+    #[test]
     fn peek_does_not_advance_position() {
         let data: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
         let mut reader: ByteReader<'_> = ByteReader::new(&data);
