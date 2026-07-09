@@ -4,6 +4,7 @@
     clippy::redundant_pub_crate
 )]
 
+mod attack_surface;
 mod card;
 mod codegen;
 mod demo;
