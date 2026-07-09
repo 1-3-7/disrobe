@@ -2322,7 +2322,6 @@ dependencies = [
  "base64",
  "boa_engine",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-mba",
  "divan",

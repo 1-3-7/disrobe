@@ -808,6 +808,13 @@ fn emit_dedicated_sidecars(bytes: &[u8]) -> Vec<ChildArtifact> {
     {
         children.push(child("js-deob.pipeline.json".to_string(), json));
     }
+    if matches!(detection.family, JsObfuscator::JsConfuser) {
+        let opts: DeobOptions = DeobOptions::all();
+        let out: DeobOutput = deobfuscate_all(text, &opts);
+        if let Ok(json) = serde_json::to_vec_pretty(&out) {
+            children.push(child("js-deob.jsconfuser.json".to_string(), json));
+        }
+    }
     children
 }
 
@@ -929,6 +936,38 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_slice(&pipeline.bytes).expect("pipeline json");
         assert!(parsed.get("source").is_some());
+    }
+
+    #[test]
+    fn extract_children_emits_jsconfuser_recovery_stats_sidecar() {
+        let Ok(bytes): std::io::Result<Vec<u8>> =
+            std::fs::read(corpus("js/jsconfuser/recovery/obf_statesum.real.js"))
+        else {
+            eprintln!("SKIP: obf_statesum.real.js fixture missing");
+            return;
+        };
+        assert_eq!(detect_obfuscator(&bytes).family, JsObfuscator::JsConfuser);
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> =
+            JS_OBF_PASS.extract_children(&a).expect("extract_children");
+        let stats: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == "js-deob.jsconfuser.json")
+            .expect("jsconfuser recovery stats sidecar present");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&stats.bytes).expect("jsconfuser recovery json");
+        assert!(
+            parsed
+                .get("cff_generators_devirtualized")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|n: u64| n > 0),
+            "the generator-wrapped state-sum machine's devirtualization count must be carried in the sidecar: {parsed}"
+        );
+        assert_eq!(
+            parsed.get("source").and_then(serde_json::Value::as_str),
+            Some("console[\"log\"](\"43:220,13:200,34:214,88:250\");\n"),
+            "the sidecar's source field must carry the same linearized plaintext as the primary recovery: {parsed}"
+        );
     }
 
     #[test]

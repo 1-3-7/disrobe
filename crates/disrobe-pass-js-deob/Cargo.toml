@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-ir = { workspace = true }
 disrobe-mba = { workspace = true }
 oxc = { workspace = true }
 oxc_allocator = { workspace = true }

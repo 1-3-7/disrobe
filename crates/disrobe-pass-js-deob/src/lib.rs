@@ -19,7 +19,6 @@ mod jsobfu;
 pub mod llm;
 mod mangled_names;
 mod obfuscator_io;
-pub mod pass;
 pub mod protectors;
 mod provenance_header;
 mod rename;
@@ -104,9 +103,6 @@ pub use obfuscator_io::{
     ObfuscatorIoDetection, Options as ObfuscatorIoOptions, Output as ObfuscatorIoOutput,
     Preset as ObfuscatorIoPreset, deobfuscate as obfuscator_io_deobfuscate,
     deobfuscate_preset as obfuscator_io_deobfuscate_preset, detect as obfuscator_io_detect,
-};
-pub use pass::{
-    JsPass, JsPassReport, JsRecovery, PASS_INPUT_PATH_CAP, PassInput, decode_pass_input,
 };
 pub use protectors::{
     LegalStance, ProtectorDetection, ProtectorFamily, ProtectorOptions, ProtectorOutput,
