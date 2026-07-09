@@ -595,7 +595,7 @@ fully_recovered: bool = deob.fully_recovered
 
 ## Query IR
 
-The query functions operate on a Disasm-rung `.dr` envelope (raw bytes). See
+The query functions operate on a Disasm- or Mir-rung `.dr` envelope (raw bytes). See
 [Editable IR objects](#editable-ir-objects) for how to produce and consume `.dr`
 envelopes programmatically.
 

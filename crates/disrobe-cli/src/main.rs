@@ -728,12 +728,12 @@ enum Cmd {
         action: EnvelopeCmd,
     },
     #[command(
-        about = "query a native binary or a Disasm-rung .dr envelope's IR: functions, calls-to <sym>, xrefs-to <sym>, string-decoders, complexity-over <N>, capability <network|crypto|filesystem|process>"
+        about = "query a native binary or a Disasm- or Mir-rung .dr envelope's IR: functions, calls-to <sym>, xrefs-to <sym>, string-decoders, complexity-over <N>, capability <network|crypto|filesystem|process>"
     )]
     Query {
         #[arg(
             value_name = "INPUT",
-            help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm-rung .dr envelope to query"
+            help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm- or Mir-rung .dr envelope to query"
         )]
         input: PathBuf,
         #[arg(
@@ -750,7 +750,7 @@ enum Cmd {
     Capabilities {
         #[arg(
             value_name = "INPUT",
-            help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm-rung .dr envelope to scan"
+            help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm- or Mir-rung .dr envelope to scan"
         )]
         input: PathBuf,
     },
@@ -1284,7 +1284,7 @@ enum NativeCmd {
         about = "recursive-descent disassemble a native binary (symbol-independent function discovery on stripped input); emit linear asm, per-function CFG DOT, or structured JSON"
     )]
     Disasm {
-        #[arg(help = "input native binary or a Disasm-rung .dr envelope")]
+        #[arg(help = "input native binary or a Disasm- or Mir-rung .dr envelope")]
         input: PathBuf,
         #[arg(short, long, help = "output path (default: ./out/<stem>.<emit>)")]
         out: Option<PathBuf>,
@@ -1326,7 +1326,7 @@ enum NativeCmd {
         about = "build the whole-program call graph (every edge backed by a real call instruction in the caller) and emit Graphviz DOT or JSON"
     )]
     Callgraph {
-        #[arg(help = "input native binary or a Disasm-rung .dr envelope")]
+        #[arg(help = "input native binary or a Disasm- or Mir-rung .dr envelope")]
         input: PathBuf,
         #[arg(short, long, help = "output path (default: ./out/<stem>.<emit>)")]
         out: Option<PathBuf>,

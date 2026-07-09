@@ -21,7 +21,7 @@ fn build_report(bytes: &[u8], uri: &str, input: &Path) -> miette::Result<Capabil
     if let Ok(env) = Envelope::decode(bytes) {
         let module: Module = disrobe_query::module_from_envelope(&env).map_err(|e| {
             miette::miette!(
-                "DR-CLI-0841: {} is a .dr envelope but not a Disasm rung the capabilities engine can read: {e}",
+                "DR-CLI-0841: {} is a .dr envelope but not a Disasm or Mir rung the capabilities engine can read: {e}",
                 input.display()
             )
         })?;
@@ -34,7 +34,7 @@ fn build_report(bytes: &[u8], uri: &str, input: &Path) -> miette::Result<Capabil
     let spinner: StageSpinner = StageSpinner::start(uri, "disassembling for capabilities");
     let payload: DisasmPayload = build_disasm_payload(bytes).map_err(|e| {
         miette::miette!(
-            "DR-CLI-0842: {} is neither a Disasm-rung .dr envelope nor a disassemblable native binary: {e}",
+            "DR-CLI-0842: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
             input.display()
         )
     })?;

@@ -32,7 +32,7 @@ fn load_module(input: &Path) -> miette::Result<Module> {
     }
     let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
         miette::miette!(
-            "DR-CLI-0833: {} is neither a Disasm-rung .dr envelope nor a disassemblable native binary: {e}",
+            "DR-CLI-0833: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
             input.display()
         )
     })?;

@@ -77,6 +77,7 @@ mod tests {
     use disrobe_ir::payload::{
         DisasmInstruction, DisasmSymbol, DisasmSymbolKind, InsnFlow, encode_disasm,
     };
+    use disrobe_nir::{SourceLang, encode_nir};
 
     fn disasm_envelope() -> Envelope {
         let payload: DisasmPayload = DisasmPayload {
@@ -127,6 +128,12 @@ mod tests {
         Envelope::new(Rung::Disasm, hot, Vec::new())
     }
 
+    fn mir_envelope() -> Envelope {
+        let module: NirModule = NirModule::new([9u8; 32], SourceLang::Unknown);
+        let hot: Vec<u8> = encode_nir(&module).expect("encode nir");
+        Envelope::new(Rung::Mir, hot, Vec::new())
+    }
+
     #[test]
     fn module_from_envelope_round_trips_through_dr() {
         let env: Envelope = disasm_envelope();
@@ -142,5 +149,32 @@ mod tests {
         let env: Envelope = Envelope::new(Rung::Raw, Vec::new(), Vec::new());
         let err: QueryError = module_from_envelope(&env).expect_err("should reject raw");
         assert!(matches!(err, QueryError::UnsupportedRung(Rung::Raw)));
+    }
+
+    #[test]
+    fn module_from_envelope_accepts_exactly_disasm_and_mir() {
+        for rung in [Rung::Raw, Rung::Disasm, Rung::Mir, Rung::Hir, Rung::Surface] {
+            let env: Envelope = match rung {
+                Rung::Disasm => disasm_envelope(),
+                Rung::Mir => mir_envelope(),
+                other => Envelope::new(other, Vec::new(), Vec::new()),
+            };
+            let result: Result<Module, QueryError> = module_from_envelope(&env);
+            match rung {
+                Rung::Disasm | Rung::Mir => assert!(
+                    result.is_ok(),
+                    "rung {rung:?} is in the accepted set {{Disasm, Mir}} but was rejected: {:?}",
+                    result.err()
+                ),
+                Rung::Raw | Rung::Hir | Rung::Surface => {
+                    let err: QueryError =
+                        result.expect_err(&format!("rung {rung:?} must be rejected"));
+                    assert!(
+                        matches!(err, QueryError::UnsupportedRung(rejected) if rejected == rung),
+                        "rung {rung:?} was rejected with the wrong error: {err:?}"
+                    );
+                }
+            }
+        }
     }
 }

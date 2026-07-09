@@ -16,7 +16,7 @@ Run `disrobe passes` for the live list. As of the current release:
 | `js` | Deobfuscate (string-array + unminify + scope-aware rename) / unbundle <!-- m:js_bundlers -->11<!-- /m --> bundlers. |
 | `wasm` | Analyze / decompile (JSON / Rust / TypeScript / WAT / C) / reverse <!-- m:wasm_reversers -->4<!-- /m --> obfuscator families (plus wasm-name-obfuscator detect + classify). |
 | `envelope` | `.dr` create / inspect / verify / diff / migrate-check. |
-| `query` | Query a Disasm-rung `.dr` IR: functions / calls-to / xrefs-to / string-decoders / complexity-over / capability sites. |
+| `query` | Query a Disasm- or Mir-rung `.dr` IR: functions / calls-to / xrefs-to / string-decoders / complexity-over / capability sites. |
 | `capabilities` | Match a binary against built-in capability rules with evidence addresses and MITRE ATT&CK / MBC tags. |
 | `taint` | Track source-to-sink flows across normalized IR for native, Wasm, JVM, Dalvik, and `.dr` inputs. |
 | `frisk` | Scan files or recovered source trees for secrets, endpoints, cloud buckets, manifest exposure, and IOCs with file/line/column evidence. |

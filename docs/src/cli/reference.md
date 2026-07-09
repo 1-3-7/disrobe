@@ -65,7 +65,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe native fingerprint <bin>` | Aggregate crypto-constant + FLIRT + string-xref sidecar at `.disrobe/fingerprints/<stem>.json`. `--flirt <sig>`. |
 | `disrobe native sbom <bin>` | CycloneDX 1.5 SBOM from cargo-auditable metadata embedded in the binary. |
 | `disrobe native graph <bin>` | Import/export table as Graphviz DOT. |
-| `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm-rung `.dr` envelope. |
+| `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm- or Mir-rung `.dr` envelope. |
 | `disrobe capabilities <bin\|.dr>` | Rule engine over the IR, mapping behaviors to MITRE ATT&CK + MBC with per-match evidence. |
 | `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). |
 

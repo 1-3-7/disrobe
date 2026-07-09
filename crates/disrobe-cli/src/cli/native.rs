@@ -1580,7 +1580,7 @@ fn load_native_module(input: &Path, bytes: &[u8]) -> miette::Result<disrobe_quer
     let payload: disrobe_ir::payload::DisasmPayload =
         build_disasm_payload(bytes).map_err(|e| {
             miette::miette!(
-                "DR-NATIVE-0147: {} is neither a Disasm-rung .dr envelope nor a disassemblable native binary: {e}",
+                "DR-NATIVE-0147: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
                 input.display()
             )
         })?;
