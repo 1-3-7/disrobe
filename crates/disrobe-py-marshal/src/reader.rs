@@ -212,17 +212,6 @@ fn charged_node_total_after_clone(obj: &Object, already: u64) -> Result<u64> {
     Ok(already.saturating_add(nodes))
 }
 
-fn parse_ascii_float_part(part: Option<&str>, literal: &str, offset: usize) -> Result<f64> {
-    let raw: &str = part.ok_or_else(|| Error::InvalidAsciiFloat {
-        literal: literal.to_owned(),
-        offset,
-    })?;
-    raw.parse::<f64>().map_err(|_| Error::InvalidAsciiFloat {
-        literal: literal.to_owned(),
-        offset,
-    })
-}
-
 pub fn load(data: &[u8], version: PyVersion) -> Result<Object> {
     let mut r: Reader<'_> = Reader::new(data, version, false);
     r.read_object(0)
@@ -237,10 +226,16 @@ pub fn load_with_reftable(data: &[u8], version: PyVersion) -> Result<(Object, Re
 }
 
 #[derive(Debug)]
+enum RefSlot {
+    Pending { definition_offset: usize },
+    Ready(Object),
+}
+
+#[derive(Debug)]
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
-    refs: Vec<Object>,
+    refs: Vec<RefSlot>,
     interned_strings: Vec<String>,
     version: PyVersion,
     dump: Option<RefTableDump>,
@@ -331,20 +326,36 @@ impl<'a> Reader<'a> {
         ]))
     }
 
-    fn alloc_ref(&mut self) -> Result<u32> {
+    fn alloc_ref(&mut self, definition_offset: usize) -> Result<u32> {
         let len: usize = self.refs.len();
         if len >= MAX_REFS {
             let truncated: u32 = u32_saturating_from_usize(len);
             return Err(Error::LengthOverflow(truncated));
         }
         let idx: u32 = u32_saturating_from_usize(len);
-        self.refs.push(Object::Null);
+        self.refs.push(RefSlot::Pending { definition_offset });
         Ok(idx)
     }
 
     fn set_ref(&mut self, idx: u32, obj: Object) {
         if let Some(slot) = self.refs.get_mut(idx as usize) {
-            *slot = obj;
+            *slot = RefSlot::Ready(obj);
+        }
+    }
+
+    fn ready_ref(&self, idx: u32, reference_offset: usize) -> Result<&Object> {
+        let len: usize = self.refs.len();
+        match self
+            .refs
+            .get(idx as usize)
+            .ok_or(Error::RefOutOfBounds { index: idx, len })?
+        {
+            RefSlot::Pending { definition_offset } => Err(Error::RecursiveReference {
+                index: idx,
+                reference_offset,
+                definition_offset: *definition_offset,
+            }),
+            RefSlot::Ready(obj) => Ok(obj),
         }
     }
 
@@ -357,7 +368,7 @@ impl<'a> Reader<'a> {
         let tag: u8 = head & TAG_MASK;
         let has_ref: bool = head & FLAG_REF != 0;
         let ref_idx: Option<u32> = if has_ref {
-            Some(self.alloc_ref()?)
+            Some(self.alloc_ref(start)?)
         } else {
             None
         };
@@ -490,31 +501,24 @@ impl<'a> Reader<'a> {
     }
 
     fn decode_ascii_float(&mut self) -> Result<Object> {
+        Ok(Object::Float(self.read_ascii_float()?))
+    }
+
+    fn read_ascii_float(&mut self) -> Result<f64> {
         let len: usize = self.read_byte()? as usize;
         let offset: usize = self.pos;
         let bytes: &'a [u8] = self.read_bytes(len)?;
-        let s: &str = core::str::from_utf8(bytes).map_err(|source| Error::InvalidUtf8 {
-            offset: self.pos - len,
-            source,
-        })?;
-        let value: f64 = s.parse::<f64>().map_err(|_| Error::InvalidAsciiFloat {
+        let s: &str =
+            core::str::from_utf8(bytes).map_err(|source| Error::InvalidUtf8 { offset, source })?;
+        s.parse::<f64>().map_err(|_| Error::InvalidAsciiFloat {
             literal: s.to_owned(),
             offset,
-        })?;
-        Ok(Object::Float(value))
+        })
     }
 
     fn decode_ascii_complex(&mut self) -> Result<Object> {
-        let len: usize = self.read_byte()? as usize;
-        let offset: usize = self.pos;
-        let bytes: &'a [u8] = self.read_bytes(len)?;
-        let s: &str = core::str::from_utf8(bytes).map_err(|source| Error::InvalidUtf8 {
-            offset: self.pos - len,
-            source,
-        })?;
-        let mut parts: core::str::SplitWhitespace<'_> = s.split_whitespace();
-        let real: f64 = parse_ascii_float_part(parts.next(), s, offset)?;
-        let imag: f64 = parse_ascii_float_part(parts.next(), s, offset)?;
+        let real: f64 = self.read_ascii_float()?;
+        let imag: f64 = self.read_ascii_float()?;
         Ok(Object::Complex { real, imag })
     }
 
@@ -586,14 +590,11 @@ impl<'a> Reader<'a> {
     }
 
     fn decode_back_ref(&mut self, ref_override: &mut Option<u32>) -> Result<Object> {
+        let reference_offset: usize = self.pos.saturating_sub(1);
         let idx: u32 = self.read_u32()?;
-        let len: usize = self.refs.len();
         let already_nodes: u64 = self.materialized_nodes;
         let already_bytes: u64 = self.materialized_bytes;
-        let entry: &Object = self
-            .refs
-            .get(idx as usize)
-            .ok_or(Error::RefOutOfBounds { index: idx, len })?;
+        let entry: &Object = self.ready_ref(idx, reference_offset)?;
         let (total_nodes, total_bytes): (u64, u64) =
             charged_totals_after_clone(entry, already_nodes, already_bytes)?;
         let resolved: Object = entry.clone();
@@ -808,14 +809,7 @@ impl<'a> Reader<'a> {
                 Ok(text_to_raw_bytes(&value))
             }
             Object::Ref(idx) => {
-                let target: Object =
-                    self.refs
-                        .get(idx as usize)
-                        .cloned()
-                        .ok_or(Error::RefOutOfBounds {
-                            index: idx,
-                            len: self.refs.len(),
-                        })?;
+                let target: Object = self.ready_ref(idx, self.pos)?.clone();
                 match target {
                     Object::Bytes(b) => Ok(b),
                     Object::String { value, .. } | Object::ShortAscii { value, .. } => {
@@ -832,14 +826,7 @@ impl<'a> Reader<'a> {
         match self.read_object(depth)? {
             Object::Tuple(t) | Object::List(t) => Ok(t),
             Object::Ref(idx) => {
-                let target: Object =
-                    self.refs
-                        .get(idx as usize)
-                        .cloned()
-                        .ok_or(Error::RefOutOfBounds {
-                            index: idx,
-                            len: self.refs.len(),
-                        })?;
+                let target: Object = self.ready_ref(idx, self.pos)?.clone();
                 match target {
                     Object::Tuple(t) | Object::List(t) => Ok(t),
                     other => Err(self.code_field_type_err(field, "tuple", &other)),
@@ -1021,6 +1008,25 @@ mod tests {
     }
 
     #[test]
+    fn recursive_back_ref_is_rejected_without_null_substitution() {
+        const DATA: &[u8] = b"\xdb\x01\x00\x00\x00r\x00\x00\x00\x00";
+        let err: Error = load(DATA, PyVersion::PY314)
+            .expect_err("cyclic reference must not become an Object::Null value");
+        assert_eq!(
+            err.to_string(),
+            "DR-MARSHAL-0020: recursive marshal reference 0 at offset 5 targets unfinished object at offset 0; cyclic object graphs are unsupported"
+        );
+        assert!(matches!(
+            err,
+            Error::RecursiveReference {
+                index: 0,
+                reference_offset: 5,
+                definition_offset: 0,
+            }
+        ));
+    }
+
+    #[test]
     fn chained_back_ref_clone_bomb_returns_err_fast() {
         const LAYERS: u32 = 40;
         let mut data: Vec<u8> = vec![FLAG_REF | b'['];
@@ -1175,6 +1181,27 @@ mod tests {
         data.extend(b"x.y");
         let err: Error = load(&data, PyVersion::PY27).unwrap_err();
         assert!(matches!(err, Error::InvalidAsciiFloat { .. }));
+    }
+
+    #[test]
+    fn ascii_complex_reads_separate_length_prefixed_parts() {
+        const DATA: &[u8] = b"x\x031.5\x05-2.25";
+        let versions: [PyVersion; 4] = [
+            PyVersion::PY15,
+            PyVersion::PY27,
+            PyVersion::PY312,
+            PyVersion::PY315,
+        ];
+        for version in versions {
+            let obj: Object = load(DATA, version).expect("CPython format-0 complex must decode");
+            assert_eq!(
+                obj,
+                Object::Complex {
+                    real: 1.5,
+                    imag: -2.25,
+                }
+            );
+        }
     }
 
     #[test]

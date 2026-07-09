@@ -97,4 +97,13 @@ pub enum Error {
 
     #[error("DR-MARSHAL-0019: payload length {actual} exceeds marshal u8 size field max ({max})")]
     WriterShortLengthOverflow { actual: usize, max: u8 },
+
+    #[error(
+        "DR-MARSHAL-0020: recursive marshal reference {index} at offset {reference_offset} targets unfinished object at offset {definition_offset}; cyclic object graphs are unsupported"
+    )]
+    RecursiveReference {
+        index: u32,
+        reference_offset: usize,
+        definition_offset: usize,
+    },
 }
