@@ -12,11 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
-use disrobe_pass_native::{
-    NativePass, NativePassReport, PASS_INPUT_PATH_CAP, RecoveredImage, decode_pass_report,
-};
+use disrobe_core::Artifact;
+use disrobe_core::Rung;
+use disrobe_core::chain::{ChildArtifact, Pass};
+use disrobe_pass_native::chain_detector::PACKER_PASS;
 
 const KNOWN_MARKER: &[u8] = b"disrobe-auto-unpack-known-plaintext-marker-9f3a7c1e";
 
@@ -44,25 +43,11 @@ fn write_source(dir: &Path) -> PathBuf {
     src
 }
 
-fn run_pass(bytes: &[u8]) -> NativePassReport {
-    let raw: RawPayload = RawPayload {
-        source_path: "packed.exe".to_owned(),
-        source_bytes: bytes.to_vec(),
-        source_hash: blake3::hash(bytes).into(),
-        detected_format: Some("native".to_owned()),
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    let envelope: Vec<u8> = Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope");
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        envelope,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [0u8; 32],
-    );
-    let out: Artifact = NativePass.run(&input).expect("native pass run");
-    decode_pass_report(&out.envelope).expect("decode report")
+fn run_pass(bytes: &[u8]) -> Vec<ChildArtifact> {
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
+    PACKER_PASS
+        .extract_children(&input)
+        .expect("packer-unpack children extraction")
 }
 
 #[test]
@@ -133,24 +118,30 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
     );
     let reference: Vec<u8> = std::fs::read(&ref_unpacked).expect("read reference");
 
-    let report: NativePassReport = run_pass(&packed_bytes);
-    assert!(
-        report.packers.iter().any(|p| p.packer.label() == "upx"),
-        "auto must detect UPX on the real packed sample: {:?}",
-        report.packers
-    );
-    assert!(
-        !report.recovered_images.is_empty(),
-        "auto must surface a recovered image for the detected UPX packer; got none"
-    );
-    let upx_image: &RecoveredImage = report
-        .recovered_images
+    let children: Vec<ChildArtifact> = run_pass(&packed_bytes);
+    let manifest: &ChildArtifact = children
         .iter()
-        .find(|r: &&RecoveredImage| r.packer == "upx")
-        .expect("a upx RecoveredImage must be present");
+        .find(|c: &&ChildArtifact| c.handle.relative_path == "packer-unpack.manifest.json")
+        .expect("auto must emit the packer-unpack manifest sidecar");
+    let manifest_json: serde_json::Value =
+        serde_json::from_slice(&manifest.bytes).expect("manifest is valid json");
+    assert_eq!(
+        manifest_json["packer"].as_str(),
+        Some("upx"),
+        "auto must detect UPX on the real packed sample: {manifest_json}"
+    );
+
+    let recovered: &ChildArtifact = children
+        .iter()
+        .find(|c: &&ChildArtifact| c.handle.relative_path == "recovered-image.bin")
+        .expect("auto must surface a recovered image for the detected UPX packer");
+    assert!(
+        !recovered.bytes.is_empty(),
+        "the recovered image child must carry real bytes"
+    );
 
     assert!(
-        contains(&upx_image.image, KNOWN_MARKER),
+        contains(&recovered.bytes, KNOWN_MARKER),
         "surfaced unpacked image must contain the original known-plaintext marker"
     );
     assert!(
@@ -158,7 +149,7 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
         "the upx -d reference must contain the known-plaintext marker (sanity of oracle)"
     );
 
-    let overlap: usize = longest_common_run(&upx_image.image, &reference);
+    let overlap: usize = longest_common_run(&recovered.bytes, &reference);
     assert!(
         overlap >= KNOWN_MARKER.len() * 4,
         "the surfaced unpacked bytes must share a substantial contiguous run with the upx -d \

@@ -234,10 +234,7 @@ pub use packers::{
     unpack_polycryptor_emulated, unpack_upx, unpack_warzone_crypter,
     unpack_warzone_crypter_emulated, warzone_crypter_layout,
 };
-pub use pass::{
-    DecompilerProbeSummary, NativePass, NativePassReport, PASS_INPUT_PATH_CAP, PassInput,
-    analyze_deobf_report, decode_pass_input, decode_pass_report, distinct_packer_labels,
-};
+pub use pass::analyze_deobf_report;
 pub use patch::{
     AppliedEdit, PatchEdit, PatchReport, apply_patches, apply_patches_reported, default_nop_fill,
 };

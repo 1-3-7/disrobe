@@ -1,13 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
 use disrobe_pass_native::vm_devirt::detect::Bitness;
 use disrobe_pass_native::vm_devirt::evaluate;
-use disrobe_pass_native::{
-    NativePass, NativePassReport, ObfuscatorFamily, ObfuscatorHit, PASS_INPUT_PATH_CAP,
-    decode_pass_report, detect_obfuscators, devirtualize_vm,
-};
+use disrobe_pass_native::{ObfuscatorFamily, ObfuscatorHit, detect_obfuscators, devirtualize_vm};
 
 const VIRT: &[u8] =
     include_bytes!("../../../corpus/native/obfuscators/guardian-rs/sample.virtualized.exe");
@@ -117,18 +112,6 @@ fn clean_baseline_does_not_devirtualize() {
     );
 }
 
-#[test]
-fn native_pass_surfaces_guardian_devirtualization_summary() {
-    let report: NativePassReport = run_pass(VIRT);
-    let vm: &disrobe_pass_native::pass::VmDevirtSummary = report
-        .vm_devirt
-        .as_ref()
-        .expect("pass surfaces guardian VM summary");
-    assert_eq!(vm.dispatch_kind, "SwitchJumpTable");
-    assert!(vm.recovered_listing.contains("push.imm 90"));
-    assert!(vm.recovered_listing.contains("ret"));
-}
-
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
@@ -138,25 +121,4 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 const fn expected_classify(n: i32) -> i32 {
     let r: i32 = n.wrapping_add(1).wrapping_mul(3) ^ 0x5a;
     r.wrapping_sub(n)
-}
-
-fn run_pass(bytes: &[u8]) -> NativePassReport {
-    let raw: RawPayload = RawPayload {
-        source_path: "sample.virtualized.exe".to_owned(),
-        source_bytes: bytes.to_vec(),
-        source_hash: blake3::hash(bytes).into(),
-        detected_format: Some("native".to_owned()),
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    let envelope: Vec<u8> = Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope");
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        envelope,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [0u8; 32],
-    );
-    let out: Artifact = NativePass.run(&input).expect("native pass run");
-    decode_pass_report(&out.envelope).expect("decode native pass report")
 }

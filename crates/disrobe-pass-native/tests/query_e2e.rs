@@ -5,13 +5,9 @@
     clippy::unreadable_literal
 )]
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
 use disrobe_ir::payload::DisasmPayload;
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
-use disrobe_pass_native::{NativePass, PASS_INPUT_PATH_CAP, build_disasm_payload};
-use disrobe_query::{
-    CallSiteMatch, FunctionMatch, Module, Query, QueryResult, XrefMatch, module_from_envelope,
-};
+use disrobe_pass_native::build_disasm_payload;
+use disrobe_query::{CallSiteMatch, FunctionMatch, Module, Query, QueryResult, XrefMatch};
 use object::write::{
     Object as WriteObject, StandardSection, Symbol as WriteSymbol, SymbolFlags as WriteSymbolFlags,
     SymbolKind as WriteSymbolKind, SymbolScope, SymbolSection,
@@ -85,35 +81,15 @@ fn build_elf() -> Vec<u8> {
     obj.write().expect("elf write")
 }
 
-fn run_pass(elf: &[u8]) -> Artifact {
-    let raw: RawPayload = RawPayload {
-        source_path: "subject.elf".to_owned(),
-        source_bytes: elf.to_vec(),
-        source_hash: blake3::hash(elf).into(),
-        detected_format: Some("native".to_owned()),
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    let envelope: Vec<u8> = Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope");
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        envelope,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [0u8; 32],
-    );
-    NativePass.run(&input).expect("native pass run")
+fn run_pass(elf: &[u8]) -> Module {
+    let payload: DisasmPayload = build_disasm_payload(elf).expect("build disasm payload");
+    Module::from_disasm(&payload)
 }
 
 #[test]
-fn production_pass_emits_a_queryable_disasm_envelope() {
+fn production_pass_emits_a_queryable_disasm_module() {
     let elf: Vec<u8> = build_elf();
-    let out: Artifact = run_pass(&elf);
-    assert_eq!(out.rung, Rung::Disasm);
-
-    let env: Envelope = Envelope::decode(&out.envelope).expect("pass output is a real envelope");
-    assert_eq!(env.rung, Rung::Disasm);
-    let module: Module = module_from_envelope(&env).expect("module from pass envelope");
+    let module: Module = run_pass(&elf);
     assert!(
         !module.functions().is_empty(),
         "the production pass must surface real functions"
@@ -123,9 +99,7 @@ fn production_pass_emits_a_queryable_disasm_envelope() {
 #[test]
 fn e2e_functions_query_returns_real_functions() {
     let elf: Vec<u8> = build_elf();
-    let out: Artifact = run_pass(&elf);
-    let env: Envelope = Envelope::decode(&out.envelope).expect("envelope");
-    let module: Module = module_from_envelope(&env).expect("module");
+    let module: Module = run_pass(&elf);
 
     let result: QueryResult = disrobe_query::run(&module, &Query::Functions);
     let QueryResult::Functions { matches } = result else {
@@ -148,9 +122,7 @@ fn e2e_functions_query_returns_real_functions() {
 #[test]
 fn e2e_calls_to_and_xrefs_resolve_real_sites() {
     let elf: Vec<u8> = build_elf();
-    let out: Artifact = run_pass(&elf);
-    let env: Envelope = Envelope::decode(&out.envelope).expect("envelope");
-    let module: Module = module_from_envelope(&env).expect("module");
+    let module: Module = run_pass(&elf);
 
     let calls: QueryResult = disrobe_query::run(
         &module,
@@ -185,8 +157,7 @@ fn e2e_calls_to_and_xrefs_resolve_real_sites() {
 #[test]
 fn e2e_complexity_and_string_decoder_match_decode() {
     let elf: Vec<u8> = build_elf();
-    let payload: DisasmPayload = build_disasm_payload(&elf).expect("build payload");
-    let module: Module = Module::from_disasm(&payload);
+    let module: Module = run_pass(&elf);
 
     let complexity: QueryResult =
         disrobe_query::run(&module, &Query::ComplexityOver { threshold: 1 });

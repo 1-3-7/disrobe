@@ -25,10 +25,3 @@ pub(crate) fn dbg_kv(key: &str, f: impl FnOnce() -> String) {
         log.kv(key, f);
     }
 }
-
-pub(crate) fn dbg_kv_guarded(key: &str, f: impl FnOnce() -> String) {
-    let log: DebugLog = debug_log();
-    if log.on() {
-        log.kv_guarded(key, f);
-    }
-}
