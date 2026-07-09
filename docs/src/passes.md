@@ -1,6 +1,6 @@
-# Passes and the capability model
+# Passes and pass selection
 
-A **pass** is the unit of work in `disrobe`. Each pass lives in its own crate, implements a shared trait, and declares the capabilities it requires and produces. The capability resolver is what allows arbitrary passes to chain.
+A **pass** is the unit of work in `disrobe`. Each pass lives in its own crate, implements a shared trait, and registers a detector that scores how confidently it recognizes a given input. `disrobe auto` picks the next pass by comparing detector verdicts, not by matching capability descriptors between passes; see [Pass selection](#pass-selection) below.
 
 ## Registered passes
 
@@ -46,16 +46,15 @@ Run `disrobe passes` for the live list. As of the current release:
 | `chain` | Explicit pass pipeline orchestrator. |
 | `serve` | HTTP daemon + WebSocket stream + LSP-stdio + gRPC + MCP. |
 
-## The capability resolver
+## Pass selection
 
-Rather than hard-coding which pass follows which, each pass declares:
+Rather than hard-coding which pass follows which, every pass registers a `Detector` (`chain::detector::Detector` in `disrobe-core`) that inspects the current bytes and, if it recognizes them, returns a `DetectVerdict`: a pass ID, a format tag, a family (`obfuscator-wrapper`, `packer-archive`, `interpreter-bytecode`, `source`, `container`, `native-format`, or `unknown`), a confidence score, and a specificity rank.
 
-- **Requires**: the capabilities and IR rung its input envelope must already carry.
-- **Produces**: the capabilities and IR rung its output envelope will carry.
+`PassRegistry::run_all` (`chain/registry.rs`) runs every registered detector against the bytes. Six extraction-first passes (`nuitka.extract`, `pyinstaller.extract`, `pyfreeze.extract`, `pyarmor.unpack`, `binfmt.container`, `sourcedefender.decrypt`) are tried before the rest, and the sweep stops early the moment one of them returns a `High`-band verdict (confidence >= 0.90) with specificity <= 30. A raw confidence buckets into `ConfidenceBand::Low` (< 0.70), `Medium` (0.70-0.89), or `High` (>= 0.90).
 
-When the chain runner picks the next pass, it matches the current envelope's produced capabilities against each candidate pass's requirements. A pass only runs if its requirements are satisfiable. This is why `disrobe auto` can detect that a PyInstaller archive contains a PyArmor-protected module and route it through the unpack-then-decompile chain without any per-combination glue code.
+A `SelectionPolicy` then picks the winner among whatever verdicts came back: candidates below its minimum confidence (0.5 by default) are dropped, and the survivors are ranked by `precedence::compare` (`chain/precedence.rs`), which breaks ties in order: confidence band, then raw confidence, then the lower specificity value, then a fixed family-precedence table (`obfuscator-wrapper` beats `packer-archive` beats `interpreter-bytecode` beats `source` beats `container` beats `native-format` beats `unknown`), then the lexically smaller pass ID.
 
-Capabilities are versioned. A pass can require, for example, "a CPython 3.12 code object at the Disasm rung," and the resolver will refuse to feed it a 2.7 object. This keeps the chain sound across the wide version ranges **disrobe** supports.
+The chain driver (`chain/state_machine.rs`) runs this selection once per queued artifact, executes the winning pass, and re-runs detection on its output to decide what happens next. A branch ends when no verdict clears the minimum confidence (`Stalled`), when the same output bytes reappear (`Cycle`), or when the depth cap or cumulative-output budget is exceeded (`CapReached`). This is why `disrobe auto` can detect that a PyInstaller archive contains a PyArmor-protected module and route it through the unpack-then-decompile chain without any per-combination glue code.
 
 ## Standardized emits
 

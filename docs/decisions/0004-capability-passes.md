@@ -1,5 +1,7 @@
 # 4. Gate pass composition with an explicit capability model
 
+> **Superseded note (2026-07-09):** the capability resolver and `MigrationShimRegistry` described below were never wired into `disrobe auto`'s real dispatch and had zero callers anywhere in the workspace; both were removed from the codebase. `disrobe auto` actually composes passes by running each pass's detector and picking the highest-confidence, highest-precedence verdict (`crates/disrobe-core/src/chain/registry.rs`, `precedence.rs`, `detection.rs`); see [Pass selection](../src/passes.md#pass-selection). This record is kept for history and no longer describes current behavior.
+
 - Status: accepted
 - Date: 2025-09-22
 - Deciders: project maintainer

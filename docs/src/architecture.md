@@ -12,7 +12,7 @@ For the full design rationale, including the determinism argument and the oracle
                    └──────────────────────────────────────────────┘
                           │           │            │
                           │           │            └─ each pass: raw -> disasm -> mir -> hir -> surface
-                          │           └─ capability resolver gates what can run next
+                          │           └─ detector confidence + precedence pick what runs next
                           └─ chain runner records chain.json + stage mirrors + recovery.json
 ```
 
@@ -37,7 +37,7 @@ The workspace splits into a small set of shared cores and one crate per ecosyste
 
 ## The `Pass` trait
 
-Every pass implements one trait. A pass takes a `.dr` envelope at some rung, does its work, and returns an envelope one or more rungs higher, declaring which **capabilities** it requires on the way in and which it produces on the way out. Because every pass speaks the same envelope dialect, the chain runner can compose any pass with any other as long as the capability resolver is satisfied. This is what lets `PyInstaller -> PyArmor -> .pyc decompile` work as a single `disrobe auto` invocation rather than three hand-wired steps.
+Every pass implements one trait (`Pass` in `disrobe-core`, re-exported as `chain::detector::Pass`): it exposes a `Detector` that scores how confidently it recognizes an input, plus a `run` method that takes an `Artifact` at one rung and returns an `Artifact` one or more rungs higher. Because every pass speaks the same detector interface, the chain runner needs no per-pair compatibility table: it re-detects the current bytes after every stage and picks whichever registered pass returns the highest-confidence, highest-precedence verdict. This is what lets `PyInstaller -> PyArmor -> .pyc decompile` work as a single `disrobe auto` invocation rather than three hand-wired steps.
 
 Each pass also exposes a standardized set of emits (`source`, `disasm`, `ast`, `cfg`, `ir`, `manifest`, `sourcemap`, `symbols`, `strings`, `imports`, `signatures`, `report`). A pass that cannot produce a given emit writes an explicit `applicable: false` stub with the `DR-IR-NotApplicable` code rather than silently dropping it.
 
@@ -46,7 +46,7 @@ Each pass also exposes a standardized set of emits (`source`, `disasm`, `ast`, `
 The rest of this section expands each pillar:
 
 1. [The five-rung IR ladder](./ir-ladder.md): the common intermediate representation every artifact climbs.
-2. [Passes and the capability model](./passes.md): how passes declare and resolve what they need.
+2. [Passes and pass selection](./passes.md): what each pass registers and how the chain runner picks between them.
 3. [The chain runner](./chain.md): auto-detection, stage mirrors, depth and cycle caps.
 4. [The `.dr` envelope](./envelope.md): the content-addressed wire format that makes caching deterministic.
 

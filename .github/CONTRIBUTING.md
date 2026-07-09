@@ -25,8 +25,8 @@ The workspace has 53 crates, layered core -> ir -> passes -> surfaces.
 
 **Core and plumbing**
 
-- `disrobe-core` - shared traits, error types, the capability model, and pass-dispatch primitives.
-- `disrobe-ir` - the five-rung ladder IR (Raw / Disasm / MIR / HIR / Surface), the `.dr` envelope codec, and capability negotiation.
+- `disrobe-core` - shared traits (`Pass`, `Detector`), error types, the chain detector/registry/precedence machinery, and pass-dispatch primitives.
+- `disrobe-ir` - the five-rung ladder IR (Raw / Disasm / MIR / HIR / Surface), the `.dr` envelope codec, and the transcode registry.
 - `disrobe-binfmt` - container and archive detection and extraction across 98 in-tree formats.
 - `disrobe-py-marshal` - the CPython `marshal` codec and `.pyc` encoder/decoder, spanning Python 1.0 through 3.15.
 - `disrobe-llm-metadata` - the versioned deterministic metadata envelope and the per-pass emitter trait behind `--metadata-pack-*` / `--llm`.

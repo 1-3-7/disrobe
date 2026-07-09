@@ -71,7 +71,7 @@
   <text x="361.20" y="309.00" font-size="11" fill="#a1a1a1" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="400">sourcedefender</text>
   <rect x="28.00" y="342.00" width="3.50" height="24.00" fill="#c9a98e"/>
   <text x="42.00" y="354.00" font-size="13" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Foundation</text>
-  <text x="42.00" y="370.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">shared IR ladder, capability model, format ID, MBA, transcoders</text>
+  <text x="42.00" y="370.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">shared IR ladder, chain registry, format ID, MBA, transcoders</text>
   <rect x="28.00" y="380.00" width="107.20" height="26.00" rx="5.00" fill="#161616" stroke="#262626" stroke-width="1"/>
   <text x="81.60" y="397.00" font-size="11" fill="#a1a1a1" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="middle" font-weight="400">disrobe-core</text>
   <rect x="143.20" y="380.00" width="94.00" height="26.00" rx="5.00" fill="#161616" stroke="#262626" stroke-width="1"/>

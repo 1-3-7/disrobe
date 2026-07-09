@@ -104,7 +104,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 
 ## The `disrobe auto` chain
 
-`disrobe auto` is the front door to the whole catalog. It fingerprints the input, picks the first pass, runs it, re-fingerprints the output, and follows the capability resolver until no further pass applies or the depth cap is hit. Detection spans 23 pass crates.
+`disrobe auto` is the front door to the whole catalog. It fingerprints the input, picks the highest-confidence pass, runs it, re-fingerprints the output, and repeats until no further pass clears the confidence threshold or the depth cap is hit. Detection spans 23 pass crates.
 
 ```sh
 disrobe auto suspect.exe --out recovered/                 # detect + chain the whole pipeline

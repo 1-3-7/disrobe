@@ -24,7 +24,7 @@ disrobe-ir = "0.10"
 disrobe-pass-py-decompile = "0.10"
 ```
 
-Each pass implements the shared `Pass` trait: it takes an `Artifact` at one rung and returns an `Artifact` one or more rungs higher, declaring the capabilities it requires and produces. Driving a pass directly looks like this (illustrative):
+Each pass implements the shared `Pass` trait: it exposes a `Detector` that scores how confidently it recognizes an input, and a `run` method that takes an `Artifact` at one rung and returns an `Artifact` one or more rungs higher. Driving a pass directly looks like this (illustrative):
 
 ```rust,ignore
 use disrobe_core::pass::Pass;
@@ -43,7 +43,7 @@ fn recover(pyc: Vec<u8>, root: [u8; 32]) -> disrobe_core::Result<Artifact> {
 
 The Python decompiler additionally exposes `roundtrip_native`, which recompiles recovered source on the matching interpreter and returns a `RoundtripOutcome` carrying the `PERFECT`/`SEMANTIC`/`CODE_DIFF` verdict, so the same recompile-equivalence check the CI gate runs is available in-process.
 
-Because every pass speaks the same `Artifact` dialect, the `disrobe-binfmt` chain runner composes any pass with any other as long as the capability resolver is satisfied. That is what lets `PyInstaller -> PyArmor -> .pyc decompile` run as one call rather than three hand-wired steps. The shape of the `Pass` trait and the resolver is in [Passes and the capability model](./passes.md).
+Because every pass speaks the same `Artifact` dialect, the `disrobe-binfmt` chain runner can compose any pass with any other without a per-pair compatibility table: it re-detects the current bytes after each stage and picks whichever registered pass returns the highest-confidence, highest-precedence verdict. That is what lets `PyInstaller -> PyArmor -> .pyc decompile` run as one call rather than three hand-wired steps. The shape of the `Pass` trait and the selection mechanism is in [Passes and pass selection](./passes.md#pass-selection).
 
 ## Python
 
