@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 use std::fs;
 use std::io::Read as _;

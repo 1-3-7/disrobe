@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 
 pub(crate) fn push_string_fmt(out: &mut String, args: std::fmt::Arguments<'_>) {

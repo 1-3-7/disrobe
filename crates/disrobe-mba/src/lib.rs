@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![doc = "Bounded symbolic anti-analysis primitives shared across disrobe passes."]
 #![doc = ""]
 #![doc = "Two frontend-agnostic analyses over fixed-width bitvector expressions:"]

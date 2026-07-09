@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 pub mod annotation;
 pub mod bundle;
 pub mod capability;

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
-#![allow(unreachable_pub)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::unnecessary_wraps)]
 #![allow(clippy::unused_self)]

@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 pub mod c;
 pub mod intern;
 pub mod precedence;

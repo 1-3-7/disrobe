@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 #![allow(clippy::print_stdout, clippy::expect_used)]
 
 use std::fmt::Write as _;

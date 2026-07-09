@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 mod base_library;
 #[cfg(feature = "chain")]

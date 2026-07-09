@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![cfg(feature = "chain")]
 pub mod circular;
 pub mod manifest;

@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 pub mod apk;
 pub mod frisk;
 pub mod gate;

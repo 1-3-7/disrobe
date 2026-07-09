@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
 #![allow(clippy::missing_const_for_fn)]
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

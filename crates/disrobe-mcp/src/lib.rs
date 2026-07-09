@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 #[cfg(feature = "chain")]
 mod chain;
 

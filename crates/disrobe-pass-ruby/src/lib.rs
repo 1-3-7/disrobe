@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #[cfg(feature = "chain")]
 pub mod chain_detector;
 pub mod detect;

@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read as _;

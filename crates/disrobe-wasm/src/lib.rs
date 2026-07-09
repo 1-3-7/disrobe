@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 #![allow(clippy::missing_safety_doc)]
 use serde::Serialize;
 

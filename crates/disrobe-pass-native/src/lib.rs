@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_lossless,

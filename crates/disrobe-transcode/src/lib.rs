@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![deny(unreachable_pub)]
 
 use std::fmt;
 

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 pub mod corpus;
 pub mod metrics;
 pub mod report;

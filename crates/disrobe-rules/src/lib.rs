@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(unreachable_pub)]
 #![doc = "Data-driven deobfuscation rewrite rules for the disrobe suite."]
 #![doc = ""]
 #![doc = "Deobfuscation peephole identities are expressed as DATA: a serde-validated"]

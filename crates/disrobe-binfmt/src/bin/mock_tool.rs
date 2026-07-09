@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;

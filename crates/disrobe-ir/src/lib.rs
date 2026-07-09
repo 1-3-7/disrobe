@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![deny(unreachable_pub)]
 pub mod envelope;
 pub mod error;
 pub mod io;

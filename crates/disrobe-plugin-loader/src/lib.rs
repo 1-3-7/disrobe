@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 mod manifest;
 
 pub use manifest::{Manifest, ManifestError};
