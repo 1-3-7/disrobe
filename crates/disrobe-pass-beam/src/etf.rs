@@ -309,7 +309,7 @@ fn decode_term_after_first(reader: &mut Reader<'_>, tag: u8, depth: usize) -> Re
                 }
                 pairs.push((k, v));
             }
-            if all_string_keys {
+            if all_string_keys && string_keys_are_unique(&pairs) {
                 let mut map: BTreeMap<String, Term> = BTreeMap::new();
                 for (k, v) in pairs {
                     let key: String = k
@@ -393,6 +393,18 @@ fn bounded_container_prealloc(declared: usize, min_item_bytes: usize, remaining:
     declared.min(byte_bound).min(MAX_ETF_CONTAINER_PREALLOC)
 }
 
+fn string_keys_are_unique(pairs: &[(Term, Term)]) -> bool {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (k, _) in pairs {
+        if let Some(key) = k.as_str()
+            && !seen.insert(key)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -415,5 +427,66 @@ mod tests {
 
         let err: Error = decode_etf(&bytes).expect_err("oversized tuple must truncate");
         assert!(matches!(err, Error::Truncated { .. }));
+    }
+
+    #[test]
+    fn distinct_atom_keys_use_queryable_map() {
+        let mut bytes: Vec<u8> = vec![ETF_MAGIC, TAG_MAP];
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&[TAG_SMALL_ATOM_UTF8, 1, b'a', TAG_SMALL_INTEGER, 1]);
+        bytes.extend_from_slice(&[TAG_SMALL_ATOM_UTF8, 1, b'b', TAG_SMALL_INTEGER, 2]);
+        let term: Term = decode_etf(&bytes).expect("atom-keyed map decodes");
+        let map: &BTreeMap<String, Term> =
+            term.as_map().expect("distinct atom keys stay queryable");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&Term::SmallInt(1)));
+        assert_eq!(map.get("b"), Some(&Term::SmallInt(2)));
+    }
+
+    #[test]
+    fn single_binary_key_map_stays_queryable() {
+        let mut bytes: Vec<u8> = vec![ETF_MAGIC, TAG_MAP];
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.push(TAG_BINARY);
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(b"en");
+        bytes.extend_from_slice(&[TAG_SMALL_INTEGER, 7]);
+        let term: Term = decode_etf(&bytes).expect("binary-keyed map decodes");
+        let map: &BTreeMap<String, Term> = term
+            .as_map()
+            .expect("unique binary key stays queryable for docs lookup");
+        assert_eq!(map.get("en"), Some(&Term::SmallInt(7)));
+    }
+
+    #[test]
+    fn colliding_typed_keys_preserve_every_entry() {
+        let mut bytes: Vec<u8> = vec![ETF_MAGIC, TAG_MAP];
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&[
+            TAG_SMALL_ATOM_UTF8,
+            3,
+            b'f',
+            b'o',
+            b'o',
+            TAG_SMALL_INTEGER,
+            1,
+        ]);
+        bytes.push(TAG_BINARY);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(b"foo");
+        bytes.extend_from_slice(&[TAG_SMALL_INTEGER, 2]);
+        let term: Term = decode_etf(&bytes).expect("colliding-key map decodes");
+        let expected: Term = Term::MapMixed(vec![
+            (Term::Atom("foo".to_owned()), Term::SmallInt(1)),
+            (Term::Binary(b"foo".to_vec()), Term::SmallInt(2)),
+        ]);
+        assert_eq!(
+            term, expected,
+            "atom/binary key collision must keep both entries as MapMixed"
+        );
+        assert!(
+            term.as_map().is_none(),
+            "MapMixed is not the queryable form"
+        );
     }
 }
