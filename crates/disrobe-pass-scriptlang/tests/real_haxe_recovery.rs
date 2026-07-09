@@ -5,6 +5,8 @@ const HAXE_JS: &[u8] = include_bytes!("fixtures/haxe_calc.js");
 const HAXE_HL: &[u8] = include_bytes!("fixtures/haxe_calc.hl");
 const HAXE_NEKO: &[u8] = include_bytes!("fixtures/haxe_calc.n");
 const HAXE_SRC: &str = include_str!("fixtures/HaxeCalc.hx");
+const HAXE_SWF: &[u8] = include_bytes!("fixtures/haxe_main.swf");
+const HAXE_SWF_SRC: &str = include_str!("fixtures/Main.hx");
 
 fn fp(bytes: &[u8]) -> HaxeFingerprint {
     detect(bytes).expect("real haxe target must be detected")
@@ -16,6 +18,42 @@ fn source_fixture_sanity() {
     assert!(HAXE_SRC.contains("class Main"));
     assert!(HAXE_SRC.contains("function add"));
     assert!(HAXE_SRC.contains("function describe"));
+}
+
+#[test]
+fn cws_swf_recovers_source_symbols() {
+    assert!(HAXE_SWF.starts_with(b"CWS"));
+    let f: HaxeFingerprint = fp(HAXE_SWF);
+    assert_eq!(f.target, HaxeTarget::SwfFlash);
+    assert!(HAXE_SWF_SRC.contains("class Main"));
+    assert!(
+        f.recovered
+            .classes
+            .iter()
+            .any(|class: &String| class == "Main"),
+        "zlib-compressed SWF must retain the Main class: {:?}",
+        f.recovered.classes
+    );
+    assert!(
+        ["greet", "add", "main"].iter().all(|method: &&str| {
+            HAXE_SWF_SRC.contains(&format!("function {method}"))
+                && f.recovered
+                    .methods
+                    .iter()
+                    .any(|recovered: &String| recovered == *method)
+        }),
+        "zlib-compressed SWF must retain source methods: {:?}",
+        f.recovered.methods
+    );
+    assert!(
+        f.recovered
+            .source_files
+            .iter()
+            .any(|source: &String| source == "Main.hx"),
+        "zlib-compressed SWF must retain the source filename: {:?}",
+        f.recovered.source_files
+    );
+    assert!(f.haxe_confirmed);
 }
 
 #[test]

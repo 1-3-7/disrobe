@@ -8,6 +8,9 @@ const NEKO_MAGIC: &[u8] = b"NEKO";
 const SWF_UNCOMPRESSED: &[u8] = b"FWS";
 const SWF_ZLIB: &[u8] = b"CWS";
 const SWF_LZMA: &[u8] = b"ZWS";
+const SWF_HEADER_BYTES: usize = 8usize;
+const SWF_READ_CHUNK_BYTES: usize = 8192usize;
+const MAX_SWF_BYTES: usize = 1usize << 26;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -181,12 +184,27 @@ fn detect_swf(bytes: &[u8]) -> Option<HaxeFingerprint> {
     if !is_swf {
         return None;
     }
-    let haxe_confirmed: bool = window_contains(bytes, b"haxe") || window_contains(bytes, b"Haxe");
-    let recovered: HaxeRecovered = if starts_with(bytes, SWF_UNCOMPRESSED) {
-        recover_vm_strings(bytes)
+    let inflated: Option<Vec<u8>> = if starts_with(bytes, SWF_ZLIB) {
+        inflate_cws(bytes)
     } else {
-        HaxeRecovered::default()
+        None
     };
+    let recoverable: Option<&[u8]> = if starts_with(bytes, SWF_UNCOMPRESSED) {
+        Some(bytes)
+    } else {
+        inflated.as_deref()
+    };
+    let recovered: HaxeRecovered =
+        recoverable.map_or_else(HaxeRecovered::default, recover_vm_strings);
+    let haxe_confirmed: bool = window_contains(bytes, b"haxe")
+        || window_contains(bytes, b"Haxe")
+        || recoverable.is_some_and(|decoded: &[u8]| {
+            window_contains(decoded, b"haxe") || window_contains(decoded, b"Haxe")
+        })
+        || recovered
+            .source_files
+            .iter()
+            .any(|source: &String| source.ends_with(".hx"));
     Some(HaxeFingerprint {
         target: HaxeTarget::SwfFlash,
         route_pass_id: HaxeTarget::SwfFlash.route_pass_id(),
@@ -196,6 +214,70 @@ fn detect_swf(bytes: &[u8]) -> Option<HaxeFingerprint> {
         recovered,
         hashlink: None,
     })
+}
+
+fn inflate_cws(bytes: &[u8]) -> Option<Vec<u8>> {
+    let header: &[u8] = bytes.get(..SWF_HEADER_BYTES)?;
+    let declared_bytes: [u8; 4] = header.get(4usize..8usize)?.try_into().ok()?;
+    let declared_len: usize = usize::try_from(u32::from_le_bytes(declared_bytes)).ok()?;
+    if !(SWF_HEADER_BYTES..=MAX_SWF_BYTES).contains(&declared_len) {
+        return None;
+    }
+    let declared_body_len: usize = declared_len.checked_sub(SWF_HEADER_BYTES)?;
+    let output_limit: usize = declared_body_len.checked_add(1usize)?;
+    let compressed: &[u8] = bytes.get(SWF_HEADER_BYTES..)?;
+    let initial_capacity: usize = compressed
+        .len()
+        .min(declared_body_len)
+        .min(SWF_READ_CHUNK_BYTES);
+    let mut output: Vec<u8> = Vec::new();
+    output.try_reserve(initial_capacity).ok()?;
+
+    let mut decoder: flate2::Decompress = flate2::Decompress::new(true);
+    let mut chunk: [u8; SWF_READ_CHUNK_BYTES] = [0u8; SWF_READ_CHUNK_BYTES];
+    let mut input_offset: usize = 0usize;
+    loop {
+        let remaining_output: usize = output_limit.checked_sub(output.len())?;
+        if remaining_output == 0usize {
+            return None;
+        }
+        let output_len: usize = remaining_output.min(chunk.len());
+        let input: &[u8] = compressed.get(input_offset..)?;
+        let flush: flate2::FlushDecompress = if input.is_empty() {
+            flate2::FlushDecompress::Finish
+        } else {
+            flate2::FlushDecompress::None
+        };
+        let before_in: u64 = decoder.total_in();
+        let before_out: u64 = decoder.total_out();
+        let status: flate2::Status = decoder
+            .decompress(input, chunk.get_mut(..output_len)?, flush)
+            .ok()?;
+        let consumed: usize = usize::try_from(decoder.total_in().checked_sub(before_in)?).ok()?;
+        let produced: usize = usize::try_from(decoder.total_out().checked_sub(before_out)?).ok()?;
+        input_offset = input_offset.checked_add(consumed)?;
+        let decoded: &[u8] = chunk.get(..produced)?;
+        output.try_reserve(produced).ok()?;
+        output.extend_from_slice(decoded);
+        if status == flate2::Status::StreamEnd {
+            break;
+        }
+        if consumed == 0usize && produced == 0usize {
+            return None;
+        }
+    }
+    if output.len() != declared_body_len || input_offset != compressed.len() {
+        return None;
+    }
+
+    output.try_reserve(SWF_HEADER_BYTES).ok()?;
+    output.resize(declared_len, 0u8);
+    output.rotate_right(SWF_HEADER_BYTES);
+    let reconstructed_header: &mut [u8] = output.get_mut(..SWF_HEADER_BYTES)?;
+    reconstructed_header.copy_from_slice(header);
+    let signature: &mut [u8] = output.get_mut(..SWF_UNCOMPRESSED.len())?;
+    signature.copy_from_slice(SWF_UNCOMPRESSED);
+    Some(output)
 }
 
 fn recover_js(bytes: &[u8]) -> HaxeRecovered {
@@ -603,6 +685,34 @@ fn window_contains(haystack: &[u8], needle: &[u8]) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn make_cws(body: &[u8]) -> Vec<u8> {
+        let declared_len: u32 = u32::try_from(
+            SWF_HEADER_BYTES
+                .checked_add(body.len())
+                .expect("test body length"),
+        )
+        .expect("test SWF length");
+        let mut encoder: flate2::write::ZlibEncoder<Vec<u8>> =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(body).expect("compress test body");
+        let compressed: Vec<u8> = encoder.finish().expect("finish test stream");
+        let mut bytes: Vec<u8> =
+            Vec::with_capacity(SWF_HEADER_BYTES.saturating_add(compressed.len()));
+        bytes.extend_from_slice(SWF_ZLIB);
+        bytes.push(10u8);
+        bytes.extend_from_slice(&declared_len.to_le_bytes());
+        bytes.extend_from_slice(&compressed);
+        bytes
+    }
+
+    fn set_cws_declared_len(bytes: &mut [u8], declared_len: u32) {
+        let field: &mut [u8] = bytes
+            .get_mut(4usize..SWF_HEADER_BYTES)
+            .expect("test SWF header");
+        field.copy_from_slice(&declared_len.to_le_bytes());
+    }
 
     #[test]
     fn detects_haxe_js_and_version() {
@@ -629,6 +739,65 @@ mod tests {
         assert_eq!(fp.target, HaxeTarget::SwfFlash);
         assert_eq!(fp.route_pass_id, "as3.classify");
         assert!(fp.haxe_confirmed);
+    }
+
+    #[test]
+    fn cws_rejects_invalid_declared_lengths() {
+        assert!(inflate_cws(b"CWS").is_none());
+        let mut below_header: Vec<u8> = make_cws(b"haxe Main Main.hx");
+        set_cws_declared_len(&mut below_header, 7u32);
+        assert!(inflate_cws(&below_header).is_none());
+        let mut above_limit: Vec<u8> = make_cws(b"haxe Main Main.hx");
+        let oversized: u32 =
+            u32::try_from(MAX_SWF_BYTES.saturating_add(1usize)).expect("limit fits u32");
+        set_cws_declared_len(&mut above_limit, oversized);
+        assert!(inflate_cws(&above_limit).is_none());
+    }
+
+    #[test]
+    fn cws_rejects_declared_body_mismatch() {
+        let body: &[u8] = b"haxe Main Main.hx";
+        let declared_len: u32 = u32::try_from(
+            SWF_HEADER_BYTES
+                .checked_add(body.len())
+                .expect("test body length"),
+        )
+        .expect("test SWF length");
+        let mut short: Vec<u8> = make_cws(body);
+        set_cws_declared_len(
+            &mut short,
+            declared_len.checked_sub(1u32).expect("shorter length"),
+        );
+        assert!(inflate_cws(&short).is_none());
+        let mut long: Vec<u8> = make_cws(body);
+        set_cws_declared_len(
+            &mut long,
+            declared_len.checked_add(1u32).expect("longer length"),
+        );
+        assert!(inflate_cws(&long).is_none());
+    }
+
+    #[test]
+    fn cws_rejects_truncated_stream() {
+        let mut bytes: Vec<u8> = make_cws(b"haxe Main Main.hx");
+        let _: Option<u8> = bytes.pop();
+        assert!(inflate_cws(&bytes).is_none());
+    }
+
+    #[test]
+    fn cws_rejects_checksum_corruption() {
+        let mut bytes: Vec<u8> = make_cws(b"haxe Main Main.hx");
+        let last_index: usize = bytes.len().checked_sub(1usize).expect("test stream byte");
+        let last: &mut u8 = bytes.get_mut(last_index).expect("test stream byte");
+        *last ^= 0xffu8;
+        assert!(inflate_cws(&bytes).is_none());
+    }
+
+    #[test]
+    fn cws_rejects_trailing_bytes() {
+        let mut bytes: Vec<u8> = make_cws(b"haxe Main Main.hx");
+        bytes.push(0u8);
+        assert!(inflate_cws(&bytes).is_none());
     }
 
     #[test]
