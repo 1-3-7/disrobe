@@ -2276,7 +2276,6 @@ dependencies = [
  "des",
  "disrobe-binfmt",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-pass-native",
  "flate2",

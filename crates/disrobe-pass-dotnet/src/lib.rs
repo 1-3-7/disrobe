@@ -63,7 +63,7 @@ pub use metadata::{
 };
 pub use model::{AssemblyModel, FieldModel, MethodModel, ParamModel, Resolver, TypeModel};
 pub use names::NameTable;
-pub use pass::{DotnetPass, EazVmSummary, KoiVmSummary, PASS_INPUT_PE_CAP, PassSummary, analyze};
+pub use pass::{EazVmSummary, KoiVmSummary, PassSummary, analyze};
 pub use pe::{
     ClrHeader, DataDirectory, PeBitness, PeImage, SectionHeader, parse, parse_clr_header,
 };

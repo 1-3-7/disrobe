@@ -187,7 +187,7 @@ fn push_terminal_child(children: &mut Vec<ChildArtifact>, relative_path: String,
 
 fn analyze_manifest(summary: &PassSummary) -> serde_json::Value {
     serde_json::json!({
-        "schema": "disrobe.dotnet.analyze/v0",
+        "schema": "disrobe.dotnet.analyze/v1",
         "pe_bitness": summary.pe_bitness,
         "machine": summary.machine,
         "clr_runtime_version": summary.clr_runtime_version,
@@ -203,6 +203,11 @@ fn analyze_manifest(summary: &PassSummary) -> serde_json::Value {
         "stream_names": summary.stream_names,
         "opcode_table_size": summary.opcode_table_size,
         "opcode_spec_coverage_pct": summary.opcode_spec_coverage_pct,
+        "recovered_constants": summary.recovered_constants,
+        "koivm": summary.koivm,
+        "eazvm": summary.eazvm,
+        "control_flow_flattening": summary.control_flow_flattening,
+        "inlined_literals": summary.inlined_literals,
     })
 }
 
@@ -749,6 +754,95 @@ mod tests {
             .expect("analyze sidecar present");
         let parsed: serde_json::Value =
             serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON");
-        assert_eq!(parsed["schema"], "disrobe.dotnet.analyze/v0");
+        assert_eq!(parsed["schema"], "disrobe.dotnet.analyze/v1");
+    }
+
+    #[test]
+    fn extract_children_analyze_sidecar_surfaces_koivm_devirtualization() {
+        let path: std::path::PathBuf = corpus("dotnet/koivm/KoiSample.koivm.exe");
+        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
+            eprintln!("SKIP: koivm fixture missing at {}", path.display());
+            return;
+        };
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = DOTNET_PASS
+            .extract_children(&artifact)
+            .expect("extract_children must not error on a real KoiVM .NET PE");
+        let analyze_child: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path.ends_with(".analyze.json"))
+            .expect("analyze sidecar present");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON");
+        let koivm: &serde_json::Value = &parsed["koivm"];
+        assert_eq!(koivm["koi_stream_present"], true);
+        assert_eq!(koivm["virtualized_methods"], 6);
+        assert_eq!(koivm["devirtualized_methods"], 6);
+        let names: Vec<String> = koivm["recovered_method_names"]
+            .as_array()
+            .expect("recovered_method_names is a json array")
+            .iter()
+            .map(|v: &serde_json::Value| v.as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            names.contains(&"Add".to_owned()),
+            "the analyze sidecar must carry the KoiVM devirtualized method names; got {names:?}"
+        );
+        assert!(parsed["eazvm"].is_null());
+    }
+
+    fn analyze_sidecar_for(rel: &str) -> Option<serde_json::Value> {
+        let path: std::path::PathBuf = corpus(rel);
+        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
+            eprintln!("SKIP: fixture missing at {}", path.display());
+            return None;
+        };
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = DOTNET_PASS
+            .extract_children(&artifact)
+            .expect("extract_children must not error on a real .NET PE");
+        let analyze_child: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path.ends_with(".analyze.json"))
+            .expect("analyze sidecar present");
+        Some(serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON"))
+    }
+
+    #[test]
+    fn extract_children_analyze_sidecar_surfaces_control_flow_flattening() {
+        let Some(parsed): Option<serde_json::Value> =
+            analyze_sidecar_for("dotnet/cff/CffSample.ctrlflow.exe")
+        else {
+            return;
+        };
+        let cff: &serde_json::Value = &parsed["control_flow_flattening"];
+        assert!(
+            !cff.is_null(),
+            "the analyze sidecar must surface the control-flow-flattening summary"
+        );
+        assert!(
+            cff["deflattened_methods"].as_u64().unwrap_or(0) >= 6,
+            "expected at least six deflattened methods; got {cff:?}"
+        );
+        assert_eq!(cff["flattened_methods"], cff["deflattened_methods"]);
+    }
+
+    #[test]
+    fn extract_children_analyze_sidecar_surfaces_inlined_decryptor_literals() {
+        let Some(parsed): Option<serde_json::Value> =
+            analyze_sidecar_for("dotnet/cff/DecryptSample.exe")
+        else {
+            return;
+        };
+        let inlined: Vec<String> = parsed["inlined_literals"]
+            .as_array()
+            .expect("inlined_literals is a json array")
+            .iter()
+            .map(|v: &serde_json::Value| v.as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            inlined.contains(&"genuine".to_owned()),
+            "the analyze sidecar must carry the recovered decryptor literal; got {inlined:?}"
+        );
     }
 }
