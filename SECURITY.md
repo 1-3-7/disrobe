@@ -59,6 +59,66 @@ The reporting channel covers any issue in the `disrobe` source tree that affects
 - `corpus/native/packers/MANIFEST.toml` and sibling registries pin every fixture by BLAKE3; tests verify byte-identity before exercising the parser.
 - The HTTP / gRPC / LSP servers never read files from disk based on client input. Only `bytes_b64` is accepted; `#[serde(deny_unknown_fields)]` is enforced; non-loopback HTTP binds emit a `tracing::warn!` banner at startup.
 
+## Fuzzing and panic-safety coverage
+
+Test coverage against adversarial input has three distinct layers. They are not interchangeable, and are listed separately so a claim of "fuzzed" is never inflated to a surface that only has the lighter layers.
+
+1. **Continuous coverage-guided fuzzing** via `cargo-fuzz` / libFuzzer, defined in `fuzz/Cargo.toml`: `chain_driver.rs` and `chain_spec_parser.rs`. Both drive the chain-orchestration subsystem in `disrobe-core` (the `chain` feature) specifically, not the format parsers themselves.
+2. **Property-based tests** via `proptest`, six files: `crates/disrobe-bytes/tests/properties.rs`, `crates/disrobe-emit/tests/c_cc_oracle.rs`, `crates/disrobe-emit/tests/rust_roundtrip.rs`, `crates/disrobe-ir/tests/proptest_envelope.rs`, `crates/disrobe-llm-metadata/tests/selection_builder.rs`, `crates/disrobe-mba/tests/semantic_preservation.rs`. These cover byte-buffer primitives, the C/Rust emitters' round-trip properties, the `.dr` envelope decoder, LLM-metadata selection, and MBA semantic-preservation with generated structured inputs, not raw byte fuzzing.
+3. **Ad-hoc panic-safety unit tests.** A name-pattern grep (functions named `*_never_panics`, `no_panic`, `panic_safety`, `fuzz_decode_*`, plus files named `*resilience*`, `*adversarial*`, `fuzz_*`, `*malformed*`) turns up on the order of 55 files across the workspace; the exact count depends on where the pattern's boundary is drawn. Each feeds hand-picked or lightly randomized truncated/mutated/malformed bytes into a parser and asserts a clean `Err` rather than a panic. This is not property-based fuzzing (no shrinking, no corpus, no coverage feedback), but it is the widest-covering layer by file count and reaches most `disrobe-pass-*` crates, `disrobe-binfmt`, and `disrobe-core`.
+
+**Known gap, stated plainly.** `disrobe-pass-py-deob`, `disrobe-pass-pyarmor`, `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, `disrobe-nir`, and `disrobe-nir-lift` have none of the three layers: no fuzz target, no proptest file, and no dedicated resilience/never-panics test file. `disrobe-pass-py-deob` and `disrobe-pass-pyarmor` each have several scattered "rejects garbage/malformed bytes" assertions across their existing detector and unpack tests, not a one-off, but this is ad hoc coverage embedded in functional tests, not the systematic dedicated-file treatment the rest of the pass crates get. These are real, major parsing surfaces (dozens of Python-obfuscator and PyArmor peelers, the native PyArmor C-extraction interop, and the cross-format IR lifters for JVM/Dalvik/CIL/AVM2/BEAM/Lua/Python/wasm), and this gap is not papered over by a broader "the parsing surface is fuzzed" claim elsewhere in the docs.
+
+## Plugin trust model
+
+Two crates implement `disrobe`'s WASM plugin substrate, and neither matches a "plugins run with full host privileges, unsandboxed" model: analysis logic loaded as WASM is sandboxed by construction.
+
+- **`disrobe-plugin-host`** (`crates/disrobe-plugin-host/src/lib.rs`) runs a raw core WASM module through `wasmtime` under a fuel budget (default 50,000,000, capped at 1,000,000,000), a wall-clock deadline (default 1s, capped at 30s, enforced by an epoch-interrupt watchdog thread), and a memory cap (default 16 MiB, capped at 256 MiB) enforced by a `ResourceLimiter`. Before instantiation, `PluginHost::run` rejects a module outright if it imports anything at all: `first_import` denies the module and `Linker::define_unknown_imports_as_traps` backstops it. A module run through this path has no ambient filesystem, network, or host-function access; it can only transform the input bytes it is given and return output bytes, bounded by the caps above.
+- **`disrobe-plugin-loader`** (`crates/disrobe-plugin-loader/src/lib.rs`, `manifest.rs`) verifies a WASM component against a `minisign` signature from a trusted key before it is even parsed as a component, then walks the component's declared imports and rejects any import not explicitly granted by a TOML manifest (`Manifest::grants`). This is a capability allowlist, not a blanket trust grant: an unsigned, mis-signed, or over-capability-requesting component is rejected before it runs.
+
+**What is not yet true, stated honestly.** The two crates are not wired to each other or to the CLI: nothing in the workspace currently loads a signed, manifest-verified component from `disrobe-plugin-loader` and executes it through `disrobe-plugin-host` (they operate on different WASM object kinds, core `Module` versus component-model `Component`, with no glue code between them yet). The WIT schema at `schemas/v0/wit/disrobe-plugin@0.1.0.wit` defines a `pass-descriptor` record carrying `id` and `version` fields intended for exactly this kind of provenance, but no code path currently calls a plugin's `descriptor()` export or records a plugin's name and version into any `disrobe` output; there is no `wit-bindgen` / `bindgen!` usage anywhere in the workspace that would wire the WIT interface to real execution. Attaching a name/version field to either crate in isolation today would be cosmetic, since there is no execution path for it to travel through yet, so this is left as a disclosed gap rather than bolted onto an unconnected crate.
+
+**Editor integrations are a different thing.** The IDA / Ghidra / Binary Ninja / VS Code integrations under `editors/` (generated by `xtask plugins`) are not WASM plugins; they shell out to the real `disrobe` CLI binary as a subprocess from inside the host tool's own process, with the same privileges the analyst already has running that tool. They carry no additional trust boundary beyond "the analyst chose to install and run `disrobe`."
+
+**Residual trust, stated plainly.** Resource sandboxing bounds compute, memory, and wall-clock time, and denies ambient capability; it does not validate the correctness of a plugin's analysis output. A plugin that stays within its resource caps can still return incorrect or misleading bytes, and nothing downstream currently distinguishes in-house pass output from plugin output in provenance. Only load plugins from sources you trust for correctness, even though the sandbox bounds what a plugin can do to your machine.
+
+## Attack surface inventory
+
+A plain enumeration, grouped by subsystem rather than one row per crate, generated by reading the workspace rather than asserted from memory.
+
+**Untrusted-input parsers (format / container / bytecode):**
+
+| Family | Crates |
+|---|---|
+| Native executables and containers | `disrobe-binfmt` (PE/ELF/Mach-O; zip/tar/7z/cab/msi/nsis/deb/rpm/AppImage/... containers; quota + path-sanitisation), `disrobe-pass-native` (packers, protectors, disassembly), `disrobe-pass-nativelang` (Nim/Zig/Crystal/D) |
+| .NET / CIL | `disrobe-pass-dotnet` |
+| JVM / Android | `disrobe-pass-jvm`, `disrobe-nir-lift` (JVM/Dalvik/CIL/AVM2 bytecode lifters) |
+| Python ecosystem | `disrobe-pass-py-decompile`, `disrobe-pass-py-disasm`, `disrobe-pass-py-deob`, `disrobe-pass-pyarmor`, `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, `disrobe-pass-pyinstaller`, `disrobe-pass-pyfreeze`, `disrobe-pass-nuitka`, `disrobe-pass-pickle`, `disrobe-py-marshal`, `disrobe-pass-sourcedefender` |
+| JavaScript / wasm | `disrobe-pass-js-deob`, `disrobe-pass-wasm-deob` |
+| Scripting / VM bytecode / mobile | `disrobe-pass-lua`, `disrobe-pass-ruby`, `disrobe-pass-php`, `disrobe-pass-shell`, `disrobe-pass-scriptlang`, `disrobe-pass-beam`, `disrobe-pass-go`, `disrobe-pass-as3`, `disrobe-pass-swift-objc`, `disrobe-pass-mobile` |
+| Internal envelope / IR | `disrobe-ir` (`.dr` envelope decoder), `disrobe-nir` |
+
+**Subprocess-capable code** (real `std::process::Command` call sites found by grep, non-test):
+
+| Path | What it invokes |
+|---|---|
+| `crates/disrobe-binfmt/src/external_wrap.rs` | Shared wrapper backing the optional-external-container-tool call sites |
+| `crates/disrobe-cli/src/cli/native.rs`, `crates/disrobe-cli/src/cli/nuitka.rs` | Optional decompiler/analysis backends (Ghidra, CFR, Vineflower, jadx, ILSpy, dnSpy, de4dot, Rizin) selected with `--backend` |
+| `crates/disrobe-cli/src/cli/path_ops.rs` | Path-resolution / install helper invocations |
+| `crates/disrobe-pass-nuitka/src/frozen.rs` (`verify_recompile`) | Spawns a Python interpreter at a caller-supplied path to check a recovered module recompiles |
+
+`crates/disrobe-core/src/recon/git_history.rs`, `crates/disrobe-pass-native/src/pseudo_c.rs`, and `crates/disrobe-pass-wasm-deob/src/structured.rs` also call `std::process::Command`, but every call site found sits inside a `#[cfg(test)]` module (test-only recompile-oracle grading against a host `rustc`/`git`) and does not ship in the release binary. `crates/disrobe-pass-py-decompile/examples/decomp_one.rs` calls `Command` too; it is an `examples/` binary, not part of any shipped target, for the same reason.
+
+**Network-capable code** (excluding dev/test-only dependencies):
+
+| Direction | Crate | Path |
+|---|---|---|
+| Inbound (server) | `disrobe-cli` | `disrobe serve`: HTTP via `axum` / `hyper`, gRPC via `tonic`. `bytes_b64`-only bodies, `deny_unknown_fields`, non-loopback bind warns at startup (Boundary 3 in the threat model). Gated behind the `serve` subcommand, not running by default. |
+| Outbound (client) | `disrobe-cli` | `crates/disrobe-cli/src/cli/install_deps.rs`: `reqwest` calls to fetch release metadata and download optional backend tools (e.g. Ghidra) during `disrobe install` / `disrobe doctor --auto-install`. Opt-in subcommands, not run implicitly. |
+| Outbound (client) | `disrobe-prowl` | OSINT / IOC harvester; queries public web archives and threat-intel feeds via `reqwest`. A dedicated, explicitly-invoked tool, not part of the default parsing path. |
+
+None of the parser crates in the first table above link `reqwest`, `axum`, `hyper`, or `tonic`. Network capability is confined to the CLI's `serve` / `install` / `doctor` paths and the separate `disrobe-prowl` tool.
+
 ## Cryptography
 
 - Identity hash: BLAKE3 (the `blake3` crate, `0.x`).
@@ -88,3 +148,31 @@ When a reported issue ships a fix, we add the reporter (with their preferred han
 ## License
 
 This policy is published under the same Elastic License 2.0 as the rest of the project. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Dependency licenses
+
+`disrobe`'s own dependency-license policy lives in [`deny.toml`](deny.toml) under `[licenses]`: an explicit allowlist (Apache-2.0, MIT, BSD-2/3-Clause, ISC, Zlib, 0BSD, CC0-1.0, Unicode-3.0/DFS-2016, MPL-2.0, CDLA-Permissive-2.0, Elastic-2.0), plus per-crate clarifications and exceptions for the handful of dependencies whose license metadata needs a manual pointer (`ring`, `libbz2-rs-sys`). This is enforced in CI on every push via `EmbarkStudios/cargo-deny-action`. To regenerate the full report yourself:
+
+```sh
+cargo deny check licenses
+```
+
+That command lists every dependency's resolved license against the policy in `deny.toml` and fails on anything outside the allowlist. There is no separate license-report generator beyond this; `cargo deny check licenses` is the report.
+
+### Optional external backend tools
+
+`disrobe` can optionally invoke a small set of external decompiler/analysis tools as subprocesses when selected with `--backend` (see the attack surface inventory above, and the "Subprocess invocation" item under In scope). Each ships under its own license. This list is informational only, not a compatibility analysis:
+
+| Tool | License (informational) |
+|---|---|
+| Ghidra | Apache License 2.0 |
+| CFR | MIT License |
+| Vineflower | Apache License 2.0 |
+| Procyon | Apache License 2.0 |
+| jadx | Apache License 2.0 |
+| ILSpy | MIT License |
+| dnSpy / dnSpyEx | GPL-3.0 |
+| de4dot | GPL-3.0 |
+| Rizin | LGPL-3.0 (core) |
+
+None of these tools are vendored or redistributed by `disrobe`; the CLI shells out to a binary you separately installed. Installing and invoking any of them is your own choice, and compliance with that tool's own license terms, including any copyleft obligations triggered by how you use it, is your responsibility, not `disrobe`'s. This table is not legal advice and is not a compatibility analysis against the Elastic License 2.0; consult your own counsel if you need one.
