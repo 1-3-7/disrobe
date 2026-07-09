@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-pass-py-decompile = { workspace = true }

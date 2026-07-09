@@ -230,6 +230,11 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         FreezerKind::Bbfreeze => (TAG_BBFREEZE, "bbfreeze-layout"),
         FreezerKind::Unknown => return None,
     };
+    let explain: String = if d.reasons.is_empty() {
+        format!("pyfreeze kind={tag}")
+    } else {
+        d.reasons.join("; ")
+    };
     Some(DetectVerdict::new(
         PASS_ID,
         tag,
@@ -237,7 +242,7 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         d.confidence,
         22,
         vec![marker],
-        format!("pyfreeze kind={tag}"),
+        explain,
     ))
 }
 
@@ -265,6 +270,23 @@ mod tests {
     fn detect_misses_random_bytes() {
         let bytes: Vec<u8> = vec![0u8; 32];
         assert!(PyfreezeDetector.detect(&ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn detect_verdict_explain_carries_the_resolved_python_version() {
+        let magic: u32 = disrobe_py_marshal::magic_for(disrobe_py_marshal::PyVersion::PY315)
+            .expect("known magic");
+        let mut bytes: Vec<u8> = magic.to_le_bytes().to_vec();
+        bytes.resize(16, 0);
+        let verdict: DetectVerdict = PyfreezeDetector
+            .detect(&ctx(&bytes))
+            .expect("pyc magic must detect");
+        assert_eq!(verdict.format_tag, TAG_PYC);
+        assert!(
+            verdict.explain.contains("3.15"),
+            "the durably-serialized DetectorPickDoc.explain must carry the resolved Python version, not a generic template; got {:?}",
+            verdict.explain,
+        );
     }
 
     #[test]

@@ -2648,7 +2648,6 @@ dependencies = [
  "bytes",
  "disrobe-binfmt",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-pass-native",
  "disrobe-pass-py-decompile",
  "disrobe-py-marshal",
