@@ -2301,7 +2301,6 @@ version = "0.10.4"
 dependencies = [
  "disrobe-binfmt",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "flate2",
  "gimli 0.32.3",
