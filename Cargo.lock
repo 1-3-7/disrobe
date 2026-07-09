@@ -2706,7 +2706,6 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "disrobe-core",
- "disrobe-ir",
  "insta",
  "lzma-rs",
  "miette",

@@ -25,9 +25,7 @@ pub use mruby::disasm::{MrubyInstruction, disassemble_iseq};
 pub use mruby::irep::{IrepRecord, IrepTree, PoolEntry, PoolKind};
 pub use mruby::ops::{MrubyOp, OperandFormat};
 pub use mruby::reader::{RiteBinary, RiteHeader, RiteSection};
-pub use pass::{
-    PASS_INPUT_PATH_CAP, PassInput, RubyAnalysis, RubyPass, analyze_bytes, decode_pass_input,
-};
+pub use pass::{RubyAnalysis, analyze_bytes};
 pub use provenance_header::{
     mruby_decompiled_header, render_ruby_with_header, render_yarv_with_header,
     ruby_decompiled_header, yarv_disasm_header,
