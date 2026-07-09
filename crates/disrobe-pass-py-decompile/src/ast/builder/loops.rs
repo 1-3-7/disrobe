@@ -2229,6 +2229,16 @@ fn find_break_target(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> 
         {
             target = Some(target.map_or(t, |prev: usize| prev.max(t)));
         }
+        if matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::JumpAbsolute(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t < region.header)
+        {
+            target = Some(target.map_or(hi, |prev: usize| prev.max(hi)));
+        }
     }
     target
 }

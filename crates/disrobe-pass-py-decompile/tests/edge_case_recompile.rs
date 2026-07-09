@@ -460,3 +460,19 @@ fn fstring_nested_fstring_in_field() {
         "def f(x):\n    return f\"{f'{x}'}\"\n",
     );
 }
+
+#[test]
+fn nested_for_else_break_targets_enclosing_loop_header() {
+    assert_recompiles(
+        "edge_nested_for_else_break_ancestor",
+        "def has_all(outer, inner_source):\n    for needle in outer:\n        for hay in inner_source:\n            if needle == hay:\n                break\n        else:\n            return False\n    return True\n",
+    );
+}
+
+#[test]
+fn nested_for_else_break_after_guarded_return() {
+    assert_recompiles(
+        "edge_nested_for_else_break_guarded_return",
+        "def check_methods(c, *methods):\n    mro = c.__mro__\n    for method in methods:\n        for b in mro:\n            if method in b.__dict__:\n                if b.__dict__[method] is None:\n                    return None\n                break\n        else:\n            return None\n    return True\n",
+    );
+}

@@ -35,8 +35,8 @@ use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
     active_version, class_docstring, enter_active_region, enter_structure_depth, extract_docstring,
     fallthrough_cond_test, loop_break_target, loop_continue_target, loop_exit_return,
-    loop_exit_tail_range, negate_cond_expr, none_jump_test, none_jump_test_taken,
-    with_boolop_context,
+    loop_exit_tail_range, loop_frame_has_header, negate_cond_expr, none_jump_test,
+    none_jump_test_taken, with_boolop_context,
 };
 use crate::ast::node::{
     Arguments, Comprehension, ConstValue, ExceptHandler, Expr, ExprCtx, FormatConversion,
@@ -2206,6 +2206,9 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
     if loop_break_target().is_some_and(|exit: usize| target >= exit && target > last_idx) {
         return Some(Stmt::Break);
     }
+    if target < last_idx && loop_frame_has_header(target) {
+        return Some(Stmt::Break);
+    }
     None
 }
 
@@ -2220,16 +2223,30 @@ fn trailing_loop_break_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opt
         })
     })?;
     let last_op: &CanonicalOp = stream.ops.get(last_idx)?;
-    if !matches!(
+    if matches!(
         last_op,
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
-        return None;
+        let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
+        if loop_break_target().is_some_and(|exit: usize| target >= exit && target > last_idx) {
+            return Some(Stmt::Break);
+        }
     }
-    let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
-    loop_break_target()
-        .filter(|&exit: &usize| target >= exit && target > last_idx)
-        .map(|_: usize| Stmt::Break)
+    if matches!(
+        last_op,
+        CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::JumpAbsolute(_)
+    ) {
+        let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
+        if loop_continue_target() == Some(target) {
+            return None;
+        }
+        if target < last_idx && loop_frame_has_header(target) {
+            return Some(Stmt::Break);
+        }
+    }
+    None
 }
 
 #[deny(clippy::indexing_slicing)]
@@ -2389,6 +2406,9 @@ fn rewrite_jump_to_break_continue(
         && target == header
     {
         return vec![Stmt::Continue];
+    }
+    if continue_at != Some(target) && target < last_idx && loop_frame_has_header(target) {
+        return vec![Stmt::Break];
     }
     body
 }
@@ -4334,6 +4354,16 @@ fn stmt_is_continue_guard_safe(stmt: &Stmt) -> bool {
     )
 }
 
+fn back_edge_breaks_to_enclosing_loop(stream: &DecodedStream, idx: usize) -> bool {
+    let Some(target): Option<usize> = resolve_jump_target(stream, idx, &stream.ops[idx]) else {
+        return false;
+    };
+    if loop_continue_target() == Some(target) {
+        return false;
+    }
+    target < idx && loop_frame_has_header(target)
+}
+
 fn trim_body_back_edge(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     let mut end: usize = hi;
     while end > lo
@@ -4344,7 +4374,10 @@ fn trim_body_back_edge(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
     {
         end -= 1;
     }
-    if end > lo && is_back_edge(&stream.ops[end - 1]) {
+    if end > lo
+        && is_back_edge(&stream.ops[end - 1])
+        && !back_edge_breaks_to_enclosing_loop(stream, end - 1)
+    {
         end -= 1;
     }
     end.max(lo)
