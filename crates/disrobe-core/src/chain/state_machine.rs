@@ -356,27 +356,87 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                             } else {
                                 None
                             };
-                            nodes.push(Node {
-                                output_kind: Some(outcome.kind),
-                                output_blake3: Some(out_hash),
-                                output_size: Some(out_size),
-                                output_bytes: captured,
-                                duration: Some(outcome.duration),
-                                metadata: outcome.metadata,
-                                verdict: Verdict::Complete {
-                                    formats: vec![language.label().to_string()],
-                                },
-                                ..pass_node_base(
-                                    layer_id,
-                                    item.parent,
-                                    item.depth,
-                                    item.branch_id.clone(),
-                                    in_hash,
-                                    in_size,
-                                    format_tag_in,
-                                    pick,
-                                )
-                            });
+                            let no_further_progress: bool = item.history.contains(&out_hash);
+                            let further_pick: Option<DetectorPick> = if no_further_progress {
+                                None
+                            } else {
+                                let peek_ctx: DetectContext<'_> = DetectContext {
+                                    bytes: &outcome.output_bytes,
+                                    path_hint: item.path_hint.as_deref(),
+                                    parent_hint: Some(language.label()),
+                                    depth: item.depth.saturating_add(1),
+                                };
+                                let peek_cands: Vec<super::detection::DetectVerdict> =
+                                    self.registry.run_all(&peek_ctx);
+                                detector_calls +=
+                                    u32::try_from(peek_cands.len()).unwrap_or(u32::MAX);
+                                let peek_outcome: PickOutcome = self
+                                    .registry
+                                    .pick_with_policy(peek_cands, &self.config.selection_policy);
+                                rejected = rejected.saturating_add(
+                                    u32::try_from(peek_outcome.dropped).unwrap_or(u32::MAX),
+                                );
+                                peek_outcome.pick
+                            };
+                            if further_pick.is_some() {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_blake3: Some(out_hash),
+                                    output_size: Some(out_size),
+                                    output_bytes: captured,
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::Ok,
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in.clone(),
+                                        pick,
+                                    )
+                                });
+                                let mut next_history: BTreeSet<[u8; 32]> = item.history.clone();
+                                next_history.insert(out_hash);
+                                let mut next_container_lineage: BTreeSet<String> =
+                                    item.container_lineage.clone();
+                                next_container_lineage.insert(format_tag_in);
+                                queue.push_back(WorkItem {
+                                    parent: layer_id,
+                                    bytes: outcome.output_bytes,
+                                    depth: item.depth.saturating_add(1),
+                                    branch_id: item.branch_id.clone(),
+                                    history: next_history,
+                                    container_lineage: next_container_lineage,
+                                    spec_cursor: item.spec_cursor.advance(),
+                                    path_hint: item.path_hint.clone(),
+                                    parent_hint: Some(language.label().to_string()),
+                                });
+                            } else {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_blake3: Some(out_hash),
+                                    output_size: Some(out_size),
+                                    output_bytes: captured,
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::Complete {
+                                        formats: vec![language.label().to_string()],
+                                    },
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in,
+                                        pick,
+                                    )
+                                });
+                            }
                         }
                         OutputKind::Bytes {
                             format_tag,
@@ -777,6 +837,8 @@ mod tests {
         id: &'static str,
     }
 
+    const STUB_ALREADY_CLEAN_SOURCE: &[u8] = b"src";
+
     #[derive(Debug)]
     struct StubDetector {
         id: &'static str,
@@ -788,7 +850,10 @@ mod tests {
         fn id(&self) -> PassId {
             self.id
         }
-        fn detect(&self, _ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+            if ctx.bytes == STUB_ALREADY_CLEAN_SOURCE {
+                return None;
+            }
             Some(DetectVerdict::new(
                 self.id,
                 "tag",
@@ -1112,6 +1177,203 @@ mod tests {
         assert_eq!(plan.final_format.as_deref(), Some("Python"));
     }
 
+    const WRAPPED_LAYER_PREFIX: &[u8] = b"WRAP:";
+
+    fn strip_one_wrap_layer(bytes: &[u8]) -> Vec<u8> {
+        bytes
+            .strip_prefix(WRAPPED_LAYER_PREFIX)
+            .unwrap_or(bytes)
+            .to_vec()
+    }
+
+    #[test]
+    fn source_output_that_still_matches_a_further_pass_stays_non_terminal_and_the_chain_progresses_to_real_completion()
+     {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: strip_one_wrap_layer(bytes),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            capture_stage_bytes: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let mut seed: Vec<u8> = WRAPPED_LAYER_PREFIX.to_vec();
+        seed.extend_from_slice(WRAPPED_LAYER_PREFIX);
+        seed.extend_from_slice(STUB_ALREADY_CLEAN_SOURCE);
+        let plan: ChainPlan = d.run(seed, &spec, None);
+
+        assert_eq!(
+            runner.calls.load(AtomicOrdering::SeqCst),
+            2,
+            "a still-wrapped recovered source must genuinely drive a second real pass \
+             invocation, not merely flip a verdict label"
+        );
+        let first_hop: &Node = plan
+            .nodes
+            .iter()
+            .find(|n: &&Node| n.parent_id == Some(0))
+            .expect("root must have a direct child for the first pass run");
+        assert_eq!(
+            first_hop.verdict,
+            Verdict::Ok,
+            "recovered source that still matches a further pass must not be marked terminal"
+        );
+        assert!(
+            matches!(first_hop.output_kind, Some(OutputKind::Source { .. })),
+            "provenance must be preserved: the non-terminal hop is still Source-shaped"
+        );
+        let second_hop: &Node = plan
+            .nodes
+            .iter()
+            .find(|n: &&Node| n.parent_id == Some(first_hop.id))
+            .expect("a real child work item must have been enqueued and processed");
+        assert_eq!(second_hop.pass_id.as_deref(), Some("stub.a"));
+        assert_eq!(
+            second_hop.verdict,
+            Verdict::Complete {
+                formats: vec!["Python".to_string()]
+            },
+            "the chain must reach a genuine terminal state once nothing further matches"
+        );
+        assert_eq!(
+            second_hop.output_bytes.as_deref(),
+            Some(STUB_ALREADY_CLEAN_SOURCE),
+            "tracing to actual completion: the final recovered bytes must be the fully \
+             unwrapped source, not a placeholder"
+        );
+        assert_eq!(plan.final_format.as_deref(), Some("Python"));
+    }
+
+    #[test]
+    fn source_output_with_no_further_pass_stays_byte_for_byte_complete() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n, _b| {
+                Ok(PassRunOutcome {
+                    output_bytes: STUB_ALREADY_CLEAN_SOURCE.to_vec(),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            capture_stage_bytes: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &spec, None);
+
+        assert_eq!(
+            runner.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "no pass claims the already-clean recovered source, so exactly one invocation \
+             must occur; a second, wasted invocation would mean the 99% terminal case \
+             regressed"
+        );
+        let leaf: &Node = plan
+            .nodes
+            .iter()
+            .find(|n: &&Node| n.parent_id == Some(0))
+            .expect("root must have exactly one direct child");
+        assert_eq!(
+            leaf.verdict,
+            Verdict::Complete {
+                formats: vec!["Python".to_string()]
+            },
+            "the old unconditional-terminal verdict shape must be preserved byte-for-byte \
+             when no further pass claims the recovered source"
+        );
+        assert!(matches!(leaf.output_kind, Some(OutputKind::Source { .. })));
+        assert_eq!(
+            leaf.output_bytes.as_deref(),
+            Some(STUB_ALREADY_CLEAN_SOURCE)
+        );
+        assert!(
+            !plan
+                .nodes
+                .iter()
+                .any(|n: &Node| n.parent_id == Some(leaf.id)),
+            "a genuinely terminal source must never enqueue a child work item"
+        );
+        assert_eq!(plan.final_format.as_deref(), Some("Python"));
+    }
+
+    #[test]
+    fn source_chain_of_sources_terminates_via_recursion_budget_not_an_infinite_loop() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|n: u32, _b: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: format!("gen-{n}").into_bytes(),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let spec: ChainSpec = ChainSpec::Auto { cap: 5 };
+        let started: Instant = Instant::now();
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &spec, None);
+        let elapsed: Duration = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "a source pass whose output is always re-claimed by a further source-shaped \
+             pass must still terminate quickly, took {elapsed:?}"
+        );
+        let calls: u32 = runner.calls.load(AtomicOrdering::SeqCst);
+        assert_eq!(
+            calls, 5,
+            "the depth cap of 5 must halt this ever-distinct, always-re-detected source \
+             chain after exactly 5 real pass invocations, got {calls}"
+        );
+        let any_cap: bool = plan
+            .nodes
+            .iter()
+            .any(|n: &Node| matches!(n.verdict, Verdict::CapReached));
+        assert!(
+            any_cap,
+            "expected the existing depth-cap machinery to terminal-layer the runaway \
+             source-of-sources chain as CapReached"
+        );
+        let any_complete: bool = plan
+            .nodes
+            .iter()
+            .any(|n: &Node| matches!(n.verdict, Verdict::Complete { .. }));
+        assert!(
+            !any_complete,
+            "an ever-distinct, always-re-detected source chain must never fabricate a \
+             Complete verdict; it must cap out instead"
+        );
+    }
+
     fn stub_leaf(id: NodeId, branch_id: &str, verdict: Verdict) -> Node {
         Node {
             id,
@@ -1210,7 +1472,7 @@ mod tests {
                     })
                 } else {
                     Ok(PassRunOutcome {
-                        output_bytes: b"src".to_vec(),
+                        output_bytes: STUB_ALREADY_CLEAN_SOURCE.to_vec(),
                         kind: OutputKind::Source {
                             language: Language::Python,
                             formatted: true,

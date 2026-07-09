@@ -293,8 +293,20 @@ fn render_vba_modules(modules: &[RecoveredVbaModule]) -> String {
 
 pub static SHELL_PASS: ShellPass = ShellPass;
 
+const fn family_dispatch_bypasses_reverse_for_family(dialect: Dialect) -> bool {
+    matches!(
+        dialect,
+        Dialect::Batch | Dialect::Vba | Dialect::Xlm | Dialect::Vbs | Dialect::Wsh
+    )
+}
+
 fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
     if d.confidence < 0.5 {
+        return None;
+    }
+    if !family_dispatch_bypasses_reverse_for_family(d.dialect)
+        && matches!(d.family, Family::Plain | Family::Unknown)
+    {
         return None;
     }
     let (tag, marker): (&'static str, &'static str) = match d.dialect {
@@ -585,7 +597,7 @@ mod tests {
 
     #[test]
     fn detect_bash_shebang() {
-        let bytes: &[u8] = b"#!/bin/bash\necho hello\n";
+        let bytes: &[u8] = b"#!/bin/bash\neval${IFS}echo${IFS}hello\n";
         let v: DetectVerdict = Detector::detect(&ShellDetector, &ctx(bytes)).expect("must detect");
         assert_eq!(v.format_tag, TAG_BASH);
     }
@@ -593,6 +605,16 @@ mod tests {
     #[test]
     fn detect_misses_empty() {
         assert!(Detector::detect(&ShellDetector, &ctx(b"")).is_none());
+    }
+
+    #[test]
+    fn detect_misses_clean_bash_shebang() {
+        let bytes: &[u8] = b"#!/bin/bash\necho hello\n";
+        assert!(
+            Detector::detect(&ShellDetector, &ctx(bytes)).is_none(),
+            "a clean, non-obfuscated bash script carries no reversible family and must not \
+             be claimed by the chain detector, matching the js.deob/py.deob convention"
+        );
     }
 
     #[test]
@@ -612,7 +634,7 @@ mod tests {
 
     #[test]
     fn pass_run_returns_bash_source_not_json() {
-        let bytes: Vec<u8> = b"#!/bin/bash\necho hello\n".to_vec();
+        let bytes: Vec<u8> = b"#!/bin/bash\neval${IFS}echo${IFS}hello\n".to_vec();
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = SHELL_PASS.run(&a).expect("classify must succeed");
         assert_eq!(out.rung, Rung::Surface);
@@ -623,7 +645,7 @@ mod tests {
         );
         assert!(
             s.contains("echo hello"),
-            "must contain the real shell source"
+            "must contain the real, IFS-substituted shell source; got {s:?}"
         );
         match SHELL_PASS.output_kind(&out) {
             OutputKind::Source { language, .. } => assert_eq!(language, Language::Bash),
