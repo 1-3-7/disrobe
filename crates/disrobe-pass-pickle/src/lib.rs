@@ -25,7 +25,6 @@ pub mod error;
 #[cfg(feature = "ml")]
 pub mod ml;
 pub mod opcode;
-pub mod pass;
 pub mod polyglot;
 pub mod reconstruct;
 pub mod safety;
@@ -39,9 +38,8 @@ pub use ml::{
     EmbeddedPickle, MlReport, ModelFormat, detect as detect_model, extract as extract_ml,
 };
 pub use opcode::{ArgKind, Effect, OPCODES, OpInfo, lookup as lookup_opcode, max_proto};
-pub use pass::{PickleLegacyPass, PicklePassReport};
 pub use polyglot::{ContainerKind, PolyglotReport, analyze as analyze_polyglot, looks_like_pickle};
-pub use reconstruct::{Reconstruction, reconstruct};
+pub use reconstruct::{Reconstruction, needs_memo_table, reconstruct};
 pub use safety::{
     AnalysisOptions, ConfidenceTier, Finding, Policy, SafetyReport, Severity,
     analyze as analyze_safety, analyze_deep, analyze_with_options, analyze_with_policy,

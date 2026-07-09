@@ -33,6 +33,13 @@ pub struct Reconstruction {
 }
 
 #[must_use]
+pub fn needs_memo_table(value: &PickleValue) -> bool {
+    let mut refs: Vec<u64> = Vec::new();
+    collect_refs(value, &mut refs);
+    !refs.is_empty()
+}
+
+#[must_use]
 pub fn reconstruct(
     value: &PickleValue,
     memo: &BTreeMap<u64, PickleValue>,
@@ -596,5 +603,21 @@ mod tests {
         assert!(r.reexecutable);
         assert!(r.program.contains("import os"));
         assert!(r.program.contains("result = os.system"));
+    }
+
+    fn vm_result(bytes: &[u8]) -> PickleValue {
+        let dis: Disassembly = disassemble(bytes).expect("disasm");
+        let mut session: Session = Session::new();
+        session.run(&dis).expect("vm")
+    }
+
+    #[test]
+    fn needs_memo_table_is_false_for_a_plain_scalar() {
+        assert!(!needs_memo_table(&vm_result(b"\x80\x02K\x2a.")));
+    }
+
+    #[test]
+    fn needs_memo_table_is_true_for_a_self_referential_list() {
+        assert!(needs_memo_table(&vm_result(b"\x80\x02]q\x00h\x00a.")));
     }
 }

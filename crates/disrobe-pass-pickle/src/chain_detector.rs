@@ -1,5 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::collections::BTreeMap;
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{
@@ -11,7 +13,8 @@ use disrobe_core::provenance::Language;
 
 use crate::disasm::{Disassembly, disassemble};
 use crate::polyglot::looks_like_pickle;
-use crate::vm::{VmTrace, execute};
+use crate::reconstruct::{Reconstruction, needs_memo_table, reconstruct};
+use crate::vm::{PickleValue, VmTrace, execute_full};
 
 pub const PASS_ID: PassId = "pickle.classify";
 
@@ -77,10 +80,16 @@ impl Pass for PicklePass {
         let dis: Disassembly = disassemble(bytes).map_err(|e: crate::error::Error| {
             CoreError::PassFailure(format!("DR-PICKLE-0903: pickle disasm: {e}"))
         })?;
-        let trace: VmTrace = execute(&dis).map_err(|e: crate::error::Error| {
-            CoreError::PassFailure(format!("DR-PICKLE-0904: pickle vm: {e}"))
-        })?;
-        let source: String = crate::decompile::to_python_assignment(&trace.result);
+        let (trace, memo): (VmTrace, BTreeMap<u64, PickleValue>) =
+            execute_full(&dis).map_err(|e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-PICKLE-0904: pickle vm: {e}"))
+            })?;
+        let source: String = if needs_memo_table(&trace.result) {
+            let recovered: Reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
+            recovered.program
+        } else {
+            crate::decompile::to_python_assignment(&trace.result)
+        };
         Ok(Artifact::new(
             Rung::Surface,
             source.into_bytes(),
@@ -143,5 +152,18 @@ mod tests {
         let art: Artifact = Artifact::new(Rung::Raw, b"\x80\x02K\x2a.".to_vec(), [0u8; 32]);
         let out: Artifact = PICKLE_PASS.run(&art).expect("run");
         assert!(String::from_utf8_lossy(&out.envelope).contains("result = 42"));
+    }
+
+    #[test]
+    fn pass_emits_a_self_defined_memo_table_for_a_self_referential_list() {
+        let art: Artifact = Artifact::new(Rung::Raw, b"\x80\x02]q\x00h\x00a.".to_vec(), [0u8; 32]);
+        let out: Artifact = PICKLE_PASS.run(&art).expect("run");
+        let source: String = String::from_utf8_lossy(&out.envelope).into_owned();
+        assert!(
+            source.contains("_m = {}"),
+            "a memo-backed reference must never appear without the dict that defines it: {source}"
+        );
+        assert!(source.contains("_m[0] = []"));
+        assert!(source.contains("_m[0].extend([_m[0]])"));
     }
 }

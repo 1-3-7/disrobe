@@ -11,8 +11,9 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use disrobe_core::{Artifact, LegacyPass, Rung};
-use disrobe_pass_pickle::pass::{self, PickleLegacyPass};
+use disrobe_core::chain::Pass;
+use disrobe_core::{Artifact, Rung};
+use disrobe_pass_pickle::chain_detector::PICKLE_PASS;
 use disrobe_pass_pickle::vm::PickleValue;
 use disrobe_pass_pickle::{
     AnalysisOptions, Disassembly, Policy, VmTrace, analyze_all, analyze_deep, analyze_polyglot,
@@ -76,12 +77,9 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
     guard("analyze_all", desc, || {
         let _ = analyze_all(bytes);
     });
-    guard("pass::decode_pass_input", desc, || {
-        let _ = pass::decode_pass_input(bytes);
-    });
-    guard("PickleLegacyPass::run", desc, || {
+    guard("PICKLE_PASS::run", desc, || {
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
-        let _ = PickleLegacyPass.run(&artifact);
+        let _ = PICKLE_PASS.run(&artifact);
     });
     guard("disassemble->everything", desc, || {
         let Ok(dis): Result<Disassembly, _> = disassemble(bytes) else {

@@ -2536,7 +2536,6 @@ version = "0.10.4"
 dependencies = [
  "base64",
  "disrobe-core",
- "disrobe-ir",
  "insta",
  "miette",
  "serde",
