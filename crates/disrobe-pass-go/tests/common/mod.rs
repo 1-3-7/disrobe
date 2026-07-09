@@ -77,6 +77,10 @@ pub const BENCH_DARWIN_ARM64_NM: &str = "bench_generics_darwin_arm64.nm.txt";
 pub const BENCH_DARWIN_ARM64_NM_EQ: &str = "bench_generics_darwin_arm64.nm_eq.txt";
 pub const BENCH_DARWIN_ARM64_NM_ITAB: &str = "bench_generics_darwin_arm64.nm_itab.txt";
 
+pub const GO124_WINDOWS_AMD64: &str = "hello_go124_windows_amd64";
+pub const GO124_WINDOWS_AMD64_NM_EQ: &str = "hello_go124_windows_amd64.nm_eq.txt";
+pub const GO124_WINDOWS_AMD64_NM_ITAB: &str = "hello_go124_windows_amd64.nm_itab.txt";
+
 const PCLNTAB_MAGICS: [[u8; 4]; 4] = [
     [0xfb, 0xff, 0xff, 0xff],
     [0xfa, 0xff, 0xff, 0xff],

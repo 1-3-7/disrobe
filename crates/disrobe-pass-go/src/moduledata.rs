@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::binary::GoImage;
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
-use crate::pclntab::LocatedPclntab;
+use crate::pclntab::{LocatedPclntab, PclntabVersion};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moduledata {
@@ -53,7 +53,13 @@ pub fn locate_moduledata(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> M
             .map_or(0, |b: &GoBuildInfo| b.settings.len())
             .to_string()
     });
-    if let Some(mut md) = via_symbol(image) {
+    let version: PclntabVersion = located.header.version;
+    let go_version: Option<String> = build_info
+        .as_ref()
+        .and_then(|b: &GoBuildInfo| b.go_version.clone())
+        .or_else(|| extract_buildversion(image));
+    dbg_kv("moduledata_layout_version", || version.label().to_owned());
+    if let Some(mut md) = via_symbol(image, version, go_version.as_deref()) {
         dbg_line(|| {
             format!(
                 "moduledata via runtime.firstmoduledata symbol: text={:#x}..{:#x} types={:#x}",
@@ -64,7 +70,7 @@ pub fn locate_moduledata(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> M
         md.build_info = build_info;
         return md;
     }
-    if let Some(mut md) = via_pclntab_backsearch(image, located) {
+    if let Some(mut md) = via_pclntab_backsearch(image, located, version, go_version.as_deref()) {
         dbg_line(|| {
             format!(
                 "moduledata via pclntab back-search: text={:#x}..{:#x} types={:#x}",
@@ -98,16 +104,31 @@ pub fn locate_moduledata(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> M
     }
 }
 
-fn via_symbol(image: &GoImage<'_>) -> Option<Moduledata> {
+fn via_symbol(
+    image: &GoImage<'_>,
+    version: PclntabVersion,
+    go_version: Option<&str>,
+) -> Option<Moduledata> {
     let entry: &(String, u64, u64) = image
         .symbol_addrs
         .iter()
         .find(|(n, _, _)| n == RUNTIME_FIRSTMODULE_SYM)?;
     let va: u64 = entry.1;
-    walk_moduledata(image, va, ModuledataSource::SymbolRuntimeFirstmoduledata)
+    walk_moduledata(
+        image,
+        va,
+        ModuledataSource::SymbolRuntimeFirstmoduledata,
+        version,
+        go_version,
+    )
 }
 
-fn via_pclntab_backsearch(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> Option<Moduledata> {
+fn via_pclntab_backsearch(
+    image: &GoImage<'_>,
+    located: &LocatedPclntab<'_>,
+    version: PclntabVersion,
+    go_version: Option<&str>,
+) -> Option<Moduledata> {
     let pclntab_va: u64 = located.header.section_addr;
     let ps: u8 = image.ptr_size;
     let mut attempts: usize = 0;
@@ -136,9 +157,13 @@ fn via_pclntab_backsearch(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> 
                     off += step;
                     continue;
                 };
-                if let Some(md) =
-                    walk_moduledata(image, candidate_va, ModuledataSource::PclntabBacksearch)
-                {
+                if let Some(md) = walk_moduledata(
+                    image,
+                    candidate_va,
+                    ModuledataSource::PclntabBacksearch,
+                    version,
+                    go_version,
+                ) {
                     return Some(md);
                 }
             }
@@ -150,33 +175,177 @@ fn via_pclntab_backsearch(image: &GoImage<'_>, located: &LocatedPclntab<'_>) -> 
 
 const MD_WORD_TEXT: u64 = 22;
 const MD_WORD_ETEXT: u64 = 23;
-const MD_WORD_TYPES: u64 = 37;
-const MD_WORD_ETYPES: u64 = 38;
-const MD_WORD_TYPELINKS_PTR: u64 = 45;
-const MD_WORD_TYPELINKS_LEN: u64 = 46;
-const MD_WORD_ITABLINKS_PTR: u64 = 48;
-const MD_WORD_ITABLINKS_LEN: u64 = 49;
 
 const MAX_PLAUSIBLE_SLICE_LEN: u64 = 1 << 22;
 
-fn walk_moduledata(image: &GoImage<'_>, base: u64, via: ModuledataSource) -> Option<Moduledata> {
+#[derive(Debug, Clone, Copy)]
+enum Epclntab {
+    Absent,
+    Present,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MdLayout {
+    types_word: u64,
+    typelinks_base_word: u64,
+    epclntab: Epclntab,
+}
+
+fn md_layout(magic_version: PclntabVersion, go_version: Option<&str>) -> MdLayout {
+    build_minor(go_version)
+        .and_then(layout_from_minor)
+        .unwrap_or_else(|| layout_from_magic(magic_version))
+}
+
+const fn layout_from_minor(minor: u32) -> Option<MdLayout> {
+    let layout: MdLayout = match minor {
+        16 | 17 => MdLayout {
+            types_word: 35,
+            typelinks_base_word: 40,
+            epclntab: Epclntab::Absent,
+        },
+        18 | 19 => MdLayout {
+            types_word: 35,
+            typelinks_base_word: 42,
+            epclntab: Epclntab::Absent,
+        },
+        20..=25 => MdLayout {
+            types_word: 37,
+            typelinks_base_word: 44,
+            epclntab: Epclntab::Absent,
+        },
+        _ if minor >= 26 => MdLayout {
+            types_word: 37,
+            typelinks_base_word: 44,
+            epclntab: Epclntab::Present,
+        },
+        _ => return None,
+    };
+    Some(layout)
+}
+
+const fn layout_from_magic(magic_version: PclntabVersion) -> MdLayout {
+    match magic_version {
+        PclntabVersion::Go116 => MdLayout {
+            types_word: 35,
+            typelinks_base_word: 40,
+            epclntab: Epclntab::Absent,
+        },
+        PclntabVersion::Go118 => MdLayout {
+            types_word: 35,
+            typelinks_base_word: 42,
+            epclntab: Epclntab::Absent,
+        },
+        PclntabVersion::Go12 | PclntabVersion::Go120 => MdLayout {
+            types_word: 37,
+            typelinks_base_word: 44,
+            epclntab: Epclntab::Unresolved,
+        },
+    }
+}
+
+const TL_VALIDATE_SAMPLE: u64 = 64;
+const TL_MIN_VALID_PCT: u64 = 75;
+
+fn score_typelinks_word(
+    image: &GoImage<'_>,
+    base: u64,
+    ps: u64,
+    tl_word: u64,
+    types_blob_len: u64,
+) -> Option<u64> {
+    if types_blob_len == 0 {
+        return None;
+    }
+    let raw_ptr: u64 = read_module_word(image, base, ps, tl_word)?;
+    let raw_len: u64 = read_module_word(image, base, ps, tl_word.checked_add(1)?)?;
+    let (ptr, len): (u64, u64) = validated_slice(image, raw_ptr, raw_len, 4);
+    if ptr == 0 || len == 0 {
+        return None;
+    }
+    let sample: u64 = len.min(TL_VALIDATE_SAMPLE);
+    let mut read: u64 = 0;
+    let mut in_range: u64 = 0;
+    for i in 0..sample {
+        let Some(entry_va): Option<u64> = i.checked_mul(4).and_then(|d: u64| ptr.checked_add(d))
+        else {
+            break;
+        };
+        let Some(off): Option<u32> = image.read_u32(entry_va) else {
+            break;
+        };
+        read += 1;
+        if u64::from(off) < types_blob_len {
+            in_range += 1;
+        }
+    }
+    if read == 0 {
+        return None;
+    }
+    Some(in_range.saturating_mul(100) / read)
+}
+
+fn build_minor(go_version: Option<&str>) -> Option<u32> {
+    let rest: &str = go_version?.strip_prefix("go1.")?;
+    let dot: usize = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest.get(..dot)?.parse().ok()
+}
+
+fn resolve_typelinks_word(
+    image: &GoImage<'_>,
+    base: u64,
+    ps: u64,
+    layout: MdLayout,
+    types_va: u64,
+    etypes_va: u64,
+) -> u64 {
+    let tl_base: u64 = layout.typelinks_base_word;
+    match layout.epclntab {
+        Epclntab::Absent => tl_base,
+        Epclntab::Present => tl_base + 1,
+        Epclntab::Unresolved => {
+            let blob_len: u64 = etypes_va.saturating_sub(types_va);
+            let s0: Option<u64> = score_typelinks_word(image, base, ps, tl_base, blob_len);
+            let s1: Option<u64> = score_typelinks_word(image, base, ps, tl_base + 1, blob_len);
+            match (s0, s1) {
+                (Some(a), Some(b)) if b > a && b >= TL_MIN_VALID_PCT => tl_base + 1,
+                (Some(a), _) if a >= TL_MIN_VALID_PCT => tl_base,
+                (None, Some(b)) if b >= TL_MIN_VALID_PCT => tl_base + 1,
+                _ => tl_base,
+            }
+        }
+    }
+}
+
+fn walk_moduledata(
+    image: &GoImage<'_>,
+    base: u64,
+    via: ModuledataSource,
+    version: PclntabVersion,
+    go_version: Option<&str>,
+) -> Option<Moduledata> {
     let ps: u64 = u64::from(image.ptr_size);
     let word = |index: u64| -> Option<u64> { read_module_word(image, base, ps, index) };
     let pclntab_va: u64 = image.read_ptr(base)?;
     let text_va: u64 = word(MD_WORD_TEXT)?;
     let etext_va: u64 = word(MD_WORD_ETEXT)?;
-    let types_va: u64 = word(MD_WORD_TYPES)?;
-    let etypes_va: u64 = word(MD_WORD_ETYPES)?;
+    let layout: MdLayout = md_layout(version, go_version);
+    let types_va: u64 = word(layout.types_word)?;
+    let etypes_va: u64 = word(layout.types_word + 1)?;
+    let tl_word: u64 = resolve_typelinks_word(image, base, ps, layout, types_va, etypes_va);
     let (typelinks_va, typelinks_len): (u64, u64) = validated_slice(
         image,
-        word(MD_WORD_TYPELINKS_PTR).unwrap_or(0),
-        word(MD_WORD_TYPELINKS_LEN).unwrap_or(0),
+        word(tl_word).unwrap_or(0),
+        word(tl_word + 1).unwrap_or(0),
         4,
     );
     let (itablinks_va, itablinks_len): (u64, u64) = validated_slice(
         image,
-        word(MD_WORD_ITABLINKS_PTR).unwrap_or(0),
-        word(MD_WORD_ITABLINKS_LEN).unwrap_or(0),
+        word(tl_word + 3).unwrap_or(0),
+        word(tl_word + 4).unwrap_or(0),
         ps,
     );
     Some(Moduledata {
@@ -866,7 +1035,13 @@ mod tests {
             flat: true,
         };
         assert_eq!(
-            walk_moduledata(&image, base, ModuledataSource::SymbolRuntimeFirstmoduledata),
+            walk_moduledata(
+                &image,
+                base,
+                ModuledataSource::SymbolRuntimeFirstmoduledata,
+                PclntabVersion::Go120,
+                None
+            ),
             None
         );
     }

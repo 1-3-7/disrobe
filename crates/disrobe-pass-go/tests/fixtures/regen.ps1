@@ -145,6 +145,31 @@ if (Test-Path (Join-Path $benchSrc 'main.go')) {
     }
 }
 
+$go124Src = Join-Path $here 'go124src'
+if (Test-Path (Join-Path $go124Src 'main.go')) {
+    Push-Location $go124Src
+    try {
+        $env:GO111MODULE = 'on'
+        $env:GOTOOLCHAIN = 'go1.24.0'
+        $go124Bin = Join-Path $here 'hello_go124_windows_amd64'
+        & go build -trimpath -o $go124Bin .
+        if ($LASTEXITCODE -ne 0) { throw "go build (go124) failed" }
+        $env:GOTOOLCHAIN = 'auto'
+        $rawNm = & go tool nm $go124Bin
+        if ($LASTEXITCODE -ne 0) { throw "go tool nm (go124) failed" }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $eq = $rawNm | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'type:.eq.*' } }
+        [System.IO.File]::WriteAllLines(($go124Bin + '.nm_eq.txt'), $eq, $utf8NoBom)
+        $itab = $rawNm | Where-Object { ($_ -split '\s+') | Where-Object { $_ -like 'go:itab.*' } }
+        [System.IO.File]::WriteAllLines(($go124Bin + '.nm_itab.txt'), $itab, $utf8NoBom)
+        $vm = & go version -m $go124Bin
+        [System.IO.File]::WriteAllLines(($go124Bin + '.govm.txt'), $vm, $utf8NoBom)
+        $env:GO111MODULE = 'auto'
+    } finally {
+        Pop-Location
+    }
+}
+
 $garbleSrc = Join-Path $here 'garblesrc'
 if ($haveGarble -and (Test-Path (Join-Path $garbleSrc 'main.go'))) {
     Push-Location $garbleSrc
