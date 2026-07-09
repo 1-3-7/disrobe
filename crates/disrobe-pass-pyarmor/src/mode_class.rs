@@ -21,6 +21,7 @@ impl ScriptType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BootstrapImport {
     RuntimePackage,
+    RuntimePackagePrefixed,
     MiniLegacy,
     MiniNamespaced,
     None,
@@ -31,6 +32,7 @@ impl BootstrapImport {
     pub const fn label(self) -> &'static str {
         match self {
             Self::RuntimePackage => "pyarmor_runtime_NNNNNN",
+            Self::RuntimePackagePrefixed => "<prefix>.pyarmor_runtime_NNNNNN",
             Self::MiniLegacy => "pyarmor_mini",
             Self::MiniNamespaced => "pyarmor.mini.pyarmor_mini",
             Self::None => "none",
@@ -115,7 +117,7 @@ pub fn classify_modes(wrapper_text: &str, payload: &[u8]) -> ModeClassification 
     let script_type: ScriptType = classify_script_type(bootstrap_import, flags);
     let disposition: RecoveryDisposition = derive_disposition(script_type, flags);
     let min_format_version: &'static str = derive_min_format_version(bootstrap_import, flags);
-    let notes: Vec<String> = build_notes(script_type, flags);
+    let notes: Vec<String> = build_notes(script_type, bootstrap_import, flags);
 
     ModeClassification {
         script_type,
@@ -147,7 +149,34 @@ fn detect_bootstrap_import(wrapper_bytes: &[u8]) -> BootstrapImport {
     if find_subslice(wrapper_bytes, RUNTIME_PACKAGE_IMPORT).is_some() {
         return BootstrapImport::RuntimePackage;
     }
+    if has_prefixed_runtime_package_import(wrapper_bytes) {
+        return BootstrapImport::RuntimePackagePrefixed;
+    }
     BootstrapImport::None
+}
+
+const RUNTIME_PACKAGE_IMPORT_NESTED_NEEDLE: &str = ".pyarmor_runtime_";
+
+fn has_prefixed_runtime_package_import(wrapper_bytes: &[u8]) -> bool {
+    if find_subslice(
+        wrapper_bytes,
+        RUNTIME_PACKAGE_IMPORT_NESTED_NEEDLE.as_bytes(),
+    )
+    .is_none()
+    {
+        return false;
+    }
+    let Ok(text): core::result::Result<&str, core::str::Utf8Error> =
+        core::str::from_utf8(wrapper_bytes)
+    else {
+        return false;
+    };
+    text.split_inclusive('\n').any(|line: &str| {
+        let trimmed: &str = line.trim_start();
+        trimmed.starts_with("from ")
+            && trimmed.contains(RUNTIME_PACKAGE_IMPORT_NESTED_NEEDLE)
+            && trimmed.contains(" import ")
+    })
 }
 
 fn detect_rft(wrapper_bytes: &[u8], head: &[u8], markers: &mut Vec<String>) -> bool {
@@ -180,7 +209,9 @@ const fn classify_script_type(bootstrap: BootstrapImport, flags: ModeFlags) -> S
     }
     match bootstrap {
         BootstrapImport::MiniLegacy | BootstrapImport::MiniNamespaced => ScriptType::Mini,
-        BootstrapImport::RuntimePackage | BootstrapImport::None => ScriptType::Normal,
+        BootstrapImport::RuntimePackage
+        | BootstrapImport::RuntimePackagePrefixed
+        | BootstrapImport::None => ScriptType::Normal,
     }
 }
 
@@ -200,13 +231,18 @@ const fn derive_min_format_version(bootstrap: BootstrapImport, flags: ModeFlags)
     }
     match bootstrap {
         BootstrapImport::MiniNamespaced => "9.2.2",
-        BootstrapImport::MiniLegacy | BootstrapImport::RuntimePackage | BootstrapImport::None => {
-            "9.0.0"
-        }
+        BootstrapImport::MiniLegacy
+        | BootstrapImport::RuntimePackage
+        | BootstrapImport::RuntimePackagePrefixed
+        | BootstrapImport::None => "9.0.0",
     }
 }
 
-fn build_notes(script_type: ScriptType, flags: ModeFlags) -> Vec<String> {
+fn build_notes(
+    script_type: ScriptType,
+    bootstrap: BootstrapImport,
+    flags: ModeFlags,
+) -> Vec<String> {
     let mut notes: Vec<String> = Vec::new();
     match script_type {
         ScriptType::Mini => notes.push(
@@ -218,6 +254,12 @@ fn build_notes(script_type: ScriptType, flags: ModeFlags) -> Vec<String> {
                 .to_owned(),
         ),
         ScriptType::Normal => {}
+    }
+    if matches!(bootstrap, BootstrapImport::RuntimePackagePrefixed) {
+        notes.push(
+            "DR-PYARM-MODE: runtime package relocated under a caller-chosen parent package (pyarmor gen --prefix); the pyarmor_runtime_NNNNNN shared object is nested one directory below the wrapper rather than a sibling, and the import line reads `from <prefix>.pyarmor_runtime_NNNNNN import __pyarmor__`"
+                .to_owned(),
+        );
     }
     if flags.rft {
         notes.push(
@@ -275,6 +317,31 @@ mod tests {
         assert_eq!(c.script_type, ScriptType::Mini);
         assert_eq!(c.bootstrap_import, BootstrapImport::MiniNamespaced);
         assert_eq!(c.min_format_version, "9.2.2");
+    }
+
+    #[test]
+    fn prefixed_runtime_package_import_is_recognized() {
+        let wrapper: &str = "from paypal_runtime.pyarmor_runtime_000000 import __pyarmor__\n__pyarmor__(__name__, __file__, b'PY009000')\n";
+        let c: ModeClassification = classify_modes(wrapper, b"PY009000");
+        assert_eq!(c.bootstrap_import, BootstrapImport::RuntimePackagePrefixed);
+        assert_eq!(c.script_type, ScriptType::Normal);
+        assert_eq!(c.disposition, RecoveryDisposition::StaticRecoverable);
+        assert_eq!(c.min_format_version, "9.0.0");
+        assert!(c.notes.iter().any(|n| n.contains("--prefix")));
+    }
+
+    #[test]
+    fn unprefixed_runtime_package_import_is_not_misclassified_as_prefixed() {
+        let c: ModeClassification = classify_modes(&normal_wrapper(), b"PY009000");
+        assert_eq!(c.bootstrap_import, BootstrapImport::RuntimePackage);
+        assert!(!c.notes.iter().any(|n| n.contains("--prefix")));
+    }
+
+    #[test]
+    fn unrelated_dotted_import_does_not_trigger_prefixed_bootstrap() {
+        let wrapper: &str = "import somepkg.pyarmor_runtime_thing_but_not_a_bootstrap_call\n";
+        let c: ModeClassification = classify_modes(wrapper, b"");
+        assert_eq!(c.bootstrap_import, BootstrapImport::None);
     }
 
     #[test]
