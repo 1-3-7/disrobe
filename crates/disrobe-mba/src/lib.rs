@@ -26,11 +26,19 @@
 #![doc = "linear-MBA grammar excludes because it forbids non-trivial mask constants. It reads"]
 #![doc = "each output bit's boolean function, groups bit positions by that function, and emits"]
 #![doc = "one masked term per distinct function; the result is proven by the same oracles."]
+#![doc = ""]
+#![doc = "[`mixed_mba`] handles the general case the linear and polynomial reducers cannot: a"]
+#![doc = "bitwise operator whose operands are themselves arithmetic, or vice versa. It recurses"]
+#![doc = "the expression tree bottom-up, reducing each subterm on its own with the same linear"]
+#![doc = "and polynomial machinery before substituting the result back into its parent, then"]
+#![doc = "re-verifies the fully reassembled expression against the original at the exact width"]
+#![doc = "before ever returning it."]
 
 pub mod bitwise_synth;
 pub mod expr;
 pub mod linear_mba;
 pub mod linear_solver;
+pub mod mixed_mba;
 pub mod opaque;
 pub mod poly_mba;
 pub mod rewrite;
@@ -47,6 +55,7 @@ pub use linear_mba::synthesize_linear_basis;
 pub use linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
+pub use mixed_mba::{MAX_MIXED_MBA_VARS, simplify_mixed};
 pub use opaque::{BranchFold, CmpOp, OpaqueVerdict, Predicate, classify, fold_branch};
 pub use poly_mba::{MAX_POLY_MBA_VARS, solve_polynomial_mba};
 pub use rewrite::canonicalize;

@@ -14,6 +14,7 @@ pub enum Verification {
     LinearColumnIdentity(Width),
     AlgebraicIdentity,
     PolynomialNormalForm(Width),
+    MixedNormalForm(Width),
     #[cfg(feature = "smt-verify")]
     SmtProvenAtWidth(Width),
 }
@@ -123,6 +124,12 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         && let Some(reduced) = crate::poly_mba::solve_polynomial_mba(expr, width, var_count)
     {
         consider(reduced, Verification::PolynomialNormalForm(width));
+    }
+    if !original_is_mba
+        && (1..=crate::mixed_mba::MAX_MIXED_MBA_VARS).contains(&var_count)
+        && let Some(mixed) = crate::mixed_mba::simplify_mixed(expr, width)
+    {
+        consider(mixed, Verification::MixedNormalForm(width));
     }
 
     let (simplified, verification): (Expr, Verification) = best;
