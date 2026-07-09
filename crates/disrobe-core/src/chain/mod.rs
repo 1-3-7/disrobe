@@ -28,7 +28,9 @@ pub use recovery::{
     ChainPassRecovery, ChainRecoveryReport, RECOVERY_SCHEMA_VERSION, RecoveryInputDoc,
     RecoveryStatus, status_from_node, tier_from_node,
 };
-pub use registry::{DetectorPick, PassRegistry};
+pub use registry::{
+    DetectorPick, PassRegistry, PickOutcome, PolicyOutcome, SelectionPolicy, TieBreak,
+};
 pub use spec::{ChainSpec, ChainSpecError, PassToken, SpecCursor, SpecKind};
 pub use state_machine::{
     ChainConfig, ChainDriver, ChainPlan, ExtractedArtifact, Node, NodeId, Verdict, WorkItem,

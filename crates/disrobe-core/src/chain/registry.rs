@@ -13,6 +13,60 @@ pub struct DetectorPick {
     pub verdict: DetectVerdict,
 }
 
+pub type TieBreak = fn(&DetectVerdict, &DetectVerdict) -> Ordering;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SelectionPolicy {
+    pub min_confidence: f32,
+    pub tie_break: TieBreak,
+}
+
+impl SelectionPolicy {
+    pub const DEFAULT_MIN_CONFIDENCE: f32 = 0.5;
+
+    #[inline]
+    #[must_use]
+    pub const fn new(min_confidence: f32, tie_break: TieBreak) -> Self {
+        Self {
+            min_confidence,
+            tie_break,
+        }
+    }
+
+    #[must_use]
+    pub fn select(&self, mut candidates: Vec<DetectVerdict>) -> PolicyOutcome {
+        let considered: usize = candidates.len();
+        candidates.retain(|v: &DetectVerdict| v.confidence >= self.min_confidence);
+        let dropped: usize = considered.saturating_sub(candidates.len());
+        candidates.sort_by(|a: &DetectVerdict, b: &DetectVerdict| (self.tie_break)(a, b).reverse());
+        let winner: Option<DetectVerdict> = if candidates.is_empty() {
+            None
+        } else {
+            Some(candidates.swap_remove(0))
+        };
+        PolicyOutcome { winner, dropped }
+    }
+}
+
+impl Default for SelectionPolicy {
+    #[inline]
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_MIN_CONFIDENCE, precedence::compare)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyOutcome {
+    pub winner: Option<DetectVerdict>,
+    pub dropped: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PickOutcome {
+    pub pick: Option<DetectorPick>,
+    pub dropped: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct PassRegistry {
     passes: BTreeMap<PassId, &'static dyn Pass>,
@@ -90,19 +144,32 @@ impl PassRegistry {
     }
 
     #[must_use]
-    pub fn pick(&self, mut candidates: Vec<DetectVerdict>) -> Option<DetectorPick> {
-        candidates.retain(|v: &DetectVerdict| v.confidence >= 0.5);
-        if candidates.is_empty() {
-            return None;
-        }
-        candidates
-            .sort_by(|a: &DetectVerdict, b: &DetectVerdict| precedence::compare(a, b).reverse());
-        let winner: DetectVerdict = candidates.swap_remove(0);
-        let pass: &'static dyn Pass = self.get(winner.pass_id)?;
-        Some(DetectorPick {
-            pass,
-            verdict: winner,
-        })
+    pub fn pick(&self, candidates: Vec<DetectVerdict>) -> Option<DetectorPick> {
+        self.pick_with_policy(candidates, &SelectionPolicy::default())
+            .pick
+    }
+
+    #[must_use]
+    pub fn pick_with_policy(
+        &self,
+        candidates: Vec<DetectVerdict>,
+        policy: &SelectionPolicy,
+    ) -> PickOutcome {
+        let outcome: PolicyOutcome = policy.select(candidates);
+        let dropped: usize = outcome.dropped;
+        let Some(winner): Option<DetectVerdict> = outcome.winner else {
+            return PickOutcome {
+                pick: None,
+                dropped,
+            };
+        };
+        let pick: Option<DetectorPick> =
+            self.get(winner.pass_id)
+                .map(|pass: &'static dyn Pass| DetectorPick {
+                    pass,
+                    verdict: winner,
+                });
+        PickOutcome { pick, dropped }
     }
 
     #[must_use]
@@ -158,5 +225,115 @@ mod tests {
             String::new(),
         )];
         assert!(r.pick(verdicts).is_none());
+    }
+
+    fn mk_verdict(
+        pass_id: &'static str,
+        family: &'static str,
+        confidence: f32,
+        specificity: u16,
+    ) -> DetectVerdict {
+        DetectVerdict::new(
+            pass_id,
+            "tag",
+            family,
+            confidence,
+            specificity,
+            vec![],
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn selection_policy_default_min_confidence_matches_the_former_hardcoded_cutoff() {
+        assert!((SelectionPolicy::DEFAULT_MIN_CONFIDENCE - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn selection_policy_band_filter_drops_below_threshold_and_counts_them() {
+        let policy: SelectionPolicy = SelectionPolicy::default();
+        let candidates: Vec<DetectVerdict> = vec![
+            mk_verdict("low.pass", super::super::FAMILY_UNKNOWN, 0.2, 10),
+            mk_verdict(
+                "winner.pass",
+                super::super::FAMILY_OBFUSCATOR_WRAPPER,
+                0.95,
+                10,
+            ),
+        ];
+        let outcome: PolicyOutcome = policy.select(candidates);
+        assert_eq!(outcome.dropped, 1);
+        assert_eq!(
+            outcome.winner.expect("a winner survives the band").pass_id,
+            "winner.pass"
+        );
+    }
+
+    #[test]
+    fn selection_policy_admits_a_lower_band_when_configured() {
+        let policy: SelectionPolicy = SelectionPolicy::new(0.1, precedence::compare);
+        let candidates: Vec<DetectVerdict> = vec![mk_verdict(
+            "low.pass",
+            super::super::FAMILY_UNKNOWN,
+            0.2,
+            10,
+        )];
+        let outcome: PolicyOutcome = policy.select(candidates);
+        assert_eq!(outcome.dropped, 0);
+        assert!(outcome.winner.is_some());
+    }
+
+    #[test]
+    fn selection_policy_tie_break_matches_precedence_compare_specificity_rule() {
+        let policy: SelectionPolicy = SelectionPolicy::default();
+        let candidates: Vec<DetectVerdict> = vec![
+            mk_verdict(
+                "py.decompile",
+                super::super::FAMILY_OBFUSCATOR_WRAPPER,
+                0.95,
+                50,
+            ),
+            mk_verdict(
+                "pyarmor.unpack",
+                super::super::FAMILY_OBFUSCATOR_WRAPPER,
+                0.95,
+                10,
+            ),
+        ];
+        let outcome: PolicyOutcome = policy.select(candidates);
+        assert_eq!(
+            outcome.winner.expect("a winner").pass_id,
+            "pyarmor.unpack",
+            "lower specificity must win the tie exactly like registry::pick did before"
+        );
+    }
+
+    #[test]
+    fn selection_policy_empty_candidates_yield_no_winner_and_no_drops() {
+        let policy: SelectionPolicy = SelectionPolicy::default();
+        let outcome: PolicyOutcome = policy.select(Vec::new());
+        assert!(outcome.winner.is_none());
+        assert_eq!(outcome.dropped, 0);
+    }
+
+    #[test]
+    fn pick_with_policy_reports_dropped_count_and_missing_pass_yields_no_pick() {
+        let r: PassRegistry = PassRegistry::new();
+        let policy: SelectionPolicy = SelectionPolicy::default();
+        let candidates: Vec<DetectVerdict> = vec![
+            mk_verdict("low.pass", super::super::FAMILY_UNKNOWN, 0.1, 10),
+            mk_verdict(
+                "unregistered.pass",
+                super::super::FAMILY_OBFUSCATOR_WRAPPER,
+                0.95,
+                10,
+            ),
+        ];
+        let outcome: PickOutcome = r.pick_with_policy(candidates, &policy);
+        assert_eq!(outcome.dropped, 1);
+        assert!(
+            outcome.pick.is_none(),
+            "a winner whose pass is not registered must not yield a pick"
+        );
     }
 }

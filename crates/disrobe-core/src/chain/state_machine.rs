@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::detection::{DetectContext, OutputKind, PassRunOutcome};
-use super::registry::{DetectorPick, PassRegistry};
+use super::registry::{DetectorPick, PassRegistry, PickOutcome, SelectionPolicy};
 use super::spec::{ChainSpec, SpecCursor};
 
 pub type NodeId = u32;
@@ -45,12 +45,16 @@ pub struct Node {
     pub verdict: Verdict,
 }
 
+pub const DEFAULT_MAX_CUMULATIVE_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct ChainConfig {
     pub max_parallel_branches: u32,
     pub capture_stage_bytes: bool,
     pub persist_children: bool,
     pub stream_extracted: bool,
+    pub max_cumulative_output_bytes: u64,
+    pub selection_policy: SelectionPolicy,
 }
 
 impl Default for ChainConfig {
@@ -60,6 +64,8 @@ impl Default for ChainConfig {
             capture_stage_bytes: false,
             persist_children: false,
             stream_extracted: false,
+            max_cumulative_output_bytes: DEFAULT_MAX_CUMULATIVE_OUTPUT_BYTES,
+            selection_policy: SelectionPolicy::default(),
         }
     }
 }
@@ -78,6 +84,7 @@ pub struct WorkItem {
     pub depth: u8,
     pub branch_id: String,
     pub history: BTreeSet<[u8; 32]>,
+    pub container_lineage: BTreeSet<String>,
     pub spec_cursor: SpecCursor,
     pub path_hint: Option<String>,
     pub parent_hint: Option<String>,
@@ -166,6 +173,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         let mut detector_calls: u32 = 0;
         let mut rejected: u32 = 0;
         let mut branch_seq: u64 = 0;
+        let mut seen_inputs: BTreeSet<[u8; 32]> = BTreeSet::new();
 
         let seed_hash: [u8; 32] = blake3_of(&seed);
         let seed_size: u64 = seed.len() as u64;
@@ -217,10 +225,14 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 h.insert(seed_hash);
                 h
             },
+            container_lineage: BTreeSet::new(),
             spec_cursor: ChainSpec::cursor_for_root(),
             path_hint,
             parent_hint: None,
         });
+
+        let mut cumulative_output_bytes: u64 = 0;
+        let mut output_budget_exceeded: bool = false;
 
         while let Some(item) = queue.pop_front() {
             if item.depth > spec.cap() {
@@ -232,6 +244,32 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     blake3_of(&item.bytes),
                     item.bytes.len() as u64,
                     Verdict::CapReached,
+                );
+                continue;
+            }
+            if output_budget_exceeded {
+                push_terminal_layer(
+                    &mut nodes,
+                    item.parent,
+                    item.depth,
+                    item.branch_id.clone(),
+                    blake3_of(&item.bytes),
+                    item.bytes.len() as u64,
+                    Verdict::CapReached,
+                );
+                continue;
+            }
+            let in_hash: [u8; 32] = blake3_of(&item.bytes);
+            let in_size: u64 = item.bytes.len() as u64;
+            if !seen_inputs.insert(in_hash) {
+                push_terminal_layer(
+                    &mut nodes,
+                    item.parent,
+                    item.depth,
+                    item.branch_id.clone(),
+                    in_hash,
+                    in_size,
+                    Verdict::Cycle,
                 );
                 continue;
             }
@@ -253,9 +291,12 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             } else {
                 let cands: Vec<super::detection::DetectVerdict> = self.registry.run_all(&ctx);
                 detector_calls += u32::try_from(cands.len()).unwrap_or(u32::MAX);
-                let dropped: usize = cands.iter().filter(|v| v.confidence < 0.5).count();
-                rejected = rejected.saturating_add(u32::try_from(dropped).unwrap_or(u32::MAX));
-                self.registry.pick(cands)
+                let outcome: PickOutcome = self
+                    .registry
+                    .pick_with_policy(cands, &self.config.selection_policy);
+                rejected =
+                    rejected.saturating_add(u32::try_from(outcome.dropped).unwrap_or(u32::MAX));
+                outcome.pick
             };
             let Some(pick): Option<DetectorPick> = pick_opt else {
                 push_terminal_layer(
@@ -263,16 +304,13 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     item.parent,
                     item.depth,
                     item.branch_id.clone(),
-                    blake3_of(&item.bytes),
-                    item.bytes.len() as u64,
+                    in_hash,
+                    in_size,
                     Verdict::Stalled,
                 );
                 continue;
             };
-            let in_hash: [u8; 32] = blake3_of(&item.bytes);
-            let in_size: u64 = item.bytes.len() as u64;
             let layer_id: NodeId = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
-            let pass_id: String = pick.verdict.pass_id.to_string();
             let format_tag_in: String = pick.verdict.format_tag.to_string();
             let input_bytes: Vec<u8> = item.bytes;
             let pass_run: Result<PassRunOutcome, String> =
@@ -281,255 +319,265 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             match pass_run {
                 Err(msg) => {
                     nodes.push(Node {
-                        id: layer_id,
-                        parent_id: Some(item.parent),
-                        depth: item.depth,
-                        branch_id: item.branch_id.clone(),
-                        pass_id: Some(pass_id),
-                        format_tag_in: Some(format_tag_in),
-                        input_blake3: in_hash,
-                        input_size: in_size,
-                        output_kind: None,
-                        output_blake3: None,
-                        output_size: None,
-                        output_bytes: None,
-                        duration: None,
-                        picks: vec![pick],
-                        artifacts: Vec::new(),
-                        metadata: BTreeMap::new(),
                         verdict: Verdict::Error { message: msg },
+                        ..pass_node_base(
+                            layer_id,
+                            item.parent,
+                            item.depth,
+                            item.branch_id.clone(),
+                            in_hash,
+                            in_size,
+                            format_tag_in,
+                            pick,
+                        )
                     });
                 }
-                Ok(outcome) => match outcome.kind.clone() {
-                    OutputKind::Source {
-                        language,
-                        formatted: _,
-                    } => {
-                        let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
-                        let out_size: u64 = outcome.output_bytes.len() as u64;
-                        let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
-                            Some(outcome.output_bytes.clone())
-                        } else {
-                            None
-                        };
-                        nodes.push(Node {
-                            id: layer_id,
-                            parent_id: Some(item.parent),
-                            depth: item.depth,
-                            branch_id: item.branch_id.clone(),
-                            pass_id: Some(pass_id),
-                            format_tag_in: Some(format_tag_in),
-                            input_blake3: in_hash,
-                            input_size: in_size,
-                            output_kind: Some(outcome.kind),
-                            output_blake3: Some(out_hash),
-                            output_size: Some(out_size),
-                            output_bytes: captured,
-                            duration: Some(outcome.duration),
-                            picks: vec![pick],
-                            artifacts: Vec::new(),
-                            metadata: outcome.metadata,
-                            verdict: Verdict::Complete {
-                                formats: vec![language.label().to_string()],
-                            },
-                        });
+                Ok(outcome) => {
+                    let outcome_bytes_len: u64 = outcome.output_bytes.len() as u64
+                        + outcome
+                            .children
+                            .iter()
+                            .map(|c: &Vec<u8>| c.len() as u64)
+                            .sum::<u64>();
+                    cumulative_output_bytes =
+                        cumulative_output_bytes.saturating_add(outcome_bytes_len);
+                    if cumulative_output_bytes > self.config.max_cumulative_output_bytes {
+                        output_budget_exceeded = true;
                     }
-                    OutputKind::Bytes {
-                        format_tag,
-                        family: _,
-                    } => {
-                        if outcome.output_bytes.is_empty() {
+                    match outcome.kind.clone() {
+                        OutputKind::Source {
+                            language,
+                            formatted: _,
+                        } => {
+                            let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
+                            let out_size: u64 = outcome.output_bytes.len() as u64;
+                            let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
+                                Some(outcome.output_bytes.clone())
+                            } else {
+                                None
+                            };
                             nodes.push(Node {
-                                id: layer_id,
-                                parent_id: Some(item.parent),
-                                depth: item.depth,
-                                branch_id: item.branch_id.clone(),
-                                pass_id: Some(pass_id),
-                                format_tag_in: Some(format_tag_in),
-                                input_blake3: in_hash,
-                                input_size: in_size,
-                                output_kind: Some(outcome.kind),
-                                output_blake3: None,
-                                output_size: Some(0),
-                                output_bytes: None,
-                                duration: Some(outcome.duration),
-                                picks: vec![pick],
-                                artifacts: Vec::new(),
-                                metadata: outcome.metadata,
-                                verdict: Verdict::Stalled,
-                            });
-                            continue;
-                        }
-                        let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
-                        if item.history.contains(&out_hash) {
-                            nodes.push(Node {
-                                id: layer_id,
-                                parent_id: Some(item.parent),
-                                depth: item.depth,
-                                branch_id: item.branch_id.clone(),
-                                pass_id: Some(pass_id),
-                                format_tag_in: Some(format_tag_in),
-                                input_blake3: in_hash,
-                                input_size: in_size,
                                 output_kind: Some(outcome.kind),
                                 output_blake3: Some(out_hash),
-                                output_size: Some(outcome.output_bytes.len() as u64),
-                                output_bytes: None,
+                                output_size: Some(out_size),
+                                output_bytes: captured,
                                 duration: Some(outcome.duration),
-                                picks: vec![pick],
-                                artifacts: Vec::new(),
                                 metadata: outcome.metadata,
-                                verdict: Verdict::Cycle,
+                                verdict: Verdict::Complete {
+                                    formats: vec![language.label().to_string()],
+                                },
+                                ..pass_node_base(
+                                    layer_id,
+                                    item.parent,
+                                    item.depth,
+                                    item.branch_id.clone(),
+                                    in_hash,
+                                    in_size,
+                                    format_tag_in,
+                                    pick,
+                                )
                             });
-                            continue;
                         }
-                        let out_size: u64 = outcome.output_bytes.len() as u64;
-                        let kind_clone: OutputKind = outcome.kind.clone();
-                        let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
-                            Some(outcome.output_bytes.clone())
-                        } else {
-                            None
-                        };
-                        nodes.push(Node {
-                            id: layer_id,
-                            parent_id: Some(item.parent),
-                            depth: item.depth,
-                            branch_id: item.branch_id.clone(),
-                            pass_id: Some(pass_id),
-                            format_tag_in: Some(format_tag_in),
-                            input_blake3: in_hash,
-                            input_size: in_size,
-                            output_kind: Some(kind_clone),
-                            output_blake3: Some(out_hash),
-                            output_size: Some(out_size),
-                            output_bytes: captured,
-                            duration: Some(outcome.duration),
-                            picks: vec![pick],
-                            artifacts: Vec::new(),
-                            metadata: outcome.metadata,
-                            verdict: Verdict::Ok,
-                        });
-                        let mut next_history: BTreeSet<[u8; 32]> = item.history.clone();
-                        next_history.insert(out_hash);
-                        queue.push_back(WorkItem {
-                            parent: layer_id,
-                            bytes: outcome.output_bytes,
-                            depth: item.depth.saturating_add(1),
-                            branch_id: item.branch_id.clone(),
-                            history: next_history,
-                            spec_cursor: item.spec_cursor.advance(),
-                            path_hint: item.path_hint.clone(),
-                            parent_hint: Some(format_tag.to_string()),
-                        });
-                    }
-                    OutputKind::Mixed { children } => {
-                        let child_count: u32 = u32::try_from(children.len()).unwrap_or(u32::MAX);
-                        let mut child_bytes: Vec<Vec<u8>> = outcome.children;
-                        nodes.push(Node {
-                            id: layer_id,
-                            parent_id: Some(item.parent),
-                            depth: item.depth,
-                            branch_id: item.branch_id.clone(),
-                            pass_id: Some(pass_id),
-                            format_tag_in: Some(format_tag_in),
-                            input_blake3: in_hash,
-                            input_size: in_size,
-                            output_kind: Some(outcome.kind),
-                            output_blake3: None,
-                            output_size: None,
-                            output_bytes: None,
-                            duration: Some(outcome.duration),
-                            picks: vec![pick],
-                            artifacts: Vec::new(),
-                            metadata: outcome.metadata,
-                            verdict: Verdict::FanOut { count: child_count },
-                        });
-                        for ch in children {
-                            let child_branch: String = next_branch_id(&mut branch_seq);
-                            let next_bytes: Vec<u8> = if let Some(bytes) =
-                                child_bytes.get_mut(ch.artifact_index as usize)
-                            {
-                                std::mem::take(bytes)
-                            } else {
-                                push_terminal_layer(
-                                    &mut nodes,
-                                    layer_id,
-                                    item.depth.saturating_add(1),
-                                    child_branch,
-                                    blake3_of(&[]),
-                                    0,
-                                    Verdict::Error {
-                                        message: format!(
-                                            "missing mixed child artifact {}",
-                                            ch.artifact_index
-                                        ),
-                                    },
-                                );
-                                continue;
-                            };
-                            if next_bytes.is_empty() {
-                                push_terminal_layer(
-                                    &mut nodes,
-                                    layer_id,
-                                    item.depth.saturating_add(1),
-                                    child_branch,
-                                    blake3_of(&next_bytes),
-                                    0,
-                                    Verdict::Stalled,
-                                );
+                        OutputKind::Bytes {
+                            format_tag,
+                            family: _,
+                        } => {
+                            if outcome.output_bytes.is_empty() {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_size: Some(0),
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::Stalled,
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in,
+                                        pick,
+                                    )
+                                });
                                 continue;
                             }
-                            let child_hash: [u8; 32] = blake3_of(&next_bytes);
-                            let child_len: u64 = next_bytes.len() as u64;
-                            if ch.is_terminal() {
+                            let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
+                            if item.history.contains(&out_hash) {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_blake3: Some(out_hash),
+                                    output_size: Some(outcome.output_bytes.len() as u64),
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::Cycle,
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in,
+                                        pick,
+                                    )
+                                });
+                                continue;
+                            }
+                            let out_size: u64 = outcome.output_bytes.len() as u64;
+                            let kind_clone: OutputKind = outcome.kind.clone();
+                            let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
+                                Some(outcome.output_bytes.clone())
+                            } else {
+                                None
+                            };
+                            nodes.push(Node {
+                                output_kind: Some(kind_clone),
+                                output_blake3: Some(out_hash),
+                                output_size: Some(out_size),
+                                output_bytes: captured,
+                                duration: Some(outcome.duration),
+                                metadata: outcome.metadata,
+                                verdict: Verdict::Ok,
+                                ..pass_node_base(
+                                    layer_id,
+                                    item.parent,
+                                    item.depth,
+                                    item.branch_id.clone(),
+                                    in_hash,
+                                    in_size,
+                                    format_tag_in.clone(),
+                                    pick,
+                                )
+                            });
+                            let mut next_history: BTreeSet<[u8; 32]> = item.history.clone();
+                            next_history.insert(out_hash);
+                            let mut next_container_lineage: BTreeSet<String> =
+                                item.container_lineage.clone();
+                            next_container_lineage.insert(format_tag_in);
+                            queue.push_back(WorkItem {
+                                parent: layer_id,
+                                bytes: outcome.output_bytes,
+                                depth: item.depth.saturating_add(1),
+                                branch_id: item.branch_id.clone(),
+                                history: next_history,
+                                container_lineage: next_container_lineage,
+                                spec_cursor: item.spec_cursor.advance(),
+                                path_hint: item.path_hint.clone(),
+                                parent_hint: Some(format_tag.to_string()),
+                            });
+                        }
+                        OutputKind::Mixed { children } => {
+                            let child_count: u32 =
+                                u32::try_from(children.len()).unwrap_or(u32::MAX);
+                            let mut child_bytes: Vec<Vec<u8>> = outcome.children;
+                            nodes.push(Node {
+                                output_kind: Some(outcome.kind),
+                                duration: Some(outcome.duration),
+                                metadata: outcome.metadata,
+                                verdict: Verdict::FanOut { count: child_count },
+                                ..pass_node_base(
+                                    layer_id,
+                                    item.parent,
+                                    item.depth,
+                                    item.branch_id.clone(),
+                                    in_hash,
+                                    in_size,
+                                    format_tag_in.clone(),
+                                    pick,
+                                )
+                            });
+                            for ch in children {
+                                let child_branch: String = next_branch_id(&mut branch_seq);
+                                let next_bytes: Vec<u8> = if let Some(bytes) =
+                                    child_bytes.get_mut(ch.artifact_index as usize)
+                                {
+                                    std::mem::take(bytes)
+                                } else {
+                                    push_terminal_layer(
+                                        &mut nodes,
+                                        layer_id,
+                                        item.depth.saturating_add(1),
+                                        child_branch,
+                                        blake3_of(&[]),
+                                        0,
+                                        Verdict::Error {
+                                            message: format!(
+                                                "missing mixed child artifact {}",
+                                                ch.artifact_index
+                                            ),
+                                        },
+                                    );
+                                    continue;
+                                };
+                                if next_bytes.is_empty() {
+                                    push_terminal_layer(
+                                        &mut nodes,
+                                        layer_id,
+                                        item.depth.saturating_add(1),
+                                        child_branch,
+                                        blake3_of(&next_bytes),
+                                        0,
+                                        Verdict::Stalled,
+                                    );
+                                    continue;
+                                }
+                                let child_hash: [u8; 32] = blake3_of(&next_bytes);
+                                let child_len: u64 = next_bytes.len() as u64;
+                                if ch.is_terminal() {
+                                    if self.config.persist_children {
+                                        let artifact: ExtractedArtifact = ExtractedArtifact {
+                                            node_id: layer_id,
+                                            relative_path: ch.relative_path.clone(),
+                                            bytes: next_bytes,
+                                        };
+                                        sink(&artifact);
+                                        if !self.config.stream_extracted {
+                                            extracted.push(artifact);
+                                        }
+                                    }
+                                    push_terminal_layer(
+                                        &mut nodes,
+                                        layer_id,
+                                        item.depth.saturating_add(1),
+                                        child_branch,
+                                        child_hash,
+                                        child_len,
+                                        Verdict::Extracted,
+                                    );
+                                    continue;
+                                }
+                                let mut child_history: BTreeSet<[u8; 32]> = item.history.clone();
+                                child_history.insert(child_hash);
                                 if self.config.persist_children {
                                     let artifact: ExtractedArtifact = ExtractedArtifact {
                                         node_id: layer_id,
                                         relative_path: ch.relative_path.clone(),
-                                        bytes: next_bytes,
+                                        bytes: next_bytes.clone(),
                                     };
                                     sink(&artifact);
                                     if !self.config.stream_extracted {
                                         extracted.push(artifact);
                                     }
                                 }
-                                push_terminal_layer(
-                                    &mut nodes,
-                                    layer_id,
-                                    item.depth.saturating_add(1),
-                                    child_branch,
-                                    child_hash,
-                                    child_len,
-                                    Verdict::Extracted,
-                                );
-                                continue;
+                                let mut child_container_lineage: BTreeSet<String> =
+                                    item.container_lineage.clone();
+                                child_container_lineage.insert(format_tag_in.clone());
+                                queue.push_back(WorkItem {
+                                    parent: layer_id,
+                                    bytes: next_bytes,
+                                    depth: item.depth.saturating_add(1),
+                                    branch_id: child_branch,
+                                    history: child_history,
+                                    container_lineage: child_container_lineage,
+                                    spec_cursor: item.spec_cursor.advance(),
+                                    path_hint: Some(ch.relative_path),
+                                    parent_hint: ch.hint,
+                                });
                             }
-                            let mut child_history: BTreeSet<[u8; 32]> = item.history.clone();
-                            child_history.insert(child_hash);
-                            if self.config.persist_children {
-                                let artifact: ExtractedArtifact = ExtractedArtifact {
-                                    node_id: layer_id,
-                                    relative_path: ch.relative_path.clone(),
-                                    bytes: next_bytes.clone(),
-                                };
-                                sink(&artifact);
-                                if !self.config.stream_extracted {
-                                    extracted.push(artifact);
-                                }
-                            }
-                            queue.push_back(WorkItem {
-                                parent: layer_id,
-                                bytes: next_bytes,
-                                depth: item.depth.saturating_add(1),
-                                branch_id: child_branch,
-                                history: child_history,
-                                spec_cursor: item.spec_cursor.advance(),
-                                path_hint: Some(ch.relative_path),
-                                parent_hint: ch.hint,
-                            });
                         }
                     }
-                },
+                }
             }
         }
         let has_multiple_branches: bool = {
@@ -623,6 +671,38 @@ fn collect_leaves(nodes: &[Node]) -> Vec<&Node> {
         .iter()
         .filter(|n: &&Node| !has_child.contains(&n.id))
         .collect()
+}
+
+fn pass_node_base(
+    layer_id: NodeId,
+    parent: NodeId,
+    depth: u8,
+    branch_id: String,
+    input_blake3: [u8; 32],
+    input_size: u64,
+    format_tag_in: String,
+    pick: DetectorPick,
+) -> Node {
+    let pass_id: String = pick.verdict.pass_id.to_string();
+    Node {
+        id: layer_id,
+        parent_id: Some(parent),
+        depth,
+        branch_id,
+        pass_id: Some(pass_id),
+        format_tag_in: Some(format_tag_in),
+        input_blake3,
+        input_size,
+        output_kind: None,
+        output_blake3: None,
+        output_size: None,
+        output_bytes: None,
+        duration: None,
+        picks: vec![pick],
+        artifacts: Vec::new(),
+        metadata: BTreeMap::new(),
+        verdict: Verdict::Ok,
+    }
 }
 
 fn push_terminal_layer(
@@ -1294,5 +1374,241 @@ mod tests {
             .iter()
             .any(|n: &Node| matches!(&n.verdict, Verdict::Error { message } if message == "boom"));
         assert!(any_err);
+    }
+
+    fn stub_verdict(pass_id: &'static str, confidence: f32) -> DetectVerdict {
+        DetectVerdict::new(
+            pass_id,
+            "tag",
+            super::super::FAMILY_OBFUSCATOR_WRAPPER,
+            confidence,
+            10,
+            vec![],
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn pass_node_base_carries_identity_and_defaults_output_absent() {
+        let pick: DetectorPick = DetectorPick {
+            pass: &PASS_A,
+            verdict: stub_verdict("stub.a", 0.9),
+        };
+        let node: Node = pass_node_base(
+            7,
+            3,
+            2,
+            "branch-q".to_string(),
+            [9u8; 32],
+            128,
+            "tag".to_string(),
+            pick,
+        );
+        assert_eq!(node.id, 7);
+        assert_eq!(node.parent_id, Some(3));
+        assert_eq!(node.depth, 2);
+        assert_eq!(node.branch_id, "branch-q");
+        assert_eq!(node.pass_id.as_deref(), Some("stub.a"));
+        assert_eq!(node.format_tag_in.as_deref(), Some("tag"));
+        assert_eq!(node.input_blake3, [9u8; 32]);
+        assert_eq!(node.input_size, 128);
+        assert!(node.output_kind.is_none());
+        assert!(node.output_blake3.is_none());
+        assert!(node.output_size.is_none());
+        assert!(node.output_bytes.is_none());
+        assert!(node.duration.is_none());
+        assert_eq!(node.picks.len(), 1);
+        assert!(node.artifacts.is_empty());
+        assert!(node.metadata.is_empty());
+        assert!(matches!(node.verdict, Verdict::Ok));
+    }
+
+    fn self_reemit_via_mixed_fanout() -> RunnerFn {
+        Box::new(|_n: u32, bytes: &[u8]| {
+            Ok(PassRunOutcome {
+                output_bytes: Vec::new(),
+                kind: OutputKind::Mixed {
+                    children: vec![ChildHandle {
+                        artifact_index: 0,
+                        relative_path: "self-echo.bin".to_string(),
+                        hint: None,
+                    }],
+                },
+                duration: Duration::from_millis(1),
+                metadata: BTreeMap::new(),
+                children: vec![bytes.to_vec()],
+            })
+        })
+    }
+
+    #[test]
+    fn global_memo_halts_a_self_reemission_that_a_new_sibling_branch_lineage_would_not_catch() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: self_reemit_via_mixed_fanout(),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let spec: ChainSpec = ChainSpec::Auto { cap: 32 };
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &spec, None);
+
+        assert_eq!(
+            runner.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "OutputKind::Mixed never records into WorkItem.history (only OutputKind::Bytes does), \
+             so the fresh sibling branch spawned for the echoed child carries a history set that \
+             does not contain the repeat; only the global visited set can stop the pass from being \
+             invoked a second time on the identical bytes"
+        );
+        let cycle_node: &Node = plan
+            .nodes
+            .iter()
+            .find(|n: &&Node| matches!(n.verdict, Verdict::Cycle))
+            .expect("the globally-repeated input must be recorded as a Cycle terminal");
+        assert_eq!(
+            cycle_node.depth, 2,
+            "the duplicate must be caught on its first reappearance, not after grinding through the depth cap"
+        );
+        assert_ne!(
+            cycle_node.branch_id, "a",
+            "the catch must happen in the new sibling branch the mixed fan-out created, proving the \
+             hit is not an artifact of the parent's own per-lineage history"
+        );
+        assert!(
+            !plan
+                .nodes
+                .iter()
+                .any(|n: &Node| matches!(n.verdict, Verdict::CapReached)),
+            "without the global memo this would spawn a fresh branch every hop until the depth cap \
+             fired instead; the run must halt via Cycle, not by exhausting the cap"
+        );
+    }
+
+    #[test]
+    fn fanout_expansion_is_bounded_by_cumulative_output_budget() {
+        const CHILD_SIZE: usize = 4 * 1024 * 1024;
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _b: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: Vec::new(),
+                    kind: OutputKind::Mixed {
+                        children: vec![
+                            ChildHandle {
+                                artifact_index: 0,
+                                relative_path: "a.bin".to_string(),
+                                hint: None,
+                            },
+                            ChildHandle {
+                                artifact_index: 1,
+                                relative_path: "b.bin".to_string(),
+                                hint: None,
+                            },
+                            ChildHandle {
+                                artifact_index: 2,
+                                relative_path: "c.bin".to_string(),
+                                hint: None,
+                            },
+                        ],
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: vec![
+                        vec![0xABu8; CHILD_SIZE],
+                        vec![0xABu8; CHILD_SIZE],
+                        vec![0xABu8; CHILD_SIZE],
+                    ],
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            max_cumulative_output_bytes: 16 * 1024 * 1024,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let started: Instant = Instant::now();
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &spec, None);
+        let elapsed: Duration = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "decompression-bomb-style fan-out must terminate quickly under the output budget, took {elapsed:?}"
+        );
+        let calls: u32 = runner.calls.load(AtomicOrdering::SeqCst);
+        assert_eq!(
+            calls, 2,
+            "the output budget must stop the traversal after the second pass run (3x4MiB then 3x4MiB again crosses the 16MiB budget), got {calls} calls"
+        );
+        let any_cap: bool = plan
+            .nodes
+            .iter()
+            .any(|n: &Node| matches!(n.verdict, Verdict::CapReached));
+        assert!(
+            any_cap,
+            "expected the cumulative output budget to terminal-layer unprocessed fan-out work as CapReached"
+        );
+    }
+
+    #[test]
+    fn non_identical_self_re_detecting_chain_bounded_by_output_budget_not_depth_cap() {
+        const GROWTH_BYTES: usize = 2 * 1024 * 1024;
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|n: u32, _b: &[u8]| {
+                let mut v: Vec<u8> = format!("gen-{n}-").into_bytes();
+                v.resize(GROWTH_BYTES, 0xCDu8);
+                Ok(PassRunOutcome {
+                    output_bytes: v,
+                    kind: OutputKind::Bytes {
+                        format_tag: "x",
+                        family: super::super::FAMILY_OBFUSCATOR_WRAPPER,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            max_cumulative_output_bytes: 10 * 1024 * 1024,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let spec: ChainSpec = ChainSpec::Auto {
+            cap: super::super::spec::MAX_CAP,
+        };
+        let started: Instant = Instant::now();
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &spec, None);
+        let elapsed: Duration = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "an ever-distinct re-emitting lineage must still terminate quickly, took {elapsed:?}"
+        );
+        let any_cycle: bool = plan
+            .nodes
+            .iter()
+            .any(|n: &Node| matches!(n.verdict, Verdict::Cycle));
+        assert!(
+            !any_cycle,
+            "each generation's output differs by its prefix, so the exact-byte-hash Cycle check must never fire here"
+        );
+        let any_cap: bool = plan
+            .nodes
+            .iter()
+            .any(|n: &Node| matches!(n.verdict, Verdict::CapReached));
+        assert!(
+            any_cap,
+            "expected the cumulative output budget to terminal-layer the runaway lineage as CapReached"
+        );
+        let calls: u32 = runner.calls.load(AtomicOrdering::SeqCst);
+        assert_eq!(
+            calls,
+            6,
+            "the 10MiB output budget must halt this lineage at generation 6 (6x2MiB), well before the depth cap of {}",
+            super::super::spec::MAX_CAP
+        );
     }
 }
