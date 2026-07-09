@@ -2764,7 +2764,6 @@ dependencies = [
  "blake2",
  "ctr",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-pass-py-decompile",
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",

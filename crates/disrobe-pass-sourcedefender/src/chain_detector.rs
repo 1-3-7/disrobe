@@ -68,8 +68,13 @@ impl Pass for SourceDefenderPass {
     }
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        self.run_with_path(artifact, None)
+    }
+
+    fn run_with_path(&self, artifact: &Artifact, path_hint: Option<&str>) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
-        let recovery: LayeredRecovery = recover_layered(bytes, "chain.pye")
+        let filename: &str = path_hint.unwrap_or("chain.pye");
+        let recovery: LayeredRecovery = recover_layered(bytes, filename)
             .map_err(|e| CoreError::PassFailure(format!("DR-SD-0901: recover_layered: {e}")))?;
 
         if let Some(wall) = recovery.wall {
@@ -210,6 +215,26 @@ mod tests {
 
     const MODERN_TRIAL: &[u8] =
         include_bytes!("../../../corpus/python/sourcedefender/known_v16_trial.pye");
+    const LEGACY_HELLO: &[u8] = include_bytes!("../../../corpus/python/sourcedefender/hello.pye");
+
+    #[test]
+    fn pass_run_recovers_real_legacy_free_source() {
+        let a: Artifact = Artifact::new(Rung::Raw, LEGACY_HELLO.to_vec(), [0u8; 32]);
+        let out: Artifact = SOURCEDEFENDER_PASS
+            .run_with_path(&a, Some("hello.pye"))
+            .expect("legacy body must recover with its real basename-derived key");
+        let recovered: &str = core::str::from_utf8(&out.envelope).expect("utf8 source");
+        assert_eq!(recovered.trim_end(), "print(\"Hello World!\")");
+    }
+
+    #[test]
+    fn pass_run_without_path_hint_falls_back_to_a_stable_default_basename() {
+        let a: Artifact = Artifact::new(Rung::Raw, LEGACY_HELLO.to_vec(), [0u8; 32]);
+        let err: CoreError = SOURCEDEFENDER_PASS
+            .run(&a)
+            .expect_err("legacy body keyed to a different basename must not falsely recover");
+        assert!(format!("{err}").contains("DR-SD-0902"));
+    }
 
     #[test]
     fn detect_real_modern_pye_envelope() {

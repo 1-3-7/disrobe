@@ -13,7 +13,6 @@ mod inlined;
 mod kdf;
 mod layered;
 mod modern_gcm;
-pub mod pass;
 mod provenance_header;
 mod source_recover;
 

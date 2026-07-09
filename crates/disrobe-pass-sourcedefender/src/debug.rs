@@ -10,13 +10,6 @@ pub(crate) fn dbg_enabled() -> bool {
     debug_log().on()
 }
 
-pub(crate) fn dbg_section(name: &str) {
-    let log: DebugLog = debug_log();
-    if log.on() {
-        log.section(name);
-    }
-}
-
 pub(crate) fn dbg_line(f: impl FnOnce() -> String) {
     let log: DebugLog = debug_log();
     if log.on() {
