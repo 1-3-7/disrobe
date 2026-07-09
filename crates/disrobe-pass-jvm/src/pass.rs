@@ -1,9 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use disrobe_core::{
-    Artifact, Capability, CoreError, LegacyPass, PassId, Result as CoreResult, Rung,
-};
-
 use crate::apk_resources::{ApkResourceReport, analyze_apk};
 use crate::arsc::{RES_TABLE_TYPE, ResourceTable, parse_arsc};
 use crate::classfile::{CLASS_MAGIC, ClassFile, parse as parse_classfile};
@@ -18,17 +14,6 @@ use crate::oat::{ODEX_MAGIC, OdexFile, parse_oat, parse_odex};
 use crate::protectors::{ProtectorPeelReport, peel_classfile};
 
 const ZIP_LOCAL_FILE_MAGIC: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct JvmPass;
-
-impl JvmPass {
-    #[inline]
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JvmSummary {
@@ -390,47 +375,10 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<JvmSummary> {
     Err(crate::error::Error::BadMagic(u32::from_be_bytes(first4)))
 }
 
-impl LegacyPass for JvmPass {
-    const CONSUMES: &'static [Rung] = &[Rung::Raw];
-    const EMITS: &'static [Rung] = &[Rung::Disasm];
-    const REQUIRES: &'static [fn() -> Capability] = &[];
-    const PRODUCES: &'static [fn() -> Capability] = &[
-        || Capability::produces("jvm.classfile", 1),
-        || Capability::produces("jvm.dex", 1),
-        || Capability::produces("jvm.axml", 1),
-        || Capability::produces("android.apk.resources", 1),
-        || Capability::produces("android.apk.certificate", 1),
-        || Capability::produces("jvm.proguard.mapping", 1),
-        || Capability::produces("jvm.jmod", 1),
-        || Capability::produces("jvm.jimage", 1),
-        || Capability::produces("jvm.oat", 1),
-        || Capability::produces("jvm.odex", 1),
-        || Capability::produces("android.arsc", 1),
-    ];
-
-    fn id(&self) -> PassId {
-        "jvm.deob"
-    }
-
-    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let bytes: &[u8] = artifact.envelope.as_slice();
-        let summary: JvmSummary = analyze(bytes)
-            .map_err(|e: crate::error::Error| CoreError::PassFailure(format!("{e}")))?;
-        let payload: Vec<u8> = serde_json::to_vec(&summary)
-            .map_err(|e: serde_json::Error| CoreError::PassFailure(format!("DR-JVM-SER: {e}")))?;
-        let mut next: Artifact = Artifact::new(Rung::Disasm, payload, artifact.root_hash);
-        for emitter in <Self as LegacyPass>::PRODUCES {
-            next.add_capability(emitter());
-        }
-        Ok(next)
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use disrobe_core::PassMetadata;
 
     fn minimal_classfile(major: u16) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
@@ -449,33 +397,18 @@ mod tests {
     }
 
     #[test]
-    fn pass_metadata_advertises_capabilities() {
-        let p: JvmPass = JvmPass::new();
-        assert_eq!(PassMetadata::id(&p), "jvm.deob");
-        assert_eq!(p.consumes(), &[Rung::Raw]);
-        assert_eq!(p.emits(), &[Rung::Disasm]);
-        assert_eq!(p.produced_capabilities().len(), 11);
-    }
-
-    #[test]
-    fn jvm_pass_run_on_classfile_emits_summary() {
+    fn analyze_classfile_reports_summary() {
         let envelope: Vec<u8> = minimal_classfile(52);
-        let input: Artifact = Artifact::new(Rung::Raw, envelope, [0u8; 32]);
-        let out: Artifact = JvmPass::new().run(&input).expect("classfile parses");
-        assert_eq!(out.rung, Rung::Disasm);
-        assert!(!out.capabilities.is_empty());
-        let summary: JvmSummary =
-            serde_json::from_slice(&out.envelope).expect("payload is a JvmSummary");
+        let summary: JvmSummary = analyze(&envelope).expect("classfile parses");
         assert_eq!(summary.kind, "classfile");
         assert_eq!(summary.major_version, 52);
         assert_eq!(summary.java_version.as_deref(), Some("Java SE 8"));
     }
 
     #[test]
-    fn jvm_pass_run_on_garbage_returns_pass_failure() {
-        let input: Artifact = Artifact::new(Rung::Raw, vec![0u8; 64], [0u8; 32]);
-        let err: CoreError = JvmPass::new().run(&input).expect_err("garbage should fail");
-        let text: String = format!("{err}");
-        assert!(text.contains("DR-JVM"), "got: {text}");
+    fn analyze_on_garbage_returns_bad_magic() {
+        let err: crate::error::Error =
+            analyze(&[0u8; 64]).expect_err("garbage bytes must not classify");
+        assert!(matches!(err, crate::error::Error::BadMagic(_)));
     }
 }

@@ -198,7 +198,6 @@ pub use obfuscators::{
     CffUndoStats, Detection, Protector, StringStrip, UpstreamStatus, WatermarkFinding, detect_all,
     detect_allatori_watermarks, strip_encrypted_strings, undo_control_flow, upstream_status,
 };
-pub use pass::JvmPass;
 pub use proguard::{
     AppliedNames, ClassHierarchy, ClassMapping, FieldMapping, InheritedField, InheritedMethod,
     LineRange, Mapping as ProguardMapping, MethodLineRecord, MethodMapping, RetracedFrame,

@@ -11,11 +11,12 @@ use disrobe_core::chain::{
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
-use crate::classfile::{CLASS_MAGIC, ClassFile, parse as parse_classfile};
+use crate::classfile::{CLASS_MAGIC, ClassFile, JavaVersion, parse as parse_classfile};
 use crate::dalvik_decompile::{DecompiledDex, decompile_dex};
+use crate::dalvik_dexguard::{DalvikCffReport, unflatten_dex_methods};
 use crate::dalvik_strdec::{DexStringRecovery, recover as recover_dex_strings};
 use crate::decompile::{DecompiledClass, decompile_class};
-use crate::dex::{DEX_MAGIC_PREFIX, DexFile, parse as parse_dex};
+use crate::dex::{CodeItem, DEX_MAGIC_PREFIX, DexFile, parse as parse_dex, parse_code_items};
 use crate::obfuscators::Protector;
 use crate::protectors::{
     PeelStatus, PeeledClass, ProtectorPeelReport, detect_family as detect_protector_family,
@@ -227,6 +228,8 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
     })?;
     let decompiled: DecompiledDex = decompile_dex(&dex, bytes);
     let recovery: Vec<DexStringRecovery> = recover_dex_strings(&dex, bytes);
+    let items: Vec<CodeItem> = parse_code_items(&dex, bytes);
+    let (cff, _per_method): (DalvikCffReport, _) = unflatten_dex_methods(&items);
     let mut children: Vec<ChildArtifact> = Vec::new();
 
     if !decompiled.source.trim().is_empty() {
@@ -245,7 +248,7 @@ fn dex_children(bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
         ));
     }
 
-    if let Ok(json) = serde_json::to_vec_pretty(&dex_manifest(&dex)) {
+    if let Ok(json) = serde_json::to_vec_pretty(&dex_manifest(&dex, &cff)) {
         children.push(terminal_child("jvm-manifest.json".to_string(), json));
     }
 
@@ -286,12 +289,14 @@ fn peel_sidecar(report: &ProtectorPeelReport) -> serde_json::Value {
 }
 
 fn classfile_manifest(cf: &ClassFile, this_class: &str) -> serde_json::Value {
+    let java_version: Option<&'static str> = cf.version().map(|v: JavaVersion| v.marketing_name());
     serde_json::json!({
         "schema": "disrobe.jvm.classify/v1",
         "format": "classfile",
         "this_class": this_class,
         "major_version": cf.major_version,
         "minor_version": cf.minor_version,
+        "java_version": java_version,
         "field_count": cf.fields.len(),
         "method_count": cf.methods.len(),
         "constant_pool_size": cf.constant_pool.len(),
@@ -320,14 +325,25 @@ fn dex_reflection_sidecar(recovery: &[DexStringRecovery]) -> serde_json::Value {
     })
 }
 
-fn dex_manifest(dex: &DexFile) -> serde_json::Value {
+fn dex_manifest(dex: &DexFile, cff: &DalvikCffReport) -> serde_json::Value {
     serde_json::json!({
         "schema": "disrobe.jvm.classify/v1",
         "format": "dex",
         "dex_version": format!("{:?}", dex.header.version),
+        "android_marketing": dex.header.version.android_marketing(),
         "string_count": dex.strings.len(),
         "class_count": dex.class_descriptors.len(),
         "type_name_count": dex.type_names.len(),
+        "method_count": dex.method_ids.len(),
+        "field_count": dex.field_ids.len(),
+        "cff_methods_scanned": cff.methods_scanned,
+        "cff_flattened_methods": cff.flattened_methods,
+        "cff_methods_unflattened": cff.methods_unflattened,
+        "cff_dispatchers_resolved": cff.dispatchers_resolved,
+        "cff_edges_redirected": cff.edges_redirected,
+        "cff_dead_branches_folded": cff.dead_branches_folded,
+        "cff_dispatcher_blocks_pruned": cff.dispatcher_blocks_pruned,
+        "cff_residual_dispatcher_edges": cff.residual_dispatcher_edges,
     })
 }
 
@@ -725,6 +741,11 @@ mod tests {
         assert_eq!(manifest["format"], "classfile");
         assert!(manifest["this_class"].is_string());
         assert!(manifest["method_count"].as_u64().is_some());
+        assert!(
+            manifest["java_version"].is_string(),
+            "the manifest sidecar must carry the marketing java_version the legacy analyze() \
+             report also exposed; got:\n{manifest}"
+        );
 
         let java: &ChildArtifact = children
             .iter()
@@ -756,6 +777,16 @@ mod tests {
         let manifest: serde_json::Value = parse_child(&children, "jvm-manifest.json");
         assert_eq!(manifest["format"], "dex");
         assert!(manifest["class_count"].as_u64().is_some());
+        assert!(
+            manifest["method_count"].is_number() && manifest["field_count"].is_number(),
+            "the dex manifest sidecar must carry the method/field counts the legacy analyze() \
+             report also exposed; got:\n{manifest}"
+        );
+        assert!(
+            manifest["cff_methods_scanned"].is_number(),
+            "the dex manifest sidecar must carry the DexGuard control-flow-unflatten stats the \
+             legacy analyze() report's dex_protector_peel.cff also exposed; got:\n{manifest}"
+        );
     }
 
     #[test]
