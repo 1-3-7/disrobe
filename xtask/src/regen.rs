@@ -33,11 +33,17 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::attack_surface::run(root),
         &mut stale,
     );
+    run_one(
+        "fuzz-scope",
+        check,
+        || crate::fuzz_scope::run(root),
+        &mut stale,
+    );
 
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check, attack-surface cross-check)"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, README stat cross-check, attack-surface cross-check, fuzz-scope cross-check)"
             );
             Ok(())
         } else {
@@ -49,7 +55,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
     } else {
         println!(
-            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, and evidence regenerated; README stat and attack-surface cross-checks ok"
+            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, and evidence regenerated; README stat, attack-surface, and fuzz-scope cross-checks ok"
         );
         Ok(())
     }

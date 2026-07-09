@@ -11,6 +11,7 @@ mod demo;
 mod errdocs;
 mod evidence;
 mod fileio;
+mod fuzz_scope;
 mod graphs;
 mod metrics;
 #[cfg(feature = "playground")]
