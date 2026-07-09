@@ -125,6 +125,80 @@ jobs:
         with:
           ruby-version: "3.4"
       - run: cargo test --workspace --all-features
+      - name: stage this OS leg's cross-platform determinism hash file
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f target/determinism-hashes.txt
+          cp target/determinism-hashes.txt "target/determinism-hashes-${{ matrix.os }}.txt"
+          cat "target/determinism-hashes-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: determinism-hashes-${{ matrix.os }}
+          path: target/determinism-hashes-${{ matrix.os }}.txt
+      - name: batch worker-pool determinism (--jobs 1 vs --jobs 4, same fixtures, one leg only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
+
+  determinism-cross-platform:
+    name: determinism cross-platform proof
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: determinism-hashes-*
+          merge-multiple: true
+          path: determinism-hashes
+      - name: assert identical input yields byte-identical output on every OS leg
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import sys
+
+          files = sorted(glob.glob("determinism-hashes/determinism-hashes-*.txt"))
+          if len(files) < 2:
+              sys.exit(f"expected a hash file from every OS leg, found {files}")
+
+          by_os = {}
+          for path in files:
+              os_name = path.rsplit("determinism-hashes-", 1)[-1]
+              if os_name.endswith(".txt"):
+                  os_name = os_name[:-4]
+              entries = {}
+              for line in open(path):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  name, digest = line.rsplit(" ", 1)
+                  entries[name] = digest
+              by_os[os_name] = entries
+
+          oses = sorted(by_os)
+          baseline_os = oses[0]
+          baseline = by_os[baseline_os]
+          mismatches = []
+          for os_name in oses[1:]:
+              entries = by_os[os_name]
+              if entries.keys() != baseline.keys():
+                  mismatches.append(
+                      f"{os_name} vs {baseline_os}: fixture set differs "
+                      f"({sorted(entries)} vs {sorted(baseline)})"
+                  )
+                  continue
+              for fixture, digest in baseline.items():
+                  other = entries[fixture]
+                  if other != digest:
+                      mismatches.append(
+                          f"{fixture}: {baseline_os}={digest} != {os_name}={other}"
+                      )
+
+          if mismatches:
+              sys.exit("cross-platform determinism violated:\n" + "\n".join(mismatches))
+          print(f"determinism proof ok: {len(baseline)} fixture(s) byte-identical across {oses}")
+          PY
 
   py-recompile-gate:
     name: py recompile-equivalence gate

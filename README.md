@@ -46,7 +46,7 @@ Try it in your browser: [`1-3-7.github.io/disrobe/playground`](https://1-3-7.git
 
 **Is:**
 
-- A static, deterministic Rust binary that decompiles, deobfuscates, and unpacks across 20+ ecosystems, with identical input yielding byte-identical output on every machine.
+- A static, deterministic Rust binary that decompiles, deobfuscates, and unpacks across 20+ ecosystems, with identical input yielding byte-identical output on every machine, proven by a CI job that hashes the same real recovered fixtures on Linux, macOS, and Windows and fails if any two disagree.
 - Graded per recovery against an independent oracle (a real compiler, verifier, interpreter, or execution differential), never against its own output.
 - A CLI, a set of Rust library crates, Python bindings, and a daemon (`disrobe serve`, HTTP/gRPC/LSP/MCP), so the same passes drive automation and other tools.
 - A recon and IOC engine (`frisk`, `prowl`, `indicators`) alongside decompilation, for secrets, endpoints, and threat-intel enrichment.
@@ -542,6 +542,7 @@ Every measured number below links to a committed corpus or fixture, a runnable r
 | APK secrets vs apkleaks | 8 / 8 planted secrets vs 5 / 8 `[CI]` | hand-verified planted APK ground truth | `cargo run -p disrobe-bench-head-to-head` |
 | frisk IOC detection | 6 / 6 planted non-secret IOC categories `[CI]` | known-planted endpoints, manifest findings, URLs, IPv4, email, and `.onion` | `crates/disrobe-core/tests/frisk_gauntlet.rs` |
 | Container / archive / firmware extraction | <!-- m:containers_frac -->98 / 98<!-- /m --> formats write member bytes in-tree `[CI]` | per-format in-tree extraction count | `crates/disrobe-binfmt/src/container.rs` (`every_real_format_extracts_in_tree`) |
+| Cross-platform determinism | 3 / 3 real fixtures (Python `.pyc` decompile, native packer unpack, malicious pickle decompile) byte-identical across Linux/macOS/Windows, and a batch run over the same fixtures identical between `--jobs 1` and `--jobs 4` `[CI]` | BLAKE3 hash equality of the real recovered output, compared across the 3-OS CI matrix and across worker-pool sizes on the one real concurrent code path (`disrobe auto <dir>`'s batch runner) | `crates/disrobe-cli/tests/determinism_cross_platform.rs`; the `determinism-cross-platform` job in `.github/workflows/ci.yml` |
 
 <details>
 <summary>Reproduce every number</summary>
@@ -668,7 +669,7 @@ Yes, the default path is pure static analysis and never executes the sample. The
 
 ### Is it deterministic? Does it use an LLM?
 
-Fully deterministic and static, with no model anywhere in the pipeline. Identical input yields byte-identical output on every machine, so a result can be cached, diffed, signed, and replayed.
+Fully deterministic and static, with no model anywhere in the pipeline. Identical input yields byte-identical output on every machine, so a result can be cached, diffed, signed, and replayed. This is not just asserted: the `determinism-cross-platform` CI job runs the real CLI against the same fixtures on Linux, macOS, and Windows, BLAKE3-hashes the real recovered output, and fails the build if any OS disagrees; a companion check runs the same fixtures through `disrobe auto`'s batch runner (the one code path in the CLI that actually uses a multi-worker thread pool) at `--jobs 1` and `--jobs 4` and confirms the recovered bytes are identical either way. See `crates/disrobe-cli/tests/determinism_cross_platform.rs`.
 
 ### What does "recovery %" mean?
 
