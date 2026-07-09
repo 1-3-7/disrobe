@@ -133,15 +133,19 @@ bytecode pairs and predicts likely source. That approach produces plausible text
 guarantee that the text means what the bytecode meant, which is precisely the guarantee a malware
 analyst needs before acting on a finding. The crate here is the other family. It is deterministic and
 non-probabilistic: the same input always yields the same output, the output is derived by explicit
-rules from the bytecode, and the output is checkable. The pass declares itself a pure transform from
-disassembly to a surface-syntax rung:
+rules from the bytecode, and the output is checkable. The pass declares itself a pure transform that
+detects raw pyc/pypy/micropython bytes and always emits formatted Python source:
 
 ```rust
-impl LegacyPass for DecompilePass {
-    const CONSUMES: &'static [Rung] = &[Rung::Disasm];
-    const EMITS: &'static [Rung] = &[Rung::Surface];
+impl Pass for PyDecompilePass {
+    ...
+    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+        OutputKind::Source {
+            language: Language::Python,
+            formatted: true,
+        }
 ```
-(`src/pass.rs:97-98`)
+(`src/chain_detector.rs:53-68`)
 
 Determinism matters for reverse engineering and malware analysis for three concrete reasons. First,
 static safety: the recovery runs no attacker-controlled code, so analyzing a hostile sample cannot
@@ -176,7 +180,7 @@ pub use engine::{
     NativeDecompile, decompile_micropython, decompile_pyc, decompile_pypy, pypy_variant_label,
 };
 ```
-(`src/lib.rs:30-32`)
+(`src/lib.rs:29-31`)
 
 ### 1.2 Why it is hard
 

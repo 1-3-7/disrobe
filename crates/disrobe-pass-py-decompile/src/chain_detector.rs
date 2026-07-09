@@ -9,13 +9,16 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
+use disrobe_pass_py_disasm::alt_runtimes::{AltRuntime, detect_runtime as detect_alt_runtime};
 use disrobe_py_marshal::{PyVersion as MarshalVersion, pyversion_from_magic};
 
-use crate::engine::{NativeDecompile, decompile_pyc};
+use crate::engine::{NativeDecompile, decompile_micropython, decompile_pyc, decompile_pypy};
 
 pub const PASS_ID: PassId = "py.decompile";
 
 const TAG_PYC_PREFIX: &str = "pyc";
+const TAG_PYPY: &str = "pyc-pypy";
+const TAG_MICROPYTHON: &str = "pyc-micropython";
 
 #[derive(Debug)]
 pub struct PyDecompileDetector;
@@ -30,6 +33,13 @@ impl Detector for PyDecompileDetector {
         let bytes: &[u8] = ctx.bytes;
         if bytes.len() < 4 {
             return None;
+        }
+        match detect_alt_runtime(bytes) {
+            Some(AltRuntime::PyPy) => return Some(verdict_alt(TAG_PYPY, "pypy")),
+            Some(AltRuntime::MicroPython) => {
+                return Some(verdict_alt(TAG_MICROPYTHON, "micropython"));
+            }
+            _ => {}
         }
         let magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let version: MarshalVersion = pyversion_from_magic(magic)?;
@@ -69,9 +79,34 @@ impl Pass for PyDecompilePass {
         };
         if PyDecompileDetector.detect(&ctx).is_none() {
             return Err(CoreError::PassFailure(
-                "DR-PYDEC-0902: py.decompile: input is not a recognized cpython pyc magic"
+                "DR-PYDEC-0902: py.decompile: input is not a recognized cpython pyc or pypy/micropython magic"
                     .to_string(),
             ));
+        }
+        match detect_alt_runtime(bytes) {
+            Some(AltRuntime::PyPy) => {
+                let result: NativeDecompile = decompile_pypy(bytes).map_err(|e| {
+                    CoreError::PassFailure(format!("DR-PYDEC-0911: py.decompile pypy engine: {e}"))
+                })?;
+                return Ok(Artifact::new(
+                    Rung::Surface,
+                    result.source.into_bytes(),
+                    artifact.root_hash,
+                ));
+            }
+            Some(AltRuntime::MicroPython) => {
+                let result: NativeDecompile = decompile_micropython(bytes).map_err(|e| {
+                    CoreError::PassFailure(format!(
+                        "DR-PYDEC-0912: py.decompile micropython engine: {e}"
+                    ))
+                })?;
+                return Ok(Artifact::new(
+                    Rung::Surface,
+                    result.source.into_bytes(),
+                    artifact.root_hash,
+                ));
+            }
+            _ => {}
         }
         let result: NativeDecompile = decompile_pyc(bytes).map_err(|e| {
             CoreError::PassFailure(format!("DR-PYDEC-0908: py.decompile engine: {e}"))
@@ -85,6 +120,18 @@ impl Pass for PyDecompilePass {
 }
 
 pub static PY_DECOMPILE_PASS: PyDecompilePass = PyDecompilePass;
+
+fn verdict_alt(tag: &'static str, label: &str) -> DetectVerdict {
+    DetectVerdict::new(
+        PASS_ID,
+        tag,
+        FAMILY_INTERPRETER_BYTECODE,
+        0.94,
+        50,
+        vec!["alt-runtime-magic-known"],
+        format!("{label} bytecode routed to the native decompile engine"),
+    )
+}
 
 fn verdict_for(v: MarshalVersion) -> DetectVerdict {
     let tag: &'static str = format_tag_for(v);
@@ -203,5 +250,54 @@ mod tests {
         let a: Artifact = Artifact::new(Rung::Raw, pyc_for(9999), [0u8; 32]);
         let err: CoreError = PY_DECOMPILE_PASS.run(&a).expect_err("must reject");
         assert!(format!("{err}").contains("DR-PYDEC-0902"));
+    }
+
+    const MICROPYTHON_BYTECODE: &[u8] =
+        include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_bytecode.mpy");
+    const PYPY27_METHODS: &[u8] =
+        include_bytes!("../../../corpus/python/alt_runtimes/pypy/methods.pypy27.pyc");
+
+    #[test]
+    fn detect_micropython_magic_outranks_disasm_alt_runtime_verdict() {
+        let v: DetectVerdict = PyDecompileDetector
+            .detect(&ctx(MICROPYTHON_BYTECODE))
+            .expect("must detect micropython");
+        assert_eq!(v.format_tag, TAG_MICROPYTHON);
+        assert!(
+            v.confidence > 0.92,
+            "must outrank py.disasm's alt-runtime verdict (0.92) so the chain recovers real \
+             source instead of a disassembly listing: {v:?}"
+        );
+    }
+
+    #[test]
+    fn detect_pypy_magic_outranks_disasm_alt_runtime_verdict() {
+        let v: DetectVerdict = PyDecompileDetector
+            .detect(&ctx(PYPY27_METHODS))
+            .expect("must detect pypy");
+        assert_eq!(v.format_tag, TAG_PYPY);
+        assert!(v.confidence > 0.92, "must outrank py.disasm: {v:?}");
+    }
+
+    #[test]
+    fn chain_run_recovers_real_source_for_micropython_bytecode() {
+        let a: Artifact = Artifact::new(Rung::Raw, MICROPYTHON_BYTECODE.to_vec(), [0u8; 32]);
+        let out: Artifact = PY_DECOMPILE_PASS
+            .run(&a)
+            .expect("chain must route micropython magic to the native decompile engine");
+        let text: String = String::from_utf8_lossy(out.envelope.as_slice()).into_owned();
+        assert!(text.contains("def add"), "got: {text}");
+        assert!(text.contains("print"), "got: {text}");
+    }
+
+    #[test]
+    fn chain_run_recovers_real_source_for_pypy_bytecode() {
+        let a: Artifact = Artifact::new(Rung::Raw, PYPY27_METHODS.to_vec(), [0u8; 32]);
+        let out: Artifact = PY_DECOMPILE_PASS
+            .run(&a)
+            .expect("chain must route pypy magic to the native decompile engine");
+        let text: String = String::from_utf8_lossy(out.envelope.as_slice()).into_owned();
+        assert!(text.contains("def run"), "got: {text}");
+        assert!(text.contains("class Box"), "got: {text}");
     }
 }

@@ -12,7 +12,7 @@ Every pass is its own crate over the shared `disrobe-core` and `disrobe-ir` type
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot payload + postcard cold sidecar + BLAKE3 root), and the transcode registry. |
 | `disrobe-binfmt` | Container detection, the 98-format extractors, and the chain runner. |
 | `disrobe-prowl` | Typed URL and IOC harvest reports, source filters, bounded async provider fan-out, and API-key resolution for the `prowl` CLI. |
-| `disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, `disrobe-pass-dotnet`, ... | One crate per ecosystem, each exposing a typed `Pass` plus direct entry points (for example the Python decompiler's `DecompilePass` and `roundtrip_native`). |
+| `disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, `disrobe-pass-dotnet`, ... | One crate per ecosystem, each exposing a typed `Pass` plus direct entry points (for example the Python decompiler's `PY_DECOMPILE_PASS` and `roundtrip_native`). |
 | `disrobe-query`, `disrobe-capabilities` | The queryable-IR layer and the ATT&CK/MBC rule engine over the disassembled native code. |
 
 Add the crates you want to a workspace member or an external project that pins the published versions:
@@ -29,12 +29,11 @@ Each pass implements the shared `Pass` trait: it exposes a `Detector` that score
 ```rust,ignore
 use disrobe_core::pass::Pass;
 use disrobe_core::{Artifact, Rung};
-use disrobe_pass_py_decompile::DecompilePass;
+use disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS;
 
 fn recover(pyc: Vec<u8>, root: [u8; 32]) -> disrobe_core::Result<Artifact> {
     let input: Artifact = Artifact::new(Rung::Raw, pyc, root);
-    let pass: DecompilePass = DecompilePass::new();
-    let recovered: Artifact = pass.run(&input)?;
+    let recovered: Artifact = PY_DECOMPILE_PASS.run(&input)?;
     let surface: &[u8] = recovered.envelope.as_slice();
     println!("rung={:?} bytes={}", recovered.rung, surface.len());
     Ok(recovered)

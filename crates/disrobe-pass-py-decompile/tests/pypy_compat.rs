@@ -14,7 +14,6 @@ use disrobe_pass_py_decompile::bytecode::opcode::pypy_extras::{
 };
 use disrobe_pass_py_decompile::bytecode::opcode::{CanonicalOp, OpcodeMap, map_for};
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
-use disrobe_pass_py_decompile::pass::{AltRuntime, DecompilePass, RuntimeRoute, detect_runtime};
 
 const PYPY_LOOKUP_METHOD: u8 = 201;
 const PYPY_CALL_METHOD: u8 = 202;
@@ -175,13 +174,6 @@ fn pypy_magic_dispatch() {
 
     let cpython_310: Box<dyn OpcodeMap> = map_for(PyVersion::V3_10);
     assert_eq!(map.opname(1), cpython_310.opname(1));
-
-    let runtime: AltRuntime = detect_runtime(PYPY_MAGIC_310_MARKER);
-    assert_eq!(runtime, AltRuntime::PyPy);
-    assert_eq!(
-        DecompilePass::dispatch_runtime(runtime),
-        RuntimeRoute::NativeMarshal
-    );
 }
 
 #[test]
@@ -196,13 +188,6 @@ fn pypy_full_pipeline() {
     assert!(matches!(ops[1], CanonicalOp::LoadAttr(0)));
     assert!(matches!(ops[2], CanonicalOp::CallFunction(0)));
     assert!(matches!(ops[3], CanonicalOp::Return));
-
-    let runtime: AltRuntime = detect_runtime(PYPY_MAGIC_310_MARKER);
-    assert_eq!(runtime, AltRuntime::PyPy);
-    assert_eq!(
-        DecompilePass::dispatch_runtime(runtime),
-        RuntimeRoute::NativeMarshal
-    );
 
     let receiver: Expr = Expr::Name {
         id: "self".to_owned(),

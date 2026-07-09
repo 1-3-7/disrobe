@@ -22,7 +22,6 @@ pub mod error;
 pub mod frame_tree;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
-pub mod pass;
 pub mod reader;
 pub mod recompile;
 pub mod roundtrip;
@@ -33,7 +32,6 @@ pub use engine::{
 pub use error::{DecompileError, Result};
 #[cfg(feature = "llm-metadata")]
 pub use llm::{DisasmIns as LlmDisasmIns, METADATA_CAPABILITY, PyDecompileLlmInput};
-pub use pass::DecompilePass;
 pub use recompile::{RoundtripOutcome, RoundtripStatus, roundtrip_native, roundtrip_skipped};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
