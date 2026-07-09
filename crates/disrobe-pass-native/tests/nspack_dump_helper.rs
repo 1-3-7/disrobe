@@ -156,6 +156,7 @@ fn dump_hash_for_inspection() {
     );
     let r: NspackEmulatedReport =
         unpack_nspack_emulated_with_baseline(&packed, Some(&orig)).unwrap();
+    fs::create_dir_all(scratch_dir()).unwrap();
     let mut out: PathBuf = scratch_dir();
     out.push("dump_hash_decompressed.bin");
     fs::write(&out, &r.decompressed_image).unwrap();
