@@ -108,7 +108,6 @@ pub use obfuscators::{
     simplify_mba, strip_dead_functions, strip_integrity_imports, unflatten,
     unflatten_to_fixed_point, unwrap_decryption,
 };
-pub use pass::{WasmDeobLegacyPass, WasmPassReport};
 pub use provenance_header::{
     c_lifted_header, render_c_lifted_with_header, render_rust_lifted_with_header,
     render_ts_lifted_with_header, render_wat_decompiled_with_header, rust_lifted_header,

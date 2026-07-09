@@ -22,7 +22,6 @@ chain = ["disrobe-core/chain"]
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-ir = { workspace = true }
 disrobe-mba = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 indexmap = { workspace = true }

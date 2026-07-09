@@ -123,6 +123,9 @@ impl Pass for WasmDeobPass {
             });
 
         let mut children: Vec<ChildArtifact> = Vec::new();
+        if let Ok(json) = serde_json::to_vec_pretty(&detection) {
+            children.push(sidecar_child("wasm.detection.json".to_string(), json));
+        }
         if let Ok(summary) = analyze_module(analyzed_bytes) {
             let summary: ModuleSummary = summary;
             if let Ok(json) = serde_json::to_vec_pretty(&summary) {
@@ -662,6 +665,10 @@ mod tests {
             .map(|c: &ChildArtifact| c.handle.relative_path.as_str())
             .collect();
         assert!(
+            paths.contains(&"wasm.detection.json"),
+            "auto must surface the dedicated WasmDetection sidecar, got {paths:?}",
+        );
+        assert!(
             paths.contains(&"wasm.summary.json"),
             "auto must surface the dedicated ModuleSummary sidecar, got {paths:?}",
         );
@@ -685,6 +692,62 @@ mod tests {
         assert!(
             parsed.get("func_count").is_some(),
             "summary must carry module structure"
+        );
+    }
+
+    #[test]
+    fn extract_children_detection_sidecar_carries_the_real_classification_markers() {
+        let module: &str = r#"
+            (module
+              (func (export "aa") (result i32) i32.const 1)
+              (func (export "bb") (result i32) i32.const 2)
+              (func (export "cc") (result i32) i32.const 3)
+              (func (export "dd") (result i32) i32.const 4))
+        "#;
+        let bytes: Vec<u8> = wat::parse_str(module).expect("assemble wat");
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = WASM_DEOB_PASS
+            .extract_children(&a)
+            .expect("extract_children must run");
+
+        let detection: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == "wasm.detection.json")
+            .expect("detection sidecar present");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&detection.bytes).expect("detection json deserializes");
+        assert_eq!(
+            parsed.get("obfuscator").and_then(serde_json::Value::as_str),
+            Some("WasmNameObfuscator"),
+        );
+        assert_eq!(
+            parsed
+                .get("export_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(4),
+        );
+        assert_eq!(
+            parsed
+                .get("import_count")
+                .and_then(serde_json::Value::as_u64),
+            Some(0),
+        );
+        assert_eq!(
+            parsed
+                .get("has_name_section")
+                .and_then(serde_json::Value::as_bool),
+            Some(false),
+        );
+        let markers: Vec<&str> = parsed
+            .get("markers")
+            .and_then(serde_json::Value::as_array)
+            .expect("markers array present")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(
+            markers.contains(&"stripped+short-exports"),
+            "detection sidecar must carry the real per-obfuscator marker the DetectVerdict.markers placeholder drops, got {markers:?}",
         );
     }
 

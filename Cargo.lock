@@ -2795,7 +2795,6 @@ name = "disrobe-pass-wasm-deob"
 version = "0.10.4"
 dependencies = [
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-mba",
  "divan",
