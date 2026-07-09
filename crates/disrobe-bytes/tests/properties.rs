@@ -5,6 +5,40 @@ use disrobe_bytes::{
 };
 use proptest::prelude::*;
 
+fn encode_uleb128_for_test(value: u64) -> Vec<u8> {
+    let mut remaining: u64 = value;
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let mut byte: u8 = (remaining & 0x7F) as u8;
+        remaining >>= 7;
+        if remaining != 0 {
+            byte |= 0x80;
+        }
+        bytes.push(byte);
+        if remaining == 0 {
+            break;
+        }
+    }
+    bytes
+}
+
+fn encode_sleb128_for_test(value: i64) -> Vec<u8> {
+    let mut remaining: i64 = value;
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let byte: u8 = (remaining & 0x7F) as u8;
+        remaining >>= 7;
+        let sign_bit_set: bool = byte & 0x40 != 0;
+        let done: bool = (remaining == 0 && !sign_bit_set) || (remaining == -1 && sign_bit_set);
+        if done {
+            bytes.push(byte);
+            break;
+        }
+        bytes.push(byte | 0x80);
+    }
+    bytes
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -229,5 +263,40 @@ proptest! {
         let usize_result: usize = align_up_usize(value as usize, align as usize);
         let u64_result: u64 = align_up_u64(value, align);
         prop_assert_eq!(usize_result as u64, u64_result);
+    }
+
+    #[test]
+    fn uleb128_round_trips_arbitrary_u64(value in any::<u64>()) {
+        let bytes: Vec<u8> = encode_uleb128_for_test(value);
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let decoded: u64 = reader.read_uleb128().unwrap();
+        prop_assert_eq!(decoded, value);
+        prop_assert_eq!(reader.position(), bytes.len());
+    }
+
+    #[test]
+    fn sleb128_round_trips_arbitrary_i64(value in any::<i64>()) {
+        let bytes: Vec<u8> = encode_sleb128_for_test(value);
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let decoded: i64 = reader.read_sleb128().unwrap();
+        prop_assert_eq!(decoded, value);
+        prop_assert_eq!(reader.position(), bytes.len());
+    }
+
+    #[test]
+    fn uleb128_and_sleb128_never_panic_on_arbitrary_bytes(
+        bytes in proptest::collection::vec(any::<u8>(), 0..24),
+    ) {
+        let mut uleb_reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let before: usize = uleb_reader.position();
+        if uleb_reader.read_uleb128().is_err() {
+            prop_assert_eq!(uleb_reader.position(), before);
+        }
+
+        let mut sleb_reader: ByteReader<'_> = ByteReader::new(&bytes);
+        let before: usize = sleb_reader.position();
+        if sleb_reader.read_sleb128().is_err() {
+            prop_assert_eq!(sleb_reader.position(), before);
+        }
     }
 }
