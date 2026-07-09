@@ -9,14 +9,14 @@ mod native {
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::PathBuf;
-    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::process::{Child, Command, Stdio};
     use std::sync::{LazyLock, RwLock};
     use std::time::Duration;
 
     use crate::format::FormatError;
+    use crate::subprocess::CapturedOutput;
 
     const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
-    const CAPTURE_READ_CHUNK: usize = 8192;
 
     #[derive(Debug)]
     struct SubprocessOutput {
@@ -67,23 +67,6 @@ mod native {
         present
     }
 
-    fn read_capped_output<R: std::io::Read>(mut reader: R) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::new();
-        let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-        loop {
-            let read: usize = match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
-            };
-            let remaining: usize = MAX_CAPTURE_OUTPUT.saturating_sub(out.len());
-            if remaining > 0 {
-                let keep: usize = read.min(remaining);
-                out.extend_from_slice(&chunk[..keep]);
-            }
-        }
-        out
-    }
-
     fn run_formatter_stdio(
         binary: &'static str,
         args: &[&str],
@@ -104,9 +87,6 @@ mod native {
                 })?;
 
         let stdin_opt: Option<std::process::ChildStdin> = child.stdin.take();
-        let stdout_opt: Option<std::process::ChildStdout> = child.stdout.take();
-        let stderr_opt: Option<std::process::ChildStderr> = child.stderr.take();
-
         let input_bytes: Vec<u8> = input.as_bytes().to_vec();
         let writer_handle: Option<std::thread::JoinHandle<()>> =
             stdin_opt.map(|mut stdin: std::process::ChildStdin| {
@@ -114,66 +94,24 @@ mod native {
                     let _: std::io::Result<()> = stdin.write_all(&input_bytes);
                 })
             });
-        let stdout_handle: Option<std::thread::JoinHandle<Vec<u8>>> =
-            stdout_opt.map(|mut s: std::process::ChildStdout| {
-                std::thread::spawn(move || read_capped_output(&mut s))
-            });
-        let stderr_handle: Option<std::thread::JoinHandle<Vec<u8>>> =
-            stderr_opt.map(|mut s: std::process::ChildStderr| {
-                std::thread::spawn(move || read_capped_output(&mut s))
-            });
 
         let timeout: Duration = Duration::from_secs(u64::from(timeout_secs));
-        let status_opt: Option<ExitStatus> = wait_timeout::ChildExt::wait_timeout(
-            &mut child, timeout,
-        )
-        .map_err(|e: std::io::Error| FormatError::ToolFailed {
-            stderr: e.to_string(),
-            exit: -1,
-        })?;
-        let Some(status): Option<ExitStatus> = status_opt else {
-            let _: std::io::Result<()> = child.kill();
-            let _: std::io::Result<ExitStatus> = child.wait();
-            if let Some(h) = writer_handle {
-                let _: std::thread::Result<()> = h.join();
-            }
-            if let Some(h) = stdout_handle {
-                let _: std::thread::Result<Vec<u8>> = h.join();
-            }
-            if let Some(h) = stderr_handle {
-                let _: std::thread::Result<Vec<u8>> = h.join();
-            }
-            return Err(FormatError::Timeout);
-        };
-
+        let captured: Option<CapturedOutput> =
+            crate::subprocess::wait_with_output_timeout(child, timeout, MAX_CAPTURE_OUTPUT);
         if let Some(h) = writer_handle {
             let _: std::thread::Result<()> = h.join();
         }
-        let stdout: Vec<u8> = join_captured_output(stdout_handle, "stdout")?;
-        let stderr: Vec<u8> = join_captured_output(stderr_handle, "stderr")?;
+        let Some(captured): Option<CapturedOutput> = captured else {
+            return Err(FormatError::Timeout);
+        };
 
-        let exit: i32 = status.code().unwrap_or(-1);
+        let exit: i32 = captured.exit_code.unwrap_or(-1);
         Ok(SubprocessOutput {
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            stdout: String::from_utf8_lossy(&captured.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
             exit,
-            success: status.success(),
+            success: captured.exit_code == Some(0),
         })
-    }
-
-    fn join_captured_output(
-        handle: Option<std::thread::JoinHandle<Vec<u8>>>,
-        stream: &'static str,
-    ) -> Result<Vec<u8>, FormatError> {
-        handle.map_or_else(
-            || Ok(Vec::new()),
-            |h: std::thread::JoinHandle<Vec<u8>>| {
-                h.join().map_err(|_| FormatError::ToolFailed {
-                    stderr: format!("formatter {stream} reader panicked"),
-                    exit: -1,
-                })
-            },
-        )
     }
 
     pub(in crate::format) fn run_or_fail(
@@ -190,19 +128,6 @@ mod native {
             });
         }
         Ok(out.stdout)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn capture_reader_caps_stored_output() {
-            let payload: Vec<u8> = vec![b'f'; MAX_CAPTURE_OUTPUT + 1024];
-            let captured: Vec<u8> = read_capped_output(std::io::Cursor::new(payload));
-            assert_eq!(captured.len(), MAX_CAPTURE_OUTPUT);
-            assert!(captured.iter().all(|byte: &u8| *byte == b'f'));
-        }
     }
 }
 

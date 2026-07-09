@@ -4,11 +4,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use clap::Subcommand;
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 
-use crate::cli::process_capture::{CapturedOutput, wait_with_output_timeout};
 use crate::cli::progress_ui::StageSpinner;
 
 const CPYTHON_PROBE_TIMEOUT_SECS: u64 = 5;
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum NuitkaCmd {
@@ -504,9 +505,11 @@ fn locate_cpython(major: u8, minor: u8) -> Option<PathBuf> {
         let Ok(child): Result<std::process::Child, std::io::Error> = spawned else {
             continue;
         };
-        let Some(captured): Option<CapturedOutput> =
-            wait_with_output_timeout(child, Duration::from_secs(CPYTHON_PROBE_TIMEOUT_SECS))
-        else {
+        let Some(captured): Option<CapturedOutput> = wait_with_output_timeout(
+            child,
+            Duration::from_secs(CPYTHON_PROBE_TIMEOUT_SECS),
+            CAPTURE_CAP_BYTES,
+        ) else {
             continue;
         };
         if captured.exit_code != Some(0) {

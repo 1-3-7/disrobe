@@ -4,12 +4,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use wait_timeout::ChildExt as _;
 
 use crate::error::{Error, Result};
 
 const MAX_BACKEND_CAPTURE: usize = 4 * 1024 * 1024;
-const CAPTURE_READ_CHUNK: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -158,51 +156,6 @@ pub struct DecompileOutput {
     pub artifact_path: Option<PathBuf>,
 }
 
-fn read_capped_output<R: std::io::Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-    loop {
-        let read: usize = reader.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        let remaining: usize = MAX_BACKEND_CAPTURE.saturating_sub(out.len());
-        if remaining > 0 {
-            let keep: usize = read.min(remaining);
-            out.extend_from_slice(&chunk[..keep]);
-        }
-    }
-    Ok(out)
-}
-
-fn spawn_capture_reader<R>(reader: Option<R>) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>>
-where
-    R: std::io::Read + Send + 'static,
-{
-    std::thread::spawn(move || {
-        reader.map_or_else(|| Ok(Vec::new()), |stream: R| read_capped_output(stream))
-    })
-}
-
-fn join_capture_reader(
-    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    backend: DecompilerBackend,
-    stream: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| Error::BackendFailed {
-            tool: backend.binary_name().to_owned(),
-            status: -1,
-            stderr: format!("{stream} reader panicked"),
-        })?
-        .map_err(|e: std::io::Error| Error::BackendFailed {
-            tool: backend.binary_name().to_owned(),
-            status: -1,
-            stderr: format!("{stream} read failed: {e}"),
-        })
-}
-
 #[expect(
     clippy::duration_suboptimal_units,
     reason = "from_mins is unstable (duration_constructors, rust#120301); from_secs is the stable form"
@@ -250,37 +203,25 @@ pub fn run(backend: DecompilerBackend, input: &Path, out_dir: &Path) -> Result<D
         }
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child: std::process::Child =
-        cmd.spawn().map_err(|e: std::io::Error| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::MissingTool(backend.binary_name().to_owned()),
-            _ => Error::Io(e),
-        })?;
-    let stdout_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stdout.take());
-    let stderr_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stderr.take());
+    let child: std::process::Child = cmd.spawn().map_err(|e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::NotFound => Error::MissingTool(backend.binary_name().to_owned()),
+        _ => Error::Io(e),
+    })?;
     let timeout: Duration = Duration::from_secs(300);
-    let status: std::process::ExitStatus = match child.wait_timeout(timeout).map_err(Error::Io)? {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            drop(join_capture_reader(stdout_reader, backend, "stdout")?);
-            drop(join_capture_reader(stderr_reader, backend, "stderr")?);
-            return Err(Error::BackendTimeout(
-                backend.binary_name().to_owned(),
-                timeout.as_millis() as u64,
-            ));
-        }
+    let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> =
+        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_BACKEND_CAPTURE)
+    else {
+        return Err(Error::BackendTimeout(
+            backend.binary_name().to_owned(),
+            timeout.as_millis() as u64,
+        ));
     };
-    let stdout: Vec<u8> = join_capture_reader(stdout_reader, backend, "stdout")?;
-    let stderr: Vec<u8> = join_capture_reader(stderr_reader, backend, "stderr")?;
-    let stdout_text: String = String::from_utf8_lossy(&stdout).into_owned();
-    let stderr_text: String = String::from_utf8_lossy(&stderr).into_owned();
-    if !status.success() {
+    let stdout_text: String = String::from_utf8_lossy(&captured.stdout).into_owned();
+    let stderr_text: String = String::from_utf8_lossy(&captured.stderr).into_owned();
+    if captured.exit_code != Some(0) {
         return Err(Error::BackendFailed {
             tool: backend.binary_name().to_owned(),
-            status: status.code().unwrap_or(-1),
+            status: captured.exit_code.unwrap_or(-1),
             stderr: stderr_text,
         });
     }
@@ -362,14 +303,5 @@ mod tests {
     fn lift_llvm_ir_empty_input_rejected() {
         let err: Error = lift_llvm_ir_to_pseudo_c("").expect_err("empty");
         assert!(matches!(err, Error::LlvmIr(_)));
-    }
-
-    #[test]
-    fn backend_capture_reader_stores_fixed_limit() -> std::io::Result<()> {
-        let payload: Vec<u8> = vec![b'n'; MAX_BACKEND_CAPTURE + 1024];
-        let captured: Vec<u8> = read_capped_output(std::io::Cursor::new(payload))?;
-        assert_eq!(captured.len(), MAX_BACKEND_CAPTURE);
-        assert!(captured.iter().all(|byte: &u8| *byte == b'n'));
-        Ok(())
     }
 }

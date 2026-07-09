@@ -7,13 +7,15 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+
 use super::output::{OutputFormat, emit};
-use super::process_capture::{CapturedOutput, wait_with_output_timeout};
 pub(crate) use actions::install_action_map;
 
 mod actions;
 
 const INSTALL_TIMEOUT_SECS: u64 = 600;
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Platform {
@@ -313,9 +315,11 @@ fn execute_action(action: &InstallAction) -> ExecResult {
             };
         }
     };
-    let Some(captured): Option<CapturedOutput> =
-        wait_with_output_timeout(child, Duration::from_secs(INSTALL_TIMEOUT_SECS))
-    else {
+    let Some(captured): Option<CapturedOutput> = wait_with_output_timeout(
+        child,
+        Duration::from_secs(INSTALL_TIMEOUT_SECS),
+        CAPTURE_CAP_BYTES,
+    ) else {
         return ExecResult {
             stdout: String::new(),
             stderr: format!(

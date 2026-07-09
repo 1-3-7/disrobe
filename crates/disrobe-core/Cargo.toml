@@ -59,6 +59,10 @@ iced-x86 = { workspace = true }
 serde_json = { workspace = true }
 divan = { workspace = true }
 
+[[bin]]
+name = "disrobe-core-mock-proc"
+path = "src/bin/mock_proc.rs"
+
 [[bench]]
 name = "chain_bench"
 harness = false

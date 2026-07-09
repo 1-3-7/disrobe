@@ -18,10 +18,6 @@ workspace = true
 name = "disrobe"
 path = "src/main.rs"
 
-[[bin]]
-name = "disrobe-cli-mock-proc"
-path = "src/bin/mock_proc.rs"
-
 [[test]]
 name = "self_refresh_check_only"
 path = "tests/self_update_check_only.rs"
@@ -215,5 +211,4 @@ jsonschema = "0.28"
 serde_yaml_ng = "0.10"
 tempfile = "3"
 tokio-stream = { version = "0.1", features = ["net"] }
-wait-timeout = { workspace = true }
 wat = "1"

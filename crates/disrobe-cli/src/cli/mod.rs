@@ -75,7 +75,6 @@ pub(crate) mod path_ops;
 pub(crate) mod php;
 #[cfg(feature = "pickle")]
 pub(crate) mod pickle;
-pub(crate) mod process_capture;
 pub(crate) mod progress_ui;
 pub(crate) mod prowl;
 pub(crate) mod py;

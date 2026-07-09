@@ -6,12 +6,15 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+
 use super::install::{self, InstallSpec, Platform};
 use super::output::{OutputFormat, emit};
-use super::process_capture::{CapturedOutput, wait_with_output_timeout};
 use catalog::tool_catalog;
 
 mod catalog;
+
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolKind {
@@ -364,7 +367,8 @@ fn probe_version_at(path: &std::path::Path, args: &[&str]) -> Option<String> {
         .stderr(Stdio::piped())
         .spawn();
     let child: std::process::Child = child.ok()?;
-    let out: CapturedOutput = wait_with_output_timeout(child, Duration::from_secs(3))?;
+    let out: CapturedOutput =
+        wait_with_output_timeout(child, Duration::from_secs(3), CAPTURE_CAP_BYTES)?;
     let stdout: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).trim().to_owned();
     let first: String = stdout

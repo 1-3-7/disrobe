@@ -23,6 +23,7 @@ pub mod recovery;
 pub mod rng;
 pub mod rung;
 pub mod strings;
+pub mod subprocess;
 pub mod time;
 pub mod yara;
 pub mod yara_gen;

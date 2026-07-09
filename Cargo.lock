@@ -1927,7 +1927,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
- "wait-timeout",
  "zip",
  "zstd",
 ]
@@ -2049,7 +2048,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
- "wait-timeout",
  "walkdir",
  "wasmparser 0.250.0",
  "wat",
@@ -2290,7 +2288,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tracing",
- "wait-timeout",
 ]
 
 [[package]]
@@ -2357,7 +2354,6 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tracing",
- "wait-timeout",
  "zip",
 ]
 

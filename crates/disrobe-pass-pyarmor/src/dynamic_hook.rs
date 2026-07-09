@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,6 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const PROBE_TIMEOUT_SECS: u64 = 10;
 const MIN_PYTHON: (u8, u8, u8) = (3, 9, 7);
 const MAX_DYNAMIC_CAPTURE: usize = 4 * 1024 * 1024;
-const CAPTURE_READ_CHUNK: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CaptureSource {
@@ -192,40 +191,22 @@ pub fn run_dynamic_hook_with_target(
         )
         .current_dir(&out_abs);
 
-    let start: Instant = Instant::now();
-    let mut child: std::process::Child = cmd.spawn().map_err(|e| {
+    let child: std::process::Child = cmd.spawn().map_err(|e| {
         Error::KeyExtraction(format!("failed to spawn dynamic hook interpreter: {e}"))
     })?;
-    let stdout_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stdout.take());
-    let stderr_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stderr.take());
-
-    let exit_status: std::process::ExitStatus = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if start.elapsed() >= options.timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drop(join_capture_reader(stdout_reader, "stdout")?);
-                    drop(join_capture_reader(stderr_reader, "stderr")?);
-                    return Err(Error::DynamicHookTimedOut {
-                        secs: options.timeout.as_secs(),
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                return Err(Error::KeyExtraction(format!("wait-child failed: {e}")));
-            }
-        }
+    let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> =
+        disrobe_core::subprocess::wait_with_output_timeout(
+            child,
+            options.timeout,
+            MAX_DYNAMIC_CAPTURE,
+        )
+    else {
+        return Err(Error::DynamicHookTimedOut {
+            secs: options.timeout.as_secs(),
+        });
     };
-
-    drop(join_capture_reader(stdout_reader, "stdout")?);
-    let stderr_buf: Vec<u8> = join_capture_reader(stderr_reader, "stderr")?;
-    let stderr_excerpt: String = String::from_utf8_lossy(&stderr_buf).into_owned();
-    let exit_code: Option<i32> = exit_status.code();
+    let stderr_excerpt: String = String::from_utf8_lossy(&captured.stderr).into_owned();
+    let exit_code: Option<i32> = captured.exit_code;
 
     let manifest_path: PathBuf = out_abs.join("manifest.json");
     let manifest_bytes: Vec<u8> = read_file_bounded(&manifest_path, MAX_JSON_FILE_BYTES)
@@ -322,9 +303,8 @@ fn probe(spec: &InterpreterSpec, searched: &mut Vec<String>) -> bool {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS)).is_some_and(
-        |(status, _stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>)| status.success(),
-    )
+    run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .is_some_and(|(success, _stdout, _stderr): (bool, Vec<u8>, Vec<u8>)| success)
 }
 
 fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
@@ -338,13 +318,13 @@ fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+    let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
         run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS)).ok_or_else(|| {
             Error::KeyExtraction(format!(
                 "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
             ))
         })?;
-    if !status.success() {
+    if !success {
         return Err(Error::KeyExtraction(
             "could not query python version".to_owned(),
         ));
@@ -354,42 +334,15 @@ fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
         .ok_or_else(|| Error::KeyExtraction(format!("could not parse python version: {text:?}")))
 }
 
-fn run_probe_capped(
-    cmd: &mut Command,
-    timeout: Duration,
-) -> Option<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> {
-    let mut child: std::process::Child = cmd.spawn().ok()?;
-    let stdout_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stdout.take());
-    let stderr_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        spawn_capture_reader(child.stderr.take());
-    let start: Instant = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout: Vec<u8> = join_capture_reader(stdout_reader, "stdout").ok()?;
-                let stderr: Vec<u8> = join_capture_reader(stderr_reader, "stderr").ok()?;
-                return Some((status, stdout, stderr));
-            }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _: std::io::Result<()> = child.kill();
-                    let _: std::io::Result<std::process::ExitStatus> = child.wait();
-                    drop(join_capture_reader(stdout_reader, "stdout"));
-                    drop(join_capture_reader(stderr_reader, "stderr"));
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => {
-                let _: std::io::Result<()> = child.kill();
-                let _: std::io::Result<std::process::ExitStatus> = child.wait();
-                drop(join_capture_reader(stdout_reader, "stdout"));
-                drop(join_capture_reader(stderr_reader, "stderr"));
-                return None;
-            }
-        }
-    }
+fn run_probe_capped(cmd: &mut Command, timeout: Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    let child: std::process::Child = cmd.spawn().ok()?;
+    let captured: disrobe_core::subprocess::CapturedOutput =
+        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_DYNAMIC_CAPTURE)?;
+    Some((
+        captured.exit_code == Some(0),
+        captured.stdout,
+        captured.stderr,
+    ))
 }
 
 fn parse_version(s: &str) -> Option<(u8, u8, u8)> {
@@ -410,44 +363,6 @@ const fn version_meets(found: (u8, u8, u8), required: (u8, u8, u8)) -> bool {
     found.2 >= required.2
 }
 
-fn read_capped_output<R: std::io::Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-    loop {
-        let read: usize = reader.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        let remaining: usize = MAX_DYNAMIC_CAPTURE.saturating_sub(out.len());
-        if remaining > 0 {
-            let keep: usize = read.min(remaining);
-            out.extend_from_slice(&chunk[..keep]);
-        }
-    }
-    Ok(out)
-}
-
-fn spawn_capture_reader<R>(reader: Option<R>) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>>
-where
-    R: std::io::Read + Send + 'static,
-{
-    std::thread::spawn(move || {
-        reader.map_or_else(|| Ok(Vec::new()), |stream: R| read_capped_output(stream))
-    })
-}
-
-fn join_capture_reader(
-    handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    stream: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| Error::KeyExtraction(format!("dynamic hook {stream} reader panicked")))?
-        .map_err(|e: std::io::Error| {
-            Error::KeyExtraction(format!("dynamic hook {stream} read failed: {e}"))
-        })
-}
-
 fn dynamic_hook_manifest_read_error(
     exit_code: Option<i32>,
     stderr_excerpt: &str,
@@ -465,6 +380,8 @@ fn dynamic_hook_manifest_read_error(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
     fn mock_bin_path() -> PathBuf {
@@ -530,7 +447,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let start: Instant = Instant::now();
-        let result: Option<(std::process::ExitStatus, Vec<u8>, Vec<u8>)> =
+        let result: Option<(bool, Vec<u8>, Vec<u8>)> =
             run_probe_capped(&mut cmd, Duration::from_millis(300));
         let elapsed: Duration = start.elapsed();
         eprintln!(
@@ -554,10 +471,10 @@ mod tests {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+        let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
             run_probe_capped(&mut cmd, Duration::from_secs(20))
                 .expect("flood child must complete within timeout");
-        assert!(status.success());
+        assert!(success);
         eprintln!(
             "[evidence] pyarmor cap test: child_wrote={flood_bytes} captured={} cap={MAX_DYNAMIC_CAPTURE}",
             stdout.len()
@@ -583,10 +500,10 @@ mod tests {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let (status, stdout, _stderr): (std::process::ExitStatus, Vec<u8>, Vec<u8>) =
+        let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
             run_probe_capped(&mut cmd, Duration::from_secs(5))
                 .expect("echo-args child must complete");
-        assert!(status.success());
+        assert!(success);
         let reported: String = String::from_utf8_lossy(&stdout).trim_end().to_owned();
         eprintln!(
             "[evidence] pyarmor metachar test: sent={:?} received={reported:?}",
@@ -629,15 +546,6 @@ mod tests {
         assert_eq!(s, "\"Pytrace\"");
         let back: CaptureSource = serde_json::from_str(&s).expect("deserialize");
         assert!(matches!(back, CaptureSource::Pytrace));
-    }
-
-    #[test]
-    fn dynamic_capture_reader_stores_fixed_limit() -> std::io::Result<()> {
-        let payload: Vec<u8> = vec![b'y'; MAX_DYNAMIC_CAPTURE + 1024];
-        let captured: Vec<u8> = read_capped_output(std::io::Cursor::new(payload))?;
-        assert_eq!(captured.len(), MAX_DYNAMIC_CAPTURE);
-        assert!(captured.iter().all(|byte: &u8| *byte == b'y'));
-        Ok(())
     }
 
     #[test]

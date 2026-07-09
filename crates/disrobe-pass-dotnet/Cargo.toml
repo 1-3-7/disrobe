@@ -30,7 +30,6 @@ aes = { workspace = true }
 des = { workspace = true }
 cbc = { workspace = true }
 flate2 = { workspace = true }
-wait-timeout = { workspace = true }
 lzma-rs = "0.3.0"
 disrobe-llm-metadata = { workspace = true, optional = true }
 

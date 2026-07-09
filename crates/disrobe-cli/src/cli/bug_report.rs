@@ -3,8 +3,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use super::process_capture::{CapturedOutput, wait_with_output_timeout};
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+
 use super::util::push_format;
+
+const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
 pub(crate) fn run(out: Option<PathBuf>) -> miette::Result<()> {
     let report: String = build_report();
@@ -143,10 +146,11 @@ fn first_line_of(cmd: &str, args: &[&str]) -> String {
         Ok(c) => c,
         Err(_) => return "(not installed)".to_owned(),
     };
-    let out: CapturedOutput = match wait_with_output_timeout(child, Duration::from_secs(3)) {
-        Some(o) => o,
-        None => return "(timed out)".to_owned(),
-    };
+    let out: CapturedOutput =
+        match wait_with_output_timeout(child, Duration::from_secs(3), CAPTURE_CAP_BYTES) {
+            Some(o) => o,
+            None => return "(timed out)".to_owned(),
+        };
     let s_out: String = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     let s_err: String = String::from_utf8_lossy(&out.stderr).trim().to_owned();
     s_out

@@ -42,7 +42,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-wait-timeout = { workspace = true }
 der = { version = "0.7", features = ["derive", "alloc", "oid"] }
 const-oid = "0.9"
 spki = { version = "0.7", features = ["alloc"] }
@@ -68,6 +67,7 @@ disrobe-query = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
 flate2 = { workspace = true }
 insta = { workspace = true }
+wait-timeout = { workspace = true }
 rand = { workspace = true }
 liblzma = { workspace = true }
 zstd = { workspace = true }

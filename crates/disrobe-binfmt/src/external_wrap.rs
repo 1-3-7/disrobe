@@ -11,7 +11,6 @@ use crate::extract::{EntryCompression, ExtractedEntry, ExtractionResult, QuotaSu
 use crate::quota::{ExtractionQuota, QuotaGuard, sanitize_entry_path};
 
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
-const CAPTURE_READ_CHUNK: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -202,26 +201,9 @@ fn first_nonempty_line(s: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn read_capped_output<R: std::io::Read>(mut reader: R) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-    loop {
-        let read: usize = match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        let remaining: usize = MAX_CAPTURE_OUTPUT.saturating_sub(out.len());
-        if remaining > 0 {
-            let keep: usize = read.min(remaining);
-            out.extend_from_slice(&chunk[..keep]);
-        }
-    }
-    out
-}
-
 fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Result<(i32, String, String)> {
     let mut spawn_attempt: u32 = 0;
-    let mut child: std::process::Child = loop {
+    let child: std::process::Child = loop {
         match Command::new(program)
             .args(args)
             .stdin(Stdio::null())
@@ -237,45 +219,15 @@ fn run_capture(program: &Path, args: &[&str], timeout: Duration) -> Result<(i32,
             Err(e) => return Err(Error::Io(e)),
         }
     };
-    let stdout_handle: Option<std::process::ChildStdout> = child.stdout.take();
-    let stderr_handle: Option<std::process::ChildStderr> = child.stderr.take();
-    let stdout_join: std::thread::JoinHandle<Vec<u8>> = std::thread::spawn(move || {
-        if let Some(s) = stdout_handle {
-            return read_capped_output(s);
-        }
-        Vec::new()
-    });
-    let stderr_join: std::thread::JoinHandle<Vec<u8>> = std::thread::spawn(move || {
-        if let Some(s) = stderr_handle {
-            return read_capped_output(s);
-        }
-        Vec::new()
-    });
-    let waited: Option<std::process::ExitStatus> =
-        wait_timeout::ChildExt::wait_timeout(&mut child, timeout).map_err(Error::Io)?;
-    let Some(status): Option<std::process::ExitStatus> = waited else {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = stdout_join.join();
-        let _ = stderr_join.join();
-        return Err(Error::ExternalToolTimeout {
-            tool: "external",
-            seconds: timeout.as_secs(),
-        });
-    };
-    let stdout_buf: Vec<u8> = stdout_join.join().map_err(|_| Error::ExternalToolFailed {
-        tool: "external",
-        exit: -1,
-        stderr: "stdout capture thread panicked".to_owned(),
-    })?;
-    let stderr_buf: Vec<u8> = stderr_join.join().map_err(|_| Error::ExternalToolFailed {
-        tool: "external",
-        exit: -1,
-        stderr: "stderr capture thread panicked".to_owned(),
-    })?;
-    let code: i32 = status.code().map_or(-1, |value: i32| value);
-    let stdout_s: String = String::from_utf8_lossy(&stdout_buf).into_owned();
-    let stderr_s: String = String::from_utf8_lossy(&stderr_buf).into_owned();
+    let captured: disrobe_core::subprocess::CapturedOutput =
+        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_CAPTURE_OUTPUT)
+            .ok_or(Error::ExternalToolTimeout {
+                tool: "external",
+                seconds: timeout.as_secs(),
+            })?;
+    let code: i32 = captured.exit_code.map_or(-1, |value: i32| value);
+    let stdout_s: String = String::from_utf8_lossy(&captured.stdout).into_owned();
+    let stderr_s: String = String::from_utf8_lossy(&captured.stderr).into_owned();
     Ok((code, stdout_s, stderr_s))
 }
 
@@ -740,14 +692,6 @@ mod tests {
         let mut o: ToolOverrides = ToolOverrides::default();
         o.paths.insert(tool, path.to_path_buf());
         set_overrides(o);
-    }
-
-    #[test]
-    fn capture_reader_caps_stored_output() {
-        let payload: Vec<u8> = vec![b'x'; MAX_CAPTURE_OUTPUT + 1024];
-        let captured: Vec<u8> = read_capped_output(std::io::Cursor::new(payload));
-        assert_eq!(captured.len(), MAX_CAPTURE_OUTPUT);
-        assert!(captured.iter().all(|byte: &u8| *byte == b'x'));
     }
 
     #[test]

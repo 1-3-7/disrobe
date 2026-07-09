@@ -14,7 +14,6 @@ use disrobe_binfmt::{import_graph_dot, parse_native};
 
 const GHIDRA_DECOMPILE_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
-const CAPTURE_READ_CHUNK: usize = 8192;
 
 struct CappedRun {
     exit_code: Option<i32>,
@@ -24,80 +23,32 @@ struct CappedRun {
     stderr: Vec<u8>,
 }
 
-fn read_capped_output<R: std::io::Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut chunk: [u8; CAPTURE_READ_CHUNK] = [0u8; CAPTURE_READ_CHUNK];
-    loop {
-        let read: usize = reader.read(&mut chunk)?;
-        if read == 0 {
-            break;
-        }
-        let remaining: usize = MAX_CAPTURE_OUTPUT.saturating_sub(out.len());
-        if remaining > 0 {
-            let keep: usize = read.min(remaining);
-            out.extend_from_slice(&chunk[..keep]);
-        }
-    }
-    Ok(out)
-}
-
 fn run_capped(mut command: Command, timeout: Duration) -> miette::Result<CappedRun> {
-    let mut child: std::process::Child = command
+    let child: std::process::Child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| miette::miette!("DR-NATIVE-0004: ghidra-headless spawn failed: {e}"))?;
-    let stdout_pipe: Option<std::process::ChildStdout> = child.stdout.take();
-    let stderr_pipe: Option<std::process::ChildStderr> = child.stderr.take();
-    let stdout_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        std::thread::spawn(move || {
-            stdout_pipe.map_or_else(
-                || Ok(Vec::new()),
-                |s: std::process::ChildStdout| read_capped_output(s),
-            )
-        });
-    let stderr_reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>> =
-        std::thread::spawn(move || {
-            stderr_pipe.map_or_else(
-                || Ok(Vec::new()),
-                |s: std::process::ChildStderr| read_capped_output(s),
-            )
-        });
-    let deadline: std::time::Instant = std::time::Instant::now() + timeout;
-    let (exit_code, success, timed_out): (Option<i32>, bool, bool) = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break (status.code(), status.success(), false),
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break (None, false, true);
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                return Err(miette::miette!(
-                    "DR-NATIVE-0004: ghidra-headless wait failed: {e}"
-                ));
-            }
-        }
-    };
-    let stdout: Vec<u8> = stdout_reader
-        .join()
-        .map_err(|_| miette::miette!("DR-NATIVE-0004: ghidra-headless stdout reader panicked"))?
-        .map_err(|e| miette::miette!("DR-NATIVE-0004: ghidra-headless stdout read failed: {e}"))?;
-    let stderr: Vec<u8> = stderr_reader
-        .join()
-        .map_err(|_| miette::miette!("DR-NATIVE-0004: ghidra-headless stderr reader panicked"))?
-        .map_err(|e| miette::miette!("DR-NATIVE-0004: ghidra-headless stderr read failed: {e}"))?;
-    Ok(CappedRun {
-        exit_code,
-        success,
-        timed_out,
-        stdout,
-        stderr,
-    })
+    Ok(
+        match disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_CAPTURE_OUTPUT)
+        {
+            Some(captured) => CappedRun {
+                exit_code: captured.exit_code,
+                success: captured.exit_code == Some(0),
+                timed_out: false,
+                stdout: captured.stdout,
+                stderr: captured.stderr,
+            },
+            None => CappedRun {
+                exit_code: None,
+                success: false,
+                timed_out: true,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        },
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -2623,15 +2574,6 @@ mod tests {
         let s: String = "x".repeat(10_000);
         let cut: String = tail_bytes(&s, 100);
         assert_eq!(cut.len(), 100);
-    }
-
-    #[test]
-    fn capped_reader_stores_fixed_limit() -> std::io::Result<()> {
-        let payload: Vec<u8> = vec![b'g'; MAX_CAPTURE_OUTPUT + 1024];
-        let captured: Vec<u8> = read_capped_output(std::io::Cursor::new(payload))?;
-        assert_eq!(captured.len(), MAX_CAPTURE_OUTPUT);
-        assert!(captured.iter().all(|byte: &u8| *byte == b'g'));
-        Ok(())
     }
 
     #[test]

@@ -226,29 +226,16 @@ pub fn verify_recompile(table: &FrozenModules, interpreter: &std::path::Path) ->
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    let Ok(mut child): std::io::Result<std::process::Child> = spawned else {
+    let Ok(child): std::io::Result<std::process::Child> = spawned else {
         let _ = std::fs::remove_dir_all(&dir);
         return unchecked(0);
     };
 
-    let deadline: std::time::Instant =
-        std::time::Instant::now() + std::time::Duration::from_secs(RECOMPILE_TIMEOUT_SECS);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_dir_all(&dir);
-                dbg.line(|| "recompile interpreter exceeded timeout; killed".to_owned());
-                return unchecked(manifest.len());
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-            Err(_) => {
-                let _ = std::fs::remove_dir_all(&dir);
-                return unchecked(manifest.len());
-            }
-        }
+    let timeout: std::time::Duration = std::time::Duration::from_secs(RECOMPILE_TIMEOUT_SECS);
+    if disrobe_core::subprocess::wait_with_output_timeout(child, timeout, 0).is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+        dbg.line(|| "recompile interpreter exceeded timeout; killed".to_owned());
+        return unchecked(manifest.len());
     }
 
     let stdout: String = std::fs::read_to_string(&result_path).unwrap_or_default();
