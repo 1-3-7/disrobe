@@ -17,7 +17,7 @@ use disrobe_pass_lua::obfuscator::{
 };
 use disrobe_pass_lua::reader::common::{LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto};
 use disrobe_pass_lua::reader::{self, detect, read_auto};
-use disrobe_pass_lua::{decompile_auto, luvit, pass, serialize_chunk};
+use disrobe_pass_lua::{decompile_auto, luvit, serialize_chunk};
 
 struct XorShift64 {
     state: u64,
@@ -136,10 +136,6 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
     });
     guard("luvit::extract", desc, || {
         let _ = luvit::extract(bytes);
-    });
-
-    guard("pass::decode_pass_input", desc, || {
-        let _ = pass::decode_pass_input(bytes);
     });
 
     guard("format_lua", desc, || {

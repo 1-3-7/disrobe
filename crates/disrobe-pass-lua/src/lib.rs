@@ -39,7 +39,6 @@ pub mod error;
 pub mod format_wire;
 pub mod luvit;
 pub mod obfuscator;
-pub mod pass;
 pub mod provenance_header;
 pub mod reader;
 pub mod serialize;

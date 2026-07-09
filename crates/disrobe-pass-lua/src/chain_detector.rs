@@ -16,7 +16,7 @@ use crate::obfuscator::{
     darksec, hercules, ironbrew2, luaobfuscator_com, luraph, moonsec_v1, moonsec_v2, moonsec_v3,
     prometheus, psu, slua, wearedevs,
 };
-use crate::reader::{DetectedFormat, detect as detect_format};
+use crate::reader::{DetectedFormat, LuaProto, detect as detect_format, read_auto};
 
 pub const PASS_ID: PassId = "lua.deob";
 
@@ -399,17 +399,34 @@ fn decompiled_recovery(bytes: &[u8]) -> CoreResult<LuaRecovery> {
         CoreError::PassFailure(format!("DR-LUA-0904: lua.deob: decompile failed: {e}"))
     })?;
     let format: DetectedFormat = detect_format(bytes);
+    let (function_count, constant_count): (Option<usize>, Option<usize>) = match read_auto(bytes) {
+        Ok(parsed) => (
+            Some(count_protos(&parsed.main)),
+            Some(count_constants(&parsed.main)),
+        ),
+        Err(_) => (None, None),
+    };
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.lua.decompile/v0",
         "mode": "decompile",
         "format": format!("{format:?}"),
         "fidelity": format!("{:?}", chunk.fidelity),
         "warnings": chunk.warnings,
+        "function_count": function_count,
+        "constant_count": constant_count,
     });
     Ok(LuaRecovery {
         source: chunk.source.into_bytes(),
         manifest,
     })
+}
+
+fn count_protos(proto: &LuaProto) -> usize {
+    1 + proto.protos.iter().map(count_protos).sum::<usize>()
+}
+
+fn count_constants(proto: &LuaProto) -> usize {
+    proto.constants.len() + proto.protos.iter().map(count_constants).sum::<usize>()
 }
 
 const OBFUSCATOR_DETECTOR_COUNT: usize = 14;
@@ -584,6 +601,18 @@ mod tests {
             serde_json::from_slice(&manifest.bytes).expect("manifest is valid json");
         assert_eq!(parsed["schema"], "disrobe.lua.decompile/v0");
         assert!(parsed.get("fidelity").is_some());
+        assert!(
+            parsed["function_count"].as_u64().is_some_and(|n| n >= 1),
+            "manifest must carry the recovered function count; got {:?}",
+            parsed.get("function_count"),
+        );
+        assert!(
+            parsed
+                .get("constant_count")
+                .is_some_and(serde_json::Value::is_u64),
+            "manifest must carry the recovered constant count; got {:?}",
+            parsed.get("constant_count"),
+        );
         let recovered: &ChildArtifact = children
             .iter()
             .find(|c: &&ChildArtifact| c.handle.relative_path == "lua-recovered.lua")

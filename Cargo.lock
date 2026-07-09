@@ -2367,7 +2367,6 @@ dependencies = [
  "brotli-decompressor",
  "disrobe-binfmt",
  "disrobe-core",
- "disrobe-ir",
  "flate2",
  "insta",
  "miette",
