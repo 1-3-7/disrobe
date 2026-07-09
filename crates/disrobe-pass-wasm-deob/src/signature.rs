@@ -174,6 +174,8 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let mut imported_function_type_indices: Vec<u32> = Vec::new();
     let mut export_names: Vec<(u32, String)> = Vec::new();
     let mut name_section_names: Vec<(u32, String)> = Vec::new();
+    let mut name_section_locals: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
 
     for payload in Parser::new(0).parse_all(bytes) {
         let payload: Payload<'_> = payload.map_err(|e| Error::Parse(e.to_string()))?;
@@ -225,7 +227,7 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             }
             Payload::CustomSection(reader) if reader.name() == "name" => {
                 if let KnownCustom::Name(names) = reader.as_known() {
-                    collect_name_section(names, &mut name_section_names)?;
+                    collect_name_section(names, &mut name_section_names, &mut name_section_locals)?;
                 }
             }
             _ => {}
@@ -273,7 +275,10 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             results,
             exported: export_names.iter().any(|(i, _)| *i == function_index),
             imported: false,
-            local_names: Vec::new(),
+            local_names: name_section_locals
+                .get(&function_index)
+                .cloned()
+                .unwrap_or_default(),
         });
     }
 
@@ -342,15 +347,44 @@ fn resolve_name(
     }
 }
 
-fn collect_name_section(reader: NameSectionReader<'_>, out: &mut Vec<(u32, String)>) -> Result<()> {
+fn collect_name_section(
+    reader: NameSectionReader<'_>,
+    out: &mut Vec<(u32, String)>,
+    locals_out: &mut std::collections::BTreeMap<u32, Vec<Option<String>>>,
+) -> Result<()> {
     for subsection in reader {
         let name: wasmparser::Name<'_> = subsection.map_err(|e| Error::Parse(e.to_string()))?;
-        if let wasmparser::Name::Function(map) = name {
-            for naming in map {
-                let naming: wasmparser::Naming<'_> =
-                    naming.map_err(|e| Error::Parse(e.to_string()))?;
-                out.push((naming.index, naming.name.to_owned()));
+        match name {
+            wasmparser::Name::Function(map) => {
+                for naming in map {
+                    let naming: wasmparser::Naming<'_> =
+                        naming.map_err(|e| Error::Parse(e.to_string()))?;
+                    out.push((naming.index, naming.name.to_owned()));
+                }
             }
+            wasmparser::Name::Local(indirect) => {
+                for group in indirect {
+                    let group: wasmparser::IndirectNaming<'_> =
+                        group.map_err(|e| Error::Parse(e.to_string()))?;
+                    let mut names: Vec<Option<String>> = Vec::new();
+                    for naming in group.names {
+                        let naming: wasmparser::Naming<'_> =
+                            naming.map_err(|e| Error::Parse(e.to_string()))?;
+                        let idx: usize = naming.index as usize;
+                        if idx >= MAX_FUNCTION_LOCALS {
+                            continue;
+                        }
+                        if names.len() <= idx {
+                            names.resize(idx + 1, None);
+                        }
+                        names[idx] = Some(naming.name.to_owned());
+                    }
+                    if names.iter().any(Option::is_some) {
+                        locals_out.insert(group.index, names);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
