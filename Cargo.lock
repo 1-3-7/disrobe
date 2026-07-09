@@ -2678,7 +2678,6 @@ dependencies = [
  "disrobe-binfmt",
  "disrobe-capabilities",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-pass-native",
  "disrobe-py-marshal",
  "divan",

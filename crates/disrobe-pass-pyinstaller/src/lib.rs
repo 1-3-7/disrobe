@@ -14,7 +14,6 @@ mod manifest;
 #[cfg(feature = "chain")]
 pub mod native_surface;
 mod onedir;
-pub mod pass;
 mod provenance_header;
 mod pyc_zipper;
 mod pyz;
