@@ -2,15 +2,17 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
+#[cfg(feature = "chain")]
+use disrobe_core::chain::Pass;
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
 use disrobe_pass_py_disasm::alt_runtimes::micropython::{parse as mpy_parse, parse_bytecode};
 use disrobe_pass_py_disasm::alt_runtimes::micropython_native::parse as native_parse;
 use disrobe_pass_py_disasm::alt_runtimes::pypy::parse as pypy_parse;
 use disrobe_pass_py_disasm::alt_runtimes::recover::{recover, recover_detected};
 use disrobe_pass_py_disasm::alt_runtimes::{AltRuntime, detect_runtime};
-use disrobe_pass_py_disasm::pass::{
-    PASS_INPUT_PATH_CAP, PyDisasmPass, PyDisasmPassReport, decode_pass_input,
-};
+#[cfg(feature = "chain")]
+use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
 use disrobe_pass_py_disasm::{decode_exception_table, render_exception_table};
 
 const MAX_INPUT_SIZE: usize = 4096;
@@ -92,19 +94,14 @@ fn exercise(bytes: &[u8]) {
     run_pass(bytes);
 }
 
+#[cfg(feature = "chain")]
 fn run_pass(bytes: &[u8]) {
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        bytes.to_vec(),
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [0u8; 32],
-    );
-    if let Ok(out) = PyDisasmPass.run(&input) {
-        let _: Result<PyDisasmPassReport, serde_json::Error> =
-            serde_json::from_slice(&out.envelope);
-    }
-    let _ = decode_pass_input(bytes);
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
+    let _ = PY_DISASM_PASS.run(&input);
 }
+
+#[cfg(not(feature = "chain"))]
+fn run_pass(_bytes: &[u8]) {}
 
 fn mutate(rng: &mut Xorshift64, seed: &[u8]) -> Vec<u8> {
     let mut buf: Vec<u8> = seed.to_vec();

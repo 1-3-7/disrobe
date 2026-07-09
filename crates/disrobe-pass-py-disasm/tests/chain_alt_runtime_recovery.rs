@@ -1,44 +1,13 @@
 #![cfg(feature = "chain")]
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use disrobe_core::Artifact;
+use disrobe_core::Rung;
 use disrobe_core::chain::Pass;
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
+use disrobe_core::chain::detection::ChildArtifact;
 use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
-use disrobe_pass_py_disasm::pass::{
-    PASS_INPUT_PATH_CAP, PyDisasmPass as LegacyDisasmPass, PyDisasmPassReport,
-};
 
 const X64_NATIVE: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_x64.mpy");
-const ARMV7M_NATIVE: &[u8] =
-    include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_native_armv7m.mpy");
-
-fn legacy_report(bytes: &[u8]) -> PyDisasmPassReport {
-    let raw: RawPayload = RawPayload {
-        source_path: "fixture.mpy".to_owned(),
-        source_bytes: bytes.to_vec(),
-        source_hash: [0u8; 32],
-        detected_format: None,
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    let envelope: Vec<u8> = Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope");
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        envelope,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [7u8; 32],
-    );
-    let out: Artifact = LegacyDisasmPass.run(&input).expect("legacy run");
-    serde_json::from_slice(&out.envelope).expect("decode report")
-}
-
-fn chain_disasm_text(bytes: &[u8]) -> String {
-    let artifact: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [9u8; 32]);
-    let out: Artifact = PY_DISASM_PASS.run(&artifact).expect("chain run");
-    String::from_utf8(out.envelope.as_slice().to_vec()).expect("utf8")
-}
 
 #[test]
 fn chain_recovers_native_mpy_not_just_detection() {
@@ -60,26 +29,6 @@ fn chain_recovers_native_mpy_not_just_detection() {
 }
 
 #[test]
-fn chain_and_legacy_emit_identical_native_listing() {
-    for fixture in [X64_NATIVE, ARMV7M_NATIVE] {
-        let legacy: PyDisasmPassReport = legacy_report(fixture);
-        let chain_text: String = chain_disasm_text(fixture);
-        assert_eq!(
-            legacy.runtime, "micropython-native",
-            "legacy must label the runtime"
-        );
-        assert_eq!(
-            legacy.disasm_text, chain_text,
-            "chain mode and legacy mode must produce byte-identical native disassembly"
-        );
-        assert!(
-            legacy.instruction_count > 0,
-            "legacy must recover real instructions, not wall"
-        );
-    }
-}
-
-#[test]
 fn chain_native_listing_includes_viper_child() {
     let artifact: Artifact = Artifact::new(Rung::Raw, X64_NATIVE.to_vec(), [9u8; 32]);
     let out: Artifact = PY_DISASM_PASS.run(&artifact).expect("chain run");
@@ -95,8 +44,6 @@ const CPYTHON_PYC_311: &[u8] =
 
 #[test]
 fn chain_cpython_pyc_emits_dis_json_sidecar_child() {
-    use disrobe_core::chain::detection::ChildArtifact;
-
     let artifact: Artifact = Artifact::new(Rung::Raw, CPYTHON_PYC_311.to_vec(), [9u8; 32]);
     let kind: disrobe_core::chain::OutputKind = {
         let out: Artifact = PY_DISASM_PASS.run(&artifact).expect("chain run");
@@ -139,4 +86,55 @@ fn chain_cpython_pyc_emits_dis_json_sidecar_child() {
         first.get("opname").is_some() && first.get("offset").is_some(),
         "each instruction carries offset/opname like the dedicated dis.json"
     );
+}
+
+#[cfg(feature = "alt-runtimes-native")]
+const JYTHON_CLASS: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/jython/greet_mod$py.class");
+#[cfg(feature = "alt-runtimes-native")]
+const IRONPYTHON_DLL: &[u8] =
+    include_bytes!("../../../corpus/python/alt_runtimes/ironpython/greet_ip.dll");
+
+#[cfg(feature = "alt-runtimes-native")]
+#[test]
+fn chain_jython_classfile_emits_recovered_java_source_child() {
+    let artifact: Artifact = Artifact::new(Rung::Raw, JYTHON_CLASS.to_vec(), [9u8; 32]);
+    let children: Vec<ChildArtifact> = PY_DISASM_PASS
+        .extract_children(&artifact)
+        .expect("extract children");
+    let java: &ChildArtifact = children
+        .iter()
+        .find(|c: &&ChildArtifact| {
+            std::path::Path::new(&c.handle.relative_path)
+                .extension()
+                .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("java"))
+        })
+        .expect(
+            "chain must recover the embedded jython classfile as real java source, not drop it",
+        );
+    let text: String = String::from_utf8(java.bytes.clone()).expect("utf8 java source");
+    assert!(
+        text.contains("class"),
+        "recovered java source must contain a class declaration: {text}"
+    );
+}
+
+#[cfg(feature = "alt-runtimes-native")]
+#[test]
+fn chain_ironpython_dll_emits_recovered_csharp_source_child() {
+    let artifact: Artifact = Artifact::new(Rung::Raw, IRONPYTHON_DLL.to_vec(), [9u8; 32]);
+    let children: Vec<ChildArtifact> = PY_DISASM_PASS
+        .extract_children(&artifact)
+        .expect("extract children");
+    let cs: &ChildArtifact = children
+        .iter()
+        .find(|c: &&ChildArtifact| {
+            std::path::Path::new(&c.handle.relative_path)
+                .extension()
+                .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("cs"))
+        })
+        .expect(
+            "chain must recover the embedded ironpython assembly as real c# source, not drop it",
+        );
+    assert!(!cs.bytes.is_empty(), "recovered c# source must be non-empty");
 }

@@ -12,11 +12,15 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
-use disrobe_core::{Artifact, LegacyPass, Rung};
+#[cfg(feature = "chain")]
+use disrobe_core::chain::Pass;
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
 use disrobe_pass_py_disasm::alt_runtimes::{
     AltRuntime, micropython, micropython_native, pypy, recover,
 };
-use disrobe_pass_py_disasm::pass::{self, PyDisasmPass};
+#[cfg(feature = "chain")]
+use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
 use disrobe_pass_py_disasm::{
     Cfg, build_cfg, decode_exception_table, detect_runtime, disassemble, format_identity,
     format_python, jump_target_fitness, render_dis, render_dot, render_listing,
@@ -151,12 +155,10 @@ fn drive_bytes(bytes: &[u8], desc: &str) {
     guard("decode_exception_table", desc, || {
         let _ = decode_exception_table(bytes);
     });
-    guard("pass::decode_pass_input", desc, || {
-        let _ = pass::decode_pass_input(bytes);
-    });
-    guard("PyDisasmPass::run", desc, || {
+    #[cfg(feature = "chain")]
+    guard("chain_detector::PY_DISASM_PASS::run", desc, || {
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
-        let _ = PyDisasmPass.run(&artifact);
+        let _ = PY_DISASM_PASS.run(&artifact);
     });
     guard("detect_runtime", desc, || {
         let _ = detect_runtime(bytes);

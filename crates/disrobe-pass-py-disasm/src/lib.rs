@@ -28,7 +28,6 @@ mod listing;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
 mod opcodes;
-pub mod pass;
 mod provenance_header;
 
 use disrobe_py_marshal::{CodeObject, PyVersion};

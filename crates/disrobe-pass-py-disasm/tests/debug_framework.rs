@@ -1,10 +1,11 @@
+#![cfg(feature = "chain")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::process::{Command, Output};
 
-use disrobe_core::{Artifact, Capability, LegacyPass, Rung};
-use disrobe_ir::{Envelope, RawPayload, encode_raw};
-use disrobe_pass_py_disasm::pass::{PASS_INPUT_PATH_CAP, PyDisasmPass, PyDisasmPassReport};
+use disrobe_core::chain::Pass;
+use disrobe_core::{Artifact, Rung};
+use disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS;
 
 const HARNESS_ENV: &str = "DISROBE_PYDIS_DEBUG_HARNESS";
 
@@ -13,29 +14,10 @@ const CPYTHON_311_PYC: &[u8] =
 const MPY_BYTECODE: &[u8] =
     include_bytes!("../../../corpus/python/alt_runtimes/micropython/hello_bytecode.mpy");
 
-fn synth_envelope(source_path: &str, body: &[u8]) -> Vec<u8> {
-    let raw: RawPayload = RawPayload {
-        source_path: source_path.to_owned(),
-        source_bytes: body.to_vec(),
-        source_hash: [0u8; 32],
-        detected_format: None,
-    };
-    let hot: Vec<u8> = encode_raw(&raw).expect("encode raw");
-    Envelope::new(Rung::Raw, hot, vec![])
-        .encode()
-        .expect("encode envelope")
-}
-
-fn run_pass(source_path: &str, body: &[u8]) -> PyDisasmPassReport {
-    let bytes: Vec<u8> = synth_envelope(source_path, body);
-    let input: Artifact = Artifact::with_capabilities(
-        Rung::Raw,
-        bytes,
-        [Capability::produces(PASS_INPUT_PATH_CAP, 1)],
-        [7u8; 32],
-    );
-    let out: Artifact = PyDisasmPass.run(&input).expect("pass run");
-    serde_json::from_slice(&out.envelope).expect("decode report")
+fn run_chain(body: &[u8]) -> String {
+    let input: Artifact = Artifact::new(Rung::Raw, body.to_vec(), [7u8; 32]);
+    let out: Artifact = PY_DISASM_PASS.run(&input).expect("chain run");
+    String::from_utf8(out.envelope).expect("chain disasm output is utf8")
 }
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
@@ -65,12 +47,10 @@ fn harness_entrypoint() {
     if std::env::var_os(HARNESS_ENV).is_none() {
         return;
     }
-    let cpython: PyDisasmPassReport = run_pass("binary_ops.pyc", CPYTHON_311_PYC);
-    assert_eq!(cpython.runtime, "cpython");
-    assert!(cpython.instruction_count > 0);
-    let mpy: PyDisasmPassReport = run_pass("hello.mpy", MPY_BYTECODE);
-    assert_eq!(mpy.runtime, "micropython");
-    assert!(mpy.instruction_count > 0);
+    let cpython: String = run_chain(CPYTHON_311_PYC);
+    assert!(cpython.contains("RESUME") || cpython.contains("LOAD"));
+    let mpy: String = run_chain(MPY_BYTECODE);
+    assert!(!mpy.is_empty());
 }
 
 fn harness_stderr(debug: Option<&str>, json: bool) -> String {

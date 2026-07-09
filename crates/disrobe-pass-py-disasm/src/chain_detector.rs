@@ -12,7 +12,7 @@ use disrobe_core::pass::PassId;
 use serde::{Deserialize, Serialize};
 
 use crate::Instruction;
-use crate::alt_runtimes::recover::{AltRecovery, recover};
+use crate::alt_runtimes::recover::{AltRecovery, RecoveredSource, SourceLanguage, alt_label, recover};
 use crate::alt_runtimes::{AltRuntime, detect_runtime};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 
@@ -78,19 +78,31 @@ impl Pass for PyDisasmPass {
 
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
-        let ctx: DetectContext<'_> = DetectContext {
-            bytes,
-            path_hint: None,
-            parent_hint: None,
-            depth: 0,
-        };
-        if PyDisasmDetector.detect(&ctx).is_none() {
+        crate::debug::dbg_section("py.disasm");
+        crate::debug::dbg_kv("input-len", || bytes.len().to_string());
+        crate::debug::dbg_hex("input-magic", bytes, 8);
+        let alt: Option<AltRuntime> = detect_runtime(bytes);
+        let cpython: bool = is_cpython_pyc(bytes);
+        crate::debug::dbg_kv("classify", || match alt {
+            Some(rt) => format!("alt-runtime {}", alt_label(rt)),
+            None if cpython => "cpython pyc (magic recognized)".to_owned(),
+            None => "unrecognized".to_owned(),
+        });
+        if alt.is_none() && !cpython {
+            crate::debug::dbg_line(|| "not a recognized cpython or alt-runtime pyc".to_owned());
             return Err(CoreError::PassFailure(
                 "DR-PYDIS-0902: py.disasm: input is not a recognized cpython or alt-runtime pyc"
                     .to_string(),
             ));
         }
-        let (extract, _instructions): (PyDisasmExtract, Vec<Instruction>) = extract_for(bytes)?;
+        let (extract, _instructions, _source): (
+            PyDisasmExtract,
+            Vec<Instruction>,
+            Option<RecoveredSource>,
+        ) = extract_for(bytes)?;
+        crate::debug::dbg_kv("runtime", || extract.runtime.clone());
+        crate::debug::dbg_kv("py-version", || format!("{:?}", extract.py_version));
+        crate::debug::dbg_kv("instruction-count", || extract.instruction_count.to_string());
         Ok(Artifact::new(
             Rung::Disasm,
             extract.disasm_text.into_bytes(),
@@ -100,13 +112,27 @@ impl Pass for PyDisasmPass {
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
-        let (extract, instructions): (PyDisasmExtract, Vec<Instruction>) = match extract_for(bytes)
-        {
-            Ok(pair) => pair,
+        let (extract, instructions, source): (
+            PyDisasmExtract,
+            Vec<Instruction>,
+            Option<RecoveredSource>,
+        ) = match extract_for(bytes) {
+            Ok(triple) => triple,
             Err(_) => return Ok(Vec::new()),
         };
         if extract.disasm_text.starts_with(ALT_RUNTIME_NOTE_PREFIX) {
             return Ok(Vec::new());
+        }
+        let mut children: Vec<ChildArtifact> = Vec::new();
+        if let Some(recovered) = source {
+            let ext: &str = match recovered.language {
+                SourceLanguage::Java => "java",
+                SourceLanguage::CSharp => "cs",
+            };
+            children.push(terminal_child(
+                format!("{}-recovered.{ext}", extract.runtime),
+                recovered.text.into_bytes(),
+            ));
         }
         let sidecar: PyDisasmSidecar = PyDisasmSidecar {
             runtime: extract.runtime,
@@ -118,15 +144,16 @@ impl Pass for PyDisasmPass {
             serde_json::to_vec_pretty(&sidecar).map_err(|e: serde_json::Error| {
                 CoreError::PassFailure(format!("DR-PYDIS-0910: serialize disasm sidecar json: {e}"))
             })?;
-        Ok(vec![dis_json_child(json)])
+        children.push(terminal_child("disasm.dis.json".to_owned(), json));
+        Ok(children)
     }
 }
 
-fn dis_json_child(bytes: Vec<u8>) -> ChildArtifact {
+fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
     ChildArtifact {
         handle: ChildHandle {
             artifact_index: u32::MAX,
-            relative_path: "disasm.dis.json".to_owned(),
+            relative_path,
             hint: Some(TERMINAL_HINT.to_owned()),
         },
         bytes,
@@ -153,39 +180,66 @@ pub struct PyDisasmSidecar {
     pub instructions: Vec<Instruction>,
 }
 
-fn extract_for(bytes: &[u8]) -> CoreResult<(PyDisasmExtract, Vec<Instruction>)> {
+fn extract_for(
+    bytes: &[u8],
+) -> CoreResult<(PyDisasmExtract, Vec<Instruction>, Option<RecoveredSource>)> {
     if let Some(rt) = detect_runtime(bytes) {
         let recovery: AltRecovery = recover(bytes, rt);
+        crate::debug::dbg_kv("alt-recovery", || {
+            format!(
+                "{} instructions={} source={}",
+                recovery.label,
+                recovery.instruction_count,
+                recovery.source.is_some()
+            )
+        });
         let extract: PyDisasmExtract = PyDisasmExtract {
             runtime: recovery.label.to_owned(),
             py_version: None,
             disasm_text: recovery.disasm_text,
             instruction_count: recovery.instruction_count,
         };
-        return Ok((extract, Vec::new()));
+        return Ok((extract, Vec::new(), recovery.source));
     }
-    if bytes.len() < 4 {
-        return Err(CoreError::PassFailure(
-            "DR-PYDIS-0906: py.disasm: input too short for pyc header".to_owned(),
-        ));
-    }
-    let magic: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let first4: &[u8] = bytes.get(0..4).ok_or_else(|| {
+        CoreError::PassFailure("DR-PYDIS-0906: py.disasm: input too short for pyc header".to_owned())
+    })?;
+    let magic: u32 = u32::from_le_bytes([first4[0], first4[1], first4[2], first4[3]]);
     let version: PyVersion = pyversion_from_magic(magic).ok_or_else(|| {
+        crate::debug::dbg_kv("pyc-magic", || format!("0x{magic:08x} unknown"));
         CoreError::PassFailure(format!(
             "DR-PYDIS-0907: py.disasm: unknown pyc magic 0x{magic:08x}"
         ))
     })?;
+    crate::debug::dbg_kv("pyc-magic", || {
+        format!(
+            "0x{magic:08x} -> cpython {}.{}",
+            version.major, version.minor
+        )
+    });
     let pyc: PycFile = read_pyc(bytes).map_err(|e: disrobe_py_marshal::Error| {
+        crate::debug::dbg_kv("marshal-parse", || format!("failed: {e}"));
         CoreError::PassFailure(format!("DR-PYDIS-0908: pyc parse: {e}"))
     })?;
     let code: &CodeObject = match &pyc.code {
         Object::Code(co) => co.as_ref(),
-        _ => {
+        other => {
+            crate::debug::dbg_kv("marshal-parse", || {
+                format!("top-level object is {} not code", object_tag(other))
+            });
             return Err(CoreError::PassFailure(
                 "DR-PYDIS-0909: py.disasm: pyc top-level object is not a code object".to_owned(),
             ));
         }
     };
+    crate::debug::dbg_kv("marshal-parse", || {
+        format!(
+            "code object code_len={} consts={} names={}",
+            code.code.len(),
+            code.consts.len(),
+            code.names.len()
+        )
+    });
     let ins: Vec<Instruction> = crate::disassemble(code, version);
     let text: String = crate::render_listing(&ins, code, version);
     let extract: PyDisasmExtract = PyDisasmExtract {
@@ -194,7 +248,18 @@ fn extract_for(bytes: &[u8]) -> CoreResult<(PyDisasmExtract, Vec<Instruction>)> 
         instruction_count: ins.len(),
         disasm_text: text,
     };
-    Ok((extract, ins))
+    Ok((extract, ins, None))
+}
+
+const fn object_tag(obj: &Object) -> &'static str {
+    match obj {
+        Object::Code(_) => "code",
+        Object::None => "none",
+        Object::String { .. } | Object::Unicode { .. } | Object::ShortAscii { .. } => "string",
+        Object::Tuple(_) => "tuple",
+        Object::Int(_) => "int",
+        _ => "other",
+    }
 }
 
 fn verdict_for_alt(rt: AltRuntime) -> DetectVerdict {

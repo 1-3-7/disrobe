@@ -2596,7 +2596,6 @@ name = "disrobe-pass-py-disasm"
 version = "0.10.4"
 dependencies = [
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-pass-dotnet",
  "disrobe-pass-js-deob",
