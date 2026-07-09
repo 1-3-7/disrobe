@@ -13,13 +13,12 @@
     clippy::too_many_arguments
 )]
 
-use disrobe_core::{Artifact, CoreError, LegacyPass, Rung};
 use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
     DART_ISOLATE_DATA_SYMBOL, DART_VM_DATA_SYMBOL, DartAotDecompile, DartProgramSkeleton,
     DartRecoveryCounts, DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, Error,
-    FlutterObfuscationMap, LibAppLayout, MobilePass, build_dart_program_skeleton,
-    dart_recovery_counts, decompile_dart_aot, decompile_libapp_so_structured, parse_dart_snapshot,
+    FlutterObfuscationMap, LibAppLayout, build_dart_program_skeleton, dart_recovery_counts,
+    decompile_dart_aot, decompile_libapp_so_structured, parse_dart_snapshot,
     parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
 };
 
@@ -351,7 +350,12 @@ fn parse_flutter_apk_extracts_and_parses_libapp() {
 }
 
 #[test]
+#[cfg(feature = "chain")]
 fn malformed_snapshot_symbol_fails_mobile_pass_child_recovery() {
+    use disrobe_core::chain::Pass as _;
+    use disrobe_core::{Artifact, CoreError, Rung};
+    use disrobe_pass_mobile::chain_detector::MOBILE_PASS;
+
     let mut bytes: Vec<u8> = synth_minimal_libapp_so();
     forge_isolate_symbol_size(&mut bytes, u64::MAX);
 
@@ -363,8 +367,9 @@ fn malformed_snapshot_symbol_fails_mobile_pass_child_recovery() {
     );
 
     let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-    let pass_err: CoreError =
-        LegacyPass::run(&MobilePass, &artifact).expect_err("mobile pass must fail closed");
+    let pass_err: CoreError = MOBILE_PASS
+        .run(&artifact)
+        .expect_err("mobile pass must fail closed");
     let message: String = pass_err.to_string();
     assert!(
         message.contains("DR-MOB-0032"),

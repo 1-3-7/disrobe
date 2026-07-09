@@ -4,12 +4,12 @@
 use std::io::{Cursor, Write as _};
 use std::path::PathBuf;
 
+use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{ChildArtifact, DetectContext, DetectVerdict, Detector, Pass};
-use disrobe_core::{Artifact, LegacyPass};
 use disrobe_pass_mobile::chain_detector::{MOBILE_PASS, MobileDetector};
 use disrobe_pass_mobile::pass::{
-    BundleFormat, DetectedKind, MobilePass, MobilePassOutput, detect_bundle_format, detect_kind,
+    BundleFormat, DetectedKind, MobilePassOutput, detect_bundle_format, detect_kind,
 };
 use zip::write::SimpleFileOptions;
 
@@ -179,7 +179,7 @@ fn bundle_pass_run_reports_format_and_dex() {
     let dex: Vec<u8> = hello_dex();
     let xapk: Vec<u8> = build_xapk(&dex);
     let raw: Artifact = Artifact::new(Rung::Raw, xapk, [0u8; 32]);
-    let out: Artifact = LegacyPass::run(&MobilePass, &raw).expect("mobile pass runs on xapk");
+    let out: Artifact = MOBILE_PASS.run(&raw).expect("mobile pass runs on xapk");
     let report: MobilePassOutput =
         serde_json::from_slice(out.envelope.as_slice()).expect("decode mobile output");
     assert_eq!(report.detected, DetectedKind::AndroidBundle);

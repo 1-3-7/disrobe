@@ -2386,7 +2386,6 @@ dependencies = [
  "boa_engine",
  "disrobe-binfmt",
  "disrobe-core",
- "disrobe-ir",
  "insta",
  "miette",
  "object",

@@ -1,6 +1,3 @@
-use disrobe_core::{
-    Artifact, Capability, CoreError, LegacyPass, PassId, Result as CoreResult, Rung,
-};
 use serde::{Deserialize, Serialize};
 
 use crate::apk_recon::{
@@ -108,35 +105,7 @@ pub struct HermesSummary {
     pub raw_bytecode_size: usize,
 }
 
-impl LegacyPass for MobilePass {
-    const CONSUMES: &'static [Rung] = &[Rung::Raw];
-    const EMITS: &'static [Rung] = &[Rung::Disasm];
-    const REQUIRES: &'static [fn() -> Capability] = &[];
-    const PRODUCES: &'static [fn() -> Capability] = &[
-        || Capability::produces("mobile.bundle.extracted", 1),
-        || Capability::produces("mobile.surface.json", 1),
-    ];
-
-    fn id(&self) -> PassId {
-        "disrobe-pass-mobile"
-    }
-
-    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
-        let payload: &[u8] = artifact.envelope.as_slice();
-        let output: MobilePassOutput = run_inner(payload)
-            .map_err(|e: crate::error::Error| CoreError::PassFailure(format!("{e}")))?;
-        let encoded: Vec<u8> = serde_json::to_vec(&output).map_err(|e: serde_json::Error| {
-            CoreError::PassFailure(format!("DR-MOB-PASS: serialise: {e}"))
-        })?;
-        let mut next: Artifact = Artifact::new(Rung::Disasm, encoded, artifact.root_hash);
-        for producer in <Self as LegacyPass>::PRODUCES {
-            next.add_capability(producer());
-        }
-        Ok(next)
-    }
-}
-
-fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> {
+pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> {
     dbg_section("mobile analyze");
     dbg_kv("input_len", || bytes.len().to_string());
     dbg_hex("input-magic", bytes, 8);
@@ -542,19 +511,7 @@ pub fn extract_android_bundle_children(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use disrobe_core::PassMetadata;
-
     use super::*;
-
-    #[test]
-    fn pass_metadata_advertises_capabilities() {
-        let p: MobilePass = MobilePass;
-        assert_eq!(PassMetadata::id(&p), "disrobe-pass-mobile");
-        assert_eq!(p.consumes(), &[Rung::Raw]);
-        assert_eq!(p.emits(), &[Rung::Disasm]);
-        assert!(p.required_capabilities().is_empty());
-        assert_eq!(p.produced_capabilities().len(), 2);
-    }
 
     #[test]
     fn detect_hermes_kind() {
@@ -790,15 +747,9 @@ mod tests {
     }
 
     #[test]
-    fn pass_run_rejects_unrecognised_input() {
+    fn run_inner_rejects_unrecognised_input() {
         let bytes: Vec<u8> = vec![0u8; 32];
-        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-        let err: CoreError = MobilePass.run(&artifact).expect_err("must fail");
-        let msg: String = format!("{err}");
-        assert!(
-            msg.contains("DR-MOB-0021")
-                || msg.contains("Unrecognised")
-                || msg.contains("recognised")
-        );
+        let err: crate::error::Error = run_inner(&bytes).expect_err("must fail");
+        assert!(matches!(err, crate::error::Error::Unrecognised));
     }
 }

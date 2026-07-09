@@ -6,11 +6,11 @@ use disrobe_core::chain::{
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
-use disrobe_core::{Artifact, LegacyPass, Rung};
+use disrobe_core::{Artifact, Capability, Rung};
 
 use crate::pass::{
-    BundleFormat, DetectedKind, MobilePass, detect_bundle_format, detect_kind,
-    extract_android_bundle_children, extract_android_dex_children,
+    BundleFormat, DetectedKind, MobilePassOutput, detect_bundle_format, detect_kind,
+    extract_android_bundle_children, extract_android_dex_children, run_inner,
 };
 
 pub const PASS_ID: PassId = "mobile.classify";
@@ -89,8 +89,15 @@ impl Pass for MobilePassAdapter {
                     .to_string(),
             ));
         }
-        let raw: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), artifact.root_hash);
-        LegacyPass::run(&MobilePass, &raw)
+        let output: MobilePassOutput = run_inner(bytes)
+            .map_err(|e: crate::error::Error| CoreError::PassFailure(format!("{e}")))?;
+        let encoded: Vec<u8> = serde_json::to_vec(&output).map_err(|e: serde_json::Error| {
+            CoreError::PassFailure(format!("DR-MOB-PASS: serialise: {e}"))
+        })?;
+        let mut next: Artifact = Artifact::new(Rung::Disasm, encoded, artifact.root_hash);
+        next.add_capability(Capability::produces("mobile.bundle.extracted", 1));
+        next.add_capability(Capability::produces("mobile.surface.json", 1));
+        Ok(next)
     }
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {

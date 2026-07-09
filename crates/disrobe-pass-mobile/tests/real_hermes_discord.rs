@@ -16,9 +16,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use disrobe_core::{Artifact, LegacyPass, Rung};
 use disrobe_pass_mobile::{
-    DetectedKind, HERMES_MAGIC_LE_BYTES, HermesHeader, HermesModule, HermesStringKind, MobilePass,
+    DetectedKind, HERMES_MAGIC_LE_BYTES, HermesHeader, HermesModule, HermesStringKind,
     MobilePassOutput, detect_kind, parse_hermes_header, parse_hermes_module,
 };
 
@@ -146,8 +145,13 @@ fn real_hermes_discord_full_module_parse() {
 }
 
 #[test]
+#[cfg(feature = "chain")]
 #[ignore = "requires non-redistributable 66 MiB Discord Hermes bundle; run locally only"]
 fn discord_hermes_full_module_parse_dispatch() {
+    use disrobe_core::chain::Pass as _;
+    use disrobe_core::{Artifact, Rung};
+    use disrobe_pass_mobile::chain_detector::MOBILE_PASS;
+
     let bytes: Vec<u8> = match load_fixture() {
         Some(b) => b,
         None => {
@@ -156,7 +160,7 @@ fn discord_hermes_full_module_parse_dispatch() {
         }
     };
     let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-    let out: Artifact = MobilePass.run(&artifact).expect("mobile pass");
+    let out: Artifact = MOBILE_PASS.run(&artifact).expect("mobile pass");
     let parsed: MobilePassOutput = serde_json::from_slice(out.envelope.as_slice()).expect("decode");
     assert_eq!(parsed.detected, DetectedKind::HermesRawBytecode);
     let summary = parsed.hermes.expect("hermes summary");
