@@ -35,7 +35,6 @@ pub mod chain_detector;
 pub mod detect;
 pub mod error;
 pub mod format_wire;
-pub mod pass;
 pub mod pdf;
 pub mod policy;
 pub mod powershell;
@@ -62,7 +61,7 @@ pub use error::{Error, Result};
 pub use format_wire::format_identity;
 pub use pdf::{
     ActionFinding, EmbeddedFileFinding, EncryptionInfo, JsFinding, NameObfuscation, PdfReport,
-    analyze_pdf, is_pdf_document,
+    analyze_pdf, is_pdf_document, render_report,
 };
 pub use policy::{DynamicPolicy, STATIC_EVAL_DEPTH_CAP};
 pub use powershell::{
@@ -88,7 +87,7 @@ pub use vba::{
 pub use vba::{PCodeStreamHeader, PCodeWall, PCodeWallDetail};
 pub use xlm::{
     XlmCell, XlmContainerKind, XlmDefinedName, XlmEntryPoint, XlmRecovery, XlmSheet,
-    is_xlm_macro_document, recover_xlm,
+    is_xlm_macro_document, recover_xlm, render_source as render_xlm_source,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

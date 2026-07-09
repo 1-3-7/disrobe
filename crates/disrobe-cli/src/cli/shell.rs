@@ -1,17 +1,17 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::ffi::OsStr;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use clap::Subcommand;
 
 use disrobe_pass_shell::{
     Detection, Dialect, Family, ModuleStompReport, StompReport, StompVerdict, XlmRecovery,
-    analyze_stomp, deobfuscate_batch, deobfuscate_vbs, detect as detect_shell, extract_from_bytes,
-    format_identity, peel_indirection, recover_xlm, reverse_bashfuscator_auto, reverse_chameleon,
-    reverse_compress, reverse_encoding, reverse_invoke_stealth, reverse_isesteroids,
-    reverse_launcher, reverse_node_bash_obfuscate, reverse_powerhell, reverse_psobf,
-    reverse_string, reverse_token,
+    analyze_pdf, analyze_stomp, deobfuscate_batch, deobfuscate_vbs, detect as detect_shell,
+    extract_from_bytes, format_identity, peel_indirection, recover_xlm,
+    render_report as render_pdf_report, render_xlm_source, reverse_bashfuscator_auto,
+    reverse_chameleon, reverse_compress, reverse_encoding, reverse_invoke_stealth,
+    reverse_isesteroids, reverse_launcher, reverse_node_bash_obfuscate, reverse_powerhell,
+    reverse_psobf, reverse_string, reverse_token,
 };
 
 use super::globals;
@@ -144,6 +144,11 @@ fn recover_source(detection: &Detection, bytes: &[u8]) -> miette::Result<String>
     {
         return Ok(rendered);
     }
+    if detection.dialect == Dialect::Pdf
+        && let Some(report) = analyze_pdf(bytes)
+    {
+        return Ok(render_pdf_report(&report));
+    }
     let text: &str = match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
@@ -253,21 +258,7 @@ fn recover_vba_from_pcode(bytes: &[u8]) -> Vec<(String, String)> {
 
 fn recover_xlm_text(bytes: &[u8]) -> Option<String> {
     let report: XlmRecovery = recover_xlm(bytes)?;
-    if report.total_formulas() == 0 && report.entry_points.is_empty() {
-        return None;
-    }
-    let mut out: String = String::new();
-    for entry in &report.entry_points {
-        let _ = writeln!(out, "' entry: {} -> {}", entry.name, entry.target);
-    }
-    for sheet in &report.sheets {
-        let _ = writeln!(out, "' ===== {} sheet: {} =====", sheet.kind, sheet.name);
-        for cell in &sheet.cells {
-            let _ = writeln!(out, "{}!{}\t{}", sheet.name, cell.cell, cell.formula);
-        }
-    }
-    out.truncate(out.trim_end().len());
-    Some(out)
+    render_xlm_source(&report)
 }
 
 const fn dialect_ext(dialect: Dialect) -> &'static str {

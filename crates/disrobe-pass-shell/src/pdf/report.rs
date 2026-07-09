@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -146,4 +148,60 @@ pub fn analyze(data: &[u8]) -> Option<PdfReport> {
         embedded_files: found.embedded_files,
         name_obfuscation,
     })
+}
+
+#[must_use]
+pub fn render_report(report: &PdfReport) -> String {
+    let mut out: String = String::new();
+    let version: String = report.pdf_version.clone().unwrap_or_else(|| "?".to_owned());
+    let _ = writeln!(
+        out,
+        "%PDF-{version} objects={} xref={}{} recovered_by_scan={}",
+        report.object_count,
+        if report.xref_table { "table" } else { "" },
+        if report.xref_stream { "stream" } else { "" },
+        report.recovered_by_scan,
+    );
+    if let Some(encryption) = &report.encryption {
+        let _ = writeln!(
+            out,
+            "encrypted: {} decrypted={}",
+            encryption.handler, encryption.decrypted
+        );
+    }
+    if report.open_action {
+        out.push_str("open-action: present\n");
+    }
+    for entry in &report.name_obfuscation {
+        let _ = writeln!(out, "name-obfuscation: {} -> {}", entry.raw, entry.decoded);
+    }
+    for finding in &report.javascript {
+        let _ = write!(out, "== javascript [{}]", finding.origin);
+        if !finding.deobfuscation.is_empty() {
+            let _ = write!(out, " ({})", finding.deobfuscation.join(","));
+        }
+        out.push('\n');
+        out.push_str(&finding.script);
+        out.push('\n');
+    }
+    for action in &report.actions {
+        let _ = write!(out, "== action {} [{}]", action.kind, action.origin);
+        if !action.target.is_empty() {
+            let _ = write!(out, " -> {}", action.target);
+        }
+        out.push('\n');
+    }
+    for file in &report.embedded_files {
+        let _ = write!(
+            out,
+            "== embedded-file {} ({} bytes) sha256={}",
+            file.name, file.bytes, file.sha256
+        );
+        if let Some(subtype) = &file.subtype {
+            let _ = write!(out, " subtype={subtype}");
+        }
+        out.push('\n');
+    }
+    out.truncate(out.trim_end().len());
+    out
 }

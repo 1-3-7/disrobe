@@ -11,5 +11,5 @@ pub mod xref;
 pub use object::{EncryptionStatus, PdfDocument};
 pub use report::{
     ActionFinding, EmbeddedFileFinding, EncryptionInfo, JsFinding, NameObfuscation, PdfReport,
-    analyze as analyze_pdf, is_pdf as is_pdf_document,
+    analyze as analyze_pdf, is_pdf as is_pdf_document, render_report,
 };

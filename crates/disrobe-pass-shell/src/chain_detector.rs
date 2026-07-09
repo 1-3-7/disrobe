@@ -2,6 +2,7 @@
 #![allow(clippy::module_name_repetitions)]
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
+use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput, FAMILY_SOURCE,
     ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
@@ -14,8 +15,13 @@ use serde::Serialize;
 
 use crate::detect::{Detection, Dialect, Family, detect as detect_shell};
 use crate::format_wire::format_identity;
+use crate::pdf::PdfReport;
+use crate::xlm::XlmRecovery;
 
 pub const PASS_ID: PassId = "shell.deob";
+
+const RECOVERY_MANIFEST_CHILD: &str = "shell-recovery-manifest.json";
+const RECOVERY_MANIFEST_SCHEMA: &str = "disrobe.shell.recovery-manifest/v0";
 
 const TAG_POWERSHELL: &str = "shell-powershell";
 const TAG_BASH: &str = "shell-bash";
@@ -26,6 +32,7 @@ const TAG_BATCH: &str = "shell-batch";
 const TAG_VBA: &str = "shell-vba";
 const TAG_VBS: &str = "shell-vbs";
 const TAG_WSH: &str = "shell-wsh";
+const TAG_PDF: &str = "shell-pdf";
 
 #[derive(Debug)]
 pub struct ShellDetector;
@@ -80,9 +87,33 @@ impl Pass for ShellPass {
             artifact.root_hash,
         ))
     }
+
+    fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        Ok(recovery_manifest_child(bytes).into_iter().collect())
+    }
 }
 
 fn recovered_source(detection: &Detection, bytes: &[u8]) -> CoreResult<String> {
+    if detection.dialect == Dialect::Pdf {
+        let report: PdfReport = crate::pdf::analyze_pdf(bytes).ok_or_else(|| {
+            CoreError::PassFailure(
+                "DR-SHELL-0924: shell.deob: pdf structure could not be parsed; the residual wall is the malformed pdf itself"
+                    .to_owned(),
+            )
+        })?;
+        return Ok(crate::pdf::render_report(&report));
+    }
+    if detection.dialect == Dialect::Xlm {
+        let recovered: Option<String> = crate::xlm::recover_xlm(bytes)
+            .and_then(|report: XlmRecovery| crate::xlm::render_source(&report));
+        return recovered.ok_or_else(|| {
+            CoreError::PassFailure(
+                "DR-SHELL-0925: shell.deob: xlm macro sheet detected but no recoverable formulas or entry points were found; the residual wall is the workbook itself"
+                    .to_owned(),
+            )
+        });
+    }
     if detection.dialect == Dialect::Batch {
         let decoded: core::result::Result<&str, core::str::Utf8Error> = std::str::from_utf8(bytes);
         if let Ok(text) = decoded {
@@ -291,12 +322,101 @@ fn render_vba_modules(modules: &[RecoveredVbaModule]) -> String {
     out
 }
 
+fn recovery_breadcrumbs(detection: &Detection, text: &str) -> (Vec<String>, Vec<String>) {
+    match detection.dialect {
+        Dialect::Bash | Dialect::Dash | Dialect::Ksh | Dialect::Zsh
+            if detection.family == Family::NodeBashObfuscate =>
+        {
+            match crate::bash::reverse_node_bash_obfuscate(text) {
+                Some(crate::bash::NodeBashObfuscateReport {
+                    output,
+                    mut steps,
+                    walls,
+                    chunk_count,
+                    ..
+                }) if output != text => {
+                    steps.insert(0, format!("node-bash-obfuscate:chunks={chunk_count}"));
+                    let mut merged_walls: Vec<String> = walls;
+                    if let Ok(crate::bash::IndirectionReport {
+                        steps: inner_steps,
+                        output: peeled,
+                        walls: inner_walls,
+                        ..
+                    }) = crate::bash::peel_indirection(&output)
+                        && !inner_steps.is_empty()
+                        && peeled != output
+                    {
+                        steps.extend(inner_steps);
+                        merged_walls.extend(inner_walls);
+                    }
+                    (steps, merged_walls)
+                }
+                _ => (Vec::new(), Vec::new()),
+            }
+        }
+        Dialect::Bash | Dialect::Dash | Dialect::Ksh | Dialect::Zsh => {
+            match crate::bash::peel_indirection(text) {
+                Ok(crate::bash::IndirectionReport {
+                    steps,
+                    output,
+                    walls,
+                    ..
+                }) if !steps.is_empty() && output != text => (steps, walls),
+                _ => (Vec::new(), Vec::new()),
+            }
+        }
+        _ => (Vec::new(), Vec::new()),
+    }
+}
+
+fn recovery_manifest_child(bytes: &[u8]) -> Option<ChildArtifact> {
+    let manifest: serde_json::Value = build_recovery_manifest(bytes)?;
+    let json: Vec<u8> = serde_json::to_vec_pretty(&manifest).ok()?;
+    Some(ChildArtifact {
+        handle: ChildHandle {
+            artifact_index: u32::MAX,
+            relative_path: RECOVERY_MANIFEST_CHILD.to_string(),
+            hint: Some(TERMINAL_HINT.to_string()),
+        },
+        bytes: json,
+    })
+}
+
+fn build_recovery_manifest(bytes: &[u8]) -> Option<serde_json::Value> {
+    let detection: Detection = detect_shell(bytes);
+    verdict_for(&detection)?;
+    let xlm: Option<XlmRecovery> = if detection.dialect == Dialect::Xlm {
+        crate::xlm::recover_xlm(bytes)
+    } else {
+        None
+    };
+    let pdf: Option<PdfReport> = if detection.dialect == Dialect::Pdf {
+        crate::pdf::analyze_pdf(bytes)
+    } else {
+        None
+    };
+    let (steps, walls): (Vec<String>, Vec<String>) = match std::str::from_utf8(bytes) {
+        Ok(text) => recovery_breadcrumbs(&detection, text),
+        Err(_) => (Vec::new(), Vec::new()),
+    };
+    if xlm.is_none() && pdf.is_none() && steps.is_empty() && walls.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "schema": RECOVERY_MANIFEST_SCHEMA,
+        "steps": steps,
+        "walls": walls,
+        "xlm": xlm,
+        "pdf": pdf,
+    }))
+}
+
 pub static SHELL_PASS: ShellPass = ShellPass;
 
 const fn family_dispatch_bypasses_reverse_for_family(dialect: Dialect) -> bool {
     matches!(
         dialect,
-        Dialect::Batch | Dialect::Vba | Dialect::Xlm | Dialect::Vbs | Dialect::Wsh
+        Dialect::Batch | Dialect::Vba | Dialect::Xlm | Dialect::Vbs | Dialect::Wsh | Dialect::Pdf
     )
 }
 
@@ -320,7 +440,8 @@ fn verdict_for(d: &Detection) -> Option<DetectVerdict> {
         Dialect::Xlm => (TAG_VBA, "xlm-dialect"),
         Dialect::Vbs => (TAG_VBS, "vbs-dialect"),
         Dialect::Wsh => (TAG_WSH, "wsh-dialect"),
-        Dialect::Pdf | Dialect::Unknown => return None,
+        Dialect::Pdf => (TAG_PDF, "pdf-document"),
+        Dialect::Unknown => return None,
     };
     Some(DetectVerdict::new(
         PASS_ID,
@@ -1009,6 +1130,222 @@ mod tests {
                     .iter()
                     .any(|m: &RecoveredVbaModule| m.source.contains("MsgBox")),
             "the shared p-code fallback the CLI uses must also recover the behaviour"
+        );
+    }
+
+    #[test]
+    fn chain_pdf_recovers_javascript_and_manifest_carries_full_report() {
+        let Some(bytes): Option<Vec<u8>> = corpus_bytes("pdf/openaction_table.pdf") else {
+            eprintln!("SKIP: pdf openaction_table fixture missing");
+            return;
+        };
+        let detection: Detection = detect_shell(&bytes);
+        assert_eq!(detection.dialect, Dialect::Pdf);
+        assert!(
+            verdict_for(&detection).is_some(),
+            "a real pdf document must clear the shell chain detector gate"
+        );
+        let chained: String = chain_recovered(&bytes);
+        assert!(
+            chained.contains("OPENACTION_TABLE_MARKER"),
+            "chain must surface the pdf's embedded javascript; got {chained:?}"
+        );
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = SHELL_PASS
+            .extract_children(&a)
+            .expect("recovery manifest child must emit");
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == RECOVERY_MANIFEST_CHILD)
+            .expect("recovery manifest sidecar must appear for a pdf with javascript");
+        assert!(
+            manifest.handle.is_terminal(),
+            "manifest is a terminal sidecar"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&manifest.bytes).expect("manifest is json");
+        assert_eq!(parsed["schema"], RECOVERY_MANIFEST_SCHEMA);
+        assert!(
+            parsed["pdf"]["javascript"]
+                .as_array()
+                .is_some_and(|v: &Vec<serde_json::Value>| !v.is_empty()),
+            "manifest must carry the full structured pdf report: {parsed}"
+        );
+    }
+
+    fn xlm_record(rt: u16, data: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(4 + data.len());
+        out.extend_from_slice(&rt.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn xlm_bof(dt: u16) -> Vec<u8> {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&0x0600u16.to_le_bytes());
+        data.extend_from_slice(&dt.to_le_bytes());
+        data.extend_from_slice(&0x0DBBu16.to_le_bytes());
+        data.extend_from_slice(&0x07CCu16.to_le_bytes());
+        data.extend_from_slice(&0x0000_00C1u32.to_le_bytes());
+        data.extend_from_slice(&0x0000_0006u32.to_le_bytes());
+        xlm_record(0x0809, &data)
+    }
+
+    fn xlm_eof() -> Vec<u8> {
+        xlm_record(0x000A, &[])
+    }
+
+    fn xlm_boundsheet(lb_ply_pos: u32, name: &str) -> Vec<u8> {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&lb_ply_pos.to_le_bytes());
+        data.push(0x00);
+        data.push(0x01);
+        data.push(name.len() as u8);
+        data.push(0x00);
+        data.extend_from_slice(name.as_bytes());
+        xlm_record(0x0085, &data)
+    }
+
+    fn xlm_formula(row: u16, col: u16, rgce: &[u8]) -> Vec<u8> {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&row.to_le_bytes());
+        data.extend_from_slice(&col.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(rgce.len() as u16).to_le_bytes());
+        data.extend_from_slice(rgce);
+        xlm_record(0x0006, &data)
+    }
+
+    fn xlm_dimensions() -> Vec<u8> {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        xlm_record(0x0200, &data)
+    }
+
+    fn xlm_p_str(text: &str) -> Vec<u8> {
+        let mut b: Vec<u8> = vec![0x17, text.chars().count() as u8, 0x00];
+        b.extend_from_slice(text.as_bytes());
+        b
+    }
+
+    fn xlm_p_funcvar(cparams: u8, tab: u16, command: bool) -> Vec<u8> {
+        let mut b: Vec<u8> = vec![0x22, cparams];
+        let field: u16 = (tab & 0x7FFF) | if command { 0x8000 } else { 0 };
+        b.extend_from_slice(&field.to_le_bytes());
+        b
+    }
+
+    fn build_minimal_xlm_workbook() -> Vec<u8> {
+        use std::io::Write as _;
+
+        let mut globals: Vec<u8> = Vec::new();
+        globals.extend_from_slice(&xlm_bof(0x0005));
+        globals.extend_from_slice(&xlm_record(0x0042, &0x04B0u16.to_le_bytes()));
+        let placeholder: Vec<u8> = xlm_boundsheet(0, "Macro1");
+        globals.extend_from_slice(&placeholder);
+        globals.extend_from_slice(&xlm_eof());
+
+        let boundsheet_pos: usize =
+            xlm_bof(0x0005).len() + xlm_record(0x0042, &0x04B0u16.to_le_bytes()).len();
+        let lb_ply_pos: u32 = globals.len() as u32;
+        let fixed: Vec<u8> = xlm_boundsheet(lb_ply_pos, "Macro1");
+        globals.splice(boundsheet_pos..boundsheet_pos + placeholder.len(), fixed);
+
+        let mut rgce: Vec<u8> = xlm_p_str("calc.exe");
+        rgce.extend_from_slice(&xlm_p_funcvar(1, 0x006E, false));
+        let mut sheet: Vec<u8> = Vec::new();
+        sheet.extend_from_slice(&xlm_bof(0x0040));
+        sheet.extend_from_slice(&xlm_dimensions());
+        sheet.extend_from_slice(&xlm_formula(0, 0, &rgce));
+        sheet.extend_from_slice(&xlm_eof());
+
+        let mut stream: Vec<u8> = globals;
+        stream.extend_from_slice(&sheet);
+
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+        let mut comp: cfb::CompoundFile<std::io::Cursor<Vec<u8>>> =
+            cfb::CompoundFile::create_with_version(cfb::Version::V3, cursor).expect("create cfb");
+        {
+            let mut cfb_stream: cfb::Stream<std::io::Cursor<Vec<u8>>> = comp
+                .create_stream("Workbook")
+                .expect("create workbook stream");
+            cfb_stream.write_all(&stream).expect("write workbook");
+            cfb_stream.flush().expect("flush stream");
+        }
+        comp.into_inner().into_inner()
+    }
+
+    #[test]
+    fn chain_xlm_recovers_macro_formula_from_biff8_workbook() {
+        let xls: Vec<u8> = build_minimal_xlm_workbook();
+        let detection: Detection = detect_shell(&xls);
+        assert_eq!(detection.dialect, Dialect::Xlm);
+        let chained: String = chain_recovered(&xls);
+        assert!(
+            chained.contains("EXEC") && chained.contains("calc.exe"),
+            "chain must recover the real xlm macro-sheet formula; got {chained:?}"
+        );
+        let a: Artifact = Artifact::new(Rung::Raw, xls, [0u8; 32]);
+        let children: Vec<ChildArtifact> = SHELL_PASS
+            .extract_children(&a)
+            .expect("recovery manifest child must emit");
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == RECOVERY_MANIFEST_CHILD)
+            .expect("recovery manifest sidecar must appear for an xlm macro workbook");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&manifest.bytes).expect("manifest is json");
+        assert!(
+            parsed["xlm"]["sheets"]
+                .as_array()
+                .is_some_and(|v: &Vec<serde_json::Value>| !v.is_empty()),
+            "manifest must carry the full structured xlm recovery: {parsed}"
+        );
+    }
+
+    #[test]
+    fn chain_bash_base64_pipe_dropper_recovers_to_plaintext() {
+        let src: &[u8] = b"#!/bin/bash\necho aWQ= | base64 -d | bash\n";
+        let chained: String = chain_recovered(src);
+        assert!(
+            chained.contains("id"),
+            "chain must recover the base64-piped dropper payload; got {chained:?}"
+        );
+        assert_ne!(
+            chained.trim(),
+            std::str::from_utf8(src).expect("utf8").trim(),
+            "chain must not pass the base64 pipe through unchanged"
+        );
+    }
+
+    #[test]
+    fn extract_children_recovery_manifest_carries_bash_indirection_steps() {
+        let src: &[u8] = b"#!/bin/bash\necho aWQ= | base64 -d | bash\n";
+        let a: Artifact = Artifact::new(Rung::Raw, src.to_vec(), [0u8; 32]);
+        let children: Vec<ChildArtifact> = SHELL_PASS
+            .extract_children(&a)
+            .expect("recovery manifest child must emit");
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == RECOVERY_MANIFEST_CHILD)
+            .expect("recovery manifest sidecar must appear for a bash indirection chain");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&manifest.bytes).expect("manifest is json");
+        assert!(
+            parsed["steps"]
+                .as_array()
+                .is_some_and(|s: &Vec<serde_json::Value>| s
+                    .iter()
+                    .any(|v: &serde_json::Value| v == "base64-decode")),
+            "manifest must record the base64-decode peel step: {parsed}"
         );
     }
 }

@@ -6,6 +6,8 @@ pub mod ftab;
 pub mod limits;
 pub mod ptg;
 
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 
 use container::XlmSource;
@@ -72,4 +74,23 @@ pub fn recover_xlm(data: &[u8]) -> Option<XlmRecovery> {
 #[must_use]
 pub fn is_xlm_macro_document(data: &[u8]) -> bool {
     recover_xlm(data).is_some_and(|report: XlmRecovery| report.has_macro_sheet())
+}
+
+#[must_use]
+pub fn render_source(report: &XlmRecovery) -> Option<String> {
+    if report.total_formulas() == 0 && report.entry_points.is_empty() {
+        return None;
+    }
+    let mut out: String = String::new();
+    for entry in &report.entry_points {
+        let _ = writeln!(out, "' entry: {} -> {}", entry.name, entry.target);
+    }
+    for sheet in &report.sheets {
+        let _ = writeln!(out, "' ===== {} sheet: {} =====", sheet.kind, sheet.name);
+        for cell in &sheet.cells {
+            let _ = writeln!(out, "{}!{}\t{}", sheet.name, cell.cell, cell.formula);
+        }
+    }
+    out.truncate(out.trim_end().len());
+    Some(out)
 }
