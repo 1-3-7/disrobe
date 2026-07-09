@@ -194,6 +194,7 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
 
 struct LiveAcrossBranch {
     boundaries: Vec<bool>,
+    targets: Vec<bool>,
     reads: Vec<Vec<u32>>,
 }
 
@@ -201,13 +202,14 @@ impl LiveAcrossBranch {
     fn compute(p: &LuaProto, dialect: LuaDialect) -> Self {
         let n: usize = p.code.len();
         let mut boundaries: Vec<bool> = vec![false; n + 1];
+        let mut targets: Vec<bool> = vec![false; n + 1];
         let mut reads: Vec<Vec<u32>> = vec![Vec::new(); n];
         for (pc, raw) in p.code.iter().enumerate() {
             let d: Decoded = decode(*raw, dialect);
             for t in branch_targets(p, pc, &d, dialect) {
-                let tu: usize = t as usize;
-                if tu <= n {
-                    boundaries[tu] = true;
+                if (0..=n as i64).contains(&t) {
+                    boundaries[t as usize] = true;
+                    targets[t as usize] = true;
                 }
                 if pc < n {
                     boundaries[pc + 1] = true;
@@ -217,7 +219,16 @@ impl LiveAcrossBranch {
                 *slot = read_registers(&d, dialect);
             }
         }
-        Self { boundaries, reads }
+        Self {
+            boundaries,
+            targets,
+            reads,
+        }
+    }
+
+    #[inline]
+    fn is_jump_target(&self, pc: usize) -> bool {
+        self.targets.get(pc).copied().unwrap_or(false)
     }
 
     #[inline]
@@ -703,27 +714,45 @@ fn lower(
                 }
             }
             Op::Eq | Op::Lt | Op::Le => {
-                emit_compare(state, p, &d, pc, dialect);
-                if next_is_jmp(p, pc, dialect) {
-                    pc += 1;
+                if let Some(consumed) =
+                    emit_bool_materialize(state, names, live, p, &d, pc, dialect)
+                {
+                    pc = consumed;
+                } else {
+                    emit_compare(state, p, &d, pc, dialect);
+                    if next_is_jmp(p, pc, dialect) {
+                        pc += 1;
+                    }
                 }
             }
             Op::EqK => {
-                let lhs: String = state.reg(d.a);
-                let rhs: String = kconst(p, d.b);
-                let sym: &str = if d.k { "~=" } else { "==" };
-                emit_cond(state, p, pc, dialect, &lhs, sym, &rhs);
-                if next_is_jmp(p, pc, dialect) {
-                    pc += 1;
+                if let Some(consumed) =
+                    emit_bool_materialize(state, names, live, p, &d, pc, dialect)
+                {
+                    pc = consumed;
+                } else {
+                    let lhs: String = state.reg(d.a);
+                    let rhs: String = kconst(p, d.b);
+                    let sym: &str = if d.k { "~=" } else { "==" };
+                    emit_cond(state, p, pc, dialect, &lhs, sym, &rhs);
+                    if next_is_jmp(p, pc, dialect) {
+                        pc += 1;
+                    }
                 }
             }
             Op::EqI | Op::LtI | Op::LeI | Op::GtI | Op::GeI => {
-                let lhs: String = state.reg(d.a);
-                let imm: i32 = d.b as i32 - 127;
-                let sym: &str = imm_compare_sym(d.op, !d.k);
-                emit_cond(state, p, pc, dialect, &lhs, sym, &imm.to_string());
-                if next_is_jmp(p, pc, dialect) {
-                    pc += 1;
+                if let Some(consumed) =
+                    emit_bool_materialize(state, names, live, p, &d, pc, dialect)
+                {
+                    pc = consumed;
+                } else {
+                    let lhs: String = state.reg(d.a);
+                    let imm: i32 = d.b as i32 - 127;
+                    let sym: &str = imm_compare_sym(d.op, !d.k);
+                    emit_cond(state, p, pc, dialect, &lhs, sym, &imm.to_string());
+                    if next_is_jmp(p, pc, dialect) {
+                        pc += 1;
+                    }
                 }
             }
             Op::Test => {
@@ -1040,6 +1069,93 @@ fn emit_compare(
         _ => "==",
     };
     emit_cond(state, p, pc, dialect, &lhs, sym, &rhs);
+}
+
+#[must_use]
+fn bool_materialize_dest(
+    p: &LuaProto,
+    live: &LiveAcrossBranch,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Option<u32> {
+    let jmp: Decoded = decode(*p.code.get(pc + 1)?, dialect);
+    if jmp.op != Op::Jmp || jump_target(pc + 1, &jmp, dialect) != pc as i64 + 3 {
+        return None;
+    }
+    if live.is_jump_target(pc + 2) {
+        return None;
+    }
+    let i2: Decoded = decode(*p.code.get(pc + 2)?, dialect);
+    let i3: Decoded = decode(*p.code.get(pc + 3)?, dialect);
+    if matches!(dialect, LuaDialect::Lua54) {
+        if i2.op == Op::LFalseSkip && i3.op == Op::LoadTrue && i2.a == i3.a {
+            return Some(i2.a);
+        }
+        return None;
+    }
+    if i2.op == Op::LoadBool && i3.op == Op::LoadBool && i2.a == i3.a && i2.b == 0 && i3.b != 0 {
+        return Some(i2.a);
+    }
+    None
+}
+
+#[must_use]
+fn compare_value_expr(
+    state: &StructState,
+    p: &LuaProto,
+    d: &Decoded,
+    dialect: LuaDialect,
+) -> Option<String> {
+    let is54: bool = matches!(dialect, LuaDialect::Lua54);
+    match d.op {
+        Op::Eq | Op::Lt | Op::Le => {
+            let (lhs, rhs): (String, String) = if is54 {
+                (state.reg(d.a), state.reg(d.b))
+            } else {
+                (rk(state, p, d.b, dialect), rk(state, p, d.c, dialect))
+            };
+            let direct_true: bool = if is54 { d.k } else { d.a == 1 };
+            let sym: &str = match (d.op, direct_true) {
+                (Op::Eq, true) => "==",
+                (Op::Eq, false) => "~=",
+                (Op::Lt, true) => "<",
+                (Op::Lt, false) => ">=",
+                (Op::Le, true) => "<=",
+                (Op::Le, false) => ">",
+                _ => return None,
+            };
+            Some(format!("({lhs} {sym} {rhs})"))
+        }
+        Op::EqK if is54 => {
+            let lhs: String = state.reg(d.a);
+            let rhs: String = kconst(p, d.b);
+            let sym: &str = if d.k { "==" } else { "~=" };
+            Some(format!("({lhs} {sym} {rhs})"))
+        }
+        Op::EqI | Op::LtI | Op::LeI | Op::GtI | Op::GeI if is54 => {
+            let lhs: String = state.reg(d.a);
+            let imm: i32 = d.b as i32 - 127;
+            let sym: &str = imm_compare_sym(d.op, d.k);
+            Some(format!("({lhs} {sym} {imm})"))
+        }
+        _ => None,
+    }
+}
+
+#[must_use]
+fn emit_bool_materialize(
+    state: &mut StructState,
+    names: &LocalNames,
+    live: &LiveAcrossBranch,
+    p: &LuaProto,
+    d: &Decoded,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Option<usize> {
+    let dest: u32 = bool_materialize_dest(p, live, pc, dialect)?;
+    let value: String = compare_value_expr(state, p, d, dialect)?;
+    define_at_merge(state, names, dest, value, pc + 4);
+    Some(pc + 3)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2032,4 +2148,147 @@ fn arith(op: Op, lhs: &str, rhs: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("({lhs} {sym} {rhs})"))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn proto(code: Vec<u32>, num_params: u8, stack: u8) -> LuaProto {
+        LuaProto {
+            source: None,
+            line_defined: 0,
+            last_line_defined: 0,
+            num_params,
+            is_vararg: 0,
+            max_stack_size: stack,
+            code,
+            constants: Vec::new(),
+            protos: Vec::new(),
+            source_lines: Vec::new(),
+            locals: Vec::new(),
+            upvalues: Vec::new(),
+        }
+    }
+
+    fn enc_abc(op: u32, a: u32, b: u32, c: u32) -> u32 {
+        op | (a << 6) | (c << 14) | (b << 23)
+    }
+
+    fn enc_abx(op: u32, a: u32, bx: u32) -> u32 {
+        op | (a << 6) | (bx << 14)
+    }
+
+    fn enc54_abc(op: u32, a: u32, b: u32, c: u32, k: u32) -> u32 {
+        op | (a << 7) | (k << 15) | (b << 16) | (c << 24)
+    }
+
+    const SBX_BIAS_51: u32 = 0x1FFFF;
+    const SJ_BIAS_54: u32 = 0xFF_FFFF;
+    const OP51_LOADBOOL: u32 = 2;
+    const OP51_JMP: u32 = 22;
+    const OP51_LT: u32 = 24;
+    const OP51_LE: u32 = 25;
+    const OP51_RETURN: u32 = 30;
+    const OP54_LFALSESKIP: u32 = 6;
+    const OP54_LOADTRUE: u32 = 7;
+    const OP54_JMP: u32 = 56;
+    const OP54_LT: u32 = 58;
+    const OP54_RETURN1: u32 = 72;
+
+    #[test]
+    fn lua51_single_comparison_recovers_boolean_value_not_literal_false() {
+        let code: Vec<u32> = vec![
+            enc_abc(OP51_LT, 1, 1, 0),
+            enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51),
+            enc_abc(OP51_LOADBOOL, 2, 0, 1),
+            enc_abc(OP51_LOADBOOL, 2, 1, 0),
+            enc_abc(OP51_RETURN, 2, 2, 0),
+        ];
+        let p: LuaProto = proto(code, 2, 3);
+        let out: LiftedProto =
+            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+        assert!(
+            out.source.contains("(p1 < p0)"),
+            "a comparison materialized to a boolean must recover the comparison expression, \
+             got:\n{}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("= false") && !out.source.contains("return false"),
+            "must not degrade the comparison to a bare false literal, got:\n{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn lua54_single_comparison_recovers_boolean_value() {
+        let jmp: u32 = OP54_JMP | ((1 + SJ_BIAS_54) << 7);
+        let code: Vec<u32> = vec![
+            enc54_abc(OP54_LT, 1, 0, 0, 1),
+            jmp,
+            enc54_abc(OP54_LFALSESKIP, 2, 0, 0, 0),
+            enc54_abc(OP54_LOADTRUE, 2, 0, 0, 0),
+            enc54_abc(OP54_RETURN1, 2, 0, 0, 0),
+        ];
+        let p: LuaProto = proto(code, 2, 3);
+        let out: LiftedProto =
+            lift_structured(&p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        assert!(
+            out.source.contains("(p1 < p0)"),
+            "5.4 LFALSESKIP/LOADTRUE materialization must recover the comparison, got:\n{}",
+            out.source
+        );
+        assert!(
+            !out.source.contains("return false"),
+            "must not degrade to a false literal, got:\n{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn and_chain_shared_loadbool_does_not_misfire_the_peephole() {
+        let code: Vec<u32> = vec![
+            enc_abc(OP51_LE, 0, 1, 0),
+            enc_abx(OP51_JMP, 0, 2 + SBX_BIAS_51),
+            enc_abc(OP51_LE, 1, 0, 2),
+            enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51),
+            enc_abc(OP51_LOADBOOL, 3, 0, 1),
+            enc_abc(OP51_LOADBOOL, 3, 1, 0),
+            enc_abc(OP51_RETURN, 3, 2, 0),
+        ];
+        let p: LuaProto = proto(code, 3, 4);
+        let live: LiveAcrossBranch = LiveAcrossBranch::compute(&p, LuaDialect::Lua51);
+        assert!(
+            bool_materialize_dest(&p, &live, 0, LuaDialect::Lua51).is_none(),
+            "the first comparison of an and-chain jumps past the true-load, not to pc+3",
+        );
+        assert!(
+            bool_materialize_dest(&p, &live, 2, LuaDialect::Lua51).is_none(),
+            "the tail comparison shares a LOADBOOL pair reached by an earlier branch; the \
+             peephole must not consume it",
+        );
+        assert!(
+            lift_structured(&p, LuaDialect::Lua51, 0).is_some(),
+            "the and-chain proto must still lift without panicking",
+        );
+    }
+
+    #[test]
+    fn plain_comparison_branch_is_untouched_by_the_peephole() {
+        let code: Vec<u32> = vec![
+            enc_abc(OP51_LT, 0, 0, 1),
+            enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51),
+            enc_abc(OP51_RETURN, 0, 1, 0),
+            enc_abc(OP51_RETURN, 0, 1, 0),
+        ];
+        let p: LuaProto = proto(code, 2, 3);
+        let live: LiveAcrossBranch = LiveAcrossBranch::compute(&p, LuaDialect::Lua51);
+        assert!(
+            bool_materialize_dest(&p, &live, 0, LuaDialect::Lua51).is_none(),
+            "a comparison whose jump does not lead into a LOADBOOL pair is a control-flow \
+             branch, not a boolean materialization",
+        );
+    }
 }
