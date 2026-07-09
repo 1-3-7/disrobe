@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_swift_objc::{
-    ContainerKind, FatArchEntry, MachoKind, ObjcClassDump, ParsedSlice, SliceReport,
-    SwiftClassDump, SwiftObjcReport, analyze as analyze_macho, detect_magic, objc_class_dump,
-    parse_slice, slice_bytes, swift_class_dump, walk_fat,
+    ContainerKind, DyldSharedCache, FatArchEntry, MachoKind, ObjcClassDump, ParsedSlice,
+    ReconstructedDylib, SliceReport, SwiftClassDump, SwiftObjcReport, analyze as analyze_macho,
+    detect_magic, is_dyld_shared_cache, objc_class_dump, parse_dyld_cache, parse_slice,
+    reconstruct_dyld_images, slice_bytes, swift_class_dump, walk_fat,
 };
 
 use super::emit::EmitSpec;
@@ -50,6 +51,19 @@ pub(crate) enum MachoCmd {
         #[arg(help = "input fat Mach-O binary")]
         input: PathBuf,
     },
+    #[command(
+        about = "recover the bundled dylibs from a dyld shared cache into standalone Mach-O images"
+    )]
+    Dyldcache {
+        #[arg(help = "input dyld shared cache file")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output directory (default: ./out/<stem>-dyld-dylibs)"
+        )]
+        out: Option<PathBuf>,
+    },
 }
 
 pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
@@ -57,7 +71,65 @@ pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
         MachoCmd::Dump { input, out } => dump(input, out),
         MachoCmd::Classdump { input, out, emit } => classdump(input, out, emit),
         MachoCmd::Fat { input } => fat(input),
+        MachoCmd::Dyldcache { input, out } => dyldcache(input, out),
     }
+}
+
+fn sanitize_dylib_relpath(install_name: &str, index: usize) -> PathBuf {
+    let mut rel: PathBuf = PathBuf::new();
+    for component in install_name.split(['/', '\\']) {
+        if component.is_empty() || component == "." || component == ".." {
+            continue;
+        }
+        rel.push(component);
+    }
+    if rel.as_os_str().is_empty() {
+        rel.push(format!("image-{index}.dylib"));
+    }
+    rel
+}
+
+fn dyldcache(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0495: cannot read input: {e}"))?;
+    if !is_dyld_shared_cache(&bytes) {
+        return Err(miette::miette!(
+            "DR-CLI-0496: input is not a dyld shared cache (missing dyld_v1 magic)"
+        ));
+    }
+    let parsed: DyldSharedCache = parse_dyld_cache(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0497: dyld cache parse: {e}"))?;
+    let dylibs: Vec<ReconstructedDylib> = reconstruct_dyld_images(&bytes, &parsed)
+        .map_err(|e| miette::miette!("DR-CLI-0498: dyld image reconstruct: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dyld-cache")
+        .to_owned();
+    let out_dir: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dyld-dylibs")));
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| miette::miette!("DR-CLI-0499: cannot create out dir: {e}"))?;
+    let mut written: usize = 0;
+    for (index, dylib) in dylibs.iter().enumerate() {
+        let rel: PathBuf = sanitize_dylib_relpath(&dylib.install_name, index);
+        let target: PathBuf = out_dir.join(&rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| miette::miette!("DR-CLI-0500: cannot create dir: {e}"))?;
+        }
+        std::fs::write(&target, &dylib.bytes)
+            .map_err(|e| miette::miette!("DR-CLI-0501: cannot write dylib: {e}"))?;
+        written += 1;
+    }
+    println!("dyld shared cache: OK");
+    println!("  input:      {}", input.display());
+    println!("  arch:       {}", parsed.arch);
+    println!("  mappings:   {}", parsed.mappings.len());
+    println!("  images:     {}", parsed.images.len());
+    println!("  recovered:  {written} standalone dylib(s)");
+    println!("  wrote:      {}", out_dir.display());
+    Ok(())
 }
 
 fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
@@ -337,6 +409,30 @@ fn apply_emit_stubs(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_dylib_relpath_strips_leading_slash_and_traversal() {
+        let rel: PathBuf = sanitize_dylib_relpath("/usr/lib/libSystem.B.dylib", 0);
+        assert_eq!(
+            rel,
+            PathBuf::from("usr").join("lib").join("libSystem.B.dylib")
+        );
+        let escaped: PathBuf = sanitize_dylib_relpath("../../etc/passwd", 1);
+        assert_eq!(escaped, PathBuf::from("etc").join("passwd"));
+        let empty: PathBuf = sanitize_dylib_relpath("///", 3);
+        assert_eq!(empty, PathBuf::from("image-3.dylib"));
+    }
+
+    #[test]
+    fn dyldcache_rejects_non_cache_input() {
+        let dir: PathBuf = std::env::temp_dir().join(format!("dr-dyld-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let bogus: PathBuf = dir.join("not-a-cache.bin");
+        std::fs::write(&bogus, b"MZ\x00\x00 definitely not a dyld cache").expect("write");
+        let err: miette::Report = dyldcache(bogus, Some(dir.join("out"))).expect_err("must reject");
+        assert!(format!("{err}").contains("DR-CLI-0496"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn classdump_writes_real_objc_header_and_swift_source() {
