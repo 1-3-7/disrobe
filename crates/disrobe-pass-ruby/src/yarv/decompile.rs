@@ -566,6 +566,7 @@ fn assignment_target(
             Some(ctx.local_at_level(local_table, level, operand_num(set_instr, 0)))
         }
         "setinstancevariable" => Some(ivar_name(set_instr, 0)),
+        "setclassvariable" => Some(cvar_name(set_instr, 0)),
         "setglobal" => Some(id_or_index(set_instr, 0)),
         _ => None,
     }
@@ -1813,6 +1814,7 @@ fn scalar_read_target(
             ))
         }
         "getinstancevariable" => Some((ivar_name(instr, 0), ScalarKind::Ivar)),
+        "getclassvariable" => Some((cvar_name(instr, 0), ScalarKind::ClassVar)),
         "getglobal" => Some((id_or_index(instr, 0), ScalarKind::Global)),
         _ => None,
     }
@@ -1822,6 +1824,7 @@ fn scalar_read_target(
 enum ScalarKind {
     Local,
     Ivar,
+    ClassVar,
     Global,
 }
 
@@ -1838,6 +1841,7 @@ fn scalar_write_matches(
             ctx.local_at_level(local_table, level, operand_num(instr, 0)) == name
         }
         (ScalarKind::Ivar, "setinstancevariable") => ivar_name(instr, 0) == name,
+        (ScalarKind::ClassVar, "setclassvariable") => cvar_name(instr, 0) == name,
         (ScalarKind::Global, "setglobal") => id_or_index(instr, 0) == name,
         _ => false,
     }
@@ -2417,12 +2421,18 @@ fn try_compound_assign(
     let set_idx: usize = (rhs_lo..target).find(|&j| {
         matches!(
             body.instructions[j].mnemonic.as_str(),
-            "setinstancevariable" | "setlocal" | "setlocal_WC_0" | "setlocal_WC_1" | "setglobal"
+            "setinstancevariable"
+                | "setclassvariable"
+                | "setlocal"
+                | "setlocal_WC_0"
+                | "setlocal_WC_1"
+                | "setglobal"
         )
     })?;
     let set_instr: &YarvIbfInstruction = &body.instructions[set_idx];
     let set_target: String = match set_instr.mnemonic.as_str() {
         "setinstancevariable" => ivar_name(set_instr, 0),
+        "setclassvariable" => cvar_name(set_instr, 0),
         "setglobal" => id_or_index(set_instr, 0),
         _ => local_name(&body.local_table, operand_num(set_instr, 0)),
     };
@@ -2749,6 +2759,7 @@ fn step(
             );
         }
         "getinstancevariable" => push(stack, ivar_name(instr, 0)),
+        "getclassvariable" => push(stack, cvar_name(instr, 0)),
         "getglobal" => push(stack, id_or_index(instr, 0)),
         "getconstant" => push(stack, id_or_index(instr, 0)),
         "newarray" | "newarraykwsplat" => {
@@ -2877,6 +2888,10 @@ fn step(
         "setinstancevariable" => {
             let v: String = pop(stack);
             emit_stmt(stmts, depth, format!("{} = {v}", ivar_name(instr, 0)));
+        }
+        "setclassvariable" => {
+            let v: String = pop(stack);
+            emit_stmt(stmts, depth, format!("{} = {v}", cvar_name(instr, 0)));
         }
         "setglobal" => {
             let v: String = pop(stack);
@@ -3631,6 +3646,16 @@ fn ivar_name(instr: &YarvIbfInstruction, idx: usize) -> String {
     }
 }
 
+fn cvar_name(instr: &YarvIbfInstruction, idx: usize) -> String {
+    match instr.operands.get(idx) {
+        Some(YarvOperand::Id(s) | YarvOperand::Literal(s)) if s.starts_with("@@") => s.clone(),
+        Some(YarvOperand::Id(s) | YarvOperand::Literal(s)) => {
+            format!("@@{}", s.trim_start_matches('@'))
+        }
+        _ => "@@cvar".to_owned(),
+    }
+}
+
 fn push_fmt_line(out: &mut String, args: core::fmt::Arguments<'_>) {
     match core::fmt::write(out, args) {
         Ok(()) => out.push('\n'),
@@ -3942,6 +3967,80 @@ mod tests {
             stmts.iter().any(|s| s == "@count ||= 0"),
             "stmts: {stmts:?}"
         );
+    }
+
+    #[test]
+    fn class_variable_read_and_write_recover() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            param_size: 0,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr(
+                    "getclassvariable",
+                    vec![YarvOperand::Id("@@count".to_owned()), YarvOperand::Num(0)],
+                ),
+                instr("putobject_INT2FIX_1_", vec![]),
+                instr(
+                    "opt_plus",
+                    vec![YarvOperand::Call {
+                        method: "+".to_owned(),
+                        argc: 1,
+                        flags: 0,
+                    }],
+                ),
+                instr(
+                    "setclassvariable",
+                    vec![YarvOperand::Id("@@count".to_owned()), YarvOperand::Num(0)],
+                ),
+                instr(
+                    "getclassvariable",
+                    vec![YarvOperand::Id("@@count".to_owned()), YarvOperand::Num(0)],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert!(
+            stmts.iter().any(|s| s == "@@count = @@count + 1"),
+            "stmts: {stmts:?}"
+        );
+        assert!(stmts.iter().any(|s| s == "@@count"), "stmts: {stmts:?}");
+    }
+
+    #[test]
+    fn class_variable_assignment_from_literal_recovers() {
+        let body: YarvIseqBody = YarvIseqBody {
+            index: 0,
+            offset: 0,
+            iseq_size: 0,
+            local_table: Vec::new(),
+            param_lead_num: 0,
+            param_size: 0,
+            param_flags: 0,
+            param_opt_num: 0,
+            param_rest_start: 0,
+            param_block_start: 0,
+            catch_entries: Vec::new(),
+            instructions: vec![
+                instr("newarray", vec![YarvOperand::Num(0)]),
+                instr(
+                    "setclassvariable",
+                    vec![YarvOperand::Id("@@items".to_owned()), YarvOperand::Num(0)],
+                ),
+                instr("leave", vec![]),
+            ],
+        };
+        let stmts: Vec<String> = decompile_body(&body);
+        assert_eq!(stmts, vec!["@@items = []".to_owned()], "stmts: {stmts:?}");
     }
 
     #[test]
