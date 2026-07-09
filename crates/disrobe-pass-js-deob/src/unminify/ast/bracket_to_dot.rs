@@ -134,7 +134,7 @@ fn walk_expression(
     stats: &mut BracketToDotStats,
 ) {
     if let Expression::ComputedMemberExpression(member) = expr
-        && let Some(edit) = try_dot(member, source)
+        && let Some(edit) = try_dot(member)
     {
         edits.push(edit);
         stats.accesses_rewritten += 1;
@@ -218,7 +218,10 @@ fn walk_expression(
     }
 }
 
-fn try_dot(member: &ComputedMemberExpression<'_>, source: &str) -> Option<Edit> {
+fn try_dot(member: &ComputedMemberExpression<'_>) -> Option<Edit> {
+    if member.optional {
+        return None;
+    }
     let Expression::StringLiteral(key): &Expression<'_> = &member.expression else {
         return None;
     };
@@ -226,11 +229,10 @@ fn try_dot(member: &ComputedMemberExpression<'_>, source: &str) -> Option<Edit> 
     if !is_identifier_name(name) {
         return None;
     }
-    let object_src: &str = member.object.span().source_text(source);
     Some(Edit {
-        start: member.span.start as usize,
+        start: member.object.span().end as usize,
         end: member.span.end as usize,
-        replacement: format!("{object_src}.{name}"),
+        replacement: format!(".{name}"),
     })
 }
 
@@ -289,4 +291,85 @@ fn is_reserved_word(name: &str) -> bool {
             | "with"
             | "yield"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BracketToDotStats, RuleOutcome, recover};
+
+    fn splice(source: &str, outcome: &RuleOutcome) -> String {
+        let mut sorted: Vec<&super::Edit> = outcome.edits.iter().collect();
+        sorted.sort_by_key(|edit: &&super::Edit| core::cmp::Reverse(edit.start));
+        let mut out: String = source.to_owned();
+        for edit in sorted {
+            out.replace_range(edit.start..edit.end, &edit.replacement);
+        }
+        out
+    }
+
+    #[test]
+    fn single_level_access_is_dotted() {
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover("a[\"prop\"];");
+        assert_eq!(stats.accesses_rewritten, 1);
+        assert_eq!(splice("a[\"prop\"];", &outcome), "a.prop;");
+    }
+
+    #[test]
+    fn chained_access_is_fully_dotted_in_one_pass() {
+        let source: &str = "a[\"prop0\"][\"prop1\"][\"prop2\"];";
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover(source);
+        assert_eq!(stats.accesses_rewritten, 3);
+        assert_eq!(splice(source, &outcome), "a.prop0.prop1.prop2;");
+    }
+
+    #[test]
+    fn long_chain_produces_non_overlapping_edits() {
+        let mut source: String = String::from("a");
+        for i in 0..500 {
+            source.push_str("[\"prop");
+            source.push_str(&i.to_string());
+            source.push_str("\"]");
+        }
+        source.push(';');
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover(&source);
+        assert_eq!(stats.accesses_rewritten, 500);
+        let rewritten: String = splice(&source, &outcome);
+        assert!(
+            rewritten.starts_with("a.prop0.prop1.prop2."),
+            "got: {rewritten}"
+        );
+        assert!(rewritten.ends_with(".prop499;"), "got: {rewritten}");
+    }
+
+    #[test]
+    fn optional_chaining_bracket_access_is_left_untransformed() {
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover("a?.[\"prop\"];");
+        assert_eq!(
+            stats.accesses_rewritten, 0,
+            "optional computed access must never be flattened to a non-optional dot access"
+        );
+        assert!(outcome.edits.is_empty());
+    }
+
+    #[test]
+    fn mixed_chain_skips_only_the_non_identifier_level() {
+        let source: &str = "a[\"prop0\"][1][\"prop2\"];";
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover(source);
+        assert_eq!(stats.accesses_rewritten, 2);
+        assert_eq!(splice(source, &outcome), "a.prop0[1].prop2;");
+    }
+
+    #[test]
+    fn reserved_word_key_is_left_bracketed() {
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover("a[\"class\"];");
+        assert_eq!(stats.accesses_rewritten, 0);
+        assert!(outcome.edits.is_empty());
+    }
+
+    #[test]
+    fn numeric_key_is_left_bracketed() {
+        let (outcome, stats): (RuleOutcome, BracketToDotStats) = recover("a[0];");
+        assert_eq!(stats.accesses_rewritten, 0);
+        assert!(outcome.edits.is_empty());
+    }
 }

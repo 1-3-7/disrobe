@@ -697,10 +697,16 @@ impl AstPipeline {
 
     #[must_use]
     pub fn run(&self, source: &str) -> (String, AstUnminifyStats) {
-        let mut current: String = source.to_owned();
         let mut stats: AstUnminifyStats = AstUnminifyStats::default();
         crate::debug::dbg_section("unminify ast pipeline");
         crate::debug::dbg_kv("input-bytes", || source.len().to_string());
+        if !crate::sandbox_guard::nesting_is_safe(source) {
+            crate::debug::dbg_kv("pipeline-rejected", || {
+                "reason=nesting-depth-exceeds-safety-bound".to_owned()
+            });
+            return (source.to_owned(), stats);
+        }
+        let mut current: String = source.to_owned();
         for rule in self.ordered() {
             let (outcome, rule_stats): (RuleOutcome, RuleStats) = apply_rule(rule.id, &current);
             if outcome.edits.is_empty() {
@@ -713,6 +719,15 @@ impl AstPipeline {
                 });
                 continue;
             };
+            if !crate::sandbox_guard::nesting_is_safe(&next) {
+                crate::debug::dbg_kv("rule-rejected", || {
+                    format!(
+                        "{:?} reason=nesting-depth-exceeds-safety-bound edits={edit_count}",
+                        rule.id
+                    )
+                });
+                continue;
+            }
             if !reparses(&next) {
                 crate::debug::dbg_kv("rule-rejected", || {
                     format!("{:?} reason=reparse-failed edits={edit_count}", rule.id)
@@ -1235,5 +1250,48 @@ Rect.prototype.area = function() { return this.w * this.h; };
         assert_eq!(stats.classes_reconstructed, 0);
         assert!(!out.contains("class "), "rule disabled but fired: {out}");
         assert_eq!(out, PROTOTYPE_INPUT);
+    }
+
+    #[test]
+    fn deeply_nested_input_is_rejected_not_crashed() {
+        let depth: usize = 300_000;
+        let mut source: String = String::with_capacity(depth * 2 + 8);
+        for _ in 0..depth {
+            source.push('(');
+        }
+        source.push('1');
+        for _ in 0..depth {
+            source.push(')');
+        }
+        let pipeline: AstPipeline = AstPipeline::default();
+        let started: std::time::Instant = std::time::Instant::now();
+        let (out, stats): (String, AstUnminifyStats) = pipeline.run(&source);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the depth guard must short-circuit before any recursive parse is attempted"
+        );
+        assert_eq!(
+            out, source,
+            "input past the nesting safety bound must be left untransformed, never a crash"
+        );
+        assert_eq!(stats.classes_reconstructed, 0);
+    }
+
+    #[test]
+    fn long_flat_bracket_chain_under_the_bound_still_runs_the_pipeline() {
+        use std::fmt::Write as _;
+
+        let mut source: String = String::from("a");
+        for i in 0..500 {
+            let _: core::fmt::Result = write!(source, "[\"prop{i}\"]");
+        }
+        source.push(';');
+        let pipeline: AstPipeline = AstPipeline::default();
+        let (out, stats): (String, AstUnminifyStats) = pipeline.run(&source);
+        assert_eq!(
+            stats.bracket_accesses_dotted, 500,
+            "a long but shallow bracket chain must not trip the nesting-depth guard"
+        );
+        assert!(out.contains("a.prop0.prop1"), "got: {out}");
     }
 }
