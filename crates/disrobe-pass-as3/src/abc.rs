@@ -45,6 +45,18 @@ pub enum Multiname {
     TypeName { base: u32, params: Vec<u32> },
 }
 
+impl Multiname {
+    #[must_use]
+    pub const fn runtime_operands(&self) -> (bool, bool) {
+        match self {
+            Self::RtqName { .. } | Self::RtqNameA { .. } => (true, false),
+            Self::RtqNameL | Self::RtqNameLA => (true, true),
+            Self::MultinameL { .. } | Self::MultinameLA { .. } => (false, true),
+            _ => (false, false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConstantPool {
     pub integers: Vec<i32>,

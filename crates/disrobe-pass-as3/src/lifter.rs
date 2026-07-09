@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::abc::{AbcFile, DisasmLine, ExceptionInfo, MethodBody, MethodInfo, disasm};
+use crate::abc::{AbcFile, DisasmLine, ExceptionInfo, MethodBody, MethodInfo, Multiname, disasm};
 use crate::debug::{dbg_enabled, dbg_kv, dbg_line};
 use crate::error::Result;
 
@@ -616,6 +616,30 @@ impl Lifter<'_> {
             .cpool
             .render_multiname_property(idx as u32)
             .unwrap_or_else(|_| format!("mn#{idx}"))
+    }
+
+    fn runtime_operands(&self, mn_idx: i64) -> (bool, bool) {
+        if mn_idx <= 0 {
+            return (false, false);
+        }
+        self.abc
+            .cpool
+            .multiname_at(mn_idx as u32)
+            .map_or((false, false), Multiname::runtime_operands)
+    }
+
+    fn pop_runtime_selector(&mut self, mn_idx: i64, needs_ns: bool, needs_name: bool) -> Expr {
+        let name: Option<Expr> = if needs_name { Some(self.pop()) } else { None };
+        let ns: Option<Expr> = if needs_ns { Some(self.pop()) } else { None };
+        let name_expr: Expr = name.unwrap_or_else(|| Expr::Name(self.property(mn_idx)));
+        match ns {
+            Some(ns_expr) => Expr::Binary {
+                op: "::",
+                lhs: Box::new(ns_expr),
+                rhs: Box::new(name_expr),
+            },
+            None => name_expr,
+        }
     }
 
     fn slot_name(&self, slot: i64) -> String {
@@ -1307,9 +1331,9 @@ fn emit_setlocal(lifter: &mut Lifter<'_>, slot: i64) {
 }
 
 fn emit_getproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
-    let property: String = lifter.property(mn_idx);
-    if property == "[name]" {
-        let index: Expr = lifter.pop();
+    let (needs_ns, needs_name): (bool, bool) = lifter.runtime_operands(mn_idx);
+    if needs_ns || needs_name {
+        let index: Expr = lifter.pop_runtime_selector(mn_idx, needs_ns, needs_name);
         let object: Expr = lifter.pop();
         lifter.push(Expr::Index {
             object: Box::new(object),
@@ -1317,6 +1341,7 @@ fn emit_getproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
         });
         return;
     }
+    let property: String = lifter.property(mn_idx);
     let object: Expr = lifter.pop();
     lifter.push(scope_relative_get(object, property));
 }
@@ -1340,9 +1365,9 @@ fn emit_getslot(lifter: &mut Lifter<'_>, slot: i64) {
 
 fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
     let value: Expr = lifter.pop();
-    let property: String = lifter.property(mn_idx);
-    if property == "[name]" {
-        let index: Expr = lifter.pop();
+    let (needs_ns, needs_name): (bool, bool) = lifter.runtime_operands(mn_idx);
+    if needs_ns || needs_name {
+        let index: Expr = lifter.pop_runtime_selector(mn_idx, needs_ns, needs_name);
         let object: Expr = lifter.pop();
         lifter.statements.push(Stmt::AssignIndex {
             object,
@@ -1351,6 +1376,7 @@ fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
         });
         return;
     }
+    let property: String = lifter.property(mn_idx);
     let object: Expr = lifter.pop();
     lifter
         .statements
@@ -1562,8 +1588,27 @@ fn lex_receiver_matches(callee: &Expr, property: &str) -> bool {
 fn emit_call(lifter: &mut Lifter<'_>, ops: &[i64], void: bool) {
     let mn_idx: i64 = lifter.operand(ops, 0);
     let argc: usize = lifter.operand(ops, 1).max(0) as usize;
-    let property: String = lifter.property(mn_idx);
+    let (needs_ns, needs_name): (bool, bool) = lifter.runtime_operands(mn_idx);
     let args: Vec<Expr> = lifter.pop_n(argc);
+    if needs_ns || needs_name {
+        let index: Expr = lifter.pop_runtime_selector(mn_idx, needs_ns, needs_name);
+        let object: Expr = lifter.pop();
+        let call: Expr = Expr::Call {
+            callee: Box::new(Expr::Index {
+                object: Box::new(object),
+                index: Box::new(index),
+            }),
+            property: String::new(),
+            args,
+        };
+        if void {
+            lifter.statements.push(Stmt::Expression(call));
+        } else {
+            lifter.push(call);
+        }
+        return;
+    }
+    let property: String = lifter.property(mn_idx);
     let callee: Expr = lifter.pop();
     let call: Expr = if lex_receiver_matches(&callee, &property) {
         Expr::Call {
@@ -1600,8 +1645,21 @@ fn emit_callfn(lifter: &mut Lifter<'_>, ops: &[i64]) {
 fn emit_constructprop(lifter: &mut Lifter<'_>, ops: &[i64]) {
     let mn_idx: i64 = lifter.operand(ops, 0);
     let argc: usize = lifter.operand(ops, 1).max(0) as usize;
-    let property: String = lifter.property(mn_idx);
+    let (needs_ns, needs_name): (bool, bool) = lifter.runtime_operands(mn_idx);
     let args: Vec<Expr> = lifter.pop_n(argc);
+    if needs_ns || needs_name {
+        let index: Expr = lifter.pop_runtime_selector(mn_idx, needs_ns, needs_name);
+        let object: Expr = lifter.pop();
+        lifter.push(Expr::New {
+            ty: Box::new(Expr::Index {
+                object: Box::new(object),
+                index: Box::new(index),
+            }),
+            args,
+        });
+        return;
+    }
+    let property: String = lifter.property(mn_idx);
     let callee: Expr = lifter.pop();
     let callee: Expr = if lex_receiver_matches(&callee, &property) {
         Expr::Name(String::new())

@@ -768,6 +768,29 @@ fn mk_abc_with_runtime_name(strings: &[&str], qnames: &[(u32, u32)]) -> (AbcFile
     (abc, runtime_idx)
 }
 
+fn mk_abc_with_multiname(strings: &[&str], qnames: &[(u32, u32)], mn: Multiname) -> (AbcFile, u32) {
+    let mut abc: AbcFile = mk_abc(strings, qnames, Vec::new(), one_param_method(), Vec::new());
+    let idx: u32 = abc.cpool.multinames.len() as u32;
+    abc.cpool.multinames.push(mn);
+    (abc, idx)
+}
+
+fn body_with_code(abc: AbcFile, code: Vec<u8>) -> AbcFile {
+    AbcFile {
+        method_bodies: vec![MethodBody {
+            method: abc.method_bodies[0].method,
+            max_stack: 8,
+            local_count: 8,
+            init_scope_depth: 0,
+            max_scope_depth: 1,
+            code,
+            exceptions: Vec::new(),
+            traits: Vec::new(),
+        }],
+        ..abc
+    }
+}
+
 fn slot_trait(name_index: u32, slot_id: u32) -> TraitInfo {
     TraitInfo {
         name_index,
@@ -1322,6 +1345,111 @@ fn lifts_dynamic_index_property_assignment() {
     assert!(
         rendered.contains("this[arg1] = true;"),
         "runtime-name setproperty must synthesize a computed-index assignment: {rendered}"
+    );
+    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+}
+
+#[test]
+fn lifts_runtime_namespace_getproperty() {
+    let (abc, mn): (AbcFile, u32) = mk_abc_with_multiname(
+        &["", "C", "Object", "field", "run"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Multiname::RtqName { name_index: 3 },
+    );
+    let mut code: Vec<u8> = vec![0xD0, 0xD1, 0x66];
+    u30(mn, &mut code);
+    code.push(0x48);
+    let abc: AbcFile = body_with_code(abc, code);
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        rendered.contains("return this[(arg1 :: field)];"),
+        "runtime-namespace getproperty must pop the namespace, qualify the access, and stay balanced: {rendered}"
+    );
+    assert!(
+        !rendered.contains("[ns]") && !rendered.contains("[name]"),
+        "runtime multiname sentinels must not leak into source: {rendered}"
+    );
+    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+}
+
+#[test]
+fn lifts_runtime_namespace_and_name_getproperty() {
+    let (abc, mn): (AbcFile, u32) = mk_abc_with_multiname(
+        &["", "C", "Object", "field", "run"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Multiname::RtqNameL,
+    );
+    let mut code: Vec<u8> = vec![0xD0, 0xD1, 0xD2, 0x66];
+    u30(mn, &mut code);
+    code.push(0x48);
+    let abc: AbcFile = body_with_code(abc, code);
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        rendered.contains("return this[(arg1 :: loc2)];"),
+        "runtime ns+name getproperty must pop both operands and the object: {rendered}"
+    );
+    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+}
+
+#[test]
+fn lifts_runtime_namespace_setproperty() {
+    let (abc, mn): (AbcFile, u32) = mk_abc_with_multiname(
+        &["", "C", "Object", "field", "run"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Multiname::RtqName { name_index: 3 },
+    );
+    let mut code: Vec<u8> = vec![0xD0, 0xD1, 0x26, 0x61];
+    u30(mn, &mut code);
+    code.push(0x47);
+    let abc: AbcFile = body_with_code(abc, code);
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        rendered.contains("this[(arg1 :: field)] = true;"),
+        "runtime-namespace setproperty must keep the qualifier and stack balance: {rendered}"
+    );
+    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+}
+
+#[test]
+fn lifts_runtime_name_computed_call() {
+    let (abc, mn): (AbcFile, u32) = mk_abc_with_multiname(
+        &["", "C", "Object", "field", "run"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Multiname::MultinameL { ns_set_index: 0 },
+    );
+    let mut code: Vec<u8> = vec![0xD0, 0xD1, 0x24, 0x05, 0x4F];
+    u30(mn, &mut code);
+    u30(1, &mut code);
+    code.push(0x47);
+    let abc: AbcFile = body_with_code(abc, code);
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        rendered.contains("this[arg1](5);"),
+        "runtime-name callpropvoid must recover computed dispatch and pop the runtime name: {rendered}"
+    );
+    assert!(
+        !rendered.contains("[name]"),
+        "the [name] sentinel must not leak into a computed call: {rendered}"
+    );
+    assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
+}
+
+#[test]
+fn lifts_runtime_name_computed_construct() {
+    let (abc, mn): (AbcFile, u32) = mk_abc_with_multiname(
+        &["", "C", "Object", "field", "run"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Multiname::MultinameL { ns_set_index: 0 },
+    );
+    let mut code: Vec<u8> = vec![0xD0, 0xD1, 0x4A];
+    u30(mn, &mut code);
+    u30(0, &mut code);
+    code.push(0x48);
+    let abc: AbcFile = body_with_code(abc, code);
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        rendered.contains("return new this[arg1]();"),
+        "runtime-name constructprop must recover a computed new-expression: {rendered}"
     );
     assert!(lifted.fully_recovered, "{:?}", lifted.fidelity_warning());
 }
