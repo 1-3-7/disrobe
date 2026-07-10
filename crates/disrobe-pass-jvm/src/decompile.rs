@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::bytecode::{
     self, CodeAttribute, Instruction, Operands, branch_target, disassemble, parse_code_attribute,
 };
-use crate::classfile::{ClassFile, FieldInfo, MethodInfo};
+use crate::classfile::{ClassFile, ConstantPoolEntry, FieldInfo, MethodInfo};
 use crate::decompile_struct::{
     BasicBlock, BlockId, Cfg, Dominators, EdgeKind, ExceptionRegion, NaturalLoop, Region,
     Structurer, SwitchKey, build_cfg, compute_dominators, find_natural_loops,
@@ -23,6 +23,7 @@ pub const ACC_FINAL: u16 = 0x0010;
 pub const ACC_SYNCHRONIZED: u16 = 0x0020;
 pub const ACC_VOLATILE: u16 = 0x0040;
 pub const ACC_TRANSIENT: u16 = 0x0080;
+pub const ACC_VARARGS: u16 = 0x0080;
 pub const ACC_NATIVE: u16 = 0x0100;
 pub const ACC_INTERFACE: u16 = 0x0200;
 pub const ACC_ABSTRACT: u16 = 0x0400;
@@ -102,18 +103,19 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         let _ = writeln!(source);
     }
 
-    let annotations: crate::attributes::DeclarationAnnotations =
-        crate::attributes::parse_declaration_annotations(cf);
-    source.push_str(&crate::attributes::render_declaration_annotations(
-        cf,
-        &annotations,
-        "",
-    ));
+    let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
+        crate::attributes::DeclarationAnnotationRenderer::new(cf);
+    source.push_str(&annotation_renderer.render(cf, &cf.attributes, ""));
     let structure: crate::attributes::ClassStructure = crate::attributes::analyze(cf);
     let is_interface: bool = cf.access_flags & ACC_INTERFACE != 0;
     let is_annotation: bool = cf.access_flags & ACC_ANNOTATION != 0;
     let is_enum: bool = cf.access_flags & ACC_ENUM != 0;
-    let kw: String = class_access_keywords(cf.access_flags);
+    let class_flags: u16 = if is_enum {
+        cf.access_flags & !(ACC_FINAL | ACC_ABSTRACT)
+    } else {
+        cf.access_flags
+    };
+    let kw: String = class_access_keywords(class_flags);
     let kind: &str = if is_annotation {
         "@interface"
     } else if is_interface {
@@ -125,7 +127,11 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     } else {
         "class"
     };
-    let sealed_kw: &str = if structure.is_sealed { "sealed " } else { "" };
+    let sealed_kw: &str = if structure.is_sealed && !is_enum {
+        "sealed "
+    } else {
+        ""
+    };
     if kw.is_empty() {
         let _ = write!(source, "{sealed_kw}{kind} {simple}");
     } else {
@@ -150,6 +156,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     if let Some(sup) = &super_name
         && sup != "java/lang/Object"
         && !is_interface
+        && !is_enum
     {
         let _ = write!(source, " extends {}", descriptor::binary_to_source(sup));
     }
@@ -168,7 +175,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
             let _ = write!(source, " {verb} {}", names.join(", "));
         }
     }
-    if structure.is_sealed && !structure.permitted_subclasses.is_empty() {
+    if structure.is_sealed && !is_enum && !structure.permitted_subclasses.is_empty() {
         let permitted: Vec<String> = structure
             .permitted_subclasses
             .iter()
@@ -179,8 +186,51 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     let _ = writeln!(source, " {{");
 
     let mut field_count: usize = 0;
+    if is_enum {
+        if enum_constants_recoverable(cf, &structure) {
+            let enum_fields: Vec<&FieldInfo> = cf
+                .fields
+                .iter()
+                .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+                .collect();
+            for (index, field) in enum_fields.iter().enumerate() {
+                let name: &str = cf.utf8_at(field.name_index).unwrap_or("unresolved");
+                source.push_str(&render_member_annotations(
+                    &mut annotation_renderer,
+                    cf,
+                    &field.attributes,
+                    "    ",
+                ));
+                let separator: char = if index + 1 == enum_fields.len() {
+                    ';'
+                } else {
+                    ','
+                };
+                let _ = writeln!(source, "    {name}{separator}");
+                field_count += 1;
+            }
+            if enum_fields.is_empty() {
+                let _ = writeln!(source, "    ;");
+            }
+        } else {
+            let _ = writeln!(source, "    <unresolved-enum-constants>;");
+        }
+    }
     for field in &cf.fields {
+        let field_name: Option<&str> = cf.utf8_at(field.name_index).ok();
+        if is_enum
+            && (field.access_flags & ACC_ENUM != 0
+                || field_name.is_some_and(|name| name == "$VALUES"))
+        {
+            continue;
+        }
         if let Some(line) = render_field(cf, field) {
+            source.push_str(&render_member_annotations(
+                &mut annotation_renderer,
+                cf,
+                &field.attributes,
+                "    ",
+            ));
             let _ = writeln!(source, "    {line}");
             field_count += 1;
         }
@@ -201,6 +251,23 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         if is_bridge_method(method) {
             continue;
         }
+        if is_enum && is_generated_enum_method(cf, method) {
+            if cf
+                .utf8_at(method.name_index)
+                .is_ok_and(|name: &str| name == "<clinit>")
+            {
+                let annotations: String = render_member_annotations(
+                    &mut annotation_renderer,
+                    cf,
+                    &method.attributes,
+                    "    ",
+                );
+                if !annotations.is_empty() {
+                    source.push_str("    <unresolved-static-initializer-annotations>\n");
+                }
+            }
+            continue;
+        }
         let rendered: RenderedMethod = render_method(
             cf,
             method,
@@ -208,6 +275,17 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
             is_interface,
             annotation_defaults.get(&method_index).map(String::as_str),
         );
+        let rendered_annotations: String =
+            render_member_annotations(&mut annotation_renderer, cf, &method.attributes, "    ");
+        if cf
+            .utf8_at(method.name_index)
+            .is_ok_and(|name: &str| name == "<clinit>")
+            && !rendered_annotations.is_empty()
+        {
+            source.push_str("    <unresolved-static-initializer-annotations>\n");
+        } else {
+            source.push_str(&rendered_annotations);
+        }
         let _ = writeln!(source, "{}", rendered.text);
         method_count += 1;
         if rendered.fully_lifted {
@@ -226,6 +304,15 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         fully_lifted_methods: fully_lifted,
         fallback_methods: fallback,
     }
+}
+
+fn render_member_annotations(
+    renderer: &mut crate::attributes::DeclarationAnnotationRenderer,
+    cf: &ClassFile,
+    attributes: &[crate::classfile::Attribute],
+    indent: &str,
+) -> String {
+    renderer.render(cf, attributes, indent)
 }
 
 fn is_assertions_disabled_field(cf: &ClassFile, field: &FieldInfo) -> bool {
@@ -247,7 +334,7 @@ fn render_field(cf: &ClassFile, field: &FieldInfo) -> Option<String> {
     let desc: &str = cf.utf8_at(field.descriptor_index).ok()?;
     let ty: JavaType = descriptor::parse_field(desc)?;
     let kw: String = member_access_keywords(field.access_flags);
-    let constant: Option<String> = constant_value(cf, field);
+    let constant: Option<String> = constant_value_initializer(cf, field, &ty);
     let prefix: String = if kw.is_empty() {
         String::new()
     } else {
@@ -259,14 +346,275 @@ fn render_field(cf: &ClassFile, field: &FieldInfo) -> Option<String> {
     }
 }
 
-fn constant_value(cf: &ClassFile, field: &FieldInfo) -> Option<String> {
+fn constant_value_index(cf: &ClassFile, field: &FieldInfo) -> Option<u16> {
+    let mut index: Option<u16> = None;
     for attr in &field.attributes {
-        if cf.utf8_at(attr.name_index).ok()? == "ConstantValue" && attr.info.len() == 2 {
-            let idx: u16 = u16::from_be_bytes([attr.info[0], attr.info[1]]);
-            return bytecode::resolve_ref(cf, idx);
+        if !cf
+            .utf8_at(attr.name_index)
+            .is_ok_and(|name: &str| name == "ConstantValue")
+        {
+            continue;
+        }
+        if index.is_some() || attr.info.len() != 2 {
+            return None;
+        }
+        index = Some(u16::from_be_bytes([attr.info[0], attr.info[1]]));
+    }
+    index
+}
+
+fn constant_value_initializer(cf: &ClassFile, field: &FieldInfo, ty: &JavaType) -> Option<String> {
+    if field.access_flags & ACC_STATIC == 0 {
+        return None;
+    }
+    let index: u16 = constant_value_index(cf, field)?;
+    let entry: &ConstantPoolEntry = cf.constant_pool.get(usize::from(index))?;
+    match (ty, entry) {
+        (JavaType::Boolean, ConstantPoolEntry::Integer(value)) => match value {
+            0 => Some("false".to_string()),
+            1 => Some("true".to_string()),
+            _ => None,
+        },
+        (JavaType::Byte, ConstantPoolEntry::Integer(value)) if i8::try_from(*value).is_ok() => {
+            Some(value.to_string())
+        }
+        (JavaType::Short, ConstantPoolEntry::Integer(value)) if i16::try_from(*value).is_ok() => {
+            Some(value.to_string())
+        }
+        (JavaType::Char, ConstantPoolEntry::Integer(value)) if u16::try_from(*value).is_ok() => {
+            Some(value.to_string())
+        }
+        (JavaType::Int, ConstantPoolEntry::Integer(value)) => Some(value.to_string()),
+        (JavaType::Long, ConstantPoolEntry::Long(_))
+        | (JavaType::Float, ConstantPoolEntry::Float(_))
+        | (JavaType::Double, ConstantPoolEntry::Double(_)) => bytecode::resolve_ref(cf, index),
+        (JavaType::Object(name), ConstantPoolEntry::String { .. })
+            if name == "Ljava/lang/String;" =>
+        {
+            bytecode::resolve_ref(cf, index)
+        }
+        _ => None,
+    }
+}
+
+fn enum_constants_recoverable(
+    cf: &ClassFile,
+    structure: &crate::attributes::ClassStructure,
+) -> bool {
+    if structure.is_sealed {
+        return reject_enum_constants(cf, "permitted subclasses require constant bodies");
+    }
+    match crate::attributes::parse_inner_classes(cf) {
+        crate::attributes::InnerClassesAttribute::Rejected => {
+            return reject_enum_constants(cf, "invalid inner class metadata");
+        }
+        crate::attributes::InnerClassesAttribute::Absent
+        | crate::attributes::InnerClassesAttribute::Parsed(_) => {}
+    }
+    let enum_fields: Vec<&FieldInfo> = cf
+        .fields
+        .iter()
+        .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+        .collect();
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    if enum_fields.iter().any(|field: &&FieldInfo| {
+        !cf.utf8_at(field.name_index).is_ok_and(|name: &str| {
+            crate::name_disambig::is_java_type_identifier(name) && names.insert(name)
+        })
+    }) {
+        return reject_enum_constants(cf, "constant names are not distinct Java identifiers");
+    }
+    if cf.fields.iter().any(|field: &FieldInfo| {
+        field.access_flags & ACC_ENUM == 0
+            && !cf
+                .utf8_at(field.name_index)
+                .is_ok_and(|name: &str| name == "$VALUES")
+            && constant_value_index(cf, field).is_none()
+    }) {
+        return reject_enum_constants(cf, "field initialization is not source-representable");
+    }
+    let constructors: Vec<&MethodInfo> = cf
+        .methods
+        .iter()
+        .filter(|method: &&MethodInfo| {
+            cf.utf8_at(method.name_index)
+                .is_ok_and(|name: &str| name == "<init>")
+        })
+        .collect();
+    if constructors.len() != 1 {
+        return reject_enum_constants(cf, "constructor count is not one");
+    }
+    if !enum_constructor_is_implicit(cf, constructors[0]) {
+        return reject_enum_constants(cf, "constructor has source-only parameters or effects");
+    }
+    if enum_clinit_has_user_effects(cf) {
+        return reject_enum_constants(cf, "static initialization has source-only effects");
+    }
+    true
+}
+
+fn reject_enum_constants(cf: &ClassFile, reason: &'static str) -> bool {
+    crate::debug::dbg_kv("enum-constant-reject", || {
+        format!("{}: {reason}", cf.this_class_name().unwrap_or("<unknown>"))
+    });
+    false
+}
+
+fn enum_degradation_marker_name(cf: &ClassFile) -> String {
+    let taken: BTreeSet<&str> = cf
+        .fields
+        .iter()
+        .filter_map(|field: &FieldInfo| cf.utf8_at(field.name_index).ok())
+        .collect();
+    let base: &str = "disrobe_unresolved_enum_constants";
+    if !taken.contains(base) {
+        return base.to_string();
+    }
+    for suffix in 2..=taken.len().saturating_add(2) {
+        let candidate: String = format!("{base}_{suffix}");
+        if !taken.contains(candidate.as_str()) {
+            return candidate;
         }
     }
-    None
+    format!("{base}_fallback")
+}
+
+fn enum_constructor_is_implicit(cf: &ClassFile, constructor: &MethodInfo) -> bool {
+    let descriptor_ok: bool = cf
+        .utf8_at(constructor.descriptor_index)
+        .ok()
+        .and_then(descriptor::parse_method)
+        .is_some_and(|descriptor: MethodDescriptor| {
+            descriptor.params
+                == vec![
+                    JavaType::Object("Ljava/lang/String;".to_string()),
+                    JavaType::Int,
+                ]
+                && descriptor.returns == JavaType::Void
+        });
+    if !descriptor_ok {
+        crate::debug::dbg_kv("enum-constructor-reject", || {
+            "descriptor is not (String, int) to void".to_string()
+        });
+        return false;
+    }
+    let Some(code): Option<CodeAttribute> = find_code(cf, constructor) else {
+        crate::debug::dbg_kv("enum-constructor-reject", || "Code is absent".to_string());
+        return false;
+    };
+    let Ok(instructions): Result<Vec<Instruction>> = disassemble(&code.code) else {
+        crate::debug::dbg_kv("enum-constructor-reject", || {
+            "Code does not disassemble".to_string()
+        });
+        return false;
+    };
+    if instructions.len() != 5
+        || instructions[0].opcode != 0x2A
+        || instructions[1].opcode != 0x2B
+        || instructions[2].opcode != 0x1C
+        || instructions[3].opcode != 0xB7
+        || instructions[4].opcode != 0xB1
+    {
+        crate::debug::dbg_kv("enum-constructor-reject", || {
+            instructions
+                .iter()
+                .map(|instruction: &Instruction| format!("{:02x}", instruction.opcode))
+                .collect::<Vec<String>>()
+                .join(" ")
+        });
+        return false;
+    }
+    let Operands::ConstPool(index) = &instructions[3].operands else {
+        return false;
+    };
+    matches!(
+        cf.constant_pool.get(usize::from(*index)),
+        Some(ConstantPoolEntry::Methodref { .. })
+    ) && bytecode::resolve_ref(cf, *index).as_deref()
+        == Some("java/lang/Enum.<init>:(Ljava/lang/String;I)V")
+}
+
+fn is_generated_enum_method(cf: &ClassFile, method: &MethodInfo) -> bool {
+    let Ok(name): core::result::Result<&str, _> = cf.utf8_at(method.name_index) else {
+        return false;
+    };
+    if name == "<init>" || name == "<clinit>" {
+        return true;
+    }
+    let Ok(descriptor): core::result::Result<&str, _> = cf.utf8_at(method.descriptor_index) else {
+        return false;
+    };
+    let Ok(class_name): core::result::Result<&str, _> = cf.this_class_name() else {
+        return false;
+    };
+    match name {
+        "values" => descriptor == format!("()[L{class_name};"),
+        "valueOf" => descriptor == format!("(Ljava/lang/String;)L{class_name};"),
+        _ => false,
+    }
+}
+
+fn enum_clinit_has_user_effects(cf: &ClassFile) -> bool {
+    let Some(clinit): Option<&MethodInfo> = cf.methods.iter().find(|method: &&MethodInfo| {
+        cf.utf8_at(method.name_index)
+            .is_ok_and(|name: &str| name == "<clinit>")
+    }) else {
+        return true;
+    };
+    let Some(code): Option<CodeAttribute> = find_code(cf, clinit) else {
+        return true;
+    };
+    let Ok(instructions): Result<Vec<Instruction>> = disassemble(&code.code) else {
+        return true;
+    };
+    let Ok(class_name): core::result::Result<&str, _> = cf.this_class_name() else {
+        return true;
+    };
+    let constructor: String = format!("{class_name}.<init>:(Ljava/lang/String;I)V");
+    let values: String = format!("{class_name}.$values:()[L{class_name};");
+    let mut generated_fields: BTreeSet<String> = cf
+        .fields
+        .iter()
+        .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+        .filter_map(|field: &FieldInfo| {
+            let name: &str = cf.utf8_at(field.name_index).ok()?;
+            Some(format!("{class_name}.{name}:L{class_name};"))
+        })
+        .collect();
+    generated_fields.insert(format!("{class_name}.$VALUES:[L{class_name};"));
+    for instruction in &instructions {
+        let accepted: bool = match instruction.opcode {
+            0x02..=0x08 | 0x10 | 0x11 | 0x12 | 0x13 | 0x59 | 0xB1 => true,
+            0xBB => match &instruction.operands {
+                Operands::ConstPool(index) => {
+                    bytecode::resolve_ref(cf, *index).as_deref() == Some(class_name)
+                }
+                _ => false,
+            },
+            0xB7 => match &instruction.operands {
+                Operands::ConstPool(index) => {
+                    bytecode::resolve_ref(cf, *index).as_deref() == Some(constructor.as_str())
+                }
+                _ => false,
+            },
+            0xB3 => match &instruction.operands {
+                Operands::ConstPool(index) => bytecode::resolve_ref(cf, *index)
+                    .is_some_and(|reference: String| generated_fields.contains(&reference)),
+                _ => false,
+            },
+            0xB8 => match &instruction.operands {
+                Operands::ConstPool(index) => {
+                    bytecode::resolve_ref(cf, *index).as_deref() == Some(values.as_str())
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        if !accepted {
+            return true;
+        }
+    }
+    false
 }
 
 struct RenderedMethod {
@@ -297,6 +645,7 @@ fn render_method(
     let method_flags: u16 = method.access_flags & !(ACC_VOLATILE | ACC_TRANSIENT);
     let mut kw: String = member_access_keywords(method_flags);
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
+    let is_varargs: bool = method.access_flags & ACC_VARARGS != 0;
     let is_abstract: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0;
     let is_private: bool = method.access_flags & ACC_PRIVATE != 0;
     let needs_default: bool = is_interface
@@ -329,7 +678,7 @@ fn render_method(
             let mut rendered: Vec<String> = Vec::with_capacity(md.params.len());
             for (i, p) in md.params.iter().enumerate() {
                 let pname: String = format!("arg{i}");
-                let ty: String = p.render();
+                let ty: String = render_parameter_type(p, is_varargs && i + 1 == md.params.len());
                 rendered.push(format!("{ty} {pname}"));
                 if matches!(p, JavaType::Boolean) {
                     boolean_params.insert(pname.clone());
@@ -411,6 +760,13 @@ fn render_method(
         fully_lifted: body.fully_lifted,
         has_body: true,
     }
+}
+
+fn render_parameter_type(ty: &JavaType, is_varargs: bool) -> String {
+    if is_varargs && let JavaType::Array(element) = ty {
+        return format!("{}...", element.render());
+    }
+    ty.render()
 }
 
 fn strip_clinit_returns(body: &str) -> String {
@@ -7714,6 +8070,7 @@ const fn default_value_literal(ty: &JavaType) -> &'static str {
 }
 
 fn render_inner_method_stub(
+    annotation_renderer: &mut crate::attributes::DeclarationAnnotationRenderer,
     inner_cf: &ClassFile,
     method: &MethodInfo,
     simple: &str,
@@ -7735,13 +8092,14 @@ fn render_inner_method_stub(
     if is_interface && name == "<init>" {
         return None;
     }
-    if is_enum && (name == "values" || name == "valueOf" || name == "<init>") {
+    if is_enum && is_generated_enum_method(inner_cf, method) {
         return None;
     }
     let desc: &str = inner_cf.utf8_at(method.descriptor_index).ok()?;
     let parsed: MethodDescriptor = descriptor::parse_method(desc)?;
     let is_abstract: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0 && !is_enum;
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
+    let is_varargs: bool = method.access_flags & ACC_VARARGS != 0;
     let mut kw_flags: u16 = method.access_flags & !(ACC_VOLATILE | ACC_TRANSIENT | ACC_BRIDGE);
     if !is_abstract {
         kw_flags &= !ACC_ABSTRACT;
@@ -7751,7 +8109,12 @@ fn render_inner_method_stub(
         .params
         .iter()
         .enumerate()
-        .map(|(i, p)| format!("{} arg{i}", p.render()))
+        .map(|(i, p)| {
+            format!(
+                "{} arg{i}",
+                render_parameter_type(p, is_varargs && i + 1 == parsed.params.len())
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let prefix: &str = "        ";
@@ -7772,26 +8135,30 @@ fn render_inner_method_stub(
         let emit_name: String = recompile_safe_method_name(name);
         format!("{prefix}{kw_str}{default_kw}{ret} {emit_name}({params})")
     };
-    if is_abstract || annotation_default.is_some() {
+    let declaration: String = if is_abstract || annotation_default.is_some() {
         let default_value: String =
             annotation_default.map_or_else(String::new, |value: &str| format!(" default {value}"));
-        return Some(format!("{sig}{default_value};"));
-    }
-    if name == "<init>" {
-        return match super_call {
-            Some(call) => Some(format!("{sig} {{ {call} }}")),
-            None => Some(format!("{sig} {{}}")),
-        };
-    }
-    let body: &str = default_return_expr(&parsed.returns);
-    if body.is_empty() {
-        Some(format!("{sig} {{}}"))
+        format!("{sig}{default_value};")
+    } else if name == "<init>" {
+        super_call.map_or_else(
+            || format!("{sig} {{}}"),
+            |call: &str| format!("{sig} {{ {call} }}"),
+        )
     } else {
-        Some(format!("{sig} {{ {body} }}"))
-    }
+        let body: &str = default_return_expr(&parsed.returns);
+        if body.is_empty() {
+            format!("{sig} {{}}")
+        } else {
+            format!("{sig} {{ {body} }}")
+        }
+    };
+    let annotations: String =
+        render_member_annotations(annotation_renderer, inner_cf, &method.attributes, prefix);
+    Some(format!("{annotations}{declaration}"))
 }
 
 fn render_inner_field_stub(
+    annotation_renderer: &mut crate::attributes::DeclarationAnnotationRenderer,
     inner_cf: &ClassFile,
     field: &FieldInfo,
     is_enum: bool,
@@ -7814,12 +8181,20 @@ fn render_inner_field_stub(
     } else {
         format!("{kw} ")
     };
-    let init: String = if field.access_flags & ACC_FINAL != 0 {
-        format!(" = {}", java_type_default(&ty))
-    } else {
-        String::new()
-    };
-    Some(format!("        {kw_str}{} {name}{init};", ty.render()))
+    let init: String = constant_value_initializer(inner_cf, field, &ty).map_or_else(
+        || {
+            if field.access_flags & ACC_FINAL != 0 {
+                format!(" = {}", java_type_default(&ty))
+            } else {
+                String::new()
+            }
+        },
+        |value: String| format!(" = {value}"),
+    );
+    let declaration: String = format!("        {kw_str}{} {name}{init};", ty.render());
+    let annotations: String =
+        render_member_annotations(annotation_renderer, inner_cf, &field.attributes, "        ");
+    Some(format!("{annotations}{declaration}"))
 }
 
 const fn java_type_default(ty: &JavaType) -> &'static str {
@@ -7895,13 +8270,17 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         .map(|(field, arg): (&String, &String)| (field.clone(), arg.clone()))
         .collect();
     let is_enum: bool = anon_cf.access_flags & ACC_ENUM != 0;
+    let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
+        crate::attributes::DeclarationAnnotationRenderer::new(anon_cf);
     let mut members: Vec<String> = Vec::new();
     for field in &anon_cf.fields {
         let name: &str = anon_cf.utf8_at(field.name_index).unwrap_or("");
         if name.starts_with("val$") || name.starts_with("this$") {
             continue;
         }
-        if let Some(line) = render_inner_field_stub(anon_cf, field, is_enum) {
+        if let Some(line) =
+            render_inner_field_stub(&mut annotation_renderer, anon_cf, field, is_enum)
+        {
             members.push(line);
         }
     }
@@ -7914,7 +8293,14 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
             continue;
         }
         let rendered: RenderedMethod = render_method(anon_cf, method, &supertype, false, None);
-        members.push(substitute_captures(&rendered.text, &capture_map));
+        let annotations: String = render_member_annotations(
+            &mut annotation_renderer,
+            anon_cf,
+            &method.attributes,
+            "    ",
+        );
+        let body: String = substitute_captures(&rendered.text, &capture_map);
+        members.push(format!("{annotations}{body}"));
     }
     let mut out: String = format!("new {supertype}() {{\n");
     for member in &members {
@@ -8204,6 +8590,8 @@ fn emit_nested_class_stubs(
             return REJECTED_INNER_CLASSES.to_string();
         }
         let structure: crate::attributes::ClassStructure = crate::attributes::analyze(inner_cf);
+        let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
+            crate::attributes::DeclarationAnnotationRenderer::new(inner_cf);
         let type_params: String = structure
             .signature
             .as_deref()
@@ -8213,6 +8601,8 @@ fn emit_nested_class_stubs(
         let is_inner_enum: bool = flags & 0x4000 != 0;
         let is_inner_record: bool = structure.is_record;
         let is_inner_annotation: bool = flags & 0x2000 != 0;
+        let enum_constants_degraded: bool =
+            is_inner_enum && !enum_constants_recoverable(inner_cf, &structure);
         let is_inner_abstract: bool = flags & 0x0400 != 0 && !is_inner_interface;
         let is_inner_final: bool = flags & 0x0010 != 0;
         let access: &str = if flags & 0x0001 != 0 {
@@ -8314,10 +8704,8 @@ fn emit_nested_class_stubs(
         } else {
             String::new()
         };
-        let annotations: crate::attributes::DeclarationAnnotations =
-            crate::attributes::parse_declaration_annotations(inner_cf);
         let rendered_annotations: String =
-            crate::attributes::render_declaration_annotations(inner_cf, &annotations, "    ");
+            annotation_renderer.render(inner_cf, &inner_cf.attributes, "    ");
         if !append_inner_output(&mut out, &rendered_annotations, MAX_RENDER_BYTES) {
             return REJECTED_INNER_CLASSES.to_string();
         }
@@ -8328,19 +8716,17 @@ fn emit_nested_class_stubs(
             return REJECTED_INNER_CLASSES.to_string();
         }
         if is_inner_enum {
-            let Some(enum_limit): Option<usize> = MAX_RENDER_BYTES.checked_sub(out.len()) else {
-                return REJECTED_INNER_CLASSES.to_string();
-            };
-            let mut enum_declaration: String = String::new();
-            if !append_inner_output(&mut enum_declaration, "        ", enum_limit) {
-                return REJECTED_INNER_CLASSES.to_string();
-            }
             let mut enum_names: BTreeSet<&str> = BTreeSet::new();
-            for field in inner_cf
+            let enum_fields: Vec<&FieldInfo> = inner_cf
                 .fields
                 .iter()
                 .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+                .collect();
+            if enum_fields.is_empty() && !append_inner_line(&mut out, "        ;", MAX_RENDER_BYTES)
             {
+                return REJECTED_INNER_CLASSES.to_string();
+            }
+            for (index, field) in enum_fields.iter().enumerate() {
                 let Ok(name): core::result::Result<&str, _> = inner_cf.utf8_at(field.name_index)
                 else {
                     return REJECTED_INNER_CLASSES.to_string();
@@ -8349,24 +8735,37 @@ fn emit_nested_class_stubs(
                 {
                     return REJECTED_INNER_CLASSES.to_string();
                 }
-                let separator: &str = if enum_names.len() == 1 { "" } else { ", " };
-                if !append_inner_output(&mut enum_declaration, separator, enum_limit)
-                    || !append_inner_output(&mut enum_declaration, name, enum_limit)
-                {
+                let annotations: String =
+                    annotation_renderer.render(inner_cf, &field.attributes, "        ");
+                if !append_inner_output(&mut out, &annotations, MAX_RENDER_BYTES) {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
+                let separator: char = if index + 1 == enum_fields.len() {
+                    ';'
+                } else {
+                    ','
+                };
+                let declaration: String = format!("        {name}{separator}");
+                if !append_inner_line(&mut out, &declaration, MAX_RENDER_BYTES) {
                     return REJECTED_INNER_CLASSES.to_string();
                 }
             }
-            if !append_inner_output(&mut enum_declaration, ";", enum_limit) {
-                return REJECTED_INNER_CLASSES.to_string();
-            }
-            if !append_inner_line(&mut out, &enum_declaration, MAX_RENDER_BYTES) {
-                return REJECTED_INNER_CLASSES.to_string();
+            if enum_constants_degraded {
+                let marker_name: String = enum_degradation_marker_name(inner_cf);
+                let marker: String = format!("        private static final int {marker_name} = 0;");
+                if !append_inner_line(&mut out, &marker, MAX_RENDER_BYTES) {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
             }
         }
-        if !is_inner_interface && !is_inner_record {
+        if !is_inner_record {
             for field in &inner_cf.fields {
-                if let Some(decl) = render_inner_field_stub(inner_cf, field, is_inner_enum)
-                    && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
+                if let Some(decl) = render_inner_field_stub(
+                    &mut annotation_renderer,
+                    inner_cf,
+                    field,
+                    is_inner_enum,
+                ) && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
                 {
                     return REJECTED_INNER_CLASSES.to_string();
                 }
@@ -8394,6 +8793,7 @@ fn emit_nested_class_stubs(
                 continue;
             }
             if let Some(stub) = render_inner_method_stub(
+                &mut annotation_renderer,
                 inner_cf,
                 method,
                 &simple_name,
@@ -8579,6 +8979,100 @@ mod tests {
         let d: DecompiledClass = decompile_class(&cf);
         assert!(d.source.contains("package com.example;"));
         assert!(d.source.contains("public class Foo {"));
+    }
+
+    #[test]
+    fn constant_value_initializer_requires_descriptor_compatible_pool_entry() {
+        let cp: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            cp_utf8("ConstantValue"),
+            ConstantPoolEntry::Integer(1),
+            ConstantPoolEntry::Long(1),
+            ConstantPoolEntry::Integer(65_536),
+        ];
+        let cf: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 61,
+            constant_pool: cp,
+            access_flags: 0,
+            this_class: 0,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            attributes: Vec::new(),
+        };
+        let field_with: fn(u16) -> FieldInfo = |index: u16| FieldInfo {
+            access_flags: ACC_STATIC | ACC_FINAL,
+            name_index: 0,
+            descriptor_index: 0,
+            attributes: vec![Attribute {
+                name_index: 1,
+                info: index.to_be_bytes().to_vec(),
+            }],
+        };
+        assert_eq!(
+            constant_value_initializer(&cf, &field_with(2), &JavaType::Boolean).as_deref(),
+            Some("true")
+        );
+        assert!(constant_value_initializer(&cf, &field_with(3), &JavaType::Int).is_none());
+        assert!(constant_value_initializer(&cf, &field_with(4), &JavaType::Char).is_none());
+        let mut instance: FieldInfo = field_with(2);
+        instance.access_flags &= !ACC_STATIC;
+        assert!(constant_value_initializer(&cf, &instance, &JavaType::Int).is_none());
+        let mut duplicate: FieldInfo = field_with(2);
+        duplicate.attributes.push(Attribute {
+            name_index: 1,
+            info: 2u16.to_be_bytes().to_vec(),
+        });
+        assert!(constant_value_initializer(&cf, &duplicate, &JavaType::Int).is_none());
+    }
+
+    #[test]
+    fn static_initializer_annotations_emit_source_rejection_marker() {
+        let cp: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            cp_utf8("MarkedStatic"),
+            ConstantPoolEntry::Class { name_index: 1 },
+            cp_utf8("java/lang/Object"),
+            ConstantPoolEntry::Class { name_index: 3 },
+            cp_utf8("<clinit>"),
+            cp_utf8("()V"),
+            cp_utf8("Code"),
+            cp_utf8("RuntimeVisibleAnnotations"),
+            cp_utf8("LMark;"),
+        ];
+        let code_info: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 1, 0xB1, 0, 0];
+        let annotation_info: Vec<u8> = vec![0, 1, 0, 9, 0, 0];
+        let cf: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 61,
+            constant_pool: cp,
+            access_flags: ACC_PUBLIC,
+            this_class: 2,
+            super_class: 4,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: vec![MethodInfo {
+                access_flags: ACC_STATIC,
+                name_index: 5,
+                descriptor_index: 6,
+                attributes: vec![
+                    Attribute {
+                        name_index: 7,
+                        info: code_info,
+                    },
+                    Attribute {
+                        name_index: 8,
+                        info: annotation_info,
+                    },
+                ],
+            }],
+            attributes: Vec::new(),
+        };
+        let source: String = decompile_class(&cf).source;
+        assert!(source.contains("<unresolved-static-initializer-annotations>"));
+        assert!(!source.contains("@Mark\n    static"));
     }
 
     #[test]

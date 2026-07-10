@@ -11,6 +11,9 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_pass_jvm::bytecode::{
+    Instruction, Operands, class_internal_name_at, disassemble, parse_code_attribute, resolve_ref,
+};
 use disrobe_pass_jvm::classfile::{Attribute, MethodInfo};
 use disrobe_pass_jvm::{
     ClassFile, DecompiledClass, decompile_class, decompile_class_with_inners, parse_classfile,
@@ -811,6 +814,7 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
     for token in [
         "@java.lang.annotation.Retention(value = java.lang.annotation.RetentionPolicy.RUNTIME)",
         "@EdgeCases.TaggedSet(value = {@EdgeCases.Tagged(value = \"alpha\", priority = 1), @EdgeCases.Tagged(value = \"beta\", priority = 2)})",
+        "@java.lang.SafeVarargs\n    public static java.util.List safeVarargs(Object... arg0)",
     ] {
         assert!(
             source.contains(token),
@@ -976,4 +980,440 @@ fn runtime_invisible_class_annotation_recompiles_to_the_same_bucket() {
         assert!(output.contains("RuntimeInvisibleAnnotations:"));
         assert!(!output.contains("RuntimeVisibleAnnotations:"));
     }
+}
+
+const MEMBER_ANNOTATION_SRC: &str = r#"import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.FIELD, ElementType.METHOD})
+@interface MemberMark {
+    String value();
+    int rank();
+}
+
+@Retention(RetentionPolicy.CLASS)
+@Target({ElementType.FIELD, ElementType.METHOD})
+@interface HiddenMark {
+    int value();
+}
+
+public class MemberAnnotated {
+    @MemberMark(value = "field", rank = 1)
+    @HiddenMark(11)
+    public String value = "ready";
+
+    @MemberMark(value = "method", rank = 2)
+    @HiddenMark(22)
+    public String read() {
+        return value;
+    }
+
+    public static class Nested {
+        @MemberMark(value = "nested-field", rank = 3)
+        @HiddenMark(33)
+        public String value = "nested";
+
+        @MemberMark(value = "nested-method", rank = 4)
+        @HiddenMark(44)
+        public String read() {
+            return value;
+        }
+    }
+
+    public interface Contract {
+        @MemberMark(value = "interface-field", rank = 5)
+        @HiddenMark(55)
+        int CODE = 7;
+        boolean ENABLED = true;
+        byte SMALL = -7;
+        short LIMIT = 32000;
+        char LETTER = 'Z';
+        long EPOCH = 7L;
+        float RATIO = 1.5f;
+        double SCALE = 2.5;
+        String LABEL = "contract";
+
+        @MemberMark(value = "interface-method", rank = 6)
+        @HiddenMark(66)
+        String read();
+    }
+
+    public enum State {
+        @MemberMark(value = "enum-constant", rank = 7)
+        @HiddenMark(77)
+        START,
+        STOP
+    }
+
+    public enum EmptyState {
+        ;
+
+        @MemberMark(value = "empty-enum-method", rank = 9)
+        @HiddenMark(99)
+        public int code() {
+            return 9;
+        }
+    }
+
+    public enum ArgumentState {
+        START(1);
+
+        private final int code;
+
+        ArgumentState(int code) {
+            this.code = code;
+        }
+    }
+
+    public Runnable task(String value) {
+        return new Runnable() {
+            @MemberMark(value = "val$value", rank = 8)
+            @HiddenMark(88)
+            public void run() {
+                System.out.print(value);
+            }
+        };
+    }
+}
+
+enum TopState {
+    @MemberMark(value = "top-enum-constant", rank = 10)
+    @HiddenMark(100)
+    START,
+    STOP;
+
+    static int values(int value) {
+        return value;
+    }
+
+    static int valueOf(int value) {
+        return value + 1;
+    }
+}
+
+enum ArgumentState {
+    START(1);
+
+    private final int code;
+
+    ArgumentState(int code) {
+        this.code = code;
+    }
+}
+
+enum BodyState {
+    START {
+        int code() {
+            return 1;
+        }
+    };
+
+    abstract int code();
+}
+
+enum InitializedState {
+    START;
+
+    static {
+        System.setProperty("member.annotation.initialized", "true");
+    }
+}
+"#;
+
+const MEMBER_PROBE_SRC: &str = r#"public class MemberProbe {
+    public static void main(String[] args) throws Exception {
+        Class<?> target = Class.forName("MemberAnnotated");
+        MemberMark field = target.getField("value").getAnnotation(MemberMark.class);
+        MemberMark method = target.getMethod("read").getAnnotation(MemberMark.class);
+        Class<?> nested = Class.forName("MemberAnnotated$Nested");
+        MemberMark nestedField = nested.getField("value").getAnnotation(MemberMark.class);
+        MemberMark nestedMethod = nested.getMethod("read").getAnnotation(MemberMark.class);
+        Class<?> contract = Class.forName("MemberAnnotated$Contract");
+        MemberMark interfaceField = contract.getField("CODE").getAnnotation(MemberMark.class);
+        MemberMark interfaceMethod = contract.getMethod("read").getAnnotation(MemberMark.class);
+        Class<?> state = Class.forName("MemberAnnotated$State");
+        MemberMark enumConstant = state.getField("START").getAnnotation(MemberMark.class);
+        Class<?> emptyState = Class.forName("MemberAnnotated$EmptyState");
+        MemberMark emptyEnumMethod = emptyState.getMethod("code").getAnnotation(MemberMark.class);
+        Class<?> topState = Class.forName("TopState");
+        MemberMark topEnumConstant = topState.getField("START").getAnnotation(MemberMark.class);
+        MemberMark anonymousMethod = new MemberAnnotated().task("captured").getClass()
+            .getMethod("run").getAnnotation(MemberMark.class);
+        System.out.println(field.value() + ":" + field.rank());
+        System.out.println(method.value() + ":" + method.rank());
+        System.out.println(nestedField.value() + ":" + nestedField.rank());
+        System.out.println(nestedMethod.value() + ":" + nestedMethod.rank());
+        System.out.println(interfaceField.value() + ":" + interfaceField.rank());
+        System.out.println("interface-value:" + contract.getField("CODE").getInt(null));
+        System.out.println("interface-values:" + contract.getField("ENABLED").getBoolean(null)
+            + ":" + contract.getField("SMALL").getByte(null)
+            + ":" + contract.getField("LIMIT").getShort(null)
+            + ":" + contract.getField("LETTER").getChar(null)
+            + ":" + contract.getField("EPOCH").getLong(null)
+            + ":" + contract.getField("RATIO").getFloat(null)
+            + ":" + contract.getField("SCALE").getDouble(null)
+            + ":" + contract.getField("LABEL").get(null));
+        System.out.println(interfaceMethod.value() + ":" + interfaceMethod.rank());
+        System.out.println(enumConstant.value() + ":" + enumConstant.rank());
+        System.out.println(emptyEnumMethod.value() + ":" + emptyEnumMethod.rank());
+        System.out.println(topEnumConstant.value() + ":" + topEnumConstant.rank());
+        System.out.println("enum-overloads:" + TopState.values(10) + ":" + TopState.valueOf(10));
+        System.out.println(anonymousMethod.value() + ":" + anonymousMethod.rank());
+    }
+}
+"#;
+
+fn semantic_method_code(cf: &ClassFile, method_name: &str) -> Vec<String> {
+    let method: &MethodInfo = cf
+        .methods
+        .iter()
+        .find(|method: &&MethodInfo| {
+            cf.utf8_at(method.name_index)
+                .is_ok_and(|name: &str| name == method_name)
+        })
+        .expect("method present");
+    let code_attr: &Attribute = method
+        .attributes
+        .iter()
+        .find(|attr: &&Attribute| {
+            cf.utf8_at(attr.name_index)
+                .is_ok_and(|name: &str| name == "Code")
+        })
+        .expect("Code attribute present");
+    let code: disrobe_pass_jvm::bytecode::CodeAttribute =
+        parse_code_attribute(&code_attr.info).expect("parse Code attribute");
+    disassemble(&code.code)
+        .expect("disassemble method")
+        .iter()
+        .map(|insn: &Instruction| {
+            let operand: String = match &insn.operands {
+                Operands::ConstPool(index) => resolve_ref(cf, *index)
+                    .or_else(|| class_internal_name_at(cf, *index))
+                    .unwrap_or_else(|| format!("cp:{index}")),
+                Operands::InvokeInterface { index, count } => format!(
+                    "{}:{count}",
+                    resolve_ref(cf, *index).unwrap_or_else(|| format!("cp:{index}"))
+                ),
+                other => format!("{other:?}"),
+            };
+            format!("{:02x}:{operand}", insn.opcode)
+        })
+        .collect()
+}
+
+fn run_member_probe(java: &PathBuf, classpath: std::ffi::OsString) -> String {
+    let out: std::process::Output = Command::new(java)
+        .arg("-Xverify:all")
+        .arg("-cp")
+        .arg(classpath)
+        .arg("MemberProbe")
+        .output()
+        .expect("java member probe");
+    assert!(
+        out.status.success(),
+        "member annotation probe failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n")
+}
+
+fn hidden_mark_values(javap_output: &str) -> Vec<i32> {
+    let mut values: Vec<i32> = Vec::new();
+    let mut inside_hidden_mark: bool = false;
+    for line in javap_output.lines() {
+        let trimmed: &str = line.trim();
+        if trimmed == "HiddenMark(" {
+            inside_hidden_mark = true;
+            continue;
+        }
+        if inside_hidden_mark
+            && let Some(value) = trimmed.strip_prefix("value=")
+            && let Ok(parsed) = value.parse::<i32>()
+        {
+            values.push(parsed);
+            inside_hidden_mark = false;
+        }
+    }
+    values
+}
+
+#[test]
+fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
+    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP: javac not on PATH; member annotation gate NOT enforced");
+        return;
+    };
+    let Some(java): Option<PathBuf> = find_on_path("java") else {
+        eprintln!("SKIP: java not on PATH; member annotation gate NOT enforced");
+        return;
+    };
+    let Some(javap): Option<PathBuf> = find_on_path("javap") else {
+        eprintln!("SKIP: javap not on PATH; member annotation gate NOT enforced");
+        return;
+    };
+    let root: PathBuf =
+        std::env::temp_dir().join(format!("disrobe_member_annotation_{}", std::process::id()));
+    let original_dir: PathBuf = root.join("original");
+    let recovered_dir: PathBuf = root.join("recovered");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&original_dir).expect("mkdir original");
+    std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
+
+    let original_path: PathBuf = original_dir.join("MemberAnnotated.java");
+    std::fs::write(&original_path, MEMBER_ANNOTATION_SRC).expect("write member source");
+    let original_built: std::process::Output = Command::new(&javac)
+        .arg("-g:none")
+        .arg("-d")
+        .arg(&original_dir)
+        .arg(&original_path)
+        .output()
+        .expect("javac member source");
+    assert!(
+        original_built.status.success(),
+        "member annotation fixture did not compile: {}",
+        String::from_utf8_lossy(&original_built.stderr)
+    );
+    let original_bytes: Vec<u8> = std::fs::read(original_dir.join("MemberAnnotated.class"))
+        .expect("read original member class");
+    let original_cf: ClassFile =
+        parse_classfile(&original_bytes).expect("parse original member class");
+    let mut inners: BTreeMap<String, ClassFile> = BTreeMap::new();
+    for name in [
+        "MemberAnnotated$1.class",
+        "MemberAnnotated$ArgumentState.class",
+        "MemberAnnotated$Contract.class",
+        "MemberAnnotated$EmptyState.class",
+        "MemberAnnotated$Nested.class",
+        "MemberAnnotated$State.class",
+    ] {
+        let bytes: Vec<u8> =
+            std::fs::read(original_dir.join(name)).expect("read original nested member class");
+        inners.insert(
+            name.to_string(),
+            parse_classfile(&bytes).expect("parse original nested member class"),
+        );
+    }
+    let recovered_source: String = decompile_class_with_inners(&original_cf, &inners).source;
+    for token in [
+        "@MemberMark(value = \"field\", rank = 1)\n    @HiddenMark(value = 11)\n    public String value",
+        "@MemberMark(value = \"method\", rank = 2)\n    @HiddenMark(value = 22)\n    public String read()",
+        "@MemberMark(value = \"nested-field\", rank = 3)\n        @HiddenMark(value = 33)\n        public String value",
+        "@MemberMark(value = \"nested-method\", rank = 4)\n        @HiddenMark(value = 44)\n        public String read()",
+        "@MemberMark(value = \"interface-field\", rank = 5)\n        @HiddenMark(value = 55)\n        public static final int CODE = 7;",
+        "@MemberMark(value = \"interface-method\", rank = 6)\n        @HiddenMark(value = 66)\n        public abstract String read();",
+        "@MemberMark(value = \"enum-constant\", rank = 7)\n        @HiddenMark(value = 77)\n        START,",
+        "public static enum EmptyState {\n        ;",
+        "@MemberMark(value = \"empty-enum-method\", rank = 9)",
+        "private static final int disrobe_unresolved_enum_constants = 0;",
+        "@MemberMark(value = \"val$value\", rank = 8)",
+    ] {
+        assert!(
+            recovered_source.contains(token),
+            "decompiled member declaration dropped annotation sequence `{token}`; source:\n{recovered_source}"
+        );
+    }
+
+    let top_state_bytes: Vec<u8> =
+        std::fs::read(original_dir.join("TopState.class")).expect("read original top enum");
+    let top_state_cf: ClassFile =
+        parse_classfile(&top_state_bytes).expect("parse original top enum");
+    let recovered_top_state: String = decompile_class(&top_state_cf).source;
+    assert!(
+        recovered_top_state.contains(
+            "@MemberMark(value = \"top-enum-constant\", rank = 10)\n    @HiddenMark(value = 100)\n    START,"
+        ),
+        "decompiled top enum dropped constant annotations; source:\n{recovered_top_state}"
+    );
+    assert!(recovered_top_state.contains("static int values(int arg0)"));
+    assert!(recovered_top_state.contains("static int valueOf(int arg0)"));
+    for name in ["ArgumentState", "BodyState", "InitializedState"] {
+        let bytes: Vec<u8> =
+            std::fs::read(original_dir.join(format!("{name}.class"))).expect("read enum class");
+        let cf: ClassFile = parse_classfile(&bytes).expect("parse enum class");
+        let source: String = decompile_class(&cf).source;
+        assert!(
+            source.contains("<unresolved-enum-constants>;"),
+            "enum source-only constant state was not rejected: {source}"
+        );
+        assert!(!source.contains("sealed enum"));
+        assert!(!source.contains(" permits "));
+    }
+
+    let recovered_path: PathBuf = recovered_dir.join("MemberAnnotated.java");
+    std::fs::write(&recovered_path, &recovered_source).expect("write recovered member source");
+    let recovered_top_state_path: PathBuf = recovered_dir.join("TopState.java");
+    std::fs::write(&recovered_top_state_path, &recovered_top_state)
+        .expect("write recovered top enum source");
+    let recovered_built: std::process::Output = Command::new(&javac)
+        .arg("-g:none")
+        .arg("-cp")
+        .arg(&original_dir)
+        .arg("-d")
+        .arg(&recovered_dir)
+        .arg(&recovered_path)
+        .arg(&recovered_top_state_path)
+        .output()
+        .expect("javac recovered member source");
+    assert!(
+        recovered_built.status.success(),
+        "recovered member annotation source did not compile: {}",
+        String::from_utf8_lossy(&recovered_built.stderr)
+    );
+
+    let probe_path: PathBuf = original_dir.join("MemberProbe.java");
+    std::fs::write(&probe_path, MEMBER_PROBE_SRC).expect("write member probe");
+    let probe_built: std::process::Output = Command::new(&javac)
+        .arg("-cp")
+        .arg(&original_dir)
+        .arg("-d")
+        .arg(&original_dir)
+        .arg(&probe_path)
+        .output()
+        .expect("javac member probe");
+    assert!(
+        probe_built.status.success(),
+        "member probe did not compile: {}",
+        String::from_utf8_lossy(&probe_built.stderr)
+    );
+    let original_output: String = run_member_probe(&java, original_dir.clone().into_os_string());
+    let recovered_cp: std::ffi::OsString =
+        std::env::join_paths([recovered_dir.as_path(), original_dir.as_path()])
+            .expect("recovered member classpath");
+    let recovered_output: String = run_member_probe(&java, recovered_cp);
+    assert_eq!(
+        original_output,
+        "field:1\nmethod:2\nnested-field:3\nnested-method:4\ninterface-field:5\ninterface-value:7\ninterface-values:true:-7:32000:Z:7:1.5:2.5:contract\ninterface-method:6\nenum-constant:7\nempty-enum-method:9\ntop-enum-constant:10\nenum-overloads:10:11\nval$value:8\n"
+    );
+    assert_eq!(recovered_output, original_output);
+
+    for (class_name, expected_values) in [
+        ("MemberAnnotated", vec![11, 22]),
+        ("MemberAnnotated$1", vec![88]),
+        ("MemberAnnotated$Contract", vec![55, 66]),
+        ("MemberAnnotated$EmptyState", vec![99]),
+        ("MemberAnnotated$Nested", vec![33, 44]),
+        ("MemberAnnotated$State", vec![77]),
+        ("TopState", vec![100]),
+    ] {
+        for classpath in [&original_dir, &recovered_dir] {
+            let verbose: String = javap_verbose(&javap, classpath, class_name);
+            assert_eq!(
+                hidden_mark_values(&verbose),
+                expected_values,
+                "class-retention annotation payload drifted for {class_name}"
+            );
+        }
+    }
+
+    let recovered_bytes: Vec<u8> = std::fs::read(recovered_dir.join("MemberAnnotated.class"))
+        .expect("read recovered member class");
+    let recovered_cf: ClassFile =
+        parse_classfile(&recovered_bytes).expect("parse recovered member class");
+    assert_eq!(
+        semantic_method_code(&recovered_cf, "read"),
+        semantic_method_code(&original_cf, "read")
+    );
 }

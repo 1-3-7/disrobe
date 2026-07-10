@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -531,6 +530,7 @@ fn render_outcome(
     outcome: &AnnotationOutcome,
     resolver: &AnnotationNameResolver,
     indent: &str,
+    budget: &mut AnnotationRenderBudget,
 ) -> String {
     match outcome {
         AnnotationOutcome::Absent => String::new(),
@@ -538,20 +538,32 @@ fn render_outcome(
             crate::debug::dbg_kv("annotation-reject", || reasons.join("; "));
             let mut out: String = String::new();
             for _ in 0..*instances {
-                let _ = writeln!(out, "{indent}{UNRESOLVED_ANNOTATION}");
+                if budget.push(&mut out, indent).is_none()
+                    || budget.push(&mut out, UNRESOLVED_ANNOTATION).is_none()
+                    || budget.push_char(&mut out, '\n').is_none()
+                {
+                    break;
+                }
             }
             out
         }
         AnnotationOutcome::Parsed(annotations) => {
             let mut scratch: String = String::new();
-            let mut budget: AnnotationRenderBudget = AnnotationRenderBudget::new();
+            let bytes_before: usize = budget.bytes_remaining;
             for annotation in annotations {
                 if budget.push(&mut scratch, indent).is_none()
-                    || render_annotation(annotation, resolver, 0, &mut scratch, &mut budget)
-                        .is_none()
+                    || render_annotation(annotation, resolver, 0, &mut scratch, budget).is_none()
                     || budget.push_char(&mut scratch, '\n').is_none()
                 {
-                    return format!("{indent}{UNRESOLVED_ANNOTATION}\n");
+                    budget.bytes_remaining = bytes_before;
+                    let mut rejected: String = String::new();
+                    if budget.push(&mut rejected, indent).is_some()
+                        && budget.push(&mut rejected, UNRESOLVED_ANNOTATION).is_some()
+                        && budget.push_char(&mut rejected, '\n').is_some()
+                    {
+                        return rejected;
+                    }
+                    return String::new();
                 }
             }
             scratch
@@ -560,11 +572,13 @@ fn render_outcome(
 }
 
 #[must_use]
+#[cfg(test)]
 pub(crate) fn render_declaration_annotations(
     cf: &ClassFile,
     annotations: &DeclarationAnnotations,
     indent: &str,
 ) -> String {
+    let mut budget: AnnotationRenderBudget = AnnotationRenderBudget::new();
     let requires_names: bool = matches!(&annotations.visible, AnnotationOutcome::Parsed(_))
         || matches!(&annotations.invisible, AnnotationOutcome::Parsed(_));
     let resolver: AnnotationNameResolver = if requires_names {
@@ -577,9 +591,53 @@ pub(crate) fn render_declaration_annotations(
             usable: true,
         }
     };
-    let mut out: String = render_outcome(&annotations.visible, &resolver, indent);
-    out.push_str(&render_outcome(&annotations.invisible, &resolver, indent));
+    let mut out: String = render_outcome(&annotations.visible, &resolver, indent, &mut budget);
+    out.push_str(&render_outcome(
+        &annotations.invisible,
+        &resolver,
+        indent,
+        &mut budget,
+    ));
     out
+}
+
+pub(crate) struct DeclarationAnnotationRenderer {
+    parse_budget: AnnotationParseBudget,
+    render_budget: AnnotationRenderBudget,
+    resolver: AnnotationNameResolver,
+}
+
+impl DeclarationAnnotationRenderer {
+    pub(crate) fn new(cf: &ClassFile) -> Self {
+        Self {
+            parse_budget: AnnotationParseBudget::new(),
+            render_budget: AnnotationRenderBudget::new(),
+            resolver: AnnotationNameResolver::new(cf),
+        }
+    }
+
+    pub(crate) fn render(
+        &mut self,
+        cf: &ClassFile,
+        attributes: &[Attribute],
+        indent: &str,
+    ) -> String {
+        let annotations: DeclarationAnnotations =
+            parse_declaration_annotations_with_budget(cf, attributes, &mut self.parse_budget);
+        let mut out: String = render_outcome(
+            &annotations.visible,
+            &self.resolver,
+            indent,
+            &mut self.render_budget,
+        );
+        out.push_str(&render_outcome(
+            &annotations.invisible,
+            &self.resolver,
+            indent,
+            &mut self.render_budget,
+        ));
+        out
+    }
 }
 
 fn read_u8(reader: &mut Reader<'_>, reason: &'static str) -> AnnotationResult<u8> {
@@ -843,13 +901,14 @@ fn parse_annotation_attribute(
 
 fn parse_annotation_bucket(
     cf: &ClassFile,
+    attributes: &[Attribute],
     attribute_name: &str,
     budget: &mut AnnotationParseBudget,
 ) -> AnnotationOutcome {
     let mut first: Option<&Attribute> = None;
     let mut instances: usize = 0;
     let mut reasons: Vec<String> = Vec::new();
-    for attr in &cf.attributes {
+    for attr in attributes {
         if !cf
             .utf8_at(attr.name_index)
             .is_ok_and(|name: &str| name == attribute_name)
@@ -892,10 +951,26 @@ fn parse_annotation_bucket(
 
 #[must_use]
 pub(crate) fn parse_declaration_annotations(cf: &ClassFile) -> DeclarationAnnotations {
+    parse_declaration_annotations_from(cf, &cf.attributes)
+}
+
+#[must_use]
+pub(crate) fn parse_declaration_annotations_from(
+    cf: &ClassFile,
+    attributes: &[Attribute],
+) -> DeclarationAnnotations {
     let mut budget: AnnotationParseBudget = AnnotationParseBudget::new();
+    parse_declaration_annotations_with_budget(cf, attributes, &mut budget)
+}
+
+fn parse_declaration_annotations_with_budget(
+    cf: &ClassFile,
+    attributes: &[Attribute],
+    budget: &mut AnnotationParseBudget,
+) -> DeclarationAnnotations {
     DeclarationAnnotations {
-        visible: parse_annotation_bucket(cf, "RuntimeVisibleAnnotations", &mut budget),
-        invisible: parse_annotation_bucket(cf, "RuntimeInvisibleAnnotations", &mut budget),
+        visible: parse_annotation_bucket(cf, attributes, "RuntimeVisibleAnnotations", budget),
+        invisible: parse_annotation_bucket(cf, attributes, "RuntimeInvisibleAnnotations", budget),
     }
 }
 
@@ -1632,6 +1707,63 @@ mod tests {
         assert_eq!(
             render_declaration_annotations(&cf, &declarations, ""),
             "@<unresolved-annotation>\n"
+        );
+    }
+
+    #[test]
+    fn declaration_annotation_budget_is_shared_across_members() {
+        let large_value: String = "x".repeat(3 * 1024 * 1024);
+        let cp: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            ConstantPoolEntry::Utf8("RuntimeVisibleAnnotations".into()),
+            ConstantPoolEntry::Utf8("Lpkg/Big;".into()),
+            ConstantPoolEntry::Utf8("value".into()),
+            ConstantPoolEntry::Utf8(large_value),
+            ConstantPoolEntry::Utf8("Budgeted".into()),
+            ConstantPoolEntry::Class { name_index: 5 },
+            ConstantPoolEntry::Utf8("java/lang/Object".into()),
+            ConstantPoolEntry::Class { name_index: 7 },
+            ConstantPoolEntry::Utf8("field".into()),
+            ConstantPoolEntry::Utf8("Ljava/lang/String;".into()),
+            ConstantPoolEntry::Utf8("method".into()),
+            ConstantPoolEntry::Utf8("()V".into()),
+        ];
+        let mut info: Vec<u8> = Vec::new();
+        info.extend_from_slice(&1u16.to_be_bytes());
+        info.extend_from_slice(&2u16.to_be_bytes());
+        info.extend_from_slice(&1u16.to_be_bytes());
+        push_constant_pair(&mut info, 3, b's', 4);
+        let annotation: Attribute = Attribute {
+            name_index: 1,
+            info,
+        };
+        let mut cf: ClassFile = class_with(Vec::new(), cp);
+        cf.access_flags = 0x0401;
+        cf.this_class = 6;
+        cf.super_class = 8;
+        cf.fields = vec![crate::classfile::FieldInfo {
+            access_flags: 0x0001,
+            name_index: 9,
+            descriptor_index: 10,
+            attributes: vec![annotation.clone()],
+        }];
+        cf.methods = vec![MethodInfo {
+            access_flags: 0x0401,
+            name_index: 11,
+            descriptor_index: 12,
+            attributes: vec![annotation],
+        }];
+        let source: String = crate::decompile::decompile_class(&cf).source;
+        assert!(source.len() > 3 * 1024 * 1024);
+        assert!(source.contains("public String field;"));
+        assert!(source.contains("@<unresolved-annotation>\n    public abstract void method();"));
+        assert!(
+            source.len()
+                <= MAX_ANNOTATION_RENDER_BYTES
+                    + "public abstract class Budgeted {\n    public String field;\n\n    public abstract void method();\n}\n"
+                        .len()
+                    + UNRESOLVED_ANNOTATION.len()
+                    + 6
         );
     }
 }
