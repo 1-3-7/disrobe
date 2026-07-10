@@ -5341,42 +5341,53 @@ fn immediate_dominators(blocks: &[CfgBlock]) -> Vec<Option<usize>> {
     idom
 }
 
+struct PostGraph<'a> {
+    blocks: &'a [CfgBlock],
+    preds: &'a [Vec<usize>],
+}
+
+impl DiGraph for PostGraph<'_> {
+    fn node_count(&self) -> usize {
+        self.blocks.len() + 1
+    }
+
+    fn entry(&self) -> u32 {
+        self.blocks.len() as u32
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        let exit: u32 = self.blocks.len() as u32;
+        if node == exit {
+            for (i, block) in self.blocks.iter().enumerate() {
+                if block.successors().is_empty() {
+                    visit(i as u32);
+                }
+            }
+        } else if let Some(preds) = self.preds.get(node as usize) {
+            for &p in preds {
+                visit(p as u32);
+            }
+        }
+    }
+}
+
 fn post_dominator_sets(blocks: &[CfgBlock]) -> Vec<std::collections::BTreeSet<usize>> {
     use std::collections::BTreeSet;
-    let count: usize = blocks.len();
-    let all: BTreeSet<usize> = (0..count).collect();
-    let mut pdom: Vec<BTreeSet<usize>> = vec![all; count];
-    for (node, block) in blocks.iter().enumerate() {
-        if block.successors().is_empty() {
-            pdom[node] = BTreeSet::from([node]);
-        }
-    }
-    let mut changed: bool = true;
-    while changed {
-        changed = false;
-        for node in 0..count {
-            if blocks[node].successors().is_empty() {
-                continue;
-            }
-            let mut new_pdom: Option<BTreeSet<usize>> = None;
-            for succ in blocks[node].successors() {
-                if succ >= count {
-                    continue;
-                }
-                new_pdom = Some(new_pdom.map_or_else(
-                    || pdom[succ].clone(),
-                    |acc: BTreeSet<usize>| acc.intersection(&pdom[succ]).copied().collect(),
-                ));
-            }
-            let mut new_pdom: BTreeSet<usize> = new_pdom.unwrap_or_default();
-            new_pdom.insert(node);
-            if new_pdom != pdom[node] {
-                pdom[node] = new_pdom;
-                changed = true;
-            }
-        }
-    }
-    pdom
+    let preds: Vec<Vec<usize>> = block_predecessors(blocks);
+    let graph: PostGraph<'_> = PostGraph {
+        blocks,
+        preds: &preds,
+    };
+    let exit: u32 = blocks.len() as u32;
+    disrobe_core::dominator_sets(&graph)[..blocks.len()]
+        .iter()
+        .map(|set: &BTreeSet<u32>| {
+            set.iter()
+                .filter(|&&n: &&u32| n != exit)
+                .map(|&n: &u32| n as usize)
+                .collect()
+        })
+        .collect()
 }
 
 fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
