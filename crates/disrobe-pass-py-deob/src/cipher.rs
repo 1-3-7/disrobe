@@ -1,6 +1,7 @@
 use disrobe_core::TeaVariant;
 use disrobe_core::codec::cipher::{
-    chacha20_apply, salsa20_apply, tea_family_decrypt_bytes, xxtea_decrypt_bytes,
+    Rc4, chacha20_apply, rc4_keystream, salsa20_apply, tea_family_decrypt_bytes,
+    xxtea_decrypt_bytes,
 };
 use serde::Serialize;
 
@@ -186,34 +187,11 @@ fn matches_crib_at_zero(plain: &[u8], min_len: usize) -> Option<&'static str> {
     None
 }
 
-fn rc4_keystream(key: &[u8], len: usize) -> Vec<u8> {
-    let mut state: [u8; 256] = core::array::from_fn(|i: usize| i as u8);
-    let mut j: u8 = 0;
-    for i in 0..256usize {
-        j = j.wrapping_add(state[i]).wrapping_add(key[i % key.len()]);
-        state.swap(i, j as usize);
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(len);
-    let (mut i, mut j): (u8, u8) = (0, 0);
-    for _ in 0..len {
-        i = i.wrapping_add(1);
-        j = j.wrapping_add(state[i as usize]);
-        state.swap(i as usize, j as usize);
-        let idx: usize = state[i as usize].wrapping_add(state[j as usize]) as usize;
-        out.push(state[idx]);
-    }
-    out
-}
-
 pub(crate) fn rc4_apply(data: &[u8], key: &[u8]) -> Vec<u8> {
     if key.is_empty() {
         return data.to_vec();
     }
-    let keystream: Vec<u8> = rc4_keystream(key, data.len());
-    data.iter()
-        .zip(keystream.iter())
-        .map(|(d, k): (&u8, &u8)| d ^ k)
-        .collect()
+    Rc4::new(key).apply(data)
 }
 
 fn try_single_byte_xor(data: &[u8]) -> Option<CipherResult> {
