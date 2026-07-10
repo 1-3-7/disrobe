@@ -659,22 +659,8 @@ fn rc4_in_place(key: &[u8], data: &mut [u8]) {
     if key.is_empty() {
         return;
     }
-    let mut s: [u8; 256] = [0u8; 256];
-    for (i, slot) in s.iter_mut().enumerate() {
-        *slot = i as u8;
-    }
-    let mut j: usize = 0;
-    for i in 0..256usize {
-        j = (j + s[i] as usize + key[i % key.len()] as usize) & 0xFF;
-        s.swap(i, j);
-    }
-    let mut i: usize = 0;
-    let mut k: usize = 0;
-    for b in data.iter_mut() {
-        i = (i + 1) & 0xFF;
-        k = (k + s[i] as usize) & 0xFF;
-        s.swap(i, k);
-        let stream: u8 = s[(s[i] as usize + s[k] as usize) & 0xFF];
+    let keystream: Vec<u8> = disrobe_core::codec::cipher::rc4_keystream(key, data.len());
+    for (b, stream) in data.iter_mut().zip(keystream) {
         *b ^= stream;
     }
 }
