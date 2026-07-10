@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
@@ -76,6 +78,16 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
         > = hoisted_field_types(&model, lang);
         let _ = crate::iterator_reverse::reconstruct_iterator_stubs(&mut methods, &hoisted_types);
         let _ = crate::switch_expr_reverse::reconstruct_switch_expressions(&mut methods);
+        let record_struct_types: BTreeSet<String> = model
+            .types
+            .iter()
+            .filter(|t: &&TypeModel| crate::records::is_record_struct(t))
+            .map(|t: &TypeModel| t.full_name.clone())
+            .collect();
+        let _ = crate::with_reverse::reconstruct_struct_with_expressions(
+            &mut methods,
+            &record_struct_types,
+        );
     }
     let decompiled: u32 = u32::try_from(methods.len()).unwrap_or(u32::MAX);
     Ok(DecompiledAssembly {
