@@ -2534,8 +2534,13 @@ pub(super) fn structure_try(
         let is_star: bool = (region.handler_start..region.region_end)
             .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckEgMatch));
         if region.is_finally && !is_star {
-            let (stmt, tail): (Stmt, Vec<Stmt>) =
+            let (stmt, mut tail): (Stmt, Vec<Stmt>) =
                 structure_pure_finally(code, stream, region, body_real_end)?;
+            if tail.is_empty()
+                && let Stmt::Try { body, .. } = &stmt
+            {
+                tail = recover_modern_finally_tail(code, stream, region, body, hi)?;
+            }
             (stmt, region.region_end, tail)
         } else if is_star {
             let star_body_end: usize = except_star_body_end(stream, region, body_real_end);
@@ -3442,12 +3447,22 @@ fn structure_try_except_family(
                 }
                 (raw, tail)
             } else if has_combo {
+                let before_len: usize = raw.len();
                 strip_leading_stmts(&mut raw, &finalbody);
-                let tail: Vec<Stmt> = split_construct_tail_after_finally(&mut raw, &finalbody);
-                while matches!(raw.last(), Some(Stmt::Return(_))) {
-                    raw.pop();
+                let recovered_continuation: bool = raw.len() < before_len
+                    && !matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }));
+                if recovered_continuation {
+                    while raw.last().is_some_and(is_implicit_none_return) {
+                        raw.pop();
+                    }
+                    (Vec::new(), raw)
+                } else {
+                    let tail: Vec<Stmt> = split_construct_tail_after_finally(&mut raw, &finalbody);
+                    while matches!(raw.last(), Some(Stmt::Return(_))) {
+                        raw.pop();
+                    }
+                    (raw, tail)
                 }
-                (raw, tail)
             } else if let Some((_, tail_start, tail_end)) = else_fallthrough_tail {
                 let mut tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, tail_end)?;
                 while tail.last().is_some_and(is_implicit_none_return) {
@@ -4496,6 +4511,151 @@ fn finally_runs_match(stream: &DecodedStream, a: usize, b: usize, len: usize) ->
     (0..len).all(|k: usize| {
         std::mem::discriminant(&stream.ops[a + k]) == std::mem::discriminant(&stream.ops[b + k])
     })
+}
+
+fn finally_inline_copy_end(
+    stream: &DecodedStream,
+    copy_start: usize,
+    boundary: usize,
+    fin_start: usize,
+    fin_end: usize,
+) -> Option<usize> {
+    let fin_ops: Vec<&CanonicalOp> = significant_ops(stream, fin_start, fin_end);
+    if fin_ops.is_empty() {
+        return None;
+    }
+    let mut matched: usize = 0;
+    let mut k: usize = copy_start;
+    while k < boundary && matched < fin_ops.len() {
+        match &stream.ops[k] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            op => {
+                if op == fin_ops[matched] {
+                    matched += 1;
+                } else {
+                    return None;
+                }
+            }
+        }
+        k += 1;
+    }
+    (matched == fin_ops.len()).then_some(k)
+}
+
+fn slice_significant_contains_finally(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    fin_start: usize,
+    fin_end: usize,
+) -> bool {
+    let fin_ops: Vec<&CanonicalOp> = significant_ops(stream, fin_start, fin_end);
+    if fin_ops.is_empty() {
+        return false;
+    }
+    let hay: Vec<&CanonicalOp> = significant_ops(stream, lo, hi);
+    if hay.len() < fin_ops.len() {
+        return false;
+    }
+    (0..=hay.len() - fin_ops.len()).any(|i: usize| hay[i..i + fin_ops.len()] == fin_ops[..])
+}
+
+fn region_has_enclosing_modern_finally(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> bool {
+    let Some(&try_off): Option<&u32> = stream.offsets.get(region.try_start) else {
+        return false;
+    };
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(region.handler_start) else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            if e.start < try_off || e.start >= handler_off {
+                return false;
+            }
+            let Some(other_handler): Option<usize> = stream.index_for_offset(e.target) else {
+                return false;
+            };
+            if other_handler <= region.handler_start || other_handler >= hi {
+                return false;
+            }
+            if !matches!(
+                stream.ops.get(other_handler),
+                Some(CanonicalOp::PushExcInfo)
+            ) {
+                return false;
+            }
+            let other_end: usize = handler_join(stream, other_handler, hi);
+            is_pure_finally_handler_shape(stream, other_handler, other_end, false)
+        })
+}
+
+fn recover_finally_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    copy_start: usize,
+    boundary: usize,
+    fin_start: usize,
+    fin_end: usize,
+    body: &[Stmt],
+) -> Result<Vec<Stmt>> {
+    if matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. })) {
+        return Ok(Vec::new());
+    }
+    if fin_end <= fin_start {
+        return Ok(Vec::new());
+    }
+    let Some(cont_start): Option<usize> =
+        finally_inline_copy_end(stream, copy_start, boundary, fin_start, fin_end)
+    else {
+        return Ok(Vec::new());
+    };
+    if cont_start >= boundary || !slice_has_real_stmt(stream, cont_start, boundary) {
+        return Ok(Vec::new());
+    }
+    if slice_significant_contains_finally(stream, cont_start, boundary, fin_start, fin_end) {
+        return Ok(Vec::new());
+    }
+    let mut cont: Vec<Stmt> = structure_stmts(code, stream, cont_start, boundary)?;
+    while cont.last().is_some_and(is_implicit_none_return) {
+        cont.pop();
+    }
+    Ok(cont)
+}
+
+fn recover_modern_finally_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body: &[Stmt],
+    hi: usize,
+) -> Result<Vec<Stmt>> {
+    if stream.is_pre_311() || region.is_with || !region.is_finally {
+        return Ok(Vec::new());
+    }
+    if region_has_enclosing_modern_finally(stream, region, hi) {
+        return Ok(Vec::new());
+    }
+    let fin_start: usize = handler_body_first(stream, region.handler_start);
+    let fin_end: usize = finally_body_end(stream, fin_start, region.region_end);
+    let copy_start: usize = region
+        .protected_end
+        .max(region.try_start)
+        .min(region.handler_start);
+    recover_finally_continuation(
+        code,
+        stream,
+        copy_start,
+        region.handler_start,
+        fin_start,
+        fin_end,
+        body,
+    )
 }
 
 fn loop_spanning_finally_body_end(
