@@ -118,7 +118,7 @@ fn count_switch_regions(region: &Region) -> usize {
             count_switch_regions(try_body)
                 + handlers
                     .iter()
-                    .map(|(_, r): &(Option<String>, Region)| count_switch_regions(r))
+                    .map(|(_, r): &(Vec<String>, Region)| count_switch_regions(r))
                     .sum::<usize>()
         }
         Region::TryWithResources { try_body, .. } => count_switch_regions(try_body),

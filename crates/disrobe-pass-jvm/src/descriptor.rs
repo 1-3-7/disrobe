@@ -41,6 +41,18 @@ impl JavaType {
 }
 
 #[must_use]
+pub fn catch_clause(types: &[String]) -> String {
+    if types.is_empty() {
+        return "Throwable".to_string();
+    }
+    types
+        .iter()
+        .map(|t: &String| binary_to_source(t))
+        .collect::<Vec<String>>()
+        .join(" | ")
+}
+
+#[must_use]
 pub fn binary_to_source(internal: &str) -> String {
     if internal.starts_with('[')
         && let Some(ty) = parse_field(internal)

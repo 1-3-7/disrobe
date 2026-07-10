@@ -472,10 +472,8 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
-            for (catch_type, handler_region) in handlers {
-                let ty: String = catch_type
-                    .as_deref()
-                    .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
+            for (catch_types, handler_region) in handlers {
+                let ty: String = descriptor::catch_clause(catch_types);
                 let _ = writeln!(out, "{pad}}} catch ({ty} ex) {{");
                 render_region(state, handler_region, out, level + 1);
             }
@@ -489,10 +487,8 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(state, try_body, out, level + 1);
-            for (catch_type, handler_region) in handlers {
-                let ty: String = catch_type
-                    .as_deref()
-                    .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
+            for (catch_types, handler_region) in handlers {
+                let ty: String = descriptor::catch_clause(catch_types);
                 let _ = writeln!(out, "{pad}}} catch ({ty} ex) {{");
                 render_region(state, handler_region, out, level + 1);
             }

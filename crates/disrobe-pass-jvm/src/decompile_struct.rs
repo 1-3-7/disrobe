@@ -515,11 +515,11 @@ pub enum Region {
     },
     Try {
         try_body: Box<Self>,
-        handlers: Vec<(Option<String>, Self)>,
+        handlers: Vec<(Vec<String>, Self)>,
     },
     TryFinally {
         try_body: Box<Self>,
-        handlers: Vec<(Option<String>, Self)>,
+        handlers: Vec<(Vec<String>, Self)>,
         finally_chain: Vec<BlockId>,
     },
     TryWithResources {
@@ -1060,6 +1060,54 @@ impl<'a> Structurer<'a> {
         self.finally_handler_chain(handler_bid).is_some()
     }
 
+    fn absorbable_value_return(
+        &self,
+        group: &GroupedTry,
+        try_end_block: Option<BlockId>,
+        handler_set: &BTreeSet<BlockId>,
+    ) -> Option<BlockId> {
+        let terminal: BlockId = try_end_block?;
+        if handler_set.contains(&terminal) || self.visited.contains(&terminal) {
+            return None;
+        }
+        let block: &BasicBlock = &self.cfg.blocks[terminal.0 as usize];
+        if block
+            .successors
+            .iter()
+            .any(|e: &Edge| !matches!(e.kind, EdgeKind::Exception))
+        {
+            return None;
+        }
+        let last: &Instruction = self.block_instructions(terminal).last()?;
+        if !matches!(last.opcode, 0xAC..=0xB0) {
+            return None;
+        }
+        let real_preds: Vec<BlockId> = block
+            .predecessors
+            .iter()
+            .copied()
+            .filter(|p: &BlockId| {
+                self.cfg.blocks[p.0 as usize]
+                    .successors
+                    .iter()
+                    .any(|e: &Edge| e.target == terminal && !matches!(e.kind, EdgeKind::Exception))
+            })
+            .collect();
+        let [pred]: [BlockId; 1] = real_preds.as_slice().try_into().ok()?;
+        let falls_through: bool = self.cfg.blocks[pred.0 as usize]
+            .successors
+            .iter()
+            .any(|e: &Edge| e.target == terminal && matches!(e.kind, EdgeKind::Fallthrough));
+        if !falls_through {
+            return None;
+        }
+        let pred_pc: u32 = self.cfg.blocks[pred.0 as usize].start_pc;
+        if pred_pc < group.try_start_pc || pred_pc >= group.try_end_pc {
+            return None;
+        }
+        Some(terminal)
+    }
+
     fn structure_at(&mut self, start: BlockId, stop: Option<BlockId>) -> Region {
         self.work += 1;
         if self.work > MAX_STRUCTURE_WORK {
@@ -1152,20 +1200,39 @@ impl<'a> Structurer<'a> {
                 } else {
                     false
                 };
-                let body_region: Region = self.structure_at(b, try_end_block);
+                let mut body_region: Region = self.structure_at(b, try_end_block);
                 self.suppress_try_at = prev_suppress;
-                let mut handlers_out: Vec<(Option<String>, Region)> = Vec::new();
-                let after_try: Option<BlockId> = if end_is_handler {
+                let mut handlers_out: Vec<(Vec<String>, Region)> = Vec::new();
+                let absorbed_terminal: Option<BlockId> = if finally_handler.is_none() {
+                    self.absorbable_value_return(&try_group, try_end_block, &handler_set)
+                } else {
+                    None
+                };
+                let after_try: Option<BlockId> = if let Some(terminal) = absorbed_terminal {
+                    self.visited.insert(terminal);
+                    body_region = append_region_block(body_region, terminal);
+                    None
+                } else if end_is_handler {
                     handler_continuation(self.cfg, &handler_set)
                 } else {
                     try_end_block
                 };
+                let mut handler_index: BTreeMap<BlockId, usize> = BTreeMap::new();
                 for (catch_type, handler_bid) in catch_handler_ids {
+                    if let Some(&idx) = handler_index.get(&handler_bid) {
+                        if let Some(ty) = catch_type
+                            && !handlers_out[idx].0.contains(&ty)
+                        {
+                            handlers_out[idx].0.push(ty);
+                        }
+                        continue;
+                    }
                     if self.visited.contains(&handler_bid) {
                         continue;
                     }
                     let handler_region: Region = self.structure_at(handler_bid, after_try);
-                    handlers_out.push((catch_type, handler_region));
+                    handler_index.insert(handler_bid, handlers_out.len());
+                    handlers_out.push((catch_type.into_iter().collect(), handler_region));
                 }
                 if pushed_finally {
                     self.active_finally.pop();
@@ -1555,6 +1622,16 @@ const fn aload_slot(ins: &Instruction) -> Option<u16> {
 fn aload_slot_of_prev(block_insns: &[Instruction], target: &Instruction) -> Option<u16> {
     let idx: usize = block_insns.iter().position(|i| i.pc == target.pc)?;
     aload_slot(block_insns.get(idx.checked_sub(1)?)?)
+}
+
+fn append_region_block(region: Region, bid: BlockId) -> Region {
+    match region {
+        Region::Sequence(mut items) => {
+            items.push(Region::Block(bid));
+            Region::Sequence(items)
+        }
+        other => Region::Sequence(vec![other, Region::Block(bid)]),
+    }
 }
 
 fn handler_continuation(cfg: &Cfg, handler_set: &BTreeSet<BlockId>) -> Option<BlockId> {

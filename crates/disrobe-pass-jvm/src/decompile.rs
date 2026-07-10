@@ -1403,6 +1403,8 @@ fn lift_structured(
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
     let bool_array_names: BTreeSet<String> = boolean_array_names(cf, insns, params, param_types);
+    let slot_types: BTreeMap<u16, String> =
+        compute_slot_types(cf, insns, params, param_types, &cfg.exception_regions);
     let mut ctx: RenderCtx<'_> = RenderCtx {
         cf,
         cfg: &cfg,
@@ -1420,19 +1422,17 @@ fn lift_structured(
         reused_exc_slots,
         bool_array_names,
         string_switch_tables,
+        slot_types,
+        foreach_suppress_slots: BTreeSet::new(),
+        foreach_hidden_slots: BTreeSet::new(),
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
     append_unrendered_terminal_tail(&mut ctx, insns, &mut out);
     append_shared_fallthrough_tail(&ctx, insns, &root, &mut out);
-    let decls: String = local_declarations(
-        cf,
-        insns,
-        params,
-        param_types,
-        &cfg.exception_regions,
-        &ctx.pattern_binding_slots,
-    );
+    let mut hidden_slots: BTreeSet<u16> = ctx.pattern_binding_slots.clone();
+    hidden_slots.extend(ctx.foreach_hidden_slots.iter().copied());
+    let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
     Some(MethodBody {
         text: body,
@@ -1669,7 +1669,7 @@ fn region_falls_through(region: &Region, cfg: &Cfg) -> bool {
             region_falls_through(try_body, cfg)
                 || handlers
                     .iter()
-                    .any(|(_, body): &(Option<String>, Region)| region_falls_through(body, cfg))
+                    .any(|(_, body): &(Vec<String>, Region)| region_falls_through(body, cfg))
         }
         Region::TryWithResources { try_body, .. } => region_falls_through(try_body, cfg),
         Region::Synchronized { body, .. } => region_falls_through(body, cfg),
@@ -1973,6 +1973,29 @@ fn local_declarations(
     exception_regions: &[ExceptionRegion],
     pattern_slots: &BTreeSet<u16>,
 ) -> String {
+    let slot_type: BTreeMap<u16, String> =
+        compute_slot_types(cf, insns, params, param_types, exception_regions);
+    render_slot_declarations(&slot_type, pattern_slots)
+}
+
+fn render_slot_declarations(slot_type: &BTreeMap<u16, String>, hidden: &BTreeSet<u16>) -> String {
+    let mut out: String = String::new();
+    for (slot, ty) in slot_type {
+        if hidden.contains(slot) {
+            continue;
+        }
+        let _ = writeln!(out, "        {ty} var{slot};");
+    }
+    out
+}
+
+fn compute_slot_types(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    params: &[(u16, String)],
+    param_types: &BTreeMap<u16, String>,
+    exception_regions: &[ExceptionRegion],
+) -> BTreeMap<u16, String> {
     let param_slots: BTreeSet<u16> = params.iter().map(|(i, _)| *i).collect();
     let reused_exc: BTreeSet<u16> = reused_exception_slots(insns, exception_regions);
     let exc_conflicted: BTreeSet<u16> = exception_value_conflicted_slots(insns, exception_regions);
@@ -2047,10 +2070,7 @@ fn local_declarations(
             .or_insert(resolved);
     }
     for &slot in &reused_exc {
-        if param_slots.contains(&slot)
-            || pattern_slots.contains(&slot)
-            || slot_type.contains_key(&slot)
-        {
+        if param_slots.contains(&slot) || slot_type.contains_key(&slot) {
             continue;
         }
         let resolved: String = inferred
@@ -2059,14 +2079,7 @@ fn local_declarations(
             .unwrap_or_else(|| "Object".to_string());
         slot_type.insert(slot, resolved);
     }
-    let mut out: String = String::new();
-    for (slot, ty) in &slot_type {
-        if pattern_slots.contains(slot) {
-            continue;
-        }
-        let _ = writeln!(out, "        {ty} var{slot};");
-    }
-    out
+    slot_type
 }
 
 fn boolean_array_names(
@@ -2805,6 +2818,9 @@ struct RenderCtx<'a> {
     reused_exc_slots: BTreeSet<u16>,
     bool_array_names: BTreeSet<String>,
     string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable>,
+    slot_types: BTreeMap<u16, String>,
+    foreach_suppress_slots: BTreeSet<u16>,
+    foreach_hidden_slots: BTreeSet<u16>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -2820,8 +2836,18 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
     match region {
         Region::Block(bid) => render_block(ctx, *bid, out, level),
         Region::Sequence(items) => {
-            for r in items {
-                render_region(ctx, r, out, level);
+            let mut i: usize = 0;
+            while i < items.len() {
+                if i + 1 < items.len()
+                    && let Region::Block(pre) = &items[i]
+                    && matches!(&items[i + 1], Region::While { .. })
+                    && try_render_foreach(ctx, *pre, &items[i + 1], out, level)
+                {
+                    i += 2;
+                    continue;
+                }
+                render_region(ctx, &items[i], out, level);
+                i += 1;
             }
         }
         Region::IfThen {
@@ -2926,10 +2952,8 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(ctx, try_body, out, level + 1);
-            for (catch_type, handler_region) in handlers {
-                let ty: String = catch_type
-                    .as_deref()
-                    .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
+            for (catch_types, handler_region) in handlers {
+                let ty: String = descriptor::catch_clause(catch_types);
                 let var: String = format!("ex{}", ctx.catch_var_counter);
                 ctx.catch_var_counter += 1;
                 let _ = writeln!(out, "{pad}}} catch ({ty} {var}) {{");
@@ -2945,10 +2969,8 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
             render_region(ctx, try_body, out, level + 1);
-            for (catch_type, handler_region) in handlers {
-                let ty: String = catch_type
-                    .as_deref()
-                    .map_or_else(|| "Throwable".to_string(), descriptor::binary_to_source);
+            for (catch_types, handler_region) in handlers {
+                let ty: String = descriptor::catch_clause(catch_types);
                 let var: String = format!("ex{}", ctx.catch_var_counter);
                 ctx.catch_var_counter += 1;
                 let _ = writeln!(out, "{pad}}} catch ({ty} {var}) {{");
@@ -3091,6 +3113,296 @@ fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: 
     render_block_seeded(ctx, bid, out, level, Vec::new());
 }
 
+struct ForEachPlan {
+    header: BlockId,
+    elem_ty: String,
+    elem_name: String,
+    iterable: String,
+    slots: BTreeSet<u16>,
+}
+
+fn foreach_suppressed_slot(ins: &Instruction) -> Option<u16> {
+    if let Operands::Iinc { index, .. } = ins.operands {
+        return Some(index);
+    }
+    if matches!(ins.opcode, 0x36..=0x4E) {
+        return local_slot_operand(ins);
+    }
+    None
+}
+
+fn slot_touched(ins: &Instruction) -> Option<u16> {
+    if let Operands::Iinc { index, .. } = ins.operands {
+        return Some(index);
+    }
+    match ins.opcode {
+        0x15..=0x19 | 0x1A..=0x2D | 0x36..=0x4E => local_slot_operand(ins),
+        _ => None,
+    }
+}
+
+fn aload_slot_of(ins: &Instruction) -> Option<u16> {
+    matches!(ins.opcode, 0x19 | 0x2A..=0x2D)
+        .then(|| local_slot_operand(ins))
+        .flatten()
+}
+
+fn iload_slot_of(ins: &Instruction) -> Option<u16> {
+    matches!(ins.opcode, 0x15 | 0x1A..=0x1D)
+        .then(|| local_slot_operand(ins))
+        .flatten()
+}
+
+fn invoke_name_desc(cf: &ClassFile, ins: &Instruction) -> Option<(String, String)> {
+    let index: u16 = match &ins.operands {
+        Operands::ConstPool(i) => *i,
+        Operands::InvokeInterface { index, .. } => *index,
+        _ => return None,
+    };
+    let full: String = bytecode::resolve_ref(cf, index)?;
+    let (owner_name, desc): (&str, &str) = full.rsplit_once(':')?;
+    let (_owner, name): (&str, &str) = owner_name.rsplit_once('.')?;
+    Some((name.to_string(), desc.to_string()))
+}
+
+fn single_normal_successor(block: &BasicBlock) -> Option<BlockId> {
+    let mut normal = block
+        .successors
+        .iter()
+        .filter(|e| !matches!(e.kind, EdgeKind::Exception));
+    let first: BlockId = normal.next()?.target;
+    if normal.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+fn count_slot_touches(ctx: &RenderCtx<'_>, slot: u16) -> usize {
+    ctx.insns
+        .iter()
+        .filter(|ins: &&Instruction| slot_touched(ins) == Some(slot))
+        .count()
+}
+
+fn slot_confined(ctx: &RenderCtx<'_>, slot: u16, loop_blocks: &BTreeSet<BlockId>) -> bool {
+    for block in &ctx.cfg.blocks {
+        if loop_blocks.contains(&block.id) {
+            continue;
+        }
+        let (lo, hi): (usize, usize) = block.insn_range;
+        if ctx.insns[lo..hi]
+            .iter()
+            .any(|ins: &Instruction| slot_touched(ins) == Some(slot))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn value_stored_to_slot(ctx: &RenderCtx<'_>, bid: BlockId, slot: u16) -> Option<Expr> {
+    let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let mut stack: Vec<Expr> = ctx
+        .block_entry_stacks
+        .get(&bid)
+        .cloned()
+        .unwrap_or_default();
+    for ins in &ctx.insns[start..end] {
+        let op: u8 = ins.opcode;
+        if matches!(
+            op,
+            0x99..=0xA6 | 0xC6 | 0xC7 | 0xA7 | 0xC8 | 0xAA | 0xAB | 0xA9
+        ) {
+            continue;
+        }
+        if op == 0xC2 || op == 0xC3 {
+            stack.pop();
+            continue;
+        }
+        if matches!(op, 0x36..=0x4E) && local_slot_operand(ins) == Some(slot) {
+            return stack.last().cloned();
+        }
+        match lift_one(
+            ctx.cf,
+            ins,
+            &mut stack,
+            ctx.params,
+            ctx.bootstraps,
+            ctx.has_this,
+            ctx.bool_return,
+        ) {
+            LiftResult::Pushed | LiftResult::Statement(_) | LiftResult::ControlFlow(_) => {}
+            LiftResult::Unhandled => return None,
+        }
+    }
+    None
+}
+
+fn analyze_foreach(
+    ctx: &RenderCtx<'_>,
+    pre: BlockId,
+    while_region: &Region,
+) -> Option<ForEachPlan> {
+    let Region::While { header, body, .. } = while_region else {
+        return None;
+    };
+    let Region::Block(body_first) = body.as_ref() else {
+        return None;
+    };
+    let header: BlockId = *header;
+    let body_first: BlockId = *body_first;
+    let pre_block: &BasicBlock = &ctx.cfg.blocks[pre.0 as usize];
+    if single_normal_successor(pre_block) != Some(header) {
+        return None;
+    }
+    let mut loop_blocks: BTreeSet<BlockId> = BTreeSet::new();
+    loop_blocks.insert(pre);
+    loop_blocks.insert(header);
+    loop_blocks.insert(body_first);
+    iterator_foreach(ctx, pre, header, body_first, &loop_blocks)
+        .or_else(|| array_foreach(ctx, pre, header, body_first, &loop_blocks))
+}
+
+fn iterator_foreach(
+    ctx: &RenderCtx<'_>,
+    pre: BlockId,
+    header: BlockId,
+    body_first: BlockId,
+    loop_blocks: &BTreeSet<BlockId>,
+) -> Option<ForEachPlan> {
+    let (hlo, hhi): (usize, usize) = block_insn_range(ctx, header);
+    let hins: &[Instruction] = &ctx.insns[hlo..hhi];
+    if hins.len() != 3 || !matches!(hins[2].opcode, 0x99 | 0x9A) {
+        return None;
+    }
+    let it_slot: u16 = aload_slot_of(&hins[0])?;
+    let (name, desc): (String, String) = invoke_name_desc(ctx.cf, &hins[1])?;
+    if name != "hasNext" || desc != "()Z" {
+        return None;
+    }
+    let (blo, bhi): (usize, usize) = block_insn_range(ctx, body_first);
+    let bins: &[Instruction] = &ctx.insns[blo..bhi];
+    if bins.len() < 3 || aload_slot_of(&bins[0]) != Some(it_slot) {
+        return None;
+    }
+    let (next_name, next_desc): (String, String) = invoke_name_desc(ctx.cf, &bins[1])?;
+    if next_name != "next" || next_desc != "()Ljava/lang/Object;" {
+        return None;
+    }
+    let store_idx: usize = if bins[2].opcode == 0xC0 { 3 } else { 2 };
+    let store: &Instruction = bins.get(store_idx)?;
+    if !matches!(store.opcode, 0x3A | 0x4B..=0x4E) {
+        return None;
+    }
+    let elem_slot: u16 = local_slot_operand(store)?;
+    if count_slot_touches(ctx, it_slot) != 3 || !slot_confined(ctx, elem_slot, loop_blocks) {
+        return None;
+    }
+    let stored: Expr = value_stored_to_slot(ctx, pre, it_slot)?;
+    let Expr::Invoke {
+        receiver: Some(receiver),
+        method,
+        ..
+    } = &stored
+    else {
+        return None;
+    };
+    if method != "iterator" {
+        return None;
+    }
+    let elem_ty: String = ctx.slot_types.get(&elem_slot).cloned()?;
+    if elem_ty != "Object" {
+        return None;
+    }
+    let mut slots: BTreeSet<u16> = BTreeSet::new();
+    slots.insert(it_slot);
+    slots.insert(elem_slot);
+    Some(ForEachPlan {
+        header,
+        elem_ty,
+        elem_name: local_name(elem_slot, ctx.params),
+        iterable: receiver.render(),
+        slots,
+    })
+}
+
+fn array_foreach(
+    ctx: &RenderCtx<'_>,
+    pre: BlockId,
+    header: BlockId,
+    body_first: BlockId,
+    loop_blocks: &BTreeSet<BlockId>,
+) -> Option<ForEachPlan> {
+    let (hlo, hhi): (usize, usize) = block_insn_range(ctx, header);
+    let hins: &[Instruction] = &ctx.insns[hlo..hhi];
+    if hins.len() != 3 || hins[2].opcode != 0xA2 {
+        return None;
+    }
+    let idx_slot: u16 = iload_slot_of(&hins[0])?;
+    let len_slot: u16 = iload_slot_of(&hins[1])?;
+    let (blo, bhi): (usize, usize) = block_insn_range(ctx, body_first);
+    let bins: &[Instruction] = &ctx.insns[blo..bhi];
+    if bins.len() < 4
+        || aload_slot_of(&bins[0]).is_none()
+        || iload_slot_of(&bins[1]) != Some(idx_slot)
+        || !matches!(bins[2].opcode, 0x2E..=0x35)
+        || !matches!(bins[3].opcode, 0x36..=0x4E)
+    {
+        return None;
+    }
+    let arr_slot: u16 = aload_slot_of(&bins[0])?;
+    let elem_slot: u16 = local_slot_operand(&bins[3])?;
+    let mut slots: BTreeSet<u16> = BTreeSet::new();
+    slots.extend([arr_slot, len_slot, idx_slot, elem_slot]);
+    if slots.len() != 4
+        || count_slot_touches(ctx, arr_slot) != 3
+        || count_slot_touches(ctx, len_slot) != 2
+        || count_slot_touches(ctx, idx_slot) != 4
+        || !slot_confined(ctx, elem_slot, loop_blocks)
+    {
+        return None;
+    }
+    let stored: Expr = value_stored_to_slot(ctx, pre, arr_slot)?;
+    let elem_ty: String = ctx.slot_types.get(&elem_slot).cloned()?;
+    Some(ForEachPlan {
+        header,
+        elem_ty,
+        elem_name: local_name(elem_slot, ctx.params),
+        iterable: stored.render(),
+        slots,
+    })
+}
+
+fn try_render_foreach(
+    ctx: &mut RenderCtx<'_>,
+    pre: BlockId,
+    while_region: &Region,
+    out: &mut String,
+    level: usize,
+) -> bool {
+    let Some(plan): Option<ForEachPlan> = analyze_foreach(ctx, pre, while_region) else {
+        return false;
+    };
+    let Region::While { body, .. } = while_region else {
+        return false;
+    };
+    let saved: BTreeSet<u16> =
+        std::mem::replace(&mut ctx.foreach_suppress_slots, plan.slots.clone());
+    render_block(ctx, pre, out, level);
+    let pad: String = indent_string(level);
+    let _ = writeln!(
+        out,
+        "{pad}for ({} {} : {}) {{",
+        plan.elem_ty, plan.elem_name, plan.iterable
+    );
+    ctx.rendered_blocks.insert(plan.header);
+    render_region(ctx, body, out, level + 1);
+    let _ = writeln!(out, "{pad}}}");
+    ctx.foreach_suppress_slots = saved;
+    ctx.foreach_hidden_slots.extend(plan.slots);
+    true
+}
+
 fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, level: usize) {
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
     let pad: String = indent_string(level);
@@ -3175,6 +3487,15 @@ fn render_block_seeded(
             && matches!(stack.last(), Some(Expr::Local(_)))
         {
             stack.pop();
+            continue;
+        }
+        if !ctx.foreach_suppress_slots.is_empty()
+            && let Some(slot) = foreach_suppressed_slot(ins)
+            && ctx.foreach_suppress_slots.contains(&slot)
+        {
+            if op != 0x84 {
+                stack.pop();
+            }
             continue;
         }
         if op == 0x54
@@ -3426,6 +3747,9 @@ fn compute_block_entry_stacks(
         reused_exc_slots: BTreeSet::new(),
         bool_array_names: BTreeSet::new(),
         string_switch_tables: BTreeMap::new(),
+        slot_types: BTreeMap::new(),
+        foreach_suppress_slots: BTreeSet::new(),
+        foreach_hidden_slots: BTreeSet::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
@@ -5411,6 +5735,9 @@ const fn pattern_render_ctx<'a>(
         reused_exc_slots: BTreeSet::new(),
         bool_array_names: BTreeSet::new(),
         string_switch_tables: BTreeMap::new(),
+        slot_types: BTreeMap::new(),
+        foreach_suppress_slots: BTreeSet::new(),
+        foreach_hidden_slots: BTreeSet::new(),
     }
 }
 

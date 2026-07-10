@@ -83,7 +83,7 @@ fn count_while(region: &Region, acc: &mut usize) {
     }
 }
 
-fn find_try_handlers(region: &Region) -> Option<Vec<Option<String>>> {
+fn find_try_handlers(region: &Region) -> Option<Vec<Vec<String>>> {
     match region {
         Region::Try { handlers, .. } | Region::TryFinally { handlers, .. } => {
             Some(handlers.iter().map(|(t, _)| t.clone()).collect())
@@ -138,12 +138,12 @@ fn divsafe_contains_try_with_arithmetic_handler() {
         !irreducible,
         "divSafe must structure without irreducible fallback"
     );
-    let handlers: Vec<Option<String>> =
+    let handlers: Vec<Vec<String>> =
         find_try_handlers(&region).expect("divSafe must produce a Try region");
     assert!(
         handlers
             .iter()
-            .any(|t| t.as_deref() == Some("Ljava/lang/ArithmeticException;")),
+            .any(|types| types.iter().any(|t| t == "Ljava/lang/ArithmeticException;")),
         "divSafe try must carry an ArithmeticException handler, got {handlers:?}"
     );
 }
