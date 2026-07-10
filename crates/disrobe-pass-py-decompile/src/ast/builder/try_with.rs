@@ -935,7 +935,7 @@ fn with_setup_start(stream: &DecodedStream, try_start: usize, lo: usize) -> usiz
     }
     if i > lo && matches!(stream.ops.get(i - 1), Some(CanonicalOp::BeforeWith)) {
         let mut j: usize = i - 1;
-        while j > lo && !is_value_boundary_at(stream, j - 1) {
+        while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
             j -= 1;
         }
         return j;
@@ -962,7 +962,7 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
     match stream.ops.get(before) {
         Some(CanonicalOp::BeforeAsyncWith) => {
             let mut j: usize = before;
-            while j > lo && !is_value_boundary_at(stream, j - 1) {
+            while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
                 j -= 1;
             }
             Some(j)
@@ -972,7 +972,7 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
                 .is_some_and(|s: usize| matches!(stream.ops[s], CanonicalOp::LoadSpecial(_))) =>
         {
             let mut j: usize = before;
-            while j > lo && !is_value_boundary_at(stream, j - 1) {
+            while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
                 j -= 1;
             }
             Some(j)
@@ -998,7 +998,7 @@ fn modern_with_prologue_start(stream: &DecodedStream, store_at: usize, lo: usize
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Copy(1)))?;
     let mut j: usize = copy;
-    while j > lo && !is_value_boundary_at(stream, j - 1) {
+    while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
         j -= 1;
     }
     Some(j)
@@ -1040,6 +1040,18 @@ fn is_value_boundary_at(stream: &DecodedStream, idx: usize) -> bool {
         CanonicalOp::Raise(_) | CanonicalOp::Reraise(_) => true,
         _ => is_value_boundary(&stream.ops[idx]),
     }
+}
+
+fn is_with_ctx_boundary_at(stream: &DecodedStream, idx: usize) -> bool {
+    is_value_boundary_at(stream, idx)
+        || matches!(
+            stream.ops[idx],
+            CanonicalOp::StoreFastStoreFast(_, _)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::DeleteFast(_)
+                | CanonicalOp::DeleteName(_)
+        )
 }
 
 pub(super) fn is_shortcircuit_cleanup_pop(stream: &DecodedStream, idx: usize) -> bool {
