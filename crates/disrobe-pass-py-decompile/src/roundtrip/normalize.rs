@@ -333,7 +333,7 @@ fn lower_raw_op(
         out.push(op);
         return;
     }
-    if let Some(op) = lower_name_family(name, arg_value, code) {
+    if let Some(op) = lower_name_family(name, arg_value, code, version) {
         out.push(op);
         return;
     }
@@ -475,11 +475,29 @@ fn lower_function_family(name: &str, arg: Option<u32>) -> Option<NormalizedOp> {
 }
 
 #[must_use]
-fn lower_name_family(name: &str, arg_value: u32, code: &CodeObject) -> Option<NormalizedOp> {
+fn resolved_name_index(name: &str, arg_value: u32, version: PyVersion) -> u32 {
+    let (major, minor): (u8, u8) = (version.major, version.minor);
+    let is_311_plus: bool = major > 3 || (major == 3 && minor >= 11);
+    let is_312_plus: bool = major > 3 || (major == 3 && minor >= 12);
+    match name {
+        "LOAD_GLOBAL" if is_311_plus => arg_value >> 1,
+        "LOAD_ATTR" if is_312_plus => arg_value >> 1,
+        _ => arg_value,
+    }
+}
+
+#[must_use]
+fn lower_name_family(
+    name: &str,
+    arg_value: u32,
+    code: &CodeObject,
+    version: PyVersion,
+) -> Option<NormalizedOp> {
     if let Some(canon) = classify_load_name(name) {
+        let name_index: u32 = resolved_name_index(name, arg_value, version);
         let value: Option<NameValue> = code
             .names
-            .get(arg_value as usize)
+            .get(name_index as usize)
             .and_then(object_to_name_value);
         return Some(NormalizedOp {
             token: NormToken::Op(canon.into()),
