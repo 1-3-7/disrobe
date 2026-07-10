@@ -1600,26 +1600,7 @@ fn rc4_transform(key: &[u8], data: &[u8]) -> Vec<u8> {
     if key.is_empty() {
         return data.to_vec();
     }
-    let mut state: [u8; 256] = [0u8; 256];
-    for (i, slot) in state.iter_mut().enumerate() {
-        *slot = i as u8;
-    }
-    let mut j: usize = 0;
-    for i in 0..256usize {
-        j = (j + state[i] as usize + key[i % key.len()] as usize) % 256;
-        state.swap(i, j);
-    }
-    let mut a: usize = 0;
-    let mut b: usize = 0;
-    let mut out: Vec<u8> = Vec::with_capacity(data.len());
-    for &c in data {
-        a = (a + 1) % 256;
-        b = (b + state[a] as usize) % 256;
-        state.swap(a, b);
-        let stream: u8 = state[(state[a] as usize + state[b] as usize) % 256];
-        out.push(c ^ stream);
-    }
-    out
+    disrobe_core::codec::cipher::rc4_apply(key, data)
 }
 
 fn strip_dollar(name: &[u8]) -> Option<Vec<u8>> {
