@@ -1164,6 +1164,46 @@ fn find_aggregate<'a>(aggs: &'a [DwarfAggregate], name: &str) -> Option<&'a Dwar
     aggs.iter().find(|a: &&DwarfAggregate| a.name == name)
 }
 
+fn assert_member_type(analysis: &NativeLangAnalysis, agg: &str, member: &str, expected: &str) {
+    let aggregate: &DwarfAggregate = find_aggregate(&analysis.dwarf.aggregates, agg)
+        .unwrap_or_else(|| panic!("aggregate {agg} must be recovered"));
+    let field: &DwarfMember = aggregate
+        .members
+        .iter()
+        .find(|m: &&DwarfMember| m.name == member)
+        .unwrap_or_else(|| panic!("member {agg}.{member} must be recovered"));
+    assert_eq!(
+        field.type_name.as_deref(),
+        Some(expected),
+        "member {agg}.{member} must recover its full array/qualifier type, not the collapsed element"
+    );
+}
+
+#[test]
+fn array_typed_members_recover_dimensions_across_languages() {
+    let Some(d_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
+        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
+    };
+    let d: NativeLangAnalysis = analyze(&d_bytes).expect("analyze d object");
+    assert_member_type(&d, "_IO_FILE", "_unused2", "char[20]");
+    assert_member_type(&d, "_IO_FILE", "_shortbuf", "char[1]");
+    assert_member_type(&d, "UTFException", "sequence", "uint[4]");
+    assert_member_type(&d, "LockingTextWriter", "rbuf8", "char[4]");
+
+    let Some(nim_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
+        panic!("missing committed fixture corpus/native/nim/hello.nim.elf");
+    };
+    let nim: NativeLangAnalysis = analyze(&nim_bytes).expect("analyze nim elf");
+    assert_member_type(&nim, "NimStrPayload", "data", "NIM_CHAR[]");
+
+    let Some(zig_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
+        panic!("missing committed fixture corpus/native/zig/hello.zig.elf");
+    };
+    let zig: NativeLangAnalysis = analyze(&zig_bytes).expect("analyze zig elf");
+    assert_member_type(&zig, "elf.Elf64_Ehdr", "e_ident", "u8[16]");
+    assert_member_type(&zig, "dwarf.FileEntry", "md5", "u8[16]");
+}
+
 #[test]
 fn d_object_recovers_class_type_with_field_and_base_from_dwarf() {
     let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {

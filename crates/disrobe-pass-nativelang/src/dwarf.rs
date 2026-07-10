@@ -83,6 +83,8 @@ const MAX_DWARF_STRING_LEN: usize = 1 << 14;
 const MAX_DWARF_STRING_BYTES: usize = 1 << 26;
 const MAX_DWARF_REFERENCE_DEPTH: usize = 8;
 const MAX_DWARF_REFERENCE_VISITS: usize = 16;
+const MAX_DWARF_TYPE_DEPTH: u8 = 8;
+const MAX_ARRAY_DIMENSIONS: usize = 1 << 8;
 const MAX_LINE_ROWS: u64 = 1 << 24;
 const MAX_UNCOMPRESSED: usize = 1 << 30;
 const MAX_INFLATE_READ: u64 = MAX_UNCOMPRESSED as u64 + 1;
@@ -474,18 +476,22 @@ const fn aggregate_kind(tag: gimli::DwTag) -> Option<AggregateKind> {
     }
 }
 
+fn die_type_offset(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+) -> Option<gimli::UnitOffset> {
+    match entry.attr_value(gimli::DW_AT_type).ok()?? {
+        gimli::AttributeValue::UnitRef(offset) => Some(offset),
+        _ => None,
+    }
+}
+
 fn type_ref_name(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
     budget: &mut DwarfBudget,
 ) -> Option<String> {
-    let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
-        entry.attr_value(gimli::DW_AT_type).ok()??;
-    let offset: gimli::UnitOffset = match value {
-        gimli::AttributeValue::UnitRef(o) => o,
-        _ => return None,
-    };
+    let offset: gimli::UnitOffset = die_type_offset(entry)?;
     resolve_type_name(dwarf, unit, offset, 0, budget)
 }
 
@@ -496,7 +502,7 @@ fn resolve_type_name(
     depth: u8,
     budget: &mut DwarfBudget,
 ) -> Option<String> {
-    if depth > 8 {
+    if depth > MAX_DWARF_TYPE_DEPTH {
         return None;
     }
     if !budget.visit_die() {
@@ -507,14 +513,17 @@ fn resolve_type_name(
     if let Some(name) = attr_string(dwarf, unit, &target, gimli::DW_AT_name, budget) {
         return Some(name);
     }
-    let inner: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
-        target.attr_value(gimli::DW_AT_type).ok()??;
-    let inner_offset: gimli::UnitOffset = match inner {
-        gimli::AttributeValue::UnitRef(o) => o,
-        _ => return None,
-    };
-    let prefix: &str = match target.tag() {
+    let tag: gimli::DwTag = target.tag();
+    let inner_offset: gimli::UnitOffset = die_type_offset(&target)?;
+    if tag == gimli::DW_TAG_array_type {
+        let element: String = resolve_type_name(dwarf, unit, inner_offset, depth + 1, budget)?;
+        return compose_array_type(unit, offset, element, budget);
+    }
+    let prefix: &str = match tag {
         gimli::DW_TAG_pointer_type => "ptr ",
+        gimli::DW_TAG_reference_type | gimli::DW_TAG_rvalue_reference_type => "ref ",
+        gimli::DW_TAG_const_type => "const ",
+        gimli::DW_TAG_volatile_type => "volatile ",
         _ => "",
     };
     let name: String = resolve_type_name(dwarf, unit, inner_offset, depth + 1, budget)?;
@@ -530,6 +539,80 @@ fn resolve_type_name(
         return None;
     }
     Some(format!("{prefix}{name}"))
+}
+
+fn compose_array_type(
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    array_offset: gimli::UnitOffset,
+    element: String,
+    budget: &mut DwarfBudget,
+) -> Option<String> {
+    let dims: Vec<Option<u64>> = array_dimensions(unit, array_offset, budget);
+    let mut out: String = element;
+    let mut wrote: bool = false;
+    for dim in dims {
+        let piece: String = dim.map_or_else(|| "[]".to_owned(), |count: u64| format!("[{count}]"));
+        let rendered_len: usize = out.len().checked_add(piece.len())?;
+        if rendered_len > MAX_DWARF_STRING_LEN {
+            budget.string_limit_hit = true;
+            return None;
+        }
+        if !budget.reserve_string_bytes(piece.len()) {
+            return None;
+        }
+        out.push_str(&piece);
+        wrote = true;
+    }
+    if !wrote {
+        if !budget.reserve_string_bytes(2) {
+            return None;
+        }
+        out.push_str("[]");
+    }
+    Some(out)
+}
+
+fn array_dimensions(
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    array_offset: gimli::UnitOffset,
+    budget: &mut DwarfBudget,
+) -> Vec<Option<u64>> {
+    let mut dims: Vec<Option<u64>> = Vec::new();
+    let Ok(mut tree): Result<gimli::EntriesTree<'_, '_, EndianSlice<'_, RunTimeEndian>>, _> =
+        unit.entries_tree(Some(array_offset))
+    else {
+        return dims;
+    };
+    let Ok(root): Result<gimli::EntriesTreeNode<'_, '_, '_, EndianSlice<'_, RunTimeEndian>>, _> =
+        tree.root()
+    else {
+        return dims;
+    };
+    let mut children: gimli::EntriesTreeIter<'_, '_, '_, EndianSlice<'_, RunTimeEndian>> =
+        root.children();
+    while dims.len() < MAX_ARRAY_DIMENSIONS {
+        if !budget.visit_die() {
+            break;
+        }
+        let child: gimli::EntriesTreeNode<'_, '_, '_, EndianSlice<'_, RunTimeEndian>> =
+            match children.next() {
+                Ok(Some(node)) => node,
+                _ => break,
+            };
+        if child.entry().tag() == gimli::DW_TAG_subrange_type {
+            dims.push(subrange_count(child.entry()));
+        }
+    }
+    dims
+}
+
+fn subrange_count(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+) -> Option<u64> {
+    if let Some(count) = attr_udata(entry, gimli::DW_AT_count) {
+        return Some(count);
+    }
+    attr_udata(entry, gimli::DW_AT_upper_bound).and_then(|upper: u64| upper.checked_add(1))
 }
 
 fn collect_unit(
@@ -1501,6 +1584,101 @@ mod tests {
                 .iter()
                 .all(|aggregate: &DwarfAggregate| aggregate.name != "Outer")
         );
+    }
+
+    #[test]
+    fn member_type_names_render_arrays_and_qualifiers() {
+        let mut dwarf: DwarfUnit = dwarf_unit();
+        let root: UnitEntryId = dwarf.unit.root();
+        let u8ty: UnitEntryId = add_named_die(&mut dwarf, root, gimli::DW_TAG_base_type, "u8");
+
+        let const_u8: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_const_type);
+        dwarf
+            .unit
+            .get_mut(const_u8)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(u8ty));
+
+        let fixed: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_array_type);
+        dwarf
+            .unit
+            .get_mut(fixed)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(const_u8));
+        let fixed_sub: UnitEntryId = dwarf.unit.add(fixed, gimli::DW_TAG_subrange_type);
+        dwarf
+            .unit
+            .get_mut(fixed_sub)
+            .set(gimli::DW_AT_count, WriteAttributeValue::Udata(4));
+
+        let grid: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_array_type);
+        dwarf
+            .unit
+            .get_mut(grid)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(u8ty));
+        let grid_rows: UnitEntryId = dwarf.unit.add(grid, gimli::DW_TAG_subrange_type);
+        dwarf
+            .unit
+            .get_mut(grid_rows)
+            .set(gimli::DW_AT_upper_bound, WriteAttributeValue::Udata(1));
+        let grid_cols: UnitEntryId = dwarf.unit.add(grid, gimli::DW_TAG_subrange_type);
+        dwarf
+            .unit
+            .get_mut(grid_cols)
+            .set(gimli::DW_AT_count, WriteAttributeValue::Udata(3));
+
+        let flex: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_array_type);
+        dwarf
+            .unit
+            .get_mut(flex)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(u8ty));
+        let _: UnitEntryId = dwarf.unit.add(flex, gimli::DW_TAG_subrange_type);
+
+        let reference: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_reference_type);
+        dwarf
+            .unit
+            .get_mut(reference)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(u8ty));
+
+        let volatile: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_volatile_type);
+        dwarf
+            .unit
+            .get_mut(volatile)
+            .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(u8ty));
+
+        let shape: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_structure_type, "Shape");
+        for (name, ty) in [
+            ("fixed", fixed),
+            ("grid", grid),
+            ("flex", flex),
+            ("byref", reference),
+            ("vol", volatile),
+        ] {
+            let member: UnitEntryId = add_named_die(&mut dwarf, shape, gimli::DW_TAG_member, name);
+            dwarf
+                .unit
+                .get_mut(member)
+                .set(gimli::DW_AT_type, WriteAttributeValue::UnitRef(ty));
+        }
+
+        let sections: BTreeMap<SectionId, Vec<u8>> = serialize_dwarf(&mut dwarf);
+        let report: DwarfReport = report_from_sections(&sections);
+        let shape: &DwarfAggregate = report
+            .aggregates
+            .iter()
+            .find(|aggregate: &&DwarfAggregate| aggregate.name == "Shape")
+            .expect("Shape aggregate recovered");
+        let type_of = |name: &str| -> Option<String> {
+            shape
+                .members
+                .iter()
+                .find(|member: &&DwarfMember| member.name == name)
+                .and_then(|member: &DwarfMember| member.type_name.clone())
+        };
+        assert_eq!(type_of("fixed").as_deref(), Some("const u8[4]"));
+        assert_eq!(type_of("grid").as_deref(), Some("u8[2][3]"));
+        assert_eq!(type_of("flex").as_deref(), Some("u8[]"));
+        assert_eq!(type_of("byref").as_deref(), Some("ref u8"));
+        assert_eq!(type_of("vol").as_deref(), Some("volatile u8"));
     }
 
     #[test]
