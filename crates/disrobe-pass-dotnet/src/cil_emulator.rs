@@ -304,13 +304,9 @@ impl<'a> Vm<'a> {
                     let v: i64 = self.pop()?.as_i64()?;
                     self.stack.push(Value::I32(!(v as i32)));
                 }
-                n if n.starts_with("conv.i8") || n.starts_with("conv.u8") => {
-                    let v: i64 = self.pop()?.as_i64()?;
-                    self.stack.push(Value::I64(v));
-                }
                 n if n.starts_with("conv.") => {
-                    let v: i64 = self.pop()?.as_i64()?;
-                    self.stack.push(Value::I32(v as i32));
+                    let v: Value = self.pop()?;
+                    self.stack.push(convert_numeric(n, v)?);
                 }
                 "ldlen" => {
                     let r: usize = self.pop()?.as_array()?;
@@ -492,6 +488,34 @@ const fn truthy(v: Value) -> bool {
         Value::I32(i) => i != 0,
         Value::I64(i) => i != 0,
         Value::Array(opt) => opt.is_some(),
+    }
+}
+
+fn convert_numeric(name: &str, v: Value) -> Result<Value, EmulationError> {
+    let target: &str = name
+        .strip_prefix("conv.")
+        .unwrap_or(name)
+        .trim_start_matches("ovf.")
+        .trim_end_matches(".un");
+    let src: i64 = v.as_i64()?;
+    let out: Value = match target {
+        "i1" => Value::I32(i32::from(src as i8)),
+        "u1" => Value::I32(i32::from(src as u8)),
+        "i2" => Value::I32(i32::from(src as i16)),
+        "u2" => Value::I32(i32::from(src as u16)),
+        "i4" | "u4" => Value::I32(src as i32),
+        "i8" | "i" => Value::I64(src),
+        "u8" | "u" => Value::I64(zero_extend_word(v)),
+        _ => return Err(EmulationError::UnsupportedOpcode(name.to_owned())),
+    };
+    Ok(out)
+}
+
+fn zero_extend_word(v: Value) -> i64 {
+    match v {
+        Value::I32(x) => i64::from(x.cast_unsigned()),
+        Value::I64(x) => x,
+        Value::Array(_) => 0,
     }
 }
 
@@ -680,5 +704,84 @@ mod tests {
         };
         let out: StubOutput = emulate_stub(&body, &input).expect("decrypt");
         assert_eq!(out, StubOutput::Bytes(plain.to_vec()));
+    }
+
+    fn eval_conv(opcode: u8, value: i32) -> StubOutput {
+        let mut code: Vec<u8> = vec![0x20];
+        code.extend_from_slice(&value.to_le_bytes());
+        code.push(opcode);
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        emulate_stub(&body, &StubInput::default()).expect("conv")
+    }
+
+    #[test]
+    fn conv_u1_zero_extends_low_byte() {
+        assert_eq!(eval_conv(0xD2, 0x1234), StubOutput::Int(0x34));
+    }
+
+    #[test]
+    fn conv_i1_sign_extends_low_byte() {
+        assert_eq!(eval_conv(0x67, 0xFF), StubOutput::Int(-1));
+    }
+
+    #[test]
+    fn conv_u2_zero_extends_low_word() {
+        assert_eq!(eval_conv(0xD1, 0x0001_0041), StubOutput::Int(0x41));
+    }
+
+    #[test]
+    fn conv_i2_sign_extends_low_word() {
+        assert_eq!(eval_conv(0x68, 0xFFFF), StubOutput::Int(-1));
+    }
+
+    #[test]
+    fn conv_u8_zero_extends_negative_int32() {
+        let body: MethodBody = body_from(&[0x15, 0x6E, 0x2A]);
+        let out: StubOutput = emulate_stub(&body, &StubInput::default()).expect("conv.u8");
+        assert_eq!(out, StubOutput::Int(0xFFFF_FFFF));
+    }
+
+    #[test]
+    fn conv_float_is_rejected_not_silently_wrong() {
+        let body: MethodBody = body_from(&[0x16, 0x6B, 0x2A]);
+        let err: EmulationError =
+            emulate_stub(&body, &StubInput::default()).expect_err("float conv");
+        assert_eq!(err, EmulationError::UnsupportedOpcode("conv.r4".to_owned()));
+    }
+
+    #[test]
+    fn rolling_byte_key_shift_decoder_matches_wrapping_reference() {
+        let mut code: Vec<u8> = vec![0x16, 0x0A, 0x16, 0x0B];
+        let loop_start: i32 = code.len() as i32;
+        code.extend_from_slice(&[0x07, 0x02, 0x06, 0x91, 0x58, 0xD2, 0x0B]);
+        code.extend_from_slice(&[0x02, 0x06, 0x02, 0x06, 0x91, 0x07, 0x19, 0x63, 0x61, 0x9C]);
+        code.extend_from_slice(&[0x06, 0x17, 0x58, 0x0A]);
+        code.extend_from_slice(&[0x06, 0x02, 0x8E]);
+        let blt_op_pos: i32 = code.len() as i32 + 1;
+        let rel: i32 = loop_start - (blt_op_pos + 1);
+        code.push(0x32);
+        code.push(rel as u8);
+        code.push(0x02);
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+
+        let cipher: Vec<u8> = (0u8..48)
+            .map(|n: u8| n.wrapping_mul(7).wrapping_add(20))
+            .collect();
+        let mut key: u8 = 0;
+        let mut expected: Vec<u8> = Vec::with_capacity(cipher.len());
+        for &b in &cipher {
+            key = key.wrapping_add(b);
+            expected.push(b ^ (key >> 3));
+        }
+
+        let input: StubInput = StubInput {
+            int_args: vec![],
+            byte_array_args: vec![cipher],
+            char_array_args: vec![],
+        };
+        let out: StubOutput = emulate_stub(&body, &input).expect("rolling decode");
+        assert_eq!(out, StubOutput::Bytes(expected));
     }
 }

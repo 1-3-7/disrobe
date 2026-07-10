@@ -20,26 +20,7 @@ pub fn rc4_apply(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     if key.is_empty() || key.len() > 256 {
         return None;
     }
-    let mut s: [u8; 256] = [0u8; 256];
-    for (i, slot) in s.iter_mut().enumerate() {
-        *slot = i as u8;
-    }
-    let mut j: usize = 0;
-    for i in 0..256 {
-        j = (j + usize::from(s[i]) + usize::from(key[i % key.len()])) & 0xFF;
-        s.swap(i, j);
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(data.len());
-    let mut a: usize = 0;
-    let mut b: usize = 0;
-    for &byte in data {
-        a = (a + 1) & 0xFF;
-        b = (b + usize::from(s[a])) & 0xFF;
-        s.swap(a, b);
-        let k: u8 = s[(usize::from(s[a]) + usize::from(s[b])) & 0xFF];
-        out.push(byte ^ k);
-    }
-    Some(out)
+    Some(disrobe_core::codec::cipher::rc4_apply(key, data))
 }
 
 #[must_use]
