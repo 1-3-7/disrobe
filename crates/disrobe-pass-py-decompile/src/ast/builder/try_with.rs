@@ -3439,51 +3439,75 @@ fn structure_try_except_family(
     let body_had_comp: bool = protected_end > region.protected_end;
     let (orelse, construct_tail): (Vec<Stmt>, Vec<Stmt>) = match normal_region {
         Some((s, e)) => {
-            let mut raw: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
-            if let Some((_, cont_start, cont_end)) = handler_cont_split {
-                let mut tail: Vec<Stmt> = structure_stmts(code, stream, cont_start, cont_end)?;
-                while tail.last().is_some_and(is_implicit_none_return) {
-                    tail.pop();
-                }
-                (raw, tail)
-            } else if has_combo {
-                let before_len: usize = raw.len();
-                strip_leading_stmts(&mut raw, &finalbody);
-                let recovered_continuation: bool = raw.len() < before_len
-                    && !matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }));
-                if recovered_continuation {
-                    while raw.last().is_some_and(is_implicit_none_return) {
-                        raw.pop();
-                    }
-                    (Vec::new(), raw)
-                } else {
-                    let tail: Vec<Stmt> = split_construct_tail_after_finally(&mut raw, &finalbody);
-                    while matches!(raw.last(), Some(Stmt::Return(_))) {
-                        raw.pop();
+            let continuation: Option<(usize, usize)> = handler_cont_split
+                .map(|(_, cont_start, cont_end): (usize, usize, usize)| (cont_start, cont_end))
+                .or_else(|| {
+                    else_fallthrough_tail.map(|(_, tail_start, tail_end): (usize, usize, usize)| {
+                        (tail_start, tail_end)
+                    })
+                });
+            if !has_combo
+                && !body_had_comp
+                && let Some((split_orelse, split_tail)) =
+                    split_else_tail_at_terminating_nop(code, stream, s, e, continuation)?
+            {
+                (split_orelse, split_tail)
+            } else {
+                let mut raw: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
+                if let Some((_, cont_start, cont_end)) = handler_cont_split {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, cont_start, cont_end)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
                     }
                     (raw, tail)
+                } else if has_combo {
+                    let before_len: usize = raw.len();
+                    strip_leading_stmts(&mut raw, &finalbody);
+                    let recovered_continuation: bool = raw.len() < before_len
+                        && !matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }));
+                    if recovered_continuation {
+                        while raw.last().is_some_and(is_implicit_none_return) {
+                            raw.pop();
+                        }
+                        (Vec::new(), raw)
+                    } else {
+                        let tail: Vec<Stmt> =
+                            split_construct_tail_after_finally(&mut raw, &finalbody);
+                        while matches!(raw.last(), Some(Stmt::Return(_))) {
+                            raw.pop();
+                        }
+                        (raw, tail)
+                    }
+                } else if let Some((_, tail_start, tail_end)) = else_fallthrough_tail {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, tail_end)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
+                    }
+                    (raw, tail)
+                } else if body_had_comp {
+                    (Vec::new(), raw)
+                } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
+                    (Vec::new(), shared)
+                } else {
+                    (raw, Vec::new())
                 }
-            } else if let Some((_, tail_start, tail_end)) = else_fallthrough_tail {
-                let mut tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, tail_end)?;
-                while tail.last().is_some_and(is_implicit_none_return) {
-                    tail.pop();
-                }
-                (raw, tail)
-            } else if body_had_comp {
-                (Vec::new(), raw)
-            } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
-                (Vec::new(), shared)
-            } else {
-                (raw, Vec::new())
             }
         }
         None => match continuation_region {
             Some((s, e)) => {
-                let mut tail: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
-                while tail.last().is_some_and(is_implicit_none_return) {
-                    tail.pop();
+                if !has_combo
+                    && !body_had_comp
+                    && let Some((split_orelse, split_tail)) =
+                        split_else_tail_at_terminating_nop(code, stream, s, e, None)?
+                {
+                    (split_orelse, split_tail)
+                } else {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
+                    }
+                    (Vec::new(), tail)
                 }
-                (Vec::new(), tail)
             }
             None => (Vec::new(), lifted_tail),
         },
@@ -3508,6 +3532,103 @@ fn structure_try_except_family(
         consumed,
         construct_tail,
     ))
+}
+
+fn find_construct_terminating_nop(
+    stream: &DecodedStream,
+    else_start: usize,
+    handler_start: usize,
+) -> Option<usize> {
+    let hi: usize = handler_start.min(stream.ops.len());
+    let mut k: usize = else_start;
+    while k < hi {
+        if matches!(stream.ops[k], CanonicalOp::Nop) {
+            let prev_terminates: bool =
+                last_significant_back(stream, else_start, k).is_some_and(|p: usize| {
+                    matches!(
+                        stream.ops[p],
+                        CanonicalOp::Return
+                            | CanonicalOp::ReturnConst(_)
+                            | CanonicalOp::Raise(_)
+                            | CanonicalOp::Reraise(_)
+                    )
+                });
+            let jumped_to: bool = (else_start..k).any(|j: usize| {
+                matches!(
+                    stream.ops[j],
+                    CanonicalOp::PopJumpIfFalse(_)
+                        | CanonicalOp::PopJumpIfTrue(_)
+                        | CanonicalOp::PopJumpIfFalseRel(_)
+                        | CanonicalOp::PopJumpIfTrueRel(_)
+                        | CanonicalOp::JumpForward(_)
+                ) && resolve_jump_target(stream, j, &stream.ops[j]).is_some_and(|t: usize| t == k)
+            });
+            if prev_terminates
+                && jumped_to
+                && first_significant(stream, k + 1, hi).is_some()
+                && slice_has_real_stmt(stream, k + 1, hi)
+            {
+                return Some(k);
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
+fn split_else_tail_at_terminating_nop(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    else_start: usize,
+    else_end: usize,
+    continuation: Option<(usize, usize)>,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    if stream.is_pre_311() {
+        return Ok(None);
+    }
+    let Some(nop): Option<usize> = find_construct_terminating_nop(stream, else_start, else_end)
+    else {
+        return Ok(None);
+    };
+    let Some(else_first): Option<usize> = first_significant(stream, else_start, nop) else {
+        return Ok(None);
+    };
+    if !else_entry_is_fallthrough(&stream.ops[else_first])
+        || !slice_has_real_stmt(stream, else_start, nop)
+        || !slice_has_real_stmt(stream, nop, else_end)
+    {
+        return Ok(None);
+    }
+    if stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            stream
+                .index_for_offset(e.start)
+                .is_some_and(|si: usize| (else_start..nop).contains(&si))
+        })
+    {
+        return Ok(None);
+    }
+    let orelse: Vec<Stmt> = structure_stmts(code, stream, else_start, nop)?;
+    if orelse.is_empty() {
+        return Ok(None);
+    }
+    let mut tail: Vec<Stmt> = structure_stmts(code, stream, nop, else_end)?;
+    if let Some((cont_start, cont_end)) = continuation {
+        let mut cont: Vec<Stmt> = structure_stmts(code, stream, cont_start, cont_end)?;
+        while cont.last().is_some_and(is_implicit_none_return) {
+            cont.pop();
+        }
+        tail.extend(cont);
+    }
+    while tail.last().is_some_and(is_implicit_none_return) {
+        tail.pop();
+    }
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((orelse, tail)))
 }
 
 fn is_bare_handler_scaffolding(op: &CanonicalOp) -> bool {
@@ -3627,6 +3748,9 @@ fn structure_modern_try_with_continuation(
     if cont_start >= region.handler_start {
         return Ok(None);
     }
+    if region_holds_cold_sibling_try(stream, protected_end, cont_start, region.handler_start) {
+        return Ok(None);
+    }
 
     let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, protected_end)?;
 
@@ -3660,6 +3784,31 @@ fn structure_modern_try_with_continuation(
         except_region_end,
         continuation,
     )))
+}
+
+fn region_holds_cold_sibling_try(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    handler_start: usize,
+) -> bool {
+    if lo >= hi {
+        return false;
+    }
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let Some(start): Option<usize> = stream.index_for_offset(e.start) else {
+                return false;
+            };
+            let Some(target): Option<usize> = stream.index_for_offset(e.target) else {
+                return false;
+            };
+            (lo..hi).contains(&start)
+                && target >= handler_start
+                && matches!(stream.ops.get(target), Some(CanonicalOp::PushExcInfo))
+        })
 }
 
 fn has_back_edge_into(stream: &DecodedStream, lo: usize, hi: usize, target_floor: usize) -> bool {
