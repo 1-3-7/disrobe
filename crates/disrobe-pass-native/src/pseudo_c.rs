@@ -17,6 +17,8 @@ use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
 use crate::structuring;
 
+mod aarch64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
     Rax,
@@ -35,6 +37,54 @@ pub enum Reg {
     R13,
     R14,
     R15,
+    A64X1,
+    A64X2,
+    A64X3,
+    A64X4,
+    A64X5,
+    A64X6,
+    A64X7,
+    A64X8,
+    A64X9,
+    A64X10,
+    A64X11,
+    A64X12,
+    A64X13,
+    A64X14,
+    A64X15,
+    A64X16,
+    A64X17,
+    A64X18,
+    A64X19,
+    A64X20,
+    A64X21,
+    A64X22,
+    A64X23,
+    A64X24,
+    A64X25,
+    A64X26,
+    A64X27,
+    A64X28,
+    A64Stack0,
+    A64Stack1,
+    A64Stack2,
+    A64Stack3,
+    A64Stack4,
+    A64Stack5,
+    A64Stack6,
+    A64Stack7,
+    A64Outgoing0,
+    A64Outgoing1,
+    A64Outgoing2,
+    A64Outgoing3,
+    A64Outgoing4,
+    A64Outgoing5,
+    A64Outgoing6,
+    A64Outgoing7,
+    A64Tmp,
+    A64Tmp2,
+    A64FlagLhs,
+    A64FlagRhs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -263,6 +313,7 @@ fn parse_reg(token: &str) -> Option<RegRef> {
 pub enum Abi {
     MsX64,
     SysV,
+    Aapcs64,
 }
 
 impl Abi {
@@ -270,6 +321,24 @@ impl Abi {
         match self {
             Self::MsX64 => &[Reg::Rcx, Reg::Rdx, Reg::R8, Reg::R9],
             Self::SysV => &[Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9],
+            Self::Aapcs64 => &[
+                Reg::Rax,
+                Reg::A64X1,
+                Reg::A64X2,
+                Reg::A64X3,
+                Reg::A64X4,
+                Reg::A64X5,
+                Reg::A64X6,
+                Reg::A64X7,
+                Reg::A64Stack0,
+                Reg::A64Stack1,
+                Reg::A64Stack2,
+                Reg::A64Stack3,
+                Reg::A64Stack4,
+                Reg::A64Stack5,
+                Reg::A64Stack6,
+                Reg::A64Stack7,
+            ],
         }
     }
 }
@@ -695,6 +764,18 @@ pub fn recover_leaf_function(machine_code: &[u8], base: u64) -> Result<LeafRecov
     recover_leaf_function_abi(machine_code, base, Abi::MsX64)
 }
 
+pub fn recover_aarch64_function(machine_code: &[u8], base: u64) -> Result<LeafRecovery> {
+    aarch64::recover(machine_code, base)
+}
+
+pub fn recover_aarch64_function_with_calls(
+    machine_code: &[u8],
+    base: u64,
+    calls: &[ResolvedCall],
+) -> Result<LeafRecovery> {
+    aarch64::recover_with_calls(machine_code, base, calls)
+}
+
 pub fn recover_leaf_function_abi(machine_code: &[u8], base: u64, abi: Abi) -> Result<LeafRecovery> {
     recover_leaf_function_const_abi(machine_code, base, abi, &[])
 }
@@ -722,6 +803,7 @@ pub fn recover_vectorized_reduction(
     base: u64,
     abi: Abi,
 ) -> Result<LeafRecovery> {
+    require_x86_abi(abi)?;
     crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi)
 }
 
@@ -732,6 +814,7 @@ pub fn recover_leaf_function_in_object(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
+    require_x86_abi(abi)?;
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
         return Ok(recovery);
     }
@@ -1110,6 +1193,7 @@ fn build_leaf_items(
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
 ) -> Result<LeafItems> {
+    require_x86_abi(abi)?;
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
@@ -1653,6 +1737,7 @@ pub fn recover_leaf_function_switch_const_abi(
     tables: &[JumpTable],
     consts: &[FpConstant],
 ) -> Result<LeafRecovery> {
+    require_x86_abi(abi)?;
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
@@ -1698,6 +1783,15 @@ pub fn recover_leaf_function_switch_const_abi(
         case_targets.push(target);
     }
     build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, consts, &[])
+}
+
+fn require_x86_abi(abi: Abi) -> Result<()> {
+    if abi == Abi::Aapcs64 {
+        return Err(Error::LlvmIr(
+            "aapcs64 requires the aarch64 recovery entry point".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn build_switch_recovery(
@@ -3665,12 +3759,20 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
 }
 
 fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, abi: Abi) {
+    annotate_calls_block_with_order(body, map, abi.arg_order());
+}
+
+fn annotate_calls_block_with_order(
+    body: &mut Block,
+    map: &BTreeMap<u64, &ResolvedCall>,
+    arg_order: &[Reg],
+) {
     for node in body.iter_mut() {
         match node {
             Node::Stmt(Stmt::Call { target, args, name }) => {
                 if let Some(resolved) = map.get(target) {
-                    let count: usize = resolved.arg_count.min(abi.arg_order().len());
-                    *args = abi.arg_order()[..count].to_vec();
+                    let count: usize = resolved.arg_count.min(arg_order.len());
+                    *args = arg_order[..count].to_vec();
                     name.clone_from(&resolved.name);
                 }
             }
@@ -3680,19 +3782,19 @@ fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, ab
                 else_body,
                 ..
             } => {
-                annotate_calls_block(then_body, map, abi);
+                annotate_calls_block_with_order(then_body, map, arg_order);
                 if let Some(else_b) = else_body {
-                    annotate_calls_block(else_b, map, abi);
+                    annotate_calls_block_with_order(else_b, map, arg_order);
                 }
             }
             Node::DoWhile { body, .. } | Node::While { body } => {
-                annotate_calls_block(body, map, abi);
+                annotate_calls_block_with_order(body, map, arg_order);
             }
             Node::Switch { cases, default, .. } => {
                 for case in cases.iter_mut() {
-                    annotate_calls_block(&mut case.body, map, abi);
+                    annotate_calls_block_with_order(&mut case.body, map, arg_order);
                 }
-                annotate_calls_block(default, map, abi);
+                annotate_calls_block_with_order(default, map, arg_order);
             }
             Node::CondSnapshot { .. }
             | Node::Break
@@ -7728,6 +7830,54 @@ const fn reg_var(reg: Reg) -> &'static str {
         Reg::R13 => "r_r13",
         Reg::R14 => "r_r14",
         Reg::R15 => "r_r15",
+        Reg::A64X1 => "r_a64_x1",
+        Reg::A64X2 => "r_a64_x2",
+        Reg::A64X3 => "r_a64_x3",
+        Reg::A64X4 => "r_a64_x4",
+        Reg::A64X5 => "r_a64_x5",
+        Reg::A64X6 => "r_a64_x6",
+        Reg::A64X7 => "r_a64_x7",
+        Reg::A64X8 => "r_a64_x8",
+        Reg::A64X9 => "r_a64_x9",
+        Reg::A64X10 => "r_a64_x10",
+        Reg::A64X11 => "r_a64_x11",
+        Reg::A64X12 => "r_a64_x12",
+        Reg::A64X13 => "r_a64_x13",
+        Reg::A64X14 => "r_a64_x14",
+        Reg::A64X15 => "r_a64_x15",
+        Reg::A64X16 => "r_a64_x16",
+        Reg::A64X17 => "r_a64_x17",
+        Reg::A64X18 => "r_a64_x18",
+        Reg::A64X19 => "r_a64_x19",
+        Reg::A64X20 => "r_a64_x20",
+        Reg::A64X21 => "r_a64_x21",
+        Reg::A64X22 => "r_a64_x22",
+        Reg::A64X23 => "r_a64_x23",
+        Reg::A64X24 => "r_a64_x24",
+        Reg::A64X25 => "r_a64_x25",
+        Reg::A64X26 => "r_a64_x26",
+        Reg::A64X27 => "r_a64_x27",
+        Reg::A64X28 => "r_a64_x28",
+        Reg::A64Stack0 => "r_a64_stack0",
+        Reg::A64Stack1 => "r_a64_stack1",
+        Reg::A64Stack2 => "r_a64_stack2",
+        Reg::A64Stack3 => "r_a64_stack3",
+        Reg::A64Stack4 => "r_a64_stack4",
+        Reg::A64Stack5 => "r_a64_stack5",
+        Reg::A64Stack6 => "r_a64_stack6",
+        Reg::A64Stack7 => "r_a64_stack7",
+        Reg::A64Outgoing0 => "r_a64_outgoing0",
+        Reg::A64Outgoing1 => "r_a64_outgoing1",
+        Reg::A64Outgoing2 => "r_a64_outgoing2",
+        Reg::A64Outgoing3 => "r_a64_outgoing3",
+        Reg::A64Outgoing4 => "r_a64_outgoing4",
+        Reg::A64Outgoing5 => "r_a64_outgoing5",
+        Reg::A64Outgoing6 => "r_a64_outgoing6",
+        Reg::A64Outgoing7 => "r_a64_outgoing7",
+        Reg::A64Tmp => "r_a64_tmp",
+        Reg::A64Tmp2 => "r_a64_tmp2",
+        Reg::A64FlagLhs => "r_a64_flag_lhs",
+        Reg::A64FlagRhs => "r_a64_flag_rhs",
     }
 }
 
@@ -8348,6 +8498,7 @@ const fn sret_ptr_reg(abi: Abi) -> Reg {
     match abi {
         Abi::SysV => Reg::Rdi,
         Abi::MsX64 => Reg::Rcx,
+        Abi::Aapcs64 => Reg::A64X8,
     }
 }
 
@@ -8355,6 +8506,7 @@ const fn sret_min_memory_class(abi: Abi) -> usize {
     match abi {
         Abi::SysV => 16,
         Abi::MsX64 => 8,
+        Abi::Aapcs64 => 16,
     }
 }
 
@@ -8600,7 +8752,7 @@ fn detect_sret(body: &Block, abi: Abi) -> Option<SretPlan> {
             }
         }
     }
-    if !alias.contains(&Reg::Rax) {
+    if abi != Abi::Aapcs64 && !alias.contains(&Reg::Rax) {
         return None;
     }
     let fields: Vec<(i64, Width)> = tile_sret_fields(&raw_fields)?;
