@@ -91,6 +91,7 @@ fn github_yaml_set_is_exact() {
         "workflows/evidence.yml",
         "workflows/fuzz.yml",
         "workflows/release.yml",
+        "workflows/verify-release.yml",
         "workflows/wiki-sync.yml",
     ]
     .into_iter()
