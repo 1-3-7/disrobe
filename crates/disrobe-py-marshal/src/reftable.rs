@@ -238,7 +238,24 @@ mod tests {
         assert_eq!(RefKind::from_tag(b'i'), RefKind::Int);
         assert_eq!(RefKind::from_tag(b')'), RefKind::Tuple);
         assert_eq!(RefKind::from_tag(b'Z'), RefKind::ShortAsciiInterned);
+        assert_eq!(RefKind::from_tag(b'{'), RefKind::Dict);
+        assert_eq!(RefKind::from_tag(b'}'), RefKind::FrozenDict);
         assert_eq!(RefKind::from_tag(b'\0'), RefKind::Unknown);
+    }
+
+    #[test]
+    fn frozen_dict_ref_entry_uses_frozendict_kind() {
+        let mut data: Vec<u8> = vec![b'}' | FLAG_REF];
+        data.push(b'z');
+        data.push(1);
+        data.extend(b"k");
+        data.push(b'i');
+        data.extend(1i32.to_le_bytes());
+        data.push(b'0');
+        let (obj, table): (Object, RefTableDump) = dump_reftable(&data, PyVersion::PY312).unwrap();
+        assert!(matches!(obj, Object::FrozenDict(_)));
+        assert_eq!(table.entries[0].kind, RefKind::FrozenDict);
+        assert_eq!(table.entries[0].index, 0);
     }
 
     #[test]

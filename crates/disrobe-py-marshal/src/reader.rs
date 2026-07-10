@@ -1430,4 +1430,42 @@ mod tests {
         let back: Object = load(&bytes, PyVersion::PY27).unwrap();
         assert_eq!(back, original);
     }
+
+    #[test]
+    fn frozen_dict_tag_decodes_to_frozen_dict_variant() {
+        let mut data: Vec<u8> = vec![b'}'];
+        data.push(b'z');
+        data.push(1);
+        data.extend(b"k");
+        data.push(b'i');
+        data.extend(1i32.to_le_bytes());
+        data.push(b'0');
+        let obj: Object = load(&data, PyVersion::PY312).unwrap();
+        let Object::FrozenDict(map) = obj else {
+            panic!("expected a frozen dict for the '}}' tag");
+        };
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&short("k")), Some(&Object::Int(1)));
+    }
+
+    #[test]
+    fn frozen_dict_round_trips_through_dump_and_load() {
+        let mut map: IndexMap<Object, Object> = IndexMap::new();
+        map.insert(short("a"), Object::Int(1));
+        map.insert(short("b"), Object::Int(2));
+        let original: Object = Object::FrozenDict(map);
+        let bytes: Vec<u8> = crate::writer::dump(&original, PyVersion::PY312).unwrap();
+        assert_eq!(bytes[0], b'}');
+        let back: Object = load(&bytes, PyVersion::PY312).unwrap();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn frozen_dict_is_distinct_from_plain_dict() {
+        let mut plain: IndexMap<Object, Object> = IndexMap::new();
+        plain.insert(short("k"), Object::Int(1));
+        let dict: Object = Object::Dict(plain.clone());
+        let frozen: Object = Object::FrozenDict(plain);
+        assert_ne!(dict, frozen);
+    }
 }

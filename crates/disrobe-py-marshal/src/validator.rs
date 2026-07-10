@@ -148,6 +148,7 @@ fn sequences_equal(a: &[Object], b: &[Object]) -> bool {
 mod tests {
     use super::*;
     use crate::object::{BigInt, CodeEra, CodeObject};
+    use indexmap::IndexMap;
 
     #[test]
     fn validates_primitive_roundtrip() {
@@ -247,6 +248,30 @@ mod tests {
     fn strict_mode_returns_bytes_when_clean() {
         let bytes: Vec<u8> = validate_roundtrip_strict(&Object::Int(7), PyVersion::PY312).unwrap();
         assert_eq!(bytes, b"i\x07\x00\x00\x00");
+    }
+
+    #[test]
+    fn validates_frozen_dict_roundtrip() {
+        let mut map: IndexMap<Object, Object> = IndexMap::new();
+        map.insert(
+            Object::ShortAscii {
+                value: "k".to_owned(),
+                interned: false,
+            },
+            Object::Int(1),
+        );
+        let obj: Object = Object::FrozenDict(map);
+        let report: RoundTripReport = validate_roundtrip(&obj, PyVersion::PY312).unwrap();
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn frozen_dict_and_plain_dict_are_not_semantically_equal() {
+        let mut map: IndexMap<Object, Object> = IndexMap::new();
+        map.insert(Object::Int(1), Object::Int(2));
+        let dict: Object = Object::Dict(map.clone());
+        let frozen: Object = Object::FrozenDict(map);
+        assert!(!objects_semantically_equal(&dict, &frozen));
     }
 
     #[test]
