@@ -395,7 +395,7 @@ fn infinite_inline_break_exit(
         .filter(|t: &usize| *t > first_cond && *t < back_edge)?;
     let block_start: usize = first_significant(stream, first_cond + 1, body_label)?;
     if block_start >= body_label
-        || !block_exits_loop(stream, block_start, body_label, back_edge, hi)
+        || !block_breaks_loop(stream, block_start, body_label, back_edge, hi)
     {
         return None;
     }
@@ -516,7 +516,7 @@ fn infinite_break_exit(
     lo
 }
 
-fn block_exits_loop(
+fn block_breaks_loop(
     stream: &DecodedStream,
     lo: usize,
     hi: usize,
@@ -535,7 +535,6 @@ fn block_exits_loop(
         )
     });
     terminal.is_some_and(|idx: usize| match &stream.ops[idx] {
-        CanonicalOp::Return | CanonicalOp::ReturnConst(_) => true,
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_) => {
             resolve_jump_target(stream, idx, &stream.ops[idx])
                 .is_some_and(|t: usize| t > back_edge && t <= cap)
@@ -1804,7 +1803,7 @@ fn infinite_exit_block(stream: &DecodedStream, region: &LoopRegion) -> Option<(u
     if block_start >= body_label {
         return None;
     }
-    if !block_exits_loop(
+    if !block_breaks_loop(
         stream,
         block_start,
         body_label,
@@ -1863,7 +1862,7 @@ fn structure_infinite_while_body(
 }
 
 fn infinite_body_entry(stream: &DecodedStream, region: &LoopRegion, body_end: usize) -> usize {
-    first_significant(stream, region.header + 1, body_end).unwrap_or(region.body_start)
+    first_significant(stream, region.header, body_end).unwrap_or(region.body_start)
 }
 
 fn infinite_first_cond(stream: &DecodedStream, region: &LoopRegion) -> usize {
