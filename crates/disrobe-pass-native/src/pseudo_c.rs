@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use disrobe_core::DiGraph;
@@ -1643,17 +1643,21 @@ fn recover_leaf_function_calls_impl(
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns))?;
+    let aggregate_plan: AggregatePlan =
+        infer_aggregate_plan(&structured.body, &params, frame_plan.as_ref());
     let source: String = emit_c(
         &structured.body,
         &signature,
         frame_plan.as_ref(),
         sret_plan.as_ref(),
+        &aggregate_plan,
     );
     let rust_source: Option<String> = emit_rust(
         &structured.body,
         &signature,
         frame_plan.as_ref(),
         sret_plan.as_ref(),
+        &aggregate_plan,
     );
     let sret: Option<SretReturn> = sret_plan.as_ref().map(|plan: &SretPlan| SretReturn {
         field_widths: plan
@@ -1969,8 +1973,21 @@ fn build_switch_recovery(
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
     };
     let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns))?;
-    let source: String = emit_c(&body, &signature, frame_plan.as_ref(), None);
-    let rust_source: Option<String> = emit_rust(&body, &signature, frame_plan.as_ref(), None);
+    let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, frame_plan.as_ref());
+    let source: String = emit_c(
+        &body,
+        &signature,
+        frame_plan.as_ref(),
+        None,
+        &aggregate_plan,
+    );
+    let rust_source: Option<String> = emit_rust(
+        &body,
+        &signature,
+        frame_plan.as_ref(),
+        None,
+        &aggregate_plan,
+    );
     Ok(LeafRecovery {
         source,
         rust_source,
@@ -2182,8 +2199,9 @@ fn build_value_switch_recovery(
         int: params.clone(),
         ret: FnReturn::Int(return_width),
     };
-    let source: String = emit_c(&body, &signature, None, None);
-    let rust_source: Option<String> = emit_rust(&body, &signature, None, None);
+    let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
+    let source: String = emit_c(&body, &signature, None, None, &aggregate_plan);
+    let rust_source: Option<String> = emit_rust(&body, &signature, None, None, &aggregate_plan);
     Ok(LeafRecovery {
         source,
         rust_source,
@@ -8115,7 +8133,75 @@ fn addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> String {
     })
 }
 
-fn deref_expr(mem: &MemRef) -> String {
+fn aggregate_field_name(disp: i64) -> String {
+    format!("field_{disp:x}")
+}
+
+fn aggregate_c_type_name(plan: &AggregatePlan, root: usize) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    let prefix: &str = match root_plan.shape {
+        AggregateShape::Struct { .. } => "recovered_struct",
+        AggregateShape::Array { .. } => "recovered_array",
+    };
+    Some(format!("{prefix}_{root}_t"))
+}
+
+fn aggregate_c_local_name(plan: &AggregatePlan, root: usize) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    let prefix: &str = match root_plan.shape {
+        AggregateShape::Struct { .. } => "recovered_struct",
+        AggregateShape::Array { .. } => "recovered_array",
+    };
+    Some(format!("{prefix}_{root}"))
+}
+
+fn aggregate_c_base(plan: &AggregatePlan, root: usize, base: Reg) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    if root_plan.bind_local {
+        aggregate_c_local_name(plan, root)
+    } else {
+        let ty: String = aggregate_c_type_name(plan, root)?;
+        Some(format!("(({ty} *)(uintptr_t){})", reg_var(base)))
+    }
+}
+
+fn aggregate_c_mem_expr(mem: &MemRef, plan: &AggregatePlan) -> Option<(String, bool)> {
+    match plan.access(mem)? {
+        AggregateAccess::Field {
+            root,
+            base,
+            disp,
+            nested,
+            ..
+        } => {
+            let base: String = aggregate_c_base(plan, root, base)?;
+            let field: String = aggregate_field_name(disp);
+            let expr: String = c_render(|cx| {
+                let root_expr: CExpr = cx.var(&base);
+                cx.member(root_expr, true, &field)
+            });
+            Some((expr, nested.is_some()))
+        }
+        AggregateAccess::Array {
+            root, base, index, ..
+        } => {
+            let base: String = aggregate_c_base(plan, root, base)?;
+            let expr: String = c_render(|cx| {
+                let root_expr: CExpr = cx.var(&base);
+                CExpr::Index {
+                    base: Box::new(root_expr),
+                    index: Box::new(cx.var(reg_var(index))),
+                }
+            });
+            Some((expr, false))
+        }
+    }
+}
+
+fn deref_expr(mem: &MemRef, plan: &AggregatePlan) -> String {
+    if let Some((expr, _)) = aggregate_c_mem_expr(mem, plan) {
+        return expr;
+    }
     let addr: String = addr_expr(mem.base, mem.index, mem.disp);
     let ty: &str = match mem.width {
         Width::W8 => "uint8_t",
@@ -8180,7 +8266,7 @@ fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
     }
 }
 
-fn source_expr(src: &Source, width: Width) -> String {
+fn source_expr(src: &Source, width: Width, plan: &AggregatePlan) -> String {
     match src {
         Source::Reg(r) => {
             if r.width == width || width == Width::W64 {
@@ -8202,9 +8288,15 @@ fn source_expr(src: &Source, width: Width) -> String {
         }
         Source::Lea { base, index, disp } => addr_expr(*base, *index, *disp),
         Source::Mem(mem) => {
-            let d: String = deref_expr(mem);
+            let (d, pointer): (String, bool) =
+                aggregate_c_mem_expr(mem, plan).unwrap_or_else(|| (deref_expr(mem, plan), false));
             c_render(|cx| {
-                let inner: CExpr = cx.var(&d);
+                let value: CExpr = cx.var(&d);
+                let inner: CExpr = if pointer {
+                    c_cast(cx, "uintptr_t", value)
+                } else {
+                    value
+                };
                 c_cast(cx, "uint64_t", inner)
             })
         }
@@ -8229,6 +8321,638 @@ fn emit_fp_helpers(out: &mut String) {
         out,
         "static inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}"
     );
+}
+
+const AGGREGATE_MAX_ROOTS: usize = 8;
+const AGGREGATE_MAX_FIELDS: usize = 32;
+const AGGREGATE_MAX_ROOT_OBSERVATIONS: usize = 64;
+const AGGREGATE_MAX_OBSERVATIONS: usize = 256;
+const AGGREGATE_MAX_NODES: usize = 256;
+const AGGREGATE_MAX_SCAN_DEPTH: usize = 16;
+const AGGREGATE_MAX_NESTING: usize = 2;
+const AGGREGATE_MAX_SPAN: i64 = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AggregateShape {
+    Struct { fields: Vec<(i64, Width)> },
+    Array { width: Width, scale: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AggregateOrigin {
+    parent: Reg,
+    disp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AggregateRootPlan {
+    reg: Reg,
+    aliases: Vec<Reg>,
+    shape: AggregateShape,
+    bind_local: bool,
+    depth: usize,
+    origin: Option<AggregateOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct AggregatePlan {
+    roots: Vec<AggregateRootPlan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggregateAccess {
+    Field {
+        root: usize,
+        base: Reg,
+        disp: i64,
+        nested: Option<usize>,
+    },
+    Array {
+        root: usize,
+        base: Reg,
+        index: Reg,
+    },
+}
+
+impl AggregatePlan {
+    fn root_position(&self, reg: Reg) -> Option<usize> {
+        self.roots
+            .iter()
+            .position(|root: &AggregateRootPlan| root.reg == reg || root.aliases.contains(&reg))
+    }
+
+    fn linked_child(&self, parent: Reg, disp: i64) -> Option<usize> {
+        self.roots.iter().position(|root: &AggregateRootPlan| {
+            root.origin.is_some_and(|origin: AggregateOrigin| {
+                origin.parent == parent && origin.disp == disp
+            })
+        })
+    }
+
+    fn access(&self, mem: &MemRef) -> Option<AggregateAccess> {
+        let base: Reg = mem.base?;
+        let root_index: usize = self.root_position(base)?;
+        let root: &AggregateRootPlan = self.roots.get(root_index)?;
+        match &root.shape {
+            AggregateShape::Struct { fields } => {
+                if mem.index.is_some()
+                    || !fields.iter().any(|(disp, width): &(i64, Width)| {
+                        *disp == mem.disp && *width == mem.width
+                    })
+                {
+                    return None;
+                }
+                Some(AggregateAccess::Field {
+                    root: root_index,
+                    base,
+                    disp: mem.disp,
+                    nested: self.linked_child(root.reg, mem.disp),
+                })
+            }
+            AggregateShape::Array { width, scale } => {
+                let (index, access_scale): (Reg, u8) = mem.index?;
+                if mem.disp != 0 || access_scale != *scale || mem.width != *width {
+                    return None;
+                }
+                Some(AggregateAccess::Array {
+                    root: root_index,
+                    base,
+                    index,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct AggregateScan {
+    mems: Vec<MemRef>,
+    writes: BTreeMap<Reg, usize>,
+    unemitted_bases: BTreeSet<Reg>,
+    nodes: usize,
+    exceeded: bool,
+}
+
+impl AggregateScan {
+    fn note_mem(&mut self, mem: MemRef) {
+        if self.mems.len() >= AGGREGATE_MAX_OBSERVATIONS {
+            self.exceeded = true;
+        } else {
+            self.mems.push(mem);
+        }
+    }
+
+    fn note_unemitted_mem(&mut self, mem: MemRef) {
+        self.note_mem(mem);
+        if let Some(base) = mem.base {
+            self.unemitted_bases.insert(base);
+        }
+    }
+
+    fn note_write(&mut self, reg: Reg) {
+        let count: &mut usize = self.writes.entry(reg).or_default();
+        let Some(next): Option<usize> = count.checked_add(1) else {
+            self.exceeded = true;
+            return;
+        };
+        *count = next;
+    }
+}
+
+fn aggregate_note_source(scan: &mut AggregateScan, source: &Source) {
+    if let Source::Mem(mem) = source {
+        scan.note_mem(*mem);
+    }
+}
+
+fn aggregate_note_ext_source(scan: &mut AggregateScan, source: &ExtSource) {
+    if let ExtSource::Mem(mem) = source {
+        scan.note_mem(*mem);
+    }
+}
+
+fn aggregate_note_fp_operand(scan: &mut AggregateScan, operand: &FpOperand) {
+    if let FpOperand::Mem(mem) = operand {
+        scan.note_unemitted_mem(*mem);
+    }
+}
+
+fn aggregate_note_flags(scan: &mut AggregateScan, flags: &Flags) {
+    match flags {
+        Flags::Cmp { rhs, .. } => aggregate_note_source(scan, rhs),
+        Flags::CmpMem { lhs, rhs } => {
+            scan.note_mem(*lhs);
+            aggregate_note_source(scan, rhs);
+        }
+        Flags::FpCmp { rhs, .. } => aggregate_note_fp_operand(scan, rhs),
+        Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::Snapshot { .. } => {}
+    }
+}
+
+fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
+    for reg in stmt_dest_regs(stmt) {
+        scan.note_write(reg);
+    }
+    match stmt {
+        Stmt::Assign { src, .. } | Stmt::BinAssign { src, .. } => {
+            aggregate_note_source(scan, src);
+        }
+        Stmt::Cond { src, flags, .. } => {
+            aggregate_note_source(scan, src);
+            aggregate_note_flags(scan, flags);
+        }
+        Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
+            aggregate_note_flags(scan, flags);
+        }
+        Stmt::Store { addr, src } => {
+            scan.note_mem(*addr);
+            aggregate_note_source(scan, src);
+        }
+        Stmt::MemRmw { addr, op } => {
+            scan.note_mem(*addr);
+            if let Some(source) = op.source() {
+                aggregate_note_source(scan, source);
+            }
+        }
+        Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
+            aggregate_note_ext_source(scan, src);
+        }
+        Stmt::FpBin { rhs, .. } | Stmt::FpMinMax { rhs, .. } => {
+            aggregate_note_fp_operand(scan, rhs);
+        }
+        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
+            aggregate_note_fp_operand(scan, src);
+        }
+        Stmt::FpStore { addr, .. } => scan.note_unemitted_mem(*addr),
+        Stmt::BlockMove { .. } => {
+            scan.note_write(Reg::Rdi);
+            scan.note_write(Reg::Rsi);
+            scan.note_write(Reg::Rcx);
+        }
+        Stmt::BlockFill { .. } => {
+            scan.note_write(Reg::Rdi);
+            scan.note_write(Reg::Rcx);
+        }
+        Stmt::UnAssign { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::Call { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => {}
+    }
+}
+
+fn aggregate_scan_block(scan: &mut AggregateScan, body: &Block, depth: usize) {
+    if depth > AGGREGATE_MAX_SCAN_DEPTH {
+        scan.exceeded = true;
+        return;
+    }
+    for node in body {
+        if scan.nodes >= AGGREGATE_MAX_NODES {
+            scan.exceeded = true;
+            return;
+        }
+        scan.nodes += 1;
+        match node {
+            Node::Stmt(stmt) => aggregate_note_stmt(scan, stmt),
+            Node::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
+                    aggregate_note_flags(scan, flags);
+                });
+                aggregate_scan_block(scan, then_body, depth + 1);
+                if let Some(else_block) = else_body {
+                    aggregate_scan_block(scan, else_block, depth + 1);
+                }
+            }
+            Node::DoWhile { body, cond } => {
+                if let LoopCond::Direct { flags, .. } = cond {
+                    aggregate_note_flags(scan, flags);
+                }
+                aggregate_scan_block(scan, body, depth + 1);
+            }
+            Node::While { body } => aggregate_scan_block(scan, body, depth + 1),
+            Node::CondSnapshot { flags, .. } => aggregate_note_flags(scan, flags),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    aggregate_scan_block(scan, &case.body, depth + 1);
+                }
+                aggregate_scan_block(scan, default, depth + 1);
+            }
+            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+        }
+        if scan.exceeded {
+            return;
+        }
+    }
+}
+
+fn aggregate_flat_stmts(body: &Block) -> Option<Vec<&Stmt>> {
+    let mut statements: Vec<&Stmt> = Vec::with_capacity(body.len());
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => statements.push(stmt),
+            Node::Return => {}
+            _ => return None,
+        }
+    }
+    Some(statements)
+}
+
+fn aggregate_classify_root(reg: Reg, mems: &[MemRef]) -> Option<AggregateShape> {
+    let regs: BTreeSet<Reg> = std::iter::once(reg).collect();
+    aggregate_classify_regs(&regs, mems)
+}
+
+fn aggregate_classify_regs(regs: &BTreeSet<Reg>, mems: &[MemRef]) -> Option<AggregateShape> {
+    let observations: Vec<MemRef> = mems
+        .iter()
+        .copied()
+        .filter(|mem: &MemRef| mem.base.is_some_and(|base: Reg| regs.contains(&base)))
+        .collect();
+    if observations.is_empty() || observations.len() > AGGREGATE_MAX_ROOT_OBSERVATIONS {
+        return None;
+    }
+    if mems.iter().any(|mem: &MemRef| {
+        mem.index
+            .is_some_and(|(index, _): (Reg, u8)| regs.contains(&index))
+    }) {
+        return None;
+    }
+    let indexed: usize = observations
+        .iter()
+        .filter(|mem: &&MemRef| mem.index.is_some())
+        .count();
+    if indexed == observations.len() {
+        let first: MemRef = *observations.first()?;
+        let (_, scale): (Reg, u8) = first.index?;
+        let bytes: u32 = first.width.bits() / 8;
+        if !matches!(scale, 1 | 2 | 4 | 8) || u32::from(scale) != bytes {
+            return None;
+        }
+        if observations.iter().any(|mem: &MemRef| {
+            mem.disp != 0
+                || mem.width != first.width
+                || mem
+                    .index
+                    .is_none_or(|(_, access_scale): (Reg, u8)| access_scale != scale)
+        }) {
+            return None;
+        }
+        return Some(AggregateShape::Array {
+            width: first.width,
+            scale,
+        });
+    }
+    if indexed != 0 {
+        return None;
+    }
+    let mut by_offset: BTreeMap<i64, Width> = BTreeMap::new();
+    for mem in &observations {
+        if mem.disp < 0 {
+            return None;
+        }
+        match by_offset.get(&mem.disp) {
+            Some(width) if *width != mem.width => return None,
+            _ => {
+                by_offset.insert(mem.disp, mem.width);
+            }
+        }
+    }
+    if !(2..=AGGREGATE_MAX_FIELDS).contains(&by_offset.len()) {
+        return None;
+    }
+    let mut end: i64 = 0;
+    for (&disp, &width) in &by_offset {
+        if disp < end {
+            return None;
+        }
+        let bytes: i64 = i64::from(width.bits() / 8);
+        end = disp.checked_add(bytes)?;
+        if end > AGGREGATE_MAX_SPAN {
+            return None;
+        }
+    }
+    Some(AggregateShape::Struct {
+        fields: by_offset.into_iter().collect(),
+    })
+}
+
+fn aggregate_root_exclusive(statements: &[&Stmt], reg: Reg, definition: usize) -> bool {
+    for (index, stmt) in statements.iter().enumerate() {
+        let mut reads: Vec<Reg> = Vec::new();
+        stmt_value_reads(stmt, &mut reads);
+        let read_count: usize = reads
+            .iter()
+            .filter(|candidate: &&Reg| **candidate == reg)
+            .count();
+        let mut local_scan: AggregateScan = AggregateScan::default();
+        aggregate_note_stmt(&mut local_scan, stmt);
+        if local_scan.exceeded {
+            return false;
+        }
+        let base_count: usize = local_scan
+            .mems
+            .iter()
+            .filter(|mem: &&MemRef| mem.base == Some(reg))
+            .count();
+        if index <= definition {
+            if base_count != 0 {
+                return false;
+            }
+            continue;
+        }
+        if local_scan.mems.iter().any(|mem: &MemRef| {
+            mem.index
+                .is_some_and(|(candidate, _): (Reg, u8)| candidate == reg)
+        }) || read_count != base_count
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn aggregate_frame_reload_source(
+    statements: &[&Stmt],
+    reg: Reg,
+    frame: &FramePlan,
+) -> Option<MemRef> {
+    let mut source_slot: Option<MemRef> = None;
+    let mut live: bool = false;
+    let mut saw_access: bool = false;
+    for stmt in statements {
+        let mut reads: Vec<Reg> = Vec::new();
+        stmt_value_reads(stmt, &mut reads);
+        let read_count: usize = reads
+            .iter()
+            .filter(|candidate: &&Reg| **candidate == reg)
+            .count();
+        let mut local_scan: AggregateScan = AggregateScan::default();
+        aggregate_note_stmt(&mut local_scan, stmt);
+        if local_scan.exceeded {
+            return None;
+        }
+        let base_count: usize = local_scan
+            .mems
+            .iter()
+            .filter(|mem: &&MemRef| mem.base == Some(reg))
+            .count();
+        if base_count != 0 {
+            if !live {
+                return None;
+            }
+            saw_access = true;
+        }
+        if live && read_count != base_count {
+            return None;
+        }
+        let reload: Option<MemRef> = match stmt {
+            Stmt::Assign {
+                dest,
+                src: Source::Mem(source),
+            } if dest.reg == reg
+                && dest.width == Width::W64
+                && source.width == Width::W64
+                && source.base == Some(frame.base)
+                && source.index.is_none() =>
+            {
+                Some(*source)
+            }
+            _ => None,
+        };
+        if stmt_dest_regs(stmt).contains(&reg) {
+            if let Some(source) = reload {
+                if source_slot.is_some_and(|slot: MemRef| slot != source) {
+                    return None;
+                }
+                source_slot = Some(source);
+                live = true;
+            } else {
+                live = false;
+            }
+        }
+    }
+    if saw_access { source_slot } else { None }
+}
+
+fn aggregate_nested_origin(
+    plan: &AggregatePlan,
+    scan: &AggregateScan,
+    source: &MemRef,
+) -> Option<(usize, Option<AggregateOrigin>)> {
+    let Some(parent_reg): Option<Reg> = source.base else {
+        return Some((0, None));
+    };
+    let Some(parent_position): Option<usize> = plan.root_position(parent_reg) else {
+        return Some((0, None));
+    };
+    let parent: &AggregateRootPlan = plan.roots.get(parent_position)?;
+    let AggregateShape::Struct { fields } = &parent.shape else {
+        return None;
+    };
+    let matching_field: bool = source.index.is_none()
+        && fields
+            .iter()
+            .any(|(disp, width): &(i64, Width)| *disp == source.disp && *width == Width::W64);
+    let matching_accesses: usize = scan
+        .mems
+        .iter()
+        .filter(|mem: &&MemRef| **mem == *source)
+        .count();
+    if !matching_field || matching_accesses != 1 {
+        return None;
+    }
+    let next_depth: usize = parent.depth.checked_add(1)?;
+    if next_depth > AGGREGATE_MAX_NESTING {
+        return None;
+    }
+    Some((
+        next_depth,
+        Some(AggregateOrigin {
+            parent: parent_reg,
+            disp: source.disp,
+        }),
+    ))
+}
+
+fn infer_aggregate_plan(body: &Block, params: &[Reg], frame: Option<&FramePlan>) -> AggregatePlan {
+    let mut scan: AggregateScan = AggregateScan::default();
+    aggregate_scan_block(&mut scan, body, 0);
+    if scan.exceeded {
+        return AggregatePlan::default();
+    }
+    let mut plan: AggregatePlan = AggregatePlan::default();
+    for &reg in params {
+        if plan.roots.len() >= AGGREGATE_MAX_ROOTS {
+            return AggregatePlan::default();
+        }
+        if scan.writes.get(&reg).copied().unwrap_or(0) != 0 || scan.unemitted_bases.contains(&reg) {
+            continue;
+        }
+        if let Some(shape) = aggregate_classify_root(reg, &scan.mems) {
+            plan.roots.push(AggregateRootPlan {
+                reg,
+                aliases: Vec::new(),
+                shape,
+                bind_local: true,
+                depth: 0,
+                origin: None,
+            });
+        }
+    }
+    let Some(statements): Option<Vec<&Stmt>> = aggregate_flat_stmts(body) else {
+        return plan;
+    };
+    for (definition, stmt) in statements.iter().enumerate() {
+        if plan.roots.len() >= AGGREGATE_MAX_ROOTS {
+            return AggregatePlan::default();
+        }
+        let Stmt::Assign {
+            dest,
+            src: Source::Mem(source),
+        } = stmt
+        else {
+            continue;
+        };
+        if dest.width != Width::W64
+            || source.width != Width::W64
+            || plan.root_position(dest.reg).is_some()
+            || scan.writes.get(&dest.reg).copied().unwrap_or(0) != 1
+            || scan.unemitted_bases.contains(&dest.reg)
+            || !aggregate_root_exclusive(&statements, dest.reg, definition)
+        {
+            continue;
+        }
+        let Some(shape): Option<AggregateShape> = aggregate_classify_root(dest.reg, &scan.mems)
+        else {
+            continue;
+        };
+        let Some((depth, origin)): Option<(usize, Option<AggregateOrigin>)> =
+            aggregate_nested_origin(&plan, &scan, source)
+        else {
+            continue;
+        };
+        plan.roots.push(AggregateRootPlan {
+            reg: dest.reg,
+            aliases: Vec::new(),
+            shape,
+            bind_local: false,
+            depth,
+            origin,
+        });
+    }
+    if let Some(frame_plan) = frame {
+        let candidate_regs: BTreeSet<Reg> = scan
+            .mems
+            .iter()
+            .filter_map(|mem: &MemRef| mem.base)
+            .collect();
+        let mut groups: Vec<(MemRef, BTreeSet<Reg>)> = Vec::new();
+        for reg in candidate_regs {
+            if plan.root_position(reg).is_some() {
+                continue;
+            }
+            let Some(slot): Option<MemRef> =
+                aggregate_frame_reload_source(&statements, reg, frame_plan)
+            else {
+                continue;
+            };
+            if let Some(position) = groups
+                .iter()
+                .position(|(candidate, _): &(MemRef, BTreeSet<Reg>)| *candidate == slot)
+            {
+                if let Some((_, regs)) = groups.get_mut(position) {
+                    regs.insert(reg);
+                }
+            } else {
+                groups.push((slot, std::iter::once(reg).collect()));
+            }
+        }
+        for (_, regs) in groups {
+            if regs
+                .iter()
+                .any(|reg: &Reg| scan.unemitted_bases.contains(reg))
+            {
+                continue;
+            }
+            let Some(shape): Option<AggregateShape> = aggregate_classify_regs(&regs, &scan.mems)
+            else {
+                continue;
+            };
+            let Some(&reg): Option<&Reg> = regs.first() else {
+                continue;
+            };
+            if plan.roots.len() >= AGGREGATE_MAX_ROOTS {
+                return AggregatePlan::default();
+            }
+            plan.roots.push(AggregateRootPlan {
+                reg,
+                aliases: regs
+                    .iter()
+                    .copied()
+                    .filter(|candidate: &Reg| *candidate != reg)
+                    .collect(),
+                shape,
+                bind_local: false,
+                depth: 0,
+                origin: None,
+            });
+        }
+    }
+    plan
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8519,6 +9243,71 @@ const fn width_c_uint(width: Width) -> &'static str {
     }
 }
 
+fn emit_c_aggregate_types(out: &mut String, plan: &AggregatePlan) {
+    for (root_index, root) in plan.roots.iter().enumerate().rev() {
+        match &root.shape {
+            AggregateShape::Array { width, .. } => {
+                let _ = writeln!(
+                    out,
+                    "    typedef {} recovered_array_{root_index}_t;",
+                    width_c_uint(*width)
+                );
+            }
+            AggregateShape::Struct { fields } => {
+                let _ = writeln!(
+                    out,
+                    "    typedef struct __attribute__((packed, may_alias)) {{"
+                );
+                let mut cursor: i64 = 0;
+                for &(disp, width) in fields {
+                    if disp > cursor {
+                        let gap: i64 = disp - cursor;
+                        let _ = writeln!(out, "        uint8_t padding_{cursor:x}[{gap}];");
+                    }
+                    let field: String = aggregate_field_name(disp);
+                    let child_type: Option<String> = plan
+                        .linked_child(root.reg, disp)
+                        .and_then(|child: usize| aggregate_c_type_name(plan, child));
+                    match child_type {
+                        Some(child_type) => {
+                            let _ = writeln!(out, "        {child_type} *{field};");
+                        }
+                        None => {
+                            let _ = writeln!(out, "        {} {field};", width_c_uint(width));
+                        }
+                    }
+                    let Some(next_cursor): Option<i64> =
+                        disp.checked_add(i64::from(width.bits() / 8))
+                    else {
+                        return;
+                    };
+                    cursor = next_cursor;
+                }
+                let _ = writeln!(out, "    }} recovered_struct_{root_index}_t;");
+            }
+        }
+    }
+}
+
+fn emit_c_aggregate_locals(out: &mut String, plan: &AggregatePlan) {
+    for (root_index, root) in plan.roots.iter().enumerate() {
+        if !root.bind_local {
+            continue;
+        }
+        let Some(ty): Option<String> = aggregate_c_type_name(plan, root_index) else {
+            continue;
+        };
+        let Some(name): Option<String> = aggregate_c_local_name(plan, root_index) else {
+            continue;
+        };
+        let _ = writeln!(
+            out,
+            "    {ty} *{name} = ({ty} *)(uintptr_t){};",
+            reg_var(root.reg)
+        );
+    }
+}
+
 fn assign_is_pointer_copy(
     dest: RegRef,
     src: &Source,
@@ -8769,6 +9558,7 @@ fn emit_c(
     signature: &FnSignature,
     frame: Option<&FramePlan>,
     sret: Option<&SretPlan>,
+    aggregates: &AggregatePlan,
 ) -> String {
     let mut out: String = String::new();
     let _ = writeln!(out, "#include <stdint.h>");
@@ -8821,6 +9611,7 @@ fn emit_c(
         (None, FnReturn::Fp(width)) => width.c_type(),
     };
     let _ = writeln!(out, "{return_type} recovered({params_sig}) {{");
+    emit_c_aggregate_types(&mut out, aggregates);
     if sret.is_some() {
         let _ = writeln!(out, "    recovered_sret_t __sret;");
     }
@@ -8879,6 +9670,7 @@ fn emit_c(
             declared_gp.push(*reg);
         }
     }
+    emit_c_aggregate_locals(&mut out, aggregates);
     for xmm in &touched_xmm {
         if !declared_xmm.contains(xmm) {
             let _ = writeln!(out, "    uint64_t {} = 0;", xmm_var(*xmm));
@@ -8915,7 +9707,7 @@ fn emit_c(
         }
     };
 
-    emit_block(&mut out, body, &ret_expr);
+    emit_block(&mut out, body, &ret_expr, aggregates);
 
     if !matches!(body.last(), Some(Node::Return)) {
         let rendered: String = c_render_stmt(|cx| CStmt::Return(Some(cx.var(&ret_expr))));
@@ -9355,8 +10147,13 @@ fn case_value_expr(value: i64) -> CExpr {
     }
 }
 
-fn switch_case_chain(cx: &mut Cx<'_>, case: &SwitchCase, ret_expr: &str) -> CStmt {
-    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, &case.body, ret_expr);
+fn switch_case_chain(
+    cx: &mut Cx<'_>,
+    case: &SwitchCase,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> CStmt {
+    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, &case.body, ret_expr, aggregates);
     if !case.fallthrough {
         stmts.push(CStmt::Break);
     }
@@ -9370,27 +10167,37 @@ fn switch_case_chain(cx: &mut Cx<'_>, case: &SwitchCase, ret_expr: &str) -> CStm
     chain
 }
 
-fn switch_default_cstmt(cx: &mut Cx<'_>, default: &Block, ret_expr: &str) -> CStmt {
-    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, default, ret_expr);
+fn switch_default_cstmt(
+    cx: &mut Cx<'_>,
+    default: &Block,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> CStmt {
+    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, default, ret_expr, aggregates);
     stmts.push(CStmt::Break);
     CStmt::Default {
         body: Box::new(CStmt::Block(stmts)),
     }
 }
 
-fn node_to_cstmt(cx: &mut Cx<'_>, node: &Node, ret_expr: &str) -> CStmt {
+fn node_to_cstmt(
+    cx: &mut Cx<'_>,
+    node: &Node,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> CStmt {
     match node {
-        Node::Stmt(stmt) => stmt_to_cstmt(cx, stmt),
+        Node::Stmt(stmt) => stmt_to_cstmt(cx, stmt, aggregates),
         Node::If {
             cond,
             then_body,
             else_body,
         } => {
-            let cond_text: String = if_cond_expr(cond);
-            let then_cstmt: CStmt = braced_block(cx, then_body, ret_expr);
+            let cond_text: String = if_cond_expr(cond, aggregates);
+            let then_cstmt: CStmt = braced_block(cx, then_body, ret_expr, aggregates);
             let els_cstmt: Option<Box<CStmt>> = else_body
                 .as_ref()
-                .map(|b: &Block| Box::new(braced_block(cx, b, ret_expr)));
+                .map(|b: &Block| Box::new(braced_block(cx, b, ret_expr, aggregates)));
             CStmt::If {
                 cond: cx.var(&cond_text),
                 then: Box::new(then_cstmt),
@@ -9399,36 +10206,36 @@ fn node_to_cstmt(cx: &mut Cx<'_>, node: &Node, ret_expr: &str) -> CStmt {
         }
         Node::DoWhile { body, cond } => {
             let cond_text: String = match cond {
-                LoopCond::Direct { cond, flags } => cond_expr(*cond, flags),
+                LoopCond::Direct { cond, flags } => cond_expr(*cond, flags, aggregates),
                 LoopCond::Snapshot { var } => loop_cond_var(*var),
             };
             CStmt::DoWhile {
-                body: Box::new(braced_block(cx, body, ret_expr)),
+                body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
                 cond: cx.var(&cond_text),
             }
         }
         Node::While { body } => CStmt::While {
             cond: CExpr::int(1),
-            body: Box::new(braced_block(cx, body, ret_expr)),
+            body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
         },
         Node::Switch {
             disc,
             cases,
             default,
         } => {
-            let key: String = source_expr(&Source::Reg(*disc), disc.width);
+            let key: String = source_expr(&Source::Reg(*disc), disc.width, aggregates);
             let mut body_stmts: Vec<CStmt> = Vec::with_capacity(cases.len() + 1);
             for case in cases {
-                body_stmts.push(switch_case_chain(cx, case, ret_expr));
+                body_stmts.push(switch_case_chain(cx, case, ret_expr, aggregates));
             }
-            body_stmts.push(switch_default_cstmt(cx, default, ret_expr));
+            body_stmts.push(switch_default_cstmt(cx, default, ret_expr, aggregates));
             CStmt::Switch {
                 value: cx.var(&key),
                 body: Box::new(CStmt::Block(body_stmts)),
             }
         }
         Node::CondSnapshot { var, cond, flags } => {
-            let cond_text: String = cond_expr(*cond, flags);
+            let cond_text: String = cond_expr(*cond, flags, aggregates);
             assign_cstmt(cx, &loop_cond_var(*var), &cond_text)
         }
         Node::Break => CStmt::Break,
@@ -9446,23 +10253,33 @@ fn label_name(id: u32) -> String {
     format!("recover_L{id}")
 }
 
-fn block_to_cstmts(cx: &mut Cx<'_>, body: &Block, ret_expr: &str) -> Vec<CStmt> {
+fn block_to_cstmts(
+    cx: &mut Cx<'_>,
+    body: &Block,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> Vec<CStmt> {
     let mut stmts: Vec<CStmt> = Vec::with_capacity(body.len());
     for node in body {
-        stmts.push(node_to_cstmt(cx, node, ret_expr));
+        stmts.push(node_to_cstmt(cx, node, ret_expr, aggregates));
     }
     stmts
 }
 
-fn braced_block(cx: &mut Cx<'_>, body: &Block, ret_expr: &str) -> CStmt {
-    CStmt::Block(block_to_cstmts(cx, body, ret_expr))
+fn braced_block(
+    cx: &mut Cx<'_>,
+    body: &Block,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> CStmt {
+    CStmt::Block(block_to_cstmts(cx, body, ret_expr, aggregates))
 }
 
-fn emit_block(out: &mut String, body: &Block, ret_expr: &str) {
+fn emit_block(out: &mut String, body: &Block, ret_expr: &str, aggregates: &AggregatePlan) {
     let mut interner: Interner = Interner::new();
     let stmts: Vec<CStmt> = {
         let mut cx: Cx<'_> = Cx::new(&mut interner);
-        block_to_cstmts(&mut cx, body, ret_expr)
+        block_to_cstmts(&mut cx, body, ret_expr, aggregates)
     };
     for stmt in &stmts {
         let rendered: String = render_stmt(stmt, &interner, C_RENDER_WIDTH);
@@ -9605,17 +10422,17 @@ fn packed_shldq_exprs(imm: u8, lo: &str, hi: &str) -> (String, String) {
     ("0ULL".to_owned(), format!("({lo} << {})", bits - 64))
 }
 
-fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
+fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CStmt {
     match stmt {
         Stmt::Assign { dest, src } => {
-            let body: String = source_expr(src, dest.width);
+            let body: String = source_expr(src, dest.width, aggregates);
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
         }
         Stmt::BinAssign { dest, op, src } => {
             let var: &'static str = reg_var(dest.reg);
-            let rhs_src: String = source_expr(src, dest.width);
+            let rhs_src: String = source_expr(src, dest.width, aggregates);
             let body: String = bin_expr(*op, var, &rhs_src, dest.width);
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
@@ -9646,8 +10463,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             kind,
             flags,
         } => {
-            let cond: String = cond_expr(*kind, flags);
-            let chosen: String = source_expr(src, dest.width);
+            let cond: String = cond_expr(*kind, flags, aggregates);
+            let chosen: String = source_expr(src, dest.width, aggregates);
             let var: &'static str = reg_var(dest.reg);
             let taken: String = reg_write_rhs(var, dest.width, &chosen);
             let body: String = c_render(|cx| CExpr::Ternary {
@@ -9658,7 +10475,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             assign_cstmt(cx, var, &body)
         }
         Stmt::SetCc { dest, kind, flags } => {
-            let cond: String = cond_expr(*kind, flags);
+            let cond: String = cond_expr(*kind, flags, aggregates);
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = c_render(|cx| {
                 let kept: CExpr = c_bin(
@@ -9678,25 +10495,25 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             assign_cstmt(cx, var, &rhs)
         }
         Stmt::FlagSnapshot { var, kind, flags } => {
-            let cond: String = cond_expr(*kind, flags);
+            let cond: String = cond_expr(*kind, flags, aggregates);
             assign_cstmt(cx, &sel_var(*var), &cond)
         }
         Stmt::Store { addr, src } => {
-            let target: String = deref_expr(addr);
-            let value: String = source_expr(src, addr.width);
+            let target: String = deref_expr(addr, aggregates);
+            let value: String = source_expr(src, addr.width, aggregates);
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &value);
             assign_cstmt(cx, &target, &masked)
         }
         Stmt::MemRmw { addr, op } => {
-            let target: String = deref_expr(addr);
+            let target: String = deref_expr(addr, aggregates);
             let current: String = c_render(|cx| {
                 let inner: CExpr = cx.var(&target);
                 c_cast(cx, "uint64_t", inner)
             });
             let body: String = match op {
                 MemRmwOp::Bin { op, src } => {
-                    let rhs: String = source_expr(src, addr.width);
+                    let rhs: String = source_expr(src, addr.width, aggregates);
                     bin_expr(*op, &current, &rhs, addr.width)
                 }
                 MemRmwOp::Un(UnOp::Neg) => c_render(|cx| {
@@ -9720,7 +10537,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
                 ExtSource::Reg(r) => (reg_var(r.reg).to_string(), r.width),
-                ExtSource::Mem(mem) => (deref_expr(mem), mem.width),
+                ExtSource::Mem(mem) => (deref_expr(mem, aggregates), mem.width),
             };
             let body: String = extend_expr(&raw, src_width, dest.width, *signed);
             let var: &'static str = reg_var(dest.reg);
@@ -9731,7 +10548,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             let operand: String = match src {
                 ExtSource::Reg(r) => reg_var(r.reg).to_string(),
                 ExtSource::Mem(mem) => {
-                    let d: String = deref_expr(mem);
+                    let d: String = deref_expr(mem, aggregates);
                     c_render(|cx| {
                         let inner: CExpr = cx.var(&d);
                         c_cast(cx, "uint64_t", inner)
@@ -9801,7 +10618,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt) -> CStmt {
             }
         }
         Stmt::FpStore { addr, src, width } => {
-            let target: String = deref_expr(addr);
+            let target: String = deref_expr(addr, aggregates);
             let bits: String = xmm_bits(*src, *width);
             assign_cstmt(cx, &target, &bits)
         }
@@ -10336,34 +11153,34 @@ fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) ->
     }
 }
 
-fn if_cond_expr(cond: &Cond) -> String {
+fn if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> String {
     match cond {
-        Cond::Leaf { kind, flags } => cond_expr(*kind, flags),
+        Cond::Leaf { kind, flags } => cond_expr(*kind, flags, aggregates),
         Cond::And(lhs, rhs) => {
-            let l: String = if_cond_expr(lhs);
-            let r: String = if_cond_expr(rhs);
+            let l: String = if_cond_expr(lhs, aggregates);
+            let r: String = if_cond_expr(rhs, aggregates);
             c_render(|cx| c_bin(BinaryOp::LogAnd, c_opaque(cx, &l), c_opaque(cx, &r)))
         }
         Cond::Or(lhs, rhs) => {
-            let l: String = if_cond_expr(lhs);
-            let r: String = if_cond_expr(rhs);
+            let l: String = if_cond_expr(lhs, aggregates);
+            let r: String = if_cond_expr(rhs, aggregates);
             c_render(|cx| c_bin(BinaryOp::LogOr, c_opaque(cx, &l), c_opaque(cx, &r)))
         }
     }
 }
 
-fn cond_expr(kind: CondKind, flags: &Flags) -> String {
+fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> String {
     match flags {
         Flags::Cmp { lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
-            let rhs_expr: String = source_expr(rhs, width);
+            let rhs_expr: String = source_expr(rhs, width, aggregates);
             compare_expr(kind, lhs_expr, &rhs_expr, width)
         }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
-            let lhs_expr: String = deref_expr(lhs);
-            let rhs_expr: String = source_expr(rhs, width);
+            let lhs_expr: String = deref_expr(lhs, aggregates);
+            let rhs_expr: String = source_expr(rhs, width, aggregates);
             compare_expr(kind, &lhs_expr, &rhs_expr, width)
         }
         Flags::TestImm { operand, mask } => {
@@ -10468,11 +11285,93 @@ const fn rs_uint_ty(width: Width) -> &'static str {
     }
 }
 
+fn aggregate_rust_type_name(plan: &AggregatePlan, root: usize) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    let prefix: &str = match root_plan.shape {
+        AggregateShape::Struct { .. } => "RecoveredStruct",
+        AggregateShape::Array { .. } => "RecoveredArray",
+    };
+    Some(format!("{prefix}{root}"))
+}
+
+fn emit_rust_aggregate_types(out: &mut String, plan: &AggregatePlan) {
+    for (root_index, root) in plan.roots.iter().enumerate().rev() {
+        match &root.shape {
+            AggregateShape::Array { width, .. } => {
+                let _ = writeln!(
+                    out,
+                    "    type RecoveredArray{root_index} = {};",
+                    rs_uint_ty(*width)
+                );
+            }
+            AggregateShape::Struct { fields } => {
+                let _ = writeln!(out, "    #[repr(C, packed)]");
+                let _ = writeln!(out, "    struct RecoveredStruct{root_index} {{");
+                let mut cursor: i64 = 0;
+                for &(disp, width) in fields {
+                    if disp > cursor {
+                        let gap: i64 = disp - cursor;
+                        let _ = writeln!(out, "        padding_{cursor:x}: [u8; {gap}],");
+                    }
+                    let field: String = aggregate_field_name(disp);
+                    let child_type: Option<String> = plan
+                        .linked_child(root.reg, disp)
+                        .and_then(|child: usize| aggregate_rust_type_name(plan, child));
+                    match child_type {
+                        Some(child_type) => {
+                            let _ = writeln!(out, "        {field}: *mut {child_type},");
+                        }
+                        None => {
+                            let _ = writeln!(out, "        {field}: {},", rs_uint_ty(width));
+                        }
+                    }
+                    let Some(next_cursor): Option<i64> =
+                        disp.checked_add(i64::from(width.bits() / 8))
+                    else {
+                        return;
+                    };
+                    cursor = next_cursor;
+                }
+                let _ = writeln!(out, "    }}");
+            }
+        }
+    }
+}
+
+fn aggregate_rust_local_name(plan: &AggregatePlan, root: usize) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    let prefix: &str = match root_plan.shape {
+        AggregateShape::Struct { .. } => "recovered_struct",
+        AggregateShape::Array { .. } => "recovered_array",
+    };
+    Some(format!("{prefix}_{root}"))
+}
+
+fn emit_rust_aggregate_locals(out: &mut String, plan: &AggregatePlan) {
+    for (root_index, root) in plan.roots.iter().enumerate() {
+        if !root.bind_local {
+            continue;
+        }
+        let Some(ty): Option<String> = aggregate_rust_type_name(plan, root_index) else {
+            continue;
+        };
+        let Some(name): Option<String> = aggregate_rust_local_name(plan, root_index) else {
+            continue;
+        };
+        let _ = writeln!(
+            out,
+            "    let {name}: *mut {ty} = ({} as usize) as *mut {ty};",
+            reg_var(root.reg)
+        );
+    }
+}
+
 fn emit_rust(
     body: &Block,
     signature: &FnSignature,
     frame: Option<&FramePlan>,
     sret: Option<&SretPlan>,
+    aggregates: &AggregatePlan,
 ) -> Option<String> {
     if sret.is_some() {
         return None;
@@ -10517,6 +11416,7 @@ fn emit_rust(
         "#[allow(unused_mut, unused_variables, unused_assignments, unused_parens, dead_code)]"
     );
     let _ = writeln!(out, "pub fn recovered({params_sig}) -> {return_type} {{");
+    emit_rust_aggregate_types(&mut out, aggregates);
     if let Some(plan) = frame {
         let _ = writeln!(
             out,
@@ -10575,6 +11475,7 @@ fn emit_rust(
             declared_gp.push(*reg);
         }
     }
+    emit_rust_aggregate_locals(&mut out, aggregates);
     for xmm in &touched_xmm {
         if !declared_xmm.contains(xmm) {
             let _ = writeln!(out, "    let mut {}: u64 = 0;", xmm_var(*xmm));
@@ -10597,7 +11498,7 @@ fn emit_rust(
         FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
     };
 
-    rs_emit_block(&mut out, body, 1, &ret_expr)?;
+    rs_emit_block(&mut out, body, 1, &ret_expr, aggregates)?;
 
     if !matches!(body.last(), Some(Node::Return)) {
         let _ = writeln!(out, "    {ret_expr}");
@@ -10606,39 +11507,45 @@ fn emit_rust(
     Some(out)
 }
 
-fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -> Option<()> {
+fn rs_emit_block(
+    out: &mut String,
+    body: &Block,
+    depth: usize,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
     let indent: String = "    ".repeat(depth);
     for node in body {
         match node {
-            Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent)?,
+            Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent, aggregates)?,
             Node::If {
                 cond,
                 then_body,
                 else_body,
             } => {
-                let cond_text: String = rs_if_cond_expr(cond)?;
+                let cond_text: String = rs_if_cond_expr(cond, aggregates)?;
                 let _ = writeln!(out, "{indent}if {cond_text} {{");
-                rs_emit_block(out, then_body, depth + 1, ret_expr)?;
+                rs_emit_block(out, then_body, depth + 1, ret_expr, aggregates)?;
                 if let Some(else_b) = else_body {
                     let _ = writeln!(out, "{indent}}} else {{");
-                    rs_emit_block(out, else_b, depth + 1, ret_expr)?;
+                    rs_emit_block(out, else_b, depth + 1, ret_expr, aggregates)?;
                 }
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::DoWhile { body, cond } => {
                 let cond_text: String = match cond {
-                    LoopCond::Direct { cond, flags } => rs_cond_expr(*cond, flags)?,
+                    LoopCond::Direct { cond, flags } => rs_cond_expr(*cond, flags, aggregates)?,
                     LoopCond::Snapshot { var } => format!("{} != 0", loop_cond_var(*var)),
                 };
                 let inner: String = "    ".repeat(depth + 1);
                 let _ = writeln!(out, "{indent}loop {{");
-                rs_emit_block(out, body, depth + 1, ret_expr)?;
+                rs_emit_block(out, body, depth + 1, ret_expr, aggregates)?;
                 let _ = writeln!(out, "{inner}if !({cond_text}) {{ break; }}");
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::While { body } => {
                 let _ = writeln!(out, "{indent}loop {{");
-                rs_emit_block(out, body, depth + 1, ret_expr)?;
+                rs_emit_block(out, body, depth + 1, ret_expr, aggregates)?;
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::Switch {
@@ -10659,25 +11566,25 @@ fn rs_emit_block(out: &mut String, body: &Block, depth: usize, ret_expr: &str) -
                     let mut cursor: usize = idx;
                     loop {
                         let arm: &SwitchCase = &cases[cursor];
-                        rs_emit_block(out, &arm.body, depth + 2, ret_expr)?;
+                        rs_emit_block(out, &arm.body, depth + 2, ret_expr, aggregates)?;
                         if !arm.fallthrough {
                             break;
                         }
                         cursor += 1;
                         if cursor >= cases.len() {
-                            rs_emit_block(out, default, depth + 2, ret_expr)?;
+                            rs_emit_block(out, default, depth + 2, ret_expr, aggregates)?;
                             break;
                         }
                     }
                     let _ = writeln!(out, "{indent}    }}");
                 }
                 let _ = writeln!(out, "{indent}    _ => {{");
-                rs_emit_block(out, default, depth + 2, ret_expr)?;
+                rs_emit_block(out, default, depth + 2, ret_expr, aggregates)?;
                 let _ = writeln!(out, "{indent}    }}");
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::CondSnapshot { var, cond, flags } => {
-                let cond_text: String = rs_cond_expr(*cond, flags)?;
+                let cond_text: String = rs_cond_expr(*cond, flags, aggregates)?;
                 let _ = writeln!(
                     out,
                     "{indent}{} = ({cond_text}) as u64;",
@@ -10714,10 +11621,17 @@ fn rs_emit_xmm_store(out: &mut String, dest: Xmm, value: &str, width: FpWidth, i
     );
 }
 
-fn rs_mul_imm_stmt(out: &mut String, dest: RegRef, src: &ExtSource, imm: i64, indent: &str) {
+fn rs_mul_imm_stmt(
+    out: &mut String,
+    dest: RegRef,
+    src: &ExtSource,
+    imm: i64,
+    indent: &str,
+    aggregates: &AggregatePlan,
+) {
     let operand: String = match src {
         ExtSource::Reg(r) => reg_var(r.reg).to_string(),
-        ExtSource::Mem(mem) => rs_deref_read(mem),
+        ExtSource::Mem(mem) => rs_deref_read(mem, aggregates),
     };
     let body: String = parse_expr(&operand).map_or_else(
         || format!("({operand}).wrapping_mul(({imm}i64) as u64)"),
@@ -10928,28 +11842,39 @@ fn rs_xmm_to_gpr_stmt(out: &mut String, dest: RegRef, src: Xmm, width: FpWidth, 
     rs_emit_reg_assign(out, dest, &bits, indent);
 }
 
-fn rs_mem_rmw_stmt(out: &mut String, addr: &MemRef, op: &MemRmwOp, indent: &str) -> Option<()> {
-    let current: String = rs_deref_read(addr);
+fn rs_mem_rmw_stmt(
+    out: &mut String,
+    addr: &MemRef,
+    op: &MemRmwOp,
+    indent: &str,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
+    let current: String = rs_deref_read(addr, aggregates);
     let body: String = match op {
         MemRmwOp::Bin { op, src } => {
-            let rhs: String = rs_source_expr(src, addr.width)?;
+            let rhs: String = rs_source_expr(src, addr.width, aggregates)?;
             rs_bin_expr(*op, &current, &rhs, addr.width)
         }
         MemRmwOp::Un(un_op) => rs_unop_expr(*un_op, &current),
     };
-    rs_emit_store(out, addr, &body, indent);
+    rs_emit_store(out, addr, &body, indent, aggregates);
     Some(())
 }
 
-fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
+fn rs_emit_stmt(
+    out: &mut String,
+    stmt: &Stmt,
+    indent: &str,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
     match stmt {
         Stmt::Assign { dest, src } => {
-            let body: String = rs_source_expr(src, dest.width)?;
+            let body: String = rs_source_expr(src, dest.width, aggregates)?;
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
         Stmt::BinAssign { dest, op, src } => {
             let var: &'static str = reg_var(dest.reg);
-            let rhs: String = rs_source_expr(src, dest.width)?;
+            let rhs: String = rs_source_expr(src, dest.width, aggregates)?;
             let body: String = rs_bin_expr(*op, var, &rhs, dest.width);
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
@@ -10964,8 +11889,8 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             kind,
             flags,
         } => {
-            let cond: String = rs_cond_expr(*kind, flags)?;
-            let chosen: String = rs_source_expr(src, dest.width)?;
+            let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
+            let chosen: String = rs_source_expr(src, dest.width, aggregates)?;
             let var: &'static str = reg_var(dest.reg);
             let taken: String = rs_reg_write_rhs(var, dest.width, &chosen);
             let _ = writeln!(
@@ -10974,7 +11899,7 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             );
         }
         Stmt::SetCc { dest, kind, flags } => {
-            let cond: String = rs_cond_expr(*kind, flags)?;
+            let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
             let var: &'static str = reg_var(dest.reg);
             let _ = writeln!(
                 out,
@@ -10982,18 +11907,20 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
             );
         }
         Stmt::FlagSnapshot { var, kind, flags } => {
-            let cond: String = rs_cond_expr(*kind, flags)?;
+            let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
             let _ = writeln!(out, "{indent}{} = ({cond}) as u64;", sel_var(*var));
         }
         Stmt::Extend { dest, src, signed } => {
             let (raw, src_width): (String, Width) = match src {
                 ExtSource::Reg(r) => (reg_var(r.reg).to_string(), r.width),
-                ExtSource::Mem(mem) => (rs_deref_read(mem), mem.width),
+                ExtSource::Mem(mem) => (rs_deref_read(mem, aggregates), mem.width),
             };
             let body: String = rs_extend_expr(&raw, src_width, dest.width, *signed);
             rs_emit_reg_assign(out, *dest, &body, indent);
         }
-        Stmt::MulImm { dest, src, imm } => rs_mul_imm_stmt(out, *dest, src, *imm, indent),
+        Stmt::MulImm { dest, src, imm } => {
+            rs_mul_imm_stmt(out, *dest, src, *imm, indent, aggregates);
+        }
         Stmt::WideMul { src } => rs_emit_wide_mul(out, *src, indent),
         Stmt::Divide { divisor, signed } => rs_emit_divide(out, *divisor, *signed, indent),
         Stmt::DoubleShift {
@@ -11041,10 +11968,12 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
         Stmt::GprToXmm { dest, src, width } => rs_gpr_to_xmm_stmt(out, *dest, *src, *width, indent),
         Stmt::XmmToGpr { dest, src, width } => rs_xmm_to_gpr_stmt(out, *dest, *src, *width, indent),
         Stmt::Store { addr, src } => {
-            let value: String = rs_source_expr(src, addr.width)?;
-            rs_emit_store(out, addr, &value, indent);
+            let value: String = rs_source_expr(src, addr.width, aggregates)?;
+            rs_emit_store(out, addr, &value, indent, aggregates);
         }
-        Stmt::MemRmw { addr, op } => rs_mem_rmw_stmt(out, addr, op, indent)?,
+        Stmt::MemRmw { addr, op } => {
+            rs_mem_rmw_stmt(out, addr, op, indent, aggregates)?;
+        }
         Stmt::FpStore { .. }
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
@@ -11054,8 +11983,66 @@ fn rs_emit_stmt(out: &mut String, stmt: &Stmt, indent: &str) -> Option<()> {
     Some(())
 }
 
+fn aggregate_rust_base(plan: &AggregatePlan, root: usize, base: Reg) -> Option<String> {
+    let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
+    if root_plan.bind_local {
+        aggregate_rust_local_name(plan, root)
+    } else {
+        let ty: String = aggregate_rust_type_name(plan, root)?;
+        Some(format!("(({} as usize) as *mut {ty})", reg_var(base)))
+    }
+}
+
+fn aggregate_rust_address(
+    mem: &MemRef,
+    plan: &AggregatePlan,
+    mutable: bool,
+) -> Option<(String, bool)> {
+    match plan.access(mem)? {
+        AggregateAccess::Field {
+            root,
+            base,
+            disp,
+            nested,
+            ..
+        } => {
+            let base: String = aggregate_rust_base(plan, root, base)?;
+            let field: String = aggregate_field_name(disp);
+            let address_macro: &str = if mutable { "addr_of_mut" } else { "addr_of" };
+            Some((
+                format!("core::ptr::{address_macro}!((*{base}).{field})"),
+                nested.is_some(),
+            ))
+        }
+        AggregateAccess::Array {
+            root, base, index, ..
+        } => {
+            let base: String = aggregate_rust_base(plan, root, base)?;
+            Some((
+                format!("{base}.wrapping_add({} as usize)", reg_var(index)),
+                false,
+            ))
+        }
+    }
+}
+
 #[allow(clippy::option_if_let_else)]
-fn rs_deref_read(mem: &MemRef) -> String {
+fn rs_deref_read(mem: &MemRef, aggregates: &AggregatePlan) -> String {
+    if let Some((ptr, pointer)) = aggregate_rust_address(mem, aggregates, false)
+        && let Some(ptr_expr) = parse_expr(&ptr)
+    {
+        let read: RustExpr = rcall(
+            path_expr(&["core", "ptr", "read_unaligned"]),
+            vec![ptr_expr],
+        );
+        let value: RustExpr = unsafe_block(read);
+        let widened: RustExpr = if pointer {
+            rcast(rcast(value, rtype_path("usize")), rtype_path("u64"))
+        } else {
+            rcast(value, rtype_path("u64"))
+        };
+        return render_rust_expr(&widened);
+    }
     let uty: &str = rs_uint_ty(mem.width);
     let ptr: String = rs_addr_expr(mem.base, mem.index, mem.disp);
     match parse_expr(&ptr) {
@@ -11076,8 +12063,26 @@ fn rs_deref_read(mem: &MemRef) -> String {
     }
 }
 
-fn rs_emit_store(out: &mut String, addr: &MemRef, value: &str, indent: &str) {
+fn rs_emit_store(
+    out: &mut String,
+    addr: &MemRef,
+    value: &str,
+    indent: &str,
+    aggregates: &AggregatePlan,
+) {
     let uty: &str = rs_uint_ty(addr.width);
+    if let Some((ptr, pointer)) = aggregate_rust_address(addr, aggregates, true)
+        && !pointer
+        && let (Some(ptr_expr), Some(value_expr)) = (parse_expr(&ptr), parse_expr(value))
+    {
+        let write: RustExpr = rcall(
+            path_expr(&["core", "ptr", "write_unaligned"]),
+            vec![ptr_expr, rcast(value_expr, rtype_path(uty))],
+        );
+        let stmt: String = format!("{};", render_rust_expr(&unsafe_block(write)));
+        let _ = writeln!(out, "{indent}{stmt}");
+        return;
+    }
     let ptr: String = rs_addr_expr(addr.base, addr.index, addr.disp);
     let stmt: String = match (parse_expr(&ptr), parse_expr(value)) {
         (Some(ptr_expr), Some(value_expr)) => {
@@ -11228,7 +12233,7 @@ fn rs_addr_expr(base: Option<Reg>, index: Option<(Reg, u8)>, disp: i64) -> Strin
     render_rust_expr(&combined)
 }
 
-fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
+fn rs_source_expr(src: &Source, width: Width, aggregates: &AggregatePlan) -> Option<String> {
     match src {
         Source::Reg(r) => {
             if r.width == width || width == Width::W64 {
@@ -11245,7 +12250,7 @@ fn rs_source_expr(src: &Source, width: Width) -> Option<String> {
             rtype_path("u64"),
         ))),
         Source::Lea { base, index, disp } => Some(rs_addr_expr(*base, *index, *disp)),
-        Source::Mem(mem) => Some(rs_deref_read(mem)),
+        Source::Mem(mem) => Some(rs_deref_read(mem, aggregates)),
     }
 }
 
@@ -11505,35 +12510,35 @@ fn rs_sign_truncated_diff(lhs: &str, rhs: &str, width: Width) -> String {
     }
 }
 
-fn rs_if_cond_expr(cond: &Cond) -> Option<String> {
+fn rs_if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> Option<String> {
     match cond {
-        Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags),
+        Cond::Leaf { kind, flags } => rs_cond_expr(*kind, flags, aggregates),
         Cond::And(lhs, rhs) => {
-            let a: String = rs_if_cond_expr(lhs)?;
-            let b: String = rs_if_cond_expr(rhs)?;
+            let a: String = rs_if_cond_expr(lhs, aggregates)?;
+            let b: String = rs_if_cond_expr(rhs, aggregates)?;
             Some(rs_binary_text(&a, &b, RBinOp::And, "&&"))
         }
         Cond::Or(lhs, rhs) => {
-            let a: String = rs_if_cond_expr(lhs)?;
-            let b: String = rs_if_cond_expr(rhs)?;
+            let a: String = rs_if_cond_expr(lhs, aggregates)?;
+            let b: String = rs_if_cond_expr(rhs, aggregates)?;
             Some(rs_binary_text(&a, &b, RBinOp::Or, "||"))
         }
     }
 }
 
 #[allow(clippy::option_if_let_else)]
-fn rs_cond_expr(kind: CondKind, flags: &Flags) -> Option<String> {
+fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Option<String> {
     match flags {
         Flags::Cmp { lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
-            let rhs_expr: String = rs_source_expr(rhs, width)?;
+            let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
             Some(rs_compare_expr(kind, lhs_expr, &rhs_expr, width))
         }
         Flags::CmpMem { lhs, rhs } => {
             let width: Width = lhs.width;
-            let lhs_expr: String = rs_deref_read(lhs);
-            let rhs_expr: String = rs_source_expr(rhs, width)?;
+            let lhs_expr: String = rs_deref_read(lhs, aggregates);
+            let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
             Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
         }
         Flags::TestImm { operand, mask } => {
@@ -11640,15 +12645,17 @@ mod tests {
     }
 
     #[test]
-    fn pointer_load_lifts_to_width_exact_deref() {
+    fn pointer_load_cluster_lifts_to_width_exact_fields() {
         let code: [u8; 8] = [0x48, 0x8b, 0x01, 0x48, 0x03, 0x41, 0x08, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
         assert_eq!(rec.params, vec![Reg::Rcx]);
-        assert!(rec.source.contains("(*(uint64_t*)(uintptr_t)(r_rcx))"));
-        assert!(
-            rec.source
-                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL))")
-        );
+        assert!(rec.source.contains("recovered_struct_0_t"));
+        assert!(rec.source.contains("recovered_struct_0->field_0"));
+        assert!(rec.source.contains("recovered_struct_0->field_8"));
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("struct RecoveredStruct0"));
+        assert!(rust.contains("field_0"));
+        assert!(rust.contains("field_8"));
     }
 
     #[test]
@@ -11656,7 +12663,9 @@ mod tests {
         let code: [u8; 6] = [0x8b, 0x01, 0x03, 0x41, 0x04, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
         assert_eq!(rec.return_width_bits, 32);
-        assert!(rec.source.contains("(*(uint32_t*)(uintptr_t)(r_rcx))"));
+        assert!(rec.source.contains("uint32_t field_0"));
+        assert!(rec.source.contains("uint32_t field_4"));
+        assert!(rec.source.contains("recovered_struct_0->field_0"));
     }
 
     #[test]
@@ -11675,10 +12684,137 @@ mod tests {
         let code: [u8; 5] = [0x48, 0x8b, 0x04, 0xd1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
         assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert!(rec.source.contains("recovered_array_0[r_rdx]"));
+        assert!(rec.source.contains("typedef uint64_t recovered_array_0_t;"));
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("type RecoveredArray0 = u64;"));
+        assert!(rust.contains("recovered_array_0.wrapping_add(r_rdx as usize)"));
+    }
+
+    #[test]
+    fn nested_pointer_cluster_lifts_to_linked_struct_types() {
+        let code: [u8; 15] = [
+            0x48, 0x8b, 0x11, 0x48, 0x8b, 0x42, 0x08, 0x48, 0x03, 0x02, 0x48, 0x03, 0x41, 0x08,
+            0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert!(rec.source.contains("recovered_struct_1_t *field_0"));
+        assert!(rec.source.contains("recovered_struct_1_t"));
+        assert!(rec.source.contains("recovered_struct_0->field_0"));
         assert!(
             rec.source
-                .contains("(*(uint64_t*)(uintptr_t)(r_rcx + r_rdx * 8ULL))")
+                .contains("((recovered_struct_1_t *)(uintptr_t)r_rdx)->field_0")
         );
+        assert!(
+            rec.source
+                .contains("((recovered_struct_1_t *)(uintptr_t)r_rdx)->field_8")
+        );
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("*mut RecoveredStruct1"));
+        assert!(rust.contains("struct RecoveredStruct1"));
+    }
+
+    #[test]
+    fn nested_scaled_access_lifts_to_a_linked_array_type() {
+        let code: [u8; 12] = [
+            0x4c, 0x8b, 0x01, 0x49, 0x8b, 0x04, 0xd0, 0x48, 0x03, 0x41, 0x08, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert!(rec.source.contains("recovered_array_1_t *field_0"));
+        assert!(
+            rec.source
+                .contains("((recovered_array_1_t *)(uintptr_t)r_r8)[r_rdx]")
+        );
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("*mut RecoveredArray1"));
+        assert!(rust.contains("wrapping_add(r_rdx as usize)"));
+    }
+
+    #[test]
+    fn overlapping_field_evidence_keeps_raw_accesses() {
+        let code: [u8; 10] = [0x48, 0x8b, 0x01, 0x8b, 0x51, 0x04, 0x48, 0x01, 0xd0, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert!(!rec.source.contains("recovered_struct_"));
+        assert!(rec.source.contains("(*(uint64_t*)(uintptr_t)(r_rcx))"));
+        assert!(
+            rec.source
+                .contains("(*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)4LL))")
+        );
+    }
+
+    #[test]
+    fn aggregate_classifier_rejects_conflicts_mismatched_arrays_and_caps() {
+        let conflicting: [MemRef; 2] = [
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 0,
+                width: Width::W64,
+            },
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 0,
+                width: Width::W32,
+            },
+        ];
+        assert!(aggregate_classify_root(Reg::Rcx, &conflicting).is_none());
+
+        let mismatched_array: [MemRef; 1] = [MemRef {
+            base: Some(Reg::Rcx),
+            index: Some((Reg::Rdx, 4)),
+            disp: 0,
+            width: Width::W64,
+        }];
+        assert!(aggregate_classify_root(Reg::Rcx, &mismatched_array).is_none());
+
+        let root_reused_as_index: [MemRef; 3] = [
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 0,
+                width: Width::W64,
+            },
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 8,
+                width: Width::W64,
+            },
+            MemRef {
+                base: Some(Reg::Rdx),
+                index: Some((Reg::Rcx, 8)),
+                disp: 0,
+                width: Width::W64,
+            },
+        ];
+        assert!(aggregate_classify_root(Reg::Rcx, &root_reused_as_index).is_none());
+
+        let mut too_many_fields: Vec<MemRef> = Vec::new();
+        for field in 0..=AGGREGATE_MAX_FIELDS {
+            let disp: i64 = i64::try_from(field)
+                .expect("field index")
+                .checked_mul(8)
+                .expect("field displacement");
+            too_many_fields.push(MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp,
+                width: Width::W64,
+            });
+        }
+        assert!(aggregate_classify_root(Reg::Rcx, &too_many_fields).is_none());
+
+        let too_many_observations: Vec<MemRef> = vec![
+            MemRef {
+                base: Some(Reg::Rcx),
+                index: Some((Reg::Rdx, 8)),
+                disp: 0,
+                width: Width::W64,
+            };
+            AGGREGATE_MAX_ROOT_OBSERVATIONS + 1
+        ];
+        assert!(aggregate_classify_root(Reg::Rcx, &too_many_observations).is_none());
     }
 
     #[test]
@@ -12843,6 +13979,15 @@ mod tests {
     }
 
     #[test]
+    fn floating_memory_offsets_stay_raw_until_float_fields_are_emitted() {
+        let code: [u8; 10] = [0xf2, 0x0f, 0x10, 0x07, 0xf2, 0x0f, 0x58, 0x47, 0x08, 0xc3];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0xb810, Abi::SysV).expect("float memory leaf");
+        assert!(!rec.source.contains("recovered_struct_"));
+        assert!(rec.source.matches("(*(double*)(uintptr_t)").count() >= 2);
+    }
+
+    #[test]
     fn xor_self_zeroes_without_reading_the_register() {
         let code: [u8; 6] = [0x31, 0xc9, 0x48, 0x01, 0xc8, 0xc3];
         let rec: LeafRecovery =
@@ -13237,8 +14382,8 @@ mod tests {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod structuring_corpus {
     use super::{
-        Abi, BlockTerm, CfgBlock, Item, LeafItems, Stmt, build_blocks, build_leaf_items,
-        structure_items,
+        Abi, AggregatePlan, BlockTerm, CfgBlock, Item, LeafItems, Stmt, build_blocks,
+        build_leaf_items, structure_items,
     };
     use crate::structuring;
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
@@ -13632,19 +14777,21 @@ mod structuring_corpus {
             Box::new(leaf(Reg::Rdx, CondKind::L)),
         );
         assert!(
-            if_cond_expr(&and).contains("&&"),
+            if_cond_expr(&and, &AggregatePlan::default()).contains("&&"),
             "fused AND must render `&&`"
         );
         assert!(
-            if_cond_expr(&or).contains("||"),
+            if_cond_expr(&or, &AggregatePlan::default()).contains("||"),
             "fused OR must render `||`"
         );
         assert!(
-            rs_if_cond_expr(&and).is_some_and(|s: String| s.contains("&&")),
+            rs_if_cond_expr(&and, &AggregatePlan::default())
+                .is_some_and(|s: String| s.contains("&&")),
             "fused AND must render `&&` in rust"
         );
         assert!(
-            rs_if_cond_expr(&or).is_some_and(|s: String| s.contains("||")),
+            rs_if_cond_expr(&or, &AggregatePlan::default())
+                .is_some_and(|s: String| s.contains("||")),
             "fused OR must render `||` in rust"
         );
     }

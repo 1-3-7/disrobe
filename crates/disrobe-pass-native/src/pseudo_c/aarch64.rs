@@ -1,8 +1,9 @@
 use super::{
-    Abi, BinOp, CondKind, Error, Flags, FnReturn, FnSignature, FrameShape, Item, ItemKind,
-    LeafRecovery, MemRef, Reg, RegRef, ResolvedCall, Result, ScalarType, Source, SretPlan,
-    SretReturn, Stmt, Structured, Width, annotate_calls_block_with_order, collect_call_targets,
-    condition_is_sound, detect_sret, emit_c, emit_rust, infer_params, plan_frame, structure_items,
+    Abi, AggregatePlan, BinOp, CondKind, Error, Flags, FnReturn, FnSignature, FrameShape, Item,
+    ItemKind, LeafRecovery, MemRef, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
+    SretPlan, SretReturn, Stmt, Structured, Width, annotate_calls_block_with_order,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
+    infer_params, plan_frame, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -320,17 +321,21 @@ fn finish(
     };
     let frame_shape: FrameShape = classify_frame(insns);
     let frame = plan_frame(&structured.body, frame_shape)?;
+    let aggregate_plan: AggregatePlan =
+        infer_aggregate_plan(&structured.body, &params, frame.as_ref());
     let source: String = emit_c(
         &structured.body,
         &signature,
         frame.as_ref(),
         sret_plan.as_ref(),
+        &aggregate_plan,
     );
     let rust_source: Option<String> = emit_rust(
         &structured.body,
         &signature,
         frame.as_ref(),
         sret_plan.as_ref(),
+        &aggregate_plan,
     );
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);

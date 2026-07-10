@@ -564,7 +564,15 @@ struct MemCase {
     n_elems: usize,
     n_scalars: usize,
     returns: bool,
+    access_shape: ExpectedAggregateShape,
     c_source: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedAggregateShape {
+    Struct,
+    Array,
+    NoAggregate,
 }
 
 const MEM_BATTERY: &[MemCase] = &[
@@ -574,6 +582,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 2,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::Struct,
         c_source: "long long m_sum2(long long *p){ return p[0] + p[1]; }",
     },
     MemCase {
@@ -582,6 +591,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 2,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::Struct,
         c_source: "int m_sum2i(int *p){ return p[0] + p[1]; }",
     },
     MemCase {
@@ -590,6 +600,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 3,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::Struct,
         c_source: "long long m_diff(long long *p){ return p[0] - p[2]; }",
     },
     MemCase {
@@ -598,6 +609,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 6,
         n_scalars: 1,
         returns: true,
+        access_shape: ExpectedAggregateShape::Array,
         c_source: "long long m_index(long long *p, long long i){ return p[i]; }",
     },
     MemCase {
@@ -606,6 +618,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 2,
         n_scalars: 0,
         returns: false,
+        access_shape: ExpectedAggregateShape::Struct,
         c_source: "void m_swap(long long *p){ long long t = p[0]; p[0] = p[1]; p[1] = t; }",
     },
     MemCase {
@@ -614,6 +627,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 1,
         n_scalars: 1,
         returns: true,
+        access_shape: ExpectedAggregateShape::NoAggregate,
         c_source: "long long m_acc(long long *p, long long v){ *p = *p + v; return *p; }",
     },
     MemCase {
@@ -622,6 +636,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 6,
         n_scalars: 2,
         returns: false,
+        access_shape: ExpectedAggregateShape::Array,
         c_source: "void m_store_idx(long long *p, long long i, long long v){ p[i] = v; }",
     },
     MemCase {
@@ -630,6 +645,7 @@ const MEM_BATTERY: &[MemCase] = &[
         n_elems: 3,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::Struct,
         c_source: "int m_mask32(int *p){ return (p[0] & p[1]) | p[2]; }",
     },
 ];
@@ -784,6 +800,35 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
                 continue;
             }
         };
+        match case.access_shape {
+            ExpectedAggregateShape::Struct => {
+                assert!(
+                    recovery.source.contains("recovered_struct_0_t")
+                        && recovery.source.contains("->field_"),
+                    "{} must recover constant offsets as fields:\n{}",
+                    case.name,
+                    recovery.source
+                );
+            }
+            ExpectedAggregateShape::Array => {
+                assert!(
+                    recovery.source.contains("recovered_array_0_t")
+                        && recovery.source.contains("recovered_array_0["),
+                    "{} must recover scaled indexing as an array:\n{}",
+                    case.name,
+                    recovery.source
+                );
+            }
+            ExpectedAggregateShape::NoAggregate => {
+                assert!(
+                    !recovery.source.contains("recovered_struct_")
+                        && !recovery.source.contains("recovered_array_"),
+                    "{} has insufficient aggregate evidence:\n{}",
+                    case.name,
+                    recovery.source
+                );
+            }
+        }
         let Some(snippet): Option<String> = mem_driver_snippet(case, &recovery) else {
             eprintln!("skip {}: arg mapping unsupported", case.name);
             continue;
@@ -838,6 +883,422 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
     println!(
         "memory-access behavioral differential PASSED for {lifted_count} leaf functions (MS x64 ABI)"
     );
+}
+
+const AGGREGATE_SOURCE: &str = "\
+typedef struct { unsigned long long first; unsigned second; unsigned short third; } AggregateFields;
+typedef struct { long long left; long long right; } AggregateInner;
+typedef struct { AggregateInner *inner; long long tail; } AggregateOuter;
+typedef struct { long long *items; long long tail; } AggregateArrayOuter;
+unsigned long long aggregate_fields(AggregateFields *p){ return p->first + p->second + p->third; }
+long long aggregate_array(long long *p, long long i){ return p[i]; }
+long long aggregate_nested(AggregateOuter *p){ return p->inner->left + p->inner->right + p->tail; }
+long long aggregate_nested_array(AggregateArrayOuter *p, long long i){ return p->items[i] + p->tail; }
+void aggregate_update(AggregateFields *p, unsigned long long delta){ p->first += delta; p->second ^= (unsigned)delta; }
+";
+
+fn aggregate_driver(recovered: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n\
+         typedef struct {{ unsigned long long first; unsigned second; unsigned short third; }} AggregateFields;\n\
+         typedef struct {{ long long left; long long right; }} AggregateInner;\n\
+         typedef struct {{ AggregateInner *inner; long long tail; }} AggregateOuter;\n\
+         typedef struct {{ long long *items; long long tail; }} AggregateArrayOuter;\n\
+         extern unsigned long long aggregate_fields(AggregateFields *p);\n\
+         extern long long aggregate_array(long long *p, long long i);\n\
+         extern long long aggregate_nested(AggregateOuter *p);\n\
+         extern long long aggregate_nested_array(AggregateArrayOuter *p, long long i);\n\
+         extern void aggregate_update(AggregateFields *p, unsigned long long delta);\n\
+         {recovered}\n\
+         int main(void) {{\n\
+             long long seeds[] = {{ 0, 1, -1, 7, -7, 255, -1024, 0x12345678LL }};\n\
+             size_t count = sizeof(seeds) / sizeof(seeds[0]);\n\
+             for (size_t i = 0; i < count; i++) {{\n\
+                 AggregateFields fields = {{ (unsigned long long)seeds[i], (unsigned)(seeds[i] * 3), (unsigned short)(seeds[i] + 17) }};\n\
+                 AggregateInner inner = {{ seeds[i] - 9, seeds[i] + 23 }};\n\
+                 AggregateOuter outer = {{ &inner, seeds[i] * 5 }};\n\
+                 long long values[8];\n\
+                 for (size_t j = 0; j < 8; j++) values[j] = seeds[i] + (long long)j * 11;\n\
+                 size_t at = i % 8;\n\
+                 AggregateArrayOuter array_outer = {{ values, seeds[i] * 7 }};\n\
+                 AggregateFields updated_original = fields;\n\
+                 AggregateFields updated_recovered = fields;\n\
+                 uint64_t delta = ((uint64_t)seeds[i]) ^ 0xa5a55a5a11223344ULL;\n\
+                 uint64_t want_fields = (uint64_t)aggregate_fields(&fields);\n\
+                 uint64_t got_fields = rec_aggregate_fields((uint64_t)(uintptr_t)&fields);\n\
+                 uint64_t want_array = (uint64_t)aggregate_array(values, (long long)at);\n\
+                 uint64_t got_array = rec_aggregate_array((uint64_t)(uintptr_t)values, (uint64_t)at);\n\
+                 uint64_t want_nested = (uint64_t)aggregate_nested(&outer);\n\
+                 uint64_t got_nested = rec_aggregate_nested((uint64_t)(uintptr_t)&outer);\n\
+                 uint64_t want_nested_array = (uint64_t)aggregate_nested_array(&array_outer, (long long)at);\n\
+                 uint64_t got_nested_array = rec_aggregate_nested_array((uint64_t)(uintptr_t)&array_outer, (uint64_t)at);\n\
+                 aggregate_update(&updated_original, delta);\n\
+                 (void)rec_aggregate_update((uint64_t)(uintptr_t)&updated_recovered, delta);\n\
+                 int update_mismatch = updated_original.first != updated_recovered.first || updated_original.second != updated_recovered.second || updated_original.third != updated_recovered.third;\n\
+                 if (want_fields != got_fields || want_array != got_array || want_nested != got_nested || want_nested_array != got_nested_array || update_mismatch) {{\n\
+                     printf(\"MISMATCH %zu %llu %llu %llu %llu %llu %llu %llu %llu\\n\", i, (unsigned long long)want_fields, (unsigned long long)got_fields, (unsigned long long)want_array, (unsigned long long)got_array, (unsigned long long)want_nested, (unsigned long long)got_nested, (unsigned long long)want_nested_array, (unsigned long long)got_nested_array);\n\
+                     return 1;\n\
+                 }}\n\
+             }}\n\
+             printf(\"OK\\n\");\n\
+             return 0;\n\
+         }}\n"
+    )
+}
+
+fn aggregate_rust_driver(recovered: &str) -> String {
+    format!(
+        "#![allow(unused, unused_parens, dead_code)]\n{recovered}\n\
+         #[repr(C)]\nstruct AggregateFields {{ first: u64, second: u32, third: u16 }}\n\
+         #[repr(C)]\nstruct AggregateInner {{ left: i64, right: i64 }}\n\
+         #[repr(C)]\nstruct AggregateOuter {{ inner: *mut AggregateInner, tail: i64 }}\n\
+         #[repr(C)]\nstruct AggregateArrayOuter {{ items: *mut i64, tail: i64 }}\n\
+         fn main() {{\n\
+         \x20   let seeds: [i64; 8] = [0, 1, -1, 7, -7, 255, -1024, 0x12345678];\n\
+         \x20   for (i, seed) in seeds.into_iter().enumerate() {{\n\
+         \x20       let mut fields = AggregateFields {{ first: seed as u64, second: seed.wrapping_mul(3) as u32, third: seed.wrapping_add(17) as u16 }};\n\
+         \x20       let mut inner = AggregateInner {{ left: seed - 9, right: seed + 23 }};\n\
+         \x20       let mut outer = AggregateOuter {{ inner: &mut inner, tail: seed * 5 }};\n\
+         \x20       let mut values: [i64; 8] = core::array::from_fn(|j| seed + (j as i64) * 11);\n\
+         \x20       let at: usize = i % values.len();\n\
+         \x20       let mut array_outer = AggregateArrayOuter {{ items: values.as_mut_ptr(), tail: seed * 7 }};\n\
+         \x20       let delta: u64 = (seed as u64) ^ 0xa5a55a5a11223344u64;\n\
+         \x20       let mut updated = AggregateFields {{ first: seed as u64, second: seed.wrapping_mul(3) as u32, third: seed.wrapping_add(17) as u16 }};\n\
+         \x20       let want_updated: (u64, u32, u16) = (updated.first.wrapping_add(delta), updated.second ^ (delta as u32), updated.third);\n\
+         \x20       let want_fields: u64 = fields.first.wrapping_add(u64::from(fields.second)).wrapping_add(u64::from(fields.third));\n\
+         \x20       let got_fields: u64 = rec_aggregate_fields((&mut fields as *mut AggregateFields) as usize as u64);\n\
+         \x20       let want_array: u64 = values[at] as u64;\n\
+         \x20       let got_array: u64 = rec_aggregate_array(values.as_mut_ptr() as usize as u64, at as u64);\n\
+         \x20       let want_nested: u64 = (inner.left + inner.right + outer.tail) as u64;\n\
+         \x20       let got_nested: u64 = rec_aggregate_nested((&mut outer as *mut AggregateOuter) as usize as u64);\n\
+         \x20       let want_nested_array: u64 = values[at].wrapping_add(array_outer.tail) as u64;\n\
+         \x20       let got_nested_array: u64 = rec_aggregate_nested_array((&mut array_outer as *mut AggregateArrayOuter) as usize as u64, at as u64);\n\
+         \x20       let _ = rec_aggregate_update((&mut updated as *mut AggregateFields) as usize as u64, delta);\n\
+         \x20       assert_eq!((got_fields, got_array, got_nested, got_nested_array), (want_fields, want_array, want_nested, want_nested_array));\n\
+         \x20       assert_eq!((updated.first, updated.second, updated.third), want_updated);\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+fn aggregate_fields_driver(recovered: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n\
+         typedef struct {{ unsigned long long first; unsigned second; unsigned short third; }} AggregateFields;\n\
+         {recovered}\n\
+         int main(void) {{\n\
+         \x20   long long seeds[] = {{ 0, 1, -1, 7, -7, 255, -1024, 0x12345678LL }};\n\
+         \x20   size_t count = sizeof(seeds) / sizeof(seeds[0]);\n\
+         \x20   for (size_t i = 0; i < count; i++) {{\n\
+         \x20       AggregateFields value = {{ (unsigned long long)seeds[i], (unsigned)(seeds[i] * 3), (unsigned short)(seeds[i] + 17) }};\n\
+         \x20       uint64_t want = value.first + value.second + value.third;\n\
+         \x20       uint64_t got = rec_aggregate_fields((uint64_t)(uintptr_t)&value);\n\
+         \x20       if (want != got) return 1;\n\
+         \x20   }}\n\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+fn aggregate_fields_rust_driver(recovered: &str) -> String {
+    format!(
+        "#![allow(unused, unused_parens, dead_code)]\n{recovered}\n\
+         #[repr(C)]\nstruct AggregateFields {{ first: u64, second: u32, third: u16 }}\n\
+         fn main() {{\n\
+         \x20   let seeds: [i64; 8] = [0, 1, -1, 7, -7, 255, -1024, 0x12345678];\n\
+         \x20   for seed in seeds {{\n\
+         \x20       let mut value = AggregateFields {{ first: seed as u64, second: seed.wrapping_mul(3) as u32, third: seed.wrapping_add(17) as u16 }};\n\
+         \x20       let want: u64 = value.first.wrapping_add(u64::from(value.second)).wrapping_add(u64::from(value.third));\n\
+         \x20       let got: u64 = rec_aggregate_fields((&mut value as *mut AggregateFields) as usize as u64);\n\
+         \x20       assert_eq!(got, want);\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn gcc_and_clang_aggregate_accesses_recompile_to_c_and_rust_equivalence() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("skipping aggregate compiler differential on a non-x86-64 host");
+        return;
+    }
+    let dir: PathBuf = scratch_dir();
+    let source_path: PathBuf = dir.join("aggregate_types.c");
+    std::fs::write(&source_path, AGGREGATE_SOURCE.as_bytes()).expect("write aggregate source");
+    assert!(
+        Command::new("rustc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success()),
+        "rustc is required for aggregate grading"
+    );
+    let mut graded_compilers: usize = 0;
+    for compiler in ["gcc", "clang"] {
+        if !Command::new(compiler)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success())
+        {
+            continue;
+        }
+        let object_path: PathBuf = dir.join(format!("aggregate_types_{compiler}.o"));
+        let compile: std::process::Output = Command::new(compiler)
+            .args(["-O1", "-fno-stack-protector", "-c", "-o"])
+            .arg(&object_path)
+            .arg(&source_path)
+            .output()
+            .expect("compile aggregate source");
+        assert!(
+            compile.status.success(),
+            "{compiler} aggregate compile failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read aggregate object");
+        let mut recovered: String = String::new();
+        let mut recovered_rust: String = String::new();
+        for (name, expected) in [
+            ("aggregate_fields", ExpectedAggregateShape::Struct),
+            ("aggregate_array", ExpectedAggregateShape::Array),
+            ("aggregate_nested", ExpectedAggregateShape::Struct),
+            ("aggregate_nested_array", ExpectedAggregateShape::Struct),
+            ("aggregate_update", ExpectedAggregateShape::Struct),
+        ] {
+            let (code, base): (Vec<u8>, u64) =
+                function_code(&object_bytes, name).expect("locate aggregate function");
+            let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, HOST_ABI)
+                .expect("recover aggregate function");
+            match expected {
+                ExpectedAggregateShape::Struct => {
+                    assert!(
+                        recovery.source.contains("recovered_struct_0_t")
+                            && recovery.source.contains("->field_"),
+                        "{compiler} {name} did not recover fields:\n{}",
+                        recovery.source
+                    );
+                }
+                ExpectedAggregateShape::Array => {
+                    assert!(
+                        recovery.source.contains("recovered_array_0_t")
+                            && recovery.source.contains("recovered_array_0["),
+                        "{compiler} {name} did not recover indexing:\n{}",
+                        recovery.source
+                    );
+                }
+                ExpectedAggregateShape::NoAggregate => unreachable!(),
+            }
+            let rust: &str = recovery
+                .rust_source
+                .as_deref()
+                .expect("aggregate rust output");
+            assert!(
+                rust.contains("RecoveredStruct") || rust.contains("RecoveredArray"),
+                "{compiler} {name} did not carry the recovered type into Rust:\n{rust}"
+            );
+            if name == "aggregate_nested_array" {
+                assert!(
+                    recovery.source.contains("recovered_array_1_t *field_0")
+                        && recovery
+                            .source
+                            .contains("((recovered_array_1_t *)(uintptr_t)"),
+                    "{compiler} nested array did not link its field and elements:\n{}",
+                    recovery.source
+                );
+                assert!(
+                    rust.contains("*mut RecoveredArray1") && rust.contains("wrapping_add"),
+                    "{compiler} nested array did not carry into Rust:\n{rust}"
+                );
+            }
+            recovered.push_str(&mem_recovered_signature(&recovery, &format!("rec_{name}")));
+            recovered.push('\n');
+            recovered_rust.push_str(&rust.replacen(
+                "pub fn recovered(",
+                &format!("pub fn rec_{name}("),
+                1,
+            ));
+            recovered_rust.push('\n');
+        }
+        let driver: String = aggregate_driver(&recovered);
+        let driver_path: PathBuf = dir.join(format!("aggregate_driver_{compiler}.c"));
+        std::fs::write(&driver_path, driver.as_bytes()).expect("write aggregate driver");
+        let executable_path: PathBuf = dir.join(format!("aggregate_driver_{compiler}.exe"));
+        let link: std::process::Output = Command::new(compiler)
+            .args([
+                "-O3",
+                "-fstrict-aliasing",
+                "-Werror=ignored-attributes",
+                "-o",
+            ])
+            .arg(&executable_path)
+            .arg(&driver_path)
+            .arg(&object_path)
+            .output()
+            .expect("link aggregate driver");
+        assert!(
+            link.status.success(),
+            "{compiler} aggregate link failed: {}\n{driver}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run: std::process::Output = Command::new(&executable_path)
+            .output()
+            .expect("run aggregate driver");
+        assert!(
+            run.status.success() && String::from_utf8_lossy(&run.stdout).contains("OK"),
+            "{compiler} aggregate result mismatch: {}\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let rust_driver: String = aggregate_rust_driver(&recovered_rust);
+        let rust_driver_path: PathBuf = dir.join(format!("aggregate_driver_{compiler}.rs"));
+        std::fs::write(&rust_driver_path, rust_driver.as_bytes())
+            .expect("write aggregate rust driver");
+        let rust_executable_path: PathBuf = dir.join(format!("aggregate_rust_{compiler}.exe"));
+        let rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
+            .arg(&rust_executable_path)
+            .arg(&rust_driver_path)
+            .output()
+            .expect("compile aggregate rust driver");
+        assert!(
+            rust_build.status.success(),
+            "{compiler} aggregate Rust compile failed: {}\n{rust_driver}",
+            String::from_utf8_lossy(&rust_build.stderr)
+        );
+        let rust_run: std::process::Output = Command::new(&rust_executable_path)
+            .output()
+            .expect("run aggregate rust driver");
+        assert!(
+            rust_run.status.success(),
+            "{compiler} aggregate Rust result mismatch: {}\n{}",
+            String::from_utf8_lossy(&rust_run.stdout),
+            String::from_utf8_lossy(&rust_run.stderr)
+        );
+        graded_compilers += 1;
+    }
+    assert_eq!(
+        graded_compilers, 2,
+        "aggregate grading requires both GCC and Clang"
+    );
+    println!(
+        "aggregate C/Rust compiler differential PASSED: {}/{} recovered, 0 rejected, 0 mismatches",
+        graded_compilers * 5,
+        graded_compilers * 5
+    );
+}
+
+#[test]
+fn clang_frame_spill_recovers_one_struct_across_reload_registers() {
+    let dir: PathBuf = scratch_dir();
+    let source_path: PathBuf = dir.join("aggregate_frame_types.c");
+    std::fs::write(&source_path, AGGREGATE_SOURCE.as_bytes())
+        .expect("write frame aggregate source");
+    if clang().is_none() {
+        eprintln!("skipping frame aggregate cross-check: clang not on PATH");
+        return;
+    }
+    let object_path: PathBuf = dir.join("aggregate_frame_clang.o");
+    let compile: std::process::Output = Command::new("clang")
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-O0",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile frame aggregate source");
+    assert!(
+        compile.status.success(),
+        "clang frame aggregate compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read frame aggregate object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object_bytes, "aggregate_fields").expect("locate frame aggregate function");
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble frame aggregate function");
+    let frame_reloads: usize = instructions
+        .iter()
+        .filter(|insn: &&DisasmInsn| insn.operands.contains("[rbp-8]"))
+        .count();
+    assert!(
+        frame_reloads >= 3,
+        "clang frame aggregate must reload one pointer slot at least three times: {instructions:?}"
+    );
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
+        .expect("recover frame aggregate function");
+    assert!(
+        recovery.source.matches("recovered_struct_0_t").count() >= 3
+            && recovery.source.contains("->field_0")
+            && recovery.source.contains("->field_8")
+            && recovery.source.contains("->field_c"),
+        "clang did not combine frame reload registers into one struct:\n{}",
+        recovery.source
+    );
+    let rust: &str = recovery
+        .rust_source
+        .as_deref()
+        .expect("frame aggregate rust output");
+    assert!(rust.contains("struct RecoveredStruct0"));
+    let recovered_c: String = mem_recovered_signature(&recovery, "rec_aggregate_fields");
+    let c_driver: String = aggregate_fields_driver(&recovered_c);
+    let c_driver_path: PathBuf = dir.join("aggregate_frame_recovered.c");
+    std::fs::write(&c_driver_path, c_driver.as_bytes()).expect("write frame C driver");
+    let c_executable: PathBuf = dir.join("aggregate_frame_recovered.exe");
+    let c_link: std::process::Output = Command::new("clang")
+        .args([
+            "-O3",
+            "-fstrict-aliasing",
+            "-Werror=ignored-attributes",
+            "-o",
+        ])
+        .arg(&c_executable)
+        .arg(&c_driver_path)
+        .output()
+        .expect("link frame C driver");
+    assert!(
+        c_link.status.success(),
+        "recovered frame C did not compile: {}\n{c_driver}",
+        String::from_utf8_lossy(&c_link.stderr)
+    );
+    let c_run: std::process::Output = Command::new(&c_executable)
+        .output()
+        .expect("run frame C driver");
+    assert!(
+        c_run.status.success() && String::from_utf8_lossy(&c_run.stdout).contains("OK"),
+        "recovered frame C result mismatch: {}\n{}",
+        String::from_utf8_lossy(&c_run.stdout),
+        String::from_utf8_lossy(&c_run.stderr)
+    );
+    let recovered_rust: String =
+        rust.replacen("pub fn recovered(", "pub fn rec_aggregate_fields(", 1);
+    let rust_driver: String = aggregate_fields_rust_driver(&recovered_rust);
+    let rust_driver_path: PathBuf = dir.join("aggregate_frame_recovered.rs");
+    std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write frame Rust driver");
+    let rust_executable: PathBuf = dir.join("aggregate_frame_rust.exe");
+    let rust_build: std::process::Output = Command::new("rustc")
+        .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
+        .arg(&rust_executable)
+        .arg(&rust_driver_path)
+        .output()
+        .expect("compile frame Rust driver");
+    assert!(
+        rust_build.status.success(),
+        "recovered frame Rust did not compile: {}\n{rust_driver}",
+        String::from_utf8_lossy(&rust_build.stderr)
+    );
+    let rust_run: std::process::Output = Command::new(&rust_executable)
+        .output()
+        .expect("run frame Rust driver");
+    assert!(
+        rust_run.status.success(),
+        "recovered frame Rust result mismatch: {}\n{}",
+        String::from_utf8_lossy(&rust_run.stdout),
+        String::from_utf8_lossy(&rust_run.stderr)
+    );
+    println!("frame aggregate C/Rust differential PASSED: 1 recovered, 0 rejected, 0 mismatches");
 }
 
 fn gcc() -> Option<String> {
@@ -4040,6 +4501,7 @@ const IMUL_MEM_BATTERY: &[MemCase] = &[
         n_elems: 2,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::NoAggregate,
         c_source: "unsigned long long mi_scale64(unsigned long long *p){ return p[0] * 1000003ull; }",
     },
     MemCase {
@@ -4048,6 +4510,7 @@ const IMUL_MEM_BATTERY: &[MemCase] = &[
         n_elems: 2,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::NoAggregate,
         c_source: "unsigned mi_scale32(unsigned *p){ return p[0] * 100u; }",
     },
     MemCase {
@@ -4056,6 +4519,7 @@ const IMUL_MEM_BATTERY: &[MemCase] = &[
         n_elems: 3,
         n_scalars: 0,
         returns: true,
+        access_shape: ExpectedAggregateShape::NoAggregate,
         c_source: "unsigned long long mi_disp(unsigned long long *p){ return p[1] * 12345ull; }",
     },
     MemCase {
@@ -4064,6 +4528,7 @@ const IMUL_MEM_BATTERY: &[MemCase] = &[
         n_elems: 6,
         n_scalars: 1,
         returns: true,
+        access_shape: ExpectedAggregateShape::Array,
         c_source: "unsigned long long mi_idx(unsigned long long *p, unsigned long long i){ return p[i] * 100ull; }",
     },
 ];

@@ -127,7 +127,13 @@ fn clang_o2_pair_load_and_store_lift() {
     assert_eq!(loaded.params, vec![PseudoReg::Rax]);
     assert_eq!(loaded.source.matches("*(uint64_t*)").count(), 2);
     assert_eq!(stored.params.len(), 3);
-    assert_eq!(stored.source.matches("*(uint64_t*)").count(), 2);
+    assert!(stored.source.contains("recovered_struct_0_t"));
+    assert!(stored.source.contains("recovered_struct_0->field_0"));
+    assert!(stored.source.contains("recovered_struct_0->field_8"));
+    let rust: &str = stored.rust_source.as_deref().expect("aarch64 struct rust");
+    assert!(rust.contains("struct RecoveredStruct0"));
+    assert!(rust.contains("field_0"));
+    assert!(rust.contains("field_8"));
 }
 
 #[test]
