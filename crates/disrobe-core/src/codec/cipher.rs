@@ -371,6 +371,69 @@ pub fn has_tea_delta(haystack: &[u8]) -> bool {
         .any(|window: &[u8]| window == le || window == be)
 }
 
+const RC4_STATE_LEN: usize = 256;
+
+#[must_use]
+fn rc4_ksa(key: &[u8]) -> [u8; RC4_STATE_LEN] {
+    let mut state: [u8; RC4_STATE_LEN] = [0; RC4_STATE_LEN];
+    for (i, slot) in state.iter_mut().enumerate() {
+        *slot = i as u8;
+    }
+    let key_len: usize = key.len();
+    let mut j: u8 = 0;
+    for i in 0..RC4_STATE_LEN {
+        let key_byte: u8 = if key_len == 0 { 0 } else { key[i % key_len] };
+        j = j.wrapping_add(state[i]).wrapping_add(key_byte);
+        state.swap(i, j as usize);
+    }
+    state
+}
+
+#[derive(Debug, Clone)]
+pub struct Rc4 {
+    state: [u8; RC4_STATE_LEN],
+    i: u8,
+    j: u8,
+}
+
+impl Rc4 {
+    #[must_use]
+    pub fn new(key: &[u8]) -> Self {
+        Self {
+            state: rc4_ksa(key),
+            i: 0,
+            j: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn next_byte(&mut self) -> u8 {
+        self.i = self.i.wrapping_add(1);
+        self.j = self.j.wrapping_add(self.state[self.i as usize]);
+        self.state.swap(self.i as usize, self.j as usize);
+        let sum: u8 = self.state[self.i as usize].wrapping_add(self.state[self.j as usize]);
+        self.state[sum as usize]
+    }
+
+    #[must_use]
+    pub fn apply(&mut self, data: &[u8]) -> Vec<u8> {
+        data.iter()
+            .map(|&byte: &u8| byte ^ self.next_byte())
+            .collect()
+    }
+}
+
+#[must_use]
+pub fn rc4_apply(key: &[u8], data: &[u8]) -> Vec<u8> {
+    Rc4::new(key).apply(data)
+}
+
+#[must_use]
+pub fn rc4_keystream(key: &[u8], len: usize) -> Vec<u8> {
+    let mut cipher: Rc4 = Rc4::new(key);
+    (0..len).map(|_| cipher.next_byte()).collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -451,6 +514,67 @@ mod tests {
         let cipher: Vec<u8> = salsa20_apply(plaintext, &key, nonce, 0);
         assert_ne!(cipher, plaintext);
         assert_eq!(salsa20_apply(&cipher, &key, nonce, 0), plaintext);
+    }
+
+    #[test]
+    fn rc4_wikipedia_vector_key() {
+        let out: Vec<u8> = rc4_apply(b"Key", b"Plaintext");
+        assert_eq!(out, hex_bytes("BBF316E8D940AF0AD3"));
+    }
+
+    #[test]
+    fn rc4_wikipedia_vector_wiki() {
+        let out: Vec<u8> = rc4_apply(b"Wiki", b"pedia");
+        assert_eq!(out, hex_bytes("1021BF0420"));
+    }
+
+    #[test]
+    fn rc4_wikipedia_vector_secret() {
+        let out: Vec<u8> = rc4_apply(b"Secret", b"Attack at dawn");
+        assert_eq!(out, hex_bytes("45A01F645FC35B383552544B9BF5"));
+    }
+
+    #[test]
+    fn rc4_apply_is_involutive() {
+        let key: &[u8] = b"a shared stream cipher key";
+        let plain: &[u8] = b"rc4 keystream xor is its own inverse when reapplied";
+        let cipher: Vec<u8> = rc4_apply(key, plain);
+        assert_ne!(cipher, plain);
+        assert_eq!(rc4_apply(key, &cipher), plain);
+    }
+
+    #[test]
+    fn rc4_keystream_matches_apply_against_zeroes() {
+        let key: &[u8] = b"keystream-parity";
+        let zeroes: Vec<u8> = vec![0u8; 32];
+        assert_eq!(rc4_keystream(key, 32), rc4_apply(key, &zeroes));
+    }
+
+    #[test]
+    fn rc4_struct_matches_free_functions() {
+        let key: &[u8] = b"struct-vs-fn";
+        let data: &[u8] = b"stateful rc4 struct application";
+        let mut cipher: Rc4 = Rc4::new(key);
+        assert_eq!(cipher.apply(data), rc4_apply(key, data));
+    }
+
+    #[test]
+    fn rc4_empty_key_does_not_panic() {
+        let out: Vec<u8> = rc4_apply(b"", b"degenerate key input");
+        assert_eq!(out.len(), b"degenerate key input".len());
+    }
+
+    #[test]
+    fn rc4_zero_length_data_yields_empty_output() {
+        assert!(rc4_apply(b"Key", b"").is_empty());
+        assert!(rc4_keystream(b"Key", 0).is_empty());
+    }
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex pair"))
+            .collect()
     }
 
     #[test]
