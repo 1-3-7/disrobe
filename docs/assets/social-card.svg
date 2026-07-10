@@ -100,6 +100,6 @@
   <rect x="540.5" y="132.5" width="667" height="299" rx="9" fill="none" stroke="#262626"/>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
-  <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python 95.31% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>98 formats, no external unzipper</text>
+  <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python 95.34% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>98 formats, no external unzipper</text>
   <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android 102/103 dex JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>~637k lines of original Rust</text>
 </svg>

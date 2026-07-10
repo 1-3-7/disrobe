@@ -3,10 +3,10 @@
 - id: `py-stdlib-recompile`
 - ecosystem: python
 - claim: disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.
-- measured: 95.31%
+- measured: 95.34%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)
 - reproduce: `cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate`
 - floor: 90.00 (holds)
-- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.31 (5991 of 6286 code objects, 200 of 200 modules, whole-module exact 59.50%, 0 sibling-count collisions) on CPython 3.14 at HEAD 6e42623d (structuring campaign: try/except/else exception-table forest, multi-exit while-True/while-COND, with-fold, dup-consumer ternary, chained-compare-in-condition)
+- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.34 (5993 of 6286 code objects, 200 of 200 modules, whole-module exact 59.50%, 0 sibling-count collisions) on CPython 3.14 at HEAD a16f4625 (structuring campaign + the selfcheck re-lowering accept-gate that flips the two entangled try/except/else tail cases)
