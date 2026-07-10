@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
-    RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
+    Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
+    RecoveredProgram as LibRecoveredProgram, disassemble, recover_program as lib_recover_program,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -30,6 +30,8 @@ const WIDE_INPUTS: &str = "{0,0,0},{1,1,1},{-1,-1,-1},{7,3,5},{-7,3,-5},\
 
 const SMALL_INPUTS: &str = "{0,0,0},{1,2,3},{5,1,1},{10,4,2},{-3,7,1},{20,5,3},\
      {0,10,10},{63,2,1},{7,7,7},{-1,-1,-1},{16,8,4},{2,50,25},{40,3,9},{9,40,4}";
+
+const ENTRY_RETURN_WIDTH: u32 = 64;
 
 const CC_FLAGS: [&str; 6] = [
     "-fno-stack-protector",
@@ -157,6 +159,16 @@ const PROGRAMS: &[WholeProgram] = &[
                    long long wp_sparse_switch_entry(long long k){ return wp_sparse_switch_pick(k) + k; }",
     },
 ];
+
+const NEAR_BRANCH_PROGRAM: WholeProgram = WholeProgram {
+    name: "wp_near_branch",
+    entry: "wp_near_branch_entry",
+    entry_arity: 1,
+    loopy: false,
+    functions: &["wp_near_branch_entry", "wp_near_branch_h"],
+    c_source: "__attribute__((noinline,noclone)) long long wp_near_branch_h(long long a){ volatile unsigned long long v[24]; v[0] = (unsigned long long)a; v[1] = 1; v[2] = 2; v[3] = 3; v[4] = 4; v[5] = 5; v[6] = 6; v[7] = 7; v[8] = 8; v[9] = 9; v[10] = 10; v[11] = 11; v[12] = 12; v[13] = 13; v[14] = 14; v[15] = 15; v[16] = 16; v[17] = 17; v[18] = 18; v[19] = 19; v[20] = 20; v[21] = 21; v[22] = 22; v[23] = 23; if (a > 0) { v[0] ^= 1ULL; v[0] ^= 2ULL; v[0] ^= 3ULL; v[0] ^= 4ULL; v[0] ^= 5ULL; v[0] ^= 6ULL; v[0] ^= 7ULL; v[0] ^= 8ULL; v[0] ^= 9ULL; v[0] ^= 10ULL; v[0] ^= 11ULL; v[0] ^= 12ULL; v[0] ^= 13ULL; v[0] ^= 14ULL; v[0] ^= 15ULL; v[0] ^= 16ULL; v[0] ^= 17ULL; v[0] ^= 18ULL; v[0] ^= 19ULL; v[0] ^= 20ULL; v[0] ^= 21ULL; v[0] ^= 22ULL; v[0] ^= 23ULL; v[0] ^= 24ULL; v[0] ^= 25ULL; v[0] ^= 26ULL; v[0] ^= 27ULL; v[0] ^= 28ULL; v[0] ^= 29ULL; v[0] ^= 30ULL; v[0] ^= 31ULL; v[0] ^= 32ULL; } return (long long)(v[0] ^ v[1] ^ v[2] ^ v[3] ^ v[4] ^ v[5] ^ v[6] ^ v[7] ^ v[8] ^ v[9] ^ v[10] ^ v[11] ^ v[12] ^ v[13] ^ v[14] ^ v[15] ^ v[16] ^ v[17] ^ v[18] ^ v[19] ^ v[20] ^ v[21] ^ v[22] ^ v[23]); }\n\
+               long long wp_near_branch_entry(long long a){ return wp_near_branch_h(a) + 1; }",
+};
 
 const SHAPE_PROGRAMS: &[WholeProgram] = &[
     WholeProgram {
@@ -479,11 +491,12 @@ fn build_program_driver(program: &WholeProgram, recovered: &RecoveredProgram) ->
     } else {
         WIDE_INPUTS
     };
-    let return_mask: String = if recovered.entry_return_width >= 64 {
-        "0xFFFFFFFFFFFFFFFFULL".to_owned()
-    } else {
-        format!("0x{:x}ULL", (1u128 << recovered.entry_return_width) - 1)
-    };
+    assert_eq!(
+        recovered.entry_return_width, ENTRY_RETURN_WIDTH,
+        "{} recovered entry width differs from its long long fixture contract",
+        program.name
+    );
+    let return_mask: &str = "0xFFFFFFFFFFFFFFFFULL";
     let orig_args: String = (0..program.entry_arity)
         .map(|i: usize| format!("in[{i}]"))
         .collect::<Vec<String>>()
@@ -845,7 +858,7 @@ fn teeth_swapping_a_call_argument_diverges() {
     println!("teeth confirmed: swapping a call argument diverges (MISMATCH observed)");
 }
 
-const OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
+const OPT_LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeOutcome {
@@ -857,6 +870,52 @@ enum ShapeOutcome {
 
 fn opt_tag(opt: &str) -> &str {
     opt.trim_start_matches('-')
+}
+
+#[test]
+fn optimization_matrix_includes_aggressive_and_size_modes() {
+    assert!(OPT_LEVELS.contains(&"-O3"));
+    assert!(OPT_LEVELS.contains(&"-Os"));
+}
+
+#[test]
+fn near_conditional_branch_recompiles_to_behavioral_equivalence() {
+    if cfg!(target_os = "macos") {
+        eprintln!("skipping near-branch comparison on macos: x86-64 execution is unavailable");
+        return;
+    }
+    let Some(_host): Option<String> = cc() else {
+        eprintln!("skipping near-branch comparison: no host C compiler on PATH");
+        return;
+    };
+    let Some(_clang): Option<String> = clang() else {
+        eprintln!("skipping near-branch comparison: clang not on PATH");
+        return;
+    };
+    let program: &WholeProgram = &NEAR_BRANCH_PROGRAM;
+    let (host_cc, host_obj, sysv_obj): (String, Vec<u8>, Vec<u8>) =
+        compile_dual(program).expect("compile near-branch program");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&sysv_obj, "wp_near_branch_h").expect("near-branch body");
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("decode near-branch body");
+    assert!(
+        insns.iter().any(|insn: &DisasmInsn| {
+            insn.mnemonic.starts_with('j')
+                && insn.mnemonic != "jmp"
+                && insn.operands.starts_with("near ")
+        }),
+        "compiler did not emit a near conditional branch: {insns:?}"
+    );
+    let recovered: RecoveredProgram =
+        recover_program(&sysv_obj, program, PseudoAbi::SysV).expect("recover near-branch program");
+    let driver: String = build_program_driver(program, &recovered);
+    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "wp_near_branch_sysv", 10)
+        .expect("run near-branch comparison");
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "near-branch comparison failed: {stdout}"
+    );
 }
 
 fn full_battery() -> Vec<&'static WholeProgram> {
@@ -969,6 +1028,11 @@ fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
         let graded: usize = battery.len() - skipped;
         total_equivalent += equivalent;
         total_slots += graded;
+        assert!(
+            skipped == 0 && equivalent.saturating_mul(10) >= graded.saturating_mul(9),
+            "host shape matrix {opt} execution equivalence below 90%: {equivalent}/{graded} equivalent, {} sound-rejected, {skipped} env-skipped",
+            rejected.len()
+        );
         println!(
             "host shape oracle {opt}: {equivalent}/{graded} whole programs behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
             rejected.len()
@@ -1028,6 +1092,11 @@ fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
         let graded: usize = battery.len() - skipped;
         total_equivalent += equivalent;
         total_slots += graded;
+        assert!(
+            skipped == 0 && equivalent.saturating_mul(10) >= graded.saturating_mul(9),
+            "sysv shape matrix {opt} execution equivalence below 90%: {equivalent}/{graded} equivalent, {} sound-rejected, {skipped} env-skipped",
+            rejected.len()
+        );
         println!(
             "sysv shape oracle {opt}: {equivalent}/{graded} whole programs behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
             rejected.len()

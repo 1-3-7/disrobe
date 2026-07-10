@@ -58,6 +58,8 @@ const SMALL_INPUTS: &[[i64; 3]] = &[
     [9, 40, 4],
 ];
 
+const ENTRY_RETURN_WIDTH: u32 = 64;
+
 const CC_FLAGS: [&str; 6] = [
     "-fno-stack-protector",
     "-fno-optimize-sibling-calls",
@@ -457,7 +459,7 @@ const fn inputs_for(program: &WholeProgram) -> &'static [[i64; 3]] {
     }
 }
 
-fn build_c_ground(program: &WholeProgram, recovered: &RecoveredProgram) -> String {
+fn build_c_ground(program: &WholeProgram) -> String {
     let inputs: &[[i64; 3]] = inputs_for(program);
     let mut arr: String = String::new();
     for row in inputs {
@@ -467,7 +469,7 @@ fn build_c_ground(program: &WholeProgram, recovered: &RecoveredProgram) -> Strin
         .map(|i: usize| format!("in[{i}]"))
         .collect::<Vec<String>>()
         .join(", ");
-    let mask: String = mask_c(recovered.entry_return_width);
+    let mask: String = mask_c(ENTRY_RETURN_WIDTH);
     let entry: &str = program.entry;
     format!(
         "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{src}\n\
@@ -495,7 +497,7 @@ fn build_rust_program(program: &WholeProgram, recovered: &RecoveredProgram) -> S
         .map(|i: usize| format!("row[{i}] as u64"))
         .collect::<Vec<String>>()
         .join(", ");
-    let mask: String = mask_rs(recovered.entry_return_width);
+    let mask: String = mask_rs(ENTRY_RETURN_WIDTH);
     let entry: &str = program.entry;
     format!(
         "#![allow(unused, unused_parens, dead_code, non_snake_case, non_upper_case_globals)]\n\
@@ -582,11 +584,10 @@ fn c_ground_values(
     host_cc: &str,
     program: &WholeProgram,
     opt: &str,
-    recovered: &RecoveredProgram,
     dir: &Path,
     tag: &str,
 ) -> Option<Vec<u64>> {
-    let driver: String = build_c_ground(program, recovered);
+    let driver: String = build_c_ground(program);
     let driver_c: PathBuf = dir.join(format!("{tag}_ground.c"));
     std::fs::write(&driver_c, driver.as_bytes()).expect("write ground c");
     let exe: PathBuf = dir.join(if cfg!(windows) {
@@ -667,10 +668,16 @@ enum Outcome {
     Skipped,
 }
 
-const OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
+const OPT_LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
 fn opt_tag(opt: &str) -> &str {
     opt.trim_start_matches('-')
+}
+
+#[test]
+fn optimization_matrix_includes_aggressive_and_size_modes() {
+    assert!(OPT_LEVELS.contains(&"-O3"));
+    assert!(OPT_LEVELS.contains(&"-Os"));
 }
 
 struct Env {
@@ -691,9 +698,15 @@ fn measure(
     let Some(recovered): Option<RecoveredProgram> = recover_program(object, program, abi) else {
         return Outcome::SoundRejected;
     };
+    if recovered.entry_return_width != ENTRY_RETURN_WIDTH {
+        eprintln!(
+            "MISMATCH {tag}: recovered entry width {} differs from the {}-bit fixture contract",
+            recovered.entry_return_width, ENTRY_RETURN_WIDTH
+        );
+        return Outcome::Mismatch;
+    }
     *frame_seen |= recovered.used_frame;
-    let Some(golden): Option<Vec<u64>> =
-        c_ground_values(&env.host_cc, program, opt, &recovered, dir, tag)
+    let Some(golden): Option<Vec<u64>> = c_ground_values(&env.host_cc, program, opt, dir, tag)
     else {
         return Outcome::Skipped;
     };
@@ -777,6 +790,11 @@ fn whole_programs_recompile_to_rust_equivalence_hostabi() {
         let graded: usize = battery.len() - skipped;
         total_equivalent += equivalent;
         total_slots += graded;
+        assert!(
+            skipped == 0 && equivalent.saturating_mul(10) >= graded.saturating_mul(9),
+            "host rust whole-program {opt} execution equivalence below 90%: {equivalent}/{graded} equivalent, {} sound-rejected, {skipped} env-skipped",
+            rejected.len()
+        );
         println!(
             "host rust whole-program {opt}: {equivalent}/{graded} behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
             rejected.len()
@@ -880,6 +898,11 @@ fn whole_programs_recompile_to_rust_equivalence_sysv() {
         let graded: usize = battery.len() - skipped;
         total_equivalent += equivalent;
         total_slots += graded;
+        assert!(
+            skipped == 0 && equivalent.saturating_mul(10) >= graded.saturating_mul(9),
+            "sysv rust whole-program {opt} execution equivalence below 90%: {equivalent}/{graded} equivalent, {} sound-rejected, {skipped} env-skipped",
+            rejected.len()
+        );
         println!(
             "sysv rust whole-program {opt}: {equivalent}/{graded} behaviorally equivalent ({} sound-rejected: {rejected:?}, {skipped} env-skipped)",
             rejected.len()

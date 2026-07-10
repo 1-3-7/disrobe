@@ -3908,7 +3908,11 @@ struct Item {
 
 fn parse_branch_target(operands: &str) -> Option<u64> {
     let trimmed: &str = operands.trim();
-    let token: &str = trimmed.strip_prefix("short ").unwrap_or(trimmed).trim();
+    let token: &str = trimmed
+        .strip_prefix("short ")
+        .or_else(|| trimmed.strip_prefix("near "))
+        .unwrap_or(trimmed)
+        .trim();
     if token.contains([' ', ',', '[']) {
         return None;
     }
@@ -12096,11 +12100,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_branch_target_reads_iced_short_form() {
+    fn parse_branch_target_reads_iced_branch_size_qualifiers() {
         assert_eq!(parse_branch_target("short 0000000000001011h"), Some(0x1011));
+        assert_eq!(parse_branch_target("near 0000000000001011h"), Some(0x1011));
         assert_eq!(parse_branch_target("0000000000002000h"), Some(0x2000));
         assert_eq!(parse_branch_target("rax"), None);
         assert_eq!(parse_branch_target("qword [rax]"), None);
+        assert_eq!(parse_branch_target("near rax"), None);
+        assert_eq!(parse_branch_target("near qword [rax]"), None);
     }
 
     const JT6_SYSV: [u8; 0x6f] = [
