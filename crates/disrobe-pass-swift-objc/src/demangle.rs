@@ -164,6 +164,7 @@ enum Kind {
     OpaqueReturnType,
     MacroExpansion,
     AsyncFunctionPointer,
+    MergedFunction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -915,8 +916,8 @@ impl<'a> Demangler<'a> {
             b'p' => Node::unary(Kind::ProtocolWitnessTablePattern, base),
             b'V' => Node::unary(Kind::ValueWitnessTable, base),
             b'v' => {
-                self.consume_directness();
-                Node::unary(Kind::FieldOffset, base)
+                let directness: &'static str = self.consume_directness();
+                Node::branch_with_text(Kind::FieldOffset, directness.to_owned(), vec![base])
             }
             b'C' => Node::unary(Kind::EnumCase, base),
             b'S' => Node::unary(Kind::ProtocolSelfConformanceWitnessTable, base),
@@ -928,9 +929,17 @@ impl<'a> Demangler<'a> {
         Some(node)
     }
 
-    fn consume_directness(&mut self) {
-        if matches!(self.peek(), Some(b'd' | b'i')) {
-            self.pos += 1;
+    fn consume_directness(&mut self) -> &'static str {
+        match self.peek() {
+            Some(b'd') => {
+                self.pos += 1;
+                "direct "
+            }
+            Some(b'i') => {
+                self.pos += 1;
+                "indirect "
+            }
+            _ => "",
         }
     }
 
@@ -941,9 +950,8 @@ impl<'a> Demangler<'a> {
             b'j' => Some(Node::unary(Kind::DispatchThunk, base)),
             b'L' => Some(Node::unary(Kind::ProtocolRequirementsBaseDescriptor, base)),
             b'u' => Some(Node::unary(Kind::AsyncFunctionPointer, base)),
-            b'D' | b'd' | b'O' | b'o' | b'V' | b'I' | b'X' | b'E' | b'F' | b'c' | b'm' => {
-                Some(base)
-            }
+            b'm' => Some(Node::unary(Kind::MergedFunction, base)),
+            b'D' | b'd' | b'O' | b'o' | b'V' | b'I' | b'X' | b'E' | b'F' | b'c' => Some(base),
             _ => {
                 self.skip_to_end();
                 Some(base)
@@ -957,9 +965,14 @@ impl<'a> Demangler<'a> {
     }
 
     fn demangle_value_witness(&mut self, base: NodeRef) -> Option<NodeRef> {
-        self.next()?;
-        self.next()?;
-        Some(Node::unary(Kind::ValueWitness, base))
+        let first: u8 = self.next()?;
+        let second: u8 = self.next()?;
+        let name: &'static str = value_witness_name(first, second)?;
+        Some(Node::branch_with_text(
+            Kind::ValueWitness,
+            name.to_owned(),
+            vec![base],
+        ))
     }
 
     const fn skip_to_end(&mut self) {
@@ -3312,6 +3325,37 @@ fn print_context_path(node: &Node) -> String {
     }
 }
 
+const fn value_witness_name(first: u8, second: u8) -> Option<&'static str> {
+    let name: &'static str = match [first, second] {
+        [b'a', b'l'] => "allocateBuffer",
+        [b'c', b'a'] => "assignWithCopy",
+        [b't', b'a'] => "assignWithTake",
+        [b'd', b'e'] => "deallocateBuffer",
+        [b'x', b'x'] => "destroy",
+        [b'X', b'X'] => "destroyBuffer",
+        [b'X', b'x'] => "destroyArray",
+        [b'C', b'P'] => "initializeBufferWithCopyOfBuffer",
+        [b'C', b'p'] => "initializeBufferWithCopy",
+        [b'c', b'p'] => "initializeWithCopy",
+        [b'T', b'K'] => "initializeBufferWithTakeOfBuffer",
+        [b'T', b'k'] => "initializeBufferWithTake",
+        [b't', b'k'] => "initializeWithTake",
+        [b'C', b'c'] => "initializeArrayWithCopy",
+        [b'T', b't'] => "initializeArrayWithTakeFrontToBack",
+        [b't', b'T'] => "initializeArrayWithTakeBackToFront",
+        [b'p', b'r'] => "projectBuffer",
+        [b'x', b's'] => "storeExtraInhabitant",
+        [b'x', b'g'] => "getExtraInhabitantIndex",
+        [b'u', b'g'] => "getEnumTag",
+        [b'u', b'p'] => "destructiveProjectEnumData",
+        [b'u', b'i'] => "destructiveInjectEnumTag",
+        [b'e', b't'] => "getEnumTagSinglePayload",
+        [b's', b't'] => "storeEnumTagSinglePayload",
+        _ => return None,
+    };
+    Some(name)
+}
+
 fn nominal_kind_suffix(kind: Kind, mode: Mode) -> &'static str {
     if mode == Mode::Type {
         return "";
@@ -3335,10 +3379,18 @@ fn print_node(node: &Node, mode: Mode) -> String {
         | Kind::Identifier
         | Kind::DependentGenericParamType
         | Kind::DependentGenericParamCount
-        | Kind::ValueWitness
         | Kind::ThrowsAnnotation
         | Kind::ConventionAnnotation
         | Kind::AsyncAnnotation => node.text.clone().unwrap_or_default(),
+        Kind::ValueWitness => format!(
+            "{} value witness for {}",
+            node.text.as_deref().unwrap_or_default(),
+            print_child(node, 0)
+        ),
+        Kind::MergedFunction => node.children.first().map_or_else(
+            || "merged ".to_owned(),
+            |c: &NodeRef| format!("merged {}", print_node(c, Mode::Symbol)),
+        ),
         Kind::Class | Kind::Structure | Kind::Enum | Kind::Protocol => {
             format!(
                 "{}{}",
@@ -3475,11 +3527,15 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::ValueWitnessTable => format!("value witness table for {}", print_child(node, 0)),
         Kind::ReflectionMetadataFieldDescriptor => {
             format!(
-                "reflection metadata field descriptor for {}",
+                "reflection metadata field descriptor {}",
                 print_child(node, 0)
             )
         }
-        Kind::FieldOffset => format!("field offset for {}", print_child(node, 0)),
+        Kind::FieldOffset => format!(
+            "{}field offset for {}",
+            node.text.as_deref().unwrap_or_default(),
+            print_child(node, 0)
+        ),
         Kind::MethodDescriptor => format!("method descriptor for {}", print_child(node, 0)),
         Kind::ModuleDescriptor => format!("module descriptor {}", print_child(node, 0)),
         Kind::ProtocolSelfConformanceWitnessTable => {
@@ -4114,10 +4170,18 @@ mod tests {
 
     #[test]
     fn demangle_field_offset_operator() {
-        let out: String =
+        let direct: String =
             demangle("$s10SwiftHello19LoginViewControllerC17displayedUserNameSSvpWvd").expect("d");
-        assert!(out.starts_with("field offset for "), "got {out}");
-        assert!(out.contains("displayedUserName"), "got {out}");
+        assert_eq!(
+            direct,
+            "direct field offset for SwiftHello.LoginViewController.displayedUserName : Swift.String"
+        );
+        let indirect: String =
+            demangle("$s10SwiftHello19LoginViewControllerC17displayedUserNameSSvpWvi").expect("d");
+        assert!(
+            indirect.starts_with("indirect field offset for "),
+            "got {indirect}"
+        );
     }
 
     #[test]
@@ -4598,6 +4662,44 @@ mod tests {
             "value witness table for Builtin.Int32"
         );
         assert_eq!(demangle("$sytWV").expect("d"), "value witness table for ()");
+    }
+
+    #[test]
+    fn demangle_value_witness_functions() {
+        assert_eq!(
+            demangle("$sSiwxx").expect("d"),
+            "destroy value witness for Swift.Int"
+        );
+        assert_eq!(
+            demangle("$sSiwCP").expect("d"),
+            "initializeBufferWithCopyOfBuffer value witness for Swift.Int"
+        );
+        assert_eq!(
+            demangle("$sSiwca").expect("d"),
+            "assignWithCopy value witness for Swift.Int"
+        );
+        assert_eq!(
+            demangle("$sSiwet").expect("d"),
+            "getEnumTagSinglePayload value witness for Swift.Int"
+        );
+        assert_eq!(
+            demangle("$sSiwug").expect("d"),
+            "getEnumTag value witness for Swift.Int"
+        );
+    }
+
+    #[test]
+    fn demangle_merged_value_witness_thunk() {
+        assert_eq!(
+            demangle("$sSiwcaTm").expect("d"),
+            "merged assignWithCopy value witness for Swift.Int"
+        );
+    }
+
+    #[test]
+    fn unknown_value_witness_code_never_fabricates_a_name() {
+        let out: String = demangle("$sSiwzz").unwrap_or_default();
+        assert!(!out.contains("value witness"), "got {out}");
     }
 
     #[test]
