@@ -8137,11 +8137,24 @@ fn aggregate_field_name(disp: i64) -> String {
     format!("field_{disp:x}")
 }
 
+fn aggregate_member_name(scalar: AggregateScalar) -> String {
+    let suffix: &str = match scalar {
+        AggregateScalar::Integer(Width::W8) => "u8",
+        AggregateScalar::Integer(Width::W16) => "u16",
+        AggregateScalar::Integer(Width::W32) => "u32",
+        AggregateScalar::Integer(Width::W64) => "u64",
+        AggregateScalar::Float(FpWidth::F32) => "f32",
+        AggregateScalar::Float(FpWidth::F64) => "f64",
+    };
+    format!("field_0_{suffix}")
+}
+
 fn aggregate_c_type_name(plan: &AggregatePlan, root: usize) -> Option<String> {
     let root_plan: &AggregateRootPlan = plan.roots.get(root)?;
     let prefix: &str = match root_plan.shape {
         AggregateShape::Struct { .. } => "recovered_struct",
         AggregateShape::Array { .. } => "recovered_array",
+        AggregateShape::Union { .. } => "recovered_union",
     };
     Some(format!("{prefix}_{root}_t"))
 }
@@ -8151,6 +8164,7 @@ fn aggregate_c_local_name(plan: &AggregatePlan, root: usize) -> Option<String> {
     let prefix: &str = match root_plan.shape {
         AggregateShape::Struct { .. } => "recovered_struct",
         AggregateShape::Array { .. } => "recovered_array",
+        AggregateShape::Union { .. } => "recovered_union",
     };
     Some(format!("{prefix}_{root}"))
 }
@@ -8165,8 +8179,12 @@ fn aggregate_c_base(plan: &AggregatePlan, root: usize, base: Reg) -> Option<Stri
     }
 }
 
-fn aggregate_c_mem_expr(mem: &MemRef, plan: &AggregatePlan) -> Option<(String, bool)> {
-    match plan.access(mem)? {
+fn aggregate_c_mem_expr(
+    mem: &MemRef,
+    plan: &AggregatePlan,
+    scalar: AggregateScalar,
+) -> Option<(String, bool)> {
+    match plan.access(mem, scalar)? {
         AggregateAccess::Field {
             root,
             base,
@@ -8195,11 +8213,20 @@ fn aggregate_c_mem_expr(mem: &MemRef, plan: &AggregatePlan) -> Option<(String, b
             });
             Some((expr, false))
         }
+        AggregateAccess::UnionMember { root, base, scalar } => {
+            let base: String = aggregate_c_base(plan, root, base)?;
+            let member: String = aggregate_member_name(scalar);
+            let expr: String = c_render(|cx| {
+                let root_expr: CExpr = cx.var(&base);
+                cx.member(root_expr, true, &member)
+            });
+            Some((expr, false))
+        }
     }
 }
 
 fn deref_expr(mem: &MemRef, plan: &AggregatePlan) -> String {
-    if let Some((expr, _)) = aggregate_c_mem_expr(mem, plan) {
+    if let Some((expr, _)) = aggregate_c_mem_expr(mem, plan, AggregateScalar::Integer(mem.width)) {
         return expr;
     }
     let addr: String = addr_expr(mem.base, mem.index, mem.disp);
@@ -8289,7 +8316,8 @@ fn source_expr(src: &Source, width: Width, plan: &AggregatePlan) -> String {
         Source::Lea { base, index, disp } => addr_expr(*base, *index, *disp),
         Source::Mem(mem) => {
             let (d, pointer): (String, bool) =
-                aggregate_c_mem_expr(mem, plan).unwrap_or_else(|| (deref_expr(mem, plan), false));
+                aggregate_c_mem_expr(mem, plan, AggregateScalar::Integer(mem.width))
+                    .unwrap_or_else(|| (deref_expr(mem, plan), false));
             c_render(|cx| {
                 let value: CExpr = cx.var(&d);
                 let inner: CExpr = if pointer {
@@ -8336,6 +8364,29 @@ const AGGREGATE_MAX_SPAN: i64 = 4096;
 enum AggregateShape {
     Struct { fields: Vec<(i64, Width)> },
     Array { width: Width, scale: u8 },
+    Union { members: Vec<AggregateScalar> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggregateScalar {
+    Integer(Width),
+    Float(FpWidth),
+}
+
+impl AggregateScalar {
+    const fn width(self) -> Width {
+        match self {
+            Self::Integer(width) => width,
+            Self::Float(FpWidth::F32) => Width::W32,
+            Self::Float(FpWidth::F64) => Width::W64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AggregateObservation {
+    mem: MemRef,
+    scalar: AggregateScalar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8372,6 +8423,11 @@ enum AggregateAccess {
         base: Reg,
         index: Reg,
     },
+    UnionMember {
+        root: usize,
+        base: Reg,
+        scalar: AggregateScalar,
+    },
 }
 
 impl AggregatePlan {
@@ -8389,13 +8445,14 @@ impl AggregatePlan {
         })
     }
 
-    fn access(&self, mem: &MemRef) -> Option<AggregateAccess> {
+    fn access(&self, mem: &MemRef, scalar: AggregateScalar) -> Option<AggregateAccess> {
         let base: Reg = mem.base?;
         let root_index: usize = self.root_position(base)?;
         let root: &AggregateRootPlan = self.roots.get(root_index)?;
         match &root.shape {
             AggregateShape::Struct { fields } => {
-                if mem.index.is_some()
+                if scalar != AggregateScalar::Integer(mem.width)
+                    || mem.index.is_some()
                     || !fields.iter().any(|(disp, width): &(i64, Width)| {
                         *disp == mem.disp && *width == mem.width
                     })
@@ -8411,13 +8468,31 @@ impl AggregatePlan {
             }
             AggregateShape::Array { width, scale } => {
                 let (index, access_scale): (Reg, u8) = mem.index?;
-                if mem.disp != 0 || access_scale != *scale || mem.width != *width {
+                if scalar != AggregateScalar::Integer(mem.width)
+                    || mem.disp != 0
+                    || access_scale != *scale
+                    || mem.width != *width
+                {
                     return None;
                 }
                 Some(AggregateAccess::Array {
                     root: root_index,
                     base,
                     index,
+                })
+            }
+            AggregateShape::Union { members } => {
+                if mem.index.is_some()
+                    || mem.disp != 0
+                    || scalar.width() != mem.width
+                    || !members.contains(&scalar)
+                {
+                    return None;
+                }
+                Some(AggregateAccess::UnionMember {
+                    root: root_index,
+                    base,
+                    scalar,
                 })
             }
         }
@@ -8427,6 +8502,7 @@ impl AggregatePlan {
 #[derive(Debug, Default)]
 struct AggregateScan {
     mems: Vec<MemRef>,
+    observations: Vec<AggregateObservation>,
     writes: BTreeMap<Reg, usize>,
     unemitted_bases: BTreeSet<Reg>,
     nodes: usize,
@@ -8434,16 +8510,21 @@ struct AggregateScan {
 }
 
 impl AggregateScan {
-    fn note_mem(&mut self, mem: MemRef) {
+    fn note_observation(&mut self, mem: MemRef, scalar: AggregateScalar) {
         if self.mems.len() >= AGGREGATE_MAX_OBSERVATIONS {
             self.exceeded = true;
         } else {
             self.mems.push(mem);
+            self.observations.push(AggregateObservation { mem, scalar });
         }
     }
 
-    fn note_unemitted_mem(&mut self, mem: MemRef) {
-        self.note_mem(mem);
+    fn note_mem(&mut self, mem: MemRef) {
+        self.note_observation(mem, AggregateScalar::Integer(mem.width));
+    }
+
+    fn note_unemitted_mem(&mut self, mem: MemRef, scalar: AggregateScalar) {
+        self.note_observation(mem, scalar);
         if let Some(base) = mem.base {
             self.unemitted_bases.insert(base);
         }
@@ -8471,9 +8552,9 @@ fn aggregate_note_ext_source(scan: &mut AggregateScan, source: &ExtSource) {
     }
 }
 
-fn aggregate_note_fp_operand(scan: &mut AggregateScan, operand: &FpOperand) {
+fn aggregate_note_fp_operand(scan: &mut AggregateScan, operand: &FpOperand, width: FpWidth) {
     if let FpOperand::Mem(mem) = operand {
-        scan.note_unemitted_mem(*mem);
+        scan.note_unemitted_mem(*mem, AggregateScalar::Float(width));
     }
 }
 
@@ -8484,7 +8565,7 @@ fn aggregate_note_flags(scan: &mut AggregateScan, flags: &Flags) {
             scan.note_mem(*lhs);
             aggregate_note_source(scan, rhs);
         }
-        Flags::FpCmp { rhs, .. } => aggregate_note_fp_operand(scan, rhs),
+        Flags::FpCmp { rhs, width, .. } => aggregate_note_fp_operand(scan, rhs, *width),
         Flags::Test { .. }
         | Flags::TestImm { .. }
         | Flags::Sign { .. }
@@ -8520,13 +8601,17 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
         Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
             aggregate_note_ext_source(scan, src);
         }
-        Stmt::FpBin { rhs, .. } | Stmt::FpMinMax { rhs, .. } => {
-            aggregate_note_fp_operand(scan, rhs);
+        Stmt::FpBin { rhs, width, .. } | Stmt::FpMinMax { rhs, width, .. } => {
+            aggregate_note_fp_operand(scan, rhs, *width);
         }
-        Stmt::FpMov { src, .. } | Stmt::FpSqrt { src, .. } | Stmt::FpRound { src, .. } => {
-            aggregate_note_fp_operand(scan, src);
+        Stmt::FpMov { src, width, .. }
+        | Stmt::FpSqrt { src, width, .. }
+        | Stmt::FpRound { src, width, .. } => {
+            aggregate_note_fp_operand(scan, src, *width);
         }
-        Stmt::FpStore { addr, .. } => scan.note_unemitted_mem(*addr),
+        Stmt::FpStore { addr, width, .. } => {
+            scan.note_unemitted_mem(*addr, AggregateScalar::Float(*width));
+        }
         Stmt::BlockMove { .. } => {
             scan.note_write(Reg::Rdi);
             scan.note_write(Reg::Rsi);
@@ -8611,44 +8696,80 @@ fn aggregate_flat_stmts(body: &Block) -> Option<Vec<&Stmt>> {
     Some(statements)
 }
 
-fn aggregate_classify_root(reg: Reg, mems: &[MemRef]) -> Option<AggregateShape> {
+fn aggregate_classify_root(
+    reg: Reg,
+    observations: &[AggregateObservation],
+) -> Option<AggregateShape> {
     let regs: BTreeSet<Reg> = std::iter::once(reg).collect();
-    aggregate_classify_regs(&regs, mems)
+    aggregate_classify_regs(&regs, observations)
 }
 
-fn aggregate_classify_regs(regs: &BTreeSet<Reg>, mems: &[MemRef]) -> Option<AggregateShape> {
-    let observations: Vec<MemRef> = mems
+fn aggregate_classify_regs(
+    regs: &BTreeSet<Reg>,
+    all_observations: &[AggregateObservation],
+) -> Option<AggregateShape> {
+    let observations: Vec<AggregateObservation> = all_observations
         .iter()
         .copied()
-        .filter(|mem: &MemRef| mem.base.is_some_and(|base: Reg| regs.contains(&base)))
+        .filter(|observation: &AggregateObservation| {
+            observation
+                .mem
+                .base
+                .is_some_and(|base: Reg| regs.contains(&base))
+        })
         .collect();
     if observations.is_empty() || observations.len() > AGGREGATE_MAX_ROOT_OBSERVATIONS {
         return None;
     }
-    if mems.iter().any(|mem: &MemRef| {
-        mem.index
-            .is_some_and(|(index, _): (Reg, u8)| regs.contains(&index))
-    }) {
+    if all_observations
+        .iter()
+        .any(|observation: &AggregateObservation| {
+            observation
+                .mem
+                .index
+                .is_some_and(|(index, _): (Reg, u8)| regs.contains(&index))
+        })
+    {
+        return None;
+    }
+    if observations
+        .iter()
+        .any(|observation: &AggregateObservation| {
+            observation.scalar.width() != observation.mem.width
+        })
+    {
         return None;
     }
     let indexed: usize = observations
         .iter()
-        .filter(|mem: &&MemRef| mem.index.is_some())
+        .filter(|observation: &&AggregateObservation| observation.mem.index.is_some())
         .count();
     if indexed == observations.len() {
-        let first: MemRef = *observations.first()?;
+        if observations
+            .iter()
+            .any(|observation: &AggregateObservation| {
+                !matches!(observation.scalar, AggregateScalar::Integer(_))
+            })
+        {
+            return None;
+        }
+        let first: MemRef = observations.first()?.mem;
         let (_, scale): (Reg, u8) = first.index?;
         let bytes: u32 = first.width.bits() / 8;
         if !matches!(scale, 1 | 2 | 4 | 8) || u32::from(scale) != bytes {
             return None;
         }
-        if observations.iter().any(|mem: &MemRef| {
-            mem.disp != 0
-                || mem.width != first.width
-                || mem
-                    .index
-                    .is_none_or(|(_, access_scale): (Reg, u8)| access_scale != scale)
-        }) {
+        if observations
+            .iter()
+            .any(|observation: &AggregateObservation| {
+                let mem: MemRef = observation.mem;
+                mem.disp != 0
+                    || mem.width != first.width
+                    || mem
+                        .index
+                        .is_none_or(|(_, access_scale): (Reg, u8)| access_scale != scale)
+            })
+        {
             return None;
         }
         return Some(AggregateShape::Array {
@@ -8659,8 +8780,33 @@ fn aggregate_classify_regs(regs: &BTreeSet<Reg>, mems: &[MemRef]) -> Option<Aggr
     if indexed != 0 {
         return None;
     }
+    let mut union_members: Vec<AggregateScalar> = Vec::new();
+    if observations
+        .iter()
+        .all(|observation: &AggregateObservation| observation.mem.disp == 0)
+    {
+        for observation in &observations {
+            if !union_members.contains(&observation.scalar) {
+                union_members.push(observation.scalar);
+            }
+        }
+        if (2..=AGGREGATE_MAX_FIELDS).contains(&union_members.len()) {
+            return Some(AggregateShape::Union {
+                members: union_members,
+            });
+        }
+    }
+    if observations
+        .iter()
+        .any(|observation: &AggregateObservation| {
+            !matches!(observation.scalar, AggregateScalar::Integer(_))
+        })
+    {
+        return None;
+    }
     let mut by_offset: BTreeMap<i64, Width> = BTreeMap::new();
-    for mem in &observations {
+    for observation in &observations {
+        let mem: MemRef = observation.mem;
         if mem.disp < 0 {
             return None;
         }
@@ -8839,10 +8985,14 @@ fn infer_aggregate_plan(body: &Block, params: &[Reg], frame: Option<&FramePlan>)
         if plan.roots.len() >= AGGREGATE_MAX_ROOTS {
             return AggregatePlan::default();
         }
-        if scan.writes.get(&reg).copied().unwrap_or(0) != 0 || scan.unemitted_bases.contains(&reg) {
+        if scan.writes.get(&reg).copied().unwrap_or(0) != 0 {
             continue;
         }
-        if let Some(shape) = aggregate_classify_root(reg, &scan.mems) {
+        if let Some(shape) = aggregate_classify_root(reg, &scan.observations) {
+            if scan.unemitted_bases.contains(&reg) && !matches!(shape, AggregateShape::Union { .. })
+            {
+                continue;
+            }
             plan.roots.push(AggregateRootPlan {
                 reg,
                 aliases: Vec::new(),
@@ -8871,15 +9021,20 @@ fn infer_aggregate_plan(body: &Block, params: &[Reg], frame: Option<&FramePlan>)
             || source.width != Width::W64
             || plan.root_position(dest.reg).is_some()
             || scan.writes.get(&dest.reg).copied().unwrap_or(0) != 1
-            || scan.unemitted_bases.contains(&dest.reg)
             || !aggregate_root_exclusive(&statements, dest.reg, definition)
         {
             continue;
         }
-        let Some(shape): Option<AggregateShape> = aggregate_classify_root(dest.reg, &scan.mems)
+        let Some(shape): Option<AggregateShape> =
+            aggregate_classify_root(dest.reg, &scan.observations)
         else {
             continue;
         };
+        if scan.unemitted_bases.contains(&dest.reg)
+            && !matches!(shape, AggregateShape::Union { .. })
+        {
+            continue;
+        }
         let Some((depth, origin)): Option<(usize, Option<AggregateOrigin>)> =
             aggregate_nested_origin(&plan, &scan, source)
         else {
@@ -8922,16 +9077,18 @@ fn infer_aggregate_plan(body: &Block, params: &[Reg], frame: Option<&FramePlan>)
             }
         }
         for (_, regs) in groups {
-            if regs
-                .iter()
-                .any(|reg: &Reg| scan.unemitted_bases.contains(reg))
-            {
-                continue;
-            }
-            let Some(shape): Option<AggregateShape> = aggregate_classify_regs(&regs, &scan.mems)
+            let Some(shape): Option<AggregateShape> =
+                aggregate_classify_regs(&regs, &scan.observations)
             else {
                 continue;
             };
+            if regs
+                .iter()
+                .any(|reg: &Reg| scan.unemitted_bases.contains(reg))
+                && !matches!(shape, AggregateShape::Union { .. })
+            {
+                continue;
+            }
             let Some(&reg): Option<&Reg> = regs.first() else {
                 continue;
             };
@@ -9243,6 +9400,14 @@ const fn width_c_uint(width: Width) -> &'static str {
     }
 }
 
+const fn aggregate_scalar_c_type(scalar: AggregateScalar) -> &'static str {
+    match scalar {
+        AggregateScalar::Integer(width) => width_c_uint(width),
+        AggregateScalar::Float(FpWidth::F32) => "float",
+        AggregateScalar::Float(FpWidth::F64) => "double",
+    }
+}
+
 fn emit_c_aggregate_types(out: &mut String, plan: &AggregatePlan) {
     for (root_index, root) in plan.roots.iter().enumerate().rev() {
         match &root.shape {
@@ -9284,6 +9449,17 @@ fn emit_c_aggregate_types(out: &mut String, plan: &AggregatePlan) {
                     cursor = next_cursor;
                 }
                 let _ = writeln!(out, "    }} recovered_struct_{root_index}_t;");
+            }
+            AggregateShape::Union { members } => {
+                let _ = writeln!(
+                    out,
+                    "    typedef union __attribute__((packed, may_alias)) {{"
+                );
+                for &scalar in members {
+                    let member: String = aggregate_member_name(scalar);
+                    let _ = writeln!(out, "        {} {member};", aggregate_scalar_c_type(scalar));
+                }
+                let _ = writeln!(out, "    }} recovered_union_{root_index}_t;");
             }
         }
     }
@@ -9703,7 +9879,7 @@ fn emit_c(
                 width_mask(&mut masked, return_width, reg_var(Reg::Rax));
                 masked
             }
-            FnReturn::Fp(width) => fp_load(&FpOperand::Xmm(Xmm::Xmm0), width),
+            FnReturn::Fp(width) => fp_load(&FpOperand::Xmm(Xmm::Xmm0), width, aggregates),
         }
     };
 
@@ -10603,8 +10779,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             op,
             width,
         } => {
-            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width);
-            let rhs_val: String = fp_load(rhs, *width);
+            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width, aggregates);
+            let rhs_val: String = fp_load(rhs, *width, aggregates);
             let bin_op: BinaryOp = fp_binary_op(*op);
             let computed: String = c_render(|cx| c_bin(bin_op, cx.var(&lhs_val), cx.var(&rhs_val)));
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
@@ -10613,14 +10789,21 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             if let FpOperand::Xmm(sx) = src {
                 assign_cstmt(cx, xmm_var(*dest), xmm_var(*sx))
             } else {
-                let value: String = fp_load(src, *width);
+                let value: String = fp_load(src, *width, aggregates);
                 assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
             }
         }
         Stmt::FpStore { addr, src, width } => {
-            let target: String = deref_expr(addr, aggregates);
-            let bits: String = xmm_bits(*src, *width);
-            assign_cstmt(cx, &target, &bits)
+            if let Some((target, _)) =
+                aggregate_c_mem_expr(addr, aggregates, AggregateScalar::Float(*width))
+            {
+                let value: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
+                assign_cstmt(cx, &target, &value)
+            } else {
+                let target: String = deref_expr(addr, aggregates);
+                let bits: String = xmm_bits(*src, *width);
+                assign_cstmt(cx, &target, &bits)
+            }
         }
         Stmt::IntToFp {
             dest,
@@ -10642,7 +10825,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&int_expr, *width))
         }
         Stmt::FpToInt { dest, src, width } => {
-            let value: String = fp_load(&FpOperand::Xmm(*src), *width);
+            let value: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
             let bits: u32 = dest.width.bits();
             let truncated: String = c_render(|cx| {
                 let opaque: CExpr = c_opaque(cx, &value);
@@ -10659,7 +10842,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             from,
             to,
         } => {
-            let value: String = fp_load(&FpOperand::Xmm(*src), *from);
+            let value: String = fp_load(&FpOperand::Xmm(*src), *from, aggregates);
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *to))
         }
         Stmt::FpMinMax {
@@ -10668,8 +10851,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             is_max,
             width,
         } => {
-            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width);
-            let rhs_val: String = fp_load(rhs, *width);
+            let lhs_val: String = fp_load(&FpOperand::Xmm(*dest), *width, aggregates);
+            let rhs_val: String = fp_load(rhs, *width, aggregates);
             let cmp_op: BinaryOp = if *is_max { BinaryOp::Gt } else { BinaryOp::Lt };
             let computed: String = c_render(|cx| CExpr::Ternary {
                 cond: Box::new(c_bin(cmp_op, cx.var(&lhs_val), cx.var(&rhs_val))),
@@ -10679,7 +10862,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpSqrt { dest, src, width } => {
-            let value: String = fp_load(src, *width);
+            let value: String = fp_load(src, *width, aggregates);
             let name: &str = match width {
                 FpWidth::F64 => "__builtin_sqrt",
                 FpWidth::F32 => "__builtin_sqrtf",
@@ -10696,7 +10879,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             width,
             mode,
         } => {
-            let value: String = fp_load(src, *width);
+            let value: String = fp_load(src, *width, aggregates);
             let name: &str = mode.c_builtin(*width);
             let call: String = c_render(|cx| {
                 let arg: CExpr = cx.var(&value);
@@ -10949,7 +11132,7 @@ fn fp_binary_op(op: FpOp) -> BinaryOp {
     }
 }
 
-fn fp_load(operand: &FpOperand, width: FpWidth) -> String {
+fn fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> String {
     match operand {
         FpOperand::Xmm(x) => {
             let xv: &'static str = xmm_var(*x);
@@ -10966,6 +11149,11 @@ fn fp_load(operand: &FpOperand, width: FpWidth) -> String {
             }
         }
         FpOperand::Mem(mem) => {
+            if let Some((expr, _)) =
+                aggregate_c_mem_expr(mem, aggregates, AggregateScalar::Float(width))
+            {
+                return expr;
+            }
             let addr: String = addr_expr(mem.base, mem.index, mem.disp);
             let ty: &str = match width {
                 FpWidth::F64 => "double",
@@ -11232,8 +11420,8 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
             }
         }
         Flags::FpCmp { lhs, rhs, width } => {
-            let a: String = fp_load(&FpOperand::Xmm(*lhs), *width);
-            let b: String = fp_load(rhs, *width);
+            let a: String = fp_load(&FpOperand::Xmm(*lhs), *width, aggregates);
+            let b: String = fp_load(rhs, *width, aggregates);
             let cmp: BinaryOp = match kind {
                 CondKind::B => BinaryOp::Lt,
                 CondKind::Be => BinaryOp::Le,
@@ -11290,6 +11478,7 @@ fn aggregate_rust_type_name(plan: &AggregatePlan, root: usize) -> Option<String>
     let prefix: &str = match root_plan.shape {
         AggregateShape::Struct { .. } => "RecoveredStruct",
         AggregateShape::Array { .. } => "RecoveredArray",
+        AggregateShape::Union { .. } => "RecoveredUnion",
     };
     Some(format!("{prefix}{root}"))
 }
@@ -11334,6 +11523,20 @@ fn emit_rust_aggregate_types(out: &mut String, plan: &AggregatePlan) {
                 }
                 let _ = writeln!(out, "    }}");
             }
+            AggregateShape::Union { members } => {
+                let _ = writeln!(out, "    #[repr(C)]");
+                let _ = writeln!(out, "    union RecoveredUnion{root_index} {{");
+                for &scalar in members {
+                    let member: String = aggregate_member_name(scalar);
+                    let ty: &str = match scalar {
+                        AggregateScalar::Integer(width) => rs_uint_ty(width),
+                        AggregateScalar::Float(FpWidth::F32) => "f32",
+                        AggregateScalar::Float(FpWidth::F64) => "f64",
+                    };
+                    let _ = writeln!(out, "        {member}: {ty},");
+                }
+                let _ = writeln!(out, "    }}");
+            }
         }
     }
 }
@@ -11343,6 +11546,7 @@ fn aggregate_rust_local_name(plan: &AggregatePlan, root: usize) -> Option<String
     let prefix: &str = match root_plan.shape {
         AggregateShape::Struct { .. } => "recovered_struct",
         AggregateShape::Array { .. } => "recovered_array",
+        AggregateShape::Union { .. } => "recovered_union",
     };
     Some(format!("{prefix}_{root}"))
 }
@@ -11712,9 +11916,10 @@ fn rs_fp_bin_stmt(
     op: FpOp,
     width: FpWidth,
     indent: &str,
+    aggregates: &AggregatePlan,
 ) -> Option<()> {
     let lhs_val: String = rs_fp_load_xmm(dest, width);
-    let rhs_val: String = rs_fp_load(rhs, width)?;
+    let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
     let opstr: &str = match op {
         FpOp::Add => "+",
         FpOp::Sub => "-",
@@ -11732,11 +11937,12 @@ fn rs_fp_mov_stmt(
     src: &FpOperand,
     width: FpWidth,
     indent: &str,
+    aggregates: &AggregatePlan,
 ) -> Option<()> {
     if let FpOperand::Xmm(sx) = src {
         let _ = writeln!(out, "{indent}{} = {};", xmm_var(dest), xmm_var(*sx));
     } else {
-        let value: String = rs_fp_load(src, width)?;
+        let value: String = rs_fp_load(src, width, aggregates)?;
         rs_emit_xmm_store(out, dest, &value, width, indent);
     }
     Some(())
@@ -11786,9 +11992,10 @@ fn rs_fp_minmax_stmt(
     is_max: bool,
     width: FpWidth,
     indent: &str,
+    aggregates: &AggregatePlan,
 ) -> Option<()> {
     let lhs_val: String = rs_fp_load_xmm(dest, width);
-    let rhs_val: String = rs_fp_load(rhs, width)?;
+    let rhs_val: String = rs_fp_load(rhs, width, aggregates)?;
     let opstr: &str = if is_max { ">" } else { "<" };
     let computed: String =
         format!("(if {lhs_val} {opstr} {rhs_val} {{ {lhs_val} }} else {{ {rhs_val} }})");
@@ -11802,8 +12009,9 @@ fn rs_fp_sqrt_stmt(
     src: &FpOperand,
     width: FpWidth,
     indent: &str,
+    aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let value: String = rs_fp_load(src, width)?;
+    let value: String = rs_fp_load(src, width, aggregates)?;
     let call: String = format!("({value}).sqrt()");
     rs_emit_xmm_store(out, dest, &call, width, indent);
     Some(())
@@ -11816,8 +12024,9 @@ fn rs_fp_round_stmt(
     width: FpWidth,
     mode: RoundMode,
     indent: &str,
+    aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let value: String = rs_fp_load(src, width)?;
+    let value: String = rs_fp_load(src, width, aggregates)?;
     let method: &str = match mode {
         RoundMode::Nearest => "round_ties_even",
         RoundMode::Floor => "floor",
@@ -11937,8 +12146,10 @@ fn rs_emit_stmt(
             rhs,
             op,
             width,
-        } => rs_fp_bin_stmt(out, *dest, rhs, *op, *width, indent)?,
-        Stmt::FpMov { dest, src, width } => rs_fp_mov_stmt(out, *dest, src, *width, indent)?,
+        } => rs_fp_bin_stmt(out, *dest, rhs, *op, *width, indent, aggregates)?,
+        Stmt::FpMov { dest, src, width } => {
+            rs_fp_mov_stmt(out, *dest, src, *width, indent, aggregates)?;
+        }
         Stmt::IntToFp {
             dest,
             src,
@@ -11957,14 +12168,16 @@ fn rs_emit_stmt(
             rhs,
             is_max,
             width,
-        } => rs_fp_minmax_stmt(out, *dest, rhs, *is_max, *width, indent)?,
-        Stmt::FpSqrt { dest, src, width } => rs_fp_sqrt_stmt(out, *dest, src, *width, indent)?,
+        } => rs_fp_minmax_stmt(out, *dest, rhs, *is_max, *width, indent, aggregates)?,
+        Stmt::FpSqrt { dest, src, width } => {
+            rs_fp_sqrt_stmt(out, *dest, src, *width, indent, aggregates)?;
+        }
         Stmt::FpRound {
             dest,
             src,
             width,
             mode,
-        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent)?,
+        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent, aggregates)?,
         Stmt::GprToXmm { dest, src, width } => rs_gpr_to_xmm_stmt(out, *dest, *src, *width, indent),
         Stmt::XmmToGpr { dest, src, width } => rs_xmm_to_gpr_stmt(out, *dest, *src, *width, indent),
         Stmt::Store { addr, src } => {
@@ -11974,8 +12187,10 @@ fn rs_emit_stmt(
         Stmt::MemRmw { addr, op } => {
             rs_mem_rmw_stmt(out, addr, op, indent, aggregates)?;
         }
-        Stmt::FpStore { .. }
-        | Stmt::BlockMove { .. }
+        Stmt::FpStore { addr, src, width } => {
+            rs_emit_fp_store(out, addr, *src, *width, indent, aggregates)?;
+        }
+        Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
         | Stmt::Packed { .. }
         | Stmt::PackedToGpr { .. } => return None,
@@ -11997,8 +12212,9 @@ fn aggregate_rust_address(
     mem: &MemRef,
     plan: &AggregatePlan,
     mutable: bool,
+    scalar: AggregateScalar,
 ) -> Option<(String, bool)> {
-    match plan.access(mem)? {
+    match plan.access(mem, scalar)? {
         AggregateAccess::Field {
             root,
             base,
@@ -12023,12 +12239,22 @@ fn aggregate_rust_address(
                 false,
             ))
         }
+        AggregateAccess::UnionMember { root, base, scalar } => {
+            let base: String = aggregate_rust_base(plan, root, base)?;
+            let member: String = aggregate_member_name(scalar);
+            let address_macro: &str = if mutable { "addr_of_mut" } else { "addr_of" };
+            Some((
+                format!("core::ptr::{address_macro}!((*{base}).{member})"),
+                false,
+            ))
+        }
     }
 }
 
 #[allow(clippy::option_if_let_else)]
 fn rs_deref_read(mem: &MemRef, aggregates: &AggregatePlan) -> String {
-    if let Some((ptr, pointer)) = aggregate_rust_address(mem, aggregates, false)
+    if let Some((ptr, pointer)) =
+        aggregate_rust_address(mem, aggregates, false, AggregateScalar::Integer(mem.width))
         && let Some(ptr_expr) = parse_expr(&ptr)
     {
         let read: RustExpr = rcall(
@@ -12071,7 +12297,8 @@ fn rs_emit_store(
     aggregates: &AggregatePlan,
 ) {
     let uty: &str = rs_uint_ty(addr.width);
-    if let Some((ptr, pointer)) = aggregate_rust_address(addr, aggregates, true)
+    if let Some((ptr, pointer)) =
+        aggregate_rust_address(addr, aggregates, true, AggregateScalar::Integer(addr.width))
         && !pointer
         && let (Some(ptr_expr), Some(value_expr)) = (parse_expr(&ptr), parse_expr(value))
     {
@@ -12101,10 +12328,46 @@ fn rs_emit_store(
     let _ = writeln!(out, "{indent}{stmt}");
 }
 
-fn rs_fp_load(operand: &FpOperand, width: FpWidth) -> Option<String> {
+fn rs_emit_fp_store(
+    out: &mut String,
+    addr: &MemRef,
+    src: Xmm,
+    width: FpWidth,
+    indent: &str,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
+    let (ptr, pointer): (String, bool) =
+        aggregate_rust_address(addr, aggregates, true, AggregateScalar::Float(width))?;
+    if pointer {
+        return None;
+    }
+    let ptr_expr: RustExpr = parse_expr(&ptr)?;
+    let value: String = rs_fp_load_xmm(src, width);
+    let value_expr: RustExpr = parse_expr(&value)?;
+    let write: RustExpr = rcall(
+        path_expr(&["core", "ptr", "write_unaligned"]),
+        vec![ptr_expr, value_expr],
+    );
+    let _ = writeln!(out, "{indent}{};", render_rust_expr(&unsafe_block(write)));
+    Some(())
+}
+
+fn rs_fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> Option<String> {
     match operand {
         FpOperand::Xmm(x) => Some(rs_fp_load_xmm(*x, width)),
-        FpOperand::Mem(_) => None,
+        FpOperand::Mem(mem) => {
+            let (ptr, pointer): (String, bool) =
+                aggregate_rust_address(mem, aggregates, false, AggregateScalar::Float(width))?;
+            if pointer {
+                return None;
+            }
+            let ptr_expr: RustExpr = parse_expr(&ptr)?;
+            let read: RustExpr = rcall(
+                path_expr(&["core", "ptr", "read_unaligned"]),
+                vec![ptr_expr],
+            );
+            Some(render_rust_expr(&unsafe_block(read)))
+        }
         FpOperand::Const { bits, .. } => Some(rs_fp_const_literal(*bits, width)),
     }
 }
@@ -12587,7 +12850,7 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
         }
         Flags::FpCmp { lhs, rhs, width } => {
             let a: String = rs_fp_load_xmm(*lhs, *width);
-            let b: String = rs_fp_load(rhs, *width)?;
+            let b: String = rs_fp_load(rhs, *width, aggregates)?;
             let (op, op_text): (RBinOp, &str) = match kind {
                 CondKind::B => (RBinOp::Lt, "<"),
                 CondKind::Be => (RBinOp::Le, "<="),
@@ -12731,10 +12994,58 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_field_evidence_keeps_raw_accesses() {
+    fn coincident_integer_accesses_lift_to_a_union() {
+        let code: [u8; 8] = [0x8b, 0x01, 0x0f, 0xb7, 0x11, 0x48, 0x01, 0xd0];
+        let mut terminated: Vec<u8> = code.to_vec();
+        terminated.push(0xc3);
+        let rec: LeafRecovery = recover_leaf_function(&terminated, 0x1000).expect("recover");
+        assert!(rec.source.contains("typedef union"));
+        assert!(rec.source.contains("recovered_union_0_t"));
+        assert!(rec.source.contains("field_0_u32"));
+        assert!(rec.source.contains("field_0_u16"));
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("union RecoveredUnion0"));
+        assert!(rust.contains("field_0_u32"));
+        assert!(rust.contains("field_0_u16"));
+    }
+
+    #[test]
+    fn coincident_integer_and_float_accesses_lift_to_a_union() {
+        let code: [u8; 16] = [
+            0xf3, 0x0f, 0x10, 0x01, 0x8b, 0x01, 0xf3, 0x0f, 0x2a, 0xc8, 0xf3, 0x0f, 0x58, 0xc1,
+            0xc3, 0x90,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code[..15], 0x1000).expect("recover");
+        assert!(rec.source.contains("typedef union"));
+        assert!(rec.source.contains("field_0_u32"));
+        assert!(rec.source.contains("field_0_f32"));
+        assert!(rec.source.contains("recovered_union_0->field_0_f32"));
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("union RecoveredUnion0"));
+        assert!(rust.contains("field_0_f32"));
+    }
+
+    #[test]
+    fn coincident_integer_load_and_float_store_lift_to_a_union() {
+        let code: [u8; 11] = [
+            0x8b, 0x01, 0x66, 0x0f, 0x6e, 0xc0, 0xf3, 0x0f, 0x11, 0x01, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
+        assert!(rec.source.contains("recovered_union_0_t"));
+        assert!(rec.source.contains("field_0_u32"));
+        assert!(rec.source.contains("field_0_f32 ="));
+        let rust: &str = rec.rust_source.as_deref().expect("rust output");
+        assert!(rust.contains("union RecoveredUnion0"));
+        assert!(rust.contains("addr_of_mut!") && rust.contains(".field_0_f32"));
+        assert!(rust.contains("core::ptr::write_unaligned"));
+    }
+
+    #[test]
+    fn shifted_partial_overlap_keeps_raw_accesses() {
         let code: [u8; 10] = [0x48, 0x8b, 0x01, 0x8b, 0x51, 0x04, 0x48, 0x01, 0xd0, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
         assert!(!rec.source.contains("recovered_struct_"));
+        assert!(!rec.source.contains("recovered_union_"));
         assert!(rec.source.contains("(*(uint64_t*)(uintptr_t)(r_rcx))"));
         assert!(
             rec.source
@@ -12743,7 +13054,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_classifier_rejects_conflicts_mismatched_arrays_and_caps() {
+    fn aggregate_classifier_distinguishes_unions_from_rejected_shapes() {
         let conflicting: [MemRef; 2] = [
             MemRef {
                 base: Some(Reg::Rcx),
@@ -12758,61 +13069,138 @@ mod tests {
                 width: Width::W32,
             },
         ];
-        assert!(aggregate_classify_root(Reg::Rcx, &conflicting).is_none());
+        let conflicting: Vec<AggregateObservation> = conflicting
+            .into_iter()
+            .map(|mem: MemRef| AggregateObservation {
+                mem,
+                scalar: AggregateScalar::Integer(mem.width),
+            })
+            .collect();
+        assert!(matches!(
+            aggregate_classify_root(Reg::Rcx, &conflicting),
+            Some(AggregateShape::Union { .. })
+        ));
 
-        let mismatched_array: [MemRef; 1] = [MemRef {
-            base: Some(Reg::Rcx),
-            index: Some((Reg::Rdx, 4)),
-            disp: 0,
-            width: Width::W64,
+        let same_type: [AggregateObservation; 2] = [AggregateObservation {
+            mem: MemRef {
+                base: Some(Reg::Rcx),
+                index: None,
+                disp: 0,
+                width: Width::W32,
+            },
+            scalar: AggregateScalar::Integer(Width::W32),
+        }; 2];
+        assert!(aggregate_classify_root(Reg::Rcx, &same_type).is_none());
+
+        let mixed_union_and_tail: [AggregateObservation; 3] = [
+            conflicting[0],
+            conflicting[1],
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp: 8,
+                    width: Width::W32,
+                },
+                scalar: AggregateScalar::Integer(Width::W32),
+            },
+        ];
+        assert!(aggregate_classify_root(Reg::Rcx, &mixed_union_and_tail).is_none());
+
+        let mismatched_scalar: [AggregateObservation; 2] = [
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp: 0,
+                    width: Width::W32,
+                },
+                scalar: AggregateScalar::Integer(Width::W32),
+            },
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp: 0,
+                    width: Width::W32,
+                },
+                scalar: AggregateScalar::Float(FpWidth::F64),
+            },
+        ];
+        assert!(aggregate_classify_root(Reg::Rcx, &mismatched_scalar).is_none());
+
+        let mismatched_array: [AggregateObservation; 1] = [AggregateObservation {
+            mem: MemRef {
+                base: Some(Reg::Rcx),
+                index: Some((Reg::Rdx, 4)),
+                disp: 0,
+                width: Width::W64,
+            },
+            scalar: AggregateScalar::Integer(Width::W64),
         }];
         assert!(aggregate_classify_root(Reg::Rcx, &mismatched_array).is_none());
 
-        let root_reused_as_index: [MemRef; 3] = [
-            MemRef {
-                base: Some(Reg::Rcx),
-                index: None,
-                disp: 0,
-                width: Width::W64,
+        let root_reused_as_index: [AggregateObservation; 3] = [
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp: 0,
+                    width: Width::W64,
+                },
+                scalar: AggregateScalar::Integer(Width::W64),
             },
-            MemRef {
-                base: Some(Reg::Rcx),
-                index: None,
-                disp: 8,
-                width: Width::W64,
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp: 8,
+                    width: Width::W64,
+                },
+                scalar: AggregateScalar::Integer(Width::W64),
             },
-            MemRef {
-                base: Some(Reg::Rdx),
-                index: Some((Reg::Rcx, 8)),
-                disp: 0,
-                width: Width::W64,
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rdx),
+                    index: Some((Reg::Rcx, 8)),
+                    disp: 0,
+                    width: Width::W64,
+                },
+                scalar: AggregateScalar::Integer(Width::W64),
             },
         ];
         assert!(aggregate_classify_root(Reg::Rcx, &root_reused_as_index).is_none());
 
-        let mut too_many_fields: Vec<MemRef> = Vec::new();
+        let mut too_many_fields: Vec<AggregateObservation> = Vec::new();
         for field in 0..=AGGREGATE_MAX_FIELDS {
             let disp: i64 = i64::try_from(field)
                 .expect("field index")
                 .checked_mul(8)
                 .expect("field displacement");
-            too_many_fields.push(MemRef {
-                base: Some(Reg::Rcx),
-                index: None,
-                disp,
-                width: Width::W64,
+            too_many_fields.push(AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: None,
+                    disp,
+                    width: Width::W64,
+                },
+                scalar: AggregateScalar::Integer(Width::W64),
             });
         }
         assert!(aggregate_classify_root(Reg::Rcx, &too_many_fields).is_none());
 
-        let too_many_observations: Vec<MemRef> = vec![
-            MemRef {
-                base: Some(Reg::Rcx),
-                index: Some((Reg::Rdx, 8)),
-                disp: 0,
-                width: Width::W64,
+        let too_many_observations: Vec<AggregateObservation> = vec![
+            AggregateObservation {
+                mem: MemRef {
+                    base: Some(Reg::Rcx),
+                    index: Some((Reg::Rdx, 8)),
+                    disp: 0,
+                    width: Width::W64,
+                },
+                scalar: AggregateScalar::Integer(Width::W64),
             };
-            AGGREGATE_MAX_ROOT_OBSERVATIONS + 1
+            AGGREGATE_MAX_ROOT_OBSERVATIONS
+                + 1
         ];
         assert!(aggregate_classify_root(Reg::Rcx, &too_many_observations).is_none());
     }

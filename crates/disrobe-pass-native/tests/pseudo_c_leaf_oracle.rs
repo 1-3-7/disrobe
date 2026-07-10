@@ -662,11 +662,7 @@ fn mem_original_decl(case: &MemCase) -> String {
 fn mem_recovered_signature(recovery: &LeafRecovery, recovered_name: &str) -> String {
     recovery
         .source
-        .replacen(
-            "uint64_t recovered(",
-            &format!("uint64_t {recovered_name}("),
-            1,
-        )
+        .replacen(" recovered(", &format!(" {recovered_name}("), 1)
         .lines()
         .filter(|l: &&str| !l.starts_with("#include"))
         .collect::<Vec<&str>>()
@@ -896,6 +892,87 @@ long long aggregate_nested(AggregateOuter *p){ return p->inner->left + p->inner-
 long long aggregate_nested_array(AggregateArrayOuter *p, long long i){ return p->items[i] + p->tail; }
 void aggregate_update(AggregateFields *p, unsigned long long delta){ p->first += delta; p->second ^= (unsigned)delta; }
 ";
+
+const UNION_SOURCE: &str = "\
+typedef unsigned long long UnionU64;
+typedef unsigned UnionU32;
+typedef union { UnionU64 wide; UnionU32 word; } UnionWideWord;
+typedef union { UnionU32 word; float real; } UnionWordFloat;
+typedef union { UnionU64 wide; struct { UnionU32 low; UnionU32 high; } parts; } UnionPartial;
+UnionU64 union_wide_word(volatile UnionWideWord *p){ return p->wide + p->word; }
+float union_word_float(volatile UnionWordFloat *p){ (void)p->word; return p->real; }
+float union_word_float_store(volatile UnionWordFloat *p){ p->word = 0x3f800000U; p->real = p->real; return p->real; }
+UnionU64 union_partial(volatile UnionPartial *p){ return p->wide + p->parts.high; }
+";
+
+fn union_driver(recovered: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n\
+         typedef unsigned long long UnionU64;\n\
+         typedef unsigned UnionU32;\n\
+         typedef union {{ UnionU64 wide; UnionU32 word; }} UnionWideWord;\n\
+         typedef union {{ UnionU32 word; float real; }} UnionWordFloat;\n\
+         typedef union {{ UnionU64 wide; struct {{ UnionU32 low; UnionU32 high; }} parts; }} UnionPartial;\n\
+         extern UnionU64 union_wide_word(volatile UnionWideWord *p);\n\
+         extern float union_word_float(volatile UnionWordFloat *p);\n\
+         extern float union_word_float_store(volatile UnionWordFloat *p);\n\
+         extern UnionU64 union_partial(volatile UnionPartial *p);\n\
+         {recovered}\n\
+         int main(void) {{\n\
+             UnionU64 wide_inputs[] = {{ 0ULL, 1ULL, 0x3f800000ULL, 0x41200000a5a5a5a5ULL, 0xffffffffffffffffULL }};\n\
+             UnionU32 float_inputs[] = {{ 0U, 0x3f800000U, 0x41200000U, 0x4f000000U }};\n\
+             for (size_t i = 0; i < sizeof(wide_inputs) / sizeof(wide_inputs[0]); i++) {{\n\
+                 UnionWideWord wide = {{ .wide = wide_inputs[i] }};\n\
+                 UnionPartial partial = {{ .wide = wide_inputs[i] }};\n\
+                 UnionU64 want_wide = union_wide_word(&wide);\n\
+                 UnionU64 got_wide = rec_union_wide_word((uint64_t)(uintptr_t)&wide);\n\
+                 UnionU64 want_partial = union_partial(&partial);\n\
+                 UnionU64 got_partial = rec_union_partial((uint64_t)(uintptr_t)&partial);\n\
+                 if (want_wide != got_wide || want_partial != got_partial) return 1;\n\
+             }}\n\
+             for (size_t i = 0; i < sizeof(float_inputs) / sizeof(float_inputs[0]); i++) {{\n\
+                 UnionWordFloat value = {{ .word = float_inputs[i] }};\n\
+                 UnionWordFloat original_store = {{ .word = 0U }};\n\
+                 UnionWordFloat recovered_store = {{ .word = 0U }};\n\
+                 float want = union_word_float(&value);\n\
+                 float got = rec_union_word_float((uint64_t)(uintptr_t)&value);\n\
+                 float want_store = union_word_float_store(&original_store);\n\
+                 float got_store = rec_union_word_float_store((uint64_t)(uintptr_t)&recovered_store);\n\
+                 if (want != got || want_store != got_store || original_store.word != recovered_store.word) return 2;\n\
+             }}\n\
+             printf(\"OK\\n\");\n\
+             return 0;\n\
+         }}\n"
+    )
+}
+
+fn union_rust_driver(recovered: &str) -> String {
+    format!(
+        "#![allow(unused, unused_parens, dead_code)]\n{recovered}\n\
+         #[repr(C)]\nunion UnionWideWord {{ wide: u64, word: u32 }}\n\
+         #[repr(C)]\nunion UnionWordFloat {{ word: u32, real: f32 }}\n\
+         fn main() {{\n\
+             let wide_inputs: [u64; 5] = [0, 1, 0x3f800000, 0x41200000a5a5a5a5, u64::MAX];\n\
+             let float_inputs: [u32; 4] = [0, 0x3f800000, 0x41200000, 0x4f000000];\n\
+             for bits in wide_inputs {{\n\
+                 let mut value = UnionWideWord {{ wide: bits }};\n\
+                 let want: u64 = bits.wrapping_add(bits as u32 as u64);\n\
+                 let got: u64 = rec_union_wide_word((&mut value as *mut UnionWideWord) as usize as u64);\n\
+                 assert_eq!(got, want);\n\
+             }}\n\
+             for bits in float_inputs {{\n\
+                 let mut value = UnionWordFloat {{ word: bits }};\n\
+                 let mut stored = UnionWordFloat {{ word: 0 }};\n\
+                 let want: f32 = f32::from_bits(bits);\n\
+                 let got: f32 = rec_union_word_float((&mut value as *mut UnionWordFloat) as usize as u64);\n\
+                 assert_eq!(got.to_bits(), want.to_bits());\n\
+                 let got_store: f32 = rec_union_word_float_store((&mut stored as *mut UnionWordFloat) as usize as u64);\n\
+                 assert_eq!(got_store.to_bits(), 0x3f800000);\n\
+                 assert_eq!(unsafe {{ stored.word }}, 0x3f800000);\n\
+             }}\n\
+         }}\n"
+    )
+}
 
 fn aggregate_driver(recovered: &str) -> String {
     format!(
@@ -1183,6 +1260,166 @@ fn gcc_and_clang_aggregate_accesses_recompile_to_c_and_rust_equivalence() {
         "aggregate C/Rust compiler differential PASSED: {}/{} recovered, 0 rejected, 0 mismatches",
         graded_compilers * 5,
         graded_compilers * 5
+    );
+}
+
+#[test]
+fn gcc_and_clang_union_accesses_recompile_to_c_and_rust_equivalence() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!("skipping union compiler differential on a non-x86-64 host");
+        return;
+    }
+    let dir: PathBuf = scratch_dir();
+    let source_path: PathBuf = dir.join("union_types.c");
+    std::fs::write(&source_path, UNION_SOURCE.as_bytes()).expect("write union source");
+    assert!(
+        Command::new("rustc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success()),
+        "rustc is required for union grading"
+    );
+    let mut recovered_count: usize = 0;
+    let mut rejected_count: usize = 0;
+    for compiler in ["gcc", "clang"] {
+        assert!(
+            Command::new(compiler)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output: std::process::Output| output.status.success()),
+            "union grading requires {compiler}"
+        );
+        let object_path: PathBuf = dir.join(format!("union_types_{compiler}.o"));
+        let compile: std::process::Output = Command::new(compiler)
+            .args(["-O1", "-fno-stack-protector", "-c", "-o"])
+            .arg(&object_path)
+            .arg(&source_path)
+            .output()
+            .expect("compile union source");
+        assert!(
+            compile.status.success(),
+            "{compiler} union compile failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read union object");
+        let mut recovered_c: String = String::new();
+        let mut recovered_rust: String = String::new();
+        for name in [
+            "union_wide_word",
+            "union_word_float",
+            "union_word_float_store",
+        ] {
+            let (code, base): (Vec<u8>, u64) =
+                function_code(&object_bytes, name).expect("locate union function");
+            let recovery: LeafRecovery =
+                recover_leaf_function_abi(&code, base, HOST_ABI).expect("recover union function");
+            assert!(
+                recovery.source.contains("recovered_union_0_t")
+                    && recovery.source.contains("recovered_union_0->field_0_"),
+                "{compiler} {name} did not recover a union:\n{}",
+                recovery.source
+            );
+            let rust: &str = recovery.rust_source.as_deref().expect("union rust output");
+            assert!(
+                rust.contains("union RecoveredUnion0") && rust.contains("field_0_"),
+                "{compiler} {name} did not carry the union into Rust:\n{rust}"
+            );
+            let mut recovered_function: String =
+                mem_recovered_signature(&recovery, &format!("rec_{name}"));
+            if recovered_c.contains("static inline double fp_d_from_bits") {
+                recovered_function = recovered_function
+                    .lines()
+                    .filter(|line: &&str| !line.starts_with("static inline"))
+                    .collect::<Vec<&str>>()
+                    .join("\n");
+            }
+            recovered_c.push_str(&recovered_function);
+            recovered_c.push('\n');
+            recovered_rust.push_str(&rust.replacen(
+                "pub fn recovered(",
+                &format!("pub fn rec_{name}("),
+                1,
+            ));
+            recovered_rust.push('\n');
+            recovered_count += 1;
+        }
+        let (partial_code, partial_base): (Vec<u8>, u64) =
+            function_code(&object_bytes, "union_partial").expect("locate partial union function");
+        let partial: LeafRecovery =
+            recover_leaf_function_abi(&partial_code, partial_base, HOST_ABI)
+                .expect("recover partial union function");
+        assert!(
+            !partial.source.contains("recovered_union_")
+                && !partial.source.contains("recovered_struct_")
+                && partial.source.contains("(*(uint64_t*)")
+                && partial.source.contains("(*(uint32_t*)"),
+            "{compiler} shifted partial overlap must remain raw:\n{}",
+            partial.source
+        );
+        recovered_c.push_str(&mem_recovered_signature(&partial, "rec_union_partial"));
+        recovered_c.push('\n');
+        rejected_count += 1;
+
+        let driver: String = union_driver(&recovered_c);
+        let driver_path: PathBuf = dir.join(format!("union_driver_{compiler}.c"));
+        std::fs::write(&driver_path, driver.as_bytes()).expect("write union driver");
+        let executable_path: PathBuf = dir.join(format!("union_driver_{compiler}.exe"));
+        let link: std::process::Output = Command::new(compiler)
+            .args([
+                "-O3",
+                "-fstrict-aliasing",
+                "-Werror=ignored-attributes",
+                "-o",
+            ])
+            .arg(&executable_path)
+            .arg(&driver_path)
+            .arg(&object_path)
+            .output()
+            .expect("link union driver");
+        assert!(
+            link.status.success(),
+            "{compiler} union link failed: {}\n{driver}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run: std::process::Output = Command::new(&executable_path)
+            .output()
+            .expect("run union driver");
+        assert!(
+            run.status.success() && String::from_utf8_lossy(&run.stdout).contains("OK"),
+            "{compiler} union result mismatch: {}\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let rust_driver: String = union_rust_driver(&recovered_rust);
+        let rust_driver_path: PathBuf = dir.join(format!("union_driver_{compiler}.rs"));
+        std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write union rust driver");
+        let rust_executable_path: PathBuf = dir.join(format!("union_rust_{compiler}.exe"));
+        let rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
+            .arg(&rust_executable_path)
+            .arg(&rust_driver_path)
+            .output()
+            .expect("compile union rust driver");
+        assert!(
+            rust_build.status.success(),
+            "{compiler} union Rust compile failed: {}\n{rust_driver}",
+            String::from_utf8_lossy(&rust_build.stderr)
+        );
+        let rust_run: std::process::Output = Command::new(&rust_executable_path)
+            .output()
+            .expect("run union rust driver");
+        assert!(
+            rust_run.status.success(),
+            "{compiler} union Rust result mismatch: {}\n{}",
+            String::from_utf8_lossy(&rust_run.stdout),
+            String::from_utf8_lossy(&rust_run.stderr)
+        );
+    }
+    assert_eq!(recovered_count, 6);
+    assert_eq!(rejected_count, 2);
+    println!(
+        "union C/Rust compiler differential PASSED: {recovered_count} recovered, {rejected_count} rejected, 0 mismatches"
     );
 }
 
