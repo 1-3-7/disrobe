@@ -18,6 +18,7 @@ workspace = true
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
+disrobe-bytes = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

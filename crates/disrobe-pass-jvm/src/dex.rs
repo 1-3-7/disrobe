@@ -134,29 +134,28 @@ pub fn parse_header(bytes: &[u8]) -> Result<DexHeader> {
 }
 
 fn read_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
-    let mut result: u32 = 0;
-    let mut shift: u32 = 0;
-    let mut cursor: usize = off;
-    loop {
-        if cursor >= bytes.len() {
-            return Err(Error::Truncated {
-                offset: cursor,
-                needed: 1,
-                had: 0,
-            });
-        }
-        let b: u8 = bytes[cursor];
-        cursor += 1;
-        result |= u32::from(b & 0x7F) << shift;
-        if (b & 0x80) == 0 {
-            break;
-        }
-        shift += 7;
-        if shift >= 32 {
-            return Err(Error::BadDexEndian(0));
-        }
+    let window_end: usize = off.saturating_add(5).min(bytes.len());
+    let Some(window): Option<&[u8]> = bytes.get(off..window_end) else {
+        return Err(Error::Truncated {
+            offset: off,
+            needed: 1,
+            had: 0,
+        });
+    };
+    match disrobe_bytes::read_uleb128_at(window, 0) {
+        Ok((value, consumed)) => Ok((value as u32, off + consumed)),
+        Err(_) if window.len() == 5 => Err(Error::BadDexEndian(0)),
+        Err(disrobe_bytes::LebError::OutOfBounds(e)) => Err(Error::Truncated {
+            offset: off + e.offset,
+            needed: 1,
+            had: 0,
+        }),
+        Err(disrobe_bytes::LebError::Overflow { offset }) => Err(Error::Truncated {
+            offset,
+            needed: 1,
+            had: 0,
+        }),
     }
-    Ok((result, cursor))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -543,32 +542,40 @@ pub struct CodeItem {
 }
 
 fn read_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
-    let mut result: i32 = 0;
-    let mut shift: u32 = 0;
-    let mut cursor: usize = off;
-    loop {
-        if cursor >= bytes.len() {
-            return Err(Error::Truncated {
-                offset: cursor,
-                needed: 1,
-                had: 0,
-            });
-        }
-        let b: u8 = bytes[cursor];
-        cursor += 1;
-        result |= i32::from(b & 0x7F) << shift;
-        shift += 7;
-        if (b & 0x80) == 0 {
-            if shift < 32 && (b & 0x40) != 0 {
-                result |= -(1i32 << shift);
+    let window_end: usize = off.saturating_add(5).min(bytes.len());
+    let Some(window): Option<&[u8]> = bytes.get(off..window_end) else {
+        return Err(Error::Truncated {
+            offset: off,
+            needed: 1,
+            had: 0,
+        });
+    };
+    match disrobe_bytes::read_sleb128_at(window, 0) {
+        Ok((value, consumed)) => Ok((value as i32, off + consumed)),
+        Err(_) if window.len() == 5 => {
+            let mut capped: [u8; 5] = [0u8; 5];
+            capped.copy_from_slice(window);
+            capped[4] &= 0x7F;
+            match disrobe_bytes::read_sleb128_at(&capped, 0) {
+                Ok((value, _consumed)) => Ok((value as i32, off + 5)),
+                Err(_) => Err(Error::Truncated {
+                    offset: off,
+                    needed: 1,
+                    had: 0,
+                }),
             }
-            break;
         }
-        if shift >= 32 {
-            break;
-        }
+        Err(disrobe_bytes::LebError::OutOfBounds(e)) => Err(Error::Truncated {
+            offset: off + e.offset,
+            needed: 1,
+            had: 0,
+        }),
+        Err(disrobe_bytes::LebError::Overflow { offset }) => Err(Error::Truncated {
+            offset,
+            needed: 1,
+            had: 0,
+        }),
     }
-    Ok((result, cursor))
 }
 
 type ParsedCode = (u16, u16, u16, Vec<u16>, Vec<TryItem>, Vec<Option<String>>);

@@ -77,20 +77,19 @@ fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
 }
 
 fn read_uleb128(bytes: &[u8], off: usize) -> Option<(u32, usize)> {
-    let mut result: u32 = 0;
-    let mut shift: u32 = 0;
-    let mut cursor: usize = off;
-    loop {
-        let b: u8 = *bytes.get(cursor)?;
-        cursor += 1;
-        result |= u32::from(b & 0x7F) << shift;
-        if b & 0x80 == 0 {
-            return Some((result, cursor));
+    let window_end: usize = off.saturating_add(5).min(bytes.len());
+    let window: &[u8] = bytes.get(off..window_end)?;
+    match disrobe_bytes::read_uleb128_at(window, 0) {
+        Ok((value, consumed)) => Some((value as u32, off + consumed)),
+        Err(_) if window.len() == 5 => {
+            let mut capped: [u8; 5] = [0u8; 5];
+            capped.copy_from_slice(window);
+            capped[4] &= 0x7F;
+            disrobe_bytes::read_uleb128_at(&capped, 0)
+                .ok()
+                .map(|(value, _consumed): (u64, usize)| (value as u32, off + 5))
         }
-        shift += 7;
-        if shift > 28 {
-            return Some((result, cursor));
-        }
+        Err(_) => None,
     }
 }
 
