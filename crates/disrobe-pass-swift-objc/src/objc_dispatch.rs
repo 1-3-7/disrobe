@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 use crate::macho::{self, ParsedSlice, Section, SliceView};
@@ -362,21 +363,11 @@ fn bind_one(
     out.insert(addr, symbol.to_owned());
 }
 
-fn read_uleb(stream: &[u8], mut cursor: usize) -> (u64, usize) {
-    let mut result: u64 = 0;
-    let mut shift: u32 = 0;
-    while cursor < stream.len() {
-        let byte: u8 = stream[cursor];
-        cursor += 1;
-        if shift < 64 {
-            result |= u64::from(byte & 0x7F) << shift;
-        }
-        shift += 7;
-        if byte & 0x80 == 0 {
-            break;
-        }
+fn read_uleb(stream: &[u8], cursor: usize) -> (u64, usize) {
+    match read_uleb128_at(stream, cursor) {
+        Ok((value, consumed)) => (value, cursor + consumed),
+        Err(_) => (0, stream.len()),
     }
-    (result, cursor)
 }
 
 fn skip_uleb(stream: &[u8], cursor: usize) -> usize {
