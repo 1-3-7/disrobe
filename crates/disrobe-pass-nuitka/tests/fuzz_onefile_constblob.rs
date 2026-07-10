@@ -3,11 +3,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 
 use disrobe_pass_nuitka::{
-    ConstantsPool, build_surface, classify, decode_build_constants, decode_const_file,
-    detect_authenticode, detect_in_bytes, emit_python, extract_for_classification, extract_onefile,
-    extract_onefile_streaming, extract_variant, locate_onefile_payload, parse_c_module,
-    parse_constant_manifest, parse_constants, scan_build_info, scan_c_source_markers,
-    scan_constants_blob, scan_plugins, scan_symbols,
+    ConstantsPool, NuitkaConstants, build_manifest, build_surface, classify,
+    decode_build_constants, decode_bytecode_table, decode_const_file, decompile_bytes,
+    demangle_function, detect_authenticode, detect_in_bytes, disassemble_module_stats, emit_python,
+    extract_for_classification, extract_onefile, extract_onefile_streaming, extract_variant,
+    lift_native_bodies, locate_onefile_payload, map_names, parse_c_module, parse_constant_manifest,
+    parse_constants, reconstruct_skeleton, recover_frozen_bytecode, scan_build_info,
+    scan_c_source_markers, scan_constants_blob, scan_plugins, scan_symbols,
 };
 
 static SUPPRESS_HOOK: Once = Once::new();
@@ -154,6 +156,36 @@ fn exercise(bytes: &[u8], rng: &mut Xorshift64) {
     });
     guard("locate_onefile_payload", || {
         let _ = locate_onefile_payload(bytes);
+    });
+    guard("build_manifest", || {
+        let _ = build_manifest(bytes);
+    });
+    guard("decode_bytecode_table", || {
+        let _ = decode_bytecode_table(bytes, None);
+    });
+    guard("recover_frozen_bytecode", || {
+        let _ = recover_frozen_bytecode(bytes, None);
+    });
+    guard("disassemble_module_stats", || {
+        let _ = disassemble_module_stats("<fuzz>", bytes);
+    });
+    guard("decompile_bytes", || {
+        let _ = decompile_bytes(bytes);
+    });
+    guard("native-body+skeleton+name-map", || {
+        let constants: NuitkaConstants = parse_constants(bytes);
+        let _ = lift_native_bodies(bytes, &constants);
+        let _ = reconstruct_skeleton(&constants);
+        let names: Vec<String> = constants
+            .modules
+            .iter()
+            .flat_map(|module| module.strings.iter().cloned())
+            .take(64)
+            .collect();
+        let _ = map_names("<fuzz>", bytes, &names);
+        if let Some(name) = names.first() {
+            let _ = demangle_function(name);
+        }
     });
 
     let offsets: [usize; 4] = [

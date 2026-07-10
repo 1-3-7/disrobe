@@ -1,8 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use disrobe_pass_nuitka::{
-    detect_authenticode, detect_in_bytes, extract_onefile, extract_variant, locate_onefile_payload,
-    parse_c_module, parse_constant_manifest, parse_constants, scan_build_info,
-    scan_c_source_markers, scan_constants_blob, scan_plugins,
+    NuitkaConstants, build_manifest, decode_bytecode_table, decompile_bytes, demangle_function,
+    detect_authenticode, detect_in_bytes, disassemble_module_stats, extract_onefile,
+    extract_variant, lift_native_bodies, locate_onefile_payload, map_names, parse_c_module,
+    parse_constant_manifest, parse_constants, reconstruct_skeleton, recover_frozen_bytecode,
+    scan_build_info, scan_c_source_markers, scan_constants_blob, scan_plugins,
 };
 
 struct Xorshift64 {
@@ -89,7 +91,7 @@ fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
 
 fn exercise(bytes: &[u8], rng: &mut Xorshift64) {
     let _ = detect_in_bytes(bytes);
-    let _ = parse_constants(bytes);
+    let constants: NuitkaConstants = parse_constants(bytes);
     let _ = scan_constants_blob(bytes);
     let _ = parse_constant_manifest(bytes);
     let _ = scan_c_source_markers(bytes);
@@ -98,6 +100,23 @@ fn exercise(bytes: &[u8], rng: &mut Xorshift64) {
     let _ = detect_authenticode(bytes);
     let _ = extract_variant(bytes);
     let _ = locate_onefile_payload(bytes);
+    let _ = build_manifest(bytes);
+    let _ = decode_bytecode_table(bytes, None);
+    let _ = recover_frozen_bytecode(bytes, None);
+    let _ = disassemble_module_stats("<fuzz>", bytes);
+    let _ = lift_native_bodies(bytes, &constants);
+    let _ = reconstruct_skeleton(&constants);
+    let names: Vec<String> = constants
+        .modules
+        .iter()
+        .flat_map(|module| module.strings.iter().cloned())
+        .take(64)
+        .collect();
+    let _ = map_names("<fuzz>", bytes, &names);
+    if let Some(name) = names.first() {
+        let _ = demangle_function(name);
+    }
+    let _ = decompile_bytes(bytes);
     let off: usize = if bytes.is_empty() {
         0
     } else {
