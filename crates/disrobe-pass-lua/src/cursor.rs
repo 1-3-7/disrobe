@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use disrobe_bytes::LebError;
 
 #[derive(Debug, Clone)]
 pub struct ByteCursor<'a> {
@@ -121,25 +122,18 @@ impl<'a> ByteCursor<'a> {
 
     pub fn read_uleb128(&mut self) -> Result<u64> {
         let start: usize = self.pos;
-        let mut result: u64 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let byte: u8 = self.read_u8()?;
-            let value: u64 = u64::from(byte & 0x7F);
-            if shift >= 64 || value > (u64::MAX >> shift) {
-                return Err(Error::BadUleb128(start));
+        match disrobe_bytes::read_uleb128_at(self.bytes, start) {
+            Ok((value, consumed)) => {
+                self.pos = start + consumed;
+                Ok(value)
             }
-            let shifted: u64 = value << shift;
-            result |= shifted;
-            if byte & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift >= 64 {
-                return Err(Error::BadUleb128(start));
-            }
+            Err(LebError::OutOfBounds(err)) => Err(Error::Truncated {
+                offset: err.offset,
+                needed: err.needed,
+                had: err.available,
+            }),
+            Err(LebError::Overflow { .. }) => Err(Error::BadUleb128(start)),
         }
-        Ok(result)
     }
 
     pub fn read_size(&mut self, size_bytes: u8) -> Result<u64> {
