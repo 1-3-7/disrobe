@@ -4,15 +4,7 @@ use disrobe_pass_py_disasm::alt_runtimes::micropython::{MicroPythonModule, detec
 const MPY_MAGIC: u8 = b'M';
 
 fn header(version: u8) -> Vec<u8> {
-    let mut bytes: Vec<u8> = Vec::with_capacity(8);
-    bytes.push(MPY_MAGIC);
-    bytes.push(version);
-    bytes.push(0u8);
-    bytes.push(31u8);
-    if version >= 5 {
-        bytes.extend_from_slice(&[12u8, 0u8]);
-    }
-    bytes
+    vec![MPY_MAGIC, version, 0u8, 31u8]
 }
 
 #[test]
@@ -50,8 +42,19 @@ fn detect_rejects_v7_unsupported() {
 }
 
 #[test]
-fn parse_rejects_truncated_v5_header() {
+fn parse_accepts_minimal_four_byte_v5_header() {
     let bytes: [u8; 4] = [MPY_MAGIC, 5u8, 0u8, 31u8];
+    let module: MicroPythonModule = parse(&bytes).expect("a 4-byte header is complete for v5");
+    assert_eq!(module.version.raw(), 5);
+    assert!(
+        module.raw_code.is_empty(),
+        "no payload bytes follow the 4-byte header"
+    );
+}
+
+#[test]
+fn parse_rejects_truncated_three_byte_header() {
+    let bytes: [u8; 3] = [MPY_MAGIC, 5u8, 0u8];
     let err: disrobe_pass_py_disasm::AltRuntimeError = parse(&bytes).expect_err("truncated");
     assert!(matches!(
         err,
@@ -76,6 +79,12 @@ fn parses_real_baked_v6_fixture() {
     assert_eq!(module.version.raw(), 6);
     assert_eq!(module.small_int_bits, 31);
     assert!(!module.raw_code.is_empty());
+    assert_eq!(
+        module.raw_code,
+        HELLO_FIXTURE[4..],
+        "the real .mpy header is exactly 4 bytes at every version; raw_code must start there \
+         with nothing dropped or reinterpreted as a nonexistent field"
+    );
 }
 
 #[test]

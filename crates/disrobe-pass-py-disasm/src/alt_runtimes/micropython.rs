@@ -7,6 +7,7 @@ const MPY_MAGIC: u8 = b'M';
 const MPY_MIN_VERSION: u8 = 0;
 const MPY_MAX_VERSION: u8 = 6;
 const MPY_FEATURE_BYTECODE: u8 = 0x00;
+const MPY_FEATURE_ARCH_FLAGS_PRESENT: u8 = 0x40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MpyVersion(pub u8);
@@ -28,7 +29,6 @@ pub struct MicroPythonModule {
     pub version: MpyVersion,
     pub features: u8,
     pub small_int_bits: u8,
-    pub qstr_window_size: u16,
     pub raw_code: Vec<u8>,
     pub opcode_histogram: BTreeMap<u8, u32>,
 }
@@ -40,11 +40,10 @@ pub struct MpyInsn {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<MicroPythonModule> {
-    let header_len: usize = header_len_for(bytes)?;
-    if bytes.len() < header_len {
+    if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
-            needed: header_len,
+            needed: 4,
             had: bytes.len(),
         });
     }
@@ -63,18 +62,13 @@ pub fn parse(bytes: &[u8]) -> Result<MicroPythonModule> {
     }
     let features: u8 = bytes[2];
     let small_int_bits: u8 = bytes[3];
-    let qstr_window_size: u16 = if version >= 5 {
-        u16::from_le_bytes([bytes[4], bytes[5]])
-    } else {
-        0u16
-    };
-    let raw_code: Vec<u8> = bytes[header_len..].to_vec();
+    let payload_off: usize = payload_start(bytes)?;
+    let raw_code: Vec<u8> = bytes[payload_off..].to_vec();
     let opcode_histogram: BTreeMap<u8, u32> = histogram(&raw_code);
     Ok(MicroPythonModule {
         version: MpyVersion(version),
         features,
         small_int_bits,
-        qstr_window_size,
         raw_code,
         opcode_histogram,
     })
@@ -88,7 +82,7 @@ pub fn detect(bytes: &[u8]) -> bool {
         && (bytes[2] & 0x03) == MPY_FEATURE_BYTECODE
 }
 
-fn header_len_for(bytes: &[u8]) -> Result<usize> {
+fn payload_start(bytes: &[u8]) -> Result<usize> {
     if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
@@ -96,8 +90,13 @@ fn header_len_for(bytes: &[u8]) -> Result<usize> {
             had: bytes.len(),
         });
     }
-    let version: u8 = bytes[1];
-    if version >= 5 { Ok(6) } else { Ok(4) }
+    if bytes[2] & MPY_FEATURE_ARCH_FLAGS_PRESENT == 0 {
+        return Ok(4);
+    }
+    let mut cursor: Cursor<'_> = Cursor::new(bytes);
+    cursor.pos = 4;
+    cursor.uint()?;
+    Ok(cursor.pos)
 }
 
 impl MicroPythonModule {
@@ -232,11 +231,10 @@ pub enum MpyArg {
 }
 
 pub fn parse_bytecode(bytes: &[u8]) -> Result<MpyBytecodeModule> {
-    let header_len: usize = header_len_for(bytes)?;
-    if bytes.len() < header_len {
+    if bytes.len() < 4 {
         return Err(AltRuntimeError::Truncated {
             offset: 0,
-            needed: header_len,
+            needed: 4,
             had: bytes.len(),
         });
     }
@@ -257,8 +255,9 @@ pub fn parse_bytecode(bytes: &[u8]) -> Result<MpyBytecodeModule> {
         return Err(AltRuntimeError::NotDetected("micropython-bytecode"));
     }
     let small_int_bits: u8 = bytes[3];
+    let payload_off: usize = payload_start(bytes)?;
     let mut cursor: Cursor<'_> = Cursor::new(bytes);
-    cursor.pos = 4;
+    cursor.pos = payload_off;
     let n_qstr: u64 = cursor.uint()?;
     let n_obj: u64 = cursor.uint()?;
     let qstr_count: usize = bounded_table_count(n_qstr, cursor.remaining(), "n_qstr", cursor.pos)?;
@@ -1076,15 +1075,7 @@ mod tests {
         include_bytes!("../../../../corpus/python/alt_runtimes/micropython/control_flow.mpy");
 
     fn build_header(version: u8) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::with_capacity(8);
-        bytes.push(MPY_MAGIC);
-        bytes.push(version);
-        bytes.push(MPY_FEATURE_BYTECODE);
-        bytes.push(31);
-        if version >= 5 {
-            bytes.extend_from_slice(&[16u8, 0u8]);
-        }
-        bytes
+        vec![MPY_MAGIC, version, MPY_FEATURE_BYTECODE, 31]
     }
 
     #[test]
@@ -1094,6 +1085,51 @@ mod tests {
         let module: MicroPythonModule = parse(&bytes).expect("parse mpy v0");
         assert_eq!(module.version.raw(), 0);
         assert_eq!(module.raw_code, vec![1u8, 2u8, 3u8]);
+    }
+
+    #[test]
+    fn parses_mpy_v6_header_with_no_phantom_qstr_window_field() {
+        let mut bytes: Vec<u8> = build_header(6);
+        bytes.extend_from_slice(&[1u8, 2u8, 3u8]);
+        let module: MicroPythonModule = parse(&bytes).expect("parse mpy v6");
+        assert_eq!(
+            module.raw_code,
+            vec![1u8, 2u8, 3u8],
+            "the real .mpy header is always exactly 4 bytes (magic, version, features, \
+             small_int_bits) with no qstr-window field at any version; raw_code must start \
+             immediately at byte 4"
+        );
+    }
+
+    #[test]
+    fn parses_real_v6_fixture_raw_code_starts_at_byte_four() {
+        let module: MicroPythonModule = parse(HELLO_BYTECODE).expect("parse real v6 mpy");
+        assert_eq!(
+            module.raw_code,
+            HELLO_BYTECODE[4..],
+            "raw_code must be exactly bytes[4..] for a real v6 pure-bytecode module: no bytes \
+             may be dropped or reinterpreted as a nonexistent header field"
+        );
+    }
+
+    #[test]
+    fn payload_start_skips_arch_flags_varint_when_present() {
+        let mut bytes: Vec<u8> = vec![MPY_MAGIC, 6u8, MPY_FEATURE_ARCH_FLAGS_PRESENT, 31u8, 0x05u8];
+        bytes.extend_from_slice(&[9u8, 9u8]);
+        let off: usize = payload_start(&bytes).expect("payload_start with arch flags");
+        assert_eq!(
+            off, 5,
+            "single-byte arch_flags varint consumes one byte past the header"
+        );
+        assert_eq!(&bytes[off..], &[9u8, 9u8]);
+    }
+
+    #[test]
+    fn payload_start_rejects_truncated_arch_flags_varint() {
+        let bytes: [u8; 4] = [MPY_MAGIC, 6u8, MPY_FEATURE_ARCH_FLAGS_PRESENT, 31u8];
+        let err: AltRuntimeError =
+            payload_start(&bytes).expect_err("must reject missing arch_flags byte, not panic");
+        assert!(matches!(err, AltRuntimeError::Truncated { .. }));
     }
 
     #[test]
