@@ -162,14 +162,12 @@ fn enhanced_for_lowerings_recover_or_degrade() {
 
     let generic: String = method_body(&source, "genericIter(");
     assert!(
-        generic.contains(".iterator()") && generic.contains(".hasNext()"),
-        "an erased generic collection must degrade to the explicit iterator loop, never a \
-         non-compiling `for (Integer ...)`; got:\n{generic}"
+        generic.contains("for (Integer") && generic.contains(": arg0)"),
+        "a Signature-backed generic collection must recover its typed enhanced-for; got:\n{generic}"
     );
     assert!(
-        !generic.contains("for (Integer"),
-        "generic-iterator enhanced-for over a raw collection would not recompile; it must degrade; \
-         got:\n{generic}"
+        !generic.contains(".iterator()") && !generic.contains(".hasNext()"),
+        "a typed enhanced-for must not retain iterator scaffolding; got:\n{generic}"
     );
 }
 

@@ -814,7 +814,7 @@ fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
     for token in [
         "@java.lang.annotation.Retention(value = java.lang.annotation.RetentionPolicy.RUNTIME)",
         "@EdgeCases.TaggedSet(value = {@EdgeCases.Tagged(value = \"alpha\", priority = 1), @EdgeCases.Tagged(value = \"beta\", priority = 2)})",
-        "@java.lang.SafeVarargs\n    public static java.util.List safeVarargs(Object... arg0)",
+        "@java.lang.SafeVarargs\n    public static <T> java.util.List<T> safeVarargs(T... arg0)",
     ] {
         assert!(
             source.contains(token),

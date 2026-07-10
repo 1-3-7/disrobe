@@ -107,6 +107,8 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         crate::attributes::DeclarationAnnotationRenderer::new(cf);
     source.push_str(&annotation_renderer.render(cf, &cf.attributes, ""));
     let structure: crate::attributes::ClassStructure = crate::attributes::analyze(cf);
+    let generic_class: Option<crate::signature::RecoveredClassSignature> =
+        crate::signature::recover_class(cf);
     let is_interface: bool = cf.access_flags & ACC_INTERFACE != 0;
     let is_annotation: bool = cf.access_flags & ACC_ANNOTATION != 0;
     let is_enum: bool = cf.access_flags & ACC_ENUM != 0;
@@ -137,12 +139,24 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     } else {
         let _ = write!(source, "{kw} {sealed_kw}{kind} {simple}");
     }
+    if let Some(signature) = &generic_class {
+        source.push_str(&signature.type_parameters);
+    }
     if structure.is_record {
         let components: Vec<String> = structure
             .record_components
             .iter()
             .filter_map(|c| {
-                descriptor::parse_field(&c.descriptor).map(|t| format!("{} {}", t.render(), c.name))
+                let field: Option<&FieldInfo> = cf.fields.iter().find(|field: &&FieldInfo| {
+                    cf.utf8_at(field.name_index)
+                        .is_ok_and(|name: &str| name == c.name)
+                });
+                let ty: String = field
+                    .and_then(|value: &FieldInfo| {
+                        crate::signature::recover_field(cf, value, generic_class.as_ref())
+                    })
+                    .or_else(|| descriptor::parse_field(&c.descriptor).map(|t| t.render()))?;
+                Some(format!("{ty} {}", c.name))
             })
             .collect();
         let _ = write!(source, "({})", components.join(", "));
@@ -158,14 +172,22 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         && !is_interface
         && !is_enum
     {
-        let _ = write!(source, " extends {}", descriptor::binary_to_source(sup));
+        let rendered_superclass: String = generic_class.as_ref().map_or_else(
+            || descriptor::binary_to_source(sup),
+            |signature: &crate::signature::RecoveredClassSignature| signature.superclass.clone(),
+        );
+        let _ = write!(source, " extends {rendered_superclass}");
     }
     if !is_annotation && !cf.interfaces.is_empty() {
-        let names: Vec<String> = cf
-            .interfaces
-            .iter()
-            .filter_map(|&i| cf.class_name(i).ok().map(descriptor::binary_to_source))
-            .collect();
+        let names: Vec<String> = generic_class.as_ref().map_or_else(
+            || {
+                cf.interfaces
+                    .iter()
+                    .filter_map(|&i| cf.class_name(i).ok().map(descriptor::binary_to_source))
+                    .collect()
+            },
+            |signature: &crate::signature::RecoveredClassSignature| signature.interfaces.clone(),
+        );
         if !names.is_empty() {
             let verb: &str = if is_interface {
                 "extends"
@@ -224,7 +246,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         {
             continue;
         }
-        if let Some(line) = render_field(cf, field) {
+        if let Some(line) = render_field(cf, field, generic_class.as_ref()) {
             source.push_str(&render_member_annotations(
                 &mut annotation_renderer,
                 cf,
@@ -274,6 +296,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
             simple,
             is_interface,
             annotation_defaults.get(&method_index).map(String::as_str),
+            generic_class.as_ref(),
         );
         let rendered_annotations: String =
             render_member_annotations(&mut annotation_renderer, cf, &method.attributes, "    ");
@@ -326,13 +349,19 @@ fn is_assertions_disabled_field(cf: &ClassFile, field: &FieldInfo) -> bool {
             .is_ok_and(|d: &str| d == "Z")
 }
 
-fn render_field(cf: &ClassFile, field: &FieldInfo) -> Option<String> {
+fn render_field(
+    cf: &ClassFile,
+    field: &FieldInfo,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
+) -> Option<String> {
     if is_assertions_disabled_field(cf, field) {
         return None;
     }
     let name: &str = cf.utf8_at(field.name_index).ok()?;
     let desc: &str = cf.utf8_at(field.descriptor_index).ok()?;
     let ty: JavaType = descriptor::parse_field(desc)?;
+    let rendered_type: String =
+        crate::signature::recover_field(cf, field, class_signature).unwrap_or_else(|| ty.render());
     let kw: String = member_access_keywords(field.access_flags);
     let constant: Option<String> = constant_value_initializer(cf, field, &ty);
     let prefix: String = if kw.is_empty() {
@@ -341,8 +370,8 @@ fn render_field(cf: &ClassFile, field: &FieldInfo) -> Option<String> {
         format!("{kw} ")
     };
     match constant {
-        Some(value) => Some(format!("{prefix}{} {name} = {value};", ty.render())),
-        None => Some(format!("{prefix}{} {name};", ty.render())),
+        Some(value) => Some(format!("{prefix}{rendered_type} {name} = {value};")),
+        None => Some(format!("{prefix}{rendered_type} {name};")),
     }
 }
 
@@ -638,10 +667,35 @@ fn render_method(
     class_simple: &str,
     is_interface: bool,
     annotation_default: Option<&str>,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
+) -> RenderedMethod {
+    render_method_mode(
+        cf,
+        method,
+        class_simple,
+        is_interface,
+        annotation_default,
+        class_signature,
+        true,
+    )
+}
+
+fn render_method_mode(
+    cf: &ClassFile,
+    method: &MethodInfo,
+    class_simple: &str,
+    is_interface: bool,
+    annotation_default: Option<&str>,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
+    allow_generic_signature: bool,
 ) -> RenderedMethod {
     let name: &str = cf.utf8_at(method.name_index).unwrap_or("?");
     let desc: &str = cf.utf8_at(method.descriptor_index).unwrap_or("()V");
     let parsed: Option<MethodDescriptor> = descriptor::parse_method(desc);
+    let generic_signature: Option<crate::signature::RecoveredMethodSignature> =
+        allow_generic_signature
+            .then(|| crate::signature::recover_method(cf, method, class_signature))
+            .flatten();
     let method_flags: u16 = method.access_flags & !(ACC_VOLATILE | ACC_TRANSIENT);
     let mut kw: String = member_access_keywords(method_flags);
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
@@ -678,13 +732,33 @@ fn render_method(
             let mut rendered: Vec<String> = Vec::with_capacity(md.params.len());
             for (i, p) in md.params.iter().enumerate() {
                 let pname: String = format!("arg{i}");
-                let ty: String = render_parameter_type(p, is_varargs && i + 1 == md.params.len());
+                let ty: String = generic_signature.as_ref().map_or_else(
+                    || render_parameter_type(p, is_varargs && i + 1 == md.params.len()),
+                    |signature: &crate::signature::RecoveredMethodSignature| {
+                        render_generic_parameter_type(
+                            &signature.parameters[i],
+                            is_varargs && i + 1 == md.params.len(),
+                        )
+                    },
+                );
                 rendered.push(format!("{ty} {pname}"));
                 if matches!(p, JavaType::Boolean) {
                     boolean_params.insert(pname.clone());
                 }
                 if matches!(p, JavaType::Array(_)) {
-                    param_types.insert(local_index, p.render());
+                    param_types.insert(
+                        local_index,
+                        ty.trim_end_matches("...").to_string()
+                            + if is_varargs && i + 1 == md.params.len() {
+                                "[]"
+                            } else {
+                                ""
+                            },
+                    );
+                } else if matches!(p, JavaType::Object(_))
+                    && let Some(signature) = &generic_signature
+                {
+                    param_types.insert(local_index, signature.parameters[i].clone());
                 }
                 param_names.push((local_index, pname));
                 local_index += if p.category_two() { 2 } else { 1 };
@@ -696,19 +770,43 @@ fn render_method(
 
     let throws_clause: String = if name == "<clinit>" {
         String::new()
+    } else if let Some(signature) = &generic_signature
+        && !signature.throws.is_empty()
+    {
+        format!(" throws {}", signature.throws.join(", "))
     } else {
         method_throws_clause(cf, method)
     };
+    let generic_prefix: String = generic_signature
+        .as_ref()
+        .map_or_else(String::new, |signature| {
+            if signature.type_parameters.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", signature.type_parameters)
+            }
+        });
     if name == "<init>" {
-        let _ = write!(signature, "{class_simple}({params}){throws_clause}");
+        let _ = write!(
+            signature,
+            "{generic_prefix}{class_simple}({params}){throws_clause}"
+        );
     } else if name == "<clinit>" {
         signature = "    static".to_string();
     } else {
-        let ret: String = parsed
-            .as_ref()
-            .map_or_else(|| "void".to_string(), |md| md.returns.render());
+        let ret: String = generic_signature.as_ref().map_or_else(
+            || {
+                parsed
+                    .as_ref()
+                    .map_or_else(|| "void".to_string(), |md| md.returns.render())
+            },
+            |generic: &crate::signature::RecoveredMethodSignature| generic.result.clone(),
+        );
         let emit_name: String = recompile_safe_method_name(name);
-        let _ = write!(signature, "{ret} {emit_name}({params}){throws_clause}");
+        let _ = write!(
+            signature,
+            "{generic_prefix}{ret} {emit_name}({params}){throws_clause}"
+        );
     }
 
     if annotation_default.is_some() || is_abstract || is_interface && !has_code(cf, method) {
@@ -748,11 +846,50 @@ fn render_method(
     );
     let stackmap_note: String =
         stackmap_resilience_note(cf, method, &code, parsed.as_ref(), is_static, name);
-    let body_text: String = if name == "<clinit>" {
+    let mut body_text: String = if name == "<clinit>" {
         strip_clinit_returns(&body.text)
     } else {
         body.text
     };
+    if let Some(generic) = &generic_signature {
+        let Some(adapted): Option<String> = adapt_generic_body(&body_text, generic) else {
+            crate::debug::dbg_kv("generic-signature-reject", || {
+                format!(
+                    "{} method {name}: generic body adaptation exceeded its budget",
+                    cf.this_class_name().unwrap_or("<unknown>")
+                )
+            });
+            return render_method_mode(
+                cf,
+                method,
+                class_simple,
+                is_interface,
+                annotation_default,
+                class_signature,
+                false,
+            );
+        };
+        body_text = adapted;
+    }
+    if let Some(generic) = &generic_signature
+        && !generic_body_source_compatible(&body_text, generic)
+    {
+        crate::debug::dbg_kv("generic-signature-reject", || {
+            format!(
+                "{} method {name}: recovered body is not type-compatible with the generic declaration",
+                cf.this_class_name().unwrap_or("<unknown>")
+            )
+        });
+        return render_method_mode(
+            cf,
+            method,
+            class_simple,
+            is_interface,
+            annotation_default,
+            class_signature,
+            false,
+        );
+    }
     let mut text: String = signature;
     let _ = write!(text, " {{\n{stackmap_note}{body_text}    }}");
     RenderedMethod {
@@ -762,11 +899,322 @@ fn render_method(
     }
 }
 
+fn generic_body_source_compatible(
+    body: &str,
+    signature: &crate::signature::RecoveredMethodSignature,
+) -> bool {
+    if signature.type_parameter_names.is_empty() {
+        return true;
+    }
+    if body.contains("((Object)") || has_uncast_next_call(body) {
+        return false;
+    }
+    if !signature.type_parameter_names.contains(&signature.result) {
+        return true;
+    }
+    body.lines()
+        .filter_map(|line: &str| line.trim().strip_prefix("return "))
+        .all(|expression: &str| {
+            expression == "null;"
+                || expression.starts_with("arg")
+                || expression.starts_with(&format!("(({})", signature.result))
+                || expression.starts_with(&format!("({})", signature.result))
+        })
+}
+
+fn adapt_generic_body(
+    body: &str,
+    signature: &crate::signature::RecoveredMethodSignature,
+) -> Option<String> {
+    let mut aliases: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    for (name, erasure) in &signature.type_parameter_erasures {
+        aliases
+            .entry(erasure)
+            .and_modify(|current: &mut Option<&str>| *current = None)
+            .or_insert(Some(name));
+    }
+    let mut replacements: BTreeMap<String, Option<String>> = BTreeMap::new();
+    if let Some(result_erasure) = signature.type_parameter_erasures.get(&signature.result) {
+        for line in body.lines() {
+            let Some(expression): Option<&str> = line
+                .trim()
+                .strip_prefix("return ")
+                .and_then(|value: &str| value.strip_suffix(';'))
+            else {
+                continue;
+            };
+            let Some(suffix): Option<&str> = expression.strip_prefix("var") else {
+                continue;
+            };
+            if suffix.bytes().all(|byte: u8| byte.is_ascii_digit()) {
+                insert_generic_replacement(
+                    &mut replacements,
+                    format!("(({result_erasure}) {expression})"),
+                    format!("(({}) {expression})", signature.result),
+                );
+            }
+        }
+    }
+    for (erasure, name) in aliases
+        .iter()
+        .filter_map(|(erasure, name)| name.map(|value: &str| (*erasure, value)))
+    {
+        insert_generic_replacement(
+            &mut replacements,
+            format!("(({erasure})"),
+            format!("(({name})"),
+        );
+    }
+    if let Some(Some(object_alias)) = aliases.get("Object") {
+        for pattern in simple_next_call_patterns(body) {
+            insert_generic_replacement(
+                &mut replacements,
+                pattern.clone(),
+                format!("(({object_alias}) {pattern})"),
+            );
+        }
+    }
+    let active_replacements: BTreeMap<String, String> = replacements
+        .into_iter()
+        .filter_map(|(from, to): (String, Option<String>)| to.map(|value: String| (from, value)))
+        .collect();
+    let adapted: String = replace_java_code_many(body, &active_replacements)?;
+    if !signature.type_parameter_names.contains(&signature.result) {
+        return Some(adapted);
+    }
+    let mut out: String = String::with_capacity(adapted.len());
+    for line in adapted.lines() {
+        let trimmed: &str = line.trim();
+        let Some(expression): Option<&str> = trimmed
+            .strip_prefix("return ")
+            .and_then(|value: &str| value.strip_suffix(';'))
+        else {
+            let _ = writeln!(out, "{line}");
+            continue;
+        };
+        let already_typed: bool = expression == "null"
+            || expression.starts_with("arg")
+            || expression.starts_with(&format!("(({})", signature.result))
+            || expression.starts_with(&format!("({})", signature.result));
+        if already_typed {
+            let _ = writeln!(out, "{line}");
+            continue;
+        }
+        let indentation: &str = &line[..line.len().saturating_sub(line.trim_start().len())];
+        let _ = writeln!(
+            out,
+            "{indentation}return (({}) ({expression}));",
+            signature.result
+        );
+    }
+    Some(out)
+}
+
+fn insert_generic_replacement(
+    replacements: &mut BTreeMap<String, Option<String>>,
+    from: String,
+    to: String,
+) {
+    replacements
+        .entry(from)
+        .and_modify(|current: &mut Option<String>| {
+            if current.as_ref() != Some(&to) {
+                *current = None;
+            }
+        })
+        .or_insert(Some(to));
+}
+
+fn simple_next_call_patterns(body: &str) -> BTreeSet<String> {
+    let mut patterns: BTreeSet<String> = BTreeSet::new();
+    for word in body.split(|character: char| {
+        !(character.is_ascii_alphanumeric() || matches!(character, '_' | '$' | '.'))
+    }) {
+        let Some(receiver): Option<&str> = word.strip_suffix(".next") else {
+            continue;
+        };
+        if receiver.starts_with("var")
+            && receiver[3..].bytes().all(|byte: u8| byte.is_ascii_digit())
+        {
+            patterns.insert(format!("{receiver}.next()"));
+        }
+    }
+    patterns
+}
+
+fn has_uncast_next_call(body: &str) -> bool {
+    body.lines().any(|line: &str| {
+        line.contains(".next()") && !line.contains(") var") && !line.contains(") arg")
+    })
+}
+
+fn replace_java_code(text: &str, from: &str, to: &str) -> String {
+    let replacements: BTreeMap<String, String> =
+        BTreeMap::from([(from.to_string(), to.to_string())]);
+    match replace_java_code_many(text, &replacements) {
+        Some(replaced) => replaced,
+        None => text.to_string(),
+    }
+}
+
+const MAX_GENERIC_REPLACEMENTS: usize = 4_096;
+const MAX_GENERIC_REPLACEMENT_BYTES: usize = 262_144;
+
+#[derive(Debug, Default)]
+struct JavaReplacementNode {
+    edges: BTreeMap<u8, usize>,
+    replacement: Option<String>,
+}
+
+fn replacement_nodes(replacements: &BTreeMap<String, String>) -> Option<Vec<JavaReplacementNode>> {
+    if replacements.len() > MAX_GENERIC_REPLACEMENTS
+        || replacements
+            .keys()
+            .any(|pattern: &String| pattern.is_empty())
+    {
+        return None;
+    }
+    let total_bytes: usize =
+        replacements
+            .iter()
+            .try_fold(0usize, |total: usize, (from, to): (&String, &String)| {
+                total.checked_add(from.len())?.checked_add(to.len())
+            })?;
+    if total_bytes > MAX_GENERIC_REPLACEMENT_BYTES {
+        return None;
+    }
+    let mut nodes: Vec<JavaReplacementNode> = vec![JavaReplacementNode::default()];
+    nodes.try_reserve(total_bytes).ok()?;
+    for (pattern, replacement) in replacements {
+        let mut node_index: usize = 0;
+        for byte in pattern.bytes() {
+            let next_index: usize = if let Some(index) = nodes[node_index].edges.get(&byte) {
+                *index
+            } else {
+                let index: usize = nodes.len();
+                nodes.push(JavaReplacementNode::default());
+                nodes[node_index].edges.insert(byte, index);
+                index
+            };
+            node_index = next_index;
+        }
+        nodes[node_index].replacement = Some(replacement.clone());
+    }
+    Some(nodes)
+}
+
+fn longest_java_replacement<'a>(
+    text: &'a str,
+    start: usize,
+    nodes: &'a [JavaReplacementNode],
+) -> Option<(usize, &'a str)> {
+    let mut node_index: usize = 0;
+    let mut position: usize = start;
+    let mut found: Option<(usize, &str)> = None;
+    while let Some(byte) = text.as_bytes().get(position) {
+        let Some(next_index): Option<&usize> = nodes[node_index].edges.get(byte) else {
+            break;
+        };
+        node_index = *next_index;
+        position = position.checked_add(1)?;
+        if let Some(replacement) = nodes[node_index].replacement.as_deref() {
+            found = Some((position, replacement));
+        }
+    }
+    found
+}
+
+fn replace_java_code_many(text: &str, replacements: &BTreeMap<String, String>) -> Option<String> {
+    if text.len() > MAX_RENDER_BYTES {
+        return None;
+    }
+    if replacements.is_empty() {
+        let mut copied: String = String::new();
+        copied.try_reserve(text.len()).ok()?;
+        copied.push_str(text);
+        return Some(copied);
+    }
+    let nodes: Vec<JavaReplacementNode> = replacement_nodes(replacements)?;
+    let mut out: String = String::new();
+    out.try_reserve(text.len()).ok()?;
+    let mut index: usize = 0;
+    let mut mode: u8 = 0;
+    let mut escaped: bool = false;
+    while index < text.len() {
+        let rest: &str = &text[index..];
+        if mode == 0 {
+            let replacement: Option<(usize, &str)> = longest_java_replacement(text, index, &nodes);
+            if let Some((end, value)) = replacement {
+                append_java_replacement(&mut out, value)?;
+                index = end;
+                continue;
+            }
+        }
+        let Some(character): Option<char> = rest.chars().next() else {
+            break;
+        };
+        let width: usize = character.len_utf8();
+        if mode == 0 {
+            if rest.starts_with("//") {
+                mode = 3;
+            } else if rest.starts_with("/*") {
+                mode = 4;
+            } else if character == '"' {
+                mode = 1;
+                escaped = false;
+            } else if character == '\'' {
+                mode = 2;
+                escaped = false;
+            }
+        } else if mode == 1 || mode == 2 {
+            let closing: char = if mode == 1 { '"' } else { '\'' };
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == closing {
+                mode = 0;
+            }
+        } else if mode == 3 && character == '\n' {
+            mode = 0;
+        } else if mode == 4 && rest.starts_with("*/") {
+            append_java_replacement(&mut out, "*/")?;
+            index += 2;
+            mode = 0;
+            continue;
+        }
+        let mut encoded: [u8; 4] = [0; 4];
+        append_java_replacement(&mut out, character.encode_utf8(&mut encoded))?;
+        index += width;
+    }
+    Some(out)
+}
+
+fn append_java_replacement(out: &mut String, value: &str) -> Option<()> {
+    let next_length: usize = out.len().checked_add(value.len())?;
+    if next_length > MAX_RENDER_BYTES {
+        return None;
+    }
+    let available: usize = out.capacity().saturating_sub(out.len());
+    if available < value.len() {
+        out.try_reserve(value.len() - available).ok()?;
+    }
+    out.push_str(value);
+    Some(())
+}
+
 fn render_parameter_type(ty: &JavaType, is_varargs: bool) -> String {
     if is_varargs && let JavaType::Array(element) = ty {
         return format!("{}...", element.render());
     }
     ty.render()
+}
+
+fn render_generic_parameter_type(ty: &str, is_varargs: bool) -> String {
+    if is_varargs && let Some(element) = ty.strip_suffix("[]") {
+        return format!("{element}...");
+    }
+    ty.to_string()
 }
 
 fn strip_clinit_returns(body: &str) -> String {
@@ -1258,8 +1706,15 @@ fn lift_method_body(
         });
     }
     let exc_conflicted: BTreeSet<u16> = exception_value_conflicted_slots(&insns, &exc_regions);
-    let object_locals: BTreeSet<String> =
+    let mut object_locals: BTreeSet<String> =
         object_typed_local_names(cf, &insns, params, &exc_conflicted);
+    let source_slot_types: BTreeMap<u16, String> =
+        compute_slot_types(cf, &insns, params, param_types, &exc_regions);
+    for (slot, ty) in &source_slot_types {
+        if ty != "Object" {
+            object_locals.remove(&local_name(*slot, params));
+        }
+    }
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
     with_object_locals(object_locals, boolean_params.clone(), array_casts, || {
@@ -1423,6 +1878,7 @@ fn lift_structured(
         bool_array_names,
         string_switch_tables,
         slot_types,
+        param_types: param_types.clone(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
     };
@@ -2819,6 +3275,7 @@ struct RenderCtx<'a> {
     bool_array_names: BTreeSet<String>,
     string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable>,
     slot_types: BTreeMap<u16, String>,
+    param_types: BTreeMap<u16, String>,
     foreach_suppress_slots: BTreeSet<u16>,
     foreach_hidden_slots: BTreeSet<u16>,
 }
@@ -3310,9 +3767,12 @@ fn iterator_foreach(
     if method != "iterator" {
         return None;
     }
-    let elem_ty: String = ctx.slot_types.get(&elem_slot).cloned()?;
-    if elem_ty != "Object" {
-        return None;
+    let mut elem_ty: String = ctx.slot_types.get(&elem_slot).cloned()?;
+    if elem_ty == "Object"
+        && let Some(source_type) = source_type_for_expr(ctx, receiver)
+        && let Some(generic_element) = first_type_argument(&source_type)
+    {
+        elem_ty = generic_element;
     }
     let mut slots: BTreeSet<u16> = BTreeSet::new();
     slots.insert(it_slot);
@@ -3324,6 +3784,52 @@ fn iterator_foreach(
         iterable: receiver.render(),
         slots,
     })
+}
+
+fn source_type_for_expr(ctx: &RenderCtx<'_>, expression: &Expr) -> Option<String> {
+    let Expr::Local(name) = expression else {
+        return None;
+    };
+    let slot: u16 = ctx
+        .params
+        .iter()
+        .find_map(|(slot, parameter): &(u16, String)| (parameter == name).then_some(*slot))
+        .or_else(|| name.strip_prefix("var")?.parse::<u16>().ok())?;
+    ctx.param_types
+        .get(&slot)
+        .or_else(|| ctx.slot_types.get(&slot))
+        .cloned()
+}
+
+fn first_type_argument(source_type: &str) -> Option<String> {
+    let open: usize = source_type.find('<')?;
+    let mut depth: usize = 0;
+    let mut end: Option<usize> = None;
+    for (offset, character) in source_type[open + 1..].char_indices() {
+        match character {
+            '<' => depth = depth.checked_add(1)?,
+            '>' if depth == 0 => {
+                end = Some(open + 1 + offset);
+                break;
+            }
+            '>' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                end = Some(open + 1 + offset);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let argument: &str = source_type.get(open + 1..end?)?.trim();
+    if argument == "?" || argument.starts_with("? super ") {
+        return None;
+    }
+    Some(
+        argument
+            .strip_prefix("? extends ")
+            .unwrap_or(argument)
+            .to_string(),
+    )
 }
 
 fn array_foreach(
@@ -3396,7 +3902,16 @@ fn try_render_foreach(
         plan.elem_ty, plan.elem_name, plan.iterable
     );
     ctx.rendered_blocks.insert(plan.header);
-    render_region(ctx, body, out, level + 1);
+    let mut rendered_body: String = String::new();
+    render_region(ctx, body, &mut rendered_body, level + 1);
+    if plan.elem_ty != "Object" {
+        rendered_body = replace_java_code(
+            &rendered_body,
+            &format!("((Object) {})", plan.elem_name),
+            &plan.elem_name,
+        );
+    }
+    out.push_str(&rendered_body);
     let _ = writeln!(out, "{pad}}}");
     ctx.foreach_suppress_slots = saved;
     ctx.foreach_hidden_slots.extend(plan.slots);
@@ -3748,6 +4263,7 @@ fn compute_block_entry_stacks(
         bool_array_names: BTreeSet::new(),
         string_switch_tables: BTreeMap::new(),
         slot_types: BTreeMap::new(),
+        param_types: BTreeMap::new(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
     };
@@ -5736,6 +6252,7 @@ const fn pattern_render_ctx<'a>(
         bool_array_names: BTreeSet::new(),
         string_switch_tables: BTreeMap::new(),
         slot_types: BTreeMap::new(),
+        param_types: BTreeMap::new(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
     }
@@ -8401,11 +8918,12 @@ fn render_inner_method_stub(
     inner_cf: &ClassFile,
     method: &MethodInfo,
     simple: &str,
-    is_enum: bool,
-    is_interface: bool,
     super_call: Option<&str>,
     annotation_default: Option<&str>,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
 ) -> Option<String> {
+    let is_enum: bool = inner_cf.access_flags & ACC_ENUM != 0;
+    let is_interface: bool = inner_cf.access_flags & ACC_INTERFACE != 0;
     if is_bridge_method(method) {
         return None;
     }
@@ -8424,6 +8942,8 @@ fn render_inner_method_stub(
     }
     let desc: &str = inner_cf.utf8_at(method.descriptor_index).ok()?;
     let parsed: MethodDescriptor = descriptor::parse_method(desc)?;
+    let generic_signature: Option<crate::signature::RecoveredMethodSignature> =
+        crate::signature::recover_method(inner_cf, method, class_signature);
     let is_abstract: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) != 0 && !is_enum;
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     let is_varargs: bool = method.access_flags & ACC_VARARGS != 0;
@@ -8437,10 +8957,16 @@ fn render_inner_method_stub(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            format!(
-                "{} arg{i}",
-                render_parameter_type(p, is_varargs && i + 1 == parsed.params.len())
-            )
+            let ty: String = generic_signature.as_ref().map_or_else(
+                || render_parameter_type(p, is_varargs && i + 1 == parsed.params.len()),
+                |signature: &crate::signature::RecoveredMethodSignature| {
+                    render_generic_parameter_type(
+                        &signature.parameters[i],
+                        is_varargs && i + 1 == parsed.params.len(),
+                    )
+                },
+            );
+            format!("{ty} arg{i}")
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -8455,12 +8981,37 @@ fn render_inner_method_stub(
     } else {
         ""
     };
+    let type_parameters: String =
+        generic_signature
+            .as_ref()
+            .map_or_else(String::new, |signature| {
+                if signature.type_parameters.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ", signature.type_parameters)
+                }
+            });
+    let throws_clause: String = generic_signature.as_ref().map_or_else(
+        || method_throws_clause(inner_cf, method),
+        |signature: &crate::signature::RecoveredMethodSignature| {
+            if signature.throws.is_empty() {
+                method_throws_clause(inner_cf, method)
+            } else {
+                format!(" throws {}", signature.throws.join(", "))
+            }
+        },
+    );
     let sig: String = if name == "<init>" {
-        format!("{prefix}{kw_str}{simple}({params})")
+        format!("{prefix}{kw_str}{type_parameters}{simple}({params}){throws_clause}")
     } else {
-        let ret: String = parsed.returns.render();
+        let ret: String = generic_signature.as_ref().map_or_else(
+            || parsed.returns.render(),
+            |signature: &crate::signature::RecoveredMethodSignature| signature.result.clone(),
+        );
         let emit_name: String = recompile_safe_method_name(name);
-        format!("{prefix}{kw_str}{default_kw}{ret} {emit_name}({params})")
+        format!(
+            "{prefix}{kw_str}{default_kw}{type_parameters}{ret} {emit_name}({params}){throws_clause}"
+        )
     };
     let declaration: String = if is_abstract || annotation_default.is_some() {
         let default_value: String =
@@ -8489,6 +9040,7 @@ fn render_inner_field_stub(
     inner_cf: &ClassFile,
     field: &FieldInfo,
     is_enum: bool,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
 ) -> Option<String> {
     if field.access_flags & ACC_SYNTHETIC != 0 {
         return None;
@@ -8502,6 +9054,8 @@ fn render_inner_field_stub(
     }
     let desc: &str = inner_cf.utf8_at(field.descriptor_index).ok()?;
     let ty: JavaType = descriptor::parse_field(desc)?;
+    let rendered_type: String = crate::signature::recover_field(inner_cf, field, class_signature)
+        .unwrap_or_else(|| ty.render());
     let kw: String = member_access_keywords(field.access_flags & !(ACC_VOLATILE | ACC_TRANSIENT));
     let kw_str: String = if kw.is_empty() {
         String::new()
@@ -8518,7 +9072,7 @@ fn render_inner_field_stub(
         },
         |value: String| format!(" = {value}"),
     );
-    let declaration: String = format!("        {kw_str}{} {name}{init};", ty.render());
+    let declaration: String = format!("        {kw_str}{rendered_type} {name}{init};");
     let annotations: String =
         render_member_annotations(annotation_renderer, inner_cf, &field.attributes, "        ");
     Some(format!("{annotations}{declaration}"))
@@ -8572,6 +9126,8 @@ fn anon_capture_field_order(anon_cf: &ClassFile) -> Vec<String> {
 }
 
 fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Option<String> {
+    let generic_class: Option<crate::signature::RecoveredClassSignature> =
+        crate::signature::recover_class(anon_cf);
     let super_name: Option<String> = (anon_cf.super_class != 0)
         .then(|| {
             anon_cf
@@ -8581,13 +9137,25 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         })
         .flatten();
     let supertype: String = match anon_cf.interfaces.first() {
-        Some(&iface) => anon_cf
-            .class_name(iface)
-            .ok()
-            .map(descriptor::binary_to_source)?,
+        Some(&iface) => generic_class
+            .as_ref()
+            .and_then(|signature: &crate::signature::RecoveredClassSignature| {
+                signature.interfaces.first().cloned()
+            })
+            .or_else(|| {
+                anon_cf
+                    .class_name(iface)
+                    .ok()
+                    .map(descriptor::binary_to_source)
+            })?,
         None => match super_name.as_deref() {
             Some("java/lang/Object") | None => "Object".to_string(),
-            Some(other) => descriptor::binary_to_source(other),
+            Some(other) => generic_class.as_ref().map_or_else(
+                || descriptor::binary_to_source(other),
+                |signature: &crate::signature::RecoveredClassSignature| {
+                    signature.superclass.clone()
+                },
+            ),
         },
     };
     let capture_order: Vec<String> = anon_capture_field_order(anon_cf);
@@ -8605,9 +9173,13 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         if name.starts_with("val$") || name.starts_with("this$") {
             continue;
         }
-        if let Some(line) =
-            render_inner_field_stub(&mut annotation_renderer, anon_cf, field, is_enum)
-        {
+        if let Some(line) = render_inner_field_stub(
+            &mut annotation_renderer,
+            anon_cf,
+            field,
+            is_enum,
+            generic_class.as_ref(),
+        ) {
             members.push(line);
         }
     }
@@ -8619,7 +9191,14 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         if is_bridge_method(method) || method.access_flags & ACC_SYNTHETIC != 0 {
             continue;
         }
-        let rendered: RenderedMethod = render_method(anon_cf, method, &supertype, false, None);
+        let rendered: RenderedMethod = render_method(
+            anon_cf,
+            method,
+            &supertype,
+            false,
+            None,
+            generic_class.as_ref(),
+        );
         let annotations: String = render_member_annotations(
             &mut annotation_renderer,
             anon_cf,
@@ -8646,157 +9225,6 @@ fn substitute_captures(text: &str, capture_map: &BTreeMap<String, String>) -> St
         out = out.replace(field.as_str(), arg);
     }
     out
-}
-
-fn formal_type_params(sig: &str) -> String {
-    let bytes: &[u8] = sig.as_bytes();
-    if bytes.first() != Some(&b'<') {
-        return String::new();
-    }
-    let mut depth: usize = 0;
-    let mut end: usize = 0;
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'<' => depth += 1,
-            b'>' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    if end == 0 {
-        return String::new();
-    }
-    let inner: &str = &sig[1..end];
-    let names: Vec<String> = parse_formal_params(inner);
-    if names.is_empty() {
-        String::new()
-    } else {
-        format!("<{}>", names.join(", "))
-    }
-}
-
-fn parse_formal_params(inner: &str) -> Vec<String> {
-    let mut params: Vec<String> = Vec::new();
-    let mut rest: &str = inner;
-    while !rest.is_empty() {
-        let Some(colon): Option<usize> = rest.find(':') else {
-            break;
-        };
-        let name: &str = &rest[..colon];
-        rest = &rest[colon + 1..];
-        let mut bound_rendered: Option<String> = None;
-        if !rest.starts_with(':') && !rest.is_empty() {
-            let Some((ty, after)): Option<(String, &str)> = parse_field_type_signature(rest) else {
-                break;
-            };
-            if ty != "Object" {
-                bound_rendered = Some(ty);
-            }
-            rest = after;
-        }
-        while let Some(after_colon) = rest.strip_prefix(':') {
-            let Some((ty, after)): Option<(String, &str)> = parse_field_type_signature(after_colon)
-            else {
-                break;
-            };
-            if bound_rendered.is_none() && ty != "Object" {
-                bound_rendered = Some(ty);
-            }
-            rest = after;
-        }
-        params.push(match bound_rendered {
-            Some(b) => format!("{name} extends {b}"),
-            None => name.to_string(),
-        });
-    }
-    params
-}
-
-fn field_signature_to_source(sig: &str) -> Option<String> {
-    let (ty, _rest): (String, &str) = parse_field_type_signature(sig)?;
-    Some(ty)
-}
-
-fn parse_field_type_signature(sig: &str) -> Option<(String, &str)> {
-    let bytes: &[u8] = sig.as_bytes();
-    match bytes.first()? {
-        b'T' => {
-            let end: usize = sig.find(';')?;
-            Some((sig[1..end].to_string(), &sig[end + 1..]))
-        }
-        b'L' => parse_class_type_signature(sig),
-        b'[' => {
-            let (inner, rest): (String, &str) = parse_field_type_signature(&sig[1..])?;
-            Some((format!("{inner}[]"), rest))
-        }
-        b'Z' => Some(("boolean".to_string(), &sig[1..])),
-        b'B' => Some(("byte".to_string(), &sig[1..])),
-        b'C' => Some(("char".to_string(), &sig[1..])),
-        b'S' => Some(("short".to_string(), &sig[1..])),
-        b'I' => Some(("int".to_string(), &sig[1..])),
-        b'J' => Some(("long".to_string(), &sig[1..])),
-        b'F' => Some(("float".to_string(), &sig[1..])),
-        b'D' => Some(("double".to_string(), &sig[1..])),
-        _ => None,
-    }
-}
-
-fn parse_class_type_signature(sig: &str) -> Option<(String, &str)> {
-    let bytes: &[u8] = sig.as_bytes();
-    let mut i: usize = 1;
-    let mut name: String = String::new();
-    while i < bytes.len() {
-        match bytes[i] {
-            b';' => {
-                let rendered: String = descriptor::binary_to_source(&name);
-                return Some((rendered, &sig[i + 1..]));
-            }
-            b'<' => {
-                let (args, rest_after): (String, usize) = parse_type_arguments(sig, i)?;
-                let rendered: String = descriptor::binary_to_source(&name);
-                let semi: usize = sig[rest_after..].find(';')? + rest_after;
-                return Some((format!("{rendered}<{args}>"), &sig[semi + 1..]));
-            }
-            c => name.push(c as char),
-        }
-        i += 1;
-    }
-    None
-}
-
-fn parse_type_arguments(sig: &str, open: usize) -> Option<(String, usize)> {
-    let bytes: &[u8] = sig.as_bytes();
-    let mut i: usize = open + 1;
-    let mut args: Vec<String> = Vec::new();
-    while i < bytes.len() && bytes[i] != b'>' {
-        match bytes[i] {
-            b'*' => {
-                args.push("?".to_string());
-                i += 1;
-            }
-            b'+' => {
-                let (ty, rest): (String, &str) = parse_field_type_signature(&sig[i + 1..])?;
-                args.push(format!("? extends {ty}"));
-                i = sig.len() - rest.len();
-            }
-            b'-' => {
-                let (ty, rest): (String, &str) = parse_field_type_signature(&sig[i + 1..])?;
-                args.push(format!("? super {ty}"));
-                i = sig.len() - rest.len();
-            }
-            _ => {
-                let (ty, rest): (String, &str) = parse_field_type_signature(&sig[i..])?;
-                args.push(ty);
-                i = sig.len() - rest.len();
-            }
-        }
-    }
-    Some((args.join(", "), i))
 }
 
 fn build_inner_class_stubs(
@@ -8917,13 +9345,13 @@ fn emit_nested_class_stubs(
             return REJECTED_INNER_CLASSES.to_string();
         }
         let structure: crate::attributes::ClassStructure = crate::attributes::analyze(inner_cf);
+        let generic_class: Option<crate::signature::RecoveredClassSignature> =
+            crate::signature::recover_class(inner_cf);
         let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
             crate::attributes::DeclarationAnnotationRenderer::new(inner_cf);
-        let type_params: String = structure
-            .signature
-            .as_deref()
-            .map(formal_type_params)
-            .unwrap_or_default();
+        let type_params: String = generic_class
+            .as_ref()
+            .map_or_else(String::new, |signature| signature.type_parameters.clone());
         let is_inner_interface: bool = flags & 0x0200 != 0;
         let is_inner_enum: bool = flags & 0x4000 != 0;
         let is_inner_record: bool = structure.is_record;
@@ -8983,8 +9411,16 @@ fn emit_nested_class_stubs(
                 .record_components
                 .iter()
                 .filter_map(|c| {
-                    let ty: String = field_generic_type(inner_cf, &c.name)
-                        .or_else(|| descriptor::parse_field(&c.descriptor).map(|t| t.render()))?;
+                    let field: &FieldInfo = inner_cf.fields.iter().find(|field: &&FieldInfo| {
+                        inner_cf
+                            .utf8_at(field.name_index)
+                            .is_ok_and(|name: &str| name == c.name)
+                    })?;
+                    let ty: String =
+                        crate::signature::recover_field(inner_cf, field, generic_class.as_ref())
+                            .or_else(|| {
+                                descriptor::parse_field(&c.descriptor).map(|t| t.render())
+                            })?;
                     Some(format!("{ty} {}", c.name))
                 })
                 .collect();
@@ -9000,28 +9436,46 @@ fn emit_nested_class_stubs(
                 && sup != "java/lang/Record"
                 && sup != "java/lang/Enum"
             {
-                format!(" extends {}", descriptor::binary_to_source(sup))
+                let rendered: String = generic_class.as_ref().map_or_else(
+                    || descriptor::binary_to_source(sup),
+                    |signature: &crate::signature::RecoveredClassSignature| {
+                        signature.superclass.clone()
+                    },
+                );
+                format!(" extends {rendered}")
             } else {
                 String::new()
             }
         } else {
             String::new()
         };
-        let iface_clause: String = if !is_inner_interface && !inner_cf.interfaces.is_empty() {
-            let names: Vec<String> = inner_cf
-                .interfaces
-                .iter()
-                .filter_map(|&idx| {
+        let iface_clause: String = if !is_inner_annotation && !inner_cf.interfaces.is_empty() {
+            let names: Vec<String> = generic_class.as_ref().map_or_else(
+                || {
                     inner_cf
-                        .class_name(idx)
-                        .ok()
-                        .map(descriptor::binary_to_source)
-                })
-                .collect();
+                        .interfaces
+                        .iter()
+                        .filter_map(|&idx| {
+                            inner_cf
+                                .class_name(idx)
+                                .ok()
+                                .map(descriptor::binary_to_source)
+                        })
+                        .collect()
+                },
+                |signature: &crate::signature::RecoveredClassSignature| {
+                    signature.interfaces.clone()
+                },
+            );
             if names.is_empty() {
                 String::new()
             } else {
-                format!(" implements {}", names.join(", "))
+                let verb: &str = if is_inner_interface {
+                    "extends"
+                } else {
+                    "implements"
+                };
+                format!(" {verb} {}", names.join(", "))
             }
         } else {
             String::new()
@@ -9092,6 +9546,7 @@ fn emit_nested_class_stubs(
                     inner_cf,
                     field,
                     is_inner_enum,
+                    generic_class.as_ref(),
                 ) && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
                 {
                     return REJECTED_INNER_CLASSES.to_string();
@@ -9124,10 +9579,9 @@ fn emit_nested_class_stubs(
                 inner_cf,
                 method,
                 &simple_name,
-                is_inner_enum,
-                is_inner_interface,
                 super_call.as_deref(),
                 annotation_defaults.get(&method_index).map(String::as_str),
+                generic_class.as_ref(),
             ) && !append_inner_line(&mut out, &stub, MAX_RENDER_BYTES)
             {
                 return REJECTED_INNER_CLASSES.to_string();
@@ -9169,22 +9623,6 @@ fn record_method_is_implicit(
     components.contains(name) && desc.starts_with("()")
 }
 
-fn field_generic_type(inner_cf: &ClassFile, field_name: &str) -> Option<String> {
-    let field: &FieldInfo = inner_cf.fields.iter().find(|f| {
-        inner_cf
-            .utf8_at(f.name_index)
-            .is_ok_and(|n: &str| n == field_name)
-    })?;
-    let sig_attr: &crate::classfile::Attribute = field.attributes.iter().find(|a| {
-        inner_cf
-            .utf8_at(a.name_index)
-            .is_ok_and(|n: &str| n == "Signature")
-    })?;
-    let idx: u16 = u16::from_be_bytes([*sig_attr.info.first()?, *sig_attr.info.get(1)?]);
-    let sig: &str = inner_cf.utf8_at(idx).ok()?;
-    field_signature_to_source(sig)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -9193,6 +9631,63 @@ mod tests {
 
     fn cp_utf8(s: &str) -> ConstantPoolEntry {
         ConstantPoolEntry::Utf8(s.to_string())
+    }
+
+    #[test]
+    fn generic_cast_rewrite_skips_literals_and_comments() {
+        let source: &str = "x = ((Object) var1); s = \"((Object) var1)\"; // ((Object) var1)\ny = ((Object) var1);";
+        assert_eq!(
+            replace_java_code(source, "((Object) var1)", "((T) var1)"),
+            "x = ((T) var1); s = \"((Object) var1)\"; // ((Object) var1)\ny = ((T) var1);"
+        );
+    }
+
+    #[test]
+    fn generic_cast_rewrite_uses_longest_match_in_one_pass() {
+        let replacements: BTreeMap<String, String> = BTreeMap::from([
+            ("((Object)".to_string(), "((T)".to_string()),
+            ("((Object) var1)".to_string(), "((R) var1)".to_string()),
+        ]);
+        let replaced: Option<String> = replace_java_code_many(
+            "a = ((Object) var1); b = ((Object) var2); \"((Object) var1)\";",
+            &replacements,
+        );
+        assert_eq!(
+            replaced.as_deref(),
+            Some("a = ((R) var1); b = ((T) var2); \"((Object) var1)\";")
+        );
+    }
+
+    #[test]
+    fn generic_cast_rewrite_rejects_expanded_output_over_limit() {
+        let source: String = "x".repeat(MAX_RENDER_BYTES / 2 + 1);
+        let replacements: BTreeMap<String, String> =
+            BTreeMap::from([("x".to_string(), "xx".to_string())]);
+        assert!(replace_java_code_many(&source, &replacements).is_none());
+    }
+
+    #[test]
+    fn class_type_variable_return_is_adapted_and_checked() {
+        let recovered: crate::signature::RecoveredMethodSignature =
+            crate::signature::RecoveredMethodSignature {
+                type_parameters: String::new(),
+                parameters: Vec::new(),
+                result: "T".to_string(),
+                throws: Vec::new(),
+                type_parameter_names: BTreeSet::from(["T".to_string()]),
+                type_parameter_erasures: BTreeMap::from([("T".to_string(), "Object".to_string())]),
+            };
+        let adapted: Option<String> = adapt_generic_body("        return \"value\";\n", &recovered);
+        assert!(
+            adapted
+                .as_ref()
+                .is_some_and(|source: &String| source.contains("return ((T) (\"value\"));"))
+        );
+        assert!(
+            adapted.as_ref().is_some_and(|source: &String| {
+                generic_body_source_compatible(source, &recovered)
+            })
+        );
     }
 
     fn c(s: &str) -> Expr {

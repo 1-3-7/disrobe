@@ -72,6 +72,7 @@ pub mod provenance_header;
 pub mod rasp;
 pub mod scala;
 pub mod sccp;
+pub(crate) mod signature;
 pub mod smali;
 pub mod stackmap;
 pub mod string_recovery;
