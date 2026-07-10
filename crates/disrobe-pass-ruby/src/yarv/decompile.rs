@@ -269,8 +269,19 @@ fn try_render_exception_region(
     }
     lines.push(format!("{pad}end"));
 
-    let suffix: Vec<String> =
-        render_slice(body, ctx, depth, end, body.instructions.len(), &targets);
+    let suffix_start: usize = ensure.map_or(end, |entry| {
+        index_at_pc(&rt_pc, entry.cont_pc)
+            .max(end)
+            .min(body.instructions.len())
+    });
+    let suffix: Vec<String> = render_slice(
+        body,
+        ctx,
+        depth,
+        suffix_start,
+        body.instructions.len(),
+        &targets,
+    );
     lines.extend(suffix);
     Some(lines)
 }
@@ -508,6 +519,19 @@ fn render_region(
             && let Some(next) = try_massign(body, ctx, depth, i, hi, stack, stmts)
         {
             i = next;
+            continue;
+        }
+        if m == "pop"
+            && i > lo
+            && send_method_argc(&body.instructions[i - 1]).is_some_and(|(_, argc)| argc == 0)
+            && let Some(call) = stack.pop()
+        {
+            if is_effecting_call(&call) {
+                emit_stmt(stmts, depth, call);
+            } else if !call.is_empty() {
+                emit_stmt(stmts, depth, format!("{call}()"));
+            }
+            i += 1;
             continue;
         }
         step(instr, &body.local_table, ctx, depth, stack, stmts);
@@ -3533,6 +3557,7 @@ fn emit_binop(_instr: &YarvIbfInstruction, stack: &mut Vec<String>, op: &str) {
 fn is_effecting_call(expr: &str) -> bool {
     expr.contains('(')
         || expr.contains('.')
+        || expr.contains('{')
         || expr.contains(" = ")
         || expr.contains(" << ")
         || expr.starts_with("yield")

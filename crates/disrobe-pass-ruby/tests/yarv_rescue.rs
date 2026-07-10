@@ -51,6 +51,37 @@ fn recover(source: &str, tag: &str) -> Option<String> {
     Some(yarv.decompiled.source)
 }
 
+fn code_only(source: &str) -> String {
+    source
+        .lines()
+        .take_while(|line: &&str| !line.starts_with("# string literals"))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn ruby_opcode_count(source: &str, opcode: &str, tag: &str) -> Option<usize> {
+    let mut source_path: PathBuf = std::env::temp_dir();
+    source_path.push(format!("disrobe_rescue_source_{tag}.rb"));
+    std::fs::write(&source_path, source).ok()?;
+    let output = Command::new("ruby")
+        .arg("-e")
+        .arg(
+            "iseq = RubyVM::InstructionSequence.compile(File.read(ARGV.fetch(0))); puts iseq.disasm.lines.count { |line| line.include?(ARGV.fetch(1)) }",
+        )
+        .arg(&source_path)
+        .arg(opcode)
+        .output()
+        .ok()?;
+    let _ = std::fs::remove_file(&source_path);
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
 #[test]
 fn rescue_recovers_exception_class_and_bound_variable_from_real_yarv() {
     if !ruby_available() {
@@ -135,4 +166,58 @@ fn rescue_bare_class_without_binding_omits_arrow_from_real_yarv() {
         !code.contains("rescue RuntimeError =>"),
         "a class-only clause must not invent a bound variable:\n{code}"
     );
+}
+
+#[test]
+fn ensure_body_survives_once_and_retains_runtime_opcode_count() {
+    if !ruby_available() {
+        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the ensure check");
+        return;
+    }
+    let source: &str =
+        "begin\n  risky\nrescue RuntimeError => e\n  warn e.message\nensure\n  cleanup\nend\n";
+    let Some(recovered): Option<String> = recover(source, "ensure") else {
+        eprintln!("skip: ruby could not compile the ensure source");
+        return;
+    };
+    let code: String = code_only(&recovered);
+    assert_eq!(
+        code.matches("cleanup()").count(),
+        1,
+        "the ensure handler must survive exactly once:\n{code}"
+    );
+    let original_count: usize = ruby_opcode_count(source, "opt_send_without_block", "ensure_orig")
+        .expect("real Ruby disasm counted original sends");
+    let recovered_count: usize =
+        ruby_opcode_count(&code, "opt_send_without_block", "ensure_recovered")
+            .expect("real Ruby disasm counted recovered sends");
+    assert_eq!(original_count, 5, "the fixture must exercise five sends");
+    assert_eq!(
+        recovered_count, original_count,
+        "real Ruby disasm send count must survive recovery"
+    );
+}
+
+#[test]
+fn zero_arg_inline_block_statement_remains_recompilable() {
+    if !ruby_available() {
+        eprintln!("skip: ruby not on PATH; install ruby 3.4.x to run the block check");
+        return;
+    }
+    let source: &str = "def f\n  tap { 1 }\n  :done\nend\n";
+    let Some(recovered): Option<String> = recover(source, "inline_block") else {
+        eprintln!("skip: ruby could not compile the block source");
+        return;
+    };
+    let code: String = code_only(&recovered);
+    assert!(
+        code.contains("tap { 1 }") && !code.contains("}()"),
+        "the zero-argument block call must remain valid Ruby:\n{code}"
+    );
+    let original_count: usize = ruby_opcode_count(source, "opt_send_without_block", "block_orig")
+        .expect("real Ruby disasm counted original block sends");
+    let recovered_count: usize =
+        ruby_opcode_count(&code, "opt_send_without_block", "block_recovered")
+            .expect("real Ruby disasm counted recovered block sends");
+    assert_eq!(recovered_count, original_count);
 }
