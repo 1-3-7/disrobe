@@ -2,6 +2,7 @@ use aes::Aes128;
 use cbc::Decryptor;
 use cipher::block_padding::Pkcs7;
 use cipher::{BlockDecryptMut, KeyIvInit};
+use disrobe_core::codec::cipher::rc4_apply;
 use md5::{Digest, Md5};
 
 use super::object::{EncryptionStatus, PdfDict, PdfDocument, PdfObject};
@@ -215,28 +216,7 @@ fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
     if key.is_empty() {
         return data.to_vec();
     }
-    let mut state: [u8; 256] = [0; 256];
-    for (index, slot) in state.iter_mut().enumerate() {
-        *slot = index as u8;
-    }
-    let mut j: u8 = 0;
-    for index in 0..256 {
-        j = j
-            .wrapping_add(state[index])
-            .wrapping_add(key[index % key.len()]);
-        state.swap(index, usize::from(j));
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(data.len());
-    let mut a: u8 = 0;
-    let mut b: u8 = 0;
-    for &byte in data {
-        a = a.wrapping_add(1);
-        b = b.wrapping_add(state[usize::from(a)]);
-        state.swap(usize::from(a), usize::from(b));
-        let index: u8 = state[usize::from(a)].wrapping_add(state[usize::from(b)]);
-        out.push(byte ^ state[usize::from(index)]);
-    }
-    out
+    rc4_apply(key, data)
 }
 
 fn aes_cbc_decrypt(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
