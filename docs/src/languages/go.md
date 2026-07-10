@@ -6,7 +6,8 @@
 
 | Layer | Coverage |
 |---|---|
-| Binary formats | PE, ELF, Mach-O |
+| Binary formats | PE, ELF, Mach-O, on little- and big-endian targets |
+| Architectures | little-endian amd64/arm64 and big-endian s390x, ppc64, and mips, with the pclntab, type, and itab tables read in the image's own byte order |
 | pclntab | Header eras go1.2, go1.16, go1.18, and go1.20, located structurally even when the magic word has been stomped |
 | Symbol recovery | `pclntab` function table, `moduledata`, `typelinks`/`itablinks` type metadata, `buildversion` |
 | Obfuscation | garble report graded `None` / `Detected` / `Partial` / `Full`, with per-scheme literal-recovery statistics |
@@ -46,4 +47,4 @@ The garble report separates a real wall from a tooling boundary. Standard-librar
 
 ## Validation and chaining
 
-The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; 528 of 528 type names (100%) are recovered at HEAD, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. UPX-on-Go chains automatically: `disrobe auto` unpacks the UPX layer first, then recovers the Go symbols underneath.
+The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; 528 of 528 type names (100%) are recovered at HEAD, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. Big-endian recovery has its own oracle: a cross-built stripped linux/s390x binary is parsed as a big-endian ELF and its named type and itab pairs are recovered by back-searching the metadata tables, graded against the build (`go_bigendian_recovery.rs`). UPX-on-Go chains automatically: `disrobe auto` unpacks the UPX layer first, then recovers the Go symbols underneath.

@@ -8,7 +8,7 @@ The commercial PHP encoder market has no maintained FOSS competition offline. **
 |---|---|
 | Commercial encoders | ionCube, SourceGuardian, Zend Guard: envelope detect and wall (the decrypt key is native-loader-resident); a partial `op_array` skeleton only for legacy statically-keyed cases (Zend legacy XOR), graded `StructuralOnly` otherwise |
 | Phar archives | Manifest walker with path-sanitized extraction |
-| Eval-chain layers | `base64_decode`, `gzinflate`, `gzuncompress`, `gzdecode`, `str_rot13`, `strrev`, `str_replace`, `urldecode` / `rawurldecode`, hex escapes, `pack`-hex, `chr()` concatenation, uudecode, single-key XOR, `create_function`, nested `eval`, FOPO, Better PHP Obfuscator |
+| Eval-chain layers | `base64_decode`, `gzinflate`, `gzuncompress`, `gzdecode`, `str_rot13`, `strrev`, `str_replace`, `urldecode` / `rawurldecode`, hex and octal escapes, `pack`-hex, `chr()` concatenation, uudecode, single-key XOR, `create_function`, nested `eval`, FOPO, Better PHP Obfuscator |
 | Recovery grading | `EvalChainPeeled` / `OpArrayDecompiled` / `StructuralOnly` / `PlainSource` |
 
 ## Decoding an encoder envelope

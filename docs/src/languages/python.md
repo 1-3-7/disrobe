@@ -9,6 +9,7 @@ Python is **disrobe**'s most contested and most developed ecosystem. It ships an
 | Bytecode disassembly | CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
 | Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object recompile-equivalence on the full CPython 3.14 stdlib (16880 of 18262), <!-- m:py_stdlib_pinned_pct -->94.18%<!-- /m --> on the pinned 200-module corpus (5920 of 6286, above a 90% CI floor), and the legacy 1.0-3.7 band asserts a CI floor of 150 of 191 proven-correct (166 of 191 measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
+| Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender |
 | Protectors | PyArmor v6-v9-pro and 18 source obfuscators with an AST-evaluator backend |
 
