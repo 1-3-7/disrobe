@@ -3,8 +3,8 @@ use super::branches::{
     collect_value_boolop_sc, jump_taken_if_true, match_head_enclosed_by_loop,
     match_head_enclosed_by_try, region_contains_match_head, structure_break_on_false_continue,
     structure_guarded_break, structure_match, try_recover_compound_if, try_recover_or_body_guard,
-    try_structure_compound_assert, try_structure_literal_wildcard_match,
-    try_structure_return_ternary, try_structure_ternary_expr,
+    try_structure_compound_assert, try_structure_dup_consumer_ternary,
+    try_structure_literal_wildcard_match, try_structure_return_ternary, try_structure_ternary_expr,
 };
 use super::comprehensions::{
     CompKind, ComprehensionParts, clause_filters_use_skip_form, comp_loop_target,
@@ -1757,6 +1757,11 @@ pub(super) fn structure_stmts(
             return Ok(stmts);
         }
         if let Some(stmts) = try_structure_ternary_expr(code, stream, lo, hi, first, first_target)?
+        {
+            return Ok(stmts);
+        }
+        if let Some(stmts) =
+            try_structure_dup_consumer_ternary(code, stream, lo, hi, first, first_target)?
         {
             return Ok(stmts);
         }

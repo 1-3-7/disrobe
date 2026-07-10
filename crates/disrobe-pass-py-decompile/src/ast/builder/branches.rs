@@ -342,6 +342,142 @@ fn try_fold_nested_ternary(
     Ok(tail_residual.into_iter().next_back())
 }
 
+fn dup_ternary_significant_indices(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {
+    (lo..hi)
+        .filter(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .collect()
+}
+
+fn dup_ternary_arm_is_straight_line(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).all(|k: usize| {
+        let jumping: bool = matches!(
+            stream.ops[k],
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfTrue(_)
+                | CanonicalOp::PopJumpIfFalseRel(_)
+                | CanonicalOp::PopJumpIfTrueRel(_)
+                | CanonicalOp::PopJumpIfFalseBackward(_)
+                | CanonicalOp::PopJumpIfTrueBackward(_)
+                | CanonicalOp::JumpIfTrueOrPop(_)
+                | CanonicalOp::JumpIfFalseOrPop(_)
+        );
+        !jumping || is_value_form_shortcircuit(&stream.ops, k)
+    })
+}
+
+fn dup_ternary_op_is_terminal(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_)
+    )
+}
+
+pub(super) fn try_structure_dup_consumer_ternary(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    jump_idx: usize,
+    target: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if target <= jump_idx + 1 || target >= hi || is_chain_cond_jump(&stream.ops, jump_idx) {
+        return Ok(None);
+    }
+    let arm1_lo: usize = jump_idx + 1;
+    let arm1_hi: usize = target;
+    let arm2_lo: usize = target;
+    let arm2_hi: usize = hi;
+    if !dup_ternary_arm_is_straight_line(stream, arm1_lo, arm1_hi)
+        || !dup_ternary_arm_is_straight_line(stream, arm2_lo, arm2_hi)
+    {
+        return Ok(None);
+    }
+    let sig1: Vec<usize> = dup_ternary_significant_indices(stream, arm1_lo, arm1_hi);
+    let sig2: Vec<usize> = dup_ternary_significant_indices(stream, arm2_lo, arm2_hi);
+    if sig1.is_empty() || sig2.is_empty() {
+        return Ok(None);
+    }
+    let last1: usize = sig1[sig1.len() - 1];
+    if !dup_ternary_op_is_terminal(&stream.ops[last1]) {
+        return Ok(None);
+    }
+    let mut matched: usize = 0;
+    while matched < sig1.len() && matched < sig2.len() {
+        let i1: usize = sig1[sig1.len() - 1 - matched];
+        let i2: usize = sig2[sig2.len() - 1 - matched];
+        if stream.ops[i1] != stream.ops[i2] {
+            break;
+        }
+        matched += 1;
+    }
+    if matched == 0 || matched >= sig1.len() || matched >= sig2.len() {
+        return Ok(None);
+    }
+    let consumer1_first: usize = sig1[sig1.len() - matched];
+    let consumer2_first: usize = sig2[sig2.len() - matched];
+    let consumer_has_sink: bool = (consumer1_first..arm1_hi).any(|k: usize| {
+        dup_ternary_op_is_terminal(&stream.ops[k]) || is_ternary_consumer_sink(&stream.ops[k])
+    });
+    if !consumer_has_sink {
+        return Ok(None);
+    }
+    let Some(arm1_expr): Option<Expr> =
+        build_region_as_single_expr(code, stream, arm1_lo, consumer1_first)?
+    else {
+        return Ok(None);
+    };
+    let Some(arm2_expr): Option<Expr> =
+        build_region_as_single_expr(code, stream, arm2_lo, consumer2_first)?
+    else {
+        return Ok(None);
+    };
+    let (head_stmts, mut head_residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..jump_idx])?;
+    let Some(test_operand): Option<Expr> = head_residual.pop() else {
+        return Ok(None);
+    };
+    let below_stack: Vec<Expr> = head_residual;
+    if below_stack.is_empty() {
+        return Ok(None);
+    }
+    let none_jump: bool = stream.none_jump_kind.contains_key(&jump_idx);
+    let negate: bool = matches!(
+        stream.ops[jump_idx],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+    );
+    let test_final: Expr = if none_jump {
+        fallthrough_cond_test(stream, jump_idx, test_operand)
+    } else if negate {
+        test_operand
+    } else {
+        negate_cond_expr(test_operand)
+    };
+    let if_exp: Expr = Expr::IfExp {
+        test: Box::new(test_final),
+        body: Box::new(arm1_expr),
+        orelse: Box::new(arm2_expr),
+    };
+    let mut seed: Vec<Expr> = below_stack;
+    seed.push(if_exp);
+    let (consumer_stmts, consumer_residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim_seed(code, &stream.ops[consumer1_first..arm1_hi], seed)?;
+    if !consumer_residual.is_empty() {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head_stmts;
+    out.extend(consumer_stmts);
+    Ok(Some(out))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BoolOperand {
     value_lo: usize,
