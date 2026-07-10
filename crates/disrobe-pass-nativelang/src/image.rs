@@ -2,7 +2,7 @@ use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::{File as ObjFile, FileKind};
-use object::{Architecture as ObjArch, SectionKind, SymbolKind};
+use object::{Architecture as ObjArch, ObjectKind, SectionKind, SymbolKind};
 
 use crate::error::{Error, Result};
 
@@ -42,6 +42,7 @@ pub struct FuncSymbol {
 #[derive(Debug, Clone)]
 pub struct NativeImage<'a> {
     pub kind: ImageKind,
+    pub relocatable: bool,
     pub arch: CodeArch,
     pub ptr_size: u8,
     pub entry: u64,
@@ -66,6 +67,7 @@ impl<'a> NativeImage<'a> {
         };
         let file: ObjFile<'a, &'a [u8]> =
             ObjFile::parse(bytes).map_err(|e| Error::ContainerParse(e.to_string()))?;
+        let relocatable: bool = file.kind() == ObjectKind::Relocatable;
         let ptr_size: u8 = if file.is_64() { 8 } else { 4 };
         let arch: CodeArch = match file.architecture() {
             ObjArch::I386 => CodeArch::X86,
@@ -99,31 +101,34 @@ impl<'a> NativeImage<'a> {
                     continue;
                 }
                 let address: u64 = sym.address();
-                if address != 0 {
+                if relocatable {
+                    if let Some(section_addr) =
+                        sym.section_index().and_then(|idx: object::SectionIndex| {
+                            file.section_by_index(idx)
+                                .ok()
+                                .map(|s: object::read::Section<'a, '_, &'a [u8]>| s.address())
+                        })
+                    {
+                        func_symbols.push(FuncSymbol {
+                            name: raw_name.to_owned(),
+                            address: section_addr.saturating_add(address),
+                            size,
+                            relocatable: true,
+                        });
+                    }
+                } else if address != 0 {
                     func_symbols.push(FuncSymbol {
                         name: raw_name.to_owned(),
                         address,
                         size,
                         relocatable: false,
                     });
-                } else if let Some(section_addr) =
-                    sym.section_index().and_then(|idx: object::SectionIndex| {
-                        file.section_by_index(idx)
-                            .ok()
-                            .map(|s: object::read::Section<'a, '_, &'a [u8]>| s.address())
-                    })
-                {
-                    func_symbols.push(FuncSymbol {
-                        name: raw_name.to_owned(),
-                        address: section_addr.saturating_add(sym.address()),
-                        size,
-                        relocatable: true,
-                    });
                 }
             }
         }
         Ok(Self {
             kind,
+            relocatable,
             arch,
             ptr_size,
             entry,

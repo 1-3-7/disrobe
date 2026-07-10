@@ -65,7 +65,8 @@ pub fn recover_functions(
     debug::dbg_section("recover-functions");
     debug::dbg_kv("func-symbols-in", || image.func_symbols.len().to_string());
     let mut by_start: BTreeMap<u64, RecoveredFunction> = BTreeMap::new();
-    let mut relocatable: BTreeMap<String, RecoveredFunction> = BTreeMap::new();
+    let mut relocatable: Vec<RecoveredFunction> = Vec::new();
+    let mut relocatable_symbol_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
     let mut from_symbol_table: usize = 0;
     for sym in &image.func_symbols {
@@ -92,35 +93,57 @@ pub fn recover_functions(
             address_assigned: !sym.relocatable,
         };
         if sym.relocatable {
-            if relocatable.insert(sym.name.clone(), entry).is_none() {
-                from_symbol_table += 1;
-            }
+            let index: usize = relocatable.len();
+            relocatable.push(entry);
+            relocatable_symbol_indices
+                .entry(sym.name.clone())
+                .or_default()
+                .push(index);
+            from_symbol_table += 1;
         } else if by_start.insert(sym.address, entry).is_none() {
             from_symbol_table += 1;
         }
     }
-    let from_relocatable: usize = relocatable.len();
     debug::dbg_kv("from-symbol-table", || from_symbol_table.to_string());
-    debug::dbg_kv("from-relocatable", || from_relocatable.to_string());
 
     let mut from_dwarf: usize = 0;
+    let relocatable_object: bool = image.relocatable;
     for func in &dwarf.functions {
         let Some(low_pc): Option<u64> = func.low_pc else {
             continue;
         };
+        let symbol_name: &str = func.linkage_name.as_deref().unwrap_or(&func.name);
+        if let Some(indices) = relocatable_symbol_indices.get(symbol_name) {
+            for index in indices {
+                if let Some(existing) = relocatable.get_mut(*index) {
+                    enrich_from_dwarf(existing, func);
+                }
+            }
+            continue;
+        }
         if let Some(existing) = by_start.get_mut(&low_pc) {
             enrich_from_dwarf(existing, func);
+        } else if relocatable_object {
+            if by_start.len().saturating_add(relocatable.len()) >= MAX_RECOVERED_FUNCTIONS {
+                break;
+            }
+            let demangled: Option<DemangledSymbol> = demangle_for(lang, symbol_name);
+            let entry: RecoveredFunction = dwarf_function(func, low_pc, demangled, false);
+            relocatable.push(entry);
+            from_dwarf += 1;
         } else {
             if by_start.len() >= MAX_RECOVERED_FUNCTIONS {
                 break;
             }
-            let demangled: Option<DemangledSymbol> = demangle_for(lang, &func.name);
-            by_start.insert(low_pc, dwarf_function(func, low_pc, demangled));
+            let demangled: Option<DemangledSymbol> = demangle_for(lang, symbol_name);
+            by_start.insert(low_pc, dwarf_function(func, low_pc, demangled, true));
             from_dwarf += 1;
         }
     }
 
     debug::dbg_kv("from-dwarf", || from_dwarf.to_string());
+    let from_relocatable: usize = relocatable.len();
+    debug::dbg_kv("from-relocatable", || from_relocatable.to_string());
 
     let arch_supported: bool = matches!(image.arch, CodeArch::X86 | CodeArch::X86_64);
     let stripped: bool = image.func_symbols.is_empty() && dwarf.functions.is_empty();
@@ -185,7 +208,7 @@ pub fn recover_functions(
     });
 
     let mut functions: Vec<RecoveredFunction> = by_start.into_values().collect();
-    functions.extend(relocatable.into_values());
+    functions.extend(relocatable);
     debug::dbg_kv("functions-total", || functions.len().to_string());
 
     FunctionRecovery {
@@ -213,6 +236,7 @@ fn dwarf_function(
     func: &DwarfFunction,
     low_pc: u64,
     demangled: Option<DemangledSymbol>,
+    address_assigned: bool,
 ) -> RecoveredFunction {
     let mut out: RecoveredFunction = RecoveredFunction {
         name: demangled
@@ -233,7 +257,7 @@ fn dwarf_function(
             func.params.clone()
         },
         origin: FunctionOrigin::Dwarf,
-        address_assigned: true,
+        address_assigned,
     };
     apply_lines(&mut out, func);
     out
@@ -319,6 +343,7 @@ mod tests {
     fn blank_image(arch: CodeArch) -> NativeImage<'static> {
         NativeImage {
             kind: ImageKind::Elf,
+            relocatable: false,
             arch,
             ptr_size: 8,
             entry: 0,
@@ -366,6 +391,7 @@ mod tests {
             compile_units: 1,
             functions: vec![DwarfFunction {
                 name: "fib".to_owned(),
+                linkage_name: None,
                 low_pc: Some(0x2000),
                 high_pc: Some(0x2030),
                 decl_file: Some("hello.zig".to_owned()),
@@ -401,6 +427,7 @@ mod tests {
             compile_units: 1,
             functions: vec![DwarfFunction {
                 name: "greet".to_owned(),
+                linkage_name: None,
                 low_pc: Some(0x3000),
                 high_pc: Some(0x3050),
                 decl_file: None,
@@ -415,6 +442,105 @@ mod tests {
         assert_eq!(rec.from_dwarf, 1);
         assert_eq!(rec.functions[0].start, 0x3000);
         assert_eq!(rec.functions[0].end, Some(0x3050));
+    }
+
+    #[test]
+    fn relocatable_dwarf_offset_remains_unassigned_without_symbols() {
+        let mut image: NativeImage<'static> = blank_image(CodeArch::X86_64);
+        image.relocatable = true;
+        let dwarf: DwarfReport = DwarfReport {
+            present: true,
+            compressed: false,
+            dwarf_version: Some(4),
+            compile_units: 1,
+            functions: vec![DwarfFunction {
+                name: "helper".to_owned(),
+                linkage_name: Some("module.helper".to_owned()),
+                low_pc: Some(0x40),
+                high_pc: Some(0x60),
+                decl_file: None,
+                decl_line: None,
+                line_lo: None,
+                line_hi: None,
+                params: Vec::new(),
+            }],
+            aggregates: Vec::new(),
+        };
+        let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
+        assert_eq!(rec.from_dwarf, 1);
+        assert_eq!(rec.from_relocatable, 1);
+        assert_eq!(rec.functions.len(), 1);
+        assert_eq!(rec.functions[0].start, 0x40);
+        assert_eq!(rec.functions[0].end, Some(0x60));
+        assert!(!rec.functions[0].address_assigned);
+    }
+
+    #[test]
+    fn relocatable_duplicate_names_preserve_every_entry() {
+        let mut image: NativeImage<'static> = blank_image(CodeArch::X86_64);
+        image.relocatable = true;
+        image.func_symbols = vec![
+            FuncSymbol {
+                name: "module.present".to_owned(),
+                address: 0,
+                size: 0x10,
+                relocatable: true,
+            },
+            FuncSymbol {
+                name: "module.present".to_owned(),
+                address: 0x20,
+                size: 0x10,
+                relocatable: true,
+            },
+        ];
+        let dwarf: DwarfReport = DwarfReport {
+            present: true,
+            compressed: false,
+            dwarf_version: Some(4),
+            compile_units: 1,
+            functions: vec![
+                DwarfFunction {
+                    name: "missing".to_owned(),
+                    linkage_name: Some("module.missing".to_owned()),
+                    low_pc: Some(0x40),
+                    high_pc: Some(0x50),
+                    decl_file: None,
+                    decl_line: None,
+                    line_lo: None,
+                    line_hi: None,
+                    params: Vec::new(),
+                },
+                DwarfFunction {
+                    name: "missing".to_owned(),
+                    linkage_name: Some("module.missing".to_owned()),
+                    low_pc: Some(0x80),
+                    high_pc: Some(0x90),
+                    decl_file: None,
+                    decl_line: None,
+                    line_lo: None,
+                    line_hi: None,
+                    params: Vec::new(),
+                },
+            ],
+            aggregates: Vec::new(),
+        };
+        let rec: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
+        assert_eq!(rec.from_symbol_table, 2);
+        assert_eq!(rec.from_dwarf, 2);
+        assert_eq!(rec.from_relocatable, 4);
+        assert_eq!(rec.functions.len(), 4);
+        assert_eq!(
+            rec.functions
+                .iter()
+                .map(|function: &RecoveredFunction| function.start)
+                .collect::<Vec<u64>>(),
+            [0, 0x20, 0x40, 0x80]
+        );
+        assert!(
+            rec.functions
+                .iter()
+                .all(|function: &RecoveredFunction| !function.address_assigned)
+        );
     }
 
     #[test]

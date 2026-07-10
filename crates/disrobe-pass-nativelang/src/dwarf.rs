@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::io::Read as _;
 
 use flate2::read::ZlibDecoder;
@@ -10,6 +11,8 @@ use crate::image::{ImageKind, NativeImage};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DwarfFunction {
     pub name: String,
+    #[serde(default)]
+    pub linkage_name: Option<String>,
     pub low_pc: Option<u64>,
     pub high_pc: Option<u64>,
     pub decl_file: Option<String>,
@@ -78,10 +81,14 @@ const MAX_DWARF_FUNCTION_PARAMS: usize = 1 << 16;
 const MAX_DWARF_DIE_VISITS: usize = 1 << 22;
 const MAX_DWARF_STRING_LEN: usize = 1 << 14;
 const MAX_DWARF_STRING_BYTES: usize = 1 << 26;
+const MAX_DWARF_REFERENCE_DEPTH: usize = 8;
+const MAX_DWARF_REFERENCE_VISITS: usize = 16;
 const MAX_LINE_ROWS: u64 = 1 << 24;
 const MAX_UNCOMPRESSED: usize = 1 << 30;
 const MAX_INFLATE_READ: u64 = MAX_UNCOMPRESSED as u64 + 1;
 const INITIAL_INFLATE_CAP: usize = 64 * 1024;
+
+type DwarfAttrResult<T> = core::result::Result<Option<T>, ()>;
 
 #[derive(Debug)]
 struct DwarfBudget {
@@ -578,20 +585,52 @@ fn collect_unit(
             if functions.len() >= MAX_DWARF_FUNCS {
                 return;
             }
-            let low_pc: Option<u64> = attr_low_pc(dwarf, unit, entry);
-            if low_pc.is_some()
-                && let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget)
-            {
-                let decl_file: Option<String> = attr_decl_file(dwarf, unit, entry, budget);
+            let Some(low_pc): Option<u64> = attr_low_pc(dwarf, unit, entry) else {
+                continue;
+            };
+            let name: Option<String> = match inherited_attr_string(
+                dwarf,
+                unit,
+                entry,
+                gimli::DW_AT_name,
+                gimli::DW_TAG_subprogram,
+                budget,
+            ) {
+                Ok(value) => value,
+                Err(()) => continue,
+            };
+            let linkage_name: Option<String> = inherited_attr_string(
+                dwarf,
+                unit,
+                entry,
+                gimli::DW_AT_linkage_name,
+                gimli::DW_TAG_subprogram,
+                budget,
+            )
+            .ok()
+            .flatten();
+            if let Some(name) = name.or_else(|| linkage_name.clone()) {
+                let decl_file: Option<String> =
+                    inherited_decl_file(dwarf, unit, entry, gimli::DW_TAG_subprogram, budget)
+                        .ok()
+                        .flatten();
                 if budget.string_limit_hit {
                     return;
                 }
                 current = Some(DwarfFunction {
                     name,
-                    high_pc: attr_high_pc(entry, low_pc),
-                    low_pc,
+                    linkage_name,
+                    high_pc: attr_high_pc(entry, Some(low_pc)),
+                    low_pc: Some(low_pc),
                     decl_file,
-                    decl_line: attr_udata(entry, gimli::DW_AT_decl_line),
+                    decl_line: inherited_attr_udata(
+                        unit,
+                        entry,
+                        gimli::DW_AT_decl_line,
+                        gimli::DW_TAG_subprogram,
+                    )
+                    .ok()
+                    .flatten(),
                     line_lo: None,
                     line_hi: None,
                     params: Vec::new(),
@@ -610,7 +649,14 @@ fn collect_unit(
             if budget.function_params >= MAX_DWARF_FUNCTION_PARAMS {
                 return;
             }
-            if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name, budget) {
+            if let Ok(Some(name)) = inherited_attr_string(
+                dwarf,
+                unit,
+                entry,
+                gimli::DW_AT_name,
+                gimli::DW_TAG_formal_parameter,
+                budget,
+            ) {
                 if !budget.take_function_param() {
                     return;
                 }
@@ -720,6 +766,124 @@ fn attr_string(
     decode_dwarf_string(slice, budget)
 }
 
+fn inherited_attr_string(
+    dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    attr: gimli::DwAt,
+    expected_tag: gimli::DwTag,
+    budget: &mut DwarfBudget,
+) -> DwarfAttrResult<String> {
+    let Some(value): Option<gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>> =
+        inherited_attr_value(unit, entry, attr, expected_tag)?
+    else {
+        return Ok(None);
+    };
+    let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, value).map_err(|_| ())?;
+    decode_dwarf_string(slice, budget).map(Some).ok_or(())
+}
+
+fn inherited_attr_udata(
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    attr: gimli::DwAt,
+    expected_tag: gimli::DwTag,
+) -> DwarfAttrResult<u64> {
+    let Some(value): Option<gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>> =
+        inherited_attr_value(unit, entry, attr, expected_tag)?
+    else {
+        return Ok(None);
+    };
+    attr_value_udata(value).map(Some).ok_or(())
+}
+
+fn inherited_attr_value<'data>(
+    unit: &gimli::Unit<EndianSlice<'data, RunTimeEndian>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'data, RunTimeEndian>>,
+    attr: gimli::DwAt,
+    expected_tag: gimli::DwTag,
+) -> DwarfAttrResult<gimli::AttributeValue<EndianSlice<'data, RunTimeEndian>>> {
+    if entry.tag() != expected_tag {
+        return Ok(None);
+    }
+    match entry.attr_value(attr) {
+        Ok(Some(value)) => return Ok(Some(value)),
+        Ok(None) => {}
+        Err(_) => return Err(()),
+    }
+    let mut queue: VecDeque<(gimli::UnitOffset, usize)> =
+        VecDeque::with_capacity(MAX_DWARF_REFERENCE_VISITS);
+    enqueue_references(entry, 1, &mut queue);
+    let mut visited: Vec<gimli::UnitOffset> = Vec::with_capacity(MAX_DWARF_REFERENCE_VISITS);
+    visited.push(entry.offset());
+    resolve_attr_queue(unit, attr, expected_tag, &mut queue, &mut visited)
+}
+
+fn resolve_attr_queue<'data>(
+    unit: &gimli::Unit<EndianSlice<'data, RunTimeEndian>>,
+    attr: gimli::DwAt,
+    expected_tag: gimli::DwTag,
+    queue: &mut VecDeque<(gimli::UnitOffset, usize)>,
+    visited: &mut Vec<gimli::UnitOffset>,
+) -> DwarfAttrResult<gimli::AttributeValue<EndianSlice<'data, RunTimeEndian>>> {
+    while visited.len() < MAX_DWARF_REFERENCE_VISITS
+        && let Some((offset, depth)) = queue.pop_front()
+    {
+        if depth > MAX_DWARF_REFERENCE_DEPTH || visited.contains(&offset) {
+            continue;
+        }
+        visited.push(offset);
+        let Ok(target): Result<
+            gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'data, RunTimeEndian>>,
+            _,
+        > = unit.entry(offset) else {
+            continue;
+        };
+        if target.tag() != expected_tag {
+            continue;
+        }
+        match target.attr_value(attr) {
+            Ok(Some(value)) => return Ok(Some(value)),
+            Ok(None) => {}
+            Err(_) => return Err(()),
+        }
+        if depth < MAX_DWARF_REFERENCE_DEPTH {
+            enqueue_references(&target, depth + 1, queue);
+        }
+    }
+    Ok(None)
+}
+
+fn enqueue_references(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    depth: usize,
+    queue: &mut VecDeque<(gimli::UnitOffset, usize)>,
+) {
+    for attr in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
+        if queue.len() >= MAX_DWARF_REFERENCE_VISITS {
+            return;
+        }
+        let Ok(Some(value)): Result<
+            Option<gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>>,
+            _,
+        > = entry.attr_value(attr) else {
+            continue;
+        };
+        if let Some(offset) = unit_reference_offset(value) {
+            queue.push_back((offset, depth));
+        }
+    }
+}
+
+const fn unit_reference_offset(
+    value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>,
+) -> Option<gimli::UnitOffset> {
+    match value {
+        gimli::AttributeValue::UnitRef(offset) => Some(offset),
+        _ => None,
+    }
+}
+
 fn decode_dwarf_string(
     slice: EndianSlice<'_, RunTimeEndian>,
     budget: &mut DwarfBudget,
@@ -765,6 +929,10 @@ fn attr_udata(
 ) -> Option<u64> {
     let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
         entry.attr_value(attr).ok()??;
+    attr_value_udata(value)
+}
+
+fn attr_value_udata(value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>) -> Option<u64> {
     match value {
         gimli::AttributeValue::Udata(v) | gimli::AttributeValue::Data8(v) => Some(v),
         gimli::AttributeValue::Data1(v) => Some(u64::from(v)),
@@ -774,25 +942,29 @@ fn attr_udata(
     }
 }
 
-fn attr_decl_file(
+fn inherited_decl_file(
     dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
     unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    expected_tag: gimli::DwTag,
     budget: &mut DwarfBudget,
-) -> Option<String> {
-    let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
-        entry.attr_value(gimli::DW_AT_decl_file).ok()??;
+) -> DwarfAttrResult<String> {
+    let Some(value): Option<gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>>> =
+        inherited_attr_value(unit, entry, gimli::DW_AT_decl_file, expected_tag)?
+    else {
+        return Ok(None);
+    };
     let index: u64 = match value {
         gimli::AttributeValue::FileIndex(i) | gimli::AttributeValue::Udata(i) => i,
-        _ => return None,
+        _ => return Err(()),
     };
     let program: &gimli::IncompleteLineProgram<EndianSlice<'_, RunTimeEndian>> =
-        unit.line_program.as_ref()?;
+        unit.line_program.as_ref().ok_or(())?;
     let header: &gimli::LineProgramHeader<EndianSlice<'_, RunTimeEndian>> = program.header();
-    let file: &gimli::FileEntry<EndianSlice<'_, RunTimeEndian>> = header.file(index)?;
-    let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> = file.path_name();
-    let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, value).ok()?;
-    decode_dwarf_string(slice, budget)
+    let file: &gimli::FileEntry<EndianSlice<'_, RunTimeEndian>> = header.file(index).ok_or(())?;
+    let path: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> = file.path_name();
+    let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, path).map_err(|_| ())?;
+    decode_dwarf_string(slice, budget).map(Some).ok_or(())
 }
 
 fn canonical_debug_name(name: &str) -> Option<&'static str> {
@@ -976,6 +1148,246 @@ mod tests {
         let mut oversized: DwarfBudget = DwarfBudget::new();
         assert!(!oversized.reserve_string(MAX_DWARF_STRING_LEN + 1));
         assert!(oversized.string_limit_hit);
+    }
+
+    #[test]
+    fn subprogram_metadata_follows_abstract_origin_and_specification_with_bounds() {
+        let mut dwarf: DwarfUnit = dwarf_unit();
+        let root: UnitEntryId = dwarf.unit.root();
+        let abstract_subprogram: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_subprogram, "abstract_fn");
+        let linkage: gimli::write::StringId = dwarf.strings.add(b"mod.abstract_fn".to_vec());
+        dwarf.unit.get_mut(abstract_subprogram).set(
+            gimli::DW_AT_linkage_name,
+            WriteAttributeValue::StringRef(linkage),
+        );
+        dwarf
+            .unit
+            .get_mut(abstract_subprogram)
+            .set(gimli::DW_AT_decl_line, WriteAttributeValue::Udata(41));
+        let abstract_param: UnitEntryId = add_named_die(
+            &mut dwarf,
+            abstract_subprogram,
+            gimli::DW_TAG_formal_parameter,
+            "value",
+        );
+
+        for (reference, address) in [
+            (gimli::DW_AT_abstract_origin, 0x1000_u64),
+            (gimli::DW_AT_specification, 0x2000_u64),
+        ] {
+            let concrete: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+            dwarf.unit.get_mut(concrete).set(
+                gimli::DW_AT_low_pc,
+                WriteAttributeValue::Address(gimli::write::Address::Constant(address)),
+            );
+            dwarf
+                .unit
+                .get_mut(concrete)
+                .set(gimli::DW_AT_high_pc, WriteAttributeValue::Udata(16));
+            dwarf
+                .unit
+                .get_mut(concrete)
+                .set(reference, WriteAttributeValue::UnitRef(abstract_subprogram));
+            let concrete_param: UnitEntryId =
+                dwarf.unit.add(concrete, gimli::DW_TAG_formal_parameter);
+            dwarf.unit.get_mut(concrete_param).set(
+                gimli::DW_AT_abstract_origin,
+                WriteAttributeValue::UnitRef(abstract_param),
+            );
+        }
+
+        let direct: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_subprogram, "direct_fn");
+        dwarf.unit.get_mut(direct).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x2800)),
+        );
+        dwarf.unit.get_mut(direct).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(abstract_subprogram),
+        );
+
+        let wrong_target: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_base_type, "wrong_target");
+        let wrong_reference: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(wrong_reference).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x2900)),
+        );
+        dwarf.unit.get_mut(wrong_reference).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(wrong_target),
+        );
+
+        let malformed_direct: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(malformed_direct).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x2a00)),
+        );
+        dwarf
+            .unit
+            .get_mut(malformed_direct)
+            .set(gimli::DW_AT_name, WriteAttributeValue::Udata(7));
+        dwarf.unit.get_mut(malformed_direct).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(abstract_subprogram),
+        );
+
+        let cycle_a: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        let cycle_b: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(cycle_a).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x3000)),
+        );
+        dwarf.unit.get_mut(cycle_a).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(cycle_b),
+        );
+        dwarf.unit.get_mut(cycle_b).set(
+            gimli::DW_AT_specification,
+            WriteAttributeValue::UnitRef(cycle_a),
+        );
+
+        let within_limit: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_subprogram, "within_limit");
+        let mut within_head: UnitEntryId = within_limit;
+        for _ in 1..MAX_DWARF_REFERENCE_DEPTH {
+            let next: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+            dwarf.unit.get_mut(next).set(
+                gimli::DW_AT_abstract_origin,
+                WriteAttributeValue::UnitRef(within_head),
+            );
+            within_head = next;
+        }
+        let within_concrete: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(within_concrete).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x4000)),
+        );
+        dwarf.unit.get_mut(within_concrete).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(within_head),
+        );
+
+        let beyond_limit: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_subprogram, "beyond_limit");
+        let mut beyond_head: UnitEntryId = beyond_limit;
+        for _ in 0..MAX_DWARF_REFERENCE_DEPTH {
+            let next: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+            dwarf.unit.get_mut(next).set(
+                gimli::DW_AT_abstract_origin,
+                WriteAttributeValue::UnitRef(beyond_head),
+            );
+            beyond_head = next;
+        }
+        let beyond_concrete: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(beyond_concrete).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x5000)),
+        );
+        dwarf.unit.get_mut(beyond_concrete).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(beyond_head),
+        );
+
+        let shortest_name: UnitEntryId =
+            add_named_die(&mut dwarf, root, gimli::DW_TAG_subprogram, "shortest_path");
+        let common: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(common).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(shortest_name),
+        );
+        let mut long_head: UnitEntryId = common;
+        for _ in 1..MAX_DWARF_REFERENCE_DEPTH {
+            let next: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+            dwarf.unit.get_mut(next).set(
+                gimli::DW_AT_abstract_origin,
+                WriteAttributeValue::UnitRef(long_head),
+            );
+            long_head = next;
+        }
+        let branching_concrete: UnitEntryId = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+        dwarf.unit.get_mut(branching_concrete).set(
+            gimli::DW_AT_low_pc,
+            WriteAttributeValue::Address(gimli::write::Address::Constant(0x6000)),
+        );
+        dwarf.unit.get_mut(branching_concrete).set(
+            gimli::DW_AT_abstract_origin,
+            WriteAttributeValue::UnitRef(long_head),
+        );
+        dwarf.unit.get_mut(branching_concrete).set(
+            gimli::DW_AT_specification,
+            WriteAttributeValue::UnitRef(common),
+        );
+
+        let sections: BTreeMap<SectionId, Vec<u8>> = serialize_dwarf(&mut dwarf);
+        let report: DwarfReport = report_from_sections(&sections);
+        let inherited: Vec<&DwarfFunction> = report
+            .functions
+            .iter()
+            .filter(|function: &&DwarfFunction| function.name == "abstract_fn")
+            .collect();
+        assert_eq!(inherited.len(), 2);
+        for function in inherited {
+            assert_eq!(function.linkage_name.as_deref(), Some("mod.abstract_fn"));
+            assert_eq!(function.decl_line, Some(41));
+            assert_eq!(function.params, ["value".to_owned()]);
+        }
+        let direct: &DwarfFunction = report
+            .functions
+            .iter()
+            .find(|function: &&DwarfFunction| function.low_pc == Some(0x2800))
+            .expect("directly named function recovered");
+        assert_eq!(direct.name, "direct_fn");
+        assert!(report.functions.iter().any(|function: &DwarfFunction| {
+            function.low_pc == Some(0x4000) && function.name == "within_limit"
+        }));
+        assert!(report.functions.iter().any(|function: &DwarfFunction| {
+            function.low_pc == Some(0x6000) && function.name == "shortest_path"
+        }));
+        assert!(report.functions.iter().all(|function: &DwarfFunction| {
+            function.low_pc != Some(0x2900)
+                && function.low_pc != Some(0x2a00)
+                && function.low_pc != Some(0x3000)
+                && function.low_pc != Some(0x5000)
+        }));
+
+        let unsupported: gimli::AttributeValue<EndianSlice<'static, RunTimeEndian>> =
+            gimli::AttributeValue::DebugInfoRef(gimli::DebugInfoOffset(0));
+        assert!(unit_reference_offset(unsupported).is_none());
+
+        let empty: Vec<u8> = Vec::new();
+        let endian: RunTimeEndian = RunTimeEndian::Little;
+        let load =
+            |id: SectionId| -> std::result::Result<EndianSlice<'_, RunTimeEndian>, gimli::Error> {
+                let data: &[u8] = sections.get(&id).unwrap_or(&empty);
+                Ok(EndianSlice::new(data, endian))
+            };
+        let read_dwarf: Dwarf<EndianSlice<'_, RunTimeEndian>> =
+            Dwarf::load(load).expect("dwarf sections load");
+        let header: gimli::UnitHeader<EndianSlice<'_, RunTimeEndian>> = read_dwarf
+            .units()
+            .next()
+            .expect("unit header reads")
+            .expect("unit header exists");
+        let unit: gimli::Unit<EndianSlice<'_, RunTimeEndian>> =
+            read_dwarf.unit(header).expect("unit reads");
+        let mut invalid_queue: VecDeque<(gimli::UnitOffset, usize)> = (0..32)
+            .map(|index: usize| (gimli::UnitOffset(usize::MAX - index), 1))
+            .collect();
+        let mut invalid_visited: Vec<gimli::UnitOffset> = vec![gimli::UnitOffset(0)];
+        assert!(matches!(
+            resolve_attr_queue(
+                &unit,
+                gimli::DW_AT_name,
+                gimli::DW_TAG_subprogram,
+                &mut invalid_queue,
+                &mut invalid_visited,
+            ),
+            Ok(None)
+        ));
+        assert_eq!(invalid_visited.len(), MAX_DWARF_REFERENCE_VISITS);
     }
 
     #[test]

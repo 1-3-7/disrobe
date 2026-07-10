@@ -205,6 +205,7 @@ mod tests {
     fn image_with_text(arch: CodeArch, addr: u64, data: &'static [u8]) -> NativeImage<'static> {
         NativeImage {
             kind: ImageKind::Elf,
+            relocatable: false,
             arch,
             ptr_size: 8,
             entry: addr,

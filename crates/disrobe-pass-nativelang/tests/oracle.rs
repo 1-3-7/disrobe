@@ -9,6 +9,8 @@ use disrobe_pass_nativelang::{
     AggregateKind, DemangledSymbol, DwarfAggregate, DwarfMember, FunctionOrigin, NativeLang,
     NativeLangAnalysis, RecoveredFunction, SourceGrade, analyze, demangle_crystal,
 };
+use gimli::{Dwarf, EndianSlice, RunTimeEndian};
+use object::{Object as _, ObjectSection as _};
 
 fn elf_symtab_names(bytes: &[u8]) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
@@ -984,6 +986,178 @@ fn d_object_dwarf_present_with_subprograms() {
         "expected many dwarf subprograms in d object, got {}",
         analysis.dwarf.functions.len()
     );
+}
+
+#[derive(Debug)]
+struct OriginTruth {
+    producer: String,
+    concrete_offset: usize,
+    origin_offset: usize,
+    target_name: String,
+    target_linkage_name: String,
+}
+
+fn independent_attr_text(
+    dwarf: &Dwarf<EndianSlice<'_, RunTimeEndian>>,
+    unit: &gimli::Unit<EndianSlice<'_, RunTimeEndian>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>>,
+    attr: gimli::DwAt,
+) -> Option<String> {
+    let value: gimli::AttributeValue<EndianSlice<'_, RunTimeEndian>> =
+        entry.attr_value(attr).ok()??;
+    let slice: EndianSlice<'_, RunTimeEndian> = dwarf.attr_string(unit, value).ok()?;
+    std::str::from_utf8(slice.slice()).ok().map(str::to_owned)
+}
+
+fn zig_origin_truth(bytes: &[u8], expected_name: &str) -> Option<OriginTruth> {
+    let file: object::read::File<'_, &[u8]> = object::read::File::parse(bytes).ok()?;
+    let endian: RunTimeEndian = if file.is_little_endian() {
+        RunTimeEndian::Little
+    } else {
+        RunTimeEndian::Big
+    };
+    let mut sections: BTreeMap<String, &[u8]> = BTreeMap::new();
+    for section in file.sections() {
+        let name: &str = section.name().ok()?;
+        let data: &[u8] = section.data().ok()?;
+        sections.insert(name.to_owned(), data);
+    }
+    let empty: &[u8] = &[];
+    let load = |id: gimli::SectionId| -> Result<EndianSlice<'_, RunTimeEndian>, gimli::Error> {
+        let data: &[u8] = sections.get(id.name()).copied().unwrap_or(empty);
+        Ok(EndianSlice::new(data, endian))
+    };
+    let dwarf: Dwarf<EndianSlice<'_, RunTimeEndian>> = Dwarf::load(load).ok()?;
+    let mut producer: Option<String> = None;
+    let mut headers: gimli::DebugInfoUnitHeadersIter<EndianSlice<'_, RunTimeEndian>> =
+        dwarf.units();
+    while let Some(header) = headers.next().ok()? {
+        let unit: gimli::Unit<EndianSlice<'_, RunTimeEndian>> = dwarf.unit(header).ok()?;
+        let mut entries: gimli::EntriesCursor<'_, '_, EndianSlice<'_, RunTimeEndian>> =
+            unit.entries();
+        while let Some((_, entry)) = entries.next_dfs().ok()? {
+            if producer.is_none() {
+                producer = independent_attr_text(&dwarf, &unit, entry, gimli::DW_AT_producer);
+            }
+            if entry.tag() != gimli::DW_TAG_subprogram
+                || entry.attr_value(gimli::DW_AT_name).ok()?.is_some()
+            {
+                continue;
+            }
+            let origin: gimli::UnitOffset = match entry.attr_value(gimli::DW_AT_abstract_origin) {
+                Ok(Some(gimli::AttributeValue::UnitRef(offset))) => offset,
+                Ok(None | Some(_)) | Err(_) => continue,
+            };
+            let target: gimli::DebuggingInformationEntry<'_, '_, EndianSlice<'_, RunTimeEndian>> =
+                unit.entry(origin).ok()?;
+            let Some(target_name): Option<String> =
+                independent_attr_text(&dwarf, &unit, &target, gimli::DW_AT_name)
+            else {
+                continue;
+            };
+            if target_name != expected_name {
+                continue;
+            }
+            let Some(target_linkage_name): Option<String> =
+                independent_attr_text(&dwarf, &unit, &target, gimli::DW_AT_linkage_name)
+            else {
+                continue;
+            };
+            return Some(OriginTruth {
+                producer: producer?,
+                concrete_offset: entry.offset().0,
+                origin_offset: origin.0,
+                target_name,
+                target_linkage_name,
+            });
+        }
+    }
+    None
+}
+
+#[test]
+fn dwarf_inherits_concrete_subprogram_metadata_from_real_compiler_output() {
+    let Some(zig): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
+        panic!("missing committed fixture corpus/native/zig/hello.zig.elf");
+    };
+    let truth: OriginTruth =
+        zig_origin_truth(&zig, "__divti3").expect("independent abstract-origin truth");
+    assert_eq!(truth.producer, "zig 0.13.0");
+    assert_ne!(truth.concrete_offset, truth.origin_offset);
+    assert_eq!(truth.target_name, "__divti3");
+    assert_eq!(truth.target_linkage_name, "compiler_rt.divti3.__divti3");
+    let zig_analysis: NativeLangAnalysis = analyze(&zig).expect("analyze zig elf");
+    let zig_divti3: &disrobe_pass_nativelang::DwarfFunction = zig_analysis
+        .dwarf
+        .functions
+        .iter()
+        .find(|function: &&disrobe_pass_nativelang::DwarfFunction| function.name == "__divti3")
+        .expect("concrete __divti3 DIE must inherit its abstract-origin name");
+    assert_eq!(
+        zig_divti3.linkage_name.as_deref(),
+        Some("compiler_rt.divti3.__divti3")
+    );
+    assert!(
+        zig_divti3
+            .decl_file
+            .as_deref()
+            .is_some_and(|path: &str| path.ends_with("divti3.zig"))
+    );
+    assert_eq!(zig_divti3.decl_line, Some(17));
+    assert_eq!(zig_divti3.params, ["a".to_owned(), "b".to_owned()]);
+
+    let Some(d): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
+        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
+    };
+    let d_analysis: NativeLangAnalysis = analyze(&d).expect("analyze d object");
+    let d_addu: &disrobe_pass_nativelang::DwarfFunction = d_analysis
+        .dwarf
+        .functions
+        .iter()
+        .find(|function: &&disrobe_pass_nativelang::DwarfFunction| function.name == "addu!()")
+        .expect("concrete addu DIE must inherit its abstract-origin name");
+    assert_eq!(
+        d_addu.linkage_name.as_deref(),
+        Some("_D4core10checkedint__T4adduZQgFNaNbNiNfmmKbZm")
+    );
+    assert!(
+        d_addu
+            .decl_file
+            .as_deref()
+            .is_some_and(|path: &str| path.ends_with("checkedint.d"))
+    );
+    assert_eq!(d_addu.decl_line, Some(263));
+    assert_eq!(
+        d_addu.params,
+        ["x".to_owned(), "y".to_owned(), "overflow".to_owned()]
+    );
+}
+
+#[test]
+fn d_object_never_assigns_relocatable_section_offsets() {
+    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
+        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
+    };
+    let image: disrobe_pass_nativelang::NativeImage<'_> =
+        disrobe_pass_nativelang::NativeImage::parse(&bytes).expect("parse d object");
+    assert!(image.relocatable);
+    assert!(
+        image
+            .func_symbols
+            .iter()
+            .all(|symbol: &disrobe_pass_nativelang::image::FuncSymbol| symbol.relocatable)
+    );
+    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    assert!(
+        analysis
+            .function_recovery
+            .functions
+            .iter()
+            .all(|function: &RecoveredFunction| !function.address_assigned),
+        "a relocatable object has section-relative offsets, not assigned virtual addresses"
+    );
+    assert!(analysis.disasm.listings.is_empty());
+    assert!(analysis.nir.functions.is_empty());
 }
 
 fn find_aggregate<'a>(aggs: &'a [DwarfAggregate], name: &str) -> Option<&'a DwarfAggregate> {
