@@ -18,6 +18,21 @@ pub struct GoTypeRef {
     pub fields: Vec<GoStructField>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fields_rejected: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imethods: Vec<GoInterfaceMethod>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub imethods_rejected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GoInterfaceMethod {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub type_va: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -51,6 +66,20 @@ pub struct GoItab {
     pub va: u64,
     pub interface_name: Option<String>,
     pub concrete_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fun: Vec<GoItabSlot>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unimplemented: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GoItabSlot {
+    pub index: u32,
+    pub func_va: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linker_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,10 +213,14 @@ fn extract_typemeta_versioned(
             if let Some(ref s) = concrete_name {
                 strings.insert(s.clone());
             }
+            let (fun, unimplemented): (Vec<GoItabSlot>, bool) =
+                recover_itab_fun(image, md, itab_va, inter_va, layout);
             itabs.push(GoItab {
                 va: itab_va,
                 interface_name: inter_name,
                 concrete_name,
+                fun,
+                unimplemented,
             });
         }
     }
@@ -227,6 +260,15 @@ fn recover_type_ref(
     } else {
         (Vec::new(), false)
     };
+    let (imethods, imethods_rejected): (Vec<GoInterfaceMethod>, bool) =
+        if kind == Some(KIND_INTERFACE) {
+            read_interface_methods(image, md, type_va, layout).map_or_else(
+                || (Vec::new(), true),
+                |value: Vec<GoInterfaceMethod>| (value, false),
+            )
+        } else {
+            (Vec::new(), false)
+        };
     GoTypeRef {
         va: type_va,
         name,
@@ -235,6 +277,8 @@ fn recover_type_ref(
         methods,
         fields,
         fields_rejected,
+        imethods,
+        imethods_rejected,
     }
 }
 
@@ -256,6 +300,16 @@ pub fn link_method_functions(meta: &mut GoTypeMeta, funcs: &[(u64, &str)], text_
             }
             if let Some(name) = by_va.get(&m.func_va) {
                 m.linker_name = Some((*name).to_owned());
+            }
+        }
+    }
+    for itab in &mut meta.itabs {
+        for slot in &mut itab.fun {
+            if slot.func_va == 0 {
+                continue;
+            }
+            if let Some(name) = by_va.get(&slot.func_va) {
+                slot.linker_name = Some((*name).to_owned());
             }
         }
     }
@@ -886,6 +940,11 @@ const UNCOMMON_XCOUNT_OFF: u64 = 6;
 const UNCOMMON_MOFF_OFF: u64 = 8;
 const TEXTOFF_ABSENT: u32 = u32::MAX;
 
+const IMETHOD_ENTRY_SIZE: u64 = 8;
+const IMETHOD_TYPEOFF_OFF: u64 = 4;
+const MAX_IMETHODS_PER_INTERFACE: u64 = 1 << 12;
+const ITAB_HASH_SIZE: u64 = 4;
+
 const fn kind_extra_size(kind: u8, ps: u64) -> Option<u64> {
     let words: u64 = match kind {
         KIND_PTR | KIND_SLICE => 1,
@@ -1020,6 +1079,182 @@ fn read_one_method(
         linker_name: None,
         exported,
     })
+}
+
+fn read_interface_methods(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    type_va: u64,
+    layout: AbiTypeLayout,
+) -> Option<Vec<GoInterfaceMethod>> {
+    if md.types_va == 0 {
+        return None;
+    }
+    let ps: u64 = layout.ptr_size;
+    let methods_slice_va: u64 = type_va
+        .checked_add(layout.base_type_size)
+        .and_then(|va: u64| va.checked_add(ps))?;
+    let data_va: u64 = image.read_ptr(methods_slice_va)?;
+    let len_va: u64 = methods_slice_va.checked_add(ps)?;
+    let cap_va: u64 = len_va.checked_add(ps)?;
+    let len: u64 = image.read_ptr(len_va)?;
+    let cap: u64 = image.read_ptr(cap_va)?;
+    if len == 0 {
+        return (cap == 0).then(Vec::new);
+    }
+    if data_va == 0
+        || len > cap
+        || len > MAX_IMETHODS_PER_INTERFACE
+        || cap > MAX_IMETHODS_PER_INTERFACE
+    {
+        return None;
+    }
+    let span: u64 = len.checked_mul(IMETHOD_ENTRY_SIZE)?;
+    let span_usize: usize = usize::try_from(span).ok()?;
+    image.data_at_va(data_va, span_usize)?;
+    let types_blob_len: Option<u64> = md
+        .etypes_va
+        .checked_sub(md.types_va)
+        .filter(|len: &u64| *len != 0);
+    let capacity: usize = usize::try_from(len).ok()?;
+    let mut out: Vec<GoInterfaceMethod> = Vec::with_capacity(capacity);
+    for index in 0..len {
+        let entry_va: u64 = index
+            .checked_mul(IMETHOD_ENTRY_SIZE)
+            .and_then(|off: u64| data_va.checked_add(off))?;
+        let method: GoInterfaceMethod =
+            read_one_imethod(image, md, entry_va, layout, types_blob_len)?;
+        out.push(method);
+    }
+    Some(out)
+}
+
+fn read_one_imethod(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    entry_va: u64,
+    layout: AbiTypeLayout,
+    types_blob_len: Option<u64>,
+) -> Option<GoInterfaceMethod> {
+    let nameoff: u32 = image.read_u32(entry_va)?;
+    let typeoff: u32 = image.read_u32(entry_va.checked_add(IMETHOD_TYPEOFF_OFF)?)?;
+    let (name, exported): (Option<String>, bool) = if nameoff == 0 {
+        (None, false)
+    } else {
+        let nameoff_u64: u64 = u64::from(nameoff);
+        if types_blob_len.is_some_and(|len: u64| nameoff_u64 >= len) {
+            (None, false)
+        } else {
+            let name_va: u64 = md.types_va.checked_add(nameoff_u64)?;
+            let decoded: Option<String> = decode_method_name(image, name_va, layout.name_decoder);
+            let is_exported: bool = image
+                .data_at_va(name_va, 1)
+                .and_then(|b: &[u8]| b.first().copied())
+                .is_some_and(|flag: u8| flag & NAME_FLAG_EXPORTED != 0);
+            (decoded, is_exported)
+        }
+    };
+    let (type_va, signature): (u64, Option<String>) = if typeoff == 0 {
+        (0, None)
+    } else {
+        let typeoff_u64: u64 = u64::from(typeoff);
+        if types_blob_len.is_some_and(|len: u64| typeoff_u64 >= len) {
+            (0, None)
+        } else {
+            match md.types_va.checked_add(typeoff_u64) {
+                Some(tva) if type_in_module(md, tva) => {
+                    (tva, read_type_display_name(image, md, tva, layout))
+                }
+                _ => (0, None),
+            }
+        }
+    };
+    if name.is_none() && type_va == 0 {
+        return None;
+    }
+    Some(GoInterfaceMethod {
+        name,
+        signature,
+        type_va,
+        exported,
+    })
+}
+
+const fn itab_fun_offset(ps: u64) -> Option<u64> {
+    let after_ptrs: u64 = match ps.checked_mul(2) {
+        Some(v) => v,
+        None => return None,
+    };
+    let after_hash: u64 = match after_ptrs.checked_add(ITAB_HASH_SIZE) {
+        Some(v) => v,
+        None => return None,
+    };
+    if ps == 0 {
+        return None;
+    }
+    let rem: u64 = after_hash % ps;
+    if rem == 0 {
+        Some(after_hash)
+    } else {
+        after_hash.checked_add(ps - rem)
+    }
+}
+
+fn recover_itab_fun(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    itab_va: u64,
+    inter_va: u64,
+    layout: AbiTypeLayout,
+) -> (Vec<GoItabSlot>, bool) {
+    let imethod_names: Vec<Option<String>> = if inter_va != 0 && type_in_module(md, inter_va) {
+        read_interface_methods(image, md, inter_va, layout)
+            .map(|methods: Vec<GoInterfaceMethod>| {
+                methods
+                    .into_iter()
+                    .map(|m: GoInterfaceMethod| m.name)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let count: usize = imethod_names.len();
+    if count == 0 {
+        return (Vec::new(), false);
+    }
+    let ps: u64 = layout.ptr_size;
+    let Some(fun_off): Option<u64> = itab_fun_offset(ps) else {
+        return (Vec::new(), false);
+    };
+    let Some(fun_base): Option<u64> = itab_va.checked_add(fun_off) else {
+        return (Vec::new(), false);
+    };
+    if image.read_ptr(fun_base).unwrap_or(0) == 0 {
+        return (Vec::new(), true);
+    }
+    let mut out: Vec<GoItabSlot> = Vec::with_capacity(count);
+    for k in 0..count {
+        let Ok(index): core::result::Result<u32, _> = u32::try_from(k) else {
+            break;
+        };
+        let Some(slot_va): Option<u64> = u64::from(index)
+            .checked_mul(ps)
+            .and_then(|off: u64| fun_base.checked_add(off))
+        else {
+            break;
+        };
+        let Some(func_va): Option<u64> = image.read_ptr(slot_va) else {
+            break;
+        };
+        out.push(GoItabSlot {
+            index,
+            func_va,
+            method_name: imethod_names.get(k).cloned().flatten(),
+            linker_name: None,
+        });
+    }
+    (out, false)
 }
 
 fn read_u16(image: &GoImage<'_>, va: u64) -> Option<u16> {
@@ -1498,6 +1733,107 @@ mod tests {
     fn buildversion_dispatch_routes_to_pre117_for_old() {
         let v: Option<PclntabVersion> = infer_version_from_build(Some("go1.15.6"));
         assert_eq!(v, Some(PclntabVersion::Go12));
+    }
+
+    #[test]
+    fn itab_fun_offset_matches_go_abi_layout() {
+        assert_eq!(itab_fun_offset(8), Some(24));
+        assert_eq!(itab_fun_offset(4), Some(12));
+        assert_eq!(itab_fun_offset(0), None);
+    }
+
+    #[test]
+    fn interface_method_count_inconsistent_sets_rejection_marker() {
+        let base: u64 = 0x1000;
+        let mut bytes: Vec<u8> = vec![0u8; 128];
+        bytes[23] = KIND_INTERFACE;
+        bytes[56..64].copy_from_slice(&(base + 96).to_le_bytes());
+        bytes[64..72].copy_from_slice(&2u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&1u64.to_le_bytes());
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![crate::binary::Section {
+                name: ".rdata".to_owned(),
+                address: base,
+                data: &bytes,
+            }],
+            raw: &bytes,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+        let md: Moduledata = Moduledata {
+            pclntab_va: 0,
+            typelinks_va: 0,
+            typelinks_len: 0,
+            itablinks_va: 0,
+            itablinks_len: 0,
+            types_va: base,
+            etypes_va: base + u64::try_from(bytes.len()).expect("fixture size fits u64"),
+            text_va: 0,
+            etext_va: 0,
+            modulename: None,
+            buildversion: Some("go1.26.3".to_owned()),
+            build_info: None,
+            via: crate::moduledata::ModuledataSource::None,
+        };
+        let recovered: GoTypeRef = recover_type_ref(
+            &image,
+            &md,
+            base,
+            layout_for_version(PclntabVersion::Go120, true),
+            false,
+        );
+        assert!(recovered.imethods.is_empty());
+        assert!(recovered.imethods_rejected);
+    }
+
+    #[test]
+    fn empty_interface_recovers_no_methods_without_rejection() {
+        let base: u64 = 0x1000;
+        let bytes: Vec<u8> = {
+            let mut b: Vec<u8> = vec![0u8; 128];
+            b[23] = KIND_INTERFACE;
+            b
+        };
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![crate::binary::Section {
+                name: ".rdata".to_owned(),
+                address: base,
+                data: &bytes,
+            }],
+            raw: &bytes,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+        let md: Moduledata = Moduledata {
+            pclntab_va: 0,
+            typelinks_va: 0,
+            typelinks_len: 0,
+            itablinks_va: 0,
+            itablinks_len: 0,
+            types_va: base,
+            etypes_va: base + u64::try_from(bytes.len()).expect("fixture size fits u64"),
+            text_va: 0,
+            etext_va: 0,
+            modulename: None,
+            buildversion: Some("go1.26.3".to_owned()),
+            build_info: None,
+            via: crate::moduledata::ModuledataSource::None,
+        };
+        let recovered: GoTypeRef = recover_type_ref(
+            &image,
+            &md,
+            base,
+            layout_for_version(PclntabVersion::Go120, true),
+            false,
+        );
+        assert!(recovered.imethods.is_empty());
+        assert!(!recovered.imethods_rejected);
     }
 
     #[test]

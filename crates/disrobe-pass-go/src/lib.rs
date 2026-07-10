@@ -48,9 +48,9 @@ pub use provenance_header::{
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
 pub use symbols::{GoFunc, GoSymbols, package_histogram, parse_symbols};
 pub use types::{
-    GoGenericInstantiation, GoItab, GoMethod, GoStructField, GoTypeMeta, GoTypeRef,
-    disambiguate_generics, extract_typemeta, harvest_concrete_args, link_method_functions,
-    parse_generic_name, parse_generic_type_info, type_kind_label,
+    GoGenericInstantiation, GoInterfaceMethod, GoItab, GoItabSlot, GoMethod, GoStructField,
+    GoTypeMeta, GoTypeRef, disambiguate_generics, extract_typemeta, harvest_concrete_args,
+    link_method_functions, parse_generic_name, parse_generic_type_info, type_kind_label,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -139,6 +139,22 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                     .types
                     .iter()
                     .map(|t: &GoTypeRef| t.methods.len())
+                    .sum::<usize>()
+                    .to_string()
+            });
+            dbg_kv("typemeta_imethods", || {
+                typemeta
+                    .types
+                    .iter()
+                    .map(|t: &GoTypeRef| t.imethods.len())
+                    .sum::<usize>()
+                    .to_string()
+            });
+            dbg_kv("typemeta_itab_slots", || {
+                typemeta
+                    .itabs
+                    .iter()
+                    .map(|i: &GoItab| i.fun.len())
                     .sum::<usize>()
                     .to_string()
             });
