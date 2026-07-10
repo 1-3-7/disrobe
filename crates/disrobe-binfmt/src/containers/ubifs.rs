@@ -41,13 +41,11 @@ pub struct UbifsWalk {
 }
 
 fn rd_u32_be(b: &[u8], at: usize) -> Option<u32> {
-    b.get(at..at + 4)
-        .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_be_at(b, at).ok()
 }
 
 fn rd_u32_le(b: &[u8], at: usize) -> Option<u32> {
-    b.get(at..at + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(b, at).ok()
 }
 
 #[must_use]

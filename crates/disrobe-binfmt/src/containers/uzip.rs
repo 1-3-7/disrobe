@@ -224,19 +224,13 @@ impl Write for BoundedVecWriter {
 }
 
 fn read_be_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    let s: &[u8] = bytes
-        .get(at..at + 4)
-        .ok_or_else(|| Error::Uzip("uzip: truncated u32".to_owned()))?;
-    Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_be_at(bytes, at)
+        .map_err(|_| Error::Uzip("uzip: truncated u32".to_owned()))
 }
 
 fn read_be_u64(bytes: &[u8], at: usize) -> Result<u64> {
-    let s: &[u8] = bytes
-        .get(at..at + 8)
-        .ok_or_else(|| Error::Uzip("uzip: truncated u64".to_owned()))?;
-    Ok(u64::from_be_bytes([
-        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-    ]))
+    disrobe_bytes::read_u64_be_at(bytes, at)
+        .map_err(|_| Error::Uzip("uzip: truncated u64".to_owned()))
 }
 
 fn toc_overflow() -> Error {

@@ -66,34 +66,27 @@ struct LoadSegment {
 }
 
 fn read_u16(bytes: &[u8], off: usize, little: bool) -> Option<u16> {
-    let slice: &[u8] = bytes.get(off..off.checked_add(2)?)?;
-    let arr: [u8; 2] = [slice[0], slice[1]];
-    Some(if little {
-        u16::from_le_bytes(arr)
+    if little {
+        disrobe_bytes::read_u16_le_at(bytes, off).ok()
     } else {
-        u16::from_be_bytes(arr)
-    })
+        disrobe_bytes::read_u16_be_at(bytes, off).ok()
+    }
 }
 
 fn read_u32(bytes: &[u8], off: usize, little: bool) -> Option<u32> {
-    let slice: &[u8] = bytes.get(off..off.checked_add(4)?)?;
-    let arr: [u8; 4] = [slice[0], slice[1], slice[2], slice[3]];
-    Some(if little {
-        u32::from_le_bytes(arr)
+    if little {
+        disrobe_bytes::read_u32_le_at(bytes, off).ok()
     } else {
-        u32::from_be_bytes(arr)
-    })
+        disrobe_bytes::read_u32_be_at(bytes, off).ok()
+    }
 }
 
 fn read_u64(bytes: &[u8], off: usize, little: bool) -> Option<u64> {
-    let slice: &[u8] = bytes.get(off..off.checked_add(8)?)?;
-    let mut arr: [u8; 8] = [0u8; 8];
-    arr.copy_from_slice(slice);
-    Some(if little {
-        u64::from_le_bytes(arr)
+    if little {
+        disrobe_bytes::read_u64_le_at(bytes, off).ok()
     } else {
-        u64::from_be_bytes(arr)
-    })
+        disrobe_bytes::read_u64_be_at(bytes, off).ok()
+    }
 }
 
 fn read_addr(bytes: &[u8], off: usize, class: ElfClass) -> Option<u64> {

@@ -39,16 +39,12 @@ pub struct XarArchive {
 
 #[inline]
 fn read_u16_be(bytes: &[u8], at: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(at..at + 2)?;
-    Some(u16::from_be_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_be_at(bytes, at).ok()
 }
 
 #[inline]
 fn read_u64_be(bytes: &[u8], at: usize) -> Option<u64> {
-    let slice: &[u8] = bytes.get(at..at + 8)?;
-    Some(u64::from_be_bytes([
-        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-    ]))
+    disrobe_bytes::read_u64_be_at(bytes, at).ok()
 }
 
 pub fn detect_xar(bytes: &[u8]) -> bool {

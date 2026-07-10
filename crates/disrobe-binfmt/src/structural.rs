@@ -80,38 +80,31 @@ const WASM_MAX_SECTIONS: u32 = 1024;
 
 #[inline]
 fn read_u16_le(bytes: &[u8], off: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(off..off + 2)?;
-    Some(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, off).ok()
 }
 
 #[inline]
 fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(off..off + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, off).ok()
 }
 
 #[inline]
 fn read_u32_be(bytes: &[u8], off: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(off..off + 4)?;
-    Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_be_at(bytes, off).ok()
 }
 
 #[inline]
 fn read_u16_be(bytes: &[u8], off: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(off..off + 2)?;
-    Some(u16::from_be_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_be_at(bytes, off).ok()
 }
 
 #[inline]
 fn read_u64(bytes: &[u8], off: usize, little: bool) -> Option<u64> {
-    let slice: &[u8] = bytes.get(off..off + 8)?;
-    let mut arr: [u8; 8] = [0u8; 8];
-    arr.copy_from_slice(slice);
-    Some(if little {
-        u64::from_le_bytes(arr)
+    if little {
+        disrobe_bytes::read_u64_le_at(bytes, off).ok()
     } else {
-        u64::from_be_bytes(arr)
-    })
+        disrobe_bytes::read_u64_be_at(bytes, off).ok()
+    }
 }
 
 #[inline]

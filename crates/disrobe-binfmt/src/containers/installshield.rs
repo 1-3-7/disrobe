@@ -211,22 +211,17 @@ fn read_cstring(bytes: &[u8], at: usize) -> String {
 
 #[inline]
 fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    let s: &[u8] = bytes.get(at..at + 2)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at).ok()
 }
 
 #[inline]
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 #[inline]
 fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
-    let s: &[u8] = bytes.get(at..at + 8)?;
-    Some(u64::from_le_bytes([
-        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-    ]))
+    disrobe_bytes::read_u64_le_at(bytes, at).ok()
 }
 
 #[inline]

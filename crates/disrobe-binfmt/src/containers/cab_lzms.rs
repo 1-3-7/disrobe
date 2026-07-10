@@ -57,17 +57,11 @@ struct Header {
 }
 
 fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
-    let slice: &[u8] = bytes
-        .get(at..at + 2)
-        .ok_or_else(|| cab_err("truncated reading u16"))?;
-    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at).map_err(|_| cab_err("truncated reading u16"))
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    let slice: &[u8] = bytes
-        .get(at..at + 4)
-        .ok_or_else(|| cab_err("truncated reading u32"))?;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).map_err(|_| cab_err("truncated reading u32"))
 }
 
 fn parse_header_and_folders(bytes: &[u8]) -> Result<(Header, Vec<Folder>, usize)> {

@@ -226,21 +226,15 @@ pub struct FvExtraction {
 }
 
 fn u16_le(bytes: &[u8], at: usize) -> Option<u16> {
-    bytes
-        .get(at..at + 2)
-        .map(|s: &[u8]| u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at).ok()
 }
 
 fn u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    bytes
-        .get(at..at + 4)
-        .map(|s: &[u8]| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 fn u64_le(bytes: &[u8], at: usize) -> Option<u64> {
-    bytes
-        .get(at..at + 8)
-        .map(|s: &[u8]| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+    disrobe_bytes::read_u64_le_at(bytes, at).ok()
 }
 
 fn u24_le(bytes: &[u8], at: usize) -> Option<u32> {

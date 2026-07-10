@@ -29,8 +29,7 @@ pub struct IsoImage {
 
 #[inline]
 fn read_u32_le(bytes: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 fn sector(bytes: &[u8], lba: usize) -> Option<&[u8]> {

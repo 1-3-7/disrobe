@@ -57,17 +57,15 @@ struct ErofsInode {
 }
 
 fn rd_u16(b: &[u8], at: usize) -> Option<u16> {
-    b.get(at..at + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(b, at).ok()
 }
 
 fn rd_u32(b: &[u8], at: usize) -> Option<u32> {
-    b.get(at..at + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(b, at).ok()
 }
 
 fn rd_u64(b: &[u8], at: usize) -> Option<u64> {
-    b.get(at..at + 8)
-        .map(|s| u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+    disrobe_bytes::read_u64_le_at(b, at).ok()
 }
 
 #[must_use]

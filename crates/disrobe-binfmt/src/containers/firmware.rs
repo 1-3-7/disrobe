@@ -206,25 +206,19 @@ pub fn detect_firmware(bytes: &[u8]) -> Option<FirmwareKind> {
 }
 
 fn u16_le(bytes: &[u8], off: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(off..off + 2)?;
-    Some(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, off).ok()
 }
 
 fn u32_be(bytes: &[u8], off: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(off..off + 4)?;
-    Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_be_at(bytes, off).ok()
 }
 
 fn u32_le(bytes: &[u8], off: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(off..off + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, off).ok()
 }
 
 fn u64_le(bytes: &[u8], off: usize) -> Option<u64> {
-    let slice: &[u8] = bytes.get(off..off + 8)?;
-    Some(u64::from_le_bytes([
-        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-    ]))
+    disrobe_bytes::read_u64_le_at(bytes, off).ok()
 }
 
 fn crc32(data: &[u8]) -> u32 {

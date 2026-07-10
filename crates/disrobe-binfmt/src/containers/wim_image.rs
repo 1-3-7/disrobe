@@ -98,26 +98,18 @@ fn parse_lookup_table(table: &[u8]) -> (BlobMap, Option<WimResource>) {
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
-    let slice: &[u8] = bytes
-        .get(offset..offset + 2)
-        .ok_or_else(|| Error::Decompression("wim dentry field truncated".to_owned()))?;
-    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, offset)
+        .map_err(|_| Error::Decompression("wim dentry field truncated".to_owned()))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
-    let slice: &[u8] = bytes
-        .get(offset..offset + 4)
-        .ok_or_else(|| Error::Decompression("wim dentry field truncated".to_owned()))?;
-    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, offset)
+        .map_err(|_| Error::Decompression("wim dentry field truncated".to_owned()))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64> {
-    let slice: &[u8] = bytes
-        .get(offset..offset + 8)
-        .ok_or_else(|| Error::Decompression("wim dentry field truncated".to_owned()))?;
-    let mut buf: [u8; 8] = [0u8; 8];
-    buf.copy_from_slice(slice);
-    Ok(u64::from_le_bytes(buf))
+    disrobe_bytes::read_u64_le_at(bytes, offset)
+        .map_err(|_| Error::Decompression("wim dentry field truncated".to_owned()))
 }
 
 const fn align8(value: usize) -> usize {

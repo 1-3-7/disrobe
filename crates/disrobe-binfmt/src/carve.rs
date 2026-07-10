@@ -864,14 +864,12 @@ const DEFAULT_SKIP: &[SkipMagic] = &[
 
 #[inline]
 fn u16_le(bytes: &[u8], off: usize) -> Option<u16> {
-    let s: &[u8] = bytes.get(off..off + 2)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, off).ok()
 }
 
 #[inline]
 fn u32_le(bytes: &[u8], off: usize) -> Option<u32> {
-    let s: &[u8] = bytes.get(off..off + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, off).ok()
 }
 
 #[cfg(test)]

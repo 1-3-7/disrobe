@@ -178,14 +178,12 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[inline]
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(at..at + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 #[inline]
 fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(at..at + 2)?;
-    Some(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at).ok()
 }
 
 #[cfg(test)]

@@ -57,13 +57,11 @@ pub struct FatVolume {
 }
 
 fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
-    let slice: &[u8] = bytes.get(offset..offset + 2)?;
-    Some(u16::from_le_bytes([slice[0], slice[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, offset).ok()
 }
 
 fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
-    let slice: &[u8] = bytes.get(offset..offset + 4)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, offset).ok()
 }
 
 #[must_use]

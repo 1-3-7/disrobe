@@ -172,17 +172,13 @@ fn skip_ext_headers(bytes: &[u8], start: usize, first_len: usize) -> Result<usiz
 }
 
 fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
-    let raw: &[u8] = bytes
-        .get(at..at + 2)
-        .ok_or_else(|| Error::Lzh("lzh: truncated u16 field".to_owned()))?;
-    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at)
+        .map_err(|_| Error::Lzh("lzh: truncated u16 field".to_owned()))
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    let raw: &[u8] = bytes
-        .get(at..at + 4)
-        .ok_or_else(|| Error::Lzh("lzh: truncated u32 field".to_owned()))?;
-    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at)
+        .map_err(|_| Error::Lzh("lzh: truncated u32 field".to_owned()))
 }
 
 fn decode_via_delharc(

@@ -43,18 +43,12 @@ pub struct BunStandalone {
 
 #[inline]
 fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    let end: usize = at.checked_add(4)?;
-    let slice: &[u8] = bytes.get(at..end)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 #[inline]
 fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
-    let end: usize = at.checked_add(8)?;
-    let slice: &[u8] = bytes.get(at..end)?;
-    Some(u64::from_le_bytes([
-        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
-    ]))
+    disrobe_bytes::read_u64_le_at(bytes, at).ok()
 }
 
 fn read_record_u32(bytes: &[u8], record: usize, offset: usize, err: &'static str) -> Result<u32> {

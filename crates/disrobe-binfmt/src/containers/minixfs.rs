@@ -69,15 +69,11 @@ struct MinixInode {
 }
 
 fn rd_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    bytes
-        .get(at..at + 2)
-        .map(|s| u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at).ok()
 }
 
 fn rd_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    bytes
-        .get(at..at + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at).ok()
 }
 
 #[must_use]

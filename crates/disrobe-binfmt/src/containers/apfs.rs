@@ -33,22 +33,17 @@ pub struct ApfsVolume {
 
 #[inline]
 fn le_u16(b: &[u8], at: usize) -> Option<u16> {
-    let s: &[u8] = b.get(at..at + 2)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(b, at).ok()
 }
 
 #[inline]
 fn le_u32(b: &[u8], at: usize) -> Option<u32> {
-    let s: &[u8] = b.get(at..at + 4)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(b, at).ok()
 }
 
 #[inline]
 fn le_u64(b: &[u8], at: usize) -> Option<u64> {
-    let s: &[u8] = b.get(at..at + 8)?;
-    Some(u64::from_le_bytes([
-        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-    ]))
+    disrobe_bytes::read_u64_le_at(b, at).ok()
 }
 
 pub fn detect_apfs(bytes: &[u8]) -> bool {

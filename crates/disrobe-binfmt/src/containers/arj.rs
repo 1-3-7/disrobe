@@ -40,17 +40,13 @@ pub fn detect_arj(bytes: &[u8]) -> bool {
 }
 
 fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
-    let s: &[u8] = bytes
-        .get(at..at + 2)
-        .ok_or_else(|| Error::Arj("arj: truncated u16".to_owned()))?;
-    Ok(u16::from_le_bytes([s[0], s[1]]))
+    disrobe_bytes::read_u16_le_at(bytes, at)
+        .map_err(|_| Error::Arj("arj: truncated u16".to_owned()))
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    let s: &[u8] = bytes
-        .get(at..at + 4)
-        .ok_or_else(|| Error::Arj("arj: truncated u32".to_owned()))?;
-    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_le_at(bytes, at)
+        .map_err(|_| Error::Arj("arj: truncated u32".to_owned()))
 }
 
 fn skip_block(bytes: &[u8], at: usize) -> Result<(Vec<u8>, usize)> {

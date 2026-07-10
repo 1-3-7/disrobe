@@ -31,10 +31,8 @@ pub struct SitArchive {
 }
 
 fn rd_u32_be(b: &[u8], at: usize) -> Result<u32> {
-    let s: &[u8] = b
-        .get(at..at + 4)
-        .ok_or_else(|| Error::StuffIt("stuffit: truncated u32".to_owned()))?;
-    Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    disrobe_bytes::read_u32_be_at(b, at)
+        .map_err(|_| Error::StuffIt("stuffit: truncated u32".to_owned()))
 }
 
 pub fn parse_classic(bytes: &[u8]) -> Result<SitArchive> {
