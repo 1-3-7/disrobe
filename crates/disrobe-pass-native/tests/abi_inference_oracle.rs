@@ -185,6 +185,22 @@ int __attribute__((fastcall)) fc_two(int a, int b) { return a * b - a; }
 int __attribute__((fastcall)) fc_three(int a, int b, int c) { return a + b + c; }
 ";
 
+const FIXTURES_THISCALL: &str = r"
+struct S { int x; int y; };
+int __attribute__((thiscall)) tc_add(struct S *self, int a) { return self->x + a; }
+int __attribute__((thiscall)) tc_add2(struct S *self, int a, int b) { return self->y + a + b; }
+";
+
+const FIXTURES_VC32: &str = r"
+float __attribute__((vectorcall)) vc_f2(float a, float b) { return a + b; }
+int __attribute__((vectorcall)) vc_if(int a, float b) { return a + (int)b; }
+int __attribute__((vectorcall)) vc_iif(int a, int b, float c) { return a + b + (int)c; }
+";
+
+const FIXTURES_VC64: &str = r"
+float __attribute__((vectorcall)) v_if5(int a, float b, float c, float d, float e, float f) { return (float)a + b + c + d + e + f; }
+";
+
 #[test]
 fn abi_inference_matches_compiler_lowering() {
     let Some(clang): Option<PathBuf> = clang() else {
@@ -347,6 +363,70 @@ fn abi_inference_matches_compiler_lowering() {
         );
     } else {
         println!("x86 32-bit leg could not be built on this clang: skipped honestly");
+    }
+
+    let tc_src: PathBuf = write_src(&dir, "tc.c", FIXTURES_THISCALL);
+    let tc_obj: PathBuf = dir.join("tc.o");
+    if compile(&clang, &tc_src, "i686-pc-windows-msvc", &["-m32"], &tc_obj) {
+        graded_legs += 1;
+        let funcs: BTreeMap<String, Vec<u8>> = carve_functions(&objdump, &tc_obj);
+        println!("x86 thiscall:");
+        let t = |exact: u32| Expect {
+            abi: Some(CallingConvention::Thiscall),
+            min_args: exact,
+            exact_args: Some(exact),
+            returns: ReturnKind::Value,
+        };
+        grade(&funcs, 32, "tc_add", t(2));
+        grade(&funcs, 32, "tc_add2", t(3));
+    } else {
+        println!("x86 thiscall leg could not be built on this clang: skipped honestly");
+    }
+
+    let vc32_src: PathBuf = write_src(&dir, "vc32.c", FIXTURES_VC32);
+    let vc32_obj: PathBuf = dir.join("vc32.o");
+    if compile(
+        &clang,
+        &vc32_src,
+        "i686-pc-windows-msvc",
+        &["-m32"],
+        &vc32_obj,
+    ) {
+        graded_legs += 1;
+        let funcs: BTreeMap<String, Vec<u8>> = carve_functions(&objdump, &vc32_obj);
+        println!("x86 vectorcall:");
+        let v = |exact: u32| Expect {
+            abi: Some(CallingConvention::Vectorcall),
+            min_args: exact,
+            exact_args: Some(exact),
+            returns: ReturnKind::Value,
+        };
+        grade(&funcs, 32, "vc_f2", v(2));
+        grade(&funcs, 32, "vc_if", v(2));
+        grade(&funcs, 32, "vc_iif", v(3));
+    } else {
+        println!("x86 vectorcall leg could not be built on this clang: skipped honestly");
+    }
+
+    let vc64_src: PathBuf = write_src(&dir, "vc64.c", FIXTURES_VC64);
+    let vc64_obj: PathBuf = dir.join("vc64.o");
+    if compile(&clang, &vc64_src, "x86_64-pc-windows-msvc", &[], &vc64_obj) {
+        graded_legs += 1;
+        let funcs: BTreeMap<String, Vec<u8>> = carve_functions(&objdump, &vc64_obj);
+        println!("x64 vectorcall:");
+        grade(
+            &funcs,
+            64,
+            "v_if5",
+            Expect {
+                abi: Some(CallingConvention::Vectorcall),
+                min_args: 6,
+                exact_args: Some(6),
+                returns: ReturnKind::Value,
+            },
+        );
+    } else {
+        println!("x64 vectorcall leg could not be built on this clang: skipped honestly");
     }
 
     let _ = std::fs::remove_dir_all(&dir);

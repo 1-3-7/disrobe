@@ -223,6 +223,104 @@ mod x86_32 {
     }
 }
 
+mod thiscall {
+    use super::*;
+
+    const TC_GET: &[u8] = &[0x8B, 0x01, 0xC3];
+    const TC_ADD: &[u8] = &[0x8B, 0x01, 0x03, 0x44, 0x24, 0x04, 0xC2, 0x04, 0x00];
+    const TC_ADD2: &[u8] = &[
+        0x8B, 0x44, 0x24, 0x08, 0x03, 0x44, 0x24, 0x04, 0x03, 0x41, 0x04, 0xC2, 0x08, 0x00,
+    ];
+
+    #[test]
+    fn this_pointer_plus_one_stack_arg_is_thiscall() {
+        let got: AbiInference = run(32, TC_ADD);
+        assert_eq!(got.abi, CallingConvention::Thiscall);
+        assert_eq!(got.arg_count, ArgCount::Exact(2));
+        assert_eq!(got.param_regs, vec!["ecx".to_owned()]);
+        assert_eq!(got.returns_value, ReturnKind::Value);
+    }
+
+    #[test]
+    fn this_pointer_plus_two_stack_args_is_thiscall() {
+        let got: AbiInference = run(32, TC_ADD2);
+        assert_eq!(got.abi, CallingConvention::Thiscall);
+        assert_eq!(got.arg_count, ArgCount::Exact(3));
+        assert_eq!(got.param_regs, vec!["ecx".to_owned()]);
+    }
+
+    #[test]
+    fn this_only_stays_fastcall_because_it_is_indistinguishable() {
+        let got: AbiInference = run(32, TC_GET);
+        assert_ne!(got.abi, CallingConvention::Thiscall);
+        assert_eq!(got.abi, CallingConvention::Fastcall);
+    }
+}
+
+mod vectorcall_x86 {
+    use super::*;
+
+    const VC_F2: &[u8] = &[0xF3, 0x0F, 0x58, 0xC1, 0xC3];
+    const VC_IF: &[u8] = &[0xF3, 0x0F, 0x2C, 0xC0, 0x01, 0xC8, 0xC3];
+    const VC_IIF: &[u8] = &[
+        0x01, 0xD1, 0xF3, 0x0F, 0x2A, 0xC9, 0xF3, 0x0F, 0x58, 0xC1, 0xC3,
+    ];
+
+    #[test]
+    fn two_float_args_are_vectorcall_xmm0_xmm1() {
+        let got: AbiInference = run(32, VC_F2);
+        assert_eq!(got.abi, CallingConvention::Vectorcall);
+        assert_eq!(got.arg_count, ArgCount::Exact(2));
+        assert_eq!(got.param_regs, vec!["xmm0".to_owned(), "xmm1".to_owned()]);
+        assert_eq!(got.returns_value, ReturnKind::Value);
+    }
+
+    #[test]
+    fn int_then_float_is_vectorcall_ecx_xmm0() {
+        let got: AbiInference = run(32, VC_IF);
+        assert_eq!(got.abi, CallingConvention::Vectorcall);
+        assert_eq!(got.arg_count, ArgCount::Exact(2));
+        assert_eq!(got.param_regs, vec!["ecx".to_owned(), "xmm0".to_owned()]);
+    }
+
+    #[test]
+    fn two_ints_then_float_is_vectorcall_ecx_edx_xmm0() {
+        let got: AbiInference = run(32, VC_IIF);
+        assert_eq!(got.abi, CallingConvention::Vectorcall);
+        assert_eq!(got.arg_count, ArgCount::Exact(3));
+        assert_eq!(
+            got.param_regs,
+            vec!["ecx".to_owned(), "edx".to_owned(), "xmm0".to_owned()]
+        );
+    }
+}
+
+mod vectorcall_x64 {
+    use super::*;
+
+    const V_IF: &[u8] = &[0xF3, 0x0F, 0x2C, 0xC1, 0x01, 0xC8, 0xC3];
+    const V_IF5: &[u8] = &[
+        0xF3, 0x0F, 0x2A, 0xC1, 0xF3, 0x0F, 0x58, 0xC1, 0xF3, 0x0F, 0x58, 0xC2, 0xF3, 0x0F, 0x58,
+        0xC3, 0xF3, 0x0F, 0x58, 0xC4, 0xF3, 0x0F, 0x58, 0xC5, 0xC3,
+    ];
+
+    #[test]
+    fn int_arg_reaching_high_xmm_is_vectorcall() {
+        let got: AbiInference = run(64, V_IF5);
+        assert_eq!(got.abi, CallingConvention::Vectorcall);
+        assert_eq!(got.arg_count, ArgCount::Exact(6));
+        assert_eq!(got.returns_value, ReturnKind::Value);
+    }
+
+    #[test]
+    fn int_plus_low_float_is_indistinguishable_from_win64() {
+        let got: AbiInference = run(64, V_IF);
+        assert_ne!(got.abi, CallingConvention::Vectorcall);
+        assert_eq!(got.abi, CallingConvention::Microsoft64);
+        assert_eq!(got.arg_count, ArgCount::Exact(2));
+    }
+}
+
 mod conservatism {
     use super::*;
 

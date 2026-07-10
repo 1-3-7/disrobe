@@ -17,6 +17,8 @@ pub enum CallingConvention {
     Cdecl,
     Stdcall,
     Fastcall,
+    Thiscall,
+    Vectorcall,
     Unknown,
 }
 
@@ -86,7 +88,7 @@ pub fn infer(bitness: u32, base: u64, code: &[u8], entry: u64) -> Option<AbiInfe
 
     let (abi, param_regs, arg_count): (CallingConvention, Vec<Register>, ArgCount) = match bitness {
         64 => classify_64(&integer_live, &fp_args),
-        32 => classify_32(&insns, &blocks, &integer_live),
+        32 => classify_32(&insns, &blocks, &integer_live, &fp_args),
         _ => (CallingConvention::Unknown, Vec::new(), ArgCount::Unknown),
     };
 
@@ -122,11 +124,12 @@ fn classify_64(
         (None, Some(used)) => {
             let params: Vec<Register> = abi_param_sequence(MS64_INTEGER, used, fp_args);
             let count: u32 = params.len() as u32;
-            (
-                CallingConvention::Microsoft64,
-                params,
-                ArgCount::Exact(count),
-            )
+            let abi: CallingConvention = if uses_high_xmm_args(fp_args) {
+                CallingConvention::Vectorcall
+            } else {
+                CallingConvention::Microsoft64
+            };
+            (abi, params, ArgCount::Exact(count))
         }
         _ => {
             if integer_live.is_empty() && !fp_args.is_empty() {
@@ -165,22 +168,84 @@ fn abi_param_sequence(table: &[Register], used: usize, fp_args: &[Register]) -> 
     params
 }
 
+fn uses_high_xmm_args(fp_args: &[Register]) -> bool {
+    fp_args
+        .iter()
+        .any(|r: &Register| matches!(*r, Register::XMM4 | Register::XMM5))
+}
+
+fn ecx_edx_prefix(integer_live: &BTreeSet<Register>) -> bool {
+    match integer_live.len() {
+        0 => true,
+        1 => integer_live.contains(&Register::RCX),
+        2 => integer_live.contains(&Register::RCX) && integer_live.contains(&Register::RDX),
+        _ => false,
+    }
+}
+
+fn x86_vector_args(fp_args: &[Register]) -> Vec<Register> {
+    fp_args
+        .iter()
+        .copied()
+        .filter(|r: &Register| X86_VECTOR_ARGS.contains(r))
+        .collect()
+}
+
+fn reg_used_as_memory_base(insns: &[Instruction], blocks: &[BasicBlock], reg: Register) -> bool {
+    blocks.iter().any(|block: &BasicBlock| {
+        insns[block.insns.clone()].iter().any(|insn: &Instruction| {
+            (0..insn.op_count())
+                .any(|op: u32| insn.op_kind(op) == OpKind::Memory && insn.memory_base() == reg)
+        })
+    })
+}
+
 fn classify_32(
     insns: &[Instruction],
     blocks: &[BasicBlock],
     integer_live: &BTreeSet<Register>,
+    fp_args: &[Register],
 ) -> (CallingConvention, Vec<Register>, ArgCount) {
     let callee_cleanup: Option<bool> = callee_cleans_stack(insns, blocks);
     let stack_args: Option<u32> = count_stack_args(insns, blocks);
 
     let has_ecx: bool = integer_live.contains(&Register::RCX);
     let has_edx: bool = integer_live.contains(&Register::RDX);
+    let has_stack_args: bool = matches!(stack_args, Some(n) if n > 0);
+    let cleanup_consistent: bool = !has_stack_args || callee_cleanup == Some(true);
+
+    let xmm_args: Vec<Register> = x86_vector_args(fp_args);
+    if !xmm_args.is_empty() && ecx_edx_prefix(integer_live) && cleanup_consistent {
+        let int_count: usize = integer_live.len();
+        let mut params: Vec<Register> =
+            FASTCALL_INTEGER32.iter().copied().take(int_count).collect();
+        params.extend_from_slice(&xmm_args);
+        let reg_args: u32 = params.len() as u32;
+        let count: ArgCount = stack_args.map_or(ArgCount::AtLeast(reg_args), |stack: u32| {
+            ArgCount::Exact(reg_args + stack)
+        });
+        return (CallingConvention::Vectorcall, params, count);
+    }
+
+    if has_ecx
+        && !has_edx
+        && xmm_args.is_empty()
+        && has_stack_args
+        && callee_cleanup == Some(true)
+        && reg_used_as_memory_base(insns, blocks, Register::ECX)
+    {
+        let stack: u32 = stack_args.unwrap_or(0);
+        return (
+            CallingConvention::Thiscall,
+            vec![Register::ECX],
+            ArgCount::Exact(1 + stack),
+        );
+    }
+
     let uses_only_fastcall_regs: bool = !integer_live.is_empty()
         && integer_live
             .iter()
             .all(|r: &Register| matches!(*r, Register::RCX | Register::RDX));
-    let has_stack_args: bool = matches!(stack_args, Some(n) if n > 0);
-    let cleanup_consistent: bool = !has_stack_args || callee_cleanup == Some(true);
 
     if has_ecx && uses_only_fastcall_regs && cleanup_consistent {
         let reg_count: u32 = if has_edx { 2 } else { 1 };
@@ -365,6 +430,12 @@ fn block_use_def(
         for base in memory_address_registers(insn) {
             reads.push(base);
         }
+        if let Some(dest) = merge_write_only_dest(insn) {
+            reads.retain(|r: &Register| *r != dest);
+            if !writes.contains(&dest) {
+                writes.push(dest);
+            }
+        }
         for reg in reads {
             if argument_candidate(reg) && !sets.def_set.contains(&reg) {
                 sets.use_set.insert(reg);
@@ -397,6 +468,17 @@ fn collect_access(used: UsedRegister, reads: &mut Vec<Register>, writes: &mut Ve
         }
         OpAccess::None | OpAccess::NoMemAccess => {}
     }
+}
+
+fn merge_write_only_dest(insn: &Instruction) -> Option<Register> {
+    if !matches!(insn.mnemonic(), Mnemonic::Cvtsi2ss | Mnemonic::Cvtsi2sd) {
+        return None;
+    }
+    if insn.op0_kind() != OpKind::Register {
+        return None;
+    }
+    let dest: Register = canonical_argument_register(insn.op0_register());
+    (dest != Register::None).then_some(dest)
 }
 
 fn memory_address_registers(insn: &Instruction) -> Vec<Register> {
@@ -727,6 +809,15 @@ const SYSV64_INTEGER: &[Register] = &[
 const MS64_INTEGER: &[Register] = &[Register::RCX, Register::RDX, Register::R8, Register::R9];
 
 const FASTCALL_INTEGER32: &[Register] = &[Register::ECX, Register::EDX];
+
+const X86_VECTOR_ARGS: &[Register] = &[
+    Register::XMM0,
+    Register::XMM1,
+    Register::XMM2,
+    Register::XMM3,
+    Register::XMM4,
+    Register::XMM5,
+];
 
 const INTEGER_ARG_FULL: &[Register] = &[
     Register::RDI,
