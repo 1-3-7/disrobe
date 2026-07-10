@@ -1,5 +1,7 @@
 mod ast_facts;
 mod input_facts;
+mod opcontent;
+mod relower;
 mod repair;
 
 use std::collections::BTreeMap;
@@ -23,8 +25,18 @@ fn repair_scope(body: &mut Vec<Stmt>, code: &CodeObject, version: &DecompileVers
         let taken: Vec<Stmt> = std::mem::take(body);
         *body = repair::repair_body(taken, &facts);
     }
+    if opcontent_enabled(version)
+        && let Some(reordered) = opcontent::accept_reordering(body, code, version)
+    {
+        *body = reordered;
+    }
     let mut picker: ChildPicker<'_> = ChildPicker::new(code);
     descend(body, &mut picker, version);
+}
+
+#[must_use]
+fn opcontent_enabled(version: &DecompileVersion) -> bool {
+    version.major() == 3 && version.minor() == 14
 }
 
 fn descend(body: &mut [Stmt], picker: &mut ChildPicker<'_>, version: &DecompileVersion) {

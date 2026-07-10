@@ -28,6 +28,7 @@ const CLEANUP_THROW_NAME: &str = "CLEANUP_THROW";
 const JUMP_BACKWARD_NO_INTERRUPT_NAME: &str = "JUMP_BACKWARD_NO_INTERRUPT";
 
 const LOAD_FAST_LOAD_FAST_NAME: &str = "LOAD_FAST_LOAD_FAST";
+const LOAD_FAST_BORROW_LOAD_FAST_BORROW_NAME: &str = "LOAD_FAST_BORROW_LOAD_FAST_BORROW";
 const STORE_FAST_LOAD_FAST_NAME: &str = "STORE_FAST_LOAD_FAST";
 const STORE_FAST_STORE_FAST_NAME: &str = "STORE_FAST_STORE_FAST";
 
@@ -190,7 +191,7 @@ fn expand_primitives(instructions: &[Instruction]) -> Vec<StagedOp> {
             });
             continue;
         }
-        if name == LOAD_FAST_LOAD_FAST_NAME {
+        if name == LOAD_FAST_LOAD_FAST_NAME || name == LOAD_FAST_BORROW_LOAD_FAST_BORROW_NAME {
             let arg: u32 = ins.arg.unwrap_or(0);
             let (a, b): (u32, u32) = unpack_super_pair(arg);
             out.push(StagedOp {
@@ -724,6 +725,14 @@ fn canonical_jump_name(profile: JumpProfile) -> String {
         JumpCondition::OnNotNone => "JUMP_IF_NOT_NONE",
     };
     condition.to_owned()
+}
+
+#[must_use]
+pub(crate) fn canonicalize_relowered(seq: Vec<NormalizedOp>) -> Vec<NormalizedOp> {
+    let seq: Vec<NormalizedOp> = canonicalize_cmp_branches(seq);
+    let seq: Vec<NormalizedOp> = canonicalize_jretleaf(seq);
+    let seq: Vec<NormalizedOp> = canonicalize_retblock(seq);
+    drop_firstlineno_assignment(seq)
 }
 
 #[must_use]
