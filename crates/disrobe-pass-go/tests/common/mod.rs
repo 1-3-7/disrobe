@@ -202,6 +202,36 @@ pub fn go_build(scratch: &GoBuildScratch, out_name: &str, extra: &[&str]) -> Opt
     Some(out)
 }
 
+pub fn go_build_cross(
+    scratch: &GoBuildScratch,
+    out_name: &str,
+    goos: &str,
+    goarch: &str,
+    extra: &[&str],
+) -> Option<PathBuf> {
+    let out: PathBuf = scratch.path().join(out_name);
+    let mut cmd: Command = Command::new("go");
+    cmd.current_dir(scratch.path())
+        .env("GOOS", goos)
+        .env("GOARCH", goarch)
+        .env("CGO_ENABLED", "0")
+        .env("GO111MODULE", "on");
+    cmd.arg("build").arg("-trimpath");
+    for a in extra {
+        cmd.arg(a);
+    }
+    cmd.arg("-o").arg(&out).arg(".");
+    let output: Output = cmd.output().ok()?;
+    if !output.status.success() {
+        eprintln!(
+            "go build ({out_name}, {goos}/{goarch}) failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
+    }
+    Some(out)
+}
+
 pub fn garble_build(scratch: &GoBuildScratch, out_name: &str, extra: &[&str]) -> Option<PathBuf> {
     let out: PathBuf = scratch.path().join(out_name);
     let mut cmd: Command = Command::new("garble");

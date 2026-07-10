@@ -60,18 +60,25 @@ pub struct LocatedPclntab<'a> {
     pub data: &'a [u8],
 }
 
+const fn magic_needle(magic: u32, endian: Endian) -> [u8; 4] {
+    match endian {
+        Endian::Little => magic.to_le_bytes(),
+        Endian::Big => magic.to_be_bytes(),
+    }
+}
+
 pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
-    let candidates: [&[u8]; 4] = [
-        &[0xfb, 0xff, 0xff, 0xff],
-        &[0xfa, 0xff, 0xff, 0xff],
-        &[0xf0, 0xff, 0xff, 0xff],
-        &[0xf1, 0xff, 0xff, 0xff],
+    let candidates: [[u8; 4]; 4] = [
+        magic_needle(MAGIC_GO12, image.endian),
+        magic_needle(MAGIC_GO116, image.endian),
+        magic_needle(MAGIC_GO118, image.endian),
+        magic_needle(MAGIC_GO120, image.endian),
     ];
     for sec in &image.sections {
         if sec.data.len() < 16 {
             continue;
         }
-        for needle in candidates {
+        for needle in &candidates {
             if let Some(pos) = find_aligned(sec.data, needle, 16)
                 && pos + 16 <= sec.data.len()
             {
@@ -107,9 +114,9 @@ pub fn signature_scan_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<
             continue;
         }
         for magic in magics {
-            let le_bytes: [u8; 4] = magic.to_le_bytes();
+            let magic_bytes: [u8; 4] = magic_needle(magic, image.endian);
             let mut search: usize = 0;
-            while let Some(rel) = find_subslice(&data[search..], &le_bytes) {
+            while let Some(rel) = find_subslice(&data[search..], &magic_bytes) {
                 let pos: usize = search + rel;
                 search = pos + 1;
                 consider_candidate(image, sec.address, data, pos, magic, false, &mut best);
@@ -613,6 +620,26 @@ pub(crate) fn read_u64(buf: &[u8], off: usize, endian: Endian) -> Result<u64> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn magic_needle_encodes_image_byte_order() {
+        assert_eq!(
+            magic_needle(MAGIC_GO120, Endian::Little),
+            [0xf1, 0xff, 0xff, 0xff]
+        );
+        assert_eq!(
+            magic_needle(MAGIC_GO120, Endian::Big),
+            [0xff, 0xff, 0xff, 0xf1]
+        );
+        assert_eq!(
+            magic_needle(MAGIC_GO12, Endian::Big),
+            [0xff, 0xff, 0xff, 0xfb]
+        );
+        assert_eq!(
+            magic_needle(MAGIC_GO116, Endian::Little),
+            [0xfa, 0xff, 0xff, 0xff]
+        );
+    }
 
     #[test]
     fn symbol_separator_accepts_go_pseudo_symbols() {

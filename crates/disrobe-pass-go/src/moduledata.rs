@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::binary::GoImage;
+use crate::binary::{Endian, GoImage};
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::pclntab::{LocatedPclntab, PclntabVersion};
 
@@ -139,10 +139,17 @@ fn via_pclntab_backsearch(
         let step: usize = ps as usize;
         let mut off: usize = 0;
         while off + step <= sec.data.len() {
-            let val: u64 = match ps {
-                4 => <[u8; 4]>::try_from(&sec.data[off..off + 4])
+            let val: u64 = match (ps, image.endian) {
+                (4, Endian::Little) => <[u8; 4]>::try_from(&sec.data[off..off + 4])
                     .map_or(0, |a: [u8; 4]| u64::from(u32::from_le_bytes(a))),
-                8 => <[u8; 8]>::try_from(&sec.data[off..off + 8]).map_or(0, u64::from_le_bytes),
+                (4, Endian::Big) => <[u8; 4]>::try_from(&sec.data[off..off + 4])
+                    .map_or(0, |a: [u8; 4]| u64::from(u32::from_be_bytes(a))),
+                (8, Endian::Little) => {
+                    <[u8; 8]>::try_from(&sec.data[off..off + 8]).map_or(0, u64::from_le_bytes)
+                }
+                (8, Endian::Big) => {
+                    <[u8; 8]>::try_from(&sec.data[off..off + 8]).map_or(0, u64::from_be_bytes)
+                }
                 _ => 0,
             };
             if val == pclntab_va {
