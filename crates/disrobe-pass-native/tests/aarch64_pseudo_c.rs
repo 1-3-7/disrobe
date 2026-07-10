@@ -338,18 +338,224 @@ fn clang_assembler_pre_and_post_index_writeback_lift() {
 }
 
 #[test]
-fn neon_atomics_and_out_of_subset_integer_ops_reject_explicitly() {
-    let neon: [u8; 8] = [0x20, 0x84, 0xe0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
+fn atomics_and_out_of_subset_integer_ops_reject_explicitly() {
     let atomics: [u8; 12] = [
         0x01, 0x7c, 0x5f, 0xc8, 0x01, 0x7c, 0x02, 0xc8, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let high_multiply: [u8; 8] = [0x09, 0x7d, 0xc9, 0x9b, 0xc0, 0x03, 0x5f, 0xd6];
-    for bytes in [&neon[..], &atomics[..], &high_multiply[..]] {
+    for bytes in [&atomics[..], &high_multiply[..]] {
         let error = recover_aarch64_function(bytes, 0).expect_err("unsupported aarch64 class");
         assert!(
             format!("{error:?}").contains("aarch64 reject: unsupported instruction"),
             "{error:?}"
         );
+    }
+}
+
+#[test]
+fn neon_register_form_packed_arithmetic_lifts() {
+    let cases: [(&[u8], &str, &str); 9] = [
+        (
+            &[0x00, 0xd4, 0x21, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_f32x4",
+            "v0 = v0 + v1",
+        ),
+        (
+            &[0x00, 0xd4, 0xa1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_f32x4",
+            "v0 = v0 - v1",
+        ),
+        (
+            &[0x00, 0xdc, 0x21, 0x6e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_f32x4",
+            "v0 = v0 * v1",
+        ),
+        (
+            &[0x20, 0x84, 0xa0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_i32x4",
+            "v0 = v1 + v0",
+        ),
+        (
+            &[0x20, 0x9c, 0xa0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_i32x4",
+            "v0 = v1 * v0",
+        ),
+        (
+            &[0x00, 0x84, 0xa1, 0x6e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_i32x4",
+            "v0 = v0 - v1",
+        ),
+        (
+            &[0x00, 0xd4, 0x61, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_f64x2",
+            "v0 = v0 + v1",
+        ),
+        (
+            &[0x00, 0xdc, 0x61, 0x6e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_f64x2",
+            "v0 = v0 * v1",
+        ),
+        (
+            &[0x20, 0x84, 0x60, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered_i16x8",
+            "v0 = v1 + v0",
+        ),
+    ];
+    for (bytes, ty, op) in cases {
+        let recovered: LeafRecovery = recover_aarch64_function(bytes, 0).expect("neon arithmetic");
+        assert!(
+            recovered.source.contains(ty),
+            "missing {ty} in {}",
+            recovered.source
+        );
+        assert!(
+            recovered
+                .source
+                .contains("__attribute__((vector_size(16)))"),
+            "{}",
+            recovered.source
+        );
+        assert!(
+            recovered.source.contains(op),
+            "missing {op} in {}",
+            recovered.source
+        );
+        assert!(
+            recovered.source.contains("return v0;"),
+            "{}",
+            recovered.source
+        );
+        assert_eq!(recovered.return_width_bits, 128);
+        assert!(recovered.rust_source.is_none());
+    }
+}
+
+#[test]
+fn neon_vector_load_store_and_dup_lift() {
+    let store_add: [u8; 20] = [
+        0x20, 0x00, 0xc0, 0x3d, 0x41, 0x00, 0xc0, 0x3d, 0x00, 0xd4, 0x21, 0x4e, 0x00, 0x00, 0x80,
+        0x3d, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&store_add, 0).expect("neon store-add");
+    assert!(
+        recovered
+            .source
+            .contains("void recovered(uint64_t a0, uint64_t a1, uint64_t a2)")
+    );
+    assert_eq!(recovered.source.matches("*(recovered_f32x4*)").count(), 3);
+    assert!(recovered.source.contains("v0 = v0 + v1;"));
+    assert!(recovered.source.contains("return;"));
+    assert_eq!(recovered.return_width_bits, 0);
+
+    let copyq: [u8; 12] = [
+        0x20, 0x00, 0xc0, 0x3d, 0x00, 0x00, 0x80, 0x3d, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let copy: LeafRecovery = recover_aarch64_function(&copyq, 0).expect("neon copy");
+    assert_eq!(copy.source.matches("*(recovered_i8x16*)").count(), 2);
+    assert!(copy.source.contains("void recovered("));
+
+    let splat: [u8; 8] = [0x00, 0x0c, 0x04, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
+    let broadcast: LeafRecovery = recover_aarch64_function(&splat, 0).expect("neon dup");
+    assert_eq!(broadcast.params, vec![PseudoReg::Rax]);
+    assert!(
+        broadcast.source.contains(
+            "(recovered_i32x4){(int32_t)r_rax, (int32_t)r_rax, (int32_t)r_rax, (int32_t)r_rax}"
+        ),
+        "{}",
+        broadcast.source
+    );
+    assert!(broadcast.source.contains("return v0;"));
+}
+
+#[test]
+fn neon_out_of_subset_forms_reject_explicitly() {
+    let vector_mov: [u8; 8] = [0x20, 0x1c, 0xa1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
+    let indexed_fmla: [u8; 8] = [0x10, 0x11, 0x80, 0x0f, 0xc0, 0x03, 0x5f, 0xd6];
+    let ld1_single: [u8; 8] = [0x68, 0x79, 0x40, 0x4c, 0xc0, 0x03, 0x5f, 0xd6];
+    let reduction: [u8; 8] = [0x00, 0x38, 0x30, 0x0e, 0xc0, 0x03, 0x5f, 0xd6];
+    for bytes in [
+        &vector_mov[..],
+        &indexed_fmla[..],
+        &ld1_single[..],
+        &reduction[..],
+    ] {
+        let error =
+            recover_aarch64_function(bytes, 0).expect_err("out-of-subset neon form must reject");
+        assert!(
+            format!("{error:?}").contains("aarch64 reject: unsupported instruction"),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn neon_recovered_sources_recompile_to_matching_words() {
+    let Some(clang): Option<PathBuf> = find_program("clang") else {
+        eprintln!("skipping neon recompile: clang is unavailable");
+        return;
+    };
+    let Some(objdump): Option<PathBuf> = find_program("llvm-objdump") else {
+        eprintln!("skipping neon recompile: llvm-objdump is unavailable");
+        return;
+    };
+    let cases: [(&[u8], &[&str]); 5] = [
+        (
+            &[0x00, 0xd4, 0x21, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            &["4e21d400"],
+        ),
+        (
+            &[0x20, 0x84, 0xa0, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            &["4ea08420"],
+        ),
+        (
+            &[0x00, 0x0c, 0x04, 0x4e, 0xc0, 0x03, 0x5f, 0xd6],
+            &["4e040c00"],
+        ),
+        (
+            &[
+                0x20, 0x00, 0xc0, 0x3d, 0x41, 0x00, 0xc0, 0x3d, 0x00, 0xd4, 0x21, 0x4e, 0x00, 0x00,
+                0x80, 0x3d, 0xc0, 0x03, 0x5f, 0xd6,
+            ],
+            &["3dc00020", "3dc00041", "4e21d400", "3d800000"],
+        ),
+        (
+            &[
+                0x20, 0x00, 0xc0, 0x3d, 0x41, 0x00, 0xc0, 0x3d, 0x00, 0xd4, 0x21, 0x4e, 0x61, 0x00,
+                0xc0, 0x3d, 0x00, 0xdc, 0x21, 0x6e, 0x00, 0x00, 0x80, 0x3d, 0xc0, 0x03, 0x5f, 0xd6,
+            ],
+            &["3dc00020", "4e21d400", "6e21dc00", "3d800000"],
+        ),
+    ];
+    let scratch: tempfile::TempDir = tempfile::tempdir().expect("create neon scratch directory");
+    for (index, (bytes, expected)) in cases.into_iter().enumerate() {
+        let recovered: LeafRecovery =
+            recover_aarch64_function(bytes, 0).expect("recover neon function");
+        let source_path: PathBuf = scratch.path().join(format!("neon_{index}.c"));
+        let object_path: PathBuf = scratch.path().join(format!("neon_{index}.o"));
+        std::fs::write(&source_path, recovered.source).expect("write recovered neon source");
+        run_tool(
+            &clang,
+            vec![
+                "--target=aarch64-linux-gnu".into(),
+                "-O2".into(),
+                "-ffreestanding".into(),
+                "-c".into(),
+                source_path.as_os_str().to_owned(),
+                "-o".into(),
+                object_path.as_os_str().to_owned(),
+            ],
+        );
+        let listing: CapturedOutput = run_tool(
+            &objdump,
+            vec!["-d".into(), object_path.as_os_str().to_owned()],
+        );
+        let listing: String = String::from_utf8(listing.stdout).expect("utf8 neon listing");
+        for word in expected {
+            assert!(
+                listing.contains(word),
+                "recompiled neon function {index} is missing {word}\n{listing}"
+            );
+        }
     }
 }
 

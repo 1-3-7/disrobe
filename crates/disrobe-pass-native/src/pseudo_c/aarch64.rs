@@ -1,9 +1,10 @@
 use super::{
     Abi, AggregatePlan, BinOp, CondKind, Error, Flags, FnReturn, FnSignature, FrameShape, Item,
     ItemKind, LeafRecovery, MemRef, Reg, RegRef, ResolvedCall, Result, ScalarType, Source,
-    SretPlan, SretReturn, Stmt, Structured, Width, annotate_calls_block_with_order,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
-    infer_params, plan_frame, structure_items,
+    SretPlan, SretReturn, Stmt, Structured, VecArrangement, VecBinOp, VecElem, VecStmt, Width,
+    annotate_calls_block_with_order, collect_call_targets, condition_is_sound, detect_sret, emit_c,
+    emit_rust, infer_aggregate_plan, infer_params, plan_frame, stmt_writes_rax_int,
+    structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,6 +121,11 @@ pub(super) fn recover_with_calls(
         let consumes_flags: bool = insn.mnemonic.starts_with("b.");
         if !sets_flags && !consumes_flags {
             flags = None;
+        }
+        if operand_is_vector(insn) {
+            let stmts: Vec<Stmt> = lower_vector(insn)?;
+            push_stmts(&mut items, base, index, stmts)?;
+            continue;
         }
         match insn.mnemonic.as_str() {
             "add" | "adds" | "sub" | "subs" | "and" | "orr" | "eor" | "lsl" | "lsr" | "asr"
@@ -292,7 +298,9 @@ pub(super) fn recover_with_calls(
             _ => return Err(reject_at(insn, "unsupported instruction")),
         }
     }
-    finish(&insns, &items, return_width, calls)
+    resolve_vector_types(&mut items)?;
+    let vec_abi: VectorAbi = scan_vector_abi(&items)?;
+    finish(&insns, &items, return_width, calls, &vec_abi)
 }
 
 fn finish(
@@ -300,6 +308,7 @@ fn finish(
     items: &[Item],
     return_width: Width,
     calls: &[ResolvedCall],
+    vec_abi: &VectorAbi,
 ) -> Result<LeafRecovery> {
     let mut structured: Structured = structure_items(items)?;
     if !calls.is_empty() {
@@ -309,7 +318,15 @@ fn finish(
             .collect();
         annotate_calls_block_with_order(&mut structured.body, &call_map, &CALL_ARG_ORDER);
     }
-    let sret_plan: Option<SretPlan> = detect_sret(&structured.body, Abi::Aapcs64);
+    let ret: FnReturn = match vec_abi.ret {
+        VectorRet::Vector(arr) => FnReturn::Vec(arr),
+        VectorRet::Void => FnReturn::Void,
+        VectorRet::None => FnReturn::Int(return_width),
+    };
+    let sret_plan: Option<SretPlan> = match ret {
+        FnReturn::Int(_) => detect_sret(&structured.body, Abi::Aapcs64),
+        FnReturn::Fp(_) | FnReturn::Void | FnReturn::Vec(_) => None,
+    };
     let mut params: Vec<Reg> = infer_params(&structured.body, Abi::Aapcs64);
     if let Some(plan) = &sret_plan {
         params.retain(|reg: &Reg| *reg != plan.ptr);
@@ -317,7 +334,8 @@ fn finish(
     let signature: FnSignature = FnSignature {
         fp: Vec::new(),
         int: params.clone(),
-        ret: FnReturn::Int(return_width),
+        vec: vec_abi.params.clone(),
+        ret,
     };
     let frame_shape: FrameShape = classify_frame(insns);
     let frame = plan_frame(&structured.body, frame_shape)?;
@@ -340,10 +358,15 @@ fn finish(
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
     crate::debug::dbg_kv("aarch64_lifted_instructions", || insns.len().to_string());
+    let return_width_bits: u32 = match ret {
+        FnReturn::Vec(arr) => arr.total_bits(),
+        FnReturn::Void => 0,
+        FnReturn::Int(_) | FnReturn::Fp(_) => return_width.bits(),
+    };
     Ok(LeafRecovery {
         source,
         rust_source,
-        return_width_bits: return_width.bits(),
+        return_width_bits,
         params,
         fp_params: Vec::<ScalarType>::new(),
         returns_fp: None,
@@ -1280,7 +1303,7 @@ fn has_unsupported_register_class(operands: &str) -> bool {
         let token: &str = operand.trim().trim_start_matches('[');
         let mut chars = token.chars();
         chars.next().is_some_and(|prefix: char| {
-            matches!(prefix, 'v' | 'q' | 'd' | 's' | 'h' | 'b' | 'z' | 'p')
+            matches!(prefix, 'd' | 's' | 'h' | 'b' | 'z' | 'p')
                 && chars.next().is_some_and(|ch: char| ch.is_ascii_digit())
         })
     })
@@ -1559,6 +1582,410 @@ fn parse_reg(token: &str) -> Result<RegRef> {
         _ => return Err(reject("register is outside the current bounded set")),
     };
     Ok(RegRef { reg, width })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorRet {
+    None,
+    Void,
+    Vector(VecArrangement),
+}
+
+#[derive(Debug, Clone)]
+struct VectorAbi {
+    params: Vec<(u8, VecArrangement)>,
+    ret: VectorRet,
+}
+
+const SIMD_RETURN_REG: u8 = 0;
+
+fn operand_is_vector(insn: &DisasmInsn) -> bool {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let Some(first): Option<&&str> = operands.first() else {
+        return false;
+    };
+    let token: &str = first.trim();
+    token.starts_with('{') || is_vector_register_token(token) || is_qreg_token(token)
+}
+
+fn is_vector_register_token(token: &str) -> bool {
+    let mut chars = token.trim().chars();
+    chars.next() == Some('v') && chars.next().is_some_and(|ch: char| ch.is_ascii_digit())
+}
+
+fn is_qreg_token(token: &str) -> bool {
+    let mut chars = token.trim().chars();
+    chars.next() == Some('q') && chars.next().is_some_and(|ch: char| ch.is_ascii_digit())
+}
+
+fn lower_vector(insn: &DisasmInsn) -> Result<Vec<Stmt>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    match insn.mnemonic.as_str() {
+        "add" | "sub" | "mul" => vector_bin(insn, &operands, false),
+        "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
+        "ldr" => vector_load_store(insn, &operands, true),
+        "str" => vector_load_store(insn, &operands, false),
+        "dup" => vector_dup(insn, &operands),
+        _ => Err(reject_at(insn, "unsupported instruction")),
+    }
+}
+
+fn vector_bin(insn: &DisasmInsn, operands: &[&str], float: bool) -> Result<Vec<Stmt>> {
+    if operands.len() != 3 {
+        return Err(reject_at(insn, "malformed vector arithmetic instruction"));
+    }
+    let (dest, dest_arr): (u8, VecArrangement) = parse_vector_operand(operands[0], float)?;
+    let (lhs, lhs_arr): (u8, VecArrangement) = parse_vector_operand(operands[1], float)?;
+    let (rhs, rhs_arr): (u8, VecArrangement) = parse_vector_operand(operands[2], float)?;
+    if dest_arr != lhs_arr || dest_arr != rhs_arr {
+        return Err(reject_at(insn, "mixed-arrangement vector arithmetic"));
+    }
+    let op: VecBinOp = match insn.mnemonic.as_str() {
+        "add" | "fadd" => VecBinOp::Add,
+        "sub" | "fsub" => VecBinOp::Sub,
+        "mul" | "fmul" => VecBinOp::Mul,
+        "fdiv" => VecBinOp::Div,
+        _ => return Err(reject_at(insn, "unsupported vector arithmetic")),
+    };
+    Ok(vec![Stmt::Vector(VecStmt::Bin {
+        dest,
+        lhs,
+        rhs,
+        op,
+        arr: dest_arr,
+    })])
+}
+
+fn vector_load_store(insn: &DisasmInsn, operands: &[&str], is_load: bool) -> Result<Vec<Stmt>> {
+    if !(2..=3).contains(&operands.len()) {
+        return Err(reject_at(insn, "malformed vector load or store"));
+    }
+    let reg: u8 = parse_qreg(operands[0])
+        .ok_or_else(|| reject_at(insn, "vector load or store requires a q register"))?;
+    let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[1], Width::W64)?;
+    let post_delta: Option<i64> = operands
+        .get(2)
+        .map(|token: &&str| parse_immediate(token))
+        .transpose()?;
+    if pre_index && post_delta.is_some() {
+        return Err(reject_at(
+            insn,
+            "vector address cannot be both pre-indexed and post-indexed",
+        ));
+    }
+    let mut stmts: Vec<Stmt> = Vec::new();
+    if pre_index {
+        let delta: i64 = mem.disp;
+        mem.disp = 0;
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    let access: MemRef = mem;
+    let memory_stmt: Stmt = if is_load {
+        Stmt::Vector(VecStmt::Load {
+            dest: reg,
+            arr: None,
+            addr: access,
+        })
+    } else {
+        Stmt::Vector(VecStmt::Store {
+            src: reg,
+            arr: None,
+            addr: access,
+        })
+    };
+    stmts.push(memory_stmt);
+    if let Some(delta) = post_delta {
+        if mem.disp != 0 {
+            return Err(reject_at(
+                insn,
+                "post-indexed vector address has an inline displacement",
+            ));
+        }
+        stmts.push(base_update(mem.base, delta)?);
+    }
+    Ok(stmts)
+}
+
+fn vector_dup(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(insn, "malformed vector duplicate"));
+    }
+    let (dest, arr): (u8, VecArrangement) = parse_vector_operand(operands[0], false)?;
+    let src: RegRef = parse_reg(operands[1])
+        .map_err(|_| reject_at(insn, "vector duplicate source is not a general register"))?;
+    let lane_bits: u32 = arr.elem.bits();
+    if src.width.bits() != lane_bits {
+        return Err(reject_at(
+            insn,
+            "vector duplicate source width does not match the lane width",
+        ));
+    }
+    Ok(vec![Stmt::Vector(VecStmt::Dup { dest, src, arr })])
+}
+
+fn parse_qreg(token: &str) -> Option<u8> {
+    let number: &str = token.trim().strip_prefix('q')?;
+    let index: u8 = number.parse::<u8>().ok()?;
+    (index < 32).then_some(index)
+}
+
+fn parse_vector_operand(token: &str, float: bool) -> Result<(u8, VecArrangement)> {
+    let (register, suffix): (&str, &str) = token
+        .trim()
+        .split_once('.')
+        .ok_or_else(|| reject("vector operand lacks an arrangement suffix"))?;
+    let number: &str = register
+        .strip_prefix('v')
+        .ok_or_else(|| reject("vector operand is not a v register"))?;
+    let index: u8 = number
+        .parse::<u8>()
+        .ok()
+        .filter(|value: &u8| *value < 32)
+        .ok_or_else(|| reject("vector register is outside v0..v31"))?;
+    let arrangement: VecArrangement = parse_arrangement(suffix, float)?;
+    Ok((index, arrangement))
+}
+
+fn parse_arrangement(suffix: &str, float: bool) -> Result<VecArrangement> {
+    let suffix: &str = suffix.trim();
+    if suffix.contains('[') {
+        return Err(reject(
+            "vector lane-indexed operand is outside the supported subset",
+        ));
+    }
+    let split: usize = suffix
+        .char_indices()
+        .find(|(_, ch): &(usize, char)| ch.is_ascii_alphabetic())
+        .map(|(index, _): (usize, char)| index)
+        .ok_or_else(|| reject("vector arrangement lacks an element letter"))?;
+    let (digits, letter): (&str, &str) = suffix.split_at(split);
+    let lanes: u8 = digits
+        .parse::<u8>()
+        .ok()
+        .filter(|value: &u8| *value > 0)
+        .ok_or_else(|| reject("vector arrangement lane count is malformed"))?;
+    let elem: VecElem = match (letter, float) {
+        ("b", false) => VecElem::I8,
+        ("h", false) => VecElem::I16,
+        ("s", false) => VecElem::I32,
+        ("s", true) => VecElem::F32,
+        ("d", false) => VecElem::I64,
+        ("d", true) => VecElem::F64,
+        _ => {
+            return Err(reject(
+                "vector element type is outside the supported subset",
+            ));
+        }
+    };
+    let arrangement: VecArrangement = VecArrangement { lanes, elem };
+    if arrangement.total_bits() != 64 && arrangement.total_bits() != 128 {
+        return Err(reject(
+            "vector arrangement is not a 64-bit or 128-bit register shape",
+        ));
+    }
+    Ok(arrangement)
+}
+
+fn resolve_vector_types(items: &mut [Item]) -> Result<()> {
+    let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    for item in items.iter() {
+        let ItemKind::Stmt(Stmt::Vector(vec)) = &item.kind else {
+            continue;
+        };
+        match vec {
+            VecStmt::Bin {
+                dest,
+                lhs,
+                rhs,
+                arr,
+                ..
+            } => {
+                note_vector_type(&mut types, *dest, *arr)?;
+                note_vector_type(&mut types, *lhs, *arr)?;
+                note_vector_type(&mut types, *rhs, *arr)?;
+            }
+            VecStmt::Dup { dest, arr, .. } => note_vector_type(&mut types, *dest, *arr)?,
+            VecStmt::Load {
+                dest,
+                arr: Some(arr),
+                ..
+            } => note_vector_type(&mut types, *dest, *arr)?,
+            VecStmt::Store {
+                src,
+                arr: Some(arr),
+                ..
+            } => note_vector_type(&mut types, *src, *arr)?,
+            VecStmt::Load { arr: None, .. } | VecStmt::Store { arr: None, .. } => {}
+        }
+    }
+    for item in items.iter_mut() {
+        let ItemKind::Stmt(Stmt::Vector(vec)) = &mut item.kind else {
+            continue;
+        };
+        match vec {
+            VecStmt::Load { dest, arr, .. } => {
+                *arr = Some(resolved_wide_arrangement(&types, *dest)?);
+            }
+            VecStmt::Store { src, arr, .. } => {
+                *arr = Some(resolved_wide_arrangement(&types, *src)?);
+            }
+            VecStmt::Bin { .. } | VecStmt::Dup { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn note_vector_type(
+    types: &mut BTreeMap<u8, VecArrangement>,
+    reg: u8,
+    arr: VecArrangement,
+) -> Result<()> {
+    match types.get(&reg) {
+        Some(existing) if *existing != arr => Err(reject(
+            "vector register is used with conflicting arrangements",
+        )),
+        _ => {
+            types.insert(reg, arr);
+            Ok(())
+        }
+    }
+}
+
+fn resolved_wide_arrangement(
+    types: &BTreeMap<u8, VecArrangement>,
+    reg: u8,
+) -> Result<VecArrangement> {
+    match types.get(&reg) {
+        Some(arr) => {
+            if arr.total_bits() != 128 {
+                return Err(reject(
+                    "q-register access does not match a 128-bit vector arrangement",
+                ));
+            }
+            Ok(*arr)
+        }
+        None => Ok(VecArrangement {
+            lanes: 16,
+            elem: VecElem::I8,
+        }),
+    }
+}
+
+fn scan_vector_abi(items: &[Item]) -> Result<VectorAbi> {
+    let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    let mut written: BTreeSet<u8> = BTreeSet::new();
+    let mut params: Vec<(u8, VecArrangement)> = Vec::new();
+    let mut has_vector: bool = false;
+    let mut wrote_int_result: bool = false;
+    let mut return_defined: bool = false;
+    let mut return_stored: bool = false;
+    for item in items {
+        match &item.kind {
+            ItemKind::Stmt(Stmt::Vector(vec)) => {
+                has_vector = true;
+                record_vector_types(&mut types, vec);
+                for (reg, arr) in vector_reads(vec) {
+                    if !written.contains(&reg) && !params.iter().any(|(r, _)| *r == reg) {
+                        params.push((reg, arr));
+                    }
+                }
+                if let Some(dest) = vector_write(vec) {
+                    if dest == SIMD_RETURN_REG {
+                        return_defined = true;
+                        return_stored = false;
+                    }
+                    written.insert(dest);
+                }
+                if let VecStmt::Store { src, .. } = vec
+                    && *src == SIMD_RETURN_REG
+                {
+                    return_stored = true;
+                }
+            }
+            ItemKind::Stmt(stmt) => {
+                if stmt_writes_rax_int(stmt) {
+                    wrote_int_result = true;
+                }
+            }
+            ItemKind::Branch { .. } | ItemKind::Jmp { .. } | ItemKind::Ret => {}
+        }
+    }
+    params.sort_by_key(|(reg, _): &(u8, VecArrangement)| *reg);
+    for (position, (reg, _)) in params.iter().enumerate() {
+        if usize::from(*reg) != position {
+            return Err(reject(
+                "vector parameters do not form a contiguous v0.. sequence",
+            ));
+        }
+    }
+    let ret: VectorRet = if has_vector && return_defined && !return_stored {
+        let arr: VecArrangement = *types
+            .get(&SIMD_RETURN_REG)
+            .ok_or_else(|| reject("vector return register has no resolved arrangement"))?;
+        VectorRet::Vector(arr)
+    } else if has_vector && !wrote_int_result {
+        VectorRet::Void
+    } else {
+        VectorRet::None
+    };
+    Ok(VectorAbi { params, ret })
+}
+
+fn record_vector_types(types: &mut BTreeMap<u8, VecArrangement>, vec: &VecStmt) {
+    match vec {
+        VecStmt::Bin {
+            dest,
+            lhs,
+            rhs,
+            arr,
+            ..
+        } => {
+            types.entry(*dest).or_insert(*arr);
+            types.entry(*lhs).or_insert(*arr);
+            types.entry(*rhs).or_insert(*arr);
+        }
+        VecStmt::Dup { dest, arr, .. } => {
+            types.entry(*dest).or_insert(*arr);
+        }
+        VecStmt::Load { dest, arr, .. } => {
+            if let Some(arrangement) = arr {
+                types.entry(*dest).or_insert(*arrangement);
+            }
+        }
+        VecStmt::Store { src, arr, .. } => {
+            if let Some(arrangement) = arr {
+                types.entry(*src).or_insert(*arrangement);
+            }
+        }
+    }
+}
+
+fn vector_reads(vec: &VecStmt) -> Vec<(u8, VecArrangement)> {
+    match vec {
+        VecStmt::Bin { lhs, rhs, arr, .. } => vec![(*lhs, *arr), (*rhs, *arr)],
+        VecStmt::Store {
+            src,
+            arr: Some(arr),
+            ..
+        } => vec![(*src, *arr)],
+        VecStmt::Store { src, arr: None, .. } => vec![(
+            *src,
+            VecArrangement {
+                lanes: 16,
+                elem: VecElem::I8,
+            },
+        )],
+        VecStmt::Load { .. } | VecStmt::Dup { .. } => Vec::new(),
+    }
+}
+
+fn vector_write(vec: &VecStmt) -> Option<u8> {
+    match vec {
+        VecStmt::Bin { dest, .. } | VecStmt::Dup { dest, .. } | VecStmt::Load { dest, .. } => {
+            Some(*dest)
+        }
+        VecStmt::Store { .. } => None,
+    }
 }
 
 fn reject(message: &str) -> Error {

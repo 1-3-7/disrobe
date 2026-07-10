@@ -523,6 +523,99 @@ enum Source {
     Mem(MemRef),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum VecElem {
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl VecElem {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::I8 => 8,
+            Self::I16 => 16,
+            Self::I32 | Self::F32 => 32,
+            Self::I64 | Self::F64 => 64,
+        }
+    }
+
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+
+    const fn c_scalar(self) -> &'static str {
+        match self {
+            Self::I8 => "int8_t",
+            Self::I16 => "int16_t",
+            Self::I32 => "int32_t",
+            Self::I64 => "int64_t",
+            Self::F32 => "float",
+            Self::F64 => "double",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct VecArrangement {
+    lanes: u8,
+    elem: VecElem,
+}
+
+impl VecArrangement {
+    const fn total_bits(self) -> u32 {
+        self.lanes as u32 * self.elem.bits()
+    }
+
+    fn type_name(self) -> String {
+        format!("recovered_{}x{}", self.elem.tag(), self.lanes)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VecBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VecStmt {
+    Load {
+        dest: u8,
+        arr: Option<VecArrangement>,
+        addr: MemRef,
+    },
+    Store {
+        src: u8,
+        arr: Option<VecArrangement>,
+        addr: MemRef,
+    },
+    Bin {
+        dest: u8,
+        lhs: u8,
+        rhs: u8,
+        op: VecBinOp,
+        arr: VecArrangement,
+    },
+    Dup {
+        dest: u8,
+        src: RegRef,
+        arr: VecArrangement,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stmt {
     Assign {
@@ -664,6 +757,7 @@ enum Stmt {
         dest: RegRef,
         src: Xmm,
     },
+    Vector(VecStmt),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1580,6 +1674,9 @@ fn build_leaf_items(
                 flags = None;
             }
             Stmt::Packed { .. } | Stmt::PackedToGpr { .. } => {}
+            Stmt::Vector(_) => {
+                flags = None;
+            }
             Stmt::Call { .. } | Stmt::FlagSnapshot { .. } => {}
         }
         items.push(Item {
@@ -1639,6 +1736,7 @@ fn recover_leaf_function_calls_impl(
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: params.clone(),
+        vec: Vec::new(),
         ret,
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
@@ -1704,12 +1802,15 @@ const fn scalar_of_fp(width: FpWidth) -> ScalarType {
 enum FnReturn {
     Int(Width),
     Fp(FpWidth),
+    Void,
+    Vec(VecArrangement),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FnSignature {
     fp: Vec<(Xmm, FpWidth)>,
     int: Vec<Reg>,
+    vec: Vec<(u8, VecArrangement)>,
     ret: FnReturn,
 }
 
@@ -1966,11 +2067,12 @@ fn build_switch_recovery(
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: params.clone(),
+        vec: Vec::new(),
         ret,
     };
     let returns_fp: Option<ScalarType> = match ret {
-        FnReturn::Int(_) => None,
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
+        FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
     let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns))?;
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, frame_plan.as_ref());
@@ -2197,6 +2299,7 @@ fn build_value_switch_recovery(
     let signature: FnSignature = FnSignature {
         fp: Vec::new(),
         int: params.clone(),
+        vec: Vec::new(),
         ret: FnReturn::Int(return_width),
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
@@ -3772,6 +3875,7 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
         | Stmt::Packed { .. }
+        | Stmt::Vector(_)
         | Stmt::FlagSnapshot { .. } => {}
     }
 }
@@ -6535,6 +6639,13 @@ fn scan_stmt_params(
         Stmt::PackedToGpr { dest, .. } => {
             written.insert(dest.reg, true);
         }
+        Stmt::Vector(vec) => match vec {
+            VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
+                read_addr(addr, written, acc, note);
+            }
+            VecStmt::Dup { src, .. } => note(src.reg, written, acc),
+            VecStmt::Bin { .. } => {}
+        },
         Stmt::FlagSnapshot { flags, .. } => {
             read_flags(flags, written, acc, note);
         }
@@ -6861,6 +6972,7 @@ fn stmt_writes_rax_int(stmt: &Stmt) -> bool {
         | Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
         | Stmt::Packed { .. }
+        | Stmt::Vector(_)
         | Stmt::FlagSnapshot { .. } => false,
     }
 }
@@ -8632,6 +8744,7 @@ fn aggregate_note_stmt(scan: &mut AggregateScan, stmt: &Stmt) {
         | Stmt::DoubleShift { .. }
         | Stmt::Call { .. }
         | Stmt::Packed { .. }
+        | Stmt::Vector(_)
         | Stmt::PackedToGpr { .. } => {}
     }
 }
@@ -9260,6 +9373,13 @@ impl FrameScan {
                 }
             }
             Stmt::PackedToGpr { dest, .. } => self.note_reg(dest.reg, misuse),
+            Stmt::Vector(vec) => match vec {
+                VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
+                    self.note_mem(addr, slots, misuse);
+                }
+                VecStmt::Dup { src, .. } => self.note_reg(src.reg, misuse),
+                VecStmt::Bin { .. } => {}
+            },
             Stmt::FpConvert { .. }
             | Stmt::BlockMove { .. }
             | Stmt::BlockFill { .. }
@@ -9602,6 +9722,11 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             }
         }
         Stmt::PackedToGpr { .. } => {}
+        Stmt::Vector(vec) => match vec {
+            VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => mem_regs(addr, acc),
+            VecStmt::Dup { src, .. } => acc.push(src.reg),
+            VecStmt::Bin { .. } => {}
+        },
         Stmt::FlagSnapshot { flags, .. } => acc.extend(flag_operand_regs(flags)),
     }
 }
@@ -9760,20 +9885,41 @@ fn emit_c(
     }
 
     let param_types: Vec<ScalarType> = signature.ordered_param_types();
-    let params_sig: String = if param_types.is_empty() {
+    let scalar_count: usize = param_types.len();
+    let mut param_decls: Vec<String> = param_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty): (usize, &ScalarType)| match ty {
+            ScalarType::Int => format!("uint64_t a{i}"),
+            ScalarType::Double => format!("double a{i}"),
+            ScalarType::Float => format!("float a{i}"),
+        })
+        .collect();
+    for (k, (_, arr)) in signature.vec.iter().enumerate() {
+        param_decls.push(format!("{} a{}", arr.type_name(), scalar_count + k));
+    }
+    let params_sig: String = if param_decls.is_empty() {
         "void".to_owned()
     } else {
-        param_types
-            .iter()
-            .enumerate()
-            .map(|(i, ty): (usize, &ScalarType)| match ty {
-                ScalarType::Int => format!("uint64_t a{i}"),
-                ScalarType::Double => format!("double a{i}"),
-                ScalarType::Float => format!("float a{i}"),
-            })
-            .collect::<Vec<String>>()
-            .join(", ")
+        param_decls.join(", ")
     };
+    let mut vec_types: BTreeSet<VecArrangement> = BTreeSet::new();
+    collect_block_vec_arrangements(body, &mut vec_types);
+    for (_, arr) in &signature.vec {
+        vec_types.insert(*arr);
+    }
+    if let FnReturn::Vec(arr) = signature.ret {
+        vec_types.insert(arr);
+    }
+    for arr in &vec_types {
+        let _ = writeln!(
+            out,
+            "typedef {} {} __attribute__((vector_size({})));",
+            arr.elem.c_scalar(),
+            arr.type_name(),
+            arr.total_bits() / 8
+        );
+    }
     if let Some(plan) = sret {
         let _ = writeln!(out, "typedef struct {{");
         for (i, (_, width)) in plan.fields.iter().enumerate() {
@@ -9781,10 +9927,12 @@ fn emit_c(
         }
         let _ = writeln!(out, "}} recovered_sret_t;");
     }
-    let return_type: &str = match (sret, signature.ret) {
-        (Some(_), _) => "recovered_sret_t",
-        (None, FnReturn::Int(_)) => "uint64_t",
-        (None, FnReturn::Fp(width)) => width.c_type(),
+    let return_type: String = match (sret, signature.ret) {
+        (Some(_), _) => "recovered_sret_t".to_owned(),
+        (None, FnReturn::Int(_)) => "uint64_t".to_owned(),
+        (None, FnReturn::Fp(width)) => width.c_type().to_owned(),
+        (None, FnReturn::Void) => "void".to_owned(),
+        (None, FnReturn::Vec(arr)) => arr.type_name(),
     };
     let _ = writeln!(out, "{return_type} recovered({params_sig}) {{");
     emit_c_aggregate_types(&mut out, aggregates);
@@ -9801,7 +9949,7 @@ fn emit_c(
 
     let mut touched_gp: Vec<Reg> = Vec::new();
     collect_block_regs(body, &mut touched_gp);
-    if !matches!(signature.ret, FnReturn::Fp(_)) && !touched_gp.contains(&Reg::Rax) {
+    if matches!(signature.ret, FnReturn::Int(_)) && !touched_gp.contains(&Reg::Rax) {
         touched_gp.push(Reg::Rax);
     }
     let mut touched_xmm: Vec<Xmm> = Vec::new();
@@ -9869,6 +10017,23 @@ fn emit_c(
     for var in &sel_vars {
         let _ = writeln!(out, "    uint64_t {} = 0;", sel_var(*var));
     }
+    let vec_type_map: BTreeMap<u8, VecArrangement> = resolve_block_vec_types(body);
+    let mut declared_vec: BTreeSet<u8> = BTreeSet::new();
+    for (k, (reg, arr)) in signature.vec.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "    {} {} = a{};",
+            arr.type_name(),
+            vec_var(*reg),
+            scalar_count + k
+        );
+        declared_vec.insert(*reg);
+    }
+    for (reg, arr) in &vec_type_map {
+        if declared_vec.insert(*reg) {
+            let _ = writeln!(out, "    {} {};", arr.type_name(), vec_var(*reg));
+        }
+    }
 
     let ret_expr: String = if sret.is_some() {
         "__sret".to_owned()
@@ -9880,13 +10045,21 @@ fn emit_c(
                 masked
             }
             FnReturn::Fp(width) => fp_load(&FpOperand::Xmm(Xmm::Xmm0), width, aggregates),
+            FnReturn::Void => String::new(),
+            FnReturn::Vec(_) => vec_var(0),
         }
     };
 
     emit_block(&mut out, body, &ret_expr, aggregates);
 
     if !matches!(body.last(), Some(Node::Return)) {
-        let rendered: String = c_render_stmt(|cx| CStmt::Return(Some(cx.var(&ret_expr))));
+        let rendered: String = c_render_stmt(|cx| {
+            if ret_expr.is_empty() {
+                CStmt::Return(None)
+            } else {
+                CStmt::Return(Some(cx.var(&ret_expr)))
+            }
+        });
         write_indented(&mut out, &rendered, "    ");
     }
     let _ = writeln!(out, "}}");
@@ -10071,6 +10244,13 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                     }
                 }
                 Stmt::PackedToGpr { dest, .. } => push(dest.reg, acc),
+                Stmt::Vector(vec) => match vec {
+                    VecStmt::Load { addr, .. } | VecStmt::Store { addr, .. } => {
+                        push_addr(addr, acc);
+                    }
+                    VecStmt::Dup { src, .. } => push(src.reg, acc),
+                    VecStmt::Bin { .. } => {}
+                },
                 Stmt::FlagSnapshot { flags, .. } => push_flags(flags, acc),
                 Stmt::Call { args, .. } => {
                     for reg in args {
@@ -10179,6 +10359,7 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 | Stmt::FlagSnapshot { .. }
                 | Stmt::Packed { .. }
                 | Stmt::PackedToGpr { .. }
+                | Stmt::Vector(_)
                 | Stmt::Call { .. } => {}
             },
             Node::If {
@@ -10270,6 +10451,88 @@ fn collect_block_packed_xmm(body: &Block, acc: &mut Vec<Xmm>) {
             | Node::Goto(_) => {}
         }
     }
+}
+
+fn for_each_vec_stmt(body: &Block, visit: &mut impl FnMut(&VecStmt)) {
+    for node in body {
+        match node {
+            Node::Stmt(Stmt::Vector(vec)) => visit(vec),
+            Node::Stmt(_)
+            | Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for_each_vec_stmt(then_body, visit);
+                if let Some(else_b) = else_body {
+                    for_each_vec_stmt(else_b, visit);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body } => for_each_vec_stmt(body, visit),
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    for_each_vec_stmt(&case.body, visit);
+                }
+                for_each_vec_stmt(default, visit);
+            }
+        }
+    }
+}
+
+fn block_has_vector(body: &Block) -> bool {
+    let mut found: bool = false;
+    for_each_vec_stmt(body, &mut |_: &VecStmt| found = true);
+    found
+}
+
+fn resolve_block_vec_types(body: &Block) -> BTreeMap<u8, VecArrangement> {
+    let mut types: BTreeMap<u8, VecArrangement> = BTreeMap::new();
+    for_each_vec_stmt(body, &mut |vec: &VecStmt| match vec {
+        VecStmt::Load { dest, arr, .. } => {
+            if let Some(arrangement) = arr {
+                types.entry(*dest).or_insert(*arrangement);
+            }
+        }
+        VecStmt::Store { src, arr, .. } => {
+            if let Some(arrangement) = arr {
+                types.entry(*src).or_insert(*arrangement);
+            }
+        }
+        VecStmt::Bin {
+            dest,
+            lhs,
+            rhs,
+            arr,
+            ..
+        } => {
+            types.entry(*dest).or_insert(*arr);
+            types.entry(*lhs).or_insert(*arr);
+            types.entry(*rhs).or_insert(*arr);
+        }
+        VecStmt::Dup { dest, arr, .. } => {
+            types.entry(*dest).or_insert(*arr);
+        }
+    });
+    types
+}
+
+fn collect_block_vec_arrangements(body: &Block, acc: &mut BTreeSet<VecArrangement>) {
+    for_each_vec_stmt(body, &mut |vec: &VecStmt| match vec {
+        VecStmt::Load { arr, .. } | VecStmt::Store { arr, .. } => {
+            if let Some(arrangement) = arr {
+                acc.insert(*arrangement);
+            }
+        }
+        VecStmt::Bin { arr, .. } | VecStmt::Dup { arr, .. } => {
+            acc.insert(*arr);
+        }
+    });
 }
 
 fn write_indented(out: &mut String, text: &str, indent: &str) {
@@ -10416,7 +10679,13 @@ fn node_to_cstmt(
         }
         Node::Break => CStmt::Break,
         Node::Continue => CStmt::Continue,
-        Node::Return => CStmt::Return(Some(cx.var(ret_expr))),
+        Node::Return => {
+            if ret_expr.is_empty() {
+                CStmt::Return(None)
+            } else {
+                CStmt::Return(Some(cx.var(ret_expr)))
+            }
+        }
         Node::Label(id) => CStmt::Label {
             name: cx.sym(&label_name(*id)),
             body: Box::new(CStmt::Empty),
@@ -10912,6 +11181,59 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
+        }
+        Stmt::Vector(vec) => vec_stmt_cstmt(cx, vec),
+    }
+}
+
+fn vec_var(reg: u8) -> String {
+    format!("v{reg}")
+}
+
+fn vec_resolved_arr(arr: Option<VecArrangement>) -> VecArrangement {
+    arr.unwrap_or(VecArrangement {
+        lanes: 16,
+        elem: VecElem::I8,
+    })
+}
+
+fn vec_deref_expr(arr: VecArrangement, addr: &MemRef) -> String {
+    format!(
+        "*({}*)({})",
+        arr.type_name(),
+        addr_expr(addr.base, addr.index, addr.disp)
+    )
+}
+
+fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
+    match vec {
+        VecStmt::Load { dest, arr, addr } => {
+            let arrangement: VecArrangement = vec_resolved_arr(*arr);
+            let rhs: String = vec_deref_expr(arrangement, addr);
+            assign_cstmt(cx, &vec_var(*dest), &rhs)
+        }
+        VecStmt::Store { src, arr, addr } => {
+            let arrangement: VecArrangement = vec_resolved_arr(*arr);
+            let target: String = vec_deref_expr(arrangement, addr);
+            assign_cstmt(cx, &target, &vec_var(*src))
+        }
+        VecStmt::Bin {
+            dest, lhs, rhs, op, ..
+        } => {
+            let op_sym: &str = match op {
+                VecBinOp::Add => "+",
+                VecBinOp::Sub => "-",
+                VecBinOp::Mul => "*",
+                VecBinOp::Div => "/",
+            };
+            let body: String = format!("{} {op_sym} {}", vec_var(*lhs), vec_var(*rhs));
+            assign_cstmt(cx, &vec_var(*dest), &body)
+        }
+        VecStmt::Dup { dest, src, arr } => {
+            let scalar: String = format!("({}){}", arr.elem.c_scalar(), reg_var(src.reg));
+            let lanes: Vec<String> = std::iter::repeat_n(scalar, usize::from(arr.lanes)).collect();
+            let init: String = format!("({}){{{}}}", arr.type_name(), lanes.join(", "));
+            assign_cstmt(cx, &vec_var(*dest), &init)
         }
     }
 }
@@ -11583,6 +11905,9 @@ fn emit_rust(
     if block_string_ops_present(body) {
         return None;
     }
+    if block_has_vector(body) || !signature.vec.is_empty() {
+        return None;
+    }
 
     let mut out: String = String::new();
     let mut call_decls: Vec<CallDecl> = Vec::new();
@@ -11614,6 +11939,7 @@ fn emit_rust(
         FnReturn::Int(_) => "u64",
         FnReturn::Fp(FpWidth::F64) => "f64",
         FnReturn::Fp(FpWidth::F32) => "f32",
+        FnReturn::Void | FnReturn::Vec(_) => "()",
     };
     let _ = writeln!(
         out,
@@ -11700,6 +12026,7 @@ fn emit_rust(
     let ret_expr: String = match signature.ret {
         FnReturn::Int(return_width) => rs_width_mask(return_width, reg_var(Reg::Rax)),
         FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
+        FnReturn::Void | FnReturn::Vec(_) => String::new(),
     };
 
     rs_emit_block(&mut out, body, 1, &ret_expr, aggregates)?;
@@ -12193,6 +12520,7 @@ fn rs_emit_stmt(
         Stmt::BlockMove { .. }
         | Stmt::BlockFill { .. }
         | Stmt::Packed { .. }
+        | Stmt::Vector(_)
         | Stmt::PackedToGpr { .. } => return None,
     }
     Some(())
