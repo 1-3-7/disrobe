@@ -1,0 +1,112 @@
+mod ast_facts;
+mod input_facts;
+mod repair;
+
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
+
+use disrobe_py_marshal::{CodeObject, Object};
+
+use crate::ast::node::{AstModule, MatchCase, Stmt};
+use crate::bytecode::version::PyVersion as DecompileVersion;
+
+pub fn verify_and_repair(module: &mut AstModule, code: &CodeObject, version: &DecompileVersion) {
+    if version.is_pre_311() {
+        return;
+    }
+    repair_scope(&mut module.body, code, version);
+}
+
+fn repair_scope(body: &mut Vec<Stmt>, code: &CodeObject, version: &DecompileVersion) {
+    if repair::has_repair_candidate(body) {
+        let facts: input_facts::InputFacts = input_facts::extract(code, version);
+        let taken: Vec<Stmt> = std::mem::take(body);
+        *body = repair::repair_body(taken, &facts);
+    }
+    let mut picker: ChildPicker<'_> = ChildPicker::new(code);
+    descend(body, &mut picker, version);
+}
+
+fn descend(body: &mut [Stmt], picker: &mut ChildPicker<'_>, version: &DecompileVersion) {
+    for stmt in body.iter_mut() {
+        match stmt {
+            Stmt::FunctionDef { name, body, .. } | Stmt::ClassDef { name, body, .. } => {
+                if let Some(child) = picker.take(name) {
+                    repair_scope(body, child, version);
+                }
+            }
+            Stmt::If { body, orelse, .. }
+            | Stmt::For { body, orelse, .. }
+            | Stmt::While { body, orelse, .. } => {
+                descend(body, picker, version);
+                descend(orelse, picker, version);
+            }
+            Stmt::With { body, .. } => descend(body, picker, version),
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                descend(body, picker, version);
+                for handler in handlers.iter_mut() {
+                    descend(&mut handler.body, picker, version);
+                }
+                descend(orelse, picker, version);
+                descend(finalbody, picker, version);
+            }
+            Stmt::Match { cases, .. } => {
+                for case in cases.iter_mut() {
+                    let MatchCase { body, .. } = case;
+                    descend(body, picker, version);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ChildPicker<'a> {
+    by_name: BTreeMap<String, VecDeque<&'a CodeObject>>,
+}
+
+impl<'a> ChildPicker<'a> {
+    #[must_use]
+    fn new(code: &'a CodeObject) -> Self {
+        let mut by_name: BTreeMap<String, VecDeque<&'a CodeObject>> = BTreeMap::new();
+        for konst in &code.consts {
+            let Object::Code(boxed) = konst else {
+                continue;
+            };
+            let child: &CodeObject = boxed.as_ref();
+            by_name
+                .entry(code_short_name(child))
+                .or_default()
+                .push_back(child);
+        }
+        Self { by_name }
+    }
+
+    fn take(&mut self, name: &str) -> Option<&'a CodeObject> {
+        self.by_name.get_mut(name)?.pop_front()
+    }
+}
+
+#[must_use]
+fn code_short_name(code: &CodeObject) -> String {
+    match &code.name {
+        Object::String { value, .. }
+        | Object::Unicode { value, .. }
+        | Object::ShortAscii { value, .. } => value.clone(),
+        _ => String::new(),
+    }
+}

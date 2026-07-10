@@ -25,6 +25,7 @@ pub mod llm;
 pub mod reader;
 pub mod recompile;
 pub mod roundtrip;
+pub mod selfcheck;
 
 pub use engine::{
     NativeDecompile, decompile_micropython, decompile_pyc, decompile_pypy, pypy_variant_label,

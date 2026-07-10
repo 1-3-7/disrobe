@@ -216,7 +216,8 @@ pub fn build_real_source(
 ) -> Result<String> {
     let started: Option<Instant> = wall_clock_start();
     let frame_tree: FrameTree = builder_for(marshal_version).build(code, marshal_version)?;
-    let module: AstModule = structure_module(code, &frame_tree, decompile_version)?;
+    let mut module: AstModule = structure_module(code, &frame_tree, decompile_version)?;
+    crate::selfcheck::verify_and_repair(&mut module, code, decompile_version);
     let pipeline: EmitPipeline = EmitPipeline {
         emitter: Box::new(DefaultEmitter {
             unicode_literals: module_has_unicode_literals(&module),
