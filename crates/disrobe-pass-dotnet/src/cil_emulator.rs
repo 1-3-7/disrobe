@@ -16,7 +16,10 @@ pub enum EmulationError {
 
 const STEP_LIMIT: u64 = 4_000_000;
 const MAX_ARRAY: usize = 16 * 1024 * 1024;
+const MAX_HEAP_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HEAP: usize = 4096;
+const MAX_EMULATED_INSTRUCTIONS: usize = 16_384;
+const MAX_SWITCH_TARGETS: usize = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Value {
@@ -24,6 +27,8 @@ pub enum Value {
     I64(i64),
 
     Array(Option<usize>),
+
+    String(Option<usize>),
 }
 
 impl Value {
@@ -31,7 +36,7 @@ impl Value {
         match self {
             Self::I32(v) => Ok(v as i64),
             Self::I64(v) => Ok(v),
-            Self::Array(_) => Err(EmulationError::BadShape),
+            Self::Array(_) | Self::String(_) => Err(EmulationError::BadShape),
         }
     }
 
@@ -39,22 +44,32 @@ impl Value {
         match self {
             Self::Array(Some(r)) => Ok(r),
             Self::Array(None) => Err(EmulationError::OutOfBounds),
-            Self::I32(_) | Self::I64(_) => Err(EmulationError::BadShape),
+            Self::I32(_) | Self::I64(_) | Self::String(_) => Err(EmulationError::BadShape),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeapKind {
+    ByteArray,
+    CharArray,
+    OtherArray,
+    String,
 }
 
 #[derive(Debug, Clone)]
 struct HeapArray {
     bytes: Vec<u8>,
     elem_size: usize,
+    kind: HeapKind,
 }
 
 impl HeapArray {
-    fn new(len: usize, elem_size: usize) -> Self {
+    fn new(len: usize, elem_size: usize, kind: HeapKind) -> Self {
         Self {
             bytes: vec![0u8; len.saturating_mul(elem_size)],
             elem_size,
+            kind,
         }
     }
 
@@ -111,6 +126,8 @@ pub struct FieldInitEnv {
     pub field_data: std::collections::BTreeMap<u32, Vec<u8>>,
     pub init_array_tokens: std::collections::BTreeSet<u32>,
     pub array_elem_sizes: std::collections::BTreeMap<u32, usize>,
+    pub char_array_tokens: std::collections::BTreeSet<u32>,
+    pub string_char_ctor_tokens: std::collections::BTreeSet<u32>,
 }
 
 struct Vm<'a> {
@@ -120,6 +137,7 @@ struct Vm<'a> {
     locals: Vec<Value>,
     args: Vec<Value>,
     heap: Vec<HeapArray>,
+    heap_bytes: usize,
     steps: u64,
     env: FieldInitEnv,
 }
@@ -129,6 +147,7 @@ impl<'a> Vm<'a> {
         body: &'a MethodBody,
         args: Vec<Value>,
         heap: Vec<HeapArray>,
+        heap_bytes: usize,
         env: FieldInitEnv,
     ) -> Self {
         let index_of: Vec<u32> = body
@@ -143,6 +162,7 @@ impl<'a> Vm<'a> {
             locals: vec![Value::I32(0); 64],
             args,
             heap,
+            heap_bytes,
             steps: 0,
             env,
         }
@@ -174,11 +194,17 @@ impl<'a> Vm<'a> {
         self.index_of.binary_search(&offset).ok()
     }
 
-    fn alloc(&mut self, len: usize, elem: usize) -> Result<usize, EmulationError> {
-        if self.heap.len() >= MAX_HEAP || len.saturating_mul(elem) > MAX_ARRAY {
+    fn alloc(&mut self, len: usize, elem: usize, kind: HeapKind) -> Result<usize, EmulationError> {
+        let bytes: usize = len.checked_mul(elem).ok_or(EmulationError::OutOfBounds)?;
+        let heap_bytes: usize = self
+            .heap_bytes
+            .checked_add(bytes)
+            .ok_or(EmulationError::OutOfBounds)?;
+        if self.heap.len() >= MAX_HEAP || bytes > MAX_ARRAY || heap_bytes > MAX_HEAP_BYTES {
             return Err(EmulationError::OutOfBounds);
         }
-        self.heap.push(HeapArray::new(len, elem));
+        self.heap.push(HeapArray::new(len, elem, kind));
+        self.heap_bytes = heap_bytes;
         Ok(self.heap.len() - 1)
     }
 
@@ -189,8 +215,21 @@ impl<'a> Vm<'a> {
         }
     }
 
+    fn array_kind_for(&self, ins: &Instruction) -> HeapKind {
+        match ins.operand {
+            OperandValue::Token(token) if self.env.char_array_tokens.contains(&token) => {
+                HeapKind::CharArray
+            }
+            _ => HeapKind::OtherArray,
+        }
+    }
+
     fn is_init_array_call(&self, ins: &Instruction) -> bool {
         matches!(ins.operand, OperandValue::Token(t) if self.env.init_array_tokens.contains(&t))
+    }
+
+    fn is_string_char_ctor(&self, ins: &Instruction) -> bool {
+        matches!(ins.operand, OperandValue::Token(t) if self.env.string_char_ctor_tokens.contains(&t))
     }
 
     fn exec_init_array(&mut self) -> Result<(), EmulationError> {
@@ -209,6 +248,27 @@ impl<'a> Vm<'a> {
             .ok_or(EmulationError::OutOfBounds)?;
         let n: usize = data.len().min(arr.bytes.len());
         arr.bytes[..n].copy_from_slice(&data[..n]);
+        Ok(())
+    }
+
+    fn exec_string_char_ctor(&mut self) -> Result<(), EmulationError> {
+        let value: Value = self.pop()?;
+        let array_ref: usize = value.as_array()?;
+        let source: &HeapArray = self
+            .heap
+            .get(array_ref)
+            .ok_or(EmulationError::OutOfBounds)?;
+        if source.kind != HeapKind::CharArray {
+            return Err(EmulationError::BadShape);
+        }
+        let bytes: Vec<u8> = source.bytes.clone();
+        let string_ref: usize = self.alloc(source.len(), 2, HeapKind::String)?;
+        let target: &mut HeapArray = self
+            .heap
+            .get_mut(string_ref)
+            .ok_or(EmulationError::OutOfBounds)?;
+        target.bytes.copy_from_slice(&bytes);
+        self.stack.push(Value::String(Some(string_ref)));
         Ok(())
     }
 
@@ -319,7 +379,8 @@ impl<'a> Vm<'a> {
                         return Err(EmulationError::OutOfBounds);
                     }
                     let elem: usize = self.elem_size_for(ins);
-                    let r: usize = self.alloc(len as usize, elem)?;
+                    let kind: HeapKind = self.array_kind_for(ins);
+                    let r: usize = self.alloc(len as usize, elem, kind)?;
                     self.stack.push(Value::Array(Some(r)));
                 }
                 n if n.starts_with("ldelem") => {
@@ -358,6 +419,19 @@ impl<'a> Vm<'a> {
                 }
                 "br" | "br.s" => {
                     next = self.branch(ins)?;
+                }
+                "switch" => {
+                    let index: i64 = self.pop()?.as_i64()?;
+                    let OperandValue::Switch(targets) = &ins.operand else {
+                        return Err(EmulationError::BadShape);
+                    };
+                    if let Ok(index) = usize::try_from(index)
+                        && let Some(relative) = targets.get(index)
+                    {
+                        let target: u32 = checked_post_offset(self, ins, *relative)
+                            .ok_or(EmulationError::BadShape)?;
+                        next = self.ip_of(target).ok_or(EmulationError::BadShape)?;
+                    }
                 }
                 "brtrue" | "brtrue.s" => {
                     let v: Value = self.pop()?;
@@ -399,6 +473,9 @@ impl<'a> Vm<'a> {
                 "call" if self.is_init_array_call(ins) => {
                     self.exec_init_array()?;
                 }
+                "newobj" if self.is_string_char_ctor(ins) => {
+                    self.exec_string_char_ctor()?;
+                }
                 "call" | "callvirt" | "calli" | "newobj" | "ldsfld" | "ldfld" | "stfld"
                 | "ldstr" | "box" | "unbox" | "unbox.any" | "castclass" | "isinst" => {
                     return Err(EmulationError::ExternalCall);
@@ -422,12 +499,28 @@ impl<'a> Vm<'a> {
                         .chunks_exact(2)
                         .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
                         .collect();
-                    Ok(StubOutput::Utf16(String::from_utf16_lossy(&units)))
+                    String::from_utf16(&units)
+                        .map(StubOutput::Utf16)
+                        .map_err(|_| EmulationError::BadShape)
                 } else {
                     Ok(StubOutput::Bytes(arr.bytes.clone()))
                 }
             }
-            Value::Array(None) => Err(EmulationError::NoResult),
+            Value::Array(None) | Value::String(None) => Err(EmulationError::NoResult),
+            Value::String(Some(r)) => {
+                let string: &HeapArray = self.heap.get(r).ok_or(EmulationError::OutOfBounds)?;
+                if string.kind != HeapKind::String || string.elem_size != 2 {
+                    return Err(EmulationError::BadShape);
+                }
+                let units: Vec<u16> = string
+                    .bytes
+                    .chunks_exact(2)
+                    .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16(&units)
+                    .map(StubOutput::Utf16)
+                    .map_err(|_| EmulationError::BadShape)
+            }
         }
     }
 
@@ -483,11 +576,65 @@ fn post_offset(vm: &Vm<'_>, ins: &Instruction, rel: i32) -> u32 {
     (i64::from(next_off) + i64::from(rel)) as u32
 }
 
+fn validate_switch_targets(body: &MethodBody, index_of: &[u32]) -> Result<(), EmulationError> {
+    if body.instructions.len() > MAX_EMULATED_INSTRUCTIONS {
+        return Err(EmulationError::OutOfBounds);
+    }
+    let mut switch_targets: usize = 0;
+    for (index, instruction) in body.instructions.iter().enumerate() {
+        let OperandValue::Switch(targets) = &instruction.operand else {
+            continue;
+        };
+        if !body.exception_clauses.is_empty() {
+            return Err(EmulationError::BadShape);
+        }
+        switch_targets = switch_targets
+            .checked_add(targets.len())
+            .filter(|count: &usize| *count <= MAX_SWITCH_TARGETS)
+            .ok_or(EmulationError::OutOfBounds)?;
+        let next_index: usize = index.checked_add(1).ok_or(EmulationError::BadShape)?;
+        let next_offset: u32 = *index_of.get(next_index).ok_or(EmulationError::BadShape)?;
+        for relative in targets {
+            let target: i64 = i64::from(next_offset)
+                .checked_add(i64::from(*relative))
+                .ok_or(EmulationError::BadShape)?;
+            let target: u32 = u32::try_from(target).map_err(|_| EmulationError::BadShape)?;
+            let target_index: usize = index_of
+                .binary_search(&target)
+                .map_err(|_| EmulationError::BadShape)?;
+            if target_index > 0
+                && is_prefix(
+                    body.instructions
+                        .get(target_index - 1)
+                        .ok_or(EmulationError::BadShape)?,
+                )
+            {
+                return Err(EmulationError::BadShape);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_prefix(instruction: &Instruction) -> bool {
+    matches!(
+        instruction.name.as_str(),
+        "unaligned." | "volatile." | "tail." | "constrained." | "no." | "readonly."
+    )
+}
+
+fn checked_post_offset(vm: &Vm<'_>, ins: &Instruction, rel: i32) -> Option<u32> {
+    let ip: usize = vm.ip_of(ins.offset)?;
+    let next_off: u32 = *vm.index_of.get(ip.checked_add(1)?)?;
+    let target: i64 = i64::from(next_off).checked_add(i64::from(rel))?;
+    u32::try_from(target).ok()
+}
+
 const fn truthy(v: Value) -> bool {
     match v {
         Value::I32(i) => i != 0,
         Value::I64(i) => i != 0,
-        Value::Array(opt) => opt.is_some(),
+        Value::Array(opt) | Value::String(opt) => opt.is_some(),
     }
 }
 
@@ -515,7 +662,7 @@ fn zero_extend_word(v: Value) -> i64 {
     match v {
         Value::I32(x) => i64::from(x.cast_unsigned()),
         Value::I64(x) => x,
-        Value::Array(_) => 0,
+        Value::Array(_) | Value::String(_) => 0,
     }
 }
 
@@ -579,19 +726,56 @@ pub fn emulate_stub_with_init(
     input: &StubInput,
     env: &FieldInitEnv,
 ) -> Result<StubOutput, EmulationError> {
+    validate_stub_body(body)?;
+    emulate_stub_with_init_prevalidated(body, input, env)
+}
+
+pub(crate) fn validate_stub_body(body: &MethodBody) -> Result<(), EmulationError> {
+    let index_of: Vec<u32> = body
+        .instructions
+        .iter()
+        .map(|instruction: &Instruction| instruction.offset)
+        .collect();
+    validate_switch_targets(body, &index_of)
+}
+
+pub(crate) fn emulate_stub_with_init_prevalidated(
+    body: &MethodBody,
+    input: &StubInput,
+    env: &FieldInitEnv,
+) -> Result<StubOutput, EmulationError> {
     let mut heap: Vec<HeapArray> = Vec::new();
     let mut args: Vec<Value> = Vec::new();
+    let mut heap_bytes: usize = 0;
     for &i in &input.int_args {
         args.push(Value::I64(i));
     }
     for bytes in &input.byte_array_args {
-        let mut arr: HeapArray = HeapArray::new(bytes.len(), 1);
+        heap_bytes = heap_bytes
+            .checked_add(bytes.len())
+            .filter(|total: &usize| *total <= MAX_HEAP_BYTES)
+            .ok_or(EmulationError::OutOfBounds)?;
+        if bytes.len() > MAX_ARRAY || heap.len() >= MAX_HEAP {
+            return Err(EmulationError::OutOfBounds);
+        }
+        let mut arr: HeapArray = HeapArray::new(bytes.len(), 1, HeapKind::ByteArray);
         arr.bytes.copy_from_slice(bytes);
         heap.push(arr);
         args.push(Value::Array(Some(heap.len() - 1)));
     }
     for chars in &input.char_array_args {
-        let mut arr: HeapArray = HeapArray::new(chars.len(), 2);
+        let bytes_len: usize = chars
+            .len()
+            .checked_mul(2)
+            .ok_or(EmulationError::OutOfBounds)?;
+        heap_bytes = heap_bytes
+            .checked_add(bytes_len)
+            .filter(|total: &usize| *total <= MAX_HEAP_BYTES)
+            .ok_or(EmulationError::OutOfBounds)?;
+        if bytes_len > MAX_ARRAY || heap.len() >= MAX_HEAP {
+            return Err(EmulationError::OutOfBounds);
+        }
+        let mut arr: HeapArray = HeapArray::new(chars.len(), 2, HeapKind::CharArray);
         for (i, unit) in chars.iter().enumerate() {
             let off: usize = i * 2;
             arr.bytes[off] = (unit & 0xFF) as u8;
@@ -600,7 +784,7 @@ pub fn emulate_stub_with_init(
         heap.push(arr);
         args.push(Value::Array(Some(heap.len() - 1)));
     }
-    let mut vm: Vm<'_> = Vm::with_env(body, args, heap, env.clone());
+    let mut vm: Vm<'_> = Vm::with_env(body, args, heap, heap_bytes, env.clone());
     vm.run()
 }
 
@@ -649,6 +833,122 @@ mod tests {
         let err: EmulationError =
             emulate_stub(&body, &StubInput::default()).expect_err("external call");
         assert_eq!(err, EmulationError::ExternalCall);
+    }
+
+    #[test]
+    fn switch_rejects_an_invalid_unselected_target() {
+        let mut code: Vec<u8> = vec![0x16, 0x45];
+        code.extend_from_slice(&2u32.to_le_bytes());
+        code.extend_from_slice(&0i32.to_le_bytes());
+        code.extend_from_slice(&i32::MAX.to_le_bytes());
+        code.extend_from_slice(&[0x17, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let error: EmulationError =
+            emulate_stub(&body, &StubInput::default()).expect_err("invalid switch target");
+        assert_eq!(error, EmulationError::BadShape);
+    }
+
+    #[test]
+    fn switch_rejects_a_target_after_a_prefix() {
+        let mut code: Vec<u8> = vec![0x16, 0x45];
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.extend_from_slice(&2i32.to_le_bytes());
+        code.extend_from_slice(&[0xFE, 0x13, 0x17, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let error: EmulationError =
+            emulate_stub(&body, &StubInput::default()).expect_err("target after prefix");
+        assert_eq!(error, EmulationError::BadShape);
+    }
+
+    #[test]
+    fn switch_negative_and_out_of_range_selectors_fall_through() {
+        for selector in [0x15, 0x17] {
+            let mut code: Vec<u8> = vec![selector, 0x45];
+            code.extend_from_slice(&1u32.to_le_bytes());
+            code.extend_from_slice(&2i32.to_le_bytes());
+            code.extend_from_slice(&[0x17, 0x2A, 0x18, 0x2A]);
+            let body: MethodBody = body_from(&code);
+            let output: StubOutput =
+                emulate_stub(&body, &StubInput::default()).expect("switch fallthrough");
+            assert_eq!(output, StubOutput::Int(1));
+        }
+    }
+
+    #[test]
+    fn constructed_string_cannot_be_used_as_an_array() {
+        let char_token: u32 = 0x0100_0001;
+        let ctor_token: u32 = 0x0A00_0001;
+        let mut code: Vec<u8> = vec![0x17, 0x8D];
+        code.extend_from_slice(&char_token.to_le_bytes());
+        code.extend_from_slice(&[0x25, 0x16, 0x1F, 65, 0x9D, 0x73]);
+        code.extend_from_slice(&ctor_token.to_le_bytes());
+        code.extend_from_slice(&[0x16, 0x93, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let mut env: FieldInitEnv = FieldInitEnv::default();
+        env.array_elem_sizes.insert(char_token, 2);
+        env.char_array_tokens.insert(char_token);
+        env.string_char_ctor_tokens.insert(ctor_token);
+        let error: EmulationError = emulate_stub_with_init(&body, &StubInput::default(), &env)
+            .expect_err("string is not an array");
+        assert_eq!(error, EmulationError::BadShape);
+    }
+
+    #[test]
+    fn string_constructor_rejects_unpaired_utf16() {
+        let char_token: u32 = 0x0100_0001;
+        let ctor_token: u32 = 0x0A00_0001;
+        let mut code: Vec<u8> = vec![0x17, 0x8D];
+        code.extend_from_slice(&char_token.to_le_bytes());
+        code.extend_from_slice(&[0x25, 0x16, 0x20]);
+        code.extend_from_slice(&0xD800i32.to_le_bytes());
+        code.extend_from_slice(&[0x9D, 0x73]);
+        code.extend_from_slice(&ctor_token.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let mut env: FieldInitEnv = FieldInitEnv::default();
+        env.array_elem_sizes.insert(char_token, 2);
+        env.char_array_tokens.insert(char_token);
+        env.string_char_ctor_tokens.insert(ctor_token);
+        let error: EmulationError =
+            emulate_stub_with_init(&body, &StubInput::default(), &env).expect_err("invalid UTF-16");
+        assert_eq!(error, EmulationError::BadShape);
+    }
+
+    #[test]
+    fn string_constructor_rejects_a_two_byte_non_char_array() {
+        let short_token: u32 = 0x0100_0001;
+        let ctor_token: u32 = 0x0A00_0001;
+        let mut code: Vec<u8> = vec![0x17, 0x8D];
+        code.extend_from_slice(&short_token.to_le_bytes());
+        code.extend_from_slice(&[0x73]);
+        code.extend_from_slice(&ctor_token.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let mut env: FieldInitEnv = FieldInitEnv::default();
+        env.array_elem_sizes.insert(short_token, 2);
+        env.string_char_ctor_tokens.insert(ctor_token);
+        let error: EmulationError = emulate_stub_with_init(&body, &StubInput::default(), &env)
+            .expect_err("short array is not char array");
+        assert_eq!(error, EmulationError::BadShape);
+    }
+
+    #[test]
+    fn string_constructor_copies_the_source_array() {
+        let char_token: u32 = 0x0100_0001;
+        let ctor_token: u32 = 0x0A00_0001;
+        let mut code: Vec<u8> = vec![0x17, 0x8D];
+        code.extend_from_slice(&char_token.to_le_bytes());
+        code.extend_from_slice(&[0x0A, 0x06, 0x16, 0x1F, 65, 0x9D, 0x06, 0x73]);
+        code.extend_from_slice(&ctor_token.to_le_bytes());
+        code.extend_from_slice(&[0x0B, 0x06, 0x16, 0x1F, 66, 0x9D, 0x07, 0x2A]);
+        let body: MethodBody = body_from(&code);
+        let mut env: FieldInitEnv = FieldInitEnv::default();
+        env.array_elem_sizes.insert(char_token, 2);
+        env.char_array_tokens.insert(char_token);
+        env.string_char_ctor_tokens.insert(ctor_token);
+        let output: StubOutput =
+            emulate_stub_with_init(&body, &StubInput::default(), &env).expect("construct string");
+        assert_eq!(output, StubOutput::Utf16("A".to_owned()));
     }
 
     #[test]

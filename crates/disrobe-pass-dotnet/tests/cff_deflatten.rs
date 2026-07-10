@@ -439,6 +439,30 @@ fn decryptor_inliner_recovers_known_literals_by_real_execution() {
     );
 }
 
+#[test]
+fn expression_predicate_string_loader_recovers_known_originals() {
+    let image: Vec<u8> = load(PRED_EXPR);
+    let report: DecryptInlineReport =
+        inline_decryptors(&image).expect("inliner runs on protected fixture");
+    let mut recovered: Vec<(i64, &str)> = report
+        .call_sites
+        .iter()
+        .filter_map(
+            |site: &disrobe_pass_dotnet::peel::deflatten::decrypt::CallSite| match &site.literal {
+                InlinedLiteral::Text(text) => Some((site.argument, text.as_str())),
+                _ => None,
+            },
+        )
+        .collect();
+    recovered.sort_unstable();
+    assert_eq!(
+        recovered,
+        [(11, "PMFMI"), (22, "DDBBCEFG")],
+        "the real ConfuserEx ExpressionPredicate fixture must statically recover both outputs of \
+         Secrets.Decode(int) against its committed source"
+    );
+}
+
 fn dotnet_run(exe: &str) -> Option<String> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(exe);

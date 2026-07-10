@@ -239,6 +239,7 @@ impl TypeSig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MethodSig {
+    pub calling_convention: u8,
     pub has_this: bool,
     pub explicit_this: bool,
     pub generic_param_count: u32,
@@ -428,6 +429,7 @@ impl<'a> SigReader<'a> {
 
     fn parse_method_inner(&mut self) -> Result<MethodSig> {
         let cc: u8 = self.byte()?;
+        let calling_convention: u8 = cc;
         let has_this: bool = cc & SIG_HASTHIS != 0;
         let explicit_this: bool = cc & SIG_EXPLICITTHIS != 0;
         let generic_param_count: u32 = if cc & SIG_GENERIC != 0 {
@@ -449,6 +451,7 @@ impl<'a> SigReader<'a> {
             params.push(self.type_sig()?);
         }
         Ok(MethodSig {
+            calling_convention,
             has_this,
             explicit_this,
             generic_param_count,

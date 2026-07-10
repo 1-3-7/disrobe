@@ -312,7 +312,7 @@ impl Resolver {
     }
 
     #[must_use]
-    fn string(&self, index: u32) -> String {
+    pub(crate) fn string(&self, index: u32) -> String {
         if index == 0 {
             return String::new();
         }
