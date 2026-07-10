@@ -3928,12 +3928,56 @@ fn shares_duplicated_tail(
         }
         matched.push(&stream.ops[*a]);
     }
+    let genuine_none_else: bool = then_tail.len() > matched.len()
+        && else_tail.len() > matched.len()
+        && region_all_paths_terminate(stream, then_lo, then_hi);
     match matched.as_slice() {
-        [op @ CanonicalOp::ReturnConst(_), ..] => !loads_none(code, op),
+        [op @ CanonicalOp::ReturnConst(_), ..] => !loads_none(code, op) || genuine_none_else,
         [CanonicalOp::Raise(_) | CanonicalOp::Reraise(_), _, ..] => true,
-        [CanonicalOp::Return, value, ..] => !loads_none(code, value),
+        [CanonicalOp::Return, value, ..] => !loads_none(code, value) || genuine_none_else,
         _ => false,
     }
+}
+
+fn region_all_paths_terminate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    if lo >= hi || hi > stream.ops.len() {
+        return false;
+    }
+    let mut visited: Vec<bool> = vec![false; hi - lo];
+    let mut work: Vec<usize> = vec![lo];
+    while let Some(idx) = work.pop() {
+        if idx < lo || idx >= hi {
+            return false;
+        }
+        let slot: usize = idx - lo;
+        if visited[slot] {
+            continue;
+        }
+        visited[slot] = true;
+        match &stream.ops[idx] {
+            CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_) => {}
+            op @ (CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)) => {
+                match resolve_jump_target(stream, idx, op) {
+                    Some(target) => work.push(target),
+                    None => return false,
+                }
+            }
+            op => match resolve_jump_target(stream, idx, op) {
+                Some(target) => {
+                    work.push(target);
+                    work.push(idx + 1);
+                }
+                None => work.push(idx + 1),
+            },
+        }
+    }
+    true
 }
 
 fn significant_indices_back(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {

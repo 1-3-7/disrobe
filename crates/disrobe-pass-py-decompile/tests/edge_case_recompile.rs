@@ -476,3 +476,43 @@ fn nested_for_else_break_after_guarded_return() {
         "def check_methods(c, *methods):\n    mro = c.__mro__\n    for method in methods:\n        for b in mro:\n            if method in b.__dict__:\n                if b.__dict__[method] is None:\n                    return None\n                break\n        else:\n            return None\n    return True\n",
     );
 }
+
+#[test]
+fn main_guard_module_tail() {
+    assert_recompiles(
+        "edge_main_guard_module_tail",
+        "import sys\n\n\ndef main():\n    print('hi')\n    return 0\n\n\nif __name__ == '__main__':\n    sys.exit(main())\n",
+    );
+}
+
+#[test]
+fn module_scope_if_else_duplicated_none_tail() {
+    assert_recompiles(
+        "edge_module_if_else_none_tail",
+        "import os\nif os.name == 'nt':\n    sep = '\\\\'\nelse:\n    sep = '/'\n",
+    );
+}
+
+#[test]
+fn module_scope_if_elif_else_chain() {
+    assert_recompiles(
+        "edge_module_if_elif_else",
+        "import sys\nv = sys.argv\nif len(v) == 1:\n    mode = 'a'\nelif len(v) == 2:\n    mode = 'b'\nelse:\n    mode = 'c'\n",
+    );
+}
+
+#[test]
+fn module_scope_nested_if_else_in_guard() {
+    assert_recompiles(
+        "edge_module_nested_if_else_guard",
+        "import sys\nif __name__ == '__main__':\n    if len(sys.argv) > 1:\n        target = sys.argv[1]\n    else:\n        target = 'default'\n    print(target)\n",
+    );
+}
+
+#[test]
+fn module_scope_bare_if_no_else_preserved() {
+    assert_recompiles(
+        "edge_module_bare_if_stmt_after",
+        "flag = 0\nif flag:\n    x = 1\ny = 2\n",
+    );
+}
