@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -95,7 +96,8 @@ pub fn extract_source_mapping_url(input: &[u8]) -> Result<Option<String>> {
 }
 
 fn decode_name_string(data: &[u8]) -> Result<String> {
-    let (len, consumed): (u64, usize) = read_uleb128(data)?;
+    let (len, consumed): (u64, usize) = read_uleb128_at(data, 0)
+        .map_err(|e| Error::Parse(format!("uleb128 decode failed: {e}")))?;
     let start: usize = consumed;
     let end: usize = start
         .checked_add(usize::try_from(len).map_err(|_| Error::Parse("name length overflow".into()))?)
@@ -105,22 +107,6 @@ fn decode_name_string(data: &[u8]) -> Result<String> {
         .ok_or_else(|| Error::Parse("sourceMappingURL truncated".into()))?;
     String::from_utf8(bytes.to_vec())
         .map_err(|e| Error::Parse(format!("sourceMappingURL not utf-8: {e}")))
-}
-
-fn read_uleb128(data: &[u8]) -> Result<(u64, usize)> {
-    let mut result: u64 = 0;
-    let mut shift: u32 = 0;
-    for (i, &byte) in data.iter().enumerate() {
-        if shift >= 64 {
-            return Err(Error::Parse("uleb128 overflow".into()));
-        }
-        result |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Ok((result, i + 1));
-        }
-        shift += 7;
-    }
-    Err(Error::Parse("uleb128 truncated".into()))
 }
 
 pub fn parse_source_map(json: &[u8]) -> Result<SourceMap> {

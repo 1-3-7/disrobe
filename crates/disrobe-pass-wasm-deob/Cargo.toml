@@ -21,6 +21,7 @@ llm-metadata = ["dep:disrobe-llm-metadata"]
 chain = ["disrobe-core/chain"]
 
 [dependencies]
+disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-mba = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
