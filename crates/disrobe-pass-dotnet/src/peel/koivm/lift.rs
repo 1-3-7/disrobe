@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::descriptors::KoiDescriptors;
 use super::disasm::{KoiBlock, KoiInstr, KoiInstrOperand, KoiMethodDisasm};
@@ -97,9 +97,9 @@ fn render_op(op: &LiftedOp) -> String {
         LiftedOp::LoadConstI64(v) => format!("ldc.i8 {v}"),
         LiftedOp::Binary(b) => render_binop(*b).to_string(),
         LiftedOp::Compare(c) => format!("cmp.{}", render_cmpop(*c)),
-        LiftedOp::BranchTrue(t) => format!("brtrue koi_{t:#x}"),
-        LiftedOp::BranchFalse(t) => format!("brfalse koi_{t:#x}"),
-        LiftedOp::Branch(t) => format!("br koi_{t:#x}"),
+        LiftedOp::BranchTrue(t) => format!("brtrue IL_{t:04}"),
+        LiftedOp::BranchFalse(t) => format!("brfalse IL_{t:04}"),
+        LiftedOp::Branch(t) => format!("br IL_{t:04}"),
         LiftedOp::Switch => "switch".to_string(),
         LiftedOp::Call(t) => format!("call token#{t:08X}"),
         LiftedOp::VirtualCall(name) => format!("vcall {name}"),
@@ -254,23 +254,47 @@ pub fn lift_method(
         descriptors,
         stream,
     };
-    let mut ops: Vec<LiftedOp> = Vec::new();
-
-    let body_blocks: Vec<&KoiBlock> = disasm
+    let body_blocks: Vec<&KoiBlock> = order_body_blocks(disasm);
+    let known_entries: BTreeSet<u32> = body_blocks
+        .iter()
+        .map(|block: &&KoiBlock| block.entry_offset)
+        .collect();
+    let epilogue_entries: BTreeSet<u32> = disasm
         .blocks
         .iter()
-        .filter(|b: &&KoiBlock| !is_prologue(b))
+        .filter(|block: &&KoiBlock| is_epilogue(block))
+        .map(|block: &KoiBlock| block.entry_offset)
         .collect();
+    let mut block_ops: Vec<(u32, Vec<LiftedOp>)> = Vec::with_capacity(body_blocks.len());
 
-    let offsets: BTreeMap<u32, usize> = body_blocks
-        .iter()
-        .enumerate()
-        .map(|(i, b): (usize, &&KoiBlock)| (b.entry_offset, i))
-        .collect();
-
-    for block in &body_blocks {
-        lift_block(block, layout, ctx, &offsets, &mut ops);
+    for (index, block) in body_blocks.iter().enumerate() {
+        let next_entry: Option<u32> = body_blocks
+            .get(index + 1)
+            .map(|next: &&KoiBlock| next.entry_offset);
+        let mut lifted: Vec<LiftedOp> = Vec::new();
+        lift_block(
+            block,
+            layout,
+            ctx,
+            next_entry,
+            &known_entries,
+            &epilogue_entries,
+            &mut lifted,
+        );
+        block_ops.push((block.entry_offset, lifted));
     }
+
+    let (mut ops, block_starts): (Vec<LiftedOp>, BTreeMap<u32, u32>) = flatten_block_ops(block_ops);
+    rebase_branch_targets(&mut ops, &block_starts);
+    let explicit_unresolved: usize = ops
+        .iter()
+        .filter(|op: &&LiftedOp| matches!(op, LiftedOp::Unknown("branch-target")))
+        .count();
+    let missing_markers: usize = disasm
+        .unresolved_offsets
+        .len()
+        .saturating_sub(explicit_unresolved);
+    ops.extend((0..missing_markers).map(|_index: usize| LiftedOp::Unknown("branch-target")));
 
     let unknown_op_count: u32 = ops
         .iter()
@@ -284,6 +308,130 @@ pub fn lift_method(
         local_count: layout.local_count,
         ops,
         unknown_op_count,
+    }
+}
+
+fn flatten_block_ops(block_ops: Vec<(u32, Vec<LiftedOp>)>) -> (Vec<LiftedOp>, BTreeMap<u32, u32>) {
+    let mut block_starts: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut ops: Vec<LiftedOp> = Vec::new();
+    for (entry_offset, lifted) in block_ops {
+        if let Ok(start) = u32::try_from(ops.len()) {
+            block_starts.insert(entry_offset, start);
+        }
+        ops.extend(lifted);
+    }
+    block_starts.retain(|_entry: &u32, start: &mut u32| {
+        usize::try_from(*start).is_ok_and(|index: usize| index < ops.len())
+    });
+    (ops, block_starts)
+}
+
+fn order_body_blocks(disasm: &KoiMethodDisasm) -> Vec<&KoiBlock> {
+    let epilogue_entries: BTreeSet<u32> = disasm
+        .blocks
+        .iter()
+        .filter(|block: &&KoiBlock| is_epilogue(block))
+        .map(|block: &KoiBlock| block.entry_offset)
+        .collect();
+    let conditional_epilogues: BTreeSet<u32> = disasm
+        .blocks
+        .iter()
+        .filter_map(|block: &KoiBlock| {
+            let terminal: &KoiInstr = block.instrs.last()?;
+            if matches!(terminal.op, KoiOp::Jz | KoiOp::Jnz) {
+                terminal.rel_target
+            } else {
+                None
+            }
+        })
+        .filter(|target: &u32| epilogue_entries.contains(target))
+        .collect();
+    let retained: BTreeMap<u32, &KoiBlock> = disasm
+        .blocks
+        .iter()
+        .filter(|block: &&KoiBlock| {
+            !is_prologue(block)
+                && (!epilogue_entries.contains(&block.entry_offset)
+                    || conditional_epilogues.contains(&block.entry_offset))
+        })
+        .map(|block: &KoiBlock| (block.entry_offset, block))
+        .collect();
+    let entry: Option<u32> = disasm
+        .blocks
+        .iter()
+        .find(|block: &&KoiBlock| is_prologue(block))
+        .and_then(|block: &KoiBlock| block.instrs.last())
+        .and_then(|terminal: &KoiInstr| terminal.rel_target)
+        .filter(|target: &u32| retained.contains_key(target))
+        .or_else(|| retained.keys().next().copied());
+    let mut ordered: Vec<&KoiBlock> = Vec::with_capacity(retained.len());
+    let mut visited: BTreeSet<u32> = BTreeSet::new();
+    let mut pending: Vec<u32> = entry.into_iter().collect();
+
+    while ordered.len() < retained.len() {
+        let Some(start): Option<u32> = pending.pop().or_else(|| {
+            retained
+                .keys()
+                .find(|offset: &&u32| !visited.contains(offset))
+                .copied()
+        }) else {
+            break;
+        };
+        let mut current: Option<u32> = Some(start);
+        while let Some(offset) = current {
+            if !visited.insert(offset) {
+                break;
+            }
+            let Some(block): Option<&&KoiBlock> = retained.get(&offset) else {
+                break;
+            };
+            ordered.push(*block);
+            let Some(terminal): Option<&KoiInstr> = block.instrs.last() else {
+                break;
+            };
+            current = match terminal.op {
+                KoiOp::Jz | KoiOp::Jnz => {
+                    if let Some(target) = terminal.rel_target
+                        && retained.contains_key(&target)
+                        && !visited.contains(&target)
+                    {
+                        pending.push(target);
+                    }
+                    block
+                        .fallthrough_offset
+                        .filter(|target: &u32| retained.contains_key(target))
+                }
+                KoiOp::Jmp => terminal
+                    .rel_target
+                    .filter(|target: &u32| retained.contains_key(target)),
+                _ => None,
+            };
+        }
+    }
+    ordered
+}
+
+fn rebase_branch_targets(ops: &mut [LiftedOp], block_starts: &BTreeMap<u32, u32>) {
+    for op in ops {
+        let raw_target: Option<u32> = match op {
+            LiftedOp::BranchTrue(target)
+            | LiftedOp::BranchFalse(target)
+            | LiftedOp::Branch(target) => Some(*target),
+            _ => None,
+        };
+        let Some(raw_target) = raw_target else {
+            continue;
+        };
+        let Some(lifted_target): Option<&u32> = block_starts.get(&raw_target) else {
+            *op = LiftedOp::Unknown("branch-target");
+            continue;
+        };
+        match op {
+            LiftedOp::BranchTrue(target)
+            | LiftedOp::BranchFalse(target)
+            | LiftedOp::Branch(target) => *target = *lifted_target,
+            _ => {}
+        }
     }
 }
 
@@ -301,11 +449,41 @@ fn is_prologue(block: &KoiBlock) -> bool {
     has_bp_sp && has_jmp
 }
 
+fn is_epilogue(block: &KoiBlock) -> bool {
+    let Some(tail): Option<&[KoiInstr]> = block.instrs.get(block.instrs.len().saturating_sub(4)..)
+    else {
+        return false;
+    };
+    matches!(
+        tail,
+        [
+            KoiInstr {
+                op: KoiOp::PushrDword,
+                operand: KoiInstrOperand::Register(KoiReg::Bp),
+                ..
+            },
+            KoiInstr {
+                op: KoiOp::Pop,
+                operand: KoiInstrOperand::Register(KoiReg::Sp),
+                ..
+            },
+            KoiInstr {
+                op: KoiOp::Pop,
+                operand: KoiInstrOperand::Register(KoiReg::Bp),
+                ..
+            },
+            KoiInstr { op: KoiOp::Ret, .. },
+        ]
+    )
+}
+
 fn lift_block(
     block: &KoiBlock,
     layout: FrameLayout,
     ctx: LiftCtx<'_>,
-    offsets: &BTreeMap<u32, usize>,
+    next_entry: Option<u32>,
+    known_entries: &BTreeSet<u32>,
+    epilogue_entries: &BTreeSet<u32>,
     out: &mut Vec<LiftedOp>,
 ) {
     let mut stack: Vec<Value> = Vec::new();
@@ -393,28 +571,49 @@ fn lift_block(
                     out.push(LiftedOp::Compare(cmp));
                 }
                 if let Some(target) = ins.rel_target
-                    && offsets.contains_key(&target)
+                    && known_entries.contains(&target)
                 {
                     out.push(LiftedOp::BranchFalse(target));
-                } else if let Some(target) = ins.rel_target {
-                    out.push(LiftedOp::BranchFalse(target));
+                } else {
+                    out.push(LiftedOp::Unknown("branch-target"));
                 }
+                emit_nonadjacent_fallthrough(
+                    block,
+                    next_entry,
+                    known_entries,
+                    epilogue_entries,
+                    out,
+                );
             }
             KoiOp::Jnz => {
                 if let Some(cmp) = last_cmp {
                     out.push(LiftedOp::Compare(cmp));
                 }
-                if let Some(target) = ins.rel_target {
-                    out.push(LiftedOp::BranchTrue(target));
-                }
-            }
-            KoiOp::Jmp => {
                 if let Some(target) = ins.rel_target
-                    && offsets.contains_key(&target)
+                    && known_entries.contains(&target)
                 {
+                    out.push(LiftedOp::BranchTrue(target));
+                } else {
+                    out.push(LiftedOp::Unknown("branch-target"));
+                }
+                emit_nonadjacent_fallthrough(
+                    block,
+                    next_entry,
+                    known_entries,
+                    epilogue_entries,
+                    out,
+                );
+            }
+            KoiOp::Jmp => match ins.rel_target {
+                Some(target) if epilogue_entries.contains(&target) => {
+                    out.push(LiftedOp::Return);
+                }
+                Some(target) if Some(target) == next_entry => {}
+                Some(target) if known_entries.contains(&target) => {
                     out.push(LiftedOp::Branch(target));
                 }
-            }
+                _ => out.push(LiftedOp::Unknown("branch-target")),
+            },
             KoiOp::SxByte => emit_convert(&mut stack, ConvKind::SignExtendByte, out),
             KoiOp::SxWord => emit_convert(&mut stack, ConvKind::SignExtendWord, out),
             KoiOp::SxDword => emit_convert(&mut stack, ConvKind::SignExtendDword, out),
@@ -455,6 +654,21 @@ fn lift_block(
             },
         }
         i += 1;
+    }
+}
+
+fn emit_nonadjacent_fallthrough(
+    block: &KoiBlock,
+    next_entry: Option<u32>,
+    known_entries: &BTreeSet<u32>,
+    epilogue_entries: &BTreeSet<u32>,
+    out: &mut Vec<LiftedOp>,
+) {
+    match block.fallthrough_offset {
+        Some(target) if Some(target) == next_entry => {}
+        Some(target) if epilogue_entries.contains(&target) => out.push(LiftedOp::Return),
+        Some(target) if known_entries.contains(&target) => out.push(LiftedOp::Branch(target)),
+        _ => out.push(LiftedOp::Unknown("branch-target")),
     }
 }
 
@@ -762,6 +976,52 @@ mod tests {
                 m.ops
             );
         }
+    }
+
+    #[test]
+    fn missing_or_invalid_real_branch_target_is_marked_unknown() {
+        let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("../../corpus/dotnet/koivm/KoiSample.koistream.bin");
+        let bytes: Vec<u8> = std::fs::read(path).unwrap();
+        let stream: KoiStream = parse_koistream(&bytes).unwrap();
+        let descriptors: KoiDescriptors = KoiDescriptors::from_seed(0);
+        let sig: &KoiSig = stream.sig_by_id(2).unwrap();
+        let disasm: KoiMethodDisasm =
+            disassemble_method(&stream.raw, sig.entry_offset, sig.entry_key, &descriptors).unwrap();
+        for replacement in [None, Some(u32::MAX)] {
+            let mut changed: KoiMethodDisasm = disasm.clone();
+            let body: &mut KoiBlock = changed
+                .blocks
+                .iter_mut()
+                .find(|block: &&mut KoiBlock| !is_prologue(block))
+                .unwrap();
+            let branch: &mut KoiInstr = body.instrs.last_mut().unwrap();
+            assert!(matches!(branch.op, KoiOp::Jmp));
+            branch.rel_target = replacement;
+
+            let lifted: LiftedMethod = lift_method(&changed, 2, &descriptors, &stream);
+            assert!(
+                lifted
+                    .ops
+                    .iter()
+                    .any(|op: &LiftedOp| matches!(op, LiftedOp::Unknown("branch-target"))),
+                "unresolved branch target must be explicit; got {:?}",
+                lifted.ops
+            );
+        }
+    }
+
+    #[test]
+    fn empty_transport_block_rebases_to_next_emitted_op() {
+        let block_ops: Vec<(u32, Vec<LiftedOp>)> = vec![
+            (10, vec![LiftedOp::Branch(20)]),
+            (20, Vec::new()),
+            (30, vec![LiftedOp::Return]),
+        ];
+        let (mut ops, starts): (Vec<LiftedOp>, BTreeMap<u32, u32>) = flatten_block_ops(block_ops);
+        rebase_branch_targets(&mut ops, &starts);
+        assert_eq!(ops, vec![LiftedOp::Branch(1), LiftedOp::Return]);
+        assert_eq!(starts.get(&20), Some(&1));
     }
 
     struct BlockEncoder {

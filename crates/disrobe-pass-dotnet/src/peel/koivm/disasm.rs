@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::descriptors::KoiDescriptors;
 use super::opcodes::{KoiOp, KoiOperand, KoiReg};
@@ -23,12 +23,14 @@ pub enum KoiInstrOperand {
 pub struct KoiBlock {
     pub entry_offset: u32,
     pub entry_key: u8,
+    pub fallthrough_offset: Option<u32>,
     pub instrs: Vec<KoiInstr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct KoiMethodDisasm {
     pub blocks: Vec<KoiBlock>,
+    pub unresolved_offsets: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,9 +64,8 @@ impl StreamCipher {
 
 struct BlockDecode {
     instrs: Vec<KoiInstr>,
-    exit_key: u8,
+    fallthrough_offset: Option<u32>,
     successors: Vec<(u32, u8)>,
-    end_pos: usize,
 }
 
 fn decode_block(
@@ -76,7 +77,6 @@ fn decode_block(
     let mut instrs: Vec<KoiInstr> = Vec::new();
     let mut cipher: StreamCipher = StreamCipher::new(entry_key);
     let mut pos: usize = entry_offset as usize;
-    let mut last_imm: Option<(usize, u32)> = None;
 
     for _ in 0..MAX_INSTRS_PER_BLOCK {
         if pos >= koi.len() {
@@ -111,7 +111,6 @@ fn decode_block(
             }
             KoiOperand::ImmDword => {
                 let value: u32 = read_u32(koi, &mut pos, &mut cipher, instr_offset)?;
-                last_imm = Some((pos_of_imm(instr_offset, op), value));
                 KoiInstrOperand::ImmU32(value)
             }
             KoiOperand::ImmQword => {
@@ -122,7 +121,7 @@ fn decode_block(
         };
 
         let rel_target: Option<u32> = if op.is_terminator() {
-            resolve_rel_target(last_imm)
+            resolve_branch_target(&instrs)
         } else {
             None
         };
@@ -136,6 +135,11 @@ fn decode_block(
 
         if op.is_terminator() {
             let exit_key: u8 = cipher.key;
+            let fallthrough_offset: Option<u32> = if matches!(op, KoiOp::Jz | KoiOp::Jnz) {
+                u32::try_from(pos).ok()
+            } else {
+                None
+            };
             let successors: Vec<(u32, u8)> = match op {
                 KoiOp::Jmp => rel_target
                     .map(|t: u32| vec![(t, exit_key)])
@@ -145,31 +149,46 @@ fn decode_block(
                     if let Some(t) = rel_target {
                         succ.push((t, exit_key));
                     }
-                    let fallthrough: u32 = u32::try_from(pos).unwrap_or(u32::MAX);
-                    succ.push((fallthrough, exit_key));
+                    if let Some(fallthrough) = fallthrough_offset {
+                        succ.push((fallthrough, exit_key));
+                    }
                     succ
                 }
                 _ => Vec::new(),
             };
             return Ok(BlockDecode {
                 instrs,
-                exit_key,
+                fallthrough_offset,
                 successors,
-                end_pos: pos,
             });
         }
     }
     Err(DisasmError::StreamEnd)
 }
 
-const fn pos_of_imm(instr_offset: u32, _op: KoiOp) -> usize {
-    instr_offset as usize
-}
-
-fn resolve_rel_target(last_imm: Option<(usize, u32)>) -> Option<u32> {
-    let (imm_instr_offset, rel): (usize, u32) = last_imm?;
-    let rel_signed: i64 = i64::from(rel.cast_signed());
-    let target: i64 = imm_instr_offset as i64 + rel_signed;
+fn resolve_branch_target(instrs: &[KoiInstr]) -> Option<u32> {
+    let [push_ip, push_relative, add_address]: &[KoiInstr; 3] = instrs
+        .get(instrs.len().checked_sub(3)?..)?
+        .try_into()
+        .ok()?;
+    if !matches!(
+        push_ip,
+        KoiInstr {
+            op: KoiOp::PushrQword,
+            operand: KoiInstrOperand::Register(KoiReg::Ip),
+            ..
+        }
+    ) || !matches!(add_address.op, KoiOp::AddQword)
+    {
+        return None;
+    }
+    let KoiInstrOperand::ImmU32(relative) = push_relative.operand else {
+        return None;
+    };
+    if !matches!(push_relative.op, KoiOp::PushiDword) {
+        return None;
+    }
+    let target: i64 = i64::from(push_relative.offset) + i64::from(relative.cast_signed());
     u32::try_from(target).ok()
 }
 
@@ -197,6 +216,7 @@ pub fn disassemble_method(
     descriptors: &KoiDescriptors,
 ) -> Result<KoiMethodDisasm, DisasmError> {
     let mut blocks: BTreeMap<u32, KoiBlock> = BTreeMap::new();
+    let mut unresolved_offsets: BTreeSet<u32> = BTreeSet::new();
     let mut worklist: Vec<(u32, u8)> = vec![(entry_offset, entry_key)];
 
     while let Some((offset, key)) = worklist.pop() {
@@ -206,32 +226,43 @@ pub fn disassemble_method(
         if blocks.len() >= MAX_BLOCKS {
             return Err(DisasmError::TooManyBlocks);
         }
-        let decoded: BlockDecode = decode_block(koi, offset, key, descriptors)?;
+        let decoded: BlockDecode = match decode_block(koi, offset, key, descriptors) {
+            Ok(decoded) => decoded,
+            Err(error) if offset == entry_offset => return Err(error),
+            Err(_) => {
+                unresolved_offsets.insert(offset);
+                continue;
+            }
+        };
+        unresolved_offsets.remove(&offset);
         for (succ_offset, succ_key) in &decoded.successors {
             if !blocks.contains_key(succ_offset) {
                 worklist.push((*succ_offset, *succ_key));
             }
         }
-        let _ = decoded.exit_key;
-        let _ = decoded.end_pos;
         blocks.insert(
             offset,
             KoiBlock {
                 entry_offset: offset,
                 entry_key: key,
+                fallthrough_offset: decoded.fallthrough_offset,
                 instrs: decoded.instrs,
             },
         );
     }
 
     let ordered: Vec<KoiBlock> = blocks.into_values().collect();
-    Ok(KoiMethodDisasm { blocks: ordered })
+    Ok(KoiMethodDisasm {
+        blocks: ordered,
+        unresolved_offsets: unresolved_offsets.into_iter().collect(),
+    })
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::super::koistream::{KoiSig, KoiStream, parse_koistream};
+    use super::super::lift::{LiftedOp, lift_method};
     use super::*;
 
     fn real_koistream() -> KoiStream {
@@ -325,5 +356,73 @@ mod tests {
                 "id {id} must reach a return"
             );
         }
+    }
+
+    #[test]
+    fn invalid_successor_keeps_source_block_for_explicit_rejection() {
+        let mut stream: KoiStream = real_koistream();
+        let descriptors: KoiDescriptors = KoiDescriptors::from_seed(0);
+        let (entry_offset, entry_key): (u32, u8) = stream
+            .sig_by_id(2)
+            .map(|sig: &KoiSig| (sig.entry_offset, sig.entry_key))
+            .unwrap();
+        let baseline: KoiMethodDisasm =
+            disassemble_method(&stream.raw, entry_offset, entry_key, &descriptors).unwrap();
+        let entry: &KoiBlock = baseline
+            .blocks
+            .iter()
+            .find(|block: &&KoiBlock| block.entry_offset == entry_offset)
+            .unwrap();
+        let successor_offset: u32 = entry
+            .instrs
+            .last()
+            .and_then(|instruction: &KoiInstr| instruction.rel_target)
+            .unwrap();
+        let successor: &KoiBlock = baseline
+            .blocks
+            .iter()
+            .find(|block: &&KoiBlock| block.entry_offset == successor_offset)
+            .unwrap();
+        let unknown_opcode: u8 = (u8::MIN..=u8::MAX)
+            .find(|encoded: &u8| descriptors.decode_opcode(*encoded).is_none())
+            .unwrap();
+        stream.raw[successor_offset as usize] = unknown_opcode ^ successor.entry_key;
+
+        let disasm: KoiMethodDisasm =
+            disassemble_method(&stream.raw, entry_offset, entry_key, &descriptors).unwrap();
+        assert_eq!(disasm.blocks.len(), 1, "the entry block survives");
+        assert_eq!(
+            disasm.unresolved_offsets,
+            vec![successor_offset],
+            "the failed reachable body must remain explicit"
+        );
+        let lifted = lift_method(&disasm, 2, &descriptors, &stream);
+        assert!(
+            lifted
+                .ops
+                .iter()
+                .any(|op: &LiftedOp| matches!(op, LiftedOp::Unknown("branch-target"))),
+            "the failed body must reach recover-or-reject; got {:?}",
+            lifted.ops
+        );
+    }
+
+    #[test]
+    fn unrelated_immediate_is_not_reused_as_branch_target() {
+        let instructions: Vec<KoiInstr> = vec![
+            KoiInstr {
+                offset: 10,
+                op: KoiOp::PushiDword,
+                operand: KoiInstrOperand::ImmU32(20),
+                rel_target: None,
+            },
+            KoiInstr {
+                offset: 16,
+                op: KoiOp::Nop,
+                operand: KoiInstrOperand::None,
+                rel_target: None,
+            },
+        ];
+        assert_eq!(resolve_branch_target(&instructions), None);
     }
 }

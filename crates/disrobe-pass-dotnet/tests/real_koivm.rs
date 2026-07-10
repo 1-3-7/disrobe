@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use disrobe_pass_dotnet::pass::{KoiVmSummary, PassSummary, analyze};
 use disrobe_pass_dotnet::peel::koivm::grade::{GroundOp, RecoveryScore, grade, project};
+use disrobe_pass_dotnet::peel::koivm::lift::{CmpOp, LiftedOp};
 use disrobe_pass_dotnet::peel::{PeelReport, PeelStrategy, RecoveredMethod, peel_by};
 use disrobe_pass_dotnet::protectors::{
     ExecuteOptions, ExecutionOutcome, Protector, plan_execution,
@@ -103,6 +104,106 @@ fn cil_op_kind(line: &str) -> Option<GroundOp> {
 
 fn count_kind(ops: &[GroundOp], kind: GroundOp) -> usize {
     ops.iter().filter(|o: &&GroundOp| **o == kind).count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchKind {
+    True,
+    False,
+    Always,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchDestination {
+    LoadArg(u32),
+    LoadLocal(u32),
+    Return,
+    Other,
+    Invalid,
+}
+
+type EdgeSignature = (
+    usize,
+    BranchKind,
+    Option<CmpOp>,
+    usize,
+    BranchDestination,
+    Option<usize>,
+);
+
+fn edge_signatures(ops: &[LiftedOp]) -> Vec<EdgeSignature> {
+    let mut signatures: Vec<EdgeSignature> = Vec::new();
+    for (index, op) in ops.iter().enumerate() {
+        let (kind, target): (BranchKind, u32) = match op {
+            LiftedOp::BranchTrue(target) => (BranchKind::True, *target),
+            LiftedOp::BranchFalse(target) => (BranchKind::False, *target),
+            LiftedOp::Branch(target) => (BranchKind::Always, *target),
+            _ => continue,
+        };
+        let target_index: Option<usize> = usize::try_from(target).ok();
+        let destination: BranchDestination = target_index
+            .and_then(|target: usize| ops.get(target))
+            .map_or(
+                BranchDestination::Invalid,
+                |target: &LiftedOp| match target {
+                    LiftedOp::LoadArg(argument) => BranchDestination::LoadArg(*argument),
+                    LiftedOp::LoadLocal(local) => BranchDestination::LoadLocal(*local),
+                    LiftedOp::Return => BranchDestination::Return,
+                    _ => BranchDestination::Other,
+                },
+            );
+        let comparison: Option<CmpOp> = if matches!(kind, BranchKind::Always) {
+            None
+        } else {
+            index
+                .checked_sub(1)
+                .and_then(|previous: usize| ops.get(previous))
+                .and_then(|previous: &LiftedOp| match previous {
+                    LiftedOp::Compare(comparison) => Some(*comparison),
+                    _ => None,
+                })
+        };
+        signatures.push((
+            index,
+            kind,
+            comparison,
+            target_index.unwrap_or(usize::MAX),
+            destination,
+            if matches!(kind, BranchKind::Always) {
+                None
+            } else {
+                index.checked_add(1)
+            },
+        ));
+    }
+    signatures
+}
+
+fn expected_edge_signatures(method: &str) -> Vec<EdgeSignature> {
+    use BranchDestination::{LoadArg, LoadLocal, Return};
+    use BranchKind::{Always, False, True};
+
+    let ge: Option<CmpOp> = Some(CmpOp::GreaterOrEqual);
+    match method {
+        "Add" | "Square" => Vec::new(),
+        "SumTo" => vec![
+            (5, True, ge, 8, LoadLocal(1), Some(6)),
+            (15, Always, None, 2, LoadLocal(0), None),
+        ],
+        "Classify" => vec![
+            (2, True, ge, 4, LoadArg(0), Some(3)),
+            (6, False, ge, 8, Return, Some(7)),
+        ],
+        "Factorial" => vec![
+            (4, False, ge, 7, LoadLocal(1), Some(5)),
+            (16, Always, None, 2, LoadArg(0), None),
+        ],
+        "Max3" => vec![
+            (5, True, ge, 8, LoadArg(2), Some(6)),
+            (11, True, ge, 14, LoadLocal(0), Some(12)),
+        ],
+        _ => panic!("no clean-IL edge ground truth for {method}"),
+    }
 }
 
 #[test]
@@ -220,6 +321,34 @@ fn peel_delivered_bodies_recover_known_originals() {
         "aggregate structural recovery of the delivered KoiVM bodies vs known originals must be \
          >= 75%; got {pct:.1}% ({total_matched}/{total_expected})"
     );
+}
+
+#[test]
+fn real_koivm_control_flow_matches_clean_il_and_targets_lifted_ops() {
+    let image: Vec<u8> = load(KOIVM_REL);
+    let recovery: KoiVmRecovery = devirtualize_koivm(&image).expect("devirtualize");
+    for name in ["Add", "Square", "SumTo", "Classify", "Factorial", "Max3"] {
+        let method: &disrobe_pass_dotnet::KoiVmMethod = recovery
+            .methods
+            .iter()
+            .find(|method: &&disrobe_pass_dotnet::KoiVmMethod| method.method_name == name)
+            .unwrap_or_else(|| panic!("{name} recovered"));
+        assert_eq!(
+            edge_signatures(&method.lifted.ops),
+            expected_edge_signatures(name),
+            "{name} edge polarity, predicate, direction, and destination must match KoiSample.clean.il; got {:?}",
+            method.lifted.ops
+        );
+        assert!(
+            method
+                .lifted
+                .ops
+                .iter()
+                .all(|op: &LiftedOp| !matches!(op, LiftedOp::Unknown("branch-target"))),
+            "{name} real fixture must recover every branch target; got {:?}",
+            method.lifted.ops
+        );
+    }
 }
 
 #[test]
