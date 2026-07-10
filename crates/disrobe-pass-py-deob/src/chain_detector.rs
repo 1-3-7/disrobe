@@ -212,7 +212,7 @@ impl Pass for PyDeobPass {
         let manifest: serde_json::Value = serde_json::json!({
             "schema": MANIFEST_SCHEMA,
             "peel": outcome.peel,
-            "cleanup": serde_json::Value::Null,
+            "cleanup": outcome.cleanup,
             "route": outcome.kind,
             "detection": outcome.detection,
             "chain": outcome.chain,
@@ -591,6 +591,10 @@ mod tests {
         assert!(
             !manifest["peel"]["steps"].is_null(),
             "manifest peel must expose the peel steps; got:\n{manifest}"
+        );
+        assert!(
+            manifest["cleanup"].is_object(),
+            "chain manifest must carry real cleanup stats, not a hardcoded null; got:\n{manifest}"
         );
         assert_eq!(manifest["route"], "Deobfuscated");
 

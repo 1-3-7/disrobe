@@ -6,6 +6,7 @@ use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::detect::{Detection, Family, detect};
 use crate::obfuscators::{Obfuscator, ObfuscatorPass, iter_passes};
 use crate::peel::{PeelResult, peel_with_pyver};
+use crate::source_cleanup::{CleanupStats, cleanup_source};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SupportedObfuscator {
@@ -90,6 +91,7 @@ pub struct AutoDeobOutcome {
     pub peel: Option<PeelResult>,
     pub source: Option<String>,
     pub chain: Vec<String>,
+    pub cleanup: Option<CleanupStats>,
     pub guidance: Option<String>,
 }
 
@@ -112,15 +114,22 @@ pub fn auto_deobfuscate(bytes: &[u8], pyver_hint: Option<PyVersion>) -> AutoDeob
         && !result.final_source.trim().is_empty()
     {
         let chain: Vec<String> = deob_chain_labels(&result);
+        let (cleaned_source, cleanup): (String, Option<CleanupStats>) =
+            match cleanup_source(&result.final_source) {
+                Ok((cleaned, stats)) => (cleaned, Some(stats)),
+                Err(_) => (result.final_source.clone(), None),
+            };
         dbg_kv("route", || "deobfuscated".to_owned());
-        dbg_kv("recovered_len", || result.final_source.len().to_string());
+        dbg_kv("recovered_len", || cleaned_source.len().to_string());
         dbg_kv("chain", || chain.join(" | "));
+        dbg_kv("cleanup_applied", || cleanup.is_some().to_string());
         return AutoDeobOutcome {
             kind: RouteKind::Deobfuscated,
             detection,
-            source: Some(result.final_source.clone()),
+            source: Some(cleaned_source),
             chain,
             peel: Some(result),
+            cleanup,
             guidance: None,
         };
     }
@@ -136,6 +145,7 @@ pub fn auto_deobfuscate(bytes: &[u8], pyver_hint: Option<PyVersion>) -> AutoDeob
             peel: None,
             source: Some(native.source),
             chain,
+            cleanup: None,
             guidance: None,
         };
     }
@@ -154,6 +164,7 @@ pub fn auto_deobfuscate(bytes: &[u8], pyver_hint: Option<PyVersion>) -> AutoDeob
         peel: None,
         source: None,
         chain: Vec::new(),
+        cleanup: None,
         guidance: Some(unidentified_guidance(bytes)),
     }
 }
@@ -262,7 +273,32 @@ pub fn unidentified_guidance(bytes: &[u8]) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use base64::Engine;
+
     use super::*;
+
+    #[test]
+    fn deobfuscated_route_applies_cleanup_source_not_just_raw_peel() {
+        let inner: &str = "x = 5 + 3\nprint(x)\n";
+        let compressed: Vec<u8> = crate::codec::zlib_compress(inner.as_bytes());
+        let b64: String = base64::engine::general_purpose::STANDARD.encode(&compressed);
+        let dropper: String =
+            format!("import base64, zlib\nexec(zlib.decompress(base64.b64decode(b'{b64}')))\n");
+        let outcome: AutoDeobOutcome = auto_deobfuscate(dropper.as_bytes(), None);
+        assert_eq!(outcome.kind, RouteKind::Deobfuscated);
+        let source: String = outcome.source.expect("deobfuscated source present");
+        assert!(
+            source.contains('8') && !source.contains("5 + 3"),
+            "auto route must apply constant-fold cleanup, not just the raw peel; got: {source}"
+        );
+        let stats: CleanupStats = outcome.cleanup.expect(
+            "auto route must report cleanup stats so the chain manifest is not a fabricated null",
+        );
+        assert!(
+            stats.fold_replacements > 0,
+            "cleanup must have actually folded the constant expression; stats={stats:?}"
+        );
+    }
 
     #[test]
     fn supported_list_covers_all_registered_passes() {
