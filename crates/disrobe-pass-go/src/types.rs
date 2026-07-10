@@ -14,6 +14,10 @@ pub struct GoTypeRef {
     pub kind_label: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<GoMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<GoStructField>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fields_rejected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -22,6 +26,22 @@ pub struct GoMethod {
     pub func_va: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linker_name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GoStructField {
+    pub name: String,
+    pub type_va: u64,
+    pub type_name: String,
+    pub kind: u8,
+    pub kind_label: String,
+    pub offset: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub embedded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exported: bool,
 }
@@ -74,30 +94,52 @@ fn extract_typemeta_versioned(
         types.reserve(n.min(TYPELINKS_WALK_CAP));
         let mut seen: BTreeSet<u64> = BTreeSet::new();
         for i in 0..n.min(TYPELINKS_WALK_CAP) {
-            let entry_va: u64 = md.typelinks_va.wrapping_add((i as u64) * 4);
+            let Ok(index): core::result::Result<u64, _> = u64::try_from(i) else {
+                break;
+            };
+            let Some(entry_va): Option<u64> = index
+                .checked_mul(4)
+                .and_then(|offset: u64| md.typelinks_va.checked_add(offset))
+            else {
+                break;
+            };
             let Some(off): Option<u32> = image.read_u32(entry_va) else {
                 break;
             };
-            let type_va: u64 = md.types_va.wrapping_add(u64::from(off));
+            let Some(type_va): Option<u64> = md.types_va.checked_add(u64::from(off)) else {
+                continue;
+            };
             if !seen.insert(type_va) {
                 continue;
             }
-            let name: Option<String> = read_type_name(image, md, type_va, layout);
-            let kind: Option<u8> = read_type_kind(image, type_va, layout);
-            if let Some(ref n_str) = name {
+            let recovered: GoTypeRef = recover_type_ref(image, md, type_va, layout, false);
+            if let Some(ref n_str) = recovered.name {
                 strings.insert(n_str.clone());
             }
-            let kind_label: Option<String> = kind.map(|k: u8| type_kind_label(k).to_owned());
-            let methods: Vec<GoMethod> = kind.map_or_else(Vec::new, |k: u8| {
-                read_type_methods(image, md, type_va, k, layout)
-            });
-            types.push(GoTypeRef {
-                va: type_va,
-                name,
-                kind,
-                kind_label,
-                methods,
-            });
+            types.push(recovered);
+        }
+        let mut index: usize = 0;
+        while index < types.len() && types.len() < TYPELINKS_WALK_CAP {
+            let type_va: u64 = types[index].va;
+            let kind: Option<u8> = types[index].kind;
+            index += 1;
+            if kind != Some(KIND_PTR) {
+                continue;
+            }
+            let Some(elem_slot_va): Option<u64> = type_va.checked_add(layout.base_type_size) else {
+                continue;
+            };
+            let Some(elem_va): Option<u64> = image.read_ptr(elem_slot_va) else {
+                continue;
+            };
+            if !type_in_module(md, elem_va) || !seen.insert(elem_va) {
+                continue;
+            }
+            let recovered: GoTypeRef = recover_type_ref(image, md, elem_va, layout, true);
+            if let Some(ref name) = recovered.name {
+                strings.insert(name.clone());
+            }
+            types.push(recovered);
         }
     }
 
@@ -106,7 +148,15 @@ fn extract_typemeta_versioned(
         itabs.reserve(n.min(ITABLINKS_WALK_CAP));
         let ps: u64 = u64::from(image.ptr_size);
         for i in 0..n.min(ITABLINKS_WALK_CAP) {
-            let slot_va: u64 = md.itablinks_va.wrapping_add((i as u64) * ps);
+            let Ok(index): core::result::Result<u64, _> = u64::try_from(i) else {
+                break;
+            };
+            let Some(slot_va): Option<u64> = index
+                .checked_mul(ps)
+                .and_then(|offset: u64| md.itablinks_va.checked_add(offset))
+            else {
+                break;
+            };
             let Some(itab_va): Option<u64> = image.read_ptr(slot_va) else {
                 break;
             };
@@ -114,7 +164,10 @@ fn extract_typemeta_versioned(
                 continue;
             }
             let inter_va: u64 = image.read_ptr(itab_va).unwrap_or(0);
-            let concrete_va: u64 = image.read_ptr(itab_va.wrapping_add(ps)).unwrap_or(0);
+            let concrete_va: u64 = itab_va
+                .checked_add(ps)
+                .and_then(|va: u64| image.read_ptr(va))
+                .unwrap_or(0);
             let inter_name: Option<String> = if inter_va != 0 {
                 read_type_name(image, md, inter_va, layout)
             } else {
@@ -148,6 +201,40 @@ fn extract_typemeta_versioned(
         itabs,
         strings: strings.into_iter().collect(),
         generics,
+    }
+}
+
+fn recover_type_ref(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    type_va: u64,
+    layout: AbiTypeLayout,
+    normalize_extra_star: bool,
+) -> GoTypeRef {
+    let name: Option<String> = if normalize_extra_star {
+        read_type_display_name(image, md, type_va, layout)
+    } else {
+        read_type_name(image, md, type_va, layout)
+    };
+    let kind: Option<u8> = read_type_kind(image, type_va, layout);
+    let kind_label: Option<String> = kind.map(|value: u8| type_kind_label(value).to_owned());
+    let methods: Vec<GoMethod> = kind.map_or_else(Vec::new, |value: u8| {
+        read_type_methods(image, md, type_va, value, layout)
+    });
+    let (fields, fields_rejected): (Vec<GoStructField>, bool) = if kind == Some(KIND_STRUCT) {
+        read_struct_fields(image, md, type_va, layout)
+            .map_or_else(|| (Vec::new(), true), |value| (value, false))
+    } else {
+        (Vec::new(), false)
+    };
+    GoTypeRef {
+        va: type_va,
+        name,
+        kind,
+        kind_label,
+        methods,
+        fields,
+        fields_rejected,
     }
 }
 
@@ -500,6 +587,7 @@ const ABI_TYPE_32_STR_OFF: u64 = 24;
 const ABI_TYPE_32_BASE_SIZE: u64 = 32;
 
 const ABI_TFLAG_UNCOMMON: u8 = 1 << 0;
+const ABI_TFLAG_EXTRA_STAR: u8 = 1 << 1;
 
 const KIND_MASK: u8 = 0x1f;
 const NAME_VARINT_MAX_BYTES: usize = 5;
@@ -515,6 +603,11 @@ const KIND_SLICE: u8 = 23;
 const KIND_STRUCT: u8 = 25;
 
 const MAX_METHODS_PER_TYPE: u16 = 1 << 12;
+const MAX_FIELDS_PER_STRUCT: u64 = 1 << 12;
+const MAX_STRUCT_FIELD_TAG_LEN: u64 = 1 << 12;
+const NAME_FLAG_EXPORTED: u8 = 1 << 0;
+const NAME_FLAG_HAS_TAG: u8 = 1 << 1;
+const NAME_FLAG_EMBEDDED: u8 = 1 << 3;
 
 fn infer_layout(md: &Moduledata, ptr_size: u8) -> AbiTypeLayout {
     let version: PclntabVersion =
@@ -567,7 +660,8 @@ const fn layout_for_version(version: PclntabVersion, sixty_four_bit: bool) -> Ab
 }
 
 fn read_type_kind(image: &GoImage<'_>, type_va: u64, layout: AbiTypeLayout) -> Option<u8> {
-    let buf: &[u8] = image.data_at_va(type_va.wrapping_add(layout.kind_off), 1)?;
+    let kind_va: u64 = type_va.checked_add(layout.kind_off)?;
+    let buf: &[u8] = image.data_at_va(kind_va, 1)?;
     Some(buf[0] & KIND_MASK)
 }
 
@@ -580,7 +674,8 @@ fn read_type_name(
     if md.types_va == 0 {
         return None;
     }
-    let nameoff: u32 = image.read_u32(type_va.wrapping_add(layout.str_off))?;
+    let nameoff_va: u64 = type_va.checked_add(layout.str_off)?;
+    let nameoff: u32 = image.read_u32(nameoff_va)?;
     if nameoff == 0 {
         return None;
     }
@@ -591,8 +686,196 @@ fn read_type_name(
     {
         return None;
     }
-    let name_va: u64 = md.types_va.wrapping_add(nameoff_u64);
+    let name_va: u64 = md.types_va.checked_add(nameoff_u64)?;
     decode_go_name(image, name_va, layout.name_decoder)
+}
+
+fn read_type_display_name(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    type_va: u64,
+    layout: AbiTypeLayout,
+) -> Option<String> {
+    let mut name: String = read_type_name(image, md, type_va, layout)?;
+    let tflag_off: u64 = layout.kind_off.checked_sub(3)?;
+    let tflag_va: u64 = type_va.checked_add(tflag_off)?;
+    let tflag: u8 = *image.data_at_va(tflag_va, 1)?.first()?;
+    if tflag & ABI_TFLAG_EXTRA_STAR != 0 {
+        name = name.strip_prefix('*')?.to_owned();
+    }
+    Some(name)
+}
+
+fn read_struct_fields(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    type_va: u64,
+    layout: AbiTypeLayout,
+) -> Option<Vec<GoStructField>> {
+    let ps: u64 = layout.ptr_size;
+    let fields_slice_va: u64 = type_va
+        .checked_add(layout.base_type_size)
+        .and_then(|va: u64| va.checked_add(ps))?;
+    let fields_va: u64 = image.read_ptr(fields_slice_va)?;
+    let fields_len_va: u64 = fields_slice_va.checked_add(ps)?;
+    let fields_cap_va: u64 = fields_len_va.checked_add(ps)?;
+    let fields_len: u64 = image.read_ptr(fields_len_va)?;
+    let fields_cap: u64 = image.read_ptr(fields_cap_va)?;
+    if fields_len == 0 {
+        return (fields_cap == 0).then(Vec::new);
+    }
+    if fields_va == 0
+        || fields_len > fields_cap
+        || fields_len > MAX_FIELDS_PER_STRUCT
+        || fields_cap > MAX_FIELDS_PER_STRUCT
+    {
+        return None;
+    }
+    let entry_size: u64 = ps.checked_mul(3)?;
+    let fields_span: u64 = fields_len.checked_mul(entry_size)?;
+    let Ok(fields_span_usize): core::result::Result<usize, _> = usize::try_from(fields_span) else {
+        return None;
+    };
+    image.data_at_va(fields_va, fields_span_usize)?;
+    let struct_size: u64 = image.read_ptr(type_va)?;
+    let Ok(capacity): core::result::Result<usize, _> = usize::try_from(fields_len) else {
+        return None;
+    };
+    let mut fields: Vec<GoStructField> = Vec::with_capacity(capacity);
+    for index in 0..fields_len {
+        let entry_va: u64 = index
+            .checked_mul(entry_size)
+            .and_then(|off: u64| fields_va.checked_add(off))?;
+        let field: GoStructField = read_struct_field(image, md, entry_va, struct_size, layout)?;
+        fields.push(field);
+    }
+    Some(fields)
+}
+
+fn read_struct_field(
+    image: &GoImage<'_>,
+    md: &Moduledata,
+    entry_va: u64,
+    struct_size: u64,
+    layout: AbiTypeLayout,
+) -> Option<GoStructField> {
+    let ps: u64 = layout.ptr_size;
+    let name_va: u64 = image.read_ptr(entry_va)?;
+    let type_ptr_va: u64 = entry_va.checked_add(ps)?;
+    let offset_va: u64 = type_ptr_va.checked_add(ps)?;
+    let type_va: u64 = image.read_ptr(type_ptr_va)?;
+    let offset: u64 = image.read_ptr(offset_va)?;
+    if name_va == 0 || !type_in_module(md, type_va) || offset > struct_size {
+        return None;
+    }
+    let field_size: u64 = image.read_ptr(type_va)?;
+    if field_size != 0
+        && offset
+            .checked_add(field_size)
+            .is_none_or(|end: u64| end > struct_size)
+    {
+        return None;
+    }
+    let decoded_name: DecodedFieldName = decode_field_name(image, name_va, layout.name_decoder)?;
+    let type_name: String = read_type_display_name(image, md, type_va, layout)?;
+    let kind: u8 = read_type_kind(image, type_va, layout)?;
+    Some(GoStructField {
+        name: decoded_name.name,
+        type_va,
+        type_name,
+        kind,
+        kind_label: type_kind_label(kind).to_owned(),
+        offset,
+        tag: decoded_name.tag,
+        embedded: decoded_name.embedded,
+        exported: decoded_name.exported,
+    })
+}
+
+const fn type_in_module(md: &Moduledata, type_va: u64) -> bool {
+    md.types_va != 0
+        && md.etypes_va > md.types_va
+        && type_va >= md.types_va
+        && type_va < md.etypes_va
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedFieldName {
+    name: String,
+    tag: Option<String>,
+    embedded: bool,
+    exported: bool,
+}
+
+fn decode_field_name(
+    image: &GoImage<'_>,
+    name_va: u64,
+    decoder: NameDecoder,
+) -> Option<DecodedFieldName> {
+    let flags: u8 = *image.data_at_va(name_va, 1)?.first()?;
+    let component_va: u64 = name_va.checked_add(1)?;
+    let (name, consumed): (String, u64) = decode_name_component(
+        image,
+        component_va,
+        decoder,
+        u64::try_from(MAX_TYPE_NAME_LEN).ok()?,
+    )?;
+    if !plausible_field_name(&name) {
+        return None;
+    }
+    let tag: Option<String> = if flags & NAME_FLAG_HAS_TAG != 0 {
+        let tag_va: u64 = component_va.checked_add(consumed)?;
+        let (value, _): (String, u64) =
+            decode_name_component(image, tag_va, decoder, MAX_STRUCT_FIELD_TAG_LEN)?;
+        Some(value)
+    } else {
+        None
+    };
+    Some(DecodedFieldName {
+        name,
+        tag,
+        embedded: flags & NAME_FLAG_EMBEDDED != 0,
+        exported: flags & NAME_FLAG_EXPORTED != 0,
+    })
+}
+
+fn decode_name_component(
+    image: &GoImage<'_>,
+    component_va: u64,
+    decoder: NameDecoder,
+    max_len: u64,
+) -> Option<(String, u64)> {
+    let (header_len, value_len): (u64, u64) = match decoder {
+        NameDecoder::Pre117BigEndianLen => {
+            let header: &[u8] = image.data_at_va(component_va, 2)?;
+            (2, (u64::from(header[0]) << 8) | u64::from(header[1]))
+        }
+        NameDecoder::Varint => {
+            let header: &[u8] = image.data_at_va(component_va, NAME_VARINT_MAX_BYTES)?;
+            let (consumed, value): (usize, u64) = read_varint(header)?;
+            (u64::try_from(consumed).ok()?, value)
+        }
+    };
+    if value_len > max_len {
+        return None;
+    }
+    let value_va: u64 = component_va.checked_add(header_len)?;
+    let value_len_usize: usize = usize::try_from(value_len).ok()?;
+    let value_bytes: &[u8] = image.data_at_va(value_va, value_len_usize)?;
+    let value: String = std::str::from_utf8(value_bytes).ok()?.to_owned();
+    let consumed: u64 = header_len.checked_add(value_len)?;
+    Some((value, consumed))
+}
+
+fn plausible_field_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_TYPE_NAME_LEN
+        && (name == "_"
+            || name
+                .chars()
+                .next()
+                .is_some_and(|c: char| c == '_' || c.is_alphabetic()))
+        && name.chars().all(|c: char| c == '_' || c.is_alphanumeric())
 }
 
 const METHOD_ENTRY_SIZE: u64 = 16;
@@ -607,7 +890,8 @@ const fn kind_extra_size(kind: u8, ps: u64) -> Option<u64> {
     let words: u64 = match kind {
         KIND_PTR | KIND_SLICE => 1,
         KIND_CHAN => 2,
-        KIND_ARRAY | KIND_INTERFACE | KIND_STRUCT => 3,
+        KIND_ARRAY => 3,
+        KIND_INTERFACE | KIND_STRUCT => 4,
         KIND_MAP => map_type_extra_words(ps),
         KIND_FUNC => return Some(func_type_extra_size(ps)),
         _ => 0,
@@ -639,9 +923,13 @@ fn read_type_methods(
     if md.types_va == 0 {
         return Vec::new();
     }
-    let tflag_off: u64 = layout.kind_off.wrapping_sub(3);
-    let Some(tflag_byte): Option<&[u8]> = image.data_at_va(type_va.wrapping_add(tflag_off), 1)
-    else {
+    let Some(tflag_off): Option<u64> = layout.kind_off.checked_sub(3) else {
+        return Vec::new();
+    };
+    let Some(tflag_va): Option<u64> = type_va.checked_add(tflag_off) else {
+        return Vec::new();
+    };
+    let Some(tflag_byte): Option<&[u8]> = image.data_at_va(tflag_va, 1) else {
         return Vec::new();
     };
     if tflag_byte[0] & ABI_TFLAG_UNCOMMON == 0 {
@@ -650,15 +938,23 @@ fn read_type_methods(
     let Some(uncommon): Option<u64> = uncommon_va(type_va, kind, layout) else {
         return Vec::new();
     };
-    let Some(mcount): Option<u16> = read_u16(image, uncommon.wrapping_add(UNCOMMON_MCOUNT_OFF))
-    else {
+    let Some(mcount_va): Option<u64> = uncommon.checked_add(UNCOMMON_MCOUNT_OFF) else {
+        return Vec::new();
+    };
+    let Some(mcount): Option<u16> = read_u16(image, mcount_va) else {
         return Vec::new();
     };
     if mcount == 0 || mcount > MAX_METHODS_PER_TYPE {
         return Vec::new();
     }
-    let xcount: u16 = read_u16(image, uncommon.wrapping_add(UNCOMMON_XCOUNT_OFF)).unwrap_or(0);
-    let Some(moff): Option<u32> = image.read_u32(uncommon.wrapping_add(UNCOMMON_MOFF_OFF)) else {
+    let xcount: u16 = uncommon
+        .checked_add(UNCOMMON_XCOUNT_OFF)
+        .and_then(|va: u64| read_u16(image, va))
+        .unwrap_or(0);
+    let Some(moff_va): Option<u64> = uncommon.checked_add(UNCOMMON_MOFF_OFF) else {
+        return Vec::new();
+    };
+    let Some(moff): Option<u32> = image.read_u32(moff_va) else {
         return Vec::new();
     };
     let Some(methods_base): Option<u64> = uncommon.checked_add(u64::from(moff)) else {
@@ -668,7 +964,7 @@ fn read_type_methods(
         .etypes_va
         .checked_sub(md.types_va)
         .filter(|len: &u64| *len != 0);
-    let mut out: Vec<GoMethod> = Vec::with_capacity(mcount as usize);
+    let mut out: Vec<GoMethod> = Vec::with_capacity(usize::from(mcount));
     for i in 0..mcount {
         let Some(entry_va): Option<u64> =
             methods_base.checked_add(u64::from(i) * METHOD_ENTRY_SIZE)
@@ -693,9 +989,11 @@ fn read_one_method(
     types_blob_len: Option<u64>,
     exported: bool,
 ) -> Option<GoMethod> {
-    let nameoff: u32 = image.read_u32(entry_va.wrapping_add(METHOD_NAMEOFF_OFF))?;
-    let tfn: u32 = image
-        .read_u32(entry_va.wrapping_add(METHOD_TFN_OFF))
+    let nameoff_va: u64 = entry_va.checked_add(METHOD_NAMEOFF_OFF)?;
+    let nameoff: u32 = image.read_u32(nameoff_va)?;
+    let tfn: u32 = entry_va
+        .checked_add(METHOD_TFN_OFF)
+        .and_then(|va: u64| image.read_u32(va))
         .unwrap_or(TEXTOFF_ABSENT);
     let name: Option<String> = if nameoff == 0 {
         None
@@ -704,14 +1002,14 @@ fn read_one_method(
         if types_blob_len.is_some_and(|len: u64| nameoff_u64 >= len) {
             None
         } else {
-            let name_va: u64 = md.types_va.wrapping_add(nameoff_u64);
+            let name_va: u64 = md.types_va.checked_add(nameoff_u64)?;
             decode_method_name(image, name_va, layout.name_decoder)
         }
     };
     let func_va: u64 = if tfn == TEXTOFF_ABSENT || md.text_va == 0 {
         0
     } else {
-        md.text_va.wrapping_add(u64::from(tfn))
+        md.text_va.checked_add(u64::from(tfn)).unwrap_or(0)
     };
     if name.is_none() && func_va == 0 {
         return None;
@@ -765,7 +1063,8 @@ fn decode_pre117(image: &GoImage<'_>, name_va: u64) -> Option<String> {
     if len == 0 || len > MAX_TYPE_NAME_LEN {
         return None;
     }
-    let body: &[u8] = image.data_at_va(name_va.wrapping_add(3), len)?;
+    let body_va: u64 = name_va.checked_add(3)?;
+    let body: &[u8] = image.data_at_va(body_va, len)?;
     let text: &str = std::str::from_utf8(body).ok()?;
     if !plausible_type_name(text) {
         return None;
@@ -776,11 +1075,12 @@ fn decode_pre117(image: &GoImage<'_>, name_va: u64) -> Option<String> {
 fn decode_varint(image: &GoImage<'_>, name_va: u64) -> Option<String> {
     let header: &[u8] = image.data_at_va(name_va, 1 + NAME_VARINT_MAX_BYTES)?;
     let (consumed, len_val): (usize, u64) = read_varint(&header[1..])?;
-    if len_val == 0 || len_val > MAX_TYPE_NAME_LEN as u64 {
+    if len_val == 0 || len_val > u64::try_from(MAX_TYPE_NAME_LEN).ok()? {
         return None;
     }
-    let len: usize = len_val as usize;
-    let name_body_va: u64 = name_va.wrapping_add(1 + consumed as u64);
+    let len: usize = usize::try_from(len_val).ok()?;
+    let consumed_u64: u64 = u64::try_from(consumed).ok()?;
+    let name_body_va: u64 = name_va.checked_add(1)?.checked_add(consumed_u64)?;
     let body: &[u8] = image.data_at_va(name_body_va, len)?;
     let text: &str = std::str::from_utf8(body).ok()?;
     if !plausible_type_name(text) {
@@ -1198,5 +1498,53 @@ mod tests {
     fn buildversion_dispatch_routes_to_pre117_for_old() {
         let v: Option<PclntabVersion> = infer_version_from_build(Some("go1.15.6"));
         assert_eq!(v, Some(PclntabVersion::Go12));
+    }
+
+    #[test]
+    fn struct_field_count_above_capacity_sets_rejection_marker() {
+        let base: u64 = 0x1000;
+        let mut bytes: Vec<u8> = vec![0u8; 128];
+        bytes[..8].copy_from_slice(&64u64.to_le_bytes());
+        bytes[23] = KIND_STRUCT;
+        bytes[56..64].copy_from_slice(&(base + 96).to_le_bytes());
+        bytes[64..72].copy_from_slice(&2u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&1u64.to_le_bytes());
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: crate::binary::Endian::Little,
+            ptr_size: 8,
+            sections: vec![crate::binary::Section {
+                name: ".rdata".to_owned(),
+                address: base,
+                data: &bytes,
+            }],
+            raw: &bytes,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        };
+        let md: Moduledata = Moduledata {
+            pclntab_va: 0,
+            typelinks_va: 0,
+            typelinks_len: 0,
+            itablinks_va: 0,
+            itablinks_len: 0,
+            types_va: base,
+            etypes_va: base + u64::try_from(bytes.len()).expect("fixture size fits u64"),
+            text_va: 0,
+            etext_va: 0,
+            modulename: None,
+            buildversion: Some("go1.26.3".to_owned()),
+            build_info: None,
+            via: crate::moduledata::ModuledataSource::None,
+        };
+        let recovered: GoTypeRef = recover_type_ref(
+            &image,
+            &md,
+            base,
+            layout_for_version(PclntabVersion::Go120, true),
+            false,
+        );
+        assert!(recovered.fields.is_empty());
+        assert!(recovered.fields_rejected);
     }
 }

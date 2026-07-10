@@ -48,9 +48,9 @@ pub use provenance_header::{
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
 pub use symbols::{GoFunc, GoSymbols, package_histogram, parse_symbols};
 pub use types::{
-    GoGenericInstantiation, GoItab, GoMethod, GoTypeMeta, GoTypeRef, disambiguate_generics,
-    extract_typemeta, harvest_concrete_args, link_method_functions, parse_generic_name,
-    parse_generic_type_info, type_kind_label,
+    GoGenericInstantiation, GoItab, GoMethod, GoStructField, GoTypeMeta, GoTypeRef,
+    disambiguate_generics, extract_typemeta, harvest_concrete_args, link_method_functions,
+    parse_generic_name, parse_generic_type_info, type_kind_label,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
