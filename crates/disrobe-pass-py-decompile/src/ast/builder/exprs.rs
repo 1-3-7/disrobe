@@ -1385,7 +1385,9 @@ pub(super) fn build_linear_stmts_sim_seed(
             }
             CanonicalOp::DupTwo => sim.dup_two(),
             CanonicalOp::Copy(n) => {
-                if let Some(v) = sim.peek_at(usize::from(*n)) {
+                if let Some(v) = sim.peek_at(usize::from(*n))
+                    && !is_chain_sentinel(&v)
+                {
                     sim.push(v);
                 }
             }

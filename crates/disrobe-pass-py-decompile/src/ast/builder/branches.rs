@@ -1,8 +1,8 @@
 use super::exprs::{
     DR_CODE_CONST_PREFIX, ShortCircuitItem, boolop_shortcircuit_skip, build_linear_stmts_sim,
     build_linear_stmts_sim_seed, const_string_tuple, first_significant_after,
-    fold_short_circuit_items, is_chain_cond_jump, is_modern_test_chain_link_jump, local_name_at,
-    name_at, skip_to_bool_jump, value_boolop_at,
+    fold_short_circuit_items, is_chain_compare_jump, is_chain_cond_jump,
+    is_modern_test_chain_link_jump, local_name_at, name_at, skip_to_bool_jump, value_boolop_at,
 };
 use super::function_meta::load_const;
 use super::loops::{find_loop, is_walrus_store_shape, non_empty};
@@ -506,6 +506,10 @@ fn next_shortcircuit(stream: &DecodedStream, from: usize, hi: usize) -> Option<S
                 if jump >= hi {
                     return None;
                 }
+                if is_chain_compare_jump(&stream.ops, jump) {
+                    i = jump + 1;
+                    continue;
+                }
                 let op: BoolOpKind = match stream.ops[jump] {
                     CanonicalOp::PopJumpIfFalse(_) => BoolOpKind::And,
                     CanonicalOp::PopJumpIfTrue(_) => BoolOpKind::Or,
@@ -533,6 +537,10 @@ fn next_shortcircuit(stream: &DecodedStream, from: usize, hi: usize) -> Option<S
             | CanonicalOp::JumpIfTrueOrPop(_)
             | CanonicalOp::PopJumpIfFalse(_)
             | CanonicalOp::PopJumpIfTrue(_) => {
+                if is_chain_compare_jump(&stream.ops, i) {
+                    i += 1;
+                    continue;
+                }
                 let op: BoolOpKind = match stream.ops[i] {
                     CanonicalOp::JumpIfFalseOrPop(_) | CanonicalOp::PopJumpIfFalse(_) => {
                         BoolOpKind::And
