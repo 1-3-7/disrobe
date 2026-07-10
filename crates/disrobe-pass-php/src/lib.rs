@@ -17,6 +17,7 @@ pub mod encoder;
 pub mod error;
 pub mod format_wire;
 pub mod key_extractor;
+mod literal;
 pub mod loader;
 pub mod peel;
 pub mod phar;

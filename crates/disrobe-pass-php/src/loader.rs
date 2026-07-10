@@ -574,40 +574,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_int_literal(&mut self) -> Option<Expr> {
-        if self.peek() == Some(b'0')
-            && let Some(radix_marker) = self.buf.get(self.pos + 1)
-            && matches!(radix_marker, b'x' | b'X' | b'o' | b'O' | b'b' | b'B')
-        {
-            let radix: u32 = match radix_marker {
-                b'x' | b'X' => 16,
-                b'o' | b'O' => 8,
-                _ => 2,
-            };
-            self.pos += 2;
-            let start: usize = self.pos;
-            while self
-                .peek()
-                .is_some_and(|b: u8| (b as char).is_digit(radix) || b == b'_')
-            {
-                self.pos += 1;
-            }
-            let digits: String = std::str::from_utf8(&self.buf[start..self.pos])
-                .ok()?
-                .replace('_', "");
-            let value: i64 = i64::from_str_radix(&digits, radix).ok()?;
-            return Some(Expr::IntLit(value));
-        }
         let start: usize = self.pos;
         while self
             .peek()
-            .is_some_and(|b: u8| b.is_ascii_digit() || b == b'_')
+            .is_some_and(|b: u8| b.is_ascii_alphanumeric() || b == b'_')
         {
             self.pos += 1;
         }
-        let text: String = std::str::from_utf8(&self.buf[start..self.pos])
-            .ok()?
-            .replace('_', "");
-        let value: i64 = text.parse::<i64>().ok()?;
+        let raw: &[u8] = self.buf.get(start..self.pos)?;
+        let value: i64 = crate::literal::parse_php_integer_literal(raw)?;
         Some(Expr::IntLit(value))
     }
 

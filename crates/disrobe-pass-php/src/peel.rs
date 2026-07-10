@@ -357,10 +357,8 @@ fn createfunction_call_re() -> &'static Regex {
 fn extract_eval_arg(buf: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
     if let Some(caps) = eval_outer_re().captures(buf) {
         let arg: &[u8] = caps.get(1)?.as_bytes();
-        return classify_inner(arg).or_else(|| {
-            let trimmed: Vec<u8> = trim_quotes(arg);
-            Some((EvalKind::Plain, trimmed))
-        });
+        return classify_inner(arg)
+            .or_else(|| is_bare_string_literal(arg).then(|| (EvalKind::Plain, trim_quotes(arg))));
     }
     extract_embedded_eval_arg(buf)
 }
@@ -925,7 +923,7 @@ fn classify_single_key_xor(arg: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 fn classify_chr_concat(arg: &[u8]) -> Option<Vec<u8>> {
     static TERM_RE: OnceLock<Regex> = OnceLock::new();
     let term_re: &Regex = TERM_RE.get_or_init(|| {
-        Regex::new(r"(?is)chr\s*\(\s*(0x[0-9A-Fa-f]+|\d+)\s*\)").expect("static chr regex compiles")
+        Regex::new(r"(?is)chr\s*\(\s*([0-9A-Za-z_]+)\s*\)").expect("static chr regex compiles")
     });
     let trimmed: &[u8] = arg.trim_ascii();
     if !trimmed.starts_with(b"chr") {
@@ -933,11 +931,22 @@ fn classify_chr_concat(arg: &[u8]) -> Option<Vec<u8>> {
     }
     let mut out: Vec<u8> = Vec::new();
     let mut matched_any: bool = false;
+    let mut cursor: usize = 0;
     for caps in term_re.captures_iter(arg) {
+        let whole: regex::bytes::Match<'_> = caps.get(0)?;
+        let gap: &[u8] = arg.get(cursor..whole.start())?.trim_ascii();
+        if (matched_any && gap != b".") || (!matched_any && !gap.is_empty()) {
+            return None;
+        }
         let raw: &[u8] = caps.get(1)?.as_bytes();
-        let value: u32 = parse_int_literal(raw)?;
-        out.push(value as u8);
+        let value: i64 = crate::literal::parse_php_integer_literal(raw)?;
+        let byte: u8 = u8::try_from(value.rem_euclid(256)).ok()?;
+        out.push(byte);
         matched_any = true;
+        cursor = whole.end();
+    }
+    if !arg.get(cursor..)?.trim_ascii().is_empty() {
+        return None;
     }
     if matched_any { Some(out) } else { None }
 }
@@ -950,14 +959,6 @@ fn classify_hex_escape_literal(arg: &[u8]) -> Option<Vec<u8>> {
     let inner: &[u8] = &s[1..s.len() - 1];
     memchr::memmem::find(inner, b"\\x")?;
     Some(decode_hex_escapes(inner))
-}
-
-fn parse_int_literal(raw: &[u8]) -> Option<u32> {
-    let text: &str = std::str::from_utf8(raw).ok()?;
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        return u32::from_str_radix(hex, 16).ok();
-    }
-    text.parse::<u32>().ok()
 }
 
 const fn rot13_byte(b: u8) -> u8 {
