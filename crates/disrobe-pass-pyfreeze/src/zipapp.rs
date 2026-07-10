@@ -5,7 +5,10 @@ use zip::ZipArchive;
 
 use crate::common::manifest::{EntryKind, EntryOrigin, EntryRecord, FreezerKind, FreezerManifest};
 use crate::common::pyc::{PycFingerprint, fingerprint};
-use crate::common::quota::{ExtractionQuota, QuotaGuard};
+use crate::common::quota::{
+    ExtractionQuota, QuotaGuard, admit_charged_entry, default_quota, next_entry_uncompressed_limit,
+    reject_declared_entry_over_cap,
+};
 use crate::common::shebang::parse as parse_shebang;
 use crate::common::zip_tail::locate;
 use crate::error::{Error, Result};
@@ -23,7 +26,7 @@ pub struct ExtractedEntry {
 }
 
 pub fn detect_and_extract(bytes: &[u8], source: &Path, out_dir: &Path) -> Result<ZipappExtraction> {
-    detect_and_extract_with_quota(bytes, source, out_dir, ExtractionQuota::default_safe())
+    detect_and_extract_with_quota(bytes, source, out_dir, default_quota())
 }
 
 pub fn detect_and_extract_with_quota(
@@ -55,8 +58,8 @@ pub fn detect_and_extract_with_quota(
         let safe: String = sanitize(file.name())?;
         let declared_size: u64 = file.size();
         let compressed_size: u64 = file.compressed_size();
-        guard.reject_declared_entry_over_cap(&safe, declared_size)?;
-        let read_limit: u64 = guard.next_entry_uncompressed_limit();
+        reject_declared_entry_over_cap(quota, &safe, declared_size)?;
+        let read_limit: u64 = next_entry_uncompressed_limit(quota, &guard);
         let buf: Vec<u8> =
             crate::common::read_bounded::read_to_vec_limited(&mut file, declared_size, read_limit)
                 .map_err(|e| Error::ZipEntry(safe.clone(), e.to_string()))?;
@@ -64,7 +67,7 @@ pub fn detect_and_extract_with_quota(
             entry: safe.clone(),
             reason: "actual uncompressed size exceeds u64".to_owned(),
         })?;
-        guard.admit_entry(&safe, actual_size, compressed_size)?;
+        admit_charged_entry(&mut guard, &safe, actual_size, compressed_size)?;
         let disk_path: PathBuf = out_dir.join(&safe);
         if let Some(parent) = disk_path.parent() {
             std::fs::create_dir_all(parent)?;

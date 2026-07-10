@@ -5,11 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
+use disrobe_binfmt::ContainerKind;
 use disrobe_binfmt::extract::{ExtractionResult as BinfmtResult, extract_to_with_quota};
-use disrobe_binfmt::{ContainerKind, ExtractionQuota as BinfmtQuota};
 
 use crate::common::pyc::fingerprint;
-use crate::common::quota::ExtractionQuota;
+use crate::common::quota::{ExtractionQuota, default_quota};
 use crate::error::{Error, Result};
 use crate::{MAX_RECOVERY_FILE_BYTES, read_file_bounded};
 
@@ -23,7 +23,7 @@ pub struct ExtractedEntry {
 }
 
 pub fn extract_all(zip_bytes: &[u8], out_dir: &Path) -> Result<Vec<ExtractedEntry>> {
-    extract_all_with_quota(zip_bytes, out_dir, ExtractionQuota::default_safe())
+    extract_all_with_quota(zip_bytes, out_dir, default_quota())
 }
 
 pub fn extract_all_with_quota(
@@ -32,20 +32,8 @@ pub fn extract_all_with_quota(
     quota: ExtractionQuota,
 ) -> Result<Vec<ExtractedEntry>> {
     std::fs::create_dir_all(out_dir)?;
-    let binfmt_quota: BinfmtQuota = bridge_quota(quota);
     let result: BinfmtResult =
-        extract_to_with_quota(ContainerKind::Zip, zip_bytes, out_dir, binfmt_quota).map_err(
-            |e: disrobe_binfmt::Error| match e {
-                disrobe_binfmt::Error::Zip(s) => Error::Zip(s),
-                disrobe_binfmt::Error::ZipEntry { name, reason } => Error::ZipEntry(name, reason),
-                disrobe_binfmt::Error::UnsafeEntryPath(p) => Error::UnsafeEntryPath(p),
-                disrobe_binfmt::Error::QuotaExceeded { entry, reason } => {
-                    Error::QuotaExceeded { entry, reason }
-                }
-                disrobe_binfmt::Error::Io(io) => Error::Io(io),
-                other => Error::Zip(other.to_string()),
-            },
-        )?;
+        extract_to_with_quota(ContainerKind::Zip, zip_bytes, out_dir, quota)?;
     if let Some(first_violation) = result.integrity_violations.first() {
         return Err(Error::UnsafeEntryPath(first_violation.clone()));
     }
@@ -72,16 +60,6 @@ pub fn extract_all_with_quota(
     Ok(out)
 }
 
-const fn bridge_quota(quota: ExtractionQuota) -> BinfmtQuota {
-    BinfmtQuota {
-        max_entries: quota.max_entries,
-        max_total_uncompressed: quota.max_total_uncompressed,
-        max_per_entry_uncompressed: quota.max_per_entry_uncompressed,
-        max_per_entry_ratio: quota.max_expansion_ratio,
-        max_aggregate_ratio: quota.max_aggregate_ratio,
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -104,17 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn bridge_quota_arms_finite_aggregate_ratio() {
-        let bridged: BinfmtQuota = bridge_quota(ExtractionQuota::default_safe());
+    fn default_quota_arms_finite_aggregate_ratio() {
+        let default: ExtractionQuota = default_quota();
         assert!(
-            bridged.max_aggregate_ratio < u64::MAX,
+            default.max_aggregate_ratio < u64::MAX,
             "the aggregate zip-bomb cap must not be disabled"
         );
         assert!(
-            bridged.max_aggregate_ratio <= bridged.max_per_entry_ratio,
+            default.max_aggregate_ratio <= default.max_per_entry_ratio,
             "the aggregate cap must be at least as strict as the per-entry ratio"
         );
-        let unrestricted: BinfmtQuota = bridge_quota(ExtractionQuota::unrestricted());
+        let unrestricted: ExtractionQuota = ExtractionQuota::unrestricted();
         assert_eq!(
             unrestricted.max_aggregate_ratio,
             u64::MAX,
@@ -152,9 +130,9 @@ mod tests {
             zip_bytes.len()
         ));
         let strict: ExtractionQuota = ExtractionQuota {
-            max_expansion_ratio: u64::MAX,
+            max_per_entry_ratio: u64::MAX,
             max_aggregate_ratio: 4,
-            ..ExtractionQuota::default_safe()
+            ..default_quota()
         };
         let start: std::time::Instant = std::time::Instant::now();
         let result: Result<Vec<ExtractedEntry>> = extract_all_with_quota(&zip_bytes, &tmp, strict);
@@ -183,9 +161,8 @@ mod tests {
             std::process::id(),
             zip_bytes.len()
         ));
-        let out: Vec<ExtractedEntry> =
-            extract_all_with_quota(&zip_bytes, &tmp, ExtractionQuota::default_safe())
-                .expect("a normal cx_Freeze zip must still extract under the armed aggregate cap");
+        let out: Vec<ExtractedEntry> = extract_all_with_quota(&zip_bytes, &tmp, default_quota())
+            .expect("a normal cx_Freeze zip must still extract under the armed aggregate cap");
         assert_eq!(out.len(), 2, "both members must extract: {out:?}");
         let _ = std::fs::remove_dir_all(&tmp);
     }

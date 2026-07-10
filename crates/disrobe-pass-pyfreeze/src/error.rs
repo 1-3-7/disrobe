@@ -99,3 +99,18 @@ pub enum Error {
     #[error("DR-PYFRZ-0026: PyOxidizer packed-resources module index malformed: {0}")]
     PyOxidizerResourceIndex(String),
 }
+
+impl From<disrobe_binfmt::Error> for Error {
+    fn from(err: disrobe_binfmt::Error) -> Self {
+        match err {
+            disrobe_binfmt::Error::Zip(s) => Self::Zip(s),
+            disrobe_binfmt::Error::ZipEntry { name, reason } => Self::ZipEntry(name, reason),
+            disrobe_binfmt::Error::UnsafeEntryPath(p) => Self::UnsafeEntryPath(p),
+            disrobe_binfmt::Error::QuotaExceeded { entry, reason } => {
+                Self::QuotaExceeded { entry, reason }
+            }
+            disrobe_binfmt::Error::Io(io) => Self::Io(io),
+            other => Self::Zip(other.to_string()),
+        }
+    }
+}
