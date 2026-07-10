@@ -827,7 +827,7 @@ fn lower(
                     pc += 1;
                 }
             }
-            Op::SetList => emit_setlist(state, &d, &mut pc, dialect),
+            Op::SetList => emit_setlist(state, p, &d, &mut pc, dialect),
             Op::Close => {}
             Op::Tbc => {}
             Op::Closure => emit_closure(state, p, &d, dialect, depth)?,
@@ -1844,13 +1844,24 @@ fn stmt_references(stmt: &LStmt, name: &str) -> bool {
 
 const LFIELDS_PER_FLUSH: u32 = 50;
 
-fn emit_setlist(state: &mut StructState, d: &Decoded, pc: &mut usize, dialect: LuaDialect) {
+fn emit_setlist(
+    state: &mut StructState,
+    p: &LuaProto,
+    d: &Decoded,
+    pc: &mut usize,
+    dialect: LuaDialect,
+) {
     let table: String = state.reg(d.a);
     let count: u32 = d.b;
+    let setlist_pc: usize = *pc;
     if matches!(dialect, LuaDialect::Lua54) && d.k {
         *pc += 1;
     }
     if count == 0 {
+        if is_fresh_vararg_table(p, d, setlist_pc, dialect) {
+            state.push_raw(format!("{table} = {{...}}"));
+            return;
+        }
         state.fully_structured = false;
         state
             .warnings
@@ -1864,6 +1875,54 @@ fn emit_setlist(state: &mut StructState, d: &Decoded, pc: &mut usize, dialect: L
         let index: u32 = base_index + i;
         state.push_raw(format!("{table}[{index}]{SETLIST_TAG} = {elem}"));
     }
+}
+
+#[must_use]
+fn is_fresh_vararg_table(p: &LuaProto, d: &Decoded, pc: usize, dialect: LuaDialect) -> bool {
+    if p.is_vararg == 0 {
+        return false;
+    }
+    let is_lua54: bool = matches!(dialect, LuaDialect::Lua54);
+    let first_block: bool = if is_lua54 { d.c == 0 && !d.k } else { d.c == 1 };
+    if !first_block {
+        return false;
+    }
+    let Some(first_value): Option<u32> = d.a.checked_add(1) else {
+        return false;
+    };
+    let Some(vararg_pc): Option<usize> = pc.checked_sub(1) else {
+        return false;
+    };
+    let table_distance: usize = if is_lua54 { 3 } else { 2 };
+    let Some(table_pc): Option<usize> = pc.checked_sub(table_distance) else {
+        return false;
+    };
+    let Some(vararg_raw): Option<u32> = p.code.get(vararg_pc).copied() else {
+        return false;
+    };
+    let Some(table_raw): Option<u32> = p.code.get(table_pc).copied() else {
+        return false;
+    };
+    let vararg: Decoded = decode(vararg_raw, dialect);
+    let new_table: Decoded = decode(table_raw, dialect);
+    let open_vararg: bool = if is_lua54 {
+        vararg.c == 0
+    } else {
+        vararg.b == 0
+    };
+    let extra_arg: bool = if is_lua54 {
+        pc.checked_sub(2)
+            .and_then(|extra_pc: usize| p.code.get(extra_pc))
+            .is_some_and(|raw: &u32| decode(*raw, dialect).op == Op::ExtraArg)
+    } else {
+        true
+    };
+    vararg.op == Op::Vararg
+        && vararg.a == first_value
+        && open_vararg
+        && extra_arg
+        && new_table.op == Op::NewTable
+        && new_table.a == d.a
 }
 
 fn emit_closure(
@@ -2193,9 +2252,14 @@ mod tests {
     const OP51_RETURN: u32 = 30;
     const OP54_LFALSESKIP: u32 = 6;
     const OP54_LOADTRUE: u32 = 7;
+    const OP54_NEWTABLE: u32 = 19;
     const OP54_JMP: u32 = 56;
     const OP54_LT: u32 = 58;
+    const OP54_RETURN0: u32 = 71;
     const OP54_RETURN1: u32 = 72;
+    const OP54_SETLIST: u32 = 78;
+    const OP54_VARARG: u32 = 80;
+    const OP54_EXTRAARG: u32 = 82;
 
     #[test]
     fn lua51_single_comparison_recovers_boolean_value_not_literal_false() {
@@ -2289,6 +2353,91 @@ mod tests {
             bool_materialize_dest(&p, &live, 0, LuaDialect::Lua51).is_none(),
             "a comparison whose jump does not lead into a LOADBOOL pair is a control-flow \
              branch, not a boolean materialization",
+        );
+    }
+
+    #[test]
+    fn lua54_extended_dynamic_setlist_remains_explicitly_lossy() {
+        let code: Vec<u32> = vec![
+            enc54_abc(OP54_NEWTABLE, 0, 0, 0, 0),
+            OP54_EXTRAARG,
+            enc54_abc(OP54_VARARG, 1, 0, 0, 0),
+            enc54_abc(OP54_SETLIST, 0, 0, 0, 1),
+            OP54_EXTRAARG,
+            enc54_abc(OP54_RETURN0, 0, 0, 0, 0),
+        ];
+        let mut p: LuaProto = proto(code, 0, 2);
+        p.is_vararg = 1;
+        assert_dynamic_setlist_rejected("extended block", &p);
+    }
+
+    #[test]
+    fn lua54_non_vararg_dynamic_setlist_remains_explicitly_lossy() {
+        let code: Vec<u32> = vec![
+            enc54_abc(OP54_NEWTABLE, 0, 0, 0, 0),
+            OP54_EXTRAARG,
+            enc54_abc(OP54_VARARG, 1, 0, 0, 0),
+            enc54_abc(OP54_SETLIST, 0, 0, 0, 0),
+            enc54_abc(OP54_RETURN0, 0, 0, 0, 0),
+        ];
+        let p: LuaProto = proto(code, 0, 2);
+        assert_dynamic_setlist_rejected("non-vararg prototype", &p);
+    }
+
+    #[test]
+    fn lua54_other_dynamic_setlist_shapes_remain_explicitly_lossy() {
+        let cases: [(&str, Vec<u32>); 3] = [
+            (
+                "later block",
+                vec![
+                    enc54_abc(OP54_NEWTABLE, 0, 0, 0, 0),
+                    OP54_EXTRAARG,
+                    enc54_abc(OP54_VARARG, 1, 0, 0, 0),
+                    enc54_abc(OP54_SETLIST, 0, 0, 1, 0),
+                    enc54_abc(OP54_RETURN0, 0, 0, 0, 0),
+                ],
+            ),
+            (
+                "mismatched value register",
+                vec![
+                    enc54_abc(OP54_NEWTABLE, 0, 0, 0, 0),
+                    OP54_EXTRAARG,
+                    enc54_abc(OP54_VARARG, 2, 0, 0, 0),
+                    enc54_abc(OP54_SETLIST, 0, 0, 0, 0),
+                    enc54_abc(OP54_RETURN0, 0, 0, 0, 0),
+                ],
+            ),
+            (
+                "missing extra argument",
+                vec![
+                    enc54_abc(OP54_NEWTABLE, 0, 0, 0, 0),
+                    enc54_abc(OP54_VARARG, 1, 0, 0, 0),
+                    enc54_abc(OP54_SETLIST, 0, 0, 0, 0),
+                    enc54_abc(OP54_RETURN0, 0, 0, 0, 0),
+                ],
+            ),
+        ];
+        for (label, code) in cases {
+            let mut p: LuaProto = proto(code, 0, 3);
+            p.is_vararg = 1;
+            assert_dynamic_setlist_rejected(label, &p);
+        }
+    }
+
+    fn assert_dynamic_setlist_rejected(label: &str, p: &LuaProto) {
+        let out: LiftedProto =
+            lift_structured(p, LuaDialect::Lua54, 0).expect("structured lift succeeds");
+        assert!(
+            !out.fully_structured,
+            "{label}: unsupported dynamic SETLIST must not claim a complete structure: {}",
+            out.source
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|warning: &String| warning.contains("multi-value table elements")),
+            "{label}: unsupported dynamic SETLIST must retain its warning: {:?}",
+            out.warnings
         );
     }
 }

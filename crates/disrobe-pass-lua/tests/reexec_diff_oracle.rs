@@ -249,7 +249,8 @@ fn assert_lane(tag: &str) {
     );
 }
 
-const REEXEC_FLOOR_NUM: usize = 27;
+const REEXEC_FLOOR_NUM: usize = 29;
+const VARARG_TABLE_PROGRAM: &str = "local function sumall(...)\n  local s = 0\n  for _, v in ipairs({...}) do s = s + v end\n  return s\nend\nprint(sumall(1, 2, 3, 4, 5))\n";
 
 #[test]
 fn reexec_equivalence_lua_5_1() {
@@ -259,6 +260,43 @@ fn reexec_equivalence_lua_5_1() {
 #[test]
 fn reexec_equivalence_lua_5_4() {
     assert_lane("5.4");
+}
+
+#[test]
+fn vararg_table_constructor_reexecutes_lua_5_1() {
+    let Some(tc): Option<Toolchain> = toolchain_51() else {
+        eprintln!("skip: lua 5.1 toolchain not found");
+        return;
+    };
+    assert_vararg_table_constructor_reexecutes(&tc);
+}
+
+#[test]
+fn vararg_table_constructor_reexecutes_lua_5_4() {
+    let Some(tc): Option<Toolchain> = toolchain_54() else {
+        eprintln!("skip: lua 5.4 toolchain not found");
+        return;
+    };
+    assert_vararg_table_constructor_reexecutes(&tc);
+}
+
+fn assert_vararg_table_constructor_reexecutes(tc: &Toolchain) {
+    let dir: PathBuf = scratch_dir();
+    let src: PathBuf = dir.join("vararg_table.lua");
+    std::fs::write(&src, VARARG_TABLE_PROGRAM).expect("write source");
+    let bc: PathBuf = dir.join("vararg_table.luac");
+    assert!(compile(&tc.luac, &src, &bc), "luac compiles source");
+    let bytes: Vec<u8> = std::fs::read(&bc).expect("read bytecode");
+    let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile");
+    let body: String = strip_main_wrapper(&decompiled.source);
+    let expected: String =
+        run_source(&tc.lua, &dir, "vararg_orig", VARARG_TABLE_PROGRAM).expect("original runs");
+    let actual: String =
+        run_source(&tc.lua, &dir, "vararg_dec", &body).expect("recovered source runs");
+    assert_eq!(
+        actual, expected,
+        "vararg table constructor must preserve every argument\n--- recovered ---\n{body}"
+    );
 }
 
 const GOTO_PROGRAM: &str = "local acc = 0\nlocal i = 1\n::top::\nif i > 5 then goto done end\nacc = acc + i\ni = i + 1\ngoto top\n::done::\nprint(acc)\n";
@@ -360,10 +398,7 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_return",
         "local function minmax(t)\n  local lo, hi = t[1], t[1]\n  for i = 2, #t do\n    if t[i] < lo then lo = t[i] end\n    if t[i] > hi then hi = t[i] end\n  end\n  return lo, hi\nend\nprint(minmax({4, 1, 7, 3, 9, 2}))\n",
     ),
-    (
-        "varargs",
-        "local function sumall(...)\n  local s = 0\n  for _, v in ipairs({...}) do s = s + v end\n  return s\nend\nprint(sumall(1, 2, 3, 4, 5))\n",
-    ),
+    ("varargs", VARARG_TABLE_PROGRAM),
     (
         "method_self",
         "local obj = {value = 10}\nfunction obj:add(x) self.value = self.value + x return self.value end\nprint(obj:add(5), obj:add(3))\n",
