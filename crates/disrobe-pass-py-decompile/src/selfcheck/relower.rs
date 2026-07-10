@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use disrobe_py_marshal::{CodeObject, Object};
@@ -11,6 +12,7 @@ const CO_OPTIMIZED: i32 = 0x0001;
 const KIND_CELL: u8 = 0x40;
 const KIND_FREE: u8 = 0x80;
 const NB_SUBSCR: u32 = 26;
+const MAX_DEPTH: u32 = 96;
 
 #[derive(Debug)]
 pub(crate) enum Relowered {
@@ -116,46 +118,353 @@ fn object_str(obj: &Object) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Tail {
+    Return,
+    Goto(u32),
+}
+
+#[derive(Debug)]
+enum Item {
+    Op(NormalizedOp),
+    Label(u32),
+    Jump(u32),
+    CondJump(&'static str, u32),
+}
+
+#[derive(Debug)]
+struct Emitter {
+    items: Vec<Item>,
+    next_label: u32,
+}
+
+impl Emitter {
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            next_label: 0,
+        }
+    }
+
+    fn new_label(&mut self) -> u32 {
+        let label: u32 = self.next_label;
+        self.next_label += 1;
+        label
+    }
+
+    fn place(&mut self, label: u32) {
+        self.items.push(Item::Label(label));
+    }
+
+    fn op(&mut self, op: NormalizedOp) {
+        self.items.push(Item::Op(op));
+    }
+
+    fn push_ops(&mut self, ops: Vec<NormalizedOp>) {
+        for op in ops {
+            self.items.push(Item::Op(op));
+        }
+    }
+
+    fn jump(&mut self, label: u32) {
+        self.items.push(Item::Jump(label));
+    }
+
+    fn cond_jump(&mut self, name: &'static str, label: u32) {
+        self.items.push(Item::CondJump(name, label));
+    }
+
+    #[must_use]
+    fn finish(self) -> Option<Vec<NormalizedOp>> {
+        let items: Vec<Item> = elide_noop_jumps(self.items);
+        let mut label_index: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut idx: u32 = 0;
+        for item in &items {
+            match item {
+                Item::Label(label) => {
+                    label_index.insert(*label, idx);
+                }
+                _ => idx = idx.checked_add(1)?,
+            }
+        }
+        let mut out: Vec<NormalizedOp> = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                Item::Label(_) => {}
+                Item::Op(op) => out.push(op),
+                Item::Jump(label) => out.push(jump_op("JUMP", label_index.get(&label).copied())),
+                Item::CondJump(name, label) => {
+                    out.push(jump_op(name, label_index.get(&label).copied()));
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+#[must_use]
+fn elide_noop_jumps(items: Vec<Item>) -> Vec<Item> {
+    let mut remove: Vec<bool> = vec![false; items.len()];
+    for (pos, item) in items.iter().enumerate() {
+        let Item::Jump(target) = item else {
+            continue;
+        };
+        let mut cursor: usize = pos + 1;
+        let mut lands_on_next: bool = false;
+        while let Some(next) = items.get(cursor) {
+            match next {
+                Item::Label(label) if label == target => {
+                    lands_on_next = true;
+                    break;
+                }
+                Item::Label(_) => cursor += 1,
+                _ => break,
+            }
+        }
+        if lands_on_next {
+            remove[pos] = true;
+        }
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, item): (usize, Item)| (!remove[idx]).then_some(item))
+        .collect()
+}
+
 #[must_use]
 pub(crate) fn relower_function_body(body: &[Stmt], ctx: &ScopeCtx) -> Relowered {
     if !ctx.is_function_scope() {
         return Relowered::Uncovered;
     }
-    let mut out: Vec<NormalizedOp> = Vec::new();
-    for stmt in body {
-        if lower_stmt(stmt, ctx, &mut out).is_none() {
-            return Relowered::Uncovered;
+    let mut em: Emitter = Emitter::new();
+    if lower_seq(body, ctx, &mut em, Tail::Return, 0).is_none() {
+        return Relowered::Uncovered;
+    }
+    em.finish()
+        .map_or(Relowered::Uncovered, |ops: Vec<NormalizedOp>| {
+            Relowered::Ops(canonicalize_relowered(ops))
+        })
+}
+
+#[must_use]
+fn lower_seq(
+    stmts: &[Stmt],
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    tail: Tail,
+    depth: u32,
+) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let Some((first, rest)): Option<(&Stmt, &[Stmt])> = stmts.split_first() else {
+        return apply_tail(em, tail);
+    };
+    match first {
+        Stmt::If {
+            test, body, orelse, ..
+        } => lower_if(test, body, orelse, rest, ctx, em, tail, depth),
+        Stmt::While {
+            test, body, orelse, ..
+        } => lower_while(test, body, orelse, rest, ctx, em, tail, depth),
+        Stmt::For {
+            target,
+            iter,
+            body,
+            orelse,
+            is_async,
+            ..
+        } => {
+            if *is_async {
+                return None;
+            }
+            lower_for(target, iter, body, orelse, rest, ctx, em, tail, depth)
+        }
+        Stmt::Return(value) => {
+            if !rest.is_empty() {
+                return None;
+            }
+            lower_return(value.as_ref(), ctx, em)
+        }
+        Stmt::Pass | Stmt::Assign { .. } | Stmt::Expr(_) => {
+            lower_simple(first, ctx, em)?;
+            lower_seq(rest, ctx, em, tail, depth)
+        }
+        _ => None,
+    }
+}
+
+#[must_use]
+fn apply_tail(em: &mut Emitter, tail: Tail) -> Option<()> {
+    match tail {
+        Tail::Return => {
+            em.op(op_const(ConstValue::None));
+            em.op(op_bare("RETURN_VALUE"));
+            Some(())
+        }
+        Tail::Goto(label) => {
+            em.jump(label);
+            Some(())
         }
     }
-    if !ends_with_terminator(body) {
-        out.push(op_const(ConstValue::None));
-        out.push(op_bare("RETURN_VALUE"));
+}
+
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+fn lower_if(
+    test: &Expr,
+    body: &[Stmt],
+    orelse: &[Stmt],
+    rest: &[Stmt],
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    tail: Tail,
+    depth: u32,
+) -> Option<()> {
+    if orelse.is_empty() {
+        let join: u32 = em.new_label();
+        emit_condition(test, join, ctx, em)?;
+        let body_tail: Tail = if rest.is_empty() {
+            tail
+        } else {
+            Tail::Goto(join)
+        };
+        lower_seq(body, ctx, em, body_tail, depth + 1)?;
+        em.place(join);
+        return lower_seq(rest, ctx, em, tail, depth + 1);
     }
-    Relowered::Ops(canonicalize_relowered(out))
+    let elselbl: u32 = em.new_label();
+    emit_condition(test, elselbl, ctx, em)?;
+    if rest.is_empty() {
+        lower_seq(body, ctx, em, tail, depth + 1)?;
+        em.place(elselbl);
+        return lower_seq(orelse, ctx, em, tail, depth + 1);
+    }
+    let join: u32 = em.new_label();
+    lower_seq(body, ctx, em, Tail::Goto(join), depth + 1)?;
+    em.place(elselbl);
+    lower_seq(orelse, ctx, em, Tail::Goto(join), depth + 1)?;
+    em.place(join);
+    lower_seq(rest, ctx, em, tail, depth + 1)
 }
 
 #[must_use]
-fn ends_with_terminator(body: &[Stmt]) -> bool {
-    matches!(
-        body.last(),
-        Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Continue | Stmt::Break)
-    )
+#[allow(clippy::too_many_arguments)]
+fn lower_while(
+    test: &Expr,
+    body: &[Stmt],
+    orelse: &[Stmt],
+    rest: &[Stmt],
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    tail: Tail,
+    depth: u32,
+) -> Option<()> {
+    if !body_is_straight_line(body) || is_constant_test(test) {
+        return None;
+    }
+    let header: u32 = em.new_label();
+    let exit: u32 = em.new_label();
+    em.place(header);
+    emit_condition(test, exit, ctx, em)?;
+    lower_seq(body, ctx, em, Tail::Goto(header), depth + 1)?;
+    em.place(exit);
+    let cont: Vec<Stmt> = concat_stmts(orelse, rest);
+    lower_seq(&cont, ctx, em, tail, depth + 1)
 }
 
 #[must_use]
-fn lower_stmt(stmt: &Stmt, ctx: &ScopeCtx, out: &mut Vec<NormalizedOp>) -> Option<()> {
+#[allow(clippy::too_many_arguments)]
+fn lower_for(
+    target: &Expr,
+    iter: &Expr,
+    body: &[Stmt],
+    orelse: &[Stmt],
+    rest: &[Stmt],
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    tail: Tail,
+    depth: u32,
+) -> Option<()> {
+    if !body_is_straight_line(body) {
+        return None;
+    }
+    let Expr::Name {
+        id,
+        ctx: ExprCtx::Store,
+        ..
+    } = target
+    else {
+        return None;
+    };
+    let store_op: &'static str = ctx.store_op_for(id)?;
+    emit_expr(iter, ctx, em)?;
+    em.op(op_bare("GET_ITER"));
+    let header: u32 = em.new_label();
+    let end: u32 = em.new_label();
+    em.place(header);
+    em.cond_jump("FOR_ITER", end);
+    em.op(op_name(store_op, id));
+    lower_seq(body, ctx, em, Tail::Goto(header), depth + 1)?;
+    em.place(end);
+    em.op(op_bare("END_FOR"));
+    em.op(op_bare("POP_ITER"));
+    let cont: Vec<Stmt> = concat_stmts(orelse, rest);
+    lower_seq(&cont, ctx, em, tail, depth + 1)
+}
+
+#[must_use]
+fn concat_stmts(head: &[Stmt], tail: &[Stmt]) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(head.len() + tail.len());
+    out.extend_from_slice(head);
+    out.extend_from_slice(tail);
+    out
+}
+
+#[must_use]
+fn body_is_straight_line(body: &[Stmt]) -> bool {
+    !body.is_empty()
+        && body
+            .iter()
+            .all(|s: &Stmt| matches!(s, Stmt::Pass | Stmt::Assign { .. } | Stmt::Expr(_)))
+}
+
+#[must_use]
+fn is_constant_test(test: &Expr) -> bool {
+    matches!(test, Expr::Constant { .. })
+}
+
+#[must_use]
+fn lower_return(value: Option<&Expr>, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    let mut ops: Vec<NormalizedOp> = Vec::new();
+    match value {
+        None => {
+            ops.push(op_const(ConstValue::None));
+            ops.push(op_bare("RETURN_VALUE"));
+        }
+        Some(expr) => {
+            lower_expr(expr, ctx, &mut ops)?;
+            ops.push(op_bare("RETURN_VALUE"));
+        }
+    }
+    em.push_ops(ops);
+    Some(())
+}
+
+#[must_use]
+fn lower_simple(stmt: &Stmt, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    let mut ops: Vec<NormalizedOp> = Vec::new();
+    lower_simple_ops(stmt, ctx, &mut ops)?;
+    em.push_ops(ops);
+    Some(())
+}
+
+#[must_use]
+fn lower_simple_ops(stmt: &Stmt, ctx: &ScopeCtx, out: &mut Vec<NormalizedOp>) -> Option<()> {
     match stmt {
         Stmt::Pass => Some(()),
-        Stmt::Return(None) => {
-            out.push(op_const(ConstValue::None));
-            out.push(op_bare("RETURN_VALUE"));
-            Some(())
-        }
-        Stmt::Return(Some(value)) => {
-            lower_expr(value, ctx, out)?;
-            out.push(op_bare("RETURN_VALUE"));
-            Some(())
-        }
         Stmt::Expr(call @ Expr::Call { .. }) => {
             lower_expr(call, ctx, out)?;
             out.push(op_bare("POP_TOP"));
@@ -166,6 +475,106 @@ fn lower_stmt(stmt: &Stmt, ctx: &ScopeCtx, out: &mut Vec<NormalizedOp>) -> Optio
         }
         _ => None,
     }
+}
+
+#[must_use]
+fn emit_expr(expr: &Expr, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    let mut ops: Vec<NormalizedOp> = Vec::new();
+    lower_expr(expr, ctx, &mut ops)?;
+    em.push_ops(ops);
+    Some(())
+}
+
+#[must_use]
+fn emit_condition(test: &Expr, target: u32, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    emit_branch(test, target, ctx, em)?;
+    em.op(op_bare("NOT_TAKEN"));
+    Some(())
+}
+
+#[must_use]
+fn emit_branch(test: &Expr, target: u32, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    match test {
+        Expr::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+        } => {
+            emit_expr(operand, ctx, em)?;
+            em.op(op_bare("TO_BOOL"));
+            em.cond_jump("JUMP_IF_TRUE", target);
+            Some(())
+        }
+        Expr::Compare {
+            left,
+            ops,
+            comparators,
+        } if ops.len() == 1 && comparators.len() == 1 => {
+            emit_compare_condition(left, ops[0], &comparators[0], target, ctx, em)
+        }
+        Expr::BoolOp { .. }
+        | Expr::IfExp { .. }
+        | Expr::NamedExpr { .. }
+        | Expr::Constant { .. }
+        | Expr::Compare { .. } => None,
+        other => {
+            emit_expr(other, ctx, em)?;
+            em.op(op_bare("TO_BOOL"));
+            em.cond_jump("JUMP_IF_FALSE", target);
+            Some(())
+        }
+    }
+}
+
+#[must_use]
+fn emit_compare_condition(
+    left: &Expr,
+    op: CmpOp,
+    right: &Expr,
+    target: u32,
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+) -> Option<()> {
+    if matches!(op, CmpOp::Is | CmpOp::IsNot) && is_none_const(right) {
+        emit_expr(left, ctx, em)?;
+        let name: &'static str = if matches!(op, CmpOp::Is) {
+            "JUMP_IF_NOT_NONE"
+        } else {
+            "JUMP_IF_NONE"
+        };
+        em.cond_jump(name, target);
+        return Some(());
+    }
+    if !matches!(
+        op,
+        CmpOp::Lt
+            | CmpOp::Le
+            | CmpOp::Eq
+            | CmpOp::Ne
+            | CmpOp::Gt
+            | CmpOp::Ge
+            | CmpOp::In
+            | CmpOp::NotIn
+            | CmpOp::Is
+            | CmpOp::IsNot
+    ) {
+        return None;
+    }
+    emit_expr(left, ctx, em)?;
+    emit_expr(right, ctx, em)?;
+    em.op(compare_op(op)?);
+    em.cond_jump("JUMP_IF_FALSE", target);
+    Some(())
+}
+
+#[must_use]
+fn is_none_const(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Constant {
+            value: AstConst::None,
+            ..
+        }
+    )
 }
 
 #[must_use]
@@ -304,10 +713,10 @@ fn lower_call(
             ..
         } => {
             let op: &'static str = ctx.load_op_for(id)?;
-            if op != "LOAD_GLOBAL" {
-                return None;
-            }
             out.push(op_name(op, id));
+            if op != "LOAD_GLOBAL" {
+                out.push(op_bare("PUSH_NULL"));
+            }
         }
         Expr::Attribute {
             value,
@@ -446,6 +855,18 @@ fn op_operator(op: &'static str, operator_id: u32) -> NormalizedOp {
     }
 }
 
+#[must_use]
+fn jump_op(name: &str, target: Option<u32>) -> NormalizedOp {
+    NormalizedOp {
+        token: NormToken::Op(name.into()),
+        const_value: None,
+        name_value: None,
+        jump_target_index: target,
+        operator_id: None,
+        raw_arg: None,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
@@ -493,11 +914,34 @@ mod tests {
         }
     }
 
+    fn call_stmt(func: Expr, args: Vec<Expr>) -> Stmt {
+        Stmt::Expr(call(func, args))
+    }
+
+    fn if_stmt(test: Expr, body: Vec<Stmt>, orelse: Vec<Stmt>) -> Stmt {
+        Stmt::If {
+            test,
+            body,
+            orelse,
+            line: None,
+        }
+    }
+
     fn ops(body: &[Stmt], ctx: &ScopeCtx) -> Vec<NormalizedOp> {
         match relower_function_body(body, ctx) {
             Relowered::Ops(o) => o,
             Relowered::Uncovered => panic!("expected covered body, got Uncovered"),
         }
+    }
+
+    fn names(seq: &[NormalizedOp]) -> Vec<String> {
+        seq.iter()
+            .map(|op: &NormalizedOp| match &op.token {
+                NormToken::Op(n) => n.clone(),
+                NormToken::JRetLeaf => "JRET".to_owned(),
+                NormToken::RetBlock => "RETBLK".to_owned(),
+            })
+            .collect()
     }
 
     fn jret_none() -> NormalizedOp {
@@ -554,6 +998,20 @@ mod tests {
     }
 
     #[test]
+    fn local_callable_emits_push_null() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["b"], &[], true);
+        let body: Vec<Stmt> = vec![call_stmt(load("b"), Vec::new())];
+        let expected: Vec<NormalizedOp> = vec![
+            op_name("LOAD_FAST", "b"),
+            op_bare("PUSH_NULL"),
+            op_operator("CALL", 0),
+            op_bare("POP_TOP"),
+            jret_none(),
+        ];
+        assert_eq!(ops(&body, &ctx), expected);
+    }
+
+    #[test]
     fn global_call_and_attr_store_and_implicit_return() {
         let ctx: ScopeCtx = ScopeCtx::from_parts(&["self", "x"], &[], true);
         let body: Vec<Stmt> = vec![
@@ -565,7 +1023,7 @@ mod tests {
                 },
                 load("x"),
             ),
-            Stmt::Expr(call(load("log"), vec![])),
+            call_stmt(load("log"), Vec::new()),
         ];
         let expected: Vec<NormalizedOp> = vec![
             op_name("LOAD_FAST", "x"),
@@ -597,6 +1055,194 @@ mod tests {
     }
 
     #[test]
+    fn if_without_else_tail_duplicates_return_none() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b"], &[], true);
+        let body: Vec<Stmt> = vec![if_stmt(
+            load("a"),
+            vec![call_stmt(load("b"), Vec::new())],
+            Vec::new(),
+        )];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_FAST",
+                "TO_BOOL",
+                "JUMP_IF_FALSE",
+                "NOT_TAKEN",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "JRET",
+            ]
+        );
+        assert_eq!(seq[2].jump_target_index, Some(10));
+    }
+
+    #[test]
+    fn if_followed_by_return_shares_join() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b", "c"], &[], true);
+        let body: Vec<Stmt> = vec![
+            if_stmt(load("a"), vec![Stmt::Return(Some(load("b")))], Vec::new()),
+            Stmt::Return(Some(load("c"))),
+        ];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_FAST",
+                "TO_BOOL",
+                "JUMP_IF_FALSE",
+                "NOT_TAKEN",
+                "LOAD_FAST",
+                "RETURN_VALUE",
+                "LOAD_FAST",
+                "RETURN_VALUE",
+            ]
+        );
+        assert_eq!(seq[2].jump_target_index, Some(6));
+    }
+
+    #[test]
+    fn if_else_continuation_jumps_over_else() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b", "c", "d"], &[], true);
+        let body: Vec<Stmt> = vec![
+            if_stmt(
+                load("a"),
+                vec![call_stmt(load("b"), Vec::new())],
+                vec![call_stmt(load("c"), Vec::new())],
+            ),
+            call_stmt(load("d"), Vec::new()),
+        ];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_FAST",
+                "TO_BOOL",
+                "JUMP_IF_FALSE",
+                "NOT_TAKEN",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "JUMP",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "JRET",
+            ]
+        );
+        assert_eq!(seq[2].jump_target_index, Some(9));
+        assert_eq!(seq[8].jump_target_index, Some(13));
+    }
+
+    #[test]
+    fn for_loop_straight_body_matches_3_14_codegen() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "x"], &[], true);
+        let body: Vec<Stmt> = vec![Stmt::For {
+            target: store("x"),
+            iter: load("a"),
+            body: vec![call_stmt(load("x"), Vec::new())],
+            orelse: Vec::new(),
+            is_async: false,
+            line: None,
+        }];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_FAST",
+                "GET_ITER",
+                "FOR_ITER",
+                "STORE_FAST",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "JUMP",
+                "END_FOR",
+                "POP_ITER",
+                "JRET",
+            ]
+        );
+        assert_eq!(seq[2].jump_target_index, Some(9));
+        assert_eq!(seq[8].jump_target_index, Some(2));
+    }
+
+    #[test]
+    fn while_loop_straight_body_matches_3_14_codegen() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a"], &[], true);
+        let body: Vec<Stmt> = vec![Stmt::While {
+            test: load("a"),
+            body: vec![call_stmt(load("a"), Vec::new())],
+            orelse: Vec::new(),
+            line: None,
+        }];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_FAST",
+                "TO_BOOL",
+                "JUMP_IF_FALSE",
+                "NOT_TAKEN",
+                "LOAD_FAST",
+                "PUSH_NULL",
+                "CALL",
+                "POP_TOP",
+                "JUMP",
+                "JRET",
+            ]
+        );
+        assert_eq!(seq[2].jump_target_index, Some(9));
+        assert_eq!(seq[8].jump_target_index, Some(0));
+    }
+
+    #[test]
+    fn not_condition_flips_polarity() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b"], &[], true);
+        let body: Vec<Stmt> = vec![if_stmt(
+            Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand: Box::new(load("a")),
+            },
+            vec![call_stmt(load("b"), Vec::new())],
+            Vec::new(),
+        )];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq)[0..4],
+            ["LOAD_FAST", "TO_BOOL", "JUMP_IF_TRUE", "NOT_TAKEN"]
+        );
+    }
+
+    #[test]
+    fn is_none_condition_uses_none_branch() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b"], &[], true);
+        let body: Vec<Stmt> = vec![if_stmt(
+            Expr::Compare {
+                left: Box::new(load("a")),
+                ops: vec![CmpOp::Is],
+                comparators: vec![Expr::Constant {
+                    value: AstConst::None,
+                    line: None,
+                }],
+            },
+            vec![call_stmt(load("b"), Vec::new())],
+            Vec::new(),
+        )];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(names(&seq)[0..2], ["LOAD_FAST", "JUMP_IF_NOT_NONE"]);
+    }
+
+    #[test]
     fn deref_and_global_resolution() {
         let ctx: ScopeCtx = ScopeCtx::from_parts(&["a"], &["cell"], true);
         let body: Vec<Stmt> = vec![
@@ -619,24 +1265,37 @@ mod tests {
     }
 
     #[test]
-    fn control_flow_and_uncovered_expr_abstain() {
+    fn boolop_and_while_true_and_nested_loop_if_abstain() {
         let ctx: ScopeCtx = ScopeCtx::from_parts(&["a", "b"], &[], true);
-        let with_if: Vec<Stmt> = vec![Stmt::If {
-            test: load("a"),
-            body: vec![Stmt::Pass],
-            orelse: Vec::new(),
-            line: None,
-        }];
-        assert!(matches!(
-            relower_function_body(&with_if, &ctx),
-            Relowered::Uncovered
-        ));
         let with_boolop: Vec<Stmt> = vec![Stmt::Return(Some(Expr::BoolOp {
             op: BoolOpKind::And,
             values: vec![load("a"), load("b")],
         }))];
         assert!(matches!(
             relower_function_body(&with_boolop, &ctx),
+            Relowered::Uncovered
+        ));
+        let while_true: Vec<Stmt> = vec![Stmt::While {
+            test: Expr::Constant {
+                value: AstConst::True,
+                line: None,
+            },
+            body: vec![call_stmt(load("a"), Vec::new())],
+            orelse: Vec::new(),
+            line: None,
+        }];
+        assert!(matches!(
+            relower_function_body(&while_true, &ctx),
+            Relowered::Uncovered
+        ));
+        let loop_with_if: Vec<Stmt> = vec![Stmt::While {
+            test: load("a"),
+            body: vec![if_stmt(load("b"), vec![Stmt::Pass], Vec::new())],
+            orelse: Vec::new(),
+            line: None,
+        }];
+        assert!(matches!(
+            relower_function_body(&loop_with_if, &ctx),
             Relowered::Uncovered
         ));
     }
