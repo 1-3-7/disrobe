@@ -28,6 +28,7 @@ pub const ACC_INTERFACE: u16 = 0x0200;
 pub const ACC_ABSTRACT: u16 = 0x0400;
 pub const ACC_BRIDGE: u16 = 0x0040;
 pub const ACC_SYNTHETIC: u16 = 0x1000;
+pub const ACC_ANNOTATION: u16 = 0x2000;
 pub const ACC_ENUM: u16 = 0x4000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,11 +102,21 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
         let _ = writeln!(source);
     }
 
+    let annotations: crate::attributes::DeclarationAnnotations =
+        crate::attributes::parse_declaration_annotations(cf);
+    source.push_str(&crate::attributes::render_declaration_annotations(
+        cf,
+        &annotations,
+        "",
+    ));
     let structure: crate::attributes::ClassStructure = crate::attributes::analyze(cf);
     let is_interface: bool = cf.access_flags & ACC_INTERFACE != 0;
+    let is_annotation: bool = cf.access_flags & ACC_ANNOTATION != 0;
     let is_enum: bool = cf.access_flags & ACC_ENUM != 0;
     let kw: String = class_access_keywords(cf.access_flags);
-    let kind: &str = if is_interface {
+    let kind: &str = if is_annotation {
+        "@interface"
+    } else if is_interface {
         "interface"
     } else if is_enum {
         "enum"
@@ -142,7 +153,7 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     {
         let _ = write!(source, " extends {}", descriptor::binary_to_source(sup));
     }
-    if !cf.interfaces.is_empty() {
+    if !is_annotation && !cf.interfaces.is_empty() {
         let names: Vec<String> = cf
             .interfaces
             .iter()
@@ -181,11 +192,22 @@ pub fn decompile_class(cf: &ClassFile) -> DecompiledClass {
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
-    for method in &cf.methods {
+    let annotation_defaults: BTreeMap<usize, String> = if is_annotation {
+        crate::attributes::render_annotation_defaults(cf)
+    } else {
+        BTreeMap::new()
+    };
+    for (method_index, method) in cf.methods.iter().enumerate() {
         if is_bridge_method(method) {
             continue;
         }
-        let rendered: RenderedMethod = render_method(cf, method, simple, is_interface);
+        let rendered: RenderedMethod = render_method(
+            cf,
+            method,
+            simple,
+            is_interface,
+            annotation_defaults.get(&method_index).map(String::as_str),
+        );
         let _ = writeln!(source, "{}", rendered.text);
         method_count += 1;
         if rendered.fully_lifted {
@@ -267,6 +289,7 @@ fn render_method(
     method: &MethodInfo,
     class_simple: &str,
     is_interface: bool,
+    annotation_default: Option<&str>,
 ) -> RenderedMethod {
     let name: &str = cf.utf8_at(method.name_index).unwrap_or("?");
     let desc: &str = cf.utf8_at(method.descriptor_index).unwrap_or("()V");
@@ -339,7 +362,10 @@ fn render_method(
         let _ = write!(signature, "{ret} {emit_name}({params}){throws_clause}");
     }
 
-    if is_abstract || is_interface && !has_code(cf, method) {
+    if annotation_default.is_some() || is_abstract || is_interface && !has_code(cf, method) {
+        if let Some(value) = annotation_default {
+            let _ = write!(signature, " default {value}");
+        }
         let _ = write!(signature, ";");
         return RenderedMethod {
             text: signature,
@@ -7694,6 +7720,7 @@ fn render_inner_method_stub(
     is_enum: bool,
     is_interface: bool,
     super_call: Option<&str>,
+    annotation_default: Option<&str>,
 ) -> Option<String> {
     if is_bridge_method(method) {
         return None;
@@ -7745,8 +7772,10 @@ fn render_inner_method_stub(
         let emit_name: String = recompile_safe_method_name(name);
         format!("{prefix}{kw_str}{default_kw}{ret} {emit_name}({params})")
     };
-    if is_abstract {
-        return Some(format!("{sig};"));
+    if is_abstract || annotation_default.is_some() {
+        let default_value: String =
+            annotation_default.map_or_else(String::new, |value: &str| format!(" default {value}"));
+        return Some(format!("{sig}{default_value};"));
     }
     if name == "<init>" {
         return match super_call {
@@ -7884,7 +7913,7 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         if is_bridge_method(method) || method.access_flags & ACC_SYNTHETIC != 0 {
             continue;
         }
-        let rendered: RenderedMethod = render_method(anon_cf, method, &supertype, false);
+        let rendered: RenderedMethod = render_method(anon_cf, method, &supertype, false, None);
         members.push(substitute_captures(&rendered.text, &capture_map));
     }
     let mut out: String = format!("new {supertype}() {{\n");
@@ -8061,7 +8090,8 @@ fn build_inner_class_stubs(
     outer_cf: &ClassFile,
     inners: &std::collections::BTreeMap<String, ClassFile>,
 ) -> String {
-    emit_nested_class_stubs(outer_cf, inners, outer_cf.this_class, 0)
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    emit_nested_class_stubs(outer_cf, inners, 0, &mut visited)
 }
 
 fn is_anonymous_binary_name(binary: &str) -> bool {
@@ -8072,75 +8102,107 @@ fn is_anonymous_binary_name(binary: &str) -> bool {
 }
 
 const INNER_STUB_MAX_DEPTH: u32 = 8;
+const INNER_STUB_MAX_CLASSES: usize = 4_096;
+const INNER_CLASS_SHARED_FLAGS: u16 = ACC_PUBLIC
+    | ACC_FINAL
+    | ACC_INTERFACE
+    | ACC_ABSTRACT
+    | ACC_SYNTHETIC
+    | ACC_ANNOTATION
+    | ACC_ENUM;
+const REJECTED_INNER_CLASSES: &str = "<unresolved-inner-classes>\n";
 
-fn reindent_block(block: &str) -> String {
+fn append_inner_output(out: &mut String, text: &str, limit: usize) -> bool {
+    let Some(new_len): Option<usize> = out.len().checked_add(text.len()) else {
+        return false;
+    };
+    if new_len > limit || out.try_reserve(text.len()).is_err() {
+        return false;
+    }
+    out.push_str(text);
+    true
+}
+
+fn append_inner_line(out: &mut String, text: &str, limit: usize) -> bool {
+    append_inner_output(out, text, limit) && append_inner_output(out, "\n", limit)
+}
+
+fn reindent_block(block: &str, limit: usize) -> Option<String> {
     let mut out: String = String::new();
     for line in block.lines() {
         if line.is_empty() {
-            out.push('\n');
-        } else {
-            let _ = writeln!(out, "    {line}");
+            if !append_inner_output(&mut out, "\n", limit) {
+                return None;
+            }
+        } else if !append_inner_output(&mut out, "    ", limit)
+            || !append_inner_line(&mut out, line, limit)
+        {
+            return None;
         }
     }
-    out
+    Some(out)
 }
 
 fn emit_nested_class_stubs(
     outer_cf: &ClassFile,
     inners: &std::collections::BTreeMap<String, ClassFile>,
-    this_idx: u16,
     depth: u32,
+    visited: &mut BTreeSet<String>,
 ) -> String {
-    if depth >= INNER_STUB_MAX_DEPTH {
-        return String::new();
-    }
-    let ic_attr: Option<&[u8]> =
-        outer_cf
-            .attributes
-            .iter()
-            .find_map(|a: &crate::classfile::Attribute| {
-                outer_cf
-                    .utf8_at(a.name_index)
-                    .ok()
-                    .filter(|&n: &&str| n == "InnerClasses")
-                    .map(|_| a.info.as_slice())
-            });
-    let Some(data): Option<&[u8]> = ic_attr else {
-        return String::new();
+    let entries: Vec<crate::attributes::InnerClassEntry> =
+        match crate::attributes::parse_inner_classes(outer_cf) {
+            crate::attributes::InnerClassesAttribute::Absent => return String::new(),
+            crate::attributes::InnerClassesAttribute::Rejected => {
+                return REJECTED_INNER_CLASSES.to_string();
+            }
+            crate::attributes::InnerClassesAttribute::Parsed(entries) => entries,
+        };
+    let Ok(this_binary): core::result::Result<&str, _> = outer_cf.this_class_name() else {
+        return REJECTED_INNER_CLASSES.to_string();
     };
-    if data.len() < 2 {
-        return String::new();
+    if depth >= INNER_STUB_MAX_DEPTH {
+        return if entries
+            .iter()
+            .any(|entry: &crate::attributes::InnerClassEntry| {
+                entry.outer_binary.as_deref() == Some(this_binary)
+            }) {
+            REJECTED_INNER_CLASSES.to_string()
+        } else {
+            String::new()
+        };
     }
-    let count: u16 = u16::from_be_bytes([data[0], data[1]]);
     let mut out: String = String::new();
-    for i in 0..count as usize {
-        let off: usize = 2 + i * 8;
-        if off + 8 > data.len() {
-            break;
-        }
-        let inner_idx: u16 = u16::from_be_bytes([data[off], data[off + 1]]);
-        let outer_idx: u16 = u16::from_be_bytes([data[off + 2], data[off + 3]]);
-        let name_idx: u16 = u16::from_be_bytes([data[off + 4], data[off + 5]]);
-        let flags: u16 = u16::from_be_bytes([data[off + 6], data[off + 7]]);
-        if outer_idx != this_idx || name_idx == 0 || inner_idx == 0 {
+    for entry in entries {
+        if entry.outer_binary.as_deref() != Some(this_binary) {
             continue;
         }
-        if flags & 0x1000 != 0 {
-            continue;
-        }
-        let Ok(simple_name) = outer_cf.utf8_at(name_idx) else {
+        let Some(simple_name): Option<String> = entry.simple_name else {
             continue;
         };
-        if simple_name.is_empty() {
-            continue;
-        }
-        let Ok(binary_name) = outer_cf.class_name(inner_idx) else {
-            continue;
-        };
+        let binary_name: String = entry.inner_binary;
+        let flags: u16 = entry.flags;
         let inner_key: String = format!("{binary_name}.class");
         let Some(inner_cf): Option<&ClassFile> = inners.get(&inner_key) else {
             continue;
         };
+        if !inner_cf
+            .this_class_name()
+            .is_ok_and(|name: &str| name == binary_name.as_str())
+        {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
+        if flags & INNER_CLASS_SHARED_FLAGS != inner_cf.access_flags & INNER_CLASS_SHARED_FLAGS {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
+        if flags & ACC_SYNTHETIC != 0 {
+            continue;
+        }
+        if !crate::name_disambig::is_java_type_identifier(&simple_name)
+            || visited.len() >= INNER_STUB_MAX_CLASSES
+            || !visited.insert(binary_name.clone())
+        {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
         let structure: crate::attributes::ClassStructure = crate::attributes::analyze(inner_cf);
         let type_params: String = structure
             .signature
@@ -8252,27 +8314,61 @@ fn emit_nested_class_stubs(
         } else {
             String::new()
         };
-        let _ = writeln!(
-            out,
+        let annotations: crate::attributes::DeclarationAnnotations =
+            crate::attributes::parse_declaration_annotations(inner_cf);
+        let rendered_annotations: String =
+            crate::attributes::render_declaration_annotations(inner_cf, &annotations, "    ");
+        if !append_inner_output(&mut out, &rendered_annotations, MAX_RENDER_BYTES) {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
+        let declaration: String = format!(
             "    {access}{static_kw}{abstract_kw}{final_kw}{sealed_kw}{kind} {simple_name}{type_params}{record_params}{super_clause}{iface_clause}{permits_clause} {{"
         );
+        if !append_inner_line(&mut out, &declaration, MAX_RENDER_BYTES) {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
         if is_inner_enum {
-            let constants: Vec<String> = inner_cf
+            let Some(enum_limit): Option<usize> = MAX_RENDER_BYTES.checked_sub(out.len()) else {
+                return REJECTED_INNER_CLASSES.to_string();
+            };
+            let mut enum_declaration: String = String::new();
+            if !append_inner_output(&mut enum_declaration, "        ", enum_limit) {
+                return REJECTED_INNER_CLASSES.to_string();
+            }
+            let mut enum_names: BTreeSet<&str> = BTreeSet::new();
+            for field in inner_cf
                 .fields
                 .iter()
-                .filter(|f| f.access_flags & ACC_ENUM != 0)
-                .filter_map(|f| inner_cf.utf8_at(f.name_index).ok().map(str::to_owned))
-                .collect();
-            if constants.is_empty() {
-                let _ = writeln!(out, "        ;");
-            } else {
-                let _ = writeln!(out, "        {};", constants.join(", "));
+                .filter(|field: &&FieldInfo| field.access_flags & ACC_ENUM != 0)
+            {
+                let Ok(name): core::result::Result<&str, _> = inner_cf.utf8_at(field.name_index)
+                else {
+                    return REJECTED_INNER_CLASSES.to_string();
+                };
+                if !crate::name_disambig::is_java_type_identifier(name) || !enum_names.insert(name)
+                {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
+                let separator: &str = if enum_names.len() == 1 { "" } else { ", " };
+                if !append_inner_output(&mut enum_declaration, separator, enum_limit)
+                    || !append_inner_output(&mut enum_declaration, name, enum_limit)
+                {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
+            }
+            if !append_inner_output(&mut enum_declaration, ";", enum_limit) {
+                return REJECTED_INNER_CLASSES.to_string();
+            }
+            if !append_inner_line(&mut out, &enum_declaration, MAX_RENDER_BYTES) {
+                return REJECTED_INNER_CLASSES.to_string();
             }
         }
         if !is_inner_interface && !is_inner_record {
             for field in &inner_cf.fields {
-                if let Some(decl) = render_inner_field_stub(inner_cf, field, is_inner_enum) {
-                    let _ = writeln!(out, "{decl}");
+                if let Some(decl) = render_inner_field_stub(inner_cf, field, is_inner_enum)
+                    && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
+                {
+                    return REJECTED_INNER_CLASSES.to_string();
                 }
             }
         }
@@ -8286,7 +8382,12 @@ fn emit_nested_class_stubs(
             BTreeSet::new()
         };
         let super_call: Option<String> = super_ctor_call(inner_cf, inners);
-        for method in &inner_cf.methods {
+        let annotation_defaults: BTreeMap<usize, String> = if is_inner_annotation {
+            crate::attributes::render_annotation_defaults(inner_cf)
+        } else {
+            BTreeMap::new()
+        };
+        for (method_index, method) in inner_cf.methods.iter().enumerate() {
             if is_inner_record
                 && record_method_is_implicit(inner_cf, method, &record_component_names)
             {
@@ -8295,20 +8396,31 @@ fn emit_nested_class_stubs(
             if let Some(stub) = render_inner_method_stub(
                 inner_cf,
                 method,
-                simple_name,
+                &simple_name,
                 is_inner_enum,
                 is_inner_interface,
                 super_call.as_deref(),
-            ) {
-                let _ = writeln!(out, "{stub}");
+                annotation_defaults.get(&method_index).map(String::as_str),
+            ) && !append_inner_line(&mut out, &stub, MAX_RENDER_BYTES)
+            {
+                return REJECTED_INNER_CLASSES.to_string();
             }
         }
-        let nested: String =
-            emit_nested_class_stubs(inner_cf, inners, inner_cf.this_class, depth + 1);
+        let nested: String = emit_nested_class_stubs(inner_cf, inners, depth + 1, visited);
         if !nested.is_empty() {
-            out.push_str(&reindent_block(&nested));
+            let Some(remaining): Option<usize> = MAX_RENDER_BYTES.checked_sub(out.len()) else {
+                return REJECTED_INNER_CLASSES.to_string();
+            };
+            let Some(indented): Option<String> = reindent_block(&nested, remaining) else {
+                return REJECTED_INNER_CLASSES.to_string();
+            };
+            if !append_inner_output(&mut out, &indented, MAX_RENDER_BYTES) {
+                return REJECTED_INNER_CLASSES.to_string();
+            }
         }
-        let _ = writeln!(out, "    }}");
+        if !append_inner_line(&mut out, "    }", MAX_RENDER_BYTES) {
+            return REJECTED_INNER_CLASSES.to_string();
+        }
     }
     out
 }

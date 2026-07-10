@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const CLASS_SUFFIX: &str = "_Cls";
 const KEYWORD_SUFFIX: &str = "_";
+const JAVA_RESTRICTED_TYPE_IDENTIFIERS: &[&str] = &["permits", "record", "sealed", "var", "yield"];
 
 const JAVA_RESERVED: &[&str] = &[
     "abstract",
@@ -63,7 +64,25 @@ const JAVA_RESERVED: &[&str] = &[
 
 #[must_use]
 fn is_reserved(token: &str) -> bool {
-    JAVA_RESERVED.binary_search(&token).is_ok()
+    JAVA_RESERVED.contains(&token)
+}
+
+#[must_use]
+pub(crate) fn is_java_source_identifier(token: &str) -> bool {
+    if token.is_empty() || is_reserved(token) {
+        return false;
+    }
+    let mut chars = token.chars();
+    let Some(first): Option<char> = chars.next() else {
+        return false;
+    };
+    (first == '_' || first == '$' || first.is_ascii_alphabetic())
+        && chars.all(|ch: char| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric())
+}
+
+#[must_use]
+pub(crate) fn is_java_type_identifier(token: &str) -> bool {
+    is_java_source_identifier(token) && !JAVA_RESTRICTED_TYPE_IDENTIFIERS.contains(&token)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -94,7 +113,8 @@ impl NameDisambiguator {
         for name in ordered {
             let collides_as_package: bool = package_prefixes.contains(name.as_str());
             let leaf: &str = name.rsplit('/').next().unwrap_or(name.as_str());
-            let leaf_reserved: bool = is_reserved(leaf);
+            let leaf_reserved: bool =
+                is_reserved(leaf) || JAVA_RESTRICTED_TYPE_IDENTIFIERS.contains(&leaf);
             if !collides_as_package && !leaf_reserved {
                 continue;
             }
@@ -481,9 +501,10 @@ mod tests {
 
     #[test]
     fn renames_reserved_word_leaf() {
-        let names: Vec<&str> = vec!["p/int", "p/Foo"];
+        let names: Vec<&str> = vec!["p/int", "p/record", "p/Foo"];
         let d: NameDisambiguator = NameDisambiguator::build(names);
         assert_eq!(d.rewrite("p/int"), "p/int_");
+        assert_eq!(d.rewrite("p/record"), "p/record_");
         assert_eq!(d.rewrite("p/Foo"), "p/Foo");
     }
 

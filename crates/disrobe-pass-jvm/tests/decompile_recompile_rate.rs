@@ -736,3 +736,244 @@ fn report_gapcases_family_recovery() {
          reconstruction no longer produces javac-clean output. stderr:\n{stderr}"
     );
 }
+
+const ANNOTATION_PROBE_SRC: &str = r#"import java.lang.annotation.Annotation;
+import java.lang.reflect.Method;
+public class AnnotationProbe {
+    public static void main(String[] args) throws Exception {
+        Class<?> target = Class.forName("EdgeCases$TaggedBox");
+        Class<? extends Annotation> tagType = Class.forName("EdgeCases$Tagged")
+            .asSubclass(Annotation.class);
+        System.out.println("default:" + tagType.getDeclaredMethod("priority").getDefaultValue());
+        Annotation[] tags = target.getDeclaredAnnotationsByType(tagType);
+        for (Annotation tag : tags) {
+            Method text = tag.annotationType().getDeclaredMethod("value");
+            Method priority = tag.annotationType().getDeclaredMethod("priority");
+            System.out.println(text.invoke(tag) + ":" + priority.invoke(tag));
+        }
+    }
+}
+"#;
+
+fn run_annotation_probe(java: &PathBuf, classpath: std::ffi::OsString) -> String {
+    let out: std::process::Output = Command::new(java)
+        .arg("-Xverify:all")
+        .arg("-cp")
+        .arg(classpath)
+        .arg("AnnotationProbe")
+        .output()
+        .expect("java annotation probe");
+    assert!(
+        out.status.success(),
+        "annotation probe failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n")
+}
+
+#[test]
+fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
+    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP: javac not on PATH; annotation recovery gate NOT enforced");
+        return;
+    };
+    let Some(java): Option<PathBuf> = find_on_path("java") else {
+        eprintln!("SKIP: java not on PATH; annotation reflection gate NOT enforced");
+        return;
+    };
+    let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
+    let classes: Vec<(String, Vec<u8>)> =
+        classes_from_jar(&jar).expect("tracked EdgeCases-baseline.jar");
+    let (_name, bytes): &(String, Vec<u8>) = classes
+        .iter()
+        .find(|(name, _bytes)| name == "EdgeCases.class")
+        .expect("EdgeCases.class in baseline jar");
+    let cf: ClassFile = parse_classfile(bytes).expect("parse EdgeCases");
+    let inners: BTreeMap<String, ClassFile> = classes
+        .iter()
+        .filter(|(name, _bytes)| name.contains('$'))
+        .filter_map(|(name, inner_bytes)| {
+            parse_classfile(inner_bytes)
+                .ok()
+                .map(|inner| (name.clone(), inner))
+        })
+        .collect();
+    let (_tagged_name, tagged_bytes): &(String, Vec<u8>) = classes
+        .iter()
+        .find(|(name, _bytes)| name == "EdgeCases$Tagged.class")
+        .expect("EdgeCases$Tagged.class in baseline jar");
+    let tagged_cf: ClassFile = parse_classfile(tagged_bytes).expect("parse EdgeCases$Tagged");
+    let tagged_source: String = decompile_class(&tagged_cf).source;
+    assert!(tagged_source.contains("@interface EdgeCases$Tagged"));
+    assert!(!tagged_source.contains("extends java.lang.annotation.Annotation"));
+    let source: String = decompile_class_with_inners(&cf, &inners).source;
+
+    for token in [
+        "@java.lang.annotation.Retention(value = java.lang.annotation.RetentionPolicy.RUNTIME)",
+        "@EdgeCases.TaggedSet(value = {@EdgeCases.Tagged(value = \"alpha\", priority = 1), @EdgeCases.Tagged(value = \"beta\", priority = 2)})",
+    ] {
+        assert!(
+            source.contains(token),
+            "decompiled EdgeCases dropped declaration annotation `{token}`"
+        );
+    }
+
+    let root: PathBuf = std::env::temp_dir().join(format!(
+        "disrobe_annotation_equivalence_{}",
+        std::process::id()
+    ));
+    let original_dir: PathBuf = root.join("original");
+    let recovered_dir: PathBuf = root.join("recovered");
+    let standalone_dir: PathBuf = root.join("standalone");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&original_dir).expect("mkdir original");
+    std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
+    std::fs::create_dir_all(&standalone_dir).expect("mkdir standalone");
+
+    let tagged_path: PathBuf = standalone_dir.join("EdgeCases$Tagged.java");
+    std::fs::write(&tagged_path, &tagged_source).expect("write recovered annotation declaration");
+    let tagged_built: std::process::Output = Command::new(&javac)
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-cp")
+        .arg(&jar)
+        .arg("-d")
+        .arg(&standalone_dir)
+        .arg(&tagged_path)
+        .output()
+        .expect("javac recovered annotation declaration");
+    assert!(
+        tagged_built.status.success(),
+        "standalone annotation declaration did not compile: {}",
+        String::from_utf8_lossy(&tagged_built.stderr)
+    );
+
+    let probe_path: PathBuf = original_dir.join("AnnotationProbe.java");
+    std::fs::write(&probe_path, ANNOTATION_PROBE_SRC).expect("write annotation probe");
+    let probe_built: std::process::Output = Command::new(&javac)
+        .arg("-d")
+        .arg(&original_dir)
+        .arg(&probe_path)
+        .output()
+        .expect("javac annotation probe");
+    assert!(
+        probe_built.status.success(),
+        "annotation probe did not compile: {}",
+        String::from_utf8_lossy(&probe_built.stderr)
+    );
+
+    let source_path: PathBuf = recovered_dir.join("EdgeCases.java");
+    std::fs::write(&source_path, &source).expect("write recovered EdgeCases");
+    let recovered_built: std::process::Output = Command::new(&javac)
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-cp")
+        .arg(&jar)
+        .arg("-d")
+        .arg(&recovered_dir)
+        .arg(&source_path)
+        .output()
+        .expect("javac recovered EdgeCases");
+    assert!(
+        recovered_built.status.success(),
+        "annotated recovered EdgeCases did not compile: {}",
+        String::from_utf8_lossy(&recovered_built.stderr)
+    );
+
+    let original_cp: std::ffi::OsString =
+        std::env::join_paths([original_dir.as_path(), jar.as_path()]).expect("original classpath");
+    let recovered_cp: std::ffi::OsString =
+        std::env::join_paths([recovered_dir.as_path(), original_dir.as_path()])
+            .expect("recovered classpath");
+    let original: String = run_annotation_probe(&java, original_cp);
+    let recovered: String = run_annotation_probe(&java, recovered_cp);
+    assert_eq!(original, "default:0\nalpha:1\nbeta:2\n");
+    assert_eq!(recovered, original);
+}
+
+const CLASS_RETENTION_SRC: &str = r"import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+@Retention(RetentionPolicy.CLASS)
+@interface ClassMark {
+    int value();
+}
+@ClassMark(7)
+class ClassMarked {}
+";
+
+fn javap_verbose(javap: &PathBuf, classpath: &PathBuf, class_name: &str) -> String {
+    let out: std::process::Output = Command::new(javap)
+        .arg("-v")
+        .arg("-classpath")
+        .arg(classpath)
+        .arg(class_name)
+        .output()
+        .expect("javap verbose");
+    assert!(
+        out.status.success(),
+        "javap failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn runtime_invisible_class_annotation_recompiles_to_the_same_bucket() {
+    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP: javac not on PATH; invisible annotation gate NOT enforced");
+        return;
+    };
+    let Some(javap): Option<PathBuf> = find_on_path("javap") else {
+        eprintln!("SKIP: javap not on PATH; invisible annotation gate NOT enforced");
+        return;
+    };
+    let root: PathBuf = std::env::temp_dir().join(format!(
+        "disrobe_invisible_annotation_{}",
+        std::process::id()
+    ));
+    let original_dir: PathBuf = root.join("original");
+    let recovered_dir: PathBuf = root.join("recovered");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&original_dir).expect("mkdir original");
+    std::fs::create_dir_all(&recovered_dir).expect("mkdir recovered");
+    let original_path: PathBuf = original_dir.join("ClassMarked.java");
+    std::fs::write(&original_path, CLASS_RETENTION_SRC).expect("write class-retention source");
+    let original_built: std::process::Output = Command::new(&javac)
+        .arg("-d")
+        .arg(&original_dir)
+        .arg(&original_path)
+        .output()
+        .expect("javac class-retention source");
+    assert!(
+        original_built.status.success(),
+        "class-retention fixture did not compile: {}",
+        String::from_utf8_lossy(&original_built.stderr)
+    );
+    let original_bytes: Vec<u8> =
+        std::fs::read(original_dir.join("ClassMarked.class")).expect("read original class");
+    let original_cf: ClassFile = parse_classfile(&original_bytes).expect("parse original class");
+    let recovered_source: String = decompile_class(&original_cf).source;
+    assert!(recovered_source.contains("@ClassMark(value = 7)"));
+    let recovered_path: PathBuf = recovered_dir.join("ClassMarked.java");
+    std::fs::write(&recovered_path, recovered_source).expect("write recovered class");
+    let recovered_built: std::process::Output = Command::new(&javac)
+        .arg("-cp")
+        .arg(&original_dir)
+        .arg("-d")
+        .arg(&recovered_dir)
+        .arg(&recovered_path)
+        .output()
+        .expect("javac recovered class");
+    assert!(
+        recovered_built.status.success(),
+        "recovered class-retention source did not compile: {}",
+        String::from_utf8_lossy(&recovered_built.stderr)
+    );
+    for output in [
+        javap_verbose(&javap, &original_dir, "ClassMarked"),
+        javap_verbose(&javap, &recovered_dir, "ClassMarked"),
+    ] {
+        assert!(output.contains("RuntimeInvisibleAnnotations:"));
+        assert!(!output.contains("RuntimeVisibleAnnotations:"));
+    }
+}

@@ -257,19 +257,19 @@ impl ClassFile {
     }
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
     #[inline]
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
 
     #[inline]
-    const fn remaining(&self) -> usize {
+    pub(crate) const fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.pos)
     }
 
@@ -293,14 +293,14 @@ impl<'a> Reader<'a> {
     }
 
     #[inline]
-    fn u8(&mut self) -> Result<u8> {
+    pub(crate) fn u8(&mut self) -> Result<u8> {
         let raw: &'a [u8] = self.take(1)?;
         let v: u8 = raw[0];
         Ok(v)
     }
 
     #[inline]
-    fn u16(&mut self) -> Result<u16> {
+    pub(crate) fn u16(&mut self) -> Result<u16> {
         let raw: &'a [u8] = self.take(2)?;
         let v: u16 = u16::from_be_bytes([raw[0], raw[1]]);
         Ok(v)

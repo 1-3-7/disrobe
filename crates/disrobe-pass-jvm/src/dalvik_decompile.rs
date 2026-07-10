@@ -221,7 +221,7 @@ fn render_method(
                     .param_names
                     .get(i)
                     .and_then(|n: &Option<String>| n.clone())
-                    .filter(|n: &String| is_java_ident(n))
+                    .filter(|n: &String| crate::name_disambig::is_java_source_identifier(n))
                     .unwrap_or_else(|| format!("arg{i}"));
                 format!("{} {name}", p.render())
             })
@@ -394,15 +394,6 @@ struct RenderState<'a> {
 
 fn indent_string(level: usize) -> String {
     "    ".repeat(level)
-}
-
-fn is_java_ident(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
-        _ => return false,
-    }
-    chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String, level: usize) {
