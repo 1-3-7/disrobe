@@ -168,6 +168,84 @@ pub fn int_literal(ins: &Instruction) -> Option<i64> {
     }
 }
 
+const KEY_PATH_STEP_CAP: usize = 4096;
+
+fn instr_index(instrs: &[Instruction], offset: u32) -> Option<usize> {
+    instrs
+        .binary_search_by_key(&offset, |i: &Instruction| i.offset)
+        .ok()
+}
+
+fn local_of(ins: &Instruction, prefix: &str) -> Option<u32> {
+    let rest: &str = ins.name.as_str().strip_prefix(prefix)?;
+    if !(rest.is_empty() || rest.starts_with('.')) {
+        return None;
+    }
+    if let Some(tail) = rest.rsplit('.').next()
+        && let Ok(n) = tail.parse::<u32>()
+    {
+        return Some(n);
+    }
+    match ins.operand {
+        OperandValue::U8(b) => Some(u32::from(b)),
+        OperandValue::U16(v) => Some(u32::from(v)),
+        _ => None,
+    }
+}
+
+fn is_pure_key_step(ins: &Instruction, state_local: u32) -> bool {
+    let name: &str = ins.name.as_str();
+    if name.starts_with("ldc.i4") || name.starts_with("conv.") {
+        return true;
+    }
+    match name {
+        "nop" | "break" | "dup" | "pop" | "add" | "add.ovf" | "add.ovf.un" | "sub" | "sub.ovf"
+        | "sub.ovf.un" | "mul" | "mul.ovf" | "mul.ovf.un" | "div" | "div.un" | "rem" | "rem.un"
+        | "and" | "or" | "xor" | "shl" | "shr" | "shr.un" | "neg" | "not" => true,
+        _ => {
+            local_of(ins, "ldloc") == Some(state_local)
+                || local_of(ins, "stloc") == Some(state_local)
+        }
+    }
+}
+
+fn reaches_dispatcher_switch(body: &MethodBody, dispatcher: &Dispatcher, start_off: u32) -> bool {
+    let instrs: &[Instruction] = &body.instructions;
+    let header_idx: Option<usize> = instr_index(instrs, dispatcher.header_entry);
+    let Some(mut idx): Option<usize> = instr_index(instrs, start_off) else {
+        return false;
+    };
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    let mut steps: usize = 0;
+    loop {
+        steps += 1;
+        if steps > KEY_PATH_STEP_CAP || !visited.insert(idx) {
+            return false;
+        }
+        if idx == dispatcher.switch_index || Some(idx) == header_idx {
+            return true;
+        }
+        let Some(ins): Option<&Instruction> = instrs.get(idx) else {
+            return false;
+        };
+        match ins.flow {
+            FlowControl::Branch => {
+                let OperandValue::BrTarget(rel) = ins.operand else {
+                    return false;
+                };
+                let target: u32 = absolute_target(ins, rel, next_offset(body, idx));
+                let Some(next_idx): Option<usize> = instr_index(instrs, target) else {
+                    return false;
+                };
+                idx = next_idx;
+            }
+            FlowControl::CondBranch | FlowControl::Return | FlowControl::Throw => return false,
+            _ if !is_pure_key_step(ins, dispatcher.state_local) => return false,
+            _ => idx += 1,
+        }
+    }
+}
+
 fn collect_leaders(body: &MethodBody, dispatcher: &Dispatcher) -> BTreeSet<u32> {
     let instrs: &[Instruction] = &body.instructions;
     let mut leaders: BTreeSet<u32> = BTreeSet::new();
@@ -181,6 +259,24 @@ fn collect_leaders(body: &MethodBody, dispatcher: &Dispatcher) -> BTreeSet<u32> 
     for (idx, ins) in instrs.iter().enumerate() {
         let next_off: u32 = next_offset(body, idx);
         if matches!(ins.flow, FlowControl::Return | FlowControl::Throw) && next_off < body.code_size
+        {
+            leaders.insert(next_off);
+        }
+        if idx == dispatcher.switch_index {
+            continue;
+        }
+        let (FlowControl::Branch | FlowControl::CondBranch, &OperandValue::BrTarget(rel)) =
+            (ins.flow, &ins.operand)
+        else {
+            continue;
+        };
+        let target: u32 = absolute_target(ins, rel, next_off);
+        if target < body.code_size && !reaches_dispatcher_switch(body, dispatcher, target) {
+            leaders.insert(target);
+        }
+        if ins.flow == FlowControl::CondBranch
+            && next_off < body.code_size
+            && !reaches_dispatcher_switch(body, dispatcher, next_off)
         {
             leaders.insert(next_off);
         }

@@ -325,6 +325,68 @@ fn aggregate_structural_recovery_is_total_against_known_originals() {
     assert!((pct - 100.0).abs() < f64::EPSILON);
 }
 
+const CE2: &str = "../../corpus/dotnet/HelloAppLegacy.confuserex2.dll";
+
+#[test]
+fn real_confuserex2_flattened_methods_fully_deflatten_with_sound_edges() {
+    use disrobe_pass_dotnet::peel::deflatten::rebuild::{Edge, RecoveredBlock, edge_targets};
+
+    let bytes: Vec<u8> = load(CE2);
+    let pe: PeImage = parse(&bytes).expect("pe");
+    let clr = parse_clr_header(&bytes, &pe).expect("clr");
+    let root = parse_metadata_root(&bytes, &pe, &clr).expect("md");
+    let resolver: Resolver = Resolver::build(&bytes, &pe, &clr, &root).expect("resolver");
+    let model: AssemblyModel = resolver.model();
+
+    let mut flattened: usize = 0;
+    let mut conditional_edges: usize = 0;
+    for ty in &model.types {
+        for m in &ty.methods {
+            let Some(rec): Option<MethodRecovery> = recover_method(&bytes, &pe, ty, m) else {
+                continue;
+            };
+            flattened += 1;
+            assert!(
+                rec.recovered.unresolved.is_empty(),
+                "real ConfuserEx2 method {} left {} unresolved block(s); its injected decoder \
+                 carries in-block if/else predicates that must deflatten, not stall",
+                rec.name,
+                rec.recovered.unresolved.len()
+            );
+            let ids: std::collections::BTreeSet<usize> = rec
+                .recovered
+                .blocks
+                .iter()
+                .map(|b: &RecoveredBlock| b.id)
+                .collect();
+            for b in &rec.recovered.blocks {
+                for t in edge_targets(&b.edge) {
+                    assert!(
+                        ids.contains(&t),
+                        "method {}: recovered block {} has an edge to {} which is not a \
+                         recovered block (silently-wrong control flow)",
+                        rec.name,
+                        b.id,
+                        t
+                    );
+                }
+                if matches!(b.edge, Edge::Cond { .. }) {
+                    conditional_edges += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        flattened >= 2,
+        "the real ConfuserEx2 fixture flattens the cctor and its injected decoder; found {flattened}"
+    );
+    assert!(
+        conditional_edges >= 9,
+        "the injected decoder's real in-block ternary/loop predicates must survive deflattening \
+         as recovered conditional edges rather than being linearized; found {conditional_edges}"
+    );
+}
+
 #[test]
 fn recovered_predicates_cover_the_original_comparisons() {
     let rec: MethodRecovery = recover_named("Collatz");
