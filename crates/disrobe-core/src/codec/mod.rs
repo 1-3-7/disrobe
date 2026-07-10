@@ -1,13 +1,19 @@
+pub mod aes_cbc;
 pub mod alphabets;
+pub mod base64;
 pub mod cipher;
+pub mod crc32;
 pub mod crypto_wall;
 pub mod framed;
 pub mod web_escape;
 
 use thiserror::Error;
 
+pub use aes_cbc::{CbcPadding, aes_cbc_decrypt};
 pub use alphabets::Base58Variant;
+pub use base64::{Base64Alphabet, Base64Padding, base64_decode};
 pub use cipher::{StreamCipher, TeaVariant};
+pub use crc32::crc32_ieee;
 pub use crypto_wall::{CryptoWall, CryptoWallKind, classify as classify_crypto_wall};
 
 const MIN_CASCADE_INPUT: usize = 8;
@@ -26,6 +32,8 @@ pub enum DecodeError {
     MissingFrame,
     #[error("decoded value overflowed the scheme word width")]
     Overflow,
+    #[error("block cipher or base64 padding was malformed")]
+    BadPadding,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,6 +53,8 @@ pub enum Scheme {
     PercentUrl,
     HtmlEntity,
     Punycode,
+    Base64Standard,
+    Base64Url,
 }
 
 pub(crate) fn bytes_to_string(bytes: Vec<u8>) -> String {
@@ -74,6 +84,8 @@ impl Scheme {
             Self::PercentUrl => "percent-url",
             Self::HtmlEntity => "html-entity",
             Self::Punycode => "punycode",
+            Self::Base64Standard => "base64:standard",
+            Self::Base64Url => "base64:url",
         }
     }
 
@@ -95,6 +107,8 @@ impl Scheme {
             Self::Base58Ripple,
             Self::Base62,
             Self::Base45,
+            Self::Base64Standard,
+            Self::Base64Url,
         ]
     }
 }
@@ -118,6 +132,10 @@ pub fn decode(input: &[u8], scheme: Scheme) -> Result<Vec<u8>, DecodeError> {
         Scheme::Punycode => decode_text(input, |s: &str| {
             web_escape::punycode_decode(s).map(String::into_bytes)
         }),
+        Scheme::Base64Standard => {
+            base64_decode(input, Base64Alphabet::Standard, Base64Padding::Optional)
+        }
+        Scheme::Base64Url => base64_decode(input, Base64Alphabet::UrlSafe, Base64Padding::Optional),
     }
 }
 
@@ -509,8 +527,8 @@ mod tests {
 
     #[test]
     fn cascade_or_wall_emits_crypto_wall_when_no_decode() {
-        use base64::Engine as _;
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+        use ::base64::Engine as _;
+        use ::base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
         let header: String = B64URL.encode(br#"{"alg":"RSA-OAEP","enc":"A256GCM"}"#);
         let token: String = format!("{header}.QUJD.REVG.R0hJ.SktM");
         let outcome: CascadeRecovery = cascade_or_wall(token.as_bytes());

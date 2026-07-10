@@ -46,7 +46,11 @@ fn encode_for(scheme: Scheme, plaintext: &[u8]) -> Option<Vec<u8>> {
         Scheme::XxEncode => Some(xxencode(plaintext, "payload.bin").into_bytes()),
         Scheme::YEnc => Some(yenc_encode(plaintext, "payload.bin")),
         Scheme::PercentUrl => Some(percent_encode(plaintext).into_bytes()),
-        Scheme::Base122 | Scheme::HtmlEntity | Scheme::Punycode => None,
+        Scheme::Base122
+        | Scheme::HtmlEntity
+        | Scheme::Punycode
+        | Scheme::Base64Standard
+        | Scheme::Base64Url => None,
     }
 }
 

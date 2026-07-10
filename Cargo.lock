@@ -2068,6 +2068,7 @@ dependencies = [
  "cbc",
  "chacha20poly1305",
  "cipher 0.4.4",
+ "crc32fast",
  "divan",
  "flate2",
  "gix",
