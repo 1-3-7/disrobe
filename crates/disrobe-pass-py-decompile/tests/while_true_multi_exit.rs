@@ -103,6 +103,22 @@ fn while_cond_loop_else_raise_recovered() {
 }
 
 #[test]
+fn while_cond_body_else_raise_sink_after_backedge() {
+    assert_recompiles(
+        "while_cond_body_else_sink",
+        "def scan(data, i, n):\n    j = i\n    while j < n:\n        c = data[j]\n        if c == \"x\":\n            j = j + 1\n        elif c == \"]\":\n            return j\n        elif c.isspace():\n            j = j + 1\n        else:\n            self.mark(j)\n            raise AssertionError(\"unexpected %r\" % c)\n    return -1\n",
+    );
+}
+
+#[test]
+fn while_cond_body_else_return_sink_after_backedge() {
+    assert_recompiles(
+        "while_cond_body_else_return",
+        "def walk(seq, i, n):\n    j = i\n    while j < n:\n        c = seq[j]\n        if c == \"a\":\n            j = j + 1\n        elif c == \"b\":\n            j = j + 2\n        else:\n            return -1\n    return j\n",
+    );
+}
+
+#[test]
 fn nested_loop_break_targets_own_loop() {
     assert_recompiles(
         "nested_break_own_loop",

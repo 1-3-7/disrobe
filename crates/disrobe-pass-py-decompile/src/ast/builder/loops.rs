@@ -1242,7 +1242,8 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                 header,
                 body_start: header,
                 body_end: bottom_test_start(stream, j, header, exit)
-                    .min(bottom_test_span_start(stream, header, back_edge)),
+                    .min(bottom_test_span_start(stream, header, back_edge))
+                    .max(terminator_floor(stream, header, back_edge)),
                 back_edge,
                 exit,
                 infinite: false,
@@ -1474,11 +1475,12 @@ fn while_region(
             .unwrap_or(back_edge + 1);
         let run_start: usize = bottom_test_run_start(stream, conds, bottom, header);
         let span_start: usize = bottom_test_span_start(stream, header, back_edge);
+        let raw_end: usize = run_start.min(span_start);
         return LoopRegion {
             kind: LoopKind::While,
             header,
             body_start: header,
-            body_end: run_start.min(span_start),
+            body_end: raw_end.max(terminator_floor(stream, header, back_edge)),
             back_edge,
             exit: exit.min(hi),
             infinite: false,
@@ -1502,14 +1504,54 @@ fn while_region(
             resolve_jump_target(stream, c, &stream.ops[c]).filter(|t: &usize| *t > back_edge)
         })
         .unwrap_or(back_edge + 1);
+    let capped_exit: usize = exit.min(hi);
     LoopRegion {
         kind: LoopKind::While,
         header,
         body_start: last_top + 1,
-        body_end: back_edge,
+        body_end: while_cond_tail_body_end(stream, header, back_edge, capped_exit),
         back_edge,
-        exit: exit.min(hi),
+        exit: capped_exit,
         infinite: false,
+    }
+}
+
+fn while_cond_tail_body_end(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+    exit: usize,
+) -> usize {
+    let cap: usize = exit.min(stream.ops.len());
+    if header >= cap || back_edge + 1 >= cap {
+        return back_edge;
+    }
+    let Some(gap_stmt): Option<usize> = (back_edge + 1..cap).find(|&k: &usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::Pop
+                | CanonicalOp::PopExcept
+        )
+    }) else {
+        return back_edge;
+    };
+    let reach: Vec<bool> = reachable_in_loop(stream, header, header, cap);
+    if !reach.get(gap_stmt).copied().unwrap_or(false)
+        || !trailing_block_absorbable(stream, &reach, back_edge + 1, header, cap)
+    {
+        return back_edge;
+    }
+    let Some(last_reach): Option<usize> = (back_edge + 1..cap).rev().find(|&i: &usize| reach[i])
+    else {
+        return back_edge;
+    };
+    if is_stmt_terminator(&stream.ops[last_reach]) {
+        cap
+    } else {
+        back_edge
     }
 }
 
@@ -2662,11 +2704,28 @@ fn is_pop_cond_jump_if_true(op: &CanonicalOp) -> bool {
     )
 }
 
+fn is_stmt_terminator(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+    )
+}
+
+fn terminator_floor(stream: &DecodedStream, floor: usize, back_edge: usize) -> usize {
+    (floor..back_edge.min(stream.ops.len()))
+        .rev()
+        .find(|&k: &usize| is_stmt_terminator(&stream.ops[k]))
+        .map_or(floor, |t: usize| t + 1)
+}
+
 fn bottom_test_span_start(stream: &DecodedStream, floor: usize, back_edge: usize) -> usize {
     let mut start: usize = back_edge;
     while start > floor {
         let prev: usize = start - 1;
-        if completes_body_stmt(stream, prev) {
+        if completes_body_stmt(stream, prev) || is_stmt_terminator(&stream.ops[prev]) {
             break;
         }
         start = prev;
