@@ -2342,6 +2342,7 @@ name = "disrobe-pass-jvm"
 version = "0.10.4"
 dependencies = [
  "disrobe-binfmt",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-ir",
  "disrobe-llm-metadata",
@@ -2363,6 +2364,7 @@ version = "0.10.4"
 dependencies = [
  "brotli-decompressor",
  "disrobe-binfmt",
+ "disrobe-bytes",
  "disrobe-core",
  "flate2",
  "insta",
@@ -2766,6 +2768,7 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "disrobe-binfmt",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-ir",
  "disrobe-nir",
@@ -2786,6 +2789,7 @@ dependencies = [
 name = "disrobe-pass-wasm-deob"
 version = "0.10.4"
 dependencies = [
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-llm-metadata",
  "disrobe-mba",
