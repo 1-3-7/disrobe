@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
-use disrobe_bytes::ByteReader;
+use disrobe_bytes::{ByteReader, LebError, read_uleb128_at};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -161,25 +161,13 @@ fn put_u32(buf: &mut [u8], offset: usize, value: u32) -> Result<()> {
 }
 
 fn read_uleb128(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
-    let mut result: u64 = 0;
-    let mut shift: u32 = 0;
-    loop {
-        let byte: u8 = *bytes
-            .get(*cursor)
-            .ok_or_else(|| blazor_err("truncated uleb128"))?;
-        *cursor += 1;
-        result |= u64::from(byte & 0x7f)
-            .checked_shl(shift)
-            .ok_or_else(|| blazor_err("uleb128 shift overflow"))?;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        if shift > 63 {
-            return Err(blazor_err("uleb128 encoding too long"));
-        }
-    }
-    Ok(result)
+    let (value, consumed): (u64, usize) =
+        read_uleb128_at(bytes, *cursor).map_err(|err: LebError| match err {
+            LebError::OutOfBounds(_) => blazor_err("truncated uleb128"),
+            LebError::Overflow { .. } => blazor_err("uleb128 encoding too long"),
+        })?;
+    *cursor += consumed;
+    Ok(value)
 }
 
 fn align_up(value: u32, alignment: u32) -> Result<u32> {

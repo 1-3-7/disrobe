@@ -1,3 +1,4 @@
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -461,7 +462,8 @@ pub fn validate_wasm(bytes: &[u8]) -> bool {
             return false;
         }
         cursor += 1;
-        let Some((payload_len, consumed)): Option<(u64, usize)> = read_uleb128(bytes, cursor)
+        let Some((payload_len, consumed)): Option<(u64, usize)> =
+            read_uleb128_at(bytes, cursor).ok()
         else {
             return false;
         };
@@ -479,25 +481,6 @@ pub fn validate_wasm(bytes: &[u8]) -> bool {
         }
     }
     cursor == bytes.len() && sections > 0
-}
-
-fn read_uleb128(bytes: &[u8], off: usize) -> Option<(u64, usize)> {
-    let mut result: u64 = 0;
-    let mut shift: u32 = 0;
-    let mut consumed: usize = 0;
-    loop {
-        let &b: &u8 = bytes.get(off + consumed)?;
-        consumed += 1;
-        result |= u64::from(b & 0x7F) << shift;
-        if (b & 0x80) == 0 {
-            break;
-        }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
-    }
-    Some((result, consumed))
 }
 
 #[must_use]
