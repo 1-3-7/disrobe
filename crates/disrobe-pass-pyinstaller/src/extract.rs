@@ -945,4 +945,41 @@ mod tests {
             "the reconstructed pyc body must be the original carrier bytes, untouched"
         );
     }
+
+    #[test]
+    fn zipfile_typecode_entry_passes_through_verbatim_never_pyz_decoded() {
+        let empty_pkzip_eocd: Vec<u8> = {
+            let mut v: Vec<u8> = vec![0x50, 0x4b, 0x05, 0x06];
+            v.extend_from_slice(&[0u8; 18]);
+            v
+        };
+        let entries: [(u8, &str, Vec<u8>); 1] =
+            [(b'Z', "vendor/extra.zip", empty_pkzip_eocd.clone())];
+        let archive: Vec<u8> = assemble_v21_carchive(&entries, 312, &[]);
+
+        let cookie: Cookie = find_cookie(&archive).expect("cookie located");
+        let toc: Vec<TocEntry> = walk_toc(&archive, &cookie).expect("toc walks");
+        assert_eq!(toc[0].entry_type, EntryType::Zipfile);
+        assert!(!toc[0].entry_type.is_pyz());
+
+        let out: ExtractOutput =
+            extract_archive(&archive).expect("a real pkzip payload under 'Z' must extract cleanly");
+        assert_eq!(
+            out.pyz_module_count, 0,
+            "a 'Z' (ARCHIVE_ITEM_ZIPFILE) entry must never be run through the PYZ marshal \
+             unpacker; PyInstaller's own CArchiveReader refuses to open it as an embedded archive",
+        );
+        let zip_entry: &ExtractedEntry = out
+            .entries
+            .iter()
+            .find(|e: &&ExtractedEntry| e.toc.name == "vendor/extra.zip")
+            .expect("the zipfile entry itself must survive extraction");
+        assert_eq!(
+            zip_entry.data, empty_pkzip_eocd,
+            "the real bootloader extracts a 'Z' entry byte-for-byte verbatim to disk; disrobe \
+             must recover the same untouched bytes, never a corrupted or PYZ-reinterpreted body",
+        );
+        assert_eq!(zip_entry.toc.entry_type, EntryType::Zipfile);
+        assert!(!zip_entry.toc.entry_type.is_pyc_carrier());
+    }
 }

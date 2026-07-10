@@ -8,7 +8,7 @@ pub enum EntryType {
     Module,
     Package,
     Pyz,
-    PyzZipfile,
+    Zipfile,
     Binary,
     Data,
     Dependency,
@@ -30,7 +30,7 @@ impl EntryType {
             b'm' => Self::Module,
             b'M' => Self::Package,
             b'z' => Self::Pyz,
-            b'Z' => Self::PyzZipfile,
+            b'Z' => Self::Zipfile,
             b'b' => Self::Binary,
             b'x' => Self::Data,
             b'd' => Self::Dependency,
@@ -65,7 +65,7 @@ impl EntryType {
 
     #[must_use]
     pub const fn is_pyz(self) -> bool {
-        matches!(self, Self::Pyz | Self::PyzZipfile)
+        matches!(self, Self::Pyz)
     }
 
     #[must_use]
@@ -80,7 +80,7 @@ impl EntryType {
             Self::Module => "module",
             Self::Package => "package",
             Self::Pyz => "pyz",
-            Self::PyzZipfile => "pyz-zipfile",
+            Self::Zipfile => "zipfile",
             Self::Binary => "binary",
             Self::Data => "data",
             Self::Dependency => "dependency",
@@ -314,6 +314,7 @@ mod tests {
         assert_eq!(EntryType::from_byte(b'm'), EntryType::Module);
         assert_eq!(EntryType::from_byte(b'M'), EntryType::Package);
         assert_eq!(EntryType::from_byte(b'z'), EntryType::Pyz);
+        assert_eq!(EntryType::from_byte(b'Z'), EntryType::Zipfile);
         assert_eq!(EntryType::from_byte(b'b'), EntryType::Binary);
         assert_eq!(EntryType::from_byte(b'x'), EntryType::Data);
         assert_eq!(EntryType::from_byte(b'd'), EntryType::Dependency);
@@ -331,6 +332,24 @@ mod tests {
         assert!(!EntryType::Binary.is_pyc_carrier());
         assert!(EntryType::Pyz.is_pyz());
         assert!(EntryType::Dependency.should_skip());
+    }
+
+    #[test]
+    fn zipfile_typecode_is_not_pyz_and_not_a_pyc_carrier() {
+        assert_eq!(EntryType::from_byte(b'Z'), EntryType::Zipfile);
+        assert!(
+            !EntryType::Zipfile.is_pyz(),
+            "PyInstaller's own CArchiveReader.open_embedded_archive() refuses to open a \
+             'Z' (ARCHIVE_ITEM_ZIPFILE) entry as a PYZ archive (\"Zipfile archives not \
+             supported yet!\"); disrobe must not attempt a PYZ marshal decode on it either",
+        );
+        assert!(!EntryType::Zipfile.is_pyc_carrier());
+        assert!(!EntryType::Zipfile.carries_full_filename());
+        assert!(!EntryType::Zipfile.should_skip());
+        assert!(
+            EntryType::Pyz.is_pyz(),
+            "the real 'z' typecode must remain the only entry type unpacked as a PYZ archive",
+        );
     }
 
     #[test]
@@ -405,7 +424,7 @@ mod tests {
             EntryType::Module.label(),
             EntryType::Package.label(),
             EntryType::Pyz.label(),
-            EntryType::PyzZipfile.label(),
+            EntryType::Zipfile.label(),
             EntryType::Binary.label(),
             EntryType::Data.label(),
             EntryType::Dependency.label(),

@@ -123,7 +123,7 @@ fn compute_relative_path(prefix: &str, entry: &ExtractedEntry) -> Option<(String
         EntryType::Package => {
             format!("{prefix}{}/__init__.pyc", logical.replace('.', "/"))
         }
-        EntryType::Pyz | EntryType::PyzZipfile => {
+        EntryType::Pyz => {
             let safe_name: String = if has_extension_ignore_case(&logical, "pyz") {
                 logical
             } else {
@@ -135,7 +135,7 @@ fn compute_relative_path(prefix: &str, entry: &ExtractedEntry) -> Option<(String
         | EntryType::PyzPackage
         | EntryType::BaseLibraryModule
         | EntryType::BaseLibraryPackage => format!("{prefix}{logical}"),
-        EntryType::Binary | EntryType::Data | EntryType::Symlink => {
+        EntryType::Binary | EntryType::Data | EntryType::Symlink | EntryType::Zipfile => {
             format!("{prefix}{logical}")
         }
         EntryType::Splash => format!("{prefix}_pyi_splash/{logical}"),
@@ -283,6 +283,35 @@ mod tests {
             .collect();
         assert!(paths.contains(&"PYZ-00.pyz"));
         assert!(paths.contains(&"inner.pyz"));
+    }
+
+    #[test]
+    fn zipfile_entries_keep_their_original_name_not_forced_pyz() {
+        let entries: Vec<ExtractedEntry> = vec![
+            entry("vendor/extra.zip", EntryType::Zipfile, vec![0u8; 4]),
+            entry("bundle.whl", EntryType::Zipfile, vec![0u8; 4]),
+        ];
+        let out: ExtractOutput = output_with(entries);
+        let plan: OnedirPlan = plan_onedir(&out, OnedirLayout::PyInstallerLegacy, None);
+        let paths: Vec<&str> = plan
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
+        assert!(
+            paths.contains(&"vendor/extra.zip"),
+            "a 'Z' (ARCHIVE_ITEM_ZIPFILE) entry must be written back with its exact TOC \
+             name, matching the real bootloader's verbatim extraction; got {paths:?}",
+        );
+        assert!(
+            paths.contains(&"bundle.whl"),
+            "an unrelated real extension on a Zipfile entry must never be replaced with .pyz; got {paths:?}",
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.ends_with(".whl.pyz") || p.ends_with(".zip.pyz"))
+        );
     }
 
     #[test]

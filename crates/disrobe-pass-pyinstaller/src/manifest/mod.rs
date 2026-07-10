@@ -139,7 +139,7 @@ fn classify(entry: &ExtractedEntry) -> EntryClassification {
         EntryType::BaseLibraryModule | EntryType::BaseLibraryPackage => {
             EntryClassification::StdlibModule
         }
-        EntryType::Pyz | EntryType::PyzZipfile => EntryClassification::PyzNested,
+        EntryType::Pyz => EntryClassification::PyzNested,
         EntryType::Binary => {
             if looks_like_stdlib_native(name) {
                 EntryClassification::StdlibModule
@@ -147,7 +147,7 @@ fn classify(entry: &ExtractedEntry) -> EntryClassification {
                 EntryClassification::NativeBinary
             }
         }
-        EntryType::Data => EntryClassification::DataResource,
+        EntryType::Data | EntryType::Zipfile => EntryClassification::DataResource,
         EntryType::Splash => EntryClassification::SplashScreen,
         EntryType::Symlink => EntryClassification::SymlinkAlias,
         EntryType::Dependency | EntryType::RuntimeOption | EntryType::Unknown(_) => {
@@ -412,6 +412,25 @@ mod tests {
             m.entries[2].classification,
             EntryClassification::SymlinkAlias
         );
+    }
+
+    #[test]
+    fn zipfile_entry_classifies_as_data_resource_not_pyz_nested() {
+        let entries: Vec<ExtractedEntry> = vec![entry(
+            "vendor/extra.zip",
+            EntryType::Zipfile,
+            false,
+            vec![0u8; 4],
+        )];
+        let out: ExtractOutput = output_with(entries, None);
+        let m: PyInstallerManifest = build_manifest(&[0u8; 16], &out);
+        assert_eq!(
+            m.entries[0].classification,
+            EntryClassification::DataResource,
+            "a 'Z' (ARCHIVE_ITEM_ZIPFILE) entry is extracted verbatim by the real bootloader, \
+             the same as DATA; it must never be reported as pyz-nested",
+        );
+        assert_eq!(m.entries[0].kind, "zipfile");
     }
 
     #[test]
