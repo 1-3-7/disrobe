@@ -24,8 +24,8 @@ use super::loops::{
     structure_loop, try_enclosed_by_loop,
 };
 use super::try_with::{
-    LoopKind, LoopRegion, extend_window_over_split_handler, find_try_region, is_back_edge,
-    is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
+    LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
+    is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
     is_value_form_shortcircuit, loop_inside_unpeeled_pre311_try, recover_return_at,
     region_is_linear, skip_await_poll, structure_try, trim_trailing_comp_cleanup,
     try_enclosed_by_leading_guard, try_structure_cold_sibling_try, try_structure_else_try,
@@ -1693,6 +1693,10 @@ pub(super) fn structure_stmts(
         && !try_enclosed_by_loop(stream, lo, hi, &try_region)
         && !try_enclosed_by_leading_guard(stream, lo, hi, &try_region)
     {
+        if let Some(stmts) = try_structure_loop_guard_before_try(code, stream, lo, hi, &try_region)?
+        {
+            return Ok(stmts);
+        }
         return structure_try(code, stream, lo, hi, &try_region);
     }
     if let Some(stmts) = loop_structure_guarded_loop(code, stream, lo, hi)? {
@@ -4090,6 +4094,56 @@ fn region_is_only_continue_back_edge(
 
 fn loop_body_guard_polarity_applies() -> bool {
     active_version().is_some_and(|v: PyVersion| (v.major(), v.minor()) >= (3, 10))
+}
+
+fn leading_continue_guard_before(
+    stream: &DecodedStream,
+    lo: usize,
+    boundary: usize,
+    continue_target: usize,
+) -> Option<(usize, usize)> {
+    let guard: usize = (lo..boundary).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    })?;
+    let target: usize =
+        resolve_jump_target(stream, guard, &stream.ops[guard]).filter(|t: &usize| *t > guard)?;
+    let skip: usize = first_significant(stream, guard + 1, target)?;
+    if !is_back_edge(&stream.ops[skip]) {
+        return None;
+    }
+    let back: usize = resolve_jump_target(stream, skip, &stream.ops[skip])?;
+    (back < guard && back <= continue_target).then_some((guard, target))
+}
+
+fn try_structure_loop_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if region.is_with() || region.is_finally() || !loop_body_guard_polarity_applies() {
+        return Ok(None);
+    }
+    let Some(continue_target): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let or_guard_encloses: bool = matches!(
+        try_recover_or_body_guard(code, stream, lo, hi, continue_target),
+        Ok(Some(ref guard)) if guard.body_start <= region.try_start
+    );
+    if or_guard_encloses && let Some(stmts) = structure_or_chain_body_guard(code, stream, lo, hi)? {
+        return Ok(Some(stmts));
+    }
+    if let Some((guard, target)) =
+        leading_continue_guard_before(stream, lo, region.try_start, continue_target)
+        && let Some(stmts) = structure_guarded_continue(code, stream, lo, hi, guard, target)?
+    {
+        return Ok(Some(stmts));
+    }
+    Ok(None)
 }
 
 fn structure_or_chain_body_guard(
