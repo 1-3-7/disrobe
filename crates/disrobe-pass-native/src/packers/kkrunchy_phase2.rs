@@ -16,6 +16,7 @@
 use disrobe_bytes::align_up_u32;
 
 use crate::error::{Error, Result};
+use crate::packers::pe_sections::{read_u16 as read_u16_le, read_u32 as read_u32_le};
 use crate::stub_emu::mem::MAX_MAP_BYTES;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
@@ -637,31 +638,6 @@ fn parse_pe_layout(bytes: &[u8]) -> Result<PeLayout> {
         size_of_image,
         last_section_end_va: last_end_va,
     })
-}
-
-fn read_u16_le(bytes: &[u8], off: usize) -> Result<u16> {
-    if off + 2 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: off + 2,
-            had: bytes.len(),
-        });
-    }
-    Ok(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
-}
-
-fn read_u32_le(bytes: &[u8], off: usize) -> Result<u32> {
-    if off + 4 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: off + 4,
-            had: bytes.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
 }
 
 #[cfg(test)]

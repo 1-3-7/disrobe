@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::packers::pe_sections::{read_u16 as read_u16_le, read_u32 as read_u32_le};
 
 const FSG_MIN_STUB_BYTES: usize = 0x26;
 const FSG_STUB_OPCODE_MOV_EBX: u8 = 0xBB;
@@ -432,35 +433,6 @@ fn copy_match(out: &mut Vec<u8>, offset: usize, len: usize) -> Result<()> {
         out.push(b);
     }
     Ok(())
-}
-
-const fn read_u16_le_const(bytes: &[u8], off: usize) -> Option<u16> {
-    if off + 2 > bytes.len() {
-        return None;
-    }
-    Some(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
-}
-
-fn read_u16_le(bytes: &[u8], off: usize) -> Result<u16> {
-    read_u16_le_const(bytes, off).ok_or(Error::Truncated {
-        needed: off + 2,
-        had: bytes.len(),
-    })
-}
-
-fn read_u32_le(bytes: &[u8], off: usize) -> Result<u32> {
-    if off + 4 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: off + 4,
-            had: bytes.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
 }
 
 #[cfg(test)]

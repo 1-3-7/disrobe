@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::mpress_lzma::decode_mpress_lzma;
+use super::pe_sections::{PeImage, PeSection, parse_pe_image};
 use crate::error::{Error, Result};
 
 const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
@@ -12,16 +13,6 @@ const MPRESS2_NAME: &[u8; 8] = b".MPRESS2";
 
 const MPRESS_HEADER_SIZE: usize = 6;
 const MPRESS_PAGE_SHIFT: u32 = 12;
-const PE_SECTION_HEADER_SIZE: usize = 40;
-const PE_OPTIONAL_HEADER_OFFSET: usize = 24;
-const PE_FILE_HEADER_NUM_SECTIONS_OFFSET: usize = 2;
-const PE_FILE_HEADER_SIZE_OF_OPTIONAL_OFFSET: usize = 16;
-const PE32PLUS_MAGIC: u16 = 0x020B;
-const PE32_MAGIC: u16 = 0x010B;
-const PE_OPT_SIZE_OF_HEADERS_OFFSET: usize = 60;
-const PE_OPT_FILE_ALIGN_OFFSET: usize = 36;
-const PE_OPT_SECTION_ALIGN_OFFSET: usize = 32;
-const PE_OPT_SIZE_OF_IMAGE_OFFSET: usize = 56;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MpressInfo {
@@ -298,28 +289,7 @@ fn slice_section(bytes: &[u8], offset: u32, size: u32) -> Result<&[u8]> {
     Ok(&bytes[start..end])
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PeSectionEntry {
-    vsize: u32,
-    raw_size: u32,
-    raw_off: u32,
-    vaddr: u32,
-    name: [u8; 8],
-}
-
-type SectionMap = BTreeMap<u32, PeSectionEntry>;
-
-#[derive(Debug, Clone, Copy)]
-struct PeOptionalCore {
-    is_pe32_plus: bool,
-    aep: u32,
-    section_alignment: u32,
-    file_alignment: u32,
-    size_of_headers: u32,
-    size_of_image: u32,
-}
-
-fn parse_pe_header_basics(bytes: &[u8]) -> Result<(u32, usize, usize, usize)> {
+fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
     if bytes.len() < 0x40 {
         return Err(Error::Truncated {
             needed: 0x40,
@@ -329,119 +299,32 @@ fn parse_pe_header_basics(bytes: &[u8]) -> Result<(u32, usize, usize, usize)> {
     if &bytes[0..2] != b"MZ" {
         return Err(Error::UnknownFormat);
     }
-    let e_lfanew: u32 = u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]);
-    let pe_off: usize = e_lfanew as usize;
-    if pe_off + 24 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: pe_off + 24,
-            had: bytes.len(),
-        });
+    let image: PeImage = parse_pe_image(bytes)?;
+    let mut sections: BTreeMap<u32, &PeSection> = BTreeMap::new();
+    for section in &image.sections {
+        sections.insert(section.virtual_address, section);
     }
-    if &bytes[pe_off..pe_off + 4] != b"PE\0\0" {
-        return Err(Error::UnknownFormat);
-    }
-    let num_sections: usize = usize::from(u16::from_le_bytes([
-        bytes[pe_off + 4 + PE_FILE_HEADER_NUM_SECTIONS_OFFSET],
-        bytes[pe_off + 5 + PE_FILE_HEADER_NUM_SECTIONS_OFFSET],
-    ]));
-    let size_of_optional: usize = usize::from(u16::from_le_bytes([
-        bytes[pe_off + 4 + PE_FILE_HEADER_SIZE_OF_OPTIONAL_OFFSET],
-        bytes[pe_off + 5 + PE_FILE_HEADER_SIZE_OF_OPTIONAL_OFFSET],
-    ]));
-    Ok((e_lfanew, pe_off, num_sections, size_of_optional))
-}
-
-fn parse_optional_core(
-    bytes: &[u8],
-    opt_off: usize,
-    size_of_optional: usize,
-) -> Result<PeOptionalCore> {
-    if opt_off + size_of_optional > bytes.len() {
-        return Err(Error::Truncated {
-            needed: opt_off + size_of_optional,
-            had: bytes.len(),
-        });
-    }
-    let magic: u16 = u16::from_le_bytes([bytes[opt_off], bytes[opt_off + 1]]);
-    let is_pe32_plus: bool = match magic {
-        PE32_MAGIC => false,
-        PE32PLUS_MAGIC => true,
-        _ => return Err(Error::UnknownFormat),
-    };
-    Ok(PeOptionalCore {
-        is_pe32_plus,
-        aep: read_u32(bytes, opt_off + 16)?,
-        section_alignment: read_u32(bytes, opt_off + PE_OPT_SECTION_ALIGN_OFFSET)?,
-        file_alignment: read_u32(bytes, opt_off + PE_OPT_FILE_ALIGN_OFFSET)?,
-        size_of_headers: read_u32(bytes, opt_off + PE_OPT_SIZE_OF_HEADERS_OFFSET)?,
-        size_of_image: read_u32(bytes, opt_off + PE_OPT_SIZE_OF_IMAGE_OFFSET)?,
-    })
-}
-
-fn parse_section_table(
-    bytes: &[u8],
-    sec_table_off: usize,
-    num_sections: usize,
-) -> Result<SectionMap> {
-    if sec_table_off + num_sections * PE_SECTION_HEADER_SIZE > bytes.len() {
-        return Err(Error::Truncated {
-            needed: sec_table_off + num_sections * PE_SECTION_HEADER_SIZE,
-            had: bytes.len(),
-        });
-    }
-    let mut sections: SectionMap = BTreeMap::new();
-    for i in 0..num_sections {
-        let base: usize = sec_table_off + i * PE_SECTION_HEADER_SIZE;
-        let name: [u8; 8] = [
-            bytes[base],
-            bytes[base + 1],
-            bytes[base + 2],
-            bytes[base + 3],
-            bytes[base + 4],
-            bytes[base + 5],
-            bytes[base + 6],
-            bytes[base + 7],
-        ];
-        let entry: PeSectionEntry = PeSectionEntry {
-            vsize: read_u32(bytes, base + 8)?,
-            vaddr: read_u32(bytes, base + 12)?,
-            raw_size: read_u32(bytes, base + 16)?,
-            raw_off: read_u32(bytes, base + 20)?,
-            name,
-        };
-        sections.insert(entry.vaddr, entry);
-    }
-    Ok(sections)
-}
-
-fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
-    let (e_lfanew, pe_off, num_sections, size_of_optional): (u32, usize, usize, usize) =
-        parse_pe_header_basics(bytes)?;
-    let opt_off: usize = pe_off + PE_OPTIONAL_HEADER_OFFSET;
-    let core: PeOptionalCore = parse_optional_core(bytes, opt_off, size_of_optional)?;
-    let sec_table_off: usize = opt_off + size_of_optional;
-    let sections: SectionMap = parse_section_table(bytes, sec_table_off, num_sections)?;
-    let mut mpress1: Option<PeSectionEntry> = None;
-    let mut mpress2: Option<PeSectionEntry> = None;
+    let mut mpress1: Option<&PeSection> = None;
+    let mut mpress2: Option<&PeSection> = None;
     for entry in sections.values() {
         if &entry.name == MPRESS1_NAME {
-            mpress1 = Some(*entry);
+            mpress1 = Some(entry);
         } else if &entry.name == MPRESS2_NAME {
-            mpress2 = Some(*entry);
+            mpress2 = Some(entry);
         }
     }
-    let m1: PeSectionEntry = mpress1.ok_or_else(|| {
+    let m1: &PeSection = mpress1.ok_or_else(|| {
         Error::SignatureDb(
             ".MPRESS1 section not found in PE - not an MPRESS-packed binary".to_owned(),
         )
     })?;
-    let m2: PeSectionEntry = mpress2.ok_or_else(|| {
+    let m2: &PeSection = mpress2.ok_or_else(|| {
         Error::SignatureDb(
             ".MPRESS2 section not found in PE - not an MPRESS-packed binary".to_owned(),
         )
     })?;
     let (mpress_page_count, mpress_payload_len): (u16, u32) =
-        read_mpress_header(bytes, m1.raw_off, m1.raw_size)?;
+        read_mpress_header(bytes, m1.raw_pointer, m1.raw_size)?;
     let claimed_decompressed: u32 = u32::from(mpress_page_count) << MPRESS_PAGE_SHIFT;
     if claimed_decompressed == 0 {
         return Err(Error::SignatureDb(
@@ -449,21 +332,21 @@ fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
         ));
     }
     Ok(MpressInfo {
-        mpress1_va: m1.vaddr,
-        mpress1_vsize: m1.vsize,
-        mpress1_raw_off: m1.raw_off,
+        mpress1_va: m1.virtual_address,
+        mpress1_vsize: m1.virtual_size,
+        mpress1_raw_off: m1.raw_pointer,
         mpress1_raw_size: m1.raw_size,
-        mpress2_va: m2.vaddr,
-        mpress2_vsize: m2.vsize,
-        mpress2_raw_off: m2.raw_off,
+        mpress2_va: m2.virtual_address,
+        mpress2_vsize: m2.virtual_size,
+        mpress2_raw_off: m2.raw_pointer,
         mpress2_raw_size: m2.raw_size,
-        address_of_entry_point: core.aep,
-        size_of_headers: core.size_of_headers,
-        size_of_image: core.size_of_image,
-        file_alignment: core.file_alignment,
-        section_alignment: core.section_alignment,
-        pe_header_off: e_lfanew,
-        is_pe32_plus: core.is_pe32_plus,
+        address_of_entry_point: image.entry_point_rva,
+        size_of_headers: image.size_of_headers,
+        size_of_image: image.size_of_image,
+        file_alignment: image.file_alignment,
+        section_alignment: image.section_alignment,
+        pe_header_off: image.pe_header_offset,
+        is_pe32_plus: image.is_pe32_plus,
         mpress_page_count,
         mpress_payload_len,
     })
@@ -480,21 +363,6 @@ fn read_mpress_header(bytes: &[u8], raw_off: u32, raw_size: u32) -> Result<(u16,
     let page_count: u16 = u16::from_le_bytes([slice[0], slice[1]]);
     let payload_len: u32 = u32::from_le_bytes([slice[2], slice[3], slice[4], slice[5]]);
     Ok((page_count, payload_len))
-}
-
-fn read_u32(bytes: &[u8], off: usize) -> Result<u32> {
-    if off + 4 > bytes.len() {
-        return Err(Error::Truncated {
-            needed: off + 4,
-            had: bytes.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
 }
 
 const fn checked_align_up(value: u32, alignment: u32) -> Option<u32> {
@@ -518,7 +386,8 @@ fn structural_overflow(field: &str) -> Error {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::{
-        MpressRecoveryStatus, MpressUnpackOutput, Result, checked_align_up, unpack_mpress,
+        MpressInfo, MpressRecoveryStatus, MpressUnpackOutput, Result, checked_align_up,
+        locate_mpress_sections, unpack_mpress,
     };
     use crate::error::Error;
 
@@ -628,6 +497,24 @@ mod tests {
     #[test]
     fn accepts_sane_size_of_image() {
         let pe: Vec<u8> = build_mpress_pe_with_size_of_image(0x4000);
+        let info: MpressInfo = locate_mpress_sections(&pe).expect("MPRESS layout");
+        assert_eq!(info.mpress1_va, 0x1000);
+        assert_eq!(info.mpress1_vsize, 0x1000);
+        assert_eq!(info.mpress1_raw_off, 0x600);
+        assert_eq!(info.mpress1_raw_size, 0x40);
+        assert_eq!(info.mpress2_va, 0x2000);
+        assert_eq!(info.mpress2_vsize, 0x1000);
+        assert_eq!(info.mpress2_raw_off, 0x700);
+        assert_eq!(info.mpress2_raw_size, 0x40);
+        assert_eq!(info.address_of_entry_point, 0);
+        assert_eq!(info.size_of_headers, 0x200);
+        assert_eq!(info.size_of_image, 0x4000);
+        assert_eq!(info.file_alignment, 0x200);
+        assert_eq!(info.section_alignment, 0x1000);
+        assert_eq!(info.pe_header_off, 0x80);
+        assert!(!info.is_pe32_plus);
+        assert_eq!(info.mpress_page_count, 1);
+        assert_eq!(info.mpress_payload_len, 0);
         let r: Result<MpressUnpackOutput> = unpack_mpress(&pe);
         assert!(
             !matches!(r, Err(Error::SignatureDb(ref m)) if m.contains("SizeOfImage")),

@@ -1,3 +1,4 @@
+use disrobe_core::debug::DebugLog;
 use iced_x86::{
     Code, ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction, OpKind, Register,
 };
@@ -157,16 +158,19 @@ impl Cpu {
             }
         };
         if trace {
-            eprintln!("STUB_EMU_TRACE exit={result:?} steps={steps}");
-            eprintln!("STUB_EMU_TRACE last 40 instructions before exit:");
-            for (ip, code, sp) in &ring {
-                eprintln!("  ip=0x{ip:08x} {code} rsp=0x{sp:08x}");
-            }
-            let mut by_count: Vec<(&String, &u64)> = histogram.iter().collect();
-            by_count.sort_by(|a: &(&String, &u64), b: &(&String, &u64)| b.1.cmp(a.1));
-            eprintln!("STUB_EMU_TRACE opcode histogram (top 40):");
-            for (code, count) in by_count.iter().take(40) {
-                eprintln!("  {count:>10} {code}");
+            let log: DebugLog = crate::debug::debug_log();
+            if log.on() {
+                log.line(|| format!("STUB_EMU_TRACE exit={result:?} steps={steps}"));
+                log.line(|| "STUB_EMU_TRACE last 40 instructions before exit:".to_owned());
+                for (ip, code, sp) in &ring {
+                    log.line(|| format!("  ip=0x{ip:08x} {code} rsp=0x{sp:08x}"));
+                }
+                let mut by_count: Vec<(&String, &u64)> = histogram.iter().collect();
+                by_count.sort_by(|a: &(&String, &u64), b: &(&String, &u64)| b.1.cmp(a.1));
+                log.line(|| "STUB_EMU_TRACE opcode histogram (top 40):".to_owned());
+                for (code, count) in by_count.iter().take(40) {
+                    log.line(|| format!("  {count:>10} {code}"));
+                }
             }
         }
         Ok(result)

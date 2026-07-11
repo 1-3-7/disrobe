@@ -2,6 +2,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::pe_sections::{
+    DataDirectory, PeImage, PeSection, parse_pe_image, read_u16 as read_u16_le,
+    read_u32 as read_u32_le,
+};
 use crate::error::{Error, Result};
 
 const PETITE_MAX_PREALLOC: usize = 256 * 1024 * 1024;
@@ -132,8 +136,8 @@ fn build_report(
     Ok(UnpackReport {
         packed_size: packed_len as u64,
         unpacked_size: unpacked_len as u64,
-        original_image_base: u64::from(packed.optional.image_base),
-        original_entry_point_rva: packed.optional.entry_point_rva,
+        original_image_base: packed.image.image_base,
+        original_entry_point_rva: packed.image.entry_point_rva,
         recovered_section_count: section_count,
         recovered_imports: imports,
         byte_recoverable_pct: recoverable_pct,
@@ -144,42 +148,11 @@ fn build_report(
 #[derive(Debug, Clone)]
 struct PackedPetite<'a> {
     raw: &'a [u8],
-    e_lfanew: usize,
-    coff: CoffHeader,
-    optional: OptionalHeaderPe32,
-    sections: Vec<SectionHeader>,
+    image: PeImage,
+    import_directory_rva: u32,
+    iat_directory: DataDirectory,
     payload_section: usize,
     petite_section: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CoffHeader {
-    number_of_sections: u16,
-    size_of_optional_header: u16,
-    characteristics: u16,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct OptionalHeaderPe32 {
-    image_base: u32,
-    entry_point_rva: u32,
-    section_alignment: u32,
-    file_alignment: u32,
-    import_dir_rva: u32,
-    iat_dir_rva: u32,
-    iat_dir_size: u32,
-    size_of_image: u32,
-    size_of_headers: u32,
-}
-
-#[derive(Debug, Clone)]
-struct SectionHeader {
-    name: [u8; 8],
-    virtual_size: u32,
-    virtual_address: u32,
-    size_of_raw_data: u32,
-    pointer_to_raw_data: u32,
-    characteristics: u32,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -213,15 +186,10 @@ fn parse_packed_petite(bytes: &[u8]) -> Result<PackedPetite<'_>> {
             "Petite is x86-only; refused machine=0x{machine:04x}"
         )));
     }
-    let coff: CoffHeader = CoffHeader {
-        number_of_sections: read_u16_le(bytes, coff_off + 2)?,
-        size_of_optional_header: read_u16_le(bytes, coff_off + 16)?,
-        characteristics: read_u16_le(bytes, coff_off + 18)?,
-    };
-    if coff.size_of_optional_header < IMAGE_NT_OPTIONAL_HDR32_SIZE {
+    let size_of_optional_header: u16 = read_u16_le(bytes, coff_off + 16)?;
+    if size_of_optional_header < IMAGE_NT_OPTIONAL_HDR32_SIZE {
         return Err(Error::GoblinParse(format!(
-            "Petite-packed PE32 must carry a 224-byte optional header; got {}",
-            coff.size_of_optional_header
+            "Petite-packed PE32 must carry a 224-byte optional header; got {size_of_optional_header}"
         )));
     }
     let opt_off: usize = coff_off + COFF_HEADER_LEN;
@@ -231,59 +199,31 @@ fn parse_packed_petite(bytes: &[u8]) -> Result<PackedPetite<'_>> {
             "Petite is PE32 only; refused optional-header magic 0x{magic:04x}"
         )));
     }
-    let optional: OptionalHeaderPe32 = OptionalHeaderPe32 {
-        image_base: read_u32_le(bytes, opt_off + 28)?,
-        entry_point_rva: read_u32_le(bytes, opt_off + 16)?,
-        section_alignment: read_u32_le(bytes, opt_off + 32)?,
-        file_alignment: read_u32_le(bytes, opt_off + 36)?,
-        import_dir_rva: read_u32_le(bytes, opt_off + 96 + 8)?,
-        iat_dir_rva: read_u32_le(bytes, opt_off + 96 + 96)?,
-        iat_dir_size: read_u32_le(bytes, opt_off + 96 + 100)?,
-        size_of_image: read_u32_le(bytes, opt_off + 56)?,
-        size_of_headers: read_u32_le(bytes, opt_off + 60)?,
+    let import_directory_rva: u32 = read_u32_le(bytes, opt_off + 96 + 8)?;
+    let iat_directory: DataDirectory = DataDirectory {
+        virtual_address: read_u32_le(bytes, opt_off + 96 + 96)?,
+        size: read_u32_le(bytes, opt_off + 96 + 100)?,
     };
-    let sec_off: usize = opt_off + coff.size_of_optional_header as usize;
-    let sec_table_end: usize = sec_off
-        .checked_add(SECTION_HEADER_LEN * coff.number_of_sections as usize)
-        .ok_or(Error::UnknownFormat)?;
-    if bytes.len() < sec_table_end {
-        return Err(Error::Truncated {
-            needed: sec_table_end,
-            had: bytes.len(),
-        });
-    }
-    let mut sections: Vec<SectionHeader> = Vec::with_capacity(coff.number_of_sections as usize);
-    for i in 0..coff.number_of_sections as usize {
-        let s: usize = sec_off + i * SECTION_HEADER_LEN;
-        let mut name: [u8; 8] = [0u8; 8];
-        name.copy_from_slice(&bytes[s..s + 8]);
-        sections.push(SectionHeader {
-            name,
-            virtual_size: read_u32_le(bytes, s + 8)?,
-            virtual_address: read_u32_le(bytes, s + 12)?,
-            size_of_raw_data: read_u32_le(bytes, s + 16)?,
-            pointer_to_raw_data: read_u32_le(bytes, s + 20)?,
-            characteristics: read_u32_le(bytes, s + 36)?,
-        });
-    }
-    let petite_section: usize = sections
+    let image: PeImage = parse_pe_image(bytes)?;
+    let petite_section: usize = image
+        .sections
         .iter()
-        .position(|s: &SectionHeader| {
+        .position(|s: &PeSection| {
             &s.name == PETITE_SECTION_NAME || &s.name == PETITE_SECTION_NAME_DOTTED
         })
         .ok_or_else(|| Error::GoblinParse("no 'petite' section found".into()))?;
-    let payload_section: usize = sections
+    let payload_section: usize = image
+        .sections
         .iter()
         .enumerate()
-        .find(|(idx, s): &(usize, &SectionHeader)| *idx != petite_section && s.size_of_raw_data > 0)
-        .map(|(idx, _): (usize, &SectionHeader)| idx)
+        .find(|(idx, s): &(usize, &PeSection)| *idx != petite_section && s.raw_size > 0)
+        .map(|(idx, _): (usize, &PeSection)| idx)
         .ok_or_else(|| Error::GoblinParse("no compressed-payload section found".into()))?;
     Ok(PackedPetite {
         raw: bytes,
-        e_lfanew,
-        coff,
-        optional,
-        sections,
+        image,
+        import_directory_rva,
+        iat_directory,
         payload_section,
         petite_section,
     })
@@ -296,9 +236,9 @@ struct DecodedStream {
 }
 
 fn decode_petite_stream(packed: &PackedPetite<'_>) -> Result<DecodedStream> {
-    let sec: &SectionHeader = &packed.sections[packed.payload_section];
-    let start: usize = sec.pointer_to_raw_data as usize;
-    let len: usize = sec.size_of_raw_data as usize;
+    let sec: &PeSection = &packed.image.sections[packed.payload_section];
+    let start: usize = sec.raw_pointer as usize;
+    let len: usize = sec.raw_size as usize;
     if start
         .checked_add(len)
         .map_or(true, |end: usize| end > packed.raw.len())
@@ -340,15 +280,14 @@ struct PhaseOneParams {
 }
 
 fn parse_phase_one_stub(packed: &PackedPetite<'_>) -> Option<PhaseOneParams> {
-    let payload: &SectionHeader = &packed.sections[packed.payload_section];
-    let ep_rva: u32 = packed.optional.entry_point_rva;
+    let payload: &PeSection = &packed.image.sections[packed.payload_section];
+    let ep_rva: u32 = packed.image.entry_point_rva;
     if ep_rva < payload.virtual_address
         || ep_rva >= payload.virtual_address.saturating_add(payload.virtual_size)
     {
         return None;
     }
-    let ep_file: usize =
-        payload.pointer_to_raw_data as usize + (ep_rva - payload.virtual_address) as usize;
+    let ep_file: usize = payload.raw_pointer as usize + (ep_rva - payload.virtual_address) as usize;
     if ep_file + 0x40 > packed.raw.len() {
         return None;
     }
@@ -400,7 +339,7 @@ fn parse_phase_one_stub(packed: &PackedPetite<'_>) -> Option<PhaseOneParams> {
         return None;
     }
     let compressed_file_off: usize =
-        payload.pointer_to_raw_data as usize + (compressed_rva - payload.virtual_address) as usize;
+        payload.raw_pointer as usize + (compressed_rva - payload.virtual_address) as usize;
     if compressed_file_off >= packed.raw.len() {
         return None;
     }
@@ -667,20 +606,17 @@ fn parse_petite_import_table(packed: &PackedPetite<'_>) -> Result<Vec<RecoveredI
         Ok(())
     };
 
-    let petite_sec: &SectionHeader = &packed.sections[packed.petite_section];
+    let petite_sec: &PeSection = &packed.image.sections[packed.petite_section];
     scan_section(
-        petite_sec.pointer_to_raw_data as usize,
-        petite_sec.size_of_raw_data as usize,
+        petite_sec.raw_pointer as usize,
+        petite_sec.raw_size as usize,
     )?;
 
-    for (idx, sec) in packed.sections.iter().enumerate() {
+    for (idx, sec) in packed.image.sections.iter().enumerate() {
         if idx == packed.petite_section {
             continue;
         }
-        scan_section(
-            sec.pointer_to_raw_data as usize,
-            sec.size_of_raw_data as usize,
-        )?;
+        scan_section(sec.raw_pointer as usize, sec.raw_size as usize)?;
     }
 
     Ok(imports.into_values().collect())
@@ -737,7 +673,7 @@ fn is_dll_name(s: &str) -> bool {
 struct Reconstruction {
     bytes: Vec<u8>,
     deterministic_bytes: usize,
-    original_sections: Vec<SectionHeader>,
+    original_sections: Vec<PeSection>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -746,22 +682,22 @@ fn reconstruct_image(
     stream: &DecodedStream,
     imports: &[RecoveredImport],
 ) -> Result<Reconstruction> {
-    let original_sections: Vec<SectionHeader> = infer_original_sections(packed, stream);
+    let original_sections: Vec<PeSection> = infer_original_sections(packed, stream);
     let import_dir_bytes: Vec<u8> = build_import_directory(imports);
     let import_dir_rva: u32 = pick_import_directory_rva(packed);
 
-    let file_alignment: u32 = if packed.optional.file_alignment == 0 {
+    let file_alignment: u32 = if packed.image.file_alignment == 0 {
         FILE_ALIGNMENT_DEFAULT
     } else {
-        packed.optional.file_alignment
+        packed.image.file_alignment
     };
-    let section_alignment: u32 = if packed.optional.section_alignment == 0 {
+    let section_alignment: u32 = if packed.image.section_alignment == 0 {
         SECTION_ALIGNMENT_DEFAULT
     } else {
-        packed.optional.section_alignment
+        packed.image.section_alignment
     };
 
-    let nt_off: usize = packed.e_lfanew.max(DOS_HEADER_SIZE);
+    let nt_off: usize = (packed.image.pe_header_offset as usize).max(DOS_HEADER_SIZE);
     let nt_headers_end: usize = nt_off
         + PE_SIGNATURE_LEN
         + COFF_HEADER_LEN
@@ -777,7 +713,7 @@ fn reconstruct_image(
     let mut raw_offsets: Vec<u32> = Vec::with_capacity(original_sections.len());
     for sec in &original_sections {
         raw_offsets.push(total_raw);
-        let raw: u32 = align_up(sec.size_of_raw_data, file_alignment);
+        let raw: u32 = align_up(sec.raw_size, file_alignment);
         total_raw = total_raw
             .checked_add(raw)
             .ok_or_else(|| Error::GoblinParse("section raw size overflowed".into()))?;
@@ -814,13 +750,15 @@ fn reconstruct_image(
     image[coff_off + 12..coff_off + 16].copy_from_slice(&num_symtab.to_le_bytes());
     image[coff_off + 16..coff_off + 18]
         .copy_from_slice(&IMAGE_NT_OPTIONAL_HDR32_SIZE.to_le_bytes());
-    image[coff_off + 18..coff_off + 20].copy_from_slice(&packed.coff.characteristics.to_le_bytes());
+    image[coff_off + 18..coff_off + 20]
+        .copy_from_slice(&packed.image.coff_characteristics.to_le_bytes());
 
     let opt_off: usize = coff_off + COFF_HEADER_LEN;
     image[opt_off..opt_off + 2].copy_from_slice(&PE32_MAGIC.to_le_bytes());
-    image[opt_off + 16..opt_off + 20]
-        .copy_from_slice(&packed.optional.entry_point_rva.to_le_bytes());
-    image[opt_off + 28..opt_off + 32].copy_from_slice(&packed.optional.image_base.to_le_bytes());
+    image[opt_off + 16..opt_off + 20].copy_from_slice(&packed.image.entry_point_rva.to_le_bytes());
+    let image_base: u32 = u32::try_from(packed.image.image_base)
+        .map_err(|_| Error::GoblinParse("Petite PE32 image base exceeded u32".into()))?;
+    image[opt_off + 28..opt_off + 32].copy_from_slice(&image_base.to_le_bytes());
     image[opt_off + 32..opt_off + 36].copy_from_slice(&section_alignment.to_le_bytes());
     image[opt_off + 36..opt_off + 40].copy_from_slice(&file_alignment.to_le_bytes());
     let size_of_image: u32 = compute_size_of_image(&original_sections, section_alignment);
@@ -834,9 +772,9 @@ fn reconstruct_image(
     image[import_dir_off + 4..import_dir_off + 8]
         .copy_from_slice(&(import_dir_bytes.len() as u32).to_le_bytes());
     image[opt_off + 96 + 96..opt_off + 96 + 100]
-        .copy_from_slice(&packed.optional.iat_dir_rva.to_le_bytes());
+        .copy_from_slice(&packed.iat_directory.virtual_address.to_le_bytes());
     image[opt_off + 96 + 100..opt_off + 96 + 104]
-        .copy_from_slice(&packed.optional.iat_dir_size.to_le_bytes());
+        .copy_from_slice(&packed.iat_directory.size.to_le_bytes());
 
     let sec_table_off: usize = opt_off + OPTIONAL_HEADER_STANDARD_LEN;
     let mut deterministic: usize =
@@ -847,7 +785,7 @@ fn reconstruct_image(
         image[s..s + 8].copy_from_slice(&sec.name);
         image[s + 8..s + 12].copy_from_slice(&sec.virtual_size.to_le_bytes());
         image[s + 12..s + 16].copy_from_slice(&sec.virtual_address.to_le_bytes());
-        image[s + 16..s + 20].copy_from_slice(&sec.size_of_raw_data.to_le_bytes());
+        image[s + 16..s + 20].copy_from_slice(&sec.raw_size.to_le_bytes());
         image[s + 20..s + 24].copy_from_slice(&raw_offsets[i].to_le_bytes());
         image[s + 24..s + 28].copy_from_slice(&0u32.to_le_bytes());
         image[s + 28..s + 32].copy_from_slice(&0u32.to_le_bytes());
@@ -857,10 +795,10 @@ fn reconstruct_image(
         deterministic += SECTION_HEADER_LEN;
     }
 
-    let payload_va: u32 = packed.sections[packed.payload_section].virtual_address;
+    let payload_va: u32 = packed.image.sections[packed.payload_section].virtual_address;
     for (i, sec) in original_sections.iter().enumerate() {
         let raw_off: usize = raw_offsets[i] as usize;
-        let raw_size: usize = sec.size_of_raw_data as usize;
+        let raw_size: usize = sec.raw_size as usize;
         let dst_end: usize = raw_off + raw_size;
         if dst_end > image.len() {
             continue;
@@ -988,15 +926,15 @@ fn reconstruct_from_memory_image(
     mem_post: &[u8],
     pre_resolution: &[u8],
 ) -> Option<EmulatedReconstruction> {
-    let section_alignment: u32 = if packed.optional.section_alignment == 0 {
+    let section_alignment: u32 = if packed.image.section_alignment == 0 {
         SECTION_ALIGNMENT_DEFAULT
     } else {
-        packed.optional.section_alignment
+        packed.image.section_alignment
     };
-    let file_alignment: u32 = if packed.optional.file_alignment == 0 {
+    let file_alignment: u32 = if packed.image.file_alignment == 0 {
         FILE_ALIGNMENT_DEFAULT
     } else {
-        packed.optional.file_alignment
+        packed.image.file_alignment
     };
 
     let e_lfanew: usize = read_u32_le(mem_post, FILE_HEADER_OFFSET_E_LFANEW).ok()? as usize;
@@ -1019,7 +957,7 @@ fn reconstruct_from_memory_image(
                 None
             }
         })
-        .unwrap_or(packed.optional.size_of_image);
+        .unwrap_or(packed.image.size_of_image);
     if original_size_of_image <= section_alignment {
         return None;
     }
@@ -1039,10 +977,10 @@ fn reconstruct_from_memory_image(
     }
     let mem: &[u8] = &mem;
 
-    let size_of_headers: u32 = if packed.optional.size_of_headers == 0 {
+    let size_of_headers: u32 = if packed.image.size_of_headers == 0 {
         align_up(0x400, file_alignment)
     } else {
-        packed.optional.size_of_headers
+        packed.image.size_of_headers
     };
 
     let mut derived: Vec<DerivedSection> = Vec::with_capacity(starts.len());
@@ -1203,12 +1141,14 @@ fn write_reconstructed_header(
     out[coff_off..coff_off + 2].copy_from_slice(&MACHINE_I386.to_le_bytes());
     out[coff_off + 2..coff_off + 4].copy_from_slice(&section_count.to_le_bytes());
     out[coff_off + 16..coff_off + 18].copy_from_slice(&IMAGE_NT_OPTIONAL_HDR32_SIZE.to_le_bytes());
-    out[coff_off + 18..coff_off + 20].copy_from_slice(&packed.coff.characteristics.to_le_bytes());
+    out[coff_off + 18..coff_off + 20]
+        .copy_from_slice(&packed.image.coff_characteristics.to_le_bytes());
 
     let opt_off: usize = coff_off + COFF_HEADER_LEN;
     out[opt_off..opt_off + 2].copy_from_slice(&PE32_MAGIC.to_le_bytes());
-    out[opt_off + 16..opt_off + 20].copy_from_slice(&packed.optional.entry_point_rva.to_le_bytes());
-    out[opt_off + 28..opt_off + 32].copy_from_slice(&packed.optional.image_base.to_le_bytes());
+    out[opt_off + 16..opt_off + 20].copy_from_slice(&packed.image.entry_point_rva.to_le_bytes());
+    let image_base: u32 = u32::try_from(packed.image.image_base).ok()?;
+    out[opt_off + 28..opt_off + 32].copy_from_slice(&image_base.to_le_bytes());
     out[opt_off + 32..opt_off + 36].copy_from_slice(&section_alignment.to_le_bytes());
     out[opt_off + 36..opt_off + 40].copy_from_slice(&file_alignment.to_le_bytes());
     out[opt_off + 56..opt_off + 60].copy_from_slice(&size_of_image.to_le_bytes());
@@ -1229,31 +1169,29 @@ fn write_reconstructed_header(
     Some(())
 }
 
-fn infer_original_sections(
-    packed: &PackedPetite<'_>,
-    _stream: &DecodedStream,
-) -> Vec<SectionHeader> {
-    let payload: &SectionHeader = &packed.sections[packed.payload_section];
+fn infer_original_sections(packed: &PackedPetite<'_>, _stream: &DecodedStream) -> Vec<PeSection> {
+    let payload: &PeSection = &packed.image.sections[packed.payload_section];
     let packed_total: u32 = u32::try_from(packed.raw.len()).unwrap_or(payload.virtual_size);
     let heuristic_unpacked: u32 = packed_total.saturating_mul(18).saturating_div(10);
     let estimated_unpacked: u32 = heuristic_unpacked
         .max(packed_total)
         .min(payload.virtual_size.saturating_mul(8));
     let raw_size: u32 = align_up(estimated_unpacked, FILE_ALIGNMENT_DEFAULT);
-    let single: SectionHeader = SectionHeader {
+    let single: PeSection = PeSection {
         name: *b".text\x00\x00\x00",
         virtual_size: estimated_unpacked,
         virtual_address: payload.virtual_address,
-        size_of_raw_data: raw_size,
-        pointer_to_raw_data: 0,
+        raw_size,
+        raw_pointer: 0,
+        pointer_to_relocations: 0,
         characteristics: 0x6000_0020,
     };
     vec![single]
 }
 
 fn pick_import_directory_rva(packed: &PackedPetite<'_>) -> u32 {
-    let payload: &SectionHeader = &packed.sections[packed.payload_section];
-    let preferred: u32 = packed.optional.import_dir_rva;
+    let payload: &PeSection = &packed.image.sections[packed.payload_section];
+    let preferred: u32 = packed.import_directory_rva;
     if preferred >= payload.virtual_address
         && preferred < payload.virtual_address.saturating_add(payload.virtual_size)
     {
@@ -1330,16 +1268,16 @@ fn build_import_directory(imports: &[RecoveredImport]) -> Vec<u8> {
     out
 }
 
-fn covers_import_dir(sec: &SectionHeader, rva: u32, blob: &[u8]) -> bool {
+fn covers_import_dir(sec: &PeSection, rva: u32, blob: &[u8]) -> bool {
     let end: u32 = rva.saturating_add(blob.len() as u32);
     rva >= sec.virtual_address
         && end
             <= sec
                 .virtual_address
-                .saturating_add(sec.virtual_size.max(sec.size_of_raw_data))
+                .saturating_add(sec.virtual_size.max(sec.raw_size))
 }
 
-fn compute_size_of_image(sections: &[SectionHeader], alignment: u32) -> u32 {
+fn compute_size_of_image(sections: &[PeSection], alignment: u32) -> u32 {
     let mut hi: u32 = 0;
     for sec in sections {
         let end: u32 = sec.virtual_address.saturating_add(sec.virtual_size);
@@ -1356,33 +1294,6 @@ fn align_up(value: u32, alignment: u32) -> u32 {
     }
     let mask: u32 = alignment - 1;
     value.wrapping_add(mask) & !mask
-}
-
-fn read_u16_le(bytes: &[u8], off: usize) -> Result<u16> {
-    let end: usize = off.checked_add(2).ok_or(Error::UnknownFormat)?;
-    if end > bytes.len() {
-        return Err(Error::Truncated {
-            needed: end,
-            had: bytes.len(),
-        });
-    }
-    Ok(u16::from_le_bytes([bytes[off], bytes[off + 1]]))
-}
-
-fn read_u32_le(bytes: &[u8], off: usize) -> Result<u32> {
-    let end: usize = off.checked_add(4).ok_or(Error::UnknownFormat)?;
-    if end > bytes.len() {
-        return Err(Error::Truncated {
-            needed: end,
-            had: bytes.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
 }
 
 #[cfg(test)]
@@ -1478,6 +1389,37 @@ mod tests {
         let payload: Vec<u8> = vec![0u8; 32];
         let petite_meta: Vec<u8> = synth_petite_metadata();
         let pe: Vec<u8> = build_minimal_petite_pe(&payload, &petite_meta);
+        let parsed: PackedPetite<'_> = parse_packed_petite(&pe).expect("Petite layout");
+        assert_eq!(parsed.image.pe_header_offset, 0xE8);
+        assert_eq!(parsed.image.machine, MACHINE_I386);
+        assert_eq!(
+            parsed.image.size_of_optional_header,
+            IMAGE_NT_OPTIONAL_HDR32_SIZE
+        );
+        assert_eq!(parsed.image.image_base, 0x0040_0000);
+        assert_eq!(parsed.image.entry_point_rva, 0x0000_D204);
+        assert_eq!(parsed.image.section_alignment, 0x1000);
+        assert_eq!(parsed.image.file_alignment, 0x200);
+        assert_eq!(parsed.image.size_of_image, 0x0001_B000);
+        assert_eq!(parsed.image.sections.len(), 2);
+        assert_eq!(parsed.image.sections[0].virtual_address, 0x1000);
+        assert_eq!(
+            parsed.image.sections[0].raw_pointer,
+            parsed.image.size_of_headers
+        );
+        assert_eq!(parsed.image.sections[1].name, *PETITE_SECTION_NAME);
+        assert_eq!(
+            parsed
+                .image
+                .raw_data_directories
+                .get(1)
+                .map(|directory: &DataDirectory| directory.virtual_address),
+            Some(parsed.import_directory_rva)
+        );
+        assert_eq!(
+            parsed.image.raw_data_directories.get(12),
+            Some(&parsed.iat_directory)
+        );
         let result: UnpackResult =
             unpack_petite_with_report(&pe).expect("synthetic Petite PE must parse");
         assert!(
