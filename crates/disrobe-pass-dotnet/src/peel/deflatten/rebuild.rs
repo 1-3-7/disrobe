@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::cil::Instruction;
+use crate::cil::{Instruction, OperandValue};
 
 use super::blocks::{BlockGraph, BlockId};
 use super::interp::{
@@ -167,7 +167,11 @@ fn block_payload(graph: &BlockGraph, instrs: &[Instruction], bid: BlockId) -> Ve
 pub fn strip_key_tail(slice: &[Instruction], state_local: u32) -> Vec<&Instruction> {
     let mut end: usize = slice.len();
     while end > 0 {
-        let ins: &Instruction = &slice[end - 1];
+        let index: usize = end - 1;
+        let ins: &Instruction = &slice[index];
+        if ins.name == "pop" && !is_key_selector_pop(slice, index) {
+            break;
+        }
         if is_key_machinery(ins, state_local) {
             end -= 1;
         } else {
@@ -175,6 +179,87 @@ pub fn strip_key_tail(slice: &[Instruction], state_local: u32) -> Vec<&Instructi
         }
     }
     slice[..end].iter().collect()
+}
+
+fn is_key_selector_pop(slice: &[Instruction], index: usize) -> bool {
+    let Some(pop): Option<&Instruction> = slice.get(index) else {
+        return false;
+    };
+    if pop.name != "pop" {
+        return false;
+    }
+    let mut cursor: usize = index;
+    let Some(right_dup_index): Option<usize> = previous_non_padding_index(slice, &mut cursor)
+    else {
+        return false;
+    };
+    let Some(right_value_index): Option<usize> = previous_non_padding_index(slice, &mut cursor)
+    else {
+        return false;
+    };
+    let Some(join_branch_index): Option<usize> = previous_non_padding_index(slice, &mut cursor)
+    else {
+        return false;
+    };
+    let Some(left_dup_index): Option<usize> = previous_non_padding_index(slice, &mut cursor) else {
+        return false;
+    };
+    let Some(left_value_index): Option<usize> = previous_non_padding_index(slice, &mut cursor)
+    else {
+        return false;
+    };
+    let Some(condition_index): Option<usize> = previous_non_padding_index(slice, &mut cursor)
+    else {
+        return false;
+    };
+    let Some(right_dup): Option<&Instruction> = slice.get(right_dup_index) else {
+        return false;
+    };
+    let Some(right_value): Option<&Instruction> = slice.get(right_value_index) else {
+        return false;
+    };
+    let Some(join_branch): Option<&Instruction> = slice.get(join_branch_index) else {
+        return false;
+    };
+    let Some(left_dup): Option<&Instruction> = slice.get(left_dup_index) else {
+        return false;
+    };
+    let Some(left_value): Option<&Instruction> = slice.get(left_value_index) else {
+        return false;
+    };
+    let Some(condition): Option<&Instruction> = slice.get(condition_index) else {
+        return false;
+    };
+    right_dup.name == "dup"
+        && left_dup.name == "dup"
+        && super::blocks::int_literal(right_value).is_some()
+        && super::blocks::int_literal(left_value).is_some()
+        && matches!(join_branch.name.as_str(), "br" | "br.s")
+        && super::interp::is_conditional_branch(&condition.name)
+        && relative_branch_target(slice, join_branch_index) == Some(pop.offset)
+        && relative_branch_target(slice, condition_index) == Some(right_value.offset)
+}
+
+fn previous_non_padding_index(slice: &[Instruction], cursor: &mut usize) -> Option<usize> {
+    while let Some(index) = cursor.checked_sub(1) {
+        let index: usize = index;
+        *cursor = index;
+        let ins: &Instruction = slice.get(index)?;
+        if !matches!(ins.name.as_str(), "nop" | "break") {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn relative_branch_target(slice: &[Instruction], index: usize) -> Option<u32> {
+    let branch: &Instruction = slice.get(index)?;
+    let OperandValue::BrTarget(relative): &OperandValue = &branch.operand else {
+        return None;
+    };
+    let next_offset: u32 = slice.get(index.checked_add(1)?)?.offset;
+    let target: i64 = i64::from(next_offset).checked_add(i64::from(*relative))?;
+    u32::try_from(target).ok()
 }
 
 fn is_key_machinery(ins: &Instruction, state_local: u32) -> bool {
@@ -248,5 +333,150 @@ mod tests {
         let payload: Vec<&Instruction> = strip_key_tail(&instrs, 1);
         assert!(payload.len() < full_len, "tail must be stripped");
         assert_eq!(payload.first().map(|i| i.name.as_str()), Some("ldarg.0"));
+    }
+
+    #[test]
+    fn preserves_discarded_call_results_before_direct_key_tails() {
+        let call_opcodes: [(u8, &str); 4] = [
+            (0x28, "call"),
+            (0x29, "calli"),
+            (0x6F, "callvirt"),
+            (0x73, "newobj"),
+        ];
+        for call_opcode in call_opcodes {
+            let opcode: u8 = call_opcode.0;
+            let expected: &str = call_opcode.1;
+            let mut code: Vec<u8> = vec![opcode];
+            code.extend_from_slice(&0x0600_0001u32.to_le_bytes());
+            code.extend_from_slice(&[0x26, 0x20]);
+            code.extend_from_slice(&7i32.to_le_bytes());
+            code.extend_from_slice(&[0x2B, 0x00]);
+            let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+            let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+            let names: Vec<&str> = payload
+                .iter()
+                .map(|instruction: &&Instruction| instruction.name.as_str())
+                .collect();
+            assert_eq!(names, [expected, "pop"]);
+        }
+    }
+
+    #[test]
+    fn preserves_payload_pop_after_stack_neutral_instructions() {
+        let mut code: Vec<u8> = vec![0x28];
+        code.extend_from_slice(&0x0600_0001u32.to_le_bytes());
+        code.extend_from_slice(&[0x00, 0x01, 0x26, 0x20]);
+        code.extend_from_slice(&7i32.to_le_bytes());
+        code.extend_from_slice(&[0x2B, 0x00]);
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+        let names: Vec<&str> = payload
+            .iter()
+            .map(|instruction: &&Instruction| instruction.name.as_str())
+            .collect();
+        assert_eq!(names, ["call", "nop", "break", "pop"]);
+    }
+
+    #[test]
+    fn preserves_non_selector_pop_before_direct_key_tail() {
+        let code: Vec<u8> = vec![0x17, 0x26, 0x20, 7, 0, 0, 0, 0x2B, 0x00];
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+        let names: Vec<&str> = payload
+            .iter()
+            .map(|instruction: &&Instruction| instruction.name.as_str())
+            .collect();
+        assert_eq!(names, ["ldc.i4.1", "pop"]);
+    }
+
+    #[test]
+    fn preserves_non_selector_dup_branch_dup_pop_sequence() {
+        let mut code: Vec<u8> = vec![0x02, 0x25, 0x2B, 0x01, 0x00, 0x25, 0x26, 0x20];
+        code.extend_from_slice(&7i32.to_le_bytes());
+        code.extend_from_slice(&[0x2B, 0x00]);
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+        let names: Vec<&str> = payload
+            .iter()
+            .map(|instruction: &&Instruction| instruction.name.as_str())
+            .collect();
+        assert_eq!(names, ["ldarg.0", "dup", "br.s", "nop", "dup", "pop"]);
+    }
+
+    #[test]
+    fn preserves_selector_like_pops_with_mismatched_branch_targets() {
+        let cases: [[u8; 17]; 2] = [
+            [
+                0x02, 0x2D, 0x00, 0x17, 0x25, 0x2B, 0x02, 0x18, 0x25, 0x26, 0x07, 0x19, 0x5A, 0x1A,
+                0x61, 0x2B, 0x00,
+            ],
+            [
+                0x02, 0x2D, 0x04, 0x17, 0x25, 0x2B, 0x00, 0x18, 0x25, 0x26, 0x07, 0x19, 0x5A, 0x1A,
+                0x61, 0x2B, 0x00,
+            ],
+        ];
+        for code in cases {
+            let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+            let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+            let names: Vec<&str> = payload
+                .iter()
+                .map(|instruction: &&Instruction| instruction.name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "ldarg.0", "brtrue.s", "ldc.i4.1", "dup", "br.s", "ldc.i4.2", "dup", "pop",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_selector_like_pops_with_stack_clearing_joins() {
+        let cases: [(Vec<u8>, &str); 2] = [
+            (
+                vec![
+                    0x02, 0x2D, 0x04, 0x17, 0x25, 0xDE, 0x02, 0x18, 0x25, 0x26, 0x07, 0x19, 0x5A,
+                    0x1A, 0x61, 0x2B, 0x00,
+                ],
+                "leave.s",
+            ),
+            (
+                vec![
+                    0x02, 0x2D, 0x07, 0x17, 0x25, 0xDD, 0x02, 0x00, 0x00, 0x00, 0x18, 0x25, 0x26,
+                    0x07, 0x19, 0x5A, 0x1A, 0x61, 0x2B, 0x00,
+                ],
+                "leave",
+            ),
+        ];
+        for (code, join) in cases {
+            let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+            let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+            let names: Vec<&str> = payload
+                .iter()
+                .map(|instruction: &&Instruction| instruction.name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    "ldarg.0", "brtrue.s", "ldc.i4.1", "dup", join, "ldc.i4.2", "dup", "pop",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn strips_selector_pop_after_duplicate_key_arms() {
+        let code: Vec<u8> = vec![
+            0x02, 0x2D, 0x04, 0x17, 0x25, 0x2B, 0x02, 0x18, 0x25, 0x26, 0x07, 0x19, 0x5A, 0x1A,
+            0x61, 0x2B, 0x00,
+        ];
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let payload: Vec<&Instruction> = strip_key_tail(&instructions, 1);
+        let names: Vec<&str> = payload
+            .iter()
+            .map(|instruction: &&Instruction| instruction.name.as_str())
+            .collect();
+        assert_eq!(names, ["ldarg.0", "brtrue.s"]);
     }
 }

@@ -8,10 +8,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use disrobe_pass_dotnet::cil::{MethodBody, disassemble, parse_method_body};
-use disrobe_pass_dotnet::metadata::parse_metadata_root;
+use disrobe_pass_dotnet::cil::{Instruction, MethodBody, disassemble, parse_method_body};
+use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, Resolver, TypeModel};
-use disrobe_pass_dotnet::pe::{PeImage, parse, parse_clr_header};
+use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::peel::deflatten::decrypt::{
     DecryptInlineReport, InlinedLiteral, inline_decryptors,
 };
@@ -178,6 +178,12 @@ fn predicate_protected_exes_run_byte_identically_to_clean() {
 
 const CFF_METHODS: [&str; 6] = ["Crc32", "Classify", "CountWords", "Gcd", "Collatz", "Clamp"];
 
+const GAUNTLET_CLEAN: &str = "../../corpus/dotnet/confuserex/gauntlet/GauntletSample.clean.exe";
+const GAUNTLET_PROTECTED: &str =
+    "../../corpus/dotnet/confuserex/gauntlet/GauntletSample.confuserex2.exe";
+const GAUNTLET_PROCESS_TOKEN: u32 = 0x0600_000A;
+const GAUNTLET_PROTECTED_PROCESS_TOKEN: u32 = 0x0600_0042;
+
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(rel);
@@ -187,6 +193,15 @@ fn load(rel: &str) -> Vec<u8> {
             path.display()
         )
     })
+}
+
+fn load_model(rel: &str) -> (Vec<u8>, PeImage, AssemblyModel) {
+    let bytes: Vec<u8> = load(rel);
+    let pe: PeImage = parse(&bytes).expect("pe");
+    let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr");
+    let root: MetadataRoot = parse_metadata_root(&bytes, &pe, &clr).expect("metadata");
+    let resolver: Resolver = Resolver::build(&bytes, &pe, &clr, &root).expect("resolver");
+    (bytes, pe, resolver.model())
 }
 
 fn clean_body_named(name: &str) -> MethodBody {
@@ -323,6 +338,95 @@ fn aggregate_structural_recovery_is_total_against_known_originals() {
         "all benign methods must fully recover vs the known-original clean CFG"
     );
     assert!((pct - 100.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn real_confuserex2_preserves_call_result_pops_before_dispatcher_key_tails() {
+    let (clean_bytes, clean_pe, clean_model): (Vec<u8>, PeImage, AssemblyModel) =
+        load_model(GAUNTLET_CLEAN);
+    let clean_method: &MethodModel = clean_model
+        .types
+        .iter()
+        .flat_map(|ty: &TypeModel| &ty.methods)
+        .find(|method: &&MethodModel| method.token == GAUNTLET_PROCESS_TOKEN)
+        .expect("clean Process method");
+    assert_eq!(clean_method.name, "Process");
+    let clean_offset: usize = clean_pe
+        .rva_to_offset(clean_method.rva)
+        .expect("clean Process RVA");
+    let clean_body: MethodBody =
+        parse_method_body(&clean_bytes[clean_offset..]).expect("clean Process body");
+
+    let (protected_bytes, protected_pe, protected_model): (Vec<u8>, PeImage, AssemblyModel) =
+        load_model(GAUNTLET_PROTECTED);
+    let (protected_type, protected_method): (&TypeModel, &MethodModel) = protected_model
+        .types
+        .iter()
+        .find_map(|ty: &TypeModel| {
+            ty.methods
+                .iter()
+                .find(|method: &&MethodModel| method.token == GAUNTLET_PROTECTED_PROCESS_TOKEN)
+                .map(|method: &MethodModel| (ty, method))
+        })
+        .expect("protected Process method");
+    let recovery: MethodRecovery = recover_method(
+        &protected_bytes,
+        &protected_pe,
+        protected_type,
+        protected_method,
+    )
+    .expect("protected Process deflattened");
+    assert!(recovery.recovered.unresolved.is_empty());
+
+    let clean_pops: usize = clean_body
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.name == "pop")
+        .count();
+    let recovered_pops: usize = recovery
+        .recovered
+        .blocks
+        .iter()
+        .flat_map(|block| &block.payload)
+        .filter(|name| name.as_str() == "pop")
+        .count();
+    let clean_callvirt_pops: usize = clean_body
+        .instructions
+        .windows(2)
+        .filter(|pair: &&[Instruction]| pair[0].name == "callvirt" && pair[1].name == "pop")
+        .count();
+    let recovered_callvirt_pops: usize = recovery
+        .recovered
+        .blocks
+        .iter()
+        .map(|block| {
+            block
+                .payload
+                .windows(2)
+                .filter(|pair: &&[String]| pair[0] == "callvirt" && pair[1] == "pop")
+                .count()
+        })
+        .sum();
+    assert_eq!(clean_pops, 6, "clean Process ground truth changed");
+    assert_eq!(
+        clean_callvirt_pops, clean_pops,
+        "every clean Process pop must discard a callvirt result"
+    );
+    assert_eq!(
+        recovered_pops, clean_pops,
+        "every original call-result pop must survive dispatcher key-tail removal"
+    );
+    assert_eq!(
+        recovered_callvirt_pops, clean_callvirt_pops,
+        "every original callvirt-pop pair must survive dispatcher key-tail removal"
+    );
+
+    let score: StructuralScore = grade(&clean_body, &recovery.recovered);
+    assert_eq!(score.matched_signatures, 11);
+    assert_eq!(score.expected_signatures, 12);
+    assert!(score.branch_blocks_match);
+    assert!(score.return_blocks_match);
+    assert!(score.edge_count_match);
 }
 
 const CE2: &str = "../../corpus/dotnet/HelloAppLegacy.confuserex2.dll";
