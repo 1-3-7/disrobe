@@ -2,6 +2,7 @@
 extend-ignore-re = [
     "(?Rm)^.*# spellchecker:disable-line$",
     "(?s)(#|//)\\s*spellchecker:off.*?(?:\\s*(#|//)\\s*spellchecker:on)?\\s*$",
+    "HEAD [0-9a-f]{7,40}",
 ]
 
 [default.extend-words]
