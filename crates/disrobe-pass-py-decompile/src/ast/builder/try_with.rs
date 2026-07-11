@@ -3016,6 +3016,43 @@ fn else_span_is_sequential_sibling(
         })
 }
 
+fn else_span_encloses_loop_backedge(stream: &DecodedStream, try_start: usize, k: usize) -> bool {
+    is_back_edge(&stream.ops[k])
+        && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t < try_start)
+}
+
+fn else_span_loop_epilogue_cap(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    else_start: usize,
+    else_end: usize,
+) -> usize {
+    let Some(back_edge): Option<usize> = (else_start..else_end)
+        .find(|&k: &usize| else_span_encloses_loop_backedge(stream, region.try_start, k))
+    else {
+        return else_end;
+    };
+    let tail_is_loop_epilogue: bool = (back_edge + 1..else_end).any(|k: usize| {
+        else_span_encloses_loop_backedge(stream, region.try_start, k)
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+    });
+    if !tail_is_loop_epilogue {
+        return else_end;
+    }
+    let tail_reachable_from_body: bool = (else_start..back_edge).any(|k: usize| {
+        resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t > back_edge && t < else_end)
+    });
+    if tail_reachable_from_body {
+        else_end
+    } else {
+        back_edge
+    }
+}
+
 fn try_else_split(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3050,6 +3087,12 @@ fn try_else_split(
     {
         return None;
     }
+    let capped_end: usize = else_span_loop_epilogue_cap(stream, region, else_start, else_end);
+    let else_end: usize = if capped_end > else_start {
+        capped_end
+    } else {
+        else_end
+    };
     Some((else_start, else_end))
 }
 
