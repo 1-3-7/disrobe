@@ -1138,6 +1138,12 @@ fn section_name_matches(name: &[u8], target: &[u8]) -> bool {
 fn build_original_baseline(original_pe: &[u8], nsp0: &NspackSection<'_>) -> Result<Vec<u8>> {
     let layout: NspackLayout<'_> = parse_nspack_layout(original_pe)?;
     let dsize: usize = nsp0.virtual_size as usize;
+    if dsize > MAX_DECOMPRESSED_BYTES {
+        return Err(Error::SignatureDb(format!(
+            "NSPack: baseline virtual_size {dsize} exceeds safety ceiling \
+             {MAX_DECOMPRESSED_BYTES} - refusing oversized allocation"
+        )));
+    }
     let base_rva: u32 = nsp0.virtual_address;
     let mut buf: Vec<u8> = vec![0u8; dsize];
     for sec in &layout.sections {
@@ -1237,7 +1243,13 @@ pub fn parse_nspack_layout(bytes: &[u8]) -> Result<NspackLayout<'_>> {
         )
     };
     let sec_table_off: usize = opt_hdr_off + opt_hdr_size as usize;
-    let needed: usize = sec_table_off + n_sections * SECTION_ENTRY_SIZE;
+    let needed: usize = sec_table_off
+        .checked_add(
+            n_sections
+                .checked_mul(SECTION_ENTRY_SIZE)
+                .ok_or_else(|| Error::SignatureDb("NSPack: section count overflow".to_owned()))?,
+        )
+        .ok_or_else(|| Error::SignatureDb("NSPack: section table overflow".to_owned()))?;
     if needed > bytes.len() {
         return Err(Error::Truncated {
             needed,
