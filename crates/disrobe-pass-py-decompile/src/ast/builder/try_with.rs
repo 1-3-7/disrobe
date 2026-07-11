@@ -3340,10 +3340,16 @@ fn structure_try_except_family(
     } else {
         let with_return: usize =
             protected_body_end_with_return(stream, region.try_start, sc_end, region.handler_start);
-        extend_protected_end_over_guard_return(
+        let over_guard: usize = extend_protected_end_over_guard_return(
             stream,
             region.try_start,
             with_return,
+            region.handler_start,
+        );
+        extend_protected_end_over_guarded_return_body(
+            stream,
+            region.try_start,
+            over_guard,
             region.handler_start,
         )
     };
@@ -6346,6 +6352,76 @@ fn extend_protected_end_over_guard_return(
     } else {
         protected_end
     }
+}
+
+fn first_nonraising_return_unit_end(
+    stream: &DecodedStream,
+    from: usize,
+    hi: usize,
+) -> Option<usize> {
+    let mut k: usize = from;
+    let mut saw_value: bool = false;
+    while k < hi {
+        match stream.ops.get(k) {
+            Some(
+                CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::LoadFast(_),
+            ) if !saw_value => {
+                saw_value = true;
+                k += 1;
+            }
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)) => k += 1,
+            Some(CanonicalOp::ReturnConst(_)) if !saw_value => return Some(k + 1),
+            Some(CanonicalOp::Return) if saw_value => return Some(k + 1),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn extend_protected_end_over_guarded_return_body(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    if protected_end >= handler_start {
+        return protected_end;
+    }
+    let Some(guard): Option<usize> = last_significant_back(stream, try_start, protected_end) else {
+        return protected_end;
+    };
+    let is_guard: bool = is_forward_cond_jump(&stream.ops[guard])
+        && !is_chain_cond_jump(&stream.ops, guard)
+        && !is_value_form_shortcircuit(&stream.ops, guard);
+    if !is_guard {
+        return protected_end;
+    }
+    let Some(unit_end): Option<usize> =
+        first_nonraising_return_unit_end(stream, protected_end, handler_start)
+    else {
+        return protected_end;
+    };
+    let jumps_over_unit: bool = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .is_some_and(|t: usize| t >= unit_end && t <= handler_start);
+    if !jumps_over_unit {
+        return protected_end;
+    }
+    let unit_is_jump_target: bool = (try_start..protected_end).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+            ))
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t == protected_end)
+    });
+    if unit_is_jump_target {
+        return protected_end;
+    }
+    unit_end
 }
 
 fn return_after_iter_cleanup(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
