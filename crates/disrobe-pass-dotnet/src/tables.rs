@@ -634,6 +634,110 @@ pub fn parse_tables(metadata_bytes: &[u8], header: StreamHeader) -> Result<Table
     Ok(tables)
 }
 
+pub(crate) fn parse_single_assembly_row(
+    metadata_bytes: &[u8],
+    header: StreamHeader,
+) -> Result<Option<AssemblyRow>> {
+    let offset: usize = usize::try_from(header.offset).map_err(|_| Error::Truncated {
+        offset: metadata_bytes.len(),
+        needed: usize::MAX,
+        had: 0,
+    })?;
+    let size: usize = usize::try_from(header.size).map_err(|_| Error::Truncated {
+        offset,
+        needed: usize::MAX,
+        had: metadata_bytes.len().saturating_sub(offset),
+    })?;
+    let end: usize = offset.checked_add(size).ok_or_else(|| Error::Truncated {
+        offset,
+        needed: usize::MAX,
+        had: metadata_bytes.len().saturating_sub(offset),
+    })?;
+    let stream: &[u8] = metadata_bytes
+        .get(offset..end)
+        .ok_or_else(|| Error::Truncated {
+            offset,
+            needed: size,
+            had: metadata_bytes.len().saturating_sub(offset),
+        })?;
+    let table_stream: TableStream = crate::metadata::parse_table_stream(metadata_bytes, header)?;
+    let sizing: Sizing = Sizing {
+        heap: HeapWidths::from_flags(table_stream.heap_sizes),
+        row_counts: table_stream.row_counts.clone(),
+    };
+    let present: usize = table_stream
+        .row_counts
+        .keys()
+        .filter(|index: &&u8| **index < 64)
+        .count();
+    let row_count_bytes: usize = present.checked_mul(4).ok_or(Error::Truncated {
+        offset,
+        needed: usize::MAX,
+        had: stream.len(),
+    })?;
+    let mut position: usize = 24usize
+        .checked_add(row_count_bytes)
+        .ok_or(Error::Truncated {
+            offset,
+            needed: usize::MAX,
+            had: stream.len(),
+        })?;
+    let mut assembly: Option<AssemblyRow> = None;
+    for index in 0u8..64u8 {
+        let count_u32: u32 = table_stream.row_counts.get(&index).copied().unwrap_or(0);
+        if count_u32 == 0 {
+            continue;
+        }
+        let id: TableId = TableId::from_index(index)
+            .ok_or_else(|| Error::UnknownStream(format!("table 0x{index:02X}")))?;
+        let count: usize = usize::try_from(count_u32).map_err(|_| Error::Truncated {
+            offset: position,
+            needed: usize::MAX,
+            had: stream.len().saturating_sub(position),
+        })?;
+        let width: usize = sizing.row_width(id);
+        let table_bytes: usize = width.checked_mul(count).ok_or_else(|| Error::Truncated {
+            offset: position,
+            needed: usize::MAX,
+            had: stream.len().saturating_sub(position),
+        })?;
+        let table_end: usize =
+            position
+                .checked_add(table_bytes)
+                .ok_or_else(|| Error::Truncated {
+                    offset: position,
+                    needed: usize::MAX,
+                    had: stream.len().saturating_sub(position),
+                })?;
+        if table_end > stream.len() {
+            return Err(Error::Truncated {
+                offset: position,
+                needed: table_bytes,
+                had: stream.len().saturating_sub(position),
+            });
+        }
+        if id == TableId::Assembly {
+            if count != 1 {
+                return Ok(None);
+            }
+            let mut cursor: Cursor<'_> = Cursor::new(stream, position);
+            assembly = Some(AssemblyRow {
+                hash_alg_id: cursor.u32()?,
+                major: cursor.u16()?,
+                minor: cursor.u16()?,
+                build: cursor.u16()?,
+                revision: cursor.u16()?,
+                flags: cursor.u32()?,
+                public_key: cursor.index(sizing.heap.blob)?,
+                name: cursor.index(sizing.heap.strings)?,
+                culture: cursor.index(sizing.heap.strings)?,
+            });
+        }
+        position = table_end;
+    }
+    Ok(assembly)
+}
+
 #[allow(clippy::too_many_lines)]
 fn decode_table(
     id: TableId,

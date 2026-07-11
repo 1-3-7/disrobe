@@ -18,6 +18,7 @@ pub mod blowfish_tables;
 pub mod cctor_constants;
 pub mod dotnet_crypto;
 pub mod skater_strings;
+pub mod smartassembly_resources;
 pub mod smartassembly_strings;
 pub mod spices_strings;
 

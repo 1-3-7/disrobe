@@ -10,7 +10,8 @@ use crate::peel::dotnet_crypto::{
     CryptoError, aes256_cbc_decrypt_no_pad, des_cbc_decrypt, strip_pkcs7,
 };
 use crate::tables::{
-    AssemblyRow, FieldRow, FieldRvaRow, ManifestResourceRow, Tables, parse_tables,
+    AssemblyRow, FieldRow, FieldRvaRow, ManifestResourceRow, Tables, parse_single_assembly_row,
+    parse_tables,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +29,7 @@ pub struct RecoveredResource {
     pub bytes: Vec<u8>,
 }
 
-const MAX_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STRINGS: usize = 65_536;
 const MAX_EMBEDDED_RESOURCES: usize = 65_536;
 
@@ -95,28 +96,37 @@ fn assembly_simple_name(view: &ImageView) -> Option<String> {
     string_at(&view.strings, asm.name)
 }
 
-fn embedded_resource_bytes(
-    image: &[u8],
+fn embedded_resource_bytes<'a>(
+    image: &'a [u8],
     view: &ImageView,
     row: &ManifestResourceRow,
-) -> Option<Vec<u8>> {
+) -> Option<&'a [u8]> {
     if row.implementation.is_some() {
         return None;
     }
-    let base_rva: u32 = view.clr.resources.rva.checked_add(row.offset)?;
-    let header: &[u8] = view.pe.slice_at_rva(image, base_rva, 4).ok()?;
-    let len: usize = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    let directory_end: u32 = row.offset.checked_add(4)?;
+    if directory_end > view.clr.resources.size {
+        return None;
+    }
+    let header_rva: u32 = view.clr.resources.rva.checked_add(row.offset)?;
+    let header: &[u8] = view.pe.slice_at_rva(image, header_rva, 4).ok()?;
+    let len_u32: u32 = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    let len: usize = usize::try_from(len_u32).ok()?;
     if len > MAX_RESOURCE_BYTES {
         return None;
     }
-    let body: &[u8] = view
-        .pe
-        .slice_at_rva(image, base_rva.checked_add(4)?, len)
-        .ok()?;
-    Some(body.to_vec())
+    let body_directory_end: u32 = directory_end.checked_add(len_u32)?;
+    if body_directory_end > view.clr.resources.size {
+        return None;
+    }
+    let body_rva: u32 = view.clr.resources.rva.checked_add(directory_end)?;
+    view.pe.slice_at_rva(image, body_rva, len).ok()
 }
 
-pub(crate) fn recover_embedded_resources(image: &[u8]) -> Option<Vec<RecoveredResource>> {
+pub(crate) fn map_embedded_resources<T, F>(image: &[u8], mut map: F) -> Option<Vec<T>>
+where
+    F: FnMut(&str, &[u8]) -> Option<T>,
+{
     let view: ImageView = load_image(image).ok()?;
     let embedded_count: usize = view
         .tables
@@ -127,24 +137,139 @@ pub(crate) fn recover_embedded_resources(image: &[u8]) -> Option<Vec<RecoveredRe
     if embedded_count == 0 || embedded_count > MAX_EMBEDDED_RESOURCES {
         return None;
     }
-    let mut total_bytes: usize = 0;
-    let mut recovered: Vec<RecoveredResource> = Vec::with_capacity(embedded_count);
+    let mut mapped: Vec<T> = Vec::new();
     for row in &view.tables.manifest_resources {
         if row.implementation.is_some() {
             continue;
         }
-        let name: String = string_at(&view.strings, row.name)?;
+        let Some(name): Option<String> = string_at(&view.strings, row.name) else {
+            continue;
+        };
         if name.is_empty() {
-            return None;
+            continue;
         }
-        let bytes: Vec<u8> = embedded_resource_bytes(image, &view, row)?;
-        total_bytes = total_bytes.checked_add(bytes.len())?;
-        if total_bytes > MAX_RESOURCE_BYTES {
-            return None;
+        let Some(bytes): Option<&[u8]> = embedded_resource_bytes(image, &view, row) else {
+            continue;
+        };
+        if let Some(value) = map(&name, bytes) {
+            mapped.push(value);
         }
-        recovered.push(RecoveredResource { name, bytes });
     }
-    Some(recovered)
+    Some(mapped)
+}
+
+pub(crate) fn recover_embedded_resources(image: &[u8]) -> Option<Vec<RecoveredResource>> {
+    let mut total_bytes: usize = 0;
+    let mut limit_exceeded: bool = false;
+    let recovered: Vec<RecoveredResource> = map_embedded_resources(image, |name, bytes| {
+        if limit_exceeded {
+            return None;
+        }
+        let Some(next_total): Option<usize> = total_bytes.checked_add(bytes.len()) else {
+            limit_exceeded = true;
+            return None;
+        };
+        if next_total > MAX_RESOURCE_BYTES {
+            limit_exceeded = true;
+            return None;
+        }
+        total_bytes = next_total;
+        Some(RecoveredResource {
+            name: name.to_string(),
+            bytes: bytes.to_vec(),
+        })
+    })?;
+    (!limit_exceeded && !recovered.is_empty()).then_some(recovered)
+}
+
+pub(crate) fn is_complete_managed_assembly(image: &[u8]) -> bool {
+    let Ok(pe): Result<PeImage> = parse(image) else {
+        return false;
+    };
+    let Some(directory): Option<crate::pe::DataDirectory> = pe.clr_directory() else {
+        return false;
+    };
+    let Ok(clr): Result<ClrHeader> = parse_clr_header(image, &pe) else {
+        return false;
+    };
+    if directory.size < 72 || clr.cb < 72 || clr.cb > directory.size || clr.metadata.size == 0 {
+        return false;
+    }
+    let Ok(root): Result<MetadataRoot> = parse_metadata_root(image, &pe, &clr) else {
+        return false;
+    };
+    let Ok(metadata_size): std::result::Result<usize, std::num::TryFromIntError> =
+        usize::try_from(clr.metadata.size)
+    else {
+        return false;
+    };
+    let Ok(metadata): Result<&[u8]> = pe.slice_at_rva(image, clr.metadata.rva, metadata_size)
+    else {
+        return false;
+    };
+    let Some(table_header): Option<StreamHeader> = root
+        .streams
+        .get("#~")
+        .or_else(|| root.streams.get("#-"))
+        .copied()
+    else {
+        return false;
+    };
+    let Ok(Some(assembly)): Result<Option<AssemblyRow>> =
+        parse_single_assembly_row(metadata, table_header)
+    else {
+        return false;
+    };
+    let Some(strings_header): Option<StreamHeader> = root.streams.get("#Strings").copied() else {
+        return false;
+    };
+    let Some(strings): Option<&[u8]> = metadata_stream(metadata, strings_header) else {
+        return false;
+    };
+    if metadata_string(strings, assembly.name).is_none() {
+        return false;
+    }
+    if assembly.culture != 0 && metadata_string(strings, assembly.culture).is_none() {
+        return false;
+    }
+    if assembly.public_key == 0 {
+        return true;
+    }
+    let Some(blob_header): Option<StreamHeader> = root.streams.get("#Blob").copied() else {
+        return false;
+    };
+    metadata_stream(metadata, blob_header)
+        .and_then(|blob: &[u8]| metadata_blob(blob, assembly.public_key))
+        .is_some()
+}
+
+fn metadata_stream(metadata: &[u8], header: StreamHeader) -> Option<&[u8]> {
+    let offset: usize = usize::try_from(header.offset).ok()?;
+    let size: usize = usize::try_from(header.size).ok()?;
+    let end: usize = offset.checked_add(size)?;
+    metadata.get(offset..end)
+}
+
+fn metadata_string(heap: &[u8], index: u32) -> Option<&str> {
+    let offset: usize = usize::try_from(index).ok()?;
+    if offset == 0 {
+        return None;
+    }
+    let tail: &[u8] = heap.get(offset..)?;
+    let end: usize = tail.iter().position(|byte: &u8| *byte == 0)?;
+    if end == 0 {
+        return None;
+    }
+    std::str::from_utf8(tail.get(..end)?).ok()
+}
+
+fn metadata_blob(heap: &[u8], index: u32) -> Option<&[u8]> {
+    let offset: usize = usize::try_from(index).ok()?;
+    let tail: &[u8] = heap.get(offset..)?;
+    let (length_u32, prefix): (u32, usize) = decompress_uint(tail)?;
+    let length: usize = usize::try_from(length_u32).ok()?;
+    let end: usize = prefix.checked_add(length)?;
+    tail.get(prefix..end)
 }
 
 fn field_rva_blob(image: &[u8], view: &ImageView, field_rid: u32, len: usize) -> Option<Vec<u8>> {
@@ -362,14 +487,14 @@ fn pick_crypto_obfuscator_resource(
             continue;
         }
         let name: String = string_at(&view.strings, row.name).unwrap_or_default();
-        let Some(bytes): Option<Vec<u8>> = embedded_resource_bytes(image, view, row) else {
+        let Some(bytes): Option<&[u8]> = embedded_resource_bytes(image, view, row) else {
             continue;
         };
         if Some(&name) == preferred.as_ref() {
-            return Some((name, bytes));
+            return Some((name, bytes.to_vec()));
         }
         if fallback.is_none() {
-            fallback = Some((name, bytes));
+            fallback = Some((name, bytes.to_vec()));
         }
     }
     fallback
@@ -464,7 +589,7 @@ pub fn recover_babel_strings(image: &[u8]) -> Option<ResourceStringRecovery> {
     let view: ImageView = load_image(image).ok()?;
     let row: &ManifestResourceRow = first_resource(&view)?;
     let resource_name: String = string_at(&view.strings, row.name).unwrap_or_default();
-    let blob: Vec<u8> = embedded_resource_bytes(image, &view, row)?;
+    let blob: &[u8] = embedded_resource_bytes(image, &view, row)?;
     let resource_size: u32 = u32::try_from(blob.len()).unwrap_or(u32::MAX);
     let mut recovery: ResourceStringRecovery = ResourceStringRecovery {
         resource_name,
@@ -474,7 +599,7 @@ pub fn recover_babel_strings(image: &[u8]) -> Option<ResourceStringRecovery> {
         strings: Vec::new(),
         dynamic_wall: None,
     };
-    match babel_decrypt_blob(&blob, assembly_public_key(&view).as_deref()) {
+    match babel_decrypt_blob(blob, assembly_public_key(&view).as_deref()) {
         Ok(plain) => {
             recovery.strings = read_binaryreader_strings_utf8(&plain);
         }
@@ -556,7 +681,7 @@ pub fn recover_dotnet_reactor_strings(image: &[u8]) -> Option<ResourceStringReco
     let view: ImageView = load_image(image).ok()?;
     let row: &ManifestResourceRow = first_resource(&view)?;
     let resource_name: String = string_at(&view.strings, row.name).unwrap_or_default();
-    let blob: Vec<u8> = embedded_resource_bytes(image, &view, row)?;
+    let blob: &[u8] = embedded_resource_bytes(image, &view, row)?;
     let resource_size: u32 = u32::try_from(blob.len()).unwrap_or(u32::MAX);
     let mut recovery: ResourceStringRecovery = ResourceStringRecovery {
         resource_name,
@@ -567,7 +692,7 @@ pub fn recover_dotnet_reactor_strings(image: &[u8]) -> Option<ResourceStringReco
         strings: Vec::new(),
         dynamic_wall: None,
     };
-    match reactor_decrypt_blob(image, &view, &blob) {
+    match reactor_decrypt_blob(image, &view, blob) {
         Ok(plain) => {
             recovery.strings = read_unicode_records_int32(&plain);
         }
@@ -752,6 +877,20 @@ mod tests {
         blob.extend_from_slice(&[0u8; 8]);
         let err: String = crypto_obfuscator_decrypt_blob(&blob).unwrap_err();
         assert!(err.contains("all-zero"));
+    }
+
+    #[test]
+    fn invalid_embedded_rows_do_not_report_empty_success() {
+        let mut image: Vec<u8> =
+            include_bytes!("../../tests/fixtures/smartassembly_resources/SmartAssemblyCompat.dll")
+                .to_vec();
+        let pe: PeImage = parse(&image).expect("PE");
+        let directory: crate::pe::DataDirectory = pe.clr_directory().expect("CLR directory");
+        let clr_offset: usize = pe.rva_to_offset(directory.rva).expect("CLR offset");
+        let size_offset: usize = clr_offset.checked_add(28).expect("resource size offset");
+        let size_end: usize = size_offset.checked_add(4).expect("resource size range");
+        image[size_offset..size_end].fill(0);
+        assert!(recover_embedded_resources(&image).is_none());
     }
 
     #[test]

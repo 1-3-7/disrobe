@@ -1,0 +1,46 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-07-11"
+toolchain = "dotnet SDK 9.0.314, net9.0, Release, deterministic"
+license = "Elastic-2.0"
+note = "self-authored Roslyn compatibility fixture using SmartAssembly mode-1 chunked raw-DEFLATE framing; no vendor or third-party binary bytes"
+
+[reference]
+repository = "https://github.com/de4dot/de4dot"
+file = "de4dot.code/deobfuscators/SmartAssembly/ResourceDecrypter.cs"
+commit = "db2fef8d727484c42dbd91a726d677e2062d9547"
+url = "https://github.com/de4dot/de4dot/blob/db2fef8d727484c42dbd91a726d677e2062d9547/de4dot.code/deobfuscators/SmartAssembly/ResourceDecrypter.cs"
+
+[build]
+command = "powershell -File build.ps1"
+chunk_size = 257
+runtime_check = "dotnet SmartAssemblyCompat.dll"
+runtime_stdout = "smartassembly-resource-ground-truth-v1"
+
+[[fixture]]
+name = "Payload.clean.dll"
+kind = "managed-pe-dll-ground-truth"
+size = 3584
+sha256 = "d5b92b9ef980f77d4d9cd10d505a04719d805d612c332d330eb9aedd9aaeecb0"
+source = "Payload.cs"
+
+[[fixture]]
+name = "SmartAssemblyCompat.dll"
+kind = "smartassembly-static-resource-compatible-managed-pe"
+size = 8192
+sha256 = "64091aa64d041814a047cdb07b61b1c70d5aa2dbf8e4bbae3ba61e98755b9d10"
+source = "Host.cs"
+
+[[fixture]]
+name = "SmartAssemblyCompat.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "Host.csproj"
+
+[grade]
+resource_name = "[z]payload"
+resources_recovered_before = 0
+resources_recovered_after = 1
+comparison = "recovered bytes equal Payload.clean.dll"
+test = "smartassembly_static_resource_recovers_original_assembly_byte_for_byte"

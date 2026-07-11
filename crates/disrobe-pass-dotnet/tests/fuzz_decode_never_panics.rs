@@ -240,6 +240,7 @@ fn fixtures() -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     for rel in [
         "tests/fixtures/GenVerify.dll",
+        "tests/fixtures/smartassembly_resources/SmartAssemblyCompat.dll",
         "tests/fixtures/VerifyCases.dll",
     ] {
         if let Some(bytes) = load(rel) {
