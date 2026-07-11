@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 95.34,
-          "detail": "5993 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.34 (5993 of 6286 code objects, 200 of 200 modules, whole-module exact 59.50%, 0 sibling-count collisions) on CPython 3.14 at HEAD a16f4625 (structuring campaign + the selfcheck re-lowering accept-gate that flips the two entangled try/except/else tail cases)"
+          "value": 95.35,
+          "detail": "5994 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.35 (5994 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD f04fa875 (the selfcheck re-lowering accept-gate extended to exception regions, re-nesting a sibling try into the preceding try body per the recovered exception-table handler order)"
         }
       ]
     },
