@@ -173,6 +173,7 @@ pub fn peel_obfuscar(bytes: &[u8]) -> Result<PeelReport> {
         recovered_constants: decoders.constants_recovered,
         recovered_strings: Vec::new(),
         recovered_methods: Vec::new(),
+        recovered_resources: Vec::new(),
         notes: vec![format!(
             "Obfuscar NameMaker odometer detected: {} base-52 members, longest contiguous run {}, \
              max index {}. Default config embeds no in-PE name map; original identifiers are not \

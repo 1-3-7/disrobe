@@ -18,6 +18,8 @@ use disrobe_pass_dotnet::protectors::Protector;
 const HELLOAPP: &str = "../../corpus/dotnet/HelloAppLegacy.confuserex2.dll";
 const EDGECASES: &str = "../../corpus/dotnet/megafile/EdgeCases.confuserex2.dll";
 const HELLOAPP_BASELINE: &str = "../../corpus/dotnet/HelloAppLegacy.dll";
+const RESOURCE_ONLY: &str = "tests/fixtures/confuser_resources/ConfuserResources.confuserex2.dll";
+const RESOURCE_PAYLOAD: &str = "tests/fixtures/confuser_resources/ConfuserResourcePayload.bin";
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -54,7 +56,7 @@ fn helloapp_confuserex2_extracts_encrypted_resource_blob_byte_exact() {
         "encrypted blob bytes must hash to the stable real-fixture value"
     );
     match recovery {
-        ConfuserExRecovery::BlobExtractedKeyedWall {
+        ConfuserExRecovery::BlobExtractedUnknownKey {
             blob_rva,
             blob_size,
             runtime_key_derivation,
@@ -67,10 +69,9 @@ fn helloapp_confuserex2_extracts_encrypted_resource_blob_byte_exact() {
             );
             assert_eq!(
                 runtime_key_derivation,
-                KeyDerivation::AntiTamperImageHash,
-                "this fixture ships the full normal preset; the resource key is derived at load \
-                 time from a hash of the in-memory module, so it is correctly reported as \
-                 anti-tamper image-hash rather than a static seed"
+                KeyDerivation::AntiTamperEncryptedInitializer,
+                "this fixture ships the full normal preset; anti-tamper encrypts the resource \
+                 initializer, so its static seed remains unresolved"
             );
         }
         ConfuserExRecovery::FullyDecrypted { .. } => {}
@@ -79,15 +80,15 @@ fn helloapp_confuserex2_extracts_encrypted_resource_blob_byte_exact() {
 }
 
 #[test]
-fn helloapp_resource_note_states_the_runtime_key_reason_without_overclaiming() {
+fn helloapp_resource_note_states_the_encrypted_initializer_reason() {
     let bytes: Vec<u8> = load(HELLOAPP);
     let report: PeelReport = peel_by(Protector::ConfuserEx2, &bytes)
         .expect("ConfuserEx2 wired")
         .expect("peel ok");
     let note: &String = report.notes.first().expect("note recorded");
     assert!(
-        note.contains("anti-tamper") && note.contains("load time"),
-        "the note must name the physical reason the key is absent statically; got: {note}"
+        note.contains("anti-tamper") && note.contains("initializer"),
+        "the note must name the encrypted initializer that hides the resource seed; got: {note}"
     );
     assert!(
         !note.to_lowercase().contains("wall"),
@@ -142,6 +143,21 @@ fn peel_by_confuserex2_returns_encrypted_resource_strategy() {
         note.contains("blob_rva=0x2080") && note.contains("size=448"),
         "note must carry the byte-exact extraction provenance; got: {note}"
     );
+}
+
+#[test]
+fn resource_only_confuserex2_recovers_embedded_payload_byte_for_byte() {
+    let bytes: Vec<u8> = load(RESOURCE_ONLY);
+    let expected: Vec<u8> = load(RESOURCE_PAYLOAD);
+    let report: PeelReport = peel_by(Protector::ConfuserEx2, &bytes)
+        .expect("ConfuserEx2 wired")
+        .expect("resource recovery succeeds");
+    assert_eq!(report.recovered_resources.len(), 1);
+    assert_eq!(
+        report.recovered_resources[0].name,
+        "ConfuserResources.Payload.bin"
+    );
+    assert_eq!(report.recovered_resources[0].bytes, expected);
 }
 
 #[test]

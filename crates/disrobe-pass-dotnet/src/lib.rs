@@ -80,10 +80,10 @@ pub use peel::static_decrypt::{
 };
 pub use peel::{
     ConfuserExRecovery, ManifestResourceClassification, NameClassification, PeelReport,
-    PeelStrategy, RecoveredMethod, classify_names, peel_agile_net, peel_armdot, peel_babel_net,
-    peel_by, peel_confuserex_resources, peel_crypto_obfuscator, peel_deepsea, peel_dotfuscator,
-    peel_dotnet_reactor, peel_eazfuscator, peel_goliath, peel_ilprotector, peel_maxtocode,
-    peel_skater, peel_smartassembly, peel_spices_net, peel_themida_dotnet,
+    PeelStrategy, RecoveredMethod, RecoveredResource, classify_names, peel_agile_net, peel_armdot,
+    peel_babel_net, peel_by, peel_confuserex_resources, peel_crypto_obfuscator, peel_deepsea,
+    peel_dotfuscator, peel_dotnet_reactor, peel_eazfuscator, peel_goliath, peel_ilprotector,
+    peel_maxtocode, peel_skater, peel_smartassembly, peel_spices_net, peel_themida_dotnet,
 };
 pub use protectors::{
     DetectionReport, ExecuteOptions, ExecutionOutcome, GreyZone, Handling, Protector, detect_all,

@@ -17,7 +17,7 @@ use crate::pe::{DataDirectory, PeImage, parse as parse_pe};
 use crate::peel::confuserex_constants::{ConfuserConstantsRecovery, peel_confuserex_constants};
 use crate::peel::static_decrypt::{DecodedValue, RecoveredConstant};
 use crate::peel::string_emu::RecoveredString as EmulatedString;
-use crate::peel::{PeelReport, PeelStrategy, RecoveredMethod, peel_by};
+use crate::peel::{PeelReport, PeelStrategy, RecoveredMethod, RecoveredResource, peel_by};
 use crate::protectors::{DetectionReport, Handling, Protector, detect_all};
 use crate::structurize::StructuredMethod;
 
@@ -126,10 +126,14 @@ impl Pass for DotnetPass {
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
-        let stem: String = decompile_assembly(bytes).ok().map_or_else(
+        let raw_stem: String = decompile_assembly(bytes).ok().map_or_else(
             || "dotnet".to_string(),
             |a: DecompiledAssembly| a.module_name,
         );
+        let stem: String = disrobe_binfmt::quota::sanitize_entry_path(&raw_stem)
+            .ok()
+            .filter(|name: &String| name.len() <= 128)
+            .unwrap_or_else(|| "dotnet".to_string());
         let mut children: Vec<ChildArtifact> = Vec::new();
 
         if let Ok(summary) = analyze(bytes)
@@ -163,6 +167,17 @@ impl Pass for DotnetPass {
                     &mut children,
                     format!("{stem}.recovered-cil.txt"),
                     cil.into_bytes(),
+                );
+            }
+            for (index, resource) in report.recovered_resources.into_iter().enumerate() {
+                let safe_name: String = disrobe_binfmt::quota::sanitize_entry_path(&resource.name)
+                    .ok()
+                    .filter(|name: &String| name.len() <= 128)
+                    .unwrap_or_else(|| format!("resource-{index:05}.bin"));
+                push_terminal_child(
+                    &mut children,
+                    format!("{stem}.recovered-resources/{index:05}-{safe_name}"),
+                    resource.bytes,
                 );
             }
         }
@@ -213,6 +228,16 @@ fn analyze_manifest(summary: &PassSummary) -> serde_json::Value {
 
 fn peel_manifest(protector: Protector, report: &PeelReport) -> serde_json::Value {
     let walled: bool = report.strategy == PeelStrategy::DetectOnlyNativeOrVm;
+    let recovered_resources: Vec<serde_json::Value> = report
+        .recovered_resources
+        .iter()
+        .map(|resource: &RecoveredResource| {
+            serde_json::json!({
+                "name": resource.name,
+                "size": resource.bytes.len(),
+            })
+        })
+        .collect();
     serde_json::json!({
         "schema": "disrobe.dotnet.peel/v0",
         "detected": protector.label(),
@@ -229,6 +254,7 @@ fn peel_manifest(protector: Protector, report: &PeelReport) -> serde_json::Value
         "recovered_constants": report.recovered_constants,
         "recovered_strings": report.recovered_strings,
         "recovered_methods": report.recovered_methods,
+        "recovered_resources": recovered_resources,
         "bytes_in": report.bytes_in,
         "bytes_out": report.bytes_out,
         "notes": report.notes,
@@ -644,6 +670,13 @@ mod tests {
             .join(rel)
     }
 
+    fn fixture(rel: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(rel)
+    }
+
     #[test]
     fn catalog_covers_every_protector_once() {
         let entries: Vec<&'static dyn CatalogEntry> = DotnetDetector.catalog();
@@ -755,6 +788,43 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_slice(&analyze_child.bytes).expect("analyze sidecar is valid JSON");
         assert_eq!(parsed["schema"], "disrobe.dotnet.analyze/v1");
+    }
+
+    #[test]
+    fn extract_children_emits_recovered_confuserex2_resource_bytes() {
+        let bytes: Vec<u8> = std::fs::read(fixture(
+            "confuser_resources/ConfuserResources.confuserex2.dll",
+        ))
+        .expect("protected fixture");
+        let expected: Vec<u8> =
+            std::fs::read(fixture("confuser_resources/ConfuserResourcePayload.bin"))
+                .expect("payload fixture");
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = DOTNET_PASS
+            .extract_children(&artifact)
+            .expect("extract children");
+        let resource: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| {
+                child
+                    .handle
+                    .relative_path
+                    .ends_with(".recovered-resources/00000-ConfuserResources.Payload.bin")
+            })
+            .expect("recovered resource child");
+        assert_eq!(resource.bytes, expected);
+        assert!(resource.handle.is_terminal());
+        let peel: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| child.handle.relative_path.ends_with(".peel.json"))
+            .expect("peel manifest");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&peel.bytes).expect("peel manifest json");
+        assert_eq!(
+            parsed["recovered_resources"][0]["name"],
+            "ConfuserResources.Payload.bin"
+        );
+        assert_eq!(parsed["recovered_resources"][0]["size"], 132);
     }
 
     #[test]

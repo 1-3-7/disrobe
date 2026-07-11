@@ -22,8 +22,15 @@ pub struct ResourceStringRecovery {
     pub dynamic_wall: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveredResource {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
 const MAX_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STRINGS: usize = 65_536;
+const MAX_EMBEDDED_RESOURCES: usize = 65_536;
 
 struct ImageView {
     pe: PeImage,
@@ -99,7 +106,7 @@ fn embedded_resource_bytes(
     let base_rva: u32 = view.clr.resources.rva.checked_add(row.offset)?;
     let header: &[u8] = view.pe.slice_at_rva(image, base_rva, 4).ok()?;
     let len: usize = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-    if len == 0 || len > MAX_RESOURCE_BYTES {
+    if len > MAX_RESOURCE_BYTES {
         return None;
     }
     let body: &[u8] = view
@@ -107,6 +114,37 @@ fn embedded_resource_bytes(
         .slice_at_rva(image, base_rva.checked_add(4)?, len)
         .ok()?;
     Some(body.to_vec())
+}
+
+pub(crate) fn recover_embedded_resources(image: &[u8]) -> Option<Vec<RecoveredResource>> {
+    let view: ImageView = load_image(image).ok()?;
+    let embedded_count: usize = view
+        .tables
+        .manifest_resources
+        .iter()
+        .filter(|row: &&ManifestResourceRow| row.implementation.is_none())
+        .count();
+    if embedded_count == 0 || embedded_count > MAX_EMBEDDED_RESOURCES {
+        return None;
+    }
+    let mut total_bytes: usize = 0;
+    let mut recovered: Vec<RecoveredResource> = Vec::with_capacity(embedded_count);
+    for row in &view.tables.manifest_resources {
+        if row.implementation.is_some() {
+            continue;
+        }
+        let name: String = string_at(&view.strings, row.name)?;
+        if name.is_empty() {
+            return None;
+        }
+        let bytes: Vec<u8> = embedded_resource_bytes(image, &view, row)?;
+        total_bytes = total_bytes.checked_add(bytes.len())?;
+        if total_bytes > MAX_RESOURCE_BYTES {
+            return None;
+        }
+        recovered.push(RecoveredResource { name, bytes });
+    }
+    Some(recovered)
 }
 
 fn field_rva_blob(image: &[u8], view: &ImageView, field_rid: u32, len: usize) -> Option<Vec<u8>> {

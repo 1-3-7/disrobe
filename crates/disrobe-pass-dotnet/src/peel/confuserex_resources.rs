@@ -14,6 +14,7 @@ use crate::cil::{MethodBody, OperandValue, parse_method_body};
 use crate::error::{Error, Result};
 use crate::metadata::{StreamHeader, parse_metadata_root};
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
+use crate::peel::protector_resources::{RecoveredResource, recover_embedded_resources};
 use crate::tables::{
     ClassLayoutRow, FieldRvaRow, ManifestResourceRow, MethodDefRow, Tables, parse_tables,
 };
@@ -40,9 +41,11 @@ pub enum ConfuserExRecovery {
         size_div_four: u32,
         decrypted_sha256: [u8; 32],
         lzma_uncompressed_size: u32,
+        #[serde(default)]
+        recovered_resources: Vec<RecoveredResource>,
     },
 
-    BlobExtractedKeyedWall {
+    BlobExtractedUnknownKey {
         blob_rva: u32,
         blob_size: u32,
         blob_sha256: [u8; 32],
@@ -56,9 +59,9 @@ pub enum ConfuserExRecovery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeyDerivation {
-    AntiTamperImageHash,
+    AntiTamperEncryptedInitializer,
 
-    NotStaticallyPresent,
+    InitializerSeedUnresolved,
 }
 
 impl ConfuserExRecovery {
@@ -66,7 +69,7 @@ impl ConfuserExRecovery {
     pub const fn blob_located(&self) -> bool {
         matches!(
             self,
-            Self::FullyDecrypted { .. } | Self::BlobExtractedKeyedWall { .. }
+            Self::FullyDecrypted { .. } | Self::BlobExtractedUnknownKey { .. }
         )
     }
 
@@ -74,7 +77,7 @@ impl ConfuserExRecovery {
     pub const fn blob_sha256(&self) -> Option<[u8; 32]> {
         match self {
             Self::FullyDecrypted { blob_sha256, .. }
-            | Self::BlobExtractedKeyedWall { blob_sha256, .. } => Some(*blob_sha256),
+            | Self::BlobExtractedUnknownKey { blob_sha256, .. } => Some(*blob_sha256),
             Self::NoEncryptedResourceFound => None,
         }
     }
@@ -123,6 +126,17 @@ pub fn peel_confuserex_resources(image: &[u8]) -> Result<ConfuserExRecovery> {
         }
         let lzma_uncompressed_size: u32 =
             u32::from_le_bytes([plaintext[5], plaintext[6], plaintext[7], plaintext[8]]);
+        let Ok(resource_assembly): Result<Vec<u8>> = lzma_decompress(&plaintext) else {
+            continue;
+        };
+        if resource_assembly.len() != lzma_uncompressed_size as usize {
+            continue;
+        }
+        let Some(recovered_resources): Option<Vec<RecoveredResource>> =
+            recover_embedded_resources(&resource_assembly)
+        else {
+            continue;
+        };
         let decrypted_sha256: [u8; 32] = sha256(&plaintext);
         return Ok(ConfuserExRecovery::FullyDecrypted {
             blob_rva: candidate.rva,
@@ -132,15 +146,16 @@ pub fn peel_confuserex_resources(image: &[u8]) -> Result<ConfuserExRecovery> {
             size_div_four: blob_size / 4,
             decrypted_sha256,
             lzma_uncompressed_size,
+            recovered_resources,
         });
     }
 
     let runtime_key_derivation: KeyDerivation = if detect_anti_tamper(image, &pe, &tables.methods) {
-        KeyDerivation::AntiTamperImageHash
+        KeyDerivation::AntiTamperEncryptedInitializer
     } else {
-        KeyDerivation::NotStaticallyPresent
+        KeyDerivation::InitializerSeedUnresolved
     };
-    Ok(ConfuserExRecovery::BlobExtractedKeyedWall {
+    Ok(ConfuserExRecovery::BlobExtractedUnknownKey {
         blob_rva: candidate.rva,
         blob_size,
         blob_sha256,
@@ -198,6 +213,15 @@ pub fn lzma_decompress(plaintext: &[u8]) -> Result<Vec<u8>> {
             had: plaintext.len(),
         });
     }
+    let dictionary_size: usize =
+        u32::from_le_bytes([plaintext[1], plaintext[2], plaintext[3], plaintext[4]]) as usize;
+    if dictionary_size > MAX_DECRYPTED_RESOURCE_BYTES {
+        return Err(Error::Truncated {
+            offset: 1,
+            needed: dictionary_size,
+            had: MAX_DECRYPTED_RESOURCE_BYTES,
+        });
+    }
     let uncompressed_size: u32 =
         u32::from_le_bytes([plaintext[5], plaintext[6], plaintext[7], plaintext[8]]);
     let uncompressed_size_usize: usize = uncompressed_size as usize;
@@ -216,13 +240,17 @@ pub fn lzma_decompress(plaintext: &[u8]) -> Result<Vec<u8>> {
     }
     let mut reader: Cursor<&[u8]> = Cursor::new(padded.as_slice());
     let mut out: Vec<u8> = Vec::with_capacity(uncompressed_size_usize.min(1 << 20));
-    lzma_rs::lzma_decompress(&mut reader, &mut out).map_err(|_e: lzma_rs::error::Error| {
-        Error::Truncated {
+    let options: lzma_rs::decompress::Options = lzma_rs::decompress::Options {
+        memlimit: Some(MAX_DECRYPTED_RESOURCE_BYTES),
+        ..lzma_rs::decompress::Options::default()
+    };
+    lzma_rs::lzma_decompress_with_options(&mut reader, &mut out, &options).map_err(
+        |_e: lzma_rs::error::Error| Error::Truncated {
             offset: 0,
             needed: uncompressed_size_usize,
             had: out.len(),
-        }
-    })?;
+        },
+    )?;
     Ok(out)
 }
 
@@ -565,6 +593,26 @@ mod tests {
     fn oracle_rejects_short_buffers() {
         assert!(!matches_lzma_oracle(&[]));
         assert!(!matches_lzma_oracle(&[CONFUSEREX_LZMA_PROPS; 12]));
+    }
+
+    #[test]
+    fn lzma_decompress_rejects_dictionary_past_cap() {
+        let payload: Vec<u8> = vec![0x41; 32];
+        let options: lzma_rs::compress::Options = lzma_rs::compress::Options {
+            unpacked_size: lzma_rs::compress::UnpackedSize::WriteToHeader(Some(
+                payload.len() as u64
+            )),
+        };
+        let mut input: Cursor<&[u8]> = Cursor::new(payload.as_slice());
+        let mut compressed: Vec<u8> = Vec::new();
+        lzma_rs::lzma_compress_with_options(&mut input, &mut compressed, &options)
+            .expect("compress payload");
+        compressed.drain(9..13);
+        let oversized_dictionary: u32 = u32::try_from(MAX_DECRYPTED_RESOURCE_BYTES)
+            .unwrap()
+            .saturating_add(1);
+        compressed[1..5].copy_from_slice(&oversized_dictionary.to_le_bytes());
+        assert!(lzma_decompress(&compressed).is_err());
     }
 
     #[test]

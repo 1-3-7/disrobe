@@ -67,6 +67,7 @@ pub use ilprotector::peel_ilprotector;
 pub use maxtocode::peel_maxtocode;
 pub use native_surface::{NativeArch, NativeStubSurface, surface_native_stub};
 pub use obfuscar::{ObfuscarEvidence, classify_obfuscar_naming, detect_obfuscar, peel_obfuscar};
+pub use protector_resources::RecoveredResource;
 pub use skater::peel_skater;
 pub use smartassembly::peel_smartassembly;
 pub use spices_net::peel_spices_net;
@@ -90,6 +91,8 @@ pub struct PeelReport {
     pub recovered_constants: Vec<static_decrypt::RecoveredConstant>,
     pub recovered_strings: Vec<string_emu::RecoveredString>,
     pub recovered_methods: Vec<RecoveredMethod>,
+    #[serde(default)]
+    pub recovered_resources: Vec<RecoveredResource>,
     pub native_surface: Option<native_surface::NativeStubSurface>,
     pub notes: Vec<String>,
 }
@@ -220,6 +223,7 @@ pub(crate) fn report_only_peel(
         recovered_constants: decoders.constants_recovered,
         recovered_strings: Vec::new(),
         recovered_methods: Vec::new(),
+        recovered_resources: Vec::new(),
         native_surface: None,
         notes,
     })
@@ -479,61 +483,68 @@ pub(crate) fn peel_confuserex(image: &[u8], protector: Protector) -> Result<Peel
         static_decrypt::recover_static_decoders(image).unwrap_or_default();
     let recovery: confuserex_resources::ConfuserExRecovery =
         confuserex_resources::peel_confuserex_resources(image)?;
-    let (strategy, note): (PeelStrategy, String) = match &recovery {
-        confuserex_resources::ConfuserExRecovery::FullyDecrypted {
-            blob_rva,
-            blob_size,
-            blob_sha256,
-            key_seed,
-            size_div_four,
-            decrypted_sha256,
-            lzma_uncompressed_size,
-        } => (
-            PeelStrategy::EncryptedResourceExtracted,
-            format!(
-                "ConfuserEx2 resources fully decrypted: blob_rva=0x{blob_rva:x} size={blob_size} \
-                 sha256={} key_seed=0x{key_seed:08x} size/4={size_div_four} \
-                 decrypted_sha256={} lzma_uncompressed_size={lzma_uncompressed_size}",
-                hex_lower(blob_sha256),
-                hex_lower(decrypted_sha256),
-            ),
-        ),
-        confuserex_resources::ConfuserExRecovery::BlobExtractedKeyedWall {
-            blob_rva,
-            blob_size,
-            blob_sha256,
-            candidate_seeds_tried,
-            runtime_key_derivation,
-        } => {
-            let reason: &str = match runtime_key_derivation {
-                confuserex_resources::KeyDerivation::AntiTamperImageHash => {
-                    "decryption key is derived at load time from a hash of the JIT-loaded module \
-                     image (anti-tamper walks the in-memory method bodies), so it is not present in \
-                     the static file"
-                }
-                confuserex_resources::KeyDerivation::NotStaticallyPresent => {
-                    "no ldc.i4 immediate and no emulated seed expression yields a valid LZMA \
-                     payload, so the key is computed at load time and is not present in the static \
-                     file"
-                }
-            };
-            (
-                PeelStrategy::EncryptedResourceExtracted,
-                format!(
-                    "ConfuserEx2 encrypted-resource blob extracted: blob_rva=0x{blob_rva:x} \
+    let (strategy, note, recovered_resources): (PeelStrategy, String, Vec<RecoveredResource>) =
+        match recovery {
+            confuserex_resources::ConfuserExRecovery::FullyDecrypted {
+                blob_rva,
+                blob_size,
+                blob_sha256,
+                key_seed,
+                size_div_four,
+                decrypted_sha256,
+                lzma_uncompressed_size,
+                recovered_resources,
+            } => {
+                let recovered_count: usize = recovered_resources.len();
+                (
+                    PeelStrategy::EncryptedResourceExtracted,
+                    format!(
+                        "ConfuserEx2 resources fully decrypted: blob_rva=0x{blob_rva:x} size={blob_size} \
+                     sha256={} key_seed=0x{key_seed:08x} size/4={size_div_four} \
+                     decrypted_sha256={} lzma_uncompressed_size={lzma_uncompressed_size} \
+                     resources_recovered={recovered_count}",
+                        hex_lower(&blob_sha256),
+                        hex_lower(&decrypted_sha256),
+                    ),
+                    recovered_resources,
+                )
+            }
+            confuserex_resources::ConfuserExRecovery::BlobExtractedUnknownKey {
+                blob_rva,
+                blob_size,
+                blob_sha256,
+                candidate_seeds_tried,
+                runtime_key_derivation,
+            } => {
+                let reason: &str = match runtime_key_derivation {
+                    confuserex_resources::KeyDerivation::AntiTamperEncryptedInitializer => {
+                        "the resource seed is stored in an initializer whose CIL body is encrypted \
+                         by anti-tamper; this static pass did not recover that initializer"
+                    }
+                    confuserex_resources::KeyDerivation::InitializerSeedUnresolved => {
+                        "no literal or emulated initializer seed produced a decompressible managed \
+                         resource assembly"
+                    }
+                };
+                (
+                    PeelStrategy::EncryptedResourceExtracted,
+                    format!(
+                        "ConfuserEx2 encrypted-resource blob extracted: blob_rva=0x{blob_rva:x} \
                      size={blob_size} sha256={} ({reason}; {candidate_seeds_tried} seed \
                      candidates checked)",
-                    hex_lower(blob_sha256),
-                ),
-            )
-        }
-        confuserex_resources::ConfuserExRecovery::NoEncryptedResourceFound => (
-            PeelStrategy::AttributeStripAndReport,
-            "ConfuserEx watermark present but no Resources-protection signature found (only \
-             watermark + identifier renaming detected)"
-                .to_string(),
-        ),
-    };
+                        hex_lower(&blob_sha256),
+                    ),
+                    Vec::new(),
+                )
+            }
+            confuserex_resources::ConfuserExRecovery::NoEncryptedResourceFound => (
+                PeelStrategy::AttributeStripAndReport,
+                "ConfuserEx watermark present but no Resources-protection signature found (only \
+                 watermark + identifier renaming detected)"
+                    .to_string(),
+                Vec::new(),
+            ),
+        };
     let mut notes: Vec<String> = vec![note];
     if let Some(constants) = confuserex_constants::peel_confuserex_constants(image)? {
         notes.push(format!(
@@ -567,6 +578,7 @@ pub(crate) fn peel_confuserex(image: &[u8], protector: Protector) -> Result<Peel
         recovered_constants: decoders.constants_recovered,
         recovered_strings: Vec::new(),
         recovered_methods: Vec::new(),
+        recovered_resources,
         native_surface: None,
         notes,
     })
