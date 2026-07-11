@@ -51,7 +51,7 @@ fn except_handler_order(
         return Some(Vec::new());
     }
     let entries: Vec<ExceptionTableEntry> = parse_exception_table(&code.exceptiontable).ok()?;
-    let mut bodies: Vec<(u32, u32)> = Vec::new();
+    let mut first_start_by_target: BTreeMap<u32, u32> = BTreeMap::new();
     for entry in &entries {
         if entry.lasti {
             continue;
@@ -61,8 +61,15 @@ fn except_handler_order(
         if handler_op != PUSH_EXC_INFO {
             return None;
         }
-        bodies.push((entry.start, entry.target));
+        first_start_by_target
+            .entry(entry.target)
+            .and_modify(|start: &mut u32| *start = (*start).min(entry.start))
+            .or_insert(entry.start);
     }
+    let bodies: Vec<(u32, u32)> = first_start_by_target
+        .into_iter()
+        .map(|(target, start): (u32, u32)| (start, target))
+        .collect();
     if bodies.is_empty() {
         return Some(Vec::new());
     }

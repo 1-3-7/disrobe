@@ -100,18 +100,32 @@ fn cfg_equal(input: &BlockCfg, relowered: &BlockCfg) -> bool {
 }
 
 #[must_use]
+fn canonicalize_back_jumps(ops: Vec<NormalizedOp>) -> Vec<NormalizedOp> {
+    ops.into_iter()
+        .map(|mut op: NormalizedOp| {
+            if matches!(&op.token, NormToken::Op(name) if name == "JUMP_BACKWARD_NO_INTERRUPT") {
+                op.token = NormToken::Op("JUMP".to_owned());
+                op.jump_target_index = None;
+                op.raw_arg = None;
+            }
+            op
+        })
+        .collect()
+}
+
+#[must_use]
 fn input_ops(code: &CodeObject, version: &DecompileVersion) -> Vec<NormalizedOp> {
     let marshal: MarshalVersion = MarshalVersion {
         major: version.major(),
         minor: version.minor(),
     };
-    normalize_sequence(code, marshal).ops
+    canonicalize_back_jumps(normalize_sequence(code, marshal).ops)
 }
 
 #[must_use]
 fn verified_equal_core(body: &[Stmt], ctx: &ScopeCtx, input_cfg: &BlockCfg) -> Verified {
     let relowered: Vec<NormalizedOp> = match relower_function_body(body, ctx) {
-        Relowered::Ops(ops) => ops,
+        Relowered::Ops(ops) => canonicalize_back_jumps(ops),
         Relowered::Uncovered => return Verified::Uncovered,
     };
     let relowered_cfg: BlockCfg = build_cfg(&relowered);
@@ -143,8 +157,9 @@ pub(crate) fn accept_reordering(
     body: &[Stmt],
     code: &CodeObject,
     version: &DecompileVersion,
+    module_imports: &BTreeSet<String>,
 ) -> Option<Vec<Stmt>> {
-    let ctx: ScopeCtx = ScopeCtx::from_code(code);
+    let ctx: ScopeCtx = ScopeCtx::from_code(code, module_imports);
     let input_cfg: BlockCfg = build_cfg(&input_ops(code, version));
     accept_reordering_core(body, &ctx, &input_cfg)
 }

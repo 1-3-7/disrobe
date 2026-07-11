@@ -10,7 +10,24 @@ pub(crate) fn has_repair_candidate(body: &[Stmt]) -> bool {
     body.iter()
         .enumerate()
         .any(|(idx, stmt): (usize, &Stmt)| else_tail_site(stmt) || loop_tail_site(body, idx))
+        || sibling_try_site(body)
         || body.iter().any(nested_scan_worth_it)
+}
+
+#[must_use]
+fn sibling_try_site(body: &[Stmt]) -> bool {
+    body.windows(2).any(|pair: &[Stmt]| {
+        is_absorbing_try(&pair[0]) && matches!(&pair[1], Stmt::Try { .. } | Stmt::TryStar { .. })
+    })
+}
+
+#[must_use]
+fn is_absorbing_try(stmt: &Stmt) -> bool {
+    matches!(
+        stmt,
+        Stmt::Try { handlers, finalbody, .. } | Stmt::TryStar { handlers, finalbody, .. }
+            if finalbody.is_empty() && !handlers.is_empty()
+    )
 }
 
 #[must_use]
@@ -106,12 +123,58 @@ pub(crate) fn repair_body(body: Vec<Stmt>, input: &InputFacts) -> Vec<Stmt> {
     {
         current = next;
     }
+    if let Some(order) = input.handler_order.as_deref()
+        && let Some(next) = repair_nested_try(&current, order)
+    {
+        current = next;
+    }
     if !input.loop_inner_return
         && let Some(next) = repair_loop_tail(&current)
     {
         current = next;
     }
     current
+}
+
+#[must_use]
+fn repair_nested_try(body: &[Stmt], input_order: &[usize]) -> Option<Vec<Stmt>> {
+    let primary: AstFacts = ast_facts::extract(body);
+    if primary.has_with || primary.has_finally {
+        return None;
+    }
+    if primary.try_count != input_order.len() || primary.handler_order == input_order {
+        return None;
+    }
+    for i in 0..body.len().saturating_sub(1) {
+        let Some(candidate): Option<Vec<Stmt>> = nest_next_try(body, i) else {
+            continue;
+        };
+        let facts: AstFacts = ast_facts::extract(&candidate);
+        if facts.try_count == input_order.len() && facts.handler_order == input_order {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[must_use]
+fn nest_next_try(body: &[Stmt], i: usize) -> Option<Vec<Stmt>> {
+    if !is_absorbing_try(body.get(i)?) {
+        return None;
+    }
+    if !matches!(body.get(i + 1)?, Stmt::Try { .. } | Stmt::TryStar { .. }) {
+        return None;
+    }
+    let mut merged: Stmt = body[i].clone();
+    let (Stmt::Try { body: obody, .. } | Stmt::TryStar { body: obody, .. }) = &mut merged else {
+        return None;
+    };
+    obody.push(body[i + 1].clone());
+    let mut out: Vec<Stmt> = Vec::with_capacity(body.len().saturating_sub(1));
+    out.extend_from_slice(&body[..i]);
+    out.push(merged);
+    out.extend_from_slice(&body[i + 2..]);
+    Some(out)
 }
 
 #[must_use]
@@ -254,5 +317,48 @@ fn continue_handler(handler: &mut ExceptHandler) {
     }
     if !is_terminator(handler.body.last()) {
         handler.body.push(Stmt::Continue);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn bare_try(body: Vec<Stmt>) -> Stmt {
+        Stmt::Try {
+            body,
+            handlers: vec![ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![Stmt::Pass],
+                line: None,
+            }],
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        }
+    }
+
+    #[test]
+    fn nests_second_sibling_try_to_match_input_handler_order() {
+        let outer: Stmt = bare_try(vec![Stmt::Pass]);
+        let inner: Stmt = bare_try(vec![Stmt::Break]);
+        let siblings: Vec<Stmt> = vec![outer, inner];
+        assert_eq!(ast_facts::extract(&siblings).handler_order, vec![0, 1]);
+        let repaired: Vec<Stmt> =
+            repair_nested_try(&siblings, &[1, 0]).expect("nesting should match input order");
+        assert_eq!(ast_facts::extract(&repaired).handler_order, vec![1, 0]);
+        let Stmt::Try { body, .. } = &repaired[0] else {
+            panic!("expected a single outer try");
+        };
+        assert_eq!(repaired.len(), 1);
+        assert!(matches!(body.last(), Some(Stmt::Try { .. })));
+    }
+
+    #[test]
+    fn leaves_correct_sibling_tries_untouched() {
+        let siblings: Vec<Stmt> = vec![bare_try(vec![Stmt::Pass]), bare_try(vec![Stmt::Pass])];
+        assert!(repair_nested_try(&siblings, &[0, 1]).is_none());
     }
 }

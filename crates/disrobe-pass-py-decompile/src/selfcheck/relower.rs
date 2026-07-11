@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use disrobe_py_marshal::{CodeObject, Object};
 
-use crate::ast::node::{ConstValue as AstConst, Expr, ExprCtx, Stmt};
+use crate::ast::node::{ConstValue as AstConst, ExceptHandler, Expr, ExprCtx, Keyword, Stmt};
 use crate::bytecode::opcode::{BinOp, CmpOp, UnaryOp};
 use crate::roundtrip::normalize::canonicalize_relowered;
 use crate::roundtrip::{ConstValue, NameValue, NormToken, NormalizedOp};
@@ -24,12 +24,13 @@ pub(crate) enum Relowered {
 pub(crate) struct ScopeCtx {
     fast: BTreeSet<String>,
     deref: BTreeSet<String>,
+    module_imports: BTreeSet<String>,
     function_scope: bool,
 }
 
 impl ScopeCtx {
     #[must_use]
-    pub(crate) fn from_code(code: &CodeObject) -> Self {
+    pub(crate) fn from_code(code: &CodeObject, module_imports: &BTreeSet<String>) -> Self {
         let function_scope: bool = (code.flags & CO_OPTIMIZED) != 0;
         let mut fast: BTreeSet<String> = BTreeSet::new();
         let mut deref: BTreeSet<String> = BTreeSet::new();
@@ -60,6 +61,7 @@ impl ScopeCtx {
         Self {
             fast,
             deref,
+            module_imports: module_imports.clone(),
             function_scope,
         }
     }
@@ -67,6 +69,11 @@ impl ScopeCtx {
     #[must_use]
     pub(crate) fn is_function_scope(&self) -> bool {
         self.function_scope
+    }
+
+    #[must_use]
+    fn is_module_import(&self, name: &str) -> bool {
+        self.module_imports.contains(name)
     }
 
     #[must_use]
@@ -100,9 +107,23 @@ impl ScopeCtx {
 impl ScopeCtx {
     #[must_use]
     pub(crate) fn from_parts(fast: &[&str], deref: &[&str], function_scope: bool) -> Self {
+        Self::from_parts_with_imports(fast, deref, &[], function_scope)
+    }
+
+    #[must_use]
+    pub(crate) fn from_parts_with_imports(
+        fast: &[&str],
+        deref: &[&str],
+        module_imports: &[&str],
+        function_scope: bool,
+    ) -> Self {
         Self {
             fast: fast.iter().map(|s: &&str| (*s).to_owned()).collect(),
             deref: deref.iter().map(|s: &&str| (*s).to_owned()).collect(),
+            module_imports: module_imports
+                .iter()
+                .map(|s: &&str| (*s).to_owned())
+                .collect(),
             function_scope,
         }
     }
@@ -122,6 +143,7 @@ fn object_str(obj: &Object) -> Option<String> {
 enum Tail {
     Return,
     Goto(u32),
+    FallThrough,
 }
 
 #[derive(Debug)]
@@ -135,6 +157,8 @@ enum Item {
 #[derive(Debug)]
 struct Emitter {
     items: Vec<Item>,
+    cold: Vec<Item>,
+    emitting_cold: bool,
     next_label: u32,
 }
 
@@ -143,7 +167,17 @@ impl Emitter {
     fn new() -> Self {
         Self {
             items: Vec::new(),
+            cold: Vec::new(),
+            emitting_cold: false,
             next_label: 0,
+        }
+    }
+
+    fn sink(&mut self) -> &mut Vec<Item> {
+        if self.emitting_cold {
+            &mut self.cold
+        } else {
+            &mut self.items
         }
     }
 
@@ -154,29 +188,31 @@ impl Emitter {
     }
 
     fn place(&mut self, label: u32) {
-        self.items.push(Item::Label(label));
+        self.sink().push(Item::Label(label));
     }
 
     fn op(&mut self, op: NormalizedOp) {
-        self.items.push(Item::Op(op));
+        self.sink().push(Item::Op(op));
     }
 
     fn push_ops(&mut self, ops: Vec<NormalizedOp>) {
+        let sink: &mut Vec<Item> = self.sink();
         for op in ops {
-            self.items.push(Item::Op(op));
+            sink.push(Item::Op(op));
         }
     }
 
     fn jump(&mut self, label: u32) {
-        self.items.push(Item::Jump(label));
+        self.sink().push(Item::Jump(label));
     }
 
     fn cond_jump(&mut self, name: &'static str, label: u32) {
-        self.items.push(Item::CondJump(name, label));
+        self.sink().push(Item::CondJump(name, label));
     }
 
     #[must_use]
-    fn finish(self) -> Option<Vec<NormalizedOp>> {
+    fn finish(mut self) -> Option<Vec<NormalizedOp>> {
+        self.items.append(&mut self.cold);
         let items: Vec<Item> = elide_noop_jumps(self.items);
         let mut label_index: BTreeMap<u32, u32> = BTreeMap::new();
         let mut idx: u32 = 0;
@@ -288,6 +324,21 @@ fn lower_seq(
             }
             lower_return(value.as_ref(), ctx, em)
         }
+        Stmt::Raise { exc, cause, .. } => {
+            if !rest.is_empty() {
+                return None;
+            }
+            lower_raise(exc.as_ref(), cause.as_ref(), ctx, em)
+        }
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        } => lower_try(
+            body, handlers, orelse, finalbody, rest, ctx, em, tail, depth,
+        ),
         Stmt::Pass | Stmt::Assign { .. } | Stmt::Expr(_) => {
             lower_simple(first, ctx, em)?;
             lower_seq(rest, ctx, em, tail, depth)
@@ -308,6 +359,7 @@ fn apply_tail(em: &mut Emitter, tail: Tail) -> Option<()> {
             em.jump(label);
             Some(())
         }
+        Tail::FallThrough => Some(()),
     }
 }
 
@@ -413,6 +465,215 @@ fn lower_for(
     em.op(op_bare("POP_ITER"));
     let cont: Vec<Stmt> = concat_stmts(orelse, rest);
     lower_seq(&cont, ctx, em, tail, depth + 1)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Cont<'a> {
+    DupReturn(Option<&'a Expr>),
+    JumpBack,
+}
+
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+fn lower_try<'a>(
+    body: &'a [Stmt],
+    handlers: &'a [ExceptHandler],
+    orelse: &'a [Stmt],
+    finalbody: &'a [Stmt],
+    rest: &'a [Stmt],
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    tail: Tail,
+    depth: u32,
+) -> Option<()> {
+    if depth > MAX_DEPTH || em.emitting_cold {
+        return None;
+    }
+    if !finalbody.is_empty() || handlers.is_empty() || !handlers_covered(handlers) {
+        return None;
+    }
+    let needs_cont: bool = handlers
+        .iter()
+        .any(|h: &ExceptHandler| handler_falls_through(&h.body));
+    let cont: Option<Cont<'a>> = if needs_cont {
+        Some(classify_cont(rest, tail)?)
+    } else {
+        None
+    };
+    lower_seq(body, ctx, em, Tail::FallThrough, depth + 1)?;
+    if !orelse.is_empty() {
+        lower_seq(orelse, ctx, em, Tail::FallThrough, depth + 1)?;
+    }
+    emit_handlers(handlers, cont, ctx, em, depth)?;
+    match cont {
+        Some(Cont::DupReturn(value)) => lower_return(value, ctx, em),
+        Some(Cont::JumpBack) | None => lower_seq(rest, ctx, em, tail, depth + 1),
+    }
+}
+
+#[must_use]
+fn handlers_covered(handlers: &[ExceptHandler]) -> bool {
+    handlers
+        .iter()
+        .enumerate()
+        .all(|(idx, h): (usize, &ExceptHandler)| {
+            h.name.is_none()
+                && !stmts_contain_region(&h.body)
+                && (h.typ.is_some() || idx + 1 == handlers.len())
+        })
+}
+
+#[must_use]
+fn handler_falls_through(body: &[Stmt]) -> bool {
+    !matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }))
+}
+
+#[must_use]
+fn stmts_contain_region(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s: &Stmt| match s {
+        Stmt::Try { .. } | Stmt::TryStar { .. } | Stmt::With { .. } | Stmt::Match { .. } => true,
+        Stmt::If { body, orelse, .. }
+        | Stmt::For { body, orelse, .. }
+        | Stmt::While { body, orelse, .. } => {
+            stmts_contain_region(body) || stmts_contain_region(orelse)
+        }
+        _ => false,
+    })
+}
+
+#[must_use]
+fn classify_cont(rest: &[Stmt], tail: Tail) -> Option<Cont<'_>> {
+    if rest.is_empty() {
+        return match tail {
+            Tail::Return => Some(Cont::DupReturn(None)),
+            _ => None,
+        };
+    }
+    if let [Stmt::Return(value)] = rest {
+        return Some(Cont::DupReturn(value.as_ref()));
+    }
+    Some(Cont::JumpBack)
+}
+
+#[must_use]
+fn emit_handlers(
+    handlers: &[ExceptHandler],
+    cont: Option<Cont<'_>>,
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    depth: u32,
+) -> Option<()> {
+    em.emitting_cold = true;
+    let result: Option<()> = emit_handlers_inner(handlers, cont, ctx, em, depth);
+    em.emitting_cold = false;
+    result
+}
+
+#[must_use]
+fn emit_handlers_inner(
+    handlers: &[ExceptHandler],
+    cont: Option<Cont<'_>>,
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    depth: u32,
+) -> Option<()> {
+    em.op(op_bare("PUSH_EXC_INFO"));
+    let mut pending_false: Option<u32> = None;
+    let mut last_typed: bool = false;
+    for handler in handlers {
+        if let Some(label) = pending_false.take() {
+            em.place(label);
+        }
+        if let Some(typ) = &handler.typ {
+            emit_handler_type(typ, ctx, em)?;
+            em.op(op_bare("CHECK_EXC_MATCH"));
+            let next: u32 = em.new_label();
+            em.cond_jump("JUMP_IF_FALSE", next);
+            em.op(op_bare("NOT_TAKEN"));
+            pending_false = Some(next);
+            last_typed = true;
+        } else {
+            last_typed = false;
+        }
+        em.op(op_bare("POP_TOP"));
+        emit_handler_body(&handler.body, cont, ctx, em, depth)?;
+    }
+    if last_typed {
+        if let Some(label) = pending_false.take() {
+            em.place(label);
+        }
+        em.op(op_raw("RERAISE", 0));
+    }
+    em.op(op_raw("COPY", 3));
+    em.op(op_bare("POP_EXCEPT"));
+    em.op(op_raw("RERAISE", 1));
+    Some(())
+}
+
+#[must_use]
+fn emit_handler_type(typ: &Expr, ctx: &ScopeCtx, em: &mut Emitter) -> Option<()> {
+    if let Expr::Tuple { elts, .. } = typ {
+        for elt in elts {
+            emit_expr(elt, ctx, em)?;
+        }
+        let count: u32 = u32::try_from(elts.len()).ok()?;
+        em.op(op_operator("BUILD_TUPLE", count));
+        return Some(());
+    }
+    emit_expr(typ, ctx, em)
+}
+
+#[must_use]
+fn emit_handler_body(
+    body: &[Stmt],
+    cont: Option<Cont<'_>>,
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+    depth: u32,
+) -> Option<()> {
+    let (last, prefix): (&Stmt, &[Stmt]) = body.split_last()?;
+    match last {
+        Stmt::Return(value) => {
+            lower_seq(prefix, ctx, em, Tail::FallThrough, depth + 1)?;
+            em.op(op_bare("POP_EXCEPT"));
+            lower_return(value.as_ref(), ctx, em)
+        }
+        Stmt::Raise { exc, cause, .. } => {
+            lower_seq(prefix, ctx, em, Tail::FallThrough, depth + 1)?;
+            lower_raise(exc.as_ref(), cause.as_ref(), ctx, em)
+        }
+        _ => {
+            lower_seq(body, ctx, em, Tail::FallThrough, depth + 1)?;
+            em.op(op_bare("POP_EXCEPT"));
+            match cont? {
+                Cont::DupReturn(value) => lower_return(value, ctx, em),
+                Cont::JumpBack => {
+                    em.op(op_bare("JUMP"));
+                    Some(())
+                }
+            }
+        }
+    }
+}
+
+#[must_use]
+fn lower_raise(
+    exc: Option<&Expr>,
+    cause: Option<&Expr>,
+    ctx: &ScopeCtx,
+    em: &mut Emitter,
+) -> Option<()> {
+    if cause.is_some() {
+        return None;
+    }
+    match exc {
+        None => em.op(op_raw("RAISE_VARARGS", 0)),
+        Some(expr) => {
+            emit_expr(expr, ctx, em)?;
+            em.op(op_raw("RAISE_VARARGS", 1));
+        }
+    }
+    Some(())
 }
 
 #[must_use]
@@ -688,7 +949,7 @@ fn lower_expr(expr: &Expr, ctx: &ScopeCtx, out: &mut Vec<NormalizedOp>) -> Optio
             func,
             args,
             keywords,
-        } if keywords.is_empty() => lower_call(func, args, ctx, out),
+        } => lower_call(func, args, keywords, ctx, out),
         _ => None,
     }
 }
@@ -697,6 +958,7 @@ fn lower_expr(expr: &Expr, ctx: &ScopeCtx, out: &mut Vec<NormalizedOp>) -> Optio
 fn lower_call(
     func: &Expr,
     args: &[Expr],
+    keywords: &[Keyword],
     ctx: &ScopeCtx,
     out: &mut Vec<NormalizedOp>,
 ) -> Option<()> {
@@ -723,17 +985,43 @@ fn lower_call(
             attr,
             ctx: ExprCtx::Load,
         } => {
+            let plain: bool = calls_module_attr(value, ctx);
             lower_expr(value, ctx, out)?;
             out.push(op_name("LOAD_ATTR", attr));
+            if plain {
+                out.push(op_bare("PUSH_NULL"));
+            }
         }
         _ => return None,
     }
     for arg in args {
         lower_expr(arg, ctx, out)?;
     }
-    let argc: u32 = u32::try_from(args.len()).ok()?;
-    out.push(op_operator("CALL", argc));
+    if keywords.is_empty() {
+        let argc: u32 = u32::try_from(args.len()).ok()?;
+        out.push(op_operator("CALL", argc));
+        return Some(());
+    }
+    let mut names: Vec<ConstValue> = Vec::with_capacity(keywords.len());
+    for kw in keywords {
+        let name: &String = kw.arg.as_ref()?;
+        lower_expr(&kw.value, ctx, out)?;
+        names.push(ConstValue::Str(name.clone()));
+    }
+    out.push(op_const(ConstValue::Tuple(names)));
+    let total: usize = args.len().checked_add(keywords.len())?;
+    let argc: u32 = u32::try_from(total).ok()?;
+    out.push(op_operator("CALL_KW", argc));
     Some(())
+}
+
+#[must_use]
+fn calls_module_attr(value: &Expr, ctx: &ScopeCtx) -> bool {
+    matches!(
+        value,
+        Expr::Name { id, ctx: ExprCtx::Load, .. }
+            if ctx.load_op_for(id) == Some("LOAD_GLOBAL") && ctx.is_module_import(id)
+    )
 }
 
 #[must_use]
@@ -856,6 +1144,18 @@ fn op_operator(op: &'static str, operator_id: u32) -> NormalizedOp {
 }
 
 #[must_use]
+fn op_raw(name: &'static str, arg: u32) -> NormalizedOp {
+    NormalizedOp {
+        token: NormToken::Op(name.into()),
+        const_value: None,
+        name_value: None,
+        jump_target_index: None,
+        operator_id: None,
+        raw_arg: Some(arg),
+    }
+}
+
+#[must_use]
 fn jump_op(name: &str, target: Option<u32>) -> NormalizedOp {
     NormalizedOp {
         token: NormToken::Op(name.into()),
@@ -916,6 +1216,262 @@ mod tests {
 
     fn call_stmt(func: Expr, args: Vec<Expr>) -> Stmt {
         Stmt::Expr(call(func, args))
+    }
+
+    fn handler(typ: Option<Expr>, body: Vec<Stmt>) -> ExceptHandler {
+        ExceptHandler {
+            typ,
+            name: None,
+            body,
+            line: None,
+        }
+    }
+
+    fn try_stmt(body: Vec<Stmt>, handlers: Vec<ExceptHandler>, orelse: Vec<Stmt>) -> Stmt {
+        Stmt::Try {
+            body,
+            handlers,
+            orelse,
+            finalbody: Vec::new(),
+            line: None,
+        }
+    }
+
+    fn tuple_load(ids: &[&str]) -> Expr {
+        Expr::Tuple {
+            elts: ids.iter().map(|id: &&str| load(id)).collect(),
+            ctx: ExprCtx::Load,
+        }
+    }
+
+    fn const_none() -> Expr {
+        Expr::Constant {
+            value: AstConst::None,
+            line: None,
+        }
+    }
+
+    fn attr_store(obj: Expr, attr: &str) -> Expr {
+        Expr::Attribute {
+            value: Box::new(obj),
+            attr: attr.to_owned(),
+            ctx: ExprCtx::Store,
+        }
+    }
+
+    fn open_kw_call() -> Expr {
+        Expr::Call {
+            func: Box::new(load("open")),
+            args: vec![load("fd")],
+            keywords: vec![
+                Keyword {
+                    arg: Some("encoding".to_owned()),
+                    value: Expr::Constant {
+                        value: AstConst::Str("utf-8".to_owned()),
+                        line: None,
+                    },
+                },
+                Keyword {
+                    arg: Some("closefd".to_owned()),
+                    value: Expr::Constant {
+                        value: AstConst::False,
+                        line: None,
+                    },
+                },
+            ],
+        }
+    }
+
+    fn close_stdin_correct() -> Vec<Stmt> {
+        let inner: Stmt = try_stmt(
+            vec![assign(attr_store(load("sys"), "stdin"), open_kw_call())],
+            vec![handler(
+                None,
+                vec![
+                    call_stmt(attr_load(load("os"), "close"), vec![load("fd")]),
+                    Stmt::Raise {
+                        exc: None,
+                        cause: None,
+                        line: None,
+                    },
+                ],
+            )],
+            Vec::new(),
+        );
+        let open_call: Expr = call(
+            attr_load(load("os"), "open"),
+            vec![
+                attr_load(load("os"), "devnull"),
+                attr_load(load("os"), "O_RDONLY"),
+            ],
+        );
+        let try2: Stmt = try_stmt(
+            vec![assign(store("fd"), open_call), inner],
+            vec![handler(
+                Some(tuple_load(&["OSError", "ValueError"])),
+                vec![Stmt::Pass],
+            )],
+            Vec::new(),
+        );
+        let try1: Stmt = try_stmt(
+            vec![call_stmt(
+                attr_load(attr_load(load("sys"), "stdin"), "close"),
+                Vec::new(),
+            )],
+            vec![handler(
+                Some(tuple_load(&["OSError", "ValueError"])),
+                vec![Stmt::Pass],
+            )],
+            Vec::new(),
+        );
+        let guard: Stmt = if_stmt(
+            Expr::Compare {
+                left: Box::new(attr_load(load("sys"), "stdin")),
+                ops: vec![CmpOp::Is],
+                comparators: vec![const_none()],
+            },
+            vec![Stmt::Return(Some(const_none()))],
+            Vec::new(),
+        );
+        vec![guard, try1, try2]
+    }
+
+    #[test]
+    fn close_stdin_correct_structure_is_covered() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts_with_imports(&["fd"], &[], &["os", "sys"], true);
+        assert!(matches!(
+            relower_function_body(&close_stdin_correct(), &ctx),
+            Relowered::Ops(_)
+        ));
+    }
+
+    #[test]
+    fn module_import_call_uses_plain_load_push_null() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts_with_imports(&["fd"], &[], &["os"], true);
+        let body: Vec<Stmt> = vec![call_stmt(attr_load(load("os"), "close"), vec![load("fd")])];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq)[0..5],
+            ["LOAD_GLOBAL", "LOAD_ATTR", "PUSH_NULL", "LOAD_FAST", "CALL"]
+        );
+    }
+
+    #[test]
+    fn non_import_method_call_omits_push_null() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts_with_imports(&["fd"], &[], &[], true);
+        let body: Vec<Stmt> = vec![call_stmt(attr_load(load("os"), "close"), vec![load("fd")])];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq)[0..4],
+            ["LOAD_GLOBAL", "LOAD_ATTR", "LOAD_FAST", "CALL"]
+        );
+    }
+
+    #[test]
+    fn keyword_call_emits_names_tuple_and_call_kw() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["fd"], &[], true);
+        let call_kw: Expr = Expr::Call {
+            func: Box::new(load("open")),
+            args: vec![load("fd")],
+            keywords: vec![
+                Keyword {
+                    arg: Some("encoding".to_owned()),
+                    value: Expr::Constant {
+                        value: AstConst::Str("utf-8".to_owned()),
+                        line: None,
+                    },
+                },
+                Keyword {
+                    arg: Some("closefd".to_owned()),
+                    value: Expr::Constant {
+                        value: AstConst::False,
+                        line: None,
+                    },
+                },
+            ],
+        };
+        let body: Vec<Stmt> = vec![Stmt::Return(Some(call_kw))];
+        let seq: Vec<NormalizedOp> = ops(&body, &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_GLOBAL",
+                "LOAD_FAST",
+                "LOAD_CONST",
+                "LOAD_CONST",
+                "LOAD_CONST",
+                "CALL_KW",
+                "RETURN_VALUE",
+            ]
+        );
+        assert_eq!(seq[5].operator_id, Some(3));
+    }
+
+    #[test]
+    fn nested_tail_try_relowers_to_expected_3_14_stream() {
+        let ctx: ScopeCtx = ScopeCtx::from_parts(&["x", "a"], &[], true);
+        let inner: Stmt = try_stmt(
+            vec![call_stmt(load("u"), vec![load("a")])],
+            vec![handler(
+                None,
+                vec![
+                    call_stmt(load("c"), vec![load("a")]),
+                    Stmt::Raise {
+                        exc: None,
+                        cause: None,
+                        line: None,
+                    },
+                ],
+            )],
+            Vec::new(),
+        );
+        let outer: Stmt = try_stmt(
+            vec![assign(store("a"), call(load("g"), vec![load("x")])), inner],
+            vec![handler(
+                Some(tuple_load(&["OSError", "ValueError"])),
+                vec![Stmt::Pass],
+            )],
+            Vec::new(),
+        );
+        let seq: Vec<NormalizedOp> = ops(&[outer], &ctx);
+        assert_eq!(
+            names(&seq),
+            vec![
+                "LOAD_GLOBAL",
+                "LOAD_FAST",
+                "CALL",
+                "STORE_FAST",
+                "LOAD_GLOBAL",
+                "LOAD_FAST",
+                "CALL",
+                "POP_TOP",
+                "JRET",
+                "PUSH_EXC_INFO",
+                "POP_TOP",
+                "LOAD_GLOBAL",
+                "LOAD_FAST",
+                "CALL",
+                "POP_TOP",
+                "RAISE_VARARGS",
+                "COPY",
+                "POP_EXCEPT",
+                "RERAISE",
+                "PUSH_EXC_INFO",
+                "LOAD_GLOBAL",
+                "LOAD_GLOBAL",
+                "BUILD_TUPLE",
+                "CHECK_EXC_MATCH",
+                "JUMP_IF_FALSE",
+                "NOT_TAKEN",
+                "POP_TOP",
+                "POP_EXCEPT",
+                "JRET",
+                "RERAISE",
+                "COPY",
+                "POP_EXCEPT",
+                "RERAISE",
+            ]
+        );
     }
 
     fn if_stmt(test: Expr, body: Vec<Stmt>, orelse: Vec<Stmt>) -> Stmt {

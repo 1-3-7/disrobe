@@ -5,33 +5,76 @@ mod relower;
 mod repair;
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::VecDeque;
 
 use disrobe_py_marshal::{CodeObject, Object};
 
-use crate::ast::node::{AstModule, MatchCase, Stmt};
+use crate::ast::node::{Alias, AstModule, MatchCase, Stmt};
 use crate::bytecode::version::PyVersion as DecompileVersion;
 
 pub fn verify_and_repair(module: &mut AstModule, code: &CodeObject, version: &DecompileVersion) {
     if version.is_pre_311() {
         return;
     }
-    repair_scope(&mut module.body, code, version);
+    let module_imports: BTreeSet<String> = collect_module_imports(&module.body);
+    repair_scope(&mut module.body, code, version, &module_imports);
 }
 
-fn repair_scope(body: &mut Vec<Stmt>, code: &CodeObject, version: &DecompileVersion) {
+#[must_use]
+fn collect_module_imports(body: &[Stmt]) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for stmt in body {
+        match stmt {
+            Stmt::Import(aliases) => {
+                for alias in aliases {
+                    names.insert(import_bound_name(alias));
+                }
+            }
+            Stmt::ImportFrom { names: aliases, .. } => {
+                for alias in aliases {
+                    if alias.name != "*" {
+                        names.insert(alias.asname.clone().unwrap_or_else(|| alias.name.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+#[must_use]
+fn import_bound_name(alias: &Alias) -> String {
+    if let Some(asname) = &alias.asname {
+        return asname.clone();
+    }
+    alias
+        .name
+        .split('.')
+        .next()
+        .unwrap_or(alias.name.as_str())
+        .to_owned()
+}
+
+fn repair_scope(
+    body: &mut Vec<Stmt>,
+    code: &CodeObject,
+    version: &DecompileVersion,
+    module_imports: &BTreeSet<String>,
+) {
     if repair::has_repair_candidate(body) {
         let facts: input_facts::InputFacts = input_facts::extract(code, version);
         let taken: Vec<Stmt> = std::mem::take(body);
         *body = repair::repair_body(taken, &facts);
     }
     if opcontent_enabled(version)
-        && let Some(reordered) = opcontent::accept_reordering(body, code, version)
+        && let Some(reordered) = opcontent::accept_reordering(body, code, version, module_imports)
     {
         *body = reordered;
     }
     let mut picker: ChildPicker<'_> = ChildPicker::new(code);
-    descend(body, &mut picker, version);
+    descend(body, &mut picker, version, module_imports);
 }
 
 #[must_use]
@@ -39,21 +82,26 @@ fn opcontent_enabled(version: &DecompileVersion) -> bool {
     version.major() == 3 && version.minor() == 14
 }
 
-fn descend(body: &mut [Stmt], picker: &mut ChildPicker<'_>, version: &DecompileVersion) {
+fn descend(
+    body: &mut [Stmt],
+    picker: &mut ChildPicker<'_>,
+    version: &DecompileVersion,
+    module_imports: &BTreeSet<String>,
+) {
     for stmt in body.iter_mut() {
         match stmt {
             Stmt::FunctionDef { name, body, .. } | Stmt::ClassDef { name, body, .. } => {
                 if let Some(child) = picker.take(name) {
-                    repair_scope(body, child, version);
+                    repair_scope(body, child, version, module_imports);
                 }
             }
             Stmt::If { body, orelse, .. }
             | Stmt::For { body, orelse, .. }
             | Stmt::While { body, orelse, .. } => {
-                descend(body, picker, version);
-                descend(orelse, picker, version);
+                descend(body, picker, version, module_imports);
+                descend(orelse, picker, version, module_imports);
             }
-            Stmt::With { body, .. } => descend(body, picker, version),
+            Stmt::With { body, .. } => descend(body, picker, version, module_imports),
             Stmt::Try {
                 body,
                 handlers,
@@ -68,17 +116,17 @@ fn descend(body: &mut [Stmt], picker: &mut ChildPicker<'_>, version: &DecompileV
                 finalbody,
                 ..
             } => {
-                descend(body, picker, version);
+                descend(body, picker, version, module_imports);
                 for handler in handlers.iter_mut() {
-                    descend(&mut handler.body, picker, version);
+                    descend(&mut handler.body, picker, version, module_imports);
                 }
-                descend(orelse, picker, version);
-                descend(finalbody, picker, version);
+                descend(orelse, picker, version, module_imports);
+                descend(finalbody, picker, version, module_imports);
             }
             Stmt::Match { cases, .. } => {
                 for case in cases.iter_mut() {
                     let MatchCase { body, .. } = case;
-                    descend(body, picker, version);
+                    descend(body, picker, version, module_imports);
                 }
             }
             _ => {}
