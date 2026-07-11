@@ -118,9 +118,14 @@ fn constants_pool_yields_known_encrypted_strings() {
         .expect("constants protection present");
 
     let required: &[&str] = &[
+        "Server=gauntlet-db;Database=disrobe_test;",
         "DISROBE_GAUNTLET_API_KEY_7749",
         "DISROBE_SECRET_TOKEN_ALPHA",
         "gauntlet-build-v1",
+        ":empty",
+        "hello world",
+        "result",
+        "the quick brown fox",
     ];
 
     let recovered_texts: Vec<&str> = recovery
@@ -141,9 +146,19 @@ fn constants_pool_yields_known_encrypted_strings() {
     }
 
     assert!(
-        recovery.strings_recovered.len() >= 3,
-        "at least 3 encrypted strings must be recovered; got {}",
+        recovery.strings_recovered.len() >= required.len(),
+        "every known GauntletSample.cs string literal must be recovered; got {}",
         recovery.strings_recovered.len()
+    );
+
+    let connection_string: &RecoveredString = recovery
+        .strings_recovered
+        .iter()
+        .find(|r: &&RecoveredString| r.text == "Server=gauntlet-db;Database=disrobe_test;")
+        .expect("the connection string sits at constant-pool offset 0 with a control-flow-obfuscated call-site id");
+    assert_eq!(
+        connection_string.mutated_offset, 0,
+        "the connection string is the first pooled constant"
     );
 }
 

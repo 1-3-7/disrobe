@@ -17,6 +17,8 @@ use crate::tables::{ClassLayoutRow, FieldRow, FieldRvaRow, MethodDefRow, Tables,
 
 pub const CONSTANTS_BLOCK_BYTES: usize = 64;
 
+pub const CONSTANTS_POOL_ALIGN: usize = 4;
+
 pub const CONSTANTS_LZMA_PROPS: u8 = 0x5D;
 
 pub const MAX_CONSTANTS_BLOB_BYTES: usize = 16 * 1024 * 1024;
@@ -106,12 +108,18 @@ pub fn peel_confuserex_constants(image: &[u8]) -> Result<Option<ConfuserConstant
     let pool_sha256: [u8; 32] = sha256(&pool);
 
     let mutations: Vec<DecoderMutation> = collect_decoder_mutations(image, &pe, &tables.methods);
-    let strings_recovered: Vec<RecoveredString> = recover_strings(&pool, &mutations, &seeds);
+    let mut strings_recovered: Vec<RecoveredString> = recover_strings(&pool, &mutations, &seeds);
+    let segmented: Vec<RecoveredString> = segment_pool_strings(&pool, &strings_recovered);
+    let segmented_count: usize = segmented.len();
+    strings_recovered.extend(segmented);
     dbg_kv("confuserex-constants", || {
         format!(
-            "seed=0x{seed:x} decrypted_pool_bytes={} strings_recovered={}",
+            "seed=0x{seed:x} decrypted_pool_bytes={} strings_recovered={} \
+             (call_site_attributed={} pool_segmented={})",
             pool.len(),
-            strings_recovered.len()
+            strings_recovered.len(),
+            strings_recovered.len() - segmented_count,
+            segmented_count,
         )
     });
 
@@ -334,6 +342,68 @@ fn recover_strings(
     recovered
 }
 
+fn segment_pool_strings(pool: &[u8], attributed: &[RecoveredString]) -> Vec<RecoveredString> {
+    if attributed.is_empty() {
+        return Vec::new();
+    }
+    let Some(walk): Option<Vec<(u32, String)>> = walk_length_prefixed_pool(pool) else {
+        return Vec::new();
+    };
+    for entry in attributed {
+        let reproduced: bool = walk.iter().any(|(offset, text): &(u32, String)| {
+            *offset == entry.mutated_offset && *text == entry.text
+        });
+        if !reproduced {
+            return Vec::new();
+        }
+    }
+    let mut extra: Vec<RecoveredString> = Vec::new();
+    for (offset, text) in walk {
+        if attributed
+            .iter()
+            .any(|entry: &RecoveredString| entry.mutated_offset == offset)
+        {
+            continue;
+        }
+        extra.push(RecoveredString {
+            call_site_id: 0,
+            mutated_offset: offset,
+            text,
+        });
+    }
+    extra
+}
+
+fn walk_length_prefixed_pool(pool: &[u8]) -> Option<Vec<(u32, String)>> {
+    let mut walk: Vec<(u32, String)> = Vec::new();
+    let mut cursor: usize = 0;
+    while cursor < pool.len() {
+        let count_end: usize = cursor
+            .checked_add(4)
+            .filter(|end: &usize| *end <= pool.len())?;
+        let count: usize = u32::from_le_bytes([
+            pool[cursor],
+            pool[cursor + 1],
+            pool[cursor + 2],
+            pool[cursor + 3],
+        ]) as usize;
+        if count == 0 {
+            return None;
+        }
+        let data_end: usize = count_end
+            .checked_add(count)
+            .filter(|end: &usize| *end <= pool.len())?;
+        let text: &str = core::str::from_utf8(&pool[count_end..data_end]).ok()?;
+        let offset: u32 = u32::try_from(cursor).ok()?;
+        walk.push((offset, text.to_owned()));
+        let padded: usize = data_end
+            .checked_add(CONSTANTS_POOL_ALIGN - 1)
+            .map(|end: usize| end / CONSTANTS_POOL_ALIGN * CONSTANTS_POOL_ALIGN)?;
+        cursor = padded;
+    }
+    (cursor == pool.len() && !walk.is_empty()).then_some(walk)
+}
+
 fn collect_decoder_mutations(
     image: &[u8],
     pe: &PeImage,
@@ -455,5 +525,74 @@ mod tests {
         assert!(decrypt_constants_blob(&[], 1).is_none());
         assert!(decrypt_constants_blob(&[0u8; 63], 1).is_none());
         assert!(decrypt_constants_blob(&[0u8; 64], 1).is_some());
+    }
+
+    fn packed_pool(entries: &[&str]) -> Vec<u8> {
+        let mut pool: Vec<u8> = Vec::new();
+        for entry in entries {
+            pool.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+            pool.extend_from_slice(entry.as_bytes());
+            while !pool.len().is_multiple_of(CONSTANTS_POOL_ALIGN) {
+                pool.push(0);
+            }
+        }
+        pool
+    }
+
+    #[test]
+    fn segmentation_recovers_unattributed_leading_entry() {
+        let pool: Vec<u8> = packed_pool(&["Server=db;", "second"]);
+        let second_offset: u32 = {
+            let first_len: usize = "Server=db;".len();
+            let padded: usize =
+                (4 + first_len).div_ceil(CONSTANTS_POOL_ALIGN) * CONSTANTS_POOL_ALIGN;
+            u32::try_from(padded).expect("offset")
+        };
+        let attributed: Vec<RecoveredString> = vec![RecoveredString {
+            call_site_id: 0x1234,
+            mutated_offset: second_offset,
+            text: "second".to_owned(),
+        }];
+        let extra: Vec<RecoveredString> = segment_pool_strings(&pool, &attributed);
+        assert_eq!(extra.len(), 1);
+        assert_eq!(extra[0].mutated_offset, 0);
+        assert_eq!(extra[0].call_site_id, 0);
+        assert_eq!(extra[0].text, "Server=db;");
+    }
+
+    #[test]
+    fn segmentation_rejects_when_attributed_offset_absent_from_walk() {
+        let pool: Vec<u8> = packed_pool(&["alpha", "beta"]);
+        let attributed: Vec<RecoveredString> = vec![RecoveredString {
+            call_site_id: 0x1,
+            mutated_offset: 999,
+            text: "alpha".to_owned(),
+        }];
+        assert!(segment_pool_strings(&pool, &attributed).is_empty());
+    }
+
+    #[test]
+    fn segmentation_rejects_non_utf8_or_untiled_pool() {
+        let attributed: Vec<RecoveredString> = vec![RecoveredString {
+            call_site_id: 0x1,
+            mutated_offset: 0,
+            text: "x".to_owned(),
+        }];
+        let mut non_utf8: Vec<u8> = Vec::new();
+        non_utf8.extend_from_slice(&2u32.to_le_bytes());
+        non_utf8.extend_from_slice(&[0xFF, 0xFE]);
+        non_utf8.extend_from_slice(&[0, 0]);
+        assert!(segment_pool_strings(&non_utf8, &attributed).is_empty());
+
+        let mut untiled: Vec<u8> = Vec::new();
+        untiled.extend_from_slice(&64u32.to_le_bytes());
+        untiled.extend_from_slice(b"short");
+        assert!(segment_pool_strings(&untiled, &attributed).is_empty());
+    }
+
+    #[test]
+    fn segmentation_ignores_empty_attributed_set() {
+        let pool: Vec<u8> = packed_pool(&["one", "two"]);
+        assert!(segment_pool_strings(&pool, &[]).is_empty());
     }
 }
