@@ -4,7 +4,7 @@ use super::exprs::{
     is_chain_cond_jump, local_name_at, local_target, name_at,
 };
 use super::function_meta::load_const;
-use super::loops::non_empty;
+use super::loops::{for_cold_handler_exit_epilogue, non_empty};
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
@@ -2386,6 +2386,129 @@ fn try_structure_leading_else_try(
     Ok(Some(out))
 }
 
+fn inverted_continue_guard_arm(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    test_start: usize,
+    guarded: &[Stmt],
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let noise = |op: &CanonicalOp| -> bool {
+        matches!(
+            op,
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::Push(_)
+        )
+    };
+    let lands_on_header = |idx: usize| -> bool {
+        is_back_edge(&stream.ops[idx])
+            && resolve_jump_target(stream, idx, &stream.ops[idx])
+                .is_some_and(|t: usize| t <= header)
+    };
+    let Some(back_edge): Option<usize> = (lo..test_start)
+        .rev()
+        .find(|&k: &usize| !noise(&stream.ops[k]))
+    else {
+        return Ok(None);
+    };
+    if !lands_on_header(back_edge) {
+        return Ok(None);
+    }
+    let Some(arm_guard): Option<usize> = (lo..back_edge).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if arm_guard <= lo
+        || stream.none_jump_kind.contains_key(&arm_guard)
+        || !jump_taken_if_true(stream, arm_guard)
+        || is_value_form_shortcircuit(&stream.ops, arm_guard)
+    {
+        return Ok(None);
+    }
+    let entry: Option<usize> = resolve_jump_target(stream, arm_guard, &stream.ops[arm_guard])
+        .and_then(|t: usize| first_significant(stream, t, stream.ops.len()));
+    if entry != Some(test_start) {
+        return Ok(None);
+    }
+    if (arm_guard + 1..back_edge).any(|k: usize| !noise(&stream.ops[k])) {
+        return Ok(None);
+    }
+    let Some(arm_test_start): Option<usize> = guard_test_expr_start(code, stream, lo, arm_guard)
+    else {
+        return Ok(None);
+    };
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[arm_test_start..arm_guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    if !test_is_polarity_sensitive(&test) {
+        return Ok(None);
+    }
+    let epilogue: Vec<Stmt> = match resolve_jump_target(stream, header, &stream.ops[header])
+        .filter(|t: &usize| *t > header)
+        .and_then(|raw_exit: usize| for_cold_handler_exit_epilogue(stream, lo, raw_exit, hi))
+    {
+        Some((stmt_start, first_cold)) => structure_stmts(code, stream, stmt_start, first_cold)?,
+        None => Vec::new(),
+    };
+    let split: usize = if !epilogue.is_empty()
+        && guarded.len() > epilogue.len()
+        && guarded[guarded.len() - epilogue.len()..] == epilogue[..]
+    {
+        guarded.len() - epilogue.len()
+    } else {
+        guarded.len()
+    };
+    let arm_body: Vec<Stmt> = guarded[..split].to_vec();
+    if arm_body.is_empty() {
+        return Ok(None);
+    }
+    let lifted: Vec<Stmt> = guarded[split..].to_vec();
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, arm_test_start)?;
+    let arm: Stmt = Stmt::If {
+        test,
+        body: non_empty(arm_body),
+        orelse: Vec::new(),
+        line: None,
+    };
+    if !append_as_elif(&mut out, arm) {
+        return Ok(None);
+    }
+    out.extend(lifted);
+    Ok(Some(out))
+}
+
+fn append_as_elif(chain: &mut [Stmt], arm: Stmt) -> bool {
+    let Some(Stmt::If { orelse, .. }): Option<&mut Stmt> = chain.last_mut() else {
+        return false;
+    };
+    let mut cursor: &mut Vec<Stmt> = orelse;
+    loop {
+        if cursor.is_empty() {
+            cursor.push(arm);
+            return true;
+        }
+        if cursor.len() != 1 {
+            return false;
+        }
+        let Some(Stmt::If { orelse: next, .. }): Option<&mut Stmt> = cursor.first_mut() else {
+            return false;
+        };
+        cursor = next;
+    }
+}
+
 fn try_structure_loop_continue_guard_over_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2538,6 +2661,11 @@ pub(super) fn structure_try(
         let guarded_opt: Option<Vec<Stmt>> =
             try_structure_guarded_try(code, stream, test_start, hi)?;
         if let Some(guarded) = guarded_opt {
+            if let Some(arm) =
+                inverted_continue_guard_arm(code, stream, lo, hi, test_start, &guarded)?
+            {
+                return Ok(arm);
+            }
             let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
             out.extend(guarded);
             return Ok(out);

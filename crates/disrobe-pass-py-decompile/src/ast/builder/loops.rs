@@ -977,7 +977,7 @@ fn first_cold_for_handler(
         .min()
 }
 
-fn for_cold_handler_exit_epilogue(
+pub(super) fn for_cold_handler_exit_epilogue(
     stream: &DecodedStream,
     body_start: usize,
     raw_exit: usize,
