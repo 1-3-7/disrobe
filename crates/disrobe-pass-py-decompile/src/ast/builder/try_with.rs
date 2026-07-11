@@ -2574,6 +2574,124 @@ fn try_structure_loop_continue_guard_over_try(
     }]))
 }
 
+pub(super) fn structure_for_bare_except_continue_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    if stream.is_pre_311()
+        || stream.exception_table.is_empty()
+        || !matches!(region.kind, LoopKind::For)
+    {
+        return Ok(None);
+    }
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|t: &usize| *t > region.header)
+    else {
+        return Ok(None);
+    };
+    if region.body_end <= raw_exit {
+        return Ok(None);
+    }
+    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
+    if (handler_start..cold_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckExcMatch | CanonicalOp::CheckEgMatch | CanonicalOp::WithExceptStart
+        )
+    }) {
+        return Ok(None);
+    }
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(handler_start) else {
+        return Ok(None);
+    };
+    let Some((try_start, protected_end)): Option<(usize, usize)> = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let te: usize = stream.index_for_offset_ceil(e.end())?;
+            (ts >= body_start && ts < raw_exit && te <= raw_exit).then_some((ts, te))
+        })
+        .min_by_key(|&(ts, _): &(usize, usize)| ts)
+    else {
+        return Ok(None);
+    };
+    let head: Vec<Stmt> = if try_start > body_start {
+        structure_stmts(code, stream, body_start, try_start)?
+    } else {
+        Vec::new()
+    };
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let Some(back_jump): Option<usize> = (handler_start..cold_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(region.header)
+    }) else {
+        return Ok(None);
+    };
+    let handler_body_start: usize = {
+        let after_push: usize =
+            first_significant(stream, handler_start + 1, cold_end).unwrap_or(handler_start + 1);
+        if matches!(stream.ops.get(after_push), Some(CanonicalOp::Pop)) {
+            first_significant(stream, after_push + 1, cold_end).unwrap_or(after_push + 1)
+        } else {
+            after_push
+        }
+    };
+    let handler_body_end: usize = bare_except_body_end(stream, handler_body_start, cold_end);
+    let handler_body: Vec<Stmt> = if handler_body_start < handler_body_end {
+        structure_stmts(code, stream, handler_body_start, handler_body_end)?
+    } else {
+        Vec::new()
+    };
+    let handler_body: Vec<Stmt> =
+        append_handler_loop_jump(stream, handler_body, handler_body_start, back_jump + 1);
+    let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+        typ: None,
+        name: None,
+        body: non_empty(handler_body),
+        line: None,
+    }];
+    let continuation: Vec<Stmt> = if protected_end < raw_exit {
+        structure_stmts(code, stream, protected_end, raw_exit)?
+    } else {
+        Vec::new()
+    };
+    let mut loop_body: Vec<Stmt> = head;
+    loop_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    loop_body.extend(continuation);
+    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
+    if epilogue.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((loop_body, epilogue)))
+}
+
 pub(super) fn structure_try(
     code: &CodeObject,
     stream: &DecodedStream,

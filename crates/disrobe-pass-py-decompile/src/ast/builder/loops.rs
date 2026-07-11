@@ -10,7 +10,8 @@ use super::try_with::{
     is_async_cleanup_throw_back_edge, is_async_send_back_edge, is_back_edge, is_cond_back_edge,
     is_cond_jump_with_backward_target, is_forward_cond_jump, is_pure_finally_handler_shape,
     is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt, is_value_boundary,
-    is_value_form_shortcircuit, leading_guard_prelude_split, offset_is_unprotected, structure_try,
+    is_value_form_shortcircuit, leading_guard_prelude_split, offset_is_unprotected,
+    structure_for_bare_except_continue_epilogue, structure_try,
 };
 use super::{
     DecodedStream, LoopFrame, PY_CO_FLAG_FUNCTION_SCOPE, loop_frame_has_header, negate_cond_expr,
@@ -1695,11 +1696,19 @@ pub(super) fn structure_loop(
                 let iter: Expr = recover_for_iter(code, stream, region, lo);
                 let (target, body_start): (Expr, usize) = recover_for_target(code, stream, region)
                     .unwrap_or_else(|| (placeholder_target(), region.body_start));
-                let mut body: Vec<Stmt> =
-                    structure_stmts(code, stream, body_start, region.body_end)?;
-                let lifted_tail: Vec<Stmt> =
-                    lift_cold_handler_exit_epilogue(code, stream, region, body_start, &mut body)?;
-                cold_handler_exit_tail = lifted_tail;
+                let body: Vec<Stmt> = if let Some((loop_body, epilogue)) =
+                    structure_for_bare_except_continue_epilogue(code, stream, region, body_start)?
+                {
+                    cold_handler_exit_tail = epilogue;
+                    loop_body
+                } else {
+                    let mut body: Vec<Stmt> =
+                        structure_stmts(code, stream, body_start, region.body_end)?;
+                    cold_handler_exit_tail = lift_cold_handler_exit_epilogue(
+                        code, stream, region, body_start, &mut body,
+                    )?;
+                    body
+                };
                 let orelse: Vec<Stmt> = loop_orelse(code, stream, region, hi)?;
                 Stmt::For {
                     target,
@@ -1808,9 +1817,17 @@ pub(super) fn structure_for_loop_with_iter(
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let (target, body_start): (Expr, usize) = recover_for_target(code, stream, &region)
             .unwrap_or_else(|| (placeholder_target(), region.body_start));
-        let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.body_end)?;
-        cold_handler_exit_tail =
-            lift_cold_handler_exit_epilogue(code, stream, &region, body_start, &mut body)?;
+        let body: Vec<Stmt> = if let Some((loop_body, epilogue)) =
+            structure_for_bare_except_continue_epilogue(code, stream, &region, body_start)?
+        {
+            cold_handler_exit_tail = epilogue;
+            loop_body
+        } else {
+            let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, region.body_end)?;
+            cold_handler_exit_tail =
+                lift_cold_handler_exit_epilogue(code, stream, &region, body_start, &mut body)?;
+            body
+        };
         let orelse: Vec<Stmt> = loop_orelse(code, stream, &region, hi)?;
         Ok(Stmt::For {
             target,
