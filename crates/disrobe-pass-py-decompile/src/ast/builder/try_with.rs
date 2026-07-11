@@ -263,6 +263,109 @@ fn merged_protected_end(stream: &DecodedStream, start: u32, end: u32, target: u3
     body_end
 }
 
+fn is_try_body_scaffolding(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::CleanupThrow
+            | CanonicalOp::EndSend
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::ForIter(_)
+            | CanonicalOp::ForLoopLegacy(_)
+            | CanonicalOp::GetIter
+            | CanonicalOp::GetAiter
+            | CanonicalOp::GetAnext
+            | CanonicalOp::EndAsyncFor
+            | CanonicalOp::Send(_)
+    )
+}
+
+fn is_try_body_normal_exit_op(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Pop
+    )
+}
+
+fn try_body_extends_to_handler(stream: &DecodedStream, region: &TryRegion) -> Option<usize> {
+    if region.is_with || region.is_finally || stream.is_pre_311() {
+        return None;
+    }
+    if (region.handler_start..region.region_end)
+        .any(|k: usize| matches!(stream.ops.get(k), Some(CanonicalOp::CheckEgMatch)))
+    {
+        return None;
+    }
+    let lo_idx: usize = region.protected_end;
+    let hi_idx: usize = region.handler_start.min(stream.ops.len());
+    if lo_idx >= hi_idx || first_significant(stream, lo_idx, hi_idx).is_none() {
+        return None;
+    }
+    let target: u32 = stream.offsets.get(region.handler_start).copied()?;
+    let lo_off: u32 = stream.offsets.get(lo_idx).copied()?;
+    let has_nested_handler: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                e.target != target && (lo_off..target).contains(&e.target) && e.start >= lo_off
+            });
+    let has_loop: bool = (lo_idx..hi_idx).any(|idx: usize| {
+        matches!(
+            stream.ops[idx],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        )
+    });
+    if !has_nested_handler && !has_loop {
+        return None;
+    }
+    let all_body: bool = (lo_idx..hi_idx).all(|idx: usize| {
+        let op: &CanonicalOp = &stream.ops[idx];
+        if is_try_body_scaffolding(op) || is_try_body_normal_exit_op(op) {
+            return true;
+        }
+        let Some(&off): Option<&u32> = stream.offsets.get(idx) else {
+            return false;
+        };
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                off >= e.start
+                    && off < e.end()
+                    && (e.target == target || (lo_off..target).contains(&e.target))
+            })
+    });
+    if !all_body {
+        return None;
+    }
+    Some(hi_idx)
+}
+
 fn gap_is_protected_body_join(stream: &DecodedStream, lo_off: u32, hi_off: u32) -> bool {
     let Some(lo): Option<usize> = stream.index_for_offset_ceil(lo_off) else {
         return false;
@@ -2495,6 +2598,32 @@ pub(super) fn structure_try(
         && let Some(stmts) = try_structure_leading_else_try(code, stream, lo, hi, region)?
     {
         return Ok(stmts);
+    }
+    if !region.is_with
+        && !region.is_finally
+        && !stream.is_pre_311()
+        && find_combo_finally(stream, region, hi).is_none()
+        && let Some(body_end) = try_body_extends_to_handler(stream, region)
+    {
+        let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
+        let body: Vec<Stmt> = {
+            let _cap: StructureHiCapGuard = StructureHiCapGuard::enter(body_end);
+            structure_stmts(code, stream, region.try_start, body_end)?
+        };
+        let handlers: Vec<ExceptHandler> =
+            parse_except_handlers(code, stream, region.handler_start, region.region_end)?;
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        });
+        if region.region_end < hi {
+            out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+        }
+        return Ok(out);
     }
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
     let (stmt, consumed_end, gap_succ): (Stmt, usize, Vec<Stmt>) = if region.is_with {
