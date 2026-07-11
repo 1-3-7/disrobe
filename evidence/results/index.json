@@ -285,7 +285,7 @@
       "floor": 90.0,
       "floor_holds": true,
       "id": "py-stdlib-recompile",
-      "measured": "95.37%",
+      "measured": "95.50%",
       "oracle_strength": "strong",
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
     },
