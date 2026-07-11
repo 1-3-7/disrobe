@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 type TestResult<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 const KNOWN_DLL: &[u8] = include_bytes!("fixtures/loader_generators/known.dll");
+const KNOWN_DLL_LZNT1: &[u8] = include_bytes!("fixtures/loader_generators/known.dll.lznt1");
 const KNOWN_DONUT: &[u8] = include_bytes!("fixtures/loader_generators/known.go-donut.bin");
 const KNOWN_SRDI: &[u8] = include_bytes!("fixtures/loader_generators/known.srdi.bin");
 
@@ -70,6 +71,18 @@ fn fixture_manifest_matches_committed_files() -> TestResult<()> {
         assert_eq!(artifact["bytes"], bytes.len());
         assert_eq!(artifact["sha256"], sha256_hex(bytes));
     }
+    let compression_vectors: &Vec<Value> = manifest["compression_vectors"]
+        .as_array()
+        .ok_or_else(|| failure("fixture compression vector list missing"))?;
+    assert_eq!(compression_vectors.len(), 1);
+    let lznt1: &Value = &compression_vectors[0];
+    assert_eq!(lznt1["path"], "known.dll.lznt1");
+    assert_eq!(lznt1["bytes"], KNOWN_DLL_LZNT1.len());
+    assert_eq!(lznt1["sha256"], sha256_hex(KNOWN_DLL_LZNT1));
+    assert_eq!(lznt1["original_path"], "known.dll");
+    assert_eq!(lznt1["original_bytes"], KNOWN_DLL.len());
+    assert_eq!(lznt1["original_sha256"], sha256_hex(KNOWN_DLL));
+    assert_eq!(lznt1["wrapped_fixture"], false);
     assert!(include_str!("fixtures/loader_generators/known.c").contains("SayHello"));
     assert!(!include_bytes!("fixtures/loader_generators/go-donut.LICENSE").is_empty());
     assert!(!include_bytes!("fixtures/loader_generators/srdi.LICENSE").is_empty());

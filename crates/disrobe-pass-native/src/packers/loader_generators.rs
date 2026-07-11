@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+
+use disrobe_binfmt::containers::decompress_lznt1;
 use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +15,10 @@ const DONUT_GO_MODULE_OFFSET: usize = 2_336;
 const DONUT_MODULE_HEADER_SIZE: usize = 1_320;
 const DONUT_MODULE_DATA_OFFSET: usize = DONUT_GO_MODULE_OFFSET + DONUT_MODULE_HEADER_SIZE;
 const DONUT_GO_MODULE_LEN_OFFSET: usize = 2_328;
+const DONUT_GO_COMPRESSION_OFFSET: usize = DONUT_GO_MODULE_OFFSET + 8;
+const DONUT_GO_COMPRESSED_LEN_OFFSET: usize = DONUT_GO_MODULE_OFFSET + 1_312;
+const DONUT_GO_ORIGINAL_LEN_OFFSET: usize = DONUT_GO_MODULE_OFFSET + 1_316;
+const DONUT_MODULE_SERIALIZED_PADDING: u64 = 8;
 const DONUT_MAX_API_HASHES: u32 = 64;
 const SRDI_X86_BOOTSTRAP_SIZE: usize = 50;
 const SRDI_X64_BOOTSTRAP_SIZE: usize = 69;
@@ -357,13 +364,13 @@ fn recover_srdi(bytes: &[u8], bootstrap: SrdiBootstrap) -> LoaderRecovery {
 
     let (metadata, module): (WrappedModuleMetadata, RecoveryField<Vec<u8>>) = match pe_result {
         Ok(pe) => (
-            pe_metadata(module_region, &pe),
+            pe_metadata(module_region, module_region.length, &pe),
             RecoveryField::known(module_bytes.to_vec()),
         ),
         Err(error) => {
             let reason: String = error.to_string();
             (
-                region_known_metadata(module_region, regions.module_length, reason.clone()),
+                region_known_metadata(module_region, module_region.length, reason.clone()),
                 RecoveryField::unknown(reason),
             )
         }
@@ -637,12 +644,27 @@ fn parse_donut_decoded(
         .map_err(|error| read_error("Donut module header", error))?;
     let module_type_raw: u32 = read_u32(&mut reader, "Donut module type")?;
     let thread: u32 = read_u32(&mut reader, "Donut module thread mode")?;
+    if reader.position() != DONUT_GO_COMPRESSION_OFFSET {
+        return Err(donut_module_error(
+            "serialized compression field offset mismatch",
+        ));
+    }
     let compression_raw: u32 = read_u32(&mut reader, "Donut module compression")?;
     read_bytes(&mut reader, 5 * 256, "Donut module names")?;
     let unicode: u32 = read_u32(&mut reader, "Donut module Unicode mode")?;
     let signature: &[u8] = read_bytes(&mut reader, 8, "Donut module signature")?;
     let mac: u64 = read_u64(&mut reader, "Donut module MAC")?;
+    if reader.position() != DONUT_GO_COMPRESSED_LEN_OFFSET {
+        return Err(donut_module_error(
+            "serialized compressed length field offset mismatch",
+        ));
+    }
     let compressed_length: u32 = read_u32(&mut reader, "Donut compressed length")?;
+    if reader.position() != DONUT_GO_ORIGINAL_LEN_OFFSET {
+        return Err(donut_module_error(
+            "serialized original length field offset mismatch",
+        ));
+    }
     let original_length: u32 = read_u32(&mut reader, "Donut original length")?;
     if reader.position() != DONUT_MODULE_DATA_OFFSET {
         return Err(donut_module_error("serialized header size mismatch"));
@@ -671,26 +693,46 @@ fn parse_donut_decoded(
     }
     let original_size: usize = usize::try_from(original_length)
         .map_err(|_| donut_module_error("original length does not fit the host address size"))?;
+    let original_size_u64: u64 = u64::from(original_length);
     if original_size == 0 || original_size > MAX_RECOVERED_BYTES {
         return Err(donut_module_error(
             "original length is zero or exceeds the 64 MiB cap",
         ));
     }
-    let stored_size: usize = match compression {
+    let header_region: ByteRegion = region(
+        outer.instance_start + DONUT_GO_MODULE_OFFSET,
+        DONUT_MODULE_HEADER_SIZE,
+    );
+    let config: DonutConfig = DonutConfig {
+        entropy: outer.entropy,
+        api_hash_count: RecoveryField::known(api_hash_count),
+        module_type: RecoveryField::known(module_type),
+        compression: RecoveryField::known(compression),
+        module_header_region: RecoveryField::known(header_region),
+    };
+    let (stored_size, storage_compression): (usize, DonutCompression) = match compression {
         DonutCompression::None => {
             if compressed_length != 0 {
                 return Err(donut_module_error(
                     "uncompressed module has a nonzero compressed length",
                 ));
             }
-            original_size
+            (original_size, DonutCompression::None)
+        }
+        DonutCompression::Lznt1 | DonutCompression::Xpress | DonutCompression::XpressHuffman
+            if compressed_length == 0 =>
+        {
+            (original_size, DonutCompression::None)
         }
         DonutCompression::Lznt1
         | DonutCompression::Xpress
         | DonutCompression::XpressHuffman
-        | DonutCompression::Unknown { .. } => usize::try_from(compressed_length).map_err(|_| {
-            donut_module_error("compressed length does not fit the host address size")
-        })?,
+        | DonutCompression::Unknown { .. } => (
+            usize::try_from(compressed_length).map_err(|_| {
+                donut_module_error("compressed length does not fit the host address size")
+            })?,
+            compression,
+        ),
     };
     if stored_size == 0 || stored_size > MAX_RECOVERED_BYTES {
         return Err(donut_module_error(
@@ -701,7 +743,7 @@ fn parse_donut_decoded(
         .map_err(|_| donut_module_error("stored length does not fit u64"))?;
     let expected_serialized_length: u64 = (DONUT_MODULE_HEADER_SIZE as u64)
         .checked_add(stored_size_u64)
-        .and_then(|value: u64| value.checked_add(8))
+        .and_then(|value: u64| value.checked_add(DONUT_MODULE_SERIALIZED_PADDING))
         .ok_or_else(|| donut_module_error("serialized module length overflow"))?;
     if serialized_module_length != expected_serialized_length {
         return Err(donut_module_error(format!(
@@ -724,23 +766,13 @@ fn parse_donut_decoded(
     }
     let module_region: ByteRegion =
         region(outer.instance_start + DONUT_MODULE_DATA_OFFSET, stored_size);
-    let header_region: ByteRegion = region(
-        outer.instance_start + DONUT_GO_MODULE_OFFSET,
-        DONUT_MODULE_HEADER_SIZE,
-    );
-    let config: DonutConfig = DonutConfig {
-        entropy: outer.entropy,
-        api_hash_count: RecoveryField::known(api_hash_count),
-        module_type: RecoveryField::known(module_type),
-        compression: RecoveryField::known(compression),
-        module_header_region: RecoveryField::known(header_region),
-    };
     let (metadata, module): (WrappedModuleMetadata, RecoveryField<Vec<u8>>) = donut_module_output(
         module_bytes,
         module_region,
         original_size,
+        original_size_u64,
         module_type,
-        compression,
+        storage_compression,
         outer.architecture,
         materialize,
     );
@@ -755,82 +787,105 @@ fn donut_module_output(
     module_bytes: &[u8],
     module_region: ByteRegion,
     original_size: usize,
+    original_size_u64: u64,
     module_type: DonutModuleType,
     compression: DonutCompression,
     architecture: LoaderArchitecture,
     materialize: bool,
 ) -> (WrappedModuleMetadata, RecoveryField<Vec<u8>>) {
-    if compression != DonutCompression::None {
-        let reason: String = format!(
-            "Go Donut compression {} is unsupported for static recovery",
-            go_donut_compression_label(compression)
-        );
-        let format: RecoveryField<WrappedModuleFormat> = match module_type {
-            DonutModuleType::VbScript => RecoveryField::known(WrappedModuleFormat::VbScript),
-            DonutModuleType::JavaScript => RecoveryField::known(WrappedModuleFormat::JavaScript),
-            DonutModuleType::Xsl => RecoveryField::known(WrappedModuleFormat::Xsl),
-            DonutModuleType::ManagedDll
-            | DonutModuleType::ManagedExe
-            | DonutModuleType::NativeDll
-            | DonutModuleType::NativeExe
-            | DonutModuleType::Unknown { .. } => RecoveryField::unknown(reason.clone()),
-        };
-        return (
-            WrappedModuleMetadata {
-                region: RecoveryField::known(module_region),
-                format,
-                stored_size: RecoveryField::known(module_region.length),
-                original_size: RecoveryField::known(original_size as u64),
-                entry_point_rva: RecoveryField::unknown(reason.clone()),
-            },
-            RecoveryField::unknown(reason),
-        );
-    }
+    let payload: Cow<'_, [u8]> = match compression {
+        DonutCompression::None => Cow::Borrowed(module_bytes),
+        DonutCompression::Lznt1 => {
+            let decoded: Vec<u8> = match decompress_lznt1(module_bytes, original_size_u64) {
+                Ok(value) => value,
+                Err(error) => {
+                    let reason: String = format!("Go Donut LZNT1 decompression failed: {error}");
+                    return compressed_module_unknown(
+                        module_region,
+                        original_size_u64,
+                        module_type,
+                        reason,
+                    );
+                }
+            };
+            if decoded.len() != original_size {
+                let reason: String = format!(
+                    "Go Donut LZNT1 decompression produced {} bytes, expected {original_size}",
+                    decoded.len()
+                );
+                return compressed_module_unknown(
+                    module_region,
+                    original_size_u64,
+                    module_type,
+                    reason,
+                );
+            }
+            Cow::Owned(decoded)
+        }
+        DonutCompression::Xpress
+        | DonutCompression::XpressHuffman
+        | DonutCompression::Unknown { .. } => {
+            let reason: String = format!(
+                "Go Donut compression {} has no in-tree static decoder",
+                go_donut_compression_label(compression)
+            );
+            return compressed_module_unknown(
+                module_region,
+                original_size_u64,
+                module_type,
+                reason,
+            );
+        }
+    };
+    let payload_bytes: &[u8] = payload.as_ref();
 
     match module_type {
         DonutModuleType::ManagedDll
         | DonutModuleType::ManagedExe
         | DonutModuleType::NativeDll
-        | DonutModuleType::NativeExe => match parse_loader_pe(module_bytes, architecture) {
+        | DonutModuleType::NativeExe => match parse_loader_pe(payload_bytes, architecture) {
             Ok(pe) => {
                 let module: RecoveryField<Vec<u8>> = if materialize {
-                    RecoveryField::known(module_bytes.to_vec())
+                    RecoveryField::known(payload.into_owned())
                 } else {
                     RecoveryField::unknown("inspection did not copy the module")
                 };
-                (pe_metadata(module_region, &pe), module)
+                (pe_metadata(module_region, original_size_u64, &pe), module)
             }
             Err(error) => {
                 let reason: String =
                     format!("Donut module header describes PE data that does not parse: {error}");
                 (
-                    region_known_metadata(module_region, original_size, reason.clone()),
+                    region_known_metadata(module_region, original_size_u64, reason.clone()),
                     RecoveryField::unknown(reason),
                 )
             }
         },
         DonutModuleType::VbScript => script_output(
-            module_bytes,
+            payload,
             module_region,
+            original_size_u64,
             WrappedModuleFormat::VbScript,
             materialize,
         ),
         DonutModuleType::JavaScript => script_output(
-            module_bytes,
+            payload,
             module_region,
+            original_size_u64,
             WrappedModuleFormat::JavaScript,
             materialize,
         ),
         DonutModuleType::Xsl => script_output(
-            module_bytes,
+            payload,
             module_region,
+            original_size_u64,
             WrappedModuleFormat::Xsl,
             materialize,
         ),
         DonutModuleType::Unknown { value } => {
             let reason: String = format!("Donut module type {value} is unknown");
             (
-                region_known_metadata(module_region, original_size, reason.clone()),
+                region_known_metadata(module_region, original_size_u64, reason.clone()),
                 RecoveryField::unknown(reason),
             )
         }
@@ -838,13 +893,14 @@ fn donut_module_output(
 }
 
 fn script_output(
-    module_bytes: &[u8],
+    module_bytes: Cow<'_, [u8]>,
     module_region: ByteRegion,
+    original_size: u64,
     format: WrappedModuleFormat,
     materialize: bool,
 ) -> (WrappedModuleMetadata, RecoveryField<Vec<u8>>) {
     let module: RecoveryField<Vec<u8>> = if materialize {
-        RecoveryField::known(module_bytes.to_vec())
+        RecoveryField::known(module_bytes.into_owned())
     } else {
         RecoveryField::unknown("inspection did not copy the module")
     };
@@ -853,13 +909,48 @@ fn script_output(
             region: RecoveryField::known(module_region),
             format: RecoveryField::known(format),
             stored_size: RecoveryField::known(module_region.length),
-            original_size: RecoveryField::known(module_region.length),
+            original_size: RecoveryField::known(original_size),
             entry_point_rva: RecoveryField::unknown(
                 "script modules do not carry a PE entry point RVA",
             ),
         },
         module,
     )
+}
+
+fn compressed_module_unknown(
+    module_region: ByteRegion,
+    original_size: u64,
+    module_type: DonutModuleType,
+    reason: String,
+) -> (WrappedModuleMetadata, RecoveryField<Vec<u8>>) {
+    let format: RecoveryField<WrappedModuleFormat> = compressed_module_format(module_type, &reason);
+    (
+        WrappedModuleMetadata {
+            region: RecoveryField::known(module_region),
+            format,
+            stored_size: RecoveryField::known(module_region.length),
+            original_size: RecoveryField::known(original_size),
+            entry_point_rva: RecoveryField::unknown(reason.clone()),
+        },
+        RecoveryField::unknown(reason),
+    )
+}
+
+fn compressed_module_format(
+    module_type: DonutModuleType,
+    reason: &str,
+) -> RecoveryField<WrappedModuleFormat> {
+    match module_type {
+        DonutModuleType::VbScript => RecoveryField::known(WrappedModuleFormat::VbScript),
+        DonutModuleType::JavaScript => RecoveryField::known(WrappedModuleFormat::JavaScript),
+        DonutModuleType::Xsl => RecoveryField::known(WrappedModuleFormat::Xsl),
+        DonutModuleType::ManagedDll
+        | DonutModuleType::ManagedExe
+        | DonutModuleType::NativeDll
+        | DonutModuleType::NativeExe
+        | DonutModuleType::Unknown { .. } => RecoveryField::unknown(reason),
+    }
 }
 
 fn unknown_donut(outer: &DonutOuter, reason: String) -> LoaderRecovery {
@@ -882,7 +973,11 @@ fn unknown_donut(outer: &DonutOuter, reason: String) -> LoaderRecovery {
     }
 }
 
-fn pe_metadata(module_region: ByteRegion, pe: &PeImage) -> WrappedModuleMetadata {
+fn pe_metadata(
+    module_region: ByteRegion,
+    original_size: u64,
+    pe: &PeImage,
+) -> WrappedModuleMetadata {
     WrappedModuleMetadata {
         region: RecoveryField::known(module_region),
         format: RecoveryField::known(if pe.is_pe32_plus {
@@ -891,21 +986,21 @@ fn pe_metadata(module_region: ByteRegion, pe: &PeImage) -> WrappedModuleMetadata
             WrappedModuleFormat::Pe32
         }),
         stored_size: RecoveryField::known(module_region.length),
-        original_size: RecoveryField::known(module_region.length),
+        original_size: RecoveryField::known(original_size),
         entry_point_rva: RecoveryField::known(pe.entry_point_rva),
     }
 }
 
 fn region_known_metadata(
     module_region: ByteRegion,
-    original_size: usize,
+    original_size: u64,
     reason: String,
 ) -> WrappedModuleMetadata {
     WrappedModuleMetadata {
         region: RecoveryField::known(module_region),
         format: RecoveryField::unknown(reason.clone()),
         stored_size: RecoveryField::known(module_region.length),
-        original_size: RecoveryField::known(original_size as u64),
+        original_size: RecoveryField::known(original_size),
         entry_point_rva: RecoveryField::unknown(reason),
     }
 }
@@ -1274,6 +1369,99 @@ fn bytes(input: [u32; 4]) -> [u8; 16] {
 mod tests {
     use super::*;
 
+    const KNOWN_DONUT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/loader_generators/known.go-donut.bin"
+    ));
+    const KNOWN_DLL: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/loader_generators/known.dll"
+    ));
+    const KNOWN_DLL_LZNT1: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/loader_generators/known.dll.lznt1"
+    ));
+
+    fn decoded_with_compressed_module(
+        compression: u32,
+        stored: &[u8],
+        original_length: u32,
+    ) -> Result<(DonutOuter, Vec<u8>)> {
+        let outer: DonutOuter = parse_donut_outer(KNOWN_DONUT)?;
+        let mut decoded: Vec<u8> = decode_donut_instance(KNOWN_DONUT, &outer)?;
+        let stored_length: u32 = u32::try_from(stored.len())
+            .map_err(|_| loader_error("Donut compression test", "stored length exceeds u32"))?;
+        let header_length: u64 = u64::try_from(DONUT_MODULE_HEADER_SIZE).map_err(|_| {
+            loader_error("Donut compression test", "module header length exceeds u64")
+        })?;
+        let serialized_length: u64 = header_length
+            .checked_add(u64::from(stored_length))
+            .and_then(|value: u64| value.checked_add(DONUT_MODULE_SERIALIZED_PADDING))
+            .ok_or_else(|| {
+                loader_error(
+                    "Donut compression test",
+                    "serialized module length overflow",
+                )
+            })?;
+        decoded[DONUT_GO_COMPRESSION_OFFSET..DONUT_GO_COMPRESSION_OFFSET + 4]
+            .copy_from_slice(&compression.to_le_bytes());
+        decoded[DONUT_GO_COMPRESSED_LEN_OFFSET..DONUT_GO_COMPRESSED_LEN_OFFSET + 4]
+            .copy_from_slice(&stored_length.to_le_bytes());
+        decoded[DONUT_GO_ORIGINAL_LEN_OFFSET..DONUT_GO_ORIGINAL_LEN_OFFSET + 4]
+            .copy_from_slice(&original_length.to_le_bytes());
+        decoded[DONUT_GO_MODULE_LEN_OFFSET..DONUT_GO_MODULE_LEN_OFFSET + 8]
+            .copy_from_slice(&serialized_length.to_le_bytes());
+        let module_and_padding: &mut [u8] = decoded
+            .get_mut(DONUT_MODULE_DATA_OFFSET..)
+            .ok_or_else(|| loader_error("Donut compression test", "module region is invalid"))?;
+        module_and_padding.fill(0);
+        let data_end: usize = DONUT_MODULE_DATA_OFFSET
+            .checked_add(stored.len())
+            .ok_or_else(|| loader_error("Donut compression test", "stored region overflow"))?;
+        let data_region: &mut [u8] = decoded
+            .get_mut(DONUT_MODULE_DATA_OFFSET..data_end)
+            .ok_or_else(|| {
+                loader_error("Donut compression test", "stored region exceeds instance")
+            })?;
+        data_region.copy_from_slice(stored);
+        Ok((outer, decoded))
+    }
+
+    fn wrapper_from_decoded(outer: &DonutOuter, decoded: &[u8]) -> Result<Vec<u8>> {
+        if decoded.len() != outer.instance_length {
+            return Err(loader_error(
+                "Donut compression test",
+                "decoded instance length changed",
+            ));
+        }
+        let mut encoded: Vec<u8> = decoded.to_vec();
+        match outer.entropy {
+            DonutEntropy::Encrypted => {
+                let encrypted_region: &mut [u8] =
+                    encoded.get_mut(DONUT_CLEAR_HEADER_SIZE..).ok_or_else(|| {
+                        loader_error(
+                            "Donut compression test",
+                            "instance is shorter than the clear header",
+                        )
+                    })?;
+                chaskey_ctr_xor(encrypted_region, outer.key, outer.counter);
+            }
+            DonutEntropy::None | DonutEntropy::RandomNames => {}
+            DonutEntropy::Unknown { value } => {
+                return Err(loader_error(
+                    "Donut compression test",
+                    format!("unsupported entropy mode {value}"),
+                ));
+            }
+        }
+        let mut wrapper: Vec<u8> = KNOWN_DONUT.to_vec();
+        let instance: &mut [u8] = wrapper
+            .get_mut(outer.instance_start..outer.instance_end)
+            .ok_or_else(|| loader_error("Donut compression test", "instance region is invalid"))?;
+        instance.copy_from_slice(&encoded);
+        Ok(wrapper)
+    }
+
     #[test]
     fn chaskey_matches_upstream_vector() {
         let key: [u8; 16] = [
@@ -1292,30 +1480,135 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_donut_compression_emits_unknown_module() -> Result<()> {
-        let packed: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/loader_generators/known.go-donut.bin"
-        ));
-        let outer: DonutOuter = parse_donut_outer(packed)?;
-        let mut decoded: Vec<u8> = decode_donut_instance(packed, &outer)?;
-        decoded[DONUT_GO_MODULE_OFFSET + 8..DONUT_GO_MODULE_OFFSET + 12]
-            .copy_from_slice(&2u32.to_le_bytes());
-        decoded[DONUT_GO_MODULE_OFFSET + 1_312..DONUT_GO_MODULE_OFFSET + 1_316]
-            .copy_from_slice(&18_944u32.to_le_bytes());
+    fn reference_lznt1_stream_recovers_go_donut_module() -> Result<()> {
+        let original_length: u32 = u32::try_from(KNOWN_DLL.len())
+            .map_err(|_| loader_error("Donut compression test", "original length exceeds u32"))?;
+        let (outer, decoded): (DonutOuter, Vec<u8>) =
+            decoded_with_compressed_module(2, KNOWN_DLL_LZNT1, original_length)?;
         let result: DonutDecoded = parse_donut_decoded(&decoded, &outer, true)?;
         assert_eq!(
             result.config.compression,
             RecoveryField::known(DonutCompression::Lznt1)
         );
+        let RecoveryField::Known { value } = result.module else {
+            return Err(loader_error(
+                "Donut compression test",
+                "module was not recovered",
+            ));
+        };
+        assert_eq!(value, KNOWN_DLL);
+        assert_eq!(result.metadata.stored_size, RecoveryField::known(7_357));
+        assert_eq!(result.metadata.original_size, RecoveryField::known(18_944));
+        assert_eq!(
+            result.metadata.format,
+            RecoveryField::known(WrappedModuleFormat::Pe32Plus)
+        );
+        let wrapper: Vec<u8> = wrapper_from_decoded(&outer, &decoded)?;
+        let recovery: LoaderRecovery = recover_loader(&wrapper)?;
+        assert_eq!(
+            recovery.inspection.wrapped_module.stored_size,
+            RecoveryField::known(7_357)
+        );
+        assert_eq!(
+            recovery.inspection.wrapped_module.original_size,
+            RecoveryField::known(18_944)
+        );
+        assert_eq!(recovery.module, RecoveryField::known(KNOWN_DLL.to_vec()));
+        let fingerprint: LoaderFingerprint = fingerprint_loader(&wrapper)
+            .ok_or_else(|| loader_error("Donut compression test", "fingerprint missing"))?;
+        assert_eq!(fingerprint.wrapped_module_region.length, 7_357);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_compressed_length_recovers_stored_plaintext_module() -> Result<()> {
+        let outer: DonutOuter = parse_donut_outer(KNOWN_DONUT)?;
+        let mut decoded: Vec<u8> = decode_donut_instance(KNOWN_DONUT, &outer)?;
+        decoded[DONUT_GO_COMPRESSION_OFFSET..DONUT_GO_COMPRESSION_OFFSET + 4]
+            .copy_from_slice(&2u32.to_le_bytes());
+        let result: DonutDecoded = parse_donut_decoded(&decoded, &outer, true)?;
+        assert_eq!(
+            result.config.compression,
+            RecoveryField::known(DonutCompression::Lznt1)
+        );
+        let RecoveryField::Known { value } = result.module else {
+            return Err(loader_error(
+                "Donut compression test",
+                "stored plaintext module was not recovered",
+            ));
+        };
+        assert_eq!(value, KNOWN_DLL);
+        let wrapper: Vec<u8> = wrapper_from_decoded(&outer, &decoded)?;
+        let recovery: LoaderRecovery = recover_loader(&wrapper)?;
+        let LoaderConfig::Donut(config) = recovery.inspection.config else {
+            return Err(loader_error(
+                "Donut compression test",
+                "Donut config was not retained",
+            ));
+        };
+        assert_eq!(
+            config.compression,
+            RecoveryField::known(DonutCompression::Lznt1)
+        );
+        assert_eq!(recovery.module, RecoveryField::known(KNOWN_DLL.to_vec()));
+        assert!(fingerprint_loader(&wrapper).is_some());
+
+        let mut invalid: Vec<u8> = decoded;
+        let first_module_byte: &mut u8 = invalid
+            .get_mut(DONUT_MODULE_DATA_OFFSET)
+            .ok_or_else(|| loader_error("Donut compression test", "module byte is missing"))?;
+        *first_module_byte = 0;
+        let invalid_result: DonutDecoded = parse_donut_decoded(&invalid, &outer, true)?;
+        let RecoveryField::Unknown { reason } = invalid_result.module else {
+            return Err(loader_error(
+                "Donut compression test",
+                "invalid stored plaintext was reported recovered",
+            ));
+        };
+        assert!(reason.contains("does not parse"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_wrong_length_lznt1_streams_stay_unknown() -> Result<()> {
+        let malformed: [u8; 2] = [0xFF, 0xFF];
+        let (outer, decoded): (DonutOuter, Vec<u8>) =
+            decoded_with_compressed_module(2, &malformed, 18_944)?;
+        let result: DonutDecoded = parse_donut_decoded(&decoded, &outer, true)?;
         let RecoveryField::Unknown { reason } = result.module else {
             return Err(loader_error(
                 "Donut compression test",
-                "compressed module was reported recovered",
+                "malformed compressed module was reported recovered",
             ));
         };
-        assert!(reason.contains("compression"));
-        decoded[DONUT_GO_MODULE_OFFSET + 8..DONUT_GO_MODULE_OFFSET + 12]
+        assert!(reason.contains("LZNT1 decompression failed"));
+
+        let (outer, decoded): (DonutOuter, Vec<u8>) =
+            decoded_with_compressed_module(2, KNOWN_DLL_LZNT1, 18_945)?;
+        let result: DonutDecoded = parse_donut_decoded(&decoded, &outer, true)?;
+        let RecoveryField::Unknown { reason } = result.module else {
+            return Err(loader_error(
+                "Donut compression test",
+                "wrong-length compressed module was reported recovered",
+            ));
+        };
+        assert!(reason.contains("produced 18944 bytes, expected 18945"));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_donut_compression_emits_unknown_module() -> Result<()> {
+        let (outer, mut decoded): (DonutOuter, Vec<u8>) =
+            decoded_with_compressed_module(3, KNOWN_DLL, 18_944)?;
+        let result: DonutDecoded = parse_donut_decoded(&decoded, &outer, true)?;
+        let RecoveryField::Unknown { reason } = result.module else {
+            return Err(loader_error(
+                "Donut compression test",
+                "unsupported compressed module was reported recovered",
+            ));
+        };
+        assert!(reason.contains("XPRESS"));
+        decoded[DONUT_GO_COMPRESSION_OFFSET..DONUT_GO_COMPRESSION_OFFSET + 4]
             .copy_from_slice(&99u32.to_le_bytes());
         assert!(parse_donut_decoded(&decoded, &outer, false).is_err());
         Ok(())

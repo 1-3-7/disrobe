@@ -44,5 +44,22 @@
         "notice": "go-donut.LICENSE"
       }
     }
+  ],
+  "compression_vectors": [
+    {
+      "path": "known.dll.lznt1",
+      "bytes": 7357,
+      "sha256": "f15a85d0cf4eeea9525f19248e61570a66f9d546d1addbf2ac87439da601f430",
+      "original_path": "known.dll",
+      "original_bytes": 18944,
+      "original_sha256": "bd75b0cb9d050816b9e955bdfd5bb6a4656ceb9805673198c597fabc49272f82",
+      "generator": "Windows ntdll RtlCompressBuffer",
+      "generator_version": "10.0.26100.8521",
+      "format_and_engine": "COMPRESSION_FORMAT_LZNT1 | COMPRESSION_ENGINE_MAXIMUM",
+      "uncompressed_chunk_size": 4096,
+      "api_call": "RtlCompressBuffer(0x0102, known.dll, output_capacity=18944, uncompressed_chunk_size=4096)",
+      "wrapped_fixture": false,
+      "reason": "Binject/go-donut fcdcc35d591c954251d96642b93040527cee608d advertises -z 2 as LZNT1 but leaves Zlen zero and stores the input unchanged"
+    }
   ]
 }
