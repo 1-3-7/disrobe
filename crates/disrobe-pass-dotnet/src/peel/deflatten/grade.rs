@@ -4,25 +4,34 @@ use crate::cfg::{Cfg, Terminator};
 use crate::cil::{Instruction, MethodBody};
 use crate::structurize::normalize_branches_pub;
 
-use super::blocks::BlockId;
-use super::rebuild::{Edge, Recovered, RecoveredBlock};
+use super::blocks::{BlockGraph, BlockId};
+use super::rebuild::{
+    Edge, Recovered, RecoveredBlock, RecoveredInstructionBlock, recover_payload_instructions,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NormEdge {
     Goto(usize),
-    Branch(usize, usize),
+    Branch {
+        taken: usize,
+        fallthrough: usize,
+        predicate: String,
+    },
     Return,
 }
 
 #[derive(Debug, Clone)]
 struct NormBlock {
     payload: Vec<String>,
+    instructions: Vec<Instruction>,
     edge: NormEdge,
 }
 
 #[derive(Debug, Clone)]
 struct NormGraph {
+    entry: usize,
     blocks: Vec<NormBlock>,
+    payload_edges_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +49,29 @@ pub struct StructuralScore {
     pub branch_blocks_match: bool,
     pub return_blocks_match: bool,
     pub edge_count_match: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadEdge {
+    Goto(usize),
+    Branch {
+        taken: usize,
+        fallthrough: usize,
+        predicate: String,
+    },
+    Return,
+}
+
+#[derive(Debug, Clone)]
+pub struct PayloadBlock {
+    pub instructions: Vec<Instruction>,
+    pub edge: PayloadEdge,
+}
+
+#[derive(Debug, Clone)]
+pub struct PayloadGraph {
+    pub entry: usize,
+    pub blocks: Vec<PayloadBlock>,
 }
 
 impl StructuralScore {
@@ -76,6 +108,13 @@ fn payload_of(names: &[&str]) -> Vec<String> {
 }
 
 fn norm_from_recovered(recovered: &Recovered) -> NormGraph {
+    norm_from_recovered_with_instructions(recovered, &BTreeMap::new())
+}
+
+fn norm_from_recovered_with_instructions(
+    recovered: &Recovered,
+    instruction_blocks: &BTreeMap<BlockId, Vec<Instruction>>,
+) -> NormGraph {
     let mut id_to_index: BTreeMap<BlockId, usize> = BTreeMap::new();
     for (i, b) in recovered.blocks.iter().enumerate() {
         id_to_index.insert(b.id, i);
@@ -91,17 +130,38 @@ fn norm_from_recovered(recovered: &Recovered) -> NormGraph {
                 .filter(|n: &&String| !is_structural(n))
                 .cloned()
                 .collect();
+            let instructions: Vec<Instruction> = instruction_blocks
+                .get(&b.id)
+                .into_iter()
+                .flatten()
+                .filter(|instruction: &&Instruction| !is_structural(instruction.name.as_str()))
+                .cloned()
+                .collect();
             let edge: NormEdge = match &b.edge {
                 Edge::Goto(t) => NormEdge::Goto(resolve(*t)),
                 Edge::Cond {
-                    taken, fallthrough, ..
-                } => NormEdge::Branch(resolve(*taken), resolve(*fallthrough)),
+                    taken,
+                    fallthrough,
+                    predicate,
+                } => NormEdge::Branch {
+                    taken: resolve(*taken),
+                    fallthrough: resolve(*fallthrough),
+                    predicate: predicate.opcode.clone(),
+                },
                 Edge::Return => NormEdge::Return,
             };
-            NormBlock { payload, edge }
+            NormBlock {
+                payload,
+                instructions,
+                edge,
+            }
         })
         .collect();
-    NormGraph { blocks }
+    NormGraph {
+        entry: resolve(recovered.entry),
+        blocks,
+        payload_edges_complete: true,
+    }
 }
 
 fn norm_from_clean(body: &MethodBody) -> NormGraph {
@@ -115,6 +175,9 @@ fn norm_from_clean(body: &MethodBody) -> NormGraph {
             order.push(bid);
         }
     }
+    let payload_edges_complete: bool = order
+        .iter()
+        .all(|bid: &usize| !matches!(&cfg.terminators[*bid], Terminator::Switch { .. }));
     let resolve = |bid: usize| -> usize { index_map.get(&bid).copied().unwrap_or(usize::MAX) };
     let blocks: Vec<NormBlock> = order
         .iter()
@@ -125,21 +188,37 @@ fn norm_from_clean(body: &MethodBody) -> NormGraph {
                 .map(|i: &Instruction| i.name.as_str())
                 .collect();
             let payload: Vec<String> = payload_of(&names);
+            let instructions: Vec<Instruction> = normalized.instructions[block.first..=block.last]
+                .iter()
+                .filter(|instruction: &&Instruction| !is_structural(instruction.name.as_str()))
+                .cloned()
+                .collect();
             let edge: NormEdge = match &cfg.terminators[bid] {
                 Terminator::Return | Terminator::Throw | Terminator::EndFinally => NormEdge::Return,
-                Terminator::Cond { taken, fallthrough } => {
-                    NormEdge::Branch(resolve(*taken), resolve(*fallthrough))
-                }
+                Terminator::Cond { taken, fallthrough } => NormEdge::Branch {
+                    taken: resolve(*taken),
+                    fallthrough: resolve(*fallthrough),
+                    predicate: normalized.instructions[block.last].name.clone(),
+                },
                 Terminator::FallThrough(t) | Terminator::Goto(t) => NormEdge::Goto(resolve(*t)),
                 Terminator::Switch { cases, fallthrough } => {
                     let first: usize = cases.first().copied().unwrap_or(*fallthrough);
                     NormEdge::Goto(resolve(first))
                 }
             };
-            NormBlock { payload, edge }
+            NormBlock {
+                payload,
+                instructions,
+                edge,
+            }
         })
         .collect();
-    NormGraph { blocks }
+    let entry: usize = if blocks.is_empty() { usize::MAX } else { 0 };
+    NormGraph {
+        entry,
+        blocks,
+        payload_edges_complete,
+    }
 }
 
 fn predecessors(graph: &NormGraph) -> Vec<Vec<usize>> {
@@ -157,13 +236,16 @@ fn predecessors(graph: &NormGraph) -> Vec<Vec<usize>> {
 fn successors(edge: &NormEdge) -> Vec<usize> {
     match edge {
         NormEdge::Goto(t) => vec![*t],
-        NormEdge::Branch(a, b) => vec![*a, *b],
+        NormEdge::Branch {
+            taken, fallthrough, ..
+        } => vec![*taken, *fallthrough],
         NormEdge::Return => Vec::new(),
     }
 }
 
 fn coalesce(graph: &NormGraph) -> NormGraph {
     let mut blocks: Vec<NormBlock> = graph.blocks.clone();
+    let entry: usize = graph.entry;
     let mut changed: bool = true;
     let mut guard: usize = 0;
     while changed && guard < 4096 {
@@ -174,7 +256,7 @@ fn coalesce(graph: &NormGraph) -> NormGraph {
             let NormEdge::Goto(succ) = blocks[i].edge.clone() else {
                 continue;
             };
-            if succ >= blocks.len() || succ == i {
+            if succ >= blocks.len() || succ == i || succ == entry {
                 continue;
             }
             if preds.get(succ).map_or(0, Vec::len) != 1 {
@@ -183,22 +265,29 @@ fn coalesce(graph: &NormGraph) -> NormGraph {
             let mut merged_payload: Vec<String> = blocks[i].payload.clone();
             let succ_payload: Vec<String> = blocks[succ].payload.clone();
             merged_payload.extend(succ_payload);
+            let mut merged_instructions: Vec<Instruction> = blocks[i].instructions.clone();
+            let succ_instructions: Vec<Instruction> = blocks[succ].instructions.clone();
+            merged_instructions.extend(succ_instructions);
             let succ_edge: NormEdge = blocks[succ].edge.clone();
             blocks[i].payload = merged_payload;
+            blocks[i].instructions = merged_instructions;
             blocks[i].edge = redirect_self(succ_edge, succ, i);
             blocks[succ].edge = NormEdge::Return;
             blocks[succ].payload = vec!["__merged__".to_owned()];
+            blocks[succ].instructions.clear();
             redirect_all(&mut blocks, succ, i);
             changed = true;
             break;
         }
     }
-    prune_merged(&blocks)
+    prune_merged(&blocks, entry, graph.payload_edges_complete)
 }
 
 fn preds_of(blocks: &[NormBlock]) -> Vec<Vec<usize>> {
     let g: NormGraph = NormGraph {
+        entry: usize::MAX,
         blocks: blocks.to_vec(),
+        payload_edges_complete: true,
     };
     predecessors(&g)
 }
@@ -207,7 +296,15 @@ fn redirect_self(edge: NormEdge, from: usize, to: usize) -> NormEdge {
     let map = |x: usize| -> usize { if x == from { to } else { x } };
     match edge {
         NormEdge::Goto(t) => NormEdge::Goto(map(t)),
-        NormEdge::Branch(a, b) => NormEdge::Branch(map(a), map(b)),
+        NormEdge::Branch {
+            taken,
+            fallthrough,
+            predicate,
+        } => NormEdge::Branch {
+            taken: map(taken),
+            fallthrough: map(fallthrough),
+            predicate,
+        },
         NormEdge::Return => NormEdge::Return,
     }
 }
@@ -218,13 +315,38 @@ fn redirect_all(blocks: &mut [NormBlock], from: usize, to: usize) {
     }
 }
 
-fn prune_merged(blocks: &[NormBlock]) -> NormGraph {
-    let kept: Vec<NormBlock> = blocks
-        .iter()
-        .filter(|b: &&NormBlock| b.payload.first().map(String::as_str) != Some("__merged__"))
-        .cloned()
-        .collect();
-    NormGraph { blocks: kept }
+fn prune_merged(blocks: &[NormBlock], entry: usize, payload_edges_complete: bool) -> NormGraph {
+    let mut remap: Vec<Option<usize>> = vec![None; blocks.len()];
+    let mut kept: Vec<NormBlock> = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if block.payload.first().map(String::as_str) == Some("__merged__") {
+            continue;
+        }
+        remap[index] = Some(kept.len());
+        kept.push(block.clone());
+    }
+    for block in &mut kept {
+        let map =
+            |target: usize| -> usize { remap.get(target).copied().flatten().unwrap_or(usize::MAX) };
+        block.edge = match block.edge {
+            NormEdge::Goto(target) => NormEdge::Goto(map(target)),
+            NormEdge::Branch {
+                taken,
+                fallthrough,
+                ref predicate,
+            } => NormEdge::Branch {
+                taken: map(taken),
+                fallthrough: map(fallthrough),
+                predicate: predicate.clone(),
+            },
+            NormEdge::Return => NormEdge::Return,
+        };
+    }
+    NormGraph {
+        entry: remap.get(entry).copied().flatten().unwrap_or(usize::MAX),
+        blocks: kept,
+        payload_edges_complete,
+    }
 }
 
 fn signature_of(payload: &[String]) -> String {
@@ -250,7 +372,7 @@ fn fingerprint(graph: &NormGraph) -> CfgFingerprint {
         match &b.edge {
             NormEdge::Return => return_blocks += 1,
             NormEdge::Goto(_) => edge_count += 1,
-            NormEdge::Branch(_, _) => {
+            NormEdge::Branch { .. } => {
                 branch_blocks += 1;
                 edge_count += 2;
             }
@@ -273,6 +395,62 @@ pub fn clean_fingerprint(body: &MethodBody) -> CfgFingerprint {
 #[must_use]
 pub fn recovered_fingerprint(recovered: &Recovered) -> CfgFingerprint {
     fingerprint(&norm_from_recovered(recovered))
+}
+
+fn payload_graph(graph: &NormGraph) -> Option<PayloadGraph> {
+    let coalesced: NormGraph = coalesce(graph);
+    if !coalesced.payload_edges_complete || coalesced.entry >= coalesced.blocks.len() {
+        return None;
+    }
+    let block_count: usize = coalesced.blocks.len();
+    let mut blocks: Vec<PayloadBlock> = Vec::with_capacity(block_count);
+    for block in coalesced.blocks {
+        let edge: PayloadEdge = match block.edge {
+            NormEdge::Goto(target) if target < block_count => PayloadEdge::Goto(target),
+            NormEdge::Branch {
+                taken,
+                fallthrough,
+                predicate,
+            } if taken < block_count && fallthrough < block_count => PayloadEdge::Branch {
+                taken,
+                fallthrough,
+                predicate,
+            },
+            NormEdge::Return => PayloadEdge::Return,
+            NormEdge::Goto(_) | NormEdge::Branch { .. } => return None,
+        };
+        blocks.push(PayloadBlock {
+            instructions: block.instructions,
+            edge,
+        });
+    }
+    Some(PayloadGraph {
+        entry: coalesced.entry,
+        blocks,
+    })
+}
+
+#[must_use]
+pub fn clean_payload_graph(body: &MethodBody) -> Option<PayloadGraph> {
+    payload_graph(&norm_from_clean(body))
+}
+
+#[must_use]
+pub fn recovered_payload_graph(
+    graph: &BlockGraph,
+    body: &MethodBody,
+    recovered: &Recovered,
+) -> Option<PayloadGraph> {
+    let instruction_blocks: Vec<RecoveredInstructionBlock> =
+        recover_payload_instructions(graph, body, recovered)?;
+    let instructions_by_id: BTreeMap<BlockId, Vec<Instruction>> = instruction_blocks
+        .into_iter()
+        .map(|block: RecoveredInstructionBlock| (block.id, block.instructions))
+        .collect();
+    payload_graph(&norm_from_recovered_with_instructions(
+        recovered,
+        &instructions_by_id,
+    ))
 }
 
 #[must_use]
@@ -349,5 +527,13 @@ mod tests {
         let fp: CfgFingerprint = clean_fingerprint(&body);
         assert_eq!(fp.return_blocks, 1);
         assert_eq!(fp.branch_blocks, 0);
+    }
+
+    #[test]
+    fn exact_payload_graph_rejects_multiway_switch() {
+        let body: MethodBody = body_from(&[
+            0x16, 0x45, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x2A, 0x2A,
+        ]);
+        assert!(clean_payload_graph(&body).is_none());
     }
 }

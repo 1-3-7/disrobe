@@ -8,17 +8,26 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use disrobe_pass_dotnet::cil::{Instruction, MethodBody, disassemble, parse_method_body};
+use disrobe_pass_dotnet::cil::{
+    Instruction, MethodBody, OperandValue, disassemble, parse_method_body,
+};
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, Resolver, TypeModel};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::peel::deflatten::decrypt::{
     DecryptInlineReport, InlinedLiteral, inline_decryptors,
 };
-use disrobe_pass_dotnet::peel::deflatten::grade::{StructuralScore, grade};
+use disrobe_pass_dotnet::peel::deflatten::grade::{
+    PayloadEdge, PayloadGraph, StructuralScore, clean_payload_graph, grade, recovered_payload_graph,
+};
+use disrobe_pass_dotnet::peel::deflatten::rebuild::{
+    RecoveredInstructionBlock, recover_payload_instructions,
+};
 use disrobe_pass_dotnet::peel::deflatten::{
     DeflattenSummary, MethodRecovery, analyze, is_flattened, recover_method,
 };
+use disrobe_pass_dotnet::signature::{MethodSig, SIG_KIND_MASK, SIG_VARARG};
+use disrobe_pass_dotnet::tables::TableId;
 
 const CLEAN: &str = "../../corpus/dotnet/cff/CffSample.clean.exe";
 const FLAT: &str = "../../corpus/dotnet/cff/CffSample.ctrlflow.exe";
@@ -178,6 +187,415 @@ fn predicate_protected_exes_run_byte_identically_to_clean() {
 
 const CFF_METHODS: [&str; 6] = ["Crc32", "Classify", "CountWords", "Gcd", "Collatz", "Clamp"];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroundTruthOperand {
+    Raw(OperandValue),
+    ResolvedMethod(String),
+}
+
+type GroundTruthPayloadOp = (u16, GroundTruthOperand);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroundTruthBlock {
+    instructions: Vec<GroundTruthPayloadOp>,
+    edge: PayloadEdge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroundTruthGraph {
+    entry: usize,
+    blocks: Vec<GroundTruthBlock>,
+}
+
+fn resolved_method_identity(resolver: &Resolver, token: u32) -> Option<String> {
+    let name: String = resolver.resolve_token(token);
+    let signature: MethodSig = resolver.callee_signature(token)?;
+    if signature.calling_convention & SIG_KIND_MASK > SIG_VARARG {
+        return None;
+    }
+    let return_type: String = resolver.resolve_type_tokens(&signature.return_type.render());
+    let params: String = signature
+        .params
+        .iter()
+        .map(|param| resolver.resolve_type_tokens(&param.render()))
+        .collect::<Vec<String>>()
+        .join(",");
+    Some(format!(
+        "{name}|cc={}|this={}|explicit={}|generic={}|({params})->{return_type}",
+        signature.calling_convention,
+        signature.has_this,
+        signature.explicit_this,
+        signature.generic_param_count,
+    ))
+}
+
+fn is_method_operand(name: &str) -> bool {
+    matches!(
+        name,
+        "jmp" | "call" | "callvirt" | "newobj" | "ldftn" | "ldvirtftn"
+    )
+}
+
+fn token_table(token: u32) -> Option<TableId> {
+    TableId::from_index(u8::try_from(token >> 24).ok()?)
+}
+
+fn ground_truth_operand(
+    instruction: &Instruction,
+    resolver: &Resolver,
+) -> Option<GroundTruthOperand> {
+    if !is_method_operand(&instruction.name) {
+        return Some(GroundTruthOperand::Raw(instruction.operand.clone()));
+    }
+    let OperandValue::Token(token) = instruction.operand else {
+        return None;
+    };
+    let table: TableId = token_table(token)?;
+    if !matches!(table, TableId::MethodDef | TableId::MemberRef) {
+        return None;
+    }
+    Some(GroundTruthOperand::ResolvedMethod(
+        resolved_method_identity(resolver, token)?,
+    ))
+}
+
+fn ground_truth_payload_graph(
+    graph: PayloadGraph,
+    resolver: &Resolver,
+) -> Option<GroundTruthGraph> {
+    let blocks: Vec<GroundTruthBlock> = graph
+        .blocks
+        .into_iter()
+        .map(|block| {
+            let instructions: Option<Vec<GroundTruthPayloadOp>> = block
+                .instructions
+                .iter()
+                .map(|instruction: &Instruction| {
+                    Some((
+                        instruction.opcode,
+                        ground_truth_operand(instruction, resolver)?,
+                    ))
+                })
+                .collect();
+            Some(GroundTruthBlock {
+                instructions: instructions?,
+                edge: block.edge,
+            })
+        })
+        .collect::<Option<Vec<GroundTruthBlock>>>()?;
+    Some(GroundTruthGraph {
+        entry: graph.entry,
+        blocks,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PredicateFamily {
+    NonZero,
+    Equal,
+    Greater,
+    GreaterOrEqual,
+}
+
+fn predicate_form(name: &str) -> Option<(PredicateFamily, bool)> {
+    let base: &str = name.strip_suffix(".s").unwrap_or(name);
+    match base {
+        "brtrue" => Some((PredicateFamily::NonZero, false)),
+        "brfalse" => Some((PredicateFamily::NonZero, true)),
+        "beq" => Some((PredicateFamily::Equal, false)),
+        "bne.un" => Some((PredicateFamily::Equal, true)),
+        "bgt" => Some((PredicateFamily::Greater, false)),
+        "ble" => Some((PredicateFamily::Greater, true)),
+        "bge" => Some((PredicateFamily::GreaterOrEqual, false)),
+        "blt" => Some((PredicateFamily::GreaterOrEqual, true)),
+        _ => None,
+    }
+}
+
+const fn edge_kind(edge: &PayloadEdge) -> u8 {
+    match edge {
+        PayloadEdge::Goto(_) => 1,
+        PayloadEdge::Branch { .. } => 2,
+        PayloadEdge::Return => 0,
+    }
+}
+
+fn edge_targets(edge: &PayloadEdge) -> Vec<usize> {
+    match edge {
+        PayloadEdge::Goto(target) => vec![*target],
+        PayloadEdge::Branch {
+            taken, fallthrough, ..
+        } => vec![*taken, *fallthrough],
+        PayloadEdge::Return => Vec::new(),
+    }
+}
+
+fn predecessor_counts(graph: &GroundTruthGraph) -> Option<Vec<usize>> {
+    let mut counts: Vec<usize> = vec![0; graph.blocks.len()];
+    for block in &graph.blocks {
+        for target in edge_targets(&block.edge) {
+            let count: &mut usize = counts.get_mut(target)?;
+            *count = count.checked_add(1)?;
+        }
+    }
+    Some(counts)
+}
+
+fn partial_mapping_matches(
+    expected: &GroundTruthGraph,
+    recovered: &GroundTruthGraph,
+    mapping: &[Option<usize>],
+) -> bool {
+    for (expected_source, recovered_source) in mapping.iter().enumerate() {
+        let Some(recovered_source): Option<usize> = *recovered_source else {
+            continue;
+        };
+        let Some(expected_block): Option<&GroundTruthBlock> = expected.blocks.get(expected_source)
+        else {
+            return false;
+        };
+        let Some(recovered_block): Option<&GroundTruthBlock> =
+            recovered.blocks.get(recovered_source)
+        else {
+            return false;
+        };
+        let targets_match = |expected_target: usize, recovered_target: usize| -> bool {
+            mapping
+                .get(expected_target)
+                .is_some_and(|mapped: &Option<usize>| {
+                    mapped.is_none_or(|value| value == recovered_target)
+                })
+        };
+        match (&expected_block.edge, &recovered_block.edge) {
+            (PayloadEdge::Goto(expected), PayloadEdge::Goto(recovered)) => {
+                if !targets_match(*expected, *recovered) {
+                    return false;
+                }
+            }
+            (
+                PayloadEdge::Branch {
+                    taken: expected_taken,
+                    fallthrough: expected_fallthrough,
+                    predicate: expected_predicate,
+                },
+                PayloadEdge::Branch {
+                    taken: recovered_taken,
+                    fallthrough: recovered_fallthrough,
+                    predicate: recovered_predicate,
+                },
+            ) => {
+                let expected_form: Option<(PredicateFamily, bool)> =
+                    predicate_form(expected_predicate);
+                let recovered_form: Option<(PredicateFamily, bool)> =
+                    predicate_form(recovered_predicate);
+                let (expected_true, expected_false, recovered_true, recovered_false): (
+                    usize,
+                    usize,
+                    usize,
+                    usize,
+                ) = match (expected_form, recovered_form) {
+                    (
+                        Some((expected_family, expected_inverted)),
+                        Some((recovered_family, recovered_inverted)),
+                    ) if expected_family == recovered_family => (
+                        if expected_inverted {
+                            *expected_fallthrough
+                        } else {
+                            *expected_taken
+                        },
+                        if expected_inverted {
+                            *expected_taken
+                        } else {
+                            *expected_fallthrough
+                        },
+                        if recovered_inverted {
+                            *recovered_fallthrough
+                        } else {
+                            *recovered_taken
+                        },
+                        if recovered_inverted {
+                            *recovered_taken
+                        } else {
+                            *recovered_fallthrough
+                        },
+                    ),
+                    _ if expected_predicate == recovered_predicate => (
+                        *expected_taken,
+                        *expected_fallthrough,
+                        *recovered_taken,
+                        *recovered_fallthrough,
+                    ),
+                    _ => return false,
+                };
+                if !targets_match(expected_true, recovered_true)
+                    || !targets_match(expected_false, recovered_false)
+                {
+                    return false;
+                }
+            }
+            (PayloadEdge::Return, PayloadEdge::Return) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn search_graph_mapping(
+    expected: &GroundTruthGraph,
+    recovered: &GroundTruthGraph,
+    expected_predecessors: &[usize],
+    recovered_predecessors: &[usize],
+    mapping: &mut [Option<usize>],
+    claimed: &mut [bool],
+    budget: &mut usize,
+) -> bool {
+    if mapping.iter().all(Option::is_some) {
+        return partial_mapping_matches(expected, recovered, mapping);
+    }
+    let mut selected: Option<(usize, Vec<usize>)> = None;
+    for expected_index in 0..expected.blocks.len() {
+        if mapping[expected_index].is_some() {
+            continue;
+        }
+        let expected_block: &GroundTruthBlock = &expected.blocks[expected_index];
+        let candidates: Vec<usize> = recovered
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(recovered_index, recovered_block)| {
+                let predecessor_count_matches: bool = expected_predecessors[expected_index]
+                    == recovered_predecessors[*recovered_index];
+                !claimed[*recovered_index]
+                    && expected_block.instructions == recovered_block.instructions
+                    && edge_kind(&expected_block.edge) == edge_kind(&recovered_block.edge)
+                    && predecessor_count_matches
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if candidates.is_empty() {
+            return false;
+        }
+        if selected
+            .as_ref()
+            .is_none_or(|(_, current): &(usize, Vec<usize>)| candidates.len() < current.len())
+        {
+            selected = Some((expected_index, candidates));
+        }
+    }
+    let Some((expected_index, candidates)): Option<(usize, Vec<usize>)> = selected else {
+        return false;
+    };
+    for recovered_index in candidates {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        mapping[expected_index] = Some(recovered_index);
+        claimed[recovered_index] = true;
+        if partial_mapping_matches(expected, recovered, mapping)
+            && search_graph_mapping(
+                expected,
+                recovered,
+                expected_predecessors,
+                recovered_predecessors,
+                mapping,
+                claimed,
+                budget,
+            )
+        {
+            return true;
+        }
+        claimed[recovered_index] = false;
+        mapping[expected_index] = None;
+    }
+    false
+}
+
+fn exact_payload_graph_match(expected: &GroundTruthGraph, recovered: &GroundTruthGraph) -> bool {
+    const MAX_BLOCKS: usize = 256;
+    const SEARCH_BUDGET: usize = 1_000_000;
+    if expected.blocks.len() != recovered.blocks.len()
+        || expected.blocks.is_empty()
+        || expected.blocks.len() > MAX_BLOCKS
+        || expected.entry >= expected.blocks.len()
+        || recovered.entry >= recovered.blocks.len()
+    {
+        return false;
+    }
+    let Some(expected_predecessors): Option<Vec<usize>> = predecessor_counts(expected) else {
+        return false;
+    };
+    let Some(recovered_predecessors): Option<Vec<usize>> = predecessor_counts(recovered) else {
+        return false;
+    };
+    let expected_entry: &GroundTruthBlock = &expected.blocks[expected.entry];
+    let recovered_entry: &GroundTruthBlock = &recovered.blocks[recovered.entry];
+    if expected_entry.instructions != recovered_entry.instructions
+        || edge_kind(&expected_entry.edge) != edge_kind(&recovered_entry.edge)
+        || expected_predecessors[expected.entry] != recovered_predecessors[recovered.entry]
+    {
+        return false;
+    }
+    let mut mapping: Vec<Option<usize>> = vec![None; expected.blocks.len()];
+    let mut claimed: Vec<bool> = vec![false; recovered.blocks.len()];
+    mapping[expected.entry] = Some(recovered.entry);
+    claimed[recovered.entry] = true;
+    let mut budget: usize = SEARCH_BUDGET;
+    partial_mapping_matches(expected, recovered, &mapping)
+        && search_graph_mapping(
+            expected,
+            recovered,
+            &expected_predecessors,
+            &recovered_predecessors,
+            &mut mapping,
+            &mut claimed,
+            &mut budget,
+        )
+}
+
+#[test]
+fn payload_graph_match_rejects_operands_moved_between_cfg_positions() {
+    let op = |value: i32| -> Vec<GroundTruthPayloadOp> {
+        vec![(0x20, GroundTruthOperand::Raw(OperandValue::I32(value)))]
+    };
+    let expected: GroundTruthGraph = GroundTruthGraph {
+        entry: 0,
+        blocks: vec![
+            GroundTruthBlock {
+                instructions: Vec::new(),
+                edge: PayloadEdge::Branch {
+                    taken: 1,
+                    fallthrough: 2,
+                    predicate: "brtrue".to_owned(),
+                },
+            },
+            GroundTruthBlock {
+                instructions: op(1),
+                edge: PayloadEdge::Return,
+            },
+            GroundTruthBlock {
+                instructions: op(2),
+                edge: PayloadEdge::Return,
+            },
+        ],
+    };
+    let mut moved: GroundTruthGraph = expected.clone();
+    moved.blocks.swap(1, 2);
+    moved.blocks[0].edge = PayloadEdge::Branch {
+        taken: 1,
+        fallthrough: 2,
+        predicate: "brtrue".to_owned(),
+    };
+    assert!(!exact_payload_graph_match(&expected, &moved));
+    let mut inverted: GroundTruthGraph = expected.clone();
+    inverted.blocks[0].edge = PayloadEdge::Branch {
+        taken: 2,
+        fallthrough: 1,
+        predicate: "brfalse".to_owned(),
+    };
+    assert!(exact_payload_graph_match(&expected, &inverted));
+}
+
 const GAUNTLET_CLEAN: &str = "../../corpus/dotnet/confuserex/gauntlet/GauntletSample.clean.exe";
 const GAUNTLET_PROTECTED: &str =
     "../../corpus/dotnet/confuserex/gauntlet/GauntletSample.confuserex2.exe";
@@ -204,8 +622,16 @@ fn load_model(rel: &str) -> (Vec<u8>, PeImage, AssemblyModel) {
     (bytes, pe, resolver.model())
 }
 
-fn clean_body_named(name: &str) -> MethodBody {
-    let bytes: Vec<u8> = load(CLEAN);
+fn load_resolver(rel: &str) -> Resolver {
+    let bytes: Vec<u8> = load(rel);
+    let pe: PeImage = parse(&bytes).expect("pe");
+    let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr");
+    let root: MetadataRoot = parse_metadata_root(&bytes, &pe, &clr).expect("metadata");
+    Resolver::build(&bytes, &pe, &clr, &root).expect("resolver")
+}
+
+fn body_named(rel: &str, name: &str) -> MethodBody {
+    let bytes: Vec<u8> = load(rel);
     let pe: PeImage = parse(&bytes).expect("pe");
     let clr = parse_clr_header(&bytes, &pe).expect("clr");
     let root = parse_metadata_root(&bytes, &pe, &clr).expect("md");
@@ -221,7 +647,15 @@ fn clean_body_named(name: &str) -> MethodBody {
             }
         }
     }
-    panic!("clean method {name} not found");
+    panic!("method {name} not found in {rel}");
+}
+
+fn clean_body_named(name: &str) -> MethodBody {
+    body_named(CLEAN, name)
+}
+
+fn protected_body_named(name: &str) -> MethodBody {
+    body_named(FLAT, name)
 }
 
 fn recover_named(name: &str) -> MethodRecovery {
@@ -338,6 +772,91 @@ fn aggregate_structural_recovery_is_total_against_known_originals() {
         "all benign methods must fully recover vs the known-original clean CFG"
     );
     assert!((pct - 100.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn every_real_confuserex_payload_preserves_exact_opcodes_and_operands() {
+    let clean_resolver: Resolver = load_resolver(CLEAN);
+    let protected_resolver: Resolver = load_resolver(FLAT);
+    let mut matched: usize = 0;
+    let mut expected: usize = 0;
+    let mut raw_representations: usize = 0;
+    for name in CFF_METHODS {
+        let recovery: MethodRecovery = recover_named(name);
+        let clean: MethodBody = clean_body_named(name);
+        let protected: MethodBody = protected_body_named(name);
+        let structural: StructuralScore = grade(&clean, &recovery.recovered);
+        assert!(
+            structural.is_full(),
+            "{name}: structural ground truth changed"
+        );
+        let recovered_payloads: Vec<RecoveredInstructionBlock> =
+            recover_payload_instructions(&recovery.graph, &protected, &recovery.recovered)
+                .expect("recovery graph and protected method body must agree");
+        for payload_block in &recovered_payloads {
+            let block: &disrobe_pass_dotnet::peel::deflatten::rebuild::RecoveredBlock = recovery
+                .recovered
+                .blocks
+                .iter()
+                .find(|block| block.id == payload_block.id)
+                .expect("payload block has a recovered edge block");
+            let projected: Vec<String> = payload_block
+                .instructions
+                .iter()
+                .map(|instruction: &Instruction| instruction.name.clone())
+                .collect();
+            assert_eq!(
+                block.payload, projected,
+                "{name}: legacy opcode-name payload diverged from parsed instruction payload"
+            );
+        }
+        let clean_graph: GroundTruthGraph = ground_truth_payload_graph(
+            clean_payload_graph(&clean).expect("clean payload graph"),
+            &clean_resolver,
+        )
+        .expect("clean metadata operands must resolve");
+        let recovered_graph: GroundTruthGraph = ground_truth_payload_graph(
+            recovered_payload_graph(&recovery.graph, &protected, &recovery.recovered)
+                .expect("recovered payload graph"),
+            &protected_resolver,
+        )
+        .expect("protected metadata operands must resolve");
+        let clean_count: usize = clean_graph
+            .blocks
+            .iter()
+            .map(|block: &GroundTruthBlock| block.instructions.len())
+            .sum();
+        let recovered_count: usize = recovered_graph
+            .blocks
+            .iter()
+            .map(|block: &GroundTruthBlock| block.instructions.len())
+            .sum();
+        assert_eq!(
+            recovered_count, clean_count,
+            "{name}: payload count differs from the clean assembly; clean={clean_graph:?} \
+             recovered={recovered_graph:?}"
+        );
+        assert!(
+            exact_payload_graph_match(&clean_graph, &recovered_graph),
+            "{name}: the rooted opcode-operand control-flow graph differs from the clean \
+             assembly; clean={clean_graph:?} recovered={recovered_graph:?}"
+        );
+        matched += clean_count;
+        expected += clean_count;
+        raw_representations += clean_graph
+            .blocks
+            .iter()
+            .flat_map(|block: &GroundTruthBlock| &block.instructions)
+            .filter(|(_, operand): &&GroundTruthPayloadOp| {
+                matches!(operand, GroundTruthOperand::Raw(_))
+            })
+            .count();
+    }
+    println!(
+        "CFF exact payload recovery: {matched}/{expected} opcode-operand pairs, \
+         {raw_representations}/{expected} raw operand representations"
+    );
+    assert_eq!(matched, expected);
 }
 
 #[test]

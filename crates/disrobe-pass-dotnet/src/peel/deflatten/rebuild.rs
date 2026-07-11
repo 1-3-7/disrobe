@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::cil::{Instruction, OperandValue};
+use crate::cil::{Instruction, MethodBody, OperandValue};
 
 use super::blocks::{BlockGraph, BlockId};
 use super::interp::{
@@ -32,6 +32,50 @@ pub struct Recovered {
     pub blocks: Vec<RecoveredBlock>,
     pub reachable_order: Vec<BlockId>,
     pub unresolved: Vec<BlockId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecoveredInstructionBlock {
+    pub id: BlockId,
+    pub instructions: Vec<Instruction>,
+}
+
+#[must_use]
+pub fn recover_payload_instructions(
+    graph: &BlockGraph,
+    body: &MethodBody,
+    recovered: &Recovered,
+) -> Option<Vec<RecoveredInstructionBlock>> {
+    let mut block_ids: BTreeSet<BlockId> = BTreeSet::new();
+    let mut instruction_offsets: BTreeSet<u32> = BTreeSet::new();
+    let mut retained: usize = 0;
+    let mut payloads: Vec<RecoveredInstructionBlock> = Vec::with_capacity(recovered.blocks.len());
+    for block in &recovered.blocks {
+        if !block_ids.insert(block.id) {
+            return None;
+        }
+        let instructions: Vec<Instruction> = block_payload(graph, &body.instructions, block.id)?;
+        let projected: Vec<String> = instructions
+            .iter()
+            .map(|instruction: &Instruction| instruction.name.clone())
+            .collect();
+        if projected != block.payload {
+            return None;
+        }
+        retained = retained.checked_add(instructions.len())?;
+        if retained > body.instructions.len()
+            || instructions
+                .iter()
+                .any(|instruction: &Instruction| !instruction_offsets.insert(instruction.offset))
+        {
+            return None;
+        }
+        payloads.push(RecoveredInstructionBlock {
+            id: block.id,
+            instructions,
+        });
+    }
+    Some(payloads)
 }
 
 const MAX_VISIT: usize = 8192;
@@ -122,7 +166,11 @@ pub fn deflatten_with_oracle(
                 return None;
             }
             let edge: Edge = edges.get(&bid).cloned()?;
-            let payload: Vec<String> = block_payload(graph, instrs, bid);
+            let payload_instructions: Vec<Instruction> = block_payload(graph, instrs, bid)?;
+            let payload: Vec<String> = payload_instructions
+                .iter()
+                .map(|instruction: &Instruction| instruction.name.clone())
+                .collect();
             Some(RecoveredBlock {
                 id: bid,
                 payload,
@@ -152,15 +200,19 @@ fn block_of(graph: &BlockGraph, offset: u32) -> BlockId {
     graph.start_to_block.get(&offset).copied().unwrap_or(0)
 }
 
-fn block_payload(graph: &BlockGraph, instrs: &[Instruction], bid: BlockId) -> Vec<String> {
-    let Some(block) = graph.blocks.get(bid) else {
-        return Vec::new();
-    };
-    let slice: &[Instruction] = &instrs[block.first..=block.last];
-    strip_key_tail(slice, graph.dispatcher.state_local)
-        .iter()
-        .map(|i: &&Instruction| i.name.clone())
-        .collect()
+fn block_payload(
+    graph: &BlockGraph,
+    instrs: &[Instruction],
+    bid: BlockId,
+) -> Option<Vec<Instruction>> {
+    let block = graph.blocks.get(bid)?;
+    let slice: &[Instruction] = instrs.get(block.first..=block.last)?;
+    Some(
+        strip_key_tail(slice, graph.dispatcher.state_local)
+            .iter()
+            .map(|instruction: &&Instruction| (*instruction).clone())
+            .collect(),
+    )
 }
 
 #[must_use]
@@ -315,6 +367,7 @@ pub fn edge_targets(edge: &Edge) -> Vec<BlockId> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use super::super::blocks::{Block, Dispatcher};
     use super::*;
     use crate::cil::disassemble;
 
@@ -333,6 +386,38 @@ mod tests {
         let payload: Vec<&Instruction> = strip_key_tail(&instrs, 1);
         assert!(payload.len() < full_len, "tail must be stripped");
         assert_eq!(payload.first().map(|i| i.name.as_str()), Some("ldarg.0"));
+    }
+
+    #[test]
+    fn preserves_distinct_operands_for_repeated_opcodes_in_order() {
+        let mut code: Vec<u8> = vec![0x20];
+        code.extend_from_slice(&7i32.to_le_bytes());
+        code.push(0x20);
+        code.extend_from_slice(&11i32.to_le_bytes());
+        code.push(0x2A);
+        let instructions: Vec<Instruction> = disassemble(&code).expect("disasm");
+        let graph: BlockGraph = BlockGraph {
+            blocks: vec![Block {
+                start: 0,
+                first: 0,
+                last: instructions.len() - 1,
+            }],
+            start_to_block: std::collections::BTreeMap::from([(0, 0)]),
+            dispatcher: Dispatcher {
+                state_local: 3,
+                case_count: 1,
+                switch_index: usize::MAX,
+                switch_targets: Vec::new(),
+                header_entry: u32::MAX,
+            },
+        };
+        let payload: Vec<Instruction> = block_payload(&graph, &instructions, 0).expect("payload");
+        let operands: Vec<OperandValue> = payload
+            .iter()
+            .filter(|instruction: &&Instruction| instruction.name == "ldc.i4")
+            .map(|instruction: &Instruction| instruction.operand.clone())
+            .collect();
+        assert_eq!(operands, [OperandValue::I32(7), OperandValue::I32(11)]);
     }
 
     #[test]
