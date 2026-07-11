@@ -1,7 +1,9 @@
 use crate::roundtrip::{ConstValue, NameValue, NormToken, NormalizedOp, NormalizedSequence};
-use disrobe_pass_py_disasm::{Instruction, disassemble};
+use disrobe_pass_py_disasm::{Instruction, cache_size, disassemble};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion};
 use std::collections::BTreeMap;
+
+const CACHE_ENTRY_SIZE: i64 = 2;
 
 const PADDING_NAMES: &[&str] = &[
     "NOP",
@@ -146,9 +148,19 @@ struct StagedOp {
     kind: StagedKind,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct JumpSite {
+    source_offset: usize,
+    caches: u32,
+}
+
 #[derive(Debug, Clone)]
 enum StagedKind {
-    Raw { name: String, arg: Option<u32> },
+    Raw {
+        name: String,
+        arg: Option<u32>,
+        caches: u32,
+    },
     LoadConst(u32),
     LoadFast(u32),
     StoreFast(u32),
@@ -158,7 +170,7 @@ enum StagedKind {
 #[must_use]
 pub fn normalize_sequence(code: &CodeObject, version: PyVersion) -> NormalizedSequence {
     let instructions: Vec<Instruction> = disassemble(code, version);
-    let stage1: Vec<StagedOp> = expand_primitives(&instructions);
+    let stage1: Vec<StagedOp> = expand_primitives(&instructions, version);
     let stage2: Vec<StagedOp> = strip_async_cold_handler(stage1);
     let stage3: Vec<StagedOp> = strip_generator_entry_yield(stage2);
     let offset_to_index: BTreeMap<usize, usize> = build_offset_index(&stage3);
@@ -172,7 +184,7 @@ pub fn normalize_sequence(code: &CodeObject, version: PyVersion) -> NormalizedSe
 }
 
 #[must_use]
-fn expand_primitives(instructions: &[Instruction]) -> Vec<StagedOp> {
+fn expand_primitives(instructions: &[Instruction], version: PyVersion) -> Vec<StagedOp> {
     let mut out: Vec<StagedOp> = Vec::with_capacity(instructions.len());
     for ins in instructions {
         let name: &str = ins.opname.as_str();
@@ -235,6 +247,7 @@ fn expand_primitives(instructions: &[Instruction]) -> Vec<StagedOp> {
             kind: StagedKind::Raw {
                 name: name.to_owned(),
                 arg: ins.arg,
+                caches: u32::from(cache_size(ins.opcode, version)),
             },
         });
     }
@@ -271,11 +284,14 @@ fn lower_to_normalized(
                 operator_id: None,
                 raw_arg: None,
             }),
-            StagedKind::Raw { name, arg } => {
+            StagedKind::Raw { name, arg, caches } => {
                 lower_raw_op(
                     name.as_str(),
                     *arg,
-                    op.source_offset,
+                    JumpSite {
+                        source_offset: op.source_offset,
+                        caches: *caches,
+                    },
                     code,
                     version,
                     offset_to_index,
@@ -323,7 +339,7 @@ fn make_local_op(canon: &'static str, arg: u32, code: &CodeObject) -> Normalized
 fn lower_raw_op(
     name: &str,
     arg: Option<u32>,
-    source_offset: usize,
+    site: JumpSite,
     code: &CodeObject,
     version: PyVersion,
     offset_to_index: &BTreeMap<usize, usize>,
@@ -354,13 +370,11 @@ fn lower_raw_op(
         out.push(op);
         return;
     }
-    if let Some(op) = lower_jump_family(name, arg_value, source_offset, version, offset_to_index) {
+    if let Some(op) = lower_jump_family(name, arg_value, site, version, offset_to_index) {
         out.push(op);
         return;
     }
-    if let Some(op) =
-        lower_iter_jump_family(name, arg_value, source_offset, version, offset_to_index)
-    {
+    if let Some(op) = lower_iter_jump_family(name, arg_value, site, version, offset_to_index) {
         out.push(op);
         return;
     }
@@ -597,14 +611,14 @@ fn lower_arity_family(name: &str, arg: Option<u32>) -> Option<NormalizedOp> {
 fn lower_jump_family(
     name: &str,
     arg_value: u32,
-    source_offset: usize,
+    site: JumpSite,
     version: PyVersion,
     offset_to_index: &BTreeMap<usize, usize>,
 ) -> Option<NormalizedOp> {
     let profile: JumpProfile = classify_jump(name)?;
-    let target_offset: i64 =
-        jump_target_offset(source_offset, arg_value, profile.direction, version);
-    let target_index: Option<u32> = resolve_jump_target(target_offset, offset_to_index);
+    let target_offset: i64 = jump_target_offset(site, arg_value, profile.direction, version);
+    let target_index: Option<u32> =
+        resolve_jump_target(target_offset, profile.direction, offset_to_index);
     Some(NormalizedOp {
         token: NormToken::Op(canonical_jump_name(profile)),
         const_value: None,
@@ -628,14 +642,14 @@ fn classify_iter_jump(name: &str) -> Option<&'static str> {
 fn lower_iter_jump_family(
     name: &str,
     arg_value: u32,
-    source_offset: usize,
+    site: JumpSite,
     version: PyVersion,
     offset_to_index: &BTreeMap<usize, usize>,
 ) -> Option<NormalizedOp> {
     let canon: &'static str = classify_iter_jump(name)?;
-    let target_offset: i64 =
-        jump_target_offset(source_offset, arg_value, JumpDirection::Forward, version);
-    let target_index: Option<u32> = resolve_jump_target(target_offset, offset_to_index);
+    let target_offset: i64 = jump_target_offset(site, arg_value, JumpDirection::Forward, version);
+    let target_index: Option<u32> =
+        resolve_jump_target(target_offset, JumpDirection::Forward, offset_to_index);
     Some(NormalizedOp {
         token: NormToken::Op(canon.into()),
         const_value: None,
@@ -649,19 +663,23 @@ fn lower_iter_jump_family(
 #[must_use]
 fn resolve_jump_target(
     target_offset: i64,
+    direction: JumpDirection,
     offset_to_index: &BTreeMap<usize, usize>,
 ) -> Option<u32> {
     if target_offset < 0 {
         return None;
     }
     let unsigned: usize = usize::try_from(target_offset).ok()?;
-    let direct: Option<usize> = offset_to_index.get(&unsigned).copied();
-    let resolved: Option<usize> = direct.or_else(|| {
-        offset_to_index
+    if let Some(direct) = offset_to_index.get(&unsigned).copied() {
+        return u32::try_from(direct).ok();
+    }
+    let resolved: Option<usize> = match direction {
+        JumpDirection::Forward => offset_to_index.range(unsigned..).next().map(|(_, v)| *v),
+        JumpDirection::Backward => offset_to_index
             .range(..=unsigned)
             .next_back()
-            .map(|(_, v)| *v)
-    });
+            .map(|(_, v)| *v),
+    };
     resolved.and_then(|v| u32::try_from(v).ok())
 }
 
@@ -696,14 +714,17 @@ const fn str_eq(a: &str, b: &str) -> bool {
 
 #[must_use]
 fn jump_target_offset(
-    source_offset: usize,
+    site: JumpSite,
     arg: u32,
     direction: JumpDirection,
     version: PyVersion,
 ) -> i64 {
     let step: i64 = if version.is_wordcode() { 2 } else { 3 };
-    let source_signed: i64 = i64::try_from(source_offset).unwrap_or(i64::MAX);
-    let base: i64 = source_signed.saturating_add(step);
+    let source_signed: i64 = i64::try_from(site.source_offset).unwrap_or(i64::MAX);
+    let cache_bytes: i64 = i64::from(site.caches).saturating_mul(CACHE_ENTRY_SIZE);
+    let base: i64 = source_signed
+        .saturating_add(step)
+        .saturating_add(cache_bytes);
     let arg_in_bytes: i64 = if version.is_wordcode() {
         i64::from(arg).saturating_mul(2)
     } else {
@@ -973,4 +994,118 @@ fn strip_generator_entry_yield(seq: Vec<StagedOp>) -> Vec<StagedOp> {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{JumpDirection, JumpSite, jump_target_offset, resolve_jump_target};
+    use disrobe_py_marshal::PyVersion;
+    use std::collections::BTreeMap;
+
+    const PY314: PyVersion = PyVersion {
+        major: 3,
+        minor: 14,
+    };
+    const PY310: PyVersion = PyVersion {
+        major: 3,
+        minor: 10,
+    };
+
+    #[test]
+    fn forward_target_includes_the_branch_cache_bytes() {
+        let with_cache: i64 = jump_target_offset(
+            JumpSite {
+                source_offset: 32,
+                caches: 1,
+            },
+            3,
+            JumpDirection::Forward,
+            PY314,
+        );
+        assert_eq!(with_cache, 42);
+        let no_cache: i64 = jump_target_offset(
+            JumpSite {
+                source_offset: 32,
+                caches: 0,
+            },
+            3,
+            JumpDirection::Forward,
+            PY314,
+        );
+        assert_eq!(no_cache, 40);
+    }
+
+    #[test]
+    fn backward_target_includes_the_branch_cache_bytes() {
+        let with_cache: i64 = jump_target_offset(
+            JumpSite {
+                source_offset: 100,
+                caches: 1,
+            },
+            10,
+            JumpDirection::Backward,
+            PY314,
+        );
+        assert_eq!(with_cache, 84);
+    }
+
+    #[test]
+    fn pre_cache_versions_do_not_shift_targets() {
+        let target: i64 = jump_target_offset(
+            JumpSite {
+                source_offset: 10,
+                caches: 0,
+            },
+            4,
+            JumpDirection::Forward,
+            PY310,
+        );
+        assert_eq!(target, 20);
+    }
+
+    #[must_use]
+    fn dropped_pad_map() -> BTreeMap<usize, usize> {
+        let mut map: BTreeMap<usize, usize> = BTreeMap::new();
+        map.insert(38, 4);
+        map.insert(40, 5);
+        map.insert(44, 6);
+        map
+    }
+
+    #[test]
+    fn forward_dropped_landing_pad_resolves_to_next_surviving_op() {
+        let map: BTreeMap<usize, usize> = dropped_pad_map();
+        assert_eq!(
+            resolve_jump_target(42, JumpDirection::Forward, &map),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn backward_dropped_landing_pad_resolves_to_preceding_op() {
+        let map: BTreeMap<usize, usize> = dropped_pad_map();
+        assert_eq!(
+            resolve_jump_target(42, JumpDirection::Backward, &map),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn direct_hits_ignore_direction() {
+        let map: BTreeMap<usize, usize> = dropped_pad_map();
+        assert_eq!(
+            resolve_jump_target(40, JumpDirection::Forward, &map),
+            Some(5)
+        );
+        assert_eq!(
+            resolve_jump_target(44, JumpDirection::Backward, &map),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn forward_past_last_surviving_op_is_unresolved() {
+        let map: BTreeMap<usize, usize> = dropped_pad_map();
+        assert_eq!(resolve_jump_target(100, JumpDirection::Forward, &map), None);
+    }
 }
