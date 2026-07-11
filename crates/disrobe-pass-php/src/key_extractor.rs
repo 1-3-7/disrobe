@@ -197,39 +197,17 @@ pub enum AesOutcome {
 
 #[must_use]
 pub fn aes_cbc_decrypt(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> AesOutcome {
-    use cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
-
     if iv.len() != 16 || ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
         return AesOutcome::BadInput;
     }
-    let mut buf: Vec<u8> = ciphertext.to_vec();
-    let plaintext: Option<Result<Vec<u8>, ()>> = match key.len() {
-        16 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
-            .ok()
-            .map(|d: cbc::Decryptor<aes::Aes128>| {
-                d.decrypt_padded_mut::<Pkcs7>(&mut buf)
-                    .map(<[u8]>::to_vec)
-                    .map_err(drop)
-            }),
-        24 => cbc::Decryptor::<aes::Aes192>::new_from_slices(key, iv)
-            .ok()
-            .map(|d: cbc::Decryptor<aes::Aes192>| {
-                d.decrypt_padded_mut::<Pkcs7>(&mut buf)
-                    .map(<[u8]>::to_vec)
-                    .map_err(drop)
-            }),
-        32 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
-            .ok()
-            .map(|d: cbc::Decryptor<aes::Aes256>| {
-                d.decrypt_padded_mut::<Pkcs7>(&mut buf)
-                    .map(<[u8]>::to_vec)
-                    .map_err(drop)
-            }),
-        _ => return AesOutcome::BadInput,
-    };
-    match plaintext {
-        Some(Ok(plain)) => AesOutcome::Plaintext(plain),
-        Some(Err(())) => AesOutcome::PaddingError,
-        None => AesOutcome::BadInput,
+    match disrobe_core::codec::aes_cbc_decrypt(
+        key,
+        iv,
+        ciphertext,
+        disrobe_core::codec::CbcPadding::Pkcs7,
+    ) {
+        Ok(plain) => AesOutcome::Plaintext(plain),
+        Err(disrobe_core::codec::DecodeError::BadPadding) => AesOutcome::PaddingError,
+        Err(_) => AesOutcome::BadInput,
     }
 }

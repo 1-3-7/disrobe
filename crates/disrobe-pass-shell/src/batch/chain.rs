@@ -129,28 +129,8 @@ fn try_aes_cbc(cipher: &[u8], key_raw: &str, iv_text: Option<&String>) -> Option
 }
 
 fn aes_cbc_decrypt(cipher: &[u8], key: &[u8], iv: &[u8]) -> Option<Vec<u8>> {
-    use cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
-
-    let mut buf: Vec<u8> = cipher.to_vec();
-    let plain: Vec<u8> = match key.len() {
-        16 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
-            .ok()?
-            .decrypt_padded_mut::<Pkcs7>(&mut buf)
-            .ok()?
-            .to_vec(),
-        24 => cbc::Decryptor::<aes::Aes192>::new_from_slices(key, iv)
-            .ok()?
-            .decrypt_padded_mut::<Pkcs7>(&mut buf)
-            .ok()?
-            .to_vec(),
-        32 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
-            .ok()?
-            .decrypt_padded_mut::<Pkcs7>(&mut buf)
-            .ok()?
-            .to_vec(),
-        _ => return None,
-    };
-    Some(plain)
+    disrobe_core::codec::aes_cbc_decrypt(key, iv, cipher, disrobe_core::codec::CbcPadding::Pkcs7)
+        .ok()
 }
 
 fn key_material_candidates(raw: &str) -> Vec<Vec<u8>> {

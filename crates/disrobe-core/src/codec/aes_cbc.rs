@@ -1,4 +1,4 @@
-use aes::{Aes128, Aes256};
+use aes::{Aes128, Aes192, Aes256};
 use cbc::Decryptor;
 use cipher::block_padding::{NoPadding, Pkcs7};
 use cipher::{BlockDecryptMut, KeyIvInit};
@@ -8,10 +8,12 @@ use super::DecodeError;
 const AES_BLOCK: usize = 16;
 const AES_IV_LEN: usize = 16;
 const AES128_KEY_LEN: usize = 16;
+const AES192_KEY_LEN: usize = 24;
 const AES256_KEY_LEN: usize = 32;
 const MAX_AES_INPUT: usize = 1 << 26;
 
 type Aes128CbcDec = Decryptor<Aes128>;
+type Aes192CbcDec = Decryptor<Aes192>;
 type Aes256CbcDec = Decryptor<Aes256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,18 @@ pub fn aes_cbc_decrypt(
         }
         (AES128_KEY_LEN, CbcPadding::NoPadding) => {
             let engine: Aes128CbcDec = new_engine(key, iv)?;
+            engine
+                .decrypt_padded_mut::<NoPadding>(&mut buffer)
+                .map_err(|_| DecodeError::BadPadding)?
+        }
+        (AES192_KEY_LEN, CbcPadding::Pkcs7) => {
+            let engine: Aes192CbcDec = new_engine(key, iv)?;
+            engine
+                .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+                .map_err(|_| DecodeError::BadPadding)?
+        }
+        (AES192_KEY_LEN, CbcPadding::NoPadding) => {
+            let engine: Aes192CbcDec = new_engine(key, iv)?;
             engine
                 .decrypt_padded_mut::<NoPadding>(&mut buffer)
                 .map_err(|_| DecodeError::BadPadding)?
@@ -142,10 +156,26 @@ mod tests {
     }
 
     #[test]
+    fn aes192_cbc_nopadding_nist_sp800_38a() {
+        let key: Vec<u8> = unhex("8e73b0f7da0e6452c810f32b809079e562f8ead2522c6b7b");
+        let iv: Vec<u8> = unhex("000102030405060708090a0b0c0d0e0f");
+        let ciphertext: Vec<u8> = unhex(
+            "4f021db243bc633d7178183a9fa071e8b4d9ada9ad7dedf4e5e738763f69145a571b242012fb7ae07fa9baac3df102e008b0e27988598881d920a9e64f5615cd",
+        );
+        let expected: Vec<u8> = unhex(
+            "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+        );
+        assert_eq!(
+            aes_cbc_decrypt(&key, &iv, &ciphertext, CbcPadding::NoPadding).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn rejects_bad_key_length() {
         assert!(matches!(
-            aes_cbc_decrypt(&[0u8; 24], &[0u8; 16], &[0u8; 16], CbcPadding::NoPadding),
-            Err(DecodeError::BadLength { len: 24 })
+            aes_cbc_decrypt(&[0u8; 20], &[0u8; 16], &[0u8; 16], CbcPadding::NoPadding),
+            Err(DecodeError::BadLength { len: 20 })
         ));
     }
 
