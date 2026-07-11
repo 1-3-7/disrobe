@@ -1,5 +1,6 @@
 use std::io::Read as _;
 
+use disrobe_core::codec::crc32_ieee;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -671,15 +672,7 @@ fn bcj_x86_decode(data: &[u8]) -> Vec<u8> {
 }
 
 fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask: u32 = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
+    crc32_ieee(data)
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {

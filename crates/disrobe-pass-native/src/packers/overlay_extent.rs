@@ -1,4 +1,5 @@
 use disrobe_bytes::align_up_usize as align_up;
+use disrobe_core::codec::crc32_ieee;
 use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::packers::overlay::ArchiveKind;
@@ -177,9 +178,7 @@ fn gzip_extent(window: &[u8]) -> Option<usize> {
 }
 
 fn crc32(bytes: &[u8]) -> u32 {
-    let mut hasher: crc32fast::Hasher = crc32fast::Hasher::new();
-    hasher.update(bytes);
-    hasher.finalize()
+    crc32_ieee(bytes)
 }
 
 fn xz_stream_end(window: &[u8], stream_start: usize) -> Option<usize> {

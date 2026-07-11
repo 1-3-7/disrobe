@@ -1,6 +1,4 @@
 #![allow(clippy::many_single_char_names)]
-use aes::Aes128;
-use aes::Aes256;
 use cbc::Decryptor;
 use cbc::cipher::block_padding::NoPadding;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
@@ -50,11 +48,8 @@ pub fn aes128_cbc_decrypt_no_pad(
     if !data.len().is_multiple_of(16) {
         return Err(CryptoError::BadBlockAlignment);
     }
-    let mut buf: Vec<u8> = data.to_vec();
-    Decryptor::<Aes128>::new(key.into(), iv.into())
-        .decrypt_padded_mut::<NoPadding>(&mut buf)
-        .map_err(|_| CryptoError::BadBlockAlignment)?;
-    Ok(buf)
+    disrobe_core::codec::aes_cbc_decrypt(key, iv, data, disrobe_core::codec::CbcPadding::NoPadding)
+        .map_err(|_| CryptoError::BadBlockAlignment)
 }
 
 pub fn aes256_cbc_decrypt_no_pad(
@@ -68,11 +63,8 @@ pub fn aes256_cbc_decrypt_no_pad(
     if !data.len().is_multiple_of(16) {
         return Err(CryptoError::BadBlockAlignment);
     }
-    let mut buf: Vec<u8> = data.to_vec();
-    Decryptor::<Aes256>::new(key.into(), iv.into())
-        .decrypt_padded_mut::<NoPadding>(&mut buf)
-        .map_err(|_| CryptoError::BadBlockAlignment)?;
-    Ok(buf)
+    disrobe_core::codec::aes_cbc_decrypt(key, iv, data, disrobe_core::codec::CbcPadding::NoPadding)
+        .map_err(|_| CryptoError::BadBlockAlignment)
 }
 
 #[must_use]
@@ -243,6 +235,8 @@ const BLOWFISH_S: [[u32; 256]; 4] = [
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+    use aes::Aes128;
+
     use super::*;
 
     #[test]

@@ -1,3 +1,4 @@
+use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt, crc32_ieee};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -222,42 +223,29 @@ fn u64_le(bytes: &[u8], off: usize) -> Option<u64> {
 }
 
 fn crc32(data: &[u8]) -> u32 {
-    crc32fast::hash(data)
+    crc32_ieee(data)
 }
 
-type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
-type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
-
 fn aes128_cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    use cipher::{BlockDecryptMut, KeyIvInit};
     if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
         return Err(Error::Firmware(format!(
             "aes-128-cbc: ciphertext length {} is not a positive multiple of the 16-byte block size",
             ciphertext.len()
         )));
     }
-    let mut buf: Vec<u8> = ciphertext.to_vec();
-    let cipher: Aes128CbcDec = Aes128CbcDec::new(key.into(), iv.into());
-    cipher
-        .decrypt_padded_mut::<cipher::block_padding::NoPadding>(&mut buf)
-        .map_err(|e| Error::Firmware(format!("aes-128-cbc decrypt failed: {e}")))?;
-    Ok(buf)
+    aes_cbc_decrypt(key, iv, ciphertext, CbcPadding::NoPadding)
+        .map_err(|e| Error::Firmware(format!("aes-128-cbc decrypt failed: {e}")))
 }
 
 fn aes256_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    use cipher::{BlockDecryptMut, KeyIvInit};
     if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
         return Err(Error::Firmware(format!(
             "aes-256-cbc: ciphertext length {} is not a positive multiple of the 16-byte block size",
             ciphertext.len()
         )));
     }
-    let mut buf: Vec<u8> = ciphertext.to_vec();
-    let cipher: Aes256CbcDec = Aes256CbcDec::new(key.into(), iv.into());
-    cipher
-        .decrypt_padded_mut::<cipher::block_padding::NoPadding>(&mut buf)
-        .map_err(|e| Error::Firmware(format!("aes-256-cbc decrypt failed: {e}")))?;
-    Ok(buf)
+    aes_cbc_decrypt(key, iv, ciphertext, CbcPadding::NoPadding)
+        .map_err(|e| Error::Firmware(format!("aes-256-cbc decrypt failed: {e}")))
 }
 
 const DLINK_SHRS_KEY: [u8; 16] = [

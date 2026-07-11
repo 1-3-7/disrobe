@@ -1,13 +1,7 @@
-use aes::Aes128;
-use cbc::Decryptor;
-use cipher::block_padding::Pkcs7;
-use cipher::{BlockDecryptMut, KeyIvInit};
 use disrobe_core::codec::cipher::rc4_apply;
 use md5::{Digest, Md5};
 
 use super::object::{EncryptionStatus, PdfDict, PdfDocument, PdfObject};
-
-type Aes128CbcDec = Decryptor<Aes128>;
 
 const PAD: [u8; 32] = [
     0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
@@ -231,12 +225,13 @@ fn aes_cbc_decrypt(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     if usable == 0 {
         return None;
     }
-    let mut buffer: Vec<u8> = cipher_text[..usable].to_vec();
-    let decryptor: Aes128CbcDec = Aes128CbcDec::new_from_slices(key, iv).ok()?;
-    decryptor
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
-        .ok()
-        .map(<[u8]>::to_vec)
+    disrobe_core::codec::aes_cbc_decrypt(
+        key,
+        iv,
+        &cipher_text[..usable],
+        disrobe_core::codec::CbcPadding::Pkcs7,
+    )
+    .ok()
 }
 
 pub fn decrypt_document(doc: &mut PdfDocument, encryption: &Encryption) {
