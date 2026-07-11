@@ -3,10 +3,10 @@
 - id: `py-stdlib-recompile`
 - ecosystem: python
 - claim: disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.
-- measured: 95.35%
+- measured: 95.37%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)
 - reproduce: `cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate`
 - floor: 90.00 (holds)
-- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.35 (5994 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD f04fa875 (the selfcheck re-lowering accept-gate extended to exception regions, re-nesting a sibling try into the preceding try body per the recovered exception-table handler order)
+- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.37 (5995 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 002538c3 (the main structurer keeps an innermost guarded return inside the try body when its non-raising tail sits past the exception-table end, recovering the dropped nested conditional)
