@@ -3021,6 +3021,23 @@ fn else_span_encloses_loop_backedge(stream: &DecodedStream, try_start: usize, k:
         && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t < try_start)
 }
 
+fn else_span_target_is_bare_loop_continue(
+    stream: &DecodedStream,
+    try_start: usize,
+    target: usize,
+) -> bool {
+    let mut k: usize = target;
+    while k < stream.ops.len()
+        && matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    {
+        k += 1;
+    }
+    k < stream.ops.len() && else_span_encloses_loop_backedge(stream, try_start, k)
+}
+
 fn else_span_loop_epilogue_cap(
     stream: &DecodedStream,
     region: &TryRegion,
@@ -3043,8 +3060,11 @@ fn else_span_loop_epilogue_cap(
         return else_end;
     }
     let tail_reachable_from_body: bool = (else_start..back_edge).any(|k: usize| {
-        resolve_jump_target(stream, k, &stream.ops[k])
-            .is_some_and(|t: usize| t > back_edge && t < else_end)
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| {
+            t > back_edge
+                && t < else_end
+                && !else_span_target_is_bare_loop_continue(stream, region.try_start, t)
+        })
     });
     if tail_reachable_from_body {
         else_end
