@@ -17,7 +17,7 @@ Built for forensic and recovery work where reproducibility matters:
 - **Deterministic.** No model anywhere in the decompile path. The same input produces byte-identical output on every machine and every run, usable as evidence and as a diff baseline.
 - **Single static binary.** No JVM, no Python runtime, no Docker image required to run the core. Builds from one `cargo build --release`. Drops into CI headlessly.
 - **Content-addressed.** Every recovered artifact persists as a `.dr` envelope: an rkyv hot payload plus a postcard cold sidecar, rooted by a BLAKE3 hash. Cache hits are byte-identical and chains compose offline.
-- **Honest.** Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262), plus <!-- m:py_stdlib_pinned_pct -->95.58%<!-- /m --> on the pinned 200-module corpus (5920 of 6286). Recovery that is not perfect is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that **disrobe** cannot fully unpack are reported as detect-only by design, never faked.
+- **Honest.** Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262), plus <!-- m:py_stdlib_pinned_pct -->95.61%<!-- /m --> on the pinned 200-module corpus (5920 of 6286). Recovery that is not perfect is labelled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that **disrobe** cannot fully unpack are reported as detect-only by design, never faked.
 
 ## Who this is for
 
@@ -38,7 +38,7 @@ Every figure below is produced by a committed test gate or a local measurement h
 
 | Ecosystem | Measured | Oracle |
 |---|---|---|
-| Python bytecode | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262); <!-- m:py_stdlib_pinned_pct -->95.58%<!-- /m --> on the pinned 200-module corpus (5920 of 6286) | recompile on CPython 3.14.5, opcode diff |
+| Python bytecode | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (16880 of 18262); <!-- m:py_stdlib_pinned_pct -->95.61%<!-- /m --> on the pinned 200-module corpus (5920 of 6286) | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | 150 of 191 proven-correct (CI floor); 166 of 191 measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 98.4% op-coverage on the 36 parseable corpus modules (124 of 126); 50 of 50 execution-eligible functions equivalent | execution differential under wasmtime |
 | JVM classfile | 131 of 131 methods recompile error-free | real `javac` |
