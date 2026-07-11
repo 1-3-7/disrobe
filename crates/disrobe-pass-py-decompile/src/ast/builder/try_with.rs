@@ -1577,6 +1577,7 @@ pub(super) fn try_structure_guarded_try(
             first_significant(stream, guard + 1, false_target).unwrap_or(guard + 1);
         structure_stmts(code, stream, body_start, region.region_end)?
     } else {
+        let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
         let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
         let handlers: Vec<ExceptHandler> =
             parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
@@ -1600,7 +1601,8 @@ pub(super) fn try_structure_guarded_try(
             finalbody: Vec::new(),
             line: None,
         };
-        let mut body: Vec<Stmt> = vec![try_stmt];
+        let mut body: Vec<Stmt> = prelude;
+        body.push(try_stmt);
         if !span_is_else {
             body.extend(structure_stmts(code, stream, body_end, false_target)?);
         }
