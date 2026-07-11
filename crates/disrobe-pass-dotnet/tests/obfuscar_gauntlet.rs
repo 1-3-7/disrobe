@@ -5,16 +5,18 @@
     clippy::missing_panics_doc
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root, read_strings_heap};
+use disrobe_pass_dotnet::metadata::{
+    MetadataRoot, parse_metadata_root, read_strings_heap, read_us_heap_strings,
+};
 use disrobe_pass_dotnet::pass::{PassSummary, analyze};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::peel::obfuscar::{
     ObfuscarEvidence, classify_obfuscar_naming, detect_obfuscar, peel_obfuscar,
 };
-use disrobe_pass_dotnet::peel::{NameClassification, PeelReport, classify_names};
+use disrobe_pass_dotnet::peel::{NameClassification, PeelReport, PeelStrategy, classify_names};
 use disrobe_pass_dotnet::protectors::Protector;
 
 const CLEAN_REL: &str =
@@ -46,6 +48,8 @@ const HIDDEN_STRING_LITERALS: &[&[u8]] = &[
     b"north", b"south", b"central", b"ledger=", b"audits=", b"record",
 ];
 
+const HIDDEN_ACCESSORS: &str = include_str!("fixtures/obfuscar_accessor_map/expected.tsv");
+
 const INLINED_CONST_BANNER: &[u8] = b"DISROBE_OBFUSCAR_LICENSE_BANNER_2026";
 
 fn load(rel: &str) -> Vec<u8> {
@@ -65,6 +69,43 @@ fn strings_heap(image: &[u8]) -> BTreeMap<u32, String> {
     let header: &disrobe_pass_dotnet::metadata::StreamHeader =
         root.streams.get("#Strings").expect("#Strings heap present");
     read_strings_heap(md, *header)
+}
+
+fn user_strings(image: &[u8]) -> BTreeSet<String> {
+    let pe: PeImage = parse(image).expect("PE parse");
+    let clr: ClrHeader = parse_clr_header(image, &pe).expect("CLR header");
+    let root: MetadataRoot = parse_metadata_root(image, &pe, &clr).expect("metadata root");
+    let md: &[u8] = pe
+        .slice_at_rva(image, clr.metadata.rva, clr.metadata.size as usize)
+        .expect("metadata slice");
+    let Some(header): Option<&disrobe_pass_dotnet::metadata::StreamHeader> =
+        root.streams.get("#US")
+    else {
+        return BTreeSet::new();
+    };
+    read_us_heap_strings(md, *header).into_iter().collect()
+}
+
+fn hidden_accessors() -> BTreeMap<u32, Vec<u8>> {
+    HIDDEN_ACCESSORS
+        .lines()
+        .map(|line: &str| {
+            let (token, bytes): (&str, &str) = line.split_once('\t').expect("token and bytes");
+            let token: u32 =
+                u32::from_str_radix(token.strip_prefix("0x").expect("token prefix"), 16)
+                    .expect("token hex");
+            assert!(bytes.len().is_multiple_of(2));
+            let bytes: Vec<u8> = bytes
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair: &[u8]| {
+                    u8::from_str_radix(std::str::from_utf8(pair).expect("UTF-8 hex"), 16)
+                        .expect("byte hex")
+                })
+                .collect();
+            (token, bytes)
+        })
+        .collect()
 }
 
 fn appears_utf8_or_utf16(image: &[u8], needle: &[u8]) -> bool {
@@ -234,6 +275,46 @@ fn string_hiding_moved_literals_out_of_plaintext() {
         "Obfuscar HideStrings must move these {} ldstr literals out of plaintext; {obf_visible} \
          still appear verbatim in the obfuscated assembly",
         HIDDEN_STRING_LITERALS.len()
+    );
+}
+
+#[test]
+fn peel_recovers_every_hidden_string_from_real_obfuscar_field_rva_carrier() {
+    let clean: Vec<u8> = load(CLEAN_REL);
+    let obf: Vec<u8> = load(OBFUSCATED_REL);
+    let clean_literals: BTreeSet<String> = user_strings(&clean);
+    let obfuscated_literals: BTreeSet<String> = user_strings(&obf);
+    let expected_literals: BTreeSet<Vec<u8>> = clean_literals
+        .difference(&obfuscated_literals)
+        .map(|value: &String| value.as_bytes().to_vec())
+        .collect();
+    assert_eq!(
+        expected_literals.len(),
+        15,
+        "ground-truth clean assembly must expose 15 unique ldstr values removed by Obfuscar"
+    );
+    let expected_accessors: BTreeMap<u32, Vec<u8>> = hidden_accessors();
+    let mapped_literals: BTreeSet<Vec<u8>> = expected_accessors.values().cloned().collect();
+    assert_eq!(mapped_literals, expected_literals);
+
+    let report: PeelReport = peel_obfuscar(&obf).expect("peel real Obfuscar assembly");
+    let recovered: BTreeMap<u32, Vec<u8>> = report
+        .recovered_strings
+        .iter()
+        .map(|value| (value.method_token, value.text.as_bytes().to_vec()))
+        .collect();
+    assert_eq!(
+        recovered, expected_accessors,
+        "the protected FieldRVA carrier must recover the runtime-verified accessor-token map byte-for-byte"
+    );
+    assert_eq!(report.strategy, PeelStrategy::StaticStringRecovery);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note: &String| note.contains("15/15")),
+        "the peel report must expose the complete recovered/accessor count: {:?}",
+        report.notes
     );
 }
 

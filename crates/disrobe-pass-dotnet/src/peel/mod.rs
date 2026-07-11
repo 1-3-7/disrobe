@@ -43,6 +43,7 @@ pub mod ilprotector_bodies;
 pub mod maxtocode;
 pub mod maxtocode_bodies;
 pub mod obfuscar;
+pub mod obfuscar_strings;
 pub mod skater;
 pub mod smartassembly;
 pub mod spices_net;
@@ -114,6 +115,8 @@ pub enum PeelStrategy {
     ReportOnlyEncryptedResource,
 
     EncryptedResourceExtracted,
+
+    StaticStringRecovery,
 
     DetectOnlyNativeOrVm,
 }

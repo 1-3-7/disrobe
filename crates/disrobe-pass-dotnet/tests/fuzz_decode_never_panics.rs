@@ -20,6 +20,7 @@ use disrobe_pass_dotnet::peel::confuserex_constants::{
     decode_pool_string, decrypt_constants_blob, peel_confuserex_constants,
 };
 use disrobe_pass_dotnet::peel::koivm::koistream::parse_koistream;
+use disrobe_pass_dotnet::peel::peel_obfuscar;
 use disrobe_pass_dotnet::peel::static_decrypt::recover_static_decoders;
 use disrobe_pass_dotnet::peel::{deflatten, eazvm, koivm};
 use disrobe_pass_dotnet::protectors::Protector;
@@ -154,6 +155,7 @@ fn drive_whole_image(image: &[u8], seed: u32, full_decompile: bool, desc: &str) 
     drive_peel!(peel_goliath);
     drive_peel!(peel_ilprotector);
     drive_peel!(peel_maxtocode);
+    drive_peel!(peel_obfuscar);
     drive_peel!(peel_skater);
     drive_peel!(peel_smartassembly);
     drive_peel!(peel_spices_net);

@@ -73,7 +73,10 @@ fn build_field_env(image: &[u8], pe: &PeImage, resolver: &Resolver) -> FieldInit
     env
 }
 
-fn init_array_tokens(resolver: &Resolver, blob: &[u8]) -> std::collections::BTreeSet<u32> {
+pub(crate) fn init_array_tokens(
+    resolver: &Resolver,
+    blob: &[u8],
+) -> std::collections::BTreeSet<u32> {
     use crate::signature::TypeSigOrVoid;
 
     let mut tokens: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
@@ -190,7 +193,7 @@ fn is_corelib_named_type(
     )
 }
 
-fn is_corelib_type_ref(
+pub(crate) fn is_corelib_type_ref(
     resolver: &Resolver,
     blob: &[u8],
     type_ref: RowRef,

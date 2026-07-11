@@ -859,80 +859,179 @@ const SECT_EH_TABLE: u8 = 0x01;
 const SECT_FAT_FORMAT: u8 = 0x40;
 const SECT_MORE_SECTS: u8 = 0x80;
 
-pub fn parse_method_body(bytes: &[u8]) -> Result<MethodBody> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MethodHeader {
+    max_stack: u16,
+    code_size: u32,
+    local_var_sig_tok: u32,
+    init_locals: bool,
+    header_size: usize,
+    more_sects: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MethodBodyExtent {
+    pub code_size: u32,
+    pub consumed_bytes: usize,
+}
+
+fn parse_method_header(bytes: &[u8]) -> Result<MethodHeader> {
     if bytes.is_empty() {
         return Err(Error::CilTruncated(0));
     }
     let header_byte: u8 = bytes[0];
-    let mut more_sects: bool = false;
-    let (max_stack, code_size, local_var_sig_tok, init_locals, header_size): (
-        u16,
-        u32,
-        u32,
-        bool,
-        usize,
-    ) = if (header_byte & 0x03) == COR_IL_METHOD_TINY {
+    if (header_byte & 0x03) == COR_IL_METHOD_TINY {
         let code_size_v: u32 = u32::from(header_byte >> 2);
-        (8, code_size_v, 0, false, 1)
+        Ok(MethodHeader {
+            max_stack: 8,
+            code_size: code_size_v,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            header_size: 1,
+            more_sects: false,
+        })
     } else if (header_byte & 0x03) == COR_IL_METHOD_FAT {
         if bytes.len() < 12 {
             return Err(Error::CilTruncated(bytes.len()));
         }
         let flags_size: u16 = u16::from_le_bytes([bytes[0], bytes[1]]);
         let init: bool = (flags_size & COR_IL_METHOD_INIT_LOCALS) != 0;
-        more_sects = (flags_size & COR_IL_METHOD_MORE_SECTS) != 0;
+        let more_sects: bool = (flags_size & COR_IL_METHOD_MORE_SECTS) != 0;
         let header_words: usize = usize::from(flags_size >> 12);
+        if header_words < 3 {
+            return Err(Error::BadMethodHeader(header_byte));
+        }
         let max_stack_v: u16 = u16::from_le_bytes([bytes[2], bytes[3]]);
         let code_size_v: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let local_sig: u32 = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        (max_stack_v, code_size_v, local_sig, init, header_words * 4)
+        Ok(MethodHeader {
+            max_stack: max_stack_v,
+            code_size: code_size_v,
+            local_var_sig_tok: local_sig,
+            init_locals: init,
+            header_size: header_words * 4,
+            more_sects,
+        })
     } else {
-        return Err(Error::BadMethodHeader(header_byte));
+        Err(Error::BadMethodHeader(header_byte))
+    }
+}
+
+pub(crate) fn method_body_code_size(bytes: &[u8]) -> Result<u32> {
+    Ok(parse_method_header(bytes)?.code_size)
+}
+
+pub(crate) fn method_body_extent(bytes: &[u8]) -> Result<MethodBodyExtent> {
+    let header: MethodHeader = parse_method_header(bytes)?;
+    let code_size: usize =
+        usize::try_from(header.code_size).map_err(|_| Error::CilTruncated(usize::MAX))?;
+    let code_end: usize = header
+        .header_size
+        .checked_add(code_size)
+        .ok_or(Error::CilTruncated(usize::MAX))?;
+    if code_end > bytes.len() {
+        return Err(Error::CilTruncated(code_end));
+    }
+    let consumed_bytes: usize = if header.more_sects {
+        exception_sections_end(bytes, code_end)?
+    } else {
+        code_end
     };
-    let body_end: usize = header_size + code_size as usize;
+    Ok(MethodBodyExtent {
+        code_size: header.code_size,
+        consumed_bytes,
+    })
+}
+
+pub fn parse_method_body(bytes: &[u8]) -> Result<MethodBody> {
+    let header: MethodHeader = parse_method_header(bytes)?;
+    let extent: MethodBodyExtent = method_body_extent(bytes)?;
+    let code_size: usize =
+        usize::try_from(header.code_size).map_err(|_| Error::CilTruncated(usize::MAX))?;
+    let body_end: usize = header
+        .header_size
+        .checked_add(code_size)
+        .ok_or(Error::CilTruncated(usize::MAX))?;
     if body_end > bytes.len() {
         return Err(Error::CilTruncated(body_end));
     }
-    let code: &[u8] = &bytes[header_size..body_end];
+    let code: &[u8] = &bytes[header.header_size..body_end];
     let instructions: Vec<Instruction> = disassemble(code)?;
-    let exception_clauses: Vec<ExceptionClause> = if more_sects {
-        parse_exception_sections(bytes, body_end)?
+    let exception_clauses: Vec<ExceptionClause> = if header.more_sects {
+        parse_exception_sections(&bytes[..extent.consumed_bytes], body_end)?
     } else {
         Vec::new()
     };
     dbg_kv("cil-body", || {
-        let fat: bool = header_size != 1;
+        let fat: bool = header.header_size != 1;
         format!(
-            "header={} code_size={code_size} max_stack={max_stack} locals_tok=0x{local_var_sig_tok:x} init_locals={init_locals} instrs={} eh_clauses={}",
+            "header={} code_size={} max_stack={} locals_tok=0x{:x} init_locals={} instrs={} eh_clauses={}",
             if fat { "fat" } else { "tiny" },
+            header.code_size,
+            header.max_stack,
+            header.local_var_sig_tok,
+            header.init_locals,
             instructions.len(),
             exception_clauses.len()
         )
     });
     Ok(MethodBody {
-        max_stack,
-        code_size,
-        local_var_sig_tok,
-        init_locals,
+        max_stack: header.max_stack,
+        code_size: header.code_size,
+        local_var_sig_tok: header.local_var_sig_tok,
+        init_locals: header.init_locals,
         instructions,
         exception_clauses,
     })
 }
 
-fn parse_exception_sections(bytes: &[u8], code_end: usize) -> Result<Vec<ExceptionClause>> {
-    let mut pos: usize = (code_end + 3) & !3usize;
-    let mut clauses: Vec<ExceptionClause> = Vec::new();
+fn exception_sections_end(bytes: &[u8], code_end: usize) -> Result<usize> {
+    let mut pos: usize = code_end
+        .checked_add(3)
+        .ok_or(Error::CilTruncated(usize::MAX))?
+        & !3usize;
     loop {
-        if pos >= bytes.len() {
-            break;
+        let header_end: usize = pos.checked_add(4).ok_or(Error::CilTruncated(usize::MAX))?;
+        if header_end > bytes.len() {
+            return Err(Error::CilTruncated(header_end));
         }
         let kind_byte: u8 = bytes[pos];
         let is_fat: bool = kind_byte & SECT_FAT_FORMAT != 0;
         let more: bool = kind_byte & SECT_MORE_SECTS != 0;
-        let is_eh: bool = kind_byte & SECT_EH_TABLE != 0;
-        if pos + 4 > bytes.len() {
-            break;
+        let data_size: usize = if is_fat {
+            usize::from(bytes[pos + 1])
+                | (usize::from(bytes[pos + 2]) << 8)
+                | (usize::from(bytes[pos + 3]) << 16)
+        } else {
+            usize::from(bytes[pos + 1])
+        };
+        let section_end: usize = pos
+            .checked_add(data_size.max(4))
+            .ok_or(Error::CilTruncated(usize::MAX))?;
+        if section_end > bytes.len() {
+            return Err(Error::CilTruncated(section_end));
         }
+        if !more {
+            return Ok(section_end);
+        }
+        pos = section_end
+            .checked_add(3)
+            .ok_or(Error::CilTruncated(usize::MAX))?
+            & !3usize;
+    }
+}
+
+fn parse_exception_sections(bytes: &[u8], code_end: usize) -> Result<Vec<ExceptionClause>> {
+    let mut pos: usize = code_end
+        .checked_add(3)
+        .ok_or(Error::CilTruncated(usize::MAX))?
+        & !3usize;
+    let mut clauses: Vec<ExceptionClause> = Vec::new();
+    loop {
+        let kind_byte: u8 = bytes[pos];
+        let is_fat: bool = kind_byte & SECT_FAT_FORMAT != 0;
+        let more: bool = kind_byte & SECT_MORE_SECTS != 0;
+        let is_eh: bool = kind_byte & SECT_EH_TABLE != 0;
         let data_size: usize = if is_fat {
             (usize::from(bytes[pos + 1]))
                 | (usize::from(bytes[pos + 2]) << 8)
@@ -940,7 +1039,9 @@ fn parse_exception_sections(bytes: &[u8], code_end: usize) -> Result<Vec<Excepti
         } else {
             usize::from(bytes[pos + 1])
         };
-        let section_end: usize = pos + data_size.max(4);
+        let section_end: usize = pos
+            .checked_add(data_size.max(4))
+            .ok_or(Error::CilTruncated(usize::MAX))?;
         if section_end > bytes.len() {
             return Err(Error::CilTruncated(section_end));
         }
@@ -950,7 +1051,10 @@ fn parse_exception_sections(bytes: &[u8], code_end: usize) -> Result<Vec<Excepti
         if !more {
             break;
         }
-        pos = (section_end + 3) & !3usize;
+        pos = section_end
+            .checked_add(3)
+            .ok_or(Error::CilTruncated(usize::MAX))?
+            & !3usize;
     }
     Ok(clauses)
 }
@@ -1413,6 +1517,47 @@ mod tests {
         assert_eq!(body.instructions[0].name, "ldarg.0");
         assert_eq!(body.instructions[1].name, "ldarg.1");
         assert_eq!(body.instructions[2].name, "ret");
+    }
+
+    #[test]
+    fn method_body_code_size_preflights_truncated_fat_body() {
+        let flags_size: u16 = (3u16 << 12) | COR_IL_METHOD_FAT as u16;
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&flags_size.to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&(2u32 * 1024 * 1024).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            method_body_code_size(&bytes).expect("fat header"),
+            2 * 1024 * 1024
+        );
+        assert!(parse_method_body(&bytes).is_err());
+    }
+
+    #[test]
+    fn method_body_extent_counts_chained_sections() {
+        let flags_size: u16 = (3u16 << 12) | COR_IL_METHOD_FAT as u16 | COR_IL_METHOD_MORE_SECTS;
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&flags_size.to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[SECT_MORE_SECTS, 4, 0, 0]);
+        bytes.extend_from_slice(&[0, 4, 0, 0]);
+        let extent: MethodBodyExtent = method_body_extent(&bytes).expect("extent");
+        assert_eq!(extent.consumed_bytes, bytes.len());
+        assert!(parse_method_body(&bytes).is_ok());
+    }
+
+    #[test]
+    fn method_body_extent_rejects_missing_section() {
+        let flags_size: u16 = (3u16 << 12) | COR_IL_METHOD_FAT as u16 | COR_IL_METHOD_MORE_SECTS;
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(&flags_size.to_le_bytes());
+        bytes.extend_from_slice(&8u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert!(method_body_extent(&bytes).is_err());
     }
 
     #[test]

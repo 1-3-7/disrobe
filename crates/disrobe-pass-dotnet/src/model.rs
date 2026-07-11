@@ -326,7 +326,7 @@ impl Resolver {
     }
 
     #[must_use]
-    fn blob(&self, index: u32) -> Option<&[u8]> {
+    pub(crate) fn blob(&self, index: u32) -> Option<&[u8]> {
         let i: usize = index as usize;
         if i >= self.blob.len() {
             return None;
@@ -338,6 +338,20 @@ impl Resolver {
             return None;
         }
         Some(&self.blob[start..end])
+    }
+
+    #[must_use]
+    pub(crate) fn string_len(&self, index: u32) -> Option<usize> {
+        if index == 0 {
+            return Some(0);
+        }
+        let start: usize = usize::try_from(index).ok()?;
+        let rest: &[u8] = self.strings_heap.get(start..)?;
+        Some(
+            rest.iter()
+                .position(|byte: &u8| *byte == 0)
+                .unwrap_or(rest.len()),
+        )
     }
 
     #[must_use]

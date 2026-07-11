@@ -273,11 +273,13 @@ impl TypeSigOrVoid {
 }
 
 const MAX_SIG_DEPTH: usize = 256;
+const MAX_SIGNATURE_NODES: usize = 4096;
 
 struct SigReader<'a> {
     bytes: &'a [u8],
     pos: usize,
     depth: usize,
+    nodes: usize,
 }
 
 impl<'a> SigReader<'a> {
@@ -287,6 +289,7 @@ impl<'a> SigReader<'a> {
             bytes,
             pos: 0,
             depth: 0,
+            nodes: 0,
         }
     }
 
@@ -310,6 +313,24 @@ impl<'a> SigReader<'a> {
         self.bytes.len().saturating_sub(self.pos)
     }
 
+    fn signature_capacity(&self, count: u32) -> Result<usize> {
+        let count: usize = usize::try_from(count)
+            .map_err(|_| Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES))?;
+        if count > MAX_SIGNATURE_NODES.saturating_sub(self.nodes) {
+            return Err(Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES));
+        }
+        Ok(count)
+    }
+
+    fn consume_node(&mut self) -> Result<()> {
+        self.nodes = self
+            .nodes
+            .checked_add(1)
+            .filter(|nodes: &usize| *nodes <= MAX_SIGNATURE_NODES)
+            .ok_or(Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES))?;
+        Ok(())
+    }
+
     #[inline]
     fn compressed(&mut self) -> Result<u32> {
         let (v, n): (u32, usize) =
@@ -322,15 +343,20 @@ impl<'a> SigReader<'a> {
         let coded: u32 = self.compressed()?;
         let tag: u32 = coded & 0x03;
         let rid: u32 = coded >> 2;
+        if rid == 0 {
+            return Err(Error::BadCompressedUint(self.pos));
+        }
         let table: u32 = match tag {
+            0 => 0x02,
             1 => 0x01,
             2 => 0x1B,
-            _ => 0x02,
+            _ => return Err(Error::BadCompressedUint(self.pos)),
         };
         Ok((table << 24) | rid)
     }
 
     fn type_sig(&mut self) -> Result<TypeSig> {
+        self.consume_node()?;
         self.depth += 1;
         if self.depth > MAX_SIG_DEPTH {
             return Err(Error::SignatureTooDeep(MAX_SIG_DEPTH));
@@ -409,8 +435,8 @@ impl<'a> SigReader<'a> {
             et::GENERICINST => {
                 let base: TypeSig = self.type_sig()?;
                 let argc: u32 = self.compressed()?;
-                let mut args: Vec<TypeSig> =
-                    Vec::with_capacity((argc as usize).min(self.remaining()));
+                let capacity: usize = self.signature_capacity(argc)?;
+                let mut args: Vec<TypeSig> = Vec::with_capacity(capacity);
                 for _ in 0..argc {
                     args.push(self.type_sig()?);
                 }
@@ -442,11 +468,11 @@ impl<'a> SigReader<'a> {
             TypeSig::Void => TypeSigOrVoid::Void,
             other => TypeSigOrVoid::Type(other),
         };
-        let mut params: Vec<TypeSig> =
-            Vec::with_capacity((param_count as usize).min(self.remaining()));
+        let capacity: usize = self.signature_capacity(param_count)?;
+        let mut params: Vec<TypeSig> = Vec::with_capacity(capacity);
         for _ in 0..param_count {
             if self.peek().is_none() {
-                break;
+                return Err(Error::BadCompressedUint(self.pos));
             }
             params.push(self.type_sig()?);
         }
@@ -465,7 +491,12 @@ pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
     if blob.is_empty() {
         return Err(Error::BadCompressedUint(0));
     }
-    SigReader::new(blob).parse_method_inner()
+    let mut reader: SigReader<'_> = SigReader::new(blob);
+    let signature: MethodSig = reader.parse_method_inner()?;
+    if reader.remaining() != 0 {
+        return Err(Error::BadCompressedUint(reader.pos));
+    }
+    Ok(signature)
 }
 
 pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
@@ -475,12 +506,16 @@ pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
         return Err(Error::BadCompressedUint(0));
     }
     let count: u32 = r.compressed()?;
-    let mut args: Vec<TypeSig> = Vec::with_capacity((count as usize).min(r.remaining()));
+    let capacity: usize = r.signature_capacity(count)?;
+    let mut args: Vec<TypeSig> = Vec::with_capacity(capacity);
     for _ in 0..count {
         if r.peek().is_none() {
-            break;
+            return Err(Error::BadCompressedUint(r.pos));
         }
         args.push(r.type_sig()?);
+    }
+    if r.remaining() != 0 {
+        return Err(Error::BadCompressedUint(r.pos));
     }
     Ok(args)
 }
@@ -488,30 +523,39 @@ pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
 pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
     let mut r: SigReader<'_> = SigReader::new(blob);
     let cc: u8 = r.byte()?;
-    if cc & SIG_KIND_MASK != SIG_FIELD {
-        return Ok(TypeSig::Unknown);
+    if cc != SIG_FIELD {
+        return Err(Error::BadCompressedUint(0));
     }
-    r.type_sig()
+    let signature: TypeSig = r.type_sig()?;
+    if r.remaining() != 0 {
+        return Err(Error::BadCompressedUint(r.pos));
+    }
+    Ok(signature)
 }
 
 pub fn parse_local_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
     let mut r: SigReader<'_> = SigReader::new(blob);
     let cc: u8 = r.byte()?;
-    if cc & SIG_KIND_MASK != SIG_LOCAL {
+    if cc != SIG_LOCAL {
         return Err(Error::BadCompressedUint(0));
     }
     let count: u32 = r.compressed()?;
-    let mut locals: Vec<TypeSig> = Vec::with_capacity((count as usize).min(r.remaining()));
+    let capacity: usize = r.signature_capacity(count)?;
+    let mut locals: Vec<TypeSig> = Vec::with_capacity(capacity);
     for _ in 0..count {
         if r.peek().is_none() {
-            break;
+            return Err(Error::BadCompressedUint(r.pos));
         }
         if r.peek() == Some(element_type::TYPEDBYREF) {
+            r.consume_node()?;
             r.pos += 1;
             locals.push(TypeSig::TypedByRef);
             continue;
         }
         locals.push(r.type_sig()?);
+    }
+    if r.remaining() != 0 {
+        return Err(Error::BadCompressedUint(r.pos));
     }
     Ok(locals)
 }
@@ -527,12 +571,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generic_inst_huge_argc_does_not_pre_allocate() {
+    fn generic_inst_huge_argc_hits_node_quota() {
         let blob: [u8; 8] = [
             SIG_FIELD,
             element_type::GENERICINST,
             element_type::CLASS,
-            0x01,
+            0x05,
             0xDF,
             0xFF,
             0xFF,
@@ -540,8 +584,11 @@ mod tests {
         ];
         let result: Result<TypeSig> = parse_field_sig(&blob);
         assert!(
-            matches!(result, Err(Error::BadCompressedUint(8))),
-            "huge generic argc must run the reader dry on the first arg, not pre-allocate; got {result:?}"
+            matches!(
+                result,
+                Err(Error::SignatureTooManyNodes(MAX_SIGNATURE_NODES))
+            ),
+            "huge generic argc must fail before allocation; got {result:?}"
         );
     }
 
@@ -601,12 +648,38 @@ mod tests {
     }
 
     #[test]
+    fn field_sig_flags_and_trailing_bytes_error() {
+        assert!(parse_field_sig(&[SIG_FIELD | SIG_HASTHIS, element_type::I4]).is_err());
+        assert!(parse_field_sig(&[SIG_FIELD, element_type::I4, element_type::I8]).is_err());
+    }
+
+    #[test]
+    fn field_sig_rejects_reserved_and_zero_type_tokens() {
+        assert!(parse_field_sig(&[SIG_FIELD, element_type::CLASS, 0x07]).is_err());
+        assert!(parse_field_sig(&[SIG_FIELD, element_type::CLASS, 0x00]).is_err());
+    }
+
+    #[test]
     fn method_sig_void_no_args() {
         let sig: MethodSig =
             parse_method_sig(&[SIG_DEFAULT, 0x00, element_type::VOID]).expect("method");
         assert_eq!(sig.return_type, TypeSigOrVoid::Void);
         assert!(sig.params.is_empty());
         assert!(!sig.has_this);
+    }
+
+    #[test]
+    fn method_sig_truncated_before_declared_parameter_count_errors() {
+        assert!(
+            parse_method_sig(&[SIG_DEFAULT, 0x02, element_type::VOID, element_type::I4]).is_err()
+        );
+    }
+
+    #[test]
+    fn method_sig_trailing_bytes_error() {
+        assert!(
+            parse_method_sig(&[SIG_DEFAULT, 0x00, element_type::VOID, element_type::I4]).is_err()
+        );
     }
 
     #[test]
@@ -670,6 +743,17 @@ mod tests {
     #[test]
     fn local_sig_wrong_calling_convention_errors() {
         assert!(parse_local_sig(&[SIG_FIELD, element_type::I4]).is_err());
+    }
+
+    #[test]
+    fn local_sig_truncated_before_declared_count_errors() {
+        assert!(parse_local_sig(&[SIG_LOCAL, 0x02, element_type::I4]).is_err());
+    }
+
+    #[test]
+    fn local_sig_flags_and_trailing_bytes_error() {
+        assert!(parse_local_sig(&[SIG_LOCAL | SIG_HASTHIS, 0x00]).is_err());
+        assert!(parse_local_sig(&[SIG_LOCAL, 0x00, element_type::I4]).is_err());
     }
 
     #[test]

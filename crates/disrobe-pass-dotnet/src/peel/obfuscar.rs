@@ -3,7 +3,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::debug::dbg_kv;
 use crate::error::Result;
+use crate::peel::obfuscar_strings::{
+    MAX_IMAGE_BYTES, ObfuscarScanState, ObfuscarStringRecovery, recover_obfuscar_strings_with_state,
+};
 use crate::peel::{
     HeapsView, NameClassification, PeelReport, PeelStrategy, classify_names, read_heaps,
     static_decrypt,
@@ -145,6 +149,9 @@ fn has_dense_low_core(indices: &[u32]) -> bool {
 
 #[must_use]
 pub fn detect_obfuscar(image: &[u8]) -> bool {
+    if image.len() > MAX_IMAGE_BYTES {
+        return false;
+    }
     let Ok(heaps): Result<HeapsView> = read_heaps(image) else {
         return false;
     };
@@ -152,13 +159,31 @@ pub fn detect_obfuscar(image: &[u8]) -> bool {
 }
 
 pub fn peel_obfuscar(bytes: &[u8]) -> Result<PeelReport> {
+    let (recovery, scan_state): (ObfuscarStringRecovery, ObfuscarScanState) =
+        recover_obfuscar_strings_with_state(bytes);
+    if scan_state == ObfuscarScanState::Rejected {
+        return Ok(rejected_report(bytes, recovery));
+    }
     let heaps: HeapsView = read_heaps(bytes)?;
     let classification: NameClassification = classify_names(&heaps.strings);
     let evidence: ObfuscarEvidence = classify_obfuscar_naming(&heaps.strings);
     let bytes_in: u32 = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     let decoders: static_decrypt::StaticDecryptReport =
         static_decrypt::recover_static_decoders(bytes).unwrap_or_default();
-    Ok(PeelReport {
+    dbg_kv("obfuscar-strings", || {
+        format!(
+            "carriers={} accessors={} recovered={} state={}",
+            recovery.carrier_count,
+            recovery.accessor_count,
+            recovery.recovered.len(),
+            if recovery.unknown_reason.is_some() {
+                "unknown"
+            } else {
+                "complete"
+            }
+        )
+    });
+    let mut report: PeelReport = PeelReport {
         protector: Protector::Obfuscar,
         strategy: PeelStrategy::AttributeStripAndReport,
         attributes_stripped: Vec::new(),
@@ -182,7 +207,52 @@ pub fn peel_obfuscar(bytes: &[u8]) -> Result<PeelReport> {
             evidence.odometer_members, evidence.longest_run, evidence.max_index
         )],
         native_surface: None,
-    })
+    };
+    if let Some(reason) = recovery.unknown_reason {
+        report
+            .notes
+            .push(format!("Obfuscar HideStrings: Unknown ({reason})."));
+    } else {
+        let recovered_count: usize = recovery.recovered.len();
+        report.strategy = PeelStrategy::StaticStringRecovery;
+        report.recovered_strings = recovery.recovered;
+        let literal_label: &str = if recovered_count == 1 {
+            "literal"
+        } else {
+            "literals"
+        };
+        report.notes.push(format!(
+            "Obfuscar HideStrings: recovered {recovered_count}/{} UTF-8 {literal_label} from {} complete FieldRVA carrier graph.",
+            recovery.accessor_count, recovery.carrier_count
+        ));
+    }
+    Ok(report)
+}
+
+fn rejected_report(bytes: &[u8], recovery: ObfuscarStringRecovery) -> PeelReport {
+    let bytes_in: u32 = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    let reason: String = recovery
+        .unknown_reason
+        .unwrap_or_else(|| "bounded structural scan rejected the image".to_owned());
+    PeelReport {
+        protector: Protector::Obfuscar,
+        strategy: PeelStrategy::AttributeStripAndReport,
+        attributes_stripped: Vec::new(),
+        strings_total: 0,
+        strings_obfuscated_count: 0,
+        us_strings_total: 0,
+        renamable_identifiers: 0,
+        unobfuscatable_identifiers: 0,
+        bytes_in,
+        bytes_out: bytes_in,
+        recovered_decoders: 0,
+        recovered_constants: Vec::new(),
+        recovered_strings: Vec::new(),
+        recovered_methods: Vec::new(),
+        recovered_resources: Vec::new(),
+        notes: vec![format!("Obfuscar HideStrings: Unknown ({reason}).")],
+        native_surface: None,
+    }
 }
 
 #[cfg(test)]

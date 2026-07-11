@@ -99,4 +99,7 @@ pub enum Error {
         stream: &'static str,
         message: String,
     },
+
+    #[error("DR-DOTNET-0028: signature node count exceeds maximum {0}")]
+    SignatureTooManyNodes(usize),
 }
