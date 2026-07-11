@@ -126,8 +126,9 @@ mod tests {
     }
 
     #[test]
-    fn pct2_formats_two_decimals() {
-        assert_eq!(pct2(92.43), "92.43%");
-        assert_eq!(pct2(94.0), "94.00%");
+    fn readme_stats_uses_the_shared_trimming_percent_formatter() {
+        assert_eq!(format_percent(92.43), "92.43%");
+        assert_eq!(format_percent(94.0), "94%");
+        assert_eq!(format_percent(95.50), "95.5%");
     }
 }
