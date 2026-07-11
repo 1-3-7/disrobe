@@ -539,7 +539,7 @@ const fn is_number_byte(byte: u8) -> bool {
     byte.is_ascii_digit() || matches!(byte, b',' | b'.' | b'/' | b'%')
 }
 
-fn format_percent(percent: f64) -> String {
+pub(crate) fn format_percent(percent: f64) -> String {
     let raw: String = format!("{percent:.6}");
     let trimmed: &str = raw.trim_end_matches('0').trim_end_matches('.');
     format!("{trimmed}%")

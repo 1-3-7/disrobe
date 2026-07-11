@@ -518,7 +518,7 @@ Oracle strength `strong`: external-equivalence, execution, or byte-identity, the
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
 | Python `.pyc`, full CPython 3.14 stdlib | <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object (16880 / 18262, 571 modules) `[local]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` over the full Lib; pinned in `xtask/data/recovery.json` |
-| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->95.5%<!-- /m --> per-code-object (5920 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->95.5%<!-- /m --> per-code-object (6003 / 6286), floor 90% `[CI]` | recompile to equivalent bytecode | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | 150 / 191 gate-verified floor `[CI]`, 166 / 191 `[local]` | recompile-equivalence or structural token-match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | Android DEX, committed corpus | 102 / 103 verifiable classes clean, 307 re-hosted bodies clean `[CI]` | real JVM verifier `-Xverify:all` | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
 | .NET Eazfuscator VM (in-repo EazVM encoder) | 57 / 57 instructions lifted, ordered-CIL match `[CI]`; recovered CIL re-injects to byte-identical stdout `[local]` (needs a .NET runtime, not provisioned in CI) | independently compiled clean DLL, ordered CIL compare | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |

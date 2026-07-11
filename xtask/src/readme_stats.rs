@@ -4,6 +4,7 @@ use eyre::{Result, WrapErr, bail};
 use serde_json::Value;
 
 use crate::fileio::read_text_bounded;
+use crate::metrics::format_percent;
 
 const MAX_RECOVERY_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_README_BYTES: u64 = 4 * 1024 * 1024;
@@ -14,20 +15,16 @@ struct Binding {
     format: fn(f64) -> String,
 }
 
-fn pct2(value: f64) -> String {
-    format!("{value:.2}%")
-}
-
 const BINDINGS: &[Binding] = &[
     Binding {
         heading_substr: "Python bytecode",
         bar_label: "full 571-module stdlib (representative)",
-        format: pct2,
+        format: format_percent,
     },
     Binding {
         heading_substr: "Python bytecode",
         bar_label: "200-module pinned corpus",
-        format: pct2,
+        format: format_percent,
     },
 ];
 
