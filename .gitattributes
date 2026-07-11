@@ -16,6 +16,8 @@ theme/*.hbs text eol=lf
 *.ez binary
 *.pye binary
 *.class binary
+*.dll binary
+*.bin binary
 *.rds binary
 *.kit binary
 *.swf binary
