@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_jvm::{ClassFile, decompile_class, parse_classfile};
 
@@ -71,8 +72,12 @@ fn method_body(source: &str, signature_fragment: &str) -> String {
 }
 
 fn compile_and_decompile(javac: &PathBuf) -> String {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_foreach_multicatch_{}", std::process::id()));
+    static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq: u64 = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir: PathBuf = std::env::temp_dir().join(format!(
+        "disrobe_foreach_multicatch_{}_{seq}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     let src: PathBuf = dir.join("ForMulti.java");
