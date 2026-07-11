@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 95.61,
-          "detail": "6010 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.61 (6010 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 4dd44212 (the main structurer caps a try/else region at the enclosing loop back-edge so the shared post-loop return is not copied into the else, recovering uuid._find_mac_near_keyword and modulefinder.ModuleFinder.find_all_submodules)"
+          "value": 95.63,
+          "detail": "6011 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.63 (6011 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD af8de272 (the structurer keeps a try/else region capped at the enclosing loop back-edge when the only body exit into the tail is a bare loop continue, recovering typing.runtime_checkable)"
         }
       ]
     },
