@@ -183,6 +183,12 @@ pub use packers::aspack_unpack::{
     AspackRecovery, AspackReport, CarvedBlock as AspackCarvedBlock,
     RecoveredObject as AspackRecoveredObject, unpack_aspack,
 };
+pub use packers::loader_generators::{
+    ByteRegion, DonutCompression, DonutConfig, DonutEntropy, DonutModuleType, LoaderArchitecture,
+    LoaderConfig, LoaderFamily, LoaderFingerprint, LoaderInspection, LoaderRecovery, LoaderVariant,
+    RecoveryField, SrdiConfig, WrappedModuleFormat, WrappedModuleMetadata, fingerprint_loader,
+    recover_loader,
+};
 pub use packers::overlay::{
     ArchiveKind as OverlayArchiveKind, CertType as OverlayCertType, OverlayClass, OverlaySegment,
     PeOverlayReport, analyze_pe_overlay, carve_overlay as carve_pe_overlay, compute_image_end,

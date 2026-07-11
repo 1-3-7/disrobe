@@ -223,9 +223,20 @@ pub use recovered_image::{
     CarvedSectionArtifact, RecoveredImage, RecoveryOracle, recover_detected,
 };
 
+pub mod loader_generators;
+
+pub use loader_generators::{
+    ByteRegion, DonutCompression, DonutConfig, DonutEntropy, DonutModuleType, LoaderArchitecture,
+    LoaderConfig, LoaderFamily, LoaderFingerprint, LoaderInspection, LoaderRecovery, LoaderVariant,
+    RecoveryField, SrdiConfig, WrappedModuleFormat, WrappedModuleMetadata, fingerprint_loader,
+    recover_loader,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Packer {
+    Donut,
+    Srdi,
     Upx,
     AsPack,
     AsProtect,
@@ -259,6 +270,8 @@ impl Packer {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Donut => "donut",
+            Self::Srdi => "srdi",
             Self::Upx => "upx",
             Self::AsPack => "aspack",
             Self::AsProtect => "asprotect",
@@ -308,7 +321,9 @@ impl Packer {
     #[must_use]
     pub const fn unpacker_status(self) -> UnpackerStatus {
         match self {
-            Self::Upx
+            Self::Donut
+            | Self::Srdi
+            | Self::Upx
             | Self::Fsg
             | Self::Petite
             | Self::Mpress
@@ -743,10 +758,32 @@ const SIGNATURES: &[Signature] = &[
 
 #[must_use]
 pub fn detect(bytes: &[u8]) -> Vec<Detection> {
-    if crate::format::detect(bytes).is_err() {
-        return Vec::new();
-    }
     let mut found: BTreeMap<Packer, Detection> = BTreeMap::new();
+    if let Some(loader) = fingerprint_loader(bytes) {
+        let packer: Packer = match loader.family {
+            LoaderFamily::Donut => Packer::Donut,
+            LoaderFamily::Srdi => Packer::Srdi,
+        };
+        found.insert(
+            packer,
+            Detection {
+                packer,
+                confidence: Confidence::High,
+                matched_offset: Some(loader.matched_offset),
+                note: format!(
+                    "{} loader config offset={} length={} and wrapped module offset={} length={} validated",
+                    packer.label(),
+                    loader.config_region.offset,
+                    loader.config_region.length,
+                    loader.wrapped_module_region.offset,
+                    loader.wrapped_module_region.length,
+                ),
+            },
+        );
+    }
+    if crate::format::detect(bytes).is_err() {
+        return found.into_values().collect();
+    }
     let pe: Option<PeImage> = parse_pe_image(bytes).ok();
     for sig in SIGNATURES {
         let Some(offset): Option<u64> = match_offset(bytes, pe.as_ref(), sig) else {

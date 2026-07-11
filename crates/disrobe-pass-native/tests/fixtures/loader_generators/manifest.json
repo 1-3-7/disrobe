@@ -1,0 +1,48 @@
+{
+  "schema": "disrobe-native-loader-fixtures/v1",
+  "input": {
+    "path": "known.dll",
+    "bytes": 18944,
+    "sha256": "bd75b0cb9d050816b9e955bdfd5bb6a4656ceb9805673198c597fabc49272f82",
+    "compiler": "gcc.exe 13.2.0 MinGW-W64 x86_64-ucrt-posix-seh",
+    "source": "known.c",
+    "build_command": {
+      "status": "unknown",
+      "reason": "the exact compiler invocation was not retained"
+    },
+    "export": "SayHello"
+  },
+  "artifacts": [
+    {
+      "path": "known.srdi.bin",
+      "bytes": 21795,
+      "sha256": "8e7b13f3260bafd80bf9179af7cd0dc1180e5711177b7d86f6ab25c12d60c1e1",
+      "generator": "monoxgas/sRDI",
+      "repository": "https://github.com/monoxgas/sRDI",
+      "revision": "9fdd5c44383039519accd1e6bac4acd5a046a92c",
+      "command": "python Python/ConvertToShellcode.py known.dll -f SayHello -u fixture-01",
+      "deterministic_replay": true,
+      "license": {
+        "status": "unknown",
+        "reason": "the upstream notice contains distinct BSD and GPL-3.0 terms",
+        "notice": "srdi.LICENSE"
+      }
+    },
+    {
+      "path": "known.go-donut.bin",
+      "bytes": 46160,
+      "sha256": "fdc9d7674962e7aad01bc05846357bd6d2047b58aa03c64a92eaeda0dbfe58cd",
+      "generator": "Binject/go-donut",
+      "repository": "https://github.com/Binject/go-donut",
+      "revision": "fcdcc35d591c954251d96642b93040527cee608d",
+      "command": "go run . -i known.dll -a x64 -e 3 -m SayHello -o known.go-donut.bin",
+      "deterministic_replay": false,
+      "replay_boundary": "the upstream generator draws entropy from the operating system",
+      "license": {
+        "status": "known",
+        "spdx": "BSD-3-Clause",
+        "notice": "go-donut.LICENSE"
+      }
+    }
+  ]
+}

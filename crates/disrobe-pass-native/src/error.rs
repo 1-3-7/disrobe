@@ -100,4 +100,7 @@ pub enum Error {
 
     #[error("DR-NATIVE-0025: eBPF decode failure: {0}")]
     EbpfDecode(String),
+
+    #[error("DR-NATIVE-0026: loader recovery failure ({stage}): {detail}")]
+    LoaderRecovery { stage: &'static str, detail: String },
 }

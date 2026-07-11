@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::packers::{
-    AspackPhaseTwoOutput, CarvedVmpSection, Detection, KkrunchyPhaseTwoOutput, MewRebuiltImage,
-    MpressUnpackOutput, NspackEmulatedReport, OreansProduct, Packer, PecompactPhaseTwoOutput,
-    PetiteUnpackResult, SectionPerms, ThemidaCarve, UnpackerStatus, UpxUnpackOutput,
-    VmProtectCarve, carve_themida, carve_vmprotect, unpack_aspack_phase2_emulated, unpack_fsg,
-    unpack_kkrunchy_phase2_emulated, unpack_mew_rebuilt, unpack_mpress, unpack_nspack_emulated,
-    unpack_pecompact_phase2_emulated, unpack_petite_with_report, unpack_upx,
+    AspackPhaseTwoOutput, CarvedVmpSection, Detection, KkrunchyPhaseTwoOutput, LoaderRecovery,
+    MewRebuiltImage, MpressUnpackOutput, NspackEmulatedReport, OreansProduct, Packer,
+    PecompactPhaseTwoOutput, PetiteUnpackResult, RecoveryField, SectionPerms, ThemidaCarve,
+    UnpackerStatus, UpxUnpackOutput, VmProtectCarve, carve_themida, carve_vmprotect,
+    recover_loader, unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy_phase2_emulated,
+    unpack_mew_rebuilt, unpack_mpress, unpack_nspack_emulated, unpack_pecompact_phase2_emulated,
+    unpack_petite_with_report, unpack_upx,
 };
 
 const MAX_INPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -73,6 +74,7 @@ pub fn recover_detected(packed: &[u8], detections: &[Detection]) -> Vec<Recovere
 fn recover_one(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
     crate::debug::dbg_kv("recover", || format!("dispatch {}", packer.label()));
     match packer {
+        Packer::Donut | Packer::Srdi => recover_loader_generator(packed, packer),
         Packer::Upx => recover_upx(packed),
         Packer::Fsg => recover_fsg(packed),
         Packer::Petite => recover_petite(packed),
@@ -101,6 +103,22 @@ fn recover_one(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
         | Packer::WinLicense
         | Packer::YodasProtector => None,
     }
+}
+
+fn recover_loader_generator(packed: &[u8], packer: Packer) -> Option<RecoveredImage> {
+    let recovery: LoaderRecovery = recover_loader(packed).ok()?;
+    let RecoveryField::Known { value: image } = recovery.module else {
+        return None;
+    };
+    if image.is_empty() || image.len() > MAX_RECOVERED_BYTES {
+        return None;
+    }
+    Some(finish(
+        packer,
+        RecoveryOracle::StreamDecoded,
+        image,
+        "embedded module recovered from validated loader regions".to_owned(),
+    ))
 }
 
 fn recover_aspack(packed: &[u8]) -> Option<RecoveredImage> {

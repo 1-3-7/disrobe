@@ -13,11 +13,12 @@ use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes};
 
 use crate::packers::{
     AspackPhaseTwoOutput, Detection as PackerDetection, FsgUnpackOutput, KkrunchyUnpackOutput,
-    MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
-    PetitePhase2EmulatedOutput, UnpackerStatus, UpxUnpackOutput, YodasCrypterCarve,
-    detect as detect_packers, recover_yodas_crypter_carve, unpack_aspack_phase2_emulated,
-    unpack_fsg, unpack_kkrunchy, unpack_mew, unpack_mpress, unpack_nspack_emulated,
-    unpack_pecompact_phase2_emulated, unpack_petite_phase2_emulated, unpack_upx,
+    LoaderInspection, LoaderRecovery, MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport,
+    Packer, PecompactPhaseTwoOutput, PetitePhase2EmulatedOutput, RecoveryField, UnpackerStatus,
+    UpxUnpackOutput, YodasCrypterCarve, detect as detect_packers, recover_loader,
+    recover_yodas_crypter_carve, unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy,
+    unpack_mew, unpack_mpress, unpack_nspack_emulated, unpack_pecompact_phase2_emulated,
+    unpack_petite_phase2_emulated, unpack_upx,
 };
 
 pub const PASS_ID: PassId = "native.packer-unpack";
@@ -81,9 +82,13 @@ struct PackerRecovery {
     packer: Packer,
     image: Vec<u8>,
     oep_va: Option<u64>,
+    loader: Option<LoaderInspection>,
 }
 
 fn recover(artifact: &Artifact) -> CoreResult<PackerRecovery> {
+    if let Ok(loader) = recover_loader(&artifact.envelope) {
+        return loader_packer_recovery(loader);
+    }
     let dets: Vec<PackerDetection> = detect_packers(&artifact.envelope);
     let Some(pick): Option<PackerDetection> = highest_priority(dets) else {
         return Err(CoreError::PassFailure(
@@ -166,6 +171,7 @@ fn unpack_manifest(recovery: &PackerRecovery) -> serde_json::Value {
         "recovered_image": RECOVERED_IMAGE_PATH,
         "recovered_image_bytes": recovery.image.len(),
         "recovered_oep_va": recovery.oep_va,
+        "loader": recovery.loader,
     })
 }
 
@@ -217,59 +223,65 @@ fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<PackerReco
 
 fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRecovery> {
     let packed: &[u8] = &artifact.envelope;
-    let (recovered, oep_va): (Vec<u8>, Option<u64>) = match packer {
+    if matches!(packer, Packer::Donut | Packer::Srdi) {
+        let out: LoaderRecovery =
+            recover_loader(packed).map_err(|e| pass_err("DR-NAT-0931", packer, &e))?;
+        return loader_packer_recovery(out);
+    }
+    let (recovered, oep_va, loader): (Vec<u8>, Option<u64>, Option<LoaderInspection>) = match packer
+    {
         Packer::Upx => {
             let out: UpxUnpackOutput =
                 unpack_upx(packed).map_err(|e| pass_err("DR-NAT-0917", packer, &e))?;
-            (out.recovered_image, None)
+            (out.recovered_image, None, None)
         }
         Packer::Petite => {
             let out: PetitePhase2EmulatedOutput = unpack_petite_phase2_emulated(packed)
                 .map_err(|e| pass_err("DR-NAT-0910", packer, &e))?;
             require_credible_oep(packer, out.oep_estimate)?;
-            (out.recovered_image, out.oep_estimate)
+            (out.recovered_image, out.oep_estimate, None)
         }
         Packer::Nspack => {
             let report: NspackEmulatedReport =
                 unpack_nspack_emulated(packed).map_err(|e| pass_err("DR-NAT-0911", packer, &e))?;
-            (report.decompressed_image, None)
+            (report.decompressed_image, None, None)
         }
         Packer::Mew => {
             let out: MewUnpackOutput =
                 unpack_mew(packed).map_err(|e| pass_err("DR-NAT-0912", packer, &e))?;
-            (out.raw_image, None)
+            (out.raw_image, None, None)
         }
         Packer::Fsg => {
             let out: FsgUnpackOutput =
                 unpack_fsg(packed).map_err(|e| pass_err("DR-NAT-0913", packer, &e))?;
-            (out.raw_image, None)
+            (out.raw_image, None, None)
         }
         Packer::Mpress => {
             let out: MpressUnpackOutput =
                 unpack_mpress(packed).map_err(|e| pass_err("DR-NAT-0916", packer, &e))?;
-            (out.decompressed_image, None)
+            (out.decompressed_image, None, None)
         }
         Packer::YodasCrypter => {
             let carve: YodasCrypterCarve = recover_yodas_crypter_carve(packed)
                 .map_err(|e| pass_err("DR-NAT-0918", packer, &e))?;
-            (carve.recovered_image, None)
+            (carve.recovered_image, None, None)
         }
         Packer::AsPack => {
             let out: AspackPhaseTwoOutput = unpack_aspack_phase2_emulated(packed, None)
                 .map_err(|e| pass_err("DR-NAT-0919", packer, &e))?;
             require_credible_oep(packer, out.oep_estimate)?;
-            (out.recovered_memory_image, out.oep_estimate)
+            (out.recovered_memory_image, out.oep_estimate, None)
         }
         Packer::PeCompact => {
             let out: PecompactPhaseTwoOutput = unpack_pecompact_phase2_emulated(packed, None)
                 .map_err(|e| pass_err("DR-NAT-0920", packer, &e))?;
             require_credible_oep(packer, out.oep_estimate)?;
-            (out.recovered_memory_image, out.oep_estimate)
+            (out.recovered_memory_image, out.oep_estimate, None)
         }
         Packer::Kkrunchy => {
             let out: KkrunchyUnpackOutput =
                 unpack_kkrunchy(packed).map_err(|e| pass_err("DR-NAT-0921", packer, &e))?;
-            (out.packed_payload, None)
+            (out.packed_payload, None, None)
         }
         other => {
             return Err(CoreError::PassFailure(format!(
@@ -289,6 +301,36 @@ fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRe
         packer,
         image: recovered,
         oep_va,
+        loader,
+    })
+}
+
+fn loader_packer_recovery(out: LoaderRecovery) -> CoreResult<PackerRecovery> {
+    let LoaderRecovery { inspection, module } = out;
+    let packer: Packer = match inspection.family {
+        crate::packers::LoaderFamily::Donut => Packer::Donut,
+        crate::packers::LoaderFamily::Srdi => Packer::Srdi,
+    };
+    let image: Vec<u8> = match module {
+        RecoveryField::Known { value } => value,
+        RecoveryField::Unknown { reason } => {
+            return Err(CoreError::PassFailure(format!(
+                "DR-NAT-0932: native.packer-unpack: {label} module was not recovered: {reason}",
+                label = packer.label(),
+            )));
+        }
+    };
+    if image.is_empty() {
+        return Err(CoreError::PassFailure(format!(
+            "DR-NAT-0915: native.packer-unpack: {label} unpacker produced no bytes",
+            label = packer.label(),
+        )));
+    }
+    Ok(PackerRecovery {
+        packer,
+        image,
+        oep_va: None,
+        loader: Some(inspection),
     })
 }
 
@@ -331,17 +373,21 @@ fn highest_native_owned_priority(dets: Vec<PackerDetection>) -> Option<PackerDet
 
 const fn priority_rank(p: Packer) -> u8 {
     match p {
-        Packer::Upx => 0,
-        Packer::Mpress => 1,
-        Packer::Petite => 2,
-        Packer::AsPack => 3,
-        Packer::AsProtect => 4,
+        Packer::Donut => 0,
+        Packer::Srdi => 1,
+        Packer::Upx => 2,
+        Packer::Mpress => 3,
+        Packer::Petite => 4,
+        Packer::AsPack => 5,
+        Packer::AsProtect => 6,
         _ => 9,
     }
 }
 
 fn verdict_for(d: &PackerDetection) -> DetectVerdict {
     let format_tag: &'static str = match d.packer {
+        Packer::Donut => "donut",
+        Packer::Srdi => "srdi",
         Packer::Upx => "upx",
         Packer::Mpress => "mpress",
         Packer::Petite => "petite",
@@ -372,7 +418,11 @@ fn verdict_for(d: &PackerDetection) -> DetectVerdict {
         FAMILY_PACKER_ARCHIVE,
         confidence,
         specificity,
-        vec!["packer-section-magic"],
+        vec![if matches!(d.packer, Packer::Donut | Packer::Srdi) {
+            "loader-config"
+        } else {
+            "packer-section-magic"
+        }],
         format!(
             "packer={label} note={note}",
             label = d.packer.label(),
@@ -415,13 +465,27 @@ impl CatalogEntry for PackerEntry {
     }
     #[inline]
     fn support_quality(&self) -> SupportQuality {
-        quality_of(self.packer.unpacker_status())
+        if self.packer == Packer::Donut {
+            SupportQuality::Partial
+        } else {
+            quality_of(self.packer.unpacker_status())
+        }
     }
 }
 
-const CATALOG_COUNT: usize = 25;
+const CATALOG_COUNT: usize = 27;
 
 static CATALOG: [PackerEntry; CATALOG_COUNT] = [
+    PackerEntry {
+        packer: Packer::Donut,
+        display_name: "Donut",
+        aliases: &["go-donut"],
+    },
+    PackerEntry {
+        packer: Packer::Srdi,
+        display_name: "sRDI",
+        aliases: &["shellcode-rdi"],
+    },
     PackerEntry {
         packer: Packer::Upx,
         display_name: "UPX",
@@ -757,7 +821,9 @@ mod tests {
 
     #[test]
     fn every_implemented_packer_has_a_dispatch_arm() {
-        let implemented: [Packer; 10] = [
+        let implemented: [Packer; 12] = [
+            Packer::Donut,
+            Packer::Srdi,
             Packer::Upx,
             Packer::Petite,
             Packer::Nspack,
@@ -911,6 +977,12 @@ mod tests {
             .find(|e| e.id() == "upx")
             .expect("upx in catalog");
         assert_eq!(upx.support_quality(), SupportQuality::Full);
+        let donut: &dyn CatalogEntry = entries
+            .iter()
+            .copied()
+            .find(|e| e.id() == "donut")
+            .expect("donut in catalog");
+        assert_eq!(donut.support_quality(), SupportQuality::Partial);
         let vmp: &dyn CatalogEntry = entries
             .iter()
             .copied()
