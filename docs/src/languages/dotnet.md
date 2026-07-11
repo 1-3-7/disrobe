@@ -54,7 +54,7 @@ Genuine walls (the key or the original code is not in the static artifact):
 
 Other:
 
-- **Obfuscar**: dedicated in-house peeler (NameMaker odometer classification; rename-only metadata, so there is no byte rewrite and no embedded name map to recover).
+- **Obfuscar**: dedicated in-house peeler (NameMaker odometer classification plus HideStrings recovery: the hidden `ldstr` literals are read back to their original bytes from the in-assembly FieldRVA carrier through the generated accessor, 15/15 on the gauntlet sample). The rename itself embeds no in-PE name map, so original identifier names stay walled behind the out-of-band Mapping.txt.
 
 Commercial protector findings are reported with the recovery wall when the static artifact lacks the needed key or handler stream.
 
