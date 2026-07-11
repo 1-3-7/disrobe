@@ -25,6 +25,7 @@ theme/*.hbs text eol=lf
 *.idsig binary
 crates/disrobe-pass-scriptlang/tests/fixtures/** -text
 crates/disrobe-binfmt/tests/fixtures/** -text
+crates/disrobe-pass-php/tests/fixtures/** -text
 crates/disrobe-pass-scriptlang/tests/fixtures/*.js binary
 crates/disrobe-pass-scriptlang/tests/fixtures/*.hx binary
 crates/disrobe-pass-scriptlang/tests/fixtures/*.n binary
