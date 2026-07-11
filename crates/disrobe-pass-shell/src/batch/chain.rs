@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64_STANDARD;
+use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode as core_base64_decode};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -73,11 +72,12 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
         return None;
     }
     let core: &str = s.trim_end_matches('=');
-    let mut padded: String = core.to_owned();
-    while !padded.len().is_multiple_of(4) {
-        padded.push('=');
-    }
-    B64_STANDARD.decode(&padded).ok()
+    core_base64_decode(
+        core.as_bytes(),
+        Base64Alphabet::Standard,
+        Base64Padding::Forbidden,
+    )
+    .ok()
 }
 
 fn try_xor(cipher: &[u8], key: &[u8]) -> Option<DecryptedStage> {
@@ -232,6 +232,8 @@ fn push_unique(out: &mut Vec<DecryptedStage>, stage: DecryptedStage) {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64_STANDARD;
 
     fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
@@ -242,6 +244,9 @@ mod tests {
 
     #[test]
     fn recovers_xor_stage_with_literal_key() {
+        assert_eq!(decode_base64("Zg"), Some(b"f".to_vec()));
+        assert_eq!(decode_base64("Zg===="), Some(b"f".to_vec()));
+        assert!(decode_base64("Z=g").is_none());
         let key: &[u8] = b"sekret";
         let plain: &str = "echo http://stage2.example.com";
         let cipher: Vec<u8> = plain

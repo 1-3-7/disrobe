@@ -1,7 +1,6 @@
 use std::sync::LazyLock;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64_STANDARD;
+use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
 use regex::Regex;
 use serde::Serialize;
 
@@ -59,11 +58,12 @@ fn decode_base64_flexible(blob: &str) -> Option<Vec<u8>> {
         return None;
     }
     let core: &str = blob.trim_end_matches('=');
-    let mut padded: String = core.to_owned();
-    while !padded.len().is_multiple_of(4) {
-        padded.push('=');
-    }
-    B64_STANDARD.decode(&padded).ok()
+    base64_decode(
+        core.as_bytes(),
+        Base64Alphabet::Standard,
+        Base64Padding::Forbidden,
+    )
+    .ok()
 }
 
 #[must_use]
@@ -282,6 +282,8 @@ fn dedup(out: &mut Vec<EmbeddedPayload>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64_STANDARD;
 
     #[test]
     fn decodes_powershell_encodedcommand_utf16() {
@@ -318,6 +320,9 @@ mod tests {
 
     #[test]
     fn extracts_base64_utf16_blob() {
+        assert_eq!(decode_base64_flexible("Zg"), Some(b"f".to_vec()));
+        assert_eq!(decode_base64_flexible("Zg===="), Some(b"f".to_vec()));
+        assert!(decode_base64_flexible("Z=g").is_none());
         let inner: &str = "http://evil.example.com/x";
         let utf16: Vec<u8> = inner
             .encode_utf16()

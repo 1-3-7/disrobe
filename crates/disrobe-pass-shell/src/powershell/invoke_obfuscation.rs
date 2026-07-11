@@ -2,13 +2,12 @@
 use std::io::Read;
 use std::sync::LazyLock;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
 use flate2::read::GzDecoder;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, base64_error};
 
 const MAX_DECOMPRESSED: u64 = 16 * 1024 * 1024;
 const MAX_BASE64_INPUT: usize = 2 * 1024 * 1024;
@@ -201,7 +200,12 @@ fn decode_base64_bounded(what: &'static str, b64: &str) -> Result<Vec<u8>> {
             max_bytes: MAX_BASE64_INPUT,
         });
     }
-    Ok(BASE64_STD.decode(b64)?)
+    base64_decode(
+        b64.as_bytes(),
+        Base64Alphabet::Standard,
+        Base64Padding::Required,
+    )
+    .map_err(|source: disrobe_core::codec::DecodeError| base64_error(b64.as_bytes(), source))
 }
 
 #[must_use]
@@ -752,6 +756,8 @@ fn strip_wmic_proxy(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64_STD;
 
     #[test]
     fn token_strips_backticks() {
@@ -905,6 +911,21 @@ mod tests {
 
     #[test]
     fn encoding_decodes_utf16_base64() -> Result<()> {
+        assert_eq!(decode_base64_bounded("encoded command", "Zg==")?, b"f");
+        let expected_result: std::result::Result<Vec<u8>, base64::DecodeError> =
+            BASE64_STD.decode("Zg");
+        let Err(expected_source): std::result::Result<Vec<u8>, base64::DecodeError> =
+            expected_result
+        else {
+            return Err(Error::InvalidUtf16Le);
+        };
+        let expected: String = Error::Base64(expected_source).to_string();
+        let error_result: Result<Vec<u8>> = decode_base64_bounded("encoded command", "Zg");
+        let Err(error): Result<Vec<u8>> = error_result else {
+            return Err(Error::InvalidUtf16Le);
+        };
+        assert!(matches!(&error, Error::Base64(_)));
+        assert_eq!(error.to_string(), expected);
         let payload: &str = "Get-Process";
         let utf16: Vec<u8> = payload
             .encode_utf16()

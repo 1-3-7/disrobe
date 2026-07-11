@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
+use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode as core_base64_decode};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -11,6 +12,7 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 const MAX_INFLATE_BYTES: usize = 1usize << 26;
 const MAX_INFLATE_READ_BYTES: u64 = (1u64 << 26) + 1u64;
 const MAX_BASE64_INPUT_BYTES: usize = (MAX_INFLATE_BYTES / 3usize) * 4usize + 4usize;
+const MAX_BASE64_CHUNK_BYTES: usize = 1usize << 22;
 const MAX_LAYERS: usize = 16usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1605,7 +1607,7 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     if base64_input_too_large(input.len()) {
         return None;
     }
-    let cleaned: String = input
+    let mut cleaned: String = input
         .chars()
         .filter(|c: &char| !c.is_whitespace())
         .collect();
@@ -1615,45 +1617,35 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     if cleaned.len() % 4usize == 1usize {
         return None;
     }
-    let trimmed: &str = cleaned.trim_end_matches('=');
-    let pad: usize = cleaned.len() - trimmed.len();
+    let trimmed_len: usize = cleaned.trim_end_matches('=').len();
+    let pad: usize = cleaned.len() - trimmed_len;
     if pad > 2 {
         return None;
     }
-    if pad > 0usize && (trimmed.is_empty() || !cleaned.len().is_multiple_of(4usize)) {
+    if pad > 0usize && (trimmed_len == 0usize || !cleaned.len().is_multiple_of(4usize)) {
         return None;
     }
-    if trimmed.is_empty() {
+    if trimmed_len == 0usize {
         return Some(Vec::new());
     }
-    let mut out: Vec<u8> = Vec::with_capacity(trimmed.len() * 3 / 4);
-    let mut acc: u32 = 0u32;
-    let mut bits: u32 = 0u32;
-    for c in trimmed.bytes() {
-        let v: u32 = b64_value(c)?;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
+    cleaned.truncate(trimmed_len);
+    let decoded_len: usize =
+        (trimmed_len / 4usize) * 3usize + ((trimmed_len % 4usize) * 3usize) / 4usize;
+    while !cleaned.len().is_multiple_of(4usize) {
+        cleaned.push('A');
     }
+    let mut out: Vec<u8> = Vec::with_capacity(decoded_len.saturating_add(2usize));
+    for chunk in cleaned.as_bytes().chunks(MAX_BASE64_CHUNK_BYTES) {
+        let decoded: Vec<u8> =
+            core_base64_decode(chunk, Base64Alphabet::Standard, Base64Padding::Forbidden).ok()?;
+        out.extend_from_slice(&decoded);
+    }
+    out.truncate(decoded_len);
     Some(out)
 }
 
 const fn base64_input_too_large(len: usize) -> bool {
     len > MAX_BASE64_INPUT_BYTES
-}
-
-fn b64_value(c: u8) -> Option<u32> {
-    match c {
-        b'A'..=b'Z' => Some(u32::from(c - b'A')),
-        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
 }
 
 fn is_printable_bytes(bytes: &[u8]) -> bool {
@@ -1681,6 +1673,12 @@ mod tests {
     fn b64_roundtrip_matches_real() {
         let raw: Vec<u8> = base64_decode("aGVsbG8=").expect("decode");
         assert_eq!(raw, b"hello");
+        assert_eq!(base64_decode("aGVsbG8"), Some(b"hello".to_vec()));
+        assert_eq!(
+            base64_decode("aG\u{2003}Vs\n bG8="),
+            Some(b"hello".to_vec())
+        );
+        assert_eq!(base64_decode("AB"), Some(vec![0]));
     }
 
     #[test]
@@ -1688,12 +1686,18 @@ mod tests {
         assert!(base64_decode("A").is_none());
         assert!(base64_decode("=").is_none());
         assert!(base64_decode("AA=").is_none());
+        assert!(base64_decode("A=AA").is_none());
+        assert!(base64_decode("aGVsbG8===").is_none());
     }
 
     #[test]
     fn base64_size_guard_rejects_above_cap() {
         assert!(!base64_input_too_large(MAX_BASE64_INPUT_BYTES));
         assert!(base64_input_too_large(MAX_BASE64_INPUT_BYTES + 1usize));
+        let encoded: String = "A".repeat(MAX_BASE64_CHUNK_BYTES + 4usize);
+        let decoded: Vec<u8> = base64_decode(&encoded).expect("chunked decode");
+        assert_eq!(decoded.len(), (encoded.len() / 4usize) * 3usize);
+        assert!(decoded.iter().all(|byte: &u8| *byte == 0u8));
     }
 
     #[test]
