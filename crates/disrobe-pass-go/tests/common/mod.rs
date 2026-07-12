@@ -270,6 +270,42 @@ pub fn parse_nm_text_symbols(text: &str) -> BTreeSet<String> {
     out
 }
 
+pub fn parse_nm_text_symbol_vas(text: &str) -> std::collections::BTreeMap<String, u64> {
+    let mut out: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 3
+            && matches!(cols[cols.len() - 2], "T" | "t")
+            && let Ok(va) = u64::from_str_radix(cols[0], 16)
+        {
+            out.insert(cols[cols.len() - 1].to_owned(), va);
+        }
+    }
+    out
+}
+
+pub fn addr2line_name(binary: &Path, va: u64) -> Option<String> {
+    let mut child: std::process::Child = Command::new("go")
+        .args(["tool", "addr2line"])
+        .arg(binary)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        use std::io::Write as _;
+        let mut stdin: std::process::ChildStdin = child.stdin.take()?;
+        writeln!(stdin, "{va:#x}").ok()?;
+    }
+    let output: Output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
+    text.lines().next().map(str::to_owned)
+}
+
 pub fn nm_text_symbols(binary: &Path) -> Option<BTreeSet<String>> {
     let output: Output = Command::new("go")
         .args(["tool", "nm"])

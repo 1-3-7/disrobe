@@ -20,6 +20,8 @@ pub struct GoFunc {
     pub start_line: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub va: Option<u64>,
 }
 
 impl GoFunc {
@@ -33,6 +35,33 @@ impl GoFunc {
             abi0: false,
             start_line: None,
             file: None,
+            va: None,
+        }
+    }
+}
+
+pub fn assign_absolute_vas(
+    funcs: &mut [GoFunc],
+    version: PclntabVersion,
+    text_start_field: u64,
+    text_base: Option<u64>,
+) {
+    match version {
+        PclntabVersion::Go12 | PclntabVersion::Go116 => {
+            for func in funcs.iter_mut() {
+                if func.entry != 0 {
+                    func.va = Some(func.entry);
+                }
+            }
+        }
+        PclntabVersion::Go118 | PclntabVersion::Go120 => {
+            let Some(base): Option<u64> = text_base.filter(|b: &u64| *b != 0) else {
+                return;
+            };
+            for func in funcs.iter_mut() {
+                let pc_off: u64 = func.entry.wrapping_sub(text_start_field);
+                func.va = base.checked_add(pc_off);
+            }
         }
     }
 }
@@ -886,6 +915,50 @@ mod tests {
         sentinel[0x10..0x14].copy_from_slice(&u32::MAX.to_le_bytes());
         sentinel[0x41] = 0x02;
         assert_eq!(read_func_file(&header, &sentinel, func_struct_at), None);
+    }
+
+    #[test]
+    fn absolute_va_adds_text_base_to_relative_offset_entries() {
+        let mut funcs: Vec<GoFunc> = vec![
+            GoFunc::new(0xa3ba0, 0xa3bc0, "main.Alpha".to_owned()),
+            GoFunc::new(0x795a0, 0x79640, "runtime.morestack".to_owned()),
+        ];
+        assign_absolute_vas(&mut funcs, PclntabVersion::Go120, 0, Some(0x1_4000_1000));
+        assert_eq!(funcs[0].va, Some(0x1_400a_4ba0));
+        assert_eq!(funcs[1].va, Some(0x1_4007_a5a0));
+    }
+
+    #[test]
+    fn absolute_va_subtracts_populated_text_start_field() {
+        let mut funcs: Vec<GoFunc> =
+            vec![GoFunc::new(0x1_400a_4ba0, 0x1_400a_4bc0, "f".to_owned())];
+        assign_absolute_vas(
+            &mut funcs,
+            PclntabVersion::Go120,
+            0x1_4000_1000,
+            Some(0x1_4000_1000),
+        );
+        assert_eq!(funcs[0].va, Some(0x1_400a_4ba0));
+    }
+
+    #[test]
+    fn absolute_va_is_unknown_without_a_text_base() {
+        let mut funcs: Vec<GoFunc> = vec![GoFunc::new(0xa3ba0, 0xa3bc0, "f".to_owned())];
+        assign_absolute_vas(&mut funcs, PclntabVersion::Go120, 0, None);
+        assert_eq!(funcs[0].va, None);
+        assign_absolute_vas(&mut funcs, PclntabVersion::Go120, 0, Some(0));
+        assert_eq!(funcs[0].va, None);
+    }
+
+    #[test]
+    fn absolute_va_treats_legacy_functab_entry_as_already_absolute() {
+        let mut funcs: Vec<GoFunc> = vec![
+            GoFunc::new(0x40_1000, 0x40_1020, "f".to_owned()),
+            GoFunc::new(0, 0, "g".to_owned()),
+        ];
+        assign_absolute_vas(&mut funcs, PclntabVersion::Go116, 0, Some(0x40_0000));
+        assert_eq!(funcs[0].va, Some(0x40_1000));
+        assert_eq!(funcs[1].va, None);
     }
 
     #[test]

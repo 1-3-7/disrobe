@@ -155,6 +155,13 @@ impl<'a> GoImage<'a> {
     }
 
     #[must_use]
+    pub fn text_section_base(&self) -> Option<u64> {
+        self.section_by_name(&[".text", "__text"])
+            .map(|s: &Section<'a>| s.address)
+            .filter(|addr: &u64| *addr != 0)
+    }
+
+    #[must_use]
     pub fn data_at_va(&self, va: u64, len: usize) -> Option<&'a [u8]> {
         for sec in &self.sections {
             let end: u64 = sec.address.checked_add(sec.data.len() as u64)?;

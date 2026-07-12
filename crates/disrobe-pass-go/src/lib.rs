@@ -46,7 +46,9 @@ pub use provenance_header::{
     go_decompiled_header, go_extracted_header, render_go_decompiled_with_header,
 };
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
-pub use symbols::{GoFunc, GoSymbols, package_histogram, package_path, parse_symbols};
+pub use symbols::{
+    GoFunc, GoSymbols, assign_absolute_vas, package_histogram, package_path, parse_symbols,
+};
 pub use types::{
     GoGenericInstantiation, GoInterfaceMethod, GoItab, GoItabSlot, GoMethod, GoStructField,
     GoTypeMeta, GoTypeRef, disambiguate_generics, extract_typemeta, harvest_concrete_args,
@@ -108,7 +110,7 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                 format!("{:#x}", located.header.section_addr)
             });
             dbg_kv("pclntab_n_funcs", || located.header.n_funcs.to_string());
-            let symbols: GoSymbols = parse_symbols(&image, &located)?;
+            let mut symbols: GoSymbols = parse_symbols(&image, &located)?;
             dbg_kv("func_count", || symbols.funcs.len().to_string());
             dbg_kv("func_start_line_count", || {
                 symbols
@@ -133,6 +135,26 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
             let moduledata: Moduledata = locate_moduledata(&image, &located);
             dbg_kv("moduledata_via", || format!("{:?}", moduledata.via));
             dbg_kv("modulename", || format!("{:?}", moduledata.modulename));
+            let text_base: Option<u64> = (moduledata.text_va != 0)
+                .then_some(moduledata.text_va)
+                .or_else(|| image.text_section_base());
+            symbols::assign_absolute_vas(
+                &mut symbols.funcs,
+                located.header.version,
+                located.header.text_start,
+                text_base,
+            );
+            dbg_kv("func_va_base", || {
+                text_base.map_or_else(|| "unknown".to_owned(), |b: u64| format!("{b:#x}"))
+            });
+            dbg_kv("func_va_count", || {
+                symbols
+                    .funcs
+                    .iter()
+                    .filter(|f: &&GoFunc| f.va.is_some())
+                    .count()
+                    .to_string()
+            });
             let mut typemeta: GoTypeMeta = extract_typemeta(&image, &moduledata);
             let func_vas: Vec<(u64, &str)> = symbols
                 .funcs
