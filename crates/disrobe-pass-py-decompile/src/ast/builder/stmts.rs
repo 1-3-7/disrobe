@@ -18,10 +18,10 @@ use super::exprs::{
 use super::function_meta::prepend_nonlocal_decls;
 use super::loops::{
     cond_expr_start, find_legacy_async_for_loop, find_loop, guard_matches_enclosed_while,
-    leading_cond_arm_holds_loop, leading_guard_if_encloses_loop, legacy_async_for_enclosed_by_loop,
-    legacy_async_for_enclosed_by_try, loop_enclosed_by_guard, loop_is_else_arm_of_leading_if,
-    loop_structure_guarded_loop, non_empty, recover_for_target, structure_for_loop_with_iter,
-    structure_loop, try_enclosed_by_loop,
+    is_walrus_store_shape, leading_cond_arm_holds_loop, leading_guard_if_encloses_loop,
+    legacy_async_for_enclosed_by_loop, legacy_async_for_enclosed_by_try, loop_enclosed_by_guard,
+    loop_is_else_arm_of_leading_if, loop_structure_guarded_loop, non_empty, recover_for_target,
+    structure_for_loop_with_iter, structure_loop, try_enclosed_by_loop,
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
@@ -1610,6 +1610,33 @@ fn chain_link_targets_pad(stream: &DecodedStream, lo: usize, guard: usize, pad: 
     })
 }
 
+fn guard_body_completes_statement(ops: &[CanonicalOp], idx: usize) -> bool {
+    if is_walrus_store_shape(ops, idx) {
+        return false;
+    }
+    matches!(
+        ops[idx],
+        CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreSlice
+            | CanonicalOp::UnpackSequence(_)
+            | CanonicalOp::UnpackEx(_)
+    )
+}
+
+fn value_form_guard_holds_statement(stream: &DecodedStream, idx: usize, hi: usize) -> bool {
+    let Some(target): Option<usize> =
+        resolve_jump_target(stream, idx, &stream.ops[idx]).filter(|t: &usize| *t > idx && *t <= hi)
+    else {
+        return false;
+    };
+    (idx + 1..target).any(|k: usize| guard_body_completes_statement(&stream.ops, k))
+}
+
 pub(super) fn structure_stmts(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1748,7 +1775,8 @@ pub(super) fn structure_stmts(
     let first_cond: Option<usize> = (lo..hi).find(|&i: &usize| {
         is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)
-            && !is_value_form_shortcircuit(&stream.ops, i)
+            && (!is_value_form_shortcircuit(&stream.ops, i)
+                || value_form_guard_holds_statement(stream, i, hi))
             && resolve_jump_target(stream, i, &stream.ops[i])
                 .is_some_and(|t: usize| t > i && t <= hi)
     });
