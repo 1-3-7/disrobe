@@ -280,6 +280,7 @@ struct SigReader<'a> {
     pos: usize,
     depth: usize,
     nodes: usize,
+    reject_custom_modifiers: bool,
 }
 
 impl<'a> SigReader<'a> {
@@ -290,6 +291,18 @@ impl<'a> SigReader<'a> {
             pos: 0,
             depth: 0,
             nodes: 0,
+            reject_custom_modifiers: false,
+        }
+    }
+
+    #[inline]
+    const fn new_strict(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            depth: 0,
+            nodes: 0,
+            reject_custom_modifiers: true,
         }
     }
 
@@ -343,7 +356,7 @@ impl<'a> SigReader<'a> {
         let coded: u32 = self.compressed()?;
         let tag: u32 = coded & 0x03;
         let rid: u32 = coded >> 2;
-        if rid == 0 {
+        if rid == 0 || rid > 0x00FF_FFFF {
             return Err(Error::BadCompressedUint(self.pos));
         }
         let table: u32 = match tag {
@@ -372,6 +385,9 @@ impl<'a> SigReader<'a> {
         while leading_modifiers {
             match self.peek() {
                 Some(et::CMOD_REQD | et::CMOD_OPT) => {
+                    if self.reject_custom_modifiers {
+                        return Err(Error::BadCompressedUint(self.pos));
+                    }
                     self.pos += 1;
                     let _ = self.type_def_or_ref()?;
                 }
@@ -449,6 +465,9 @@ impl<'a> SigReader<'a> {
                 let _ = self.parse_method_inner()?;
                 TypeSig::FnPtr
             }
+            _ if self.reject_custom_modifiers => {
+                return Err(Error::BadCompressedUint(self.pos.saturating_sub(1)));
+            }
             _ => TypeSig::Unknown,
         })
     }
@@ -487,11 +506,7 @@ impl<'a> SigReader<'a> {
     }
 }
 
-pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
-    if blob.is_empty() {
-        return Err(Error::BadCompressedUint(0));
-    }
-    let mut reader: SigReader<'_> = SigReader::new(blob);
+fn parse_method_sig_with_reader(mut reader: SigReader<'_>) -> Result<MethodSig> {
     let signature: MethodSig = reader.parse_method_inner()?;
     if reader.remaining() != 0 {
         return Err(Error::BadCompressedUint(reader.pos));
@@ -499,8 +514,21 @@ pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
     Ok(signature)
 }
 
-pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
-    let mut r: SigReader<'_> = SigReader::new(blob);
+pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
+    if blob.is_empty() {
+        return Err(Error::BadCompressedUint(0));
+    }
+    parse_method_sig_with_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_method_sig_strict(blob: &[u8]) -> Result<MethodSig> {
+    if blob.is_empty() {
+        return Err(Error::BadCompressedUint(0));
+    }
+    parse_method_sig_with_reader(SigReader::new_strict(blob))
+}
+
+fn parse_method_spec_sig_with_reader(mut r: SigReader<'_>) -> Result<Vec<TypeSig>> {
     let cc: u8 = r.byte()?;
     if cc != 0x0A {
         return Err(Error::BadCompressedUint(0));
@@ -520,8 +548,15 @@ pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
     Ok(args)
 }
 
-pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
-    let mut r: SigReader<'_> = SigReader::new(blob);
+pub fn parse_method_spec_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
+    parse_method_spec_sig_with_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_method_spec_sig_strict(blob: &[u8]) -> Result<Vec<TypeSig>> {
+    parse_method_spec_sig_with_reader(SigReader::new_strict(blob))
+}
+
+fn parse_field_sig_with_reader(mut r: SigReader<'_>) -> Result<TypeSig> {
     let cc: u8 = r.byte()?;
     if cc != SIG_FIELD {
         return Err(Error::BadCompressedUint(0));
@@ -533,8 +568,15 @@ pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
     Ok(signature)
 }
 
-pub fn parse_local_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
-    let mut r: SigReader<'_> = SigReader::new(blob);
+pub fn parse_field_sig(blob: &[u8]) -> Result<TypeSig> {
+    parse_field_sig_with_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_field_sig_strict(blob: &[u8]) -> Result<TypeSig> {
+    parse_field_sig_with_reader(SigReader::new_strict(blob))
+}
+
+fn parse_local_sig_with_reader(mut r: SigReader<'_>) -> Result<Vec<TypeSig>> {
     let cc: u8 = r.byte()?;
     if cc != SIG_LOCAL {
         return Err(Error::BadCompressedUint(0));
@@ -548,16 +590,46 @@ pub fn parse_local_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
         }
         if r.peek() == Some(element_type::TYPEDBYREF) {
             r.consume_node()?;
-            r.pos += 1;
+            let marker: u8 = r.byte()?;
+            if marker != element_type::TYPEDBYREF {
+                return Err(Error::BadCompressedUint(r.pos.saturating_sub(1)));
+            }
             locals.push(TypeSig::TypedByRef);
             continue;
         }
-        locals.push(r.type_sig()?);
+        let local: TypeSig = r.type_sig()?;
+        if r.reject_custom_modifiers && !valid_strict_local_type(&local) {
+            return Err(Error::BadCompressedUint(r.pos));
+        }
+        locals.push(local);
     }
     if r.remaining() != 0 {
         return Err(Error::BadCompressedUint(r.pos));
     }
     Ok(locals)
+}
+
+pub fn parse_local_sig(blob: &[u8]) -> Result<Vec<TypeSig>> {
+    parse_local_sig_with_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_local_sig_strict(blob: &[u8]) -> Result<Vec<TypeSig>> {
+    parse_local_sig_with_reader(SigReader::new_strict(blob))
+}
+
+fn valid_strict_local_type(signature: &TypeSig) -> bool {
+    match signature {
+        TypeSig::Void | TypeSig::Unknown => false,
+        TypeSig::SzArray(inner)
+        | TypeSig::Ptr(inner)
+        | TypeSig::ByRef(inner)
+        | TypeSig::Pinned(inner) => valid_strict_local_type(inner),
+        TypeSig::Array { element, .. } => valid_strict_local_type(element),
+        TypeSig::GenericInst { base, args } => {
+            valid_strict_local_type(base) && args.iter().all(valid_strict_local_type)
+        }
+        _ => true,
+    }
 }
 
 pub fn parse_type_spec_sig(blob: &[u8]) -> Result<TypeSig> {
@@ -657,6 +729,53 @@ mod tests {
     fn field_sig_rejects_reserved_and_zero_type_tokens() {
         assert!(parse_field_sig(&[SIG_FIELD, element_type::CLASS, 0x07]).is_err());
         assert!(parse_field_sig(&[SIG_FIELD, element_type::CLASS, 0x00]).is_err());
+        assert!(
+            parse_field_sig(&[SIG_FIELD, element_type::CLASS, 0xC4, 0x00, 0x00, 0x00]).is_err()
+        );
+    }
+
+    #[test]
+    fn strict_signatures_reject_custom_modifiers() {
+        assert!(
+            parse_field_sig(&[SIG_FIELD, element_type::CMOD_REQD, 0x05, element_type::I4]).is_ok()
+        );
+        assert!(
+            parse_field_sig_strict(&[SIG_FIELD, element_type::CMOD_REQD, 0x05, element_type::I4,])
+                .is_err()
+        );
+        assert!(
+            parse_method_sig_strict(&[
+                SIG_DEFAULT,
+                0x00,
+                element_type::CMOD_OPT,
+                0x05,
+                element_type::VOID,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_method_spec_sig_strict(&[
+                0x0A,
+                0x01,
+                element_type::CMOD_OPT,
+                0x05,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_local_sig_strict(&[
+                SIG_LOCAL,
+                0x01,
+                element_type::CMOD_REQD,
+                0x05,
+                element_type::I4,
+            ])
+            .is_err()
+        );
+        assert!(parse_field_sig(&[SIG_FIELD, 0x17]).is_ok());
+        assert!(parse_field_sig_strict(&[SIG_FIELD, 0x17]).is_err());
+        assert!(parse_local_sig_strict(&[SIG_LOCAL, 0x01, element_type::VOID]).is_err());
     }
 
     #[test]

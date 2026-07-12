@@ -17,12 +17,11 @@ pub fn peel_dotnet_reactor(bytes: &[u8]) -> Result<PeelReport> {
         Protector::DotnetReactor,
         bytes,
         WATERMARKS,
-        "Reactor stores its strings in an embedded resource encrypted with AES-256-CBC; the \
-         32-byte key and 16-byte IV live in initialized-data fields referenced by the resource \
-         decrypter, and the records are int32-length-prefixed UTF-16. The static key+IV are read \
-         from those fields and fed to the AES engine below. Builds that reverse the IV or mix the \
-         assembly PublicKeyToken into it are walled honestly because that material is not fully \
-         present in an unsigned static image.",
+        "The selected Reactor v4 static resource slice binds a straight-line Int32/UTF-16 entry to \
+         one embedded resource and one reachable AES key/IV helper. It requires unique provenance, \
+         CBC with PKCS#7, exact FieldRVA layouts, and any IV reversal before set_IV. Ambiguous, \
+         PublicKeyToken-mixed, NecroBit/native-keyed, and VM variants remain explicit Unknown. \
+         Missing or conflicting selected invariants also remain Unknown.",
     )?;
     try_managed_string_decryptor(&mut report, bytes, ".NET Reactor");
     apply_resource_strings(&mut report, recover_dotnet_reactor_strings(bytes));

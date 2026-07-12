@@ -1,4 +1,6 @@
 #![allow(clippy::doc_markdown)]
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -6,12 +8,9 @@ use crate::metadata::{
     MetadataRoot, StreamHeader, decompress_uint, parse_metadata_root, read_strings_heap,
 };
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
-use crate::peel::dotnet_crypto::{
-    CryptoError, aes256_cbc_decrypt_no_pad, des_cbc_decrypt, strip_pkcs7,
-};
+use crate::peel::dotnet_crypto::{CryptoError, des_cbc_decrypt, strip_pkcs7};
 use crate::tables::{
-    AssemblyRow, FieldRow, FieldRvaRow, ManifestResourceRow, Tables, parse_single_assembly_row,
-    parse_tables,
+    AssemblyRow, ManifestResourceRow, Tables, parse_single_assembly_row, parse_tables,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +36,7 @@ struct ImageView {
     pe: PeImage,
     clr: ClrHeader,
     tables: Tables,
-    strings: std::collections::BTreeMap<u32, String>,
+    strings: BTreeMap<u32, String>,
     blob: Vec<u8>,
 }
 
@@ -53,7 +52,7 @@ fn load_image(image: &[u8]) -> Result<ImageView> {
         .or_else(|| root.streams.get("#-"))
         .ok_or_else(|| crate::error::Error::UnknownStream("#~".to_string()))?;
     let tables: Tables = parse_tables(metadata_slice, table_header)?;
-    let strings: std::collections::BTreeMap<u32, String> = root
+    let strings: BTreeMap<u32, String> = root
         .streams
         .get("#Strings")
         .map(|h: &StreamHeader| read_strings_heap(metadata_slice, *h))
@@ -87,7 +86,7 @@ fn blob_at(blob: &[u8], offset: u32) -> Option<&[u8]> {
     blob.get(start..start + len as usize)
 }
 
-fn string_at(strings: &std::collections::BTreeMap<u32, String>, off: u32) -> Option<String> {
+fn string_at(strings: &BTreeMap<u32, String>, off: u32) -> Option<String> {
     strings.get(&off).cloned()
 }
 
@@ -272,27 +271,6 @@ fn metadata_blob(heap: &[u8], index: u32) -> Option<&[u8]> {
     tail.get(prefix..end)
 }
 
-fn field_rva_blob(image: &[u8], view: &ImageView, field_rid: u32, len: usize) -> Option<Vec<u8>> {
-    let row: &FieldRvaRow = view
-        .tables
-        .field_rvas
-        .iter()
-        .find(|fr: &&FieldRvaRow| fr.field == field_rid)?;
-    let slice: &[u8] = view.pe.slice_at_rva(image, row.rva, len).ok()?;
-    Some(slice.to_vec())
-}
-
-fn field_rid_by_name(view: &ImageView, name: &str) -> Option<u32> {
-    view.tables
-        .fields
-        .iter()
-        .enumerate()
-        .find_map(|(i, f): (usize, &FieldRow)| {
-            (string_at(&view.strings, f.name).as_deref() == Some(name))
-                .then(|| u32::try_from(i + 1).unwrap_or(u32::MAX))
-        })
-}
-
 fn first_resource(view: &ImageView) -> Option<&ManifestResourceRow> {
     view.tables
         .manifest_resources
@@ -369,28 +347,31 @@ fn read_unicode_records_varint_strict(blob: &[u8]) -> Option<Vec<String>> {
     (!out.is_empty()).then_some(out)
 }
 
-fn read_unicode_records_int32(blob: &[u8]) -> Vec<String> {
+fn read_unicode_records_int32_strict(blob: &[u8]) -> Option<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     let mut pos: usize = 0;
-    while pos + 4 <= blob.len() {
-        let byte_len: usize =
-            u32::from_le_bytes([blob[pos], blob[pos + 1], blob[pos + 2], blob[pos + 3]]) as usize;
-        pos += 4;
-        if byte_len == 0 || pos.saturating_add(byte_len) > blob.len() || !byte_len.is_multiple_of(2)
-        {
-            break;
+    while pos < blob.len() {
+        let length_end: usize = pos.checked_add(4)?;
+        let length_bytes: [u8; 4] = blob.get(pos..length_end)?.try_into().ok()?;
+        let signed_len: i32 = i32::from_le_bytes(length_bytes);
+        let byte_len: usize = usize::try_from(signed_len).ok()?;
+        if !byte_len.is_multiple_of(2) || byte_len > MAX_RESOURCE_BYTES {
+            return None;
         }
-        let units: Vec<u16> = blob[pos..pos + byte_len]
+        pos = length_end;
+        let data_end: usize = pos.checked_add(byte_len)?;
+        let data: &[u8] = blob.get(pos..data_end)?;
+        let units: Vec<u16> = data
             .chunks_exact(2)
             .map(|c: &[u8]| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        out.push(String::from_utf16_lossy(&units));
-        pos += byte_len;
-        if out.len() >= MAX_STRINGS {
-            break;
+        out.push(String::from_utf16(&units).ok()?);
+        pos = data_end;
+        if out.len() > MAX_STRINGS {
+            return None;
         }
     }
-    out
+    (!out.is_empty()).then_some(out)
 }
 
 fn read_binaryreader_strings_utf8(blob: &[u8]) -> Vec<String> {
@@ -676,135 +657,32 @@ fn babel_decrypt_blob(
     }
 }
 
+mod reactor;
+
 #[must_use]
 pub fn recover_dotnet_reactor_strings(image: &[u8]) -> Option<ResourceStringRecovery> {
-    let view: ImageView = load_image(image).ok()?;
-    let row: &ManifestResourceRow = first_resource(&view)?;
-    let resource_name: String = string_at(&view.strings, row.name).unwrap_or_default();
-    let blob: &[u8] = embedded_resource_bytes(image, &view, row)?;
-    let resource_size: u32 = u32::try_from(blob.len()).unwrap_or(u32::MAX);
-    let mut recovery: ResourceStringRecovery = ResourceStringRecovery {
-        resource_name,
-        resource_size,
-        scheme: "Reactor AES-256-CBC resource (key/IV in initialized data fields), int32-prefixed \
-                 UTF-16 records"
-            .to_string(),
-        strings: Vec::new(),
-        dynamic_wall: None,
-    };
-    match reactor_decrypt_blob(image, &view, blob) {
-        Ok(plain) => {
-            recovery.strings = read_unicode_records_int32(&plain);
-        }
-        Err(reason) => {
-            recovery.dynamic_wall = Some(reason);
-        }
-    }
-    Some(recovery)
-}
-
-const REACTOR_KEY_FIELD: &str = "rk";
-const REACTOR_IV_FIELD: &str = "ri";
-
-fn reactor_decrypt_blob(
-    image: &[u8],
-    view: &ImageView,
-    blob: &[u8],
-) -> std::result::Result<Vec<u8>, String> {
-    let key_rid: u32 = field_rid_by_name(view, REACTOR_KEY_FIELD)
-        .or_else(|| reactor_field_rid_by_len(image, view, 32))
-        .ok_or_else(|| {
-            "Reactor 32-byte Rijndael key field not located in the initialized-data fields"
-                .to_string()
-        })?;
-    let iv_rid: u32 = field_rid_by_name(view, REACTOR_IV_FIELD)
-        .or_else(|| reactor_field_rid_by_len(image, view, 16))
-        .ok_or_else(|| {
-            "Reactor 16-byte Rijndael IV field not located in the initialized-data fields"
-                .to_string()
-        })?;
-    let key_vec: Vec<u8> = field_rva_blob(image, view, key_rid, 32)
-        .ok_or_else(|| "Reactor key field has no readable 32-byte static data".to_string())?;
-    let iv_vec: Vec<u8> = field_rva_blob(image, view, iv_rid, 16)
-        .ok_or_else(|| "Reactor IV field has no readable 16-byte static data".to_string())?;
-    let mut key: [u8; 32] = [0u8; 32];
-    key.copy_from_slice(&key_vec);
-    let mut iv: [u8; 16] = [0u8; 16];
-    iv.copy_from_slice(&iv_vec);
-    if reactor_uses_pkt_mix(image, view) {
-        return Err(
-            "Reactor mixes the assembly PublicKeyToken into the IV (pkt-index pattern present); the \
-             effective IV is only complete in a signed image, so this build's IV is not fully \
-             static"
-                .to_string(),
-        );
-    }
-    match aes256_cbc_decrypt_no_pad(&key, &iv, blob) {
-        Ok(plain) => Ok(strip_pkcs7(&plain, 16)),
-        Err(CryptoError::BadBlockAlignment) => {
-            Err("Reactor AES ciphertext is not a 16-byte multiple".to_string())
-        }
-        Err(_) => Err("Reactor AES ciphertext empty".to_string()),
-    }
-}
-
-fn reactor_field_rid_by_len(image: &[u8], view: &ImageView, len: usize) -> Option<u32> {
-    view.tables.field_rvas.iter().find_map(|fr: &FieldRvaRow| {
-        field_rva_blob(image, view, fr.field, len).map(|_b: Vec<u8>| fr.field)
-    })
-}
-
-const REACTOR_PKT_INDEX_PATTERN: [i64; 16] = [1, 0, 3, 1, 5, 2, 7, 3, 9, 4, 11, 5, 13, 6, 15, 7];
-
-fn reactor_uses_pkt_mix(image: &[u8], view: &ImageView) -> bool {
-    use crate::cil::{Instruction, MethodBody, OperandValue, parse_method_body};
-    for method in &view.tables.methods {
-        if method.rva == 0 {
-            continue;
-        }
-        let Some(off): Option<usize> = view.pe.rva_to_offset(method.rva) else {
-            continue;
-        };
-        let Some(slice): Option<&[u8]> = image.get(off..) else {
-            continue;
-        };
-        let Ok(body): Result<MethodBody> = parse_method_body(slice) else {
-            continue;
-        };
-        let mut matched: usize = 0;
-        for ins in &body.instructions {
-            let value: Option<i64> = match (&ins.name, &ins.operand) {
-                (name, OperandValue::I32(v)) if name == "ldc.i4" => Some(i64::from(*v)),
-                (name, OperandValue::U8(v)) if name == "ldc.i4.s" => Some(i64::from(*v as i8)),
-                (name, _) if name.starts_with("ldc.i4.") => name
-                    .rsplit('.')
-                    .next()
-                    .and_then(|d: &str| d.parse::<i64>().ok()),
-                _ => None,
-            };
-            let _: &Instruction = ins;
-            if let Some(v) = value {
-                if v == REACTOR_PKT_INDEX_PATTERN[matched] {
-                    matched += 1;
-                    if matched == REACTOR_PKT_INDEX_PATTERN.len() {
-                        return true;
-                    }
-                } else {
-                    matched = usize::from(v == REACTOR_PKT_INDEX_PATTERN[0]);
-                }
-            }
-        }
-    }
-    false
+    reactor::recover(image)
 }
 
 #[cfg(test)]
+use reactor::{
+    ReactorCallShape, ReactorFlow, call_shape_matches, contiguous_dominating,
+    direct_static_helper_token, framework_assembly_name_allowed,
+    instruction_calls_framework_member, reactor_method_body, resource_result_store, row_ref_token,
+    validate_reactor_method_sections,
+};
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io::Write;
 
     use flate2::Compression;
     use flate2::write::DeflateEncoder;
+
+    use crate::cil::{Instruction, MethodBody, OperandValue};
+    use crate::model::{MethodModel, Resolver, TypeModel};
+    use crate::tables::{RowRef, TableId};
 
     use super::*;
 
@@ -898,5 +776,425 @@ mod tests {
         let payload: Vec<u8> = vec![0u8; 33];
         let compressed: Vec<u8> = deflate(&payload);
         assert!(inflate_raw_to_limit(&compressed, 32).is_err());
+    }
+
+    #[test]
+    fn reactor_records_accept_empty_and_supplementary_strings() {
+        let data: Vec<u8> = vec![0, 0, 0, 0, 4, 0, 0, 0, 0x34, 0xD8, 0x1E, 0xDD];
+        assert_eq!(
+            read_unicode_records_int32_strict(&data),
+            Some(vec![String::new(), "\u{1d11e}".to_string()])
+        );
+    }
+
+    #[test]
+    fn reactor_records_reject_incomplete_or_invalid_streams() {
+        let cases: [Vec<u8>; 5] = [
+            vec![0xFF, 0xFF, 0xFF, 0xFF],
+            vec![1, 0, 0, 0, 0],
+            vec![2, 0, 0, 0, 65],
+            vec![2, 0, 0, 0, 0, 0xD8],
+            vec![2, 0, 0, 0, 65, 0, 0],
+        ];
+        for data in cases {
+            assert!(read_unicode_records_int32_strict(&data).is_none());
+        }
+    }
+
+    #[test]
+    fn reactor_framework_shape_rejects_invalid_call_opcode() {
+        let image: &[u8] =
+            include_bytes!("../../tests/fixtures/dotnet_reactor_strings/ReactorStringsCompat.dll");
+        let view: ImageView = load_image(image).expect("managed fixture");
+        let root: MetadataRoot =
+            parse_metadata_root(image, &view.pe, &view.clr).expect("metadata root");
+        let resolver: Resolver =
+            Resolver::build(image, &view.pe, &view.clr, &root).expect("resolver");
+        let model: crate::model::AssemblyModel = resolver.model();
+        let method: &MethodModel = model
+            .types
+            .iter()
+            .flat_map(|ty: &TypeModel| ty.methods.iter())
+            .find(|method: &&MethodModel| method.name == "DecryptResource")
+            .expect("resource helper");
+        let body: MethodBody =
+            reactor_method_body(image, &view.pe, method.rva).expect("method body");
+        let instruction: &Instruction = body
+            .instructions
+            .iter()
+            .find(|instruction: &&Instruction| {
+                instruction_calls_framework_member(
+                    &resolver,
+                    instruction,
+                    "System.Security.Cryptography",
+                    "Aes",
+                    "Create",
+                )
+            })
+            .expect("AES factory");
+        assert!(call_shape_matches(
+            &resolver,
+            instruction,
+            ReactorCallShape::AesCreate
+        ));
+        let mut invalid: Instruction = instruction.clone();
+        invalid.name = "newobj".to_string();
+        assert!(!call_shape_matches(
+            &resolver,
+            &invalid,
+            ReactorCallShape::AesCreate
+        ));
+        let owner: &TypeModel = model
+            .types
+            .iter()
+            .find(|ty: &&TypeModel| {
+                ty.methods
+                    .iter()
+                    .any(|candidate: &MethodModel| candidate.token == method.token)
+            })
+            .expect("helper owner");
+        let entry: &MethodModel = owner
+            .methods
+            .iter()
+            .find(|candidate: &&MethodModel| candidate.name == "Decode")
+            .expect("string entry");
+        let stack_mutations: [(&MethodModel, &str); 2] = [
+            (entry, "Unknown: Reactor string entry max stack is below 4"),
+            (method, "Unknown: Reactor helper max stack is below 3"),
+        ];
+        for (target, expected_note) in stack_mutations {
+            let mut mutated: Vec<u8> = image.to_vec();
+            let method_offset: usize = view.pe.rva_to_offset(target.rva).expect("method offset");
+            let stack_start: usize = method_offset.checked_add(2).expect("max stack offset");
+            let stack_end: usize = stack_start.checked_add(2).expect("max stack end");
+            mutated
+                .get_mut(stack_start..stack_end)
+                .expect("max stack bytes")
+                .fill(0);
+            let recovery: ResourceStringRecovery =
+                recover_dotnet_reactor_strings(&mutated).expect("mutated recovery");
+            assert!(recovery.strings.is_empty());
+            assert!(
+                recovery
+                    .dynamic_wall
+                    .as_deref()
+                    .is_some_and(|note: &str| note.contains(expected_note))
+            );
+        }
+        let method_tokens: BTreeSet<u32> = owner
+            .methods
+            .iter()
+            .map(|candidate: &MethodModel| candidate.token)
+            .collect();
+        let entry_body: MethodBody =
+            reactor_method_body(image, &view.pe, entry.rva).expect("entry body");
+        let helper_call: &Instruction = entry_body
+            .instructions
+            .iter()
+            .find(|candidate: &&Instruction| {
+                direct_static_helper_token(candidate, &method_tokens) == Some(method.token)
+            })
+            .expect("static helper call");
+        let mut invalid_helper: Instruction = helper_call.clone();
+        invalid_helper.name = "callvirt".to_string();
+        assert_eq!(
+            direct_static_helper_token(&invalid_helper, &method_tokens),
+            None
+        );
+
+        let reverse: &Instruction = body
+            .instructions
+            .iter()
+            .find(|candidate: &&Instruction| {
+                instruction_calls_framework_member(
+                    &resolver, candidate, "System", "Array", "Reverse",
+                )
+            })
+            .expect("array reversal");
+        assert!(call_shape_matches(
+            &resolver,
+            reverse,
+            ReactorCallShape::ReverseArray
+        ));
+        let OperandValue::Token(method_spec_token): &OperandValue = &reverse.operand else {
+            panic!("array reversal token");
+        };
+        let method_spec_token: u32 = *method_spec_token;
+        assert_eq!(
+            TableId::from_index(method_spec_token.to_be_bytes()[0]),
+            Some(TableId::MethodSpec)
+        );
+        let method_spec_rid: usize = usize::try_from(method_spec_token & 0x00FF_FFFF)
+            .expect("method spec rid")
+            .checked_sub(1)
+            .expect("nonzero method spec rid");
+        let method_spec = resolver
+            .tables()
+            .method_specs
+            .get(method_spec_rid)
+            .expect("method spec row");
+        let metadata_offset: usize = view
+            .pe
+            .rva_to_offset(view.clr.metadata.rva)
+            .expect("metadata offset");
+        let blob_stream: &StreamHeader = root.streams.get("#Blob").expect("blob stream");
+        let blob_start: usize = metadata_offset
+            .checked_add(usize::try_from(blob_stream.offset).expect("blob offset"))
+            .and_then(|offset: usize| {
+                offset.checked_add(
+                    usize::try_from(method_spec.instantiation).expect("instantiation offset"),
+                )
+            })
+            .expect("method spec blob offset");
+        let mut wrong_instantiation: Vec<u8> = image.to_vec();
+        let (blob_len, prefix_len): (u32, usize) =
+            decompress_uint(&wrong_instantiation[blob_start..]).expect("method spec blob");
+        assert_eq!(blob_len, 3);
+        let argument_offset: usize = blob_start
+            .checked_add(prefix_len)
+            .and_then(|offset: usize| offset.checked_add(2))
+            .expect("method spec argument offset");
+        wrong_instantiation[argument_offset] = 0x08;
+        let wrong_view: ImageView = load_image(&wrong_instantiation).expect("mutated fixture");
+        let wrong_root: MetadataRoot =
+            parse_metadata_root(&wrong_instantiation, &wrong_view.pe, &wrong_view.clr)
+                .expect("mutated metadata");
+        let wrong_resolver: Resolver = Resolver::build(
+            &wrong_instantiation,
+            &wrong_view.pe,
+            &wrong_view.clr,
+            &wrong_root,
+        )
+        .expect("mutated resolver");
+        let wrong_model: crate::model::AssemblyModel = wrong_resolver.model();
+        let wrong_method: &MethodModel = wrong_model
+            .types
+            .iter()
+            .flat_map(|ty: &TypeModel| ty.methods.iter())
+            .find(|candidate: &&MethodModel| candidate.name == "DecryptResource")
+            .expect("mutated helper");
+        let wrong_body: MethodBody =
+            reactor_method_body(&wrong_instantiation, &wrong_view.pe, wrong_method.rva)
+                .expect("mutated method body");
+        let wrong_reverse: &Instruction = wrong_body
+            .instructions
+            .iter()
+            .find(|candidate: &&Instruction| {
+                instruction_calls_framework_member(
+                    &wrong_resolver,
+                    candidate,
+                    "System",
+                    "Array",
+                    "Reverse",
+                )
+            })
+            .expect("mutated array reversal");
+        assert!(!call_shape_matches(
+            &wrong_resolver,
+            wrong_reverse,
+            ReactorCallShape::ReverseArray
+        ));
+    }
+
+    #[test]
+    fn reactor_rejects_inverted_guards_and_partial_eh_sections() {
+        let image: &[u8] =
+            include_bytes!("../../tests/fixtures/dotnet_reactor_strings/ReactorStringsCompat.dll");
+        let view: ImageView = load_image(image).expect("managed fixture");
+        let root: MetadataRoot =
+            parse_metadata_root(image, &view.pe, &view.clr).expect("metadata root");
+        let resolver: Resolver =
+            Resolver::build(image, &view.pe, &view.clr, &root).expect("resolver");
+        let model: crate::model::AssemblyModel = resolver.model();
+        let method: &MethodModel = model
+            .types
+            .iter()
+            .flat_map(|ty: &TypeModel| ty.methods.iter())
+            .find(|method: &&MethodModel| method.name == "DecryptResource")
+            .expect("resource helper");
+        let body: MethodBody =
+            reactor_method_body(image, &view.pe, method.rva).expect("method body");
+        let flow: ReactorFlow = ReactorFlow::build(&body).expect("helper flow");
+        let key_call: usize = body
+            .instructions
+            .iter()
+            .enumerate()
+            .find(|(_, instruction): &(usize, &Instruction)| {
+                instruction_calls_framework_member(
+                    &resolver,
+                    instruction,
+                    "System.Security.Cryptography",
+                    "SymmetricAlgorithm",
+                    "set_Key",
+                )
+            })
+            .map(|(index, _): (usize, &Instruction)| index)
+            .expect("key setter");
+        let key_start: usize = key_call.checked_sub(2).expect("key operands");
+        let mut bypassed_key: ReactorFlow = flow.clone();
+        bypassed_key
+            .successors
+            .get_mut(0)
+            .expect("entry successors")
+            .push(key_call);
+        assert!(!contiguous_dominating(
+            &bypassed_key,
+            &[key_start, key_start + 1, key_call],
+        ));
+        let initializer_calls: Vec<usize> = body
+            .instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction): &(usize, &Instruction)| {
+                instruction_calls_framework_member(
+                    &resolver,
+                    instruction,
+                    "System.Runtime.CompilerServices",
+                    "RuntimeHelpers",
+                    "InitializeArray",
+                )
+            })
+            .map(|(index, _): (usize, &Instruction)| index)
+            .collect();
+        let initializer_call: usize = *initializer_calls.last().expect("array initializer");
+        let initializer_start: usize = initializer_call
+            .checked_sub(4)
+            .expect("initializer operands");
+        let initializer_store: usize = initializer_call.checked_add(1).expect("initializer store");
+        let initializer_indices: Vec<usize> = (initializer_start..=initializer_store).collect();
+        let mut bypassed_initializer: ReactorFlow = flow.clone();
+        bypassed_initializer
+            .successors
+            .get_mut(0)
+            .expect("entry successors")
+            .push(initializer_store);
+        assert!(!contiguous_dominating(
+            &bypassed_initializer,
+            &initializer_indices,
+        ));
+        let return_index: usize = body
+            .instructions
+            .iter()
+            .enumerate()
+            .find(|(_, instruction): &(usize, &Instruction)| instruction.name == "ret")
+            .map(|(index, _): (usize, &Instruction)| index)
+            .expect("return");
+        let return_load: usize = return_index.checked_sub(1).expect("return load");
+        let mut bypassed_return: ReactorFlow = flow.clone();
+        bypassed_return
+            .successors
+            .get_mut(0)
+            .expect("entry successors")
+            .push(return_index);
+        assert!(!contiguous_dominating(
+            &bypassed_return,
+            &[return_load, return_index],
+        ));
+        let reverse_index: usize = body
+            .instructions
+            .iter()
+            .enumerate()
+            .find(|(_, instruction): &(usize, &Instruction)| {
+                instruction_calls_framework_member(
+                    &resolver,
+                    instruction,
+                    "System",
+                    "Array",
+                    "Reverse",
+                )
+            })
+            .map(|(index, _): (usize, &Instruction)| index)
+            .expect("array reversal");
+        let mut cyclic: ReactorFlow = flow.clone();
+        cyclic
+            .successors
+            .get_mut(reverse_index)
+            .expect("reverse successors")
+            .push(reverse_index);
+        assert!(cyclic.has_reachable_cycle());
+        let resource_call: usize = body
+            .instructions
+            .iter()
+            .enumerate()
+            .find(|(_, instruction): &(usize, &Instruction)| {
+                instruction_calls_framework_member(
+                    &resolver,
+                    instruction,
+                    "System.Reflection",
+                    "Assembly",
+                    "GetManifestResourceStream",
+                )
+            })
+            .map(|(index, _): (usize, &Instruction)| index)
+            .expect("resource call");
+        resource_result_store(&resolver, &body, &flow, resource_call)
+            .expect("supported resource binding");
+        let guard: usize = resource_call.checked_add(2).expect("resource guard");
+        let mut inverted_resource: ReactorFlow = flow.clone();
+        inverted_resource
+            .successors
+            .get_mut(guard)
+            .expect("resource guard successors")
+            .reverse();
+        assert!(
+            resource_result_store(&resolver, &body, &inverted_resource, resource_call).is_err()
+        );
+        let failure_index: usize = *flow
+            .successors
+            .get(guard)
+            .and_then(|successors: &Vec<usize>| successors.get(1))
+            .expect("resource failure edge");
+        let throw_index: usize = failure_index.checked_add(3).expect("throw index");
+        let mut rethrow_body: MethodBody = body;
+        rethrow_body
+            .instructions
+            .get_mut(throw_index)
+            .expect("throw instruction")
+            .name = "rethrow".to_string();
+        assert!(resource_result_store(&resolver, &rethrow_body, &flow, resource_call).is_err());
+
+        let malformed: Vec<u8> = vec![
+            0x0B, 0x30, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x00,
+            0x00, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00,
+        ];
+        assert!(validate_reactor_method_sections(&malformed, malformed.len()).is_err());
+
+        let unsupported_flags: Vec<u8> = vec![
+            0x23, 0x30, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A,
+        ];
+        assert!(
+            validate_reactor_method_sections(&unsupported_flags, unsupported_flags.len()).is_err()
+        );
+        let extended_header: Vec<u8> = vec![
+            0x03, 0x40, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A,
+        ];
+        assert!(validate_reactor_method_sections(&extended_header, extended_header.len()).is_err());
+        assert_eq!(
+            row_ref_token(RowRef {
+                table: TableId::TypeRef,
+                row: 0x0100_0000,
+            }),
+            None
+        );
+        assert!(framework_assembly_name_allowed(
+            "System.Security.Cryptography",
+            "Aes",
+            "System.Security.Cryptography.Algorithms",
+        ));
+        assert!(!framework_assembly_name_allowed(
+            "System.Security.Cryptography",
+            "Aes",
+            "System.Security.Cryptography.Primitives",
+        ));
+        assert!(framework_assembly_name_allowed(
+            "System.Security.Cryptography",
+            "CryptoStream",
+            "System.Security.Cryptography.Primitives",
+        ));
+        assert!(!framework_assembly_name_allowed(
+            "System.Security.Cryptography",
+            "CryptoStream",
+            "System.Security.Cryptography.Algorithms",
+        ));
     }
 }

@@ -76,23 +76,14 @@ fn reactor_sample() -> Vec<u8> {
 }
 
 #[test]
-fn dotnet_reactor_recovers_known_plaintext_from_self_built_aes_resource() {
+fn dotnet_reactor_methodless_named_fields_remain_unknown() {
     let image: Vec<u8> = reactor_sample();
     let report: PeelReport = peel_dotnet_reactor(&image).expect("peel");
-    let recovered: Vec<&str> = report
-        .recovered_strings
-        .iter()
-        .map(|r| r.text.as_str())
-        .collect();
-    for expected in PLAINTEXTS {
-        assert!(
-            recovered.contains(expected),
-            "Reactor must recover the known plaintext {expected:?} by reading the 32-byte key and \
-             16-byte IV from the initialized-data fields and AES-256-CBC decrypting; \
-             recovered={recovered:?}"
-        );
-    }
-    assert_eq!(report.strategy, PeelStrategy::EncryptedResourceExtracted);
+    assert!(report.recovered_strings.is_empty());
+    assert_eq!(report.strategy, PeelStrategy::ReportOnlyEncryptedResource);
+    assert!(report.notes.iter().any(|note: &String| {
+        note.contains("Unknown: Reactor managed methods contain no proven static string entry")
+    }));
 }
 
 #[test]

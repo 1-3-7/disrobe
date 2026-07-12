@@ -380,6 +380,29 @@ impl Resolver {
     }
 
     #[must_use]
+    pub(crate) fn user_string_strict(&self, offset: u32) -> Option<String> {
+        let index: usize = usize::try_from(offset).ok()?;
+        let tail: &[u8] = self.us.get(index..)?;
+        let (length, consumed): (u32, usize) = decompress_uint(tail)?;
+        let length: usize = usize::try_from(length).ok()?;
+        let start: usize = index.checked_add(consumed)?;
+        let end: usize = start.checked_add(length)?;
+        let blob: &[u8] = self.us.get(start..end)?;
+        let (terminal, characters): (&u8, &[u8]) = blob.split_last()?;
+        if *terminal > 1 || !characters.len().is_multiple_of(2) {
+            return None;
+        }
+        let units: Vec<u16> = characters
+            .chunks_exact(2)
+            .map(|unit: &[u8]| {
+                let bytes: [u8; 2] = unit.try_into().ok()?;
+                Some(u16::from_le_bytes(bytes))
+            })
+            .collect::<Option<Vec<u16>>>()?;
+        String::from_utf16(&units).ok()
+    }
+
+    #[must_use]
     pub fn resolve_token(&self, token: u32) -> String {
         let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
         let rid: u32 = token & 0x00FF_FFFF;
@@ -903,6 +926,26 @@ mod tests {
         assert_eq!(generic_arity("Dictionary`2"), 2);
         assert_eq!(generic_arity("Enumerator"), 0);
         assert_eq!(generic_arity("Weird`x"), 0);
+    }
+
+    #[test]
+    fn strict_user_strings_reject_malformed_utf16_and_trailers() {
+        let resolver: fn(Vec<u8>) -> Resolver = |us: Vec<u8>| Resolver {
+            tables: Tables::default(),
+            strings_heap: Vec::new(),
+            blob: Vec::new(),
+            us,
+        };
+        assert_eq!(
+            resolver(vec![0, 3, 0x41, 0, 0]).user_string_strict(1),
+            Some("A".to_string())
+        );
+        assert_eq!(resolver(vec![0, 2, 0x41, 0]).user_string_strict(1), None);
+        assert_eq!(
+            resolver(vec![0, 3, 0x00, 0xD8, 1]).user_string_strict(1),
+            None
+        );
+        assert_eq!(resolver(vec![0, 3, 0x41, 0, 2]).user_string_strict(1), None);
     }
 
     #[test]
