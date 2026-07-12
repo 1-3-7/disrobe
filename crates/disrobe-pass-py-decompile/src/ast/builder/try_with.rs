@@ -7312,6 +7312,12 @@ fn parse_except_handlers(
         } else {
             handler_body_end(stream, body_start, next_handler)
         };
+        let raw_body_end: usize = if is_return_idiom {
+            raw_body_end
+        } else {
+            handler_pass_through_return_cap(stream, body_start, next_handler)
+                .map_or(raw_body_end, |cap: usize| cap.min(raw_body_end))
+        };
         let body_end: usize = if is_return_idiom {
             raw_body_end
         } else {
@@ -7845,6 +7851,49 @@ fn handler_body_end_at_pop_except(stream: &DecodedStream, lo: usize, hi: usize) 
     let after_cleanup: usize = skip_handler_name_cleanup(stream, pop + 1, hi);
     let trailing: usize = handler_trailing_terminator_end(stream, after_cleanup, hi);
     if trailing > pop { trailing } else { pop }
+}
+
+fn handler_pass_through_return_cap(
+    stream: &DecodedStream,
+    body_start: usize,
+    next_handler: usize,
+) -> Option<usize> {
+    let hi: usize = next_handler.min(stream.ops.len());
+    let mut depth: u32 = 0;
+    let mut pop_at: Option<usize> = None;
+    for k in body_start..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => {
+                pop_at = Some(k);
+                break;
+            }
+            CanonicalOp::PopExcept => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let pop: usize = pop_at?;
+    let (tail_lo, tail_hi): (usize, usize) = pop_except_tail_return(stream, pop, hi)?;
+    pass_through_tail_loads_nonconstant(stream, tail_lo, tail_hi).then_some(pop)
+}
+
+fn pass_through_tail_loads_nonconstant(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let mut saw_nonconstant: bool = false;
+    for k in lo..hi {
+        match stream.ops[k] {
+            CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Pop => return false,
+            _ => saw_nonconstant = true,
+        }
+    }
+    saw_nonconstant
 }
 
 fn skip_handler_name_cleanup(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
