@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 95.67,
-          "detail": "6014 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.67 (6014 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 7f2634df (the structurer adds a typed-handler sibling to the named except-continue recognizer for a for-loop whose handler is laid out past the loop, recovering _bootstrap_external.SourceFileLoader.set_data and tarfile.TarInfo.create_pax_header)"
+          "value": 95.69,
+          "detail": "6015 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.69 (6015 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD c40b35b6 (the structurer strips a loop-exit return that a while break-handler try pulled into the body when the exit sits past the back-edge, recovering email._header_value_parser.get_address_list)"
         }
       ]
     },

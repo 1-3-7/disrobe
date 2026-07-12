@@ -3,10 +3,10 @@
 - id: `py-stdlib-recompile`
 - ecosystem: python
 - claim: disrobe recovers Python source whose recompiled bytecode is equivalent to the original, per code object, across the CPython 3.14 stdlib.
-- measured: 95.67%
+- measured: 95.69%
 - oracle strength: strong
 - CI-attested: yes [CI]
 - external oracle: CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)
 - reproduce: `cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate`
 - floor: 90.00 (holds)
-- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.67 (6014 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 7f2634df (the structurer adds a typed-handler sibling to the named except-continue recognizer for a for-loop whose handler is laid out past the loop, recovering _bootstrap_external.SourceFileLoader.set_data and tarfile.TarInfo.create_pax_header)
+- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.69 (6015 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD c40b35b6 (the structurer strips a loop-exit return that a while break-handler try pulled into the body when the exit sits past the back-edge, recovering email._header_value_parser.get_address_list)
