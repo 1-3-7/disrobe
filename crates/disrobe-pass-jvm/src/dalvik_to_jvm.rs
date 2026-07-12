@@ -158,6 +158,7 @@ struct CfgEmit {
     tries: Vec<TryRegion>,
 
     handler_stack: BTreeMap<u32, String>,
+    handler_stub_offset: BTreeMap<u32, usize>,
 }
 
 struct TryRegion {
@@ -330,7 +331,16 @@ pub(crate) fn emit_branch_method_code(
     if !tries.is_empty() && !move_exceptions_are_handler_entries(&insns, &tries) {
         return None;
     }
-    if !tries.is_empty() && !handlers_not_fallthrough_reachable(&insns, &tries) {
+    let shared_handler_pcs: BTreeSet<u32> = if tries.is_empty() {
+        BTreeSet::new()
+    } else {
+        fallthrough_reachable_handler_pcs(&insns, &tries)
+    };
+    if shared_handler_pcs.iter().any(|hpc: &u32| {
+        insns
+            .iter()
+            .any(|i: &DalvikInsn| i.pc == *hpc && i.op == 0x0D)
+    }) {
         return None;
     }
     if insns.iter().any(|i: &DalvikInsn| i.op == 0x22)
@@ -352,7 +362,10 @@ pub(crate) fn emit_branch_method_code(
 
     let handler_edges: BTreeMap<u32, Vec<u32>> = try_handler_edges(&insns, &tries);
     let move_exception_type: BTreeMap<u32, String> = move_exception_types(&insns, &tries);
-    let handler_stack: BTreeMap<u32, String> = handler_stack_types(&tries);
+    let handler_stack: BTreeMap<u32, String> = handler_stack_types(&tries)
+        .into_iter()
+        .filter(|(pc, _): &(u32, String)| !shared_handler_pcs.contains(pc))
+        .collect();
 
     let base_first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
     let base_param_local_slots: u16 = u16::from(!is_static)
@@ -537,6 +550,7 @@ pub(crate) fn emit_branch_method_code(
             pc_exit_ref_regs,
             tries,
             handler_stack,
+            handler_stub_offset: BTreeMap::new(),
         }),
     };
     emitter.seed_parameter_types(&parsed, is_static);
@@ -555,6 +569,10 @@ pub(crate) fn emit_branch_method_code(
         }
     }
     if emitter.bailed || !emitter.pending_new.is_empty() || !emitter.eager_new_active.is_empty() {
+        return None;
+    }
+    emitter.emit_handler_dispatch_stubs(&shared_handler_pcs);
+    if emitter.bailed {
         return None;
     }
     emitter.resolve_branches()?;
@@ -622,11 +640,12 @@ fn build_try_regions(item: &CodeItem, insns: &[DalvikInsn]) -> Option<Vec<TryReg
     Some(out)
 }
 
-fn handlers_not_fallthrough_reachable(insns: &[DalvikInsn], tries: &[TryRegion]) -> bool {
+fn fallthrough_reachable_handler_pcs(insns: &[DalvikInsn], tries: &[TryRegion]) -> BTreeSet<u32> {
     let handler_pcs: BTreeSet<u32> = tries
         .iter()
         .flat_map(|t: &TryRegion| t.handlers.iter().map(|(_ty, hpc)| *hpc))
         .collect();
+    let mut out: BTreeSet<u32> = BTreeSet::new();
     for (i, insn) in insns.iter().enumerate() {
         if i == 0 || !handler_pcs.contains(&insn.pc) {
             continue;
@@ -634,10 +653,10 @@ fn handlers_not_fallthrough_reachable(insns: &[DalvikInsn], tries: &[TryRegion])
         let prev: &DalvikInsn = &insns[i - 1];
         let diverts: bool = prev.is_unconditional_goto() || prev.is_return() || prev.is_throw();
         if !diverts {
-            return false;
+            out.insert(insn.pc);
         }
     }
-    true
+    out
 }
 
 fn move_exceptions_are_handler_entries(insns: &[DalvikInsn], tries: &[TryRegion]) -> bool {
@@ -1713,6 +1732,31 @@ impl Emitter<'_> {
         }
     }
 
+    fn emit_handler_dispatch_stubs(&mut self, shared: &BTreeSet<u32>) {
+        if shared.is_empty() {
+            return;
+        }
+        if self.max_stack < 1 {
+            self.max_stack = 1;
+        }
+        for &hpc in shared {
+            let offset_known: bool = self
+                .cfg
+                .as_ref()
+                .is_some_and(|c: &CfgEmit| c.jvm_offset_of_pc.contains_key(&hpc));
+            if !offset_known {
+                self.bail();
+                return;
+            }
+            let stub_off: usize = self.code.len();
+            self.push(0x57);
+            self.emit_jump(0xA7, hpc);
+            if let Some(cfg) = self.cfg.as_mut() {
+                cfg.handler_stub_offset.insert(hpc, stub_off);
+            }
+        }
+    }
+
     fn emit_switch(&mut self, insn: &DalvikInsn) {
         let Some(&value_reg): Option<&u16> = insn.regs.first() else {
             self.bail();
@@ -1890,7 +1934,11 @@ impl Emitter<'_> {
                 None => u16::try_from(end_jvm).ok()?,
             };
             for (ty, hpc) in &tr.handlers {
-                let handler: u16 = u16::try_from(*offsets.get(hpc)?).ok()?;
+                let handler_off: usize = match cfg.handler_stub_offset.get(hpc) {
+                    Some(&stub) => stub,
+                    None => *offsets.get(hpc)?,
+                };
+                let handler: u16 = u16::try_from(handler_off).ok()?;
                 let catch_idx: u16 = match ty {
                     Some(_) => self.cp.class_const(&catch_internal(ty.as_deref())),
                     None => 0,
@@ -1941,13 +1989,8 @@ impl Emitter<'_> {
             branch_target_pcs.insert(hpc);
         }
         let handler_stack: BTreeMap<u32, String> = cfg.handler_stack.clone();
-        let mut frames: Vec<(usize, Vec<crate::dalvik_typestate::RegType>, Option<String>)> =
-            Vec::new();
-        for (&pc, regs) in &cfg.frame_types {
-            if !branch_target_pcs.contains(&pc) {
-                continue;
-            }
-            let &offset: &usize = cfg.jvm_offset_of_pc.get(&pc)?;
+        let frame_locals = |regs: &BTreeMap<u16, crate::dalvik_typestate::RegType>|
+         -> Vec<crate::dalvik_typestate::RegType> {
             let mut by_slot: BTreeMap<u16, crate::dalvik_typestate::RegType> = BTreeMap::new();
             for (&reg, ty) in regs {
                 if reg >= registers_size && !virtual_local.contains_key(&reg) {
@@ -1975,7 +2018,26 @@ impl Emitter<'_> {
                 locals.push(ty);
                 slot += if wide { 2 } else { 1 };
             }
-            frames.push((offset, locals, handler_stack.get(&pc).cloned()));
+            locals
+        };
+        let mut frames: Vec<(usize, Vec<crate::dalvik_typestate::RegType>, Option<String>)> =
+            Vec::new();
+        for (&pc, regs) in &cfg.frame_types {
+            if !branch_target_pcs.contains(&pc) {
+                continue;
+            }
+            let &offset: &usize = cfg.jvm_offset_of_pc.get(&pc)?;
+            frames.push((offset, frame_locals(regs), handler_stack.get(&pc).cloned()));
+        }
+        let stub_exc_types: BTreeMap<u32, String> = handler_stack_types(&cfg.tries);
+        for (&hpc, &stub_off) in &cfg.handler_stub_offset {
+            let regs: &BTreeMap<u16, crate::dalvik_typestate::RegType> =
+                cfg.frame_types.get(&hpc)?;
+            frames.push((
+                stub_off,
+                frame_locals(regs),
+                stub_exc_types.get(&hpc).cloned(),
+            ));
         }
         frames.sort_by_key(|(off, _, _)| *off);
         if frames.is_empty() {

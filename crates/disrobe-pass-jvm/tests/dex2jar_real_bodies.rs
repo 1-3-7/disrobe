@@ -320,6 +320,51 @@ fn new_instance_constructed_on_stack_matches_baseline() {
     );
 }
 
+fn translated_kt_classes() -> BTreeMap<String, Vec<u8>> {
+    let dex_bytes: Vec<u8> =
+        std::fs::read(corpus(&["jvm", "dex", "EdgeCasesKt.dex"])).expect("kt dex");
+    let result: Dex2JarResult = translate_dex_bytes(&dex_bytes).expect("translate kt");
+    result
+        .jar_entries
+        .into_iter()
+        .filter(|(name, _)| name.ends_with(".class"))
+        .map(|(name, bytes)| (name[..name.len() - 6].to_string(), bytes))
+        .collect()
+}
+
+#[test]
+fn whenmappings_clinit_recovers_empty_catch_dispatch() {
+    let classes: BTreeMap<String, Vec<u8>> = translated_kt_classes();
+    let bytes: &Vec<u8> = classes
+        .get("Direction$WhenMappings")
+        .expect("Direction$WhenMappings present in kotlin translation");
+    let cf: ClassFile = parse_classfile(bytes).expect("parse WhenMappings");
+    let code: CodeAttribute =
+        method_code(&cf, "<clinit>", "()V").expect("WhenMappings.<clinit> has a Code attribute");
+
+    let mnemonics: Vec<&'static str> = disassemble(&code.code)
+        .expect("disassemble clinit")
+        .into_iter()
+        .map(|i: Instruction| i.mnemonic)
+        .collect();
+    for probe in ["newarray", "iastore", "putstatic"] {
+        assert!(
+            mnemonics.contains(&probe),
+            "recovered when-map <clinit> must build the ordinal->case int[] (real body, not a stub); {probe} missing: {mnemonics:?}"
+        );
+    }
+    assert_eq!(
+        code.exception_table.len(),
+        4,
+        "each `catch (NoSuchFieldError) {{}}` guard must lower to its own bounds-checked JVM handler entry: {:?}",
+        code.exception_table
+    );
+    assert_eq!(
+        code.dropped_exception_entries, 0,
+        "every synthesized empty-catch dispatch handler must point at an in-bounds offset"
+    );
+}
+
 #[test]
 fn square_area_code_bytes_are_exact() {
     let translated: BTreeMap<String, Vec<u8>> = translated_classes();
@@ -454,9 +499,9 @@ fn translated_classes_pass_jvm_verifier() {
         java_out.methods_verified
     );
     assert!(
-        java_out.bodies_recovered >= 353,
-        "switch/try/array and synthetic-class CFG lowering must hold its recovered-body floor on \
-         EdgeCases.dex ({} of {}); a drop means a real-body regression",
+        java_out.bodies_recovered >= 354,
+        "switch/try/array, empty-catch dispatch, and synthetic-class CFG lowering must hold its \
+         recovered-body floor on EdgeCases.dex ({} of {}); a drop means a real-body regression",
         java_out.bodies_recovered,
         java_out.method_total
     );
@@ -467,8 +512,9 @@ fn translated_classes_pass_jvm_verifier() {
         "EdgeCasesKt.dex recovered bodies (Kotlin coroutine state machines included) must verify"
     );
     assert!(
-        kt_out.bodies_recovered >= 434,
-        "Kotlin synthetic/coroutine bodies must hold their recovered-body floor ({} of {})",
+        kt_out.bodies_recovered >= 435,
+        "Kotlin synthetic/coroutine bodies (WhenMappings empty-catch dispatch included) must hold \
+         their recovered-body floor ({} of {})",
         kt_out.bodies_recovered,
         kt_out.method_total
     );
