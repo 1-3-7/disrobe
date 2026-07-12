@@ -11,7 +11,8 @@ use super::try_with::{
     is_cond_jump_with_backward_target, is_forward_cond_jump, is_pure_finally_handler_shape,
     is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt, is_value_boundary,
     is_value_form_shortcircuit, leading_guard_prelude_split, offset_is_unprotected,
-    structure_for_bare_except_continue_epilogue, structure_try,
+    structure_for_bare_except_continue_epilogue, structure_for_typed_except_continue_epilogue,
+    structure_try,
 };
 use super::{
     DecodedStream, LoopFrame, PY_CO_FLAG_FUNCTION_SCOPE, loop_frame_has_header, negate_cond_expr,
@@ -1696,9 +1697,16 @@ pub(super) fn structure_loop(
                 let iter: Expr = recover_for_iter(code, stream, region, lo);
                 let (target, body_start): (Expr, usize) = recover_for_target(code, stream, region)
                     .unwrap_or_else(|| (placeholder_target(), region.body_start));
-                let body: Vec<Stmt> = if let Some((loop_body, epilogue)) =
-                    structure_for_bare_except_continue_epilogue(code, stream, region, body_start)?
-                {
+                let except_continue: Option<(Vec<Stmt>, Vec<Stmt>)> =
+                    match structure_for_bare_except_continue_epilogue(
+                        code, stream, region, body_start,
+                    )? {
+                        Some(v) => Some(v),
+                        None => structure_for_typed_except_continue_epilogue(
+                            code, stream, region, body_start,
+                        )?,
+                    };
+                let body: Vec<Stmt> = if let Some((loop_body, epilogue)) = except_continue {
                     cold_handler_exit_tail = epilogue;
                     loop_body
                 } else {
@@ -1817,9 +1825,14 @@ pub(super) fn structure_for_loop_with_iter(
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let (target, body_start): (Expr, usize) = recover_for_target(code, stream, &region)
             .unwrap_or_else(|| (placeholder_target(), region.body_start));
-        let body: Vec<Stmt> = if let Some((loop_body, epilogue)) =
-            structure_for_bare_except_continue_epilogue(code, stream, &region, body_start)?
-        {
+        let except_continue: Option<(Vec<Stmt>, Vec<Stmt>)> =
+            match structure_for_bare_except_continue_epilogue(code, stream, &region, body_start)? {
+                Some(v) => Some(v),
+                None => {
+                    structure_for_typed_except_continue_epilogue(code, stream, &region, body_start)?
+                }
+            };
+        let body: Vec<Stmt> = if let Some((loop_body, epilogue)) = except_continue {
             cold_handler_exit_tail = epilogue;
             loop_body
         } else {

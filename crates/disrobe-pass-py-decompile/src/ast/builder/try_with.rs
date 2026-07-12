@@ -2692,6 +2692,154 @@ pub(super) fn structure_for_bare_except_continue_epilogue(
     Ok(Some((loop_body, epilogue)))
 }
 
+pub(super) fn structure_for_typed_except_continue_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    if stream.is_pre_311()
+        || stream.exception_table.is_empty()
+        || !matches!(region.kind, LoopKind::For)
+    {
+        return Ok(None);
+    }
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|t: &usize| *t > region.header)
+    else {
+        return Ok(None);
+    };
+    if region.body_end <= raw_exit {
+        return Ok(None);
+    }
+    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
+    let has_typed_match: bool = (handler_start..cold_end)
+        .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckExcMatch));
+    let has_group_or_with: bool = (handler_start..cold_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckEgMatch | CanonicalOp::WithExceptStart
+        )
+    });
+    if !has_typed_match || has_group_or_with {
+        return Ok(None);
+    }
+    if count_handlers_continuing_to(stream, handler_start, cold_end, region.header) != 1 {
+        return Ok(None);
+    }
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(handler_start) else {
+        return Ok(None);
+    };
+    let loop_body_protected_by_outer: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                let (Some(ts), Some(t)): (Option<usize>, Option<usize>) = (
+                    stream.index_for_offset(e.start),
+                    stream.index_for_offset(e.target),
+                ) else {
+                    return false;
+                };
+                ts >= body_start
+                    && ts < raw_exit
+                    && t != handler_start
+                    && t >= raw_exit
+                    && matches!(stream.ops.get(t), Some(CanonicalOp::PushExcInfo))
+            });
+    if loop_body_protected_by_outer {
+        return Ok(None);
+    }
+    let Some((try_start, protected_end)): Option<(usize, usize)> = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let te: usize = stream.index_for_offset_ceil(e.end())?;
+            (ts >= body_start && ts < raw_exit && te <= raw_exit).then_some((ts, te))
+        })
+        .min_by_key(|&(ts, _): &(usize, usize)| ts)
+    else {
+        return Ok(None);
+    };
+    let head: Vec<Stmt> = if try_start > body_start {
+        structure_stmts(code, stream, body_start, try_start)?
+    } else {
+        Vec::new()
+    };
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, handler_start, cold_end)?;
+    if handlers.iter().any(|h: &ExceptHandler| h.typ.is_none()) {
+        return Ok(None);
+    }
+    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
+    if epilogue.is_empty() || epilogue_is_trivial_return(&epilogue) {
+        return Ok(None);
+    }
+    let continuation: Vec<Stmt> = if protected_end < raw_exit {
+        structure_stmts(code, stream, protected_end, raw_exit)?
+    } else {
+        Vec::new()
+    };
+    let mut loop_body: Vec<Stmt> = head;
+    loop_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    loop_body.extend(continuation);
+    Ok(Some((loop_body, epilogue)))
+}
+
+fn count_handlers_continuing_to(
+    stream: &DecodedStream,
+    handler_start: usize,
+    cold_end: usize,
+    header: usize,
+) -> usize {
+    (handler_start..cold_end)
+        .filter(|&p: &usize| matches!(stream.ops[p], CanonicalOp::PushExcInfo))
+        .filter(|&p: &usize| {
+            let block_end: usize = (p + 1..cold_end)
+                .find(|&j: &usize| matches!(stream.ops[j], CanonicalOp::PushExcInfo))
+                .unwrap_or(cold_end);
+            (p..block_end).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+            })
+        })
+        .count()
+}
+
+fn epilogue_is_trivial_return(epilogue: &[Stmt]) -> bool {
+    epilogue.len() == 1
+        && matches!(
+            epilogue.first(),
+            Some(Stmt::Return(None) | Stmt::Return(Some(Expr::Constant { .. })))
+        )
+}
+
 pub(super) fn structure_try(
     code: &CodeObject,
     stream: &DecodedStream,
