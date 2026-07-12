@@ -32,7 +32,7 @@ fn version_label_covers_full_matrix() {
     assert_eq!(PclntabVersion::Go12.label(), "go1.2..go1.15");
     assert_eq!(PclntabVersion::Go116.label(), "go1.16..go1.17");
     assert_eq!(PclntabVersion::Go118.label(), "go1.18..go1.19");
-    assert_eq!(PclntabVersion::Go120.label(), "go1.20..go1.25");
+    assert_eq!(PclntabVersion::Go120.label(), "go1.20+");
 }
 
 #[test]

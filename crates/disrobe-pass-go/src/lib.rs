@@ -46,7 +46,7 @@ pub use provenance_header::{
     go_decompiled_header, go_extracted_header, render_go_decompiled_with_header,
 };
 pub use redress::{StrippedReport, analyze_stripped, synth_main_candidates};
-pub use symbols::{GoFunc, GoSymbols, package_histogram, parse_symbols};
+pub use symbols::{GoFunc, GoSymbols, package_histogram, package_path, parse_symbols};
 pub use types::{
     GoGenericInstantiation, GoInterfaceMethod, GoItab, GoItabSlot, GoMethod, GoStructField,
     GoTypeMeta, GoTypeRef, disambiguate_generics, extract_typemeta, harvest_concrete_args,

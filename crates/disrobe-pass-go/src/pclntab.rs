@@ -21,7 +21,7 @@ impl PclntabVersion {
             Self::Go12 => "go1.2..go1.15",
             Self::Go116 => "go1.16..go1.17",
             Self::Go118 => "go1.18..go1.19",
-            Self::Go120 => "go1.20..go1.25",
+            Self::Go120 => "go1.20+",
         }
     }
 

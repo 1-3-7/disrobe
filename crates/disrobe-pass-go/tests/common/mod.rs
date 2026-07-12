@@ -174,6 +174,14 @@ pub fn write_module(scratch: &GoBuildScratch, module: &str, main_go: &str) {
     std::fs::write(scratch.path().join("main.go"), main_go).expect("write main.go");
 }
 
+pub fn write_file(scratch: &GoBuildScratch, rel_path: &str, content: &str) {
+    let target: PathBuf = scratch.path().join(rel_path);
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).expect("create package dir");
+    }
+    std::fs::write(&target, content).expect("write package source");
+}
+
 fn build_env(cmd: &mut Command, dir: &Path) {
     cmd.current_dir(dir)
         .env("GOOS", "windows")

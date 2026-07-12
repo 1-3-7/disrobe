@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::binary::GoImage;
-use crate::symbols::{GoFunc, GoSymbols};
+use crate::symbols::{GoFunc, GoSymbols, package_path};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrippedReport {
@@ -77,14 +77,13 @@ fn classify(syms: &GoSymbols) -> (usize, Vec<String>) {
     let mut stdlib_hits: usize = 0;
     let mut user_packages: BTreeMap<String, usize> = BTreeMap::new();
     for f in &syms.funcs {
-        let pkg: &str = package_root(&f.name);
-        if pkg.is_empty() {
+        let Some(path): Option<&str> = package_path(&f.name) else {
             continue;
-        }
-        if STDLIB_PREFIXES.contains(&pkg) {
+        };
+        if is_stdlib_import(path) {
             stdlib_hits += 1;
         } else {
-            *user_packages.entry(pkg.to_owned()).or_insert(0) += 1;
+            *user_packages.entry(path.to_owned()).or_insert(0) += 1;
         }
     }
     let mut user_sorted: Vec<(String, usize)> = user_packages.into_iter().collect();
@@ -94,10 +93,9 @@ fn classify(syms: &GoSymbols) -> (usize, Vec<String>) {
     (stdlib_hits, users)
 }
 
-fn package_root(qual: &str) -> &str {
-    let cut: usize = qual.find('.').unwrap_or(qual.len());
-    let head: &str = &qual[..cut];
-    head.rfind('/').map_or(head, |i: usize| &head[i + 1..])
+fn is_stdlib_import(path: &str) -> bool {
+    let first_segment: &str = path.split('/').next().unwrap_or(path);
+    STDLIB_PREFIXES.contains(&first_segment)
 }
 
 fn is_stripped(image: &GoImage<'_>) -> bool {

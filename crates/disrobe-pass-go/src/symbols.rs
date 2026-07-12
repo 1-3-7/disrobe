@@ -398,12 +398,34 @@ fn read_cstring(buf: &[u8], off: usize) -> String {
     String::from_utf8_lossy(&tail[..end]).into_owned()
 }
 
+#[must_use]
+pub fn package_path(symbol: &str) -> Option<&str> {
+    let type_args_at: usize = symbol.find('[').unwrap_or(symbol.len());
+    let head: &str = symbol.get(..type_args_at)?;
+    let scan_start: usize = head.rfind('/').map_or(0, |slash: usize| slash + 1);
+    let dot_rel: usize = head.get(scan_start..)?.find('.')?;
+    let boundary: usize = scan_start + dot_rel;
+    if boundary == 0 {
+        return None;
+    }
+    if symbol.as_bytes().get(boundary + 1) == Some(&b'.') {
+        return None;
+    }
+    let path: &str = symbol.get(..boundary)?;
+    is_import_path_plausible(path).then_some(path)
+}
+
+fn is_import_path_plausible(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && path
+            .bytes()
+            .all(|b: u8| !matches!(b, b':' | b'(' | b')' | b'*' | b',' | b' ' | b'\t'))
+}
+
 fn record_package(name: &str, packages: &mut BTreeSet<String>) {
-    if let Some(idx) = name.find('.') {
-        let candidate: &str = &name[..idx];
-        if !candidate.is_empty() && !candidate.contains(' ') {
-            packages.insert(candidate.to_owned());
-        }
+    if let Some(path) = package_path(name) {
+        packages.insert(path.to_owned());
     }
 }
 
@@ -527,11 +549,8 @@ fn is_source_file(path: &str) -> bool {
 pub fn package_histogram(syms: &GoSymbols) -> BTreeMap<String, usize> {
     let mut out: BTreeMap<String, usize> = BTreeMap::new();
     for f in &syms.funcs {
-        if let Some(idx) = f.name.find('.') {
-            let pkg: &str = &f.name[..idx];
-            if !pkg.is_empty() {
-                *out.entry(pkg.to_owned()).or_insert(0) += 1;
-            }
+        if let Some(path) = package_path(&f.name) {
+            *out.entry(path.to_owned()).or_insert(0) += 1;
         }
     }
     out
@@ -541,6 +560,52 @@ pub fn package_histogram(syms: &GoSymbols) -> BTreeMap<String, usize> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_path_recovers_dotted_import_paths() {
+        assert_eq!(
+            package_path("github.com/acme.corp/tool/internal/worker.Run"),
+            Some("github.com/acme.corp/tool/internal/worker")
+        );
+        assert_eq!(
+            package_path("github.com/acme.corp/tool/netutil.(*Conn).String"),
+            Some("github.com/acme.corp/tool/netutil")
+        );
+        assert_eq!(package_path("net/http.(*Server).Serve"), Some("net/http"));
+        assert_eq!(package_path("internal/abi.TypeOf"), Some("internal/abi"));
+        assert_eq!(package_path("main.main"), Some("main"));
+        assert_eq!(package_path("runtime.mallocgc"), Some("runtime"));
+    }
+
+    #[test]
+    fn package_path_rejects_compiler_pseudo_symbols() {
+        assert_eq!(package_path("type:.eq.[2]internal/abi.Method"), None);
+        assert_eq!(package_path("go:itab.runtime.errorString,error"), None);
+        assert_eq!(
+            package_path("go:itab.internal/poll.errNetClosing,error"),
+            None
+        );
+        assert_eq!(package_path("type..eq.runtime.g"), None);
+        assert_eq!(package_path("main..inittask"), None);
+    }
+
+    #[test]
+    fn package_path_rejects_bare_assembly_and_marker_symbols() {
+        assert_eq!(package_path("aeshashbody"), None);
+        assert_eq!(package_path("gogo"), None);
+        assert_eq!(package_path("go:buildid"), None);
+        assert_eq!(package_path("_rt0_amd64_windows"), None);
+        assert_eq!(package_path(""), None);
+    }
+
+    #[test]
+    fn package_path_cuts_type_arguments_before_boundary() {
+        assert_eq!(package_path("main.Filter[github.com/x/y.T]"), Some("main"));
+        assert_eq!(
+            package_path("github.com/x/y/pkg.Map[go.shape.int]"),
+            Some("github.com/x/y/pkg")
+        );
+    }
 
     #[test]
     fn linker_base_strips_macho_underscore_only_for_macho() {

@@ -101,7 +101,7 @@ fn stripped_binary_recovers_per_function_start_line_from_source() {
         "the -s -w build must classify as stripped"
     );
     assert_eq!(
-        stripped_analysis.pclntab_version, "go1.20..go1.25",
+        stripped_analysis.pclntab_version, "go1.20+",
         "go1.26 emits the 0xfffffff1 pclntab whose _func carries startLine"
     );
 
@@ -151,7 +151,7 @@ fn start_line_offset_is_fixed_width_on_32bit_image() {
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze 386 fixture");
     assert_eq!(analysis.ptr_size, 4, "expected a 32-bit image");
     assert_eq!(
-        analysis.pclntab_version, "go1.20..go1.25",
+        analysis.pclntab_version, "go1.20+",
         "the 32-bit fixture is a go1.20+ build carrying startLine"
     );
 
