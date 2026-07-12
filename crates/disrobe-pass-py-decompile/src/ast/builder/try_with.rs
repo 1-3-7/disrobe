@@ -1026,6 +1026,24 @@ fn pre311_trailing_bare_except(stream: &DecodedStream, lo: usize, hi: usize) -> 
     pops >= 3
 }
 
+fn with_prologue_crosses_then_jump(stream: &DecodedStream, idx: usize, start: usize) -> bool {
+    matches!(
+        stream.ops[idx],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) && resolve_jump_target(stream, idx, &stream.ops[idx]).is_some_and(|t: usize| t > start)
+}
+
+fn with_prologue_walk_back(stream: &DecodedStream, start: usize, lo: usize) -> usize {
+    let mut j: usize = start;
+    while j > lo
+        && !is_with_ctx_boundary_at(stream, j - 1)
+        && !with_prologue_crosses_then_jump(stream, j - 1, start)
+    {
+        j -= 1;
+    }
+    j
+}
+
 fn with_setup_start(stream: &DecodedStream, try_start: usize, lo: usize) -> usize {
     let mut i: usize = try_start;
     while i > lo
@@ -1037,11 +1055,7 @@ fn with_setup_start(stream: &DecodedStream, try_start: usize, lo: usize) -> usiz
         i -= 1;
     }
     if i > lo && matches!(stream.ops.get(i - 1), Some(CanonicalOp::BeforeWith)) {
-        let mut j: usize = i - 1;
-        while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
-            j -= 1;
-        }
-        return j;
+        return with_prologue_walk_back(stream, i - 1, lo);
     }
     if let Some(prologue_start) = async_with_prologue_start(stream, try_start, lo) {
         return prologue_start;
@@ -1063,22 +1077,12 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
         )
     })?;
     match stream.ops.get(before) {
-        Some(CanonicalOp::BeforeAsyncWith) => {
-            let mut j: usize = before;
-            while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
-                j -= 1;
-            }
-            Some(j)
-        }
+        Some(CanonicalOp::BeforeAsyncWith) => Some(with_prologue_walk_back(stream, before, lo)),
         Some(CanonicalOp::Copy(1))
             if first_significant(stream, before + 1, awaitable)
                 .is_some_and(|s: usize| matches!(stream.ops[s], CanonicalOp::LoadSpecial(_))) =>
         {
-            let mut j: usize = before;
-            while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
-                j -= 1;
-            }
-            Some(j)
+            Some(with_prologue_walk_back(stream, before, lo))
         }
         _ => None,
     }
@@ -1100,11 +1104,7 @@ fn modern_with_prologue_start(stream: &DecodedStream, store_at: usize, lo: usize
     let copy: usize = (lo..enter)
         .rev()
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Copy(1)))?;
-    let mut j: usize = copy;
-    while j > lo && !is_with_ctx_boundary_at(stream, j - 1) {
-        j -= 1;
-    }
-    Some(j)
+    Some(with_prologue_walk_back(stream, copy, lo))
 }
 
 pub(super) fn is_comprehension_expr(expr: &Expr) -> bool {
@@ -2313,7 +2313,17 @@ fn try_structure_leading_else_try(
         return Ok(None);
     };
     let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
-        .filter(|t: &usize| *t > guard && *t <= region.try_start)
+        .filter(|t: &usize| {
+            *t > guard
+                && (*t <= region.try_start
+                    || (*t <= region.try_start + 2
+                        && (region.try_start..*t).all(|k: usize| {
+                            matches!(
+                                stream.ops[k],
+                                CanonicalOp::Push(_) | CanonicalOp::Nop | CanonicalOp::Cache
+                            )
+                        })))
+        })
     else {
         return Ok(None);
     };
@@ -2369,8 +2379,14 @@ fn try_structure_leading_else_try(
         }
     };
     let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
-    let mut else_pack: Vec<Stmt> = structure_try(code, stream, else_start, hi, region)?;
-    if else_pack.is_empty() || !matches!(else_pack.first(), Some(Stmt::Try { .. })) {
+    let else_lo: usize = else_start.min(region.try_start);
+    let mut else_pack: Vec<Stmt> = structure_try(code, stream, else_lo, hi, region)?;
+    if else_pack.is_empty()
+        || !matches!(
+            else_pack.first(),
+            Some(Stmt::Try { .. } | Stmt::With { .. })
+        )
+    {
         return Ok(None);
     }
     let cont_tail: Vec<Stmt> = else_pack.split_off(1);
@@ -2987,8 +3003,7 @@ pub(super) fn structure_try(
             return Ok(out);
         }
     }
-    if !region.is_with
-        && !region.is_finally
+    if !region.is_finally
         && let Some(stmts) = try_structure_leading_else_try(code, stream, lo, hi, region)?
     {
         return Ok(stmts);
