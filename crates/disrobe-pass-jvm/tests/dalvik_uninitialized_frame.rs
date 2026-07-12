@@ -393,3 +393,336 @@ fn recovered_class_verifies_and_wrong_offset_is_rejected() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn make_alias_dex() -> Vec<u8> {
+    let mut foo_init_units: Vec<u16> = Vec::new();
+    let mut foo_init_relocs: Vec<Reloc> = Vec::new();
+    foo_init_units.extend(insn::fmt35c_one(0x70, 0, 0));
+    foo_init_relocs.push(Reloc::MethodIndex {
+        unit: 1,
+        method: object_init(),
+    });
+    foo_init_units.extend(insn::fmt10x(0x0E));
+    let foo_ctor: EncodedMethod = EncodedMethod {
+        method: foo_init(),
+        access_flags: 0x1,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 2,
+        outs_size: 1,
+        insns: foo_init_units,
+        relocations: foo_init_relocs,
+    };
+
+    let mut sample_init_units: Vec<u16> = Vec::new();
+    let mut sample_init_relocs: Vec<Reloc> = Vec::new();
+    sample_init_units.extend(insn::fmt35c_one(0x70, 0, 0));
+    sample_init_relocs.push(Reloc::MethodIndex {
+        unit: 1,
+        method: object_init(),
+    });
+    sample_init_units.extend(insn::fmt10x(0x0E));
+    let sample_ctor: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "V".to_owned(),
+                params: Vec::new(),
+            },
+            name: "<init>".to_owned(),
+        },
+        access_flags: 0x1,
+        is_direct: true,
+        registers_size: 1,
+        ins_size: 1,
+        outs_size: 1,
+        insns: sample_init_units,
+        relocations: sample_init_relocs,
+    };
+
+    let mut units: Vec<u16> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+    units.extend(insn::fmt21c(0x22, 0, 0));
+    relocs.push(Reloc::TypeIndex {
+        unit: 1,
+        descriptor: "LFoo;".to_owned(),
+    });
+    units.extend(insn::fmt12x(0x07, 1, 0));
+    units.extend(insn::fmt11n(0x12, 2, 1));
+    units.push(0x38 | (3u16 << 8));
+    units.push(4);
+    units.extend(insn::fmt11n(0x12, 2, 7));
+    units.push(0x28 | (2u16 << 8));
+    units.extend(insn::fmt11n(0x12, 2, 9));
+    let invoke_pos: usize = units.len();
+    units.extend(insn::fmt35c_two(0x70, 1, 2, 0));
+    relocs.push(Reloc::MethodIndex {
+        unit: invoke_pos + 1,
+        method: foo_init(),
+    });
+    units.push(0x38 | (4u16 << 8));
+    units.push(3);
+    units.extend(insn::fmt11n(0x12, 2, 3));
+    units.extend(insn::fmt11x(0x11, 0));
+
+    let make_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "LFoo;".to_owned(),
+                params: vec!["Z".to_owned(), "Z".to_owned()],
+            },
+            name: "make".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 5,
+        ins_size: 2,
+        outs_size: 2,
+        insns: units,
+        relocations: relocs,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class: "LFoo;".to_owned(),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![foo_ctor],
+        virtual_methods: Vec::new(),
+    });
+    builder.add_class(ClassDef {
+        class: "LSample;".to_owned(),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![sample_ctor, make_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+fn translate_alias() -> Dex2JarResult {
+    translate_dex_bytes(&make_alias_dex()).expect("translate crafted alias dex")
+}
+
+fn first_local_tag7_pos(body: &[u8]) -> Option<usize> {
+    let mut o: usize = 0;
+    let entries: usize = u16::from_be_bytes([body[o], body[o + 1]]) as usize;
+    o += 2;
+    for _ in 0..entries {
+        let frame_type: u8 = body[o];
+        o += 1;
+        assert_eq!(frame_type, 255, "lifter emits full_frame frames only");
+        o += 2;
+        let num_locals: usize = u16::from_be_bytes([body[o], body[o + 1]]) as usize;
+        o += 2;
+        for _ in 0..num_locals {
+            let tag: u8 = body[o];
+            if tag == 7 {
+                return Some(o);
+            }
+            o += 1;
+            if tag == 8 {
+                o += 2;
+            }
+        }
+        let num_stack: usize = u16::from_be_bytes([body[o], body[o + 1]]) as usize;
+        o += 2;
+        for _ in 0..num_stack {
+            let tag: u8 = body[o];
+            o += 1;
+            if tag == 7 || tag == 8 {
+                o += 2;
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn alias_move_of_uninitialized_ref_emits_shared_offset_frames() {
+    let result: Dex2JarResult = translate_alias();
+    let sample: &Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present in alias translation");
+    let cf: ClassFile = parse_classfile(sample).expect("parse alias Sample.class");
+    let body: Vec<u8> = stack_map_body(&cf);
+    let offsets: Vec<usize> = tag8_body_offsets(&body);
+    assert!(
+        offsets.len() >= 2,
+        "make() aliases the not-yet-<init>ed Foo across a branch via move-object, so both the \
+         original and the alias register must carry an Uninitialized(0) verification type; the \
+         lifter emitted only {} tag-8 entries, so the move-object alias fell back",
+        offsets.len()
+    );
+    for &rel in &offsets {
+        let target: u16 = u16::from_be_bytes([body[rel], body[rel + 1]]);
+        assert_eq!(
+            target, 0,
+            "every Uninitialized alias entry must point at the shared `new` bytecode (offset 0)"
+        );
+    }
+    assert!(
+        first_local_tag7_pos(&body).is_some(),
+        "after the <init> on the alias, a later merge frame must report the aliases as the \
+         initialized Foo (tag 7); none was found, so the <init> did not propagate to all aliases"
+    );
+}
+
+const PROBE_ALIAS_SRC: &str = r#"
+public class Probe {
+    public static void main(String[] a) throws Throwable {
+        Class<?> c = Class.forName("Sample", true, Probe.class.getClassLoader());
+        c.getDeclaredMethods();
+        java.lang.reflect.Method m = c.getMethod("make", boolean.class, boolean.class);
+        String all = "";
+        boolean[] bs = { true, false };
+        for (boolean x : bs) for (boolean y : bs) {
+            Object r = m.invoke(null, x, y);
+            all += r.getClass().getName() + ",";
+        }
+        System.out.println("verify_ok=1 " + all);
+    }
+}
+"#;
+
+#[test]
+fn aliased_uninitialized_ref_verifies_and_partial_init_is_rejected() {
+    let Some(java): Option<PathBuf> = find_on_path("java") else {
+        eprintln!("SKIP alias -Xverify:all gate: java not on PATH");
+        return;
+    };
+    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
+        eprintln!("SKIP alias -Xverify:all gate: javac not on PATH");
+        return;
+    };
+
+    let result: Dex2JarResult = translate_alias();
+    let sample: Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present")
+        .clone();
+    let foo: Vec<u8> = result
+        .jar_entries
+        .get("Foo.class")
+        .expect("Foo.class present")
+        .clone();
+
+    let root: PathBuf =
+        std::env::temp_dir().join(format!("disrobe_uninit_alias_{}", std::process::id()));
+    let ok_dir: PathBuf = root.join("ok");
+    let bad_off_dir: PathBuf = root.join("bad_off");
+    let bad_partial_dir: PathBuf = root.join("bad_partial");
+    let _ = std::fs::remove_dir_all(&root);
+    for d in [&ok_dir, &bad_off_dir, &bad_partial_dir] {
+        std::fs::create_dir_all(d).expect("mkdir alias dir");
+    }
+
+    let probe_src: PathBuf = ok_dir.join("Probe.java");
+    std::fs::write(&probe_src, PROBE_ALIAS_SRC).expect("write alias probe");
+    let compiled: std::process::Output = Command::new(&javac)
+        .arg("-d")
+        .arg(&ok_dir)
+        .arg(&probe_src)
+        .output()
+        .expect("javac alias probe");
+    assert!(
+        compiled.status.success(),
+        "alias probe did not compile: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    std::fs::copy(ok_dir.join("Probe.class"), bad_off_dir.join("Probe.class")).expect("copy probe");
+    std::fs::copy(
+        ok_dir.join("Probe.class"),
+        bad_partial_dir.join("Probe.class"),
+    )
+    .expect("copy probe");
+
+    std::fs::write(ok_dir.join("Foo.class"), &foo).expect("write foo ok");
+    std::fs::write(ok_dir.join("Sample.class"), &sample).expect("write sample ok");
+    std::fs::write(bad_off_dir.join("Foo.class"), &foo).expect("write foo bad_off");
+    std::fs::write(bad_partial_dir.join("Foo.class"), &foo).expect("write foo bad_partial");
+
+    let cf: ClassFile = parse_classfile(&sample).expect("parse alias Sample.class");
+    let body: Vec<u8> = stack_map_body(&cf);
+    let body_abs: usize = find_subslice(&sample, &body);
+
+    let off_rel: usize = *tag8_body_offsets(&body)
+        .first()
+        .expect("a tag-8 alias offset exists");
+    let mut corrupt_off: Vec<u8> = sample.clone();
+    corrupt_off[body_abs + off_rel] = 0xFF;
+    corrupt_off[body_abs + off_rel + 1] = 0xFF;
+    std::fs::write(bad_off_dir.join("Sample.class"), &corrupt_off).expect("write sample bad_off");
+
+    let tag7_rel: usize =
+        first_local_tag7_pos(&body).expect("a post-init tag-7 alias entry exists");
+    let mut corrupt_partial: Vec<u8> = sample;
+    corrupt_partial[body_abs + tag7_rel] = 8;
+    corrupt_partial[body_abs + tag7_rel + 1] = 0;
+    corrupt_partial[body_abs + tag7_rel + 2] = 0;
+    std::fs::write(bad_partial_dir.join("Sample.class"), &corrupt_partial)
+        .expect("write sample bad_partial");
+
+    let ok: std::process::Output = verify_dir(&java, &ok_dir);
+    let ok_out: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&ok.stdout);
+    eprintln!(
+        "ALIAS POSITIVE (shared Uninitialized(0) on original and alias): status={} stdout={} stderr={}",
+        ok.status,
+        ok_out.trim(),
+        String::from_utf8_lossy(&ok.stderr).trim()
+    );
+    assert!(
+        ok.status.success()
+            && ok_out.contains("verify_ok=1")
+            && ok_out.contains("Foo,Foo,Foo,Foo,"),
+        "the recovered Sample.class must pass -Xverify:all and return a constructed Foo on all four \
+         boolean paths, proving the <init> on the alias initialized the original register too"
+    );
+
+    let bad_off: std::process::Output = verify_dir(&java, &bad_off_dir);
+    let bad_off_out: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&bad_off.stdout);
+    let bad_off_err: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&bad_off.stderr);
+    eprintln!(
+        "ALIAS NEGATIVE A (alias Uninitialized offset -> 0xFFFF): status={} stdout={} stderr={}",
+        bad_off.status,
+        bad_off_out.trim(),
+        bad_off_err.trim()
+    );
+    assert!(
+        !bad_off.status.success() && !bad_off_out.contains("verify_ok=1"),
+        "the corrupted-offset alias class must not pass; the tag-8 frames are not being verified"
+    );
+
+    let bad_partial: std::process::Output = verify_dir(&java, &bad_partial_dir);
+    let bad_partial_out: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&bad_partial.stdout);
+    let bad_partial_err: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&bad_partial.stderr);
+    eprintln!(
+        "ALIAS NEGATIVE B (post-init alias forced back to Uninitialized, i.e. only one alias \
+         initialized): status={} stdout={} stderr={}",
+        bad_partial.status,
+        bad_partial_out.trim(),
+        bad_partial_err.trim()
+    );
+    assert!(
+        !bad_partial.status.success() && !bad_partial_out.contains("verify_ok=1"),
+        "declaring a post-init alias as still Uninitialized (only one alias initialized) must be \
+         rejected; the positive result would be vacuous if the verifier accepted a partial init"
+    );
+    assert!(
+        bad_partial_err.contains("Uninitialized")
+            || bad_partial_err.contains("StackMapTable")
+            || bad_partial_err.contains("VerifyError")
+            || bad_partial_err.contains("ClassFormatError")
+            || bad_partial_err.contains("bad type"),
+        "the partial-init class must be rejected by the JVM verifier; stderr was:\n{bad_partial_err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

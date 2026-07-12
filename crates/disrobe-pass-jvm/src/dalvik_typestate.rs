@@ -108,6 +108,16 @@ fn define(regs: &mut RegState, d: u16, ty: RegType) {
     }
 }
 
+fn reinitialize_aliases(regs: &mut RegState, marker: &RegType, initialized: &RegType) {
+    let aliases: Vec<u16> = regs
+        .iter()
+        .filter_map(|(&reg, ty): (&u16, &RegType)| (ty == marker).then_some(reg))
+        .collect();
+    for reg in aliases {
+        regs.insert(reg, initialized.clone());
+    }
+}
+
 fn merge_state(into: &mut RegState, from: &RegState) -> bool {
     let mut changed: bool = false;
     let keys: BTreeSet<u16> = into.keys().chain(from.keys()).copied().collect();
@@ -493,10 +503,16 @@ fn transfer(
             if let Some(owner) = init_owner
                 && let Some(&recv) = r.first()
             {
-                if regs.get(&recv) == Some(&RegType::UninitializedThis) {
-                    define(regs, recv, RegType::Ref(strip_object(class_internal)));
-                } else {
-                    define(regs, recv, RegType::Ref(owner));
+                match regs.get(&recv).cloned() {
+                    Some(RegType::UninitializedThis) => {
+                        let init_ty: RegType = RegType::Ref(strip_object(class_internal));
+                        reinitialize_aliases(regs, &RegType::UninitializedThis, &init_ty);
+                    }
+                    Some(marker @ RegType::Uninitialized(_)) => {
+                        let init_ty: RegType = RegType::Ref(owner);
+                        reinitialize_aliases(regs, &marker, &init_ty);
+                    }
+                    _ => define(regs, recv, RegType::Ref(owner)),
                 }
             }
         }

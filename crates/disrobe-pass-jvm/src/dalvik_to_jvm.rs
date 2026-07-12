@@ -1302,19 +1302,7 @@ fn new_instance_pairs_are_trackable(dex: &DexFile, insns: &[DalvikInsn]) -> bool
         }) else {
             return false;
         };
-        let mut matched: bool = false;
-        for follow in &insns[k + 1..] {
-            if let Some(init_owner) = init_invoke_owner(dex, follow)
-                && follow.regs.first().copied() == Some(dest)
-            {
-                matched = init_owner == owner;
-                break;
-            }
-            if follow.regs.contains(&dest) {
-                break;
-            }
-        }
-        if !matched {
+        if paired_init_pc(dex, insns, k, dest, &owner).is_none() {
             return false;
         }
     }
@@ -1380,6 +1368,10 @@ fn collect_eager_new_pcs(
     out
 }
 
+const fn is_move_object(op: u8) -> bool {
+    matches!(op, 0x07..=0x09)
+}
+
 fn paired_init_pc(
     dex: &DexFile,
     insns: &[DalvikInsn],
@@ -1387,13 +1379,27 @@ fn paired_init_pc(
     dest: u16,
     owner: &str,
 ) -> Option<u32> {
+    let mut aliases: BTreeSet<u16> = BTreeSet::from([dest]);
     for follow in &insns[from_idx + 1..] {
         if let Some(init_owner) = init_invoke_owner(dex, follow)
-            && follow.regs.first().copied() == Some(dest)
+            && follow
+                .regs
+                .first()
+                .is_some_and(|r: &u16| aliases.contains(r))
         {
             return (init_owner == owner).then_some(follow.pc);
         }
-        if follow.regs.contains(&dest) {
+        if is_move_object(follow.op)
+            && let (Some(&d), Some(&s)) = (follow.regs.first(), follow.regs.get(1))
+        {
+            if aliases.contains(&s) {
+                aliases.insert(d);
+            } else if aliases.remove(&d) && aliases.is_empty() {
+                return None;
+            }
+            continue;
+        }
+        if follow.regs.iter().any(|r: &u16| aliases.contains(r)) {
             return None;
         }
     }
@@ -2499,6 +2505,11 @@ impl Emitter<'_> {
         else {
             return;
         };
+        let src_marker: Option<(String, u32)> = self.materialize_active.get(&src).cloned();
+        if let Some(marker) = src_marker {
+            self.move_uninitialized_alias(dest, src, marker);
+            return;
+        }
         let slot: Slot = self.reg_slot(src);
         self.emit_load(src);
         self.emit_store(dest, slot);
@@ -2518,6 +2529,19 @@ impl Emitter<'_> {
                 self.array_elem_desc.remove(&dest);
             }
         }
+        self.materialize_active.remove(&dest);
+    }
+
+    fn move_uninitialized_alias(&mut self, dest: u16, src: u16, marker: (String, u32)) {
+        let Some(src_index): Option<u16> = self.local_index(src) else {
+            return;
+        };
+        self.emit_local_op(src_index, 0x2A, 0x19);
+        self.adjust_stack(1);
+        self.emit_store(dest, Slot::Ref);
+        self.materialize_active.insert(dest, marker);
+        self.reg_array_elem.remove(&dest);
+        self.array_elem_desc.remove(&dest);
     }
 
     fn move_result(&mut self, regs: &[u16], default: Slot) {
@@ -3323,7 +3347,23 @@ impl Emitter<'_> {
         param_types: &[String],
         regs: &[u16],
     ) {
-        self.materialize_active.remove(&recv);
+        let aliases: Vec<u16> = match self
+            .materialize_active
+            .get(&recv)
+            .map(|(_, pc): &(String, u32)| *pc)
+        {
+            Some(new_pc) => self
+                .materialize_active
+                .iter()
+                .filter_map(|(&reg, (_, pc)): (&u16, &(String, u32))| {
+                    (*pc == new_pc).then_some(reg)
+                })
+                .collect(),
+            None => vec![recv],
+        };
+        for &reg in &aliases {
+            self.materialize_active.remove(&reg);
+        }
         let Some(index): Option<u16> = self.local_index(recv) else {
             return;
         };
@@ -3351,7 +3391,9 @@ impl Emitter<'_> {
         self.push(0xB7);
         self.push_u16(method_idx);
         self.adjust_stack(-consumed - 1);
-        self.set_reg(recv, Slot::Ref);
+        for &reg in &aliases {
+            self.set_reg(reg, Slot::Ref);
+        }
         self.pending_result = None;
     }
 
