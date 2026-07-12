@@ -120,6 +120,8 @@ struct Emitter<'a> {
     wide_double_pcs: BTreeSet<u32>,
     reg_array_elem: BTreeMap<u16, Slot>,
     param_array_elem: BTreeMap<u16, Slot>,
+    array_elem_desc: BTreeMap<u16, u8>,
+    param_array_elem_desc: BTreeMap<u16, u8>,
     fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload>,
     poisoned_regs: BTreeSet<u16>,
     const_zero: BTreeSet<u16>,
@@ -240,6 +242,8 @@ pub(crate) fn emit_method_code(
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        array_elem_desc: BTreeMap::new(),
+        param_array_elem_desc: BTreeMap::new(),
         fill_payloads,
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
@@ -523,6 +527,8 @@ pub(crate) fn emit_branch_method_code(
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        array_elem_desc: BTreeMap::new(),
+        param_array_elem_desc: BTreeMap::new(),
         fill_payloads,
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
@@ -1510,6 +1516,10 @@ impl Emitter<'_> {
                 self.reg_array_elem.insert(cursor, elem);
                 self.param_array_elem.insert(cursor, elem);
             }
+            if let Some(desc) = array_elem_desc_jt(ty) {
+                self.array_elem_desc.insert(cursor, desc);
+                self.param_array_elem_desc.insert(cursor, desc);
+            }
             cursor = cursor.saturating_add(if slot.category_two() { 2 } else { 1 });
         }
     }
@@ -1660,6 +1670,20 @@ impl Emitter<'_> {
                 }
             }
             self.reg_array_elem = entry_elems;
+            let mut entry_descs: BTreeMap<u16, u8> = self.param_array_elem_desc.clone();
+            if let Some(ft) = cfg.frame_types.get(&insn.pc) {
+                for (&reg, ty) in ft {
+                    match array_elem_desc_from_regtype(ty) {
+                        Some(desc) => {
+                            entry_descs.insert(reg, desc);
+                        }
+                        None => {
+                            entry_descs.remove(&reg);
+                        }
+                    }
+                }
+            }
+            self.array_elem_desc = entry_descs;
             self.const_zero.clear();
             self.pending_result = None;
             self.cur_stack = 0;
@@ -2330,6 +2354,14 @@ impl Emitter<'_> {
                 self.reg_array_elem.remove(&dest);
             }
         }
+        match self.array_elem_desc.get(&src).copied() {
+            Some(desc) => {
+                self.array_elem_desc.insert(dest, desc);
+            }
+            None => {
+                self.array_elem_desc.remove(&dest);
+            }
+        }
     }
 
     fn move_result(&mut self, regs: &[u16], default: Slot) {
@@ -2738,12 +2770,33 @@ impl Emitter<'_> {
             return;
         }
         let elem: Option<Slot> = self.reg_array_elem.get(&array).copied();
-        let (store_op, slot): (u8, Slot) = match (width, elem) {
-            (1, Some(Slot::Int)) => (0x54, Slot::Int),
-            (4, Some(Slot::Int)) => (0x4F, Slot::Int),
-            (4, Some(Slot::Float)) => (0x51, Slot::Float),
-            (8, Some(Slot::Long)) => (0x50, Slot::Long),
-            (8, Some(Slot::Double)) => (0x52, Slot::Double),
+        let elem_desc: Option<u8> = self.fill_elem_desc(array);
+        let (store_op, slot): (u8, Slot) = match width {
+            1 if matches!(elem, Some(Slot::Int)) => (0x54, Slot::Int),
+            2 => match elem_desc {
+                Some(b'C') => (0x55, Slot::Int),
+                Some(b'S') => (0x56, Slot::Int),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
+            4 => match elem {
+                Some(Slot::Int) => (0x4F, Slot::Int),
+                Some(Slot::Float) => (0x51, Slot::Float),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
+            8 => match elem {
+                Some(Slot::Long) => (0x50, Slot::Long),
+                Some(Slot::Double) => (0x52, Slot::Double),
+                _ => {
+                    self.bail();
+                    return;
+                }
+            },
             _ => {
                 self.bail();
                 return;
@@ -2765,6 +2818,15 @@ impl Emitter<'_> {
             match (width, slot) {
                 (1, _) => {
                     let value: i32 = i32::from(chunk[0] as i8);
+                    self.push_int_const(value);
+                }
+                (2, _) => {
+                    let raw: u16 = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    let value: i32 = if store_op == 0x55 {
+                        i32::from(raw)
+                    } else {
+                        i32::from(raw as i16)
+                    };
                     self.push_int_const(value);
                 }
                 (4, Slot::Int) => {
@@ -2812,6 +2874,28 @@ impl Emitter<'_> {
                 self.reg_array_elem.remove(&reg);
             }
         }
+        match array_descriptor
+            .strip_prefix('[')
+            .and_then(|s: &str| s.bytes().next())
+            .filter(|b: &u8| is_primitive_elem(*b))
+        {
+            Some(desc) => {
+                self.array_elem_desc.insert(reg, desc);
+            }
+            None => {
+                self.array_elem_desc.remove(&reg);
+            }
+        }
+    }
+
+    fn fill_elem_desc(&self, array: u16) -> Option<u8> {
+        if let Some(&desc) = self.array_elem_desc.get(&array) {
+            return Some(desc);
+        }
+        let name: String = self.entry_ref_name(array)?;
+        name.strip_prefix('[')
+            .and_then(|s: &str| s.bytes().next())
+            .filter(|b: &u8| is_primitive_elem(*b))
     }
 
     fn instance_get(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -4287,6 +4371,36 @@ fn array_elem_from_regtype(ty: &crate::dalvik_typestate::RegType) -> Option<Slot
         return None;
     };
     desc.strip_prefix('[').and_then(array_elem_slot)
+}
+
+const fn is_primitive_elem(b: u8) -> bool {
+    matches!(b, b'I' | b'F' | b'J' | b'D' | b'B' | b'Z' | b'C' | b'S')
+}
+
+fn array_elem_desc_jt(ty: &JavaType) -> Option<u8> {
+    let JavaType::Array(inner): &JavaType = ty else {
+        return None;
+    };
+    Some(match inner.as_ref() {
+        JavaType::Byte => b'B',
+        JavaType::Char => b'C',
+        JavaType::Short => b'S',
+        JavaType::Boolean => b'Z',
+        JavaType::Int => b'I',
+        JavaType::Long => b'J',
+        JavaType::Float => b'F',
+        JavaType::Double => b'D',
+        _ => return None,
+    })
+}
+
+fn array_elem_desc_from_regtype(ty: &crate::dalvik_typestate::RegType) -> Option<u8> {
+    let crate::dalvik_typestate::RegType::Ref(desc) = ty else {
+        return None;
+    };
+    desc.strip_prefix('[')
+        .and_then(|s: &str| s.bytes().next())
+        .filter(|b: &u8| is_primitive_elem(*b))
 }
 
 fn array_elem_slot_jt(ty: &JavaType) -> Option<Slot> {

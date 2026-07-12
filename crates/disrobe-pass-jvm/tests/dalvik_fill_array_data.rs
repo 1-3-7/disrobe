@@ -118,6 +118,24 @@ fn cases() -> Vec<Case> {
             store_mnemonic: "lastore",
         },
         Case {
+            name: "fC",
+            ret: "[C",
+            elem_type: "[C",
+            element_width: 2,
+            data: vec![72, 0, 105, 0, 33, 0],
+            count: 3,
+            store_mnemonic: "castore",
+        },
+        Case {
+            name: "fS",
+            ret: "[S",
+            elem_type: "[S",
+            element_width: 2,
+            data: vec![0xFF, 0xFF, 0xE8, 0x03, 0xFF, 0x7F],
+            count: 3,
+            store_mnemonic: "sastore",
+        },
+        Case {
             name: "fF",
             ret: "[F",
             elem_type: "[F",
@@ -237,6 +255,71 @@ fn fill_array_data_recovers_every_element_type() {
     }
 
     verify_with_jvm(&result);
+}
+
+#[test]
+fn char_short_fill_round_trips_runtime_values() {
+    let dex: Vec<u8> = build_dex();
+    let result: Dex2JarResult = translate_dex_bytes(&dex).expect("translate");
+
+    let Some(java): Option<PathBuf> = find_java() else {
+        eprintln!("skip jvm verify: no java");
+        return;
+    };
+    let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
+    if !javac.is_file() {
+        eprintln!("skip jvm verify: no javac");
+        return;
+    }
+
+    let jar: Vec<u8> = assemble_jar(&result).expect("jar");
+    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe_fill_cs_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let jar_path: PathBuf = dir.join("fill.jar");
+    let mut f: std::fs::File = std::fs::File::create(&jar_path).expect("create jar");
+    f.write_all(&jar).expect("write jar");
+    drop(f);
+
+    let driver: &str = "public class W { public static void main(String[] a) throws Exception { \
+        Class<?> c = Class.forName(\"com.disrobe.Fill\"); \
+        java.lang.reflect.Method mc = c.getDeclaredMethod(\"fC\"); mc.setAccessible(true); \
+        char[] cs = (char[]) mc.invoke(null); \
+        if (!new String(cs).equals(\"Hi!\")) throw new IllegalStateException(\"char mismatch: \" + new String(cs)); \
+        java.lang.reflect.Method ms = c.getDeclaredMethod(\"fS\"); ms.setAccessible(true); \
+        short[] ss = (short[]) ms.invoke(null); \
+        if (!(ss.length == 3 && ss[0] == -1 && ss[1] == 1000 && ss[2] == 32767)) \
+            throw new IllegalStateException(\"short mismatch: \" + java.util.Arrays.toString(ss)); \
+        System.out.println(\"VALUES_OK\"); } }";
+    let src: PathBuf = dir.join("W.java");
+    std::fs::write(&src, driver).expect("write driver");
+
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-d")
+        .arg(&dir)
+        .arg(&src)
+        .output()
+        .expect("javac");
+    assert!(
+        compile.status.success(),
+        "driver compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let cp: String = format!("{}{}{}", dir.display(), classpath_sep(), jar_path.display());
+    let run: std::process::Output = Command::new(&java)
+        .arg("-Xverify:all")
+        .arg("-cp")
+        .arg(&cp)
+        .arg("W")
+        .output()
+        .expect("java run");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        run.status.success() && stdout.contains("VALUES_OK"),
+        "jvm value check failed: stdout={stdout} stderr={stderr}"
+    );
 }
 
 fn find_java() -> Option<PathBuf> {
