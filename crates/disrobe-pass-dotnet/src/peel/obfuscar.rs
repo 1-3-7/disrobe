@@ -159,12 +159,12 @@ pub fn detect_obfuscar(image: &[u8]) -> bool {
 }
 
 pub fn peel_obfuscar(bytes: &[u8]) -> Result<PeelReport> {
+    let heaps: HeapsView = read_heaps(bytes)?;
     let (recovery, scan_state): (ObfuscarStringRecovery, ObfuscarScanState) =
         recover_obfuscar_strings_with_state(bytes);
     if scan_state == ObfuscarScanState::Rejected {
         return Ok(rejected_report(bytes, recovery));
     }
-    let heaps: HeapsView = read_heaps(bytes)?;
     let classification: NameClassification = classify_names(&heaps.strings);
     let evidence: ObfuscarEvidence = classify_obfuscar_naming(&heaps.strings);
     let bytes_in: u32 = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
