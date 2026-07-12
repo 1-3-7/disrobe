@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 95.82,
-          "detail": "6023 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.82 (6023 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 6d192eb7 (the structurer recovers a chained if/elif whose elif arm opens a try by keeping the try inside the arm instead of dropping the sibling arm's forward jump, recovering modulefinder.ModuleFinder.load_module)"
+          "value": 95.83,
+          "detail": "6024 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.83 (6024 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 2878568f (the structurer keeps a while-loop else-arm try nested in its else when the except handler is emitted past the loop body and lifts the loop continuation back to the loop, recovering logging.config.BaseConfigurator.cfg_convert)"
         }
       ]
     },
