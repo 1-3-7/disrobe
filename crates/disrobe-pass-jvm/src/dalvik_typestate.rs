@@ -17,6 +17,7 @@ pub(crate) enum RegType {
     Ref(String),
 
     UninitializedThis,
+    Uninitialized(u32),
 }
 
 impl RegType {
@@ -187,6 +188,7 @@ pub(crate) struct MethodShape<'a> {
     pub(crate) is_static: bool,
     pub(crate) is_init_ctor: bool,
     pub(crate) class_internal: &'a str,
+    pub(crate) materialize_new_pcs: &'a BTreeSet<u32>,
 }
 
 pub(crate) fn analyze(
@@ -234,6 +236,7 @@ pub(crate) fn analyze(
         narrow_floats: &narrow_floats,
         move_exception_type,
         class_internal,
+        materialize_new_pcs: shape.materialize_new_pcs,
     };
 
     let mut state_in: Vec<Option<RegState>> = vec![None; n];
@@ -333,6 +336,7 @@ struct TransferCtx<'a> {
     narrow_floats: &'a BTreeSet<u16>,
     move_exception_type: &'a BTreeMap<u32, String>,
     class_internal: &'a str,
+    materialize_new_pcs: &'a BTreeSet<u32>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -348,6 +352,7 @@ fn transfer(
     let narrow_floats: &BTreeSet<u16> = ctx.narrow_floats;
     let move_exception_type: &BTreeMap<u32, String> = ctx.move_exception_type;
     let class_internal: &str = ctx.class_internal;
+    let materialize_new_pcs: &BTreeSet<u32> = ctx.materialize_new_pcs;
     let op: u8 = insn.op;
     let r: &[u16] = &insn.regs;
 
@@ -451,6 +456,9 @@ fn transfer(
         0x20 | 0x21 => set(regs, r.first().copied(), RegType::Int),
         0x22 => {
             let _ty: String = type_name_at(dex, insn.index)?;
+            if materialize_new_pcs.contains(&insn.pc) {
+                set(regs, r.first().copied(), RegType::Uninitialized(insn.pc));
+            }
         }
         0x23 => {
             let ty: String = type_name_at(dex, insn.index)?;

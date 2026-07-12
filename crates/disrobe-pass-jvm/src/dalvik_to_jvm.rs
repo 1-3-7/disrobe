@@ -129,6 +129,8 @@ struct Emitter<'a> {
     eager_new_pcs: BTreeSet<u32>,
     iinc_suppressed: BTreeSet<u32>,
     eager_new_active: BTreeMap<u16, String>,
+    materialize_new_pcs: BTreeSet<u32>,
+    materialize_active: BTreeMap<u16, (String, u32)>,
     pending_result: Option<Slot>,
     cur_stack: i32,
     max_stack: i32,
@@ -251,6 +253,8 @@ pub(crate) fn emit_method_code(
         eager_new_pcs,
         iinc_suppressed,
         eager_new_active: BTreeMap::new(),
+        materialize_new_pcs: BTreeSet::new(),
+        materialize_active: BTreeMap::new(),
         pending_result: None,
         cur_stack: 0,
         max_stack: 0,
@@ -281,7 +285,11 @@ pub(crate) fn emit_method_code(
             });
         }
     }
-    if emitter.bailed || !emitter.pending_new.is_empty() || !emitter.eager_new_active.is_empty() {
+    if emitter.bailed
+        || !emitter.pending_new.is_empty()
+        || !emitter.eager_new_active.is_empty()
+        || !emitter.materialize_active.is_empty()
+    {
         return None;
     }
     Some(EmittedCode {
@@ -304,7 +312,7 @@ const fn regtype_to_slot(ty: &crate::dalvik_typestate::RegType) -> Slot {
         RegType::Long => Slot::Long,
         RegType::Float => Slot::Float,
         RegType::Double => Slot::Double,
-        RegType::Ref(_) | RegType::UninitializedThis => Slot::Ref,
+        RegType::Ref(_) | RegType::UninitializedThis | RegType::Uninitialized(_) => Slot::Ref,
         RegType::Int | RegType::ZeroOrNull | RegType::Top => Slot::Int,
     }
 }
@@ -406,6 +414,24 @@ pub(crate) fn emit_branch_method_code(
             None => (insns, BTreeMap::new(), base_max_locals),
         };
 
+    let mut block_leaders: BTreeSet<u32> = collect_leaders_with_switch(&insns, &switch_targets);
+    for tr in &tries {
+        block_leaders.insert(tr.start_pc);
+        block_leaders.insert(tr.end_pc);
+        for (_ty, hpc) in &tr.handlers {
+            block_leaders.insert(*hpc);
+        }
+    }
+    let eager_new_pcs: BTreeSet<u32> = collect_eager_new_pcs(dex, &insns, &block_leaders);
+    let materialize_new_pcs: BTreeSet<u32> = collect_materialize_new_pcs(
+        dex,
+        &insns,
+        &block_leaders,
+        &eager_new_pcs,
+        &switch_targets,
+        &handler_edges,
+    );
+
     let edges: crate::dalvik_typestate::CfgEdges<'_> = crate::dalvik_typestate::CfgEdges {
         switch_targets: &switch_targets,
         handler_edges: &handler_edges,
@@ -418,18 +444,11 @@ pub(crate) fn emit_branch_method_code(
         is_static,
         is_init_ctor,
         class_internal: &item.class,
+        materialize_new_pcs: &materialize_new_pcs,
     };
     let states: crate::dalvik_typestate::TypeStates =
         crate::dalvik_typestate::analyze(dex, &insns, &parsed, &shape, &edges)?;
 
-    let mut block_leaders: BTreeSet<u32> = collect_leaders_with_switch(&insns, &switch_targets);
-    for tr in &tries {
-        block_leaders.insert(tr.start_pc);
-        block_leaders.insert(tr.end_pc);
-        for (_ty, hpc) in &tr.handlers {
-            block_leaders.insert(*hpc);
-        }
-    }
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
 
@@ -515,7 +534,6 @@ pub(crate) fn emit_branch_method_code(
         .max(split_max_locals);
     let const_kind: BTreeMap<u16, Slot> = infer_const_kinds(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
-    let eager_new_pcs: BTreeSet<u32> = collect_eager_new_pcs(dex, &insns, &block_leaders);
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
 
     let mut emitter: Emitter<'_> = Emitter {
@@ -536,6 +554,8 @@ pub(crate) fn emit_branch_method_code(
         eager_new_pcs,
         iinc_suppressed,
         eager_new_active: BTreeMap::new(),
+        materialize_new_pcs,
+        materialize_active: BTreeMap::new(),
         pending_result: None,
         cur_stack: 0,
         max_stack: 0,
@@ -578,7 +598,11 @@ pub(crate) fn emit_branch_method_code(
             record_bail_op(insn.op);
         }
     }
-    if emitter.bailed || !emitter.pending_new.is_empty() || !emitter.eager_new_active.is_empty() {
+    if emitter.bailed
+        || !emitter.pending_new.is_empty()
+        || !emitter.eager_new_active.is_empty()
+        || !emitter.materialize_active.is_empty()
+    {
         return None;
     }
     emitter.emit_handler_dispatch_stubs(&shared_handler_pcs);
@@ -1356,6 +1380,123 @@ fn collect_eager_new_pcs(
     out
 }
 
+fn paired_init_pc(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    from_idx: usize,
+    dest: u16,
+    owner: &str,
+) -> Option<u32> {
+    for follow in &insns[from_idx + 1..] {
+        if let Some(init_owner) = init_invoke_owner(dex, follow)
+            && follow.regs.first().copied() == Some(dest)
+        {
+            return (init_owner == owner).then_some(follow.pc);
+        }
+        if follow.regs.contains(&dest) {
+            return None;
+        }
+    }
+    None
+}
+
+fn new_dominates_init(
+    insns: &[DalvikInsn],
+    pc_to_idx: &BTreeMap<u32, usize>,
+    new_pc: u32,
+    init_pc: u32,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    handler_edges: &BTreeMap<u32, Vec<u32>>,
+) -> bool {
+    let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
+    let mut visited: BTreeSet<u32> = BTreeSet::new();
+    let mut work: Vec<u32> = vec![entry_pc];
+    while let Some(pc) = work.pop() {
+        if pc == new_pc {
+            continue;
+        }
+        if pc == init_pc {
+            return false;
+        }
+        if !visited.insert(pc) {
+            continue;
+        }
+        let Some(&idx): Option<&usize> = pc_to_idx.get(&pc) else {
+            return false;
+        };
+        let insn: &DalvikInsn = &insns[idx];
+        if let Some(t) = insn.branch_target_pc() {
+            work.push(t);
+        }
+        if insn.is_switch()
+            && let Some(targets) = switch_targets.get(&pc)
+        {
+            work.extend(targets.iter().copied());
+        }
+        if let Some(edges) = handler_edges.get(&pc) {
+            work.extend(edges.iter().copied());
+        }
+        if !insn.is_unconditional_goto()
+            && !insn.is_return()
+            && !insn.is_throw()
+            && let Some(next) = insns.get(idx + 1)
+        {
+            work.push(next.pc);
+        }
+    }
+    true
+}
+
+fn collect_materialize_new_pcs(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    leaders: &BTreeSet<u32>,
+    eager: &BTreeSet<u32>,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    handler_edges: &BTreeMap<u32, Vec<u32>>,
+) -> BTreeSet<u32> {
+    let pc_to_idx: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, n): (usize, &DalvikInsn)| (n.pc, i))
+        .collect();
+    let mut out: BTreeSet<u32> = BTreeSet::new();
+    for (k, insn) in insns.iter().enumerate() {
+        if insn.op != 0x22 || eager.contains(&insn.pc) {
+            continue;
+        }
+        let Some(&dest): Option<&u16> = insn.regs.first() else {
+            continue;
+        };
+        let Some(owner): Option<String> = insn.index.and_then(|i: u32| {
+            dex.type_names
+                .get(i as usize)
+                .map(|t: &String| internal_of(t))
+        }) else {
+            continue;
+        };
+        let Some(init_pc): Option<u32> = paired_init_pc(dex, insns, k, dest, &owner) else {
+            continue;
+        };
+        let cross_block: bool = leaders.iter().any(|&l: &u32| l > insn.pc && l <= init_pc);
+        if !cross_block {
+            continue;
+        }
+        if !new_dominates_init(
+            insns,
+            &pc_to_idx,
+            insn.pc,
+            init_pc,
+            switch_targets,
+            handler_edges,
+        ) {
+            continue;
+        }
+        out.insert(insn.pc);
+    }
+    out
+}
+
 fn sole_init_call_on_this(dex: &DexFile, this_reg: u16, insns: &[DalvikInsn]) -> Option<u32> {
     let mut found: Option<u32> = None;
     for insn in insns {
@@ -2090,6 +2231,7 @@ impl Emitter<'_> {
         if frames.is_empty() {
             return Some(Vec::new());
         }
+        let jvm_off: BTreeMap<u32, usize> = cfg.jvm_offset_of_pc.clone();
 
         let mut body: Vec<u8> = Vec::new();
         body.extend_from_slice(&(frames.len() as u16).to_be_bytes());
@@ -2103,14 +2245,14 @@ impl Emitter<'_> {
             body.extend_from_slice(&u16::try_from(delta).ok()?.to_be_bytes());
             body.extend_from_slice(&u16::try_from(locals.len()).ok()?.to_be_bytes());
             for ty in locals {
-                self.append_verification_type(&mut body, ty);
+                self.append_verification_type(&mut body, ty, &jvm_off)?;
             }
             match stack {
                 Some(throwable) => {
                     body.extend_from_slice(&1u16.to_be_bytes());
                     let ty: crate::dalvik_typestate::RegType =
                         crate::dalvik_typestate::RegType::Ref(throwable.clone());
-                    self.append_verification_type(&mut body, &ty);
+                    self.append_verification_type(&mut body, &ty, &jvm_off)?;
                 }
                 None => body.extend_from_slice(&0u16.to_be_bytes()),
             }
@@ -2129,7 +2271,8 @@ impl Emitter<'_> {
         &mut self,
         out: &mut Vec<u8>,
         ty: &crate::dalvik_typestate::RegType,
-    ) {
+        jvm_off: &BTreeMap<u32, usize>,
+    ) -> Option<()> {
         use crate::dalvik_typestate::RegType;
         match ty {
             RegType::Top => out.push(0),
@@ -2138,12 +2281,19 @@ impl Emitter<'_> {
             RegType::Double => out.push(3),
             RegType::Long => out.push(4),
             RegType::UninitializedThis => out.push(6),
+            RegType::Uninitialized(new_pc) => {
+                let &offset: &usize = jvm_off.get(new_pc)?;
+                let offset16: u16 = u16::try_from(offset).ok()?;
+                out.push(8);
+                out.extend_from_slice(&offset16.to_be_bytes());
+            }
             RegType::Ref(name) => {
                 let idx: u16 = self.cp.class_const(name);
                 out.push(7);
                 out.extend_from_slice(&idx.to_be_bytes());
             }
         }
+        Some(())
     }
 
     fn local_index(&mut self, reg: u16) -> Option<u16> {
@@ -2192,6 +2342,12 @@ impl Emitter<'_> {
         if self.eager_new_active.contains_key(&reg) {
             #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("eager-new-load");
+            self.bail();
+            return;
+        }
+        if self.materialize_active.contains_key(&reg) {
+            #[cfg(any(test, feature = "lifter-diag"))]
+            record_bail_kind("materialize-new-load");
             self.bail();
             return;
         }
@@ -2555,6 +2711,15 @@ impl Emitter<'_> {
             self.push(0x59);
             self.adjust_stack(1);
             self.eager_new_active.insert(dest, owner);
+            return;
+        }
+        if self.materialize_new_pcs.contains(&insn.pc) {
+            let class_idx: u16 = self.cp.class_const(&owner);
+            self.push(0xBB);
+            self.push_u16(class_idx);
+            self.adjust_stack(1);
+            self.emit_store(dest, Slot::Ref);
+            self.materialize_active.insert(dest, (owner, insn.pc));
             return;
         }
         self.pending_new.insert(dest, owner);
@@ -3029,6 +3194,25 @@ impl Emitter<'_> {
             && name == "<init>"
             && let Some(&recv) = insn.regs.first()
             && self
+                .materialize_active
+                .get(&recv)
+                .is_some_and(|(t, _): &(String, u32)| *t == owner)
+        {
+            self.emit_constructor_materialized(
+                recv,
+                &owner,
+                &name,
+                &descriptor,
+                &param_types,
+                &insn.regs,
+            );
+            return;
+        }
+
+        if is_special
+            && name == "<init>"
+            && let Some(&recv) = insn.regs.first()
+            && self
                 .pending_new
                 .get(&recv)
                 .is_some_and(|t: &String| *t == owner)
@@ -3127,6 +3311,47 @@ impl Emitter<'_> {
         self.push_u16(method_idx);
         self.adjust_stack(-consumed - 1);
         self.emit_store(recv, Slot::Ref);
+        self.pending_result = None;
+    }
+
+    fn emit_constructor_materialized(
+        &mut self,
+        recv: u16,
+        owner: &str,
+        name: &str,
+        descriptor: &str,
+        param_types: &[String],
+        regs: &[u16],
+    ) {
+        self.materialize_active.remove(&recv);
+        let Some(index): Option<u16> = self.local_index(recv) else {
+            return;
+        };
+        self.emit_local_op(index, 0x2A, 0x19);
+        self.adjust_stack(1);
+        let mut reg_iter: std::slice::Iter<'_, u16> = regs.iter();
+        let _ = reg_iter.next();
+        let mut consumed: i32 = 0;
+        for param in param_types {
+            let slot: Slot = field_slot(param);
+            if let Some(&reg) = reg_iter.next() {
+                if matches!(slot, Slot::Ref) {
+                    self.emit_ref_param(reg, param);
+                } else {
+                    self.set_reg(reg, slot);
+                    self.emit_load(reg);
+                }
+                consumed += slot.width();
+            }
+            if slot.category_two() {
+                let _ = reg_iter.next();
+            }
+        }
+        let method_idx: u16 = self.cp.methodref(owner, name, descriptor);
+        self.push(0xB7);
+        self.push_u16(method_idx);
+        self.adjust_stack(-consumed - 1);
+        self.set_reg(recv, Slot::Ref);
         self.pending_result = None;
     }
 
