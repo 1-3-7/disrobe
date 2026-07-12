@@ -18,6 +18,8 @@ pub struct GoFunc {
     pub abi0: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_line: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 impl GoFunc {
@@ -30,6 +32,7 @@ impl GoFunc {
             linker_symbol: None,
             abi0: false,
             start_line: None,
+            file: None,
         }
     }
 }
@@ -336,13 +339,94 @@ fn parse_go118_plus(
         }
         record_package(&name, packages);
         let start_line: Option<i32> = read_start_line(body, func_struct_at, header);
+        let file: Option<String> = read_func_file(header, body, func_struct_at);
         let mut func: GoFunc = GoFunc::new(pc, pc, name);
         func.start_line = start_line;
+        func.file = file;
         funcs.push(func);
     }
     fill_func_ends(funcs);
     collect_files_go118(image, header, body, files);
     Ok(())
+}
+
+const FUNC_PCFILE_OFFSET: usize = 20;
+const FUNC_CUOFFSET_OFFSET: usize = 32;
+
+fn read_func_file(header: &PclntabHeader, body: &[u8], func_struct_at: usize) -> Option<String> {
+    let pcfile_field: usize = func_struct_at.checked_add(FUNC_PCFILE_OFFSET)?;
+    let pcfile: u32 = read_u32(body, pcfile_field, header.endian).ok()?;
+    if pcfile == 0 {
+        return None;
+    }
+    let cuoffset_field: usize = func_struct_at.checked_add(FUNC_CUOFFSET_OFFSET)?;
+    let cu_offset: u32 = read_u32(body, cuoffset_field, header.endian).ok()?;
+    let fileno: u32 = pcfile_entry_file_index(header, body, pcfile)?;
+    let cutab_index: u32 = cu_offset.checked_add(fileno)?;
+    let file_off: u32 = read_cutab_entry(header, body, cutab_index)?;
+    if file_off == u32::MAX {
+        return None;
+    }
+    read_filetab_name(header, body, file_off)
+}
+
+fn pcfile_entry_file_index(header: &PclntabHeader, body: &[u8], pcfile: u32) -> Option<u32> {
+    let pctab_off: usize = usize::try_from(header.pctab_off).ok()?;
+    let start: usize = pctab_off.checked_add(usize::try_from(pcfile).ok()?)?;
+    let (uvdelta, _consumed): (u32, usize) = read_pctab_varint(body, start)?;
+    let vdelta: i32 = zigzag_decode(uvdelta);
+    let fileno: i32 = (-1i32).checked_add(vdelta)?;
+    u32::try_from(fileno).ok()
+}
+
+const fn zigzag_decode(uvdelta: u32) -> i32 {
+    if uvdelta & 1 == 0 {
+        (uvdelta >> 1) as i32
+    } else {
+        !(uvdelta >> 1) as i32
+    }
+}
+
+const PCTAB_VARINT_MAX_BYTES: usize = 5;
+
+fn read_pctab_varint(buf: &[u8], at: usize) -> Option<(u32, usize)> {
+    let tail: &[u8] = buf.get(at..)?;
+    let mut value: u32 = 0;
+    let mut shift: u32 = 0;
+    for (i, &byte) in tail.iter().take(PCTAB_VARINT_MAX_BYTES).enumerate() {
+        value |= u32::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+        shift += 7;
+    }
+    None
+}
+
+fn read_cutab_entry(header: &PclntabHeader, body: &[u8], index: u32) -> Option<u32> {
+    let cu_off: usize = usize::try_from(header.cu_off).ok()?;
+    let filetab_off: usize = usize::try_from(header.filetab_off).ok()?;
+    if cu_off == 0 || filetab_off <= cu_off || filetab_off > body.len() {
+        return None;
+    }
+    let cutab: &[u8] = body.get(cu_off..filetab_off)?;
+    let byte_off: usize = usize::try_from(index).ok()?.checked_mul(4)?;
+    read_u32(cutab, byte_off, header.endian).ok()
+}
+
+fn read_filetab_name(header: &PclntabHeader, body: &[u8], file_off: u32) -> Option<String> {
+    let filetab_off: usize = usize::try_from(header.filetab_off).ok()?;
+    let pctab_off: usize = usize::try_from(header.pctab_off).ok()?;
+    if filetab_off == 0 || pctab_off <= filetab_off || pctab_off > body.len() {
+        return None;
+    }
+    let filetab: &[u8] = body.get(filetab_off..pctab_off)?;
+    let name: String = read_cstring(filetab, usize::try_from(file_off).ok()?);
+    if name.is_empty() || name.len() > MAX_FILETAB_ENTRY_LEN {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 const FUNC_STARTLINE_OFFSET: usize = 36;
@@ -730,6 +814,78 @@ mod tests {
             read_start_line(&huge, 0, &startline_header(PclntabVersion::Go120)),
             None
         );
+    }
+
+    #[test]
+    fn zigzag_decode_matches_go_pcvalue_encoding() {
+        assert_eq!(zigzag_decode(0), 0);
+        assert_eq!(zigzag_decode(2), 1);
+        assert_eq!(zigzag_decode(4), 2);
+        assert_eq!(zigzag_decode(1), -1);
+        assert_eq!(zigzag_decode(3), -2);
+    }
+
+    #[test]
+    fn pctab_varint_reads_multibyte_and_bounds() {
+        assert_eq!(read_pctab_varint(&[0x02], 0), Some((2, 1)));
+        assert_eq!(read_pctab_varint(&[0xd2, 0x02], 0), Some((0x152, 2)));
+        assert_eq!(read_pctab_varint(&[0x80, 0x80, 0x01], 0), Some((0x4000, 3)));
+        assert_eq!(read_pctab_varint(&[], 0), None);
+        assert_eq!(read_pctab_varint(&[0x80; 5], 0), None);
+        assert_eq!(read_pctab_varint(&[0x02], 5), None);
+    }
+
+    fn file_layout_header() -> PclntabHeader {
+        PclntabHeader {
+            version: PclntabVersion::Go120,
+            quantum: 1,
+            ptr_size: 8,
+            endian: crate::binary::Endian::Little,
+            n_funcs: 1,
+            n_files: 1,
+            text_start: 0,
+            funcname_off: 0,
+            cu_off: 0x10,
+            filetab_off: 0x20,
+            pctab_off: 0x40,
+            funcdata_off: 0,
+            section_addr: 0,
+            section_len: 0x200,
+        }
+    }
+
+    #[test]
+    fn read_func_file_resolves_pcfile_through_cutab_and_filetab() {
+        let mut body: Vec<u8> = vec![0u8; 0x200];
+        let func_struct_at: usize = 0x100;
+        body[func_struct_at + FUNC_PCFILE_OFFSET..func_struct_at + FUNC_PCFILE_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        body[func_struct_at + FUNC_CUOFFSET_OFFSET..func_struct_at + FUNC_CUOFFSET_OFFSET + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        body[0x10..0x14].copy_from_slice(&5u32.to_le_bytes());
+        body[0x25..0x25 + 9].copy_from_slice(b"abc/x.go\0");
+        body[0x41] = 0x02;
+        assert_eq!(
+            read_func_file(&file_layout_header(), &body, func_struct_at),
+            Some("abc/x.go".to_owned())
+        );
+    }
+
+    #[test]
+    fn read_func_file_rejects_zero_pcfile_and_sentinel_cutab() {
+        let header: PclntabHeader = file_layout_header();
+        let func_struct_at: usize = 0x100;
+
+        let mut zero_pcfile: Vec<u8> = vec![0u8; 0x200];
+        zero_pcfile[0x41] = 0x02;
+        assert_eq!(read_func_file(&header, &zero_pcfile, func_struct_at), None);
+
+        let mut sentinel: Vec<u8> = vec![0u8; 0x200];
+        sentinel[func_struct_at + FUNC_PCFILE_OFFSET..func_struct_at + FUNC_PCFILE_OFFSET + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        sentinel[0x10..0x14].copy_from_slice(&u32::MAX.to_le_bytes());
+        sentinel[0x41] = 0x02;
+        assert_eq!(read_func_file(&header, &sentinel, func_struct_at), None);
     }
 
     #[test]
