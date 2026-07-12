@@ -3021,6 +3021,18 @@ pub(super) fn structure_try(
         };
         let handlers: Vec<ExceptHandler> =
             parse_except_handlers(code, stream, region.handler_start, region.region_end)?;
+        let construct_tail: Vec<Stmt> =
+            match handler_pass_through_tail_return(stream, region, region.region_end) {
+                Some((tail_start, tail_end)) => {
+                    structure_stmts(code, stream, tail_start, tail_end)?
+                }
+                None => Vec::new(),
+            };
+        let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
+            handlers
+        } else {
+            strip_shared_exit_return(handlers, &construct_tail)
+        };
         let mut out: Vec<Stmt> = head;
         out.push(Stmt::Try {
             body: non_empty(body),
@@ -3029,6 +3041,7 @@ pub(super) fn structure_try(
             finalbody: Vec::new(),
             line: None,
         });
+        out.extend(construct_tail);
         if region.region_end < hi {
             out.extend(structure_stmts(code, stream, region.region_end, hi)?);
         }
@@ -3748,6 +3761,73 @@ fn strip_shared_exit_suffix(
             h
         })
         .collect()
+}
+
+fn pop_except_tail_return(stream: &DecodedStream, pop: usize, hi: usize) -> Option<(usize, usize)> {
+    let after: usize = skip_except_name_teardown(stream, pop + 1, hi);
+    let start: usize = first_significant(stream, after, hi)?;
+    let mut k: usize = start;
+    let mut saw_value: bool = false;
+    while k < hi {
+        match &stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => {
+                return saw_value.then_some((start, k + 1));
+            }
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Reraise(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::DeleteFast(_)
+            | CanonicalOp::DeleteName(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::ForIter(_) => return None,
+            _ => saw_value = true,
+        }
+        k += 1;
+    }
+    None
+}
+
+fn handler_pass_through_tail_return(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() {
+        return None;
+    }
+    let hi: usize = except_region_end.min(stream.ops.len());
+    let scan_from: usize = usize::from(matches!(
+        stream.ops.get(region.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    )) + region.handler_start;
+    let mut depth: u32 = 0;
+    for k in scan_from..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => {
+                if let Some(span) = pop_except_tail_return(stream, k, hi) {
+                    return Some(span);
+                }
+            }
+            CanonicalOp::PopExcept => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn strip_shared_exit_return(
