@@ -2836,7 +2836,7 @@ fn epilogue_is_trivial_return(epilogue: &[Stmt]) -> bool {
     epilogue.len() == 1
         && matches!(
             epilogue.first(),
-            Some(Stmt::Return(None) | Stmt::Return(Some(Expr::Constant { .. })))
+            Some(Stmt::Return(None | Some(Expr::Constant { .. })))
         )
 }
 

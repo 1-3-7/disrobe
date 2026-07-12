@@ -1653,6 +1653,48 @@ fn while_break_handler_try(
     Some(region_try)
 }
 
+fn loop_exit_leading_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    hi: usize,
+) -> Option<Expr> {
+    let tail_start: usize = loop_tail_start(stream, region, hi);
+    if tail_start >= hi {
+        return None;
+    }
+    let tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, hi).ok()?;
+    match tail.first() {
+        Some(Stmt::Return(Some(value))) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn loop_exit_return_absorbed(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    hi: usize,
+    body: &[Stmt],
+) -> bool {
+    let Some(Stmt::Return(Some(last_val))): Option<&Stmt> = body.last() else {
+        return false;
+    };
+    let Some(exit_ret): Option<Expr> = loop_exit_leading_return(code, stream, region, hi) else {
+        return false;
+    };
+    if *last_val != exit_ret {
+        return false;
+    }
+    let exit: usize = region.exit.min(stream.ops.len());
+    let Some(prev): Option<usize> = last_significant_back(stream, region.body_start, exit) else {
+        return false;
+    };
+    is_back_edge(&stream.ops[prev])
+        && resolve_jump_target(stream, prev, &stream.ops[prev])
+            .is_some_and(|t: usize| t <= region.header)
+}
+
 fn structure_while_body_absorbing_break_handler(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1661,7 +1703,12 @@ fn structure_while_body_absorbing_break_handler(
 ) -> Result<Vec<Stmt>> {
     if let Some(region_try) = while_break_handler_try(stream, region, hi) {
         let try_hi: usize = region_try.region_end().min(hi);
-        return structure_try(code, stream, region.body_start, try_hi, &region_try);
+        let mut body: Vec<Stmt> =
+            structure_try(code, stream, region.body_start, try_hi, &region_try)?;
+        if loop_exit_return_absorbed(code, stream, region, hi, &body) {
+            body.pop();
+        }
+        return Ok(body);
     }
     structure_stmts(code, stream, region.body_start, region.body_end)
 }
