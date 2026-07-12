@@ -25,11 +25,12 @@ use super::loops::{
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
-    is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop, is_value_boundary,
-    is_value_form_shortcircuit, loop_inside_unpeeled_pre311_try, recover_return_at,
-    region_is_linear, skip_await_poll, structure_try, trim_trailing_comp_cleanup,
-    try_enclosed_by_leading_guard, try_structure_cold_sibling_try, try_structure_else_try,
-    try_structure_empty_body_try, try_structure_guarded_try, try_structure_multibranch_guarded_try,
+    guard_test_expr_start, is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop,
+    is_value_boundary, is_value_form_shortcircuit, loop_inside_unpeeled_pre311_try,
+    recover_return_at, region_is_linear, skip_await_poll, structure_try,
+    trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
+    try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
+    try_structure_multibranch_guarded_try,
 };
 use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
@@ -1309,6 +1310,119 @@ fn elif_arm_continues_to_loop(
     Some((back, orelse_at))
 }
 
+fn try_structure_elif_arm_over_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> = find_try_region(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if region.is_finally() || region.is_with() {
+        return Ok(None);
+    }
+    let Some(guard_cur): Option<usize> = (lo..region.try_start).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(_false_cur): Option<usize> =
+        resolve_jump_target(stream, guard_cur, &stream.ops[guard_cur])
+            .filter(|&t: &usize| t > region.try_start && t <= region.handler_start)
+    else {
+        return Ok(None);
+    };
+    let Some(cur_test_start): Option<usize> = guard_test_expr_start(code, stream, lo, guard_cur)
+    else {
+        return Ok(None);
+    };
+    if cur_test_start <= lo {
+        return Ok(None);
+    }
+    let Some(guard_prev): Option<usize> = (lo..cur_test_start).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if resolve_jump_target(stream, guard_prev, &stream.ops[guard_prev]) != Some(cur_test_start) {
+        return Ok(None);
+    }
+    let Some(then_jump): Option<usize> =
+        then_terminating_jump(stream, guard_prev + 1, cur_test_start)
+    else {
+        return Ok(None);
+    };
+    let Some(_join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .filter(|&t: &usize| t > region.try_start && t <= hi)
+    else {
+        return Ok(None);
+    };
+    let Some(prev_test_start): Option<usize> = guard_test_expr_start(code, stream, lo, guard_prev)
+    else {
+        return Ok(None);
+    };
+    if (lo..prev_test_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > prev_test_start)
+    }) {
+        return Ok(None);
+    }
+    let Some(guarded): Option<Vec<Stmt>> =
+        try_structure_guarded_try(code, stream, cur_test_start, hi)?
+    else {
+        return Ok(None);
+    };
+    let Some((elif_stmt, tail)): Option<(&Stmt, &[Stmt])> = guarded.split_first() else {
+        return Ok(None);
+    };
+    if !matches!(elif_stmt, Stmt::If { .. }) {
+        return Ok(None);
+    }
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[prev_test_start..guard_prev])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard_prev);
+    let test: Expr = none_jump_test(stream, guard_prev, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard_prev],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let head: Vec<Stmt> = structure_stmts(code, stream, lo, prev_test_start)?;
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard_prev + 1, then_jump)?;
+    let then_body: Vec<Stmt> =
+        rewrite_jump_to_break_continue(code, stream, then_body, guard_prev + 1, then_jump);
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: vec![elif_stmt.clone()],
+        line: None,
+    });
+    out.extend(tail.iter().cloned());
+    Ok(Some(out))
+}
+
 fn structure_elif_chain_arm(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1714,6 +1828,9 @@ pub(super) fn structure_stmts(
         return Ok(stmts);
     }
     if let Some(stmts) = try_structure_else_try(code, stream, lo, hi)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_elif_arm_over_try(code, stream, lo, hi)? {
         return Ok(stmts);
     }
     if let Some(try_region) = find_try_region(stream, lo, hi)

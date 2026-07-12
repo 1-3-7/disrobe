@@ -2267,7 +2267,7 @@ fn guard_test_split_after_stmts(
     (head.is_empty() && residual.len() == 1).then_some(test_start)
 }
 
-fn guard_test_expr_start(
+pub(super) fn guard_test_expr_start(
     code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
