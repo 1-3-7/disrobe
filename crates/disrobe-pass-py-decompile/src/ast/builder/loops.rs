@@ -1631,6 +1631,29 @@ fn bottom_test_start(
     start
 }
 
+fn absorb_hoists_nested_try(
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    region_try: &TryRegion,
+) -> bool {
+    let handler_reenters_body: bool =
+        (region_try.handler_start..region_try.region_end()).any(|k: usize| {
+            is_back_edge(&stream.ops[k])
+                && resolve_jump_target(stream, k, &stream.ops[k])
+                    .is_some_and(|t: usize| t <= region.back_edge)
+        });
+    if !handler_reenters_body {
+        return false;
+    }
+    (region.body_start..region_try.try_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > region_try.try_start)
+    })
+}
+
 fn while_break_handler_try(
     stream: &DecodedStream,
     region: &LoopRegion,
@@ -1702,6 +1725,10 @@ fn structure_while_body_absorbing_break_handler(
     hi: usize,
 ) -> Result<Vec<Stmt>> {
     if let Some(region_try) = while_break_handler_try(stream, region, hi) {
+        if absorb_hoists_nested_try(stream, region, &region_try) {
+            let body_hi: usize = region_try.region_end().min(hi);
+            return structure_stmts(code, stream, region.body_start, body_hi);
+        }
         let try_hi: usize = region_try.region_end().min(hi);
         let mut body: Vec<Stmt> =
             structure_try(code, stream, region.body_start, try_hi, &region_try)?;

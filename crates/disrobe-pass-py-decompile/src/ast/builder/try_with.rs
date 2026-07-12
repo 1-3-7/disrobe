@@ -2195,6 +2195,155 @@ pub(super) fn try_structure_else_try(
     Ok(Some(out))
 }
 
+pub(super) fn try_structure_loop_else_nested_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let Some(guard): Option<usize> = else_try_first_guard(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if (lo..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return Ok(None);
+    }
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, else_start)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .filter(|t: &usize| *t > else_start && *t <= hi)
+    else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, else_start, hi) else {
+        return Ok(None);
+    };
+    if region.is_with
+        || region.is_finally
+        || region.try_start < else_start
+        || region.try_start >= join
+        || region.handler_start < join
+        || region.region_end > hi
+    {
+        return Ok(None);
+    }
+    let handler_reenters: bool = (region.handler_start..region.region_end).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= header && t < region.handler_start)
+    });
+    if !handler_reenters {
+        return Ok(None);
+    }
+    if !(else_start..region.try_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > region.try_start)
+    }) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
+    let Some(inner_guard): Option<usize> = (else_start..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(inner_test_start): Option<usize> =
+        guard_test_split_after_stmts(code, stream, else_start, inner_guard)
+    else {
+        return Ok(None);
+    };
+    let leading: Vec<Stmt> = structure_stmts(code, stream, else_start, inner_test_start)?;
+    let Some(guarded): Option<Vec<Stmt>> =
+        try_structure_guarded_try(code, stream, inner_test_start, region.region_end)?
+    else {
+        return Ok(None);
+    };
+    let mut else_full: Vec<Stmt> = leading;
+    else_full.extend(guarded);
+    let cont: Vec<Stmt> = structure_stmts(code, stream, join, region.handler_start)?;
+    if cont.is_empty()
+        || else_full.len() <= cont.len()
+        || else_full[else_full.len() - cont.len()..] != cont[..]
+    {
+        return Ok(None);
+    }
+    strip_trailing_continuation(&mut else_full, &cont);
+    let orelse: Vec<Stmt> = else_full;
+    if orelse.is_empty() || !stmts_contain_try(&orelse) {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse,
+        line: None,
+    });
+    out.extend(cont);
+    Ok(Some(out))
+}
+
+fn strip_trailing_continuation(stmts: &mut Vec<Stmt>, cont: &[Stmt]) {
+    if cont.is_empty() {
+        return;
+    }
+    if stmts.len() >= cont.len() && stmts[stmts.len() - cont.len()..] == *cont {
+        stmts.truncate(stmts.len() - cont.len());
+    }
+    if let Some(Stmt::If { body, .. }) = stmts.last_mut() {
+        strip_trailing_continuation(body, cont);
+    }
+}
+
+fn stmts_contain_try(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s: &Stmt| match s {
+        Stmt::Try { .. } => true,
+        Stmt::If { body, orelse, .. } => stmts_contain_try(body) || stmts_contain_try(orelse),
+        _ => false,
+    })
+}
+
 pub(super) fn try_enclosed_by_leading_guard(
     stream: &DecodedStream,
     lo: usize,
