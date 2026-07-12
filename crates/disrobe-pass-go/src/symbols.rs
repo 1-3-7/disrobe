@@ -16,6 +16,8 @@ pub struct GoFunc {
     pub linker_symbol: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub abi0: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<i32>,
 }
 
 impl GoFunc {
@@ -27,6 +29,7 @@ impl GoFunc {
             name,
             linker_symbol: None,
             abi0: false,
+            start_line: None,
         }
     }
 }
@@ -332,11 +335,29 @@ fn parse_go118_plus(
             continue;
         }
         record_package(&name, packages);
-        funcs.push(GoFunc::new(pc, pc, name));
+        let start_line: Option<i32> = read_start_line(body, func_struct_at, header);
+        let mut func: GoFunc = GoFunc::new(pc, pc, name);
+        func.start_line = start_line;
+        funcs.push(func);
     }
     fill_func_ends(funcs);
     collect_files_go118(image, header, body, files);
     Ok(())
+}
+
+const FUNC_STARTLINE_OFFSET: usize = 36;
+const MAX_PLAUSIBLE_START_LINE: i32 = 1 << 26;
+
+fn read_start_line(body: &[u8], func_struct_at: usize, header: &PclntabHeader) -> Option<i32> {
+    if header.version != PclntabVersion::Go120 {
+        return None;
+    }
+    let field: usize = func_struct_at.checked_add(FUNC_STARTLINE_OFFSET)?;
+    let raw: u32 = read_u32(body, field, header.endian).ok()?;
+    let line: i32 = i32::try_from(raw).ok()?;
+    (1..=MAX_PLAUSIBLE_START_LINE)
+        .contains(&line)
+        .then_some(line)
 }
 
 const MAX_PLAUSIBLE_FUNCS: u64 = 16 * 1024 * 1024;
@@ -586,6 +607,64 @@ mod tests {
             MAX_FUNC_PREALLOC
         );
         assert_eq!(bounded_func_prealloc(usize::MAX), MAX_FUNC_PREALLOC);
+    }
+
+    fn startline_header(version: PclntabVersion) -> PclntabHeader {
+        PclntabHeader {
+            version,
+            quantum: 1,
+            ptr_size: 8,
+            endian: crate::binary::Endian::Little,
+            n_funcs: 1,
+            n_files: 0,
+            text_start: 0,
+            funcname_off: 0,
+            cu_off: 0,
+            filetab_off: 0,
+            pctab_off: 0,
+            funcdata_off: 0,
+            section_addr: 0,
+            section_len: 0,
+        }
+    }
+
+    #[test]
+    fn start_line_read_only_for_go120_layout() {
+        let mut body: Vec<u8> = vec![0u8; 64];
+        body[FUNC_STARTLINE_OFFSET..FUNC_STARTLINE_OFFSET + 4]
+            .copy_from_slice(&123u32.to_le_bytes());
+        assert_eq!(
+            read_start_line(&body, 0, &startline_header(PclntabVersion::Go120)),
+            Some(123)
+        );
+        assert_eq!(
+            read_start_line(&body, 0, &startline_header(PclntabVersion::Go118)),
+            None
+        );
+    }
+
+    #[test]
+    fn start_line_rejects_out_of_bounds_and_implausible() {
+        let short: Vec<u8> = vec![0u8; FUNC_STARTLINE_OFFSET + 2];
+        assert_eq!(
+            read_start_line(&short, 0, &startline_header(PclntabVersion::Go120)),
+            None
+        );
+
+        let mut zero: Vec<u8> = vec![0u8; 64];
+        zero[FUNC_STARTLINE_OFFSET..FUNC_STARTLINE_OFFSET + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            read_start_line(&zero, 0, &startline_header(PclntabVersion::Go120)),
+            None
+        );
+
+        let mut huge: Vec<u8> = vec![0u8; 64];
+        huge[FUNC_STARTLINE_OFFSET..FUNC_STARTLINE_OFFSET + 4]
+            .copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        assert_eq!(
+            read_start_line(&huge, 0, &startline_header(PclntabVersion::Go120)),
+            None
+        );
     }
 
     #[test]

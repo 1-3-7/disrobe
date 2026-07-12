@@ -110,6 +110,14 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
             dbg_kv("pclntab_n_funcs", || located.header.n_funcs.to_string());
             let symbols: GoSymbols = parse_symbols(&image, &located)?;
             dbg_kv("func_count", || symbols.funcs.len().to_string());
+            dbg_kv("func_start_line_count", || {
+                symbols
+                    .funcs
+                    .iter()
+                    .filter(|f: &&GoFunc| f.start_line.is_some())
+                    .count()
+                    .to_string()
+            });
             dbg_kv("package_count", || symbols.package_set.len().to_string());
             dbg_kv("source_file_count", || {
                 symbols.source_files.len().to_string()
