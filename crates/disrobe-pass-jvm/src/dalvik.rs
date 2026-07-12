@@ -826,6 +826,42 @@ pub fn parse_sparse_switch(
     Some(SwitchPayload { keys, targets })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrayDataPayload {
+    pub element_width: u16,
+    pub data: Vec<u8>,
+}
+
+#[must_use]
+pub fn parse_fill_array_data(code: &[u16], payload_off: u32) -> Option<ArrayDataPayload> {
+    let base: usize = payload_off as usize;
+    if *code.get(base)? != 0x0300 {
+        return None;
+    }
+    let element_width: u16 = *code.get(base + 1)?;
+    if element_width == 0 {
+        return None;
+    }
+    let size: u32 = u32::from(*code.get(base + 2)?) | (u32::from(*code.get(base + 3)?) << 16);
+    let total_bytes: usize = usize::from(element_width).checked_mul(size as usize)?;
+    let unit_count: usize = total_bytes.div_ceil(2);
+    let data_start: usize = base.checked_add(4)?;
+    if data_start.checked_add(unit_count)? > code.len() {
+        return None;
+    }
+    let mut data: Vec<u8> = Vec::with_capacity(unit_count * 2);
+    for k in 0..unit_count {
+        let unit: u16 = *code.get(data_start + k)?;
+        data.push((unit & 0xFF) as u8);
+        data.push((unit >> 8) as u8);
+    }
+    data.truncate(total_bytes);
+    Some(ArrayDataPayload {
+        element_width,
+        data,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -865,5 +901,38 @@ mod tests {
         let insns: Vec<(u32, &'static str)> = disassemble_units(&code);
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].1, "nop");
+    }
+
+    #[test]
+    fn fill_array_data_payload_byte_elements() {
+        let code: Vec<u16> = vec![0x0300, 0x0001, 0x0003, 0x0000, 0x0201, 0x0003];
+        let parsed: ArrayDataPayload = parse_fill_array_data(&code, 0).expect("payload");
+        assert_eq!(parsed.element_width, 1);
+        assert_eq!(parsed.data, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn fill_array_data_payload_int_elements() {
+        let code: Vec<u16> = vec![
+            0x0300, 0x0004, 0x0002, 0x0000, 0x0007, 0x0000, 0xFFFF, 0xFFFF,
+        ];
+        let parsed: ArrayDataPayload = parse_fill_array_data(&code, 0).expect("payload");
+        assert_eq!(parsed.element_width, 4);
+        assert_eq!(
+            parsed.data,
+            vec![0x07, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    #[test]
+    fn fill_array_data_payload_rejects_truncated() {
+        let code: Vec<u16> = vec![0x0300, 0x0004, 0x0002, 0x0000, 0x0007];
+        assert!(parse_fill_array_data(&code, 0).is_none());
+    }
+
+    #[test]
+    fn fill_array_data_payload_rejects_bad_ident() {
+        let code: Vec<u16> = vec![0x0200, 0x0001, 0x0001, 0x0000, 0x0005];
+        assert!(parse_fill_array_data(&code, 0).is_none());
     }
 }

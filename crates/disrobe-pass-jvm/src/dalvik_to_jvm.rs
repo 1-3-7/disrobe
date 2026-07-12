@@ -120,6 +120,7 @@ struct Emitter<'a> {
     wide_double_pcs: BTreeSet<u32>,
     reg_array_elem: BTreeMap<u16, Slot>,
     param_array_elem: BTreeMap<u16, Slot>,
+    fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload>,
     poisoned_regs: BTreeSet<u16>,
     const_zero: BTreeSet<u16>,
     pending_new: BTreeMap<u16, String>,
@@ -228,6 +229,8 @@ pub(crate) fn emit_method_code(
         .max(1);
     let eager_new_pcs: BTreeSet<u32> = collect_eager_new_pcs(dex, &insns, &collect_leaders(&insns));
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
+    let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
+        collect_fill_payloads(&insns, &item.insns);
     let mut emitter: Emitter<'_> = Emitter {
         dex,
         cp,
@@ -237,6 +240,7 @@ pub(crate) fn emit_method_code(
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        fill_payloads,
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
@@ -324,9 +328,6 @@ pub(crate) fn emit_branch_method_code(
     if item.method_name == "<init>" && !init_this_call_is_trackable(dex, item, &insns) {
         return None;
     }
-    if insns.iter().any(|i: &DalvikInsn| matches!(i.op, 0x26)) {
-        return None;
-    }
     let tries: Vec<TryRegion> = build_try_regions(item, &insns)?;
     if !tries.is_empty() && !move_exceptions_are_handler_entries(&insns, &tries) {
         return None;
@@ -351,6 +352,8 @@ pub(crate) fn emit_branch_method_code(
     let switch_payloads: BTreeMap<u32, crate::dalvik::SwitchPayload> =
         parse_switch_payloads(&insns, &item.insns)?;
     let switch_targets: BTreeMap<u32, Vec<u32>> = switch_target_map(&insns, &switch_payloads);
+    let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
+        collect_fill_payloads(&insns, &item.insns);
     let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
     let entry_is_branch_target: bool = insns
         .iter()
@@ -520,6 +523,7 @@ pub(crate) fn emit_branch_method_code(
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
+        fill_payloads,
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
@@ -740,6 +744,25 @@ fn parse_switch_payloads(
         out.insert(insn.pc, payload);
     }
     Some(out)
+}
+
+fn collect_fill_payloads(
+    insns: &[DalvikInsn],
+    code: &[u16],
+) -> BTreeMap<u32, crate::dalvik::ArrayDataPayload> {
+    let mut out: BTreeMap<u32, crate::dalvik::ArrayDataPayload> = BTreeMap::new();
+    for insn in insns {
+        if insn.op != 0x26 {
+            continue;
+        }
+        let Some(payload_off): Option<u32> = insn.payload_off else {
+            continue;
+        };
+        if let Some(payload) = crate::dalvik::parse_fill_array_data(code, payload_off) {
+            out.insert(insn.pc, payload);
+        }
+    }
+    out
 }
 
 fn switch_target_map(
@@ -2272,6 +2295,7 @@ impl Emitter<'_> {
             0x22 => self.new_instance(regs, insn),
             0x23 => self.new_array(regs, insn),
             0x24 | 0x25 => self.filled_new_array(insn),
+            0x26 => self.fill_array_data(regs, insn),
             0x27 => self.throw(regs),
             0x2D..=0x31 => self.cmp(op, regs),
             0x44..=0x4A => self.array_get(op, regs),
@@ -2696,6 +2720,87 @@ impl Emitter<'_> {
         self.emit_value_operand(value, slot);
         self.push(opcode);
         self.adjust_stack(-2 - slot.width());
+    }
+
+    fn fill_array_data(&mut self, regs: &[u16], insn: &DalvikInsn) {
+        let Some(&array): Option<&u16> = regs.first() else {
+            return;
+        };
+        let Some(payload): Option<crate::dalvik::ArrayDataPayload> =
+            self.fill_payloads.get(&insn.pc).cloned()
+        else {
+            self.bail();
+            return;
+        };
+        let width: usize = usize::from(payload.element_width);
+        if width == 0 || !payload.data.len().is_multiple_of(width) {
+            self.bail();
+            return;
+        }
+        let elem: Option<Slot> = self.reg_array_elem.get(&array).copied();
+        let (store_op, slot): (u8, Slot) = match (width, elem) {
+            (1, Some(Slot::Int)) => (0x54, Slot::Int),
+            (4, Some(Slot::Int)) => (0x4F, Slot::Int),
+            (4, Some(Slot::Float)) => (0x51, Slot::Float),
+            (8, Some(Slot::Long)) => (0x50, Slot::Long),
+            (8, Some(Slot::Double)) => (0x52, Slot::Double),
+            _ => {
+                self.bail();
+                return;
+            }
+        };
+        self.set_reg(array, Slot::Ref);
+        let count: usize = payload.data.len() / width;
+        for i in 0..count {
+            let off: usize = i * width;
+            let Some(chunk): Option<&[u8]> = payload.data.get(off..off + width) else {
+                self.bail();
+                return;
+            };
+            self.emit_load(array);
+            if self.bailed {
+                return;
+            }
+            self.push_int_const(i as i32);
+            match (width, slot) {
+                (1, _) => {
+                    let value: i32 = i32::from(chunk[0] as i8);
+                    self.push_int_const(value);
+                }
+                (4, Slot::Int) => {
+                    let value: i32 = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    self.push_int_const(value);
+                }
+                (4, Slot::Float) => {
+                    let bits: u32 = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let idx: u16 = self.cp.float_bits(bits);
+                    self.emit_ldc(idx);
+                }
+                (8, Slot::Long) => {
+                    let value: i64 = i64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]);
+                    self.push_long_const(value);
+                }
+                (8, Slot::Double) => {
+                    let bits: u64 = u64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]);
+                    let idx: u16 = self.cp.double_bits(bits);
+                    self.push(0x14);
+                    self.push_u16(idx);
+                    self.adjust_stack(2);
+                }
+                _ => {
+                    self.bail();
+                    return;
+                }
+            }
+            self.push(store_op);
+            self.adjust_stack(-2 - slot.width());
+        }
     }
 
     fn note_array_elem(&mut self, reg: u16, array_descriptor: &str) {
