@@ -1927,6 +1927,26 @@ pub(super) fn structure_stmts(
     } else {
         rewrite_jump_to_break_continue(code, stream, fallthrough, jump_idx + 1, body_real_end)
     };
+    if else_via_continue
+        && let Some(rest_start) = orelse_start
+        && !(jump_idx + 1..body_real_end).any(|k: usize| is_back_edge(&stream.ops[k]))
+        && matches!(
+            fallthrough.last(),
+            Some(Stmt::If { orelse, .. }) if orelse.is_empty()
+        )
+    {
+        let mut body: Vec<Stmt> = fallthrough;
+        body.push(Stmt::Continue);
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::If {
+            test,
+            body,
+            orelse: Vec::new(),
+            line: None,
+        });
+        out.extend(structure_stmts(code, stream, rest_start, hi)?);
+        return Ok(out);
+    }
     let jumped: Vec<Stmt> = match orelse_start {
         Some(s) if else_via_continue => structure_elif_chain_arm(code, stream, s, join)?,
         Some(s) => structure_stmts(code, stream, s, join)?,
