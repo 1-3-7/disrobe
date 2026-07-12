@@ -46,6 +46,7 @@ paeth = "paeth"
 parm = "parm"
 parms = "parms"
 Parms = "Parms"
+vas = "vas"
 
 SEH = "SEH"
 Seh = "Seh"
