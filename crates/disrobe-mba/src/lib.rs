@@ -49,6 +49,8 @@ pub mod simplify;
 pub mod smt;
 pub mod smtlib;
 #[cfg(feature = "smt-verify")]
+pub mod synth;
+#[cfg(feature = "smt-verify")]
 pub mod verify;
 
 pub use bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
@@ -70,6 +72,8 @@ pub use simplify::{Simplification, Verification, simplify};
 #[cfg(feature = "smt-solver")]
 pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 pub use smtlib::{equivalence_query, tautology_refutation_query};
+#[cfg(feature = "smt-verify")]
+pub use synth::{SynthConfig, synthesize, synthesize_with};
 #[cfg(feature = "smt-verify")]
 pub use verify::{Equivalence, verify_equivalent, verify_equivalent_budgeted};
 
