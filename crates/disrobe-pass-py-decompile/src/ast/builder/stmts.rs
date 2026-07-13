@@ -12,8 +12,8 @@ use super::comprehensions::{
 };
 use super::exprs::{
     DR_UNRECOVERED_TARGET, build_linear_stmts_sim, build_linear_stmts_sim_seed, chain_group_end,
-    is_chain_cond_jump, is_modern_test_chain_link_jump, local_name_at, local_target,
-    modern_test_chain_then_end, name_at, object_to_const, recover_chain_target,
+    is_chain_compare_jump, is_chain_cond_jump, is_modern_test_chain_link_jump, local_name_at,
+    local_target, modern_test_chain_then_end, name_at, object_to_const, recover_chain_target,
 };
 use super::function_meta::prepend_nonlocal_decls;
 use super::loops::{
@@ -3295,7 +3295,10 @@ fn extract_inline_comp_parts(
             CanonicalOp::PopJumpIfFalse(_)
             | CanonicalOp::PopJumpIfTrue(_)
             | CanonicalOp::PopJumpIfFalseBackward(_)
-            | CanonicalOp::PopJumpIfTrueBackward(_) => {
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+                if !is_value_form_shortcircuit(&stream.ops, i)
+                    && !is_chain_compare_jump(&stream.ops, i) =>
+            {
                 let cond_end: usize = i;
                 let expr_start: usize = cond_expr_start(stream, cond_end, body_start);
                 let (_, residual): (Vec<Stmt>, Vec<Expr>) =
@@ -3766,8 +3769,7 @@ fn consume_inline_comp_result(
                     inline_comp_consumer_boundary(stream, consumer, get_iter)
                 })
         });
-    let consumer_end: usize =
-        comp_cap.min(comp_tail_controlflow_boundary(stream, consumer, comp_cap));
+    let consumer_end: usize = comp_result_consume_end(code, stream, consumer, comp_cap, &seed);
     let (consumed, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim_seed(code, &stream.ops[consumer..consumer_end], seed)?;
     let mut out: Vec<Stmt> = if consumed.is_empty() {
@@ -3782,6 +3784,24 @@ fn consume_inline_comp_result(
     };
     out.extend(structure_stmts(code, stream, consumer_end, hi)?);
     Ok(out)
+}
+
+fn comp_result_consume_end(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    consumer: usize,
+    cap: usize,
+    seed: &[Expr],
+) -> usize {
+    for mid in consumer + 1..=cap {
+        if let Ok((_, residual)) =
+            build_linear_stmts_sim_seed(code, &stream.ops[consumer..mid], seed.to_vec())
+            && residual.is_empty()
+        {
+            return mid;
+        }
+    }
+    cap.min(comp_tail_controlflow_boundary(stream, consumer, cap))
 }
 
 fn inline_comp_consumer_boundary(
