@@ -40,6 +40,7 @@ pub mod linear_mba;
 pub mod linear_solver;
 pub mod mixed_mba;
 pub mod opaque;
+pub mod perm_poly;
 pub mod poly_mba;
 pub mod rewrite;
 pub mod rules;
@@ -58,6 +59,7 @@ pub use linear_solver::{
 };
 pub use mixed_mba::{MAX_MIXED_MBA_VARS, simplify_mixed};
 pub use opaque::{BranchFold, CmpOp, OpaqueVerdict, Predicate, classify, fold_branch};
+pub use perm_poly::{PermutationPolynomial, recover_inverse};
 pub use poly_mba::{MAX_POLY_MBA_VARS, solve_polynomial_mba};
 pub use rewrite::canonicalize;
 pub use rules::{
