@@ -2790,6 +2790,7 @@ dependencies = [
 name = "disrobe-pass-wasm-deob"
 version = "0.10.4"
 dependencies = [
+ "blake3",
  "disrobe-bytes",
  "disrobe-core",
  "disrobe-llm-metadata",
