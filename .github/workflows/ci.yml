@@ -308,16 +308,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny --all-features check
 
   audit:
     name: audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny --all-features check advisories
 
   typos:
     name: typos
