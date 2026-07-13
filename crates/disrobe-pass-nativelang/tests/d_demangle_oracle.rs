@@ -85,7 +85,7 @@ const ORACLE: &[(&str, &str)] = &[
     ),
     (
         "_D3std5range10primitives__T9moveFrontTSQBl9algorithm9iteration__T12FilterResultSQDa8bitmanip8BitArray7bitsSetMxFNbNdZ18__lambda_L2661_C26TSQFhQFg__T4iotaTmTxmZQlFmxmZ6ResultZQEfZQFvFNaNbNiQFuZm",
-        "pure nothrow @nogc ulong std.range.primitives.moveFront!(std.algorithm.iteration.FilterResult!(std.bitmanip.BitArray.bitsSetconst ().__lambda_L2661_C26, std.range.iota!(ulong, const(ulong)).iota(ulong, const(ulong)).Result).FilterResult).moveFront(std.algorithm.iteration.FilterResult!(std.bitmanip.BitArray.bitsSetconst ().__lambda_L2661_C26, std.range.iota!(ulong, const(ulong)).iota(ulong, const(ulong)).Result).FilterResult)",
+        "pure nothrow @nogc ulong std.range.primitives.moveFront!(std.algorithm.iteration.FilterResult!(std.bitmanip.BitArray.bitsSet().__lambda_L2661_C26, std.range.iota!(ulong, const(ulong)).iota(ulong, const(ulong)).Result).FilterResult).moveFront(std.algorithm.iteration.FilterResult!(std.bitmanip.BitArray.bitsSet().__lambda_L2661_C26, std.range.iota!(ulong, const(ulong)).iota(ulong, const(ulong)).Result).FilterResult)",
     ),
     (
         "_D3std6base64__T10Base64ImplVai45Vai95Vai0Z12decodeLengthFNaNbNiNfImZm",
@@ -248,5 +248,64 @@ fn char_template_value_quoting_matches_libiberty_dlang() {
         base64_third_arg(&null_reference).as_deref(),
         Some("'\\x00'"),
         "the canonical null char must demangle to a quoted hex escape"
+    );
+}
+
+fn bitsset_intermediate_join(demangled: &str) -> Option<String> {
+    let anchor: &str = "std.bitmanip.BitArray.bitsSet";
+    let start: usize = demangled.find(anchor)? + anchor.len();
+    let rest: &str = &demangled[start..];
+    let end: usize = rest.find("__lambda_L2661_C26")?;
+    Some(rest[..end].to_owned())
+}
+
+#[test]
+fn intermediate_member_this_modifier_not_leaked_matches_libiberty_dlang() {
+    const SYMBOL: &str = "_D3std5range10primitives__T9moveFrontTSQBl9algorithm9iteration__T12FilterResultSQDa8bitmanip8BitArray7bitsSetMxFNbNdZ18__lambda_L2661_C26TSQFhQFg__T4iotaTmTxmZQlFmxmZ6ResultZQEfZQFvFNaNbNiQFuZm";
+
+    let recovered: DemangledSymbol =
+        demangle_d(SYMBOL).unwrap_or_else(|| panic!("disrobe failed to demangle {SYMBOL}"));
+    let recovered_join: String =
+        bitsset_intermediate_join(&recovered.demangled).unwrap_or_else(|| {
+            panic!(
+                "no bitsSet intermediate in disrobe output: {}",
+                recovered.demangled
+            )
+        });
+    assert_eq!(
+        recovered_join, "().",
+        "the const this-modifier of an intermediate qualified-name member must not leak inline; got {}",
+        recovered.demangled
+    );
+    assert!(
+        !recovered.demangled.contains("bitsSetconst"),
+        "reverting the fix leaks the intermediate this-modifier inline: {}",
+        recovered.demangled
+    );
+
+    if !dlang_reference_ready() {
+        eprintln!(
+            "\n=== c++filt -s dlang unavailable; libiberty cross-check skipped \
+             (committed bitsSet() expectation still enforced above) ===\n"
+        );
+        return;
+    }
+
+    let reference: String =
+        cppfilt_dlang(SYMBOL).unwrap_or_else(|| panic!("reference demangle failed for {SYMBOL}"));
+    assert_ne!(
+        reference, SYMBOL,
+        "the libiberty reference must actually demangle {SYMBOL}, not echo it back"
+    );
+    let reference_join: String = bitsset_intermediate_join(&reference)
+        .unwrap_or_else(|| panic!("no bitsSet intermediate in reference output: {reference}"));
+    assert_eq!(
+        reference_join, "().",
+        "the libiberty reference renders the intermediate member as bitsSet(): {reference}"
+    );
+    assert_eq!(
+        recovered_join, reference_join,
+        "disrobe must match the libiberty dlang demangler on the intermediate member rendering; disrobe={} reference={}",
+        recovered.demangled, reference
     );
 }

@@ -506,8 +506,9 @@ impl Demangler<'_> {
         if self.front() == b'M' {
             self.pop()?;
             let mods: u16 = self.parse_modifier();
-            let mod_text: String = type_ctors_text(mods);
-            self.put(&mod_text)?;
+            if keep_attr {
+                self.put(&type_ctors_text(mods))?;
+            }
         }
         if is_call_convention(self.front()) {
             let mut err: bool = false;
