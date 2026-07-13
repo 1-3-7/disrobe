@@ -804,3 +804,144 @@ fn walk_rs(dir: &std::path::Path, f: &mut dyn FnMut(&std::path::Path)) {
         }
     }
 }
+
+fn ref_crc32(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            let mask: u32 = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn ref_base62_6(mut value: u32) -> String {
+    const ALPHA: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut digits: [u8; 6] = [b'0'; 6];
+    let mut i: usize = 6;
+    while value > 0 && i > 0 {
+        i -= 1;
+        digits[i] = ALPHA[(value % 62) as usize];
+        value /= 62;
+    }
+    String::from_utf8(digits.to_vec()).expect("ascii base62")
+}
+
+fn github_token(prefix: &str, content: &str) -> String {
+    format!(
+        "{prefix}{content}{}",
+        ref_base62_6(ref_crc32(content.as_bytes()))
+    )
+}
+
+#[test]
+fn github_checksum_published_vector_cross_checks_real_scheme() {
+    use disrobe_core::{Confidence, secret_validate};
+    let entropy: &str = "zQWBuTSOoRi4A9spHcVY5ncnsDkxkJ";
+    let checksum: &str = "0mLq17";
+    assert_eq!(
+        ref_crc32(entropy.as_bytes()),
+        714_468_973,
+        "independent bitwise crc32 must match the published vector's crc integer"
+    );
+    assert_eq!(
+        ref_base62_6(714_468_973),
+        checksum,
+        "base62 of the published crc must equal the published checksum"
+    );
+    let token: String = format!("ghp_{entropy}{checksum}");
+    assert_eq!(
+        secret_validate(SecretKind::GithubPat, &token),
+        Confidence::Confirmed
+    );
+    let scanned: Vec<Finding> = scan_bytes(format!("token: {token} end").as_bytes(), None);
+    let f: &Finding = first_of(&scanned, SecretKind::GithubPat).expect("github pat");
+    assert_eq!(f.validation, Some(Confidence::Confirmed));
+}
+
+#[test]
+fn github_valid_checksum_tokens_confirm_across_prefixes() {
+    use disrobe_core::{Confidence, secret_validate};
+    let cases: [(&str, SecretKind); 5] = [
+        ("ghp_", SecretKind::GithubPat),
+        ("gho_", SecretKind::GithubOauth),
+        ("ghu_", SecretKind::GithubAppToken),
+        ("ghs_", SecretKind::GithubAppToken),
+        ("ghr_", SecretKind::GithubAppToken),
+    ];
+    let mut confirmed: usize = 0;
+    for (i, (prefix, kind)) in cases.iter().enumerate() {
+        let content: String = alnum(20u8.wrapping_add(i as u8), 30);
+        let token: String = github_token(prefix, &content);
+        assert_eq!(
+            secret_validate(*kind, &token),
+            Confidence::Confirmed,
+            "prefix {prefix} with a valid checksum must confirm"
+        );
+        let scanned: Vec<Finding> = scan_bytes(format!("k = {token} tail").as_bytes(), None);
+        let f: &Finding =
+            first_of(&scanned, *kind).unwrap_or_else(|| panic!("finding for {prefix}"));
+        assert_eq!(
+            f.validation,
+            Some(Confidence::Confirmed),
+            "scanned {prefix} finding must carry the high tier"
+        );
+        confirmed += 1;
+    }
+    assert_eq!(confirmed, 5);
+}
+
+#[test]
+fn github_fine_grained_valid_checksum_confirms() {
+    use disrobe_core::{Confidence, secret_validate};
+    let content: String = alnum(7, 76);
+    let token: String = github_token("github_pat_", &content);
+    assert_eq!(
+        secret_validate(SecretKind::GithubFineGrainedPat, &token),
+        Confidence::Confirmed
+    );
+    let scanned: Vec<Finding> = scan_bytes(format!("pat = {token}").as_bytes(), None);
+    let f: &Finding =
+        first_of(&scanned, SecretKind::GithubFineGrainedPat).expect("fine-grained pat");
+    assert_eq!(f.validation, Some(Confidence::Confirmed));
+}
+
+#[test]
+fn github_bad_checksum_tokens_are_not_high() {
+    use disrobe_core::{Confidence, secret_validate};
+    let content: String = alnum(42, 30);
+    let good: String = ref_base62_6(ref_crc32(content.as_bytes()));
+    let mut bytes: Vec<u8> = good.into_bytes();
+    bytes[5] = if bytes[5] == b'0' { b'1' } else { b'0' };
+    let bad: String = String::from_utf8(bytes).expect("ascii");
+    let token: String = format!("ghp_{content}{bad}");
+    assert_ne!(
+        secret_validate(SecretKind::GithubPat, &token),
+        Confidence::Confirmed,
+        "a corrupted checksum must never read as high confidence"
+    );
+    assert_eq!(
+        secret_validate(SecretKind::GithubPat, &token),
+        Confidence::Speculative
+    );
+    let scanned: Vec<Finding> = scan_bytes(format!("k = {token}").as_bytes(), None);
+    let f: &Finding = first_of(&scanned, SecretKind::GithubPat).expect("github pat");
+    assert_eq!(f.validation, Some(Confidence::Speculative));
+}
+
+#[test]
+fn github_flipped_content_invalidates_stale_checksum() {
+    use disrobe_core::{Confidence, secret_validate};
+    let content: String = alnum(99, 30);
+    let stale: String = ref_base62_6(ref_crc32(content.as_bytes()));
+    let mut bytes: Vec<u8> = content.into_bytes();
+    bytes[0] = if bytes[0] == b'a' { b'b' } else { b'a' };
+    let mutated: String = String::from_utf8(bytes).expect("ascii");
+    let token: String = format!("ghp_{mutated}{stale}");
+    assert_eq!(
+        secret_validate(SecretKind::GithubPat, &token),
+        Confidence::Speculative
+    );
+}
