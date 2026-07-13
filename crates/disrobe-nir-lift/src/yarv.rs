@@ -242,12 +242,23 @@ fn classify(
             Vec::new(),
         ),
         "opt_case_dispatch" => (NirOp::CondBranch { target: None }, Vec::new()),
+        "nop" => (NirOp::Nop, Vec::new()),
         _ if is_const(name) => (NirOp::Const, const_operand(instr)),
         _ if is_load(name) => (NirOp::Load, access_operand(instr)),
         _ if is_store(name) => (NirOp::Store, access_operand(instr)),
         _ if is_call(name) => classify_call(instr, imports),
-        _ => (NirOp::Nop, Vec::new()),
+        _ => (
+            NirOp::Unmodeled {
+                opcode: unmodeled_opcode(instr.opcode),
+                offset: instr.pc,
+            },
+            Vec::new(),
+        ),
     }
+}
+
+fn unmodeled_opcode(opcode: u32) -> u8 {
+    u8::try_from(opcode).unwrap_or(u8::MAX)
 }
 
 fn classify_call(instr: &YarvIbfInstruction, imports: &mut ImportTable) -> (NirOp, Vec<String>) {
