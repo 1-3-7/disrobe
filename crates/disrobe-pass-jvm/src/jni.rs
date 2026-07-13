@@ -4,7 +4,7 @@ use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::File as ObjFile;
-use object::{Architecture, Endianness, SymbolKind};
+use object::{Architecture, Endianness, RelocationTarget, SectionKind, SymbolKind};
 use serde::{Deserialize, Serialize};
 
 use crate::classfile::ClassFile;
@@ -36,6 +36,15 @@ pub struct ResolvedNative {
     pub resolved_in: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisteredNative {
+    pub library: String,
+    pub name: String,
+    pub signature: String,
+    pub fn_addr: u64,
+    pub fn_symbol: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JniSurfaceReport {
     pub native_method_count: usize,
@@ -43,6 +52,7 @@ pub struct JniSurfaceReport {
     pub libraries: Vec<NativeLibrary>,
     pub resolved_statically: usize,
     pub dynamic_only: usize,
+    pub registered_natives: Vec<RegisteredNative>,
 }
 
 fn abi_from_path(path: &str) -> Option<String> {
@@ -104,12 +114,21 @@ pub fn analyze(
     }
 
     let mut libraries: Vec<NativeLibrary> = Vec::new();
+    let mut registered_natives: Vec<RegisteredNative> = Vec::new();
     for (path, bytes) in native_libs {
         if let Some(lib) = parse_library(path, bytes) {
             libraries.push(lib);
         }
+        registered_natives.extend(recover_register_natives(path, bytes));
     }
     libraries.sort_by(|a: &NativeLibrary, b: &NativeLibrary| a.path.cmp(&b.path));
+    registered_natives.sort_by(|a: &RegisteredNative, b: &RegisteredNative| {
+        (a.library.as_str(), a.fn_addr, a.name.as_str()).cmp(&(
+            b.library.as_str(),
+            b.fn_addr,
+            b.name.as_str(),
+        ))
+    });
 
     let mut symbol_to_lib: BTreeMap<&str, &str> = BTreeMap::new();
     for lib in &libraries {
@@ -146,6 +165,309 @@ pub fn analyze(
         libraries,
         resolved_statically,
         dynamic_only,
+        registered_natives,
+    }
+}
+
+const MAX_JNI_STRING_LEN: usize = 512;
+const MAX_ARRAY_DIMS: usize = 255;
+
+#[derive(Debug, Clone)]
+struct ResolvedPtr {
+    target: u64,
+    symbol: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SectionSpan<'a> {
+    address: u64,
+    data: &'a [u8],
+    executable: bool,
+}
+
+#[must_use]
+pub fn recover_register_natives(library: &str, bytes: &[u8]) -> Vec<RegisteredNative> {
+    let Ok(file): Result<ObjFile<'_, &[u8]>, _> = ObjFile::parse(bytes) else {
+        return Vec::new();
+    };
+    let ptr_size: usize = if file.is_64() { 8 } else { 4 };
+    let stride: u64 = (ptr_size as u64).saturating_mul(3);
+    let spans: Vec<SectionSpan<'_>> = collect_sections(&file);
+    let pointers: BTreeMap<u64, ResolvedPtr> = collect_pointer_targets(&file, ptr_size, &spans);
+    if pointers.is_empty() {
+        return Vec::new();
+    }
+    let functions: BTreeMap<u64, String> = function_symbols_by_address(&file);
+    let ptr: u64 = ptr_size as u64;
+    let mut out: Vec<RegisteredNative> = Vec::new();
+    for &base in pointers.keys() {
+        if decode_entry(library, base, ptr, &pointers, &functions, &spans).is_none() {
+            continue;
+        }
+        let preceded: bool = base
+            .checked_sub(stride)
+            .and_then(|prev: u64| decode_entry(library, prev, ptr, &pointers, &functions, &spans))
+            .is_some();
+        if preceded {
+            continue;
+        }
+        let mut cursor: u64 = base;
+        while let Some(decoded) = decode_entry(library, cursor, ptr, &pointers, &functions, &spans)
+        {
+            out.push(decoded);
+            let Some(next): Option<u64> = cursor.checked_add(stride) else {
+                break;
+            };
+            cursor = next;
+        }
+    }
+    out
+}
+
+fn decode_entry(
+    library: &str,
+    base: u64,
+    ptr: u64,
+    pointers: &BTreeMap<u64, ResolvedPtr>,
+    functions: &BTreeMap<u64, String>,
+    spans: &[SectionSpan<'_>],
+) -> Option<RegisteredNative> {
+    let name_ptr: &ResolvedPtr = pointers.get(&base)?;
+    let sig_ptr: &ResolvedPtr = pointers.get(&base.checked_add(ptr)?)?;
+    let fn_ptr: &ResolvedPtr = pointers.get(&base.checked_add(ptr.checked_mul(2)?)?)?;
+    let name: &str = read_c_string(spans, name_ptr.target)?;
+    if !is_jni_method_name(name) {
+        return None;
+    }
+    let signature: &str = read_c_string(spans, sig_ptr.target)?;
+    if !is_jni_signature(signature) {
+        return None;
+    }
+    if !is_code_target(spans, functions, fn_ptr.target) {
+        return None;
+    }
+    let fn_symbol: Option<String> = fn_ptr
+        .symbol
+        .clone()
+        .or_else(|| functions.get(&fn_ptr.target).cloned());
+    Some(RegisteredNative {
+        library: library.to_owned(),
+        name: name.to_owned(),
+        signature: signature.to_owned(),
+        fn_addr: fn_ptr.target,
+        fn_symbol,
+    })
+}
+
+fn collect_sections<'a>(file: &ObjFile<'a, &'a [u8]>) -> Vec<SectionSpan<'a>> {
+    let mut spans: Vec<SectionSpan<'a>> = Vec::new();
+    for section in file.sections() {
+        let address: u64 = section.address();
+        if address == 0 {
+            continue;
+        }
+        let Ok(data): Result<&'a [u8], _> = section.data() else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        spans.push(SectionSpan {
+            address,
+            data,
+            executable: matches!(section.kind(), SectionKind::Text),
+        });
+    }
+    spans
+}
+
+fn collect_pointer_targets<'a>(
+    file: &ObjFile<'a, &'a [u8]>,
+    ptr_size: usize,
+    spans: &[SectionSpan<'_>],
+) -> BTreeMap<u64, ResolvedPtr> {
+    let mut out: BTreeMap<u64, ResolvedPtr> = BTreeMap::new();
+    let Some(dynamic_relocations): Option<_> = file.dynamic_relocations() else {
+        return out;
+    };
+    let dynamic_symbols: Option<_> = file.dynamic_symbol_table();
+    for (offset, reloc) in dynamic_relocations {
+        let base_addend: i64 = if reloc.has_implicit_addend() {
+            read_pointer(spans, offset, ptr_size)
+                .map_or_else(|| reloc.addend(), |value: u64| value as i64)
+        } else {
+            reloc.addend()
+        };
+        let resolved: Option<ResolvedPtr> = match reloc.target() {
+            RelocationTarget::Absolute => Some(ResolvedPtr {
+                target: mask_pointer(base_addend as u64, ptr_size),
+                symbol: None,
+            }),
+            RelocationTarget::Symbol(index) => {
+                resolve_symbol_target(dynamic_symbols.as_ref(), index, base_addend, ptr_size)
+            }
+            _ => None,
+        };
+        if let Some(pointer) = resolved {
+            out.entry(offset).or_insert(pointer);
+        }
+    }
+    out
+}
+
+fn resolve_symbol_target<'a, T>(
+    table: Option<&T>,
+    index: object::SymbolIndex,
+    base_addend: i64,
+    ptr_size: usize,
+) -> Option<ResolvedPtr>
+where
+    T: object::read::ObjectSymbolTable<'a>,
+{
+    let symbol: T::Symbol = table?.symbol_by_index(index).ok()?;
+    let name: Option<String> = symbol
+        .name()
+        .ok()
+        .filter(|value: &&str| !value.is_empty())
+        .map(str::to_owned);
+    Some(ResolvedPtr {
+        target: mask_pointer(symbol.address().wrapping_add(base_addend as u64), ptr_size),
+        symbol: name,
+    })
+}
+
+fn function_symbols_by_address<'a>(file: &ObjFile<'a, &'a [u8]>) -> BTreeMap<u64, String> {
+    let mut out: BTreeMap<u64, String> = BTreeMap::new();
+    for symbol in file.dynamic_symbols().chain(file.symbols()) {
+        if symbol.kind() != SymbolKind::Text {
+            continue;
+        }
+        let Ok(name): Result<&str, _> = symbol.name() else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        out.entry(symbol.address())
+            .or_insert_with(|| name.to_owned());
+    }
+    out
+}
+
+fn read_pointer(spans: &[SectionSpan<'_>], address: u64, ptr_size: usize) -> Option<u64> {
+    for span in spans {
+        let end: u64 = span.address.checked_add(span.data.len() as u64)?;
+        if address >= span.address && address < end {
+            let offset: usize = usize::try_from(address - span.address).ok()?;
+            let slice: &[u8] = span.data.get(offset..offset.checked_add(ptr_size)?)?;
+            let mut value: u64 = 0;
+            for (index, byte) in slice.iter().enumerate() {
+                value |= u64::from(*byte) << (index * 8);
+            }
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn read_c_string<'a>(spans: &[SectionSpan<'a>], address: u64) -> Option<&'a str> {
+    for span in spans {
+        let end: u64 = span.address.checked_add(span.data.len() as u64)?;
+        if address >= span.address && address < end {
+            let offset: usize = usize::try_from(address - span.address).ok()?;
+            let rest: &'a [u8] = span.data.get(offset..)?;
+            let stop: usize = rest.iter().position(|byte: &u8| *byte == 0)?;
+            if stop == 0 || stop > MAX_JNI_STRING_LEN {
+                return None;
+            }
+            return core::str::from_utf8(&rest[..stop]).ok();
+        }
+    }
+    None
+}
+
+fn is_code_target(
+    spans: &[SectionSpan<'_>],
+    functions: &BTreeMap<u64, String>,
+    address: u64,
+) -> bool {
+    if functions.contains_key(&address) {
+        return true;
+    }
+    spans.iter().any(|span: &SectionSpan<'_>| {
+        span.executable
+            && address >= span.address
+            && address < span.address.saturating_add(span.data.len() as u64)
+    })
+}
+
+const fn mask_pointer(value: u64, ptr_size: usize) -> u64 {
+    if ptr_size >= 8 {
+        value
+    } else {
+        value & 0xFFFF_FFFF
+    }
+}
+
+fn is_jni_method_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > MAX_JNI_STRING_LEN {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first): Option<char> = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn is_jni_signature(signature: &str) -> bool {
+    let bytes: &[u8] = signature.as_bytes();
+    if bytes.first() != Some(&b'(') {
+        return false;
+    }
+    let mut index: usize = 1;
+    while bytes.get(index).is_some_and(|byte: &u8| *byte != b')') {
+        let Some(next): Option<usize> = consume_field_type(bytes, index) else {
+            return false;
+        };
+        index = next;
+    }
+    if bytes.get(index) != Some(&b')') {
+        return false;
+    }
+    index += 1;
+    if bytes.get(index) == Some(&b'V') {
+        return index + 1 == bytes.len();
+    }
+    consume_field_type(bytes, index).is_some_and(|end: usize| end == bytes.len())
+}
+
+fn consume_field_type(bytes: &[u8], mut index: usize) -> Option<usize> {
+    let mut dims: usize = 0;
+    while bytes.get(index) == Some(&b'[') {
+        dims += 1;
+        if dims > MAX_ARRAY_DIMS {
+            return None;
+        }
+        index += 1;
+    }
+    match bytes.get(index)? {
+        b'Z' | b'B' | b'C' | b'S' | b'I' | b'J' | b'F' | b'D' => Some(index + 1),
+        b'L' => {
+            index += 1;
+            while let Some(byte) = bytes.get(index) {
+                match byte {
+                    b';' => return Some(index + 1),
+                    b'(' | b')' | b'[' => return None,
+                    _ => index += 1,
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
