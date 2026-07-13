@@ -7,7 +7,7 @@ Python is **disrobe**'s most contested and most developed ecosystem. It ships an
 | Layer | Coverage |
 |---|---|
 | Bytecode disassembly | CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
-| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object recompile-equivalence on the full CPython 3.14 stdlib (16880 of 18262), <!-- m:py_stdlib_pinned_pct -->95.86%<!-- /m --> on the pinned 200-module corpus (5920 of 6286, above a 90% CI floor), and the legacy 1.0-3.7 band asserts a CI floor of 150 of 191 proven-correct (166 of 191 measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
+| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; <!-- m:py_stdlib_full_pct -->92.43%<!-- /m --> per-code-object recompile-equivalence on the full CPython 3.14 stdlib (16880 of 18262), <!-- m:py_stdlib_pinned_pct -->95.88%<!-- /m --> on the pinned 200-module corpus (5920 of 6286, above a 90% CI floor), and the legacy 1.0-3.7 band asserts a CI floor of 150 of 191 proven-correct (166 of 191 measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, PyOxidizer, shiv, pex, Briefcase, SourceDefender |
@@ -31,7 +31,7 @@ The `native` backend is the in-tree engine: it runs a frame-tree pre-pass, per-v
 
 ### Measured equivalence
 
-The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->92.43%<!-- /m -->** (16880 of 18262 code objects across 571 modules). On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->95.86%<!-- /m -->** (5920 of 6286), above a 90% floor a committed CI gate enforces (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
+The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->92.43%<!-- /m -->** (16880 of 18262 code objects across 571 modules). On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->95.88%<!-- /m -->** (5920 of 6286), above a 90% floor a committed CI gate enforces (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
 
 ## Disassembling
 
