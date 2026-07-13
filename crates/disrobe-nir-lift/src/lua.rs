@@ -330,6 +330,11 @@ fn lift_proto(
         let op: Op = decoded.op;
         let here: u32 = usize_to_u32_saturating(pc);
         let address: u64 = base.saturating_add(u64::from(here));
+        let raw: u32 = proto.code.get(pc).copied().unwrap_or_default();
+        let unmodeled: NirOp = NirOp::Unmodeled {
+            opcode: opcode_byte(raw, dialect),
+            offset: here,
+        };
 
         let branch_target: Option<u64> = resolve_target(dialect, here, &decoded, count, base);
         let cond_target: Option<u64> = if is_compare_skip(op) {
@@ -349,6 +354,7 @@ fn lift_proto(
             &decoded,
             branch_target,
             cond_target,
+            unmodeled,
             &mut names,
             imports,
         );
@@ -403,12 +409,21 @@ fn resolve_target(
         .map(|t| base.saturating_add(u64::from(t)))
 }
 
+const fn opcode_byte(raw: u32, dialect: LuaDialect) -> u8 {
+    let mask: u32 = match dialect {
+        LuaDialect::Lua54 => 0x7F,
+        _ => 0x3F,
+    };
+    (raw & mask) as u8
+}
+
 fn classify(
     proto: &LuaProto,
     op: Op,
     decoded: &Decoded,
     branch_target: Option<u64>,
     cond_target: Option<u64>,
+    unmodeled: NirOp,
     names: &mut RegisterNames,
     imports: &mut ImportTable,
 ) -> (NirOp, Vec<String>) {
@@ -433,7 +448,7 @@ fn classify(
         Op::Move => {
             let src: Option<String> = names.get(decoded.b);
             names.set(decoded.a, src);
-            (NirOp::Nop, Vec::new())
+            (unmodeled, Vec::new())
         }
         _ if is_compare_skip(op) => (
             NirOp::CondBranch {
@@ -467,7 +482,7 @@ fn classify(
         }
         _ => {
             names.set(decoded.a, None);
-            (NirOp::Nop, Vec::new())
+            (unmodeled, Vec::new())
         }
     }
 }
