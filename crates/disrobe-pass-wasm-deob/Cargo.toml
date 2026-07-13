@@ -24,6 +24,7 @@ chain = ["disrobe-core/chain"]
 disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-mba = { workspace = true }
+blake3 = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 indexmap = { workspace = true }
 wasmparser = { workspace = true }
