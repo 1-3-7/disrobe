@@ -55,6 +55,30 @@ impl<'data> DartReadStream<'data> {
         None
     }
 
+    pub fn read_signed(&mut self) -> Option<i64> {
+        let mut result: i64 = 0;
+        let mut shift: u32 = 0;
+        let mut consumed: usize = 0;
+        while consumed < DART_VARINT_MAX_BYTES {
+            let byte: u8 = *self.bytes.get(self.pos)?;
+            self.pos += 1;
+            consumed += 1;
+            let terminal: bool = byte > DART_VARINT_MAX_CONTINUATION;
+            let chunk: i64 = i64::from(if terminal { byte & 0x7f } else { byte });
+            if shift < i64::BITS {
+                result |= chunk.wrapping_shl(shift);
+            }
+            shift += DART_VARINT_DATA_BITS;
+            if terminal {
+                if shift < i64::BITS && chunk & 0x40 != 0 {
+                    result |= (-1i64).wrapping_shl(shift);
+                }
+                return Some(result);
+            }
+        }
+        None
+    }
+
     pub fn read_byte(&mut self) -> Option<u8> {
         let byte: u8 = *self.bytes.get(self.pos)?;
         self.pos += 1;
@@ -372,6 +396,58 @@ mod tests {
             bytes[bytes.len() - 1] & 0x80,
             0,
             "terminating byte must have high bit set"
+        );
+    }
+
+    fn encode_signed(value: i64) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut v: i64 = value;
+        loop {
+            let low: u8 = (v as u8) & DART_VARINT_MAX_CONTINUATION;
+            v >>= DART_VARINT_DATA_BITS;
+            let sign_bit: bool = low & 0x40 != 0;
+            if (v == 0 && !sign_bit) || (v == -1 && sign_bit) {
+                out.push(low | 0x80);
+                return out;
+            }
+            out.push(low);
+        }
+    }
+
+    #[test]
+    fn signed_varint_round_trip_including_double_bits() {
+        let cases: [i64; 9] = [
+            0,
+            1,
+            -1,
+            63,
+            -64,
+            i64::MAX,
+            i64::MIN,
+            0x4033_f333_3333_3333u64 as i64,
+            0x40c3_8800_0000_0000u64 as i64,
+        ];
+        for value in cases {
+            let bytes: Vec<u8> = encode_signed(value);
+            let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+            assert_eq!(
+                stream.read_signed(),
+                Some(value),
+                "signed round trip {value}"
+            );
+            assert_eq!(stream.remaining(), 0, "consumed all bytes for {value}");
+        }
+    }
+
+    #[test]
+    fn signed_varint_decodes_double_immediate_bit_pattern() {
+        let bits: u64 = 19.95f64.to_bits();
+        let bytes: Vec<u8> = encode_signed(bits as i64);
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        let decoded: i64 = stream.read_signed().expect("decode");
+        assert_eq!(
+            decoded as u64, bits,
+            "signed varint preserves the double bit pattern"
         );
     }
 

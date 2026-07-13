@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    AotLiftReport, DartCallKind, DartKernel, DartLiftedFunction, KernelClass, lift_libapp_aot,
-    parse_dart_kernel,
+    AotLiftReport, DartCallKind, DartKernel, DartLiftedFunction, DartPoolLiteral, KernelClass,
+    lift_libapp_aot, parse_dart_kernel,
 };
 
 fn sample_dir() -> PathBuf {
@@ -297,12 +297,54 @@ fn check_branch_elision_reduces_control_flow() {
     );
 }
 
+fn dill_source_text(kernel: &DartKernel) -> String {
+    let mut text: String = String::new();
+    for source in &kernel.sources {
+        text.push_str(&source.text);
+        text.push('\n');
+    }
+    for library in &kernel.libraries {
+        for procedure in &library.procedures {
+            if let Some(body) = &procedure.recovered_source {
+                text.push_str(body);
+                text.push('\n');
+            }
+        }
+        for class in &library.classes {
+            if let Some(body) = &class.recovered_source {
+                text.push_str(body);
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
+
+fn pool_strings(report: &AotLiftReport) -> BTreeSet<String> {
+    report
+        .pool_literals
+        .iter()
+        .filter_map(|l: &DartPoolLiteral| l.as_str().map(str::to_owned))
+        .collect::<BTreeSet<String>>()
+}
+
+fn pool_doubles(report: &AotLiftReport) -> Vec<f64> {
+    report
+        .pool_literals
+        .iter()
+        .filter_map(DartPoolLiteral::as_double)
+        .collect::<Vec<f64>>()
+}
+
 #[test]
 fn pool_resolution_covers_wide_offset_load_forms() {
     let report: AotLiftReport = aot_report();
     eprintln!(
-        "object-pool resolution: refs_total={} wide_offset(add/reg)={} content_resolved={}",
-        report.pool_refs_total, report.pool_refs_wide_offset, report.pool_content_resolved,
+        "object-pool resolution: refs_total={} wide_offset(add/reg)={} content_resolved={} literals={}",
+        report.pool_refs_total,
+        report.pool_refs_wide_offset,
+        report.pool_content_resolved,
+        report.pool_literals.len(),
     );
 
     assert!(
@@ -315,9 +357,83 @@ fn pool_resolution_covers_wide_offset_load_forms() {
         "a 1.8MB app has an object pool larger than the 4096-slot direct ldr range, forcing add/movk wide-offset load forms; the resolver must decode them, got {}",
         report.pool_refs_wide_offset
     );
+    assert!(
+        report.pool_content_resolved > 0,
+        "ObjectPool string and kImmediate double literal content now resolves, got {}",
+        report.pool_content_resolved
+    );
     assert_eq!(
-        report.pool_content_resolved, 0,
-        "slot->literal content requires the ObjectPool cluster; it is honestly unresolved, never fabricated"
+        report.pool_content_resolved,
+        report.pool_literals.len(),
+        "the resolved count must equal the recovered typed literal inventory"
+    );
+}
+
+#[test]
+fn pool_literals_match_dill_declared_constants() {
+    let kernel: DartKernel = dill_ground_truth();
+    let report: AotLiftReport = aot_report();
+    let source: String = dill_source_text(&kernel);
+    let strings: BTreeSet<String> = pool_strings(&report);
+    let doubles: Vec<f64> = pool_doubles(&report);
+
+    eprintln!(
+        "resolved pool literals: {} strings, {} doubles",
+        strings.len(),
+        doubles.len()
+    );
+
+    let named_strings: [&str; 7] = [
+        "widget-alpha",
+        "gadget-bravo",
+        "sprocket-charlie",
+        "flange-delta",
+        "enterprise-tier",
+        "mid-market-tier",
+        "starter-tier",
+    ];
+    for literal in named_strings {
+        assert!(
+            source.contains(literal),
+            "the .dill must declare the source string literal {literal}"
+        );
+        assert!(
+            strings.contains(literal),
+            "the ObjectPool must resolve the byte-exact string literal {literal} (recovered {} strings)",
+            strings.len()
+        );
+    }
+
+    let named_doubles: [(&str, f64); 5] = [
+        ("19.95", 19.95),
+        ("149.50", 149.5),
+        ("2400.00", 2400.0),
+        ("10000.0", 10000.0),
+        ("1000.0", 1000.0),
+    ];
+    for (token, value) in named_doubles {
+        assert!(
+            source.contains(token),
+            "the .dill must declare the source double literal {token}"
+        );
+        assert!(
+            doubles.iter().any(|d: &f64| d.to_bits() == value.to_bits()),
+            "the ObjectPool kImmediate double {value} must resolve byte-exact, got {doubles:?}"
+        );
+    }
+
+    assert!(
+        source.contains("4.25"),
+        "the .dill declares the 4.25 literal"
+    );
+    assert!(
+        !doubles
+            .iter()
+            .any(|d: &f64| d.to_bits() == 4.25f64.to_bits()),
+        "4.25 is an fmov-encodable inline immediate, not an ObjectPool entry; it stays an honest residual"
+    );
+    eprintln!(
+        "walls: 4.25 is materialized as an inline fmov immediate (not a pool entry); Smi integer immediates and per-slot attribution stay behind the version-keyed ObjectPool cluster"
     );
 }
 

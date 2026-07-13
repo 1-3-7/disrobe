@@ -49,7 +49,8 @@ pub use libapp_parser::{
     DartRecoveryCounts, build_program_skeleton, recover_libapp, recovery_counts,
 };
 pub use object_pool::{
-    DispatchSite, ObjectPoolReferenceMap, PoolSlotUse, recover_object_pool_references,
+    DartPoolLiteral, DispatchSite, ObjectPoolReferenceMap, PoolSlotUse,
+    recover_object_pool_references, resolve_pool_literals,
 };
 pub use snapshot::{
     DartClassEntry, DartFunctionBoundary, DartMethodEntry, DartNameSource, DartRecoveredFunction,
@@ -498,6 +499,13 @@ pub(crate) fn isolate_instruction_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
         ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
     let layout: LibAppLayout = parse_libapp_so(bytes)?;
     section_bytes(&file, layout.isolate_snapshot_instructions.as_ref())
+}
+
+pub(crate) fn isolate_data_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let file: ObjFile<'_> =
+        ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
+    let layout: LibAppLayout = parse_libapp_so(bytes)?;
+    section_bytes(&file, layout.isolate_snapshot_data.as_ref())
 }
 
 pub fn disassemble_libapp_so(bytes: &[u8]) -> Result<disasm::Arm64Disassembly> {

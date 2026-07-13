@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::DartFunctionSymbol;
 use super::cid_table::matches_version;
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
+use super::object_pool::{DartPoolLiteral, resolve_pool_literals};
 use crate::debug::{dbg_kv, dbg_section};
 use crate::error::Result;
 
@@ -201,12 +202,13 @@ pub struct AotLiftReport {
     pub pool_refs_total: usize,
     pub pool_refs_wide_offset: usize,
     pub pool_content_resolved: usize,
+    pub pool_literals: Vec<DartPoolLiteral>,
     pub notes: Vec<String>,
 }
 
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
-const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form; slot->literal content requires deserializing the version-keyed ObjectPool cluster and stays an honest pool[slot] marker rather than a fabricated value";
+const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form; string literals and ObjectPool cluster kImmediate double constants are decoded to typed values, while per-slot attribution, Smi integer immediates, and fmov-inlined doubles need the fully deserialized version-keyed ObjectPool cluster and stay unresolved rather than fabricated";
 
 const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes and are never fabricated. field access surfaces by offset only";
 
@@ -223,10 +225,12 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
         disassemble_symtab_functions(&instructions, &layout.function_symbols)
     };
     dbg_kv("aot.functions", || disasm.function_count.to_string());
+    let isolate_data: Vec<u8> = super::isolate_data_bytes(bytes)?;
     Ok(lift_functions(
         &recovery.version_hash,
         &disasm,
         &layout.function_symbols,
+        &isolate_data,
     ))
 }
 
@@ -262,6 +266,7 @@ pub fn lift_functions(
     version_hash: &str,
     disasm: &Arm64Disassembly,
     symbols: &[DartFunctionSymbol],
+    isolate_data: &[u8],
 ) -> AotLiftReport {
     let abi_resolved: bool = matches_version(version_hash);
     let index: SymbolIndex = SymbolIndex::build(symbols);
@@ -287,7 +292,6 @@ pub fn lift_functions(
     let mut elided_write_barriers: usize = 0;
     let mut pool_refs_total: usize = 0;
     let mut pool_refs_wide_offset: usize = 0;
-    let mut pool_content_resolved: usize = 0;
 
     for func in &functions {
         let mut saw_self_recursion: bool = false;
@@ -327,11 +331,15 @@ pub fn lift_functions(
             ) {
                 pool_refs_wide_offset += 1;
             }
-            if pref.resolved_content.is_some() {
-                pool_content_resolved += 1;
-            }
         }
     }
+
+    let pool_literals: Vec<DartPoolLiteral> = if abi_resolved {
+        resolve_pool_literals(isolate_data)
+    } else {
+        Vec::new()
+    };
+    let pool_content_resolved: usize = pool_literals.len();
 
     let mut notes: Vec<String> = Vec::new();
     if abi_resolved {
@@ -361,6 +369,7 @@ pub fn lift_functions(
         pool_refs_total,
         pool_refs_wide_offset,
         pool_content_resolved,
+        pool_literals,
         notes,
     }
 }
@@ -1097,6 +1106,7 @@ mod tests {
             super::super::cid_table::DART_3_12_VERSION_HASH,
             &disasm,
             &[symbol(0x100, 0x08, "fib")],
+            &[],
         );
         assert!(report.abi_resolved);
         assert!(report.self_recursive_functions >= 1);
