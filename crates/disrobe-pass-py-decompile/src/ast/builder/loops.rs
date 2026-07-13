@@ -1,4 +1,6 @@
-use super::branches::{CondOperand, parse_cond_range};
+use super::branches::{
+    CondOperand, collect_value_boolop_merges, collect_value_boolop_sc, parse_cond_range,
+};
 use super::exprs::{build_linear_stmts_sim, is_chain_cond_jump, local_target, name_at};
 use super::stmts::{
     InlineComp, collect_unpack_targets, detect_inline_comprehension, first_significant,
@@ -15,8 +17,8 @@ use super::try_with::{
     structure_try,
 };
 use super::{
-    DecodedStream, LoopFrame, PY_CO_FLAG_FUNCTION_SCOPE, loop_frame_has_header, negate_cond_expr,
-    none_jump_test, pop_loop_frame, push_loop_frame,
+    DecodedStream, LoopFrame, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc, loop_frame_has_header,
+    negate_cond_expr, none_jump_test, pop_loop_frame, push_loop_frame, with_boolop_context,
 };
 use crate::ast::node::{ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
@@ -2435,6 +2437,33 @@ fn find_break_target(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> 
     target
 }
 
+fn is_iter_setup_boundary(stream: &DecodedStream, k: usize) -> bool {
+    match stream.ops[k] {
+        CanonicalOp::StoreFast(_)
+        | CanonicalOp::StoreName(_)
+        | CanonicalOp::StoreGlobal(_)
+        | CanonicalOp::ForIter(_)
+        | CanonicalOp::JumpBackward(_) => true,
+        CanonicalOp::Pop => !is_shortcircuit_cleanup_pop(stream, k),
+        _ => false,
+    }
+}
+
+fn iter_region_residual(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    setup_start: usize,
+    setup_end: usize,
+) -> Vec<Expr> {
+    let region: &[CanonicalOp] = &stream.ops[setup_start..setup_end];
+    let merges: Vec<usize> = collect_value_boolop_merges(stream, setup_start, setup_end);
+    let sc: Vec<ScDesc> = collect_value_boolop_sc(stream, setup_start, setup_end);
+    let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+        with_boolop_context(region, merges, sc, || build_linear_stmts_sim(code, region))
+            .unwrap_or_default();
+    residual
+}
+
 fn recover_for_iter(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2453,21 +2482,10 @@ fn recover_for_iter(
     let setup_end: usize = get_iter.unwrap_or(region.header);
     let setup_start: usize = (lo..setup_end)
         .rev()
-        .take_while(|&k: &usize| {
-            !matches!(
-                stream.ops[k],
-                CanonicalOp::Pop
-                    | CanonicalOp::StoreFast(_)
-                    | CanonicalOp::StoreName(_)
-                    | CanonicalOp::StoreGlobal(_)
-                    | CanonicalOp::ForIter(_)
-                    | CanonicalOp::JumpBackward(_)
-            )
-        })
+        .take_while(|&k: &usize| !is_iter_setup_boundary(stream, k))
         .last()
         .unwrap_or(setup_end);
-    let (_, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[setup_start..setup_end]).unwrap_or_default();
+    let residual: Vec<Expr> = iter_region_residual(code, stream, setup_start, setup_end);
     residual.into_iter().next_back().unwrap_or(Expr::Constant {
         value: ConstValue::None,
         line: None,
@@ -2496,8 +2514,7 @@ fn recover_for_loop_legacy_iter(
         })
         .last()
         .unwrap_or(region.header);
-    let (_, mut residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[setup_start..region.header]).unwrap_or_default();
+    let mut residual: Vec<Expr> = iter_region_residual(code, stream, setup_start, region.header);
     let _index: Option<Expr> = residual.pop();
     residual.into_iter().next_back().unwrap_or(Expr::Constant {
         value: ConstValue::None,
@@ -2601,8 +2618,7 @@ fn recover_async_for_iter(
         })
         .last()
         .unwrap_or(aiter);
-    let (_, residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[setup_start..aiter]).unwrap_or_default();
+    let residual: Vec<Expr> = iter_region_residual(code, stream, setup_start, aiter);
     residual.into_iter().next_back().unwrap_or(Expr::Constant {
         value: ConstValue::None,
         line: None,
