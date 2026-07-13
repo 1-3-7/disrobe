@@ -267,7 +267,22 @@ fn classify(
     if is_const(insn.name.as_str()) {
         return (NirOp::Const, const_operand(insn));
     }
-    (NirOp::Nop, Vec::new())
+    if insn.opcode == OP_NOP {
+        return (NirOp::Nop, Vec::new());
+    }
+    (
+        NirOp::Unmodeled {
+            opcode: unmodeled_opcode(insn.opcode),
+            offset: insn.offset,
+        },
+        Vec::new(),
+    )
+}
+
+const OP_NOP: u16 = 0x00;
+
+const fn unmodeled_opcode(opcode: u16) -> u8 {
+    (opcode & 0xFF) as u8
 }
 
 fn classify_call(
