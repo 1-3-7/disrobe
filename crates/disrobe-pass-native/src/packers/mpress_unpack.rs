@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use iced_x86::{ConstantOffsets, Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
-
 use super::mpress_lzma::decode_mpress_lzma;
 use super::pe_sections::{PeImage, PeSection, parse_pe_image};
 use crate::error::{Error, Result};
@@ -15,6 +13,7 @@ const MPRESS2_NAME: &[u8; 8] = b".MPRESS2";
 
 const MPRESS_HEADER_SIZE: usize = 6;
 const MPRESS_PAGE_SHIFT: u32 = 12;
+const MPRESS_FILTER_TAIL: usize = 0x1000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MpressInfo {
@@ -148,7 +147,9 @@ fn assemble_image_from_payload(
         .len()
         .min(image_size.saturating_sub(start_off));
     if max_copy > 0 {
-        image[start_off..start_off + max_copy].copy_from_slice(&decoded_payload[..max_copy]);
+        let mut payload: Vec<u8> = decoded_payload.to_vec();
+        unfilter_code_branches(&mut payload);
+        image[start_off..start_off + max_copy].copy_from_slice(&payload[..max_copy]);
     }
     let mpress2_dst: usize = info.mpress2_va as usize;
     let mpress2_avail: usize = (info.mpress2_raw_size as usize).min(
@@ -162,77 +163,63 @@ fn assemble_image_from_payload(
         image[mpress2_dst..mpress2_dst + mpress2_copy]
             .copy_from_slice(&packed_bytes[src_start..src_start + mpress2_copy]);
     }
-    unfilter_code_branches(&mut image, info, start_off.saturating_add(max_copy));
     image
 }
 
-fn unfilter_code_branches(image: &mut [u8], info: &MpressInfo, payload_end: usize) {
-    let payload_start: usize = info.mpress1_va as usize;
-    let code_lo: usize = (info.base_of_code as usize).max(payload_start);
-    let code_hi: usize = (info.base_of_code as usize)
-        .saturating_add(info.size_of_code as usize)
-        .min(payload_end)
-        .min(image.len());
-    if code_hi <= code_lo || code_hi - code_lo < 5 {
+fn unfilter_code_branches(payload: &mut [u8]) {
+    let len: usize = payload.len();
+    if len <= MPRESS_FILTER_TAIL {
         return;
     }
-    let bitness: u32 = if info.is_pe32_plus { 64 } else { 32 };
-    let start_off: u32 = u32::try_from(code_lo - payload_start).unwrap_or(0);
-    let snapshot: Vec<u8> = image[code_lo..code_hi].to_vec();
-    let region: &mut [u8] = &mut image[code_lo..code_hi];
-    let mut decoder: Decoder<'_> = Decoder::with_ip(bitness, &snapshot, 0, DecoderOptions::NONE);
-    let mut insn: Instruction = Instruction::default();
-    while decoder.can_decode() {
-        let insn_off: usize = decoder.ip() as usize;
-        decoder.decode_out(&mut insn);
-        if insn.is_invalid() {
+    let max_addr: i64 = (len - MPRESS_FILTER_TAIL) as i64;
+    let mut pos: usize = 0;
+    while (pos as i64) < max_addr {
+        let opcode: u8 = payload[pos];
+        if opcode & 0xFE == 0xE8 {
+            if pos + 5 > len {
+                break;
+            }
+            recover_displacement(payload, pos + 1, max_addr);
+            pos += 5;
             continue;
         }
-        let offs: ConstantOffsets = decoder.get_constant_offsets(&insn);
-        let field: Option<usize> = branch_or_riprel_field(&insn, offs, insn_off);
-        let Some(field_off) = field else {
-            continue;
-        };
-        if field_off + 4 > region.len() {
+        if (opcode == 0x8D || opcode == 0xFF)
+            && pos + 6 <= len
+            && (payload[pos + 1] & 0xC7) == 0x05
+            && rip_field_is_filtered(opcode, payload[pos + 1])
+        {
+            recover_displacement(payload, pos + 2, max_addr);
+            pos += 6;
             continue;
         }
-        let stored: u32 = u32::from_le_bytes([
-            region[field_off],
-            region[field_off + 1],
-            region[field_off + 2],
-            region[field_off + 3],
-        ]);
-        let payload_off: u32 = start_off.wrapping_add(field_off as u32);
-        let recovered: u32 = stored.wrapping_sub(payload_off);
-        region[field_off..field_off + 4].copy_from_slice(&recovered.to_le_bytes());
+        pos += 1;
     }
 }
 
-fn branch_or_riprel_field(
-    insn: &Instruction,
-    offs: ConstantOffsets,
-    insn_off: usize,
-) -> Option<usize> {
-    let mn: Mnemonic = insn.mnemonic();
-    let is_near_branch: bool = matches!(
-        insn.flow_control(),
-        FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch | FlowControl::Call
-    );
-    if is_near_branch
-        && matches!(mn, Mnemonic::Call | Mnemonic::Jmp)
-        && offs.has_immediate()
-        && offs.immediate_size() == 4
-    {
-        return Some(insn_off + offs.immediate_offset());
+fn rip_field_is_filtered(opcode: u8, modrm: u8) -> bool {
+    match opcode {
+        0x8D => true,
+        0xFF => (modrm >> 3) & 0x07 == 0x02,
+        _ => false,
     }
-    if insn.is_ip_rel_memory_operand()
-        && offs.has_displacement()
-        && offs.displacement_size() == 4
-        && matches!(mn, Mnemonic::Lea | Mnemonic::Call)
-    {
-        return Some(insn_off + offs.displacement_offset());
+}
+
+fn recover_displacement(payload: &mut [u8], field: usize, max_addr: i64) {
+    let move_offset: i64 = field as i64;
+    let stored: i64 = i64::from(i32::from_le_bytes([
+        payload[field],
+        payload[field + 1],
+        payload[field + 2],
+        payload[field + 3],
+    ]));
+    let recovered: Option<i64> = if stored >= 0 {
+        (stored < max_addr).then_some(stored - move_offset)
+    } else {
+        (stored + move_offset >= 0).then_some(stored + max_addr)
+    };
+    if let Some(value) = recovered {
+        payload[field..field + 4].copy_from_slice(&(value as i32).to_le_bytes());
     }
-    None
 }
 
 fn build_structural_image(

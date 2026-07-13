@@ -188,9 +188,9 @@ fn mpress_v219_gauntlet_text_section_byte_exact() {
         echo_pct < 95.0,
         "pre-filter .text recovery {echo_pct:.2}% must sit well below the post-filter number so the E8/E9 + RIP-relative branch unfilter is doing the work, not the comparison",
     );
-    assert!(
-        text_pct >= 99.7,
-        ".text byte recovery {text_pct:.2}% must be >= 99.7% after the E8/E9 + RIP-relative branch unfilter",
+    assert_eq!(
+        text_matches, text_compared,
+        ".text byte recovery must be exact ({text_matches}/{text_compared} = {text_pct:.2}%) after the E8/E9 + RIP-relative branch unfilter",
     );
     assert!(
         text_pct > echo_pct + 5.0,
