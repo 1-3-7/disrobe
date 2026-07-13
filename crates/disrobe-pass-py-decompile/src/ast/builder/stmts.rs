@@ -30,7 +30,8 @@ use super::try_with::{
     recover_return_at, region_is_linear, skip_await_poll, structure_try,
     trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
     try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
-    try_structure_loop_else_nested_try, try_structure_multibranch_guarded_try,
+    try_structure_loop_else_nested_try, try_structure_loop_then_nested_try,
+    try_structure_multibranch_guarded_try,
 };
 use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
@@ -1810,6 +1811,9 @@ pub(super) fn structure_stmts(
         && !legacy_async_for_enclosed_by_loop(stream, lo, hi, &loop_region)
     {
         return structure_loop(code, stream, lo, hi, &loop_region);
+    }
+    if let Some(stmts) = try_structure_loop_then_nested_try(code, stream, lo, hi)? {
+        return Ok(stmts);
     }
     if let Some(stmts) = try_structure_guarded_try(code, stream, lo, hi)? {
         return Ok(stmts);

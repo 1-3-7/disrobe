@@ -2324,6 +2324,132 @@ pub(super) fn try_structure_loop_else_nested_try(
     Ok(Some(out))
 }
 
+pub(super) fn try_structure_loop_then_nested_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(loop_header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if region.is_with() || region.is_finally() {
+        return Ok(None);
+    }
+    if !matches!(
+        stream.ops.get(region.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let protected_end: usize = region.protected_end();
+    let handler_start: usize = region.handler_start;
+    let region_end: usize = region.region_end();
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| {
+                t > region.try_start && t >= protected_end && t < handler_start
+            })
+    }) else {
+        return Ok(None);
+    };
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+    else {
+        return Ok(None);
+    };
+    if first_significant(stream, else_start, handler_start).is_none() {
+        return Ok(None);
+    }
+    let Some(then_tail): Option<usize> = last_significant_back(stream, protected_end, else_start)
+    else {
+        return Ok(None);
+    };
+    if !is_back_edge(&stream.ops[then_tail])
+        || resolve_jump_target(stream, then_tail, &stream.ops[then_tail]) != Some(loop_header)
+    {
+        return Ok(None);
+    }
+    if !(handler_start..region_end).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= protected_end && t < else_start)
+    }) {
+        return Ok(None);
+    }
+    let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
+    else {
+        return Ok(None);
+    };
+    if (lo..test_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > test_start)
+    }) {
+        return Ok(None);
+    }
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, handler_start, region_end)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, protected_end)?;
+    let continuation: Vec<Stmt> = structure_stmts(code, stream, protected_end, else_start)?;
+    let else_body: Vec<Stmt> = structure_stmts(code, stream, else_start, handler_start)?;
+    if else_body.is_empty() {
+        return Ok(None);
+    }
+    let mut then_body: Vec<Stmt> = prelude;
+    then_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    then_body.extend(continuation);
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: else_body,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, region_end, hi)?);
+    Ok(Some(out))
+}
+
 fn strip_trailing_continuation(stmts: &mut Vec<Stmt>, cont: &[Stmt]) {
     if cont.is_empty() {
         return;
