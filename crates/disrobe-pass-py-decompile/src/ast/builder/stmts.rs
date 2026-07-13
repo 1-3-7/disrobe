@@ -2394,6 +2394,31 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
 }
 
 #[deny(clippy::indexing_slicing)]
+fn trailing_jump_is_guarded_fallthrough(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    last_idx: usize,
+) -> bool {
+    let Some(guard): Option<usize> = (lo..last_idx).rev().find(|&k: &usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            is_forward_cond_jump(op)
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+        })
+    }) else {
+        return false;
+    };
+    if first_significant(stream, guard + 1, hi) != Some(last_idx) {
+        return false;
+    }
+    let Some(guard_op): Option<&CanonicalOp> = stream.ops.get(guard) else {
+        return false;
+    };
+    resolve_jump_target(stream, guard, guard_op).is_some_and(|t: usize| t == hi)
+}
+
+#[deny(clippy::indexing_slicing)]
 fn trailing_loop_break_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Option<Stmt> {
     let last_idx: usize = (lo..hi).rev().find(|&k: &usize| {
         stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
@@ -2409,7 +2434,9 @@ fn trailing_loop_break_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opt
         CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
     ) {
         let target: usize = resolve_jump_target(stream, last_idx, last_op)?;
-        if loop_break_target().is_some_and(|exit: usize| target >= exit && target > last_idx) {
+        if loop_break_target().is_some_and(|exit: usize| target >= exit && target > last_idx)
+            && !trailing_jump_is_guarded_fallthrough(stream, lo, hi, last_idx)
+        {
             return Some(Stmt::Break);
         }
     }
