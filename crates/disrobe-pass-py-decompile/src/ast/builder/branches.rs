@@ -1520,6 +1520,10 @@ fn collect_if_cond_jumps(
         let target: usize = resolve_jump_target(stream, cursor, &stream.ops[cursor])
             .filter(|t: &usize| *t > cursor && *t <= hi)?;
         let jumps_if_true: bool = jump_taken_if_true(stream, cursor);
+        let run_has_none_jump: bool = stream.none_jump_kind.contains_key(&cursor)
+            || jumps
+                .iter()
+                .any(|&j: &usize| stream.none_jump_kind.contains_key(&j));
         jumps.push(cursor);
         targets.push(target);
         if jumps_if_true {
@@ -1527,10 +1531,12 @@ fn collect_if_cond_jumps(
         }
         let next_op: usize = first_significant(stream, cursor + 1, hi)?;
         let next_entry: usize = body_entry_index(stream, next_op, hi);
-        if body_targets
+        let reaches_body: bool = body_targets
             .iter()
-            .any(|&t: &usize| t == next_op || t == next_entry)
-        {
+            .any(|&t: &usize| t == next_op || t == next_entry);
+        let body_target_beyond: bool =
+            !run_has_none_jump && body_targets.iter().any(|&t: &usize| t > next_entry);
+        if reaches_body && !body_target_beyond {
             let body: usize = next_op;
             let exit: usize = *targets.iter().filter(|&&t: &&usize| t != body).max()?;
             if exit <= body || jumps.iter().any(|&j: &usize| j >= body) {
