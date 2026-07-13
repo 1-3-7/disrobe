@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::io::Write as _;
+use std::process::{Command, Output, Stdio};
+
 use disrobe_pass_nativelang::{DemangledSymbol, demangle_d};
 
 const ORACLE: &[(&str, &str)] = &[
@@ -86,7 +89,7 @@ const ORACLE: &[(&str, &str)] = &[
     ),
     (
         "_D3std6base64__T10Base64ImplVai45Vai95Vai0Z12decodeLengthFNaNbNiNfImZm",
-        "pure nothrow @nogc @safe ulong std.base64.Base64Impl!('-', '_', \\x00).decodeLength(in ulong)",
+        "pure nothrow @nogc @safe ulong std.base64.Base64Impl!('-', '_', '\\x00').decodeLength(in ulong)",
     ),
     (
         "_D3std4meta__T10aliasSeqOfVSQBa5range__T4iotaTmTmZQkFmmZ6ResultS2i0i2Z4Impl6__initZ",
@@ -154,4 +157,96 @@ fn d_demangler_handles_backreferences() {
         "the Q back-reference for the char[] parameter must resolve"
     );
     assert_eq!(stride.params, vec!["char[]".to_owned()]);
+}
+
+fn cppfilt_dlang(symbol: &str) -> Option<String> {
+    let mut child: std::process::Child = Command::new("c++filt")
+        .args(["-s", "dlang"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        let stdin: &mut std::process::ChildStdin = child.stdin.as_mut()?;
+        stdin.write_all(symbol.as_bytes()).ok()?;
+        stdin.write_all(b"\n").ok()?;
+    }
+    let out: Output = child.wait_with_output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8(out.stdout).ok()?.trim().to_owned())
+}
+
+fn dlang_reference_ready() -> bool {
+    cppfilt_dlang("_D5hello7Greeter3fibMFlZl").as_deref() == Some("hello.Greeter.fib(long)")
+}
+
+fn base64_third_arg(demangled: &str) -> Option<String> {
+    let head: &str = "std.base64.Base64Impl!(";
+    let start: usize = demangled.find(head)? + head.len();
+    let inner: &str = &demangled[start..];
+    let close: usize = inner.find(')')?;
+    inner[..close].rsplit(", ").next().map(str::to_owned)
+}
+
+#[test]
+fn char_template_value_quoting_matches_libiberty_dlang() {
+    if !dlang_reference_ready() {
+        eprintln!(
+            "\n=== c++filt -s dlang unavailable; libiberty cross-check skipped \
+             (committed char-literal expectations still enforced above) ===\n"
+        );
+        return;
+    }
+
+    let values: [usize; 14] = [0, 1, 2, 3, 4, 5, 6, 14, 15, 16, 26, 31, 127, 128];
+    let mut compared: usize = 0;
+    for value in values {
+        let symbol: String =
+            format!("_D3std6base64__T10Base64ImplVai45Vai95Vai{value}Z12decodeLengthFNaNbNiNfImZm");
+        let reference: String = cppfilt_dlang(&symbol)
+            .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
+        assert_ne!(
+            reference, symbol,
+            "the libiberty reference must actually demangle {symbol}, not echo it back"
+        );
+        let reference_arg: String = base64_third_arg(&reference)
+            .unwrap_or_else(|| panic!("no template arg in reference output: {reference}"));
+        assert!(
+            reference_arg.starts_with('\'') && reference_arg.ends_with('\''),
+            "the reference wraps the char literal in quotes: {reference_arg}"
+        );
+
+        let recovered: DemangledSymbol =
+            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        let recovered_arg: String = base64_third_arg(&recovered.demangled).unwrap_or_else(|| {
+            panic!("no template arg in disrobe output: {}", recovered.demangled)
+        });
+        assert_eq!(
+            recovered_arg, reference_arg,
+            "char literal {value} must match the libiberty dlang demangler; disrobe={} reference={}",
+            recovered.demangled, reference
+        );
+        assert!(
+            !recovered.demangled.contains(&format!(", \\x{value:02x})")),
+            "the char literal must never render unquoted: {}",
+            recovered.demangled
+        );
+        compared += 1;
+    }
+    assert!(
+        compared >= 10,
+        "expected a batch of char literals graded against the reference, got {compared}"
+    );
+
+    let null_reference: String =
+        cppfilt_dlang("_D3std6base64__T10Base64ImplVai45Vai95Vai0Z12decodeLengthFNaNbNiNfImZm")
+            .expect("reference null-char demangle");
+    assert_eq!(
+        base64_third_arg(&null_reference).as_deref(),
+        Some("'\\x00'"),
+        "the canonical null char must demangle to a quoted hex escape"
+    );
 }

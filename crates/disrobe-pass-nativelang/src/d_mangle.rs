@@ -1206,8 +1206,9 @@ impl Demangler<'_> {
                             self.put_char(num as u8 as char)?;
                             return self.put_char('\'');
                         }
-                        self.put("\\x")?;
-                        self.put(&format!("{num:02x}"))
+                        self.put("'\\x")?;
+                        self.put(&format!("{num:02x}"))?;
+                        self.put_char('\'')
                     }
                     b'u' => {
                         self.put("'\\u")?;
@@ -1580,6 +1581,6 @@ mod tests {
     fn wide_character_literal_does_not_truncate_to_scalar() {
         let mut d: Demangler<'_> = Demangler::new(b"4294967329");
         assert!(d.parse_integer_value(b'a').is_some());
-        assert_eq!(d.out, "\\x100000021");
+        assert_eq!(d.out, "'\\x100000021'");
     }
 }
