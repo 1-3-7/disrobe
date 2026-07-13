@@ -461,20 +461,56 @@ mod tests {
     }
 
     #[test]
-    fn restore_resource_offset_converts_absolute_va_back_to_rva() {
+    fn restore_walks_nested_resource_directory_and_folds_only_va_form_leaves() {
         let mut mapped: Vec<u8> = vec![0u8; 0x1000];
         let image_base: u64 = 0x0040_0000;
-        let original_rva: u32 = 0x800;
-        let dumped_va: u32 = image_base as u32 + original_rva;
-        let data_entry: usize = 0x200;
-        mapped[data_entry..data_entry + 4].copy_from_slice(&dumped_va.to_le_bytes());
+        let base32: u32 = image_base as u32;
+        let res: usize = 0x100;
+        let sub: usize = res + 0x40;
+        let leaf_a: usize = res + 0x80;
+        let leaf_b: usize = res + 0x90;
+        let leaf_c: usize = res + 0xA0;
+
+        mapped[res + 14..res + 16].copy_from_slice(&1u16.to_le_bytes());
+        let root_entry: usize = res + RESOURCE_DIR_HEADER_SIZE;
+        mapped[root_entry + 4..root_entry + 8]
+            .copy_from_slice(&(0x40u32 | RESOURCE_SUBDIR_FLAG).to_le_bytes());
+
+        mapped[sub + 14..sub + 16].copy_from_slice(&3u16.to_le_bytes());
+        let e0: usize = sub + RESOURCE_DIR_HEADER_SIZE;
+        let e1: usize = e0 + RESOURCE_ENTRY_SIZE;
+        let e2: usize = e1 + RESOURCE_ENTRY_SIZE;
+        mapped[e0 + 4..e0 + 8].copy_from_slice(&0x80u32.to_le_bytes());
+        mapped[e1 + 4..e1 + 8].copy_from_slice(&0x90u32.to_le_bytes());
+        mapped[e2 + 4..e2 + 8].copy_from_slice(&0xA0u32.to_le_bytes());
+
+        mapped[leaf_a..leaf_a + 4].copy_from_slice(&(base32 + 0x300).to_le_bytes());
+        mapped[leaf_b..leaf_b + 4].copy_from_slice(&(base32 + 0x310).to_le_bytes());
+        mapped[leaf_c..leaf_c + 4].copy_from_slice(&0x320u32.to_le_bytes());
+
         let mut report: UnbindReport = UnbindReport::default();
-        restore_resource_data_entry(&mut mapped, data_entry, image_base, &mut report);
-        assert_eq!(report.resource_offsets_restored, 1);
+        restore_resource_offsets(&mut mapped, res as u32, image_base, &mut report);
+
         assert_eq!(
-            read_u32(&mapped, data_entry),
-            Some(original_rva),
-            "a dumper-VA OffsetToData must be folded back to an RVA"
+            report.resource_data_entries_walked, 3,
+            "walker must descend the subdirectory and reach every leaf"
+        );
+        assert_eq!(
+            report.resource_offsets_restored, 2,
+            "only the two VA-form leaves may be folded; the genuine RVA leaf must be left"
+        );
+        assert!(
+            read_u32(&mapped, leaf_a).is_some_and(|v: u32| v < base32),
+            "a VA-form leaf must be folded below the image base"
+        );
+        assert!(
+            read_u32(&mapped, leaf_b).is_some_and(|v: u32| v < base32),
+            "a VA-form leaf must be folded below the image base"
+        );
+        assert_eq!(
+            read_u32(&mapped, leaf_c),
+            Some(0x320),
+            "a genuine RVA leaf must be untouched"
         );
     }
 
