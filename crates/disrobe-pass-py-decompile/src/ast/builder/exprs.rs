@@ -586,7 +586,7 @@ pub(super) fn build_linear_stmts_sim_seed(
             continue;
         }
         if boolop.is_some()
-            && idx >= boolop_merge_idx
+            && (idx >= boolop_merge_idx || boolop_value_consumer(op))
             && !is_value_boolop_shortcircuit(ops, idx)
             && sim.stack.len() == boolop_base_depth + 1
             && !sim
@@ -629,6 +629,14 @@ pub(super) fn build_linear_stmts_sim_seed(
                 });
             }
             boolop_merge_idx = boolop_merge_after(ops, idx);
+            if boolop_merge_idx == 0
+                && let Some(descriptors) = sc_descriptors.as_ref()
+                && let Some(desc) = descriptors
+                    .iter()
+                    .find(|s: &&super::ScDesc| s.sc_idx == idx)
+            {
+                boolop_merge_idx = boolop_operand_merge_point(ops, desc.target);
+            }
             skip_next = boolop_shortcircuit_skip(ops, idx);
             next_operand_value_lo =
                 first_significant_after(ops, idx + 1 + skip_next).unwrap_or(idx + 1 + skip_next);
@@ -2459,6 +2467,33 @@ pub(super) fn value_boolop_at(
 
 fn is_value_boolop_shortcircuit(ops: &[CanonicalOp], idx: usize) -> bool {
     value_boolop_at(ops, idx).is_some()
+}
+
+fn boolop_value_consumer(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+    )
+}
+
+fn boolop_operand_merge_point(ops: &[CanonicalOp], target: usize) -> usize {
+    if target > 0
+        && matches!(ops.get(target), Some(CanonicalOp::Push(_)))
+        && matches!(
+            ops.get(target - 1),
+            Some(
+                CanonicalOp::LoadAttr(_)
+                    | CanonicalOp::LoadSpecial(_)
+                    | CanonicalOp::LoadSuperAttr { .. }
+            )
+        )
+    {
+        return target - 1;
+    }
+    target
 }
 
 pub(super) fn inner_short_circuit_polarity(
