@@ -46,6 +46,7 @@ pub mod rules;
 pub mod simplify;
 #[cfg(feature = "smt-solver")]
 pub mod smt;
+pub mod smtlib;
 #[cfg(feature = "smt-verify")]
 pub mod verify;
 
@@ -66,6 +67,7 @@ pub use rules::{
 pub use simplify::{Simplification, Verification, simplify};
 #[cfg(feature = "smt-solver")]
 pub use smt::{SmtBudget, SmtVerdict, check_unsat};
+pub use smtlib::{equivalence_query, tautology_refutation_query};
 #[cfg(feature = "smt-verify")]
 pub use verify::{Equivalence, verify_equivalent, verify_equivalent_budgeted};
 
