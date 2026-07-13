@@ -32,6 +32,7 @@ mod detect;
 pub mod dwarf;
 mod eh;
 mod error;
+pub mod fingerprint;
 pub mod format_wire;
 mod function_refs;
 mod gc_extern;
@@ -75,6 +76,11 @@ pub use eh::{
     scan_module as scan_module_eh,
 };
 pub use error::{Error, Result};
+pub use fingerprint::{
+    DEFAULT_FUZZY_THRESHOLD, DEFAULT_MIN_FUZZY_OPS, FingerprintDb, FunctionFingerprint,
+    FunctionMatch, MINHASH_WIDTH, MatchConfig, MatchTier, NGRAM_WINDOW, canonical_label,
+    fingerprint_module, strip_name_section,
+};
 pub use format_wire::{
     format_c as format_c_lifted, format_rust as format_rust_lifted,
     format_typescript as format_typescript_lifted, format_wat,
