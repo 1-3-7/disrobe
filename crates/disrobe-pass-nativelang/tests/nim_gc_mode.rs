@@ -184,3 +184,43 @@ fn nim_arc_is_distinguished_from_orc_by_absent_cycle_collector() {
     assert_eq!(arc_kind.as_deref(), Some("arc"));
     assert_eq!(orc_kind.as_deref(), Some("orc"));
 }
+
+#[test]
+fn nim_go_that_also_links_the_unref_slot_stays_go_not_refc() {
+    let go: Vec<u8> = fixture_bytes("go_unref");
+    assert_eq!(
+        &go[..2],
+        b"MZ",
+        "mm_go_unref.exe must be a real nim-built PE"
+    );
+
+    assert!(
+        raw_has(&go, "nimGCunref") && raw_has(&go, "newObjRC1"),
+        "this go build links both nimGCunref and newObjRC1; that overlap is what a refc-keyed \
+         classifier trips on"
+    );
+    assert!(
+        !raw_has(&go, "collectCycles") && !raw_has(&go, "nimNewObj"),
+        "the go collector links neither the refc cycle collector nor the arc allocator; their \
+         absence is what keeps it separable from refc and arc"
+    );
+
+    let analysis: NativeLangAnalysis = analyze(&go).expect("analyze go_unref fixture");
+    assert_eq!(analysis.fingerprint.lang, NativeLang::Nim);
+    assert_eq!(
+        analysis.recovery.gc.gc_kind.as_deref(),
+        Some("go"),
+        "a go binary that also links nimGCunref must recover as go, not refc; got {:?}",
+        analysis.recovery.gc.gc_kind
+    );
+    assert!(
+        analysis
+            .recovery
+            .gc
+            .runtime_symbols
+            .iter()
+            .any(|s: &String| s == "newObjRC1"),
+        "classifier must surface the go allocator marker newObjRC1; got {:?}",
+        analysis.recovery.gc.runtime_symbols
+    );
+}
