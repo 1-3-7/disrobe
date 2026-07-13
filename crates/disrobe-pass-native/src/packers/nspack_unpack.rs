@@ -1031,45 +1031,86 @@ fn apply_e8e9_call_jmp_fixup(buf: &mut [u8]) {
         return;
     }
     let image_size: i64 = i64::try_from(len).unwrap_or(i64::MAX);
+    let mut marker_hist: [u32; 256] = [0u32; 256];
     let mut i: usize = 0;
-    let end: usize = len.saturating_sub(5);
-    while i < end {
+    while i + 5 <= len {
         let op: u8 = buf[i];
         if op == 0xE8 || op == 0xE9 {
             let stored_le: u32 =
                 u32::from_le_bytes([buf[i + 1], buf[i + 2], buf[i + 3], buf[i + 4]]);
-            let stored_rel: i32 = stored_le.cast_signed();
             let pos_i64: i64 = i64::try_from(i).unwrap_or(i64::MAX);
+            let recovered: i32 = recover_branch_displacement(stored_le, i);
+            let recovered_target: i64 = pos_i64
+                .saturating_add(5)
+                .saturating_add(i64::from(recovered));
             let stored_target: i64 = pos_i64
                 .saturating_add(5)
-                .saturating_add(i64::from(stored_rel));
+                .saturating_add(i64::from(stored_le.cast_signed()));
+            let recovered_in_image: bool = recovered_target >= 0 && recovered_target < image_size;
             let stored_in_image: bool = stored_target >= 0 && stored_target < image_size;
-            let bswapped: u32 = stored_le.swap_bytes();
-            let masked: u32 = bswapped & 0x00FF_FFFF;
-            let pos_plus_one: u32 = u32::try_from(i.wrapping_add(1)).unwrap_or(u32::MAX);
-            let original: u32 = masked.wrapping_sub(pos_plus_one);
-            let candidate: u32 = if original & 0x0080_0000 != 0 {
-                original | 0xFF00_0000
-            } else {
-                original & 0x00FF_FFFF
-            };
-            let rel: i32 = candidate.cast_signed();
-            let target: i64 = pos_i64.saturating_add(5).saturating_add(i64::from(rel));
-            let recovered_in_image: bool = target >= 0 && target < image_size;
             if recovered_in_image && !stored_in_image {
-                let out: [u8; 4] = candidate.to_le_bytes();
+                marker_hist[usize::from(buf[i + 1])] += 1;
+                i += 5;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let Some(marker): Option<u8> = dominant_branch_marker(&marker_hist) else {
+        return;
+    };
+    i = 0;
+    while i + 5 <= len {
+        let op: u8 = buf[i];
+        if (op == 0xE8 || op == 0xE9) && buf[i + 1] == marker {
+            let stored_le: u32 =
+                u32::from_le_bytes([buf[i + 1], buf[i + 2], buf[i + 3], buf[i + 4]]);
+            let pos_i64: i64 = i64::try_from(i).unwrap_or(i64::MAX);
+            let recovered: i32 = recover_branch_displacement(stored_le, i);
+            let recovered_target: i64 = pos_i64
+                .saturating_add(5)
+                .saturating_add(i64::from(recovered));
+            if recovered_target >= 0 && recovered_target < image_size {
+                let out: [u8; 4] = recovered.cast_unsigned().to_le_bytes();
                 buf[i + 1] = out[0];
                 buf[i + 2] = out[1];
                 buf[i + 3] = out[2];
                 buf[i + 4] = out[3];
                 i += 5;
-            } else {
-                i += 1;
+                continue;
             }
-        } else {
-            i += 1;
+        }
+        i += 1;
+    }
+}
+
+fn recover_branch_displacement(stored_le: u32, pos: usize) -> i32 {
+    let masked: u32 = stored_le.swap_bytes() & 0x00FF_FFFF;
+    let pos_plus_one: u32 = u32::try_from(pos.wrapping_add(1)).unwrap_or(u32::MAX);
+    let original: u32 = masked.wrapping_sub(pos_plus_one);
+    let candidate: u32 = if original & 0x0080_0000 != 0 {
+        original | 0xFF00_0000
+    } else {
+        original & 0x00FF_FFFF
+    };
+    candidate.cast_signed()
+}
+
+fn dominant_branch_marker(hist: &[u32; 256]) -> Option<u8> {
+    let mut best: Option<(u8, u32)> = None;
+    for (value, &count) in hist.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let keep: bool = match best {
+            Some((_, best_count)) => count > best_count,
+            None => true,
+        };
+        if keep {
+            best = Some((u8::try_from(value).unwrap_or(0), count));
         }
     }
+    best.map(|(value, _): (u8, u32)| value)
 }
 
 #[allow(clippy::cast_precision_loss)]
