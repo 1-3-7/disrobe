@@ -2390,7 +2390,42 @@ fn trailing_loop_jump_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> Opti
     if target < last_idx && loop_frame_has_header(target) {
         return Some(Stmt::Break);
     }
+    if matches!(
+        last_op,
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) && let Some(header) = loop_continue_target()
+        && let Some(header_op) = stream.ops.get(header)
+        && matches!(header_op, CanonicalOp::ForIter(_))
+        && let Some(raw_exit) = resolve_jump_target(stream, header, header_op)
+        && target >= raw_exit
+        && target != header
+        && handler_break_pops_for_iterator(stream, lo, last_idx)
+    {
+        return Some(Stmt::Break);
+    }
     None
+}
+
+#[deny(clippy::indexing_slicing)]
+fn handler_break_pops_for_iterator(stream: &DecodedStream, lo: usize, jump_idx: usize) -> bool {
+    let significant_before = |before: usize| -> Option<usize> {
+        (lo..before).rev().find(|&k: &usize| {
+            stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+                !matches!(
+                    op,
+                    CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+                )
+            })
+        })
+    };
+    let Some(pop_idx): Option<usize> = significant_before(jump_idx) else {
+        return false;
+    };
+    if !matches!(stream.ops.get(pop_idx), Some(CanonicalOp::Pop)) {
+        return false;
+    }
+    significant_before(pop_idx)
+        .is_some_and(|prev: usize| matches!(stream.ops.get(prev), Some(CanonicalOp::PopExcept)))
 }
 
 #[deny(clippy::indexing_slicing)]
