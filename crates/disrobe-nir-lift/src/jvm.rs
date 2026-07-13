@@ -260,7 +260,16 @@ fn classify(
     if is_const(insn.opcode) {
         return (NirOp::Const, Vec::new());
     }
-    (NirOp::Nop, Vec::new())
+    if insn.opcode == OP_NOP {
+        return (NirOp::Nop, Vec::new());
+    }
+    (
+        NirOp::Unmodeled {
+            opcode: insn.opcode,
+            offset: insn.pc,
+        },
+        Vec::new(),
+    )
 }
 
 fn classify_invoke(
@@ -364,6 +373,7 @@ const fn is_return(opcode: u8) -> bool {
 }
 
 const OP_ATHROW: u8 = 0xBF;
+const OP_NOP: u8 = 0x00;
 
 const fn is_conditional_branch(opcode: u8) -> bool {
     matches!(

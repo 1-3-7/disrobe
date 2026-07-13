@@ -205,6 +205,10 @@ pub enum NirOp {
     Phi,
     Return,
     Interrupt,
+    Unmodeled {
+        opcode: u8,
+        offset: u32,
+    },
 }
 
 impl NirOp {
@@ -221,7 +225,21 @@ impl NirOp {
             | Self::Load
             | Self::Store
             | Self::Phi
-            | Self::Interrupt => NirClass::Other,
+            | Self::Interrupt
+            | Self::Unmodeled { .. } => NirClass::Other,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_unmodeled(&self) -> bool {
+        matches!(self, Self::Unmodeled { .. })
+    }
+
+    #[must_use]
+    pub const fn unmodeled_opcode(&self) -> Option<u8> {
+        match self {
+            Self::Unmodeled { opcode, .. } => Some(*opcode),
+            _ => None,
         }
     }
 

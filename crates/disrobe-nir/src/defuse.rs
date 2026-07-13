@@ -58,7 +58,8 @@ pub fn def_use(instr: &NirInstr) -> DefUse {
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
         | NirOp::Phi
-        | NirOp::Interrupt => DefUse::default(),
+        | NirOp::Interrupt
+        | NirOp::Unmodeled { .. } => DefUse::default(),
     }
 }
 

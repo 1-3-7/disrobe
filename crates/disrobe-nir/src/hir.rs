@@ -673,7 +673,8 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
         | NirOp::Interrupt
         | NirOp::Branch { .. }
         | NirOp::CondBranch { .. }
-        | NirOp::Return => HirInstrStmt::Effect {
+        | NirOp::Return
+        | NirOp::Unmodeled { .. } => HirInstrStmt::Effect {
             expr: HirExpr::Unknown {
                 text: instr.mnemonic.clone(),
             },
