@@ -66,6 +66,66 @@ const NIM_RUNTIME_SYMS: &[&[u8]] = &[
     b"nimFrame",
 ];
 
+const NIM_ARC_API_MARKERS: &[&str] = &["nimNewObj", "nimRawDispose", "nimDestroyAndDispose"];
+const NIM_ORC_CYCLE_MARKERS: &[&str] = &[
+    "collectCyclesBacon",
+    "rememberCycle",
+    "nimMarkCyclic",
+    "nimIncRefCyclic",
+    "nimTraceRef",
+    "GC_runOrc",
+];
+const NIM_BOEHM_MARKERS: &[&str] = &["boehmgc", "GC_malloc"];
+const NIM_TRACING_REFCOUNT_MARKER: &str = "nimGCunref";
+const NIM_REFC_MARKERS: &[&str] = &["newObjRC1", "collectCycles"];
+const NIM_GO_MARKERS: &[&str] = &["newObjRC1", "nimGCvisit", "nimGC_setStackBottom"];
+
+fn nim_marker_present(image: &NativeImage<'_>, token: &str) -> bool {
+    image.symbols.iter().any(|s: &String| s.contains(token)) || image.raw_contains(token.as_bytes())
+}
+
+fn nim_collect_markers(
+    image: &NativeImage<'_>,
+    tokens: &[&str],
+    evidence: &mut Vec<String>,
+) -> bool {
+    let mut any: bool = false;
+    for token in tokens {
+        if nim_marker_present(image, token) {
+            any = true;
+            let owned: String = (*token).to_owned();
+            if !evidence.contains(&owned) {
+                evidence.push(owned);
+            }
+        }
+    }
+    any
+}
+
+fn classify_nim_gc(image: &NativeImage<'_>) -> (&'static str, Vec<String>) {
+    let mut evidence: Vec<String> = Vec::new();
+    if nim_collect_markers(image, NIM_BOEHM_MARKERS, &mut evidence) {
+        return ("boehm", evidence);
+    }
+    if nim_collect_markers(image, NIM_ARC_API_MARKERS, &mut evidence) {
+        if nim_collect_markers(image, NIM_ORC_CYCLE_MARKERS, &mut evidence) {
+            return ("orc", evidence);
+        }
+        return ("arc", evidence);
+    }
+    if nim_marker_present(image, NIM_TRACING_REFCOUNT_MARKER) {
+        evidence.push(NIM_TRACING_REFCOUNT_MARKER.to_owned());
+        if nim_collect_markers(image, NIM_REFC_MARKERS, &mut evidence) {
+            return ("refc", evidence);
+        }
+        return ("markAndSweep", evidence);
+    }
+    if nim_collect_markers(image, NIM_GO_MARKERS, &mut evidence) {
+        return ("go", evidence);
+    }
+    ("none", evidence)
+}
+
 const ZIG_STD_PREFIXES: &[&str] = &[
     "std",
     "start",
@@ -211,13 +271,18 @@ fn recover_nim(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         }
     }
     debug::dbg_kv("nim-demangled", || demangled.len().to_string());
+    let (gc_kind, gc_evidence): (&'static str, Vec<String>) = classify_nim_gc(image);
+    debug::dbg_kv("nim-gc", || {
+        format!("{gc_kind} via [{}]", gc_evidence.join(","))
+    });
     finish(
         image,
         NativeLang::Nim,
         demangled,
         NIM_STD_PREFIXES,
         NIM_RUNTIME_SYMS,
-        Some("boehm-or-orc"),
+        Some(gc_kind),
+        &gc_evidence,
         None,
         types,
     )
@@ -248,6 +313,7 @@ fn recover_zig(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         ZIG_STD_PREFIXES,
         ZIG_RUNTIME_SYMS,
         Some("none-manual"),
+        &[],
         None,
         types,
     )
@@ -303,6 +369,7 @@ fn recover_crystal(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         CRYSTAL_STD_PREFIXES,
         CRYSTAL_RUNTIME_SYMS,
         Some("boehm"),
+        &[],
         scanned_count,
         types,
     )
@@ -360,6 +427,7 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         D_STD_PREFIXES,
         D_RUNTIME_SYMS,
         Some("druntime-conservative"),
+        &[],
         None,
         types,
     )
@@ -373,6 +441,7 @@ fn finish(
     std_prefixes: &[&str],
     runtime_syms: &[&[u8]],
     gc_kind: Option<&str>,
+    gc_evidence: &[String],
     precomputed_string_count: Option<usize>,
     types: &TypeReport,
 ) -> Recovery {
@@ -390,11 +459,16 @@ fn finish(
             user_count += 1;
         }
     }
-    let runtime_symbols: Vec<String> = runtime_syms
+    let mut runtime_symbols: Vec<String> = runtime_syms
         .iter()
         .filter(|m: &&&[u8]| image.raw_contains(m))
         .map(|m: &&[u8]| String::from_utf8_lossy(m).into_owned())
         .collect();
+    for symbol in gc_evidence {
+        if !runtime_symbols.contains(symbol) {
+            runtime_symbols.push(symbol.clone());
+        }
+    }
     let strings_sampled: usize =
         precomputed_string_count.unwrap_or_else(|| image.ascii_strings(3).len());
     debug::dbg_kv("modules", || {
