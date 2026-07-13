@@ -1030,10 +1030,25 @@ fn lift_cold_handler_exit_epilogue(
     if tail.is_empty() {
         return Ok(Vec::new());
     }
+    let body_breaks_to_epilogue: bool = last_significant_back(stream, body_start, raw_exit)
+        .is_some_and(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+            ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(stmt_start)
+        });
     if tail.len() <= body.len() {
         let split: usize = body.len() - tail.len();
         if body[split..] == tail[..] {
             body.truncate(split);
+            if body_breaks_to_epilogue
+                && !matches!(
+                    body.last(),
+                    Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
+                )
+            {
+                body.push(Stmt::Break);
+            }
             return Ok(tail);
         }
     }
