@@ -884,6 +884,35 @@ fn max_back_edge_to_header(stream: &DecodedStream, header: usize, lo: usize, hi:
         .unwrap_or(header)
 }
 
+fn is_generator_stopiteration_terminal(
+    stream: &DecodedStream,
+    handler_start: usize,
+    cap: usize,
+) -> bool {
+    let mut i: usize = handler_start;
+    while i < cap
+        && matches!(
+            stream.ops.get(i),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        i += 1;
+    }
+    if !matches!(stream.ops.get(i), Some(CanonicalOp::CallIntrinsic1(3))) {
+        return false;
+    }
+    i += 1;
+    while i < cap
+        && matches!(
+            stream.ops.get(i),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        i += 1;
+    }
+    matches!(stream.ops.get(i), Some(CanonicalOp::Reraise(_)))
+}
+
 fn infinite_while_body_end(
     stream: &DecodedStream,
     header: usize,
@@ -903,6 +932,9 @@ fn infinite_while_body_end(
             };
             if try_start < header || try_start >= end || handler_start < end || handler_start >= cap
             {
+                continue;
+            }
+            if is_generator_stopiteration_terminal(stream, handler_start, cap) {
                 continue;
             }
             let handler_end: usize =
