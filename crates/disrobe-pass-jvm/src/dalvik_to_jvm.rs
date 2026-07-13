@@ -1302,11 +1302,29 @@ fn new_instance_pairs_are_trackable(dex: &DexFile, insns: &[DalvikInsn]) -> bool
         }) else {
             return false;
         };
-        if paired_init_pc(dex, insns, k, dest, &owner).is_none() {
+        if paired_init_pc(dex, insns, k, dest, &owner).is_none()
+            && !new_dest_discarded_by_renew(dex, insns, k, dest)
+        {
             return false;
         }
     }
     true
+}
+
+fn new_dest_discarded_by_renew(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    from_idx: usize,
+    dest: u16,
+) -> bool {
+    for follow in &insns[from_idx + 1..] {
+        match reg_use_kind(dex, follow, dest) {
+            RegUse::Redefined => return follow.op == 0x22,
+            RegUse::Int | RegUse::Ref => return false,
+            RegUse::Neutral => {}
+        }
+    }
+    false
 }
 
 fn init_invoke_owner(dex: &DexFile, insn: &DalvikInsn) -> Option<String> {
