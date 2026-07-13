@@ -96,6 +96,7 @@ fn shape_token(op: &NirOp, reads_memory: bool, writes_memory: bool, byte_width: 
         NirOp::Phi => "phi".to_owned(),
         NirOp::Return => "ret".to_owned(),
         NirOp::Interrupt => "int".to_owned(),
+        NirOp::Unmodeled { opcode, .. } => format!("unmodeled.{opcode:#04x}"),
     };
     let mem_shape: &'static str = match (reads_memory, writes_memory) {
         (true, true) => ".rw",

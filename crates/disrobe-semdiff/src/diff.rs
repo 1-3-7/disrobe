@@ -64,6 +64,7 @@ fn op_token(insn: &NirInstr, labels: &BTreeMap<u64, String>) -> String {
         NirOp::Phi => "phi".to_owned(),
         NirOp::Return => "return".to_owned(),
         NirOp::Interrupt => "interrupt".to_owned(),
+        NirOp::Unmodeled { opcode, .. } => format!("unmodeled.{opcode:#04x}"),
     }
 }
 
