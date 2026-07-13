@@ -1572,7 +1572,9 @@ pub(super) fn try_structure_guarded_try(
     hi: usize,
 ) -> Result<Option<Vec<Stmt>>> {
     let Some(first_cond): Option<usize> = (lo..hi).find(|&k: &usize| {
-        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
     }) else {
         return Ok(None);
     };
