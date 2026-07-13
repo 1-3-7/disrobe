@@ -629,7 +629,11 @@ fn apply_instr(
             apply_call(state, insn, mode)
         }
         NirOp::Phi => Some(()),
-        NirOp::Branch { .. } | NirOp::CondBranch { .. } | NirOp::Return | NirOp::Interrupt | NirOp::Unmodeled { .. } => None,
+        NirOp::Branch { .. }
+        | NirOp::CondBranch { .. }
+        | NirOp::Return
+        | NirOp::Interrupt
+        | NirOp::Unmodeled { .. } => None,
     }
 }
 
