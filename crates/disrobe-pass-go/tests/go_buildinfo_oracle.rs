@@ -184,6 +184,127 @@ fn buildinfo_matches_go_version_m_on_fresh_real_build() {
     );
 }
 
+#[derive(Clone, Copy)]
+struct MatrixTarget {
+    goarch: &'static str,
+    stripped: bool,
+}
+
+const MATRIX_MODULE: &str = "disrobe.example/buildinfomatrix";
+
+const MATRIX: [MatrixTarget; 4] = [
+    MatrixTarget {
+        goarch: "amd64",
+        stripped: false,
+    },
+    MatrixTarget {
+        goarch: "amd64",
+        stripped: true,
+    },
+    MatrixTarget {
+        goarch: "386",
+        stripped: false,
+    },
+    MatrixTarget {
+        goarch: "386",
+        stripped: true,
+    },
+];
+
+#[test]
+fn buildinfo_matches_oracle_across_arch_and_strip_matrix() {
+    if !common::require_go() {
+        return;
+    }
+    let scratch: common::GoBuildScratch = common::new_scratch("buildinfo_matrix");
+    common::write_module(&scratch, MATRIX_MODULE, BUILDINFO_SOURCE);
+
+    let mut built: usize = 0;
+    for target in MATRIX {
+        let out_name: String = format!(
+            "matrix_{}_{}.exe",
+            target.goarch,
+            if target.stripped { "stripped" } else { "full" }
+        );
+        let extra: &[&str] = if target.stripped {
+            &["-ldflags", "-s -w"]
+        } else {
+            &[]
+        };
+        let Some(binary): Option<std::path::PathBuf> =
+            common::go_build_cross(&scratch, &out_name, "windows", target.goarch, extra)
+        else {
+            eprintln!(
+                "SKIP matrix target windows/{} stripped={}: go build failed on this host",
+                target.goarch, target.stripped
+            );
+            continue;
+        };
+        built += 1;
+
+        let oracle: common::GoVersionM = common::go_version_m(&binary)
+            .expect("go version -m must produce the build-info reference for a matrix target");
+
+        let bytes: Vec<u8> = std::fs::read(&binary).expect("read matrix build");
+        let analysis: GoAnalysis = analyze(&bytes).expect("analyze matrix build");
+        let bi: &GoBuildInfo = analysis.moduledata.build_info.as_ref().unwrap_or_else(|| {
+            panic!(
+                "build-info blob must survive windows/{} stripped={}",
+                target.goarch, target.stripped
+            )
+        });
+
+        assert_eq!(
+            bi.path.as_deref(),
+            Some(MATRIX_MODULE),
+            "recovered module path must equal the go.mod module for windows/{} stripped={}",
+            target.goarch,
+            target.stripped
+        );
+        assert_eq!(
+            bi.path.as_deref(),
+            oracle.path.as_deref(),
+            "recovered module path must match `go version -m` for windows/{} stripped={}",
+            target.goarch,
+            target.stripped
+        );
+        assert_eq!(
+            bi.go_version, oracle.go_version,
+            "recovered go toolchain version must match `go version -m` for windows/{} stripped={}",
+            target.goarch, target.stripped
+        );
+        assert_eq!(
+            bi.settings, oracle.settings,
+            "recovered build settings must match `go version -m` exactly for windows/{} stripped={}",
+            target.goarch, target.stripped
+        );
+        assert_eq!(
+            bi.goos(),
+            Some("windows"),
+            "GOOS must surface for windows/{} stripped={}",
+            target.goarch,
+            target.stripped
+        );
+        assert_eq!(
+            bi.goarch(),
+            Some(target.goarch),
+            "GOARCH must surface for windows/{} stripped={}",
+            target.goarch,
+            target.stripped
+        );
+        assert_eq!(
+            analysis.buildversion, oracle.go_version,
+            "buildversion must prefer the build-info go version for windows/{} stripped={}",
+            target.goarch, target.stripped
+        );
+    }
+
+    assert!(
+        built > 0,
+        "no matrix target built on this host; the reference could not run"
+    );
+}
+
 #[test]
 fn buildinfo_matches_go_toolchain_oracle_on_embed_fixture() {
     let Some(analysis): Option<GoAnalysis> = analyze_fixture(common::HELLO_EMBED) else {
