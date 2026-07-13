@@ -134,6 +134,28 @@ fn mpress_v219_gauntlet_unpacks_lzmat_decoded() {
     );
 }
 
+fn prefilter_text_recovery(original: &[u8], out: &MpressUnpackOutput) -> (usize, usize) {
+    let sections: Vec<(String, usize, usize, usize)> = parse_pe_sections(original);
+    let payload_base: usize = out.info.mpress1_va as usize;
+    for (name, vsize, vaddr, raw_off) in &sections {
+        if name != ".text" || *vaddr < payload_base {
+            continue;
+        }
+        let off: usize = vaddr - payload_base;
+        let take: usize = (*vsize)
+            .min(out.decoded_payload.len().saturating_sub(off))
+            .min(original.len().saturating_sub(*raw_off));
+        let mut matches: usize = 0;
+        for k in 0..take {
+            if out.decoded_payload[off + k] == original[raw_off + k] {
+                matches += 1;
+            }
+        }
+        return (matches, take);
+    }
+    (0, 0)
+}
+
 #[test]
 fn mpress_v219_gauntlet_text_section_byte_exact() {
     let out: MpressUnpackOutput = unpack_mpress(PACKED).expect("gauntlet unpack must succeed");
@@ -147,6 +169,9 @@ fn mpress_v219_gauntlet_text_section_byte_exact() {
     );
     let text_pct: f64 = 100.0 * text_matches as f64 / text_compared as f64;
 
+    let (echo_matches, echo_compared): (usize, usize) = prefilter_text_recovery(ORIGINAL, &out);
+    let echo_pct: f64 = 100.0 * echo_matches as f64 / echo_compared.max(1) as f64;
+
     let (rdata_matches, rdata_compared): (usize, usize) =
         section_byte_recovery(ORIGINAL, &out.decompressed_image, ".rdata");
     let rdata_pct: f64 = if rdata_compared > 0 {
@@ -156,12 +181,20 @@ fn mpress_v219_gauntlet_text_section_byte_exact() {
     };
 
     println!(
-        "mpress v2.19 gauntlet byte recovery: .text {text_matches}/{text_compared} = {text_pct:.2}%  .rdata {rdata_matches}/{rdata_compared} = {rdata_pct:.2}%",
+        "mpress v2.19 gauntlet byte recovery: .text {text_matches}/{text_compared} = {text_pct:.2}% (pre-filter {echo_pct:.2}%)  .rdata {rdata_matches}/{rdata_compared} = {rdata_pct:.2}%",
     );
 
     assert!(
-        text_pct >= 90.0,
-        ".text byte recovery {text_pct:.2}% must be >= 90% on gauntlet fixture (MPRESS LZMAT decode is byte-exact for code sections)",
+        echo_pct < 95.0,
+        "pre-filter .text recovery {echo_pct:.2}% must sit well below the post-filter number so the E8/E9 + RIP-relative branch unfilter is doing the work, not the comparison",
+    );
+    assert!(
+        text_pct >= 99.7,
+        ".text byte recovery {text_pct:.2}% must be >= 99.7% after the E8/E9 + RIP-relative branch unfilter",
+    );
+    assert!(
+        text_pct > echo_pct + 5.0,
+        ".text recovery must jump far past the pre-filter baseline once the branch unfilter runs",
     );
     assert!(
         rdata_pct >= 85.0,

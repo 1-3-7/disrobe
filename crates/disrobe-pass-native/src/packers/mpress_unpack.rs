@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use iced_x86::{ConstantOffsets, Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
+
 use super::mpress_lzma::decode_mpress_lzma;
 use super::pe_sections::{PeImage, PeSection, parse_pe_image};
 use crate::error::{Error, Result};
@@ -31,6 +33,8 @@ pub struct MpressInfo {
     pub section_alignment: u32,
     pub pe_header_off: u32,
     pub is_pe32_plus: bool,
+    pub base_of_code: u32,
+    pub size_of_code: u32,
     pub mpress_page_count: u16,
     pub mpress_payload_len: u32,
 }
@@ -158,7 +162,77 @@ fn assemble_image_from_payload(
         image[mpress2_dst..mpress2_dst + mpress2_copy]
             .copy_from_slice(&packed_bytes[src_start..src_start + mpress2_copy]);
     }
+    unfilter_code_branches(&mut image, info, start_off.saturating_add(max_copy));
     image
+}
+
+fn unfilter_code_branches(image: &mut [u8], info: &MpressInfo, payload_end: usize) {
+    let payload_start: usize = info.mpress1_va as usize;
+    let code_lo: usize = (info.base_of_code as usize).max(payload_start);
+    let code_hi: usize = (info.base_of_code as usize)
+        .saturating_add(info.size_of_code as usize)
+        .min(payload_end)
+        .min(image.len());
+    if code_hi <= code_lo || code_hi - code_lo < 5 {
+        return;
+    }
+    let bitness: u32 = if info.is_pe32_plus { 64 } else { 32 };
+    let start_off: u32 = u32::try_from(code_lo - payload_start).unwrap_or(0);
+    let snapshot: Vec<u8> = image[code_lo..code_hi].to_vec();
+    let region: &mut [u8] = &mut image[code_lo..code_hi];
+    let mut decoder: Decoder<'_> = Decoder::with_ip(bitness, &snapshot, 0, DecoderOptions::NONE);
+    let mut insn: Instruction = Instruction::default();
+    while decoder.can_decode() {
+        let insn_off: usize = decoder.ip() as usize;
+        decoder.decode_out(&mut insn);
+        if insn.is_invalid() {
+            continue;
+        }
+        let offs: ConstantOffsets = decoder.get_constant_offsets(&insn);
+        let field: Option<usize> = branch_or_riprel_field(&insn, offs, insn_off);
+        let Some(field_off) = field else {
+            continue;
+        };
+        if field_off + 4 > region.len() {
+            continue;
+        }
+        let stored: u32 = u32::from_le_bytes([
+            region[field_off],
+            region[field_off + 1],
+            region[field_off + 2],
+            region[field_off + 3],
+        ]);
+        let payload_off: u32 = start_off.wrapping_add(field_off as u32);
+        let recovered: u32 = stored.wrapping_sub(payload_off);
+        region[field_off..field_off + 4].copy_from_slice(&recovered.to_le_bytes());
+    }
+}
+
+fn branch_or_riprel_field(
+    insn: &Instruction,
+    offs: ConstantOffsets,
+    insn_off: usize,
+) -> Option<usize> {
+    let mn: Mnemonic = insn.mnemonic();
+    let is_near_branch: bool = matches!(
+        insn.flow_control(),
+        FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch | FlowControl::Call
+    );
+    if is_near_branch
+        && matches!(mn, Mnemonic::Call | Mnemonic::Jmp)
+        && offs.has_immediate()
+        && offs.immediate_size() == 4
+    {
+        return Some(insn_off + offs.immediate_offset());
+    }
+    if insn.is_ip_rel_memory_operand()
+        && offs.has_displacement()
+        && offs.displacement_size() == 4
+        && matches!(mn, Mnemonic::Lea | Mnemonic::Call)
+    {
+        return Some(insn_off + offs.displacement_offset());
+    }
+    None
 }
 
 fn build_structural_image(
@@ -331,6 +405,9 @@ fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
             "MPRESS header reported zero decompressed size".to_owned(),
         ));
     }
+    let opt_off: usize = (image.pe_header_offset as usize).saturating_add(24);
+    let size_of_code: u32 = read_u32_at(bytes, opt_off.saturating_add(4)).unwrap_or(0);
+    let base_of_code: u32 = read_u32_at(bytes, opt_off.saturating_add(20)).unwrap_or(0);
     Ok(MpressInfo {
         mpress1_va: m1.virtual_address,
         mpress1_vsize: m1.virtual_size,
@@ -347,9 +424,24 @@ fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
         section_alignment: image.section_alignment,
         pe_header_off: image.pe_header_offset,
         is_pe32_plus: image.is_pe32_plus,
+        base_of_code,
+        size_of_code,
         mpress_page_count,
         mpress_payload_len,
     })
+}
+
+fn read_u32_at(bytes: &[u8], off: usize) -> Option<u32> {
+    let end: usize = off.checked_add(4)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        bytes[off],
+        bytes[off + 1],
+        bytes[off + 2],
+        bytes[off + 3],
+    ]))
 }
 
 fn read_mpress_header(bytes: &[u8], raw_off: u32, raw_size: u32) -> Result<(u16, u32)> {
