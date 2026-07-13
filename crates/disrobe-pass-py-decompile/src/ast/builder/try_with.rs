@@ -7564,13 +7564,16 @@ fn parse_except_handlers(
         let mut body_start: usize =
             first_significant(stream, dispatch_idx + 1, next_handler).unwrap_or(dispatch_idx + 1);
         let mut name: Option<String> = None;
+        let mut bound_store: Option<CanonicalOp> = None;
         match stream.ops.get(body_start) {
             Some(CanonicalOp::StoreFast(slot)) => {
                 name = local_name_at(code, *slot, body_start).ok();
+                bound_store = Some(CanonicalOp::StoreFast(*slot));
                 body_start += 1;
             }
             Some(CanonicalOp::StoreName(slot)) => {
                 name = name_at(&code.names, *slot, body_start, "name").ok();
+                bound_store = Some(CanonicalOp::StoreName(*slot));
                 body_start += 1;
             }
             Some(CanonicalOp::Pop) => {
@@ -7589,16 +7592,26 @@ fn parse_except_handlers(
         } else {
             handler_body_end(stream, body_start, next_handler)
         };
+        let pass_through_cap: Option<usize> = if is_return_idiom {
+            None
+        } else {
+            handler_pass_through_return_cap(stream, body_start, next_handler)
+        };
         let raw_body_end: usize = if is_return_idiom {
             raw_body_end
         } else {
-            handler_pass_through_return_cap(stream, body_start, next_handler)
-                .map_or(raw_body_end, |cap: usize| cap.min(raw_body_end))
+            pass_through_cap.map_or(raw_body_end, |cap: usize| cap.min(raw_body_end))
         };
         let body_end: usize = if is_return_idiom {
             raw_body_end
         } else {
             extend_over_nested_cold_handler(stream, body_start, raw_body_end, region_end)
+        };
+        let body_end: usize = match (&bound_store, is_return_idiom, pass_through_cap) {
+            (Some(store), false, None) => {
+                extend_named_handler_over_trailing_branch(stream, body_end, next_handler, store)
+            }
+            _ => body_end,
         };
         let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
         if let Some(bound) = name.as_deref() {
@@ -7957,6 +7970,62 @@ fn eg_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
 fn strip_named_exc_cleanup(body: &mut Vec<Stmt>, bound: &str) {
     body.retain(|s: &Stmt| !is_bound_clear_stmt(s, bound));
     strip_trailing_bound_clear(body, bound);
+    strip_nested_bound_clear_pairs(body, bound);
+}
+
+fn strip_nested_bound_clear_pairs(body: &mut Vec<Stmt>, bound: &str) {
+    for stmt in body.iter_mut() {
+        match stmt {
+            Stmt::If {
+                body: b, orelse, ..
+            }
+            | Stmt::For {
+                body: b, orelse, ..
+            }
+            | Stmt::While {
+                body: b, orelse, ..
+            } => {
+                strip_nested_bound_clear_pairs(b, bound);
+                strip_nested_bound_clear_pairs(orelse, bound);
+            }
+            Stmt::With { body: b, .. } => strip_nested_bound_clear_pairs(b, bound),
+            Stmt::Try {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                strip_nested_bound_clear_pairs(b, bound);
+                strip_nested_bound_clear_pairs(orelse, bound);
+                strip_nested_bound_clear_pairs(finalbody, bound);
+                for handler in handlers.iter_mut() {
+                    strip_nested_bound_clear_pairs(&mut handler.body, bound);
+                }
+            }
+            _ => {}
+        }
+    }
+    remove_adjacent_bound_clear_pairs(body, bound);
+}
+
+fn remove_adjacent_bound_clear_pairs(body: &mut Vec<Stmt>, bound: &str) {
+    let mut i: usize = 0;
+    while i + 1 < body.len() {
+        if is_bound_assign_none_stmt(&body[i], bound) && is_bound_del_stmt(&body[i + 1], bound) {
+            body.remove(i + 1);
+            body.remove(i);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 fn strip_trailing_bound_clear(body: &mut Vec<Stmt>, bound: &str) {
@@ -8106,6 +8175,92 @@ fn extend_over_nested_cold_handler(
         }
     }
     end.min(limit)
+}
+
+fn extend_named_handler_over_trailing_branch(
+    stream: &DecodedStream,
+    naive_end: usize,
+    next_handler: usize,
+    store: &CanonicalOp,
+) -> usize {
+    let hi: usize = next_handler.min(stream.ops.len());
+    let (want_fast, slot): (bool, u32) = match *store {
+        CanonicalOp::StoreFast(s) => (true, s),
+        CanonicalOp::StoreName(s) => (false, s),
+        _ => return naive_end,
+    };
+    if matches!(
+        stream.ops.get(naive_end),
+        Some(
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+        )
+    ) {
+        return naive_end;
+    }
+    let Some(cleanup): Option<usize> =
+        named_exc_cleanup_copy_at(stream, naive_end, hi, want_fast, slot)
+    else {
+        return naive_end;
+    };
+    if cleanup > naive_end && handler_gap_has_statement(stream, naive_end, cleanup) {
+        cleanup
+    } else {
+        naive_end
+    }
+}
+
+fn named_exc_cleanup_copy_at(
+    stream: &DecodedStream,
+    from: usize,
+    hi: usize,
+    want_fast: bool,
+    slot: u32,
+) -> Option<usize> {
+    (from..hi.saturating_sub(3)).find(|&k: &usize| {
+        matches!(stream.ops.get(k), Some(CanonicalOp::LoadConst(_)))
+            && bound_store_matches(stream.ops.get(k + 1), want_fast, slot)
+            && bound_delete_matches(stream.ops.get(k + 2), want_fast, slot)
+            && matches!(stream.ops.get(k + 3), Some(CanonicalOp::Reraise(_)))
+    })
+}
+
+fn bound_store_matches(op: Option<&CanonicalOp>, want_fast: bool, slot: u32) -> bool {
+    match op {
+        Some(CanonicalOp::StoreFast(s)) => want_fast && *s == slot,
+        Some(CanonicalOp::StoreName(s)) => !want_fast && *s == slot,
+        _ => false,
+    }
+}
+
+fn bound_delete_matches(op: Option<&CanonicalOp>, want_fast: bool, slot: u32) -> bool {
+    match op {
+        Some(CanonicalOp::DeleteFast(s)) => want_fast && *s == slot,
+        Some(CanonicalOp::DeleteName(s)) => !want_fast && *s == slot,
+        _ => false,
+    }
+}
+
+fn handler_gap_has_statement(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        !matches!(
+            stream.ops.get(k),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::PopExcept
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::PushExcInfo
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        )
+    })
 }
 
 fn handler_body_end_at_pop_except(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
