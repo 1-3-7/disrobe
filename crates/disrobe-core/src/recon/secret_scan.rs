@@ -843,7 +843,64 @@ pub fn validate(kind: SecretKind, value: &str) -> Confidence {
         SecretKind::NewRelicLicenseKey => validate_newrelic_license(value),
         SecretKind::AnthropicOauth => validate_anthropic_oauth(value),
         SecretKind::SolanaKeypair => Confidence::Confirmed,
+        SecretKind::GithubPat => validate_github_token(value, &["ghp_"]),
+        SecretKind::GithubOauth => validate_github_token(value, &["gho_"]),
+        SecretKind::GithubAppToken => validate_github_token(value, &["ghu_", "ghs_", "ghr_"]),
+        SecretKind::GithubFineGrainedPat => validate_github_token(value, &["github_pat_"]),
         _ => Confidence::Probable,
+    }
+}
+
+const GITHUB_CHECKSUM_LEN: usize = 6;
+const GITHUB_BASE62_ALPHABET: &[u8; 62] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+#[inline]
+const fn is_github_checksummed(kind: SecretKind) -> bool {
+    matches!(
+        kind,
+        SecretKind::GithubPat
+            | SecretKind::GithubOauth
+            | SecretKind::GithubAppToken
+            | SecretKind::GithubFineGrainedPat
+    )
+}
+
+const fn base62_encode_checksum(mut value: u32) -> [u8; GITHUB_CHECKSUM_LEN] {
+    let mut out: [u8; GITHUB_CHECKSUM_LEN] = [GITHUB_BASE62_ALPHABET[0]; GITHUB_CHECKSUM_LEN];
+    let mut idx: usize = GITHUB_CHECKSUM_LEN;
+    while value > 0 && idx > 0 {
+        idx -= 1;
+        out[idx] = GITHUB_BASE62_ALPHABET[(value % 62) as usize];
+        value /= 62;
+    }
+    out
+}
+
+fn validate_github_token(value: &str, prefixes: &[&str]) -> Confidence {
+    let Some(body): Option<&str> = prefixes.iter().find_map(|p: &&str| value.strip_prefix(*p))
+    else {
+        return Confidence::Speculative;
+    };
+    let Some(split): Option<usize> = body.len().checked_sub(GITHUB_CHECKSUM_LEN) else {
+        return Confidence::Speculative;
+    };
+    if split == 0 {
+        return Confidence::Speculative;
+    }
+    let (content, checksum): (&str, &str) = body.split_at(split);
+    if !checksum
+        .bytes()
+        .all(|b: u8| GITHUB_BASE62_ALPHABET.contains(&b))
+    {
+        return Confidence::Speculative;
+    }
+    let expected: [u8; GITHUB_CHECKSUM_LEN] =
+        base62_encode_checksum(crate::codec::crc32_ieee(content.as_bytes()));
+    if checksum.as_bytes() == expected.as_slice() {
+        Confidence::Confirmed
+    } else {
+        Confidence::Speculative
     }
 }
 
@@ -1045,7 +1102,7 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
             };
             let preview: String = redact(matched);
             claimed.push((offset, offset + matched.len()));
-            findings.push(finding_for(
+            let mut finding: Finding = finding_for(
                 rule.kind,
                 rule.code,
                 rule.severity,
@@ -1053,7 +1110,11 @@ pub fn scan_bytes(bytes: &[u8], uri: Option<&str>) -> Vec<Finding> {
                 matched,
                 preview,
                 uri,
-            ));
+            );
+            if is_github_checksummed(rule.kind) {
+                finding.validation = Some(validate(rule.kind, matched));
+            }
+            findings.push(finding);
         }
     }
 
