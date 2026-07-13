@@ -205,7 +205,16 @@ fn classify(
     if is_const(insn.op) {
         return (NirOp::Const, Vec::new());
     }
-    (NirOp::Nop, Vec::new())
+    if insn.op == OP_NOP {
+        return (NirOp::Nop, Vec::new());
+    }
+    (
+        NirOp::Unmodeled {
+            opcode: insn.op,
+            offset: insn.pc,
+        },
+        Vec::new(),
+    )
 }
 
 fn classify_invoke(
@@ -278,6 +287,8 @@ fn byte_arith_flags(insns: &[DalvikInsn]) -> Vec<bool> {
     }
     flags
 }
+
+const OP_NOP: u8 = 0x00;
 
 const fn is_invoke(op: u8) -> bool {
     matches!(op, 0x6E..=0x72 | 0x74..=0x78 | 0xF8 | 0xF9 | 0xFA..=0xFD)
