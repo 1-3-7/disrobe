@@ -90,8 +90,8 @@ fn nspack_byte_recovery_hash() {
         "hash",
         "hash.packed.nspack.exe",
         "hash.original.exe",
-        93.5,
-        99.0,
+        94.1,
+        99.3,
     );
 }
 
@@ -113,8 +113,8 @@ fn nspack_byte_recovery_cmd() {
         "cmd",
         "cmd.packed.nspack.exe",
         "cmd.original.exe",
-        92.0,
-        99.0,
+        92.6,
+        99.3,
     );
 }
 
@@ -124,8 +124,8 @@ fn nspack_byte_recovery_psexec() {
         "psexec",
         "psexec.packed.nspack.exe",
         "psexec.original.exe",
-        73.5,
-        98.0,
+        74.0,
+        98.9,
     );
 }
 
@@ -135,8 +135,8 @@ fn nspack_byte_recovery_handle() {
         "handle",
         "handle.packed.nspack.exe",
         "handle.original.exe",
-        49.5,
-        98.0,
+        50.1,
+        98.6,
     );
 }
 
@@ -146,8 +146,8 @@ fn nspack_byte_recovery_calc() {
         "calc",
         "calc.packed.nspack.exe",
         "calc.original.exe",
-        89.0,
-        98.0,
+        90.0,
+        99.2,
     );
 }
 
