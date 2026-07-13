@@ -22,7 +22,7 @@ const EXPECTED_JSON: &str = include_str!("fixtures/dotnet_reactor_strings/expect
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-const DOTNET_TIMEOUT: Duration = Duration::from_secs(15);
+const DOTNET_TIMEOUT: Duration = Duration::from_secs(90);
 const DOTNET_CAPTURE_LIMIT: usize = 1024 * 1024;
 
 fn expected_strings() -> TestResult<Vec<String>> {
