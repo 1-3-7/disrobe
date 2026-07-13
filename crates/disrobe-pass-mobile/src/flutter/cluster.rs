@@ -1,6 +1,9 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::cid_table::{cid_table, is_application_cid, matches_version, predefined_name};
+use super::string_pool::{DartStringPool, recover_string_pool};
 
 const DART_VARINT_DATA_BITS: u32 = 7;
 
@@ -153,7 +156,7 @@ pub struct DartSnapshotFraming {
     pub num_base_objects: u64,
     pub num_objects: u64,
     pub num_clusters: u64,
-    pub fields_total_bytes: u64,
+    pub instructions_table_len: u64,
     pub observed_cid_tags: Vec<u64>,
     pub cluster_schema: Option<DartClusterSchemaReport>,
     pub version_keyed_clusters_unparsed: u64,
@@ -166,23 +169,27 @@ const FRAMING_WALL: &str = "cluster object bodies are version-keyed: pinned Dart
 pub fn parse_snapshot_framing(serialized_after_features: &[u8]) -> DartSnapshotFraming {
     let mut stream: DartReadStream<'_> = DartReadStream::new(serialized_after_features);
 
-    let (num_base_objects, num_objects, num_clusters, fields_total_bytes): (u64, u64, u64, u64) =
-        match read_preamble(&mut stream) {
-            Some(values) => values,
-            None => {
-                return DartSnapshotFraming {
-                    status: ClusterFramingStatus::PreambleUnreadable,
-                    num_base_objects: 0,
-                    num_objects: 0,
-                    num_clusters: 0,
-                    fields_total_bytes: 0,
-                    observed_cid_tags: Vec::new(),
-                    cluster_schema: None,
-                    version_keyed_clusters_unparsed: 0,
-                    wall_reason: FRAMING_WALL.to_owned(),
-                };
-            }
-        };
+    let (num_base_objects, num_objects, num_clusters, instructions_table_len): (
+        u64,
+        u64,
+        u64,
+        u64,
+    ) = match read_preamble(&mut stream) {
+        Some(values) => values,
+        None => {
+            return DartSnapshotFraming {
+                status: ClusterFramingStatus::PreambleUnreadable,
+                num_base_objects: 0,
+                num_objects: 0,
+                num_clusters: 0,
+                instructions_table_len: 0,
+                observed_cid_tags: Vec::new(),
+                cluster_schema: None,
+                version_keyed_clusters_unparsed: 0,
+                wall_reason: FRAMING_WALL.to_owned(),
+            };
+        }
+    };
 
     if !preamble_is_plausible(num_base_objects, num_objects, num_clusters) {
         return DartSnapshotFraming {
@@ -190,7 +197,7 @@ pub fn parse_snapshot_framing(serialized_after_features: &[u8]) -> DartSnapshotF
             num_base_objects,
             num_objects,
             num_clusters,
-            fields_total_bytes,
+            instructions_table_len,
             observed_cid_tags: Vec::new(),
             cluster_schema: None,
             version_keyed_clusters_unparsed: num_clusters,
@@ -205,7 +212,7 @@ pub fn parse_snapshot_framing(serialized_after_features: &[u8]) -> DartSnapshotF
         num_base_objects,
         num_objects,
         num_clusters,
-        fields_total_bytes,
+        instructions_table_len,
         observed_cid_tags,
         cluster_schema: None,
         version_keyed_clusters_unparsed: num_clusters,
@@ -305,12 +312,12 @@ fn read_preamble(stream: &mut DartReadStream<'_>) -> Option<(u64, u64, u64, u64)
     let num_base_objects: u64 = stream.read_unsigned()?;
     let num_objects: u64 = stream.read_unsigned()?;
     let num_clusters: u64 = stream.read_unsigned()?;
-    let fields_total_bytes: u64 = stream.read_unsigned()?;
+    let instructions_table_len: u64 = stream.read_unsigned()?;
     Some((
         num_base_objects,
         num_objects,
         num_clusters,
-        fields_total_bytes,
+        instructions_table_len,
     ))
 }
 
@@ -344,6 +351,105 @@ fn scan_cid_tags(stream: &mut DartReadStream<'_>, num_clusters: u64) -> Vec<u64>
         }
     }
     tags
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartDeclaredNames {
+    pub class_names: Vec<String>,
+    pub member_names: Vec<String>,
+    pub library_uris: Vec<String>,
+}
+
+#[must_use]
+pub fn recover_declared_names(isolate_data: &[u8]) -> DartDeclaredNames {
+    let pool: DartStringPool = recover_string_pool(isolate_data);
+    let mut member_names: Vec<String> = Vec::with_capacity(
+        pool.method_or_field_names.len()
+            + pool.getter_selectors.len()
+            + pool.setter_selectors.len()
+            + pool.init_selectors.len(),
+    );
+    member_names.extend(pool.method_or_field_names.iter().cloned());
+    member_names.extend(pool.getter_selectors.iter().cloned());
+    member_names.extend(pool.setter_selectors.iter().cloned());
+    member_names.extend(pool.init_selectors.iter().cloned());
+    member_names.sort_unstable();
+    member_names.dedup();
+    DartDeclaredNames {
+        class_names: pool.class_names,
+        member_names,
+        library_uris: pool.library_uris,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredNameRecall {
+    pub declared_total: usize,
+    pub recovered_total: usize,
+    pub recovered_class_names: Vec<String>,
+    pub recovered_member_names: Vec<String>,
+    pub missing_names: Vec<String>,
+}
+
+impl DeclaredNameRecall {
+    #[must_use]
+    pub fn recall(&self) -> f64 {
+        if self.declared_total == 0 {
+            return 0.0;
+        }
+        self.recovered_total as f64 / self.declared_total as f64
+    }
+}
+
+#[must_use]
+pub fn score_declared_name_recall(
+    recovered: &DartDeclaredNames,
+    declared_class_names: &[String],
+    declared_member_names: &[String],
+) -> DeclaredNameRecall {
+    let recovered_classes: BTreeSet<&str> =
+        recovered.class_names.iter().map(String::as_str).collect();
+    let recovered_members: BTreeSet<&str> =
+        recovered.member_names.iter().map(String::as_str).collect();
+
+    let mut recovered_class_names: Vec<String> = Vec::new();
+    let mut recovered_member_names: Vec<String> = Vec::new();
+    let mut missing_names: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+
+    for name in declared_class_names {
+        if !seen.insert(name.as_str()) {
+            continue;
+        }
+        if recovered_classes.contains(name.as_str()) {
+            recovered_class_names.push(name.clone());
+        } else {
+            missing_names.push(name.clone());
+        }
+    }
+    for name in declared_member_names {
+        if !seen.insert(name.as_str()) {
+            continue;
+        }
+        if recovered_members.contains(name.as_str()) {
+            recovered_member_names.push(name.clone());
+        } else {
+            missing_names.push(name.clone());
+        }
+    }
+
+    recovered_class_names.sort_unstable();
+    recovered_member_names.sort_unstable();
+    missing_names.sort_unstable();
+    let recovered_total: usize = recovered_class_names.len() + recovered_member_names.len();
+    let declared_total: usize = recovered_total + missing_names.len();
+    DeclaredNameRecall {
+        declared_total,
+        recovered_total,
+        recovered_class_names,
+        recovered_member_names,
+        missing_names,
+    }
 }
 
 #[cfg(test)]
@@ -587,5 +693,329 @@ mod tests {
         let framing: DartSnapshotFraming = parse_snapshot_framing(&[]);
         assert_eq!(framing.status, ClusterFramingStatus::PreambleUnreadable);
         assert!(framing.wall_reason.contains("SDK schema"));
+    }
+
+    fn string_object(text: &str) -> Vec<u8> {
+        let mut value: u64 = (text.len() as u64) << 1;
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let low: u8 = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(low | 0x80);
+                break;
+            }
+            out.push(low);
+        }
+        out.extend_from_slice(text.as_bytes());
+        out
+    }
+
+    #[test]
+    fn declared_names_classify_class_member_and_library_roles() {
+        let mut data: Vec<u8> = vec![0u8];
+        for tok in [
+            "InventoryItem",
+            "totalCarryingValue",
+            "get:isBackordered",
+            "package:app/main.dart",
+            "widget-alpha",
+        ] {
+            data.extend_from_slice(&string_object(tok));
+            data.push(0u8);
+        }
+        let names: DartDeclaredNames = recover_declared_names(&data);
+        assert!(
+            names
+                .class_names
+                .iter()
+                .any(|c: &String| c == "InventoryItem"),
+            "upper-camel token is a class name, got {:?}",
+            names.class_names
+        );
+        assert!(
+            names
+                .member_names
+                .iter()
+                .any(|m: &String| m == "totalCarryingValue"),
+            "lower-camel token is a member name, got {:?}",
+            names.member_names
+        );
+        assert!(
+            names
+                .member_names
+                .iter()
+                .any(|m: &String| m == "isBackordered"),
+            "a get: selector contributes its scrubbed member name, got {:?}",
+            names.member_names
+        );
+        assert!(
+            names
+                .library_uris
+                .iter()
+                .any(|u: &String| u == "package:app/main.dart")
+        );
+    }
+
+    #[test]
+    fn declared_name_recall_counts_hits_and_keeps_misses_without_inventing() {
+        let recovered: DartDeclaredNames = DartDeclaredNames {
+            class_names: vec!["InventoryItem".to_owned(), "WarehouseLedger".to_owned()],
+            member_names: vec!["totalCarryingValue".to_owned(), "fibonacciStep".to_owned()],
+            library_uris: Vec::new(),
+        };
+        let declared_classes: Vec<String> =
+            vec!["InventoryItem".to_owned(), "WarehouseLedger".to_owned()];
+        let declared_members: Vec<String> = vec![
+            "totalCarryingValue".to_owned(),
+            "fibonacciStep".to_owned(),
+            "extendedValue".to_owned(),
+            "skuLabel".to_owned(),
+        ];
+        let score: DeclaredNameRecall =
+            score_declared_name_recall(&recovered, &declared_classes, &declared_members);
+        assert_eq!(score.declared_total, 6);
+        assert_eq!(score.recovered_total, 4);
+        assert!(score.missing_names.contains(&"extendedValue".to_owned()));
+        assert!(score.missing_names.contains(&"skuLabel".to_owned()));
+        assert!((score.recall() - 4.0 / 6.0).abs() < 1e-9);
+    }
+
+    fn corpus_sample_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("mobile")
+            .join("flutter")
+            .join("disrobe_sample")
+    }
+
+    fn section_bounds(bytes: &[u8], want: &str) -> Option<(usize, usize)> {
+        let e_shoff: usize = u64::from_le_bytes(bytes[0x28..0x30].try_into().unwrap()) as usize;
+        let e_shentsize: usize = u16::from_le_bytes(bytes[0x3a..0x3c].try_into().unwrap()) as usize;
+        let e_shnum: usize = u16::from_le_bytes(bytes[0x3c..0x3e].try_into().unwrap()) as usize;
+        let e_shstrndx: usize = u16::from_le_bytes(bytes[0x3e..0x40].try_into().unwrap()) as usize;
+        let shstr_hdr: usize = e_shoff + e_shstrndx * e_shentsize;
+        let shstr_off: usize =
+            u64::from_le_bytes(bytes[shstr_hdr + 24..shstr_hdr + 32].try_into().unwrap()) as usize;
+        for i in 0..e_shnum {
+            let sh: usize = e_shoff + i * e_shentsize;
+            let name_off: usize =
+                u32::from_le_bytes(bytes[sh..sh + 4].try_into().unwrap()) as usize;
+            let name_start: usize = shstr_off + name_off;
+            let name_end: usize = bytes[name_start..]
+                .iter()
+                .position(|b: &u8| *b == 0)
+                .map_or(name_start, |p: usize| name_start + p);
+            if std::str::from_utf8(&bytes[name_start..name_end]).unwrap_or("") == want {
+                let off: usize =
+                    u64::from_le_bytes(bytes[sh + 24..sh + 32].try_into().unwrap()) as usize;
+                let size: usize =
+                    u64::from_le_bytes(bytes[sh + 32..sh + 40].try_into().unwrap()) as usize;
+                return Some((off, size));
+            }
+        }
+        None
+    }
+
+    fn strip_elf_symtab(bytes: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = bytes.to_vec();
+        let e_shoff: usize = u64::from_le_bytes(out[0x28..0x30].try_into().unwrap()) as usize;
+        let e_shentsize: usize = u16::from_le_bytes(out[0x3a..0x3c].try_into().unwrap()) as usize;
+        let e_shnum: usize = u16::from_le_bytes(out[0x3c..0x3e].try_into().unwrap()) as usize;
+        let e_shstrndx: usize = u16::from_le_bytes(out[0x3e..0x40].try_into().unwrap()) as usize;
+        let shstr_hdr: usize = e_shoff + e_shstrndx * e_shentsize;
+        let shstr_off: usize =
+            u64::from_le_bytes(out[shstr_hdr + 24..shstr_hdr + 32].try_into().unwrap()) as usize;
+        for i in 0..e_shnum {
+            let sh: usize = e_shoff + i * e_shentsize;
+            let name_off: usize = u32::from_le_bytes(out[sh..sh + 4].try_into().unwrap()) as usize;
+            let name_start: usize = shstr_off + name_off;
+            let name_end: usize = out[name_start..]
+                .iter()
+                .position(|b: &u8| *b == 0)
+                .map_or(name_start, |p: usize| name_start + p);
+            let name: String = String::from_utf8_lossy(&out[name_start..name_end]).into_owned();
+            if name == ".symtab" || name == ".strtab" {
+                out[sh + 4..sh + 8].copy_from_slice(&0u32.to_le_bytes());
+                out[sh + 32..sh + 40].copy_from_slice(&0u64.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    fn count_iso_text_func_symbols(bytes: &[u8], iso_start: u64, iso_size: u64) -> usize {
+        let Some((symoff, symsize)): Option<(usize, usize)> = section_bounds(bytes, ".symtab")
+        else {
+            return 0;
+        };
+        let iso_end: u64 = iso_start + iso_size;
+        let mut count: usize = 0;
+        let mut i: usize = 0;
+        while i + 24 <= symsize {
+            let base: usize = symoff + i;
+            let st_info: u8 = bytes[base + 4];
+            let st_value: u64 = u64::from_le_bytes(bytes[base + 8..base + 16].try_into().unwrap());
+            let st_size: u64 = u64::from_le_bytes(bytes[base + 16..base + 24].try_into().unwrap());
+            if (st_info & 0xf) == 2 && st_size > 0 && st_value >= iso_start && st_value < iso_end {
+                count += 1;
+            }
+            i += 24;
+        }
+        count
+    }
+
+    #[test]
+    fn stripped_libapp_declared_name_recall_vs_kernel_dill() {
+        let dir: std::path::PathBuf = corpus_sample_dir();
+        let so: Vec<u8> = std::fs::read(dir.join("libapp_arm64.so"))
+            .expect("committed real AOT libapp must be present");
+        let dill: Vec<u8> = std::fs::read(dir.join("disrobe_aot_sample.app.dill"))
+            .expect("committed same-build kernel .dill must be present");
+
+        let full_layout = super::super::parse_libapp_so(&so).expect("parse unstripped libapp");
+        assert!(
+            !full_layout.function_symbols.is_empty(),
+            "the unstripped .so drives offset->name from its ELF symtab"
+        );
+        let iso = full_layout
+            .isolate_snapshot_instructions
+            .as_ref()
+            .expect("isolate instructions section");
+        let (iso_start, iso_size): (u64, u64) = (iso.address, iso.size);
+
+        let stripped: Vec<u8> = strip_elf_symtab(&so);
+        let stripped_layout =
+            super::super::parse_libapp_so(&stripped).expect("parse stripped libapp");
+        assert!(
+            stripped_layout.function_symbols.is_empty(),
+            "after stripping .symtab the ELF offset->name path yields nothing, got {} symbols",
+            stripped_layout.function_symbols.len()
+        );
+        assert!(
+            stripped_layout.isolate_snapshot_data.is_some(),
+            "the snapshot sections still resolve from .dynsym after stripping .symtab"
+        );
+
+        let structure =
+            super::super::decompile_libapp_so_structured(&stripped).expect("structured recovery");
+        assert_eq!(
+            structure.named_function_count, 0,
+            "a stripped image has no symtab-backed offset->name pairs"
+        );
+        let symtab_iso_funcs: usize = count_iso_text_func_symbols(&so, iso_start, iso_size);
+        assert_eq!(
+            structure.framing.instructions_table_len as usize, symtab_iso_funcs,
+            "the corrected header field must equal the isolate code-entry count the ELF symtab reports independently"
+        );
+        assert_eq!(
+            symtab_iso_funcs, 3237,
+            "pinned fixture: the isolate instructions image holds 3237 code entries"
+        );
+
+        let iso_data: Vec<u8> =
+            super::super::isolate_data_bytes(&stripped).expect("isolate data from stripped image");
+        let recovered: DartDeclaredNames = recover_declared_names(&iso_data);
+
+        let kernel = super::super::kernel::parse_kernel(&dill).expect("parse .dill");
+        let mut declared_classes: Vec<String> = Vec::new();
+        let mut declared_members: Vec<String> = Vec::new();
+        for lib in &kernel.libraries {
+            for class in &lib.classes {
+                declared_classes.push(class.name.clone());
+                for procedure in &class.procedures {
+                    declared_members.push(procedure.name.clone());
+                }
+                for field in &class.fields {
+                    declared_members.push(field.clone());
+                }
+            }
+            for procedure in &lib.procedures {
+                declared_members.push(procedure.name.clone());
+            }
+        }
+        assert!(
+            declared_classes
+                .iter()
+                .any(|c: &String| c == "InventoryItem")
+                && declared_classes
+                    .iter()
+                    .any(|c: &String| c == "WarehouseLedger"),
+            "the .dill declares the two app classes"
+        );
+
+        let score: DeclaredNameRecall =
+            score_declared_name_recall(&recovered, &declared_classes, &declared_members);
+
+        for class in ["InventoryItem", "WarehouseLedger"] {
+            assert!(
+                score
+                    .recovered_class_names
+                    .iter()
+                    .any(|n: &String| n == class),
+                "class {class} must recover from the stripped snapshot string cluster"
+            );
+        }
+        for member in [
+            "totalCarryingValue",
+            "countBackordered",
+            "mostValuable",
+            "fibonacciStep",
+        ] {
+            assert!(
+                score
+                    .recovered_member_names
+                    .iter()
+                    .any(|n: &String| n == member),
+                "member {member} must recover from the stripped snapshot, got {:?}",
+                score.recovered_member_names
+            );
+        }
+        for dropped in [
+            "classifyMagnitude",
+            "extendedValue",
+            "isBackordered",
+            "withRestock",
+        ] {
+            assert!(
+                score.missing_names.iter().any(|n: &String| n == dropped),
+                "{dropped} is inlined and tree-shaken out of the product AOT snapshot; recovery must report it missing, never invent it"
+            );
+        }
+
+        assert!(
+            score.recovered_total >= 6,
+            "at least the six surviving declarations must recover, got {}",
+            score.recovered_total
+        );
+        assert!(
+            score.recovered_total < score.declared_total,
+            "a real ceiling: field names (DropFields) and inlined leaves do not survive AOT, so recall stays below 1.0 ({}/{})",
+            score.recovered_total,
+            score.declared_total
+        );
+        for name in score
+            .recovered_class_names
+            .iter()
+            .chain(score.recovered_member_names.iter())
+        {
+            assert!(
+                iso_data
+                    .windows(name.len())
+                    .any(|w: &[u8]| w == name.as_bytes()),
+                "recovered name {name} must appear verbatim in the snapshot, never invented"
+            );
+        }
+
+        eprintln!(
+            "stripped flutter declared-name recall vs .dill: recovered={}/{} ({:.1}%) instructions_table_len={} symtab_iso_code_entries={} missing={:?}",
+            score.recovered_total,
+            score.declared_total,
+            score.recall() * 100.0,
+            structure.framing.instructions_table_len,
+            symtab_iso_funcs,
+            score.missing_names
+        );
     }
 }
