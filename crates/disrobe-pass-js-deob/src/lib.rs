@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
+pub mod analysis;
 mod bundle;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
@@ -31,6 +32,10 @@ mod typescript;
 mod unminify;
 pub mod v8;
 
+pub use analysis::{
+    HotspotConfig, HotspotFinding, HotspotRule, HotspotSeverity, HotspotSpan, analyze_hotspots,
+    analyze_hotspots_with,
+};
 pub use bundle::{
     BundlerDetection, BundlerKind, ChunkAnnotation, ChunkKind, ChunkNode, DecodedInlineMap,
     DecodedMappings, DeployedRecovery, ExtractedModule, MappingSegment, MergedTreeRecovery,
