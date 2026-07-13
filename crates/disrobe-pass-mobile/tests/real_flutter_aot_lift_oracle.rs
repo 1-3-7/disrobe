@@ -336,6 +336,14 @@ fn pool_doubles(report: &AotLiftReport) -> Vec<f64> {
         .collect::<Vec<f64>>()
 }
 
+fn inline_doubles(report: &AotLiftReport) -> Vec<f64> {
+    report
+        .inline_double_literals
+        .iter()
+        .filter_map(DartPoolLiteral::as_double)
+        .collect::<Vec<f64>>()
+}
+
 #[test]
 fn pool_resolution_covers_wide_offset_load_forms() {
     let report: AotLiftReport = aot_report();
@@ -430,11 +438,53 @@ fn pool_literals_match_dill_declared_constants() {
         !doubles
             .iter()
             .any(|d: &f64| d.to_bits() == 4.25f64.to_bits()),
-        "4.25 is an fmov-encodable inline immediate, not an ObjectPool entry; it stays an honest residual"
+        "4.25 is an fmov-encodable inline immediate, not an ObjectPool entry; it never enters the pool literal set"
     );
     eprintln!(
-        "walls: 4.25 is materialized as an inline fmov immediate (not a pool entry); Smi integer immediates and per-slot attribution stay behind the version-keyed ObjectPool cluster"
+        "pool residual: 4.25 is not an ObjectPool entry (it is recovered from the inline fmov path); Smi integer immediates and per-slot attribution stay behind the version-keyed ObjectPool cluster"
     );
+}
+
+#[test]
+fn inline_fmov_doubles_recover_the_pool_double_residual() {
+    let kernel: DartKernel = dill_ground_truth();
+    let report: AotLiftReport = aot_report();
+    let source: String = dill_source_text(&kernel);
+    let inline: Vec<f64> = inline_doubles(&report);
+
+    eprintln!(
+        "inline fmov double literals: count={} values={:?}",
+        report.inline_double_count, inline,
+    );
+
+    assert_eq!(
+        report.inline_double_count,
+        report.inline_double_literals.len(),
+        "the inline count must equal the recovered inline literal inventory"
+    );
+    assert!(
+        source.contains("4.25"),
+        "the .dill declares the 4.25 source literal"
+    );
+    assert!(
+        inline
+            .iter()
+            .any(|d: &f64| d.to_bits() == 4.25f64.to_bits()),
+        "4.25 is materialized as an inline fmov #imm and must decode byte-exact from the instruction stream, got {inline:?}"
+    );
+    assert!(
+        !pool_doubles(&report)
+            .iter()
+            .any(|d: &f64| d.to_bits() == 4.25f64.to_bits()),
+        "the inline path is distinct from the ObjectPool: 4.25 must not appear in pool_literals"
+    );
+    for (token, value) in [("19.95", 19.95f64), ("149.50", 149.5), ("2400.00", 2400.0)] {
+        assert!(source.contains(token), "sanity: {token} is declared");
+        assert!(
+            !inline.iter().any(|d: &f64| d.to_bits() == value.to_bits()),
+            "{value} is stored in the ObjectPool, not as an fmov immediate; the two paths must not overlap"
+        );
+    }
 }
 
 #[test]

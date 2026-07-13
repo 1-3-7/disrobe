@@ -104,6 +104,7 @@ pub struct DartLiftedFunction {
     pub calls: Vec<DartCallSite>,
     pub elided_checks: Vec<DartElidedCheck>,
     pub pool_refs: Vec<DartPoolRef>,
+    pub inline_double_literals: Vec<u64>,
     pub basic_block_count: usize,
     pub conditional_branch_count: usize,
     pub source_conditional_estimate: usize,
@@ -203,12 +204,16 @@ pub struct AotLiftReport {
     pub pool_refs_wide_offset: usize,
     pub pool_content_resolved: usize,
     pub pool_literals: Vec<DartPoolLiteral>,
+    pub inline_double_literals: Vec<DartPoolLiteral>,
+    pub inline_double_count: usize,
     pub notes: Vec<String>,
 }
 
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
 const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form; string literals and ObjectPool cluster kImmediate double constants are decoded to typed values, while per-slot attribution, Smi integer immediates, and fmov-inlined doubles need the fully deserialized version-keyed ObjectPool cluster and stay unresolved rather than fabricated";
+
+const INLINE_DOUBLE_NOTE: &str = "double literals that gen_snapshot materializes with an inline fmov 8-bit immediate never reach the ObjectPool; they are decoded byte-exact from the AArch64 fmov encoding and attributed to the function that loads them";
 
 const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes and are never fabricated. field access surfaces by offset only";
 
@@ -292,8 +297,12 @@ pub fn lift_functions(
     let mut elided_write_barriers: usize = 0;
     let mut pool_refs_total: usize = 0;
     let mut pool_refs_wide_offset: usize = 0;
+    let mut inline_double_bits: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
 
     for func in &functions {
+        for bits in &func.inline_double_literals {
+            inline_double_bits.insert(*bits);
+        }
         let mut saw_self_recursion: bool = false;
         for call in &func.calls {
             match call.kind {
@@ -341,9 +350,16 @@ pub fn lift_functions(
     };
     let pool_content_resolved: usize = pool_literals.len();
 
+    let inline_double_literals: Vec<DartPoolLiteral> = inline_double_bits
+        .into_iter()
+        .map(DartPoolLiteral::Double)
+        .collect::<Vec<DartPoolLiteral>>();
+    let inline_double_count: usize = inline_double_literals.len();
+
     let mut notes: Vec<String> = Vec::new();
     if abi_resolved {
         notes.push(POOL_CONTENT_NOTE.to_owned());
+        notes.push(INLINE_DOUBLE_NOTE.to_owned());
         notes.push(FIELD_NAME_WALL_NOTE.to_owned());
         notes.push(INLINE_WALL_NOTE.to_owned());
     } else {
@@ -370,6 +386,8 @@ pub fn lift_functions(
         pool_refs_wide_offset,
         pool_content_resolved,
         pool_literals,
+        inline_double_literals,
+        inline_double_count,
         notes,
     }
 }
@@ -388,9 +406,11 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
     let mut calls: Vec<DartCallSite> = Vec::new();
     let mut elided_checks: Vec<DartElidedCheck> = Vec::new();
     let mut pool_refs: Vec<DartPoolRef> = Vec::new();
+    let mut inline_double_literals: Vec<u64> = Vec::new();
 
     if abi_resolved {
         pool_refs = resolve_pool_refs(&func.instructions);
+        inline_double_literals = recover_inline_double_literals(&func.instructions);
         for (i, insn) in func.instructions.iter().enumerate() {
             match insn.flow {
                 Arm64FlowKind::DirectCall => {
@@ -423,6 +443,7 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
         calls,
         elided_checks,
         pool_refs,
+        inline_double_literals,
         basic_block_count,
         conditional_branch_count,
         source_conditional_estimate,
@@ -742,6 +763,41 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
     refs
 }
 
+const FMOV_DOUBLE_IMM_MASK: u32 = 0xFFE0_1E00;
+
+const FMOV_DOUBLE_IMM_MATCH: u32 = 0x1E60_1000;
+
+#[must_use]
+fn recover_inline_double_literals(instructions: &[Arm64Instruction]) -> Vec<u64> {
+    let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    for insn in instructions {
+        if let Some(bits) = fmov_double_immediate(insn.bytes)
+            && f64::from_bits(bits).is_finite()
+        {
+            seen.insert(bits);
+        }
+    }
+    seen.into_iter().collect::<Vec<u64>>()
+}
+
+#[must_use]
+fn fmov_double_immediate(raw: u32) -> Option<u64> {
+    if raw & FMOV_DOUBLE_IMM_MASK != FMOV_DOUBLE_IMM_MATCH {
+        return None;
+    }
+    let imm8: u8 = ((raw >> 13) & 0xFF) as u8;
+    Some(vfp_expand_double(imm8))
+}
+
+#[must_use]
+const fn vfp_expand_double(imm8: u8) -> u64 {
+    let sign: u64 = ((imm8 >> 7) & 1) as u64;
+    let b6: u64 = ((imm8 >> 6) & 1) as u64;
+    let exp: u64 = ((1 - b6) << 10) | ((0xFF * b6) << 2) | ((imm8 >> 4) & 0x3) as u64;
+    let frac: u64 = ((imm8 & 0xF) as u64) << 48;
+    (sign << 63) | (exp << 52) | frac
+}
+
 #[must_use]
 fn pool_slot_from(rn: u8, byte_off: u64) -> Option<u64> {
     if rn != POOL_REG || !byte_off.is_multiple_of(POOL_ENTRY_BYTES) {
@@ -1046,6 +1102,61 @@ mod tests {
             .find(|p: &&DartPoolRef| p.form == DartPoolLoadForm::ShiftedAdd)
             .expect("add x16,x27,#1,lsl#12 then ldr must resolve a wide pool slot");
         assert_eq!(wide.slot_index, ((1u64 << 12) + 16) / 8);
+    }
+
+    fn fmov_d(imm8: u8, rd: u32) -> u32 {
+        0x1E60_1000 | (u32::from(imm8) << 13) | rd
+    }
+
+    #[test]
+    fn decodes_fmov_double_immediate_byte_exact() {
+        assert_eq!(
+            fmov_double_immediate(fmov_d(0x11, 0)),
+            Some(4.25f64.to_bits()),
+            "fmov d0,#4.25 has imm8 0x11 and must decode byte-exact"
+        );
+        assert_eq!(
+            fmov_double_immediate(fmov_d(0x00, 3)).map(f64::from_bits),
+            Some(2.0),
+            "imm8 0x00 encodes 2.0 regardless of destination register"
+        );
+        assert_eq!(
+            fmov_double_immediate(fmov_d(0xF0, 5)).map(f64::from_bits),
+            Some(-1.0),
+            "the sign bit of imm8 flips to a negative literal"
+        );
+        assert_eq!(
+            fmov_double_immediate(ldr_pool(0, 8)),
+            None,
+            "a pool load is not an fmov immediate"
+        );
+    }
+
+    #[test]
+    fn lifts_inline_fmov_double_and_attributes_it_to_the_function() {
+        let bytes: Vec<u8> = words(&[fmov_d(0x11, 0), ret()]);
+        let func: Arm64Function =
+            disassemble_function(&bytes, 0x100, 0, bytes.len(), Some("build".to_owned()));
+        let index: SymbolIndex = SymbolIndex::build(&[symbol(0x100, 0x08, "build")]);
+        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        assert_eq!(
+            lifted.inline_double_literals,
+            vec![4.25f64.to_bits()],
+            "the fmov #4.25 must lift as an inline double attributed to build, got {:?}",
+            lifted.inline_double_literals
+        );
+    }
+
+    #[test]
+    fn unresolved_version_suppresses_inline_double_recovery() {
+        let bytes: Vec<u8> = words(&[fmov_d(0x11, 0), ret()]);
+        let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
+        let index: SymbolIndex = SymbolIndex::build(&[]);
+        let lifted: DartLiftedFunction = lift_one(&func, &index, false);
+        assert!(
+            lifted.inline_double_literals.is_empty(),
+            "an unpinned ABI must not decode inline immediates"
+        );
     }
 
     #[test]
