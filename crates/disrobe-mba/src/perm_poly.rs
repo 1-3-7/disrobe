@@ -172,7 +172,12 @@ fn reconstruct_monomial(differences: &[u128], bits: u32, mask: u128) -> Option<V
             *slot = slot.wrapping_add(coefficient.wrapping_mul(*stir) & mask) & mask;
         }
     }
-    Some(accumulator.iter().map(|value: &u128| *value as u64).collect())
+    Some(
+        accumulator
+            .iter()
+            .map(|value: &u128| *value as u64)
+            .collect(),
+    )
 }
 
 fn falling_factorial_coeffs(differences: &[u128], bits: u32, mask: u128) -> Option<Vec<u128>> {

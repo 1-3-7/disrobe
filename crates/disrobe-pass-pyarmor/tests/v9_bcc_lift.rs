@@ -412,7 +412,9 @@ fn bcc_lift_route_discovers_multiple_function_boundaries() {
     let Ok(file): Result<object::File<'_>, object::Error> =
         object::File::parse(object_bytes.as_slice())
     else {
-        eprintln!("skipping: the host c compiler did not emit a parseable object for the bcc battery");
+        eprintln!(
+            "skipping: the host c compiler did not emit a parseable object for the bcc battery"
+        );
         return;
     };
     let text: object::Section<'_, '_> = file
