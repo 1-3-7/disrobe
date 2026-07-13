@@ -75,10 +75,12 @@ const NIM_ORC_CYCLE_MARKERS: &[&str] = &[
     "nimTraceRef",
     "GC_runOrc",
 ];
-const NIM_BOEHM_MARKERS: &[&str] = &["boehmgc", "GC_malloc"];
-const NIM_TRACING_REFCOUNT_MARKER: &str = "nimGCunref";
-const NIM_REFC_MARKERS: &[&str] = &["newObjRC1", "collectCycles"];
-const NIM_GO_MARKERS: &[&str] = &["newObjRC1", "nimGCvisit", "nimGC_setStackBottom"];
+const NIM_BOEHM_MARKERS: &[&str] = &["boehmgc", "GC_malloc", "GC_init"];
+const NIM_TRACING_UNREF_MARKERS: &[&str] = &["nimGCunref"];
+const NIM_REFC_CYCLE_MARKERS: &[&str] = &["collectCycles"];
+const NIM_RC_ALLOC_MARKERS: &[&str] = &["newObjRC1"];
+const NIM_MARK_SWEEP_MARKERS: &[&str] = &["markGlobals", "markStackAndRegisters"];
+const NIM_STACK_SCAN_MARKERS: &[&str] = &["nimGC_setStackBottom", "nimGCvisit"];
 
 fn nim_marker_present(image: &NativeImage<'_>, token: &str) -> bool {
     image.symbols.iter().any(|s: &String| s.contains(token)) || image.raw_contains(token.as_bytes())
@@ -113,15 +115,19 @@ fn classify_nim_gc(image: &NativeImage<'_>) -> (&'static str, Vec<String>) {
         }
         return ("arc", evidence);
     }
-    if nim_marker_present(image, NIM_TRACING_REFCOUNT_MARKER) {
-        evidence.push(NIM_TRACING_REFCOUNT_MARKER.to_owned());
-        if nim_collect_markers(image, NIM_REFC_MARKERS, &mut evidence) {
-            return ("refc", evidence);
-        }
-        return ("markAndSweep", evidence);
+    let tracing_unref: bool = nim_collect_markers(image, NIM_TRACING_UNREF_MARKERS, &mut evidence);
+    let cycle_collector: bool = nim_collect_markers(image, NIM_REFC_CYCLE_MARKERS, &mut evidence);
+    let refcount_alloc: bool = nim_collect_markers(image, NIM_RC_ALLOC_MARKERS, &mut evidence);
+    let mark_and_sweep: bool = nim_collect_markers(image, NIM_MARK_SWEEP_MARKERS, &mut evidence);
+    let stack_scan: bool = nim_collect_markers(image, NIM_STACK_SCAN_MARKERS, &mut evidence);
+    if cycle_collector {
+        return ("refc", evidence);
     }
-    if nim_collect_markers(image, NIM_GO_MARKERS, &mut evidence) {
+    if refcount_alloc {
         return ("go", evidence);
+    }
+    if tracing_unref || mark_and_sweep || stack_scan {
+        return ("markAndSweep", evidence);
     }
     ("none", evidence)
 }
