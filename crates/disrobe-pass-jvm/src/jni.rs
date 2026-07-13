@@ -7,8 +7,10 @@ use object::read::File as ObjFile;
 use object::{Architecture, Endianness, SymbolKind};
 use serde::{Deserialize, Serialize};
 
+use crate::classfile::ClassFile;
 use crate::dalvik_strdec::NativeIntKey;
-use crate::dex::{DexFile, NativeMethod, extract_native_methods};
+use crate::descriptor::{JavaType, parse_method};
+use crate::dex::{DexFile, NativeMethod, extract_native_methods, jni_symbols};
 
 const MAX_NATIVE_KEY_LIBS: usize = 128;
 const MAX_NATIVE_KEY_LIB_BYTES: usize = 64 * 1024 * 1024;
@@ -317,9 +319,223 @@ fn decode_x86_64_constant_return(stub: &[u8]) -> Option<i64> {
     None
 }
 
+const CLASS_ACC_STATIC: u16 = 0x0008;
+const CLASS_ACC_NATIVE: u16 = 0x0100;
+
+const KNOWN_THROWABLES: &[&str] = &[
+    "java/lang/Throwable",
+    "java/lang/Exception",
+    "java/lang/RuntimeException",
+    "java/lang/Error",
+    "java/lang/ArithmeticException",
+    "java/lang/ArrayIndexOutOfBoundsException",
+    "java/lang/ArrayStoreException",
+    "java/lang/ClassCastException",
+    "java/lang/ClassNotFoundException",
+    "java/lang/CloneNotSupportedException",
+    "java/lang/IllegalAccessException",
+    "java/lang/IllegalArgumentException",
+    "java/lang/IllegalMonitorStateException",
+    "java/lang/IllegalStateException",
+    "java/lang/IllegalThreadStateException",
+    "java/lang/IndexOutOfBoundsException",
+    "java/lang/InstantiationException",
+    "java/lang/InterruptedException",
+    "java/lang/NegativeArraySizeException",
+    "java/lang/NoSuchFieldException",
+    "java/lang/NoSuchMethodException",
+    "java/lang/NullPointerException",
+    "java/lang/NumberFormatException",
+    "java/lang/ReflectiveOperationException",
+    "java/lang/SecurityException",
+    "java/lang/StringIndexOutOfBoundsException",
+    "java/lang/UnsupportedOperationException",
+    "java/lang/AssertionError",
+    "java/lang/LinkageError",
+    "java/lang/VirtualMachineError",
+    "java/lang/StackOverflowError",
+    "java/lang/OutOfMemoryError",
+    "java/lang/NoClassDefFoundError",
+    "java/lang/ExceptionInInitializerError",
+    "java/io/IOException",
+    "java/io/FileNotFoundException",
+    "java/io/UncheckedIOException",
+    "java/io/UnsupportedEncodingException",
+    "java/util/ConcurrentModificationException",
+    "java/util/NoSuchElementException",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JniPrototype {
+    pub class: String,
+    pub method: String,
+    pub descriptor: String,
+    pub symbol: String,
+    pub is_static: bool,
+    pub return_type: String,
+    pub param_types: Vec<String>,
+    pub declaration: String,
+}
+
+#[must_use]
+pub fn native_methods_from_class(class: &ClassFile) -> Vec<NativeMethod> {
+    let Ok(class_name): crate::error::Result<&str> = class.this_class_name() else {
+        return Vec::new();
+    };
+    let mut out: Vec<NativeMethod> = Vec::new();
+    for method in &class.methods {
+        if method.access_flags & CLASS_ACC_NATIVE == 0 {
+            continue;
+        }
+        let Ok(name): crate::error::Result<&str> = class.utf8_at(method.name_index) else {
+            continue;
+        };
+        let Ok(descriptor): crate::error::Result<&str> = class.utf8_at(method.descriptor_index)
+        else {
+            continue;
+        };
+        let (short, long): (String, String) =
+            jni_symbols(class_name, name, argument_descriptor(descriptor));
+        out.push(NativeMethod {
+            class: class_name.to_owned(),
+            method: name.to_owned(),
+            descriptor: descriptor.to_owned(),
+            jni_short_symbol: short,
+            jni_long_symbol: long,
+            is_static: method.access_flags & CLASS_ACC_STATIC != 0,
+        });
+    }
+    out
+}
+
+#[must_use]
+pub fn emit_prototypes(methods: &[NativeMethod]) -> Vec<JniPrototype> {
+    let mut name_counts: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for method in methods {
+        *name_counts
+            .entry((method.class.as_str(), method.method.as_str()))
+            .or_insert(0) += 1;
+    }
+    let mut out: Vec<JniPrototype> = Vec::with_capacity(methods.len());
+    for method in methods {
+        let Some(parsed): Option<crate::descriptor::MethodDescriptor> =
+            parse_method(&method.descriptor)
+        else {
+            continue;
+        };
+        let overloaded: bool = name_counts
+            .get(&(method.class.as_str(), method.method.as_str()))
+            .copied()
+            .unwrap_or(0)
+            > 1;
+        let symbol: String = if overloaded {
+            method.jni_long_symbol.clone()
+        } else {
+            method.jni_short_symbol.clone()
+        };
+        let return_type: String = jni_return_type(&parsed.returns);
+        let param_types: Vec<String> = parsed.params.iter().map(jni_value_type).collect();
+        let receiver: &str = if method.is_static {
+            "jclass"
+        } else {
+            "jobject"
+        };
+        let mut signature: Vec<String> = Vec::with_capacity(param_types.len() + 2);
+        signature.push("JNIEnv *".to_owned());
+        signature.push(receiver.to_owned());
+        signature.extend(param_types.iter().cloned());
+        let declaration: String = format!(
+            "JNIEXPORT {return_type} JNICALL {symbol}({});",
+            signature.join(", ")
+        );
+        out.push(JniPrototype {
+            class: method.class.clone(),
+            method: method.method.clone(),
+            descriptor: method.descriptor.clone(),
+            symbol,
+            is_static: method.is_static,
+            return_type,
+            param_types,
+            declaration,
+        });
+    }
+    out
+}
+
+fn argument_descriptor(descriptor: &str) -> &str {
+    descriptor
+        .strip_prefix('(')
+        .and_then(|rest: &str| rest.split_once(')'))
+        .map_or("", |(args, _): (&str, &str)| args)
+}
+
+fn jni_return_type(ty: &JavaType) -> String {
+    match ty {
+        JavaType::Void => "void".to_owned(),
+        other => jni_value_type(other),
+    }
+}
+
+fn jni_value_type(ty: &JavaType) -> String {
+    match ty {
+        JavaType::Boolean => "jboolean".to_owned(),
+        JavaType::Byte => "jbyte".to_owned(),
+        JavaType::Char => "jchar".to_owned(),
+        JavaType::Short => "jshort".to_owned(),
+        JavaType::Int => "jint".to_owned(),
+        JavaType::Long => "jlong".to_owned(),
+        JavaType::Float => "jfloat".to_owned(),
+        JavaType::Double => "jdouble".to_owned(),
+        JavaType::Void => "void".to_owned(),
+        JavaType::Object(internal) => jni_reference_type(internal).to_owned(),
+        JavaType::Array(inner) => jni_array_type(inner).to_owned(),
+    }
+}
+
+fn jni_reference_type(internal: &str) -> &'static str {
+    let name: &str = internal
+        .strip_prefix('L')
+        .and_then(|s: &str| s.strip_suffix(';'))
+        .unwrap_or(internal);
+    match name {
+        "java/lang/String" => "jstring",
+        "java/lang/Class" => "jclass",
+        n if KNOWN_THROWABLES.contains(&n) => "jthrowable",
+        _ => "jobject",
+    }
+}
+
+const fn jni_array_type(inner: &JavaType) -> &'static str {
+    match inner {
+        JavaType::Boolean => "jbooleanArray",
+        JavaType::Byte => "jbyteArray",
+        JavaType::Char => "jcharArray",
+        JavaType::Short => "jshortArray",
+        JavaType::Int => "jintArray",
+        JavaType::Long => "jlongArray",
+        JavaType::Float => "jfloatArray",
+        JavaType::Double => "jdoubleArray",
+        JavaType::Object(_) | JavaType::Array(_) | JavaType::Void => "jobjectArray",
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn native(class: &str, method: &str, descriptor: &str, is_static: bool) -> NativeMethod {
+        let (short, long): (String, String) =
+            jni_symbols(class, method, argument_descriptor(descriptor));
+        NativeMethod {
+            class: class.to_owned(),
+            method: method.to_owned(),
+            descriptor: descriptor.to_owned(),
+            jni_short_symbol: short,
+            jni_long_symbol: long,
+            is_static,
+        }
+    }
 
     #[test]
     fn abi_extracted_from_lib_path() {
@@ -328,5 +544,97 @@ mod tests {
             Some("arm64-v8a")
         );
         assert_eq!(abi_from_path("classes.dex"), None);
+    }
+
+    #[test]
+    fn mangling_covers_every_escape_class() {
+        assert_eq!(
+            jni_symbols("com/foo/Bar", "run", "").0,
+            "Java_com_foo_Bar_run"
+        );
+        assert_eq!(
+            jni_symbols("a", "with_underscore", "").0,
+            "Java_a_with_1underscore"
+        );
+        assert_eq!(
+            jni_symbols("a", "with$dollar", "").0,
+            "Java_a_with_00024dollar"
+        );
+        assert_eq!(
+            jni_symbols("a", "f", "Ljava/lang/String;").1,
+            "Java_a_f__Ljava_lang_String_2"
+        );
+        assert_eq!(jni_symbols("a", "f", "[I").1, "Java_a_f___3I");
+        assert_eq!(
+            jni_symbols("a", "value\u{03c0}", "").0,
+            "Java_a_value_003c0"
+        );
+    }
+
+    #[test]
+    fn primitive_reference_and_array_types_map_to_jni() {
+        let methods: Vec<NativeMethod> = vec![
+            native("Foo", "z", "()Z", false),
+            native("Foo", "arr", "([I)[Ljava/lang/String;", true),
+            native(
+                "Foo",
+                "refs",
+                "(Ljava/lang/String;Ljava/lang/Class;Ljava/lang/Object;Ljava/lang/Throwable;)V",
+                false,
+            ),
+        ];
+        let protos: Vec<JniPrototype> = emit_prototypes(&methods);
+        let by_method = |m: &str| -> &JniPrototype {
+            protos
+                .iter()
+                .find(|p: &&JniPrototype| p.method == m)
+                .unwrap()
+        };
+        assert_eq!(
+            by_method("z").declaration,
+            "JNIEXPORT jboolean JNICALL Java_Foo_z(JNIEnv *, jobject);"
+        );
+        assert_eq!(
+            by_method("arr").declaration,
+            "JNIEXPORT jobjectArray JNICALL Java_Foo_arr(JNIEnv *, jclass, jintArray);"
+        );
+        assert_eq!(
+            by_method("refs").declaration,
+            "JNIEXPORT void JNICALL Java_Foo_refs(JNIEnv *, jobject, jstring, jclass, jobject, jthrowable);"
+        );
+    }
+
+    #[test]
+    fn overloaded_natives_switch_to_the_long_symbol() {
+        let methods: Vec<NativeMethod> = vec![
+            native("Foo", "over", "(I)I", false),
+            native("Foo", "over", "(Ljava/lang/String;)I", false),
+            native("Bar", "solo", "(I)I", false),
+        ];
+        let protos: Vec<JniPrototype> = emit_prototypes(&methods);
+        assert_eq!(
+            protos
+                .iter()
+                .find(|p: &&JniPrototype| p.descriptor == "(I)I")
+                .unwrap()
+                .symbol,
+            "Java_Foo_over__I"
+        );
+        assert_eq!(
+            protos
+                .iter()
+                .find(|p: &&JniPrototype| p.descriptor == "(Ljava/lang/String;)I")
+                .unwrap()
+                .symbol,
+            "Java_Foo_over__Ljava_lang_String_2"
+        );
+        assert_eq!(
+            protos
+                .iter()
+                .find(|p: &&JniPrototype| p.class == "Bar")
+                .unwrap()
+                .symbol,
+            "Java_Bar_solo"
+        );
     }
 }

@@ -870,6 +870,8 @@ fn walk_encoded_methods(
 
 pub const ACC_NATIVE: u32 = 0x0100;
 
+pub const ACC_STATIC: u32 = 0x0008;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeMethod {
     pub class: String,
@@ -877,6 +879,7 @@ pub struct NativeMethod {
     pub descriptor: String,
     pub jni_short_symbol: String,
     pub jni_long_symbol: String,
+    pub is_static: bool,
 }
 
 #[must_use]
@@ -989,13 +992,14 @@ fn scan_native_methods(
                 format!("({params}){}", method.proto.return_type)
             };
             let (short, long): (String, String) =
-                jni_symbols(class_name, &method.name, &method.proto.parameters);
+                jni_symbols(class_name, &method.name, &method.proto.parameters.concat());
             out.push(NativeMethod {
                 class: class_name.to_owned(),
                 method: method.name.clone(),
                 descriptor,
                 jni_short_symbol: short,
                 jni_long_symbol: long,
+                is_static: access & ACC_STATIC != 0,
             });
         }
         o = n3;
@@ -1003,7 +1007,7 @@ fn scan_native_methods(
     o
 }
 
-fn jni_mangle(segment: &str) -> String {
+pub(crate) fn jni_mangle(segment: &str) -> String {
     let mut out: String = String::with_capacity(segment.len() + 8);
     for ch in segment.chars() {
         match ch {
@@ -1014,14 +1018,21 @@ fn jni_mangle(segment: &str) -> String {
             c if c.is_ascii_alphanumeric() => out.push(c),
             c => {
                 use std::fmt::Write as _;
-                let _ = write!(out, "_0{:04x}", c as u32);
+                let mut buf: [u16; 2] = [0u16; 2];
+                for unit in c.encode_utf16(&mut buf) {
+                    let _ = write!(out, "_0{unit:04x}");
+                }
             }
         }
     }
     out
 }
 
-fn jni_symbols(class_descriptor: &str, method: &str, params: &[String]) -> (String, String) {
+pub(crate) fn jni_symbols(
+    class_descriptor: &str,
+    method: &str,
+    arg_descriptor: &str,
+) -> (String, String) {
     let internal: &str = class_descriptor
         .strip_prefix('L')
         .and_then(|s: &str| s.strip_suffix(';'))
@@ -1029,7 +1040,7 @@ fn jni_symbols(class_descriptor: &str, method: &str, params: &[String]) -> (Stri
     let mangled_class: String = jni_mangle(internal);
     let mangled_method: String = jni_mangle(method);
     let short: String = format!("Java_{mangled_class}_{mangled_method}");
-    let mangled_args: String = jni_mangle(&params.concat());
+    let mangled_args: String = jni_mangle(arg_descriptor);
     let long: String = format!("{short}__{mangled_args}");
     (short, long)
 }

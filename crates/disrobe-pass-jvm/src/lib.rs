@@ -181,7 +181,10 @@ pub use jar::{
     JimageHeader, JimageResource, JmodExtract, extract as extract_jar, extract_aab, extract_apk,
     extract_jmod, parse_jimage, parse_jimage_header,
 };
-pub use jni::{JniSurfaceReport, NativeLibrary, ResolvedNative, analyze as analyze_jni_surface};
+pub use jni::{
+    JniPrototype, JniSurfaceReport, NativeLibrary, ResolvedNative, analyze as analyze_jni_surface,
+    emit_prototypes as emit_jni_prototypes, native_methods_from_class,
+};
 pub use jsr_inline::{JsrInlineReport, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
 #[cfg(feature = "llm-metadata")]
