@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::gc_types::GcTypeGraph;
-use crate::ssa::LocalId;
+use crate::ssa::{LocalId, OpKind, SsaFunction, UnOp, ValueDef, ValueId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum LoadKind {
@@ -32,6 +32,85 @@ pub enum StoreKind {
     I64_8,
     I64_16,
     I64_32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum Signedness {
+    Unknown,
+    Signed,
+    Unsigned,
+    Conflict,
+}
+
+impl Signedness {
+    #[inline]
+    #[must_use]
+    pub const fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unknown, x) | (x, Self::Unknown) => x,
+            (Self::Signed, Self::Signed) => Self::Signed,
+            (Self::Unsigned, Self::Unsigned) => Self::Unsigned,
+            _ => Self::Conflict,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_certain(self) -> bool {
+        matches!(self, Self::Signed | Self::Unsigned)
+    }
+}
+
+impl LoadKind {
+    #[inline]
+    #[must_use]
+    pub const fn width_bytes(self) -> u32 {
+        match self {
+            Self::I32_8U | Self::I32_8S | Self::I64_8U | Self::I64_8S => 1,
+            Self::I32_16U | Self::I32_16S | Self::I64_16U | Self::I64_16S => 2,
+            Self::I32 | Self::F32 | Self::I64_32U | Self::I64_32S => 4,
+            Self::I64 | Self::F64 => 8,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        !matches!(self, Self::F32 | Self::F64)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn signedness(self) -> Signedness {
+        match self {
+            Self::I32_8S | Self::I32_16S | Self::I64_8S | Self::I64_16S | Self::I64_32S => {
+                Signedness::Signed
+            }
+            Self::I32_8U | Self::I32_16U | Self::I64_8U | Self::I64_16U | Self::I64_32U => {
+                Signedness::Unsigned
+            }
+            Self::I32 | Self::I64 | Self::F32 | Self::F64 => Signedness::Unknown,
+        }
+    }
+}
+
+impl StoreKind {
+    #[inline]
+    #[must_use]
+    pub const fn width_bytes(self) -> u32 {
+        match self {
+            Self::I32_8 | Self::I64_8 => 1,
+            Self::I32_16 | Self::I64_16 => 2,
+            Self::I32 | Self::F32 | Self::I64_32 => 4,
+            Self::I64 | Self::F64 => 8,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        !matches!(self, Self::F32 | Self::F64)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -282,6 +361,361 @@ fn field_name(offset: i32) -> String {
     } else {
         format!("field_{offset}")
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub struct ScalarIntType {
+    pub width_bytes: u32,
+    pub signedness: Signedness,
+}
+
+impl ScalarIntType {
+    #[inline]
+    #[must_use]
+    pub const fn new(width_bytes: u32, signedness: Signedness) -> Self {
+        Self {
+            width_bytes,
+            signedness,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_signedness_certain(self) -> bool {
+        self.signedness.is_certain()
+    }
+
+    #[must_use]
+    pub const fn c_name(self) -> &'static str {
+        let signed: bool = matches!(self.signedness, Signedness::Signed);
+        match (self.width_bytes, signed) {
+            (1, true) => "int8_t",
+            (1, false) => "uint8_t",
+            (2, true) => "int16_t",
+            (2, false) => "uint16_t",
+            (4, true) => "int32_t",
+            (4, false) => "uint32_t",
+            (8, true) => "int64_t",
+            (8, false) => "uint64_t",
+            _ => "uint32_t",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub struct PointerType {
+    pub elem: ScalarIntType,
+}
+
+impl PointerType {
+    #[inline]
+    #[must_use]
+    pub const fn new(elem: ScalarIntType) -> Self {
+        Self { elem }
+    }
+
+    #[must_use]
+    pub fn c_name(self) -> String {
+        format!("{}*", self.elem.c_name())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SignednessReport {
+    pub value_signedness: Vec<Signedness>,
+    pub pointer_types: Vec<(BaseOrigin, PointerType)>,
+}
+
+impl SignednessReport {
+    #[inline]
+    #[must_use]
+    pub fn value(&self, v: ValueId) -> Signedness {
+        self.value_signedness
+            .get(v.0 as usize)
+            .copied()
+            .unwrap_or(Signedness::Unknown)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn pointer(&self, base: BaseOrigin) -> Option<PointerType> {
+        self.pointer_types
+            .iter()
+            .find(|(candidate, _)| *candidate == base)
+            .map(|(_, ty)| *ty)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ArgSignRule {
+    None,
+    Both(Signedness),
+    FirstOnly(Signedness),
+}
+
+const fn op_result_signedness(kind: OpKind) -> Signedness {
+    match kind {
+        OpKind::I32DivS
+        | OpKind::I64DivS
+        | OpKind::I32RemS
+        | OpKind::I64RemS
+        | OpKind::I32ShrS
+        | OpKind::I64ShrS => Signedness::Signed,
+        OpKind::I32DivU
+        | OpKind::I64DivU
+        | OpKind::I32RemU
+        | OpKind::I64RemU
+        | OpKind::I32ShrU
+        | OpKind::I64ShrU => Signedness::Unsigned,
+        _ => Signedness::Unknown,
+    }
+}
+
+const fn op_arg_signedness(kind: OpKind) -> ArgSignRule {
+    match kind {
+        OpKind::I32LtS
+        | OpKind::I32GtS
+        | OpKind::I32LeS
+        | OpKind::I32GeS
+        | OpKind::I64LtS
+        | OpKind::I64GtS
+        | OpKind::I64LeS
+        | OpKind::I64GeS
+        | OpKind::I32DivS
+        | OpKind::I64DivS
+        | OpKind::I32RemS
+        | OpKind::I64RemS => ArgSignRule::Both(Signedness::Signed),
+        OpKind::I32LtU
+        | OpKind::I32GtU
+        | OpKind::I32LeU
+        | OpKind::I32GeU
+        | OpKind::I64LtU
+        | OpKind::I64GtU
+        | OpKind::I64LeU
+        | OpKind::I64GeU
+        | OpKind::I32DivU
+        | OpKind::I64DivU
+        | OpKind::I32RemU
+        | OpKind::I64RemU => ArgSignRule::Both(Signedness::Unsigned),
+        OpKind::I32ShrS | OpKind::I64ShrS => ArgSignRule::FirstOnly(Signedness::Signed),
+        OpKind::I32ShrU | OpKind::I64ShrU => ArgSignRule::FirstOnly(Signedness::Unsigned),
+        _ => ArgSignRule::None,
+    }
+}
+
+const fn unary_result_signedness(op: UnOp) -> Signedness {
+    match op {
+        UnOp::I64ExtendI32S
+        | UnOp::I32Extend8S
+        | UnOp::I32Extend16S
+        | UnOp::I64Extend8S
+        | UnOp::I64Extend16S
+        | UnOp::I64Extend32S
+        | UnOp::I32TruncF32S
+        | UnOp::I32TruncF64S
+        | UnOp::I64TruncF32S
+        | UnOp::I64TruncF64S
+        | UnOp::I32TruncSatF32S
+        | UnOp::I32TruncSatF64S
+        | UnOp::I64TruncSatF32S
+        | UnOp::I64TruncSatF64S => Signedness::Signed,
+        UnOp::I64ExtendI32U
+        | UnOp::I32TruncF32U
+        | UnOp::I32TruncF64U
+        | UnOp::I64TruncF32U
+        | UnOp::I64TruncF64U
+        | UnOp::I32TruncSatF32U
+        | UnOp::I32TruncSatF64U
+        | UnOp::I64TruncSatF32U
+        | UnOp::I64TruncSatF64U => Signedness::Unsigned,
+        _ => Signedness::Unknown,
+    }
+}
+
+const fn unary_arg_signedness(op: UnOp) -> Option<Signedness> {
+    match op {
+        UnOp::I64ExtendI32S
+        | UnOp::I32Extend8S
+        | UnOp::I32Extend16S
+        | UnOp::I64Extend8S
+        | UnOp::I64Extend16S
+        | UnOp::I64Extend32S
+        | UnOp::F32ConvertI32S
+        | UnOp::F32ConvertI64S
+        | UnOp::F64ConvertI32S
+        | UnOp::F64ConvertI64S => Some(Signedness::Signed),
+        UnOp::I64ExtendI32U
+        | UnOp::F32ConvertI32U
+        | UnOp::F32ConvertI64U
+        | UnOp::F64ConvertI32U
+        | UnOp::F64ConvertI64U => Some(Signedness::Unsigned),
+        _ => None,
+    }
+}
+
+fn sign_at(slots: &[Signedness], v: ValueId) -> Signedness {
+    slots
+        .get(v.0 as usize)
+        .copied()
+        .unwrap_or(Signedness::Unknown)
+}
+
+fn vote(slots: &mut [Signedness], v: ValueId, s: Signedness) {
+    if let Some(slot) = slots.get_mut(v.0 as usize) {
+        *slot = slot.join(s);
+    }
+}
+
+struct MemAccess {
+    width: u32,
+    sign: Signedness,
+}
+
+#[must_use]
+pub fn recover_signedness(ssa: &SsaFunction) -> SignednessReport {
+    let count: usize = ssa.values.len();
+    let mut prod: Vec<Signedness> = vec![Signedness::Unknown; count];
+    let mut cons: Vec<Signedness> = vec![Signedness::Unknown; count];
+
+    for (index, def) in ssa.values.iter().enumerate() {
+        match def {
+            ValueDef::Load { kind, .. } => {
+                prod[index] = kind.signedness();
+            }
+            ValueDef::Unary { op, arg, .. } => {
+                prod[index] = unary_result_signedness(*op);
+                if let Some(s) = unary_arg_signedness(*op) {
+                    vote(&mut cons, *arg, s);
+                }
+            }
+            ValueDef::Op { kind, args, .. } => {
+                prod[index] = op_result_signedness(*kind);
+                match op_arg_signedness(*kind) {
+                    ArgSignRule::None => {}
+                    ArgSignRule::Both(s) => {
+                        for arg in args.iter().take(2) {
+                            vote(&mut cons, *arg, s);
+                        }
+                    }
+                    ArgSignRule::FirstOnly(s) => {
+                        if let Some(arg) = args.first() {
+                            vote(&mut cons, *arg, s);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let cap: usize = count.saturating_add(2);
+    let mut iterations: usize = 0;
+    loop {
+        let mut changed: bool = false;
+        for (index, def) in ssa.values.iter().enumerate() {
+            let incoming: Signedness = match def {
+                ValueDef::Phi { operands, .. } => operands
+                    .iter()
+                    .fold(Signedness::Unknown, |acc: Signedness, op: &ValueId| {
+                        acc.join(sign_at(&prod, *op))
+                    }),
+                ValueDef::Select {
+                    if_true, if_false, ..
+                } => sign_at(&prod, *if_true).join(sign_at(&prod, *if_false)),
+                _ => continue,
+            };
+            let merged: Signedness = prod[index].join(incoming);
+            if merged != prod[index] {
+                prod[index] = merged;
+                changed = true;
+            }
+        }
+        iterations += 1;
+        if !changed || iterations >= cap {
+            break;
+        }
+    }
+
+    let value_signedness: Vec<Signedness> = (0..count)
+        .map(|index: usize| {
+            if matches!(prod[index], Signedness::Unknown) {
+                cons[index]
+            } else {
+                prod[index]
+            }
+        })
+        .collect();
+
+    let pointer_types: Vec<(BaseOrigin, PointerType)> =
+        recover_pointer_types(ssa, &value_signedness);
+
+    SignednessReport {
+        value_signedness,
+        pointer_types,
+    }
+}
+
+fn recover_pointer_types(
+    ssa: &SsaFunction,
+    value_signedness: &[Signedness],
+) -> Vec<(BaseOrigin, PointerType)> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<BaseOrigin, Vec<MemAccess>> = BTreeMap::new();
+
+    for block in &ssa.blocks {
+        for vid in &block.instrs {
+            let Some(ValueDef::Load { addr, kind, .. }): Option<&ValueDef> =
+                ssa.values.get(vid.0 as usize)
+            else {
+                continue;
+            };
+            if !kind.is_integer() {
+                continue;
+            }
+            let base: BaseOrigin = crate::classify_base_origin(*addr, ssa);
+            let sign: Signedness = match kind.signedness() {
+                Signedness::Unknown => sign_at(value_signedness, *vid),
+                resolved => resolved,
+            };
+            groups.entry(base).or_default().push(MemAccess {
+                width: kind.width_bytes(),
+                sign,
+            });
+        }
+        for store in &block.stores {
+            if !store.kind.is_integer() {
+                continue;
+            }
+            let base: BaseOrigin = crate::classify_base_origin(store.addr, ssa);
+            groups.entry(base).or_default().push(MemAccess {
+                width: store.kind.width_bytes(),
+                sign: sign_at(value_signedness, store.val),
+            });
+        }
+    }
+
+    let mut out: Vec<(BaseOrigin, PointerType)> = Vec::with_capacity(groups.len());
+    for (base, accesses) in groups {
+        if matches!(base, BaseOrigin::Unknown) {
+            continue;
+        }
+        let Some(first): Option<&MemAccess> = accesses.first() else {
+            continue;
+        };
+        let width: u32 = first.width;
+        if accesses
+            .iter()
+            .any(|access: &MemAccess| access.width != width)
+        {
+            continue;
+        }
+        let sign: Signedness = accesses.iter().fold(
+            Signedness::Unknown,
+            |acc: Signedness, access: &MemAccess| acc.join(access.sign),
+        );
+        out.push((base, PointerType::new(ScalarIntType::new(width, sign))));
+    }
+    out
 }
 
 #[cfg(test)]

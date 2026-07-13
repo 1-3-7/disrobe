@@ -143,8 +143,9 @@ pub use structured::rust_module_decls;
 pub use tail_call::{TailCallKind, TailCallRecord, TailCallReport, scan_tail_calls};
 pub use threads::{AtomicOpKind, AtomicOpRecord, SharedMemoryRecord, ThreadsReport, scan_threads};
 pub use types::{
-    AccessPattern, BaseOrigin, FieldRecord, LoadKind, NamedField, NamedType, RecoveredType,
-    RecoveredTypes, StoreKind, WasmValType, classify_aggregates, synthesize_named_types,
+    AccessPattern, BaseOrigin, FieldRecord, LoadKind, NamedField, NamedType, PointerType,
+    RecoveredType, RecoveredTypes, ScalarIntType, Signedness, SignednessReport, StoreKind,
+    WasmValType, classify_aggregates, recover_signedness, synthesize_named_types,
 };
 
 pub use component::{
@@ -185,7 +186,7 @@ fn build_access_patterns(ssa: &SsaFunction) -> Vec<AccessPattern> {
             {
                 let base_origin: BaseOrigin = classify_base_origin(*addr, ssa);
                 let is_indexed: bool = address_is_indexed(*addr, ssa);
-                let width: u32 = load_kind_width(*kind);
+                let width: u32 = kind.width_bytes();
                 out.push(AccessPattern {
                     load_kind: Some(*kind),
                     store_kind: None,
@@ -200,7 +201,7 @@ fn build_access_patterns(ssa: &SsaFunction) -> Vec<AccessPattern> {
         for store in &block.stores {
             let base_origin: BaseOrigin = classify_base_origin(store.addr, ssa);
             let is_indexed: bool = address_is_indexed(store.addr, ssa);
-            let width: u32 = store_kind_width(store.kind);
+            let width: u32 = store.kind.width_bytes();
             out.push(AccessPattern {
                 load_kind: None,
                 store_kind: Some(store.kind),
@@ -222,7 +223,7 @@ fn alignment_from_exponent(align: u8) -> u32 {
 
 const MAX_ORIGIN_DEPTH: u32 = 1024;
 
-fn classify_base_origin(v: ValueId, ssa: &SsaFunction) -> BaseOrigin {
+pub(crate) fn classify_base_origin(v: ValueId, ssa: &SsaFunction) -> BaseOrigin {
     classify_base_origin_depth(v, ssa, 0)
 }
 
@@ -277,24 +278,6 @@ fn address_is_indexed_depth(v: ValueId, ssa: &SsaFunction, depth: u32) -> bool {
                     .any(|a| address_is_indexed_depth(*a, ssa, depth + 1))
         }
         _ => false,
-    }
-}
-
-const fn load_kind_width(k: LoadKind) -> u32 {
-    match k {
-        LoadKind::I32_8U | LoadKind::I32_8S | LoadKind::I64_8U | LoadKind::I64_8S => 1,
-        LoadKind::I32_16U | LoadKind::I32_16S | LoadKind::I64_16U | LoadKind::I64_16S => 2,
-        LoadKind::I32 | LoadKind::F32 | LoadKind::I64_32U | LoadKind::I64_32S => 4,
-        LoadKind::I64 | LoadKind::F64 => 8,
-    }
-}
-
-const fn store_kind_width(k: StoreKind) -> u32 {
-    match k {
-        StoreKind::I32_8 | StoreKind::I64_8 => 1,
-        StoreKind::I32_16 | StoreKind::I64_16 => 2,
-        StoreKind::I32 | StoreKind::F32 | StoreKind::I64_32 => 4,
-        StoreKind::I64 | StoreKind::F64 => 8,
     }
 }
 
