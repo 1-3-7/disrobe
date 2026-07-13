@@ -3,19 +3,24 @@ use std::collections::BTreeMap;
 use disrobe_pass_native::{
     Bitness, DesyncReport, UnresolvedKind, UnresolvedTarget, resolve_desync,
 };
+use gimli::{BaseAddresses, CieOrFde, EhFrame, EndianSlice, RunTimeEndian, UnwindSection};
 use serde::{Deserialize, Serialize};
 
 use crate::debug;
 use crate::demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
 use crate::detect::NativeLang;
 use crate::dwarf::{DwarfFunction, DwarfReport};
-use crate::image::{CodeArch, NativeImage};
+use crate::image::{CodeArch, NativeImage, Section};
+
+type EhReader<'a> = EndianSlice<'a, RunTimeEndian>;
+type EhSection<'a> = EhFrame<EhReader<'a>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FunctionOrigin {
     SymbolTable,
     Dwarf,
+    EhFrame,
     RecursiveTraversal,
 }
 
@@ -46,6 +51,8 @@ pub struct FunctionRecovery {
     pub functions: Vec<RecoveredFunction>,
     pub from_symbol_table: usize,
     pub from_dwarf: usize,
+    #[serde(default)]
+    pub from_eh_frame: usize,
     pub from_traversal: usize,
     pub from_relocatable: usize,
     pub unresolved_targets: Vec<UnresolvedTarget>,
@@ -55,6 +62,8 @@ pub struct FunctionRecovery {
 
 const MAX_TRAVERSAL_TEXT: usize = 16 * 1024 * 1024;
 const MAX_RECOVERED_FUNCTIONS: usize = 1 << 18;
+const MAX_EH_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EH_FRAME_FDES: usize = 1 << 20;
 
 #[must_use]
 pub fn recover_functions(
@@ -145,6 +154,34 @@ pub fn recover_functions(
     let from_relocatable: usize = relocatable.len();
     debug::dbg_kv("from-relocatable", || from_relocatable.to_string());
 
+    let eh_frame_functions: Vec<(u64, Option<u64>)> = recover_eh_frame_functions(image);
+    debug::dbg_kv("eh-frame-fdes", || eh_frame_functions.len().to_string());
+    let mut from_eh_frame: usize = 0;
+    for (start, end) in eh_frame_functions {
+        if by_start.len() >= MAX_RECOVERED_FUNCTIONS {
+            break;
+        }
+        if by_start.contains_key(&start) {
+            continue;
+        }
+        by_start.insert(
+            start,
+            RecoveredFunction {
+                name: format!("sub_{start:x}"),
+                demangled: None,
+                signature: None,
+                start,
+                end,
+                source_lines: None,
+                params: Vec::new(),
+                origin: FunctionOrigin::EhFrame,
+                address_assigned: true,
+            },
+        );
+        from_eh_frame += 1;
+    }
+    debug::dbg_kv("from-eh-frame", || from_eh_frame.to_string());
+
     let arch_supported: bool = matches!(image.arch, CodeArch::X86 | CodeArch::X86_64);
     let stripped: bool = image.func_symbols.is_empty() && dwarf.functions.is_empty();
     let mut from_traversal: usize = 0;
@@ -215,12 +252,60 @@ pub fn recover_functions(
         functions,
         from_symbol_table,
         from_dwarf,
+        from_eh_frame,
         from_traversal,
         from_relocatable,
         unresolved_targets,
         traversal_attempted,
         traversal_arch_supported: arch_supported,
     }
+}
+
+fn recover_eh_frame_functions(image: &NativeImage<'_>) -> Vec<(u64, Option<u64>)> {
+    if image.relocatable {
+        return Vec::new();
+    }
+    let Some(section): Option<&Section<'_>> = image
+        .sections
+        .iter()
+        .find(|s: &&Section<'_>| s.name == ".eh_frame" && !s.data.is_empty())
+    else {
+        return Vec::new();
+    };
+    if section.data.len() > MAX_EH_FRAME_BYTES {
+        return Vec::new();
+    }
+    let eh_frame: EhSection<'_> = EhFrame::new(section.data, RunTimeEndian::Little);
+    let bases: BaseAddresses = BaseAddresses::default().set_eh_frame(section.address);
+    let mut entries: gimli::CfiEntriesIter<'_, EhSection<'_>, EhReader<'_>> =
+        eh_frame.entries(&bases);
+    let mut out: Vec<(u64, Option<u64>)> = Vec::new();
+    while out.len() < MAX_EH_FRAME_FDES {
+        let entry: CieOrFde<'_, EhSection<'_>, EhReader<'_>> = match entries.next() {
+            Ok(Some(entry)) => entry,
+            _ => break,
+        };
+        let CieOrFde::Fde(partial) = entry else {
+            continue;
+        };
+        let Ok(fde): Result<gimli::FrameDescriptionEntry<EhReader<'_>>, gimli::Error> =
+            partial.parse(EhFrame::cie_from_offset)
+        else {
+            continue;
+        };
+        let start: u64 = fde.initial_address();
+        if start == 0 {
+            continue;
+        }
+        let range: u64 = fde.len();
+        let end: Option<u64> = if range == 0 {
+            None
+        } else {
+            start.checked_add(range)
+        };
+        out.push((start, end));
+    }
+    out
 }
 
 fn demangle_for(lang: NativeLang, name: &str) -> Option<DemangledSymbol> {

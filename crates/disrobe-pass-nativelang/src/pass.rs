@@ -37,6 +37,8 @@ pub struct NativeLangPassReport {
     pub recovered_function_count: u32,
     pub functions_from_symbol_table: u32,
     pub functions_from_dwarf: u32,
+    #[serde(default)]
+    pub functions_from_eh_frame: u32,
     pub functions_from_traversal: u32,
     pub functions_from_relocatable: u32,
     pub unresolved_target_count: u32,
@@ -77,6 +79,8 @@ pub fn build_report(source_path: String, analysis: NativeLangAnalysis) -> Native
         functions_from_symbol_table: u32::try_from(analysis.function_recovery.from_symbol_table)
             .unwrap_or(u32::MAX),
         functions_from_dwarf: u32::try_from(analysis.function_recovery.from_dwarf)
+            .unwrap_or(u32::MAX),
+        functions_from_eh_frame: u32::try_from(analysis.function_recovery.from_eh_frame)
             .unwrap_or(u32::MAX),
         functions_from_traversal: u32::try_from(analysis.function_recovery.from_traversal)
             .unwrap_or(u32::MAX),

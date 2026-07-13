@@ -1925,16 +1925,19 @@ fn stripped_binary_surfaces_entry_points_honestly() {
         "recursive traversal must run on a stripped binary"
     );
     assert!(
-        analysis.function_recovery.from_traversal > 0,
-        "traversal must surface entry points on a stripped x86 binary"
+        analysis.function_recovery.from_eh_frame > 0,
+        "eh_frame FDEs must surface function boundaries on a stripped x86 binary"
     );
     assert!(
         analysis
             .function_recovery
             .functions
             .iter()
-            .all(|f: &RecoveredFunction| f.origin == FunctionOrigin::RecursiveTraversal),
-        "stripped recovery must be traversal-only (no fake symtab names)"
+            .all(|f: &RecoveredFunction| matches!(
+                f.origin,
+                FunctionOrigin::EhFrame | FunctionOrigin::RecursiveTraversal
+            )),
+        "stripped recovery must come from eh_frame or traversal, never fabricated symtab names"
     );
     assert!(
         analysis
