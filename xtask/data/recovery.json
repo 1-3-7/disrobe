@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 95.88,
-          "detail": "6027 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.88 (6027 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD eb2dda70 (the structurer drops the spurious break appended to a while-loop else arm whose guarded fall-through already carries the break, recovering tarfile._Stream._read)"
+          "value": 95.90,
+          "detail": "6028 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 95.90 (6028 of 6286 code objects, 200 of 200 modules, whole-module exact 60.00%, 0 sibling-count collisions) on CPython 3.14 at HEAD 84ff0ece (the structurer recovers the break dropped from a for-loop except handler whose cold backward jump targets the loop exit, recovering tarfile.TarInfo._create_pax_generic_header)"
         }
       ]
     },
