@@ -299,7 +299,7 @@ fn order_commutative(op: BinOp, left: Expr, right: Expr) -> (Expr, Expr) {
     }
 }
 
-fn order_key(expr: &Expr) -> Vec<u64> {
+pub(crate) fn order_key(expr: &Expr) -> Vec<u64> {
     let mut out: Vec<u64> = Vec::new();
     encode_key(expr, &mut out);
     out

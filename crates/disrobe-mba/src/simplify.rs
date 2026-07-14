@@ -6,7 +6,7 @@ use crate::linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
 use crate::opaque::{CmpOp, Predicate};
-use crate::rewrite::canonicalize;
+use crate::rewrite::{canonicalize, order_key};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -521,105 +521,10 @@ fn canonicalize_predicate_comparison(
         }
         other => other,
     };
-    if matches!(op, CmpOp::Eq | CmpOp::Ne) && compare_expr(&right, &left).is_lt() {
+    if matches!(op, CmpOp::Eq | CmpOp::Ne) && order_key(&right) < order_key(&left) {
         std::mem::swap(&mut left, &mut right);
     }
     Predicate::Compare { op, left, right }
-}
-
-const fn expr_rank(expr: &Expr) -> u8 {
-    match expr {
-        Expr::Const(_) => 0,
-        Expr::Var(_) => 1,
-        Expr::Unary(_, _) => 2,
-        Expr::Binary(_, _, _) => 3,
-        Expr::Ite(_, _, _) => 4,
-        Expr::Slice(_, _, _) => 5,
-        Expr::Compose(_, _, _) => 6,
-        Expr::Mem(_, _) => 7,
-    }
-}
-
-fn compare_expr(left: &Expr, right: &Expr) -> Ordering {
-    let rank_order: Ordering = expr_rank(left).cmp(&expr_rank(right));
-    if rank_order != Ordering::Equal {
-        return rank_order;
-    }
-    match (left, right) {
-        (Expr::Const(left), Expr::Const(right)) => left.cmp(right),
-        (Expr::Var(left), Expr::Var(right)) => left.cmp(right),
-        (Expr::Unary(left_op, left_inner), Expr::Unary(right_op, right_inner)) => {
-            let op_order: Ordering = left_op.cmp(right_op);
-            if op_order != Ordering::Equal {
-                return op_order;
-            }
-            compare_expr(left_inner, right_inner)
-        }
-        (
-            Expr::Binary(left_op, left_left, left_right),
-            Expr::Binary(right_op, right_left, right_right),
-        ) => {
-            let op_order: Ordering = left_op.cmp(right_op);
-            if op_order != Ordering::Equal {
-                return op_order;
-            }
-            let left_order: Ordering = compare_expr(left_left, right_left);
-            if left_order != Ordering::Equal {
-                return left_order;
-            }
-            compare_expr(left_right, right_right)
-        }
-        (
-            Expr::Ite(left_condition, left_then, left_otherwise),
-            Expr::Ite(right_condition, right_then, right_otherwise),
-        ) => {
-            let condition_order: Ordering = compare_expr(left_condition, right_condition);
-            if condition_order != Ordering::Equal {
-                return condition_order;
-            }
-            let then_order: Ordering = compare_expr(left_then, right_then);
-            if then_order != Ordering::Equal {
-                return then_order;
-            }
-            compare_expr(left_otherwise, right_otherwise)
-        }
-        (
-            Expr::Slice(left_inner, left_lo, left_hi),
-            Expr::Slice(right_inner, right_lo, right_hi),
-        ) => {
-            let inner_order: Ordering = compare_expr(left_inner, right_inner);
-            if inner_order != Ordering::Equal {
-                return inner_order;
-            }
-            let lo_order: Ordering = left_lo.cmp(right_lo);
-            if lo_order != Ordering::Equal {
-                return lo_order;
-            }
-            left_hi.cmp(right_hi)
-        }
-        (
-            Expr::Compose(left_low, left_high, left_bits),
-            Expr::Compose(right_low, right_high, right_bits),
-        ) => {
-            let low_order: Ordering = compare_expr(left_low, right_low);
-            if low_order != Ordering::Equal {
-                return low_order;
-            }
-            let high_order: Ordering = compare_expr(left_high, right_high);
-            if high_order != Ordering::Equal {
-                return high_order;
-            }
-            left_bits.cmp(right_bits)
-        }
-        (Expr::Mem(left_addr, left_width), Expr::Mem(right_addr, right_width)) => {
-            let address_order: Ordering = compare_expr(left_addr, right_addr);
-            if address_order != Ordering::Equal {
-                return address_order;
-            }
-            left_width.cmp(right_width)
-        }
-        _ => Ordering::Equal,
-    }
 }
 
 const fn predicate_rank(predicate: &Predicate) -> u8 {
@@ -653,13 +558,15 @@ fn compare_predicates(left: &Predicate, right: &Predicate) -> Ordering {
             if op_order != Ordering::Equal {
                 return op_order;
             }
-            let left_order: Ordering = compare_expr(left_left, right_left);
+            let left_order: Ordering = order_key(left_left).cmp(&order_key(right_left));
             if left_order != Ordering::Equal {
                 return left_order;
             }
-            compare_expr(left_right, right_right)
+            order_key(left_right).cmp(&order_key(right_right))
         }
-        (Predicate::Nonzero(left), Predicate::Nonzero(right)) => compare_expr(left, right),
+        (Predicate::Nonzero(left), Predicate::Nonzero(right)) => {
+            order_key(left).cmp(&order_key(right))
+        }
         (Predicate::Or(left_left, left_right), Predicate::Or(right_left, right_right))
         | (Predicate::And(left_left, left_right), Predicate::And(right_left, right_right)) => {
             let left_order: Ordering = compare_predicates(left_left, right_left);
