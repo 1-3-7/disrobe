@@ -186,3 +186,35 @@ fn refuse_merge_second_guard_to_third_target() {
         "def f(items):\n    out = []\n    for x in items:\n        if x and x.ok:\n            out.append(x)\n        if x.done:\n            break\n    return out\n",
     );
 }
+
+#[test]
+fn guard_or_break_inlined_tail() {
+    assert_recompiles(
+        "or_break_inlined_tail",
+        "def f(readline):\n    while True:\n        s = readline()\n        if not s or s == b\"end\":\n            break\n        work(s)\n    return s\n",
+    );
+}
+
+#[test]
+fn guard_or_three_operands_break_nested_return() {
+    assert_recompiles(
+        "or3_break_nested_return",
+        "def f(get, shutting_down):\n    while True:\n        item = get()\n        if shutting_down or item is None or item.done:\n            if item is not None:\n                item.flag = True\n            return\n        work(item)\n",
+    );
+}
+
+#[test]
+fn guard_or_break_multi_statement_return_body() {
+    assert_recompiles(
+        "or_break_multi_stmt",
+        "def f(readline):\n    while True:\n        s = readline()\n        if not s or s == b\"end\":\n            flush()\n            record(s)\n            return s\n        work(s)\n",
+    );
+}
+
+#[test]
+fn refuse_or_guard_then_separate_break() {
+    assert_recompiles(
+        "refuse_or_separate_break",
+        "def f(items):\n    out = []\n    for x in items:\n        if x is None or x == 0:\n            continue\n        if x.done:\n            break\n        out.append(x)\n    return out\n",
+    );
+}

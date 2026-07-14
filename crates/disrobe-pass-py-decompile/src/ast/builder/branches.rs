@@ -1171,7 +1171,13 @@ pub(super) fn try_recover_compound_if(
         }
         let is_jump_if_true: bool = jump_taken_if_true(stream, jump);
         let Some(target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
-            .map(|t: usize| if t == body_entry { body } else { t })
+            .map(|t: usize| {
+                if t == body_entry || body_entry_index(stream, t, hi) == body_entry {
+                    body
+                } else {
+                    t
+                }
+            })
             .map(|t: usize| {
                 if t != body
                     && t != exit
