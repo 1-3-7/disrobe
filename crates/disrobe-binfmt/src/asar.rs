@@ -41,24 +41,30 @@ pub fn parse(bytes: &[u8]) -> Result<AsarLayout> {
     if bytes[0..4] != ALIGNMENT_PREFIX {
         return Err(Error::AsarHeader("missing 0x04 outer marker".to_owned()));
     }
-    let pickle_size: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if pickle_size < 8 {
-        return Err(Error::AsarHeader("pickle size too small".to_owned()));
+    let header_pickle_size: usize =
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    let string_pickle_size: usize =
+        u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    let json_len: usize = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    if Some(header_pickle_size) != string_pickle_size.checked_add(4) {
+        return Err(Error::AsarHeader(
+            "header pickle size disagrees with string pickle".to_owned(),
+        ));
     }
-    if bytes[8..12] != ALIGNMENT_PREFIX {
-        return Err(Error::AsarHeader("missing 0x04 inner marker".to_owned()));
+    if !matches!(string_pickle_size.checked_sub(json_len), Some(4..=7)) {
+        return Err(Error::AsarHeader(
+            "string pickle size disagrees with json length".to_owned(),
+        ));
     }
-    let header_size: u32 = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
     let header_start: usize = 16;
     let header_end: usize = header_start
-        .checked_add(header_size as usize)
-        .ok_or_else(|| Error::AsarHeader("header size overflow".to_owned()))?;
+        .checked_add(json_len)
+        .ok_or_else(|| Error::AsarHeader("json length overflow".to_owned()))?;
     if header_end > bytes.len() {
         return Err(Error::AsarHeader("header extends past file end".to_owned()));
     }
-    let aligned_header_size: usize = align_up(header_size as usize, 4);
-    let data_offset: usize = header_start
-        .checked_add(aligned_header_size)
+    let data_offset: usize = 8usize
+        .checked_add(header_pickle_size)
         .ok_or_else(|| Error::AsarHeader("data offset overflow".to_owned()))?;
     let header_json: &[u8] = &bytes[header_start..header_end];
     let root: RawNode = serde_json::from_slice(header_json)?;
@@ -71,6 +77,7 @@ pub fn parse(bytes: &[u8]) -> Result<AsarLayout> {
     })
 }
 
+#[cfg(test)]
 const fn align_up(value: usize, align: usize) -> usize {
     let rem: usize = value % align;
     if rem == 0 {
@@ -156,11 +163,12 @@ mod tests {
         let header_bytes: &[u8] = header.as_bytes();
         let header_size: u32 = u32::try_from(header_bytes.len()).expect("len fits");
         let aligned: u32 = u32::try_from(align_up(header_bytes.len(), 4)).expect("len fits");
-        let pickle_size: u32 = 8 + aligned;
+        let string_pickle_size: u32 = aligned + 4;
+        let header_pickle_size: u32 = string_pickle_size + 4;
         let mut out: Vec<u8> = Vec::with_capacity(16 + aligned as usize);
         out.extend_from_slice(&ALIGNMENT_PREFIX);
-        out.extend_from_slice(&pickle_size.to_le_bytes());
-        out.extend_from_slice(&ALIGNMENT_PREFIX);
+        out.extend_from_slice(&header_pickle_size.to_le_bytes());
+        out.extend_from_slice(&string_pickle_size.to_le_bytes());
         out.extend_from_slice(&header_size.to_le_bytes());
         out.extend_from_slice(header_bytes);
         let padding: usize = (aligned - header_size) as usize;
@@ -226,5 +234,51 @@ mod tests {
         bad.size = bytes.len() as u64 + 9999;
         let err: Error = read_entry(&bytes, &layout, &bad).unwrap_err();
         assert!(matches!(err, Error::AsarOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn emits_variable_string_pickle_size_not_constant() {
+        let bytes: Vec<u8> = synth_asar(&[("a.txt", b"aaa")]);
+        assert_eq!(bytes[0..4], ALIGNMENT_PREFIX);
+        assert_ne!(bytes[8..12], ALIGNMENT_PREFIX);
+        let header_pickle: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let string_pickle: u32 = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        let json_len: u32 = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        assert_eq!(header_pickle, string_pickle + 4);
+        assert!((4..=7).contains(&(string_pickle - json_len)));
+    }
+
+    #[test]
+    fn rejects_constant_inner_marker_shape() {
+        let header: &[u8] = br#"{"files":{"a.txt":{"size":3,"offset":"0"}}}"#;
+        let aligned: usize = align_up(header.len(), 4);
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&ALIGNMENT_PREFIX);
+        out.extend_from_slice(&(8 + aligned as u32).to_le_bytes());
+        out.extend_from_slice(&ALIGNMENT_PREFIX);
+        out.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        out.extend_from_slice(header);
+        out.extend(std::iter::repeat_n(0u8, aligned - header.len()));
+        out.extend_from_slice(b"aaa");
+        let err: Error = parse(&out).unwrap_err();
+        assert!(matches!(err, Error::AsarHeader(_)));
+    }
+
+    #[test]
+    fn parses_real_electron_asar() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/asar/real_electron.asar");
+        let layout: AsarLayout = parse(bytes).expect("parse real asar");
+        let by_path: BTreeMap<&str, &AsarEntry> = layout
+            .entries
+            .iter()
+            .map(|e: &AsarEntry| (e.path.as_str(), e))
+            .collect();
+        let a: &AsarEntry = by_path.get("a.txt").expect("a.txt entry");
+        let b: &AsarEntry = by_path.get("b.js").expect("b.js entry");
+        assert_eq!(
+            read_entry(bytes, &layout, a).expect("a bytes"),
+            b"hello asar body\n"
+        );
+        assert_eq!(read_entry(bytes, &layout, b).expect("b bytes"), b"second\n");
     }
 }
