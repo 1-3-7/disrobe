@@ -2571,7 +2571,17 @@ fn rewrite_inlined_break_tail(
     if pop_at <= lo {
         return None;
     }
-    let prefix: Vec<Stmt> = structure_stmts(code, stream, lo, pop_at).ok()?;
+    let prefix_excl: Vec<Stmt> = structure_stmts(code, stream, lo, pop_at).ok()?;
+    let prefix: Vec<Stmt> = match structure_stmts(code, stream, lo, pop_at + 1) {
+        Ok(prefix_incl)
+            if matches!(prefix_incl.last(), Some(Stmt::Expr(_)))
+                && prefix_incl.len() == prefix_excl.len() + 1
+                && prefix_incl.get(..prefix_excl.len()) == Some(prefix_excl.as_slice()) =>
+        {
+            prefix_incl
+        }
+        _ => prefix_excl,
+    };
     if matches!(
         prefix.last(),
         Some(Stmt::Break | Stmt::Continue | Stmt::Return(_) | Stmt::Raise { .. })
