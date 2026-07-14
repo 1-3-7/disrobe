@@ -2347,6 +2347,7 @@ dependencies = [
  "disrobe-core",
  "disrobe-ir",
  "disrobe-llm-metadata",
+ "encoding_rs",
  "flate2",
  "insta",
  "miette",
