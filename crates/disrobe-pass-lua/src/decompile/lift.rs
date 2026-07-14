@@ -139,18 +139,24 @@ fn define(state: &mut LiftState, slot: u32, value: String) {
 }
 
 #[must_use]
-pub fn const_text(k: &LuaConstant) -> String {
-    const_repr(k)
+pub fn const_text(k: &LuaConstant, dialect: LuaDialect) -> String {
+    const_repr(k, dialect)
+}
+
+#[inline]
+#[must_use]
+fn floats_are_distinct(dialect: LuaDialect) -> bool {
+    matches!(dialect, LuaDialect::Lua53 | LuaDialect::Lua54)
 }
 
 #[must_use]
-fn const_repr(k: &LuaConstant) -> String {
+fn const_repr(k: &LuaConstant, dialect: LuaDialect) -> String {
     match k {
         LuaConstant::Nil => "nil".to_owned(),
         LuaConstant::Bool(true) => "true".to_owned(),
         LuaConstant::Bool(false) => "false".to_owned(),
         LuaConstant::Integer(i) => i.to_string(),
-        LuaConstant::Number(n) => fmt_number(*n),
+        LuaConstant::Number(n) => fmt_number(*n, floats_are_distinct(dialect)),
         LuaConstant::Str(s) => quote_lua_string(s),
         LuaConstant::Import(path) if !path.is_empty() => path.join("."),
         LuaConstant::Import(_) | LuaConstant::ClosureRef(_) | LuaConstant::Vector(_) => {
@@ -160,7 +166,7 @@ fn const_repr(k: &LuaConstant) -> String {
 }
 
 #[must_use]
-fn fmt_number(n: f64) -> String {
+pub fn fmt_number(n: f64, as_float: bool) -> String {
     if n.is_nan() {
         return "(0/0)".to_owned();
     }
@@ -172,7 +178,11 @@ fn fmt_number(n: f64) -> String {
         };
     }
     if n.fract() == 0.0 && n.abs() < 1e15 {
-        return format!("{}", n as i64);
+        return if as_float {
+            format!("{}.0", n as i64)
+        } else {
+            format!("{}", n as i64)
+        };
     }
     let abs: f64 = n.abs();
     if abs != 0.0 && !(1e-4..1e15).contains(&abs) {
@@ -208,16 +218,17 @@ fn quote_lua_string(s: &str) -> String {
 }
 
 #[inline]
-fn kconst(p: &LuaProto, idx: u32) -> String {
-    p.constants
-        .get(idx as usize)
-        .map_or_else(|| format!("K{idx}"), const_repr)
+fn kconst(p: &LuaProto, idx: u32, dialect: LuaDialect) -> String {
+    p.constants.get(idx as usize).map_or_else(
+        || format!("K{idx}"),
+        |k: &LuaConstant| const_repr(k, dialect),
+    )
 }
 
 #[inline]
 fn rk(state: &LiftState, p: &LuaProto, field: u32) -> String {
     if is_k(field) {
-        kconst(p, rk_index(field))
+        kconst(p, rk_index(field), state.dialect)
     } else {
         state.reg(field)
     }
@@ -226,17 +237,17 @@ fn rk(state: &LiftState, p: &LuaProto, field: u32) -> String {
 #[inline]
 fn rk_or_const(state: &LiftState, p: &LuaProto, field: u32, use_const: bool) -> String {
     if use_const {
-        kconst(p, field)
+        kconst(p, field, state.dialect)
     } else {
         state.reg(field)
     }
 }
 
 #[inline]
-fn kstr(p: &LuaProto, bx: u32) -> String {
+fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
     match p.constants.get(bx as usize) {
         Some(LuaConstant::Str(s)) => s.clone(),
-        Some(other) => const_repr(other),
+        Some(other) => const_repr(other, dialect),
         None => format!("K{bx}"),
     }
 }
@@ -353,7 +364,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 define(&mut state, d.a, src);
             }
             Op::LoadK => {
-                define(&mut state, d.a, kconst(p, d.bx));
+                define(&mut state, d.a, kconst(p, d.bx, dialect));
             }
             Op::LoadKx => {
                 let extra: Option<u32> = p.code.get(pc + 1).map(|raw2: &u32| {
@@ -362,7 +373,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 });
                 match extra {
                     Some(ax) => {
-                        define(&mut state, d.a, kconst(p, ax));
+                        define(&mut state, d.a, kconst(p, ax, dialect));
                         pc += 1;
                     }
                     None => define(&mut state, d.a, format!("K{}", d.bx)),
@@ -372,7 +383,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 define(&mut state, d.a, d.sbx.to_string());
             }
             Op::LoadF => {
-                define(&mut state, d.a, format!("{}", f64::from(d.sbx)));
+                define(&mut state, d.a, fmt_number(f64::from(d.sbx), true));
             }
             Op::LoadBool => {
                 define(
@@ -421,10 +432,10 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
                 state.push(&format!("{name} = {val}"));
             }
             Op::GetGlobal => {
-                define(&mut state, d.a, kstr(p, d.bx));
+                define(&mut state, d.a, kstr(p, d.bx, dialect));
             }
             Op::SetGlobal => {
-                let name: String = kstr(p, d.bx);
+                let name: String = kstr(p, d.bx, dialect);
                 let val: String = state.reg(d.a);
                 state.push(&format!("{name} = {val}"));
             }
@@ -462,7 +473,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             Op::GetField => {
                 let table: String = state.reg(d.b);
                 let field: Option<String> = const_str_key_direct(p, d.c);
-                let raw_key: String = kconst(p, d.c);
+                let raw_key: String = kconst(p, d.c, dialect);
                 define(
                     &mut state,
                     d.a,
@@ -484,7 +495,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             Op::SetField => {
                 let table: String = state.reg(d.a);
                 let field: Option<String> = const_str_key_direct(p, d.b);
-                let raw_key: String = kconst(p, d.b);
+                let raw_key: String = kconst(p, d.b, dialect);
                 let val: String = setfield_value(&state, p, &d);
                 let lhs: String = index_expr_with_key(&table, field.as_deref(), &raw_key);
                 state.push(&format!("{lhs} = {val}"));
@@ -557,7 +568,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             | Op::BOrK
             | Op::BXorK => {
                 let lhs: String = state.reg(d.b);
-                let rhs: String = kconst(p, d.c);
+                let rhs: String = kconst(p, d.c, dialect);
                 if let Some(e) = arith(d.op, &lhs, &rhs) {
                     define(&mut state, d.a, e);
                 }
@@ -627,7 +638,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::EqK => {
                 let lhs: String = state.reg(d.a);
-                let rhs: String = kconst(p, d.b);
+                let rhs: String = kconst(p, d.b, dialect);
                 emit_cond_jump(
                     &mut state,
                     p,
@@ -832,7 +843,7 @@ fn upval_name(p: &LuaProto, idx: u32) -> String {
 #[inline]
 fn tabup_key(state: &LiftState, p: &LuaProto, d: &Decoded) -> (Option<String>, String) {
     if matches!(state.dialect, LuaDialect::Lua54) {
-        (const_str_key_direct(p, d.c), kconst(p, d.c))
+        (const_str_key_direct(p, d.c), kconst(p, d.c, state.dialect))
     } else {
         (const_str_key(p, d.c), rk(state, p, d.c))
     }
@@ -846,7 +857,7 @@ fn settabup_operands(
 ) -> (Option<String>, String, String) {
     if matches!(state.dialect, LuaDialect::Lua54) {
         let field: Option<String> = const_str_key_direct(p, d.b);
-        let raw_key: String = kconst(p, d.b);
+        let raw_key: String = kconst(p, d.b, state.dialect);
         let val: String = rk_or_const(state, p, d.c, d.k);
         (field, raw_key, val)
     } else {
@@ -874,7 +885,7 @@ fn self_key(
     dialect: LuaDialect,
 ) -> (Option<String>, String) {
     if matches!(dialect, LuaDialect::Lua54) {
-        (const_str_key_direct(p, d.c), kconst(p, d.c))
+        (const_str_key_direct(p, d.c), kconst(p, d.c, dialect))
     } else {
         (const_str_key(p, d.c), rk(state, p, d.c))
     }
