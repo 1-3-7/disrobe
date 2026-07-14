@@ -8,6 +8,7 @@ use crate::linear_solver::{
 use crate::opaque::{CmpOp, Predicate};
 use crate::rewrite::canonicalize;
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verification {
@@ -66,21 +67,105 @@ const MAX_BASIS_VARS: u32 = 3;
 const MAX_TEMPLATE_VARS: u32 = 2;
 const VERIFY_BUDGET_LOG2: u32 = 22;
 
+#[derive(Debug)]
+struct DenseExpression {
+    expr: Expr,
+    to_dense: BTreeMap<u32, u32>,
+    to_original: BTreeMap<u32, u32>,
+    var_count: u32,
+    indices_changed: bool,
+}
+
+impl DenseExpression {
+    fn restore(&self, candidate: &Expr) -> Option<Expr> {
+        if candidate
+            .vars()
+            .iter()
+            .any(|index: &u32| !self.to_original.contains_key(index))
+        {
+            return None;
+        }
+        let restored: Expr = candidate.remap_vars(&self.to_original);
+        (restored.remap_vars(&self.to_dense) == *candidate).then_some(restored)
+    }
+}
+
 #[must_use]
 pub fn simplify(expr: &Expr, width: Width) -> Simplification {
     if expr.depth() > crate::expr::MAX_MBA_DEPTH {
-        let nodes: usize = expr.node_count();
-        return Simplification {
-            original: expr.clone(),
-            simplified: expr.clone(),
-            width,
-            verification: Verification::Unverified,
-            original_nodes: nodes,
-            simplified_nodes: nodes,
-        };
+        return unchanged_simplification(expr, width);
     }
     let original_nodes: usize = expr.node_count();
-    let var_count: u32 = expr.max_var().map_or(0, |index: u32| index + 1);
+    let Some(dense): Option<DenseExpression> = compact_expression(expr) else {
+        return unchanged_simplification(expr, width);
+    };
+    let (candidate, verification): (Expr, Verification) =
+        simplify_dense(&dense.expr, width, dense.var_count);
+    if candidate == dense.expr {
+        return unchanged_simplification(expr, width);
+    }
+    let Some(restored): Option<Expr> = dense.restore(&candidate) else {
+        return unchanged_simplification(expr, width);
+    };
+    let simplified: Expr = if dense.indices_changed {
+        let Some(accepted): Option<Expr> = accept_expression_candidate(expr, restored, width)
+        else {
+            return unchanged_simplification(expr, width);
+        };
+        accepted
+    } else {
+        restored
+    };
+    let simplified_nodes: usize = simplified.node_count();
+    Simplification {
+        original: expr.clone(),
+        simplified,
+        width,
+        verification,
+        original_nodes,
+        simplified_nodes,
+    }
+}
+
+fn unchanged_simplification(expr: &Expr, width: Width) -> Simplification {
+    let nodes: usize = expr.node_count();
+    Simplification {
+        original: expr.clone(),
+        simplified: expr.clone(),
+        width,
+        verification: Verification::Unverified,
+        original_nodes: nodes,
+        simplified_nodes: nodes,
+    }
+}
+
+fn compact_expression(expr: &Expr) -> Option<DenseExpression> {
+    let variables: BTreeSet<u32> = expr.vars();
+    let Ok(var_count): Result<u32, _> = u32::try_from(variables.len()) else {
+        return None;
+    };
+    let mut to_dense: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut to_original: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut indices_changed: bool = false;
+    for (index, original) in variables.into_iter().enumerate() {
+        let Ok(index): Result<u32, _> = u32::try_from(index) else {
+            return None;
+        };
+        indices_changed |= index != original;
+        to_dense.insert(original, index);
+        to_original.insert(index, original);
+    }
+    Some(DenseExpression {
+        expr: expr.remap_vars(&to_dense),
+        to_dense,
+        to_original,
+        var_count,
+        indices_changed,
+    })
+}
+
+fn simplify_dense(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verification) {
+    let original_nodes: usize = expr.node_count();
     let original_is_mba: bool = expr.is_linear_mba();
 
     let mut best: (Expr, Verification) = (expr.clone(), Verification::Unverified);
@@ -155,17 +240,7 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         consider(mixed, Verification::MixedNormalForm(width));
     }
 
-    let (simplified, verification): (Expr, Verification) = best;
-
-    let simplified_nodes: usize = simplified.node_count();
-    Simplification {
-        original: expr.clone(),
-        simplified,
-        width,
-        verification,
-        original_nodes,
-        simplified_nodes,
-    }
+    best
 }
 
 #[must_use]
@@ -229,11 +304,11 @@ pub(crate) fn minimize_boolean_verified(expr: &Expr, width: Width) -> Option<Exp
     if candidate.node_count() >= expr.node_count() {
         return None;
     }
-    accept_boolean_candidate(expr, candidate, width)
+    accept_expression_candidate(expr, candidate, width)
 }
 
 #[cfg(feature = "smt-verify")]
-fn accept_boolean_candidate(original: &Expr, candidate: Expr, width: Width) -> Option<Expr> {
+fn accept_expression_candidate(original: &Expr, candidate: Expr, width: Width) -> Option<Expr> {
     if crate::verify::verify_equivalent(original, &candidate, width).is_proven() {
         Some(candidate)
     } else {
@@ -242,7 +317,7 @@ fn accept_boolean_candidate(original: &Expr, candidate: Expr, width: Width) -> O
 }
 
 #[cfg(not(feature = "smt-verify"))]
-fn accept_boolean_candidate(_original: &Expr, _candidate: Expr, _width: Width) -> Option<Expr> {
+fn accept_expression_candidate(_original: &Expr, _candidate: Expr, _width: Width) -> Option<Expr> {
     None
 }
 
@@ -1247,9 +1322,55 @@ mod tests {
         let incorrect: Expr = Expr::var(0);
         assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W32).is_disproven());
         assert_eq!(
-            accept_boolean_candidate(&input, incorrect, Width::W32),
+            accept_expression_candidate(&input, incorrect, Width::W32),
             None
         );
+    }
+
+    #[cfg(feature = "smt-verify")]
+    #[test]
+    fn expression_acceptance_rejects_wrong_sparse_restore() {
+        let input: Expr = xor_and_basis(7, 19);
+        let incorrect: Expr = Expr::sub(Expr::var(7), Expr::var(19));
+        assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W64).is_disproven());
+        assert_eq!(
+            accept_expression_candidate(&input, incorrect, Width::W64),
+            None
+        );
+    }
+
+    #[cfg(feature = "smt-verify")]
+    #[test]
+    fn expression_acceptance_rejects_unknown_result() {
+        let input: Expr = Expr::var(1024);
+        let candidate: Expr = Expr::konst(0);
+        assert_eq!(
+            crate::verify::verify_equivalent(&input, &candidate, Width::W8),
+            crate::verify::Equivalence::Unknown
+        );
+        assert_eq!(
+            accept_expression_candidate(&input, candidate, Width::W8),
+            None
+        );
+    }
+
+    #[test]
+    fn dense_restoration_rejects_unmapped_variable() -> Result<(), &'static str> {
+        let input: Expr = xor_and_basis(7, 19);
+        let Some(dense): Option<DenseExpression> = compact_expression(&input) else {
+            return Err("expected a dense expression");
+        };
+        assert_eq!(dense.restore(&Expr::var(2)), None);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "smt-verify"))]
+    #[test]
+    fn sparse_rewrite_is_discarded_without_bitblast_verifier() {
+        let input: Expr = Expr::xor(Expr::var(7), Expr::var(7));
+        let result: Simplification = simplify(&input, Width::W8);
+        assert!(!result.changed());
+        assert_eq!(result.simplified, input);
     }
 
     #[cfg(feature = "smt-verify")]
