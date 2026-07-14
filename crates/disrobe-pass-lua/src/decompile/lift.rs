@@ -218,7 +218,7 @@ fn quote_lua_string(s: &str) -> String {
 }
 
 #[inline]
-fn kconst(p: &LuaProto, idx: u32, dialect: LuaDialect) -> String {
+pub(crate) fn kconst(p: &LuaProto, idx: u32, dialect: LuaDialect) -> String {
     p.constants.get(idx as usize).map_or_else(
         || format!("K{idx}"),
         |k: &LuaConstant| const_repr(k, dialect),
@@ -244,7 +244,7 @@ fn rk_or_const(state: &LiftState, p: &LuaProto, field: u32, use_const: bool) -> 
 }
 
 #[inline]
-fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
+pub(crate) fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
     match p.constants.get(bx as usize) {
         Some(LuaConstant::Str(s)) => s.clone(),
         Some(other) => const_repr(other, dialect),
