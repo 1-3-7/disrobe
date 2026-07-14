@@ -1854,6 +1854,9 @@ fn lift_structured(
     let root: Region = structurer.structure();
     let string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable> =
         structurer.take_string_switch_tables();
+    let finally_inline_skips: BTreeMap<BlockId, usize> = structurer.take_finally_inline_skips();
+    let finally_return_stores: BTreeMap<BlockId, u16> = structurer.take_finally_return_stores();
+    let finally_exception_slots: BTreeSet<u16> = structurer.take_finally_exception_slots();
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
@@ -1881,6 +1884,8 @@ fn lift_structured(
         param_types: param_types.clone(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
+        finally_inline_skips,
+        finally_return_stores,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -1888,6 +1893,8 @@ fn lift_structured(
     append_shared_fallthrough_tail(&ctx, insns, &root, &mut out);
     let mut hidden_slots: BTreeSet<u16> = ctx.pattern_binding_slots.clone();
     hidden_slots.extend(ctx.foreach_hidden_slots.iter().copied());
+    hidden_slots.extend(finally_exception_slots.iter().copied());
+    hidden_slots.extend(ctx.finally_return_stores.values().copied());
     let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
     Some(MethodBody {
@@ -3278,6 +3285,8 @@ struct RenderCtx<'a> {
     param_types: BTreeMap<u16, String>,
     foreach_suppress_slots: BTreeSet<u16>,
     foreach_hidden_slots: BTreeSet<u16>,
+    finally_inline_skips: BTreeMap<BlockId, usize>,
+    finally_return_stores: BTreeMap<BlockId, u16>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -3975,6 +3984,9 @@ fn render_block_seeded(
         }
     }
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let start: usize = start
+        .saturating_add(ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0))
+        .min(end);
     let pad: String = indent_string(level);
     let mut stack: Vec<Expr> = if seed.is_empty() {
         ctx.block_entry_stacks.get(&bid).cloned().unwrap_or(seed)
@@ -4017,6 +4029,21 @@ fn render_block_seeded(
             && let Some(stmt) = boolean_array_store(&mut stack, &ctx.bool_array_names)
         {
             let _ = writeln!(out, "{pad}{stmt};");
+            continue;
+        }
+        if let Some(&ret_slot) = ctx.finally_return_stores.get(&bid)
+            && matches!(op, 0x36..=0x4E)
+            && local_slot_operand(ins) == Some(ret_slot)
+        {
+            let value: Option<Expr> = stack.pop();
+            match value {
+                Some(expr) => {
+                    let _ = writeln!(out, "{pad}return {};", expr.render());
+                }
+                None => {
+                    let _ = writeln!(out, "{pad}return;");
+                }
+            }
             continue;
         }
         let lifted: LiftResult = lift_one(
@@ -4266,6 +4293,8 @@ fn compute_block_entry_stacks(
         param_types: BTreeMap::new(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
+        finally_inline_skips: BTreeMap::new(),
+        finally_return_stores: BTreeMap::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
@@ -6255,6 +6284,8 @@ const fn pattern_render_ctx<'a>(
         param_types: BTreeMap::new(),
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
+        finally_inline_skips: BTreeMap::new(),
+        finally_return_stores: BTreeMap::new(),
     }
 }
 

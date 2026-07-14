@@ -578,6 +578,9 @@ pub struct Structurer<'a> {
     insns: &'a [Instruction],
     switch_map: BTreeMap<BlockId, PrecomputedSwitch>,
     string_switch_tables: BTreeMap<BlockId, StringSwitchTable>,
+    finally_inline_skips: BTreeMap<BlockId, usize>,
+    finally_return_stores: BTreeMap<BlockId, u16>,
+    finally_exception_slots: BTreeSet<u16>,
     visited: BTreeSet<BlockId>,
     loop_header_of: BTreeMap<BlockId, BlockId>,
     loop_exits: BTreeMap<BlockId, BlockId>,
@@ -639,6 +642,9 @@ impl<'a> Structurer<'a> {
             insns,
             switch_map,
             string_switch_tables: BTreeMap::new(),
+            finally_inline_skips: BTreeMap::new(),
+            finally_return_stores: BTreeMap::new(),
+            finally_exception_slots: BTreeSet::new(),
             visited: BTreeSet::new(),
             loop_header_of,
             loop_exits,
@@ -663,6 +669,21 @@ impl<'a> Structurer<'a> {
     #[must_use]
     pub fn take_string_switch_tables(&mut self) -> BTreeMap<BlockId, StringSwitchTable> {
         std::mem::take(&mut self.string_switch_tables)
+    }
+
+    #[must_use]
+    pub fn take_finally_inline_skips(&mut self) -> BTreeMap<BlockId, usize> {
+        std::mem::take(&mut self.finally_inline_skips)
+    }
+
+    #[must_use]
+    pub fn take_finally_return_stores(&mut self) -> BTreeMap<BlockId, u16> {
+        std::mem::take(&mut self.finally_return_stores)
+    }
+
+    #[must_use]
+    pub fn take_finally_exception_slots(&mut self) -> BTreeSet<u16> {
+        std::mem::take(&mut self.finally_exception_slots)
     }
 
     pub fn structure(&mut self) -> Region {
@@ -960,6 +981,134 @@ impl<'a> Structurer<'a> {
         }
     }
 
+    fn finally_body_instructions(&self, chain: &[BlockId]) -> Option<Vec<Instruction>> {
+        let (&first, &last): (&BlockId, &BlockId) = chain.first().zip(chain.last())?;
+        let mut body: Vec<Instruction> = Vec::new();
+        for &bid in chain {
+            let insns: &[Instruction] = self.block_instructions(bid);
+            let lo: usize = usize::from(bid == first);
+            let hi: usize = if bid == last {
+                insns.len().checked_sub(2)?
+            } else {
+                insns.len()
+            };
+            if lo > hi {
+                return None;
+            }
+            body.extend_from_slice(&insns[lo..hi]);
+        }
+        if body.is_empty()
+            || body
+                .iter()
+                .any(|ins: &Instruction| matches!(ins.opcode, 0x99..=0xB1 | 0xBF | 0xC6..=0xC9))
+        {
+            return None;
+        }
+        Some(body)
+    }
+
+    fn slot_total_uses(&self, slot: u16) -> usize {
+        self.insns
+            .iter()
+            .filter(|ins: &&Instruction| {
+                any_load_slot(ins) == Some(slot) || any_store_slot(ins) == Some(slot)
+            })
+            .count()
+    }
+
+    fn single_try_predecessor(&self, group: &GroupedTry, cont: BlockId) -> Option<BlockId> {
+        let block: &BasicBlock = &self.cfg.blocks[cont.0 as usize];
+        let real_preds: Vec<BlockId> = block
+            .predecessors
+            .iter()
+            .copied()
+            .filter(|p: &BlockId| {
+                self.cfg.blocks[p.0 as usize]
+                    .successors
+                    .iter()
+                    .any(|e: &Edge| e.target == cont && !matches!(e.kind, EdgeKind::Exception))
+            })
+            .collect();
+        let &[pred]: &[BlockId] = real_preds.as_slice() else {
+            return None;
+        };
+        let pred_pc: u32 = self.cfg.blocks[pred.0 as usize].start_pc;
+        (pred_pc >= group.try_start_pc && pred_pc < group.try_end_pc).then_some(pred)
+    }
+
+    fn finally_value_return_temp(
+        &self,
+        group: &GroupedTry,
+        cont: BlockId,
+        skip: usize,
+    ) -> Option<(BlockId, u16)> {
+        let insns: &[Instruction] = self.block_instructions(cont);
+        let tail: &[Instruction] = insns.get(skip..)?;
+        let [load, ret]: &[Instruction; 2] = tail.try_into().ok()?;
+        if !matches!(ret.opcode, 0xAC..=0xB0) {
+            return None;
+        }
+        let slot: u16 = any_load_slot(load)?;
+        let pred: BlockId = self.single_try_predecessor(group, cont)?;
+        let pred_last: &Instruction = self.block_instructions(pred).last()?;
+        if any_store_slot(pred_last) != Some(slot) {
+            return None;
+        }
+        (self.slot_total_uses(slot) == 2).then_some((pred, slot))
+    }
+
+    fn finally_return_exit(&self, group: &GroupedTry, cont: BlockId, skip: usize) -> bool {
+        let insns: &[Instruction] = self.block_instructions(cont);
+        if skip >= insns.len() {
+            return false;
+        }
+        let Some(last): Option<&Instruction> = insns.last() else {
+            return false;
+        };
+        if !matches!(last.opcode, 0xAC..=0xB1) {
+            return false;
+        }
+        let block: &BasicBlock = &self.cfg.blocks[cont.0 as usize];
+        if block
+            .successors
+            .iter()
+            .any(|e: &Edge| !matches!(e.kind, EdgeKind::Exception))
+        {
+            return false;
+        }
+        let real_preds: Vec<BlockId> = block
+            .predecessors
+            .iter()
+            .copied()
+            .filter(|p: &BlockId| {
+                self.cfg.blocks[p.0 as usize]
+                    .successors
+                    .iter()
+                    .any(|e: &Edge| e.target == cont && !matches!(e.kind, EdgeKind::Exception))
+            })
+            .collect();
+        let &[pred]: &[BlockId] = real_preds.as_slice() else {
+            return false;
+        };
+        let pred_pc: u32 = self.cfg.blocks[pred.0 as usize].start_pc;
+        pred_pc >= group.try_start_pc && pred_pc < group.try_end_pc
+    }
+
+    fn finally_inline_skip(&self, chain: &[BlockId], cont: BlockId) -> Option<usize> {
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let cont_insns: &[Instruction] = self.block_instructions(cont);
+        if cont_insns.len() <= body.len() {
+            return None;
+        }
+        let matched: bool =
+            body.iter()
+                .zip(cont_insns.iter())
+                .all(|(a, b): (&Instruction, &Instruction)| {
+                    a.opcode == b.opcode && a.operands == b.operands
+                });
+        matched.then_some(body.len())
+    }
+
     fn outer_loop_jump(&mut self, target: BlockId) -> Option<Region> {
         if self.loop_stack.len() < 2 {
             return None;
@@ -1208,7 +1357,7 @@ impl<'a> Structurer<'a> {
                 } else {
                     None
                 };
-                let after_try: Option<BlockId> = if let Some(terminal) = absorbed_terminal {
+                let mut after_try: Option<BlockId> = if let Some(terminal) = absorbed_terminal {
                     self.visited.insert(terminal);
                     body_region = append_region_block(body_region, terminal);
                     None
@@ -1254,6 +1403,36 @@ impl<'a> Structurer<'a> {
                         });
                         cur = after_try;
                         continue;
+                    }
+                    if handlers_out.is_empty()
+                        && let Some(&first) = chain.first()
+                        && let Some(entry) = self.block_instructions(first).first()
+                        && let Some(exc_slot) = astore_slot(entry)
+                        && self.slot_total_uses(exc_slot) == 2
+                    {
+                        self.finally_exception_slots.insert(exc_slot);
+                    }
+                    if let Some(cont) = after_try
+                        && let Some(skip) = self.finally_inline_skip(&chain, cont)
+                        && handlers_out.is_empty()
+                        && !self.visited.contains(&cont)
+                    {
+                        self.finally_inline_skips.insert(cont, skip);
+                        if let Some((pred, slot)) =
+                            self.finally_value_return_temp(&try_group, cont, skip)
+                        {
+                            self.finally_return_stores.insert(pred, slot);
+                            self.visited.insert(cont);
+                            after_try = None;
+                        } else if self.finally_return_exit(&try_group, cont, skip) {
+                            self.visited.insert(cont);
+                            body_region = append_region_block(body_region, cont);
+                            after_try = None;
+                        }
+                    } else if let Some(cont) = after_try
+                        && let Some(skip) = self.finally_inline_skip(&chain, cont)
+                    {
+                        self.finally_inline_skips.insert(cont, skip);
                     }
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
@@ -1366,6 +1545,9 @@ impl<'a> Structurer<'a> {
             insns: self.insns,
             switch_map: self.switch_map.clone(),
             string_switch_tables: BTreeMap::new(),
+            finally_inline_skips: BTreeMap::new(),
+            finally_return_stores: BTreeMap::new(),
+            finally_exception_slots: BTreeSet::new(),
             visited: BTreeSet::new(),
             loop_header_of: self.loop_header_of.clone(),
             loop_exits: self.loop_exits.clone(),
@@ -1395,6 +1577,12 @@ impl<'a> Structurer<'a> {
         self.had_irreducible |= inner.had_irreducible;
         self.string_switch_tables
             .extend(inner.take_string_switch_tables());
+        self.finally_inline_skips
+            .extend(inner.take_finally_inline_skips());
+        self.finally_return_stores
+            .extend(inner.take_finally_return_stores());
+        self.finally_exception_slots
+            .extend(inner.take_finally_exception_slots());
         self.labels_used.extend(inner.labels_used);
         region
     }
@@ -1615,6 +1803,30 @@ const fn aload_slot(ins: &Instruction) -> Option<u16> {
     match (ins.opcode, &ins.operands) {
         (0x19, Operands::Local(idx)) => Some(*idx),
         (0x2A..=0x2D, _) => Some((ins.opcode - 0x2A) as u16),
+        _ => None,
+    }
+}
+
+const fn any_load_slot(ins: &Instruction) -> Option<u16> {
+    match (ins.opcode, &ins.operands) {
+        (0x15..=0x19, Operands::Local(idx)) => Some(*idx),
+        (0x1A..=0x1D, _) => Some((ins.opcode - 0x1A) as u16),
+        (0x1E..=0x21, _) => Some((ins.opcode - 0x1E) as u16),
+        (0x22..=0x25, _) => Some((ins.opcode - 0x22) as u16),
+        (0x26..=0x29, _) => Some((ins.opcode - 0x26) as u16),
+        (0x2A..=0x2D, _) => Some((ins.opcode - 0x2A) as u16),
+        _ => None,
+    }
+}
+
+const fn any_store_slot(ins: &Instruction) -> Option<u16> {
+    match (ins.opcode, &ins.operands) {
+        (0x36..=0x3A, Operands::Local(idx)) => Some(*idx),
+        (0x3B..=0x3E, _) => Some((ins.opcode - 0x3B) as u16),
+        (0x3F..=0x42, _) => Some((ins.opcode - 0x3F) as u16),
+        (0x43..=0x46, _) => Some((ins.opcode - 0x43) as u16),
+        (0x47..=0x4A, _) => Some((ins.opcode - 0x47) as u16),
+        (0x4B..=0x4E, _) => Some((ins.opcode - 0x4B) as u16),
         _ => None,
     }
 }
