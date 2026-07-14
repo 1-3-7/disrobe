@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::process::Command;
 
 use disrobe_pass_go::{GoAnalysis, GoBuildInfo, GoModule, analyze};
+use object::{Object, ObjectSection};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct OracleBuildInfo {
@@ -139,6 +140,240 @@ func main() {
 	fmt.Fprintln(os.Stdout, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 "#;
+
+const BUILDINFO_MARKER: &[u8] = b"\xff Go buildinf:";
+const BUILDINFO_HEADER_LEN: usize = 32;
+const GO_STRING_HEADER_LEN: usize = 16;
+const BUILDINFO_DECOY_LEN: usize = BUILDINFO_HEADER_LEN + 2 * GO_STRING_HEADER_LEN;
+const BUILDINFO_ALIGNMENT: u64 = 16;
+
+fn read_uvarint(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
+    let mut value: u64 = 0;
+    for shift in 0..10usize {
+        let index: usize = start.checked_add(shift)?;
+        let byte: u8 = *bytes.get(index)?;
+        value |= u64::from(byte & 0x7f).checked_shl(u32::try_from(shift.checked_mul(7)?).ok()?)?;
+        if byte & 0x80 == 0 {
+            return Some((value, shift + 1));
+        }
+    }
+    None
+}
+
+fn mutate_buildinfo_to_same_section_fallback(bytes: &mut [u8]) -> bool {
+    let file: object::File<'_> = match object::File::parse(&*bytes) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut placement: Option<(usize, u64, usize, usize, u64)> = None;
+    for section in file.sections() {
+        let Ok(data): Result<&[u8], object::Error> = section.data() else {
+            continue;
+        };
+        let Some((section_file_start, section_file_len)): Option<(u64, u64)> = section.file_range()
+        else {
+            continue;
+        };
+        let Ok(section_file_len): Result<usize, _> = usize::try_from(section_file_len) else {
+            continue;
+        };
+        let Some(file_data): Option<&[u8]> = data.get(..section_file_len) else {
+            continue;
+        };
+        let Some(real_relative): Option<usize> = file_data
+            .windows(BUILDINFO_MARKER.len())
+            .position(|window: &[u8]| window == BUILDINFO_MARKER)
+        else {
+            continue;
+        };
+        let Ok(real_relative_u64): Result<u64, _> = u64::try_from(real_relative) else {
+            continue;
+        };
+        let Some(real_file_u64): Option<u64> = section_file_start.checked_add(real_relative_u64)
+        else {
+            continue;
+        };
+        let Ok(real_file): Result<usize, _> = usize::try_from(real_file_u64) else {
+            continue;
+        };
+        let Ok(section_file_start): Result<usize, _> = usize::try_from(section_file_start) else {
+            continue;
+        };
+        let Some(real_va): Option<u64> = section.address().checked_add(real_relative_u64) else {
+            continue;
+        };
+        placement = Some((
+            real_file,
+            real_va,
+            section_file_start,
+            section_file_len,
+            section.address(),
+        ));
+        break;
+    }
+    drop(file);
+    let Some((real_file, real_va, section_file_start, section_file_len, section_va)) = placement
+    else {
+        return false;
+    };
+    let Some(header): Option<&[u8]> = bytes.get(real_file..real_file + BUILDINFO_HEADER_LEN) else {
+        return false;
+    };
+    if header.get(14) != Some(&8) || header.get(15).is_none_or(|flags: &u8| flags & 0x2 == 0) {
+        return false;
+    }
+    let version_start: usize = real_file + BUILDINFO_HEADER_LEN;
+    let Some((version_len, version_prefix)): Option<(u64, usize)> =
+        read_uvarint(bytes, version_start)
+    else {
+        return false;
+    };
+    let Some(version_data_file): Option<usize> = version_start.checked_add(version_prefix) else {
+        return false;
+    };
+    let Ok(version_len_usize): Result<usize, _> = usize::try_from(version_len) else {
+        return false;
+    };
+    let Some(version_end): Option<usize> = version_data_file.checked_add(version_len_usize) else {
+        return false;
+    };
+    if bytes.get(version_data_file..version_end).is_none() {
+        return false;
+    }
+    let module_start: usize = version_end;
+    let Some((module_len, module_prefix)): Option<(u64, usize)> = read_uvarint(bytes, module_start)
+    else {
+        return false;
+    };
+    let Some(module_data_file): Option<usize> = module_start.checked_add(module_prefix) else {
+        return false;
+    };
+    let Ok(module_len_usize): Result<usize, _> = usize::try_from(module_len) else {
+        return false;
+    };
+    let Some(module_end): Option<usize> = module_data_file.checked_add(module_len_usize) else {
+        return false;
+    };
+    if bytes.get(module_data_file..module_end).is_none() {
+        return false;
+    }
+    let Some(section_file_end): Option<usize> = section_file_start.checked_add(section_file_len)
+    else {
+        return false;
+    };
+    if module_end > section_file_end {
+        return false;
+    }
+    let Some(module_end_relative): Option<usize> = module_end.checked_sub(section_file_start)
+    else {
+        return false;
+    };
+    let Some((decoy_relative, decoy_va)): Option<(usize, u64)> = bytes
+        .get(section_file_start..section_file_end)
+        .and_then(|file_data: &[u8]| {
+            file_data
+                .get(module_end_relative..)
+                .and_then(|tail: &[u8]| {
+                    tail.windows(BUILDINFO_DECOY_LEN).enumerate().find_map(
+                        |(offset, window): (usize, &[u8])| {
+                            if window.iter().any(|byte: &u8| *byte != 0) {
+                                return None;
+                            }
+                            let relative: usize = module_end_relative.checked_add(offset)?;
+                            let va: u64 = section_va.checked_add(u64::try_from(relative).ok()?)?;
+                            va.is_multiple_of(BUILDINFO_ALIGNMENT)
+                                .then_some((relative, va))
+                        },
+                    )
+                })
+        })
+    else {
+        return false;
+    };
+    let Some(decoy_file): Option<usize> = section_file_start.checked_add(decoy_relative) else {
+        return false;
+    };
+    let Some(version_relative): Option<usize> = BUILDINFO_HEADER_LEN.checked_add(version_prefix)
+    else {
+        return false;
+    };
+    let Ok(version_relative_u64): Result<u64, _> = u64::try_from(version_relative) else {
+        return false;
+    };
+    let Some(module_relative): Option<usize> = module_data_file.checked_sub(real_file) else {
+        return false;
+    };
+    let Ok(module_relative_u64): Result<u64, _> = u64::try_from(module_relative) else {
+        return false;
+    };
+    let Some(version_data_va): Option<u64> = real_va.checked_add(version_relative_u64) else {
+        return false;
+    };
+    let Some(module_data_va): Option<u64> = real_va.checked_add(module_relative_u64) else {
+        return false;
+    };
+    let Some(version_header_va): Option<u64> = decoy_va.checked_add(BUILDINFO_HEADER_LEN as u64)
+    else {
+        return false;
+    };
+    let Some(module_header_va): Option<u64> =
+        version_header_va.checked_add(GO_STRING_HEADER_LEN as u64)
+    else {
+        return false;
+    };
+    let Some(original_header): Option<&mut [u8]> =
+        bytes.get_mut(real_file..real_file + BUILDINFO_HEADER_LEN)
+    else {
+        return false;
+    };
+    original_header[14] = 0;
+    original_header[15] = 0;
+    let Some(decoy): Option<&mut [u8]> =
+        bytes.get_mut(decoy_file..decoy_file + BUILDINFO_DECOY_LEN)
+    else {
+        return false;
+    };
+    decoy[..BUILDINFO_MARKER.len()].copy_from_slice(BUILDINFO_MARKER);
+    decoy[14] = 8;
+    decoy[16..24].copy_from_slice(&version_header_va.to_le_bytes());
+    decoy[24..32].copy_from_slice(&module_header_va.to_le_bytes());
+    decoy[32..40].copy_from_slice(&version_data_va.to_le_bytes());
+    decoy[40..48].copy_from_slice(&version_len.to_le_bytes());
+    decoy[48..56].copy_from_slice(&module_data_va.to_le_bytes());
+    decoy[56..64].copy_from_slice(&module_len.to_le_bytes());
+    true
+}
+
+#[test]
+fn buildinfo_skips_malformed_marker_before_same_section_fallback() {
+    if !common::require_go() {
+        return;
+    }
+    let scratch: common::GoBuildScratch = common::new_scratch("buildinfo_decoy");
+    common::write_module(&scratch, "disrobe.example/buildinfodecoy", BUILDINFO_SOURCE);
+    let Some(binary): Option<std::path::PathBuf> =
+        common::go_build(&scratch, "buildinfo_decoy.exe", &[])
+    else {
+        panic!("go build failed; the real-toolchain reference cannot run");
+    };
+    let reference: common::GoVersionM =
+        common::go_version_m(&binary).expect("go version -m must read the fresh binary");
+    let mut bytes: Vec<u8> = std::fs::read(&binary).expect("read fresh Go binary");
+    assert!(
+        mutate_buildinfo_to_same_section_fallback(&mut bytes),
+        "the Go toolchain binary must provide room for a same-section fallback record"
+    );
+
+    let analysis: GoAnalysis = analyze(&bytes).expect("analyze binary with malformed predecessor");
+    let build_info: &GoBuildInfo = analysis
+        .moduledata
+        .build_info
+        .as_ref()
+        .expect("a malformed predecessor must not hide the valid build-info record");
+    assert_eq!(build_info.path, reference.path);
+    assert_eq!(build_info.go_version, reference.go_version);
+    assert_eq!(build_info.settings, reference.settings);
+}
 
 #[test]
 fn buildinfo_matches_go_version_m_on_fresh_real_build() {

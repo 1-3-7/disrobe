@@ -402,6 +402,7 @@ const BUILDINFO_HEADER_LEN: usize = 32;
 const BUILDINFO_FLAG_OFFSET: usize = 15;
 const BUILDINFO_PTRSIZE_OFFSET: usize = 14;
 const BUILDINFO_FLAG_INLINE_STRINGS: u8 = 0x2;
+const BUILDINFO_ALIGNMENT: u64 = 16;
 const BUILDINFO_SENTINEL_LEN: usize = 16;
 const BUILDINFO_MAX_STRING_LEN: u64 = 1 << 20;
 const MAX_MODULENAME_LEN: usize = 4096;
@@ -510,11 +511,28 @@ impl GoBuildInfo {
 #[must_use]
 pub fn extract_build_info(image: &GoImage<'_>) -> Option<GoBuildInfo> {
     for sec in &image.sections {
-        let Some(pos): Option<usize> = find_subslice(sec.data, BUILDINFO_MARKER) else {
-            continue;
-        };
-        if let Some(info) = decode_build_info(image, sec.data, pos) {
-            return Some(info);
+        let mut search_start: usize = 0;
+        while let Some(haystack) = sec.data.get(search_start..) {
+            let Some(relative): Option<usize> = find_subslice(haystack, BUILDINFO_MARKER) else {
+                break;
+            };
+            let Some(marker_pos): Option<usize> = search_start.checked_add(relative) else {
+                break;
+            };
+            let marker_offset: Option<u64> = u64::try_from(marker_pos).ok();
+            let aligned: bool = marker_offset
+                .and_then(|offset: u64| sec.address.checked_add(offset))
+                .is_some_and(|address: u64| address.is_multiple_of(BUILDINFO_ALIGNMENT));
+            if aligned
+                && let Some(info) = decode_build_info(image, sec.data, marker_pos)
+                && info.go_version.is_some()
+            {
+                return Some(info);
+            }
+            let Some(next_start): Option<usize> = marker_pos.checked_add(1) else {
+                break;
+            };
+            search_start = next_start;
         }
     }
     None
@@ -975,6 +993,51 @@ mod tests {
             flat: true,
         };
         assert_eq!(extract_build_info(&image), None);
+    }
+
+    fn write_inline_build_info(bytes: &mut [u8], offset: usize, version: &[u8]) {
+        bytes[offset..offset + BUILDINFO_MARKER.len()].copy_from_slice(BUILDINFO_MARKER);
+        bytes[offset + BUILDINFO_FLAG_OFFSET] = BUILDINFO_FLAG_INLINE_STRINGS;
+        bytes[offset + BUILDINFO_HEADER_LEN] = u8::try_from(version.len()).unwrap();
+        let version_start: usize = offset + BUILDINFO_HEADER_LEN + 1;
+        bytes[version_start..version_start + version.len()].copy_from_slice(version);
+        bytes[version_start + version.len()] = 0;
+    }
+
+    fn inline_build_info_image(bytes: &[u8]) -> GoImage<'_> {
+        GoImage {
+            kind: ImageKind::Pe,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![Section {
+                name: ".rdata".to_owned(),
+                address: 0x1000,
+                data: bytes,
+            }],
+            raw: bytes,
+            symbol_addrs: Vec::new(),
+            flat: true,
+        }
+    }
+
+    #[test]
+    fn buildinfo_skips_empty_inline_record_before_valid_record() {
+        let mut bytes: Vec<u8> = vec![0; 0x100];
+        write_inline_build_info(&mut bytes, 0, b"");
+        write_inline_build_info(&mut bytes, 64, b"go1.26.3");
+        let image: GoImage<'_> = inline_build_info_image(&bytes);
+        let info: GoBuildInfo = extract_build_info(&image).expect("valid second build info");
+        assert_eq!(info.go_version.as_deref(), Some("go1.26.3"));
+    }
+
+    #[test]
+    fn buildinfo_skips_unaligned_record_before_valid_record() {
+        let mut bytes: Vec<u8> = vec![0; 0x100];
+        write_inline_build_info(&mut bytes, 1, b"go1.1.1");
+        write_inline_build_info(&mut bytes, 64, b"go1.26.3");
+        let image: GoImage<'_> = inline_build_info_image(&bytes);
+        let info: GoBuildInfo = extract_build_info(&image).expect("valid aligned build info");
+        assert_eq!(info.go_version.as_deref(), Some("go1.26.3"));
     }
 
     #[test]
