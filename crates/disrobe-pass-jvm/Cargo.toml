@@ -28,6 +28,7 @@ zip = { workspace = true }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
 object = { workspace = true }
+encoding_rs = "0.8"
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]

@@ -8,6 +8,9 @@ use crate::dalvik_strdec::{
     DexStringRecovery, recover as recover_dex_strings,
     recover_with_native_keys as recover_dex_strings_with_native_keys,
 };
+use crate::dalvik_strdec_generic::{
+    CallSiteOutcome, GenericStringRecovery, recover as recover_dex_strings_generic,
+};
 use crate::dex::{CodeItem, DEX_MAGIC_PREFIX, DexFile, parse as parse_dex, parse_code_items};
 use crate::jar::{JIMAGE_MAGIC, JMOD_MAGIC, Jimage, JmodExtract, extract_jmod, parse_jimage};
 use crate::oat::{ODEX_MAGIC, OdexFile, parse_oat, parse_odex};
@@ -38,6 +41,8 @@ pub struct DexProtectorPeel {
     pub runtime_key_walled_classes: usize,
     pub cff: DalvikCffReport,
     pub recovery: Vec<DexStringRecovery>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub call_site_recovery: Option<GenericStringRecovery>,
 }
 
 #[must_use]
@@ -83,6 +88,14 @@ fn merge_dex_peel(acc: &mut DexProtectorPeel, part: DexProtectorPeel) {
     acc.cff.residual_dispatcher_edges += part.cff.residual_dispatcher_edges;
     acc.cff.unhandled_shapes.extend(part.cff.unhandled_shapes);
     acc.recovery.extend(part.recovery);
+    match (&mut acc.call_site_recovery, part.call_site_recovery) {
+        (Some(existing), Some(more)) => {
+            existing.candidates_found += more.candidates_found;
+            existing.call_sites.extend(more.call_sites);
+        }
+        (existing @ None, Some(more)) => *existing = Some(more),
+        (_, None) => {}
+    }
 }
 
 #[must_use]
@@ -113,7 +126,19 @@ fn peel_dex_protectors_with_native_libs(
         .iter()
         .filter(|r: &&DexStringRecovery| r.runtime_key_wall)
         .count();
-    if strings_recovered == 0 && cff.flattened_methods == 0 && runtime_key_walled_classes == 0 {
+    let generic: GenericStringRecovery = recover_dex_strings_generic(dex, bytes);
+    let generic_recovered: usize = generic
+        .call_sites
+        .iter()
+        .filter(|c: &&crate::dalvik_strdec_generic::CallSiteRecovery| {
+            matches!(c.outcome, CallSiteOutcome::Recovered(_))
+        })
+        .count();
+    if strings_recovered == 0
+        && cff.flattened_methods == 0
+        && runtime_key_walled_classes == 0
+        && generic_recovered == 0
+    {
         return None;
     }
     Some(DexProtectorPeel {
@@ -121,6 +146,11 @@ fn peel_dex_protectors_with_native_libs(
         runtime_key_walled_classes,
         cff,
         recovery,
+        call_site_recovery: if generic.call_sites.is_empty() {
+            None
+        } else {
+            Some(generic)
+        },
     })
 }
 
