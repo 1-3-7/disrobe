@@ -11,12 +11,16 @@
         {
           "label": "full 571-module stdlib (representative)",
           "value": 92.43,
+          "num": 16880,
+          "den": 18262,
           "detail": "16880 / 18262 code objects across the entire CPython 3.14 Lib; the honest representative number (the 200-module pinned corpus over-represents recoverable modules)",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over all of C:/Python314/Lib (571 modules, 18262 code objects, own_equiv oracle); measured 90.63 pre-syntax-campaign, then the smtplib/pdb/codecs whole-module syntax-error fixes (+320 objects), the shared-prefix ternary-in-argument fold, and a structure_stmts re-entrancy guard that recovers recursion-runaway functions; 16880 (92.43) at HEAD 7adfad10"
         },
         {
           "label": "200-module pinned corpus",
           "value": 96.26,
+          "num": 6051,
+          "den": 6286,
           "detail": "6051 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
           "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.26 (6051 of 6286 code objects, 200 of 200 modules) on CPython 3.14 at HEAD cba07b77 (a loop-body pure-and if-guard reassembles into a single if a and b: body, and an inlined break-tail keeps the expression-statement whose completing pop sits at the region boundary)"
         }
