@@ -409,6 +409,78 @@ fn swift_driver_swift6_feature_symbols_match_reference_exactly() {
     }
 }
 
+const VARIADIC_GENERIC_FIXTURES: [(&str, &str); 7] = [
+    (
+        "$s5probe11forEachPackyyxxQpRvzlF",
+        "probe.forEachPack<each A>(repeat A) -> ()",
+    ),
+    (
+        "$s5probe4PackV7storagexxQp_tvg",
+        "probe.Pack.storage.getter : (repeat A)",
+    ),
+    (
+        "$s5probe4PackV7storagexxQp_tvs",
+        "probe.Pack.storage.setter : (repeat A)",
+    ),
+    (
+        "$s5probe4PackV7storagexxQp_tvM",
+        "probe.Pack.storage.modify : (repeat A)",
+    ),
+    (
+        "$s5probe4PackVyACyxxQp_QPGxxQpcfC",
+        "probe.Pack.init(repeat A) -> probe.Pack<Pack{repeat A}>",
+    ),
+    (
+        "$s5probe5ShapeTL",
+        "protocol requirements base descriptor for probe.Shape",
+    ),
+    (
+        "$s10SwiftHello0B9GreetableTL",
+        "protocol requirements base descriptor for SwiftHello.HelloGreetable",
+    ),
+];
+
+#[test]
+fn variadic_generic_manglings_demangle_to_committed_fixtures() {
+    for (mangled, expected) in VARIADIC_GENERIC_FIXTURES {
+        let ours: String = demangle::demangle(mangled)
+            .unwrap_or_else(|_| panic!("demangler must recover {mangled}"));
+        assert_eq!(
+            ours, expected,
+            "variadic-generic / bare-nominal-descriptor demangling regressed for {mangled}"
+        );
+    }
+}
+
+#[test]
+fn variadic_generic_manglings_match_reference_demangler_exactly() {
+    let Some(tool): Option<PathBuf> = resolve_reference_demangler() else {
+        eprintln!("skip: swift-demangle not on PATH (reference oracle absent on this host)");
+        return;
+    };
+    let symbols: Vec<String> = VARIADIC_GENERIC_FIXTURES
+        .iter()
+        .map(|(m, _): &(&str, &str)| (*m).to_owned())
+        .collect();
+    let Some(reference): Option<Vec<String>> = reference_demangle(&tool, &symbols) else {
+        eprintln!("skip: reference swift-demangle produced no comparable output");
+        return;
+    };
+    for (fixture, refd) in VARIADIC_GENERIC_FIXTURES.iter().zip(reference.iter()) {
+        let (mangled, expected): (&str, &str) = *fixture;
+        assert_eq!(
+            expected, refd,
+            "committed fixture drifted from the live swift-demangle for {mangled}"
+        );
+        let ours: String = demangle::demangle(mangled)
+            .unwrap_or_else(|_| panic!("demangler must recover {mangled}"));
+        assert_eq!(
+            &ours, refd,
+            "disrobe must byte-match swift-demangle for {mangled}"
+        );
+    }
+}
+
 #[test]
 fn swift_hello_obfuscated_symbol_table_still_demangles_structurally() {
     let Some(bytes): Option<Vec<u8>> = load_fixture("SwiftHello.obfuscated") else {
