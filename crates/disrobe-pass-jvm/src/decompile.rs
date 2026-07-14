@@ -8085,11 +8085,11 @@ fn iinc(insn: &Instruction, params: &[(u16, String)]) -> LiftResult {
 
 fn cast_numeric(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
     let ty: &str = match insn.opcode {
-        0x85 | 0x8F | 0x91 => "long",
-        0x86 | 0x89 | 0x8C => "float",
+        0x85 | 0x8C | 0x8F => "long",
+        0x86 | 0x89 | 0x90 => "float",
         0x87 | 0x8A | 0x8D => "double",
         0x88 | 0x8B | 0x8E => "int",
-        0x90 => "float",
+        0x91 => "byte",
         0x92 => "char",
         0x93 => "short",
         _ => return LiftResult::Unhandled,
