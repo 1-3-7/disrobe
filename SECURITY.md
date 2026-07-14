@@ -91,7 +91,7 @@ A plain enumeration, grouped by subsystem rather than one row per crate, generat
 
 | Family | Crates |
 |---|---|
-| Native executables and containers | `disrobe-binfmt` (PE/ELF/Mach-O; zip/tar/7z/cab/msi/nsis/deb/rpm/AppImage/... containers; quota + path-sanitisation), `disrobe-pass-native` (packers, protectors, disassembly), `disrobe-pass-nativelang` (Nim/Zig/Crystal/D), `disrobe-pass-webview` (Electron ASAR / Tauri / Wails frontend-asset carver from packed desktop binaries) |
+| Native executables and containers | `disrobe-binfmt` (PE/ELF/Mach-O; zip/tar/7z/cab/msi/nsis/deb/rpm/AppImage/... containers; quota + path-sanitisation), `disrobe-pass-native` (packers, protectors, disassembly), `disrobe-pass-nativelang` (Nim/Zig/Crystal/D), `disrobe-pass-webview` (Electron ASAR / Tauri / Wails frontend-asset carver from packed desktop binaries), `disrobe-sleigh` (AArch64 Sleigh instruction decoder / p-code lifter over raw machine-code bytes) |
 | .NET / CIL | `disrobe-pass-dotnet` |
 | JVM / Android | `disrobe-pass-jvm`, `disrobe-nir-lift` (JVM/Dalvik/CIL/AVM2 bytecode lifters) |
 | Python ecosystem | `disrobe-pass-py-decompile`, `disrobe-pass-py-disasm`, `disrobe-pass-py-deob`, `disrobe-pass-pyarmor`, `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, `disrobe-pass-pyinstaller`, `disrobe-pass-pyfreeze`, `disrobe-pass-nuitka`, `disrobe-pass-pickle`, `disrobe-py-marshal`, `disrobe-pass-sourcedefender` |
