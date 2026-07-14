@@ -37,6 +37,10 @@ struct Bar {
     #[serde(default)]
     value: Option<f64>,
     #[serde(default)]
+    num: Option<u64>,
+    #[serde(default)]
+    den: Option<u64>,
+    #[serde(default)]
     detected: Option<u64>,
     #[serde(default)]
     delivered: Option<u64>,
@@ -72,6 +76,16 @@ impl Bar {
         Ok(MetricValue::Int(f64_to_u64_exact(raw, &self.label)?))
     }
 
+    fn count_ratio(&self) -> Result<MetricValue> {
+        let num: u64 = self
+            .num
+            .ok_or_else(|| eyre!("bar `{}` has no `num` count", self.label))?;
+        let den: u64 = self
+            .den
+            .ok_or_else(|| eyre!("bar `{}` has no `den` count", self.label))?;
+        Ok(MetricValue::Ratio { num, den })
+    }
+
     fn delivered(&self) -> Result<u64> {
         self.delivered
             .ok_or_else(|| eyre!("bar `{}` has no delivered count", self.label))
@@ -96,6 +110,8 @@ enum Formatter {
     Thousands,
     Pct,
     Frac,
+    OfPlain,
+    OfGrouped,
 }
 
 impl Formatter {
@@ -105,6 +121,12 @@ impl Formatter {
             (Self::Thousands, MetricValue::Int(n)) => Ok(group_thousands(n)),
             (Self::Pct, MetricValue::Percent(p)) => Ok(format_percent(p)),
             (Self::Frac, MetricValue::Ratio { num, den }) => Ok(format!("{num} / {den}")),
+            (Self::OfPlain, MetricValue::Ratio { num, den }) => Ok(format!("{num} of {den}")),
+            (Self::OfGrouped, MetricValue::Ratio { num, den }) => Ok(format!(
+                "{} of {}",
+                group_thousands(num),
+                group_thousands(den)
+            )),
             (formatter, other) => {
                 bail!("formatter {formatter:?} cannot render metric value {other:?}")
             }
@@ -136,6 +158,42 @@ const KEYS: &[KeySpec] = &[
         extract: |r: &Recovery| {
             r.bar("Python bytecode", "200-module pinned corpus")?
                 .percent()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_full_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "full 571-module stdlib (representative)")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_full_count_grouped",
+        formatter: Formatter::OfGrouped,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "full 571-module stdlib (representative)")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_count",
+        formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "200-module pinned corpus")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "py_stdlib_pinned_count_grouped",
+        formatter: Formatter::OfGrouped,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar("Python bytecode", "200-module pinned corpus")?
+                .count_ratio()
         },
     },
     KeySpec {
@@ -661,8 +719,8 @@ mod tests {
                 {
                     "heading": "Python bytecode (CPython 3.14 stdlib)",
                     "bars": [
-                        {"label": "full 571-module stdlib (representative)", "value": 92.43},
-                        {"label": "200-module pinned corpus", "value": 94.18}
+                        {"label": "full 571-module stdlib (representative)", "value": 92.43, "num": 16880, "den": 18262},
+                        {"label": "200-module pinned corpus", "value": 94.18, "num": 6051, "den": 6286}
                     ]
                 },
                 {
@@ -690,6 +748,35 @@ mod tests {
         assert_eq!(group_thousands(122_633), "122,633");
         assert_eq!(group_thousands(98), "98");
         assert_eq!(group_thousands(1_000), "1,000");
+    }
+
+    #[test]
+    fn of_formatters_render_the_pinned_count() -> Result<()> {
+        let recovery: Recovery = test_recovery()?;
+        let plain: MetricValue = recovery
+            .bar("Python bytecode", "200-module pinned corpus")?
+            .count_ratio()?;
+        assert_eq!(Formatter::OfPlain.render(plain)?, "6051 of 6286");
+        assert_eq!(Formatter::OfGrouped.render(plain)?, "6,051 of 6,286");
+        let full: MetricValue = recovery
+            .bar("Python bytecode", "full 571-module stdlib (representative)")?
+            .count_ratio()?;
+        assert_eq!(Formatter::OfPlain.render(full)?, "16880 of 18262");
+        assert_eq!(Formatter::OfGrouped.render(full)?, "16,880 of 18,262");
+        Ok(())
+    }
+
+    #[test]
+    fn count_marker_is_a_fixpoint() -> Result<()> {
+        let recovery: Recovery = test_recovery()?;
+        let source: &str = "pinned (<!-- m:py_stdlib_pinned_count -->0 of 0<!-- /m -->), \
+             grouped (<!-- m:py_stdlib_pinned_count_grouped -->0 of 0<!-- /m --> code objects).\n";
+        let once: String = rewrite_text(source, &recovery)?;
+        let twice: String = rewrite_text(&once, &recovery)?;
+        assert!(once.contains("-->6051 of 6286<!-- /m -->"));
+        assert!(once.contains("-->6,051 of 6,286<!-- /m --> code objects"));
+        assert_eq!(once, twice);
+        Ok(())
     }
 
     #[test]
