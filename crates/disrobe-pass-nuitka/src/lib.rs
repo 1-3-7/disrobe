@@ -17,6 +17,7 @@ mod detect;
 mod error;
 mod extract;
 mod frozen;
+mod limits;
 mod manifest;
 mod markers;
 mod name_map;
@@ -44,7 +45,10 @@ pub use body::{
 };
 pub use buildinfo::{BuildInfo, BuildInfoFlag, scan_build_info};
 pub use bytecode_table::{BytecodeModule, BytecodeTable, decode_bytecode_table};
-pub use c_module::{CCodeObject, CFunctionWiring, CImplBody, CModuleStructure, parse_c_module};
+pub use c_module::{
+    CCodeObject, CConstReturn, CFunctionWiring, CImplBody, CModuleStructure, parse_c_module,
+    parse_c_module_with_python_abi,
+};
 pub use const_blob::{
     CodeKind, CodeObjectMeta, ConstItem, ModuleConstants, NuitkaConstants, constants_unparsable,
     parse_constants,
@@ -58,7 +62,8 @@ pub use constants::{
 };
 pub use decompile::{
     BinaryConstants, DataFileEntry, DataFileKind, DecompSourceKind, NuitkaDecompilation,
-    decompile_binary, decompile_build_dir, decompile_bytes, decompile_const_bytes,
+    decompile_binary, decompile_build_dir, decompile_build_dir_with_python_abi, decompile_bytes,
+    decompile_const_bytes,
 };
 pub use demangle::{DemangledFunction, NuitkaSymbolKind, demangle_function};
 pub use detect::{
@@ -106,7 +111,8 @@ pub use skeleton::{
 };
 pub use surface::{
     SurfaceFidelity, SurfaceFunction, SurfaceModule, SurfaceParam, build_surface,
-    build_surface_names_only, build_surface_names_only_with_skeleton, emit_python,
+    build_surface_names_only, build_surface_names_only_with_skeleton,
+    build_surface_with_python_abi, emit_python,
 };
 pub use symbols::{ImpFunction, ModuleInit, SymbolGraph, scan_symbols};
 pub use variant::{BinaryFormat, NuitkaVariant, VariantClassification, classify, classify_in_file};

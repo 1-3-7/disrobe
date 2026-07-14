@@ -2,23 +2,28 @@
 use std::process::Command;
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, SurfaceModule, build_surface, decode_const_file, emit_python, parse_c_module,
+    CModuleStructure, SurfaceModule, build_surface_with_python_abi, decode_const_file, emit_python,
+    parse_c_module_with_python_abi,
 };
 
 const C_SRC: &str = include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");
 const CONST: &[u8] =
     include_bytes!("../../../corpus/python/nuitka/module/hello.build/module.hello.const");
 const PYI: &str = include_str!("../../../corpus/python/nuitka/module/hello.pyi");
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 fn build() -> SurfaceModule {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse c");
     let pool = decode_const_file(CONST, "module.hello.const", "hello").expect("decode const");
-    build_surface(&cmod, &pool, Some(C_SRC)).expect("build surface")
+    build_surface_with_python_abi(&cmod, &pool, Some(C_SRC), FIXTURE_PYTHON_ABI)
+        .expect("build surface")
 }
 
 #[test]
 fn c_structure_matches_real_bytes() {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse c");
     assert_eq!(cmod.module_name, "hello");
     assert_eq!(cmod.impl_bodies.len(), 3);
     assert!(cmod.has_main_guard, "real bytes carry a __main__ guard");
@@ -140,6 +145,102 @@ fn emitted_python_compiles_and_parses_on_cpython_314() {
         ast_out.status.success(),
         "ast gate failed: {}",
         String::from_utf8_lossy(&ast_out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
+    let Some(py): Option<String> = locate_python_314() else {
+        eprintln!("skip: no python3.14");
+        return;
+    };
+    let mut surface: SurfaceModule = build();
+    surface.functions[0].return_annotation = Some(r"'\x'".to_owned());
+    let source: String = emit_python(&surface);
+
+    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "disrobe-surface-malformed-annotation-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    std::fs::write(&file, source.as_bytes()).expect("write temp py");
+
+    let compile_out: std::process::Output = run_python(
+        &py,
+        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
+        &file,
+    );
+    assert!(
+        compile_out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile_out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
+    let Some(py): Option<String> = locate_python_314() else {
+        eprintln!("skip: no python3.14");
+        return;
+    };
+    let mut surface: SurfaceModule = build();
+    surface.functions[0].return_annotation = Some("'a\0b'".to_owned());
+    let source: String = emit_python(&surface);
+
+    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "disrobe-surface-nul-annotation-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    std::fs::write(&file, source.as_bytes()).expect("write temp py");
+
+    let compile_out: std::process::Output = run_python(
+        &py,
+        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
+        &file,
+    );
+    assert!(
+        compile_out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile_out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn integer_attribute_annotation_emits_compilable_python_on_cpython_314() {
+    let Some(py): Option<String> = locate_python_314() else {
+        eprintln!("skip: no python3.14");
+        return;
+    };
+    let mut surface: SurfaceModule = build();
+    surface.functions[0].return_annotation = Some("1.foo".to_owned());
+    let source: String = emit_python(&surface);
+
+    let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+        "disrobe-surface-integer-annotation-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    std::fs::write(&file, source.as_bytes()).expect("write temp py");
+
+    let compile_out: std::process::Output = run_python(
+        &py,
+        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
+        &file,
+    );
+    assert!(
+        compile_out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile_out.stderr)
     );
 
     let _ = std::fs::remove_dir_all(&dir);

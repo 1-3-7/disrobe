@@ -3,18 +3,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, LiftFidelity, SurfaceModule, build_surface, decode_const_file, emit_python,
-    parse_c_module,
+    CModuleStructure, LiftFidelity, SurfaceModule, build_surface, build_surface_with_python_abi,
+    decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
 
 const C_SRC: &str = include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");
 const CONST: &[u8] =
     include_bytes!("../../../corpus/python/nuitka/module/hello.build/module.hello.const");
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 fn build_with_lifting() -> SurfaceModule {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse c");
     let pool = decode_const_file(CONST, "module.hello.const", "hello").expect("decode const");
-    build_surface(&cmod, &pool, Some(C_SRC)).expect("build surface")
+    build_surface_with_python_abi(&cmod, &pool, Some(C_SRC), FIXTURE_PYTHON_ABI)
+        .expect("build surface")
 }
 
 #[test]
@@ -105,7 +108,8 @@ fn main_lifts_to_full_body() {
 
 #[test]
 fn skeleton_functions_do_not_claim_body_recovered() {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse c");
     let pool = decode_const_file(CONST, "module.hello.const", "hello").expect("decode const");
     let s: SurfaceModule = build_surface(&cmod, &pool, None).expect("build surface (no c_source)");
     for f in &s.functions {

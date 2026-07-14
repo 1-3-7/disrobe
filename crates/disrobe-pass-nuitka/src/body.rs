@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-use crate::constants::ConstantsPool;
+use crate::constants::{ConstantsPool, nuitka_bytes_repr, nuitka_string_repr};
+use crate::limits::{MAX_C_SOURCE_BYTES, validate_c_source};
 use crate::version_specific_patterns::{EraPatternPack, guess_era_from_csource, pack_for_era};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,11 +276,17 @@ pub enum PythonStmt {
 
 #[must_use]
 pub(crate) fn render_const_token(token: &str, pool: &ConstantsPool) -> Vec<String> {
+    resolve_const_items(token, pool)
+        .iter()
+        .map(render_simple_expr)
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn resolve_const_items(token: &str, pool: &ConstantsPool) -> Vec<PythonExpr> {
     match resolve_const_token(token, pool) {
-        PythonExpr::Tuple(items) | PythonExpr::List(items) => {
-            items.iter().map(render_simple_expr).collect()
-        }
-        other => vec![render_simple_expr(&other)],
+        PythonExpr::Tuple(items) | PythonExpr::List(items) => items,
+        other => vec![other],
     }
 }
 
@@ -318,22 +326,83 @@ pub fn extract_impl_body_text<'a>(
 
 #[must_use]
 pub fn extract_impl_body_by_symbol<'a>(source: &'a str, impl_symbol: &str) -> Option<&'a str> {
-    let needle: String = format!("static PyObject *{impl_symbol}(");
-    let start: usize = source.find(needle.as_str())?;
-    let bytes: &[u8] = source.as_bytes();
+    extract_c_function_body_by_symbol(source, impl_symbol)
+}
+
+#[must_use]
+pub(crate) fn extract_c_function_body_by_symbol<'a>(
+    source: &'a str,
+    symbol: &str,
+) -> Option<&'a str> {
+    let code: Vec<u8> = c_code_mask(source);
+    extract_c_function_body_by_symbol_with_mask(source, &code, symbol)
+}
+
+#[must_use]
+pub(crate) fn extract_c_function_body_by_symbol_with_mask<'a>(
+    source: &'a str,
+    code: &[u8],
+    symbol: &str,
+) -> Option<&'a str> {
+    if source.len() != code.len() {
+        return None;
+    }
+    let needle: String = format!("static PyObject *{symbol}(");
+    let mut search: usize = 0usize;
+
+    while let Some(start) = find_code_marker(code, needle.as_bytes(), search) {
+        if let Some(body) = extract_c_function_body_at_with_mask(source, code, start) {
+            return Some(body);
+        }
+        search = start + needle.len();
+    }
+    None
+}
+
+#[must_use]
+pub(crate) fn extract_c_function_body_at_with_mask<'a>(
+    source: &'a str,
+    code: &[u8],
+    start: usize,
+) -> Option<&'a str> {
+    let range: Range<usize> = extract_c_function_body_range_at_with_mask(source, code, start)?;
+    source.get(range)
+}
+
+#[must_use]
+pub(crate) fn extract_c_function_body_range_at_with_mask(
+    source: &str,
+    code: &[u8],
+    start: usize,
+) -> Option<Range<usize>> {
+    if source.len() != code.len() || start >= code.len() {
+        return None;
+    }
+    let search_start: usize = start.checked_add(1)?;
+    let next_marker: Option<usize> = find_code_marker(code, b"static ", search_start);
+    let declaration_end: usize = next_marker.map_or(code.len(), |next: usize| next);
+    let header_open: usize = code
+        .get(start..declaration_end)?
+        .iter()
+        .position(|byte: &u8| *byte == b'(')?
+        .checked_add(start)?;
+    if code.get(start..header_open)?.contains(&b';') {
+        return None;
+    }
+    let header_close: usize = matching_header_paren_before(code, header_open, declaration_end)?;
+    let open: usize = function_body_open_after_header(code, header_close, declaration_end)?;
+    let body_start: usize = open.checked_add(1)?;
+    let body_end: usize =
+        find_code_marker(code, b"static PyObject *", body_start).unwrap_or(code.len());
     let mut depth: i32 = 0i32;
-    let mut in_body: bool = false;
-    let mut i: usize = start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => {
-                depth += 1;
-                in_body = true;
-            }
+    let mut i: usize = open;
+    while i < body_end {
+        match code[i] {
+            b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
-                if in_body && depth <= 0 {
-                    return Some(&source[start..=i]);
+                if depth == 0 {
+                    return Some(start..i.checked_add(1)?);
                 }
             }
             _ => {}
@@ -343,11 +412,889 @@ pub fn extract_impl_body_by_symbol<'a>(source: &'a str, impl_symbol: &str) -> Op
     None
 }
 
+fn matching_header_paren_before(code: &[u8], open: usize, end: usize) -> Option<usize> {
+    if open >= end || end > code.len() || code.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth: i32 = 0i32;
+    for (position, byte) in code.iter().enumerate().take(end).skip(open) {
+        match *byte {
+            b'(' => depth += 1i32,
+            b')' => {
+                depth -= 1i32;
+                if depth == 0i32 {
+                    return Some(position);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn function_body_open_after_header(code: &[u8], close: usize, end: usize) -> Option<usize> {
+    let mut position: usize = close.checked_add(1usize)?;
+    while position < end && code.get(position).is_some_and(u8::is_ascii_whitespace) {
+        position += 1usize;
+    }
+    (code.get(position) == Some(&b'{')).then_some(position)
+}
+
+#[must_use]
+pub(crate) fn c_code_mask(source: &str) -> Vec<u8> {
+    c_code_mask_with_python_version(source, None)
+}
+
+#[derive(Clone, Copy)]
+enum ScanState {
+    Code,
+    LineComment,
+    BlockComment,
+    Quoted { quote: u8, escaped: bool },
+}
+
+#[must_use]
+pub(crate) fn c_code_mask_with_python_version(
+    source: &str,
+    python_version: Option<u32>,
+) -> Vec<u8> {
+    c_code_mask_with_python_version_range(
+        source,
+        python_version.map(|value: u32| PythonVersionRange {
+            minimum: value,
+            maximum: Some(value),
+        }),
+        PreprocessorProfile::Generic,
+    )
+}
+
+#[must_use]
+#[cfg(test)]
+pub(crate) fn c_code_mask_with_python_abi(source: &str, python_abi: Option<(u8, u8)>) -> Vec<u8> {
+    c_code_mask_with_python_version_range(
+        source,
+        python_abi.and_then(python_version_range_from_abi),
+        PreprocessorProfile::Generic,
+    )
+}
+
+#[must_use]
+pub(crate) fn c_code_mask_with_nuitka_python_abi(
+    source: &str,
+    python_abi: Option<(u8, u8)>,
+) -> Vec<u8> {
+    c_code_mask_with_python_version_range(
+        source,
+        python_abi.and_then(python_version_range_from_abi),
+        PreprocessorProfile::Nuitka,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct PythonVersionRange {
+    minimum: u32,
+    maximum: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+enum PreprocessorProfile {
+    Generic,
+    Nuitka,
+}
+
+impl PreprocessorProfile {
+    fn defined(self, identifier: &[u8]) -> Option<bool> {
+        match self {
+            Self::Generic => None,
+            Self::Nuitka => {
+                (identifier == b"_NUITKA_EXPERIMENTAL_NEW_CODE_OBJECTS").then_some(false)
+            }
+        }
+    }
+}
+
+fn python_version_range_from_abi(python_abi: (u8, u8)) -> Option<PythonVersionRange> {
+    let (major, minor): (u8, u8) = python_abi;
+    let minimum: u32 = u32::from(major)
+        .checked_mul(0x100u32)?
+        .checked_add(u32::from(minor).checked_mul(0x10u32)?)?;
+    Some(PythonVersionRange {
+        minimum,
+        maximum: Some(minimum.checked_add(0x0fu32)?),
+    })
+}
+
+fn c_code_mask_with_python_version_range(
+    source: &str,
+    python_version: Option<PythonVersionRange>,
+    profile: PreprocessorProfile,
+) -> Vec<u8> {
+    if source.len() > MAX_C_SOURCE_BYTES {
+        return Vec::new();
+    }
+    let bytes: &[u8] = source.as_bytes();
+    let mut mask: Vec<u8> = bytes.to_vec();
+    let mut state: ScanState = ScanState::Code;
+    let mut i: usize = 0usize;
+
+    while i < bytes.len() {
+        match state {
+            ScanState::Code => {
+                if let Some(end) = line_splice_end(bytes, i) {
+                    mask[i..end].fill(b' ');
+                    i = end;
+                    continue;
+                }
+                let next: Option<usize> = next_logical_index(bytes, i + 1);
+                match (bytes[i], next) {
+                    (b'/', Some(next)) if bytes[next] == b'/' => {
+                        mask[i..=next].fill(b' ');
+                        i = next + 1;
+                        state = ScanState::LineComment;
+                    }
+                    (b'/', Some(next)) if bytes[next] == b'*' => {
+                        mask[i..=next].fill(b' ');
+                        i = next + 1;
+                        state = ScanState::BlockComment;
+                    }
+                    (b'\'' | b'"', _) => {
+                        let quote: u8 = bytes[i];
+                        mask[i] = b' ';
+                        i += 1;
+                        state = ScanState::Quoted {
+                            quote,
+                            escaped: false,
+                        };
+                    }
+                    _ => i += 1,
+                }
+            }
+            ScanState::LineComment => {
+                if let Some(end) = line_splice_end(bytes, i) {
+                    mask[i..end].fill(b' ');
+                    i = end;
+                } else if bytes[i] == b'\n' {
+                    state = ScanState::Code;
+                    i += 1;
+                } else {
+                    mask[i] = b' ';
+                    i += 1;
+                }
+            }
+            ScanState::BlockComment => {
+                let next: Option<usize> = next_logical_index(bytes, i + 1);
+                if let Some(next) = next
+                    && bytes[i] == b'*'
+                    && bytes[next] == b'/'
+                {
+                    mask[i..=next].fill(b' ');
+                    i = next + 1;
+                    state = ScanState::Code;
+                } else if let Some(end) = line_splice_end(bytes, i) {
+                    mask[i..end].fill(b' ');
+                    i = end;
+                } else {
+                    if !matches!(bytes[i], b'\r' | b'\n') {
+                        mask[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            ScanState::Quoted { quote, escaped } => {
+                if let Some(end) = line_splice_end(bytes, i) {
+                    mask[i..end].fill(b' ');
+                    i = end;
+                    continue;
+                }
+                let byte: u8 = bytes[i];
+                mask[i] = b' ';
+                if escaped {
+                    state = ScanState::Quoted {
+                        quote,
+                        escaped: false,
+                    };
+                } else if byte == b'\\' {
+                    state = ScanState::Quoted {
+                        quote,
+                        escaped: true,
+                    };
+                } else if byte == quote {
+                    state = ScanState::Code;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    mask_inactive_preprocessor(&mut mask, python_version, profile);
+
+    mask
+}
+
+fn line_splice_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    if bytes.get(start + 1) == Some(&b'\n') {
+        return Some(start + 2);
+    }
+    (bytes.get(start + 1) == Some(&b'\r') && bytes.get(start + 2) == Some(&b'\n'))
+        .then_some(start + 3)
+}
+
+fn next_logical_index(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while let Some(end) = line_splice_end(bytes, index) {
+        index = end;
+    }
+    (index < bytes.len()).then_some(index)
+}
+
+fn mask_inactive_preprocessor(
+    mask: &mut [u8],
+    python_version: Option<PythonVersionRange>,
+    profile: PreprocessorProfile,
+) {
+    #[derive(Clone, Copy)]
+    struct ConditionalFrame {
+        parent_active: bool,
+        known_true: bool,
+        saw_unknown: bool,
+        branch_active: bool,
+        saw_else: bool,
+    }
+
+    let mut frames: Vec<ConditionalFrame> = Vec::new();
+    let mut defined_macros: BTreeMap<Vec<u8>, bool> = BTreeMap::new();
+    let mut line_start: usize = 0usize;
+
+    while line_start < mask.len() {
+        let line_end: usize = mask[line_start..]
+            .iter()
+            .position(|byte: &u8| *byte == b'\n')
+            .map_or(mask.len(), |offset: usize| line_start + offset);
+        let physical_content_end: usize = if line_end > line_start && mask[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let (content_end, next_line_start): (usize, usize) =
+            if preprocessor_line_starts(mask, line_start, physical_content_end) {
+                preprocessor_logical_bounds(mask, line_start, line_end)
+            } else {
+                (physical_content_end, line_end.saturating_add(1))
+            };
+        let active: bool = frames
+            .last()
+            .is_none_or(|frame: &ConditionalFrame| frame.branch_active);
+        let logical_line: Vec<u8> = preprocessor_logical_line(mask, line_start, content_end);
+        let directive: Option<(&[u8], &[u8])> = preprocessor_directive(&logical_line);
+
+        if let Some((kind, expression)) = directive {
+            match kind {
+                b"if" | b"ifdef" | b"ifndef" => {
+                    if !valid_preprocessor_opener(kind, expression) {
+                        mask_non_newline(mask);
+                        return;
+                    }
+                    let condition: Option<bool> = preprocessor_opening_condition(
+                        kind,
+                        expression,
+                        python_version,
+                        profile,
+                        &defined_macros,
+                    );
+                    let branch_active: bool = active && condition == Some(true);
+                    frames.push(ConditionalFrame {
+                        parent_active: active,
+                        known_true: condition == Some(true),
+                        saw_unknown: condition.is_none(),
+                        branch_active,
+                        saw_else: false,
+                    });
+                }
+                b"elif" => {
+                    let Some(frame): Option<&mut ConditionalFrame> = frames.last_mut() else {
+                        mask_non_newline(mask);
+                        return;
+                    };
+                    if frame.saw_else || preprocessor_expression_is_empty(expression) {
+                        mask_non_newline(mask);
+                        return;
+                    }
+                    let condition: Option<bool> = preprocessor_condition(
+                        expression,
+                        python_version,
+                        profile,
+                        &defined_macros,
+                    );
+                    frame.branch_active = frame.parent_active
+                        && !frame.known_true
+                        && !frame.saw_unknown
+                        && condition == Some(true);
+                    frame.known_true |= condition == Some(true);
+                    frame.saw_unknown |= condition.is_none();
+                }
+                b"else" => {
+                    let Some(frame): Option<&mut ConditionalFrame> = frames.last_mut() else {
+                        mask_non_newline(mask);
+                        return;
+                    };
+                    if frame.saw_else || !preprocessor_expression_is_empty(expression) {
+                        mask_non_newline(mask);
+                        return;
+                    }
+                    frame.branch_active =
+                        frame.parent_active && !frame.known_true && !frame.saw_unknown;
+                    frame.saw_else = true;
+                }
+                b"endif" => {
+                    if !preprocessor_expression_is_empty(expression) || frames.pop().is_none() {
+                        mask_non_newline(mask);
+                        return;
+                    }
+                }
+                b"define" => {
+                    if active {
+                        let Some(identifier): Option<Vec<u8>> =
+                            preprocessor_define_identifier(expression)
+                        else {
+                            mask_non_newline(mask);
+                            return;
+                        };
+                        defined_macros.insert(identifier, true);
+                    }
+                }
+                b"undef" => {
+                    if active {
+                        let Some(identifier): Option<&[u8]> =
+                            preprocessor_identifier_token(expression)
+                        else {
+                            mask_non_newline(mask);
+                            return;
+                        };
+                        defined_macros.insert(identifier.to_vec(), false);
+                    }
+                }
+                _ if conditional_directive_prefix(kind) => {
+                    mask_non_newline(mask);
+                    return;
+                }
+                _ => {}
+            }
+            mask_non_newline_range(mask, line_start, content_end);
+        } else if !active {
+            mask[line_start..content_end].fill(b' ');
+        }
+
+        line_start = next_line_start;
+    }
+
+    if !frames.is_empty() {
+        mask_non_newline(mask);
+    }
+}
+
+fn preprocessor_line_starts(mask: &[u8], start: usize, end: usize) -> bool {
+    mask.get(start..end)
+        .and_then(|line: &[u8]| line.iter().find(|byte: &&u8| !byte.is_ascii_whitespace()))
+        == Some(&b'#')
+}
+
+fn preprocessor_logical_bounds(mask: &[u8], start: usize, first_line_end: usize) -> (usize, usize) {
+    let mut line_start: usize = start;
+    let mut line_end: usize = first_line_end;
+    loop {
+        let content_end: usize = line_content_end(mask, line_start, line_end);
+        let next_line_start: usize = line_end.saturating_add(1);
+        if !line_ends_with_splice(mask, line_start, content_end) || next_line_start >= mask.len() {
+            return (content_end, next_line_start);
+        }
+        line_start = next_line_start;
+        line_end = mask[line_start..]
+            .iter()
+            .position(|byte: &u8| *byte == b'\n')
+            .map_or(mask.len(), |offset: usize| line_start + offset);
+    }
+}
+
+fn line_content_end(mask: &[u8], start: usize, line_end: usize) -> usize {
+    if line_end > start && mask.get(line_end - 1) == Some(&b'\r') {
+        line_end - 1
+    } else {
+        line_end
+    }
+}
+
+fn line_ends_with_splice(mask: &[u8], start: usize, content_end: usize) -> bool {
+    content_end > start && mask.get(content_end - 1) == Some(&b'\\')
+}
+
+fn mask_non_newline_range(mask: &mut [u8], start: usize, end: usize) {
+    for byte in &mut mask[start..end] {
+        if !matches!(*byte, b'\r' | b'\n') {
+            *byte = b' ';
+        }
+    }
+}
+
+fn mask_non_newline(mask: &mut [u8]) {
+    for byte in mask {
+        if !matches!(*byte, b'\r' | b'\n') {
+            *byte = b' ';
+        }
+    }
+}
+
+fn preprocessor_expression_is_empty(expression: &[u8]) -> bool {
+    expression.iter().all(u8::is_ascii_whitespace)
+}
+
+fn valid_preprocessor_opener(kind: &[u8], expression: &[u8]) -> bool {
+    match kind {
+        b"if" => !preprocessor_expression_is_empty(expression),
+        b"ifdef" | b"ifndef" => preprocessor_identifier(expression),
+        _ => false,
+    }
+}
+
+fn preprocessor_identifier(expression: &[u8]) -> bool {
+    preprocessor_identifier_token(expression).is_some()
+}
+
+fn preprocessor_identifier_token(expression: &[u8]) -> Option<&[u8]> {
+    let start: usize = expression
+        .iter()
+        .position(|byte: &u8| !byte.is_ascii_whitespace())?;
+    let end: usize = expression
+        .iter()
+        .rposition(|byte: &u8| !byte.is_ascii_whitespace())?;
+    let identifier: &[u8] = &expression[start..=end];
+    (identifier
+        .first()
+        .is_some_and(|byte: &u8| byte.is_ascii_alphabetic() || *byte == b'_')
+        && identifier[1..]
+            .iter()
+            .all(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_'))
+    .then_some(identifier)
+}
+
+fn preprocessor_define_identifier(expression: &[u8]) -> Option<Vec<u8>> {
+    let start: usize = expression
+        .iter()
+        .position(|byte: &u8| !byte.is_ascii_whitespace())?;
+    let mut end: usize = start;
+    while expression
+        .get(end)
+        .is_some_and(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        end = end.checked_add(1)?;
+    }
+    let identifier: &[u8] = expression.get(start..end)?;
+    identifier
+        .first()
+        .is_some_and(|byte: &u8| byte.is_ascii_alphabetic() || *byte == b'_')
+        .then_some(identifier.to_vec())
+}
+
+fn preprocessor_opening_condition(
+    kind: &[u8],
+    expression: &[u8],
+    python_version: Option<PythonVersionRange>,
+    profile: PreprocessorProfile,
+    defined_macros: &BTreeMap<Vec<u8>, bool>,
+) -> Option<bool> {
+    match kind {
+        b"if" => preprocessor_condition(expression, python_version, profile, defined_macros),
+        b"ifdef" => preprocessor_identifier_token(expression)
+            .and_then(|identifier: &[u8]| macro_is_defined(defined_macros, profile, identifier)),
+        b"ifndef" => preprocessor_identifier_token(expression)
+            .and_then(|identifier: &[u8]| macro_is_defined(defined_macros, profile, identifier))
+            .map(|defined: bool| !defined),
+        _ => None,
+    }
+}
+
+fn macro_is_defined(
+    defined_macros: &BTreeMap<Vec<u8>, bool>,
+    profile: PreprocessorProfile,
+    identifier: &[u8],
+) -> Option<bool> {
+    defined_macros
+        .get(identifier)
+        .copied()
+        .or_else(|| profile.defined(identifier))
+}
+
+fn preprocessor_logical_line(mask: &[u8], start: usize, end: usize) -> Vec<u8> {
+    let mut logical: Vec<u8> = Vec::with_capacity(end.saturating_sub(start));
+    let mut position: usize = start;
+    while position < end {
+        if mask.get(position) == Some(&b'\\')
+            && let Some(splice_end) = line_splice_end(mask, position)
+        {
+            position = splice_end;
+            continue;
+        }
+        let Some(byte): Option<&u8> = mask.get(position) else {
+            break;
+        };
+        logical.push(*byte);
+        position += 1;
+    }
+    logical
+}
+
+fn preprocessor_directive(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    let start: usize = line
+        .iter()
+        .position(|byte: &u8| !byte.is_ascii_whitespace())?;
+    if line.get(start) != Some(&b'#') {
+        return None;
+    }
+    let mut key_start: usize = start + 1;
+    while line
+        .get(key_start)
+        .is_some_and(|byte: &u8| byte.is_ascii_whitespace())
+    {
+        key_start += 1;
+    }
+    let mut key_end: usize = key_start;
+    while line
+        .get(key_end)
+        .is_some_and(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        key_end += 1;
+    }
+    (key_start < key_end).then_some((&line[key_start..key_end], &line[key_end..]))
+}
+
+fn conditional_directive_prefix(kind: &[u8]) -> bool {
+    [
+        b"if".as_slice(),
+        b"ifdef",
+        b"ifndef",
+        b"elif",
+        b"else",
+        b"endif",
+    ]
+    .iter()
+    .any(|prefix: &&[u8]| kind.starts_with(prefix))
+}
+
+fn preprocessor_condition(
+    expression: &[u8],
+    python_version: Option<PythonVersionRange>,
+    profile: PreprocessorProfile,
+    defined_macros: &BTreeMap<Vec<u8>, bool>,
+) -> Option<bool> {
+    let compact: Vec<u8> = expression
+        .iter()
+        .copied()
+        .filter(|byte: &u8| !byte.is_ascii_whitespace())
+        .collect();
+    let mut parser: PreprocessorExpressionParser<'_> = PreprocessorExpressionParser {
+        expression: &compact,
+        position: 0usize,
+        nesting: 0usize,
+        python_version,
+        profile,
+        defined_macros,
+    };
+    let truth: PreprocessorTruth = parser.parse_disjunction()?;
+    if parser.position != compact.len() {
+        return None;
+    }
+    truth.value()
+}
+
+const MAX_PREPROCESSOR_NESTING: usize = 256usize;
+
+#[derive(Clone, Copy)]
+enum PreprocessorTruth {
+    Known(bool),
+    Unknown,
+}
+
+impl PreprocessorTruth {
+    const fn value(self) -> Option<bool> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::Unknown => None,
+        }
+    }
+
+    const fn negate(self) -> Self {
+        match self {
+            Self::Known(value) => Self::Known(!value),
+            Self::Unknown => Self::Unknown,
+        }
+    }
+
+    const fn conjunction(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Known(false), _) | (_, Self::Known(false)) => Self::Known(false),
+            (Self::Known(true), Self::Known(true)) => Self::Known(true),
+            _ => Self::Unknown,
+        }
+    }
+
+    const fn disjunction(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Known(true), _) | (_, Self::Known(true)) => Self::Known(true),
+            (Self::Known(false), Self::Known(false)) => Self::Known(false),
+            _ => Self::Unknown,
+        }
+    }
+}
+
+struct PreprocessorExpressionParser<'a> {
+    expression: &'a [u8],
+    position: usize,
+    nesting: usize,
+    python_version: Option<PythonVersionRange>,
+    profile: PreprocessorProfile,
+    defined_macros: &'a BTreeMap<Vec<u8>, bool>,
+}
+
+impl PreprocessorExpressionParser<'_> {
+    fn parse_disjunction(&mut self) -> Option<PreprocessorTruth> {
+        let mut result: PreprocessorTruth = self.parse_conjunction()?;
+        while self.consume(b"||") {
+            result = result.disjunction(self.parse_conjunction()?);
+        }
+        Some(result)
+    }
+
+    fn parse_conjunction(&mut self) -> Option<PreprocessorTruth> {
+        let mut result: PreprocessorTruth = self.parse_unary()?;
+        while self.consume(b"&&") {
+            result = result.conjunction(self.parse_unary()?);
+        }
+        Some(result)
+    }
+
+    fn parse_unary(&mut self) -> Option<PreprocessorTruth> {
+        let mut negate: bool = false;
+        while self.consume(b"!") {
+            negate = !negate;
+        }
+        let value: PreprocessorTruth = self.parse_primary()?;
+        Some(if negate { value.negate() } else { value })
+    }
+
+    fn parse_primary(&mut self) -> Option<PreprocessorTruth> {
+        if self.consume(b"(") {
+            self.nesting = self.nesting.checked_add(1)?;
+            if self.nesting > MAX_PREPROCESSOR_NESTING {
+                return None;
+            }
+            let value: PreprocessorTruth = self.parse_disjunction()?;
+            if !self.consume(b")") {
+                return None;
+            }
+            self.nesting = self.nesting.checked_sub(1)?;
+            return Some(value);
+        }
+        if self.starts_with(b"defined(") {
+            return self.parse_defined();
+        }
+        let start: usize = self.position;
+        while let Some(byte) = self.expression.get(self.position) {
+            if *byte == b'(' || *byte == b')' || self.starts_with(b"&&") || self.starts_with(b"||")
+            {
+                break;
+            }
+            self.position = self.position.checked_add(1)?;
+        }
+        let atom: &[u8] = self.expression.get(start..self.position)?;
+        if atom.is_empty() {
+            return None;
+        }
+        if let Some((operator, value)) = python_version_comparison(atom) {
+            return self
+                .python_version
+                .and_then(|version: PythonVersionRange| {
+                    python_version_comparison_result(version, operator, value)
+                })
+                .map_or(Some(PreprocessorTruth::Unknown), |value: bool| {
+                    Some(PreprocessorTruth::Known(value))
+                });
+        }
+        Some(
+            preprocessor_integer(atom).map_or(PreprocessorTruth::Unknown, |value: u32| {
+                PreprocessorTruth::Known(value != 0u32)
+            }),
+        )
+    }
+
+    fn parse_defined(&mut self) -> Option<PreprocessorTruth> {
+        if !self.consume(b"defined(") {
+            return None;
+        }
+        let start: usize = self.position;
+        while self
+            .expression
+            .get(self.position)
+            .is_some_and(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            self.position = self.position.checked_add(1)?;
+        }
+        let identifier: &[u8] = self.expression.get(start..self.position)?;
+        if identifier.is_empty()
+            || !identifier
+                .first()
+                .is_some_and(|byte: &u8| byte.is_ascii_alphabetic() || *byte == b'_')
+            || !self.consume(b")")
+        {
+            return None;
+        }
+        Some(
+            macro_is_defined(self.defined_macros, self.profile, identifier)
+                .map_or(PreprocessorTruth::Unknown, PreprocessorTruth::Known),
+        )
+    }
+
+    fn consume(&mut self, token: &[u8]) -> bool {
+        if !self.starts_with(token) {
+            return false;
+        }
+        let Some(next): Option<usize> = self.position.checked_add(token.len()) else {
+            return false;
+        };
+        self.position = next;
+        true
+    }
+
+    fn starts_with(&self, token: &[u8]) -> bool {
+        self.expression
+            .get(self.position..)
+            .is_some_and(|remaining: &[u8]| remaining.starts_with(token))
+    }
+}
+
+fn python_version_comparison_result(
+    python_version: PythonVersionRange,
+    operator: &[u8],
+    value: u32,
+) -> Option<bool> {
+    let minimum: u32 = python_version.minimum;
+    let maximum: Option<u32> = python_version.maximum;
+    match operator {
+        b">=" => {
+            if minimum >= value {
+                Some(true)
+            } else {
+                maximum
+                    .filter(|maximum: &u32| *maximum < value)
+                    .map(|_: u32| false)
+            }
+        }
+        b"<=" => {
+            if maximum.is_some_and(|maximum: u32| maximum <= value) {
+                Some(true)
+            } else if minimum > value {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        b"==" => {
+            if maximum == Some(minimum) && minimum == value {
+                Some(true)
+            } else if minimum > value || maximum.is_some_and(|maximum: u32| maximum < value) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        b"!=" => {
+            python_version_comparison_result(python_version, b"==", value).map(|equal: bool| !equal)
+        }
+        b">" => {
+            if minimum > value {
+                Some(true)
+            } else {
+                maximum
+                    .filter(|maximum: &u32| *maximum <= value)
+                    .map(|_: u32| false)
+            }
+        }
+        b"<" => {
+            if maximum.is_some_and(|maximum: u32| maximum < value) {
+                Some(true)
+            } else if minimum >= value {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn python_version_comparison(expression: &[u8]) -> Option<(&[u8], u32)> {
+    const OPERATORS: [&[u8]; 6] = [b">=", b"<=", b"==", b"!=", b">", b"<"];
+    for operator in OPERATORS {
+        let Some(offset): Option<usize> = expression
+            .windows(operator.len())
+            .position(|candidate: &[u8]| candidate == operator)
+        else {
+            continue;
+        };
+        let left: &[u8] = expression.get(..offset)?;
+        let right_start: usize = offset.checked_add(operator.len())?;
+        let right: &[u8] = expression.get(right_start..)?;
+        if left == b"PYTHON_VERSION" {
+            return Some((operator, preprocessor_integer(right)?));
+        }
+    }
+    None
+}
+
+fn preprocessor_integer(expression: &[u8]) -> Option<u32> {
+    let (radix, digits_with_suffix): (u32, &[u8]) =
+        if expression.starts_with(b"0x") || expression.starts_with(b"0X") {
+            (16u32, &expression[2..])
+        } else {
+            (10u32, expression)
+        };
+    let first_non_digit: Option<usize> = digits_with_suffix
+        .iter()
+        .position(|byte: &u8| !byte.is_ascii_hexdigit());
+    let digit_end: usize =
+        first_non_digit.map_or(digits_with_suffix.len(), |position: usize| position);
+    let digits: &[u8] = &digits_with_suffix[..digit_end];
+    let suffix: &[u8] = &digits_with_suffix[digit_end..];
+    if digits.is_empty()
+        || (radix == 10u32 && digits.iter().any(|byte: &u8| !byte.is_ascii_digit()))
+        || suffix
+            .iter()
+            .any(|byte: &u8| !matches!(*byte, b'u' | b'U' | b'l' | b'L'))
+    {
+        return None;
+    }
+    let digits: &str = std::str::from_utf8(digits).ok()?;
+    u32::from_str_radix(digits, radix).ok()
+}
+
+#[must_use]
+pub(crate) fn find_code_marker(code: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    code.get(start..)
+        .and_then(|rest: &[u8]| {
+            rest.windows(needle.len())
+                .position(|item: &[u8]| item == needle)
+        })
+        .map(|offset: usize| start + offset)
+}
+
 fn strip_mod_consts(token: &str) -> &str {
     token.strip_prefix("mod_consts.").unwrap_or(token)
 }
 
-fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonExpr {
+pub(crate) fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonExpr {
     let t: &str = strip_mod_consts(token.trim().trim_end_matches(';'));
     if let Some(expr) = resolve_singleton_token(t) {
         return expr;
@@ -399,105 +1346,172 @@ fn resolve_numeric_token(t: &str) -> Option<PythonExpr> {
     }
     for prefix in ["const_int_pos_", "const_long_pos_"] {
         if let Some(rest) = t.strip_prefix(prefix) {
-            return Some(PythonExpr::Const(rest.to_owned()));
+            return decimal_literal(rest);
         }
     }
     for prefix in ["const_int_neg_", "const_long_neg_"] {
         if let Some(rest) = t.strip_prefix(prefix) {
-            return Some(PythonExpr::Const(format!("-{rest}")));
+            return decimal_literal(rest).map(|literal: PythonExpr| match literal {
+                PythonExpr::Const(value) if value == "0" => PythonExpr::Const(value),
+                PythonExpr::Const(value) => PythonExpr::Const(format!("-{value}")),
+                _ => literal,
+            });
         }
     }
     if let Some(rest) = t
         .strip_prefix("const_int_hex_")
         .or_else(|| t.strip_prefix("const_long_hex_"))
     {
-        return Some(PythonExpr::Const(format!("0x{rest}")));
+        return (!rest.is_empty() && rest.bytes().all(|byte: u8| byte.is_ascii_hexdigit()))
+            .then(|| PythonExpr::Const(format!("0x{rest}")));
     }
     if let Some(rest) = t.strip_prefix("const_float_") {
-        return Some(resolve_float_fragment(rest));
+        return resolve_float_fragment(rest);
     }
     if let Some(rest) = t.strip_prefix("const_complex_") {
-        return Some(resolve_complex_fragment(rest));
+        return resolve_complex_fragment(rest);
     }
     None
 }
 
-fn resolve_float_fragment(fragment: &str) -> PythonExpr {
-    if fragment == "plus_nan" || fragment == "minus_nan" {
-        return PythonExpr::Const("float('nan')".to_owned());
+fn decimal_literal(rest: &str) -> Option<PythonExpr> {
+    if rest.is_empty() || !rest.bytes().all(|byte: u8| byte.is_ascii_digit()) {
+        return None;
     }
-    if fragment == "plus_inf" {
-        return PythonExpr::Const("float('inf')".to_owned());
-    }
-    if fragment == "minus_inf" {
-        return PythonExpr::Const("float('-inf')".to_owned());
-    }
-    let restored: String = fragment.replace("minus_", "-").replace('_', ".");
-    PythonExpr::Const(restored)
+    let without_leading_zeroes: &str = rest.trim_start_matches('0');
+    let literal: &str = if without_leading_zeroes.is_empty() {
+        "0"
+    } else {
+        without_leading_zeroes
+    };
+    Some(PythonExpr::Const(literal.to_owned()))
 }
 
-fn resolve_complex_fragment(fragment: &str) -> PythonExpr {
+fn resolve_float_fragment(fragment: &str) -> Option<PythonExpr> {
+    if fragment == "plus_nan" || fragment == "minus_nan" {
+        return Some(PythonExpr::Const("float('nan')".to_owned()));
+    }
+    if fragment == "plus_inf" {
+        return Some(PythonExpr::Const("float('inf')".to_owned()));
+    }
+    if fragment == "minus_inf" {
+        return Some(PythonExpr::Const("float('-inf')".to_owned()));
+    }
     let restored: String = fragment.replace("minus_", "-").replace('_', ".");
-    PythonExpr::Const(format!("complex({restored})"))
+    restored
+        .parse::<f64>()
+        .ok()
+        .map(|_: f64| PythonExpr::Const(restored))
+}
+
+fn resolve_complex_fragment(fragment: &str) -> Option<PythonExpr> {
+    let (real, imag): (&str, &str) = fragment.split_once("__")?;
+    let real: String = decode_complex_component(real)?;
+    let imag: String = decode_complex_component(imag)?;
+    Some(PythonExpr::Const(format!("complex({real}, {imag})")))
+}
+
+fn decode_complex_component(component: &str) -> Option<String> {
+    let restored: String = component
+        .replace('p', "+")
+        .replace('m', "-")
+        .replace('_', ".");
+    restored.parse::<f64>().ok().map(|_: f64| restored)
 }
 
 fn resolve_string_token(t: &str, pool: &ConstantsPool) -> Option<PythonExpr> {
     let body: &str = t.strip_prefix("const_str_")?;
-    Some(resolve_string_fragment(body, pool, false))
+    Some(resolve_string_fragment(body, pool))
 }
 
 fn resolve_bytes_token(t: &str, pool: &ConstantsPool) -> Option<PythonExpr> {
     let body: &str = t.strip_prefix("const_bytes_")?;
-    Some(resolve_string_fragment(body, pool, true))
+    Some(resolve_bytes_fragment(body, pool))
 }
 
-fn resolve_string_fragment(body: &str, pool: &ConstantsPool, is_bytes: bool) -> PythonExpr {
-    let prefix: &str = if is_bytes { "b" } else { "" };
+fn resolve_string_fragment(body: &str, pool: &ConstantsPool) -> PythonExpr {
     if let Some(rest) = body.strip_prefix("plain_") {
-        return PythonExpr::Const(format!("{prefix}'{rest}'"));
+        return string_literal(rest);
     }
     if let Some(rest) = body.strip_prefix("chr_")
         && let Ok(code) = rest.parse::<u32>()
         && let Some(ch) = char::from_u32(code)
     {
-        return PythonExpr::Const(format!("{prefix}'{}'", escape_char_literal(ch)));
+        let value: String = ch.to_string();
+        return string_literal(&value);
     }
     if let Some(rest) = body.strip_prefix("angle_") {
-        return PythonExpr::Const(format!("{prefix}'<{rest}>'"));
+        return string_literal(&format!("<{rest}>"));
     }
     let named: Option<&str> = match body {
         "empty" => Some(""),
-        "null" => Some("\\x00"),
+        "null" => Some("\0"),
         "space" => Some(" "),
         "dot" => Some("."),
-        "newline" => Some("\\n"),
+        "newline" => Some("\n"),
         "slash" => Some("/"),
-        "backslash" => Some("\\\\"),
+        "backslash" => Some("\\"),
         "underscore" => Some("_"),
         _ => None,
     };
     if let Some(literal) = named {
-        return PythonExpr::Const(format!("{prefix}'{literal}'"));
+        return string_literal(literal);
     }
     if let Some(hex) = body.strip_prefix("digest_") {
-        if let Some(s) = pool.digest_to_string.get(hex) {
-            return PythonExpr::Const(format!("{prefix}'{s}'"));
+        if !pool.ambiguous_string_digests.contains(hex)
+            && let Some(s) = pool.digest_to_string.get(hex)
+        {
+            return string_literal(s);
         }
         return PythonExpr::Const(format!("UNRESOLVED:{hex}"));
     }
     PythonExpr::Const(format!("UNRESOLVED:{body}"))
 }
 
-fn escape_char_literal(ch: char) -> String {
-    match ch {
-        '\n' => "\\n".to_owned(),
-        '\t' => "\\t".to_owned(),
-        '\r' => "\\r".to_owned(),
-        '\'' => "\\'".to_owned(),
-        '\\' => "\\\\".to_owned(),
-        c if c.is_control() => format!("\\x{:02x}", c as u32),
-        c => c.to_string(),
+fn string_literal(value: &str) -> PythonExpr {
+    PythonExpr::Const(nuitka_string_repr(value))
+}
+
+fn resolve_bytes_fragment(body: &str, pool: &ConstantsPool) -> PythonExpr {
+    if let Some(rest) = body.strip_prefix("plain_") {
+        return bytes_literal(rest.as_bytes());
     }
+    if let Some(rest) = body.strip_prefix("chr_")
+        && let Ok(code) = rest.parse::<u32>()
+        && let Ok(byte) = u8::try_from(code)
+    {
+        return bytes_literal(&[byte]);
+    }
+    if let Some(rest) = body.strip_prefix("angle_") {
+        return bytes_literal(format!("<{rest}>").as_bytes());
+    }
+    let named: Option<&[u8]> = match body {
+        "empty" => Some(b""),
+        "null" => Some(b"\0"),
+        "space" => Some(b" "),
+        "dot" => Some(b"."),
+        "newline" => Some(b"\n"),
+        "slash" => Some(b"/"),
+        "backslash" => Some(b"\\"),
+        "underscore" => Some(b"_"),
+        _ => None,
+    };
+    if let Some(bytes) = named {
+        return bytes_literal(bytes);
+    }
+    if let Some(hex) = body.strip_prefix("digest_") {
+        if !pool.ambiguous_bytes_digests.contains(hex)
+            && let Some(bytes) = pool.digest_to_bytes.get(hex)
+        {
+            return bytes_literal(bytes);
+        }
+        return PythonExpr::Const(format!("UNRESOLVED:{hex}"));
+    }
+    PythonExpr::Const(format!("UNRESOLVED:{body}"))
+}
+
+fn bytes_literal(bytes: &[u8]) -> PythonExpr {
+    PythonExpr::Const(nuitka_bytes_repr(bytes))
 }
 
 fn resolve_sequence_inner(inner: &str, pool: &ConstantsPool, is_list: bool) -> PythonExpr {
@@ -526,6 +1540,7 @@ const SINGLE_SEGMENT_PREFIXES: &[&str] = &[
     "long_pos_",
     "long_neg_",
     "long_hex_",
+    "dict_",
 ];
 
 const ATOMIC_FRAGMENTS: &[&str] = &[
@@ -1188,7 +2203,7 @@ impl<'a> Lifter<'a> {
         let pos: usize = self.lines[match_line].find("EXCEPTION_MATCH_BOOL(")?;
         let after: &str = &self.lines[match_line][pos + "EXCEPTION_MATCH_BOOL(".len()..];
         let inner: &str = trim_matching_paren(after);
-        let args: Vec<&str> = split_top_args(inner);
+        let args: Vec<&str> = split_top_args(inner)?;
         let type_tok: &str = args.last()?.trim();
         match self.eval_operand(type_tok, env) {
             PythonExpr::Name(n) => Some(n),
@@ -1446,7 +2461,7 @@ impl<'a> Lifter<'a> {
             if let Some(pos) = t.find("LIST_APPEND1(") {
                 let after: &str = &t[pos + "LIST_APPEND1(".len()..];
                 let inner: &str = trim_matching_paren(after);
-                let value_tok: &str = split_top_args(inner).last()?.trim();
+                let value_tok: &str = split_top_args(inner)?.last()?.trim();
                 return Some(
                     env.get(value_tok)
                         .cloned()
@@ -1476,7 +2491,7 @@ impl<'a> Lifter<'a> {
                 if let Some(pos) = t.find(marker) {
                     let after: &str = &t[pos + marker.len()..];
                     let inner: &str = trim_matching_paren(after);
-                    let args: Vec<&str> = split_top_args(inner);
+                    let args: Vec<&str> = split_top_args(inner)?;
                     if args.len() == 3 {
                         let key: PythonExpr = env
                             .get(args[1].trim())
@@ -1511,7 +2526,7 @@ impl<'a> Lifter<'a> {
             if let Some(pos) = t.find("PySet_Add(") {
                 let after: &str = &t[pos + "PySet_Add(".len()..];
                 let inner: &str = trim_matching_paren(after);
-                let value_tok: &str = split_top_args(inner).last()?.trim();
+                let value_tok: &str = split_top_args(inner)?.last()?.trim();
                 return Some(
                     env.get(value_tok)
                         .cloned()
@@ -2193,15 +3208,28 @@ impl<'a> Lifter<'a> {
             .or_else(|| t.strip_prefix(self.pack.builtin_format))
             .or_else(|| t.strip_prefix("BUILTIN_FORMAT("))?;
         let inner: &str = trim_matching_paren(after);
-        let args: Vec<&str> = split_top_args(inner);
+        let args: Vec<&str> = split_top_args(inner)?;
         let value_tok: &str = args.first()?.trim();
-        Some(self.eval_operand(value_tok, env))
+        let spec_tok: &str = args.get(1usize)?.trim();
+        if args.len() != 2usize {
+            return None;
+        }
+        Some(PythonExpr::Call {
+            func: Box::new(PythonExpr::Attribute {
+                value: Box::new(PythonExpr::Const("'{0:{1}}'".to_owned())),
+                attr: "format".to_owned(),
+            }),
+            args: vec![
+                self.eval_operand(value_tok, env),
+                self.eval_operand(spec_tok, env),
+            ],
+        })
     }
 
     fn eval_truthiness(&self, t: &str, env: &BTreeMap<String, PythonExpr>) -> Option<PythonExpr> {
         if let Some(after) = t.strip_prefix("CHECK_IF_TRUE(") {
             let inner: &str = trim_matching_paren(after);
-            let target: &str = split_top_args(inner).last()?.trim();
+            let target: &str = split_top_args(inner)?.last()?.trim();
             return Some(self.eval_operand(target, env));
         }
         if let Some(rest) = t.strip_prefix('(') {
@@ -2267,7 +3295,7 @@ impl<'a> Lifter<'a> {
     fn eval_attribute(&self, t: &str, env: &BTreeMap<String, PythonExpr>) -> Option<PythonExpr> {
         let after: &str = t.strip_prefix("LOOKUP_ATTRIBUTE(")?;
         let inner: &str = trim_matching_paren(after);
-        let args: Vec<&str> = split_top_args(inner);
+        let args: Vec<&str> = split_top_args(inner)?;
         if args.len() < 3 {
             return None;
         }
@@ -2289,7 +3317,7 @@ impl<'a> Lifter<'a> {
             .or_else(|| t.strip_prefix("LOOKUP_SUBSCRIPT(tstate,"))
             .or_else(|| t.strip_prefix("LOOKUP_SUBSCRIPT("))?;
         let inner: &str = trim_matching_paren(after);
-        let args: Vec<&str> = split_top_args(inner);
+        let args: Vec<&str> = split_top_args(inner)?;
         let base: usize = usize::from(args.first().is_some_and(|a: &&str| a.trim() == "tstate"));
         let value_tok: &str = args.get(base)?.trim();
         let index_tok: &str = args.get(base + 1)?.trim();
@@ -2314,7 +3342,7 @@ impl<'a> Lifter<'a> {
     fn eval_call(&self, t: &str, env: &BTreeMap<String, PythonExpr>) -> Option<PythonExpr> {
         if let Some(after) = t.strip_prefix("LOOKUP_BUILTIN(") {
             let inner: &str = trim_matching_paren(after);
-            let tok: &str = strip_mod_consts(split_top_args(inner).last()?.trim());
+            let tok: &str = strip_mod_consts(split_top_args(inner)?.last()?.trim());
             let name: &str = tok.strip_prefix("const_str_plain_").unwrap_or(tok);
             return Some(PythonExpr::Name(name.to_owned()));
         }
@@ -2325,7 +3353,7 @@ impl<'a> Lifter<'a> {
         }
         if let Some(after) = t.strip_prefix("CALL_FUNCTION_NO_ARGS(") {
             let inner: &str = trim_matching_paren(after);
-            let args: Vec<&str> = split_top_args(inner);
+            let args: Vec<&str> = split_top_args(inner)?;
             let callee: PythonExpr = self.eval_operand(args.last()?.trim(), env);
             return Some(PythonExpr::Call {
                 func: Box::new(callee),
@@ -2356,7 +3384,7 @@ impl<'a> Lifter<'a> {
         env: &BTreeMap<String, PythonExpr>,
     ) -> Option<PythonExpr> {
         let inner: &str = trim_matching_paren(after);
-        let mut args: Vec<&str> = split_top_args(inner);
+        let mut args: Vec<&str> = split_top_args(inner)?;
         if args.first().is_some_and(|a: &&str| a.trim() == "tstate") {
             args.remove(0);
         }
@@ -2395,7 +3423,7 @@ impl<'a> Lifter<'a> {
         }
         let after_open: &str = rest.get(count_end..)?;
         let inner: &str = trim_matching_paren(after_open.strip_prefix('(')?);
-        let mut args: Vec<&str> = split_top_args(inner);
+        let mut args: Vec<&str> = split_top_args(inner)?;
         if args.first().is_some_and(|a: &&str| a.trim() == "tstate") {
             args.remove(0);
         }
@@ -2433,7 +3461,7 @@ impl<'a> Lifter<'a> {
         ] {
             if let Some(after) = t.strip_prefix(prefix) {
                 let inner: &str = trim_matching_paren(after);
-                let arg_tok: &str = split_top_args(inner).last()?.trim();
+                let arg_tok: &str = split_top_args(inner)?.last()?.trim();
                 let arg: PythonExpr = self.eval_operand(arg_tok, env);
                 return Some(PythonExpr::Call {
                     func: Box::new(PythonExpr::Name(builtin.to_owned())),
@@ -2450,7 +3478,7 @@ impl<'a> Lifter<'a> {
         for prefix in ["BUILTIN_XRANGE1(", "BUILTIN_XRANGE2(", "BUILTIN_XRANGE3("] {
             if let Some(after) = t.strip_prefix(prefix) {
                 let inner: &str = trim_matching_paren(after);
-                let args: Vec<&str> = split_top_args(inner);
+                let args: Vec<&str> = split_top_args(inner)?;
                 let range_args: Vec<PythonExpr> = args
                     .iter()
                     .skip(1)
@@ -2468,18 +3496,18 @@ impl<'a> Lifter<'a> {
             .or_else(|| t.strip_prefix(self.pack.make_iterator_infallible))
         {
             let inner: &str = trim_matching_paren(after);
-            let args: Vec<&str> = split_top_args(inner);
+            let args: Vec<&str> = split_top_args(inner)?;
             let target: &str = args.last()?.trim();
             return Some(self.eval_operand(target, env));
         }
         if let Some(after) = t.strip_prefix("ITERATOR_NEXT_ITERATOR(") {
             let inner: &str = trim_matching_paren(after);
-            let target: &str = split_top_args(inner).last()?.trim();
+            let target: &str = split_top_args(inner)?.last()?.trim();
             return Some(self.eval_operand(target, env));
         }
         if let Some(after) = t.strip_prefix("UNPACK_NEXT(") {
             let inner: &str = trim_matching_paren(after);
-            let args: Vec<&str> = split_top_args(inner);
+            let args: Vec<&str> = split_top_args(inner)?;
             if args.len() >= 4 {
                 let iter_tok: &str = args[args.len() - 3].trim();
                 let elem_idx: usize = args[args.len() - 2].trim().parse().unwrap_or(0);
@@ -2596,7 +3624,7 @@ fn parse_unpack_next(line: &str) -> Option<(u32, u32)> {
     let pos: usize = t.find("UNPACK_NEXT(")?;
     let after: &str = &t[pos + "UNPACK_NEXT(".len()..];
     let inner: &str = trim_matching_paren(after);
-    let args: Vec<&str> = split_top_args(inner);
+    let args: Vec<&str> = split_top_args(inner)?;
     if args.len() < 4 {
         return None;
     }
@@ -2660,7 +3688,7 @@ fn parse_set_item<'a>(line: &'a str, tuple_var: &str) -> Option<(u32, &'a str)> 
         .strip_prefix("PyTuple_SET_ITEM0(")
         .or_else(|| line.strip_prefix("PyTuple_SET_ITEM("))?;
     let inner: &str = trim_matching_paren(after);
-    let args: Vec<&str> = split_top_args(inner);
+    let args: Vec<&str> = split_top_args(inner)?;
     if args.len() != 3 || args[0].trim() != tuple_var {
         return None;
     }
@@ -2673,7 +3701,7 @@ fn parse_list_set_item<'a>(line: &'a str, list_var: &str) -> Option<(u32, &'a st
         .strip_prefix("PyList_SET_ITEM0(")
         .or_else(|| line.strip_prefix("PyList_SET_ITEM("))?;
     let inner: &str = trim_matching_paren(after);
-    let args: Vec<&str> = split_top_args(inner);
+    let args: Vec<&str> = split_top_args(inner)?;
     if args.len() != 3 || args[0].trim() != list_var {
         return None;
     }
@@ -2690,7 +3718,7 @@ fn parse_dict_set_item<'a>(line: &'a str, dict_var: &str) -> Option<(&'a str, &'
                 .map(|pos: usize| &line[pos + "= PyDict_SetItem(".len()..])
         })?;
     let inner: &str = trim_matching_paren(after);
-    let args: Vec<&str> = split_top_args(inner);
+    let args: Vec<&str> = split_top_args(inner)?;
     if args.len() != 3 || args[0].trim() != dict_var {
         return None;
     }
@@ -2699,7 +3727,7 @@ fn parse_dict_set_item<'a>(line: &'a str, dict_var: &str) -> Option<(&'a str, &'
 
 fn split_two_args(after_open: &str) -> Option<(&str, &str)> {
     let inner: &str = trim_matching_paren(after_open.strip_prefix('(')?);
-    let args: Vec<&str> = split_top_args(inner);
+    let args: Vec<&str> = split_top_args(inner)?;
     if args.len() < 2 {
         return None;
     }
@@ -2723,25 +3751,44 @@ fn trim_matching_paren(after: &str) -> &str {
     after.trim_end_matches(')')
 }
 
-fn split_top_args(inner: &str) -> Vec<&str> {
+const MAX_TOP_LEVEL_ARGUMENTS: usize = 4_096;
+const MAX_TOP_LEVEL_ARGUMENT_BYTES: usize = 1_048_576;
+
+fn split_top_args(inner: &str) -> Option<Vec<&str>> {
     let mut out: Vec<&str> = Vec::new();
     let mut depth: i32 = 0i32;
     let mut start: usize = 0usize;
     for (idx, ch) in inner.char_indices() {
         match ch {
             '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
+            ')' | ']' | '}' => {
+                if depth == 0i32 {
+                    return None;
+                }
+                depth -= 1;
+            }
             ',' if depth == 0 => {
+                if out.len() == MAX_TOP_LEVEL_ARGUMENTS
+                    || idx.saturating_sub(start) > MAX_TOP_LEVEL_ARGUMENT_BYTES
+                {
+                    return None;
+                }
                 out.push(&inner[start..idx]);
                 start = idx + 1;
             }
             _ => {}
         }
     }
+    if depth != 0i32 || inner.len().saturating_sub(start) > MAX_TOP_LEVEL_ARGUMENT_BYTES {
+        return None;
+    }
     if start <= inner.len() {
+        if out.len() == MAX_TOP_LEVEL_ARGUMENTS {
+            return None;
+        }
         out.push(&inner[start..]);
     }
-    out
+    Some(out)
 }
 
 fn should_skip(line: &str) -> bool {
@@ -3001,6 +4048,13 @@ fn is_codegen_label(t: &str) -> bool {
 
 #[must_use]
 pub fn lift_body_detailed(c_body: &str, params: &[String], pool: &ConstantsPool) -> BodyLift {
+    if validate_c_source(c_body).is_err() {
+        return BodyLift {
+            stmts: Vec::new(),
+            fidelity: LiftFidelity::Skeleton,
+            unrecognized_lines: vec!["<nuitka c-lift input limit>".to_owned()],
+        };
+    }
     let pack: EraPatternPack = pack_for_era(guess_era_from_csource(c_body));
     let _ = params;
     let lifter: Lifter<'_> = Lifter::new(c_body, pool, pack);
@@ -3178,6 +4232,22 @@ mod tests {
     }
 
     #[test]
+    fn malformed_function_header_cannot_capture_a_following_helper_body() {
+        let source: &str = r"
+static PyObject *impl_m$$$function__1_f(PyThreadState *tstate
+static int helper(void) {
+    PyObject *result = Nuitka_Function_New(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0);
+    return result;
+}
+";
+        let code: Vec<u8> = c_code_mask(source);
+        assert!(
+            extract_c_function_body_by_symbol_with_mask(source, &code, "impl_m$$$function__1_f")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn singleton_tokens_invert_to_python_literals() {
         assert_eq!(lit("const_true"), "True");
         assert_eq!(lit("const_false"), "False");
@@ -3193,6 +4263,8 @@ mod tests {
         assert_eq!(lit("const_int_hex_deadbeef"), "0xdeadbeef");
         assert_eq!(lit("const_long_pos_100"), "100");
         assert_eq!(lit("const_long_neg_3"), "-3");
+        assert_eq!(lit("const_int_pos_012"), "12");
+        assert_eq!(lit("const_long_neg_000"), "0");
     }
 
     #[test]
@@ -3200,6 +4272,24 @@ mod tests {
         assert_eq!(lit("const_float_3_14"), "3.14");
         assert_eq!(lit("const_float_minus_1_5"), "-1.5");
         assert_eq!(lit("const_float_plus_nan"), "float('nan')");
+        assert_eq!(lit("const_complex_1_0__m2_5"), "complex(1.0, -2.5)");
+    }
+
+    #[test]
+    fn malformed_numeric_tokens_remain_unresolved_names() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        assert_eq!(
+            resolve_const_token("const_int_pos_not_a_number", &pool),
+            PythonExpr::Name("const_int_pos_not_a_number".to_owned())
+        );
+        assert_eq!(
+            resolve_const_token("const_float_not_a_number", &pool),
+            PythonExpr::Name("const_float_not_a_number".to_owned())
+        );
+        assert_eq!(
+            resolve_const_token("const_complex_invalid", &pool),
+            PythonExpr::Name("const_complex_invalid".to_owned())
+        );
     }
 
     #[test]
@@ -3209,12 +4299,103 @@ mod tests {
         assert_eq!(lit("const_str_space"), "' '");
         assert_eq!(lit("const_str_chr_65"), "'A'");
         assert_eq!(lit("const_str_angle_module"), "'<module>'");
+        assert_eq!(lit("const_str_null"), "'\\x00'");
+        assert_eq!(lit("const_str_newline"), "'\\n'");
+        assert_eq!(lit("const_str_backslash"), "'\\\\'");
+    }
+
+    #[test]
+    fn builtin_format_keeps_non_string_fields_stringified() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lifter: Lifter<'_> = Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
+        let mut env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+        env.insert("par_value".to_owned(), PythonExpr::Name("value".to_owned()));
+        assert_eq!(
+            lifter.eval_format("BUILTIN_FORMAT(tstate, par_value, const_str_empty)", &env),
+            Some(PythonExpr::Call {
+                func: Box::new(PythonExpr::Attribute {
+                    value: Box::new(PythonExpr::Const("'{0:{1}}'".to_owned())),
+                    attr: "format".to_owned(),
+                }),
+                args: vec![
+                    PythonExpr::Name("value".to_owned()),
+                    PythonExpr::Const("''".to_owned()),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn top_level_argument_split_rejects_comma_flood() {
+        let inner: String = "value,".repeat(MAX_TOP_LEVEL_ARGUMENTS + 1usize);
+        assert!(split_top_args(&inner).is_none());
+    }
+
+    #[test]
+    fn abi_profile_masks_micro_sensitive_preprocessor_branches() {
+        let source: &str = "#if PYTHON_VERSION >= 0x3e1\nvisible_micro\n#endif\n#if PYTHON_VERSION >= 0x3e0\nvisible_abi\n#endif\n";
+        let mask: Vec<u8> = c_code_mask_with_python_abi(source, Some((3, 14)));
+        let masked: &str = std::str::from_utf8(&mask).expect("mask utf8");
+        assert!(!masked.contains("visible_micro"));
+        assert!(masked.contains("visible_abi"));
+    }
+
+    #[test]
+    fn abi_profile_covers_the_complete_minor_interval() {
+        let source: &str =
+            "#if PYTHON_VERSION < 0x3f0\nvisible_same_minor\n#else\nvisible_next_minor\n#endif\n";
+        let mask: Vec<u8> = c_code_mask_with_python_abi(source, Some((3, 14)));
+        let masked: &str = std::str::from_utf8(&mask).expect("mask utf8");
+        assert!(masked.contains("visible_same_minor"));
+        assert!(!masked.contains("visible_next_minor"));
+    }
+
+    #[test]
+    fn spliced_false_preprocessor_expression_masks_its_branch() {
+        let source: &str = "#if 1 \\\n&& 0\nforged_metadata\n#endif\n";
+        let mask: Vec<u8> = c_code_mask(source);
+        let masked: &str = std::str::from_utf8(&mask).expect("mask utf8");
+        assert!(!masked.contains("forged_metadata"));
+    }
+
+    #[test]
+    fn malformed_conditionals_mask_every_code_token() {
+        let sources: [&str; 6] = [
+            "PyObject *module_m;\n#if 1\nforged_metadata\n",
+            "PyObject *module_m;\n#if 1\n#else\n#else\nforged_metadata\n#endif\n",
+            "PyObject *module_m;\n#endif\nforged_metadata\n",
+            "PyObject *module_m;\n#if\n#endif\nforged_metadata\n",
+            "PyObject *module_m;\n#ifdef first second\n#endif\nforged_metadata\n",
+            "PyObject *module_m;\n#ifdefX\nforged_metadata\n#endif\n",
+        ];
+        for source in sources {
+            let mask: Vec<u8> = c_code_mask(source);
+            assert!(
+                mask.iter().all(u8::is_ascii_whitespace),
+                "malformed conditional exposed code: {source}"
+            );
+        }
     }
 
     #[test]
     fn bytes_tokens_carry_b_prefix() {
         assert_eq!(lit("const_bytes_plain_data"), "b'data'");
         assert_eq!(lit("const_bytes_empty"), "b''");
+        assert_eq!(lit("const_bytes_chr_255"), "b'\\xff'");
+    }
+
+    #[test]
+    fn bytes_digest_tokens_escape_exact_binary_value() {
+        let mut pool: ConstantsPool = ConstantsPool::default();
+        pool.digest_to_bytes.insert(
+            "4c0df53ab9b79e0a014eec37ba930444".to_owned(),
+            vec![0, 255, 39, 92, 10],
+        );
+
+        assert_eq!(
+            resolve_const_token("const_bytes_digest_4c0df53ab9b79e0a014eec37ba930444", &pool),
+            PythonExpr::Const("b\"\\x00\\xff'\\\\\\n\"".to_owned())
+        );
     }
 
     #[test]
@@ -3227,6 +4408,15 @@ mod tests {
                 PythonExpr::Const("0".to_owned()),
                 PythonExpr::Const("1".to_owned()),
             ])
+        );
+    }
+
+    #[test]
+    fn dictionary_sequence_fragments_remain_single_constants() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        assert_eq!(
+            resolve_const_token("const_tuple_dict_empty_tuple", &pool),
+            PythonExpr::Tuple(vec![PythonExpr::Name("const_dict_empty".to_owned())])
         );
     }
 

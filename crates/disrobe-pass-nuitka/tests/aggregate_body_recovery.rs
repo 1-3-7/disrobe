@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule, build_surface,
-    decode_const_file, emit_python, parse_c_module,
+    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
+    build_surface_with_python_abi, decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
 
 const MODULE_HELLO_C: &str =
@@ -20,6 +20,7 @@ const MODULE_HELLO_CONST: &[u8] =
 const MAIN_CONST: &[u8] = include_bytes!(
     "../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.const"
 );
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 #[derive(Debug, Clone)]
 struct BodyCensus {
@@ -65,10 +66,12 @@ fn build_from_committed(
     const_file: &str,
     blob_name: &str,
 ) -> SurfaceModule {
-    let cmod: CModuleStructure = parse_c_module(c_src).expect("parse committed c module");
+    let cmod: CModuleStructure = parse_c_module_with_python_abi(c_src, FIXTURE_PYTHON_ABI)
+        .expect("parse committed c module");
     let pool: ConstantsPool =
         decode_const_file(const_bytes, const_file, blob_name).expect("decode committed const blob");
-    build_surface(&cmod, &pool, Some(c_src)).expect("build surface from committed c")
+    build_surface_with_python_abi(&cmod, &pool, Some(c_src), FIXTURE_PYTHON_ABI)
+        .expect("build surface from committed c")
 }
 
 fn build_main_from_runtime_path() -> Option<SurfaceModule> {
@@ -86,14 +89,18 @@ fn build_main_from_runtime_path() -> Option<SurfaceModule> {
         );
         return None;
     };
-    let cmod: CModuleStructure = parse_c_module(&c_src).expect("parse __main__.c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse __main__.c");
     assert_eq!(
         cmod.module_name, "__main__",
         "module.__main__.c must derive module_name `__main__`"
     );
     let pool: ConstantsPool = decode_const_file(MAIN_CONST, "module.__main__.const", "__main__")
         .expect("decode __main__ const blob");
-    Some(build_surface(&cmod, &pool, Some(&c_src)).expect("build surface from __main__.c"))
+    Some(
+        build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
+            .expect("build surface from __main__.c"),
+    )
 }
 
 #[test]

@@ -3,9 +3,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, SurfaceFunction, SurfaceModule, build_surface, decode_const_file,
-    emit_python, parse_c_module,
+    CModuleStructure, SurfaceFunction, SurfaceModule, build_surface_with_python_abi,
+    decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
+
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 fn module_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,11 +25,12 @@ fn build_module(name: &str) -> SurfaceModule {
         .unwrap_or_else(|e| panic!("read module.{name}.c: {e}"));
     let const_bytes: Vec<u8> = std::fs::read(dir.join(format!("{name}.build/module.{name}.const")))
         .unwrap_or_else(|e| panic!("read module.{name}.const: {e}"));
-    let cmod: CModuleStructure =
-        parse_c_module(&c_src).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+    let cmod: CModuleStructure = parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI)
+        .unwrap_or_else(|e| panic!("parse {name}: {e}"));
     let pool = decode_const_file(&const_bytes, &format!("module.{name}.const"), name)
         .unwrap_or_else(|e| panic!("decode {name} const: {e}"));
-    build_surface(&cmod, &pool, Some(&c_src)).unwrap_or_else(|e| panic!("surface {name}: {e}"))
+    build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
+        .unwrap_or_else(|e| panic!("surface {name}: {e}"))
 }
 
 fn find<'a>(funcs: &'a [SurfaceFunction], name: &str) -> &'a SurfaceFunction {

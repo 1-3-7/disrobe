@@ -76,4 +76,58 @@ pub enum Error {
         "DR-NUITKA-0022: could not determine the marshal layout for the __bytecode table (no python ABI and no probed version decoded it)"
     )]
     BytecodeVersionUnknown,
+
+    #[error("DR-NUITKA-0023: C source has {bytes} bytes, above the {max_bytes}-byte parsing cap")]
+    CSourceTooLarge { bytes: usize, max_bytes: usize },
+
+    #[error("DR-NUITKA-0024: artifact path is not a regular file: {path}")]
+    NonRegularArtifact { path: std::path::PathBuf },
+
+    #[error("DR-NUITKA-0025: C source is not valid UTF-8: {0}")]
+    CSourceInvalidUtf8(#[source] std::str::Utf8Error),
+
+    #[error("DR-NUITKA-0026: artifact {path} has {bytes} bytes, above the {max_bytes}-byte cap")]
+    ArtifactTooLarge {
+        path: std::path::PathBuf,
+        bytes: u64,
+        max_bytes: u64,
+    },
+
+    #[error("DR-NUITKA-0027: C source {resource} count {count} exceeds the {max_count} limit")]
+    CSourceComplexityExceeded {
+        resource: &'static str,
+        count: usize,
+        max_count: usize,
+    },
+
+    #[error(
+        "DR-NUITKA-0028: build directory has {count} .const files, above the {max_count} limit"
+    )]
+    TooManyConstFiles { count: usize, max_count: usize },
+
+    #[error(
+        "DR-NUITKA-0029: build directory constants total {bytes} bytes, above the {max_bytes}-byte cap"
+    )]
+    BuildConstantsTooLarge { bytes: u64, max_bytes: u64 },
+
+    #[error(
+        "DR-NUITKA-0030: constant manifest has {count} object members, above the {max_count} limit"
+    )]
+    ConstManifestTooManyEntries { count: usize, max_count: usize },
+
+    #[error("DR-NUITKA-0031: directory {path} has more than {max_count} entries")]
+    TooManyDirectoryEntries {
+        path: std::path::PathBuf,
+        max_count: usize,
+    },
+
+    #[error("DR-NUITKA-0032: {resource} has {bytes} bytes, above the {max_bytes}-byte cap")]
+    InputTooLarge {
+        resource: &'static str,
+        bytes: u64,
+        max_bytes: u64,
+    },
+
+    #[error("DR-NUITKA-0033: constant input set has {count} files, above the {max_count} limit")]
+    TooManyConstantInputs { count: usize, max_count: usize },
 }
