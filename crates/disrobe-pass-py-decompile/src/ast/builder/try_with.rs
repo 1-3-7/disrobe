@@ -6851,7 +6851,17 @@ fn with_post_cleanup_tail(
             && resolve_jump_target(stream, k, &stream.ops[k])
                 .is_some_and(|t: usize| (ret_start..=tail_end).contains(&t))
     });
-    if branched && slice_has_real_stmt(stream, ret_start, tail_end) {
+    let looped: bool = (ret_start..tail_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        ) || (matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| (ret_start..tail_end).contains(&t)))
+    });
+    if (branched || looped) && slice_has_real_stmt(stream, ret_start, tail_end) {
         return structure_stmts(code, stream, ret_start, tail_end);
     }
     let (mut stmts, residual): (Vec<Stmt>, Vec<Expr>) =
