@@ -21,15 +21,26 @@ Usage:
              blank lines and lines starting with '#' are ignored.
 
 Emits a single JSON object on the first line of stdout, then a human-readable taxonomy on stderr.
+
+Pass --strict-tier to additionally measure, on top of the normalized recompile-equivalence
+oracle above, byte-identical faithfulness (co_code plus every co_* structural field, compared
+recursively through nested code objects in co_consts) and co_positions() fidelity (line-level and
+full lineno/col granularity). The strict tier runs only on code objects that already pass the
+normalized oracle above; it is a pure measurement and asserts nothing on its own.
 """
 
+from __future__ import annotations
+
 import argparse
+import difflib
 import dis
 import glob
 import importlib.util
 import json
 import marshal
+import math
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -78,6 +89,30 @@ JUMPS = {
     "POP_JUMP_FORWARD_IF_NOT_NONE": "JUMP_IF_NOT_NONE",
     "POP_JUMP_IF_NOT_NONE": "JUMP_IF_NOT_NONE",
 }
+ARGREPR_OPS = frozenset(
+    {
+        "LOAD_FAST",
+        "STORE_FAST",
+        "DELETE_FAST",
+        "LOAD_GLOBAL",
+        "STORE_GLOBAL",
+        "LOAD_NAME",
+        "STORE_NAME",
+        "LOAD_ATTR",
+        "STORE_ATTR",
+        "LOAD_METHOD",
+        "LOAD_DEREF",
+        "STORE_DEREF",
+        "IMPORT_NAME",
+        "IMPORT_FROM",
+        "COMPARE_OP",
+        "CONTAINS_OP",
+        "IS_OP",
+        "BINARY_OP",
+        "CALL",
+        "CALL_KW",
+    }
+)
 
 
 def norm_instrs(code):
@@ -106,28 +141,7 @@ def norm_instrs(code):
         elif op == "STORE_NAME" and ins.argrepr in ("__firstlineno__", "__static_attributes__"):
             if out and out[-1][0] == "LOAD_CONST":
                 out.pop()
-        elif op in (
-            "LOAD_FAST",
-            "STORE_FAST",
-            "DELETE_FAST",
-            "LOAD_GLOBAL",
-            "STORE_GLOBAL",
-            "LOAD_NAME",
-            "STORE_NAME",
-            "LOAD_ATTR",
-            "STORE_ATTR",
-            "LOAD_METHOD",
-            "LOAD_DEREF",
-            "STORE_DEREF",
-            "IMPORT_NAME",
-            "IMPORT_FROM",
-            "COMPARE_OP",
-            "CONTAINS_OP",
-            "IS_OP",
-            "BINARY_OP",
-            "CALL",
-            "CALL_KW",
-        ):
+        elif op in ARGREPR_OPS:
             out.append((op, ins.argrepr))
         else:
             out.append((op, None))
@@ -150,6 +164,108 @@ def own_equiv(a, b):
         if getattr(a, attr) != getattr(b, attr):
             return False, "sig"
     return True, ""
+
+
+Position = tuple[int | None, int | None, int | None, int | None]
+MAX_ALIGN_INSTRS = 6000
+
+
+def consts_equal(a: object, b: object) -> bool:
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, types.CodeType) and isinstance(b, types.CodeType):
+        return byte_identical(a, b)
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        return len(a) == len(b) and all(consts_equal(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, (frozenset, set)) and isinstance(b, (frozenset, set)):
+        return a == b
+    if isinstance(a, float) and isinstance(b, float):
+        if math.isnan(a) and math.isnan(b):
+            return True
+        return a == b and math.copysign(1.0, a) == math.copysign(1.0, b)
+    if isinstance(a, complex) and isinstance(b, complex):
+        return consts_equal(a.real, b.real) and consts_equal(a.imag, b.imag)
+    return a == b
+
+
+def byte_identical(a: types.CodeType, b: types.CodeType) -> bool:
+    if a.co_code != b.co_code:
+        return False
+    for attr in (
+        "co_names",
+        "co_varnames",
+        "co_freevars",
+        "co_cellvars",
+        "co_flags",
+        "co_stacksize",
+        "co_exceptiontable",
+    ):
+        if getattr(a, attr) != getattr(b, attr):
+            return False
+    if len(a.co_consts) != len(b.co_consts):
+        return False
+    return all(consts_equal(x, y) for x, y in zip(a.co_consts, b.co_consts, strict=True))
+
+
+def classify(ins: dis.Instruction) -> tuple[str, object]:
+    op = RENAME.get(ins.opname, ins.opname)
+    if op in JUMPS:
+        return (JUMPS[op], None)
+    if op == "LOAD_CONST":
+        v = ins.argval
+        if isinstance(v, types.CodeType):
+            return ("LOAD_CONST", "<code>")
+        if isinstance(v, (frozenset, set)):
+            kind = "frozenset" if isinstance(v, frozenset) else "set"
+            return ("LOAD_CONST", (kind, frozenset(repr(e) for e in v)))
+        return ("LOAD_CONST", (type(v).__name__, repr(v)))
+    if op in SPLIT2:
+        return (op, ins.argval)
+    if op in ARGREPR_OPS:
+        return (op, ins.argrepr)
+    return (op, None)
+
+
+def instr_seq(code: types.CodeType) -> list[tuple[tuple[str, object], Position]]:
+    positions: list[Position] = list(code.co_positions())
+    out: list[tuple[tuple[str, object], Position]] = []
+    for ins in dis.get_instructions(code):
+        if ins.opname in NOOP:
+            continue
+        idx = ins.offset // 2
+        pos: Position = positions[idx] if idx < len(positions) else (None, None, None, None)
+        out.append((classify(ins), pos))
+    return out
+
+
+def is_no_debug_ranges(code: types.CodeType) -> bool:
+    positions: list[Position] = list(code.co_positions())
+    if not positions:
+        return False
+    return all(p[2] is None and p[3] is None for p in positions)
+
+
+def align_positions(
+    a: types.CodeType, b: types.CodeType
+) -> tuple[list[tuple[Position, Position]], int, int]:
+    if a.co_code == b.co_code:
+        pos_a: list[Position] = list(a.co_positions())
+        pos_b: list[Position] = list(b.co_positions())
+        pairs: list[tuple[Position, Position]] = list(zip(pos_a, pos_b, strict=True))
+        return pairs, len(pairs), len(pairs)
+    seq_a = instr_seq(a)
+    seq_b = instr_seq(b)
+    total = max(len(seq_a), len(seq_b))
+    if len(seq_a) > MAX_ALIGN_INSTRS or len(seq_b) > MAX_ALIGN_INSTRS:
+        return [], 0, total
+    keys_a = [k for k, _ in seq_a]
+    keys_b = [k for k, _ in seq_b]
+    matcher = difflib.SequenceMatcher(None, keys_a, keys_b, autojunk=False)
+    aligned: list[tuple[Position, Position]] = []
+    for block in matcher.get_matching_blocks():
+        for i in range(block.size):
+            aligned.append((seq_a[block.a + i][1], seq_b[block.b + i][1]))
+    return aligned, len(aligned), total
 
 
 def group(code):
@@ -188,6 +304,7 @@ def main():
     ap.add_argument("--disrobe", required=True)
     ap.add_argument("--lib", required=True)
     ap.add_argument("--modules", required=True)
+    ap.add_argument("--strict-tier", action="store_true")
     args = ap.parse_args()
 
     warnings.simplefilter("ignore")
@@ -203,9 +320,25 @@ def main():
     samples = {}
     sibling_collisions = 0
 
+    strict_recompile_equivalent = 0
+    strict_byte_identical = 0
+    strict_lines_ok = 0
+    strict_lines_total = 0
+    strict_full_ok = 0
+    strict_full_total = 0
+    strict_align_aligned = 0
+    strict_align_total = 0
+    strict_no_debug_ranges_objects = 0
+
     for f in files:
         try:
-            a = compile(open(f, encoding="utf-8", errors="replace").read(), f, "exec")
+            a = compile(
+                open(f, encoding="utf-8", errors="replace").read(),
+                f,
+                "exec",
+                dont_inherit=True,
+                optimize=sys.flags.optimize,
+            )
         except Exception:
             reasons["COMPILE_ERR"] = reasons.get("COMPILE_ERR", 0) + 1
             continue
@@ -225,7 +358,13 @@ def main():
                 reasons["DECOMPILE_ERR"] = reasons.get("DECOMPILE_ERR", 0) + nobj
             else:
                 try:
-                    b = compile(open(rec, encoding="utf-8", errors="replace").read(), rec, "exec")
+                    b = compile(
+                        open(rec, encoding="utf-8", errors="replace").read(),
+                        rec,
+                        "exec",
+                        dont_inherit=True,
+                        optimize=sys.flags.optimize,
+                    )
                     gb = group(b)
                     for q, alist in ga.items():
                         blist = gb.get(q, [])
@@ -258,6 +397,22 @@ def main():
                             if eq:
                                 ok_obj += 1
                                 mod_ok += 1
+                                if args.strict_tier:
+                                    strict_recompile_equivalent += 1
+                                    if byte_identical(ac, bc):
+                                        strict_byte_identical += 1
+                                    pairs, aligned, tot_align = align_positions(ac, bc)
+                                    strict_align_aligned += aligned
+                                    strict_align_total += tot_align
+                                    strict_lines_total += len(pairs)
+                                    strict_lines_ok += sum(
+                                        1 for pa, pb in pairs if pa[0] == pb[0] and pa[1] == pb[1]
+                                    )
+                                    if is_no_debug_ranges(ac):
+                                        strict_no_debug_ranges_objects += 1
+                                    else:
+                                        strict_full_total += len(pairs)
+                                        strict_full_ok += sum(1 for pa, pb in pairs if pa == pb)
                             else:
                                 reasons[why] = reasons.get(why, 0) + 1
                                 samples.setdefault(why, [])
@@ -284,8 +439,52 @@ def main():
         "objects_ok": ok_obj,
         "object_pct": round(100.0 * ok_obj / tot_obj, 2) if tot_obj else 0,
         "sibling_collisions": sibling_collisions,
+        "cpython_version": platform.python_version(),
+        "magic_number": importlib.util.MAGIC_NUMBER.hex(),
     }
-    print(json.dumps(result))
+    if args.strict_tier:
+        strict_byte_identical_pct = (
+            round(100.0 * strict_byte_identical / strict_recompile_equivalent, 2)
+            if strict_recompile_equivalent
+            else 0
+        )
+        strict_lines_pct = (
+            round(100.0 * strict_lines_ok / strict_lines_total, 2) if strict_lines_total else 0
+        )
+        strict_full_pct = (
+            round(100.0 * strict_full_ok / strict_full_total, 2) if strict_full_total else 0
+        )
+        strict_alignment_coverage_pct = (
+            round(100.0 * strict_align_aligned / strict_align_total, 2)
+            if strict_align_total
+            else 0
+        )
+        result.update(
+            {
+                "strict_recompile_equivalent": strict_recompile_equivalent,
+                "strict_byte_identical": strict_byte_identical,
+                "strict_byte_identical_pct": strict_byte_identical_pct,
+                "strict_position_lines_ok": strict_lines_ok,
+                "strict_position_lines_total": strict_lines_total,
+                "strict_position_lines_pct": strict_lines_pct,
+                "strict_position_full_ok": strict_full_ok,
+                "strict_position_full_total": strict_full_total,
+                "strict_position_full_pct": strict_full_pct,
+                "strict_alignment_coverage_pct": strict_alignment_coverage_pct,
+                "strict_no_debug_ranges_objects": strict_no_debug_ranges_objects,
+            }
+        )
+        print(json.dumps(result))
+        print(
+            f"\n{strict_recompile_equivalent} recompile-equivalent; of those, "
+            f"{strict_byte_identical} byte-identical ({strict_byte_identical_pct}%); "
+            f"positions: lines {strict_lines_pct}%, full {strict_full_pct}% "
+            f"(alignment coverage {strict_alignment_coverage_pct}%, "
+            f"{strict_no_debug_ranges_objects} objects scored lines-only, no debug ranges)",
+            file=sys.stderr,
+        )
+    else:
+        print(json.dumps(result))
 
     print("\n=== failure reasons (by code-object count) ===", file=sys.stderr)
     for why, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
