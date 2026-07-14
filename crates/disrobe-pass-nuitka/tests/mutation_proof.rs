@@ -1,18 +1,23 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use disrobe_pass_nuitka::{
-    CModuleStructure, build_surface, decode_const_file, emit_python, parse_c_module,
+    CModuleStructure, build_surface_with_python_abi, decode_const_file, emit_python,
+    parse_c_module_with_python_abi,
 };
 
 const C_SRC: &str = include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");
 const CONST: &[u8] =
     include_bytes!("../../../corpus/python/nuitka/module/hello.build/module.hello.const");
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 #[test]
 fn mutation_proof_add_to_sub_changes_body() {
     let pool = decode_const_file(CONST, "module.hello.const", "hello").expect("decode");
 
-    let cmod_orig: CModuleStructure = parse_c_module(C_SRC).expect("parse orig");
-    let surf_orig = build_surface(&cmod_orig, &pool, Some(C_SRC)).expect("surface orig");
+    let cmod_orig: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse orig");
+    let surf_orig =
+        build_surface_with_python_abi(&cmod_orig, &pool, Some(C_SRC), FIXTURE_PYTHON_ABI)
+            .expect("surface orig");
     let py_orig: String = emit_python(&surf_orig);
 
     let mutated_c: String = C_SRC.replace(
@@ -24,8 +29,11 @@ fn mutation_proof_add_to_sub_changes_body() {
         "mutation should have changed the C source"
     );
 
-    let cmod_mut: CModuleStructure = parse_c_module(&mutated_c).expect("parse mutated");
-    let surf_mut = build_surface(&cmod_mut, &pool, Some(&mutated_c)).expect("surface mutated");
+    let cmod_mut: CModuleStructure =
+        parse_c_module_with_python_abi(&mutated_c, FIXTURE_PYTHON_ABI).expect("parse mutated");
+    let surf_mut =
+        build_surface_with_python_abi(&cmod_mut, &pool, Some(&mutated_c), FIXTURE_PYTHON_ABI)
+            .expect("surface mutated");
     let py_mut: String = emit_python(&surf_mut);
 
     assert_ne!(

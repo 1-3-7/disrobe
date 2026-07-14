@@ -5,13 +5,14 @@ use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
     CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFidelity, SurfaceModule, build_surface,
-    decode_const_file, emit_python, parse_c_module,
+    build_surface_with_python_abi, decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
 
 const C_SRC: &str = include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");
 const CONST: &[u8] =
     include_bytes!("../../../corpus/python/nuitka/module/hello.build/module.hello.const");
 const PYI: &str = include_str!("../../../corpus/python/nuitka/module/hello.pyi");
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PyiParam {
@@ -85,10 +86,12 @@ fn pyi_ground_truth(pyi: &str) -> BTreeMap<String, PyiSignature> {
 }
 
 fn build() -> SurfaceModule {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse module.hello.c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse module.hello.c");
     let pool: ConstantsPool =
         decode_const_file(CONST, "module.hello.const", "hello").expect("decode const blob");
-    build_surface(&cmod, &pool, Some(C_SRC)).expect("build surface")
+    build_surface_with_python_abi(&cmod, &pool, Some(C_SRC), FIXTURE_PYTHON_ABI)
+        .expect("build surface")
 }
 
 #[test]
@@ -133,7 +136,8 @@ fn emitted_python_function_set_equals_independent_pyi() {
 
 #[test]
 fn skeleton_emission_is_honest_when_c_source_absent() {
-    let cmod: CModuleStructure = parse_c_module(C_SRC).expect("parse module.hello.c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(C_SRC, FIXTURE_PYTHON_ABI).expect("parse module.hello.c");
     let pool: ConstantsPool =
         decode_const_file(CONST, "module.hello.const", "hello").expect("decode const blob");
     let surface: SurfaceModule =

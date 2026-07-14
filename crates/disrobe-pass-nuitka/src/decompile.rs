@@ -1,27 +1,35 @@
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::Path;
 
-use disrobe_core::debug::DebugLog;
 use serde::{Deserialize, Serialize};
 
 use crate::blob_scan::BlobScan;
 use crate::bytecode_table::{BytecodeTable, decode_bytecode_table};
-use crate::c_module::{CModuleStructure, parse_c_module};
+use crate::c_module::{CModuleStructure, parse_c_module_with_optional_python_abi};
 use crate::const_blob::{
     ConstantsUnparsedReason, ModuleConstants, NuitkaConstants, constants_unparsed_reason,
     parse_constants,
 };
-use crate::const_manifest::{ConstantManifest, parse_constant_manifest};
-use crate::constants::{ConstantsPool, ConstantsTable, decode_const_file};
+use crate::const_manifest::{
+    ConstantManifest, MAX_CONSTANT_MANIFEST_BYTES, parse_constant_manifest,
+};
+use crate::constants::{
+    ConstantInputBudget, ConstantsPool, ConstantsTable, MAX_BUILD_CONST_BYTES,
+    MAX_BUILD_CONST_FILES, MAX_CONST_FILE_BYTES, decode_const_file,
+};
 use crate::detect::{Detection, detect_in_bytes, find_python_version_strings};
 use crate::error::{Error, Result};
 use crate::frozen::{FrozenModules, recover_frozen_bytecode};
+use crate::limits::{MAX_BINARY_INPUT_BYTES, MAX_C_SOURCE_BYTES, validate_binary_input_size};
 use crate::name_map::{NativeNameMap, map_names};
 use crate::native_body::{NativeBodyRecovery, lift_native_bodies};
 use crate::native_disasm::{NativeDisasm, disassemble_module_stats};
-use crate::onefile::{OnefileEntry, OnefilePayload, extract_onefile};
+use crate::onefile::{StreamedEntry, extract_onefile_streaming};
 use crate::skeleton::{NuitkaSkeleton, SkeletonModule, reconstruct};
-use crate::surface::{SurfaceModule, build_surface, build_surface_names_only_with_skeleton};
+use crate::surface::{
+    SurfaceModule, build_surface_names_only_with_skeleton, build_surface_with_optional_python_abi,
+};
 use crate::symbols::{SymbolGraph, scan_symbols};
 use crate::version_db::{NuitkaVersionReport, detect_nuitka_version};
 
@@ -109,25 +117,78 @@ pub enum DecompSourceKind {
 
 const SCHEMA: &str = "disrobe.nuitka.decompile/v0";
 const BYTECODE_CONST: &str = "__bytecode.const";
+const MAX_SIBLING_BINARY_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_BUILD_DIRECTORY_ENTRIES: usize = 65_536;
+const MAX_BOUNDED_READ_PREALLOC_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug)]
+struct SiblingBinary {
+    bytes: Vec<u8>,
+    python_abi: Option<(u8, u8)>,
+    skipped_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+enum BoundedFileRead {
+    Bytes(Vec<u8>),
+    TooLarge { bytes: u64 },
+}
 
 pub fn decompile_build_dir(build_dir: &Path) -> Result<NuitkaDecompilation> {
+    decompile_build_dir_with_binary(build_dir, None, None)
+}
+
+pub fn decompile_build_dir_with_python_abi(
+    build_dir: &Path,
+    python_abi: (u8, u8),
+) -> Result<NuitkaDecompilation> {
+    decompile_build_dir_with_binary(build_dir, None, Some(python_abi))
+}
+
+fn decompile_build_dir_with_binary(
+    build_dir: &Path,
+    supplied_binary: Option<&[u8]>,
+    supplied_abi: Option<(u8, u8)>,
+) -> Result<NuitkaDecompilation> {
     let mut notes: Vec<String> = Vec::new();
 
     let manifest: Option<ConstantManifest> = read_manifest(build_dir, &mut notes)?;
 
-    let constants_c: Option<Vec<u8>> = read_optional(&build_dir.join("__constants.c"))?;
+    let constants_c: Option<Vec<u8>> = read_c_source(&build_dir.join("__constants.c"))?;
     if constants_c.is_none() {
         notes.push("__constants.c absent: exact version unavailable (Tier-A skipped)".to_owned());
     }
 
-    let binary_bytes: Vec<u8> = locate_sibling_binary(build_dir)?.unwrap_or_default();
-    let python_abi: Option<(u8, u8)> = python_abi_from_binary(&binary_bytes);
+    let sibling_binary: Option<SiblingBinary> = if supplied_binary.is_none() {
+        locate_sibling_binary(build_dir)?
+    } else {
+        None
+    };
+    let sibling_abi: Option<(u8, u8)> = sibling_binary
+        .as_ref()
+        .and_then(|binary: &SiblingBinary| binary.python_abi);
+    if let Some(bytes) = sibling_binary
+        .as_ref()
+        .and_then(|binary: &SiblingBinary| binary.skipped_bytes)
+    {
+        notes.push(format!(
+            "sibling binary skipped after {bytes} bytes exceeded the {MAX_SIBLING_BINARY_BYTES}-byte cap"
+        ));
+    }
+    let binary_view: &[u8] = match (supplied_binary, sibling_binary.as_ref()) {
+        (Some(binary), _) => binary,
+        (None, Some(binary)) => &binary.bytes,
+        (None, None) => &[],
+    };
+    let python_abi: Option<(u8, u8)> = supplied_abi
+        .or(sibling_abi)
+        .or_else(|| python_abi_from_binary(binary_view));
     if python_abi.is_none() {
-        notes.push("python ABI not recoverable from sibling binary".to_owned());
+        notes.push("python ABI not recoverable from selected binary".to_owned());
     }
 
     let version: NuitkaVersionReport =
-        detect_nuitka_version(&binary_bytes, constants_c.as_deref(), python_abi);
+        detect_nuitka_version(binary_view, constants_c.as_deref(), python_abi);
 
     let (const_files, bytecode_const): ConstFiles = list_const_files(build_dir)?;
     let python_abi: Option<(u8, u8)> = python_abi.or(version.python_abi);
@@ -156,7 +217,8 @@ pub fn decompile_build_dir(build_dir: &Path) -> Result<NuitkaDecompilation> {
         constants.pools.insert(file_name.clone(), pool);
     }
 
-    let surface: Option<SurfaceModule> = build_dir_surface(build_dir, &constants, &mut notes)?;
+    let surface: Option<SurfaceModule> =
+        build_dir_surface(build_dir, &constants, python_abi, &mut notes)?;
 
     Ok(NuitkaDecompilation {
         schema: SCHEMA.to_owned(),
@@ -220,6 +282,7 @@ fn recover_bytecode_table(
 fn build_dir_surface(
     build_dir: &Path,
     constants: &ConstantsTable,
+    python_abi: Option<(u8, u8)>,
     notes: &mut Vec<String>,
 ) -> Result<Option<SurfaceModule>> {
     let Some((const_file, primary_blob)): Option<(&String, String)> =
@@ -229,19 +292,20 @@ fn build_dir_surface(
         return Ok(None);
     };
     let c_path: std::path::PathBuf = build_dir.join(format!("module.{primary_blob}.c"));
-    let Some(bytes): Option<Vec<u8>> = read_optional(&c_path)? else {
+    let Some(bytes): Option<Vec<u8>> = read_c_source(&c_path)? else {
         notes.push(format!(
             "module.{primary_blob}.c absent: surface limited to names-only"
         ));
         return Ok(None);
     };
-    let text: String = String::from_utf8_lossy(&bytes).into_owned();
-    let cmod: CModuleStructure = parse_c_module(&text)?;
+    let text: &str = std::str::from_utf8(&bytes).map_err(Error::CSourceInvalidUtf8)?;
+    let cmod: CModuleStructure = parse_c_module_with_optional_python_abi(text, python_abi)?;
     let Some(pool): Option<&ConstantsPool> = constants.pools.get(const_file) else {
         notes.push("primary module pool vanished before surface build".to_owned());
         return Ok(None);
     };
-    let surface: SurfaceModule = build_surface(&cmod, pool, Some(&text))?;
+    let surface: SurfaceModule =
+        build_surface_with_optional_python_abi(&cmod, pool, Some(text), python_abi)?;
     notes.extend(surface.notes.iter().cloned());
     Ok(Some(surface))
 }
@@ -254,45 +318,53 @@ fn primary_module_blob(constants: &ConstantsTable) -> Option<(&String, String)> 
 }
 
 pub fn decompile_binary(path: &Path) -> Result<NuitkaDecompilation> {
-    let bytes: Vec<u8> = std::fs::read(path)?;
+    let bytes: Vec<u8> = read_required_file_bounded(path, MAX_BINARY_INPUT_BYTES)?;
     let detection: Detection = detect_in_bytes(&bytes)?;
 
-    if let Some(offset) = detection.onefile_payload_offset
-        && let Some(decomp) = try_decompile_onefile(&bytes, offset)
-    {
-        return Ok(decomp);
+    if let Some(offset) = detection.onefile_payload_offset {
+        return decompile_detected_onefile(&bytes, offset, &detection);
     }
 
     if let Some(build_dir) = sibling_build_dir(path) {
-        return decompile_build_dir(&build_dir);
+        let supplied_abi: Option<(u8, u8)> = python_abi_from_extension_path(path);
+        return decompile_build_dir_with_binary(&build_dir, Some(&bytes), supplied_abi);
     }
 
     Ok(decompile_embedded_standalone(&bytes, &detection))
 }
 
 pub fn decompile_bytes(bytes: &[u8]) -> Result<NuitkaDecompilation> {
+    validate_primary_binary_size(bytes.len())?;
     let detection: Detection = detect_in_bytes(bytes)?;
-    if let Some(offset) = detection.onefile_payload_offset
-        && let Some(decomp) = try_decompile_onefile(bytes, offset)
-    {
-        return Ok(decomp);
+    if let Some(offset) = detection.onefile_payload_offset {
+        return decompile_detected_onefile(bytes, offset, &detection);
     }
     Ok(decompile_embedded_standalone(bytes, &detection))
 }
 
-fn try_decompile_onefile(bytes: &[u8], offset: usize) -> Option<NuitkaDecompilation> {
+fn decompile_detected_onefile(
+    bytes: &[u8],
+    offset: usize,
+    detection: &Detection,
+) -> Result<NuitkaDecompilation> {
     match decompile_onefile(bytes, offset) {
-        Ok(decomp) => Some(decomp),
-        Err(e) => {
-            let dbg: DebugLog = DebugLog::for_scope("nuitka");
-            dbg.line(|| {
-                format!(
-                    "onefile extraction at {offset:#x} failed ({e}); falling back to embedded-standalone"
-                )
-            });
-            None
+        Ok(decompilation) => Ok(decompilation),
+        Err(error) if onefile_transport_error(&error) => {
+            Ok(decompile_embedded_standalone(bytes, detection))
         }
+        Err(error) => Err(error),
     }
+}
+
+const fn onefile_transport_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::BadOnefileMagic(_) | Error::EmptyPayload | Error::EntryTruncated(_) | Error::Zstd(_)
+    )
+}
+
+fn validate_primary_binary_size(bytes: usize) -> Result<()> {
+    validate_binary_input_size("binary input", bytes)
 }
 
 fn decompile_embedded_standalone(bytes: &[u8], detection: &Detection) -> NuitkaDecompilation {
@@ -538,41 +610,43 @@ pub fn decompile_const_bytes(
 }
 
 fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation> {
-    let payload: OnefilePayload = extract_onefile(bytes, offset)?;
-
-    let manifest: Option<ConstantManifest> = payload
-        .entries
-        .iter()
-        .find(|e| e.filename.ends_with("__constant.txt"))
-        .and_then(|e| parse_constant_manifest(&e.data).ok());
+    let python_abi: Option<(u8, u8)> = python_abi_from_binary(bytes);
+    let version: NuitkaVersionReport = detect_nuitka_version(bytes, None, python_abi);
+    let abi: Option<(u8, u8)> = python_abi.or(version.python_abi);
+    let mut payload: OnefileDecompilePayload = OnefileDecompilePayload::default();
+    let mut collection_error: Option<Error> = None;
+    let extraction = extract_onefile_streaming(bytes, offset, &mut |entry: &StreamedEntry<'_>| {
+        if collection_error.is_none()
+            && let Err(error) = payload.collect(entry, abi)
+        {
+            collection_error = Some(error);
+        }
+        Ok(())
+    });
+    extraction?;
+    if let Some(error) = collection_error {
+        return Err(error);
+    }
 
     let mut notes: Vec<String> = Vec::new();
     let mut constants: ConstantsTable = ConstantsTable::default();
-    let mut bytecode_const: Option<Vec<u8>> = None;
-    for entry in &payload.entries {
-        if entry.filename.ends_with(BYTECODE_CONST) {
-            bytecode_const = Some(entry.data.clone());
-            continue;
-        }
-        if !is_const_filename(&entry.filename) {
-            continue;
-        }
-        let file_name: String = entry.filename.clone();
-        let blob_name: String = manifest
+    for (file_name, bytes) in &payload.const_files {
+        let blob_name: String = payload
+            .manifest
             .as_ref()
-            .and_then(|m: &ConstantManifest| m.by_source_file(&file_name))
+            .and_then(|m: &ConstantManifest| m.by_source_file(file_name))
             .map_or_else(
-                || blob_name_from_filename(&file_name),
+                || blob_name_from_filename(file_name),
                 |e| e.blob_name.clone(),
             );
-        let pool: ConstantsPool = decode_const_file(&entry.data, &file_name, &blob_name)?;
+        let pool: ConstantsPool = decode_const_file(bytes, file_name, &blob_name)?;
         for s in &pool.strings {
             constants.all_strings.insert(s.clone());
         }
         for i in &pool.ints {
             constants.all_ints.insert(*i);
         }
-        constants.pools.insert(file_name, pool);
+        constants.pools.insert(file_name.clone(), pool);
     }
 
     if constants.pools.is_empty() {
@@ -580,10 +654,10 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
     }
 
     let (module_constants, skeleton): (Option<NuitkaConstants>, Option<NuitkaSkeleton>) =
-        recover_onefile_module_constants(&payload.entries, &mut notes);
+        finalize_onefile_module_constants(payload.module_constants, &mut notes);
     let binary_constants: Option<BinaryConstants> =
         module_constants.as_ref().map(BinaryConstants::from_modules);
-    let data_files: Vec<DataFileEntry> = data_files_from_entries(&payload.entries);
+    let data_files: Vec<DataFileEntry> = payload.data_files;
     let plain_data: usize = data_files
         .iter()
         .filter(|d: &&DataFileEntry| matches!(d.kind, DataFileKind::DataFile))
@@ -601,14 +675,16 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
             .count(),
     ));
 
-    let python_abi: Option<(u8, u8)> = python_abi_from_binary(bytes);
-    let version: NuitkaVersionReport = detect_nuitka_version(bytes, None, python_abi);
-    let abi: Option<(u8, u8)> = python_abi.or(version.python_abi);
     let bytecode: Option<BytecodeTable> =
-        recover_bytecode_table(bytecode_const.as_deref(), abi, &mut notes);
-    let frozen_modules: Option<FrozenModules> =
-        recover_onefile_frozen(&payload.entries, abi, &mut notes);
-    let main_image: Option<(&str, &[u8])> = onefile_main_image(&payload.entries);
+        recover_bytecode_table(payload.bytecode_const.as_deref(), abi, &mut notes);
+    let frozen_modules: Option<FrozenModules> = payload.frozen_modules;
+    if let Some(frozen) = frozen_modules.as_ref() {
+        notes.extend(frozen.notes.iter().cloned());
+    }
+    let main_image: Option<(&str, &[u8])> = payload
+        .main_image
+        .as_ref()
+        .map(|(name, image): &(String, Vec<u8>)| (name.as_str(), image.as_slice()));
     let native_disasm: Option<NativeDisasm> =
         main_image.and_then(|(name, image): (&str, &[u8])| disassemble_module_stats(name, image));
     let name_map: Option<NativeNameMap> = main_image.and_then(|(name, image): (&str, &[u8])| {
@@ -637,7 +713,7 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
 
     Ok(NuitkaDecompilation {
         schema: SCHEMA.to_owned(),
-        manifest,
+        manifest: payload.manifest,
         constants,
         binary_constants,
         module_constants,
@@ -655,18 +731,58 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
     })
 }
 
-fn onefile_main_image(entries: &[OnefileEntry]) -> Option<(&str, &[u8])> {
-    entries
-        .iter()
-        .find(|e: &&OnefileEntry| {
-            e.symlink_target.is_none()
-                && !e.filename.contains('/')
-                && !e.filename.contains('\\')
-                && e.filename.to_ascii_lowercase().ends_with(".dll")
-                && is_native_image(&e.data)
-                && !is_runtime_dll(&e.filename)
-        })
-        .map(|e: &OnefileEntry| (e.filename.as_str(), e.data.as_slice()))
+#[derive(Debug, Default)]
+struct OnefileDecompilePayload {
+    manifest: Option<ConstantManifest>,
+    const_files: Vec<(String, Vec<u8>)>,
+    bytecode_const: Option<Vec<u8>>,
+    data_files: Vec<DataFileEntry>,
+    module_constants: Option<NuitkaConstants>,
+    frozen_modules: Option<FrozenModules>,
+    main_image: Option<(String, Vec<u8>)>,
+    constant_budget: ConstantInputBudget,
+}
+
+impl OnefileDecompilePayload {
+    fn collect(&mut self, entry: &StreamedEntry<'_>, python_abi: Option<(u8, u8)>) -> Result<()> {
+        if entry.symlink_target.is_none() {
+            self.data_files.push(DataFileEntry {
+                filename: entry.filename.clone(),
+                size: entry.size,
+                kind: classify_data_file(&entry.filename),
+            });
+        }
+        if self.manifest.is_none() && is_constant_manifest_filename(&entry.filename) {
+            self.manifest = Some(parse_constant_manifest(entry.data)?);
+        }
+        if is_bytecode_const_filename(&entry.filename) || is_const_filename(&entry.filename) {
+            self.constant_budget.add(entry.data.len())?;
+            if is_bytecode_const_filename(&entry.filename) {
+                self.bytecode_const = Some(entry.data.to_vec());
+            } else {
+                self.const_files
+                    .push((entry.filename.clone(), entry.data.to_vec()));
+            }
+        }
+        if !is_native_image(entry.data) {
+            return Ok(());
+        }
+        consider_onefile_module_constants(&mut self.module_constants, entry.data);
+        consider_onefile_frozen(&mut self.frozen_modules, entry.data, python_abi);
+        if self.main_image.is_none() && is_onefile_main_image(entry) {
+            self.main_image = Some((entry.filename.clone(), entry.data.to_vec()));
+        }
+        Ok(())
+    }
+}
+
+fn is_onefile_main_image(entry: &StreamedEntry<'_>) -> bool {
+    entry.symlink_target.is_none()
+        && !entry.filename.contains('/')
+        && !entry.filename.contains('\\')
+        && entry.filename.to_ascii_lowercase().ends_with(".dll")
+        && is_native_image(entry.data)
+        && !is_runtime_dll(&entry.filename)
 }
 
 fn is_runtime_dll(filename: &str) -> bool {
@@ -683,31 +799,20 @@ fn is_runtime_dll(filename: &str) -> bool {
     .any(|p: &&str| lower.starts_with(p))
 }
 
-fn recover_onefile_frozen(
-    entries: &[OnefileEntry],
+fn consider_onefile_frozen(
+    best: &mut Option<FrozenModules>,
+    data: &[u8],
     python_abi: Option<(u8, u8)>,
-    notes: &mut Vec<String>,
-) -> Option<FrozenModules> {
-    let mut best: Option<FrozenModules> = None;
-    for entry in entries {
-        if !is_native_image(&entry.data) {
-            continue;
-        }
-        let Some(frozen): Option<FrozenModules> = recover_frozen_bytecode(&entry.data, python_abi)
-        else {
-            continue;
-        };
-        let better: bool = best
-            .as_ref()
-            .is_none_or(|b: &FrozenModules| frozen.modules.len() > b.modules.len());
-        if better {
-            best = Some(frozen);
-        }
+) {
+    let Some(frozen): Option<FrozenModules> = recover_frozen_bytecode(data, python_abi) else {
+        return;
+    };
+    let better: bool = best
+        .as_ref()
+        .is_none_or(|current: &FrozenModules| frozen.modules.len() > current.modules.len());
+    if better {
+        *best = Some(frozen);
     }
-    if let Some(frozen) = &best {
-        notes.extend(frozen.notes.iter().cloned());
-    }
-    best
 }
 
 fn classify_data_file(filename: &str) -> DataFileKind {
@@ -721,38 +826,23 @@ fn classify_data_file(filename: &str) -> DataFileKind {
     }
 }
 
-fn data_files_from_entries(entries: &[OnefileEntry]) -> Vec<DataFileEntry> {
-    entries
-        .iter()
-        .filter(|e: &&OnefileEntry| e.symlink_target.is_none())
-        .map(|e: &OnefileEntry| DataFileEntry {
-            filename: e.filename.clone(),
-            size: e.size,
-            kind: classify_data_file(&e.filename),
-        })
-        .collect()
+fn consider_onefile_module_constants(best: &mut Option<NuitkaConstants>, data: &[u8]) {
+    let constants: NuitkaConstants = parse_constants(data);
+    if constants.is_empty() {
+        return;
+    }
+    let better: bool = best
+        .as_ref()
+        .is_none_or(|current: &NuitkaConstants| constants.modules.len() > current.modules.len());
+    if better {
+        *best = Some(constants);
+    }
 }
 
-fn recover_onefile_module_constants(
-    entries: &[OnefileEntry],
+fn finalize_onefile_module_constants(
+    best: Option<NuitkaConstants>,
     notes: &mut Vec<String>,
 ) -> (Option<NuitkaConstants>, Option<NuitkaSkeleton>) {
-    let mut best: Option<NuitkaConstants> = None;
-    for entry in entries {
-        if !is_native_image(&entry.data) {
-            continue;
-        }
-        let constants: NuitkaConstants = parse_constants(&entry.data);
-        if constants.is_empty() {
-            continue;
-        }
-        let better: bool = best
-            .as_ref()
-            .is_none_or(|b: &NuitkaConstants| constants.modules.len() > b.modules.len());
-        if better {
-            best = Some(constants);
-        }
-    }
     let Some(constants): Option<NuitkaConstants> = best else {
         notes.push(
             "onefile inner image: no plaintext Nuitka constants chunks parsed in any native entry"
@@ -784,9 +874,19 @@ fn is_native_image(data: &[u8]) -> bool {
 
 fn read_manifest(build_dir: &Path, notes: &mut Vec<String>) -> Result<Option<ConstantManifest>> {
     let manifest_path: std::path::PathBuf = build_dir.join("blobs").join("__constant.txt");
-    let Some(bytes): Option<Vec<u8>> = read_optional(&manifest_path)? else {
-        notes.push("blobs/__constant.txt absent: blob_name fallback from filenames".to_owned());
-        return Ok(None);
+    let bytes: Vec<u8> = match read_file_bounded(&manifest_path, MAX_CONSTANT_MANIFEST_BYTES)? {
+        None => {
+            notes.push("blobs/__constant.txt absent: blob_name fallback from filenames".to_owned());
+            return Ok(None);
+        }
+        Some(BoundedFileRead::Bytes(bytes)) => bytes,
+        Some(BoundedFileRead::TooLarge { bytes }) => {
+            return Err(Error::ArtifactTooLarge {
+                path: manifest_path,
+                bytes,
+                max_bytes: MAX_CONSTANT_MANIFEST_BYTES,
+            });
+        }
     };
     Ok(Some(parse_constant_manifest(&bytes)?))
 }
@@ -797,12 +897,29 @@ fn is_const_filename(file_name: &str) -> bool {
         .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("const"))
 }
 
+fn is_bytecode_const_filename(file_name: &str) -> bool {
+    file_name
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name: &str| name.eq_ignore_ascii_case(BYTECODE_CONST))
+}
+
+fn is_constant_manifest_filename(file_name: &str) -> bool {
+    file_name
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name: &str| name.eq_ignore_ascii_case("__constant.txt"))
+}
+
 type ConstFiles = (Vec<(String, Vec<u8>)>, Option<Vec<u8>>);
 
 fn list_const_files(build_dir: &Path) -> Result<ConstFiles> {
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
     let mut bytecode: Option<Vec<u8>> = None;
+    let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut directory_entries: usize = 0usize;
     for entry in std::fs::read_dir(build_dir)? {
+        directory_entries = next_directory_entry_count(directory_entries, build_dir)?;
         let entry: std::fs::DirEntry = entry?;
         let file_name_os: std::ffi::OsString = entry.file_name();
         let Some(file_name): Option<&str> = file_name_os.to_str() else {
@@ -811,18 +928,68 @@ fn list_const_files(build_dir: &Path) -> Result<ConstFiles> {
         if !is_const_filename(file_name) {
             continue;
         }
-        let bytes: Vec<u8> = std::fs::read(entry.path())?;
-        if file_name == BYTECODE_CONST {
+        if paths.len() == MAX_BUILD_CONST_FILES {
+            return Err(Error::TooManyConstFiles {
+                count: paths.len().saturating_add(1usize),
+                max_count: MAX_BUILD_CONST_FILES,
+            });
+        }
+        paths.push((file_name.to_owned(), entry.path()));
+    }
+    paths.sort_by(
+        |left: &(String, std::path::PathBuf), right: &(String, std::path::PathBuf)| {
+            left.0.cmp(&right.0)
+        },
+    );
+    let mut total_bytes: u64 = 0u64;
+    for (file_name, path) in paths {
+        let remaining: u64 = MAX_BUILD_CONST_BYTES.saturating_sub(total_bytes);
+        let maximum: u64 = MAX_CONST_FILE_BYTES.min(remaining);
+        let bytes: Vec<u8> = match read_file_bounded(&path, maximum)? {
+            None => continue,
+            Some(BoundedFileRead::Bytes(bytes)) => bytes,
+            Some(BoundedFileRead::TooLarge { bytes }) if maximum == MAX_CONST_FILE_BYTES => {
+                return Err(Error::ArtifactTooLarge {
+                    path,
+                    bytes,
+                    max_bytes: MAX_CONST_FILE_BYTES,
+                });
+            }
+            Some(BoundedFileRead::TooLarge { bytes }) => {
+                return Err(Error::BuildConstantsTooLarge {
+                    bytes: total_bytes.saturating_add(bytes),
+                    max_bytes: MAX_BUILD_CONST_BYTES,
+                });
+            }
+        };
+        let bytes_len: u64 = u64::try_from(bytes.len()).map_or(u64::MAX, |value| value);
+        total_bytes = total_bytes
+            .checked_add(bytes_len)
+            .ok_or(Error::BuildConstantsTooLarge {
+                bytes: u64::MAX,
+                max_bytes: MAX_BUILD_CONST_BYTES,
+            })?;
+        if is_bytecode_const_filename(&file_name) {
             bytecode = Some(bytes);
             continue;
         }
-        out.push((file_name.to_owned(), bytes));
+        out.push((file_name.clone(), bytes));
     }
     out.sort_by(|a: &(String, Vec<u8>), b: &(String, Vec<u8>)| a.0.cmp(&b.0));
     Ok((out, bytecode))
 }
 
-fn locate_sibling_binary(build_dir: &Path) -> Result<Option<Vec<u8>>> {
+fn next_directory_entry_count(count: usize, directory: &Path) -> Result<usize> {
+    if count == MAX_BUILD_DIRECTORY_ENTRIES {
+        return Err(Error::TooManyDirectoryEntries {
+            path: directory.to_path_buf(),
+            max_count: MAX_BUILD_DIRECTORY_ENTRIES,
+        });
+    }
+    Ok(count.saturating_add(1usize))
+}
+
+fn locate_sibling_binary(build_dir: &Path) -> Result<Option<SiblingBinary>> {
     let stem: Option<&str> = build_dir
         .file_name()
         .and_then(|n: &std::ffi::OsStr| n.to_str())
@@ -834,28 +1001,160 @@ fn locate_sibling_binary(build_dir: &Path) -> Result<Option<Vec<u8>>> {
         Some(p) => p,
         None => return Ok(None),
     };
-    for extension in ["exe", "bin", "pyd", "so", "dylib", ""] {
-        let candidate: std::path::PathBuf = if extension.is_empty() {
-            parent.join(stem)
-        } else {
-            parent.join(format!("{stem}.{extension}"))
-        };
-        if candidate.is_file()
-            && let Some(bytes) = read_optional(&candidate)?
-        {
-            return Ok(Some(bytes));
+    let mut candidate: Option<std::path::PathBuf> = None;
+    let Ok(entries): std::result::Result<std::fs::ReadDir, std::io::Error> =
+        std::fs::read_dir(parent)
+    else {
+        return Ok(None);
+    };
+    for (directory_entries, entry) in entries.flatten().enumerate() {
+        if directory_entries == MAX_BUILD_DIRECTORY_ENTRIES {
+            return Ok(None);
         }
+        let path: std::path::PathBuf = entry.path();
+        if sibling_binary_path_matches(&path, stem) && candidate.replace(path).is_some() {
+            return Ok(None);
+        }
+    }
+    if let Some(candidate) = candidate {
+        return read_sibling_binary(&candidate);
     }
     Ok(None)
 }
 
+fn sibling_binary_path_matches(path: &Path, stem: &str) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Some(file_name): Option<&str> = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if file_name == stem {
+        return true;
+    }
+    let Some(extension): Option<&str> = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some(file_stem): Option<&str> = path.file_stem().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if (extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("bin"))
+        && file_stem == stem
+    {
+        return true;
+    }
+    if !is_extension_module_extension(extension) {
+        return false;
+    }
+    if file_stem == stem {
+        return true;
+    }
+    let Some((candidate_stem, abi_suffix)): Option<(&str, &str)> = file_stem.rsplit_once('.')
+    else {
+        return false;
+    };
+    candidate_stem == stem && python_extension_abi_suffix(abi_suffix)
+}
+
+fn read_sibling_binary(path: &Path) -> Result<Option<SiblingBinary>> {
+    read_sibling_binary_with_limit(path, MAX_SIBLING_BINARY_BYTES)
+}
+
+fn read_sibling_binary_with_limit(path: &Path, maximum: u64) -> Result<Option<SiblingBinary>> {
+    let python_abi: Option<(u8, u8)> = python_abi_from_extension_path(path);
+    let (bytes, skipped_bytes): (Vec<u8>, Option<u64>) = match read_file_bounded(path, maximum)? {
+        None => return Ok(None),
+        Some(BoundedFileRead::Bytes(bytes)) => (bytes, None),
+        Some(BoundedFileRead::TooLarge { bytes }) => (Vec::new(), Some(bytes)),
+    };
+    Ok(Some(SiblingBinary {
+        bytes,
+        python_abi,
+        skipped_bytes,
+    }))
+}
+
 fn sibling_build_dir(binary: &Path) -> Option<std::path::PathBuf> {
-    let stem: &str = binary
+    let file_stem: &str = binary
         .file_stem()
         .and_then(|s: &std::ffi::OsStr| s.to_str())?;
+    let stem: &str = if is_extension_module_path(binary) {
+        module_build_stem(file_stem)
+    } else {
+        file_stem
+    };
     let parent: &Path = binary.parent()?;
     let candidate: std::path::PathBuf = parent.join(format!("{stem}.build"));
     candidate.is_dir().then_some(candidate)
+}
+
+fn module_build_stem(file_stem: &str) -> &str {
+    let Some((stem, abi_suffix)): Option<(&str, &str)> = file_stem.rsplit_once('.') else {
+        return file_stem;
+    };
+    if python_extension_abi_suffix(abi_suffix) {
+        stem
+    } else {
+        file_stem
+    }
+}
+
+fn python_extension_abi_suffix(suffix: &str) -> bool {
+    python_abi_from_extension_suffix(suffix).is_some()
+}
+
+fn python_abi_from_extension_path(path: &Path) -> Option<(u8, u8)> {
+    if !is_extension_module_path(path) {
+        return None;
+    }
+    let stem: &str = path.file_stem()?.to_str()?;
+    let (_, suffix): (&str, &str) = stem.rsplit_once('.')?;
+    python_abi_from_extension_suffix(suffix)
+}
+
+fn is_extension_module_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension: &std::ffi::OsStr| extension.to_str())
+        .is_some_and(is_extension_module_extension)
+}
+
+const fn is_extension_module_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("pyd")
+        || extension.eq_ignore_ascii_case("so")
+        || extension.eq_ignore_ascii_case("dylib")
+}
+
+fn python_abi_from_extension_suffix(suffix: &str) -> Option<(u8, u8)> {
+    let digits: &str = python_extension_abi_digits(suffix)?;
+    let (major, minor): (&str, &str) = digits.split_at(1usize);
+    let major: u8 = major.parse().ok()?;
+    let minor: u8 = minor.parse().ok()?;
+    (major != 0u8).then_some((major, minor))
+}
+
+fn python_extension_abi_digits(suffix: &str) -> Option<&str> {
+    let digits: &str = suffix
+        .strip_prefix("cpython-")
+        .or_else(|| suffix.strip_prefix("cp"))?;
+    let digit_count: usize = digits
+        .bytes()
+        .take_while(|byte: &u8| byte.is_ascii_digit())
+        .count();
+    if digit_count < 2 {
+        return None;
+    }
+    let flags_and_platform: &[u8] = &digits.as_bytes()[digit_count..];
+    let mut flag_end: usize = 0usize;
+    while flags_and_platform
+        .get(flag_end)
+        .is_some_and(|byte: &u8| matches!(*byte, b'd' | b'm' | b't' | b'u'))
+    {
+        flag_end += 1;
+    }
+    flags_and_platform
+        .get(flag_end)
+        .is_none_or(|byte: &u8| matches!(*byte, b'-' | b'_'))
+        .then_some(&digits[..digit_count])
 }
 
 fn python_abi_from_binary(bytes: &[u8]) -> Option<(u8, u8)> {
@@ -876,19 +1175,100 @@ fn python_abi_from_binary(bytes: &[u8]) -> Option<(u8, u8)> {
 }
 
 fn blob_name_from_filename(file_name: &str) -> String {
-    let stem: &str = file_name.strip_suffix(".const").unwrap_or(file_name);
+    let stem: &str = strip_const_suffix(file_name);
     if stem == "__constants" {
         return String::new();
     }
     stem.strip_prefix("module.").unwrap_or(stem).to_owned()
 }
 
-fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(Error::Io(e)),
+fn strip_const_suffix(file_name: &str) -> &str {
+    let Some(stem_end): Option<usize> = file_name.len().checked_sub(".const".len()) else {
+        return file_name;
+    };
+    let (Some(stem), Some(suffix)): (Option<&str>, Option<&str>) =
+        (file_name.get(..stem_end), file_name.get(stem_end..))
+    else {
+        return file_name;
+    };
+    if suffix.eq_ignore_ascii_case(".const") {
+        stem
+    } else {
+        file_name
     }
+}
+
+fn read_c_source(path: &Path) -> Result<Option<Vec<u8>>> {
+    read_c_source_with_limit(path, MAX_C_SOURCE_BYTES as u64)
+}
+
+fn read_c_source_with_limit(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>> {
+    match read_file_bounded(path, maximum)? {
+        None => Ok(None),
+        Some(BoundedFileRead::Bytes(bytes)) => Ok(Some(bytes)),
+        Some(BoundedFileRead::TooLarge { bytes }) => {
+            let bytes: usize = usize::try_from(bytes).map_or(usize::MAX, |bytes| bytes);
+            let max_bytes: usize = usize::try_from(maximum).map_or(usize::MAX, |bytes| bytes);
+            Err(Error::CSourceTooLarge { bytes, max_bytes })
+        }
+    }
+}
+
+pub(crate) fn read_required_file_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    match read_file_bounded(path, maximum)? {
+        Some(BoundedFileRead::Bytes(bytes)) => Ok(bytes),
+        Some(BoundedFileRead::TooLarge { bytes }) => Err(Error::ArtifactTooLarge {
+            path: path.to_path_buf(),
+            bytes,
+            max_bytes: maximum,
+        }),
+        None => Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} was not found", path.display()),
+        ))),
+    }
+}
+
+fn read_file_bounded(path: &Path, maximum: u64) -> Result<Option<BoundedFileRead>> {
+    let metadata: std::fs::Metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Io(error)),
+    };
+    if !metadata.is_file() {
+        return Err(Error::NonRegularArtifact {
+            path: path.to_path_buf(),
+        });
+    }
+    let file: std::fs::File = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Io(error)),
+    };
+    let opened_metadata: std::fs::Metadata = file.metadata()?;
+    if !opened_metadata.is_file() {
+        return Err(Error::NonRegularArtifact {
+            path: path.to_path_buf(),
+        });
+    }
+    let declared: u64 = opened_metadata.len();
+    if declared > maximum {
+        return Ok(Some(BoundedFileRead::TooLarge { bytes: declared }));
+    }
+    let mut bytes: Vec<u8> = Vec::with_capacity(bounded_read_capacity(declared));
+    let mut reader: std::io::Take<std::fs::File> = file.take(maximum.saturating_add(1u64));
+    reader.read_to_end(&mut bytes)?;
+    let actual: u64 = u64::try_from(bytes.len()).map_or(u64::MAX, |actual| actual);
+    if actual > maximum {
+        return Ok(Some(BoundedFileRead::TooLarge { bytes: actual }));
+    }
+    Ok(Some(BoundedFileRead::Bytes(bytes)))
+}
+
+fn bounded_read_capacity(declared: u64) -> usize {
+    usize::try_from(declared).map_or(MAX_BOUNDED_READ_PREALLOC_BYTES, |bytes: usize| {
+        bytes.min(MAX_BOUNDED_READ_PREALLOC_BYTES)
+    })
 }
 
 #[cfg(test)]
@@ -1137,6 +1517,298 @@ mod tests {
         let result: Result<Detection> = detect_in_bytes(&bytes);
         assert!(matches!(result, Err(Error::NotNuitka)));
         assert_eq!(python_abi_from_binary(&bytes), Some((3, 14)));
+    }
+
+    #[test]
+    fn versioned_extension_stems_locate_the_normal_build_directory() {
+        assert_eq!(module_build_stem("module.cp314-win_amd64"), "module");
+        assert_eq!(
+            module_build_stem("module.cpython-314-x86_64-linux-gnu"),
+            "module"
+        );
+        assert_eq!(module_build_stem("module.custom"), "module.custom");
+    }
+
+    #[test]
+    fn extension_abi_suffix_preserves_the_compiled_python_minor() {
+        assert_eq!(
+            python_abi_from_extension_suffix("cp314-win_amd64"),
+            Some((3, 14))
+        );
+        assert_eq!(
+            python_abi_from_extension_suffix("cpython-313-x86_64-linux-gnu"),
+            Some((3, 13))
+        );
+        assert_eq!(python_abi_from_extension_suffix("cp3-win_amd64"), None);
+    }
+
+    #[test]
+    fn extension_abi_requires_an_extension_module_filename() {
+        assert_eq!(
+            python_abi_from_extension_path(Path::new("module.cp314-win_amd64.pyd")),
+            Some((3, 14))
+        );
+        assert_eq!(
+            python_abi_from_extension_path(Path::new("module.cp314-win_amd64.PYD")),
+            Some((3, 14))
+        );
+        assert_eq!(
+            python_abi_from_extension_path(Path::new("module.cp314-win_amd64.exe")),
+            None
+        );
+    }
+
+    #[test]
+    fn only_extension_modules_strip_abi_tags_for_build_directory_lookup() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-extension-build-stem-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let build_dir: std::path::PathBuf = dir.join("module.build");
+        std::fs::create_dir_all(&build_dir).expect("create build directory");
+
+        assert_eq!(
+            sibling_build_dir(&dir.join("module.cp314-win_amd64.PYD")),
+            Some(build_dir)
+        );
+        assert_eq!(
+            sibling_build_dir(&dir.join("module.cp314-win_amd64.exe")),
+            None
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn sibling_discovery_accepts_case_insensitive_unversioned_extensions() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-upper-extension-sibling-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("module.build")).expect("create build directory");
+        let binary_path: std::path::PathBuf = dir.join("module.PYD");
+        std::fs::write(&binary_path, b"__compiled__").expect("write extension module");
+
+        let sibling: SiblingBinary = locate_sibling_binary(&dir.join("module.build"))
+            .expect("locate sibling")
+            .expect("uppercase extension sibling");
+        assert_eq!(sibling.python_abi, None);
+        assert_eq!(sibling.bytes, b"__compiled__");
+        assert_eq!(sibling.skipped_bytes, None);
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn oversized_versioned_sibling_preserves_filename_abi_without_payload() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-oversized-sibling-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("module.build")).expect("create build directory");
+        let binary_path: std::path::PathBuf = dir.join("module.cp314-win_amd64.PYD");
+        std::fs::write(&binary_path, b"four").expect("write binary");
+
+        let sibling: SiblingBinary = read_sibling_binary_with_limit(&binary_path, 3u64)
+            .expect("locate sibling")
+            .expect("versioned sibling");
+
+        assert_eq!(sibling.python_abi, Some((3, 14)));
+        assert!(sibling.bytes.is_empty());
+        assert_eq!(sibling.skipped_bytes, Some(4u64));
+        assert!(matches!(
+            read_c_source_with_limit(&binary_path, 3u64),
+            Err(Error::CSourceTooLarge { bytes, max_bytes })
+                if bytes == 4usize && max_bytes == 3usize
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn primary_binary_reader_rejects_before_reading_the_whole_artifact() {
+        let dir: std::path::PathBuf =
+            std::env::temp_dir().join(format!("disrobe-nuitka-primary-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create directory");
+        let binary_path: std::path::PathBuf = dir.join("oversized.exe");
+        std::fs::write(&binary_path, b"four").expect("write binary");
+
+        assert!(matches!(
+            read_required_file_bounded(&binary_path, 3u64),
+            Err(Error::ArtifactTooLarge {
+                path,
+                bytes,
+                max_bytes,
+            }) if path == binary_path && bytes == 4u64 && max_bytes == 3u64
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn raw_binary_and_directory_entry_caps_reject_before_work() {
+        let bytes: usize =
+            usize::try_from(MAX_BINARY_INPUT_BYTES + 1u64).expect("binary cap fits usize");
+        assert!(matches!(
+            validate_primary_binary_size(bytes),
+            Err(Error::InputTooLarge { resource, bytes: actual, max_bytes })
+                if resource == "binary input"
+                    && actual == MAX_BINARY_INPUT_BYTES + 1u64
+                    && max_bytes == MAX_BINARY_INPUT_BYTES
+        ));
+        let directory: &Path = Path::new("build");
+        assert!(matches!(
+            next_directory_entry_count(MAX_BUILD_DIRECTORY_ENTRIES, directory),
+            Err(Error::TooManyDirectoryEntries { path, max_count })
+                if path == directory && max_count == MAX_BUILD_DIRECTORY_ENTRIES
+        ));
+        assert_eq!(bounded_read_capacity(4096u64), 4096usize);
+        assert_eq!(
+            bounded_read_capacity(MAX_BINARY_INPUT_BYTES),
+            MAX_BOUNDED_READ_PREALLOC_BYTES
+        );
+    }
+
+    #[test]
+    fn bounded_constant_manifest_reader_rejects_before_reading() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-manifest-cap-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create directory");
+        let manifest_path: std::path::PathBuf = dir.join("__constant.txt");
+        std::fs::write(&manifest_path, b"four").expect("write manifest");
+
+        assert!(matches!(
+            read_required_file_bounded(&manifest_path, 3u64),
+            Err(Error::ArtifactTooLarge {
+                path,
+                bytes,
+                max_bytes,
+            }) if path == manifest_path && bytes == 4u64 && max_bytes == 3u64
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn bounded_constant_blob_reader_rejects_before_reading() {
+        let dir: std::path::PathBuf =
+            std::env::temp_dir().join(format!("disrobe-nuitka-const-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create build directory");
+        let const_path: std::path::PathBuf = dir.join("module.oversized.const");
+        std::fs::write(&const_path, b"four").expect("write const file");
+
+        assert!(matches!(
+            read_required_file_bounded(&const_path, 3u64),
+            Err(Error::ArtifactTooLarge {
+                path,
+                bytes,
+                max_bytes,
+            }) if path == const_path && bytes == 4u64 && max_bytes == 3u64
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn direct_versioned_extension_passes_filename_abi_to_its_build_directory() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-direct-extension-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let build_dir: std::path::PathBuf = dir.join("hello.build");
+        std::fs::create_dir_all(&build_dir).expect("create build directory");
+        let fixture_dir: std::path::PathBuf = fixture("module/hello.build");
+        for file_name in [
+            "__constants.const",
+            "__constants.c",
+            "module.hello.const",
+            "module.hello.c",
+        ] {
+            std::fs::copy(fixture_dir.join(file_name), build_dir.join(file_name))
+                .expect("copy build artifact");
+        }
+        let binary_path: std::path::PathBuf = dir.join("hello.cp314-win_amd64.pyd");
+        std::fs::write(&binary_path, b"__compiled__").expect("write nuitka marker");
+
+        let decompilation: NuitkaDecompilation =
+            decompile_binary(&binary_path).expect("decompile direct extension");
+
+        assert_eq!(decompilation.source_kind, DecompSourceKind::BuildDir);
+        assert_eq!(decompilation.version.python_abi, Some((3, 14)));
+        assert!(decompilation.surface.is_some());
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn bounded_build_constants_source_is_rejected_before_reading() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-oversized-constants-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create build directory");
+        let c_path: std::path::PathBuf = dir.join("__constants.c");
+        std::fs::write(&c_path, b"four").expect("write C source");
+
+        assert!(matches!(
+            read_c_source_with_limit(&c_path, 3u64),
+            Err(Error::CSourceTooLarge { bytes, max_bytes })
+                if bytes == 4usize && max_bytes == 3usize
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn nonregular_build_constants_source_is_rejected_before_opening() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-nonregular-constants-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create build directory");
+        let c_path: std::path::PathBuf = dir.join("__constants.c");
+        std::fs::create_dir(&c_path).expect("create nonregular C source");
+
+        assert!(matches!(
+            decompile_build_dir(&dir),
+            Err(Error::NonRegularArtifact { path }) if path == c_path
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn invalid_utf8_module_source_is_rejected_without_lossy_expansion() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-invalid-utf8-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create build directory");
+        std::fs::copy(
+            fixture("module/hello.build/module.hello.const"),
+            dir.join("module.hello.const"),
+        )
+        .expect("copy constants");
+        std::fs::write(dir.join("module.hello.c"), [0xffu8]).expect("write invalid C source");
+
+        assert!(matches!(
+            decompile_build_dir(&dir),
+            Err(Error::CSourceInvalidUtf8(_))
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 
     #[test]

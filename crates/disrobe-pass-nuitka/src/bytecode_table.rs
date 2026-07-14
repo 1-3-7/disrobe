@@ -2,6 +2,7 @@ use disrobe_pass_pickle::{PickleValue, Session, disassemble};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion};
 use serde::{Deserialize, Serialize};
 
+use crate::constants::validate_const_file_size;
 use crate::error::{Error, Result};
 
 const BLOBDATA_MODULE: &str = "nuitka.Serialization";
@@ -52,6 +53,7 @@ pub fn decode_bytecode_table(
     const_bytes: &[u8],
     python_abi: Option<(u8, u8)>,
 ) -> Result<BytecodeTable> {
+    validate_const_file_size(const_bytes.len())?;
     let raw_entries: Vec<RawEntry> = parse_blob_entries(const_bytes)?;
     let mut notes: Vec<String> = Vec::new();
 

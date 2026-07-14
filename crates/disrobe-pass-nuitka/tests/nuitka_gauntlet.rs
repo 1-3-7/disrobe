@@ -5,13 +5,14 @@ use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
     DecompSourceKind, ExactNuitkaVersion, NuitkaDecompilation, SurfaceFidelity, SurfaceFunction,
-    SurfaceModule, VersionConfidence, decompile_build_dir, emit_python,
+    SurfaceModule, VersionConfidence, decompile_build_dir_with_python_abi, emit_python,
     parse_exact_version_from_constants_c,
 };
 
 const GAUNTLET_DIR: &str = "../../corpus/python/nuitka/module/gauntlet.build";
 const ORIGINAL: &str = "../../corpus/python/nuitka/module/gauntlet.src.py";
 const PYI: &str = "../../corpus/python/nuitka/module/gauntlet.pyi";
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -151,7 +152,8 @@ fn const_symbol_ground_truth() -> (BTreeSet<String>, BTreeSet<i64>) {
 }
 
 fn decompile() -> NuitkaDecompilation {
-    decompile_build_dir(&repo_path(GAUNTLET_DIR)).expect("decompile real Nuitka build dir")
+    decompile_build_dir_with_python_abi(&repo_path(GAUNTLET_DIR), FIXTURE_PYTHON_ABI)
+        .expect("decompile real Nuitka build dir")
 }
 
 const fn surface(decomp: &NuitkaDecompilation) -> &SurfaceModule {

@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
+
+pub(crate) const MAX_CONSTANT_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONSTANT_MANIFEST_ENTRIES: usize = 4_096;
+const MAX_CONSTANT_MANIFEST_MEMBERS: usize = MAX_CONSTANT_MANIFEST_ENTRIES + 1usize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstantBlobEntry {
@@ -65,44 +70,160 @@ struct RawBlobEntry {
 }
 
 pub fn parse_constant_manifest(bytes: &[u8]) -> Result<ConstantManifest> {
-    let raw: BTreeMap<String, serde_json::Value> = serde_json::from_slice(bytes)
-        .map_err(|e: serde_json::Error| Error::ConstManifestMalformed(e.to_string()))?;
-
-    let total_value: &serde_json::Value = raw
-        .get("total")
-        .ok_or_else(|| Error::ConstManifestMalformed("missing \"total\" field".to_owned()))?;
-    let total: u64 = total_value.as_u64().ok_or_else(|| {
-        Error::ConstManifestMalformed("\"total\" field is not an unsigned integer".to_owned())
-    })?;
-
-    let mut entries: Vec<ConstantBlobEntry> = Vec::with_capacity(raw.len().saturating_sub(1));
-    for (source_file, value) in &raw {
-        if source_file == "total" {
-            continue;
-        }
-        let raw_entry: RawBlobEntry =
-            serde_json::from_value(value.clone()).map_err(|e: serde_json::Error| {
-                Error::ConstManifestMalformed(format!("entry {source_file:?}: {e}"))
-            })?;
-        entries.push(ConstantBlobEntry {
-            source_file: source_file.clone(),
-            blob_name: raw_entry.blob_name,
-            blob_size: raw_entry.blob_size,
-            input_size: raw_entry.input_size,
+    validate_manifest_size(bytes.len())?;
+    let member_count: usize = manifest_member_count(bytes)?;
+    if member_count > MAX_CONSTANT_MANIFEST_MEMBERS {
+        return Err(Error::ConstManifestTooManyEntries {
+            count: member_count,
+            max_count: MAX_CONSTANT_MANIFEST_MEMBERS,
         });
     }
+    let raw: RawManifest = serde_json::from_slice(bytes)
+        .map_err(|e: serde_json::Error| Error::ConstManifestMalformed(e.to_string()))?;
 
-    Ok(ConstantManifest { entries, total })
+    let entries: Vec<ConstantBlobEntry> = raw
+        .entries
+        .into_iter()
+        .map(
+            |(source_file, raw_entry): (String, RawBlobEntry)| ConstantBlobEntry {
+                source_file,
+                blob_name: raw_entry.blob_name,
+                blob_size: raw_entry.blob_size,
+                input_size: raw_entry.input_size,
+            },
+        )
+        .collect();
+
+    Ok(ConstantManifest {
+        entries,
+        total: raw.total,
+    })
 }
 
 pub fn parse_constant_manifest_from_file(path: &Path) -> Result<ConstantManifest> {
-    let bytes: Vec<u8> = std::fs::read(path)?;
+    let bytes: Vec<u8> =
+        crate::decompile::read_required_file_bounded(path, MAX_CONSTANT_MANIFEST_BYTES)?;
     parse_constant_manifest(&bytes)
+}
+
+struct RawManifest {
+    entries: BTreeMap<String, RawBlobEntry>,
+    total: u64,
+}
+
+struct ManifestMemberCount(usize);
+
+impl<'de> Deserialize<'de> for ManifestMemberCount {
+    fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ManifestMemberCountVisitor)
+    }
+}
+
+struct ManifestMemberCountVisitor;
+
+impl<'de> Visitor<'de> for ManifestMemberCountVisitor {
+    type Value = ManifestMemberCount;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a constants manifest object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut count: usize = 0usize;
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {
+            count = count.checked_add(1usize).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("constant manifest member count overflow")
+            })?;
+        }
+        Ok(ManifestMemberCount(count))
+    }
+}
+
+fn manifest_member_count(bytes: &[u8]) -> Result<usize> {
+    let member_count: ManifestMemberCount = serde_json::from_slice(bytes)
+        .map_err(|error: serde_json::Error| Error::ConstManifestMalformed(error.to_string()))?;
+    Ok(member_count.0)
+}
+
+impl<'de> Deserialize<'de> for RawManifest {
+    fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(RawManifestVisitor)
+    }
+}
+
+struct RawManifestVisitor;
+
+impl<'de> Visitor<'de> for RawManifestVisitor {
+    type Value = RawManifest;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a constants manifest object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut count: usize = 0usize;
+        let mut total: Option<u64> = None;
+        let mut entries: BTreeMap<String, RawBlobEntry> = BTreeMap::new();
+        while let Some(source_file) = map.next_key::<String>()? {
+            count = count.checked_add(1usize).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("constant manifest member count overflow")
+            })?;
+            if count > MAX_CONSTANT_MANIFEST_MEMBERS {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "constant manifest has {count} object members, above the {MAX_CONSTANT_MANIFEST_MEMBERS} limit"
+                )));
+            }
+            if source_file == "total" {
+                let value: u64 = map.next_value()?;
+                if total.replace(value).is_some() {
+                    return Err(<A::Error as serde::de::Error>::custom(
+                        "duplicate \"total\" field",
+                    ));
+                }
+                continue;
+            }
+            let raw_entry: RawBlobEntry = map.next_value()?;
+            if entries.insert(source_file.clone(), raw_entry).is_some() {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "duplicate entry {source_file:?}"
+                )));
+            }
+        }
+        let total: u64 = total
+            .ok_or_else(|| <A::Error as serde::de::Error>::custom("missing \"total\" field"))?;
+        Ok(RawManifest { entries, total })
+    }
+}
+
+fn validate_manifest_size(bytes: usize) -> Result<()> {
+    let bytes: u64 = u64::try_from(bytes).map_or(u64::MAX, |value: u64| value);
+    if bytes > MAX_CONSTANT_MANIFEST_BYTES {
+        return Err(Error::InputTooLarge {
+            resource: "constant manifest",
+            bytes,
+            max_bytes: MAX_CONSTANT_MANIFEST_BYTES,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     const MODULE_MANIFEST: &[u8] =
@@ -172,5 +293,60 @@ mod tests {
             parse_constant_manifest(bad),
             Err(Error::ConstManifestMalformed(_))
         ));
+    }
+
+    #[test]
+    fn manifest_member_cap_rejects_before_materialization() {
+        let mut manifest: String = String::from("{\"total\":0");
+        for index in 0usize..=MAX_CONSTANT_MANIFEST_ENTRIES {
+            write!(
+                manifest,
+                ",\"module_{index}.const\":{{\"blob_name\":\"module_{index}\",\"blob_size\":0,\"input_size\":0}}"
+            )
+            .expect("write manifest entry");
+        }
+        manifest.push('}');
+
+        assert!(matches!(
+            parse_constant_manifest(manifest.as_bytes()),
+            Err(Error::ConstManifestTooManyEntries { count, max_count })
+                if count == MAX_CONSTANT_MANIFEST_MEMBERS + 1usize
+                    && max_count == MAX_CONSTANT_MANIFEST_MEMBERS
+        ));
+    }
+
+    #[test]
+    fn manifest_byte_cap_rejects_before_deserialization() {
+        let bytes: usize =
+            usize::try_from(MAX_CONSTANT_MANIFEST_BYTES + 1u64).expect("manifest cap fits usize");
+        assert!(matches!(
+            validate_manifest_size(bytes),
+            Err(Error::InputTooLarge { resource, bytes: actual, max_bytes })
+                if resource == "constant manifest"
+                    && actual == MAX_CONSTANT_MANIFEST_BYTES + 1u64
+                    && max_bytes == MAX_CONSTANT_MANIFEST_BYTES
+        ));
+    }
+
+    #[test]
+    fn manifest_file_reader_rejects_a_bounded_read() {
+        let dir: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-nuitka-manifest-reader-cap-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temporary directory");
+        let path: std::path::PathBuf = dir.join("__constant.txt");
+        std::fs::write(&path, b"four").expect("write manifest");
+
+        assert!(matches!(
+            crate::decompile::read_required_file_bounded(&path, 3u64),
+            Err(Error::ArtifactTooLarge { path: actual_path, bytes, max_bytes })
+                if actual_path == path
+                    && bytes == 4u64
+                    && max_bytes == 3u64
+        ));
+
+        std::fs::remove_dir_all(&dir).expect("remove temporary directory");
     }
 }

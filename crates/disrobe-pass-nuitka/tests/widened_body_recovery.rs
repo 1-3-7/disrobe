@@ -9,9 +9,11 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule, build_surface,
-    decode_const_file, emit_python, parse_c_module,
+    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
+    build_surface_with_python_abi, decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
+
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 struct Fixture {
     module: &'static str,
@@ -50,11 +52,15 @@ fn build_module(name: &str) -> Option<SurfaceModule> {
         corpus_module(&format!("{name}.build")).join(format!("module.{name}.const"));
     let c_src: String = std::fs::read_to_string(&c_path).ok()?;
     let const_bytes: Vec<u8> = std::fs::read(&const_path).ok()?;
-    let cmod: CModuleStructure = parse_c_module(&c_src).expect("parse c module");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse c module");
     let pool: ConstantsPool =
         decode_const_file(&const_bytes, &format!("module.{name}.const"), name)
             .expect("decode const blob");
-    Some(build_surface(&cmod, &pool, Some(&c_src)).expect("build surface"))
+    Some(
+        build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
+            .expect("build surface"),
+    )
 }
 
 #[test]

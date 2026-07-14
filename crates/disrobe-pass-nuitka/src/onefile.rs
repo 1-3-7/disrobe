@@ -1,10 +1,13 @@
 use std::io::Read;
 
 use crate::error::{Error, Result};
+use crate::limits::validate_binary_input_size;
 
 const MAX_ENTRY_SIZE: u64 = 512 * 1024 * 1024;
 
 const MAX_ENTRY_COUNT: usize = 1 << 20;
+
+const MAX_EXTRACTED_DATA_BYTES: u64 = 512 * 1024 * 1024;
 
 const MAX_DECOMPRESSION_RATIO: u64 = 1024;
 
@@ -52,6 +55,7 @@ pub struct OnefilePayload {
 }
 
 pub fn extract_onefile(image: &[u8], payload_offset: usize) -> Result<OnefilePayload> {
+    validate_onefile_image_size(image.len())?;
     let header_end: usize = payload_offset
         .checked_add(3)
         .ok_or(Error::EntryTruncated(payload_offset))?;
@@ -120,6 +124,7 @@ pub fn extract_onefile_streaming(
     payload_offset: usize,
     sink: &mut dyn FnMut(&StreamedEntry<'_>) -> std::io::Result<()>,
 ) -> Result<StreamedPayload> {
+    validate_onefile_image_size(image.len())?;
     let header_end: usize = payload_offset
         .checked_add(3)
         .ok_or(Error::EntryTruncated(payload_offset))?;
@@ -164,6 +169,10 @@ pub fn extract_onefile_streaming(
         has_checksums,
         entry_count,
     })
+}
+
+fn validate_onefile_image_size(bytes: usize) -> Result<()> {
+    validate_binary_input_size("onefile image", bytes)
 }
 
 const STREAM_DETECT_PREFIX: usize = 256 * 1024;
@@ -307,6 +316,7 @@ fn stream_entries_read(
     let mut head: Vec<u8> = Vec::with_capacity(4096);
     let mut data: Vec<u8> = Vec::new();
     let mut count: usize = 0;
+    let mut data_total: u64 = 0u64;
 
     loop {
         head.clear();
@@ -349,6 +359,7 @@ fn stream_entries_read(
         if size > MAX_ENTRY_SIZE {
             return Err(Error::EntryTruncated(count));
         }
+        data_total = checked_extracted_data_total(data_total, size)?;
         let crc32: Option<u32> = if has_checksums {
             Some(src.read_u32_le()?.ok_or(Error::EntryTruncated(count))?)
         } else {
@@ -577,7 +588,7 @@ fn count_walk(
         if end > stream.len() {
             return Err(Error::EntryTruncated(cursor));
         }
-        data_total = data_total.saturating_add(size);
+        data_total = checked_extracted_data_total(data_total, size)?;
         entries += 1;
         cursor = end;
     }
@@ -592,6 +603,7 @@ fn stream_entries(
 ) -> Result<usize> {
     let mut cursor: usize = 0usize;
     let mut count: usize = 0;
+    let mut data_total: u64 = 0u64;
     loop {
         if cursor == stream.len() {
             break;
@@ -630,6 +642,7 @@ fn stream_entries(
         if size > MAX_ENTRY_SIZE {
             return Err(Error::EntryTruncated(cursor));
         }
+        data_total = checked_extracted_data_total(data_total, size)?;
         let crc32: Option<u32> = if has_checksums {
             let value: u32 = read_u32_le(stream, cursor).ok_or(Error::EntryTruncated(cursor))?;
             cursor += 4;
@@ -806,6 +819,17 @@ fn walk_payload(stream: &[u8]) -> Result<WalkOutcome> {
                 }
                 last_err = Error::EntryTruncated(stream.len());
             }
+            Err(Error::InputTooLarge {
+                resource,
+                bytes,
+                max_bytes,
+            }) => {
+                return Err(Error::InputTooLarge {
+                    resource,
+                    bytes,
+                    max_bytes,
+                });
+            }
             Err(e) => {
                 crate::util::dbg_line(&format!(
                     "walk candidate encoding={encoding:?} crc={has_checksums}: ERR {e:?}"
@@ -825,6 +849,7 @@ fn try_walk(
     let mut entries: Vec<OnefileEntry> = Vec::new();
     let mut cursor: usize = 0usize;
     let mut terminated: bool = false;
+    let mut data_total: u64 = 0u64;
 
     loop {
         if cursor == stream.len() {
@@ -896,6 +921,7 @@ fn try_walk(
         if end > stream.len() {
             return Err(Error::EntryTruncated(cursor));
         }
+        data_total = checked_extracted_data_total(data_total, size)?;
         let data: Vec<u8> = stream[data_offset..end].to_vec();
         cursor = end;
 
@@ -911,6 +937,22 @@ fn try_walk(
     }
 
     Ok((entries, cursor, terminated))
+}
+
+fn checked_extracted_data_total(total: u64, size: u64) -> Result<u64> {
+    let next: u64 = total.checked_add(size).ok_or(Error::InputTooLarge {
+        resource: "onefile extracted data",
+        bytes: u64::MAX,
+        max_bytes: MAX_EXTRACTED_DATA_BYTES,
+    })?;
+    if next > MAX_EXTRACTED_DATA_BYTES {
+        return Err(Error::InputTooLarge {
+            resource: "onefile extracted data",
+            bytes: next,
+            max_bytes: MAX_EXTRACTED_DATA_BYTES,
+        });
+    }
+    Ok(next)
 }
 
 fn read_name(stream: &[u8], start: usize, encoding: FilenameEncoding) -> Option<(String, usize)> {

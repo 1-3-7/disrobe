@@ -9,9 +9,11 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use disrobe_pass_nuitka::{
-    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule, build_surface,
-    decode_const_file, emit_python, parse_c_module,
+    CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
+    build_surface_with_python_abi, decode_const_file, emit_python, parse_c_module_with_python_abi,
 };
+
+const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
 fn corpus_module(name: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -32,11 +34,13 @@ fn build_era() -> SurfaceModule {
         corpus_module(&format!("{name}.build")).join(format!("module.{name}.const"));
     let c_src: String = std::fs::read_to_string(&c_path).expect("read era_patterns c");
     let const_bytes: Vec<u8> = std::fs::read(&const_path).expect("read era_patterns const");
-    let cmod: CModuleStructure = parse_c_module(&c_src).expect("parse era_patterns c");
+    let cmod: CModuleStructure =
+        parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse era_patterns c");
     let pool: ConstantsPool =
         decode_const_file(&const_bytes, &format!("module.{name}.const"), name)
             .expect("decode era_patterns const");
-    build_surface(&cmod, &pool, Some(&c_src)).expect("build era_patterns surface")
+    build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
+        .expect("build era_patterns surface")
 }
 
 fn function<'a>(surface: &'a SurfaceModule, name: &str) -> &'a SurfaceFunction {
@@ -92,7 +96,7 @@ fn generator_body_lifts_from_context_function_to_full_body() {
     );
     let emitted: String = emit_python(&surface);
     assert!(
-        emitted.contains("def gen_squares(n):")
+        emitted.contains("def gen_squares(n: int):")
             && emitted.contains("for i in range(n):")
             && emitted.contains("yield i * i"),
         "generator body must restore the for/yield form from the _context function:\n{emitted}"
