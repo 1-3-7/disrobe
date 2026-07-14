@@ -102,6 +102,7 @@ use cli::swift::{self, SwiftCmd};
 use cli::taint;
 use cli::util::init_tracing;
 use cli::wasm_cmd::WasmCmd;
+use cli::webview;
 use cli::yara::{self, YaraCmd};
 
 const ABOUT: &str = "strip the obfuscation, read the source";
@@ -564,6 +565,19 @@ enum Cmd {
             help = "maximum recursion depth when --recursive is set"
         )]
         max_depth: u32,
+    },
+    #[command(
+        about = "static-carve the shipped web frontend (HTML/JS/CSS/assets) from a compiled webview-desktop binary (Electron ASAR byte-exact; Tauri/Wails detect-only)"
+    )]
+    Webview {
+        #[arg(value_name = "PATH", help = "input webview-desktop binary")]
+        input: PathBuf,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "output directory for the recovered asset tree (default: ./out/<stem>-webview)"
+        )]
+        out: Option<PathBuf>,
     },
     #[command(
         about = "YARA tooling: parse a ruleset into a typed AST (read-only), or generate a candidate rule from an artifact"
@@ -1268,6 +1282,19 @@ enum NativeCmd {
         out: Option<PathBuf>,
     },
     #[command(
+        about = "reconstruct compilable C++ headers from a Windows PDB's TPI/IPI type streams (UDTs, enums, typedefs, globals, functions)"
+    )]
+    PdbCxx {
+        #[arg(help = "input Windows PDB (.pdb)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output directory for the reconstructed header + report (default: ./out/<stem>-pdb-cxx)"
+        )]
+        out: Option<PathBuf>,
+    },
+    #[command(
         about = "render the import/export table as a Graphviz DOT digraph (modules -> imported symbols, plus exports)"
     )]
     Graph {
@@ -1591,6 +1618,7 @@ fn main() -> miette::Result<()> {
             recursive,
             max_depth,
         } => extract::run(input, out, recursive, max_depth, fmt),
+        Cmd::Webview { input, out } => webview::run(input, out, fmt),
         Cmd::Yara { action } => yara::run(action, fmt),
         #[cfg(feature = "js")]
         Cmd::Js { action } => js::run(action),
@@ -1620,6 +1648,7 @@ fn main() -> miette::Result<()> {
             NativeCmd::Signatures { input, out, flirt } => native::signatures(input, out, flirt),
             NativeCmd::Fingerprint { input, out, flirt } => native::fingerprint(input, out, flirt),
             NativeCmd::Sbom { input, out } => native::sbom(input, out),
+            NativeCmd::PdbCxx { input, out } => native::pdb_cxx(input, out, fmt),
             NativeCmd::Graph { input, out } => native::graph(input, out),
             NativeCmd::Disasm {
                 input,

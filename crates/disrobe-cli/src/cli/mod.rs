@@ -104,4 +104,5 @@ pub(crate) mod util;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm;
 pub(crate) mod wasm_cmd;
+pub(crate) mod webview;
 pub(crate) mod yara;

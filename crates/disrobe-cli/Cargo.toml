@@ -143,6 +143,7 @@ disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
+disrobe-pass-webview = { path = "../disrobe-pass-webview", version = "0.10.3" }
 disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
