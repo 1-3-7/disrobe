@@ -1,10 +1,13 @@
 use crate::bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
+use crate::boolean::{Implicant, MAX_BOOLEAN_ATOMS, minimize_sop};
 use crate::expr::{BinOp, Expr, UnOp, Width, equivalent_exhaustive};
 use crate::linear_mba::synthesize_linear_basis;
 use crate::linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
+use crate::opaque::{CmpOp, Predicate};
 use crate::rewrite::canonicalize;
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verification {
@@ -37,6 +40,21 @@ pub struct Simplification {
 }
 
 impl Simplification {
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        self.simplified != self.original
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredicateSimplification {
+    pub original: Predicate,
+    pub simplified: Predicate,
+    pub width: Width,
+    pub verification: Verification,
+}
+
+impl PredicateSimplification {
     #[must_use]
     pub fn changed(&self) -> bool {
         self.simplified != self.original
@@ -84,6 +102,11 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
     let folded: Expr = canonicalize(expr, width);
     if folded != *expr {
         consider(folded, Verification::AlgebraicIdentity);
+    }
+
+    let minimized: Option<Expr> = minimize_boolean_verified(expr, width);
+    if let Some(minimized) = minimized {
+        consider(minimized, Verification::Unverified);
     }
 
     if var_count <= MAX_TEMPLATE_VARS {
@@ -143,6 +166,591 @@ pub fn simplify(expr: &Expr, width: Width) -> Simplification {
         original_nodes,
         simplified_nodes,
     }
+}
+
+#[must_use]
+pub fn simplify_predicate(predicate: &Predicate, width: Width) -> PredicateSimplification {
+    if predicate.depth() > crate::expr::MAX_MBA_DEPTH {
+        return PredicateSimplification {
+            original: predicate.clone(),
+            simplified: predicate.clone(),
+            width,
+            verification: Verification::Unverified,
+        };
+    }
+    let canonical: Predicate = canonicalize_predicate_candidate(predicate, width);
+    let minimized: Predicate = match predicate_minimization_candidate(&canonical, width) {
+        Some(candidate) if candidate.node_count() < canonical.node_count() => candidate,
+        _ => canonical,
+    };
+    if minimized == *predicate {
+        return PredicateSimplification {
+            original: predicate.clone(),
+            simplified: predicate.clone(),
+            width,
+            verification: Verification::Unverified,
+        };
+    }
+    #[cfg(feature = "smt-verify")]
+    {
+        if let Some(minimized) = accept_predicate_candidate(predicate, minimized, width) {
+            return PredicateSimplification {
+                original: predicate.clone(),
+                simplified: minimized,
+                width,
+                verification: Verification::SmtProvenAtWidth(width),
+            };
+        }
+    }
+    PredicateSimplification {
+        original: predicate.clone(),
+        simplified: predicate.clone(),
+        width,
+        verification: Verification::Unverified,
+    }
+}
+
+#[cfg(feature = "smt-verify")]
+fn accept_predicate_candidate(
+    original: &Predicate,
+    candidate: Predicate,
+    width: Width,
+) -> Option<Predicate> {
+    if crate::verify::verify_equivalent(original, &candidate, width).is_proven() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+#[must_use]
+pub(crate) fn minimize_boolean_verified(expr: &Expr, width: Width) -> Option<Expr> {
+    let candidate: Expr = boolean_minimization_candidate(expr, width)?;
+    if candidate.node_count() >= expr.node_count() {
+        return None;
+    }
+    accept_boolean_candidate(expr, candidate, width)
+}
+
+#[cfg(feature = "smt-verify")]
+fn accept_boolean_candidate(original: &Expr, candidate: Expr, width: Width) -> Option<Expr> {
+    if crate::verify::verify_equivalent(original, &candidate, width).is_proven() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(feature = "smt-verify"))]
+fn accept_boolean_candidate(_original: &Expr, _candidate: Expr, _width: Width) -> Option<Expr> {
+    None
+}
+
+fn boolean_minimization_candidate(expr: &Expr, width: Width) -> Option<Expr> {
+    if !contains_boolean_operator(expr) {
+        return None;
+    }
+    let mut atoms: Vec<Expr> = Vec::new();
+    collect_boolean_atoms(expr, &mut atoms)?;
+    if atoms.is_empty() || atoms.len() > MAX_BOOLEAN_ATOMS {
+        return None;
+    }
+    let Ok(shift): Result<u32, _> = u32::try_from(atoms.len()) else {
+        return None;
+    };
+    let rows: usize = 1usize.checked_shl(shift)?;
+    let mut values: Vec<bool> = Vec::with_capacity(rows);
+    for row in 0..rows {
+        values.push(boolean_row(expr, &atoms, row)?);
+    }
+    let implicants: Vec<Implicant> = minimize_sop(&values, atoms.len())?;
+    build_boolean_sop(&implicants, &atoms, width)
+}
+
+const fn contains_boolean_operator(expr: &Expr) -> bool {
+    match expr {
+        Expr::Unary(UnOp::Not, _) | Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, _, _) => true,
+        Expr::Const(_)
+        | Expr::Var(_)
+        | Expr::Unary(UnOp::Neg, _)
+        | Expr::Binary(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Shl | BinOp::Shr, _, _)
+        | Expr::Ite(_, _, _)
+        | Expr::Slice(_, _, _)
+        | Expr::Compose(_, _, _)
+        | Expr::Mem(_, _) => false,
+    }
+}
+
+fn collect_boolean_atoms(expr: &Expr, atoms: &mut Vec<Expr>) -> Option<()> {
+    match expr {
+        Expr::Unary(UnOp::Not, inner) => collect_boolean_atoms(inner, atoms),
+        Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, left, right) => {
+            collect_boolean_atoms(left, atoms)?;
+            collect_boolean_atoms(right, atoms)
+        }
+        _ => {
+            if atoms.iter().all(|atom: &Expr| atom != expr) {
+                if atoms.len() == MAX_BOOLEAN_ATOMS {
+                    return None;
+                }
+                atoms.push(expr.clone());
+            }
+            Some(())
+        }
+    }
+}
+
+fn boolean_row(expr: &Expr, atoms: &[Expr], row: usize) -> Option<bool> {
+    match expr {
+        Expr::Unary(UnOp::Not, inner) => Some(!boolean_row(inner, atoms, row)?),
+        Expr::Binary(BinOp::And, left, right) => {
+            Some(boolean_row(left, atoms, row)? && boolean_row(right, atoms, row)?)
+        }
+        Expr::Binary(BinOp::Or, left, right) => {
+            Some(boolean_row(left, atoms, row)? || boolean_row(right, atoms, row)?)
+        }
+        Expr::Binary(BinOp::Xor, left, right) => {
+            Some(boolean_row(left, atoms, row)? ^ boolean_row(right, atoms, row)?)
+        }
+        _ => {
+            let index: usize = atoms.iter().position(|atom: &Expr| atom == expr)?;
+            Some((row >> index) & 1 == 1)
+        }
+    }
+}
+
+fn build_boolean_sop(implicants: &[Implicant], atoms: &[Expr], width: Width) -> Option<Expr> {
+    if implicants.is_empty() {
+        return Some(Expr::konst(0));
+    }
+    let mut terms: Vec<Expr> = Vec::with_capacity(implicants.len());
+    for implicant in implicants {
+        terms.push(build_boolean_term(*implicant, atoms, width)?);
+    }
+    join_boolean_terms(terms, BinOp::Or)
+}
+
+fn build_boolean_term(implicant: Implicant, atoms: &[Expr], width: Width) -> Option<Expr> {
+    if implicant.care == 0 {
+        return Some(Expr::konst(width.mask()));
+    }
+    let mut factors: Vec<Expr> = Vec::with_capacity(atoms.len());
+    for (index, atom) in atoms.iter().enumerate() {
+        let Ok(shift): Result<u32, _> = u32::try_from(index) else {
+            return None;
+        };
+        let bit: u16 = 1u16.checked_shl(shift)?;
+        if implicant.care & bit == 0 {
+            continue;
+        }
+        let factor: Expr = if implicant.bits & bit == 0 {
+            Expr::not(atom.clone())
+        } else {
+            atom.clone()
+        };
+        factors.push(factor);
+    }
+    join_boolean_terms(factors, BinOp::And)
+}
+
+fn join_boolean_terms(terms: Vec<Expr>, op: BinOp) -> Option<Expr> {
+    let mut iterator: std::vec::IntoIter<Expr> = terms.into_iter();
+    let first: Expr = iterator.next()?;
+    let mut combined: Expr = first;
+    for term in iterator {
+        combined = Expr::Binary(op, Box::new(combined), Box::new(term));
+    }
+    Some(combined)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PredicateConnective {
+    Or,
+    And,
+}
+
+fn canonicalize_predicate_candidate(predicate: &Predicate, width: Width) -> Predicate {
+    match predicate {
+        Predicate::Compare { op, left, right } => {
+            canonicalize_predicate_comparison(*op, left.clone(), right.clone(), width)
+        }
+        Predicate::Nonzero(inner) => {
+            canonicalize_predicate_comparison(CmpOp::Ne, inner.clone(), Expr::konst(0), width)
+        }
+        Predicate::Or(_, _) => {
+            canonicalize_predicate_chain(predicate, PredicateConnective::Or, width)
+        }
+        Predicate::And(_, _) => {
+            canonicalize_predicate_chain(predicate, PredicateConnective::And, width)
+        }
+    }
+}
+
+fn canonicalize_predicate_chain(
+    predicate: &Predicate,
+    connective: PredicateConnective,
+    width: Width,
+) -> Predicate {
+    let mut terms: Vec<Predicate> = Vec::new();
+    collect_canonical_predicate_terms(predicate, connective, width, &mut terms);
+    terms.sort_by(compare_predicates);
+    let Some(combined): Option<Predicate> = join_predicate_terms(terms, connective) else {
+        return predicate.clone();
+    };
+    combined
+}
+
+fn collect_canonical_predicate_terms(
+    predicate: &Predicate,
+    connective: PredicateConnective,
+    width: Width,
+    terms: &mut Vec<Predicate>,
+) {
+    match (connective, predicate) {
+        (PredicateConnective::Or, Predicate::Or(left, right))
+        | (PredicateConnective::And, Predicate::And(left, right)) => {
+            collect_canonical_predicate_terms(left, connective, width, terms);
+            collect_canonical_predicate_terms(right, connective, width, terms);
+        }
+        _ => {
+            let canonical: Predicate = canonicalize_predicate_candidate(predicate, width);
+            terms.push(canonical);
+        }
+    }
+}
+
+fn canonicalize_predicate_comparison(
+    op: CmpOp,
+    left: Expr,
+    right: Expr,
+    width: Width,
+) -> Predicate {
+    let mut left: Expr = canonicalize(&left, width);
+    let mut right: Expr = canonicalize(&right, width);
+    let op: CmpOp = match op {
+        CmpOp::UnsignedGt => {
+            std::mem::swap(&mut left, &mut right);
+            CmpOp::UnsignedLt
+        }
+        CmpOp::SignedGt => {
+            std::mem::swap(&mut left, &mut right);
+            CmpOp::SignedLt
+        }
+        CmpOp::UnsignedLe => {
+            std::mem::swap(&mut left, &mut right);
+            CmpOp::UnsignedGe
+        }
+        CmpOp::SignedLe => {
+            std::mem::swap(&mut left, &mut right);
+            CmpOp::SignedGe
+        }
+        other => other,
+    };
+    if matches!(op, CmpOp::Eq | CmpOp::Ne) && compare_expr(&right, &left).is_lt() {
+        std::mem::swap(&mut left, &mut right);
+    }
+    Predicate::Compare { op, left, right }
+}
+
+const fn expr_rank(expr: &Expr) -> u8 {
+    match expr {
+        Expr::Const(_) => 0,
+        Expr::Var(_) => 1,
+        Expr::Unary(_, _) => 2,
+        Expr::Binary(_, _, _) => 3,
+        Expr::Ite(_, _, _) => 4,
+        Expr::Slice(_, _, _) => 5,
+        Expr::Compose(_, _, _) => 6,
+        Expr::Mem(_, _) => 7,
+    }
+}
+
+fn compare_expr(left: &Expr, right: &Expr) -> Ordering {
+    let rank_order: Ordering = expr_rank(left).cmp(&expr_rank(right));
+    if rank_order != Ordering::Equal {
+        return rank_order;
+    }
+    match (left, right) {
+        (Expr::Const(left), Expr::Const(right)) => left.cmp(right),
+        (Expr::Var(left), Expr::Var(right)) => left.cmp(right),
+        (Expr::Unary(left_op, left_inner), Expr::Unary(right_op, right_inner)) => {
+            let op_order: Ordering = left_op.cmp(right_op);
+            if op_order != Ordering::Equal {
+                return op_order;
+            }
+            compare_expr(left_inner, right_inner)
+        }
+        (
+            Expr::Binary(left_op, left_left, left_right),
+            Expr::Binary(right_op, right_left, right_right),
+        ) => {
+            let op_order: Ordering = left_op.cmp(right_op);
+            if op_order != Ordering::Equal {
+                return op_order;
+            }
+            let left_order: Ordering = compare_expr(left_left, right_left);
+            if left_order != Ordering::Equal {
+                return left_order;
+            }
+            compare_expr(left_right, right_right)
+        }
+        (
+            Expr::Ite(left_condition, left_then, left_otherwise),
+            Expr::Ite(right_condition, right_then, right_otherwise),
+        ) => {
+            let condition_order: Ordering = compare_expr(left_condition, right_condition);
+            if condition_order != Ordering::Equal {
+                return condition_order;
+            }
+            let then_order: Ordering = compare_expr(left_then, right_then);
+            if then_order != Ordering::Equal {
+                return then_order;
+            }
+            compare_expr(left_otherwise, right_otherwise)
+        }
+        (
+            Expr::Slice(left_inner, left_lo, left_hi),
+            Expr::Slice(right_inner, right_lo, right_hi),
+        ) => {
+            let inner_order: Ordering = compare_expr(left_inner, right_inner);
+            if inner_order != Ordering::Equal {
+                return inner_order;
+            }
+            let lo_order: Ordering = left_lo.cmp(right_lo);
+            if lo_order != Ordering::Equal {
+                return lo_order;
+            }
+            left_hi.cmp(right_hi)
+        }
+        (
+            Expr::Compose(left_low, left_high, left_bits),
+            Expr::Compose(right_low, right_high, right_bits),
+        ) => {
+            let low_order: Ordering = compare_expr(left_low, right_low);
+            if low_order != Ordering::Equal {
+                return low_order;
+            }
+            let high_order: Ordering = compare_expr(left_high, right_high);
+            if high_order != Ordering::Equal {
+                return high_order;
+            }
+            left_bits.cmp(right_bits)
+        }
+        (Expr::Mem(left_addr, left_width), Expr::Mem(right_addr, right_width)) => {
+            let address_order: Ordering = compare_expr(left_addr, right_addr);
+            if address_order != Ordering::Equal {
+                return address_order;
+            }
+            left_width.cmp(right_width)
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+const fn predicate_rank(predicate: &Predicate) -> u8 {
+    match predicate {
+        Predicate::Compare { .. } => 0,
+        Predicate::Nonzero(_) => 1,
+        Predicate::Or(_, _) => 2,
+        Predicate::And(_, _) => 3,
+    }
+}
+
+fn compare_predicates(left: &Predicate, right: &Predicate) -> Ordering {
+    let rank_order: Ordering = predicate_rank(left).cmp(&predicate_rank(right));
+    if rank_order != Ordering::Equal {
+        return rank_order;
+    }
+    match (left, right) {
+        (
+            Predicate::Compare {
+                op: left_op,
+                left: left_left,
+                right: left_right,
+            },
+            Predicate::Compare {
+                op: right_op,
+                left: right_left,
+                right: right_right,
+            },
+        ) => {
+            let op_order: Ordering = left_op.cmp(right_op);
+            if op_order != Ordering::Equal {
+                return op_order;
+            }
+            let left_order: Ordering = compare_expr(left_left, right_left);
+            if left_order != Ordering::Equal {
+                return left_order;
+            }
+            compare_expr(left_right, right_right)
+        }
+        (Predicate::Nonzero(left), Predicate::Nonzero(right)) => compare_expr(left, right),
+        (Predicate::Or(left_left, left_right), Predicate::Or(right_left, right_right))
+        | (Predicate::And(left_left, left_right), Predicate::And(right_left, right_right)) => {
+            let left_order: Ordering = compare_predicates(left_left, right_left);
+            if left_order != Ordering::Equal {
+                return left_order;
+            }
+            compare_predicates(left_right, right_right)
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+fn predicate_minimization_candidate(predicate: &Predicate, width: Width) -> Option<Predicate> {
+    if !contains_predicate_boolean_operator(predicate) {
+        return None;
+    }
+    let mut atoms: Vec<Predicate> = Vec::new();
+    collect_predicate_atoms(predicate, &mut atoms)?;
+    if atoms.is_empty() || atoms.len() > MAX_BOOLEAN_ATOMS {
+        return None;
+    }
+    let Ok(shift): Result<u32, _> = u32::try_from(atoms.len()) else {
+        return None;
+    };
+    let rows: usize = 1usize.checked_shl(shift)?;
+    let mut values: Vec<bool> = Vec::with_capacity(rows);
+    for row in 0..rows {
+        values.push(predicate_boolean_row(predicate, &atoms, row)?);
+    }
+    let implicants: Vec<Implicant> = minimize_sop(&values, atoms.len())?;
+    let candidate: Predicate = build_predicate_sop(&implicants, &atoms)?;
+    Some(canonicalize_predicate_candidate(&candidate, width))
+}
+
+const fn contains_predicate_boolean_operator(predicate: &Predicate) -> bool {
+    matches!(predicate, Predicate::Or(_, _) | Predicate::And(_, _))
+}
+
+fn collect_predicate_atoms(predicate: &Predicate, atoms: &mut Vec<Predicate>) -> Option<()> {
+    match predicate {
+        Predicate::Or(left, right) | Predicate::And(left, right) => {
+            collect_predicate_atoms(left, atoms)?;
+            collect_predicate_atoms(right, atoms)
+        }
+        Predicate::Compare { .. } | Predicate::Nonzero(_) => {
+            let (atom, _positive): (Predicate, bool) = predicate_atom_parts(predicate)?;
+            if atoms.iter().all(|known: &Predicate| known != &atom) {
+                if atoms.len() == MAX_BOOLEAN_ATOMS {
+                    return None;
+                }
+                atoms.push(atom);
+            }
+            Some(())
+        }
+    }
+}
+
+fn predicate_boolean_row(predicate: &Predicate, atoms: &[Predicate], row: usize) -> Option<bool> {
+    match predicate {
+        Predicate::Or(left, right) => Some(
+            predicate_boolean_row(left, atoms, row)? || predicate_boolean_row(right, atoms, row)?,
+        ),
+        Predicate::And(left, right) => Some(
+            predicate_boolean_row(left, atoms, row)? && predicate_boolean_row(right, atoms, row)?,
+        ),
+        Predicate::Compare { .. } | Predicate::Nonzero(_) => {
+            let (atom, positive): (Predicate, bool) = predicate_atom_parts(predicate)?;
+            let index: usize = atoms.iter().position(|known: &Predicate| known == &atom)?;
+            let value: bool = (row >> index) & 1 == 1;
+            Some(if positive { value } else { !value })
+        }
+    }
+}
+
+fn predicate_atom_parts(predicate: &Predicate) -> Option<(Predicate, bool)> {
+    let Predicate::Compare { op, left, right } = predicate else {
+        return None;
+    };
+    let (base, positive): (CmpOp, bool) = match op {
+        CmpOp::Eq => (CmpOp::Eq, true),
+        CmpOp::Ne => (CmpOp::Eq, false),
+        CmpOp::UnsignedLt => (CmpOp::UnsignedLt, true),
+        CmpOp::UnsignedGe => (CmpOp::UnsignedLt, false),
+        CmpOp::SignedLt => (CmpOp::SignedLt, true),
+        CmpOp::SignedGe => (CmpOp::SignedLt, false),
+        CmpOp::UnsignedLe | CmpOp::UnsignedGt | CmpOp::SignedLe | CmpOp::SignedGt => return None,
+    };
+    Some((
+        Predicate::Compare {
+            op: base,
+            left: left.clone(),
+            right: right.clone(),
+        },
+        positive,
+    ))
+}
+
+fn build_predicate_sop(implicants: &[Implicant], atoms: &[Predicate]) -> Option<Predicate> {
+    if implicants.is_empty() {
+        return Some(predicate_constant(false));
+    }
+    let mut terms: Vec<Predicate> = Vec::with_capacity(implicants.len());
+    for implicant in implicants {
+        terms.push(build_predicate_term(*implicant, atoms)?);
+    }
+    join_predicate_terms(terms, PredicateConnective::Or)
+}
+
+fn build_predicate_term(implicant: Implicant, atoms: &[Predicate]) -> Option<Predicate> {
+    if implicant.care == 0 {
+        return Some(predicate_constant(true));
+    }
+    let mut factors: Vec<Predicate> = Vec::with_capacity(atoms.len());
+    for (index, atom) in atoms.iter().enumerate() {
+        let Ok(shift): Result<u32, _> = u32::try_from(index) else {
+            return None;
+        };
+        let bit: u16 = 1u16.checked_shl(shift)?;
+        if implicant.care & bit == 0 {
+            continue;
+        }
+        let positive: bool = implicant.bits & bit != 0;
+        factors.push(predicate_literal(atom, positive)?);
+    }
+    join_predicate_terms(factors, PredicateConnective::And)
+}
+
+fn predicate_literal(atom: &Predicate, positive: bool) -> Option<Predicate> {
+    let Predicate::Compare { op, left, right } = atom else {
+        return None;
+    };
+    let op: CmpOp = match (*op, positive) {
+        (CmpOp::Eq, true) => CmpOp::Eq,
+        (CmpOp::Eq, false) => CmpOp::Ne,
+        (CmpOp::UnsignedLt, true) => CmpOp::UnsignedLt,
+        (CmpOp::UnsignedLt, false) => CmpOp::UnsignedGe,
+        (CmpOp::SignedLt, true) => CmpOp::SignedLt,
+        (CmpOp::SignedLt, false) => CmpOp::SignedGe,
+        _ => return None,
+    };
+    Some(Predicate::Compare {
+        op,
+        left: left.clone(),
+        right: right.clone(),
+    })
+}
+
+fn join_predicate_terms(
+    terms: Vec<Predicate>,
+    connective: PredicateConnective,
+) -> Option<Predicate> {
+    let mut iterator: std::vec::IntoIter<Predicate> = terms.into_iter();
+    let first: Predicate = iterator.next()?;
+    let mut combined: Predicate = first;
+    for term in iterator {
+        combined = match connective {
+            PredicateConnective::Or => Predicate::or(combined, term),
+            PredicateConnective::And => Predicate::and(combined, term),
+        };
+    }
+    Some(combined)
+}
+
+const fn predicate_constant(value: bool) -> Predicate {
+    let right: u64 = (!value) as u64;
+    Predicate::eq(Expr::konst(0), Expr::konst(right))
 }
 
 const fn prefer_proof(verified: Verification, fallback: Verification) -> Verification {
@@ -610,5 +1218,49 @@ mod tests {
                 1
             ));
         }
+    }
+
+    #[test]
+    fn quine_mccluskey_candidate_reduces_consensus() {
+        let input: Expr = Expr::or(
+            Expr::or(
+                Expr::and(Expr::var(0), Expr::var(1)),
+                Expr::and(Expr::not(Expr::var(0)), Expr::var(2)),
+            ),
+            Expr::and(Expr::var(1), Expr::var(2)),
+        );
+        let expected: Expr = Expr::or(
+            Expr::and(Expr::var(0), Expr::var(1)),
+            Expr::and(Expr::not(Expr::var(0)), Expr::var(2)),
+        );
+        let Some(candidate): Option<Expr> = boolean_minimization_candidate(&input, Width::W32)
+        else {
+            panic!("expected a boolean minimization candidate");
+        };
+        assert_eq!(candidate, expected);
+    }
+
+    #[cfg(feature = "smt-verify")]
+    #[test]
+    fn boolean_acceptance_rejects_disproven_candidate() {
+        let input: Expr = Expr::and(Expr::var(0), Expr::var(1));
+        let incorrect: Expr = Expr::var(0);
+        assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W32).is_disproven());
+        assert_eq!(
+            accept_boolean_candidate(&input, incorrect, Width::W32),
+            None
+        );
+    }
+
+    #[cfg(feature = "smt-verify")]
+    #[test]
+    fn predicate_acceptance_rejects_disproven_candidate() {
+        let input: Predicate = Predicate::eq(Expr::var(0), Expr::konst(0));
+        let incorrect: Predicate = Predicate::eq(Expr::var(0), Expr::konst(1));
+        assert!(crate::verify::verify_equivalent(&input, &incorrect, Width::W32).is_disproven());
+        assert_eq!(
+            accept_predicate_candidate(&input, incorrect, Width::W32),
+            None
+        );
     }
 }

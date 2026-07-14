@@ -35,6 +35,7 @@
 #![doc = "before ever returning it."]
 
 pub mod bitwise_synth;
+pub mod boolean;
 pub mod expr;
 pub mod linear_mba;
 pub mod linear_solver;
@@ -68,14 +69,19 @@ pub use rules::{
     ApplyError, Binary, Condition, LoadError, MBA_PEEPHOLE_RULES, Pattern, Rule, RuleHit, RuleSet,
     Template, Unary, apply_root, load_str, mba_peephole_rules, rewrite_fixpoint,
 };
-pub use simplify::{Simplification, Verification, simplify};
+pub use simplify::{
+    PredicateSimplification, Simplification, Verification, simplify, simplify_predicate,
+};
 #[cfg(feature = "smt-solver")]
 pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 pub use smtlib::{equivalence_query, tautology_refutation_query};
 #[cfg(feature = "smt-verify")]
 pub use synth::{SynthConfig, synthesize, synthesize_with};
 #[cfg(feature = "smt-verify")]
-pub use verify::{Equivalence, verify_equivalent, verify_equivalent_budgeted};
+pub use verify::{
+    Equivalence, EquivalenceInput, verify_equivalent, verify_equivalent_budgeted,
+    verify_predicate_equivalent_budgeted,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

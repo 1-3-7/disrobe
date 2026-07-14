@@ -81,6 +81,13 @@ fn best_local(node: &Expr, width: Width) -> Expr {
         best = canonicalized;
     }
 
+    let minimized: Option<Expr> = crate::simplify::minimize_boolean_verified(&best, width);
+    if let Some(minimized) = minimized
+        && minimized.node_count() < best.node_count()
+    {
+        best = minimized;
+    }
+
     let vars: BTreeSet<u32> = node.vars();
     let Ok(var_count): Result<u32, _> = u32::try_from(vars.len()) else {
         return best;

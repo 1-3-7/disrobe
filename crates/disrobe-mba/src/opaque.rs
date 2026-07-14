@@ -80,6 +80,34 @@ impl Predicate {
     }
 
     #[must_use]
+    pub fn node_count(&self) -> usize {
+        let mut total: usize = 0;
+        let mut stack: Vec<&Self> = vec![self];
+        loop {
+            let node: Option<&Self> = stack.pop();
+            let Some(node) = node else {
+                break;
+            };
+            total = total.saturating_add(1);
+            match node {
+                Self::Nonzero(inner) => {
+                    total = total.saturating_add(inner.node_count());
+                }
+                Self::Compare { left, right, .. } => {
+                    total = total
+                        .saturating_add(left.node_count())
+                        .saturating_add(right.node_count());
+                }
+                Self::Or(left, right) | Self::And(left, right) => {
+                    stack.push(left);
+                    stack.push(right);
+                }
+            }
+        }
+        total
+    }
+
+    #[must_use]
     pub fn evaluate(&self, env: &[u64], width: Width) -> bool {
         match self {
             Self::Nonzero(inner) => inner.eval(env, width) != 0,
@@ -122,7 +150,7 @@ impl Predicate {
         self.remap_vars(&remap)
     }
 
-    fn remap_vars(&self, remap: &std::collections::BTreeMap<u32, u32>) -> Self {
+    pub(crate) fn remap_vars(&self, remap: &std::collections::BTreeMap<u32, u32>) -> Self {
         match self {
             Self::Nonzero(inner) => Self::Nonzero(inner.remap_vars(remap)),
             Self::Compare { op, left, right } => Self::Compare {
