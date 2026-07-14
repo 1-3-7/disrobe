@@ -769,11 +769,8 @@ pub(super) fn try_structure_cold_sibling_try(
         region.protected_end,
         region.handler_start.min(hi),
     );
-    let head: Vec<Stmt> = if head_end > body_start {
-        structure_stmts(code, stream, body_start, head_end)?
-    } else {
-        Vec::new()
-    };
+    let guard_wrap: Option<(Vec<Stmt>, Expr, usize)> =
+        cold_sibling_guard_wrap(code, stream, body_start, &region, body_end, hi)?;
     let body: Vec<Stmt> = {
         let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(body_end);
         structure_stmts(code, stream, region.try_start, body_end)?
@@ -788,16 +785,85 @@ pub(super) fn try_structure_cold_sibling_try(
         Some(last) => strip_shared_exit_return(handlers, std::slice::from_ref(last)),
         None => handlers,
     };
-    let mut out: Vec<Stmt> = head;
-    out.push(Stmt::Try {
+    let try_stmt: Stmt = Stmt::Try {
         body: non_empty(body),
         handlers,
         orelse: Vec::new(),
         finalbody: Vec::new(),
         line: None,
-    });
+    };
+    if let Some((guarded_head, test, guard)) = guard_wrap {
+        let mut if_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
+        if_body.push(try_stmt);
+        let mut out: Vec<Stmt> = guarded_head;
+        out.push(Stmt::If {
+            test,
+            body: non_empty(if_body),
+            orelse: Vec::new(),
+            line: None,
+        });
+        out.extend(tail);
+        return Ok(Some(out));
+    }
+    let mut out: Vec<Stmt> = if head_end > body_start {
+        structure_stmts(code, stream, body_start, head_end)?
+    } else {
+        Vec::new()
+    };
+    out.push(try_stmt);
     out.extend(tail);
     Ok(Some(out))
+}
+
+fn cold_sibling_guard_wrap(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    region: &TryRegion,
+    body_end: usize,
+    hi: usize,
+) -> Result<Option<(Vec<Stmt>, Expr, usize)>> {
+    let Some(guard): Option<usize> = (body_start..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(_false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > region.try_start && t >= body_end && t <= hi)
+    else {
+        return Ok(None);
+    };
+    if (body_start..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) && !is_value_form_shortcircuit(&stream.ops, k))
+            || is_back_edge(&stream.ops[k])
+    }) {
+        return Ok(None);
+    }
+    let (head, mut residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[body_start..guard])?;
+    let Some(raw_test): Option<Expr> = residual.pop() else {
+        return Ok(None);
+    };
+    if !residual.is_empty() {
+        return Ok(None);
+    }
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    Ok(Some((head, test, guard)))
 }
 
 fn empty_try_handler_start(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
