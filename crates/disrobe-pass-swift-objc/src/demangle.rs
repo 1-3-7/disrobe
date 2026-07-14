@@ -165,6 +165,9 @@ enum Kind {
     MacroExpansion,
     AsyncFunctionPointer,
     MergedFunction,
+    PackExpansion,
+    Pack,
+    DependentGenericParamPackMarker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -696,7 +699,10 @@ impl<'a> Demangler<'a> {
             return node;
         }
         self.restore(cp);
-        if matches!(self.peek(), Some(b'M' | b'N' | b'W' | b'H') | None) {
+        if matches!(
+            self.peek(),
+            Some(b'M' | b'N' | b'W' | b'H' | b'T' | b'w') | None
+        ) {
             return Node::branch(Kind::OtherNominalType, vec![context, name]);
         }
         let (labels, signature, generic_sig): (Option<NodeRef>, Option<NodeRef>, Option<NodeRef>) =
@@ -1338,7 +1344,7 @@ impl<'a> Demangler<'a> {
                 self.pos += 1;
                 Some(self.demangle_variable(context, name, None))
             }
-            b'M' | b'N' | b'W' | b'H' => {
+            b'M' | b'N' | b'W' | b'H' | b'T' | b'w' => {
                 Some(Node::branch(Kind::OtherNominalType, vec![context, name]))
             }
             _ => {
@@ -1830,7 +1836,7 @@ impl<'a> Demangler<'a> {
                 saw_separator = self.next_if(b'_');
             }
         }
-        if elements.len() < 2 && !tuple_has_label(&elements) {
+        if elements.len() < 2 && !tuple_has_label(&elements) && !tuple_element_is_pack(&elements) {
             return None;
         }
         if elements.len() >= 2 && !saw_separator {
@@ -1990,6 +1996,15 @@ impl<'a> Demangler<'a> {
                 Some(b'_') if self.peek_at(1) == Some(b'p') && node.kind == Kind::Protocol => {
                     self.pos += 2;
                 }
+                Some(b'_') if self.peek_at(1) == Some(b'Q') && self.peek_at(2) == Some(b'P') => {
+                    self.pos += 3;
+                    node = Node::unary(Kind::Pack, node);
+                }
+                Some(b'S' | b's' | b'B' | b'A' | b'x' | b'q' | b'0'..=b'9')
+                    if self.pack_expansion_ahead() =>
+                {
+                    node = self.demangle_pack_expansion(node)?;
+                }
                 Some(b'S') if self.peek_at(1) == Some(b'g') => {
                     self.pos += 2;
                     node = self.apply_suffix_to_pending_or(node, Kind::Optional);
@@ -2144,6 +2159,46 @@ impl<'a> Demangler<'a> {
             self.add_substitution(&wrapped);
             wrapped
         }
+    }
+
+    fn pack_expansion_ahead(&mut self) -> bool {
+        let cp: Checkpoint = self.checkpoint();
+        let saved_budget: usize = self.node_budget;
+        let saved_flags: (bool, bool, bool) = self.suppress_flags();
+        let ahead: bool = self.demangle_type().is_some()
+            && self.peek() == Some(b'Q')
+            && self.peek_at(1) == Some(b'p');
+        self.restore(cp);
+        self.node_budget = saved_budget;
+        self.restore_suppress_flags(saved_flags);
+        ahead
+    }
+
+    fn demangle_pack_expansion(&mut self, pattern: NodeRef) -> Option<NodeRef> {
+        let saved_flags: (bool, bool, bool) = self.suppress_flags();
+        let count: Option<NodeRef> = self.demangle_type();
+        self.restore_suppress_flags(saved_flags);
+        let count: NodeRef = count?;
+        if !(self.next_if(b'Q') && self.next_if(b'p')) {
+            return None;
+        }
+        Some(Node::branch(Kind::PackExpansion, vec![pattern, count]))
+    }
+
+    const fn suppress_flags(&self) -> (bool, bool, bool) {
+        (
+            self.suppress_tuple,
+            self.suppress_function_suffix,
+            self.suppress_result_function,
+        )
+    }
+
+    const fn restore_suppress_flags(&mut self, flags: (bool, bool, bool)) {
+        (
+            self.suppress_tuple,
+            self.suppress_function_suffix,
+            self.suppress_result_function,
+        ) = flags;
     }
 
     fn peek_function_kind_after(&self, ahead: usize) -> bool {
@@ -2467,6 +2522,7 @@ impl<'a> Demangler<'a> {
 
     fn demangle_generic_signature(&mut self) -> Option<NodeRef> {
         let mut requirements: Vec<NodeRef> = Vec::new();
+        let mut pack_markers: Vec<NodeRef> = Vec::new();
         let mut param_counts: Vec<u32> = Vec::new();
         let mut multi_param: bool = false;
         let mut constraint: Option<NodeRef> = None;
@@ -2505,6 +2561,14 @@ impl<'a> Demangler<'a> {
                 }
                 b'R' => {
                     self.pos += 1;
+                    if self.next_if(b'v') {
+                        let (depth, idx): (u32, u32) = self.demangle_v0_generic_param_index()?;
+                        pack_markers.push(Node::unary(
+                            Kind::DependentGenericParamPackMarker,
+                            make_generic_param(depth, idx),
+                        ));
+                        continue;
+                    }
                     let lhs: NodeRef = constraint.take()?;
                     let req: NodeRef =
                         self.demangle_generic_requirement(lhs, associated_name.take())?;
@@ -2541,8 +2605,10 @@ impl<'a> Demangler<'a> {
         };
         let counts_node: NodeRef =
             Node::leaf(Kind::DependentGenericParamCount, param_count.to_string());
-        let mut children: Vec<NodeRef> = Vec::with_capacity(1 + requirements.len());
+        let mut children: Vec<NodeRef> =
+            Vec::with_capacity(1 + pack_markers.len() + requirements.len());
         children.push(counts_node);
+        children.extend(pack_markers);
         children.extend(requirements);
         Some(Node::branch(Kind::DependentGenericSignature, children))
     }
@@ -3554,6 +3620,16 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::Isolated => format!("isolated {}", print_child(node, 0)),
         Kind::Sending => format!("sending {}", print_child(node, 0)),
         Kind::Variadic => format!("{}...", print_child(node, 0)),
+        Kind::PackExpansion => format!("repeat {}", print_child(node, 0)),
+        Kind::Pack => {
+            let parts: Vec<String> = node
+                .children
+                .iter()
+                .map(|c: &NodeRef| print_node(c, Mode::Type))
+                .collect();
+            format!("Pack{{{}}}", parts.join(", "))
+        }
+        Kind::DependentGenericParamPackMarker => format!("each {}", print_child(node, 0)),
         Kind::OpaqueReturnType => "some".to_owned(),
         Kind::MacroExpansion => print_macro_expansion(node),
         Kind::AsyncFunctionPointer => {
@@ -3951,8 +4027,22 @@ fn print_generic_signature(node: &Node) -> String {
         .and_then(|c: &NodeRef| c.text.as_deref())
         .and_then(|t: &str| t.parse::<u32>().ok())
         .unwrap_or(1);
+    let pack_params: Vec<String> = node
+        .children
+        .iter()
+        .filter(|c: &&NodeRef| c.kind == Kind::DependentGenericParamPackMarker)
+        .filter_map(|c: &NodeRef| c.children.first())
+        .filter_map(|p: &NodeRef| p.text.clone())
+        .collect();
     let params: Vec<String> = (0..count.min(64))
-        .map(|i: u32| generic_param_name(0, i))
+        .map(|i: u32| {
+            let name: String = generic_param_name(0, i);
+            if pack_params.contains(&name) {
+                format!("each {name}")
+            } else {
+                name
+            }
+        })
         .collect();
     let requirements: Vec<String> = node
         .children
@@ -4017,6 +4107,13 @@ fn tuple_has_label(elements: &[NodeRef]) -> bool {
     elements
         .iter()
         .any(|e: &NodeRef| e.children.len() == 2 && e.children[0].kind == Kind::Identifier)
+}
+
+fn tuple_element_is_pack(elements: &[NodeRef]) -> bool {
+    elements
+        .iter()
+        .filter_map(|e: &NodeRef| e.children.last())
+        .any(|ty: &NodeRef| ty.kind == Kind::PackExpansion)
 }
 
 fn print_tuple_element(node: &Node) -> String {
