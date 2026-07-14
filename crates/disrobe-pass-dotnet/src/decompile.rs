@@ -127,6 +127,7 @@ fn decompile_one(
     }
     match parse_method_body(&image[off..]) {
         Ok(body) => {
+            let devirtualized_body: MethodBody = resolver.devirtualize_callvirt(&body);
             let provenance: &str = if crate::state_machine::is_closure_display_type(ty) {
                 " [compiler-generated closure]"
             } else if state_machine.is_some() {
@@ -163,16 +164,16 @@ fn decompile_one(
                 resolver,
                 has_this: !m.is_static(),
             };
-            let names: NameTable = build_name_table(resolver, m, &body, lang);
+            let names: NameTable = build_name_table(resolver, m, &devirtualized_body, lang);
             let header_sig: String = if lang == TargetLang::CSharp {
                 apply_inferred_param_names(&resolved_sig, &names)
             } else {
                 resolved_sig
             };
             let folded_body: crate::cil::MethodBody = if lang == TargetLang::CSharp {
-                fold_cached_delegate_init(&body, resolver)
+                fold_cached_delegate_init(&devirtualized_body, resolver)
             } else {
-                body
+                devirtualized_body
             };
             let is_sm_move_next: bool = lang == TargetLang::CSharp
                 && state_machine.is_some()

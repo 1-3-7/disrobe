@@ -264,6 +264,7 @@ pub struct Tables {
     pub fields: Vec<FieldRow>,
     pub methods: Vec<MethodDefRow>,
     pub params: Vec<ParamRow>,
+    pub interface_impls: Vec<InterfaceImplRow>,
     pub member_refs: Vec<MemberRefRow>,
     pub custom_attributes: Vec<CustomAttributeRow>,
     pub module_refs: Vec<ModuleRefRow>,
@@ -272,6 +273,7 @@ pub struct Tables {
     pub assembly: Option<AssemblyRow>,
     pub assembly_refs: Vec<AssemblyRefRow>,
     pub standalone_sigs: Vec<StandAloneSigRow>,
+    pub method_impls: Vec<MethodImplRow>,
     pub nested_classes: Vec<NestedClassRow>,
     pub generic_params: Vec<GenericParamRow>,
     pub class_layouts: Vec<ClassLayoutRow>,
@@ -329,6 +331,12 @@ pub struct ParamRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterfaceImplRow {
+    pub class_type: u32,
+    pub interface: Option<RowRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberRefRow {
     pub parent: Option<RowRef>,
     pub name: u32,
@@ -361,6 +369,13 @@ pub struct MethodSpecRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StandAloneSigRow {
     pub signature: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodImplRow {
+    pub class_type: u32,
+    pub method_body: Option<RowRef>,
+    pub method_declaration: Option<RowRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -855,6 +870,18 @@ fn decode_table(
                 });
             }
         }
+        TableId::InterfaceImpl => {
+            out.interface_impls.reserve(count as usize);
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width);
+                let class_type: u32 = c.index(sz.simple_index(TableId::TypeDef))?;
+                let interface: Option<RowRef> = coded(&mut c, CodedIndex::TypeDefOrRef)?;
+                out.interface_impls.push(InterfaceImplRow {
+                    class_type,
+                    interface,
+                });
+            }
+        }
         TableId::MemberRef => {
             out.member_refs.reserve(count as usize);
             for k in 0..count as usize {
@@ -917,6 +944,20 @@ fn decode_table(
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width);
                 let signature: u32 = c.index(sz.heap.blob)?;
                 out.standalone_sigs.push(StandAloneSigRow { signature });
+            }
+        }
+        TableId::MethodImpl => {
+            out.method_impls.reserve(count as usize);
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width);
+                let class_type: u32 = c.index(sz.simple_index(TableId::TypeDef))?;
+                let method_body: Option<RowRef> = coded(&mut c, CodedIndex::MethodDefOrRef)?;
+                let method_declaration: Option<RowRef> = coded(&mut c, CodedIndex::MethodDefOrRef)?;
+                out.method_impls.push(MethodImplRow {
+                    class_type,
+                    method_body,
+                    method_declaration,
+                });
             }
         }
         TableId::Assembly => {
