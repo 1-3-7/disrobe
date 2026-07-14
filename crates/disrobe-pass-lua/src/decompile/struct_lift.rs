@@ -1,6 +1,6 @@
 mod structurer;
 
-use crate::decompile::lift::{LiftedProto, const_text};
+use crate::decompile::lift::{LiftedProto, const_text, fmt_number};
 use crate::decompile::luau_lift::{LStmt, LiftedStmt, render_blocks};
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto};
@@ -457,19 +457,26 @@ fn lower(
         let d: Decoded = decode(raw, dialect);
         match d.op {
             Op::Move => define(state, names, live, p, d.a, state.reg(d.b)),
-            Op::LoadK => define(state, names, live, p, d.a, kconst(p, d.bx)),
+            Op::LoadK => define(state, names, live, p, d.a, kconst(p, d.bx, dialect)),
             Op::LoadKx => {
                 let extra: Option<u32> = p.code.get(pc + 1).map(|r: &u32| decode(*r, dialect).ax);
                 match extra {
                     Some(ax) => {
-                        define(state, names, live, p, d.a, kconst(p, ax));
+                        define(state, names, live, p, d.a, kconst(p, ax, dialect));
                         pc += 1;
                     }
                     None => define(state, names, live, p, d.a, format!("K{}", d.bx)),
                 }
             }
             Op::LoadI => define(state, names, live, p, d.a, d.sbx.to_string()),
-            Op::LoadF => define(state, names, live, p, d.a, format!("{}", f64::from(d.sbx))),
+            Op::LoadF => define(
+                state,
+                names,
+                live,
+                p,
+                d.a,
+                fmt_number(f64::from(d.sbx), true),
+            ),
             Op::LoadBool => {
                 define(state, names, live, p, d.a, bool_lit(d.b));
                 if d.c != 0 {
@@ -506,9 +513,9 @@ fn lower(
                 let val: String = state.reg(d.a);
                 state.push_raw(format!("{name} = {val}"));
             }
-            Op::GetGlobal => define(state, names, live, p, d.a, kstr(p, d.bx)),
+            Op::GetGlobal => define(state, names, live, p, d.a, kstr(p, d.bx, dialect)),
             Op::SetGlobal => {
-                let name: String = kstr(p, d.bx);
+                let name: String = kstr(p, d.bx, dialect);
                 let val: String = state.reg(d.a);
                 state.push_raw(format!("{name} = {val}"));
             }
@@ -545,7 +552,7 @@ fn lower(
             Op::GetField => {
                 let table: String = state.reg(d.b);
                 let field: Option<String> = const_str_key_direct(p, d.c);
-                let raw_key: String = kconst(p, d.c);
+                let raw_key: String = kconst(p, d.c, dialect);
                 define(
                     state,
                     names,
@@ -576,7 +583,7 @@ fn lower(
             Op::SetField => {
                 let table: String = state.reg(d.a);
                 let field: Option<String> = const_str_key_direct(p, d.b);
-                let raw_key: String = kconst(p, d.b);
+                let raw_key: String = kconst(p, d.b, dialect);
                 let val: String = setfield_value(state, p, &d, dialect);
                 state.push_raw(format!(
                     "{} = {val}",
@@ -646,7 +653,7 @@ fn lower(
             | Op::BOrK
             | Op::BXorK => {
                 let lhs: String = state.reg(d.b);
-                let rhs: String = kconst(p, d.c);
+                let rhs: String = kconst(p, d.c, dialect);
                 if let Some(e) = arith(d.op, &lhs, &rhs) {
                     define(state, names, live, p, d.a, e);
                 }
@@ -732,7 +739,7 @@ fn lower(
                     pc = consumed;
                 } else {
                     let lhs: String = state.reg(d.a);
-                    let rhs: String = kconst(p, d.b);
+                    let rhs: String = kconst(p, d.b, dialect);
                     let sym: &str = if d.k { "~=" } else { "==" };
                     emit_cond(state, p, pc, dialect, &lhs, sym, &rhs);
                     if next_is_jmp(p, pc, dialect) {
@@ -1128,7 +1135,7 @@ fn compare_value_expr(
         }
         Op::EqK if is54 => {
             let lhs: String = state.reg(d.a);
-            let rhs: String = kconst(p, d.b);
+            let rhs: String = kconst(p, d.b, dialect);
             let sym: &str = if d.k { "==" } else { "~=" };
             Some(format!("({lhs} {sym} {rhs})"))
         }
@@ -1293,18 +1300,15 @@ fn single_value_text(
 ) -> String {
     match d.op {
         Op::Move => state.reg(d.b),
-        Op::LoadK => kconst(p, d.bx),
+        Op::LoadK => kconst(p, d.bx, dialect),
         Op::LoadBool => bool_lit(d.b),
         Op::LoadTrue => "true".to_owned(),
         Op::LoadFalse => "false".to_owned(),
         Op::LoadNil => "nil".to_owned(),
         Op::LoadI => d.sbx.to_string(),
-        Op::GetGlobal => kstr(p, d.bx),
+        Op::GetGlobal => kstr(p, d.bx, dialect),
         Op::GetUpval => upval_name(p, d.b),
-        _ => {
-            let _ = dialect;
-            state.reg(d.a)
-        }
+        _ => state.reg(d.a),
     }
 }
 
@@ -2031,34 +2035,41 @@ fn upval_name(p: &LuaProto, idx: u32) -> String {
 }
 
 #[inline]
-fn kconst(p: &LuaProto, idx: u32) -> String {
-    p.constants
-        .get(idx as usize)
-        .map_or_else(|| format!("K{idx}"), const_text)
+fn kconst(p: &LuaProto, idx: u32, dialect: LuaDialect) -> String {
+    p.constants.get(idx as usize).map_or_else(
+        || format!("K{idx}"),
+        |k: &LuaConstant| const_text(k, dialect),
+    )
 }
 
 #[inline]
-fn kstr(p: &LuaProto, bx: u32) -> String {
+fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
     match p.constants.get(bx as usize) {
         Some(LuaConstant::Str(s)) => s.clone(),
-        Some(other) => const_text(other),
+        Some(other) => const_text(other, dialect),
         None => format!("K{bx}"),
     }
 }
 
 #[inline]
-fn rk(state: &StructState, p: &LuaProto, field: u32, _dialect: LuaDialect) -> String {
+fn rk(state: &StructState, p: &LuaProto, field: u32, dialect: LuaDialect) -> String {
     if is_k(field) {
-        kconst(p, rk_index(field))
+        kconst(p, rk_index(field), dialect)
     } else {
         state.reg(field)
     }
 }
 
 #[inline]
-fn rk_or_const(state: &StructState, p: &LuaProto, field: u32, use_const: bool) -> String {
+fn rk_or_const(
+    state: &StructState,
+    p: &LuaProto,
+    field: u32,
+    use_const: bool,
+    dialect: LuaDialect,
+) -> String {
     if use_const {
-        kconst(p, field)
+        kconst(p, field, dialect)
     } else {
         state.reg(field)
     }
@@ -2123,7 +2134,7 @@ fn tabup_key(
     dialect: LuaDialect,
 ) -> (Option<String>, String) {
     if matches!(dialect, LuaDialect::Lua54) {
-        (const_str_key_direct(p, d.c), kconst(p, d.c))
+        (const_str_key_direct(p, d.c), kconst(p, d.c, dialect))
     } else {
         (const_str_key(p, d.c, dialect), rk(state, p, d.c, dialect))
     }
@@ -2138,8 +2149,8 @@ fn settabup_operands(
 ) -> (Option<String>, String, String) {
     if matches!(dialect, LuaDialect::Lua54) {
         let field: Option<String> = const_str_key_direct(p, d.b);
-        let raw_key: String = kconst(p, d.b);
-        let val: String = rk_or_const(state, p, d.c, d.k);
+        let raw_key: String = kconst(p, d.b, dialect);
+        let val: String = rk_or_const(state, p, d.c, d.k, dialect);
         (field, raw_key, val)
     } else {
         let field: Option<String> = const_str_key(p, d.b, dialect);
@@ -2152,7 +2163,7 @@ fn settabup_operands(
 #[inline]
 fn setfield_value(state: &StructState, p: &LuaProto, d: &Decoded, dialect: LuaDialect) -> String {
     if matches!(dialect, LuaDialect::Lua54) {
-        rk_or_const(state, p, d.c, d.k)
+        rk_or_const(state, p, d.c, d.k, dialect)
     } else {
         rk(state, p, d.c, dialect)
     }
@@ -2166,7 +2177,7 @@ fn self_key(
     dialect: LuaDialect,
 ) -> (Option<String>, String) {
     if matches!(dialect, LuaDialect::Lua54) {
-        (const_str_key_direct(p, d.c), kconst(p, d.c))
+        (const_str_key_direct(p, d.c), kconst(p, d.c, dialect))
     } else {
         (const_str_key(p, d.c, dialect), rk(state, p, d.c, dialect))
     }
