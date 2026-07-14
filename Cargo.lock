@@ -3013,6 +3013,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-sleigh"
+version = "0.10.4"
+dependencies = [
+ "disrobe-core",
+]
+
+[[package]]
 name = "disrobe-taint"
 version = "0.10.4"
 dependencies = [
