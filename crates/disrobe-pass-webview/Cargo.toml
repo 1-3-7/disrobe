@@ -1,0 +1,26 @@
+[package]
+name = "disrobe-pass-webview"
+description = "Static carver that recovers the shipped web frontend (dist/ tree of HTML/JS/CSS/assets) from compiled webview-desktop binaries: Electron ASAR extraction plus Tauri and Wails family detection."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["electron", "tauri", "wails", "asar", "carver"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-bytes = { workspace = true }
+disrobe-binfmt = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
