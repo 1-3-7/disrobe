@@ -304,7 +304,15 @@ def _record_case(
     data: bytes,
 ) -> None:
     pickletools_output: io.StringIO = io.StringIO()
-    pickletools.dis(data, out=pickletools_output)
+    try:
+        pickletools.dis(data, out=pickletools_output)
+    except ValueError:
+        pickletools_output = io.StringIO()
+        for opcode, opcode_arg, opcode_pos in pickletools.genops(data):
+            if opcode_arg is None:
+                pickletools_output.write(f"{opcode_pos}: {opcode.name}\n")
+            else:
+                pickletools_output.write(f"{opcode_pos}: {opcode.name} {opcode_arg!r}\n")
     opcodes: list[str] = [op.name for op, _, _ in pickletools.genops(data)]
     rel: str = f"{name}__p{proto}.pkl"
     (root / rel).write_bytes(data)
