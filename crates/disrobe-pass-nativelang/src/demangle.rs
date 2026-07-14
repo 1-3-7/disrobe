@@ -190,14 +190,13 @@ pub fn demangle_zig(mangled: &str) -> Option<DemangledSymbol> {
         .map_or((mangled, None), |idx: usize| {
             (&mangled[..idx], Some(mangled[idx + 2..].to_owned()))
         });
-    let last_dot: Option<usize> = top_level_dot(path, true);
-    let first_dot: Option<usize> = top_level_dot(path, false);
+    let last_dot: Option<usize> = last_top_level_dot(path);
     let name: String =
         last_dot.map_or_else(|| path.to_owned(), |idx: usize| path[idx + 1..].to_owned());
     if name.is_empty() {
         return None;
     }
-    let module: Option<String> = first_dot.map(|idx: usize| path[..idx].to_owned());
+    let module: Option<String> = last_dot.map(|idx: usize| path[..idx].to_owned());
     Some(DemangledSymbol {
         mangled: mangled.to_owned(),
         demangled: path.to_owned(),
@@ -208,7 +207,7 @@ pub fn demangle_zig(mangled: &str) -> Option<DemangledSymbol> {
     })
 }
 
-fn top_level_dot(path: &str, last: bool) -> Option<usize> {
+fn last_top_level_dot(path: &str) -> Option<usize> {
     let bytes: &[u8] = path.as_bytes();
     let mut depth: i32 = 0;
     let mut found: Option<usize> = None;
@@ -216,12 +215,7 @@ fn top_level_dot(path: &str, last: bool) -> Option<usize> {
         match b {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth = (depth - 1).max(0),
-            b'.' if depth == 0 => {
-                found = Some(i);
-                if !last {
-                    return found;
-                }
-            }
+            b'.' if depth == 0 => found = Some(i),
             _ => {}
         }
     }
@@ -529,7 +523,16 @@ mod tests {
             d.name, "get",
             "leaf name must be the final top-level segment, not split inside the generic args"
         );
-        assert_eq!(d.module.as_deref(), Some("array_hash_map"));
+        assert_eq!(
+            d.module.as_deref(),
+            Some(
+                "array_hash_map.ArrayHashMapUnmanaged(u64,dwarf.CommonInformationEntry,array_hash_map.AutoContext(u64),false)"
+            )
+        );
+        assert_eq!(
+            d.qualified_name(),
+            "array_hash_map.ArrayHashMapUnmanaged(u64,dwarf.CommonInformationEntry,array_hash_map.AutoContext(u64),false).get"
+        );
     }
 
     #[test]
@@ -550,7 +553,16 @@ mod tests {
         )
         .expect("demangle");
         assert_eq!(d.name, "alignBits");
-        assert_eq!(d.module.as_deref(), Some("compress"));
+        assert_eq!(
+            d.module.as_deref(),
+            Some(
+                "compress.flate.bit_reader.BitReader(u32,io.GenericReader(*io.fixed_buffer_stream.FixedBufferStream([]const u8),error{},(function 'read')))"
+            )
+        );
+        assert_eq!(
+            d.qualified_name(),
+            "compress.flate.bit_reader.BitReader(u32,io.GenericReader(*io.fixed_buffer_stream.FixedBufferStream([]const u8),error{},(function 'read'))).alignBits"
+        );
     }
 
     #[test]

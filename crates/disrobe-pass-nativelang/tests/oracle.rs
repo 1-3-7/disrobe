@@ -358,6 +358,59 @@ fn zig_detects_and_demangles_matching_independent_symtab() {
 }
 
 #[test]
+fn zig_nested_modules_match_real_compiler_symbols() {
+    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
+        panic!(
+            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
+        );
+    };
+    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
+    let independent: BTreeMap<String, (u64, u64)> = elf_func_symbols(&bytes);
+    let nested: BTreeMap<String, (u64, u64)> = independent
+        .into_iter()
+        .filter(|(symbol, _): &(String, (u64, u64))| symbol.starts_with("os.linux."))
+        .collect();
+    assert_eq!(
+        nested.len(),
+        37,
+        "the Zig 0.13.0 compiler fixture must expose its known os.linux function set"
+    );
+
+    for entry in nested {
+        let (symbol, (start, _size)): (String, (u64, u64)) = entry;
+        let Some((module, name)): Option<(&str, &str)> = symbol.rsplit_once('.') else {
+            panic!("real Zig function symbol lacks a nested module path: {symbol}");
+        };
+        let Some(recovered): Option<&DemangledSymbol> = analysis
+            .recovery
+            .demangled
+            .iter()
+            .find(|d: &&DemangledSymbol| d.demangled == symbol)
+        else {
+            panic!("pass did not recover real Zig symbol {symbol}");
+        };
+        assert_eq!(
+            recovered.module.as_deref(),
+            Some(module),
+            "real Zig symbol {symbol} must retain its full enclosing module"
+        );
+        assert_eq!(
+            recovered.name, name,
+            "real Zig symbol {symbol} must retain its leaf name"
+        );
+        let Some(function): Option<&RecoveredFunction> = recovered_by_start(&analysis, start)
+        else {
+            panic!("pass did not recover real Zig function {symbol} at 0x{start:x}");
+        };
+        assert_eq!(
+            function.demangled.as_deref(),
+            Some(symbol.as_str()),
+            "function recovery must preserve the independent Zig symbol path"
+        );
+    }
+}
+
+#[test]
 fn nim_detects_and_demangles_itanium_matching_known_source() {
     let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
         panic!(
