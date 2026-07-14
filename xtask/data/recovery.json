@@ -16,9 +16,9 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 96.18,
-          "detail": "6046 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.18 (6046 of 6286 code objects, 200 of 200 modules) on CPython 3.14 at HEAD 8e7ea82b (an if/elif/else assert-ladder keeps its guard tests, and a guard-over-try whose handler is relocated past a cold sibling keeps the guard and its prelude)"
+          "value": 96.26,
+          "detail": "6051 / 6286 code objects; CI floor 90%; a curated subset that runs higher than the full stdlib",
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:34 (OBJECT_PCT_FLOOR 90.0); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.26 (6051 of 6286 code objects, 200 of 200 modules) on CPython 3.14 at HEAD cba07b77 (a loop-body pure-and if-guard reassembles into a single if a and b: body, and an inlined break-tail keeps the expression-statement whose completing pop sits at the region boundary)"
         }
       ]
     },
