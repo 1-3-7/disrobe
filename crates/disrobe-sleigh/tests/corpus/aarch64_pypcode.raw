@@ -1,0 +1,351 @@
+pypcode 4.0.0
+AARCH64:LE:64:v8A
+0000 91000420 add
+IMARK ram[0:4]
+unique[23500:8] = 0x1
+tmpCY = carry(x1, unique[23500:8])
+tmpOV = scarry(x1, unique[23500:8])
+unique[23700:8] = x1 + unique[23500:8]
+tmpNG = unique[23700:8] s< 0x0
+tmpZR = unique[23700:8] == 0x0
+x0 = unique[23700:8]
+0004 11000420 add
+IMARK ram[4:4]
+unique[22d00:4] = 0x1
+tmpCY = carry(w1, unique[22d00:4])
+tmpOV = scarry(w1, unique[22d00:4])
+unique[22f00:4] = w1 + unique[22d00:4]
+tmpNG = unique[22f00:4] s< 0x0
+tmpZR = unique[22f00:4] == 0x0
+x0 = zext(unique[22f00:4])
+0008 b1000420 adds
+IMARK ram[8:4]
+unique[23500:8] = 0x1
+tmpCY = carry(x1, unique[23500:8])
+tmpOV = scarry(x1, unique[23500:8])
+unique[23700:8] = x1 + unique[23500:8]
+tmpNG = unique[23700:8] s< 0x0
+tmpZR = unique[23700:8] == 0x0
+x0 = unique[23700:8]
+CY = tmpCY
+ZR = tmpZR
+NG = tmpNG
+OV = tmpOV
+000c d1000420 sub
+IMARK ram[c:4]
+x0 = x1 - 0x1
+0010 f1000420 subs
+IMARK ram[10:4]
+unique[7ae00:8] = 0x1
+tmpCY = unique[7ae00:8] <= x1
+tmpOV = sborrow(x1, unique[7ae00:8])
+unique[7b000:8] = x1 - unique[7ae00:8]
+tmpNG = unique[7b000:8] s< 0x0
+tmpZR = unique[7b000:8] == 0x0
+x0 = unique[7b000:8]
+NG = tmpNG
+ZR = tmpZR
+CY = tmpCY
+OV = tmpOV
+0014 f100043f cmp
+IMARK ram[14:4]
+unique[39000:8] = 0x1
+tmpCY = unique[39000:8] <= x1
+tmpOV = sborrow(x1, unique[39000:8])
+unique[39200:8] = x1 - unique[39000:8]
+tmpNG = unique[39200:8] s< 0x0
+tmpZR = unique[39200:8] == 0x0
+NG = tmpNG
+ZR = tmpZR
+CY = tmpCY
+OV = tmpOV
+0018 b100043f cmn
+IMARK ram[18:4]
+unique[37600:8] = 0x1
+tmpCY = carry(x1, unique[37600:8])
+tmpOV = scarry(x1, unique[37600:8])
+unique[37800:8] = x1 + unique[37600:8]
+tmpNG = unique[37800:8] s< 0x0
+tmpZR = unique[37800:8] == 0x0
+CY = tmpCY
+ZR = tmpZR
+NG = tmpNG
+OV = tmpOV
+001c 8b020c20 add
+IMARK ram[1c:4]
+unique[8800:8] = x2 << 0x3
+unique[23f00:8] = unique[8800:8]
+tmpCY = carry(x1, unique[23f00:8])
+tmpOV = scarry(x1, unique[23f00:8])
+unique[24100:8] = x1 + unique[23f00:8]
+tmpNG = unique[24100:8] s< 0x0
+tmpZR = unique[24100:8] == 0x0
+x0 = unique[24100:8]
+0020 cb820c20 sub
+IMARK ram[20:4]
+unique[8c00:8] = x2 s>> 0x3
+x0 = x1 - unique[8c00:8]
+0024 4b420c20 sub
+IMARK ram[24:4]
+unique[7f00:4] = w2 >> 0x3
+unique[79a00:4] = w1 - unique[7f00:4]
+x0 = zext(unique[79a00:4])
+0028 9100001f mov
+IMARK ram[28:4]
+sp = x0
+002c 8a420c20 and
+IMARK ram[2c:4]
+unique[8a00:8] = x2 >> 0x3
+x0 = x1 & unique[8a00:8]
+0030 0a020c20 and
+IMARK ram[30:4]
+unique[7d00:4] = w2 << 0x3
+unique[24900:4] = w1 & unique[7d00:4]
+x0 = zext(unique[24900:4])
+0034 ea020020 ands
+IMARK ram[34:4]
+unique[25900:8] = x1 & x2
+tmpNG = unique[25900:8] s< 0x0
+tmpZR = unique[25900:8] == 0x0
+x0 = unique[25900:8]
+NG = tmpNG
+ZR = tmpZR
+CY = 0x0
+OV = 0x0
+0038 ea02003f tst
+IMARK ram[38:4]
+unique[7eb00:8] = x1 & x2
+tmpNG = unique[7eb00:8] s< 0x0
+tmpZR = unique[7eb00:8] == 0x0
+NG = tmpNG
+ZR = tmpZR
+CY = 0x0
+OV = 0x0
+003c aa020020 orr
+IMARK ram[3c:4]
+x0 = x1 | x2
+0040 ca020020 eor
+IMARK ram[40:4]
+x0 = x1 ^ x2
+0044 aa0103e0 mov
+IMARK ram[44:4]
+x0 = x1
+0048 2a0103e0 mov
+IMARK ram[48:4]
+x0 = zext(w1)
+004c d2a24680 mov
+IMARK ram[4c:4]
+x0 = 0x12340000
+0050 52824680 mov
+IMARK ram[50:4]
+x0 = 0x1234
+0054 92a24680 mov
+IMARK ram[54:4]
+x0 = 0xffffffffedcbffff
+0058 f2cacf00 movk
+IMARK ram[58:4]
+x0 = x0 & 0xffff0000ffffffff
+x0 = x0 | 0x567800000000
+005c 72aacf00 movk
+IMARK ram[5c:4]
+unique[53700:4] = w0 & 0xffff
+unique[53700:4] = unique[53700:4] | 0x56780000
+x0 = zext(unique[53700:4])
+0060 d37be820 lsl
+IMARK ram[60:4]
+x0 = x1 << 0x5
+0064 531b6820 lsl
+IMARK ram[64:4]
+unique[4fd00:4] = w1 << 0x5
+x0 = zext(unique[4fd00:4])
+0068 d345fc20 lsr
+IMARK ram[68:4]
+x0 = x1 >> 0x5
+006c 53057c20 lsr
+IMARK ram[6c:4]
+unique[50c00:4] = w1 >> 0x5
+x0 = zext(unique[50c00:4])
+0070 9345fc20 asr
+IMARK ram[70:4]
+x0 = x1 s>> 0x5
+0074 13057c20 asr
+IMARK ram[74:4]
+unique[26500:4] = w1 s>> 0x5
+x0 = zext(unique[26500:4])
+0078 f9400420 ldr
+IMARK ram[78:4]
+unique[c200:8] = x1 + 0x8
+x0 = *[ram]unique[c200:8]
+007c f9000420 str
+IMARK ram[7c:4]
+unique[c200:8] = x1 + 0x8
+*[ram]unique[c200:8] = x0
+0080 b9400420 ldr
+IMARK ram[80:4]
+unique[c000:8] = x1 + 0x4
+unique[48f00:4] = *[ram]unique[c000:8]
+x0 = zext(unique[48f00:4])
+0084 b9000420 str
+IMARK ram[84:4]
+unique[c000:8] = x1 + 0x4
+*[ram]unique[c000:8] = w0
+0088 a9410440 ldp
+IMARK ram[88:4]
+unique[ef00:8] = x2 + 0x10
+unique[48400:8] = *[ram]unique[ef00:8]
+unique[48500:8] = unique[ef00:8] + 0x8
+unique[48700:8] = *[ram]unique[48500:8]
+x0 = unique[48400:8]
+x1 = unique[48700:8]
+008c a9010440 stp
+IMARK ram[8c:4]
+unique[73f00:8] = x0
+unique[74000:8] = x1
+unique[ef00:8] = x2 + 0x10
+*[ram]unique[ef00:8] = unique[73f00:8]
+unique[74100:8] = unique[ef00:8] + 0x8
+*[ram]unique[74100:8] = unique[74000:8]
+0090 a9c10440 ldp
+IMARK ram[90:4]
+x2 = x2 + 0x10
+unique[48400:8] = *[ram]x2
+unique[48500:8] = x2 + 0x8
+unique[48700:8] = *[ram]unique[48500:8]
+x0 = unique[48400:8]
+x1 = unique[48700:8]
+0094 a9bf0440 stp
+IMARK ram[94:4]
+unique[73f00:8] = x0
+unique[74000:8] = x1
+x2 = x2 + 0xfffffffffffffff0
+*[ram]x2 = unique[73f00:8]
+unique[74100:8] = x2 + 0x8
+*[ram]unique[74100:8] = unique[74000:8]
+0098 a8c10440 ldp
+IMARK ram[98:4]
+unique[f100:8] = x2
+x2 = x2 + 0x10
+unique[48400:8] = *[ram]unique[f100:8]
+unique[48500:8] = unique[f100:8] + 0x8
+unique[48700:8] = *[ram]unique[48500:8]
+x0 = unique[48400:8]
+x1 = unique[48700:8]
+009c a8bf0440 stp
+IMARK ram[9c:4]
+unique[73f00:8] = x0
+unique[74000:8] = x1
+unique[f100:8] = x2
+x2 = x2 + 0xfffffffffffffff0
+*[ram]unique[f100:8] = unique[73f00:8]
+unique[74100:8] = unique[f100:8] + 0x8
+*[ram]unique[74100:8] = unique[74000:8]
+00a0 29410440 ldp
+IMARK ram[a0:4]
+unique[ef00:8] = x2 + 0x8
+unique[47c00:4] = *[ram]unique[ef00:8]
+unique[47e00:8] = zext(unique[47c00:4])
+unique[47f00:8] = unique[ef00:8] + 0x4
+unique[48000:4] = *[ram]unique[47f00:8]
+unique[48200:8] = zext(unique[48000:4])
+x0 = unique[47e00:8]
+x1 = unique[48200:8]
+00a4 29010440 stp
+IMARK ram[a4:4]
+unique[73c00:4] = w0
+unique[73d00:4] = w1
+unique[ef00:8] = x2 + 0x8
+*[ram]unique[ef00:8] = unique[73c00:4]
+unique[73e00:8] = unique[ef00:8] + 0x4
+*[ram]unique[73e00:8] = unique[73d00:4]
+00a8 9b027c20 mul
+IMARK ram[a8:4]
+x0 = x1 * x2
+00ac 1b027c20 mul
+IMARK ram[ac:4]
+unique[55e00:4] = w1 * w2
+x0 = zext(unique[55e00:4])
+00b0 9b020c20 madd
+IMARK ram[b0:4]
+unique[51700:8] = x1 * x2
+x0 = x3 + unique[51700:8]
+00b4 1b020c20 madd
+IMARK ram[b4:4]
+unique[51200:4] = w1 * w2
+tmpCY = carry(w3, unique[51200:4])
+tmpOV = scarry(w3, unique[51200:4])
+unique[51400:4] = w3 + unique[51200:4]
+x0 = zext(unique[51400:4])
+00b8 9b028c20 msub
+IMARK ram[b8:4]
+unique[55a00:8] = x1 * x2
+x0 = x3 - unique[55a00:8]
+00bc 1b028c20 msub
+IMARK ram[bc:4]
+unique[55500:4] = w1 * w2
+unique[55700:4] = w3 - unique[55500:4]
+x0 = zext(unique[55700:4])
+00c0 9a820020 csel
+IMARK ram[c0:4]
+unique[3b500:8] = x1
+if (ZR) goto 0x2
+unique[3b500:8] = x2
+x0 = unique[3b500:8]
+00c4 1a820020 csel
+IMARK ram[c4:4]
+unique[3b200:4] = w1
+if (ZR) goto 0x2
+unique[3b200:4] = w2
+x0 = zext(unique[3b200:4])
+00c8 1400000d b
+IMARK ram[c8:4]
+goto ram[fc:8]
+00cc 9400000c bl
+IMARK ram[cc:4]
+x30 = 0xcc + 0x4
+call ram[fc:8]
+00d0 54000161 b.ne
+IMARK ram[d0:4]
+unique[1400:1] = !ZR
+if (unique[1400:1]) goto ram[fc:8]
+00d4 b4000140 cbz
+IMARK ram[d4:4]
+unique[31600:1] = x0 == 0x0
+if (unique[31600:1]) goto ram[fc:8]
+00d8 34000120 cbz
+IMARK ram[d8:4]
+unique[31500:1] = w0 == 0x0
+if (unique[31500:1]) goto ram[fc:8]
+00dc b5000100 cbnz
+IMARK ram[dc:4]
+unique[31400:1] = x0 != 0x0
+if (unique[31400:1]) goto ram[fc:8]
+00e0 d61f0000 br
+IMARK ram[e0:4]
+pc = x0
+goto [pc]
+00e4 d63f0000 blr
+IMARK ram[e4:4]
+pc = x0
+x30 = 0xe4 + 0x4
+call [pc]
+00e8 d63f03c0 blr
+IMARK ram[e8:4]
+pc = x30
+x30 = 0xe8 + 0x4
+call [pc]
+00ec d65f03c0 ret
+IMARK ram[ec:4]
+pc = x30
+return pc
+00f0 10000060 adr
+IMARK ram[f0:4]
+x0 = 0xfc
+00f4 90000000 adrp
+IMARK ram[f4:4]
+x0 = 0x0
+00f8 d503201f nop
+IMARK ram[f8:4]
+00fc d65f03c0 ret
+IMARK ram[fc:4]
+pc = x30
+return pc
