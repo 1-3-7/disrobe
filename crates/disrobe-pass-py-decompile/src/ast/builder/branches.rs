@@ -1121,6 +1121,16 @@ pub(super) fn try_recover_compound_if(
     lo: usize,
     hi: usize,
 ) -> Result<Option<CompoundIf>> {
+    if let Some(continue_target) = loop_continue_target()
+        && let Some(guard) = recover_inverted_and_guard(code, stream, lo, hi, continue_target)?
+    {
+        return Ok(Some(CompoundIf {
+            head: guard.head,
+            test: guard.test,
+            last_jump: guard.last_jump,
+            exit_target: None,
+        }));
+    }
     let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
         is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)
@@ -1208,6 +1218,169 @@ pub(super) struct OrBodyGuard {
     pub(super) body_start: usize,
 }
 
+struct InvertedAndGuard {
+    head: Vec<Stmt>,
+    test: Expr,
+    body_start: usize,
+    last_jump: usize,
+}
+
+fn inverted_and_false_edge(
+    stream: &DecodedStream,
+    jump: usize,
+    hi: usize,
+    continue_target: usize,
+) -> Option<(usize, usize)> {
+    let edge: usize = first_significant(stream, jump + 1, hi)?;
+    if !is_back_edge(&stream.ops[edge]) {
+        return None;
+    }
+    let false_target: usize = resolve_jump_target(stream, edge, &stream.ops[edge])?;
+    (false_target <= continue_target).then_some((edge, false_target))
+}
+
+fn inverted_and_next_operand(
+    stream: &DecodedStream,
+    next_lo: usize,
+    hi: usize,
+    false_target: usize,
+    continue_target: usize,
+) -> Option<usize> {
+    let next_jump: usize = scan_to_cond_jump(stream, next_lo, hi)?;
+    if region_has_statement(stream, next_lo, next_jump) {
+        return None;
+    }
+    inverted_and_false_edge(stream, next_jump, hi, continue_target)
+        .filter(|&(_, nf): &(usize, usize)| nf == false_target)
+        .map(|_| next_jump)
+}
+
+fn recover_inverted_and_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    continue_target: usize,
+) -> Result<Option<InvertedAndGuard>> {
+    use crate::ast::node::BoolOpKind;
+    let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_forward_cond_jump(&stream.ops[i])
+            && !is_chain_cond_jump(&stream.ops, i)
+            && !is_value_form_shortcircuit(&stream.ops, i)
+    }) else {
+        return Ok(None);
+    };
+    let head_end: usize = first_jump_value_lo(stream, lo, first_jump);
+    let mut chain: Vec<(usize, usize)> = Vec::new();
+    let mut value_lo: usize = head_end;
+    let mut cursor: usize = first_jump;
+    let mut false_common: Option<usize> = None;
+    let body_start: usize = loop {
+        if !matches!(
+            stream.ops[cursor],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        ) || stream.none_jump_kind.contains_key(&cursor)
+            || is_chain_cond_jump(&stream.ops, cursor)
+            || is_value_form_shortcircuit(&stream.ops, cursor)
+        {
+            return Ok(None);
+        }
+        let Some((edge, false_target)): Option<(usize, usize)> =
+            inverted_and_false_edge(stream, cursor, hi, continue_target)
+        else {
+            return Ok(None);
+        };
+        if false_common.is_some_and(|prev: usize| prev != false_target) {
+            return Ok(None);
+        }
+        false_common = Some(false_target);
+        let Some(target): Option<usize> = resolve_jump_target(stream, cursor, &stream.ops[cursor])
+            .filter(|t: &usize| *t > cursor && *t <= hi)
+        else {
+            return Ok(None);
+        };
+        chain.push((cursor, value_lo));
+        let Some(next_lo): Option<usize> = first_significant(stream, edge + 1, hi) else {
+            return Ok(None);
+        };
+        let feeds_next: bool =
+            body_entry_index(stream, target, hi) == body_entry_index(stream, next_lo, hi);
+        match inverted_and_next_operand(stream, next_lo, hi, false_target, continue_target) {
+            Some(next_jump) if feeds_next => {
+                cursor = next_jump;
+                value_lo = next_lo;
+            }
+            _ => break target,
+        }
+    };
+    let Some(false_sink): Option<usize> = false_common else {
+        return Ok(None);
+    };
+    if chain.len() < 2 {
+        return Ok(None);
+    }
+    let Some(&(last_jump, _)): Option<&(usize, usize)> = chain.last() else {
+        return Ok(None);
+    };
+    if body_start <= last_jump || body_start > hi {
+        return Ok(None);
+    }
+    let mut operands: Vec<CondOperand> = Vec::with_capacity(chain.len());
+    for (n, &(jump, vlo)) in chain.iter().enumerate() {
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[vlo..jump])?;
+        if n != 0 && !stmts.is_empty() {
+            return Ok(None);
+        }
+        let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        let is_last: bool = n + 1 == chain.len();
+        let target: usize = if is_last { body_start } else { chain[n + 1].1 };
+        operands.push(CondOperand {
+            expr: none_jump_test_taken(stream, jump, value.clone()).unwrap_or(value),
+            is_jump_if_true: jump_taken_if_true(stream, jump),
+            target,
+            value_lo: vlo,
+        });
+    }
+    let Some(test): Option<Expr> = parse_cond_range(&operands, body_start, false_sink) else {
+        return Ok(None);
+    };
+    if !matches!(&test, Expr::BoolOp { op, .. } if *op == BoolOpKind::And) {
+        return Ok(None);
+    }
+    let head_region: &[CanonicalOp] = &stream.ops[lo..head_end];
+    let head_merges: Vec<usize> = collect_value_boolop_merges(stream, lo, head_end);
+    let (head, _): (Vec<Stmt>, Vec<Expr>) = with_boolop_merges(head_region, head_merges, || {
+        build_linear_stmts_sim(code, head_region)
+    })?;
+    Ok(Some(InvertedAndGuard {
+        head,
+        test,
+        body_start,
+        last_jump,
+    }))
+}
+
+fn try_recover_and_body_guard_inverted(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    continue_target: usize,
+) -> Result<Option<OrBodyGuard>> {
+    Ok(
+        recover_inverted_and_guard(code, stream, lo, hi, continue_target)?.map(
+            |g: InvertedAndGuard| OrBodyGuard {
+                head: g.head,
+                test: g.test,
+                body_start: g.body_start,
+            },
+        ),
+    )
+}
+
 pub(super) fn try_recover_or_body_guard(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -1215,6 +1388,10 @@ pub(super) fn try_recover_or_body_guard(
     hi: usize,
     continue_target: usize,
 ) -> Result<Option<OrBodyGuard>> {
+    if let Some(guard) = try_recover_and_body_guard_inverted(code, stream, lo, hi, continue_target)?
+    {
+        return Ok(Some(guard));
+    }
     let Some(first_jump): Option<usize> = (lo..hi).find(|&i: &usize| {
         is_forward_cond_jump(&stream.ops[i])
             && !is_chain_cond_jump(&stream.ops, i)

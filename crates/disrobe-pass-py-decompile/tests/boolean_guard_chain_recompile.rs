@@ -138,3 +138,51 @@ fn guard_and_or_with_body_statements() {
         "def f(items, x):\n    out = []\n    for it in items:\n        if it > 0 and x or it == -1:\n            out.append(it)\n    return out\n",
     );
 }
+
+#[test]
+fn loop_body_and_two_operands() {
+    assert_recompiles(
+        "loop_and2",
+        "def f(items):\n    out = []\n    for x in items:\n        if x and x.ok:\n            out.append(x)\n    return out\n",
+    );
+}
+
+#[test]
+fn loop_body_and_three_operands_nested_arm() {
+    assert_recompiles(
+        "loop_and3_nested",
+        "def f(args):\n    idx = None\n    for k in args:\n        sub = getattr(k, 'x', None)\n        if sub and len(sub) == 2 and sub[0]:\n            idx = k\n    return idx\n",
+    );
+}
+
+#[test]
+fn loop_body_and_three_operands_early_return() {
+    assert_recompiles(
+        "loop_and3_return",
+        "def f(items):\n    for x in items:\n        if x and x.ok and x.ready:\n            return x\n    return None\n",
+    );
+}
+
+#[test]
+fn refuse_merge_statement_between_guards() {
+    assert_recompiles(
+        "refuse_stmt_between",
+        "def f(items, log):\n    for x in items:\n        if x:\n            log.append(x)\n        if x.ok:\n            log.append(1)\n    return log\n",
+    );
+}
+
+#[test]
+fn refuse_merge_nested_guard_with_trailing_statement() {
+    assert_recompiles(
+        "refuse_nested_trailing",
+        "def f(items):\n    out = []\n    for x in items:\n        if x:\n            if x.ok:\n                out.append(x)\n            out.append(9)\n    return out\n",
+    );
+}
+
+#[test]
+fn refuse_merge_second_guard_to_third_target() {
+    assert_recompiles(
+        "refuse_third_target",
+        "def f(items):\n    out = []\n    for x in items:\n        if x and x.ok:\n            out.append(x)\n        if x.done:\n            break\n    return out\n",
+    );
+}
