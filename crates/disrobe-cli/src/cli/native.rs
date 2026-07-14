@@ -9,6 +9,7 @@ use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionFlags, S
 use serde::Serialize;
 
 use super::globals;
+use super::output::{self, OutputFormat};
 use super::progress_ui::StageSpinner;
 use disrobe_binfmt::{import_graph_dot, parse_native};
 
@@ -902,6 +903,124 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[inline]
 fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
+}
+
+#[derive(Debug, Serialize)]
+struct PdbCxxDeferred {
+    original_name: String,
+    reason: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PdbCxxSummary {
+    schema: &'static str,
+    input: String,
+    header_path: String,
+    report_path: String,
+    udts_recovered: usize,
+    enums_recovered: usize,
+    typedefs_recovered: usize,
+    globals_recovered: usize,
+    functions_recovered: usize,
+    opaque_enum_forward_decls: usize,
+    deferred_count: usize,
+    deferred: Vec<PdbCxxDeferred>,
+}
+
+pub(crate) fn pdb_cxx(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    use disrobe_pass_native::{PdbCxxReconstruction, RejectedType, reconstruct_pdb_cxx};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0190: cannot read input: {e}"))?;
+    let spinner: StageSpinner =
+        StageSpinner::start("native pdb-cxx", "parsing TPI/IPI type streams");
+    let recon: PdbCxxReconstruction = reconstruct_pdb_cxx(&bytes)
+        .map_err(|e| miette::miette!("DR-NATIVE-0191: pdb type reconstruction failed: {e}"))?;
+    spinner.finish(&format!(
+        "{} udt(s), {} enum(s), {} deferred",
+        recon.udts.len(),
+        recon.enums.len(),
+        recon.rejected.len()
+    ));
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("pdb-cxx")
+        .to_owned();
+    let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-pdb-cxx")));
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0192: cannot create out dir {}: {e}",
+            out_dir.display()
+        )
+    })?;
+
+    let header_path: PathBuf = out_dir.join(format!("{stem}.h"));
+    std::fs::write(&header_path, recon.header_text.as_bytes()).map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0193: cannot write header {}: {e}",
+            header_path.display()
+        )
+    })?;
+
+    let deferred: Vec<PdbCxxDeferred> = recon
+        .rejected
+        .iter()
+        .map(|r: &RejectedType| PdbCxxDeferred {
+            original_name: r.original_name.clone(),
+            reason: format!("{:?}", r.reason),
+            detail: r.detail.clone(),
+        })
+        .collect();
+
+    let report_path: PathBuf = out_dir.join(format!("{stem}.pdb-cxx.json"));
+    let summary: PdbCxxSummary = PdbCxxSummary {
+        schema: "disrobe.native.pdb-cxx/v1",
+        input: input.display().to_string(),
+        header_path: header_path.display().to_string(),
+        report_path: report_path.display().to_string(),
+        udts_recovered: recon.udts.len(),
+        enums_recovered: recon.enums.len(),
+        typedefs_recovered: recon.typedefs.len(),
+        globals_recovered: recon.globals.len(),
+        functions_recovered: recon.functions.len(),
+        opaque_enum_forward_decls: recon.opaque_enum_forward_decls.len(),
+        deferred_count: deferred.len(),
+        deferred,
+    };
+    let report_bytes: Vec<u8> = serde_json::to_vec_pretty(&summary)
+        .map_err(|e| miette::miette!("DR-NATIVE-0194: serialize report: {e}"))?;
+    std::fs::write(&report_path, &report_bytes).map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0195: cannot write report {}: {e}",
+            report_path.display()
+        )
+    })?;
+
+    output::emit(fmt, &summary, || render_pdb_cxx(&summary))
+}
+
+fn render_pdb_cxx(summary: &PdbCxxSummary) {
+    println!("native pdb-cxx: OK");
+    println!("  input:        {}", summary.input);
+    println!("  udts:         {}", summary.udts_recovered);
+    println!("  enums:        {}", summary.enums_recovered);
+    println!("  typedefs:     {}", summary.typedefs_recovered);
+    println!("  globals:      {}", summary.globals_recovered);
+    println!("  functions:    {}", summary.functions_recovered);
+    println!("  opaque enums: {}", summary.opaque_enum_forward_decls);
+    println!("  deferred:     {}", summary.deferred_count);
+    for d in &summary.deferred {
+        println!("    {} ({}): {}", d.original_name, d.reason, d.detail);
+    }
+    println!("  header:       {}", summary.header_path);
+    println!("  report:       {}", summary.report_path);
 }
 
 const fn packer_rank(p: disrobe_pass_native::Packer) -> u8 {
