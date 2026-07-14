@@ -36,6 +36,7 @@ enum RegVal {
     BlockProc(u32),
     ArgForward,
     BlockYield,
+    Structured,
     Unknown,
 }
 
@@ -56,6 +57,7 @@ impl RegVal {
             Self::BlockProc(_) => "proc {}".to_owned(),
             Self::ArgForward => "<super args>".to_owned(),
             Self::BlockYield => "<block>".to_owned(),
+            Self::Structured => String::new(),
             Self::Unknown => "_".to_owned(),
         }
     }
@@ -146,14 +148,38 @@ struct Frame<'a> {
     srcs: &'a [Vec<u32>],
     nlocals: u32,
     nargs: u32,
-    indent: u32,
     depth: u32,
+}
+
+#[derive(Debug)]
+enum Region {
+    Linear {
+        start: usize,
+        end: usize,
+    },
+    If {
+        else_jmp: Option<usize>,
+        cond_reg: u32,
+        unless: bool,
+        then_regions: Vec<Self>,
+        else_regions: Vec<Self>,
+        tail_return: Option<u32>,
+    },
+    While {
+        exit_branch: usize,
+        back_jmp: usize,
+        cond_reg: u32,
+        until: bool,
+        cond_regions: Vec<Self>,
+        body_regions: Vec<Self>,
+    },
 }
 
 struct Lifter<'a> {
     tree: &'a IrepTree,
     stats: LiftStats,
     scopes: Vec<u32>,
+    branch_value_reg: Option<u32>,
 }
 
 pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
@@ -163,6 +189,7 @@ pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
         tree,
         stats: LiftStats::default(),
         scopes: Vec::new(),
+        branch_value_reg: None,
     };
     lifter.record(0, 0, 0, &mut out)?;
     let modeled: u32 = lifter.stats.total.saturating_sub(lifter.stats.unmodeled);
@@ -213,20 +240,205 @@ impl Lifter<'_> {
             srcs: &srcs,
             nlocals,
             nargs,
-            indent,
             depth,
         };
+        let regions: Vec<Region> = if structurable(rec, &ins) {
+            build_regions(&ins)
+        } else {
+            vec![Region::Linear {
+                start: 0,
+                end: ins.len(),
+            }]
+        };
         self.scopes.push(nargs);
-        let mut result: Result<()> = Ok(());
-        for i in 0..ins.len() {
-            self.stats.total = self.stats.total.saturating_add(1);
-            if let Err(e) = self.instruction(&frame, i, &mut regs, &mut pending, out) {
-                result = Err(e);
-                break;
-            }
-        }
+        let saved_boundary: Option<u32> = self.branch_value_reg;
+        self.branch_value_reg = None;
+        let result: Result<()> =
+            self.lift_regions(&frame, &regions, &mut regs, &mut pending, indent, out);
+        self.branch_value_reg = saved_boundary;
         self.scopes.pop();
         result
+    }
+
+    fn lift_regions(
+        &mut self,
+        frame: &Frame<'_>,
+        regions: &[Region],
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        for region in regions {
+            self.lift_region(frame, region, regs, pending, indent, out)?;
+        }
+        Ok(())
+    }
+
+    fn lift_region(
+        &mut self,
+        frame: &Frame<'_>,
+        region: &Region,
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        match region {
+            Region::Linear { start, end } => {
+                for i in *start..*end {
+                    self.stats.total = self.stats.total.saturating_add(1);
+                    self.instruction(frame, i, regs, pending, indent, out)?;
+                }
+                Ok(())
+            }
+            Region::If { .. } => self.lift_if(frame, region, None, regs, pending, indent, out),
+            Region::While { .. } => self.lift_while(frame, region, regs, pending, indent, out),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lift_if(
+        &mut self,
+        frame: &Frame<'_>,
+        region: &Region,
+        value_ctx: Option<u32>,
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        let Region::If {
+            else_jmp,
+            cond_reg,
+            unless,
+            then_regions,
+            else_regions,
+            tail_return,
+        } = region
+        else {
+            return Ok(());
+        };
+        let value_reg: Option<u32> = value_ctx.or(*tail_return);
+        self.stats.total = self.stats.total.saturating_add(1);
+        let pad: String = pad_for(indent);
+        let cond: String = regs.get(*cond_reg).render();
+        let keyword: &str = if *unless { "unless" } else { "if" };
+        push_line(out, format_args!("{pad}{keyword} {cond}"));
+        let inner: u32 = indent.saturating_add(1);
+        self.lift_branch(frame, then_regions, value_reg, regs, pending, inner, out)?;
+        if else_jmp.is_some() {
+            self.stats.total = self.stats.total.saturating_add(1);
+            push_line(out, format_args!("{pad}else"));
+            self.lift_branch(frame, else_regions, value_reg, regs, pending, inner, out)?;
+        }
+        push_line(out, format_args!("{pad}end"));
+        if let Some(vr) = value_reg {
+            regs.set(vr, RegVal::Structured);
+        }
+        Ok(())
+    }
+
+    fn lift_branch(
+        &mut self,
+        frame: &Frame<'_>,
+        regions: &[Region],
+        value_reg: Option<u32>,
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        match value_reg {
+            Some(vr) => self.lift_value_regions(frame, regions, vr, regs, pending, indent, out),
+            None => self.lift_regions(frame, regions, regs, pending, indent, out),
+        }
+    }
+
+    fn lift_value_regions(
+        &mut self,
+        frame: &Frame<'_>,
+        regions: &[Region],
+        vr: u32,
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        let Some((last, rest)): Option<(&Region, &[Region])> = regions.split_last() else {
+            emit_value_line(&regs.get(vr), &pad_for(indent), out);
+            return Ok(());
+        };
+        for region in rest {
+            self.lift_region(frame, region, regs, pending, indent, out)?;
+        }
+        match last {
+            Region::Linear { start, end } => {
+                let prev: Option<u32> = self.branch_value_reg;
+                self.branch_value_reg = Some(vr);
+                for i in *start..*end {
+                    self.stats.total = self.stats.total.saturating_add(1);
+                    self.instruction(frame, i, regs, pending, indent, out)?;
+                }
+                self.branch_value_reg = prev;
+                emit_value_line(&regs.get(vr), &pad_for(indent), out);
+            }
+            Region::If { .. } => {
+                self.lift_if(frame, last, Some(vr), regs, pending, indent, out)?;
+            }
+            Region::While { .. } => {
+                self.lift_while(frame, last, regs, pending, indent, out)?;
+                emit_value_line(&RegVal::Nil, &pad_for(indent), out);
+            }
+        }
+        Ok(())
+    }
+
+    fn lift_while(
+        &mut self,
+        frame: &Frame<'_>,
+        region: &Region,
+        regs: &mut Regs,
+        pending: &mut PendingDefs,
+        indent: u32,
+        out: &mut String,
+    ) -> Result<()> {
+        let Region::While {
+            exit_branch,
+            back_jmp,
+            cond_reg,
+            until,
+            cond_regions,
+            body_regions,
+        } = region
+        else {
+            return Ok(());
+        };
+        let inner: u32 = indent.saturating_add(1);
+        let mut scratch: String = String::new();
+        let prev: Option<u32> = self.branch_value_reg;
+        self.branch_value_reg = Some(*cond_reg);
+        self.lift_regions(frame, cond_regions, regs, pending, inner, &mut scratch)?;
+        self.branch_value_reg = prev;
+        let pad: String = pad_for(indent);
+        if scratch.trim().is_empty() {
+            let cond: String = regs.get(*cond_reg).render();
+            let keyword: &str = if *until { "until" } else { "while" };
+            push_line(out, format_args!("{pad}{keyword} {cond}"));
+            self.lift_regions(frame, body_regions, regs, pending, inner, out)?;
+            push_line(out, format_args!("{pad}end"));
+            self.stats.total = self.stats.total.saturating_add(2);
+        } else {
+            out.push_str(&scratch);
+            self.lift_regions(frame, body_regions, regs, pending, indent, out)?;
+            for idx in [*exit_branch, *back_jmp] {
+                self.stats.total = self.stats.total.saturating_add(1);
+                if let Some(instr) = frame.ins.get(idx) {
+                    self.mark(instr, &pad, out);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn resolve_upvar(&self, index: u32, up: u32) -> String {
@@ -243,6 +455,7 @@ impl Lifter<'_> {
 
     #[allow(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         clippy::match_same_arms,
         clippy::many_single_char_names
     )]
@@ -252,6 +465,7 @@ impl Lifter<'_> {
         i: usize,
         regs: &mut Regs,
         pending: &mut PendingDefs,
+        indent: u32,
         out: &mut String,
     ) -> Result<()> {
         let instr: &MrubyInstruction = &frame.ins[i];
@@ -259,88 +473,122 @@ impl Lifter<'_> {
         let a: u32 = instr.operands.first().copied().unwrap_or(0);
         let b: u32 = instr.operands.get(1).copied().unwrap_or(0);
         let c: u32 = instr.operands.get(2).copied().unwrap_or(0);
-        let pad: String = pad_for(frame.indent);
+        let pad: String = pad_for(indent);
 
         match instr.op {
             MrubyOp::Move => {
                 let v: RegVal = regs.get(b);
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
-            MrubyOp::LoadNil => place(regs, frame, i, a, RegVal::Nil, false, out),
-            MrubyOp::LoadSelf => place(regs, frame, i, a, RegVal::SelfRef, false, out),
-            MrubyOp::LoadT => place(regs, frame, i, a, RegVal::True, false, out),
-            MrubyOp::LoadF => place(regs, frame, i, a, RegVal::False, false, out),
-            MrubyOp::LoadI => place(regs, frame, i, a, RegVal::Int(i64::from(b)), false, out),
-            MrubyOp::LoadINeg => place(regs, frame, i, a, RegVal::Int(-i64::from(b)), false, out),
+            MrubyOp::LoadNil => self.place(regs, frame, i, a, RegVal::Nil, false, indent, out),
+            MrubyOp::LoadSelf => self.place(regs, frame, i, a, RegVal::SelfRef, false, indent, out),
+            MrubyOp::LoadT => self.place(regs, frame, i, a, RegVal::True, false, indent, out),
+            MrubyOp::LoadF => self.place(regs, frame, i, a, RegVal::False, false, indent, out),
+            MrubyOp::LoadI => {
+                self.place(
+                    regs,
+                    frame,
+                    i,
+                    a,
+                    RegVal::Int(i64::from(b)),
+                    false,
+                    indent,
+                    out,
+                );
+            }
+            MrubyOp::LoadINeg => {
+                self.place(
+                    regs,
+                    frame,
+                    i,
+                    a,
+                    RegVal::Int(-i64::from(b)),
+                    false,
+                    indent,
+                    out,
+                );
+            }
             MrubyOp::LoadI16 => {
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Int(i64::from(b as i16)),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::LoadI32 => {
                 let v: i64 = i64::from(((b << 16) | c) as i32);
-                place(regs, frame, i, a, RegVal::Int(v), false, out);
+                self.place(regs, frame, i, a, RegVal::Int(v), false, indent, out);
             }
             MrubyOp::LoadISmall(n) => {
-                place(regs, frame, i, a, RegVal::Int(i64::from(n)), false, out);
+                self.place(
+                    regs,
+                    frame,
+                    i,
+                    a,
+                    RegVal::Int(i64::from(n)),
+                    false,
+                    indent,
+                    out,
+                );
             }
             MrubyOp::LoadL => {
                 let v: RegVal = pool_value(rec, b);
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
             MrubyOp::Strng => {
                 let s: String = pool_string(rec, b);
-                place(regs, frame, i, a, RegVal::Str(s), false, out);
+                self.place(regs, frame, i, a, RegVal::Str(s), false, indent, out);
             }
             MrubyOp::LoadSym | MrubyOp::Symbol => {
                 let s: String = symbol(rec, b);
-                place(regs, frame, i, a, RegVal::Sym(s), false, out);
+                self.place(regs, frame, i, a, RegVal::Sym(s), false, indent, out);
             }
             MrubyOp::StrCat => {
                 let lhs: String = regs.get(a).render();
                 let rhs: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lhs} + {rhs})")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::GetIv | MrubyOp::GetCv => {
                 let v: RegVal = RegVal::Expr(symbol(rec, b));
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
             MrubyOp::GetGv | MrubyOp::GetSv => {
                 let v: RegVal = RegVal::Expr(symbol(rec, b));
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
             MrubyOp::GetConst | MrubyOp::GetMCnst => {
                 let v: RegVal = RegVal::Expr(symbol(rec, b));
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
             MrubyOp::GetUpvar => {
                 let v: RegVal = RegVal::Expr(self.resolve_upvar(b, c));
-                place(regs, frame, i, a, v, false, out);
+                self.place(regs, frame, i, a, v, false, indent, out);
             }
-            MrubyOp::OClass => place(
+            MrubyOp::OClass => self.place(
                 regs,
                 frame,
                 i,
                 a,
                 RegVal::Expr("::Object".to_owned()),
                 false,
+                indent,
                 out,
             ),
-            MrubyOp::TClass => place(regs, frame, i, a, RegVal::SelfRef, false, out),
+            MrubyOp::TClass => self.place(regs, frame, i, a, RegVal::SelfRef, false, indent, out),
             MrubyOp::SetIv | MrubyOp::SetCv => {
                 push_line(
                     out,
@@ -375,13 +623,14 @@ impl Lifter<'_> {
                 };
                 let lhs: String = regs.get(a).render();
                 let rhs: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lhs} {opc} {rhs})")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -392,13 +641,14 @@ impl Lifter<'_> {
                     "-"
                 };
                 let lhs: String = regs.get(a).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lhs} {opc} {b})")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -412,13 +662,14 @@ impl Lifter<'_> {
                 };
                 let lhs: String = regs.get(a).render();
                 let rhs: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lhs} {opc} {rhs})")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -427,7 +678,7 @@ impl Lifter<'_> {
                 let argc: u32 = c & 0x0f;
                 let kwargc: u32 = (c >> 4) & 0x0f;
                 let call: String = render_call(rec, regs, a, b, argc, kwargc, is_self, true);
-                place(regs, frame, i, a, RegVal::Expr(call), true, out);
+                self.place(regs, frame, i, a, RegVal::Expr(call), true, indent, out);
             }
             MrubyOp::SendB | MrubyOp::SSendB => {
                 let is_self: bool = matches!(instr.op, MrubyOp::SSendB);
@@ -443,79 +694,94 @@ impl Lifter<'_> {
                     _ => u32::MAX,
                 };
                 let block: String = self.render_block(child, frame.depth);
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("{head}{block}")),
                     true,
+                    indent,
                     out,
                 );
             }
             MrubyOp::Array => {
                 let elems: String = render_consecutive(regs, a, b);
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("[{elems}]")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::Array2 => {
                 let elems: String = render_consecutive(regs, b, c);
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("[{elems}]")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::AryCat => {
                 let lhs: String = regs.get(a).render();
                 let rhs: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lhs} + {rhs})")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::AryPush => {
                 let base: String = regs.get(a).render();
                 let pushed: String = render_consecutive(regs, a.saturating_add(1), b);
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({base} + [{pushed}])")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::ArySplat => {
                 let v: String = regs.get(a).render();
-                place(regs, frame, i, a, RegVal::Expr(format!("*{v}")), false, out);
+                self.place(
+                    regs,
+                    frame,
+                    i,
+                    a,
+                    RegVal::Expr(format!("*{v}")),
+                    false,
+                    indent,
+                    out,
+                );
             }
             MrubyOp::Aref => {
                 let recv: String = regs.get(b).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("{recv}[{c}]")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -526,13 +792,14 @@ impl Lifter<'_> {
             }
             MrubyOp::Hash => {
                 let pairs: String = render_pairs(regs, a, b);
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("{{{pairs}}}")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -543,31 +810,33 @@ impl Lifter<'_> {
                     "{}" => format!("{{{pairs}}}"),
                     other => format!("{other}.merge({{{pairs}}})"),
                 };
-                place(regs, frame, i, a, RegVal::Expr(merged), false, out);
+                self.place(regs, frame, i, a, RegVal::Expr(merged), false, indent, out);
             }
             MrubyOp::HashCat => {
                 let lhs: String = regs.get(a).render();
                 let rhs: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("{lhs}.merge({rhs})")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::GetIdx => {
                 let recv: String = regs.get(a).render();
                 let idx: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("{recv}[{idx}]")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -580,26 +849,28 @@ impl Lifter<'_> {
             MrubyOp::RangeInc => {
                 let lo: String = regs.get(a).render();
                 let hi: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lo}..{hi})")),
                     false,
+                    indent,
                     out,
                 );
             }
             MrubyOp::RangeExc => {
                 let lo: String = regs.get(a).render();
                 let hi: String = regs.get(a.saturating_add(1)).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr(format!("({lo}...{hi})")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -608,7 +879,7 @@ impl Lifter<'_> {
                     RegVal::Str(text) => format!(":{text}"),
                     other => format!(":{}", other.render()),
                 };
-                place(regs, frame, i, a, RegVal::Expr(sym), false, out);
+                self.place(regs, frame, i, a, RegVal::Expr(sym), false, indent, out);
             }
             MrubyOp::Super => {
                 let argc: u32 = b & 0x0f;
@@ -622,18 +893,19 @@ impl Lifter<'_> {
                         join_args_and_kwargs(regs, a.saturating_add(1), argc, kwargc);
                     format!("super({joined})")
                 };
-                place(regs, frame, i, a, RegVal::Expr(call), true, out);
+                self.place(regs, frame, i, a, RegVal::Expr(call), true, indent, out);
             }
             MrubyOp::ArgAry => regs.set(a, RegVal::ArgForward),
             MrubyOp::BlkPush => regs.set(a, RegVal::BlockYield),
             MrubyOp::Call => {
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     a,
                     RegVal::Expr("self.call".to_owned()),
                     true,
+                    indent,
                     out,
                 );
             }
@@ -665,18 +937,28 @@ impl Lifter<'_> {
                 push_line(out, format_args!("{pad}raise LocalJumpError"));
             }
             MrubyOp::Except => {
-                place(regs, frame, i, a, RegVal::Expr("$!".to_owned()), false, out);
+                self.place(
+                    regs,
+                    frame,
+                    i,
+                    a,
+                    RegVal::Expr("$!".to_owned()),
+                    false,
+                    indent,
+                    out,
+                );
             }
             MrubyOp::Rescue => {
                 let exc: String = regs.get(a).render();
                 let class: String = regs.get(b).render();
-                place(
+                self.place(
                     regs,
                     frame,
                     i,
                     b,
                     RegVal::Expr(format!("{exc}.is_a?({class})")),
                     false,
+                    indent,
                     out,
                 );
             }
@@ -726,7 +1008,7 @@ impl Lifter<'_> {
                     RegVal::MethodProc(idx) => idx,
                     _ => u32::MAX,
                 };
-                self.emit_def(&name, child, frame.indent, frame.depth, out)?;
+                self.emit_def(&name, child, indent, frame.depth, out)?;
                 regs.set(a, RegVal::Sym(name));
             }
             MrubyOp::Class => {
@@ -751,9 +1033,9 @@ impl Lifter<'_> {
                 let child: u32 = nth_child(rec, b);
                 match pending.take_pending(a) {
                     Some((keyword, name)) => {
-                        self.emit_block(keyword, &name, child, frame.indent, frame.depth, out)?;
+                        self.emit_block(keyword, &name, child, indent, frame.depth, out)?;
                     }
-                    None => self.record(child, frame.indent, frame.depth.saturating_add(1), out)?,
+                    None => self.record(child, indent, frame.depth.saturating_add(1), out)?,
                 }
             }
             MrubyOp::Return | MrubyOp::ReturnBlk => {
@@ -860,6 +1142,34 @@ impl Lifter<'_> {
             format!("({})", names.join(", "))
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        &self,
+        regs: &mut Regs,
+        frame: &Frame<'_>,
+        i: usize,
+        d: u32,
+        val: RegVal,
+        is_call: bool,
+        indent: u32,
+        out: &mut String,
+    ) {
+        if d >= 1 && d < frame.nlocals {
+            let name: String = local_name(d, frame.nargs);
+            let pad: String = pad_for(indent);
+            push_line(out, format_args!("{pad}{name} = {}", val.render()));
+            regs.set(d, RegVal::Local(name));
+            return;
+        }
+        let is_consumed: bool =
+            consumed(frame.dests, frame.srcs, i, d) || self.branch_value_reg == Some(d);
+        if is_call && !is_consumed {
+            let pad: String = pad_for(indent);
+            push_line(out, format_args!("{pad}{}", val.render()));
+        }
+        regs.set(d, val);
+    }
 }
 
 fn required_kwarg_names(ins: &[MrubyInstruction], rec: &IrepRecord) -> Vec<String> {
@@ -880,33 +1190,154 @@ fn required_kwarg_names(ins: &[MrubyInstruction], rec: &IrepRecord) -> Vec<Strin
     names
 }
 
-fn place(
-    regs: &mut Regs,
-    frame: &Frame<'_>,
+fn structurable(rec: &IrepRecord, ins: &[MrubyInstruction]) -> bool {
+    rec.catch_count == 0
+        && !ins.iter().any(|i| {
+            matches!(
+                i.op,
+                MrubyOp::Except | MrubyOp::Rescue | MrubyOp::RaiseIf | MrubyOp::JmpUw
+            )
+        })
+}
+
+fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
+    let instr: &MrubyInstruction = ins.get(k)?;
+    let offset_raw: u32 = match instr.op {
+        MrubyOp::Jmp | MrubyOp::JmpUw => instr.operands.first().copied()?,
+        MrubyOp::JmpIf | MrubyOp::JmpNot | MrubyOp::JmpNil => instr.operands.get(1).copied()?,
+        _ => return None,
+    };
+    let offset: i64 = i64::from(offset_raw as u16 as i16);
+    let next_pc: i64 = i64::from(ins.get(k.saturating_add(1))?.pc);
+    let target: u32 = u32::try_from(next_pc.checked_add(offset)?).ok()?;
+    ins.iter().position(|i| i.pc == target)
+}
+
+fn build_regions(ins: &[MrubyInstruction]) -> Vec<Region> {
+    structure_range(ins, 0, ins.len())
+}
+
+fn structure_range(ins: &[MrubyInstruction], lo: usize, hi: usize) -> Vec<Region> {
+    let mut regions: Vec<Region> = Vec::new();
+    let mut linear_start: usize = lo;
+    let mut i: usize = lo;
+    while i < hi {
+        match try_structure_at(ins, i, lo, hi) {
+            Some((region, next, head)) if head >= linear_start && next > i => {
+                if head > linear_start {
+                    regions.push(Region::Linear {
+                        start: linear_start,
+                        end: head,
+                    });
+                }
+                regions.push(region);
+                linear_start = next;
+                i = next;
+            }
+            _ => {
+                i = i.saturating_add(1);
+            }
+        }
+    }
+    if linear_start < hi {
+        regions.push(Region::Linear {
+            start: linear_start,
+            end: hi,
+        });
+    }
+    regions
+}
+
+fn try_structure_at(
+    ins: &[MrubyInstruction],
     i: usize,
-    d: u32,
-    val: RegVal,
-    is_call: bool,
-    out: &mut String,
-) {
-    if d >= 1 && d < frame.nlocals {
-        let name: String = local_name(d, frame.nargs);
-        let pad: String = pad_for(frame.indent);
-        push_line(out, format_args!("{pad}{name} = {}", val.render()));
-        regs.set(d, RegVal::Local(name));
-        return;
+    lo: usize,
+    hi: usize,
+) -> Option<(Region, usize, usize)> {
+    let instr: &MrubyInstruction = ins.get(i)?;
+    if !matches!(instr.op, MrubyOp::JmpNot | MrubyOp::JmpIf) {
+        return None;
     }
-    let is_consumed: bool = consumed(frame.dests, frame.srcs, i, d);
-    if is_call && !is_consumed {
-        let pad: String = pad_for(frame.indent);
-        push_line(out, format_args!("{pad}{}", val.render()));
+    let cond_reg: u32 = instr.operands.first().copied()?;
+    let exit_idx: usize = jump_target_index(ins, i)?;
+    if exit_idx <= i || exit_idx > hi {
+        return None;
     }
-    regs.set(d, val);
+    let unless: bool = matches!(instr.op, MrubyOp::JmpIf);
+
+    if exit_idx >= 1 {
+        let before: &MrubyInstruction = &ins[exit_idx - 1];
+        if before.op == MrubyOp::Jmp {
+            let head_opt: Option<usize> = jump_target_index(ins, exit_idx - 1);
+            if let Some(head) = head_opt
+                && head >= lo
+                && head <= i
+            {
+                let back_jmp: usize = exit_idx - 1;
+                let cond_regions: Vec<Region> = structure_range(ins, head, i);
+                let body_regions: Vec<Region> = structure_range(ins, i + 1, back_jmp);
+                let region: Region = Region::While {
+                    exit_branch: i,
+                    back_jmp,
+                    cond_reg,
+                    until: unless,
+                    cond_regions,
+                    body_regions,
+                };
+                return Some((region, exit_idx, head));
+            }
+        }
+    }
+
+    let (else_jmp, if_end): (Option<usize>, usize) =
+        if exit_idx >= 1 && ins[exit_idx - 1].op == MrubyOp::Jmp {
+            match jump_target_index(ins, exit_idx - 1) {
+                Some(lend) if lend > exit_idx && lend <= hi => (Some(exit_idx - 1), lend),
+                _ => (None, exit_idx),
+            }
+        } else {
+            (None, exit_idx)
+        };
+    let then_end: usize = else_jmp.unwrap_or(exit_idx);
+    let then_regions: Vec<Region> = structure_range(ins, i + 1, then_end);
+    let else_regions: Vec<Region> = match else_jmp {
+        Some(_) => structure_range(ins, exit_idx, if_end),
+        None => Vec::new(),
+    };
+    let tail_return: Option<u32> = ins.get(if_end).and_then(|x| {
+        if matches!(x.op, MrubyOp::Return | MrubyOp::ReturnBlk) {
+            x.operands.first().copied()
+        } else {
+            None
+        }
+    });
+    let region: Region = Region::If {
+        else_jmp,
+        cond_reg,
+        unless,
+        then_regions,
+        else_regions,
+        tail_return,
+    };
+    Some((region, if_end, i))
 }
 
 fn emit_return_value(v: &RegVal, pad: &str, out: &mut String) {
     match v {
-        RegVal::Nil | RegVal::SelfRef | RegVal::MethodProc(_) | RegVal::BlockProc(_) => {}
+        RegVal::Nil
+        | RegVal::SelfRef
+        | RegVal::MethodProc(_)
+        | RegVal::BlockProc(_)
+        | RegVal::Structured => {}
+        other => {
+            push_line(out, format_args!("{pad}{}", other.render()));
+        }
+    }
+}
+
+fn emit_value_line(v: &RegVal, pad: &str, out: &mut String) {
+    match v {
+        RegVal::Nil | RegVal::MethodProc(_) | RegVal::BlockProc(_) | RegVal::Structured => {}
         other => {
             push_line(out, format_args!("{pad}{}", other.render()));
         }
@@ -1500,6 +1931,56 @@ mod tests {
         };
         let src: String = lift_tree(&tree).expect("lift").source;
         assert!(src.contains("def greet(amount:)"), "got: {src}");
+    }
+
+    #[test]
+    fn lifts_if_else_expression_from_forward_branch() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[2]),
+            ("JMPNOT", &[2, 5]),
+            ("LOADI_1", &[2]),
+            ("JMP", &[2]),
+            ("LOADI_2", &[2]),
+            ("RETURN", &[2]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let out: LiftOutput = lift_tree(&tree).expect("lift");
+        assert_eq!(out.unmodeled_opcodes, 0, "got: {}", out.source);
+        assert_eq!(out.modeled_opcodes, out.total_opcodes);
+        assert!(out.source.contains("if true"), "got: {}", out.source);
+        assert!(out.source.contains("else"), "got: {}", out.source);
+        assert!(out.source.contains('1'), "got: {}", out.source);
+        assert!(out.source.contains('2'), "got: {}", out.source);
+        assert!(out.source.contains("end"), "got: {}", out.source);
+        assert!(!out.source.contains("# unmodeled"), "got: {}", out.source);
+    }
+
+    #[test]
+    fn lifts_while_loop_from_backward_jump() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADF", &[2]),
+            ("JMPNOT", &[2, 5]),
+            ("LOADI_1", &[3]),
+            ("JMP", &[65525]),
+            ("RETURN", &[2]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let out: LiftOutput = lift_tree(&tree).expect("lift");
+        assert_eq!(out.unmodeled_opcodes, 0, "got: {}", out.source);
+        assert_eq!(out.modeled_opcodes, out.total_opcodes);
+        assert!(out.source.contains("while false"), "got: {}", out.source);
+        assert!(out.source.contains("end"), "got: {}", out.source);
+        assert!(!out.source.contains("# unmodeled"), "got: {}", out.source);
     }
 
     #[test]
