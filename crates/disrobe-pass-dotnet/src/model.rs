@@ -1,13 +1,18 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
 use serde::{Deserialize, Serialize};
 
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
 use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
-use crate::signature::{MethodSig, TypeSig, parse_field_sig, parse_method_sig};
+use crate::signature::{
+    MethodSig, TypeSig, parse_field_sig, parse_method_sig, parse_method_sig_strict,
+};
 use crate::structurize::TargetLang;
 use crate::tables::{
-    FieldRow, GenericParamRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef, TableId, Tables,
-    TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
+    FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
+    TableId, Tables, TypeDefRow, TypeRefRow, TypeSpecRow, parse_tables,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +54,32 @@ pub struct ParamModel {
 
 const METHOD_STATIC: u16 = 0x0010;
 const METHOD_ACCESS_MASK: u16 = 0x0007;
+const METHOD_PUBLIC: u16 = 0x0006;
+const METHOD_VIRTUAL: u16 = 0x0040;
+const METHOD_NEW_SLOT: u16 = 0x0100;
+const METHOD_ABSTRACT: u16 = 0x0400;
+const TYPE_INTERFACE: u32 = 0x0020;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverFact {
+    Unknown,
+    Exact(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReceiverState {
+    stack: Vec<ReceiverFact>,
+    locals: BTreeMap<u32, ReceiverFact>,
+    poisoned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CalleeDescriptor {
+    owner_type: u32,
+    name: String,
+    signature: MethodSig,
+    method_def_rid: Option<u32>,
+}
 
 impl MethodModel {
     #[must_use]
@@ -201,6 +232,7 @@ pub struct AssemblyModel {
 #[derive(Debug)]
 pub struct Resolver {
     tables: Tables,
+    method_impl_types: BTreeSet<u32>,
     strings_heap: Vec<u8>,
     blob: Vec<u8>,
     us: Vec<u8>,
@@ -217,6 +249,11 @@ impl Resolver {
             .copied()
             .ok_or_else(|| Error::UnknownStream("#~".to_owned()))?;
         let tables: Tables = parse_tables(metadata_slice, table_header)?;
+        let method_impl_types: BTreeSet<u32> = tables
+            .method_impls
+            .iter()
+            .map(|mapping| mapping.class_type)
+            .collect();
         let strings_heap: Vec<u8> = root
             .streams
             .get("#Strings")
@@ -258,6 +295,7 @@ impl Resolver {
             .unwrap_or_default();
         Ok(Self {
             tables,
+            method_impl_types,
             strings_heap,
             blob,
             us,
@@ -267,6 +305,863 @@ impl Resolver {
     #[must_use]
     pub const fn tables(&self) -> &Tables {
         &self.tables
+    }
+
+    #[must_use]
+    pub fn devirtualize_callvirt(&self, body: &MethodBody) -> MethodBody {
+        if !body.exception_clauses.is_empty() {
+            return body.clone();
+        }
+        if !body
+            .instructions
+            .iter()
+            .any(|instruction: &Instruction| instruction.name == "callvirt")
+        {
+            return body.clone();
+        }
+        let states: Vec<Option<ReceiverState>> = self.receiver_states(body);
+        let mut patched: MethodBody = body.clone();
+        for (index, instruction) in body.instructions.iter().enumerate() {
+            if instruction.name != "callvirt" {
+                continue;
+            }
+            let token: u32 = match instruction.operand {
+                OperandValue::Token(token) => token,
+                _ => continue,
+            };
+            let state: Option<&ReceiverState> = states.get(index).and_then(Option::as_ref);
+            let receiver_type: Option<u32> =
+                state.and_then(|state: &ReceiverState| self.receiver_before_call(state, token));
+            let target: Option<u32> = self.resolve_callvirt_target(token, receiver_type);
+            let Some(target): Option<u32> = target else {
+                continue;
+            };
+            let rewritten: &mut Instruction = &mut patched.instructions[index];
+            rewritten.opcode = 0x28;
+            rewritten.name.clear();
+            rewritten.name.push_str("call");
+            rewritten.operand = OperandValue::Token(target);
+        }
+        patched
+    }
+
+    fn receiver_states(&self, body: &MethodBody) -> Vec<Option<ReceiverState>> {
+        let count: usize = body.instructions.len();
+        let mut states: Vec<Option<ReceiverState>> = vec![None; count];
+        if count == 0 {
+            return states;
+        }
+        let mut offsets: BTreeMap<u32, usize> = BTreeMap::new();
+        for (index, instruction) in body.instructions.iter().enumerate() {
+            offsets.insert(instruction.offset, index);
+        }
+        if !control_flow_targets_are_valid(body, &offsets) {
+            return states;
+        }
+        states[0] = Some(ReceiverState {
+            stack: Vec::new(),
+            locals: BTreeMap::new(),
+            poisoned: false,
+        });
+        let mut worklist: VecDeque<usize> = VecDeque::from([0usize]);
+        while let Some(index) = worklist.pop_front() {
+            let incoming: Option<ReceiverState> = states.get(index).cloned().flatten();
+            let Some(incoming): Option<ReceiverState> = incoming else {
+                continue;
+            };
+            let outgoing: ReceiverState =
+                self.transfer_receiver_state(&incoming, &body.instructions[index]);
+            let successors: Vec<usize> = Self::successors(body, index, &offsets);
+            for successor in successors {
+                let previous: Option<ReceiverState> = states[successor].clone();
+                let merged: ReceiverState = previous.as_ref().map_or_else(
+                    || outgoing.clone(),
+                    |previous: &ReceiverState| Self::merge_receiver_states(previous, &outgoing),
+                );
+                if previous.as_ref() != Some(&merged) {
+                    states[successor] = Some(merged);
+                    worklist.push_back(successor);
+                }
+            }
+        }
+        states
+    }
+
+    fn receiver_before_call(&self, state: &ReceiverState, token: u32) -> Option<u32> {
+        if state.poisoned {
+            return None;
+        }
+        let signature: MethodSig = self.callee_signature(token)?;
+        if !signature.has_this {
+            return None;
+        }
+        let args: usize = signature.params.len().checked_add(1)?;
+        let receiver_index: usize = state.stack.len().checked_sub(args)?;
+        match state.stack.get(receiver_index) {
+            Some(ReceiverFact::Exact(type_rid)) => Some(*type_rid),
+            Some(ReceiverFact::Unknown) | None => None,
+        }
+    }
+
+    fn transfer_receiver_state(
+        &self,
+        incoming: &ReceiverState,
+        instruction: &Instruction,
+    ) -> ReceiverState {
+        if incoming.poisoned {
+            return incoming.clone();
+        }
+        let mut outgoing: ReceiverState = incoming.clone();
+        match instruction.name.as_str() {
+            "nop" | "break" | "readonly." | "tail." | "volatile." | "unaligned." | "no." => {}
+            "constrained." => poison_receiver_state(&mut outgoing),
+            _ if matches!(
+                instruction.flow,
+                FlowControl::Branch | FlowControl::CondBranch
+            ) => {}
+            "ldloc.0" | "ldloc.1" | "ldloc.2" | "ldloc.3" | "ldloc" | "ldloc.s" => {
+                let slot: u32 = local_slot(instruction);
+                let fact: ReceiverFact = outgoing
+                    .locals
+                    .get(&slot)
+                    .map_or(ReceiverFact::Unknown, |fact: &ReceiverFact| *fact);
+                outgoing.stack.push(fact);
+            }
+            "stloc.0" | "stloc.1" | "stloc.2" | "stloc.3" | "stloc" | "stloc.s" => {
+                let slot: u32 = local_slot(instruction);
+                let value: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                match value {
+                    ReceiverFact::Exact(_) => {
+                        outgoing.locals.insert(slot, value);
+                    }
+                    ReceiverFact::Unknown => {
+                        outgoing.locals.remove(&slot);
+                    }
+                }
+            }
+            "ldloca" | "ldloca.s" => {
+                let slot: u32 = local_slot(instruction);
+                outgoing.locals.remove(&slot);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            "ldarga" | "ldarga.s" => outgoing.stack.push(ReceiverFact::Unknown),
+            name if name.starts_with("ldarg") => outgoing.stack.push(ReceiverFact::Unknown),
+            name if name.starts_with("starg") => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+            }
+            "dup" => {
+                let value: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(value);
+                outgoing.stack.push(value);
+            }
+            "newobj" => self.transfer_newobj(&mut outgoing, instruction),
+            "ldsfld" | "ldsflda" => outgoing.stack.push(ReceiverFact::Unknown),
+            "pop" | "stsfld" | "initobj" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+            }
+            "ldfld" | "ldflda" | "isinst" | "box" | "unbox" | "unbox.any" | "ldobj"
+            | "ldind.i1" | "ldind.u1" | "ldind.i2" | "ldind.u2" | "ldind.i4" | "ldind.u4"
+            | "ldind.i8" | "ldind.i" | "ldind.r4" | "ldind.r8" | "ldind.ref" | "newarr"
+            | "localloc" | "ldlen" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            "stfld" | "stobj" | "cpobj" | "stind.i1" | "stind.i2" | "stind.i4" | "stind.i8"
+            | "stind.r4" | "stind.r8" | "stind.ref" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+            }
+            "call" | "callvirt" => self.transfer_call(&mut outgoing, instruction),
+            "calli" | "jmp" => poison_receiver_state(&mut outgoing),
+            "castclass" => {
+                let value: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(value);
+            }
+            "ldelema" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            name if name.starts_with("ldelem") => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            name if name.starts_with("stelem") => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+            }
+            "throw" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+            }
+            "ldnull" | "ldstr" | "ldtoken" | "ldftn" | "arglist" | "sizeof" => {
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            "ldvirtftn" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            name if name.starts_with("ldc.") => outgoing.stack.push(ReceiverFact::Unknown),
+            name if name.starts_with("conv.") || name == "neg" || name == "not" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            "add" | "add.ovf" | "add.ovf.un" | "sub" | "sub.ovf" | "sub.ovf.un" | "mul"
+            | "mul.ovf" | "mul.ovf.un" | "div" | "div.un" | "rem" | "rem.un" | "and" | "or"
+            | "xor" | "shl" | "shr" | "shr.un" | "ceq" | "cgt" | "cgt.un" | "clt" | "clt.un" => {
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                let _: ReceiverFact = pop_receiver_fact(&mut outgoing);
+                outgoing.stack.push(ReceiverFact::Unknown);
+            }
+            _ => clear_receiver_stack(&mut outgoing),
+        }
+        Self::consume_branch_operands(&mut outgoing, instruction);
+        if matches!(instruction.name.as_str(), "leave" | "leave.s") {
+            outgoing.stack.clear();
+        }
+        outgoing
+    }
+
+    fn transfer_newobj(&self, state: &mut ReceiverState, instruction: &Instruction) {
+        let OperandValue::Token(token) = instruction.operand else {
+            poison_receiver_state(state);
+            return;
+        };
+        let signature: Option<MethodSig> = self.callee_signature(token);
+        let owner_type: Option<u32> = self
+            .callee_descriptor(token)
+            .map(|descriptor: CalleeDescriptor| descriptor.owner_type);
+        let Some(signature): Option<MethodSig> = signature else {
+            poison_receiver_state(state);
+            return;
+        };
+        pop_receiver_count(state, signature.params.len());
+        match owner_type {
+            Some(type_rid)
+                if !self.type_has_generic_params(type_rid)
+                    && !self.type_is_value_type(type_rid) =>
+            {
+                state.stack.push(ReceiverFact::Exact(type_rid));
+            }
+            _ => state.stack.push(ReceiverFact::Unknown),
+        }
+    }
+
+    fn transfer_call(&self, state: &mut ReceiverState, instruction: &Instruction) {
+        let OperandValue::Token(token) = instruction.operand else {
+            poison_receiver_state(state);
+            return;
+        };
+        let Some(signature): Option<MethodSig> = self.callee_signature(token) else {
+            poison_receiver_state(state);
+            return;
+        };
+        let count: usize = signature
+            .params
+            .len()
+            .saturating_add(usize::from(signature.has_this));
+        pop_receiver_count(state, count);
+        if !matches!(signature.return_type, crate::signature::TypeSigOrVoid::Void) {
+            state.stack.push(ReceiverFact::Unknown);
+        }
+    }
+
+    fn consume_branch_operands(state: &mut ReceiverState, instruction: &Instruction) {
+        if instruction.flow != FlowControl::CondBranch {
+            return;
+        }
+        match instruction.name.as_str() {
+            "brfalse" | "brfalse.s" | "brtrue" | "brtrue.s" | "switch" => {
+                let _: ReceiverFact = pop_receiver_fact(state);
+            }
+            _ => pop_receiver_count(state, 2),
+        }
+    }
+
+    fn successors(body: &MethodBody, index: usize, offsets: &BTreeMap<u32, usize>) -> Vec<usize> {
+        let instruction: &Instruction = &body.instructions[index];
+        if instruction.name == "jmp" {
+            return Vec::new();
+        }
+        let next: Option<usize> = index
+            .checked_add(1)
+            .filter(|next: &usize| *next < body.instructions.len());
+        let mut out: Vec<usize> = Vec::new();
+        match instruction.flow {
+            FlowControl::Branch => {
+                if let Some(target) = branch_successor(body, index, offsets) {
+                    out.push(target);
+                }
+            }
+            FlowControl::CondBranch => {
+                for target in branch_successors(body, index, offsets) {
+                    if !out.contains(&target) {
+                        out.push(target);
+                    }
+                }
+                if let Some(next) = next
+                    && !out.contains(&next)
+                {
+                    out.push(next);
+                }
+            }
+            FlowControl::Return | FlowControl::Throw => {}
+            FlowControl::Next | FlowControl::Call | FlowControl::Meta | FlowControl::Break => {
+                if let Some(next) = next {
+                    out.push(next);
+                }
+            }
+        }
+        out
+    }
+
+    fn merge_receiver_states(existing: &ReceiverState, incoming: &ReceiverState) -> ReceiverState {
+        if existing.poisoned || incoming.poisoned || existing.stack.len() != incoming.stack.len() {
+            return ReceiverState {
+                stack: Vec::new(),
+                locals: BTreeMap::new(),
+                poisoned: true,
+            };
+        }
+        let stack: Vec<ReceiverFact> = existing
+            .stack
+            .iter()
+            .zip(&incoming.stack)
+            .map(|(left, right): (&ReceiverFact, &ReceiverFact)| {
+                if left == right {
+                    *left
+                } else {
+                    ReceiverFact::Unknown
+                }
+            })
+            .collect();
+        let keys: BTreeSet<u32> = existing
+            .locals
+            .keys()
+            .chain(incoming.locals.keys())
+            .copied()
+            .collect();
+        let mut locals: BTreeMap<u32, ReceiverFact> = BTreeMap::new();
+        for key in keys {
+            let left: Option<&ReceiverFact> = existing.locals.get(&key);
+            let right: Option<&ReceiverFact> = incoming.locals.get(&key);
+            if let (Some(ReceiverFact::Exact(left)), Some(ReceiverFact::Exact(right))) =
+                (left, right)
+                && left == right
+            {
+                locals.insert(key, ReceiverFact::Exact(*left));
+            }
+        }
+        ReceiverState {
+            stack,
+            locals,
+            poisoned: false,
+        }
+    }
+
+    fn resolve_callvirt_target(&self, token: u32, receiver_type: Option<u32>) -> Option<u32> {
+        let descriptor: CalleeDescriptor = self.callee_descriptor(token)?;
+        let receiver_type: u32 = receiver_type?;
+        if self.type_has_generic_params(descriptor.owner_type)
+            || self.type_has_generic_params(receiver_type)
+            || self.type_is_value_type(receiver_type)
+            || self.has_method_impl_in_hierarchy(receiver_type)
+            || self.has_ambiguous_matching_method_in_hierarchy(receiver_type, &descriptor)
+            || self.has_ambiguous_matching_methods(descriptor.owner_type, &descriptor)
+        {
+            return None;
+        }
+        self.resolve_exact_receiver_target(receiver_type, &descriptor)
+    }
+
+    fn resolve_exact_receiver_target(
+        &self,
+        receiver_type: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<u32> {
+        if self.type_is_interface(descriptor.owner_type) {
+            self.resolve_interface_dispatch(receiver_type, descriptor)
+        } else {
+            self.resolve_class_dispatch(receiver_type, descriptor)
+        }
+    }
+
+    fn resolve_class_dispatch(
+        &self,
+        receiver_type: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<u32> {
+        if !self.type_is_or_derived_from(receiver_type, descriptor.owner_type) {
+            return None;
+        }
+        let declaration: u32 = self.declaration_method(descriptor)?;
+        let declaration_row: &MethodDefRow = self
+            .tables
+            .methods
+            .get(declaration.checked_sub(1)? as usize)?;
+        if declaration_row.flags & (METHOD_VIRTUAL | METHOD_ABSTRACT) == 0 {
+            return Some(method_def_token(declaration));
+        }
+        let mut current: u32 = receiver_type;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if let Some(candidate) = self.find_matching_declared_method(current, descriptor)
+                && self.method_uses_virtual_slot(candidate, declaration)
+            {
+                return Some(method_def_token(candidate));
+            }
+            if current == descriptor.owner_type {
+                return Some(method_def_token(declaration));
+            }
+            let base: u32 = self.base_type_rid(current)?;
+            current = base;
+        }
+        None
+    }
+
+    fn resolve_interface_dispatch(
+        &self,
+        receiver_type: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<u32> {
+        if !self.type_implements_interface(receiver_type, descriptor.owner_type) {
+            return None;
+        }
+        let _: u32 = self.declaration_method(descriptor)?;
+        let lineage: Vec<u32> =
+            self.interface_implementation_lineage(receiver_type, descriptor.owner_type)?;
+        let interface_root: u32 = *lineage.last()?;
+        let (declaration_owner, declaration): (u32, u32) =
+            self.implicit_interface_method(interface_root, descriptor)?;
+        let declaration_row: &MethodDefRow = self
+            .tables
+            .methods
+            .get(declaration.checked_sub(1)? as usize)?;
+        let mut class_type: u32 = receiver_type;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(class_type) {
+            let Some(candidate): Option<u32> =
+                self.find_matching_declared_method(class_type, descriptor)
+            else {
+                if class_type == declaration_owner {
+                    return Some(method_def_token(declaration));
+                }
+                class_type = self.base_type_rid(class_type)?;
+                continue;
+            };
+            let candidate_row: &MethodDefRow = self
+                .tables
+                .methods
+                .get(candidate.checked_sub(1)? as usize)?;
+            if class_type == declaration_owner
+                || declaration_row.flags & METHOD_VIRTUAL != 0
+                    && candidate_row.flags & METHOD_VIRTUAL != 0
+                    && self.method_uses_virtual_slot(candidate, declaration)
+            {
+                return Some(method_def_token(candidate));
+            }
+            class_type = self.base_type_rid(class_type)?;
+        }
+        None
+    }
+
+    fn method_uses_virtual_slot(&self, method_rid: u32, declaration: u32) -> bool {
+        let mut current_method: u32 = method_rid;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current_method) {
+            if current_method == declaration {
+                return true;
+            }
+            let Some(method_index): Option<usize> = current_method
+                .checked_sub(1)
+                .and_then(|rid: u32| usize::try_from(rid).ok())
+            else {
+                return false;
+            };
+            let Some(row): Option<&MethodDefRow> = self.tables.methods.get(method_index) else {
+                return false;
+            };
+            if row.flags & METHOD_VIRTUAL == 0 || row.flags & METHOD_NEW_SLOT != 0 {
+                return false;
+            }
+            let Some(owner): Option<u32> = self.method_owner_rid(current_method) else {
+                return false;
+            };
+            let Some(descriptor): Option<CalleeDescriptor> =
+                self.callee_descriptor(method_def_token(current_method))
+            else {
+                return false;
+            };
+            let Some(base_method): Option<u32> = self.nearest_base_slot_method(owner, &descriptor)
+            else {
+                return false;
+            };
+            current_method = base_method;
+        }
+        false
+    }
+
+    fn nearest_base_slot_method(&self, owner: u32, descriptor: &CalleeDescriptor) -> Option<u32> {
+        let mut current: u32 = self.base_type_rid(owner)?;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if let Some(candidate) = self.find_matching_declared_method(current, descriptor) {
+                let row: &MethodDefRow = self
+                    .tables
+                    .methods
+                    .get(candidate.checked_sub(1)? as usize)?;
+                if row.flags & METHOD_VIRTUAL != 0 {
+                    return Some(candidate);
+                }
+            }
+            current = self.base_type_rid(current)?;
+        }
+        None
+    }
+
+    fn interface_implementation_lineage(
+        &self,
+        receiver_type: u32,
+        interface_type: u32,
+    ) -> Option<Vec<u32>> {
+        let mut current: u32 = receiver_type;
+        let mut lineage: Vec<u32> = Vec::new();
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            lineage.push(current);
+            if self.type_directly_implements_interface(current, interface_type) {
+                return Some(lineage);
+            }
+            current = self.base_type_rid(current)?;
+        }
+        None
+    }
+
+    fn implicit_interface_method(
+        &self,
+        interface_root: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<(u32, u32)> {
+        let mut current: u32 = interface_root;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if let Some(method) = self.find_implicit_interface_method(current, descriptor) {
+                return Some((current, method));
+            }
+            current = self.base_type_rid(current)?;
+        }
+        None
+    }
+
+    fn has_method_impl_in_hierarchy(&self, receiver_type: u32) -> bool {
+        let mut current: u32 = receiver_type;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if self.method_impl_types.contains(&current) {
+                return true;
+            }
+            let Some(base): Option<u32> = self.base_type_rid(current) else {
+                return false;
+            };
+            current = base;
+        }
+        true
+    }
+
+    fn callee_descriptor(&self, token: u32) -> Option<CalleeDescriptor> {
+        let table: TableId = token_table(token)?;
+        let rid: u32 = token_rid(token)?;
+        match table {
+            TableId::MethodDef => {
+                let row: &MethodDefRow = self.tables.methods.get(rid.checked_sub(1)? as usize)?;
+                let signature: MethodSig = self.method_signature(row.signature)?;
+                let owner_type: u32 = self.method_owner_rid(rid)?;
+                Some(CalleeDescriptor {
+                    owner_type,
+                    name: self.string(row.name),
+                    signature,
+                    method_def_rid: Some(rid),
+                })
+            }
+            TableId::MemberRef => {
+                let row: &MemberRefRow =
+                    self.tables.member_refs.get(rid.checked_sub(1)? as usize)?;
+                let parent: RowRef = row.parent?;
+                if parent.table != TableId::TypeDef {
+                    return None;
+                }
+                let signature: MethodSig = self.method_signature(row.signature)?;
+                Some(CalleeDescriptor {
+                    owner_type: parent.row,
+                    name: self.string(row.name),
+                    signature,
+                    method_def_rid: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn method_signature(&self, blob_index: u32) -> Option<MethodSig> {
+        let blob: &[u8] = self.blob(blob_index)?;
+        let signature: MethodSig = parse_method_sig_strict(blob).ok()?;
+        signature_is_closed(&signature).then_some(signature)
+    }
+
+    fn find_matching_declared_method(
+        &self,
+        type_rid: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<u32> {
+        if self.matching_declared_method_count(type_rid, descriptor)? != 1 {
+            return None;
+        }
+        let (start, end): (u32, u32) = self.method_range(type_rid)?;
+        for method_rid in start..end {
+            let row: &MethodDefRow = self
+                .tables
+                .methods
+                .get(method_rid.checked_sub(1)? as usize)?;
+            if !self.method_matches_descriptor(row, descriptor)? {
+                continue;
+            }
+            return Some(method_rid);
+        }
+        None
+    }
+
+    fn declaration_method(&self, descriptor: &CalleeDescriptor) -> Option<u32> {
+        match descriptor.method_def_rid {
+            Some(method_rid)
+                if self.method_owner_rid(method_rid) == Some(descriptor.owner_type) =>
+            {
+                Some(method_rid)
+            }
+            Some(_) => None,
+            None => self.find_matching_declared_method(descriptor.owner_type, descriptor),
+        }
+    }
+
+    fn find_implicit_interface_method(
+        &self,
+        type_rid: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<u32> {
+        let (start, end): (u32, u32) = self.method_range(type_rid)?;
+        let mut matched: Option<u32> = None;
+        for method_rid in start..end {
+            let row: &MethodDefRow = self
+                .tables
+                .methods
+                .get(method_rid.checked_sub(1)? as usize)?;
+            if row.flags & METHOD_VIRTUAL == 0
+                || row.flags & METHOD_ACCESS_MASK != METHOD_PUBLIC
+                || !self.method_matches_descriptor(row, descriptor)?
+            {
+                continue;
+            }
+            matched = Some(method_rid);
+        }
+        matched
+    }
+
+    fn has_ambiguous_matching_methods(&self, type_rid: u32, descriptor: &CalleeDescriptor) -> bool {
+        self.matching_declared_method_count(type_rid, descriptor)
+            .is_none_or(|count: usize| count > 1)
+    }
+
+    fn has_ambiguous_matching_method_in_hierarchy(
+        &self,
+        type_rid: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> bool {
+        let mut current: u32 = type_rid;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if self.has_ambiguous_matching_methods(current, descriptor) {
+                return true;
+            }
+            let Some(base): Option<u32> = self.base_type_rid(current) else {
+                return false;
+            };
+            current = base;
+        }
+        true
+    }
+
+    fn matching_declared_method_count(
+        &self,
+        type_rid: u32,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<usize> {
+        let (start, end): (u32, u32) = self.method_range(type_rid)?;
+        let mut count: usize = 0;
+        for method_rid in start..end {
+            let row: &MethodDefRow = self
+                .tables
+                .methods
+                .get(method_rid.checked_sub(1)? as usize)?;
+            if self.method_matches_descriptor(row, descriptor)? {
+                count = count.checked_add(1)?;
+            }
+        }
+        Some(count)
+    }
+
+    fn method_matches_descriptor(
+        &self,
+        row: &MethodDefRow,
+        descriptor: &CalleeDescriptor,
+    ) -> Option<bool> {
+        if row.flags & METHOD_STATIC != 0 || self.string(row.name) != descriptor.name {
+            return Some(false);
+        }
+        Some(self.method_signature(row.signature)? == descriptor.signature)
+    }
+
+    fn method_range(&self, type_rid: u32) -> Option<(u32, u32)> {
+        let index: usize = usize::try_from(type_rid.checked_sub(1)?).ok()?;
+        let type_row: &TypeDefRow = self.tables.type_defs.get(index)?;
+        let start: u32 = type_row.method_list;
+        let end: u32 = match self.tables.type_defs.get(index.checked_add(1)?) {
+            Some(next) => next.method_list,
+            None => u32::try_from(self.tables.methods.len())
+                .ok()?
+                .checked_add(1)?,
+        };
+        (start <= end).then_some((start, end))
+    }
+
+    fn method_owner_rid(&self, method_rid: u32) -> Option<u32> {
+        for (index, type_row) in self.tables.type_defs.iter().enumerate() {
+            let start: u32 = type_row.method_list;
+            let end: u32 = match self.tables.type_defs.get(index.checked_add(1)?) {
+                Some(next) => next.method_list,
+                None => u32::try_from(self.tables.methods.len())
+                    .ok()?
+                    .checked_add(1)?,
+            };
+            if method_rid >= start && method_rid < end {
+                return u32::try_from(index).ok()?.checked_add(1);
+            }
+        }
+        None
+    }
+
+    fn type_is_or_derived_from(&self, candidate: u32, ancestor: u32) -> bool {
+        let mut current: u32 = candidate;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if current == ancestor {
+                return true;
+            }
+            let Some(base) = self.base_type_rid(current) else {
+                return false;
+            };
+            current = base;
+        }
+        false
+    }
+
+    fn type_implements_interface(&self, type_rid: u32, interface_type: u32) -> bool {
+        let mut current: u32 = type_rid;
+        let mut visited: BTreeSet<u32> = BTreeSet::new();
+        while visited.insert(current) {
+            if self.type_directly_implements_interface(current, interface_type) {
+                return true;
+            }
+            let Some(base) = self.base_type_rid(current) else {
+                return false;
+            };
+            current = base;
+        }
+        false
+    }
+
+    fn type_directly_implements_interface(&self, type_rid: u32, interface_type: u32) -> bool {
+        self.tables
+            .interface_impls
+            .iter()
+            .filter(|row: &&InterfaceImplRow| row.class_type == type_rid)
+            .filter_map(|row: &InterfaceImplRow| row.interface)
+            .any(|implemented: RowRef| {
+                self.interface_reference_matches(implemented, interface_type, &mut BTreeSet::new())
+            })
+    }
+
+    fn interface_reference_matches(
+        &self,
+        implemented: RowRef,
+        target: u32,
+        visited: &mut BTreeSet<u32>,
+    ) -> bool {
+        if implemented.table != TableId::TypeDef || !visited.insert(implemented.row) {
+            return false;
+        }
+        if implemented.row == target {
+            return true;
+        }
+        self.tables
+            .interface_impls
+            .iter()
+            .filter(|row: &&InterfaceImplRow| row.class_type == implemented.row)
+            .filter_map(|row: &InterfaceImplRow| row.interface)
+            .any(|parent: RowRef| self.interface_reference_matches(parent, target, visited))
+    }
+
+    fn base_type_rid(&self, type_rid: u32) -> Option<u32> {
+        let type_row: &TypeDefRow = self
+            .tables
+            .type_defs
+            .get(type_rid.checked_sub(1)? as usize)?;
+        let parent: RowRef = type_row.extends?;
+        (parent.table == TableId::TypeDef).then_some(parent.row)
+    }
+
+    fn type_is_interface(&self, type_rid: u32) -> bool {
+        self.type_flags(type_rid)
+            .is_some_and(|flags: u32| flags & TYPE_INTERFACE != 0)
+    }
+
+    fn type_is_value_type(&self, type_rid: u32) -> bool {
+        let Some(index): Option<usize> = type_rid
+            .checked_sub(1)
+            .and_then(|rid: u32| usize::try_from(rid).ok())
+        else {
+            return false;
+        };
+        let Some(type_row): Option<&TypeDefRow> = self.tables.type_defs.get(index) else {
+            return false;
+        };
+        let Some(parent): Option<RowRef> = type_row.extends else {
+            return false;
+        };
+        if parent.table != TableId::TypeRef {
+            return false;
+        }
+        self.type_ref_name(parent.row)
+            .is_some_and(|name: String| name == "System.ValueType" || name == "System.Enum")
+    }
+
+    fn type_flags(&self, type_rid: u32) -> Option<u32> {
+        Some(
+            self.tables
+                .type_defs
+                .get(type_rid.checked_sub(1)? as usize)?
+                .flags,
+        )
+    }
+
+    fn type_has_generic_params(&self, type_rid: u32) -> bool {
+        self.tables
+            .generic_params
+            .iter()
+            .any(|parameter: &GenericParamRow| {
+                parameter.owner.is_some_and(|owner: RowRef| {
+                    owner.table == TableId::TypeDef && owner.row == type_rid
+                })
+            })
     }
 
     #[must_use]
@@ -879,6 +1774,186 @@ impl Resolver {
     }
 }
 
+fn local_slot(instruction: &Instruction) -> u32 {
+    let suffix: Option<&str> = instruction.name.rsplit('.').next();
+    let parsed: Option<u32> = suffix.and_then(|suffix: &str| suffix.parse::<u32>().ok());
+    if let Some(slot) = parsed {
+        return slot;
+    }
+    match instruction.operand {
+        OperandValue::U8(value) => u32::from(value),
+        OperandValue::U16(value) => u32::from(value),
+        OperandValue::I32(value) => u32::try_from(value).map_or(0, |value: u32| value),
+        _ => 0,
+    }
+}
+
+fn pop_receiver_fact(state: &mut ReceiverState) -> ReceiverFact {
+    if let Some(value) = state.stack.pop() {
+        value
+    } else {
+        state.poisoned = true;
+        ReceiverFact::Unknown
+    }
+}
+
+fn pop_receiver_count(state: &mut ReceiverState, count: usize) {
+    for _ in 0..count {
+        let _: ReceiverFact = pop_receiver_fact(state);
+    }
+}
+
+fn clear_receiver_stack(state: &mut ReceiverState) {
+    state.stack.clear();
+    state.locals.clear();
+    state.poisoned = true;
+}
+
+fn poison_receiver_state(state: &mut ReceiverState) {
+    clear_receiver_stack(state);
+}
+
+fn branch_successor(
+    body: &MethodBody,
+    index: usize,
+    offsets: &BTreeMap<u32, usize>,
+) -> Option<usize> {
+    branch_successors(body, index, offsets).into_iter().next()
+}
+
+fn branch_successors(
+    body: &MethodBody,
+    index: usize,
+    offsets: &BTreeMap<u32, usize>,
+) -> Vec<usize> {
+    let instruction: &Instruction = match body.instructions.get(index) {
+        Some(instruction) => instruction,
+        None => return Vec::new(),
+    };
+    let next_index: Option<usize> = index.checked_add(1);
+    let next_offset: u32 = next_index
+        .and_then(|next: usize| body.instructions.get(next))
+        .map_or(body.code_size, |next: &Instruction| next.offset);
+    let mut out: Vec<usize> = Vec::new();
+    let mut push_relative = |relative: i32| {
+        let Some(index): Option<usize> = branch_target_index(next_offset, relative, offsets) else {
+            return;
+        };
+        if !out.contains(&index) {
+            out.push(index);
+        }
+    };
+    match &instruction.operand {
+        OperandValue::BrTarget(relative) => push_relative(*relative),
+        OperandValue::Switch(relatives) => {
+            for relative in relatives {
+                push_relative(*relative);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn control_flow_targets_are_valid(body: &MethodBody, offsets: &BTreeMap<u32, usize>) -> bool {
+    body.instructions
+        .iter()
+        .enumerate()
+        .all(|(index, instruction): (usize, &Instruction)| {
+            let next_offset: u32 = index
+                .checked_add(1)
+                .and_then(|next: usize| body.instructions.get(next))
+                .map_or(body.code_size, |next: &Instruction| next.offset);
+            match instruction.flow {
+                FlowControl::Branch if instruction.name == "jmp" => true,
+                FlowControl::Branch | FlowControl::CondBranch => match &instruction.operand {
+                    OperandValue::BrTarget(relative) => {
+                        branch_target_index(next_offset, *relative, offsets).is_some()
+                    }
+                    OperandValue::Switch(relatives) => relatives.iter().all(|relative: &i32| {
+                        branch_target_index(next_offset, *relative, offsets).is_some()
+                    }),
+                    _ => false,
+                },
+                FlowControl::Next
+                | FlowControl::Call
+                | FlowControl::Return
+                | FlowControl::Throw
+                | FlowControl::Meta
+                | FlowControl::Break => true,
+            }
+        })
+}
+
+fn branch_target_index(
+    next_offset: u32,
+    relative: i32,
+    offsets: &BTreeMap<u32, usize>,
+) -> Option<usize> {
+    let target: i64 = i64::from(next_offset).checked_add(i64::from(relative))?;
+    let target: u32 = u32::try_from(target).ok()?;
+    offsets.get(&target).copied()
+}
+
+fn token_table(token: u32) -> Option<TableId> {
+    let index: u8 = u8::try_from(token >> 24).ok()?;
+    TableId::from_index(index)
+}
+
+fn token_rid(token: u32) -> Option<u32> {
+    let rid: u32 = token & 0x00FF_FFFF;
+    (rid != 0).then_some(rid)
+}
+
+fn method_def_token(method_rid: u32) -> u32 {
+    (u32::from(TableId::MethodDef.index()) << 24) | method_rid
+}
+
+fn signature_is_closed(signature: &MethodSig) -> bool {
+    if signature.generic_param_count != 0 || signature.explicit_this {
+        return false;
+    }
+    let return_closed: bool = match &signature.return_type {
+        crate::signature::TypeSigOrVoid::Void => true,
+        crate::signature::TypeSigOrVoid::Type(ty) => type_sig_is_closed(ty),
+    };
+    return_closed && signature.params.iter().all(type_sig_is_closed)
+}
+
+fn type_sig_is_closed(ty: &TypeSig) -> bool {
+    match ty {
+        TypeSig::NamedType { .. }
+        | TypeSig::Void
+        | TypeSig::Boolean
+        | TypeSig::Char
+        | TypeSig::I1
+        | TypeSig::U1
+        | TypeSig::I2
+        | TypeSig::U2
+        | TypeSig::I4
+        | TypeSig::U4
+        | TypeSig::I8
+        | TypeSig::U8
+        | TypeSig::R4
+        | TypeSig::R8
+        | TypeSig::String
+        | TypeSig::IntPtr
+        | TypeSig::UIntPtr
+        | TypeSig::Object
+        | TypeSig::TypedByRef => true,
+        TypeSig::SzArray(inner)
+        | TypeSig::Ptr(inner)
+        | TypeSig::ByRef(inner)
+        | TypeSig::Pinned(inner) => type_sig_is_closed(inner),
+        TypeSig::Array { element, .. } => type_sig_is_closed(element),
+        TypeSig::GenericInst { .. }
+        | TypeSig::Var(_)
+        | TypeSig::MVar(_)
+        | TypeSig::FnPtr
+        | TypeSig::Unknown => false,
+    }
+}
+
 #[must_use]
 fn row_ref_token(r: RowRef) -> u32 {
     (u32::from(r.table as u8) << 24) | (r.row & 0x00FF_FFFF)
@@ -929,9 +2004,39 @@ mod tests {
     }
 
     #[test]
+    fn malformed_branch_targets_are_rejected() {
+        let body: MethodBody = MethodBody {
+            max_stack: 0,
+            code_size: 2,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                Instruction {
+                    offset: 0,
+                    opcode: 0x2B,
+                    name: "br.s".to_owned(),
+                    operand: OperandValue::BrTarget(16),
+                    flow: FlowControl::Branch,
+                },
+                Instruction {
+                    offset: 1,
+                    opcode: 0x2A,
+                    name: "ret".to_owned(),
+                    operand: OperandValue::None,
+                    flow: FlowControl::Return,
+                },
+            ],
+            exception_clauses: Vec::new(),
+        };
+        let offsets: BTreeMap<u32, usize> = [(0, 0), (1, 1)].into_iter().collect();
+        assert!(!control_flow_targets_are_valid(&body, &offsets));
+    }
+
+    #[test]
     fn strict_user_strings_reject_malformed_utf16_and_trailers() {
         let resolver: fn(Vec<u8>) -> Resolver = |us: Vec<u8>| Resolver {
             tables: Tables::default(),
+            method_impl_types: BTreeSet::new(),
             strings_heap: Vec::new(),
             blob: Vec::new(),
             us,
