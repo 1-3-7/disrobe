@@ -8,7 +8,7 @@ use super::function_meta::load_const;
 use super::loops::{find_loop, is_walrus_store_shape, non_empty};
 use super::stmts::{
     chain_landing_pad_cleanup_len, first_significant, last_significant_back, loads_none,
-    name_at_either, resolve_jump_target, structure_stmts,
+    name_at_either, region_ends_in_hard_terminator, resolve_jump_target, structure_stmts,
 };
 use super::try_with::{
     LoopRegion, TryRegion, find_try_region, is_back_edge, is_forward_cond_jump,
@@ -918,6 +918,17 @@ fn skip_call_null_setup(stream: &DecodedStream, from: usize, hi: usize) -> usize
     k
 }
 
+fn assert_marker_is_branch_arm(stream: &DecodedStream, lo: usize, raise_idx: usize) -> bool {
+    (lo..raise_idx).any(|j: usize| {
+        is_forward_cond_jump(&stream.ops[j])
+            && !is_chain_cond_jump(&stream.ops, j)
+            && !is_value_form_shortcircuit(&stream.ops, j)
+            && resolve_jump_target(stream, j, &stream.ops[j]).is_some_and(|t: usize| {
+                t > j && t <= raise_idx && region_ends_in_hard_terminator(stream, j + 1, t)
+            })
+    })
+}
+
 pub(super) fn try_structure_compound_assert(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -929,6 +940,9 @@ pub(super) fn try_structure_compound_assert(
     }) else {
         return Ok(None);
     };
+    if assert_marker_is_branch_arm(stream, lo, raise_idx) {
+        return Ok(None);
+    }
     let (raise_op, msg): (usize, Option<Expr>) = match assert_raise_after(stream, raise_idx, hi) {
         Some((r, m)) => (r, assert_msg_expr(code, stream, raise_idx, r, m)?),
         None => return Ok(None),
