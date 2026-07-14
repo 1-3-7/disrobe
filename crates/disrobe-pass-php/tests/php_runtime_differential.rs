@@ -168,6 +168,18 @@ fn strtr_custom_alphabet_base64_runtime_equivalent() {
 }
 
 #[test]
+fn dot_append_base64_payload_builder_runtime_equivalent() {
+    let blob: Vec<u8> = common::build_dot_append_b64_chain(&marker_payload());
+    assert_runtime_equivalent("dot-append base64", &blob, MARKER);
+}
+
+#[test]
+fn dot_append_gzinflate_payload_builder_runtime_equivalent() {
+    let blob: Vec<u8> = common::build_dot_append_gzinflate_chain(&marker_payload());
+    assert_runtime_equivalent("dot-append gzinflate", &blob, MARKER);
+}
+
+#[test]
 fn xor_keystream_loop_runtime_equivalent() {
     let blob: Vec<u8> = common::build_loop_xor_chain(&marker_payload());
     assert_runtime_equivalent("xor-keystream-loop", &blob, MARKER);

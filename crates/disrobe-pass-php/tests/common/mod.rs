@@ -221,6 +221,32 @@ pub fn build_rc4_static_key_chain(payload: &str) -> Vec<u8> {
     out
 }
 
+pub fn build_dot_append_b64_chain(payload: &str) -> Vec<u8> {
+    let encoded: String = b64(payload.as_bytes());
+    append_chunks_chain(encoded.as_bytes(), b"base64_decode($p)")
+}
+
+pub fn build_dot_append_gzinflate_chain(payload: &str) -> Vec<u8> {
+    let deflated: Vec<u8> = deflate(payload.as_bytes());
+    let encoded: String = b64(&deflated);
+    append_chunks_chain(encoded.as_bytes(), b"gzinflate(base64_decode($p))")
+}
+
+fn append_chunks_chain(encoded: &[u8], decode_expr: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"<?php $p = '';\n");
+    for chunk in encoded.chunks(6) {
+        out.extend_from_slice(b"$p .= '");
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(b"';\n");
+    }
+    out.extend_from_slice(b"ev");
+    out.extend_from_slice(b"al(");
+    out.extend_from_slice(decode_expr);
+    out.extend_from_slice(b");");
+    out
+}
+
 pub fn build_array_indexed_dispatch(payload: &str) -> Vec<u8> {
     let deflated: Vec<u8> = deflate(payload.as_bytes());
     let encoded: String = b64(&deflated);

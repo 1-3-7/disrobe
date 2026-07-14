@@ -132,11 +132,23 @@ enum AssignTarget {
     Dynamic(Box<Expr>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssignOp {
+    Set,
+    Append,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stmt {
-    Assign { target: AssignTarget, value: Expr },
+    Assign {
+        target: AssignTarget,
+        op: AssignOp,
+        value: Expr,
+    },
     Expression(Expr),
-    ControlBlock { raw: Vec<u8> },
+    ControlBlock {
+        raw: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -369,15 +381,14 @@ impl<'a> Parser<'a> {
             let save: usize = self.pos;
             if let Some(var_ref) = self.parse_var_ref() {
                 self.skip_trivia();
-                if self.peek() == Some(b'=') && self.buf.get(self.pos + 1) != Some(&b'=') {
-                    self.pos += 1;
+                if let Some(op) = self.match_assign_op() {
                     let value: Expr = self.parse_expr()?;
                     self.expect_semicolon();
                     let target: AssignTarget = match var_ref {
                         VarRef::Name(name) => AssignTarget::Name(name),
                         VarRef::Dynamic(name_expr) => AssignTarget::Dynamic(Box::new(name_expr)),
                     };
-                    return Some(Stmt::Assign { target, value });
+                    return Some(Stmt::Assign { target, op, value });
                 }
             }
             self.pos = save;
@@ -392,6 +403,18 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(b';') {
             self.pos += 1;
         }
+    }
+
+    fn match_assign_op(&mut self) -> Option<AssignOp> {
+        if self.peek() == Some(b'=') && self.buf.get(self.pos + 1) != Some(&b'=') {
+            self.pos += 1;
+            return Some(AssignOp::Set);
+        }
+        if self.peek() == Some(b'.') && self.buf.get(self.pos + 1) == Some(&b'=') {
+            self.pos += 2;
+            return Some(AssignOp::Append);
+        }
+        None
     }
 
     fn parse_var_ref(&mut self) -> Option<VarRef> {
@@ -830,19 +853,36 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut loop_src: Vec<u8> = Vec::new();
     for stmt in &stmts {
         match stmt {
-            Stmt::Assign { target, value } => {
+            Stmt::Assign { target, op, value } => {
                 let Some(name): Option<Vec<u8>> = resolve_assign_target(target, &env, depth) else {
                     continue;
                 };
-                if let Some(body) = create_function_body(value, &env, depth) {
-                    env.set_code(name, Value::Str(body));
-                    bound += 1;
-                } else if let Some(elements) = inline_array_elements(value, &env, depth) {
-                    env.set_array(name, elements);
-                    bound += 1;
-                } else if let Some(v) = eval_expr(value, &env, depth) {
-                    env.set(name, v);
-                    bound += 1;
+                match op {
+                    AssignOp::Set => {
+                        if let Some(body) = create_function_body(value, &env, depth) {
+                            env.set_code(name, Value::Str(body));
+                            bound += 1;
+                        } else if let Some(elements) = inline_array_elements(value, &env, depth) {
+                            env.set_array(name, elements);
+                            bound += 1;
+                        } else if let Some(v) = eval_expr(value, &env, depth) {
+                            env.set(name, v);
+                            bound += 1;
+                        }
+                    }
+                    AssignOp::Append => {
+                        let Value::Str(rhs): Value = match eval_expr(value, &env, depth) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        let mut buf: Vec<u8> = match env.get(&name) {
+                            Some(Value::Str(prev)) => prev.clone(),
+                            None => Vec::new(),
+                        };
+                        buf.extend_from_slice(&rhs);
+                        env.set(name, Value::Str(buf));
+                        bound += 1;
+                    }
                 }
             }
             Stmt::ControlBlock { raw } => {
@@ -1701,6 +1741,33 @@ mod tests {
         let report: LoaderReport = peel_loader(blob, DEFAULT_LOADER_DEPTH).expect("recovered");
         assert_eq!(report.sink, LoaderSink::VariableFunction);
         assert_eq!(report.recovered, b"echo 1;");
+    }
+
+    #[test]
+    fn dot_append_builds_the_base64_payload_across_statements() {
+        let payload: &[u8] = b"echo 'dot-append-recovered';";
+        let encoded: String = B64_STD.encode(payload);
+        let mut src: Vec<u8> = b"<?php $p = '';".to_vec();
+        for chunk in encoded.as_bytes().chunks(5) {
+            src.extend_from_slice(b"$p .= '");
+            src.extend_from_slice(chunk);
+            src.extend_from_slice(b"';");
+        }
+        src.extend_from_slice(b"eval(base64_decode($p));");
+        let report: LoaderReport = peel_loader(&src, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.sink, LoaderSink::Eval);
+        assert_eq!(report.recovered, payload);
+    }
+
+    #[test]
+    fn dot_append_without_empty_init_starts_from_first_assignment() {
+        let payload: &[u8] = b"echo 'append-no-init';";
+        let encoded: String = B64_STD.encode(payload);
+        let (head, tail): (&str, &str) = encoded.split_at(encoded.len() / 2);
+        let src: Vec<u8> =
+            format!("<?php $p = '{head}'; $p .= '{tail}'; eval(base64_decode($p));").into_bytes();
+        let report: LoaderReport = peel_loader(&src, DEFAULT_LOADER_DEPTH).expect("recovered");
+        assert_eq!(report.recovered, payload);
     }
 
     #[test]
