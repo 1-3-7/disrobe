@@ -685,7 +685,7 @@ fn int_const(ins: &Instruction, name: &str) -> i32 {
     0
 }
 
-fn slot_index(ins: &Instruction, name: &str) -> u32 {
+pub(crate) fn slot_index(ins: &Instruction, name: &str) -> u32 {
     if let Some(rest) = name.rsplit('.').next()
         && let Ok(n) = rest.parse::<u32>()
     {
@@ -803,6 +803,45 @@ mod tests {
             instructions: disassemble(code).expect("disasm"),
             exception_clauses: Vec::new(),
         }
+    }
+
+    #[test]
+    fn slot_index_decodes_suffix_then_operand_and_maps_negative_to_out_of_range() {
+        let suffixed: Instruction = Instruction {
+            offset: 0,
+            opcode: 0,
+            name: "ldloc.2".to_owned(),
+            operand: OperandValue::None,
+            flow: crate::cil::FlowControl::Next,
+        };
+        assert_eq!(slot_index(&suffixed, &suffixed.name), 2);
+
+        let short_form: Instruction = Instruction {
+            offset: 0,
+            opcode: 0,
+            name: "ldloc.s".to_owned(),
+            operand: OperandValue::U8(7),
+            flow: crate::cil::FlowControl::Next,
+        };
+        assert_eq!(slot_index(&short_form, &short_form.name), 7);
+
+        let wide_form: Instruction = Instruction {
+            offset: 0,
+            opcode: 0,
+            name: "ldloc".to_owned(),
+            operand: OperandValue::U16(300),
+            flow: crate::cil::FlowControl::Next,
+        };
+        assert_eq!(slot_index(&wide_form, &wide_form.name), 300);
+
+        let malformed: Instruction = Instruction {
+            offset: 0,
+            opcode: 0,
+            name: "ldloc".to_owned(),
+            operand: OperandValue::I32(-1),
+            flow: crate::cil::FlowControl::Next,
+        };
+        assert_eq!(slot_index(&malformed, &malformed.name), u32::MAX);
     }
 
     #[test]
