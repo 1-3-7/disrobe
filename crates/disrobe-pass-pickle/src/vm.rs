@@ -236,8 +236,7 @@ pub enum ObjCtor {
 enum Slot {
     Value {
         value: PickleValue,
-        memo_key: Option<u64>,
-        source_key: Option<u64>,
+        memo_id: Option<u64>,
         depth: u32,
     },
     Mark,
@@ -312,8 +311,9 @@ pub enum ArgSummary {
 struct Machine {
     stack: Vec<Slot>,
     memo: BTreeMap<u64, PickleValue>,
+    memo_indices: BTreeMap<u64, u64>,
     memo_used: BTreeMap<u64, bool>,
-    next_auto_memo: u64,
+    next_memo_id: u64,
     max_depth: usize,
     global_refs: Vec<GlobalRef>,
     reduce_count: usize,
@@ -327,8 +327,9 @@ impl Machine {
         Self {
             stack: Vec::new(),
             memo: BTreeMap::new(),
+            memo_indices: BTreeMap::new(),
             memo_used: BTreeMap::new(),
-            next_auto_memo: 0,
+            next_memo_id: 0,
             max_depth: 0,
             global_refs: Vec::new(),
             reduce_count: 0,
@@ -350,19 +351,17 @@ impl Machine {
         let depth: u32 = value_depth(&v, MAX_VALUE_DEPTH + 1);
         self.stack.push(Slot::Value {
             value: v,
-            memo_key: None,
-            source_key: None,
+            memo_id: None,
             depth,
         });
         self.max_depth = self.max_depth.max(self.stack.len());
     }
 
-    fn push_from_memo(&mut self, v: PickleValue, key: u64) {
+    fn push_from_memo(&mut self, v: PickleValue, memo_id: u64) {
         let depth: u32 = value_depth(&v, MAX_VALUE_DEPTH + 1);
         self.stack.push(Slot::Value {
             value: v,
-            memo_key: None,
-            source_key: Some(key),
+            memo_id: Some(memo_id),
             depth,
         });
         self.max_depth = self.max_depth.max(self.stack.len());
@@ -391,8 +390,17 @@ impl Machine {
         let top: &PickleValue = self.peek_value(op, offset)?;
         let total: u64 = charged_total_after_clone(top, already)?;
         let v: PickleValue = top.clone();
+        let memo_id: Option<u64> = match self.stack.last() {
+            Some(Slot::Value { memo_id, .. }) => *memo_id,
+            Some(Slot::Mark) | None => return Err(Error::StackUnderflow { op, offset }),
+        };
         self.materialized_nodes = total;
-        self.push(v);
+        if let Some(memo_id) = memo_id {
+            self.memo_used.insert(memo_id, true);
+            self.push_from_memo(v, memo_id);
+        } else {
+            self.push(v);
+        }
         Ok(())
     }
 
@@ -431,11 +439,35 @@ impl Machine {
         let top: &PickleValue = self.peek_value(op, offset)?;
         let total: u64 = charged_total_after_clone(top, already)?;
         let v: PickleValue = top.clone();
+        let memo_id: u64 = match self.stack.last() {
+            Some(Slot::Value {
+                memo_id: Some(memo_id),
+                ..
+            }) => *memo_id,
+            Some(Slot::Value { memo_id: None, .. }) => {
+                let next: u64 = self
+                    .next_memo_id
+                    .checked_add(1)
+                    .ok_or(Error::InvalidArgument {
+                        op,
+                        offset,
+                        expected: "memo identity below u64::MAX",
+                    })?;
+                let memo_id: u64 = self.next_memo_id;
+                self.next_memo_id = next;
+                memo_id
+            }
+            Some(Slot::Mark) | None => return Err(Error::StackUnderflow { op, offset }),
+        };
         self.materialized_nodes = total;
-        self.memo.insert(key, v);
-        self.memo_used.entry(key).or_insert(false);
-        if let Some(Slot::Value { memo_key, .. }) = self.stack.last_mut() {
-            *memo_key = Some(key);
+        self.memo.insert(memo_id, v);
+        self.memo_indices.insert(key, memo_id);
+        self.memo_used.entry(memo_id).or_insert(false);
+        if let Some(Slot::Value {
+            memo_id: slot_id, ..
+        }) = self.stack.last_mut()
+        {
+            *slot_id = Some(memo_id);
         }
         Ok(())
     }
@@ -448,7 +480,7 @@ impl Machine {
             .filter_map(|(i, s): (usize, &Slot)| match s {
                 Slot::Value {
                     value,
-                    memo_key: Some(k),
+                    memo_id: Some(k),
                     ..
                 } if is_container(value) => Some((i, *k)),
                 _ => None,
@@ -467,13 +499,11 @@ impl Machine {
             match self.stack.pop() {
                 Some(Slot::Value {
                     value,
-                    memo_key,
-                    source_key,
+                    memo_id,
                     depth,
                 }) => out.push(Placed {
                     value,
-                    memo_key,
-                    source_key,
+                    memo_id,
                     depth,
                 }),
                 Some(Slot::Mark) => return Err(Error::NoMark { op, offset }),
@@ -496,13 +526,11 @@ impl Machine {
             .filter_map(|s: Slot| match s {
                 Slot::Value {
                     value,
-                    memo_key,
-                    source_key,
+                    memo_id,
                     depth,
                 } => Some(Placed {
                     value,
-                    memo_key,
-                    source_key,
+                    memo_id,
                     depth,
                 }),
                 Slot::Mark => None,
@@ -524,14 +552,12 @@ impl Machine {
             .filter_map(|s: Slot| match s {
                 Slot::Value {
                     value,
-                    memo_key,
-                    source_key,
+                    memo_id,
                     depth,
                 } => Some(
                     resolve_shared(Placed {
                         value,
-                        memo_key,
-                        source_key,
+                        memo_id,
                         depth,
                     })
                     .0,
@@ -545,12 +571,7 @@ impl Machine {
 
     fn pop_final(&mut self, op: &'static str, offset: usize) -> Result<(PickleValue, Option<u64>)> {
         match self.stack.pop() {
-            Some(Slot::Value {
-                value,
-                memo_key,
-                source_key,
-                ..
-            }) => Ok((value, memo_key.or(source_key))),
+            Some(Slot::Value { value, memo_id, .. }) => Ok((value, memo_id)),
             Some(Slot::Mark) => Err(Error::NoMark { op, offset }),
             None => Err(Error::StackUnderflow { op, offset }),
         }
@@ -600,13 +621,20 @@ impl Machine {
     }
 
     fn push_clone_of_memo(&mut self, key: u64, offset: usize) -> Result<()> {
-        self.memo_used.insert(key, true);
+        let memo_id: u64 = *self
+            .memo_indices
+            .get(&key)
+            .ok_or(Error::MemoMiss { key, offset })?;
+        self.memo_used.insert(memo_id, true);
         let already: u64 = self.materialized_nodes;
-        let entry: &PickleValue = self.memo.get(&key).ok_or(Error::MemoMiss { key, offset })?;
+        let entry: &PickleValue = self
+            .memo
+            .get(&memo_id)
+            .ok_or(Error::MemoMiss { key, offset })?;
         let total: u64 = charged_total_after_clone(entry, already)?;
         let v: PickleValue = entry.clone();
         self.materialized_nodes = total;
-        self.push_from_memo(v, key);
+        self.push_from_memo(v, memo_id);
         Ok(())
     }
 }
@@ -641,8 +669,7 @@ fn summarize_arg(v: &PickleValue) -> ArgSummary {
 #[derive(Debug)]
 struct Placed {
     value: PickleValue,
-    memo_key: Option<u64>,
-    source_key: Option<u64>,
+    memo_id: Option<u64>,
     depth: u32,
 }
 
@@ -651,6 +678,7 @@ fn is_container(v: &PickleValue) -> bool {
     matches!(
         v,
         PickleValue::List(_)
+            | PickleValue::Tuple(_)
             | PickleValue::Dict(_)
             | PickleValue::Set(_)
             | PickleValue::FrozenSet(_)
@@ -819,7 +847,7 @@ impl Session {
     #[must_use]
     #[inline]
     pub fn memo_len(&self) -> usize {
-        self.machine.memo.len()
+        self.machine.memo_indices.len()
     }
 
     #[must_use]
@@ -860,10 +888,17 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
     let m: Machine = session.machine;
 
     let unused_memos: Vec<u64> = m
-        .memo_used
+        .memo_indices
         .iter()
-        .filter_map(|(&k, &used): (&u64, &bool)| (!used).then_some(k))
+        .filter_map(|(&index, &memo_id): (&u64, &u64)| {
+            (!m.memo_used
+                .get(&memo_id)
+                .copied()
+                .is_some_and(|used: bool| used))
+            .then_some(index)
+        })
         .collect();
+    let memo_count: usize = m.memo_indices.len();
     let memo: BTreeMap<u64, PickleValue> = m.memo;
     let cyclic: bool = detect_cycle(&memo);
 
@@ -872,7 +907,7 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
             "reduce_count={} max_stack_depth={} memo_count={} unused_memos={} cyclic={} oob_buffers={} call_sites={}",
             m.reduce_count,
             m.max_depth,
-            memo.len(),
+            memo_count,
             unused_memos.len(),
             cyclic,
             m.oob_buffer_count,
@@ -888,7 +923,7 @@ pub fn execute_full(dis: &Disassembly) -> Result<(VmTrace, BTreeMap<u64, PickleV
     let trace: VmTrace = VmTrace {
         protocol: dis.protocol,
         result,
-        memo_count: memo.len(),
+        memo_count,
         max_stack_depth: m.max_depth,
         global_refs: m.global_refs,
         reduce_count: m.reduce_count,
@@ -961,23 +996,20 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
             m.push_new(PickleValue::Dict(pairs(items)))?;
         }
         "TUPLE" => {
-            let items: Vec<PickleValue> = m.pop_to_mark("TUPLE", off)?;
-            m.push_new(PickleValue::Tuple(items))?;
+            let items: Vec<Placed> = m.pop_placed_to_mark("TUPLE", off)?;
+            push_tuple(m, items)?;
         }
         "TUPLE1" => {
-            let a: PickleValue = m.pop_value("TUPLE1", off)?;
-            m.push_new(PickleValue::Tuple(vec![a]))?;
+            let items: Vec<Placed> = m.pop_placed(1, "TUPLE1", off)?;
+            push_tuple(m, items)?;
         }
         "TUPLE2" => {
-            let b: PickleValue = m.pop_value("TUPLE2", off)?;
-            let a: PickleValue = m.pop_value("TUPLE2", off)?;
-            m.push_new(PickleValue::Tuple(vec![a, b]))?;
+            let items: Vec<Placed> = m.pop_placed(2, "TUPLE2", off)?;
+            push_tuple(m, items)?;
         }
         "TUPLE3" => {
-            let c: PickleValue = m.pop_value("TUPLE3", off)?;
-            let b: PickleValue = m.pop_value("TUPLE3", off)?;
-            let a: PickleValue = m.pop_value("TUPLE3", off)?;
-            m.push_new(PickleValue::Tuple(vec![a, b, c]))?;
+            let items: Vec<Placed> = m.pop_placed(3, "TUPLE3", off)?;
+            push_tuple(m, items)?;
         }
         "FROZENSET" => {
             let items: Vec<PickleValue> = m.pop_to_mark_shared("FROZENSET", off)?;
@@ -1146,15 +1178,10 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
         }
         "BUILD" => {
             let state: PickleValue = m.pop_value("BUILD", off)?;
-            let (target_memo_key, target_source_key): (Option<u64>, Option<u64>) =
-                match m.stack.last() {
-                    Some(Slot::Value {
-                        memo_key,
-                        source_key,
-                        ..
-                    }) => (*memo_key, *source_key),
-                    _ => (None, None),
-                };
+            let target_memo_id: Option<u64> = match m.stack.last() {
+                Some(Slot::Value { memo_id, .. }) => *memo_id,
+                _ => None,
+            };
             let target: PickleValue = m.pop_value("BUILD", off)?;
             crate::debug::dbg_kv("build-setstate", || {
                 format!(
@@ -1163,10 +1190,12 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 )
             });
             m.push_new(apply_build(target, state))?;
-            if let Some(key) = target_memo_key.or(target_source_key)
-                && let Some(Slot::Value { memo_key, .. }) = m.stack.last_mut()
+            if let Some(memo_id) = target_memo_id
+                && let Some(Slot::Value {
+                    memo_id: slot_id, ..
+                }) = m.stack.last_mut()
             {
-                *memo_key = Some(key);
+                *slot_id = Some(memo_id);
             }
             m.refresh_open_memos();
         }
@@ -1175,14 +1204,11 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
             m.store_memo(key, "PUT", off)?;
         }
         "MEMOIZE" => {
-            let key: u64 = m.next_auto_memo;
-            m.next_auto_memo = m
-                .next_auto_memo
-                .checked_add(1)
-                .ok_or(Error::InvalidArgument {
+            let key: u64 =
+                u64::try_from(m.memo_indices.len()).map_err(|_| Error::InvalidArgument {
                     op: "MEMOIZE",
                     offset: off,
-                    expected: "memo key below u64::MAX",
+                    expected: "memo entry count below u64::MAX",
                 })?;
             m.store_memo(key, "MEMOIZE", off)?;
         }
@@ -1210,15 +1236,6 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
                 offset: off,
             });
         }
-    }
-    if matches!(insn.name.as_str(), "PUT" | "BINPUT" | "LONG_BINPUT") {
-        let key: u64 = arg_memo_key(&insn.arg, "PUT", off)?;
-        let next: u64 = key.checked_add(1).ok_or(Error::InvalidArgument {
-            op: "PUT",
-            offset: off,
-            expected: "memo key below u64::MAX",
-        })?;
-        m.next_auto_memo = m.next_auto_memo.max(next);
     }
     Ok(())
 }
@@ -1251,9 +1268,13 @@ fn pairs(items: Vec<PickleValue>) -> Vec<(PickleValue, PickleValue)> {
     out
 }
 
+fn push_tuple(m: &mut Machine, placed: Vec<Placed>) -> Result<()> {
+    let (items, _): (Vec<PickleValue>, u32) = resolve_all(placed);
+    m.push_new(PickleValue::Tuple(items))
+}
+
 fn resolve_shared(placed: Placed) -> (PickleValue, u32) {
-    let key: Option<u64> = placed.memo_key.or(placed.source_key);
-    match key {
+    match placed.memo_id {
         Some(k) if is_container(&placed.value) => (PickleValue::MemoRef { key: k }, 1),
         _ => (placed.value, placed.depth),
     }

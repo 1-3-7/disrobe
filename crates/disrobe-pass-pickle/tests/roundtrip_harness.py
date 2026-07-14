@@ -29,9 +29,11 @@ import dataclasses
 import datetime
 import decimal
 import fractions
+import io
 import json
 import math
 import pickle
+import pickletools
 import sys
 import traceback
 from pathlib import Path
@@ -160,6 +162,44 @@ def _shared_frozenset() -> list[Any]:
     return [fs, fs, {"fs": fs}]
 
 
+def _shared_tuple() -> list[Any]:
+    pair: tuple[int, list[int]] = (7, [8])
+    return [pair, pair, {"tuple": pair}]
+
+
+def _shared_tuple1() -> list[Any]:
+    pair: tuple[list[int]] = ([7],)
+    return [pair, pair, {"tuple": pair}]
+
+
+def _shared_tuple3() -> list[Any]:
+    pair: tuple[int, list[int], int] = (7, [8], 9)
+    return [pair, pair, {"tuple": pair}]
+
+
+def _tuple_list_cycle() -> tuple[list[Any]]:
+    items: list[Any] = []
+    pair: tuple[list[Any]] = (items,)
+    items.append(pair)
+    return pair
+
+
+def _memo_overwrite_tuple() -> bytes:
+    return bytes.fromhex("80025d7100284b075d71014b086186710268024b63710230652e")
+
+
+def _dup_shared_list() -> bytes:
+    return bytes.fromhex("8002285d7100326c2e")
+
+
+def _memo_rebind_alias() -> bytes:
+    return bytes.fromhex("80025d7100285d71014b08616801710268016802652e")
+
+
+def _sparse_memoize() -> bytes:
+    return bytes.fromhex("80044b2a7105304b63943028680568016c2e")
+
+
 def _shared_reduce_no_state() -> list[Any]:
     rp: ReducePoint = ReducePoint(11, 22)
     return [rp, rp]
@@ -242,6 +282,10 @@ def cases() -> dict[str, Callable[[], Any]]:
         "shared_ref": _shared,
         "shared_object": _shared_object,
         "shared_frozenset": _shared_frozenset,
+        "shared_tuple": _shared_tuple,
+        "shared_tuple1": _shared_tuple1,
+        "shared_tuple3": _shared_tuple3,
+        "tuple_list_cycle": _tuple_list_cycle,
         "shared_reduce_no_state": _shared_reduce_no_state,
         "distinct_equal_lists": _distinct_equal_lists,
         "newobj_ex_kwargs": lambda: KwArgsObj(3, 4),
@@ -250,6 +294,29 @@ def cases() -> dict[str, Callable[[], Any]]:
         "nan_in_set": lambda: {math.nan, 1, 2},
         "nan_in_frozenset": lambda: frozenset({math.nan, 3}),
     }
+
+
+def _record_case(
+    root: Path,
+    manifest: list[dict[str, Any]],
+    name: str,
+    proto: int,
+    data: bytes,
+) -> None:
+    pickletools_output: io.StringIO = io.StringIO()
+    pickletools.dis(data, out=pickletools_output)
+    opcodes: list[str] = [op.name for op, _, _ in pickletools.genops(data)]
+    rel: str = f"{name}__p{proto}.pkl"
+    (root / rel).write_bytes(data)
+    manifest.append(
+        {
+            "file": rel,
+            "name": name,
+            "proto": proto,
+            "opcodes": opcodes,
+            "pickletools_dis": pickletools_output.getvalue(),
+        }
+    )
 
 
 def emit(out_dir: str) -> None:
@@ -262,9 +329,26 @@ def emit(out_dir: str) -> None:
                 data: bytes = pickle.dumps(factory(), protocol=proto)
             except Exception:
                 continue
-            rel: str = f"{name}__p{proto}.pkl"
-            (root / rel).write_bytes(data)
-            manifest.append({"file": rel, "name": name, "proto": proto})
+            _record_case(root, manifest, name, proto, data)
+    overwrite: bytes = _memo_overwrite_tuple()
+    loaded: list[Any] = pickle.loads(overwrite)
+    if loaded[0] is not loaded[1]:
+        raise RuntimeError("CPython did not preserve the overwritten memo snapshot")
+    _record_case(root, manifest, "memo_overwrite_tuple", 2, overwrite)
+    duplicated: bytes = _dup_shared_list()
+    duplicated_loaded: list[Any] = pickle.loads(duplicated)
+    if duplicated_loaded[0] is not duplicated_loaded[1]:
+        raise RuntimeError("CPython did not preserve the DUP memo alias")
+    _record_case(root, manifest, "dup_shared_list", 2, duplicated)
+    rebound: bytes = _memo_rebind_alias()
+    rebound_loaded: list[Any] = pickle.loads(rebound)
+    if any(rebound_loaded[0] is not item for item in rebound_loaded[1:]):
+        raise RuntimeError("CPython did not preserve the rebound memo alias")
+    _record_case(root, manifest, "memo_rebind_alias", 2, rebound)
+    sparse: bytes = _sparse_memoize()
+    if pickle.loads(sparse) != [42, 99]:
+        raise RuntimeError("CPython did not assign MEMOIZE by memo entry count")
+    _record_case(root, manifest, "sparse_memoize", 4, sparse)
     (root / "cases.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     print(f"emit: wrote {len(manifest)} pickle fixtures to {out_dir}")
 

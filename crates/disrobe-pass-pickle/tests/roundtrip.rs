@@ -3,11 +3,65 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
-use disrobe_pass_pickle::{PickleValue, Session, disassemble, reconstruct};
+use disrobe_pass_pickle::{PickleValue, Session, disassemble, execute_full, reconstruct};
 use serde_json::{Map, Value, json};
 
 const MIN_SUPPORTED: usize = 120;
 const FLOOR_PERCENT: usize = 100;
+const CPYTHON_SHARED_TUPLE_PROTOCOL2: &[u8] =
+    b"\x80\x02]q\x00(K\x07]q\x01K\x08a\x86q\x02h\x02}q\x03X\x05\x00\x00\x00tupleq\x04h\x02se.";
+const CPYTHON_SHARED_TUPLE_PROTOCOL2_OPCODES: &[&str] = &[
+    "PROTO",
+    "EMPTY_LIST",
+    "BINPUT",
+    "MARK",
+    "BININT1",
+    "EMPTY_LIST",
+    "BINPUT",
+    "BININT1",
+    "APPEND",
+    "TUPLE2",
+    "BINPUT",
+    "BINGET",
+    "EMPTY_DICT",
+    "BINPUT",
+    "BINUNICODE",
+    "BINPUT",
+    "BINGET",
+    "SETITEM",
+    "APPENDS",
+    "STOP",
+];
+const DUP_SHARED_LIST: &[u8] = b"\x80\x02(]q\x002l.";
+const DUP_SHARED_LIST_OPCODES: &[&str] = &[
+    "PROTO",
+    "MARK",
+    "EMPTY_LIST",
+    "BINPUT",
+    "DUP",
+    "LIST",
+    "STOP",
+];
+const MEMO_OVERWRITE_TUPLE: &[u8] = b"\x80\x02]q\x00(K\x07]q\x01K\x08a\x86q\x02h\x02Kcq\x020e.";
+const MEMO_OVERWRITE_TUPLE_OPCODES: &[&str] = &[
+    "PROTO",
+    "EMPTY_LIST",
+    "BINPUT",
+    "MARK",
+    "BININT1",
+    "EMPTY_LIST",
+    "BINPUT",
+    "BININT1",
+    "APPEND",
+    "TUPLE2",
+    "BINPUT",
+    "BINGET",
+    "BININT1",
+    "BINPUT",
+    "POP",
+    "APPENDS",
+    "STOP",
+];
 
 const GENUINE_CEILINGS: &[&str] = &[
     "resolves only via the runtime copyreg registry",
@@ -70,6 +124,97 @@ fn reconstruct_source(bytes: &[u8]) -> Value {
 }
 
 #[test]
+fn overwritten_memo_keeps_the_prior_cpython_tuple_binding() {
+    let dis = disassemble(MEMO_OVERWRITE_TUPLE).expect("disassemble CPython fixture");
+    let opcodes: Vec<&str> = dis
+        .instructions
+        .iter()
+        .map(|insn| insn.name.as_str())
+        .collect();
+    assert_eq!(opcodes, MEMO_OVERWRITE_TUPLE_OPCODES);
+
+    let (trace, memo) = execute_full(&dis).expect("execute CPython fixture");
+    assert_eq!(
+        trace.result,
+        PickleValue::List(vec![
+            PickleValue::MemoRef { key: 2 },
+            PickleValue::MemoRef { key: 2 },
+        ])
+    );
+    assert_eq!(
+        memo.get(&2),
+        Some(&PickleValue::Tuple(vec![
+            PickleValue::Int(7),
+            PickleValue::List(vec![PickleValue::Int(8)]),
+        ]))
+    );
+
+    let reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
+    assert!(reconstruction.reexecutable);
+    assert!(reconstruction.program.contains("_m[2] = (7, [8])"));
+    assert!(reconstruction.program.contains("result = [_m[2], _m[2]]"));
+}
+
+#[test]
+fn cpython_pickle_protocol2_shared_tuple_keeps_aliases() {
+    let dis = disassemble(CPYTHON_SHARED_TUPLE_PROTOCOL2).expect("disassemble CPython fixture");
+    let opcodes: Vec<&str> = dis
+        .instructions
+        .iter()
+        .map(|insn| insn.name.as_str())
+        .collect();
+    assert_eq!(opcodes, CPYTHON_SHARED_TUPLE_PROTOCOL2_OPCODES);
+
+    let (trace, memo) = execute_full(&dis).expect("execute CPython fixture");
+    assert_eq!(
+        trace.result,
+        PickleValue::List(vec![
+            PickleValue::MemoRef { key: 2 },
+            PickleValue::MemoRef { key: 2 },
+            PickleValue::Dict(vec![(
+                PickleValue::Str("tuple".into()),
+                PickleValue::MemoRef { key: 2 },
+            )]),
+        ])
+    );
+    assert_eq!(
+        memo.get(&2),
+        Some(&PickleValue::Tuple(vec![
+            PickleValue::Int(7),
+            PickleValue::List(vec![PickleValue::Int(8)]),
+        ]))
+    );
+
+    let reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
+    assert!(reconstruction.reexecutable);
+    assert!(reconstruction.program.contains("_m[2] = (7, [8])"));
+}
+
+#[test]
+fn dup_keeps_the_cpython_memoized_list_alias() {
+    let dis = disassemble(DUP_SHARED_LIST).expect("disassemble CPython fixture");
+    let opcodes: Vec<&str> = dis
+        .instructions
+        .iter()
+        .map(|insn| insn.name.as_str())
+        .collect();
+    assert_eq!(opcodes, DUP_SHARED_LIST_OPCODES);
+
+    let (trace, memo) = execute_full(&dis).expect("execute CPython fixture");
+    assert_eq!(
+        trace.result,
+        PickleValue::List(vec![
+            PickleValue::MemoRef { key: 0 },
+            PickleValue::MemoRef { key: 0 },
+        ])
+    );
+
+    let reconstruction = reconstruct(&trace.result, &memo, trace.root_memo_key);
+    assert!(reconstruction.reexecutable);
+    assert!(reconstruction.program.contains("result = [_m[0], _m[0]]"));
+}
+
+#[test]
 fn cpython_roundtrip_differential_oracle() {
     let Some(python): Option<String> = find_python() else {
         eprintln!(
@@ -100,6 +245,55 @@ fn cpython_roundtrip_differential_oracle() {
         "corpus too small: {} cases",
         cases.len()
     );
+
+    let shared_tuple_cases: Vec<&Value> = cases
+        .iter()
+        .filter(|case: &&Value| {
+            matches!(
+                case["name"].as_str(),
+                Some("shared_tuple" | "shared_tuple1" | "shared_tuple3")
+            )
+        })
+        .collect();
+    assert_eq!(
+        shared_tuple_cases.len(),
+        18,
+        "CPython must emit every shared tuple fixture for each supported protocol"
+    );
+    for case in shared_tuple_cases {
+        let name: &str = case["name"].as_str().expect("fixture name");
+        let protocol: u64 = case["proto"].as_u64().expect("fixture protocol");
+        let opcodes: &Vec<Value> = case["opcodes"].as_array().expect("pickletools opcodes");
+        let pickletools_dis: &str = case["pickletools_dis"]
+            .as_str()
+            .expect("pickletools disassembly");
+        let expected_tuple: &str = if protocol < 2 {
+            "TUPLE"
+        } else {
+            match name {
+                "shared_tuple1" => "TUPLE1",
+                "shared_tuple" => "TUPLE2",
+                "shared_tuple3" => "TUPLE3",
+                _ => unreachable!("filtered shared tuple fixture name"),
+            }
+        };
+        let has_tuple: bool = opcodes
+            .iter()
+            .any(|opcode: &Value| opcode.as_str() == Some(expected_tuple));
+        let has_memo_store: bool = opcodes.iter().any(|opcode: &Value| {
+            matches!(
+                opcode.as_str(),
+                Some("PUT" | "BINPUT" | "LONG_BINPUT" | "MEMOIZE")
+            )
+        });
+        let has_memo_get: bool = opcodes.iter().any(|opcode: &Value| {
+            matches!(opcode.as_str(), Some("GET" | "BINGET" | "LONG_BINGET"))
+        });
+        assert!(
+            has_tuple && has_memo_store && has_memo_get && pickletools_dis.contains(expected_tuple),
+            "pickletools must show {expected_tuple} and memo reuse for {name} protocol {protocol}: {opcodes:?}"
+        );
+    }
 
     let mut sources: Map<String, Value> = Map::new();
     for case in &cases {

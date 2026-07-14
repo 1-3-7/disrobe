@@ -126,6 +126,10 @@ fn emit_shells(memo: &BTreeMap<u64, PickleValue>, needed: &BTreeSet<u64>, progra
             let mut base: String = String::new();
             render_object_base(*ctor, cls, args, kwargs.as_deref(), &mut base);
             program.push_str(&format!("_m[{key}] = {base}\n"));
+        } else if let Some(PickleValue::Tuple(items)) = memo.get(key) {
+            let mut body: String = String::new();
+            render_tuple(items, &mut body);
+            program.push_str(&format!("_m[{key}] = {body}\n"));
         } else if let Some(PickleValue::FrozenSet(items)) = memo.get(key) {
             let mut body: String = String::new();
             render_seq_items(items, &mut body);
@@ -206,12 +210,7 @@ fn render(value: &PickleValue, out: &mut String) {
             out.push(']');
         }
         PickleValue::Tuple(items) => {
-            out.push('(');
-            render_seq_items(items, out);
-            if items.len() == 1 {
-                out.push(',');
-            }
-            out.push(')');
+            render_tuple(items, out);
         }
         PickleValue::Set(items) => {
             if items.is_empty() {
@@ -283,6 +282,15 @@ fn render(value: &PickleValue, out: &mut String) {
         PickleValue::PersId { .. } => out.push_str("_unsupported('persistent id')"),
         PickleValue::MemoRef { .. } => {}
     }
+}
+
+fn render_tuple(items: &[PickleValue], out: &mut String) {
+    out.push('(');
+    render_seq_items(items, out);
+    if items.len() == 1 {
+        out.push(',');
+    }
+    out.push(')');
 }
 
 fn render_object_base(
