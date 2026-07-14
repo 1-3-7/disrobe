@@ -43,6 +43,18 @@ pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             .into_iter()
             .map(|r: crate::dalvik_strdec::DexStringRecovery| (r.class.clone(), r))
             .collect();
+    let generic_recovery: crate::dalvik_strdec_generic::GenericStringRecovery =
+        crate::dalvik_strdec_generic::recover(dex, bytes);
+    let mut generic_by_method: BTreeMap<
+        (String, String),
+        Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>,
+    > = BTreeMap::new();
+    for site in &generic_recovery.call_sites {
+        generic_by_method
+            .entry((site.caller_class.clone(), site.caller_method.clone()))
+            .or_default()
+            .push(site);
+    }
     let cff_by_method: BTreeMap<(String, String, String), crate::dalvik_dexguard::DalvikMethodCff> =
         crate::dalvik_dexguard::unflatten_dex_methods(&items)
             .1
@@ -69,8 +81,14 @@ pub fn decompile_dex(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     for (class_descriptor, methods) in &by_class {
         let recovery: Option<&crate::dalvik_strdec::DexStringRecovery> =
             string_recovery.get(class_descriptor);
-        let rendered: RenderedClass =
-            render_class(dex, class_descriptor, methods, recovery, &cff_by_method);
+        let rendered: RenderedClass = render_class(
+            dex,
+            class_descriptor,
+            methods,
+            recovery,
+            &cff_by_method,
+            &generic_by_method,
+        );
         source.push_str(&rendered.text);
         source.push('\n');
         class_count += 1;
@@ -101,6 +119,10 @@ fn render_class(
     methods: &[CodeItem],
     recovery: Option<&crate::dalvik_strdec::DexStringRecovery>,
     cff_by_method: &BTreeMap<(String, String, String), crate::dalvik_dexguard::DalvikMethodCff>,
+    generic_by_method: &BTreeMap<
+        (String, String),
+        Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>,
+    >,
 ) -> RenderedClass {
     let binary: String = descriptor::binary_to_source(class_descriptor);
     let (package, simple): (Option<&str>, &str) = match binary.rfind('.') {
@@ -128,7 +150,9 @@ fn render_class(
             item.method_name.clone(),
             item.method_descriptor.clone(),
         ));
-        let rendered: RenderedMethod = render_method(dex, simple, item, cff);
+        let generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>> =
+            generic_by_method.get(&(item.class.clone(), item.method_name.clone()));
+        let rendered: RenderedMethod = render_method(dex, simple, item, cff, generic_sites);
         let _ = writeln!(text, "{}", rendered.text);
         method_count += 1;
         if rendered.fully_lifted {
@@ -179,6 +203,35 @@ fn recovered_strings_annotation(rec: &crate::dalvik_strdec::DexStringRecovery) -
     out
 }
 
+fn generic_call_site_annotation(
+    sites: &[&crate::dalvik_strdec_generic::CallSiteRecovery],
+) -> String {
+    let mut out: String = String::new();
+    for site in sites {
+        match &site.outcome {
+            crate::dalvik_strdec_generic::CallSiteOutcome::Recovered(plain) => {
+                let _ = writeln!(
+                    out,
+                    "        // recovered call site pc={}: {}->{}{} = {}",
+                    site.pc,
+                    site.decrypt_class,
+                    site.decrypt_method,
+                    site.decrypt_descriptor,
+                    crate::bytecode::escape_java_string(plain)
+                );
+            }
+            crate::dalvik_strdec_generic::CallSiteOutcome::Skipped(reason) => {
+                let _ = writeln!(
+                    out,
+                    "        // decrypt call site pc={} to {}->{}{} not recoverable: {reason}",
+                    site.pc, site.decrypt_class, site.decrypt_method, site.decrypt_descriptor
+                );
+            }
+        }
+    }
+    out
+}
+
 struct RenderedMethod {
     text: String,
     fully_lifted: bool,
@@ -189,6 +242,7 @@ fn render_method(
     class_simple: &str,
     item: &CodeItem,
     cff: Option<&crate::dalvik_dexguard::DalvikMethodCff>,
+    generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
 ) -> RenderedMethod {
     let parsed: Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor);
     let footprint: u16 = parsed
@@ -247,7 +301,17 @@ fn render_method(
 
     let body: MethodBody = lift_method(dex, item, is_static);
     let cff_note: String = cff.map_or_else(String::new, cff_annotation);
-    let text: String = format!("{signature} {{\n{cff_note}{}    }}", body.text);
+    let generic_note: String = generic_sites
+        .map(
+            |sites: &Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>| {
+                generic_call_site_annotation(sites)
+            },
+        )
+        .unwrap_or_default();
+    let text: String = format!(
+        "{signature} {{\n{cff_note}{generic_note}{}    }}",
+        body.text
+    );
     RenderedMethod {
         text,
         fully_lifted: body.fully_lifted,

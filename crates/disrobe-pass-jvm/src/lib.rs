@@ -38,11 +38,13 @@ pub mod dalvik_blackobf;
 pub mod dalvik_cfg;
 pub mod dalvik_decompile;
 pub mod dalvik_dexguard;
+pub(crate) mod dalvik_interp;
 pub mod dalvik_lift;
 pub mod dalvik_pack_recover;
 pub mod dalvik_pack_stub_loader;
 pub(crate) mod dalvik_split;
 pub mod dalvik_strdec;
+pub mod dalvik_strdec_generic;
 pub mod dalvik_to_jvm;
 pub(crate) mod dalvik_typestate;
 pub(crate) mod debug;
@@ -149,6 +151,10 @@ pub use dalvik_strdec::{
     DecryptedString, DexStringRecovery, NativeIntKey, ReflectiveCallSite,
     recover as recover_dex_reflection_strings,
     recover_with_native_keys as recover_dex_reflection_strings_with_native_keys,
+};
+pub use dalvik_strdec_generic::{
+    CallSiteOutcome, CallSiteRecovery, GenericStringRecovery, SkipReason as DexInterpSkipReason,
+    recover as recover_dex_strings_generic,
 };
 #[cfg(feature = "opcode-census")]
 pub use decompile::drain_unhandled_census;

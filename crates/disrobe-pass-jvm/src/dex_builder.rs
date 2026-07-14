@@ -949,6 +949,30 @@ fn mutf8_unit_len(s: &str) -> u32 {
         .sum()
 }
 
+fn base64_encode_standard(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out: String = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0: u8 = chunk[0];
+        let b1: u8 = chunk.get(1).copied().unwrap_or(0);
+        let b2: u8 = chunk.get(2).copied().unwrap_or(0);
+        let n: u32 = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 pub(crate) fn adler32(data: &[u8]) -> u32 {
     let mut a: u32 = 1;
     let mut b: u32 = 0;
@@ -1112,6 +1136,24 @@ impl MethodBuilder {
         });
     }
 
+    fn sget(&mut self, reg: u8, field: &FieldRef) {
+        let unit: usize = self.units.len() + 1;
+        self.units.extend(insn::fmt21c(0x60, reg, 0));
+        self.relocations.push(Reloc::FieldIndex {
+            unit,
+            field: field.clone(),
+        });
+    }
+
+    fn sput(&mut self, reg: u8, field: &FieldRef) {
+        let unit: usize = self.units.len() + 1;
+        self.units.extend(insn::fmt21c(0x67, reg, 0));
+        self.relocations.push(Reloc::FieldIndex {
+            unit,
+            field: field.clone(),
+        });
+    }
+
     fn sget_object(&mut self, reg: u8, field: &FieldRef) {
         let unit: usize = self.units.len() + 1;
         self.units.extend(insn::fmt21c(0x62, reg, 0));
@@ -1186,6 +1228,52 @@ impl MethodBuilder {
     fn patch_branch(&mut self, branch_unit_pos: usize, target: usize) {
         let rel: i16 = (target as i32 - branch_unit_pos as i32) as i16;
         self.units[branch_unit_pos + 1] = rel as u16;
+    }
+
+    fn fill_array_data_ref(&mut self, array_reg: u8) -> usize {
+        let pos: usize = self.units.len();
+        self.units.extend(insn::fmt31t(0x26, array_reg, 0));
+        pos
+    }
+
+    fn emit_byte_array_payload(&mut self, data: &[u8]) -> usize {
+        if !self.units.len().is_multiple_of(2) {
+            self.units.push(0x0000);
+        }
+        let pos: usize = self.units.len();
+        self.units.push(0x0300);
+        self.units.push(1);
+        let size: u32 = data.len() as u32;
+        self.units.push((size & 0xFFFF) as u16);
+        self.units.push((size >> 16) as u16);
+        for chunk in data.chunks(2) {
+            let lo: u8 = chunk[0];
+            let hi: u8 = chunk.get(1).copied().unwrap_or(0);
+            self.units.push(u16::from(lo) | (u16::from(hi) << 8));
+        }
+        pos
+    }
+
+    fn patch_payload_ref(&mut self, branch_unit_pos: usize, payload_unit_pos: usize) {
+        let rel: i32 = payload_unit_pos as i32 - branch_unit_pos as i32;
+        self.units[branch_unit_pos + 1] = (rel as u32 & 0xFFFF) as u16;
+        self.units[branch_unit_pos + 2] = ((rel as u32) >> 16) as u16;
+    }
+
+    fn filled_new_array(&mut self, regs: &[u8], descriptor: &str) {
+        let unit: usize = self.units.len() + 1;
+        let capped: &[u8] = &regs[..regs.len().min(3)];
+        match capped {
+            [] => self.units.extend(insn::fmt35c_zero(0x24, 0)),
+            [a] => self.units.extend(insn::fmt35c_one(0x24, *a, 0)),
+            [a, b] => self.units.extend(insn::fmt35c_two(0x24, *a, *b, 0)),
+            [a, b, c] => self.units.extend(insn::fmt35c_three(0x24, *a, *b, *c, 0)),
+            _ => {}
+        }
+        self.relocations.push(Reloc::TypeIndex {
+            unit,
+            descriptor: descriptor.to_owned(),
+        });
     }
 }
 
@@ -1869,6 +1957,832 @@ pub fn dexguard_name_keyed_sample(plaintexts: &[&str]) -> Vec<u8> {
     builder.build()
 }
 
+fn xor_bytearray_decrypt_body(descriptor_class: &str) -> (MethodRef, MethodBuilder) {
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let int_t: String = "I".to_owned();
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: "V".to_owned(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+    let mut decrypt: MethodBuilder = MethodBuilder::default();
+    decrypt.op12x(0x21, 0, 5);
+    decrypt.new_array(1, 0, &byte_arr);
+    decrypt.op11n(0x12, 2, 0);
+    let loop_start: usize = decrypt.mark();
+    let if_ge_pos: usize = decrypt.if_ge(2, 0);
+    decrypt.op23x(0x48, 3, 5, 2);
+    decrypt.op12x(0xB7, 3, 6);
+    decrypt.op23x(0x4F, 3, 1, 2);
+    decrypt.op22b(0xD8, 2, 2, 1);
+    decrypt.goto_back(loop_start);
+    let done_pos: usize = decrypt.mark();
+    decrypt.patch_branch(if_ge_pos, done_pos);
+    decrypt.new_instance(4, &string_t);
+    decrypt.invoke_two(0x70, 4, 1, &string_init);
+    decrypt.op11x(0x11, 4);
+    let decrypt_ref: MethodRef = MethodRef {
+        class: descriptor_class.to_owned(),
+        proto: ProtoRef {
+            return_type: string_t,
+            params: vec![byte_arr, int_t],
+        },
+        name: "decrypt".to_owned(),
+    };
+    (decrypt_ref, decrypt)
+}
+
+#[must_use]
+pub fn xor_bytearray_callsite_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericXorCallsite;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let void_t: String = "V".to_owned();
+    let byte_arr: String = "[B".to_owned();
+
+    let (decrypt_ref, decrypt): (MethodRef, MethodBuilder) = xor_bytearray_decrypt_body(&class);
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    for (cipher, key) in pairs {
+        caller.op21s(0x13, 0, cipher.len() as i16);
+        caller.new_array(0, 0, &byte_arr);
+        let branch_pos: usize = caller.fill_array_data_ref(0);
+        let payload_pos: usize = caller.emit_byte_array_payload(cipher);
+        caller.patch_payload_ref(branch_pos, payload_pos);
+        caller.op21s(0x13, 1, i16::from(*key));
+        caller.invoke_two(0x71, 0, 1, &decrypt_ref);
+        caller.op11x(0x0C, 2);
+    }
+    caller.op10x(0x0E);
+
+    let decrypt_method: EncodedMethod = EncodedMethod {
+        method: decrypt_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 2,
+        outs_size: 2,
+        insns: decrypt.units,
+        relocations: decrypt.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 3,
+        ins_size: 0,
+        outs_size: 2,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![decrypt_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+pub const CLINIT_KEY_TABLE_DERIVED_KEY: u8 = 0x11;
+
+#[must_use]
+pub fn clinit_key_table_sample(ciphers: &[&[u8]]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericClinitKey;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let void_t: String = "V".to_owned();
+    let int_t: String = "I".to_owned();
+
+    let key_field: FieldRef = FieldRef {
+        class: class.clone(),
+        type_desc: int_t,
+        name: "KEY".to_owned(),
+    };
+
+    let mut clinit: MethodBuilder = MethodBuilder::default();
+    clinit.op21s(0x13, 0, 0x50);
+    clinit.op21s(0x13, 1, 0x41);
+    clinit.op12x(0xB7, 0, 1);
+    clinit.sput(0, &key_field);
+    clinit.op10x(0x0E);
+
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t.clone(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+    let mut decrypt: MethodBuilder = MethodBuilder::default();
+    decrypt.sget(4, &key_field);
+    decrypt.op12x(0x21, 0, 6);
+    decrypt.new_array(1, 0, &byte_arr);
+    decrypt.op11n(0x12, 2, 0);
+    let loop_start: usize = decrypt.mark();
+    let if_ge_pos: usize = decrypt.if_ge(2, 0);
+    decrypt.op23x(0x48, 3, 6, 2);
+    decrypt.op12x(0xB7, 3, 4);
+    decrypt.op23x(0x4F, 3, 1, 2);
+    decrypt.op22b(0xD8, 2, 2, 1);
+    decrypt.goto_back(loop_start);
+    let done_pos: usize = decrypt.mark();
+    decrypt.patch_branch(if_ge_pos, done_pos);
+    decrypt.new_instance(5, &string_t);
+    decrypt.invoke_two(0x70, 5, 1, &string_init);
+    decrypt.op11x(0x11, 5);
+
+    let decrypt_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t,
+            params: vec![byte_arr.clone()],
+        },
+        name: "decrypt".to_owned(),
+    };
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    for cipher in ciphers {
+        caller.op21s(0x13, 0, cipher.len() as i16);
+        caller.new_array(0, 0, &byte_arr);
+        let branch_pos: usize = caller.fill_array_data_ref(0);
+        let payload_pos: usize = caller.emit_byte_array_payload(cipher);
+        caller.patch_payload_ref(branch_pos, payload_pos);
+        caller.invoke_one(0x71, 0, &decrypt_ref);
+        caller.op11x(0x0C, 1);
+    }
+    caller.op10x(0x0E);
+
+    let decrypt_method: EncodedMethod = EncodedMethod {
+        method: decrypt_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 1,
+        outs_size: 2,
+        insns: decrypt.units,
+        relocations: decrypt.relocations,
+    };
+    let clinit_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t.clone(),
+                params: Vec::new(),
+            },
+            name: "<clinit>".to_owned(),
+        },
+        access_flags: 0x10008,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 0,
+        insns: clinit.units,
+        relocations: clinit.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 1,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: vec![EncodedField {
+            field: key_field,
+            access_flags: 0x1A,
+        }],
+        static_values: Vec::new(),
+        direct_methods: vec![clinit_method, decrypt_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn stringbuilder_decrypt_sample(pairs: &[(&[u8], u8)]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericStringBuilder;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let builder_t: String = "Ljava/lang/StringBuilder;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let void_t: String = "V".to_owned();
+    let int_t: String = "I".to_owned();
+    let char_t: String = "C".to_owned();
+
+    let sb_init: MethodRef = MethodRef {
+        class: builder_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t.clone(),
+            params: Vec::new(),
+        },
+        name: "<init>".to_owned(),
+    };
+    let sb_append_char: MethodRef = MethodRef {
+        class: builder_t.clone(),
+        proto: ProtoRef {
+            return_type: builder_t.clone(),
+            params: vec![char_t],
+        },
+        name: "append".to_owned(),
+    };
+    let sb_to_string: MethodRef = MethodRef {
+        class: builder_t.clone(),
+        proto: ProtoRef {
+            return_type: string_t.clone(),
+            params: Vec::new(),
+        },
+        name: "toString".to_owned(),
+    };
+
+    let mut decrypt: MethodBuilder = MethodBuilder::default();
+    decrypt.op12x(0x21, 0, 5);
+    decrypt.new_instance(1, &builder_t);
+    decrypt.invoke_one(0x70, 1, &sb_init);
+    decrypt.op11n(0x12, 2, 0);
+    let loop_start: usize = decrypt.mark();
+    let if_ge_pos: usize = decrypt.if_ge(2, 0);
+    decrypt.op23x(0x48, 3, 5, 2);
+    decrypt.op12x(0xB7, 3, 6);
+    decrypt.op12x(0x8E, 3, 3);
+    decrypt.invoke_two(0x6E, 1, 3, &sb_append_char);
+    decrypt.op22b(0xD8, 2, 2, 1);
+    decrypt.goto_back(loop_start);
+    let done_pos: usize = decrypt.mark();
+    decrypt.patch_branch(if_ge_pos, done_pos);
+    decrypt.invoke_one(0x6E, 1, &sb_to_string);
+    decrypt.op11x(0x0C, 4);
+    decrypt.op11x(0x11, 4);
+
+    let decrypt_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t,
+            params: vec![byte_arr.clone(), int_t],
+        },
+        name: "decrypt".to_owned(),
+    };
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    for (cipher, key) in pairs {
+        caller.op21s(0x13, 0, cipher.len() as i16);
+        caller.new_array(0, 0, &byte_arr);
+        let branch_pos: usize = caller.fill_array_data_ref(0);
+        let payload_pos: usize = caller.emit_byte_array_payload(cipher);
+        caller.patch_payload_ref(branch_pos, payload_pos);
+        caller.op21s(0x13, 1, i16::from(*key));
+        caller.invoke_two(0x71, 0, 1, &decrypt_ref);
+        caller.op11x(0x0C, 2);
+    }
+    caller.op10x(0x0E);
+
+    let decrypt_method: EncodedMethod = EncodedMethod {
+        method: decrypt_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 2,
+        outs_size: 2,
+        insns: decrypt.units,
+        relocations: decrypt.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 3,
+        ins_size: 0,
+        outs_size: 2,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![decrypt_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn base64_xor_chain_sample(pairs: &[(&str, u8)]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericBase64Xor;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let void_t: String = "V".to_owned();
+    let int_t: String = "I".to_owned();
+    let base64_t: String = "Landroid/util/Base64;".to_owned();
+
+    let base64_decode: MethodRef = MethodRef {
+        class: base64_t,
+        proto: ProtoRef {
+            return_type: byte_arr.clone(),
+            params: vec![string_t.clone(), int_t.clone()],
+        },
+        name: "decode".to_owned(),
+    };
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t.clone(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+
+    let mut decrypt: MethodBuilder = MethodBuilder::default();
+    decrypt.op11n(0x12, 1, 0);
+    decrypt.invoke_two(0x71, 6, 1, &base64_decode);
+    decrypt.op11x(0x0C, 0);
+    decrypt.op12x(0x21, 1, 0);
+    decrypt.new_array(2, 1, &byte_arr);
+    decrypt.op11n(0x12, 3, 0);
+    let loop_start: usize = decrypt.mark();
+    let if_ge_pos: usize = decrypt.if_ge(3, 1);
+    decrypt.op23x(0x48, 4, 0, 3);
+    decrypt.op12x(0xB7, 4, 7);
+    decrypt.op23x(0x4F, 4, 2, 3);
+    decrypt.op22b(0xD8, 3, 3, 1);
+    decrypt.goto_back(loop_start);
+    let done_pos: usize = decrypt.mark();
+    decrypt.patch_branch(if_ge_pos, done_pos);
+    decrypt.new_instance(5, &string_t);
+    decrypt.invoke_two(0x70, 5, 2, &string_init);
+    decrypt.op11x(0x11, 5);
+
+    let decrypt_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t.clone(),
+            params: vec![string_t.clone(), int_t],
+        },
+        name: "decrypt".to_owned(),
+    };
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    for (plain, key) in pairs {
+        let cipher: Vec<u8> = plain.bytes().map(|b: u8| b ^ key).collect();
+        let b64: String = base64_encode_standard(&cipher);
+        caller.const_string(0, &b64);
+        caller.op21s(0x13, 1, i16::from(*key));
+        caller.invoke_two(0x71, 0, 1, &decrypt_ref);
+        caller.op11x(0x0C, 2);
+    }
+    caller.op10x(0x0E);
+
+    let decrypt_method: EncodedMethod = EncodedMethod {
+        method: decrypt_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 8,
+        ins_size: 2,
+        outs_size: 2,
+        insns: decrypt.units,
+        relocations: decrypt.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 3,
+        ins_size: 0,
+        outs_size: 2,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![decrypt_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn chained_double_decrypt_sample(cipher: &[u8], k1: u8, k2: u8) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericChainedDecrypt;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let char_arr: String = "[C".to_owned();
+    let void_t: String = "V".to_owned();
+
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t.clone(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+    let mut stage1: MethodBuilder = MethodBuilder::default();
+    stage1.op12x(0x21, 0, 6);
+    stage1.new_array(1, 0, &byte_arr);
+    stage1.op11n(0x12, 2, 0);
+    let s1_loop: usize = stage1.mark();
+    let s1_if_ge: usize = stage1.if_ge(2, 0);
+    stage1.op23x(0x48, 3, 6, 2);
+    stage1.op22b(0xDF, 3, 3, k1 as i8);
+    stage1.op23x(0x4F, 3, 1, 2);
+    stage1.op22b(0xD8, 2, 2, 1);
+    stage1.goto_back(s1_loop);
+    let s1_done: usize = stage1.mark();
+    stage1.patch_branch(s1_if_ge, s1_done);
+    stage1.new_instance(4, &string_t);
+    stage1.invoke_two(0x70, 4, 1, &string_init);
+    stage1.op11x(0x11, 4);
+
+    let stage1_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t.clone(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "stage1".to_owned(),
+    };
+
+    let to_char_array: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: char_arr.clone(),
+            params: Vec::new(),
+        },
+        name: "toCharArray".to_owned(),
+    };
+    let string_value_of: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: string_t.clone(),
+            params: vec![char_arr.clone()],
+        },
+        name: "valueOf".to_owned(),
+    };
+    let mut stage2: MethodBuilder = MethodBuilder::default();
+    stage2.invoke_one(0x6E, 6, &to_char_array);
+    stage2.op11x(0x0C, 0);
+    stage2.op12x(0x21, 1, 0);
+    stage2.new_array(2, 1, &char_arr);
+    stage2.op11n(0x12, 3, 0);
+    let s2_loop: usize = stage2.mark();
+    let s2_if_ge: usize = stage2.if_ge(3, 1);
+    stage2.op23x(0x49, 4, 0, 3);
+    stage2.op22b(0xDF, 4, 4, k2 as i8);
+    stage2.op23x(0x50, 4, 2, 3);
+    stage2.op22b(0xD8, 3, 3, 1);
+    stage2.goto_back(s2_loop);
+    let s2_done: usize = stage2.mark();
+    stage2.patch_branch(s2_if_ge, s2_done);
+    stage2.invoke_one(0x71, 2, &string_value_of);
+    stage2.op11x(0x0C, 5);
+    stage2.op11x(0x11, 5);
+
+    let stage2_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t.clone(),
+            params: vec![string_t.clone()],
+        },
+        name: "stage2".to_owned(),
+    };
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    caller.op21s(0x13, 0, cipher.len() as i16);
+    caller.new_array(0, 0, &byte_arr);
+    let branch_pos: usize = caller.fill_array_data_ref(0);
+    let payload_pos: usize = caller.emit_byte_array_payload(cipher);
+    caller.patch_payload_ref(branch_pos, payload_pos);
+    caller.invoke_one(0x71, 0, &stage1_ref);
+    caller.op11x(0x0C, 1);
+    caller.invoke_one(0x71, 1, &stage2_ref);
+    caller.op11x(0x0C, 2);
+    caller.op10x(0x0E);
+
+    let stage1_method: EncodedMethod = EncodedMethod {
+        method: stage1_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 1,
+        outs_size: 2,
+        insns: stage1.units,
+        relocations: stage1.relocations,
+    };
+    let stage2_method: EncodedMethod = EncodedMethod {
+        method: stage2_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 1,
+        outs_size: 1,
+        insns: stage2.units,
+        relocations: stage2.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 3,
+        ins_size: 0,
+        outs_size: 1,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![stage1_method, stage2_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn native_call_wall_sample(cipher: &[u8]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericNativeWall;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let void_t: String = "V".to_owned();
+    let int_t: String = "I".to_owned();
+
+    let native_key: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: int_t,
+            params: Vec::new(),
+        },
+        name: "nativeKey".to_owned(),
+    };
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t.clone(),
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+
+    let mut decrypt: MethodBuilder = MethodBuilder::default();
+    decrypt.invoke_zero(0x71, &native_key);
+    decrypt.op11x(0x0A, 4);
+    decrypt.op12x(0x21, 0, 6);
+    decrypt.new_array(1, 0, &byte_arr);
+    decrypt.op11n(0x12, 2, 0);
+    let loop_start: usize = decrypt.mark();
+    let if_ge_pos: usize = decrypt.if_ge(2, 0);
+    decrypt.op23x(0x48, 3, 6, 2);
+    decrypt.op12x(0xB7, 3, 4);
+    decrypt.op23x(0x4F, 3, 1, 2);
+    decrypt.op22b(0xD8, 2, 2, 1);
+    decrypt.goto_back(loop_start);
+    let done_pos: usize = decrypt.mark();
+    decrypt.patch_branch(if_ge_pos, done_pos);
+    decrypt.new_instance(6, &string_t);
+    decrypt.invoke_two(0x70, 6, 1, &string_init);
+    decrypt.op11x(0x11, 6);
+
+    let decrypt_ref: MethodRef = MethodRef {
+        class: class.clone(),
+        proto: ProtoRef {
+            return_type: string_t,
+            params: vec![byte_arr.clone()],
+        },
+        name: "decrypt".to_owned(),
+    };
+
+    let mut caller: MethodBuilder = MethodBuilder::default();
+    caller.op21s(0x13, 0, cipher.len() as i16);
+    caller.new_array(0, 0, &byte_arr);
+    let branch_pos: usize = caller.fill_array_data_ref(0);
+    let payload_pos: usize = caller.emit_byte_array_payload(cipher);
+    caller.patch_payload_ref(branch_pos, payload_pos);
+    caller.invoke_one(0x71, 0, &decrypt_ref);
+    caller.op11x(0x0C, 1);
+    caller.op10x(0x0E);
+
+    let native_key_method: EncodedMethod = EncodedMethod {
+        method: native_key,
+        access_flags: 0x0108,
+        is_direct: true,
+        registers_size: 0,
+        ins_size: 0,
+        outs_size: 0,
+        insns: Vec::new(),
+        relocations: Vec::new(),
+    };
+    let decrypt_method: EncodedMethod = EncodedMethod {
+        method: decrypt_ref,
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 7,
+        ins_size: 1,
+        outs_size: 2,
+        insns: decrypt.units,
+        relocations: decrypt.relocations,
+    };
+    let caller_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "useSecrets".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 1,
+        insns: caller.units,
+        relocations: caller.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![native_key_method, decrypt_method, caller_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn filled_new_array_string_sample(bytes: [u8; 3]) -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericFilledNewArray;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let string_t: String = "Ljava/lang/String;".to_owned();
+    let byte_arr: String = "[B".to_owned();
+    let void_t: String = "V".to_owned();
+
+    let string_init: MethodRef = MethodRef {
+        class: string_t.clone(),
+        proto: ProtoRef {
+            return_type: void_t,
+            params: vec![byte_arr.clone()],
+        },
+        name: "<init>".to_owned(),
+    };
+
+    let mut demo: MethodBuilder = MethodBuilder::default();
+    demo.op21s(0x13, 0, i16::from(bytes[0]));
+    demo.op21s(0x13, 1, i16::from(bytes[1]));
+    demo.op21s(0x13, 2, i16::from(bytes[2]));
+    demo.filled_new_array(&[0, 1, 2], &byte_arr);
+    demo.op11x(0x0C, 3);
+    demo.new_instance(4, &string_t);
+    demo.invoke_two(0x70, 4, 3, &string_init);
+    demo.op11x(0x11, 4);
+
+    let demo_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: string_t,
+                params: Vec::new(),
+            },
+            name: "demo".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 5,
+        ins_size: 0,
+        outs_size: 2,
+        insns: demo.units,
+        relocations: demo.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![demo_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
+#[must_use]
+pub fn infinite_loop_sample() -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericInfiniteLoop;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let int_t: String = "I".to_owned();
+
+    let mut spin: MethodBuilder = MethodBuilder::default();
+    spin.op11n(0x12, 0, 0);
+    let loop_start: usize = spin.mark();
+    spin.op22b(0xD8, 0, 0, 1);
+    spin.goto_back(loop_start);
+
+    let spin_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: int_t,
+                params: Vec::new(),
+            },
+            name: "spin".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 1,
+        ins_size: 0,
+        outs_size: 0,
+        insns: spin.units,
+        relocations: spin.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![spin_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
 pub mod insn {
     #[must_use]
     pub fn fmt10x(op: u8) -> Vec<u16> {
@@ -1930,6 +2844,15 @@ pub mod insn {
         vec![
             u16::from(op) | (u16::from(a) << 8),
             u16::from(b) | (u16::from(c) << 8),
+        ]
+    }
+
+    #[must_use]
+    pub fn fmt31t(op: u8, a: u8, offset_units: i32) -> Vec<u16> {
+        vec![
+            u16::from(op) | (u16::from(a) << 8),
+            (offset_units as u32 & 0xFFFF) as u16,
+            ((offset_units as u32) >> 16) as u16,
         ]
     }
 
