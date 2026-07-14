@@ -42,6 +42,8 @@ struct Dispatcher {
     suffix: Body,
     entry_state: i32,
     slot: StateSlot,
+    case_count: u32,
+    default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
 }
 
@@ -69,13 +71,14 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> = build_parent_map(func, entry);
     let (targets, default): (Vec<InstrSeqId>, InstrSeqId) = find_switch(func, wrapper, temp)?;
 
+    let case_count: u32 = u32::try_from(targets.len()).ok()?;
     let mut state_to_body: BTreeMap<i32, Body> = BTreeMap::new();
     for (state, target) in targets.iter().enumerate() {
         let state_i32: i32 = i32::try_from(state).ok()?;
         let body: Body = case_body(func, *target, &parents)?;
         state_to_body.insert(state_i32, body);
     }
-    let default_state: i32 = i32::try_from(targets.len()).ok()?;
+    let default_state: i32 = i32::try_from(case_count).ok()?;
     let default_body: Body = case_body(func, default, &parents)?;
     state_to_body.entry(default_state).or_insert(default_body);
 
@@ -88,6 +91,8 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
         suffix,
         entry_state,
         slot,
+        case_count,
+        default_state,
         state_to_body,
     })
 }
@@ -250,7 +255,8 @@ struct Graph {
 
 fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
     let mut nodes: BTreeMap<i32, Node> = BTreeMap::new();
-    let mut work: Vec<i32> = vec![disp.entry_state];
+    let entry: i32 = canonical_state(disp, disp.entry_state);
+    let mut work: Vec<i32> = vec![entry];
     while let Some(state) = work.pop() {
         if nodes.contains_key(&state) {
             continue;
@@ -259,7 +265,8 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
             return None;
         }
         let body: &Body = disp.state_to_body.get(&state)?;
-        let node: Node = classify_case(func, body, disp.slot)?;
+        let mut node: Node = classify_case(func, body, disp.slot)?;
+        canonicalize_transition(&mut node.trans, disp);
         match &node.trans {
             Trans::Exit => {}
             Trans::Goto(k) => work.push(*k),
@@ -273,10 +280,30 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
         }
         nodes.insert(state, node);
     }
-    Some(Graph {
-        entry: disp.entry_state,
-        nodes,
-    })
+    Some(Graph { entry, nodes })
+}
+
+const fn canonical_state(disp: &Dispatcher, state: i32) -> i32 {
+    let selector: u32 = u32::from_ne_bytes(state.to_ne_bytes());
+    if selector < disp.case_count {
+        state
+    } else {
+        disp.default_state
+    }
+}
+
+const fn canonicalize_transition(trans: &mut Trans, disp: &Dispatcher) {
+    match trans {
+        Trans::Exit => {}
+        Trans::Goto(state) => *state = canonical_state(disp, *state),
+        Trans::Cond {
+            then_state,
+            else_state,
+        } => {
+            *then_state = canonical_state(disp, *then_state);
+            *else_state = canonical_state(disp, *else_state);
+        }
+    }
 }
 
 fn classify_case(func: &LocalFunction, body: &Body, slot: StateSlot) -> Option<Node> {

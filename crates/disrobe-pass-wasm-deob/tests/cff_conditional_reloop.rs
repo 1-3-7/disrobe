@@ -11,15 +11,29 @@ fn real_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real")
 }
 
-fn assemble(name: &str) -> Vec<u8> {
-    let path: PathBuf = real_dir().join(name);
-    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "read {}: {e}\nrun corpus/wasm/obf/build.sh to produce the real toolchain wat",
-            path.display()
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+fn assemble_path(path: PathBuf, hint: Option<&str>) -> Vec<u8> {
+    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
+        hint.map_or_else(
+            || panic!("read {}: {e}", path.display()),
+            |hint: &str| panic!("read {}: {e}\n{hint}", path.display()),
         )
     });
     wat::parse_str(&text).unwrap_or_else(|e| panic!("assemble {}: {e}", path.display()))
+}
+
+fn assemble(name: &str) -> Vec<u8> {
+    assemble_path(
+        real_dir().join(name),
+        Some("run corpus/wasm/obf/build.sh to produce the real toolchain wat"),
+    )
+}
+
+fn assemble_fixture(name: &str) -> Vec<u8> {
+    assemble_path(fixture_dir().join(name), None)
 }
 
 fn engine() -> Engine {
@@ -108,41 +122,71 @@ fn cond_cases() -> Vec<CondCase> {
     ]
 }
 
+fn assert_reloops_to_clean_behavior(
+    clean_bytes: &[u8],
+    obf_bytes: &[u8],
+    export: &str,
+    name: &str,
+) {
+    let eng: Engine = engine();
+
+    let mut clean_pre: Inst = instantiate(&eng, clean_bytes);
+    let mut obf_pre: Inst = instantiate(&eng, obf_bytes);
+    assert_equivalent(&mut clean_pre, &mut obf_pre, export);
+
+    let recovered: RecoveredModule =
+        recover_module(obf_bytes).unwrap_or_else(|e| panic!("recover {name}: {e}"));
+
+    assert!(
+        recovered.report.flattened_conditional_restructured >= 1,
+        "CFF dispatcher must reloop {name}: {:?}",
+        recovered.report
+    );
+    assert!(
+        wasmparser::validate(&recovered.bytes).is_ok(),
+        "recovered {name} must validate"
+    );
+    assert!(
+        !contains_br_table(&recovered.bytes),
+        "recovered {name} must remove the br_table dispatcher"
+    );
+
+    let mut clean_inst: Inst = instantiate(&eng, clean_bytes);
+    let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut clean_inst, &mut recovered_inst, export);
+}
+
 #[test]
 fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
-    let eng: Engine = engine();
     for case in cond_cases() {
         let clean_bytes: Vec<u8> = assemble(case.clean);
         let obf_bytes: Vec<u8> = assemble(case.obf);
-
-        let mut clean_pre: Inst = instantiate(&eng, &clean_bytes);
-        let mut obf_pre: Inst = instantiate(&eng, &obf_bytes);
-        assert_equivalent(&mut clean_pre, &mut obf_pre, case.export);
-
-        let recovered: RecoveredModule =
-            recover_module(&obf_bytes).unwrap_or_else(|e| panic!("recover {}: {e}", case.obf));
-
-        assert!(
-            recovered.report.flattened_conditional_restructured >= 1,
-            "data-dependent CFF must be relooped (not left WalledBranching) for {}: {:?}",
-            case.obf,
-            recovered.report
-        );
-        assert!(
-            wasmparser::validate(&recovered.bytes).is_ok(),
-            "recovered {} must validate",
-            case.obf
-        );
-        assert!(
-            !contains_br_table(&recovered.bytes),
-            "recovered {} must no longer contain a br_table dispatcher",
-            case.obf
-        );
-
-        let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
-        let mut recovered_inst: Inst = instantiate(&eng, &recovered.bytes);
-        assert_equivalent(&mut clean_inst, &mut recovered_inst, case.export);
+        assert_reloops_to_clean_behavior(&clean_bytes, &obf_bytes, case.export, case.obf);
     }
+}
+
+fn assert_fixture_reloops(clean: &str, obf: &str, export: &str) {
+    let clean_bytes: Vec<u8> = assemble_fixture(clean);
+    let obf_bytes: Vec<u8> = assemble_fixture(obf);
+    assert_reloops_to_clean_behavior(&clean_bytes, &obf_bytes, export, obf);
+}
+
+#[test]
+fn default_dispatch_state_reloops_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_default_state.clean.wat",
+        "cff_default_state.obf.wat",
+        "classify",
+    );
+}
+
+#[test]
+fn default_entry_and_conditional_state_reloop_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_default_entry_cond.clean.wat",
+        "cff_default_entry_cond.obf.wat",
+        "entry_cond",
+    );
 }
 
 fn contains_br_table(bytes: &[u8]) -> bool {
