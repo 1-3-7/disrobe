@@ -984,19 +984,25 @@ fn smells_like_asar(bytes: &[u8]) -> bool {
     if &bytes[0..4] != ASAR_HEADER_PREFIX {
         return false;
     }
-    let pickle_size: u32 = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if !(8..=64 * 1024 * 1024).contains(&pickle_size) {
+    let header_pickle_size: usize =
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    let string_pickle_size: usize =
+        u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    let json_len: usize = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    if !(8..=64 * 1024 * 1024).contains(&header_pickle_size) {
         return false;
     }
-    if &bytes[8..12] != ASAR_HEADER_PREFIX {
+    if Some(header_pickle_size) != string_pickle_size.checked_add(4) {
         return false;
     }
-    let header_size: u32 = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-    if !(1..=64 * 1024 * 1024).contains(&header_size) {
+    if !matches!(string_pickle_size.checked_sub(json_len), Some(4..=7)) {
+        return false;
+    }
+    if !(1..=64 * 1024 * 1024).contains(&json_len) {
         return false;
     }
     let header_off: usize = 16;
-    let header_end: usize = header_off.saturating_add(header_size as usize);
+    let header_end: usize = header_off.saturating_add(json_len);
     if header_end > bytes.len() {
         return false;
     }
@@ -1340,15 +1346,15 @@ mod tests {
 
     #[test]
     fn detects_asar_header_shape() {
-        let mut bytes: Vec<u8> = ASAR_HEADER_PREFIX.to_vec();
-        let pickle_size: u32 = 100;
-        bytes.extend_from_slice(&pickle_size.to_le_bytes());
-        bytes.extend_from_slice(ASAR_HEADER_PREFIX);
-        let header_size: u32 = 32;
-        bytes.extend_from_slice(&header_size.to_le_bytes());
         let header_json: &[u8] = br#"{"files":{}}"#;
+        let json_len: u32 = u32::try_from(header_json.len()).expect("json len fits");
+        let string_pickle_size: u32 = json_len + 4;
+        let header_pickle_size: u32 = string_pickle_size + 4;
+        let mut bytes: Vec<u8> = ASAR_HEADER_PREFIX.to_vec();
+        bytes.extend_from_slice(&header_pickle_size.to_le_bytes());
+        bytes.extend_from_slice(&string_pickle_size.to_le_bytes());
+        bytes.extend_from_slice(&json_len.to_le_bytes());
         bytes.extend_from_slice(header_json);
-        bytes.extend(std::iter::repeat_n(b' ', 32 - header_json.len()));
         assert_eq!(detect_container(&bytes), Some(ContainerKind::Asar));
     }
 

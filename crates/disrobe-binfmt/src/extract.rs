@@ -5050,11 +5050,12 @@ mod tests {
                 header_size + (4 - r)
             }
         };
-        let pickle_size: u32 = 8 + aligned;
+        let string_pickle_size: u32 = aligned + 4;
+        let header_pickle_size: u32 = string_pickle_size + 4;
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
-        out.extend_from_slice(&pickle_size.to_le_bytes());
-        out.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&header_pickle_size.to_le_bytes());
+        out.extend_from_slice(&string_pickle_size.to_le_bytes());
         out.extend_from_slice(&header_size.to_le_bytes());
         out.extend_from_slice(header_bytes);
         out.extend(std::iter::repeat_n(0u8, (aligned - header_size) as usize));
