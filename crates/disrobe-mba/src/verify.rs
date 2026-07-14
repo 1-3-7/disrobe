@@ -27,9 +27,26 @@ const DEFAULT_NODE_BUDGET: usize = 1usize << 20;
 const MAX_INPUT_BITS: usize = 512;
 const MAX_COUNTEREXAMPLE_SLOTS: usize = 1024;
 
+pub trait EquivalenceInput: Sized {
+    #[must_use]
+    fn verify_equivalent_at_width(&self, rhs: &Self, width: Width) -> Equivalence;
+}
+
 #[must_use]
-pub fn verify_equivalent(lhs: &Expr, rhs: &Expr, width: Width) -> Equivalence {
-    verify_equivalent_budgeted(lhs, rhs, width, DEFAULT_NODE_BUDGET)
+pub fn verify_equivalent<T: EquivalenceInput>(lhs: &T, rhs: &T, width: Width) -> Equivalence {
+    lhs.verify_equivalent_at_width(rhs, width)
+}
+
+impl EquivalenceInput for Expr {
+    fn verify_equivalent_at_width(&self, rhs: &Self, width: Width) -> Equivalence {
+        verify_equivalent_budgeted(self, rhs, width, DEFAULT_NODE_BUDGET)
+    }
+}
+
+impl EquivalenceInput for Predicate {
+    fn verify_equivalent_at_width(&self, rhs: &Self, width: Width) -> Equivalence {
+        verify_predicate_equivalent_budgeted(self, rhs, width, DEFAULT_NODE_BUDGET)
+    }
 }
 
 #[must_use]
@@ -91,6 +108,67 @@ pub fn verify_equivalent_budgeted(
         };
     }
 
+    if difference == ZERO {
+        return Equivalence::Proven;
+    }
+    let assignment: BTreeMap<u32, bool> = bdd.witness(difference);
+    let dense_counterexample: Vec<u64> = decode_witness(&assignment, var_count, bits);
+    let counterexample: Vec<u64> =
+        match expand_counterexample(&dense_counterexample, &original_vars) {
+            Some(counterexample) => counterexample,
+            None => return Equivalence::Unknown,
+        };
+    Equivalence::Disproven { counterexample }
+}
+
+#[must_use]
+pub fn verify_predicate_equivalent_budgeted(
+    lhs: &Predicate,
+    rhs: &Predicate,
+    width: Width,
+    node_budget: usize,
+) -> Equivalence {
+    if lhs.depth() > crate::expr::MAX_MBA_DEPTH || rhs.depth() > crate::expr::MAX_MBA_DEPTH {
+        return Equivalence::Unknown;
+    }
+    let bits: usize = width.bits() as usize;
+    let mut vars: BTreeSet<u32> = BTreeSet::new();
+    collect_predicate_vars(lhs, &mut vars);
+    collect_predicate_vars(rhs, &mut vars);
+    let var_count: usize = vars.len();
+    let original_vars: Vec<u32> = vars.iter().copied().collect();
+    let Some(input_bits): Option<usize> = var_count.checked_mul(bits) else {
+        return Equivalence::Unknown;
+    };
+    if input_bits > MAX_INPUT_BITS || input_bits.saturating_add(2) > node_budget {
+        return Equivalence::Unknown;
+    }
+    let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
+    for (dense, original) in original_vars.iter().copied().enumerate() {
+        let Ok(dense): Result<u32, _> = u32::try_from(dense) else {
+            return Equivalence::Unknown;
+        };
+        remap.insert(original, dense);
+    }
+    let lhs: Predicate = lhs.remap_vars(&remap);
+    let rhs: Predicate = rhs.remap_vars(&remap);
+    let mut bdd: Bdd = Bdd::new(node_budget);
+    let inputs: Vec<Vec<NodeId>> = match bdd.fresh_inputs(var_count, bits) {
+        Some(inputs) => inputs,
+        None => return Equivalence::Unknown,
+    };
+    let lhs_root: NodeId = match blast_predicate(&mut bdd, &lhs, &inputs, bits) {
+        Some(root) => root,
+        None => return Equivalence::Unknown,
+    };
+    let rhs_root: NodeId = match blast_predicate(&mut bdd, &rhs, &inputs, bits) {
+        Some(root) => root,
+        None => return Equivalence::Unknown,
+    };
+    let difference: NodeId = match bdd.xor(lhs_root, rhs_root) {
+        Some(difference) => difference,
+        None => return Equivalence::Unknown,
+    };
     if difference == ZERO {
         return Equivalence::Proven;
     }
