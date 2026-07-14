@@ -14,6 +14,7 @@ members = [
     "crates/disrobe-nir",
     "crates/disrobe-nir-lift",
     "crates/disrobe-semdiff",
+    "crates/disrobe-sleigh",
     "crates/disrobe-taint",
     "crates/disrobe-irsummary",
     "crates/disrobe-pass-as3",
