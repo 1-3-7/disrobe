@@ -31,6 +31,7 @@ const EMU_STACK_BASE: u64 = 0x0080_0000;
 const EMU_STACK_SIZE: u64 = 0x0010_0000;
 const SYNTH_IAT_BASE: u64 = 0xFE00_0000;
 const SYNTH_FN_BASE: u64 = 0xFE01_0000;
+const SYNTH_MODULE_BASE: u32 = 0x7000_0100;
 const EMU_TEB_BASE: u64 = 0x7EFD_E000;
 const EMU_PEB_BASE: u64 = 0x7EFD_D000;
 const EMU_LAZY_PAGE_BUDGET: u32 = 16_384;
@@ -43,6 +44,14 @@ const ORDINAL_NAME_PTR_CEILING: u64 = 0x1_0000;
 const IMPORT_BY_ORDINAL_FLAG: u32 = 0x8000_0000;
 
 const LOADER_REBUILT_SECTIONS: &[&[u8]] = &[b".reloc", b".idata"];
+const IMPORT_DESCRIPTOR_BYTES: usize = 20;
+const MAX_ASPACK_IMPORT_DESCRIPTORS: usize = 64;
+const MAX_ASPACK_IMPORTS_PER_MODULE: usize = 256;
+const MAX_ASPACK_MODULE_NAME_LEN: usize = 260;
+const MAX_ASPACK_THUNK_CANDIDATES: usize = 1 << 20;
+const PE_FILE_HEADER_LEN: usize = 24;
+const PE32_DATA_DIRECTORY_OFFSET: usize = 96;
+const IMPORT_DIRECTORY_INDEX: usize = 1;
 
 #[derive(Debug, Clone)]
 pub struct AspackPhaseTwoOutput {
@@ -61,6 +70,33 @@ pub struct AspackPhaseTwoOutput {
     pub section_report: Option<SectionRecoveryReport>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AspackResolvedImport {
+    synth: u32,
+    name_rva: u32,
+}
+
+#[derive(Debug)]
+struct AspackImportModule {
+    name_rva: u32,
+    imports: Vec<AspackResolvedImport>,
+    overflowed: bool,
+}
+
+#[derive(Debug)]
+struct AspackImportCapture {
+    name_rva: u32,
+    synth_entries: Vec<u32>,
+    name_entries: Vec<u32>,
+}
+
+#[derive(Debug)]
+struct AspackImportLayout {
+    name_rva: u32,
+    iat_rva: u32,
+    name_entries: Vec<u32>,
+}
+
 #[derive(Debug)]
 struct AspackHost {
     heap_brk: u64,
@@ -69,7 +105,9 @@ struct AspackHost {
     iat: BTreeMap<u64, &'static str>,
     resolved: BTreeMap<u64, String>,
     resolved_name_rva: BTreeMap<u32, u32>,
+    modules: BTreeMap<u32, AspackImportModule>,
     next_synth_fn: u64,
+    next_synth_module: u32,
     calls: Vec<String>,
     halted: bool,
 }
@@ -83,7 +121,9 @@ impl AspackHost {
             iat: BTreeMap::new(),
             resolved: BTreeMap::new(),
             resolved_name_rva: BTreeMap::new(),
+            modules: BTreeMap::new(),
             next_synth_fn: SYNTH_FN_BASE,
+            next_synth_module: SYNTH_MODULE_BASE,
             calls: Vec::new(),
             halted: false,
         }
@@ -95,24 +135,77 @@ impl AspackHost {
         v
     }
 
-    fn record_resolved_import(&mut self, synth: u64, name_ptr: u32, mem: &Memory) {
+    fn fresh_module(&mut self) -> Option<u32> {
+        let module: u32 = self.next_synth_module;
+        self.next_synth_module = module.checked_add(0x10)?;
+        Some(module)
+    }
+
+    fn resolved_import_name_rva(&self, name_ptr: u32, mem: &Memory) -> Option<u32> {
         if name_ptr == 0 {
-            return;
+            return None;
         }
         if u64::from(name_ptr) < ORDINAL_NAME_PTR_CEILING {
             let original_iat: u32 = IMPORT_BY_ORDINAL_FLAG | name_ptr;
-            self.resolved_name_rva.insert(synth as u32, original_iat);
-            return;
+            return Some(original_iat);
         }
         if u64::from(name_ptr) < self.image_base.wrapping_add(2) {
-            return;
+            return None;
         }
         let func_name: String = read_guest_cstr(mem, u64::from(name_ptr), 96);
         if func_name.is_empty() {
+            return None;
+        }
+        let name_entry_rva: u64 = u64::from(name_ptr)
+            .checked_sub(self.image_base)?
+            .checked_sub(2)?;
+        u32::try_from(name_entry_rva).ok()
+    }
+
+    fn record_resolved_import(&mut self, synth: u32, name_ptr: u32, mem: &Memory) -> Option<u32> {
+        let name_rva: u32 = self.resolved_import_name_rva(name_ptr, mem)?;
+        self.resolved_name_rva.insert(synth, name_rva);
+        Some(name_rva)
+    }
+
+    fn module_name_rva(&self, name_ptr: u32, mem: &Memory) -> Option<u32> {
+        if name_ptr == 0 {
+            return None;
+        }
+        let name_rva: u64 = u64::from(name_ptr).checked_sub(self.image_base)?;
+        let name: String = read_guest_cstr(mem, u64::from(name_ptr), MAX_ASPACK_MODULE_NAME_LEN);
+        if name.is_empty() || !name.bytes().all(|byte: u8| byte.is_ascii_graphic()) {
+            return None;
+        }
+        u32::try_from(name_rva).ok()
+    }
+
+    fn module_handle(&mut self, name_ptr: u32, mem: &Memory) -> Option<u32> {
+        let name_rva: u32 = self.module_name_rva(name_ptr, mem)?;
+        let handle: u32 = self.fresh_module()?;
+        self.modules.insert(
+            handle,
+            AspackImportModule {
+                name_rva,
+                imports: Vec::new(),
+                overflowed: false,
+            },
+        );
+        Some(handle)
+    }
+
+    fn record_module_import(&mut self, module_handle: u32, synth: u32, name_rva: u32) {
+        let Some(module): Option<&mut AspackImportModule> = self.modules.get_mut(&module_handle)
+        else {
+            return;
+        };
+        if module.imports.len() >= MAX_ASPACK_IMPORTS_PER_MODULE {
+            module.overflowed = true;
             return;
         }
-        let name_entry_rva: u32 = (u64::from(name_ptr) - self.image_base - 2) as u32;
-        self.resolved_name_rva.insert(synth as u32, name_entry_rva);
+        module
+            .imports
+            .push(AspackResolvedImport { synth, name_rva });
     }
 
     fn service_win32(&mut self, name: &str, regs: &mut Regs, mem: &mut Memory) -> Result<bool> {
@@ -144,15 +237,25 @@ impl AspackHost {
                 Ok(true)
             }
             "GetProcAddress" => {
+                let module_handle: u32 = mem.read_u32(sp)?;
                 let name_ptr: u32 = mem.read_u32(sp.wrapping_add(4))?;
                 let fn_addr: u64 = self.fresh_fn();
-                self.record_resolved_import(fn_addr, name_ptr, mem);
+                let synth: u32 = u32::try_from(fn_addr).map_err(|_| {
+                    Error::SignatureDb("ASPack: synthetic API address exceeds PE32".to_owned())
+                })?;
+                if let Some(name_rva) = self.record_resolved_import(synth, name_ptr, mem) {
+                    self.record_module_import(module_handle, synth, name_rva);
+                }
                 regs.write_sized(Reg::Rax, fn_addr, 32);
                 regs.set(Reg::Rsp, sp.wrapping_add(8));
                 Ok(true)
             }
             "GetModuleHandleA" | "LoadLibraryA" => {
-                regs.write_sized(Reg::Rax, 0x7000_0000, 32);
+                let name_ptr: u32 = mem.read_u32(sp)?;
+                let module_handle: u32 = self
+                    .module_handle(name_ptr, mem)
+                    .map_or(0x7000_0000, |handle: u32| handle);
+                regs.write_sized(Reg::Rax, u64::from(module_handle), 32);
                 regs.set(Reg::Rsp, sp.wrapping_add(4));
                 Ok(true)
             }
@@ -180,11 +283,17 @@ impl HostCall for AspackHost {
         };
         let sp: u64 = regs.get(Reg::Rsp);
         if symbol == "GetProcAddress" {
+            let module_handle: u32 = mem.read_u32(sp)?;
             let name_ptr: u32 = mem.read_u32(sp.wrapping_add(4))?;
             let func_name: String = read_guest_cstr(mem, u64::from(name_ptr), 96);
             self.calls.push(format!("GetProcAddress({func_name})"));
             let fn_addr: u64 = self.fresh_fn();
-            self.record_resolved_import(fn_addr, name_ptr, mem);
+            let synth: u32 = u32::try_from(fn_addr).map_err(|_| {
+                Error::SignatureDb("ASPack: synthetic API address exceeds PE32".to_owned())
+            })?;
+            if let Some(name_rva) = self.record_resolved_import(synth, name_ptr, mem) {
+                self.record_module_import(module_handle, synth, name_rva);
+            }
             self.resolved.insert(fn_addr, func_name);
             regs.write_sized(Reg::Rax, fn_addr, 32);
             regs.set(Reg::Rsp, sp.wrapping_add(8));
@@ -252,8 +361,15 @@ pub fn unpack_aspack_phase2_emulated(
     let final_rip: u64 = cpu.regs.rip;
 
     let mut recovered: Vec<u8> = cpu.mem.read_lossy(image_base, capacity as usize);
+    let import_layouts: Vec<AspackImportLayout> =
+        collect_aspack_import_layouts(&recovered, &host.modules);
     let _: IatReconstructionReport =
         reconstruct_import_address_table(&mut recovered, &host.resolved_name_rva);
+    if let Some(import_directory) =
+        reconstruct_aspack_import_descriptors(&mut recovered, image_base, &import_layouts)
+    {
+        rewrite_import_directory(&mut recovered, import_directory);
+    }
     let oep_estimate: Option<u64> = match &exit {
         ExitReason::JumpedOutOfRange { to, .. } => Some(*to),
         _ => None,
@@ -442,6 +558,343 @@ fn run_until_oep(
             other => return Ok(other),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AspackImportDirectory {
+    rva: u32,
+    size: u32,
+}
+
+fn collect_aspack_import_layouts(
+    recovered: &[u8],
+    modules: &BTreeMap<u32, AspackImportModule>,
+) -> Vec<AspackImportLayout> {
+    let mut captures: Vec<AspackImportCapture> = Vec::with_capacity(modules.len());
+    for module in modules.values() {
+        if module.overflowed
+            || module.imports.is_empty()
+            || !is_valid_module_name(recovered, module.name_rva)
+        {
+            continue;
+        }
+        let synth_entries: Vec<u32> = module
+            .imports
+            .iter()
+            .map(|import: &AspackResolvedImport| import.synth)
+            .collect();
+        let name_entries: Vec<u32> = module
+            .imports
+            .iter()
+            .map(|import: &AspackResolvedImport| import.name_rva)
+            .collect();
+        if !name_entries
+            .iter()
+            .all(|entry: &u32| is_valid_import_entry(recovered, *entry))
+        {
+            continue;
+        }
+        captures.push(AspackImportCapture {
+            name_rva: module.name_rva,
+            synth_entries,
+            name_entries,
+        });
+    }
+    let tables: Vec<&[u32]> = captures
+        .iter()
+        .map(|capture: &AspackImportCapture| capture.synth_entries.as_slice())
+        .collect();
+    let excluded_rvas: Vec<Option<u32>> = vec![None; tables.len()];
+    let Some(iat_rvas): Option<Vec<Option<u32>>> =
+        find_unique_thunk_tables(recovered, &tables, &excluded_rvas)
+    else {
+        return Vec::new();
+    };
+    let mut layouts: Vec<AspackImportLayout> = Vec::with_capacity(captures.len());
+    for (capture, iat_rva) in captures.into_iter().zip(iat_rvas) {
+        let Some(iat_rva): Option<u32> = iat_rva else {
+            continue;
+        };
+        layouts.push(AspackImportLayout {
+            name_rva: capture.name_rva,
+            iat_rva,
+            name_entries: capture.name_entries,
+        });
+    }
+    layouts
+}
+
+fn reconstruct_aspack_import_descriptors(
+    recovered: &mut [u8],
+    image_base: u64,
+    layouts: &[AspackImportLayout],
+) -> Option<AspackImportDirectory> {
+    if layouts.is_empty() || layouts.len() > MAX_ASPACK_IMPORT_DESCRIPTORS {
+        return None;
+    }
+    let directory: AspackImportDirectory =
+        find_aspack_runtime_import_directory(recovered, image_base, layouts.len())?;
+    let tables: Vec<&[u32]> = layouts
+        .iter()
+        .map(|layout: &AspackImportLayout| layout.name_entries.as_slice())
+        .collect();
+    let excluded_rvas: Vec<Option<u32>> = layouts
+        .iter()
+        .map(|layout: &AspackImportLayout| Some(layout.iat_rva))
+        .collect();
+    let ilt_rvas: Vec<Option<u32>> = find_unique_thunk_tables(recovered, &tables, &excluded_rvas)?;
+    let mut descriptors: Vec<[u32; 5]> = Vec::with_capacity(layouts.len());
+    for (layout, ilt_rva) in layouts.iter().zip(ilt_rvas) {
+        if !is_valid_module_name(recovered, layout.name_rva) {
+            return None;
+        }
+        let ilt_rva: u32 = ilt_rva?;
+        descriptors.push([ilt_rva, 0, 0, layout.name_rva, layout.iat_rva]);
+    }
+    let descriptor_count: usize = descriptors.len().checked_add(1)?;
+    let byte_count: usize = descriptor_count.checked_mul(IMPORT_DESCRIPTOR_BYTES)?;
+    let directory_off: usize = usize::try_from(directory.rva).ok()?;
+    let directory_end: usize = directory_off.checked_add(byte_count)?;
+    if directory_end > recovered.len() {
+        return None;
+    }
+    for (index, fields) in descriptors.iter().enumerate() {
+        let descriptor_off: usize = directory_off.checked_add(index * IMPORT_DESCRIPTOR_BYTES)?;
+        write_import_descriptor(recovered, descriptor_off, *fields)?;
+    }
+    recovered[directory_end - IMPORT_DESCRIPTOR_BYTES..directory_end].fill(0);
+    Some(directory)
+}
+
+fn find_aspack_runtime_import_directory(
+    recovered: &[u8],
+    image_base: u64,
+    expected_count: usize,
+) -> Option<AspackImportDirectory> {
+    if expected_count == 0 || expected_count > MAX_ASPACK_IMPORT_DESCRIPTORS {
+        return None;
+    }
+    let image_base: u32 = u32::try_from(image_base).ok()?;
+    let image_len: u32 = u32::try_from(recovered.len()).ok()?;
+    let image_end: u32 = image_base.checked_add(image_len)?;
+    if recovered.len() < IMPORT_DESCRIPTOR_BYTES {
+        return None;
+    }
+    let scan_end: usize = recovered.len().saturating_sub(IMPORT_DESCRIPTOR_BYTES);
+    let mut candidate: usize = 0;
+    let mut found: Option<AspackImportDirectory> = None;
+    while candidate <= scan_end {
+        let first: u32 = read_u32(recovered, candidate).ok()?;
+        if first == 0 {
+            candidate = candidate.saturating_add(4);
+            continue;
+        }
+        let first_fields: [u32; 5] = read_import_descriptor(recovered, candidate)?;
+        if aspack_runtime_descriptor(first_fields, image_base, image_end).is_none() {
+            candidate = candidate.saturating_add(4);
+            continue;
+        }
+        let mut cursor: usize = candidate;
+        let mut descriptor_count: usize = 0;
+        loop {
+            let Some(fields): Option<[u32; 5]> = read_import_descriptor(recovered, cursor) else {
+                candidate = cursor.saturating_add(4);
+                break;
+            };
+            if fields == [0; 5] {
+                if descriptor_count == expected_count {
+                    let rva: u32 = u32::try_from(candidate).ok()?;
+                    let byte_count: usize = descriptor_count
+                        .checked_add(1)?
+                        .checked_mul(IMPORT_DESCRIPTOR_BYTES)?;
+                    let size: u32 = u32::try_from(byte_count).ok()?;
+                    let directory: AspackImportDirectory = AspackImportDirectory { rva, size };
+                    if found.replace(directory).is_some() {
+                        return None;
+                    }
+                }
+                let next: usize = cursor.checked_add(IMPORT_DESCRIPTOR_BYTES)?;
+                candidate = next;
+                break;
+            }
+            if descriptor_count >= MAX_ASPACK_IMPORT_DESCRIPTORS {
+                candidate = cursor.saturating_add(4);
+                break;
+            }
+            if aspack_runtime_descriptor(fields, image_base, image_end).is_none() {
+                candidate = cursor.saturating_add(4);
+                break;
+            }
+            descriptor_count += 1;
+            let next: usize = cursor.checked_add(IMPORT_DESCRIPTOR_BYTES)?;
+            cursor = next;
+        }
+    }
+    found
+}
+
+fn read_import_descriptor(recovered: &[u8], off: usize) -> Option<[u32; 5]> {
+    let mut fields: [u32; 5] = [0; 5];
+    for (index, field) in fields.iter_mut().enumerate() {
+        let field_off: usize = off.checked_add(index.checked_mul(4)?)?;
+        *field = read_u32(recovered, field_off).ok()?;
+    }
+    Some(fields)
+}
+
+fn aspack_runtime_descriptor(fields: [u32; 5], image_base: u32, image_end: u32) -> Option<()> {
+    let runtime_table_va: u32 = fields[0];
+    if runtime_table_va == 0
+        || fields[1] != 0
+        || fields[2] != 0
+        || fields[3] != runtime_table_va
+        || fields[4] != runtime_table_va
+        || runtime_table_va < image_base
+        || runtime_table_va >= image_end
+    {
+        return None;
+    }
+    let _: u32 = runtime_table_va.checked_sub(image_base)?;
+    Some(())
+}
+
+fn find_unique_thunk_tables(
+    recovered: &[u8],
+    tables: &[&[u32]],
+    excluded_rvas: &[Option<u32>],
+) -> Option<Vec<Option<u32>>> {
+    if tables.len() != excluded_rvas.len() || tables.is_empty() {
+        return None;
+    }
+    let mut candidate_tables: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (index, entries) in tables.iter().enumerate() {
+        if entries.is_empty() || entries.len() > MAX_ASPACK_IMPORTS_PER_MODULE {
+            return None;
+        }
+        let key: u64 = thunk_table_key(entries)?;
+        candidate_tables.entry(key).or_default().push(index);
+    }
+    let scan_end: usize = recovered.len().checked_sub(8)?;
+    let mut found: Vec<Option<u32>> = vec![None; tables.len()];
+    let mut candidate_checks: usize = 0;
+    let mut off: usize = 0;
+    while off <= scan_end {
+        let first: u32 = read_u32(recovered, off).ok()?;
+        let second: u32 = read_u32(recovered, off.checked_add(4)?).ok()?;
+        let key: u64 = u64::from(first) | (u64::from(second) << 32);
+        if let Some(indices) = candidate_tables.get(&key) {
+            let rva: u32 = u32::try_from(off).ok()?;
+            for index in indices {
+                if excluded_rvas[*index] == Some(rva) {
+                    continue;
+                }
+                candidate_checks = candidate_checks.checked_add(1)?;
+                if candidate_checks > MAX_ASPACK_THUNK_CANDIDATES {
+                    return None;
+                }
+                if thunk_table_matches(recovered, off, tables[*index]) {
+                    if found[*index].is_some() || found.contains(&Some(rva)) {
+                        return None;
+                    }
+                    found[*index] = Some(rva);
+                }
+            }
+        }
+        off = off.saturating_add(4);
+    }
+    Some(found)
+}
+
+fn thunk_table_key(entries: &[u32]) -> Option<u64> {
+    let first: u32 = *entries.first()?;
+    let second: u32 = entries.get(1).map_or(0, |value: &u32| *value);
+    Some(u64::from(first) | (u64::from(second) << 32))
+}
+
+fn thunk_table_matches(recovered: &[u8], off: usize, entries: &[u32]) -> bool {
+    for (index, entry) in entries.iter().enumerate() {
+        let Some(entry_off): Option<usize> = off.checked_add(index * 4) else {
+            return false;
+        };
+        let Ok(value) = read_u32(recovered, entry_off) else {
+            return false;
+        };
+        if value != *entry {
+            return false;
+        }
+    }
+    let Some(terminator_off): Option<usize> = off.checked_add(entries.len() * 4) else {
+        return false;
+    };
+    matches!(read_u32(recovered, terminator_off), Ok(0))
+}
+
+fn is_valid_import_entry(recovered: &[u8], entry: u32) -> bool {
+    if entry & IMPORT_BY_ORDINAL_FLAG != 0 {
+        return true;
+    }
+    let Some(name_off): Option<usize> = usize::try_from(entry)
+        .ok()
+        .and_then(|rva: usize| rva.checked_add(2))
+    else {
+        return false;
+    };
+    let Some(name): Option<&[u8]> = recovered.get(name_off..) else {
+        return false;
+    };
+    let Some(len): Option<usize> = name.iter().position(|byte: &u8| *byte == 0) else {
+        return false;
+    };
+    len > 0 && len <= 255 && name[..len].iter().all(u8::is_ascii_graphic)
+}
+
+fn is_valid_module_name(recovered: &[u8], name_rva: u32) -> bool {
+    let Some(name_off): Option<usize> = usize::try_from(name_rva).ok() else {
+        return false;
+    };
+    let Some(name): Option<&[u8]> = recovered.get(name_off..) else {
+        return false;
+    };
+    let Some(len): Option<usize> = name.iter().position(|byte: &u8| *byte == 0) else {
+        return false;
+    };
+    len > 0 && len <= MAX_ASPACK_MODULE_NAME_LEN && name[..len].iter().all(u8::is_ascii_graphic)
+}
+
+fn write_import_descriptor(recovered: &mut [u8], off: usize, fields: [u32; 5]) -> Option<()> {
+    let end: usize = off.checked_add(IMPORT_DESCRIPTOR_BYTES)?;
+    let descriptor: &mut [u8] = recovered.get_mut(off..end)?;
+    for (index, field) in fields.iter().enumerate() {
+        let field_off: usize = index.checked_mul(4)?;
+        descriptor[field_off..field_off + 4].copy_from_slice(&field.to_le_bytes());
+    }
+    Some(())
+}
+
+fn rewrite_import_directory(recovered: &mut [u8], directory: AspackImportDirectory) {
+    let Some(pe_off_u32): Option<u32> = read_u32(recovered, 0x3c).ok() else {
+        return;
+    };
+    let Some(pe_off): Option<usize> = usize::try_from(pe_off_u32).ok() else {
+        return;
+    };
+    let Some(optional_off): Option<usize> = pe_off.checked_add(PE_FILE_HEADER_LEN) else {
+        return;
+    };
+    let Some(directory_off): Option<usize> = optional_off
+        .checked_add(PE32_DATA_DIRECTORY_OFFSET)
+        .and_then(|off: usize| off.checked_add(IMPORT_DIRECTORY_INDEX * 8))
+    else {
+        return;
+    };
+    let Some(directory_end): Option<usize> = directory_off.checked_add(8) else {
+        return;
+    };
+    if directory_end > recovered.len() {
+        return;
+    }
+    recovered[directory_off..directory_off + 4].copy_from_slice(&directory.rva.to_le_bytes());
+    recovered[directory_off + 4..directory_end].copy_from_slice(&directory.size.to_le_bytes());
 }
 
 fn content_recovery_pct(original: &[u8], recovered: &[u8], baseline: &[u8]) -> Result<f64> {

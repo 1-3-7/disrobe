@@ -294,6 +294,80 @@ fn aspack_iat_reconstructed_byte_identical() {
 }
 
 #[test]
+fn aspack_import_descriptors_match_original_bytes() {
+    use disrobe_pass_native::packers::{parse_pe_image, section_recovery::build_loaded_image};
+
+    let cases: [(&str, &str, f64, f64); 2] = [
+        (
+            "AccessEnum.packed.aspack.exe",
+            "AccessEnum.original.exe",
+            97.67,
+            92.42,
+        ),
+        (
+            "Clockres.packed.aspack.exe",
+            "Clockres.original.exe",
+            99.42,
+            94.88,
+        ),
+    ];
+    for (packed_name, original_name, content_floor, whole_floor) in cases {
+        let packed: Vec<u8> = corpus("aspack", packed_name).expect("packed ASPack fixture");
+        let original: Vec<u8> = corpus("aspack", original_name).expect("original ASPack fixture");
+        let output: AspackPhaseTwoOutput =
+            unpack_aspack_phase2_emulated(&packed, Some(&original)).expect("ASPack phase two");
+        let content: f64 = output.content_recovery_pct.expect("content recovery score");
+        let whole: f64 = output
+            .whole_image_recovery_pct
+            .expect("whole-image recovery score");
+        println!("{packed_name}: content={content:.8}% whole={whole:.8}%");
+        assert!(
+            content >= content_floor,
+            "{packed_name}: content recovery must be at least {content_floor:.2}%; got {content:.8}%",
+        );
+        assert!(
+            whole >= whole_floor,
+            "{packed_name}: whole-image recovery must be at least {whole_floor:.2}%; got {whole:.8}%",
+        );
+        let original_image = parse_pe_image(&original).expect("original PE");
+        let recovered_image = parse_pe_image(&output.recovered_memory_image).expect("recovered PE");
+        let original_memory: Vec<u8> =
+            build_loaded_image(&original, output.recovered_memory_image.len())
+                .expect("original loaded image");
+        let original_dir = original_image.data_directories[1];
+        let recovered_dir = recovered_image.data_directories[1];
+        assert_eq!(
+            recovered_dir.virtual_address, original_dir.virtual_address,
+            "{packed_name}: import directory RVA",
+        );
+        assert_eq!(
+            recovered_dir.size, original_dir.size,
+            "{packed_name}: import directory size",
+        );
+        let import_rva: usize = usize::try_from(original_dir.virtual_address)
+            .expect("import directory RVA must fit usize");
+        let import_size: usize =
+            usize::try_from(original_dir.size).expect("import directory size must fit usize");
+        let recovered_end: usize = import_rva
+            .checked_add(import_size)
+            .expect("recovered import directory range");
+        assert!(
+            recovered_end <= original_memory.len(),
+            "{packed_name}: original import directory must fit loaded image",
+        );
+        assert!(
+            recovered_end <= output.recovered_memory_image.len(),
+            "{packed_name}: recovered import directory must fit memory image",
+        );
+        assert_eq!(
+            &output.recovered_memory_image[import_rva..recovered_end],
+            &original_memory[import_rva..recovered_end],
+            "{packed_name}: import descriptor bytes must match the original image",
+        );
+    }
+}
+
+#[test]
 fn pecompact_iat_reconstructed_byte_identical() {
     let cases: &[(&str, &str)] = &[
         ("Clockres.packed.pecompact.exe", "Clockres.original.exe"),
