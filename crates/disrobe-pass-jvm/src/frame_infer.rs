@@ -390,27 +390,26 @@ fn apply_transfer(
         }
         0x8C => {
             state.pop();
-            state.push(VerificationType::Long);
+            state.push_wide(VerificationType::Long);
         }
         0x8D => {
             state.pop();
-            state.pop();
-            state.push_wide(VerificationType::Long);
+            state.push_wide(VerificationType::Double);
         }
         0x8E => {
             state.pop();
             state.pop();
-            state.push(VerificationType::Float);
+            state.push(VerificationType::Integer);
         }
         0x8F => {
             state.pop();
             state.pop();
-            state.push_wide(VerificationType::Double);
+            state.push_wide(VerificationType::Long);
         }
         0x90 => {
             state.pop();
             state.pop();
-            state.push(VerificationType::Integer);
+            state.push(VerificationType::Float);
         }
         0x91..=0x93 => {
             state.pop();
