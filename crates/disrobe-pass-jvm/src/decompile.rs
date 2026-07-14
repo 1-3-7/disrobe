@@ -1715,9 +1715,16 @@ fn lift_method_body(
             object_locals.remove(&local_name(*slot, params));
         }
     }
+    let param_slots: BTreeSet<u16> = params.iter().map(|(i, _): &(u16, String)| *i).collect();
+    let mut boolean_locals: BTreeSet<String> = boolean_params.clone();
+    for (slot, ty) in &source_slot_types {
+        if ty == "boolean" && !param_slots.contains(slot) {
+            boolean_locals.insert(local_name(*slot, params));
+        }
+    }
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
-    with_object_locals(object_locals, boolean_params.clone(), array_casts, || {
+    with_object_locals(object_locals, boolean_locals, array_casts, || {
         if let Some(body) = lift_structured(
             cf,
             code,
@@ -2490,6 +2497,7 @@ fn compute_slot_types(
         }
         inferred.entry(slot).or_insert(ty);
     }
+    let bool_scalar: BTreeSet<u16> = boolean_scalar_local_slots(cf, insns, params, param_types);
     let mut slot_type: BTreeMap<u16, String> = BTreeMap::new();
     for insn in insns {
         let ty: &'static str = match insn.opcode {
@@ -2520,6 +2528,8 @@ fn compute_slot_types(
                 .get(&slot)
                 .cloned()
                 .unwrap_or_else(|| "Object".to_string())
+        } else if matches!(insn.opcode, 0x36 | 0x3B..=0x3E) && bool_scalar.contains(&slot) {
+            "boolean".to_string()
         } else {
             ty.to_string()
         };
@@ -2555,6 +2565,118 @@ fn boolean_array_names(
         .into_iter()
         .filter(|(_, ty)| ty == "boolean[]")
         .map(|(slot, _)| local_name(slot, params))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum BoolScalarVal {
+    BoolArray,
+    BoolScalar,
+    Other,
+}
+
+fn boolean_scalar_local_slots(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    params: &[(u16, String)],
+    param_types: &BTreeMap<u16, String>,
+) -> BTreeSet<u16> {
+    let mut bool_array_slots: BTreeSet<u16> = infer_reference_local_types(cf, insns, param_types)
+        .into_iter()
+        .filter(|(_, ty): &(u16, String)| ty == "boolean[]")
+        .map(|(slot, _): (u16, String)| slot)
+        .collect();
+    for (slot, ty) in param_types {
+        if ty == "boolean[]" {
+            bool_array_slots.insert(*slot);
+        }
+    }
+    let param_slots: BTreeSet<u16> = params.iter().map(|(i, _): &(u16, String)| *i).collect();
+    let array_of = |val: Option<&str>| match val {
+        Some("boolean[]") => BoolScalarVal::BoolArray,
+        _ => BoolScalarVal::Other,
+    };
+    let mut stack: Vec<BoolScalarVal> = Vec::new();
+    let mut bool_stores: BTreeSet<u16> = BTreeSet::new();
+    let mut other_stores: BTreeSet<u16> = BTreeSet::new();
+    for insn in insns {
+        let op: u8 = insn.opcode;
+        match op {
+            0x02..=0x18 | 0x1A..=0x29 => stack.push(BoolScalarVal::Other),
+            0x19 => {
+                let slot: Option<u16> = match &insn.operands {
+                    Operands::Local(idx) => Some(*idx),
+                    _ => None,
+                };
+                stack.push(match slot {
+                    Some(s) if bool_array_slots.contains(&s) => BoolScalarVal::BoolArray,
+                    _ => BoolScalarVal::Other,
+                });
+            }
+            0x2A..=0x2D => {
+                let slot: u16 = u16::from(op - 0x2A);
+                stack.push(if bool_array_slots.contains(&slot) {
+                    BoolScalarVal::BoolArray
+                } else {
+                    BoolScalarVal::Other
+                });
+            }
+            0xB2 => stack.push(array_of(field_static_type(cf, insn).as_deref())),
+            0xB4 => {
+                stack.pop();
+                stack.push(array_of(field_static_type(cf, insn).as_deref()));
+            }
+            0xBC | 0xBD => {
+                stack.pop();
+                stack.push(array_of(new_array_static_type(cf, insn).as_deref()));
+            }
+            0xB6..=0xB9 => {
+                let argc: usize = invoke_pop_count(cf, insn, op);
+                for _ in 0..argc {
+                    stack.pop();
+                }
+                let ret: Option<String> = invoke_return_type(cf, insn);
+                if !matches!(ret.as_deref(), Some("void")) {
+                    stack.push(array_of(ret.as_deref()));
+                }
+            }
+            0xC0 => {
+                stack.pop();
+                stack.push(array_of(checkcast_static_type(cf, insn).as_deref()));
+            }
+            0x59 => stack.push(stack.last().copied().unwrap_or(BoolScalarVal::Other)),
+            0x33 => {
+                stack.pop();
+                let array: BoolScalarVal = stack.pop().unwrap_or(BoolScalarVal::Other);
+                stack.push(match array {
+                    BoolScalarVal::BoolArray => BoolScalarVal::BoolScalar,
+                    _ => BoolScalarVal::Other,
+                });
+            }
+            0x2E..=0x32 | 0x34 | 0x35 => {
+                stack.pop();
+                stack.pop();
+                stack.push(BoolScalarVal::Other);
+            }
+            0x36 | 0x3B..=0x3E => {
+                let value: BoolScalarVal = stack.pop().unwrap_or(BoolScalarVal::Other);
+                let slot: u16 = match (op, &insn.operands) {
+                    (0x36, Operands::Local(idx)) => *idx,
+                    (0x3B..=0x3E, _) => u16::from(op - 0x3B),
+                    _ => continue,
+                };
+                if matches!(value, BoolScalarVal::BoolScalar) {
+                    bool_stores.insert(slot);
+                } else {
+                    other_stores.insert(slot);
+                }
+            }
+            _ => stack.clear(),
+        }
+    }
+    bool_stores
+        .into_iter()
+        .filter(|slot: &u16| !other_stores.contains(slot) && !param_slots.contains(slot))
         .collect()
 }
 
@@ -7033,7 +7155,28 @@ fn fold_make_concat_arm(
     Some(())
 }
 
+fn strip_outer_not(cond: &str) -> Option<&str> {
+    let inner: &str = cond.strip_prefix("!(")?.strip_suffix(')')?;
+    let mut depth: i32 = 0;
+    for ch in inner.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(inner)
+}
+
 fn invert(cond: &str) -> String {
+    if let Some(inner) = strip_outer_not(cond) {
+        return inner.to_string();
+    }
     if let Some(rest) = cond.strip_suffix(" == 0") {
         return format!("{rest} != 0");
     }
