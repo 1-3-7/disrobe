@@ -12,7 +12,9 @@ use std::process::Command;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
-const EQUIVALENT_SET: &[&str] = &["arith", "strings", "coll", "klass", "blocks", "advanced"];
+const EQUIVALENT_SET: &[&str] = &[
+    "arith", "strings", "coll", "klass", "control", "blocks", "advanced",
+];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -123,11 +125,50 @@ fn straight_line_corpus_models_every_opcode() {
 }
 
 #[test]
-fn control_flow_opcodes_are_honestly_marked() {
+fn if_and_while_control_flow_is_structured() {
     let dec: MrubyDecompiled = recover("control");
+    assert_eq!(
+        dec.unmodeled_opcodes, 0,
+        "if/while control flow must be structured, not marked; got unmodeled {:?}",
+        dec.unmodeled_mnemonics
+    );
+    assert_eq!(
+        dec.modeled_opcodes, dec.lifted_opcodes,
+        "every opcode in the control-flow program must be modeled"
+    );
+    assert!(
+        !dec.source.contains("# unmodeled"),
+        "no jump opcode may survive as an unmodeled marker: {}",
+        dec.source
+    );
+    let body: String = dec
+        .source
+        .split_once("# --- reconstructed source ---\n")
+        .map_or_else(|| dec.source.clone(), |(_, b)| b.to_owned());
+    assert!(
+        body.contains("if ("),
+        "recovered source must carry an if: {body}"
+    );
+    assert!(
+        body.contains("else"),
+        "recovered source must carry an else: {body}"
+    );
+    assert!(
+        body.contains("while ("),
+        "recovered source must carry a while loop: {body}"
+    );
+    assert!(
+        body.contains("end"),
+        "structured blocks must be closed: {body}"
+    );
+}
+
+#[test]
+fn rescue_control_flow_stays_honestly_marked() {
+    let dec: MrubyDecompiled = recover("exceptions");
     assert!(
         dec.unmodeled_opcodes > 0,
-        "control flow currently uses honest markers, so unmodeled must be non-zero"
+        "rescue/ensure control flow is not structured yet, so its jumps stay honest markers"
     );
     assert!(
         dec.unmodeled_mnemonics.iter().any(|m| m.starts_with("JMP")),
@@ -204,7 +245,7 @@ fn mrbc_recompile_and_semantic_equivalence_oracle() {
         "every recovered program must be valid, mrbc-recompilable ruby, got {recompiled}/{total}"
     );
     assert!(
-        equivalent >= 6,
-        "the straight-line and block programs must be semantically equivalent, got {equivalent}/{total}"
+        equivalent >= 7,
+        "the straight-line, block, and if/while programs must be semantically equivalent, got {equivalent}/{total}"
     );
 }
