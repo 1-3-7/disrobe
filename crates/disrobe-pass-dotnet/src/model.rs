@@ -420,7 +420,7 @@ impl Resolver {
                 FlowControl::Branch | FlowControl::CondBranch
             ) => {}
             "ldloc.0" | "ldloc.1" | "ldloc.2" | "ldloc.3" | "ldloc" | "ldloc.s" => {
-                let slot: u32 = local_slot(instruction);
+                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
                 let fact: ReceiverFact = outgoing
                     .locals
                     .get(&slot)
@@ -428,7 +428,7 @@ impl Resolver {
                 outgoing.stack.push(fact);
             }
             "stloc.0" | "stloc.1" | "stloc.2" | "stloc.3" | "stloc" | "stloc.s" => {
-                let slot: u32 = local_slot(instruction);
+                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
                 let value: ReceiverFact = pop_receiver_fact(&mut outgoing);
                 match value {
                     ReceiverFact::Exact(_) => {
@@ -440,7 +440,7 @@ impl Resolver {
                 }
             }
             "ldloca" | "ldloca.s" => {
-                let slot: u32 = local_slot(instruction);
+                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
                 outgoing.locals.remove(&slot);
                 outgoing.stack.push(ReceiverFact::Unknown);
             }
@@ -1771,20 +1771,6 @@ impl Resolver {
             }
         }
         out
-    }
-}
-
-fn local_slot(instruction: &Instruction) -> u32 {
-    let suffix: Option<&str> = instruction.name.rsplit('.').next();
-    let parsed: Option<u32> = suffix.and_then(|suffix: &str| suffix.parse::<u32>().ok());
-    if let Some(slot) = parsed {
-        return slot;
-    }
-    match instruction.operand {
-        OperandValue::U8(value) => u32::from(value),
-        OperandValue::U16(value) => u32::from(value),
-        OperandValue::I32(value) => u32::try_from(value).map_or(0, |value: u32| value),
-        _ => 0,
     }
 }
 
