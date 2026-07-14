@@ -2004,6 +2004,7 @@ dependencies = [
  "disrobe-pass-sourcedefender",
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
+ "disrobe-pass-webview",
  "disrobe-playground",
  "disrobe-prowl",
  "disrobe-py-marshal",
