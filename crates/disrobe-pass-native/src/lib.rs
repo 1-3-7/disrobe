@@ -52,6 +52,7 @@ pub mod obfuscators;
 pub mod packers;
 pub mod pass;
 pub mod patch;
+pub mod pdb_cxx;
 pub mod plt_resolve;
 pub mod provenance_header;
 pub mod pseudo_c;
@@ -243,6 +244,11 @@ pub use packers::{
 pub use pass::analyze_deobf_report;
 pub use patch::{
     AppliedEdit, PatchEdit, PatchReport, apply_patches, apply_patches_reported, default_nop_fill,
+};
+pub use pdb_cxx::{
+    BitfieldSpec, EmittedEnum, EmittedEnumerator, EmittedField, EmittedFunction, EmittedGlobal,
+    EmittedTypedef, EmittedUdt, PdbCxxReconstruction, RejectReason, RejectedType, UdtTagKeyword,
+    perturb_first_offset, reconstruct_pdb_cxx, render_static_assert_tu,
 };
 pub use plt_resolve::{
     ImportStub, TailCall, TailCallKind, classify_tail_calls, resolve_elf_plt_imports,
