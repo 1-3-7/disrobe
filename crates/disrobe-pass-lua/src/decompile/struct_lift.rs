@@ -1,6 +1,6 @@
 mod structurer;
 
-use crate::decompile::lift::{LiftedProto, const_text, fmt_number};
+use crate::decompile::lift::{LiftedProto, fmt_number, kconst, kstr};
 use crate::decompile::luau_lift::{LStmt, LiftedStmt, render_blocks};
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto};
@@ -2032,23 +2032,6 @@ fn upval_name(p: &LuaProto, idx: u32) -> String {
         .map(|u| u.name.clone())
         .filter(|s: &String| !s.is_empty())
         .unwrap_or_else(|| format!("upval_{idx}"))
-}
-
-#[inline]
-fn kconst(p: &LuaProto, idx: u32, dialect: LuaDialect) -> String {
-    p.constants.get(idx as usize).map_or_else(
-        || format!("K{idx}"),
-        |k: &LuaConstant| const_text(k, dialect),
-    )
-}
-
-#[inline]
-fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
-    match p.constants.get(bx as usize) {
-        Some(LuaConstant::Str(s)) => s.clone(),
-        Some(other) => const_text(other, dialect),
-        None => format!("K{bx}"),
-    }
 }
 
 #[inline]
