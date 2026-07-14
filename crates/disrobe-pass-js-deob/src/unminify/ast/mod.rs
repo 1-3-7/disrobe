@@ -4,6 +4,7 @@ mod argument_spread;
 mod async_restore;
 mod block_statement;
 mod bracket_to_dot;
+mod builtin_prototype;
 mod chained_assign;
 mod conditional_statement;
 mod de_morgan;
@@ -58,6 +59,7 @@ use argument_spread::ArgumentSpreadStats;
 use async_restore::AsyncRestoreStats;
 use block_statement::BlockStatementStats;
 use bracket_to_dot::BracketToDotStats;
+use builtin_prototype::BuiltinPrototypeStats;
 use chained_assign::ChainedAssignStats;
 use conditional_statement::ConditionalStatementStats;
 use de_morgan::DeMorganStats;
@@ -149,6 +151,7 @@ enum RuleStage {
     RequireAlias = 44,
     RequireDestructure = 45,
     RequireMember = 46,
+    BuiltinPrototype = 47,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +203,7 @@ pub enum AstRuleId {
     RequireAlias,
     RequireDestructure,
     RequireMember,
+    BuiltinPrototype,
 }
 
 struct Edit {
@@ -306,6 +310,7 @@ pub struct AstUnminifyStats {
     pub require_aliases_renamed: usize,
     pub require_members_unaliased: usize,
     pub require_member_aliases_renamed: usize,
+    pub builtin_prototypes_expanded: usize,
 }
 
 enum RuleStats {
@@ -356,6 +361,7 @@ enum RuleStats {
     RequireAlias(RequireAliasStats),
     RequireDestructure(RequireDestructureStats),
     RequireMember(RequireMemberStats),
+    BuiltinPrototype(BuiltinPrototypeStats),
 }
 
 struct Rule {
@@ -669,6 +675,12 @@ impl Default for AstPipeline {
                     requires: &[],
                     enabled: true,
                 },
+                Rule {
+                    id: AstRuleId::BuiltinPrototype,
+                    stage: RuleStage::BuiltinPrototype,
+                    requires: &[],
+                    enabled: true,
+                },
             ],
         }
     }
@@ -887,6 +899,11 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
                 require_member::recover(source);
             (outcome, RuleStats::RequireMember(member_stats))
         }
+        AstRuleId::BuiltinPrototype => {
+            let (outcome, builtin_stats): (RuleOutcome, BuiltinPrototypeStats) =
+                builtin_prototype::recover(source);
+            (outcome, RuleStats::BuiltinPrototype(builtin_stats))
+        }
         AstRuleId::SplitVar => {
             let (outcome, split_stats): (RuleOutcome, SplitVarStats) = split_var::recover(source);
             (outcome, RuleStats::SplitVar(split_stats))
@@ -1073,6 +1090,9 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
         }
         RuleStats::RequireMember(member_stats) => {
             stats.require_member_aliases_renamed += member_stats.members_renamed;
+        }
+        RuleStats::BuiltinPrototype(builtin_stats) => {
+            stats.builtin_prototypes_expanded += builtin_stats.prototypes_expanded;
         }
         RuleStats::SplitVar(split_stats) => {
             stats.var_declarations_split += split_stats.declarations_split;
