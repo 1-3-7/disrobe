@@ -1170,7 +1170,11 @@ impl Translator<'_> {
         match self.lang {
             HighLang::Rust => {
                 let arm: &str = if is_default { "_" } else { pat };
-                self.emit_stmt(&format!("{arm} => {{ {action} }}"));
+                if let Some(assignment) = self.branch_result_assignment(&frame) {
+                    self.emit_stmt(&format!("{arm} => {{ {assignment} {action} }}"));
+                } else {
+                    self.emit_stmt(&format!("{arm} => {{ {action} }}"));
+                }
             }
             HighLang::TypeScript | HighLang::C => {
                 if is_default {
@@ -1179,6 +1183,7 @@ impl Translator<'_> {
                     self.emit_stmt(&format!("case {pat}: {{"));
                 }
                 self.indent += 1;
+                self.assign_branch_result(&frame);
                 self.emit_stmt(&action);
                 self.indent -= 1;
                 self.emit_stmt("}");
@@ -1188,9 +1193,18 @@ impl Translator<'_> {
     }
 
     fn assign_branch_result(&mut self, frame: &Frame) {
-        if let (Some(var), Some(top)) = (frame.result_var.as_ref(), self.stack.last().cloned()) {
-            self.emit_stmt(&format!("{var} = {};", top.text));
+        if let Some(assignment) = self.branch_result_assignment(frame) {
+            self.emit_stmt(&assignment);
         }
+    }
+
+    fn branch_result_assignment(&self, frame: &Frame) -> Option<String> {
+        if matches!(frame.kind, FrameKind::Loop) {
+            return None;
+        }
+        let var: &String = frame.result_var.as_ref()?;
+        let top: &Operand = self.stack.last()?;
+        Some(format!("{var} = {};", top.text))
     }
 
     fn do_return(&mut self) -> Result<()> {
