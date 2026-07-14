@@ -2815,6 +2815,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-pass-webview"
+version = "0.10.4"
+dependencies = [
+ "disrobe-binfmt",
+ "disrobe-bytes",
+ "miette",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "disrobe-playground"
 version = "0.10.4"
 dependencies = [
