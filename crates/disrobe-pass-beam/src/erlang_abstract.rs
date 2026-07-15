@@ -155,19 +155,38 @@ fn render(term: &Term) -> String {
     }
 }
 
+const UNARY_PREC: u8 = 9;
+
+#[derive(Clone, Copy)]
+enum Fixity {
+    Left,
+    Right,
+    None,
+}
+
 fn render_op(parts: &[Term]) -> String {
     let op: &str = parts.get(2).and_then(Term::as_atom).unwrap_or("?");
     if parts.len() == 5 {
         let prec: u8 = binary_op_prec(op);
+        let (left_prec, right_prec): (u8, u8) = match op_fixity(op) {
+            Fixity::Left => (prec, prec.saturating_add(1)),
+            Fixity::Right => (prec.saturating_add(1), prec),
+            Fixity::None => (prec.saturating_add(1), prec.saturating_add(1)),
+        };
         return format!(
             "{} {op} {}",
-            render_operand(&parts[3], prec),
-            render_operand(&parts[4], prec.saturating_sub(1))
+            render_operand(&parts[3], left_prec),
+            render_operand(&parts[4], right_prec)
         );
     }
     if parts.len() == 4 {
-        let sep: &str = if op.len() > 1 { " " } else { "" };
-        return format!("{op}{sep}{}", render_operand(&parts[3], 9));
+        let operand: String = render_operand(&parts[3], UNARY_PREC);
+        let sep: &str = if op.len() > 1 || operand.starts_with(['+', '-']) {
+            " "
+        } else {
+            ""
+        };
+        return format!("{op}{sep}{operand}");
     }
     "?".to_owned()
 }
@@ -181,6 +200,14 @@ fn binary_op_prec(op: &str) -> u8 {
         "+" | "-" | "bor" | "bxor" | "bsl" | "bsr" | "or" | "xor" => 6,
         "*" | "/" | "div" | "rem" | "band" | "and" => 7,
         _ => 4,
+    }
+}
+
+fn op_fixity(op: &str) -> Fixity {
+    match op {
+        "orelse" | "andalso" | "++" | "--" => Fixity::Right,
+        "==" | "/=" | "=<" | "<" | ">=" | ">" | "=:=" | "=/=" => Fixity::None,
+        _ => Fixity::Left,
     }
 }
 
