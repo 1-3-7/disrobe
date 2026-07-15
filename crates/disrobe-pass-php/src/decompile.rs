@@ -143,7 +143,7 @@ impl Literal {
             Self::Null => "null".to_owned(),
             Self::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
             Self::Long(n) => n.to_string(),
-            Self::Double(d) => format!("{d}"),
+            Self::Double(d) => render_php_double(*d),
             Self::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
             Self::Array(_) => "array()".to_owned(),
         }
@@ -155,6 +155,24 @@ impl Literal {
             Self::Str(s) => Some(s.as_str()),
             _ => None,
         }
+    }
+}
+
+fn render_php_double(d: f64) -> String {
+    if d.is_nan() {
+        return "NAN".to_owned();
+    }
+    if d.is_infinite() {
+        return if d < 0.0 { "-INF" } else { "INF" }.to_owned();
+    }
+    let text: String = format!("{d}");
+    if text
+        .bytes()
+        .any(|b: u8| b == b'.' || b == b'e' || b == b'E')
+    {
+        text
+    } else {
+        format!("{text}.0")
     }
 }
 
@@ -1782,5 +1800,22 @@ const fn include_kind(ext: u32) -> &'static str {
         4 => "require",
         8 => "require_once",
         _ => "eval",
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::Literal;
+
+    #[test]
+    fn integral_double_keeps_float_type_on_reemit() {
+        assert_eq!(Literal::Double(2.0).render(), "2.0");
+        assert_eq!(Literal::Double(-0.0).render(), "-0.0");
+        assert_eq!(Literal::Double(1.0e10).render(), "10000000000.0");
+        assert_eq!(Literal::Long(2).render(), "2");
+        assert_eq!(Literal::Double(2.5).render(), "2.5");
+        assert_eq!(Literal::Double(f64::INFINITY).render(), "INF");
+        assert_eq!(Literal::Double(f64::NEG_INFINITY).render(), "-INF");
+        assert_eq!(Literal::Double(f64::NAN).render(), "NAN");
     }
 }
