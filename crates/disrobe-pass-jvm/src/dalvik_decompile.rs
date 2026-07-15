@@ -849,6 +849,30 @@ mod tests {
     }
 
     #[test]
+    fn const_high16_families_render_full_width_values() {
+        let out: DecompiledDex = decompiled();
+        let src: &str = &out.source;
+        assert!(
+            src.contains("4636737291354636288L"),
+            "100.0 (const-wide/high16 0x4059) must render its full double bit pattern, \
+             not the raw 16-bit operand"
+        );
+        assert!(
+            src.contains("4602678819172646912L"),
+            "0.5 (const-wide/high16 0x3FE0) must render its full double bit pattern, \
+             not the raw 16-bit operand"
+        );
+        assert!(
+            src.contains("-2147483648"),
+            "Integer.MIN_VALUE (const/high16 0x8000) must render shifted, not -32768"
+        );
+        assert!(
+            !src.contains("16473L") && !src.contains("16352L"),
+            "raw const-wide/high16 operands must not leak as long literals"
+        );
+    }
+
+    #[test]
     fn kotlin_dex_emits_without_panic() {
         let dex: DexFile = crate::dex::parse(EDGECASES_KT_DEX).expect("parse edgecases kt dex");
         let out: DecompiledDex = decompile_dex(&dex, EDGECASES_KT_DEX);
