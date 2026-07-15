@@ -358,6 +358,8 @@ fn operands(op: &Operator<'_>, signatures: &ModuleSignatures) -> Vec<String> {
         }
         Operator::I32Const { value } => vec![value.to_string()],
         Operator::I64Const { value } => vec![value.to_string()],
+        Operator::F32Const { value } => vec![f32::from_bits(value.bits()).to_string()],
+        Operator::F64Const { value } => vec![f64::from_bits(value.bits()).to_string()],
         Operator::I32Load8U { memarg }
         | Operator::I32Load8S { memarg }
         | Operator::I64Load8U { memarg }
