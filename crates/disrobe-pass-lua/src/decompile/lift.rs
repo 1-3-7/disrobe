@@ -201,15 +201,25 @@ pub fn fmt_number(n: f64, as_float: bool) -> String {
 fn quote_lua_string(s: &str) -> String {
     let mut out: String = String::with_capacity(s.len() + 2);
     out.push('"');
-    for ch in s.chars() {
+    let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\0"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                let code: u32 = c as u32;
+                if chars
+                    .peek()
+                    .is_some_and(|next: &char| next.is_ascii_digit())
+                {
+                    out.push_str(&format!("\\{code:03}"));
+                } else {
+                    out.push_str(&format!("\\{code}"));
+                }
+            }
             c => out.push(c),
         }
     }

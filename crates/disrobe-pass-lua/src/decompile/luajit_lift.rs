@@ -619,9 +619,10 @@ impl LjState {
 
 #[must_use]
 fn quote_lua(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
+    let bytes: &[u8] = s.as_bytes();
+    let mut out: String = String::with_capacity(bytes.len() + 2);
     out.push('"');
-    for b in s.bytes() {
+    for (i, &b) in bytes.iter().enumerate() {
         match b {
             b'"' => out.push_str("\\\""),
             b'\\' => out.push_str("\\\\"),
@@ -629,7 +630,16 @@ fn quote_lua(s: &str) -> String {
             b'\r' => out.push_str("\\r"),
             b'\t' => out.push_str("\\t"),
             0x20..=0x7E => out.push(b as char),
-            other => out.push_str(&format!("\\{other}")),
+            other => {
+                if bytes
+                    .get(i + 1)
+                    .is_some_and(|next: &u8| next.is_ascii_digit())
+                {
+                    out.push_str(&format!("\\{other:03}"));
+                } else {
+                    out.push_str(&format!("\\{other}"));
+                }
+            }
         }
     }
     out.push('"');
