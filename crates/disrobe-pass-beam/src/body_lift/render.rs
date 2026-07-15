@@ -345,6 +345,7 @@ fn render_binary_literal(bytes: &[u8]) -> String {
         return "<<>>".to_owned();
     }
     if let Ok(s) = core::str::from_utf8(bytes)
+        && s.is_ascii()
         && s.chars().all(|c: char| !c.is_control() || c == '\n')
     {
         return format!("<<\"{}\">>", escape_string(s));
@@ -422,4 +423,30 @@ fn render_bigint(sign: u8, magnitude_le: &[u8]) -> String {
     digits.reverse();
     let body: String = String::from_utf8(digits).unwrap_or_else(|_| "0".to_owned());
     if sign == 1 { format!("-{body}") } else { body }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_ascii_binary_literal_renders_byte_exact() {
+        let cafe: Vec<u8> = vec![99, 97, 102, 195, 169];
+        let rendered: String = render_expr(&Expr::BinaryLit(cafe));
+        assert_eq!(rendered, "<<99, 97, 102, 195, 169>>");
+    }
+
+    #[test]
+    fn ascii_binary_literal_uses_string_form() {
+        let hi: Vec<u8> = b"hi\n".to_vec();
+        let rendered: String = render_expr(&Expr::BinaryLit(hi));
+        assert_eq!(rendered, "<<\"hi\\n\">>");
+    }
+
+    #[test]
+    fn high_byte_binary_literal_stays_numeric() {
+        let bytes: Vec<u8> = vec![0xff, 0x00, 0x80];
+        let rendered: String = render_expr(&Expr::BinaryLit(bytes));
+        assert_eq!(rendered, "<<255, 0, 128>>");
+    }
 }
