@@ -4,8 +4,8 @@ use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
 use disrobe_pass_jvm::{
-    Attribute, ClassFile, CodeAttribute, Instruction, MethodInfo, Operands, branch_target,
-    class_internal_name_at, disassemble, method_name_descriptor_at, parse_classfile,
+    Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, Instruction, MethodInfo, Operands,
+    branch_target, class_internal_name_at, disassemble, method_name_descriptor_at, parse_classfile,
     parse_code_attribute,
 };
 
@@ -258,7 +258,7 @@ fn classify(
         return (NirOp::Store, memory_operands(insn));
     }
     if is_const(insn.opcode) {
-        return (NirOp::Const, Vec::new());
+        return (NirOp::Const, const_operand(insn, class));
     }
     if insn.opcode == OP_NOP {
         return (NirOp::Nop, Vec::new());
@@ -416,6 +416,30 @@ const fn is_byte_array_access(opcode: u8) -> bool {
 
 const fn is_const(opcode: u8) -> bool {
     matches!(opcode, 0x01..=0x14)
+}
+
+fn const_operand(insn: &Instruction, class: &ClassFile) -> Vec<String> {
+    match &insn.operands {
+        Operands::Byte(value) | Operands::Short(value) => vec![value.to_string()],
+        Operands::ConstPool(index) => ldc_operand(class, *index),
+        _ => Vec::new(),
+    }
+}
+
+fn ldc_operand(class: &ClassFile, index: u16) -> Vec<String> {
+    match class.constant_pool.get(usize::from(index)) {
+        Some(ConstantPoolEntry::Integer(value)) => vec![value.to_string()],
+        Some(ConstantPoolEntry::Long(value)) => vec![value.to_string()],
+        Some(ConstantPoolEntry::Float(bits)) => vec![f32::from_bits(*bits).to_string()],
+        Some(ConstantPoolEntry::Double(bits)) => vec![f64::from_bits(*bits).to_string()],
+        Some(ConstantPoolEntry::String { utf8_index }) => class
+            .utf8_at(*utf8_index)
+            .map_or_else(|_| Vec::new(), |text: &str| vec![text.to_owned()]),
+        Some(ConstantPoolEntry::Class { name_index }) => class
+            .utf8_at(*name_index)
+            .map_or_else(|_| Vec::new(), |text: &str| vec![text.to_owned()]),
+        _ => Vec::new(),
+    }
 }
 
 const fn memory_facets(insn: &Instruction) -> (bool, bool, bool) {
