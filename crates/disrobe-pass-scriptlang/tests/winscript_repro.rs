@@ -39,3 +39,19 @@ fn rebuilt_literals_double_embedded_single_quotes() {
     let char_builder: Option<String> = winscript::rebuild_char_builder("Chr(39) & Chr(97)");
     assert_eq!(char_builder.as_deref(), Some("'''a'"));
 }
+
+#[test]
+fn char_code_join_consumes_spaced_empty_separator() {
+    assert_eq!(
+        winscript::rebuild_char_codes("[char[]](72,101,108,108,111) -join ''").as_deref(),
+        Some("'Hello'")
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes("[char[]](72,105) -join \"\"").as_deref(),
+        Some("'Hi'")
+    );
+    assert_eq!(
+        winscript::rebuild_char_codes("[char[]](72,105)-join''").as_deref(),
+        Some("'Hi'")
+    );
+}

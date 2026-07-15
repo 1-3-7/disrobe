@@ -1517,15 +1517,7 @@ fn match_char_code_run(text: &str, start: usize) -> Option<(String, usize)> {
     while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b')') {
         i += 1;
     }
-    let lower_after: String = text[i..].to_ascii_lowercase();
-    let mut consumed_join: usize = i;
-    for suffix in ["-join''", "-join \"\"", "-join ''", "-join\"\""] {
-        let s: String = lower_after.replace(' ', "");
-        if s.starts_with(&suffix.replace(' ', "")) {
-            consumed_join = i + suffix.len().min(text.len() - i);
-            break;
-        }
-    }
+    let consumed_join: usize = consume_join_empty_separator(bytes, i).unwrap_or(i);
     let decoded: String = nums
         .iter()
         .filter_map(|n: &u32| char::from_u32(*n))
@@ -1534,6 +1526,27 @@ fn match_char_code_run(text: &str, start: usize) -> Option<(String, usize)> {
         return None;
     }
     Some((decoded, consumed_join.max(i)))
+}
+
+fn consume_join_empty_separator(bytes: &[u8], start: usize) -> Option<usize> {
+    const JOIN: &[u8] = b"-join";
+    if start + JOIN.len() > bytes.len() {
+        return None;
+    }
+    for (offset, expected) in JOIN.iter().enumerate() {
+        if bytes[start + offset].to_ascii_lowercase() != *expected {
+            return None;
+        }
+    }
+    let mut i: usize = start + JOIN.len();
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
+    }
+    if i + 1 < bytes.len() && matches!(bytes[i], b'\'' | b'"') && bytes[i + 1] == bytes[i] {
+        Some(i + 2)
+    } else {
+        None
+    }
 }
 
 #[must_use]
