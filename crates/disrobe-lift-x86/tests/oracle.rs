@@ -14,11 +14,11 @@ use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 
 const EXPECTED_INSTRUCTIONS: usize = 281;
-const EXPECTED_MODELED: usize = 206;
-const EXPECTED_CALLOTHER: usize = 75;
+const EXPECTED_MODELED: usize = 223;
+const EXPECTED_CALLOTHER: usize = 58;
 const LEGACY_INSTRUCTIONS: usize = 95;
-const EXPECTED_ADDED_MODELED: usize = 113;
-const EXPECTED_ADDED_CALLOTHER: usize = 73;
+const EXPECTED_ADDED_MODELED: usize = 130;
+const EXPECTED_ADDED_CALLOTHER: usize = 56;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]

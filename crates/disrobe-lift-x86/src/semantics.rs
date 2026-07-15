@@ -653,6 +653,9 @@ fn lift_shift(
     if instruction.op_count() != 2 {
         return None;
     }
+    if instruction.op_kind(1) == OpKind::Register {
+        return integer::lift_dynamic_shift(instruction, kind, allocator);
+    }
     let width: u32 = destination_width(instruction, 0)?;
     let width_bits: u32 = width.checked_mul(8)?;
     let raw_count: u64 = instruction.try_immediate(1).ok()?;
