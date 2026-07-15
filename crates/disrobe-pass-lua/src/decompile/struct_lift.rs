@@ -2178,12 +2178,44 @@ fn rk_or_const(
 
 #[must_use]
 fn is_ident(s: &str) -> bool {
+    if is_lua_keyword(s) {
+        return false;
+    }
     let mut chars: core::str::Chars<'_> = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
     chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[must_use]
+fn is_lua_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "goto"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+    )
 }
 
 #[must_use]
@@ -2551,5 +2583,35 @@ mod tests {
             "{label}: unsupported dynamic SETLIST must retain its warning: {:?}",
             out.warnings
         );
+    }
+
+    #[test]
+    fn reserved_words_are_never_bare_dot_field_keys() {
+        for kw in [
+            "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto",
+            "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until",
+            "while",
+        ] {
+            assert!(
+                !is_ident(kw),
+                "keyword {kw} must not read as a bare identifier"
+            );
+        }
+        for name in ["foo", "_bar1", "End", "endx", "x_end"] {
+            assert!(is_ident(name), "{name} is a valid identifier");
+        }
+    }
+
+    #[test]
+    fn keyword_string_constant_forces_bracket_field_access() {
+        let mut p: LuaProto = proto(Vec::new(), 0, 2);
+        p.constants = vec![
+            LuaConstant::Str("end".to_owned()),
+            LuaConstant::Str("field".to_owned()),
+        ];
+        assert_eq!(const_str_key_direct(&p, 0), None);
+        assert_eq!(const_str_key_direct(&p, 1), Some("field".to_owned()));
+        assert_eq!(index_expr("t", None, "\"end\""), "t[\"end\"]");
+        assert_eq!(index_expr("t", Some("field"), "\"field\""), "t.field");
     }
 }
