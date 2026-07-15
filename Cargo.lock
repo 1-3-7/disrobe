@@ -2164,6 +2164,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-lift-x86"
+version = "0.10.4"
+dependencies = [
+ "disrobe-sleigh",
+ "iced-x86",
+]
+
+[[package]]
 name = "disrobe-llm-metadata"
 version = "0.10.4"
 dependencies = [
