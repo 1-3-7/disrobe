@@ -215,7 +215,12 @@ fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> Lift
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
-    let value: i64 = insn.literal.unwrap_or(0);
+    let raw: i64 = insn.literal.unwrap_or(0);
+    let value: i64 = match insn.op {
+        0x15 => i64::from((raw as i32).wrapping_shl(16)),
+        0x19 => raw.wrapping_shl(48),
+        _ => raw,
+    };
     let wide: bool = matches!(insn.op, 0x16..=0x19);
     let literal: String = if wide {
         format!("{value}L")
