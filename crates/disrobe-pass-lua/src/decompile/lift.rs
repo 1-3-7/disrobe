@@ -264,12 +264,44 @@ pub(crate) fn kstr(p: &LuaProto, bx: u32, dialect: LuaDialect) -> String {
 
 #[must_use]
 fn is_ident(s: &str) -> bool {
+    if is_lua_keyword(s) {
+        return false;
+    }
     let mut chars: core::str::Chars<'_> = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
     chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[must_use]
+fn is_lua_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "goto"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+    )
 }
 
 #[must_use]
