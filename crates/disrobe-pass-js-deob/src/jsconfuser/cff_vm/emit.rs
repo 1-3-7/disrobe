@@ -456,6 +456,7 @@ fn escape_template_chunk(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('`', "\\`")
         .replace("${", "\\${")
+        .replace('\r', "\\r")
 }
 
 fn paren_if_low(expr: &Expr) -> String {
@@ -565,4 +566,117 @@ pub(super) fn format_string(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write as _;
+    use std::path::PathBuf;
+    use std::process::{Command, Output};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn node_available() -> bool {
+        Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: Output| o.status.success())
+    }
+
+    fn unique_temp() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq: u64 = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("disrobe_cff_emit_{}_{seq}.js", std::process::id()))
+    }
+
+    fn relex_codepoints(assignment: &str) -> Option<String> {
+        let program: String = format!(
+            "{assignment}\nprocess.stdout.write(Array.from(x).map(c => c.codePointAt(0).toString(16)).join(\",\"));"
+        );
+        let tmp: PathBuf = unique_temp();
+        {
+            let mut file: fs::File = fs::File::create(&tmp).ok()?;
+            file.write_all(program.as_bytes()).ok()?;
+        }
+        let output: Output = Command::new("node").arg("--").arg(&tmp).output().ok()?;
+        let _ = fs::remove_file(&tmp);
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok()
+    }
+
+    fn expected_codepoints(value: &str) -> String {
+        value
+            .chars()
+            .map(|c: char| format!("{:x}", c as u32))
+            .collect::<Vec<String>>()
+            .join(",")
+    }
+
+    fn battery() -> Vec<String> {
+        vec![
+            "\u{0}\u{1}\u{7}\u{8}\u{b}\u{c}\u{1f}\u{7f}".to_owned(),
+            "tab \t lf \n cr \r crlf \r\n".to_owned(),
+            "quotes \" ' ` mixed".to_owned(),
+            "back\\slash and ${interp}".to_owned(),
+            "line \u{2028} para \u{2029} sep".to_owned(),
+            "astral \u{1f600}\u{1f4a9} bmp caf\u{e9} \u{2603} \u{3a9}".to_owned(),
+            "a\r\nb\tc\u{2028}d".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn double_quote_emit_reparses_and_roundtrips_under_node() {
+        if !node_available() {
+            return;
+        }
+        for value in battery() {
+            let literal: String = format_string(&value);
+            let assignment: String = format!("var x = {literal};");
+            let got: String = relex_codepoints(&assignment).unwrap_or_else(|| {
+                panic!("node rejected or failed to re-lex double-quote emit: {assignment:?}")
+            });
+            assert_eq!(
+                got,
+                expected_codepoints(&value),
+                "double-quote emit diverged after node re-lex for {value:?} -> {literal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn template_chunk_emit_reparses_and_roundtrips_under_node() {
+        if !node_available() {
+            return;
+        }
+        for value in battery() {
+            let expr: Expr = Expr::Template {
+                quasis: vec![value.clone()],
+                exprs: vec![],
+            };
+            let literal: String = emit_expr(&expr);
+            let assignment: String = format!("var x = {literal};");
+            let got: String = relex_codepoints(&assignment).unwrap_or_else(|| {
+                panic!("node rejected or failed to re-lex template emit: {assignment:?}")
+            });
+            assert_eq!(
+                got,
+                expected_codepoints(&value),
+                "template emit diverged after node re-lex for {value:?} -> {literal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn carriage_return_is_escaped_in_template_chunks() {
+        let chunk: String = escape_template_chunk("a\rb\r\nc");
+        assert!(
+            !chunk.contains('\r'),
+            "a raw carriage return in a template chunk cooks to line feed and corrupts the value"
+        );
+        assert_eq!(chunk, "a\\rb\\r\nc");
+    }
 }
