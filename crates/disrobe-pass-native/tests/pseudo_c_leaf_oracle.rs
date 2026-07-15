@@ -13276,3 +13276,212 @@ fn sysv_object_dense_switch_o0_relative_jump_table_recompiles() {
         "clang -O0 relative-jump-table differential PASSED for {lifted_count} functions (single-lea movsxd, sub-checked memory-homed discriminant)"
     );
 }
+
+struct NarrowShiftStub {
+    name: &'static str,
+    mnemonic: &'static str,
+    dest: &'static str,
+}
+
+const NARROW_SHIFT_STUBS: &[NarrowShiftStub] = &[
+    NarrowShiftStub {
+        name: "vsh8_shl",
+        mnemonic: "shl",
+        dest: "al",
+    },
+    NarrowShiftStub {
+        name: "vsh8_shr",
+        mnemonic: "shr",
+        dest: "al",
+    },
+    NarrowShiftStub {
+        name: "vsh8_sar",
+        mnemonic: "sar",
+        dest: "al",
+    },
+    NarrowShiftStub {
+        name: "vsh16_shl",
+        mnemonic: "shl",
+        dest: "ax",
+    },
+    NarrowShiftStub {
+        name: "vsh16_shr",
+        mnemonic: "shr",
+        dest: "ax",
+    },
+    NarrowShiftStub {
+        name: "vsh16_sar",
+        mnemonic: "sar",
+        dest: "ax",
+    },
+];
+
+fn narrow_shift_asm() -> String {
+    let (arg0, arg1): (&str, &str) = if cfg!(windows) {
+        ("ecx", "edx")
+    } else {
+        ("edi", "esi")
+    };
+    let mut asm: String = String::from("\t.intel_syntax noprefix\n\t.text\n");
+    for stub in NARROW_SHIFT_STUBS {
+        let _ = write!(
+            asm,
+            "\t.globl {name}\n{name}:\n\tmov eax, {arg0}\n\tmov ecx, {arg1}\n\t{mnem} {dest}, cl\n\tret\n",
+            name = stub.name,
+            mnem = stub.mnemonic,
+            dest = stub.dest,
+        );
+    }
+    asm
+}
+
+fn narrow_shift_driver(recovered_decls: &str, driver_body: &str) -> String {
+    format!(
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{recovered_decls}\n\
+         int main(void) {{\n\
+         \x20   unsigned long long grid[][2] = {{\n\
+         \x20       {{0xffULL,0}},{{0xffULL,1}},{{0xffULL,3}},{{0xffULL,7}},\n\
+         \x20       {{0xffULL,8}},{{0xffULL,12}},{{0xffULL,20}},{{0xffULL,31}},\n\
+         \x20       {{0x01ULL,8}},{{0x80ULL,20}},{{0xabULL,9}},{{0x5aULL,16}},\n\
+         \x20       {{0x1234ULL,8}},{{0xffffULL,20}},{{0xbeefULL,15}},{{0xffffULL,31}},\n\
+         \x20       {{0xffULL,40}},{{0x1234ULL,40}},{{0x7fULL,10}},{{0xfeedULL,17}}\n\
+         \x20   }};\n\
+         \x20   size_t n_inputs = sizeof(grid)/sizeof(grid[0]);\n\
+         {driver_body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    )
+}
+
+#[test]
+fn narrow_variable_count_shift_matches_x86_masking() {
+    if cfg!(target_os = "macos") || !cfg!(target_arch = "x86_64") {
+        eprintln!(
+            "skipping narrow variable-count shift differential: needs an x86-64 host to execute the assembled ground-truth stubs"
+        );
+        return;
+    }
+    let Some(compiler): Option<String> = cc() else {
+        eprintln!("skipping narrow variable-count shift differential: no C compiler on PATH");
+        return;
+    };
+    let dir: PathBuf = scratch_dir();
+    let asm_path: PathBuf = dir.join("narrow_shift_stub.s");
+    std::fs::write(&asm_path, narrow_shift_asm().as_bytes()).expect("write shift stub asm");
+    let object_path: PathBuf = dir.join("narrow_shift_stub.o");
+    let assemble: std::process::Output = Command::new(&compiler)
+        .args(["-c", "-o"])
+        .arg(&object_path)
+        .arg(&asm_path)
+        .output()
+        .expect("invoke cc to assemble narrow shift stub");
+    if !assemble.status.success() {
+        eprintln!(
+            "skipping narrow variable-count shift differential: this cc cannot assemble the intel-syntax stub: {}",
+            String::from_utf8_lossy(&assemble.stderr)
+        );
+        return;
+    }
+    let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read narrow shift object");
+
+    let mut recovered_decls: String = String::new();
+    let mut driver_body: String = String::new();
+    let mut lifted_count: usize = 0;
+    for stub in NARROW_SHIFT_STUBS {
+        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, stub.name)
+        else {
+            eprintln!("skip {}: symbol not located", stub.name);
+            continue;
+        };
+        let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("skip {}: not in leaf class ({e})", stub.name);
+                continue;
+            }
+        };
+        assert_eq!(
+            recovery.params.len(),
+            2,
+            "{} recovered with unexpected arity {}: {}",
+            stub.name,
+            recovery.params.len(),
+            recovery.source
+        );
+        let recovered_name: String = format!("rec_{}", stub.name);
+        let renamed: String = recovery
+            .source
+            .replacen(
+                "uint64_t recovered(",
+                &format!("uint64_t {recovered_name}("),
+                1,
+            )
+            .lines()
+            .filter(|l: &&str| !l.starts_with("#include"))
+            .collect::<Vec<&str>>()
+            .join("\n");
+        recovered_decls.push_str(&renamed);
+        recovered_decls.push('\n');
+        let _ = writeln!(
+            recovered_decls,
+            "extern unsigned long long {}(unsigned long long, unsigned long long);",
+            stub.name
+        );
+        let return_mask: String = if recovery.return_width_bits >= 64 {
+            "0xFFFFFFFFFFFFFFFFULL".to_owned()
+        } else {
+            format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
+        };
+        let _ = write!(
+            driver_body,
+            "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+             \x20       unsigned long long x = grid[k][0], c = grid[k][1];\n\
+             \x20       unsigned long long want = (unsigned long long){name}(x, c) & {return_mask};\n\
+             \x20       unsigned long long got = {recovered_name}((uint64_t)x, (uint64_t)c) & {return_mask};\n\
+             \x20       if (want != got) {{ printf(\"MISMATCH {name} x=%llu c=%llu want=%llu got=%llu\\n\", x, c, want, got); return 1; }}\n\
+             \x20   }}\n",
+            name = stub.name,
+        );
+        lifted_count += 1;
+    }
+
+    assert!(
+        lifted_count == NARROW_SHIFT_STUBS.len(),
+        "expected all {} narrow-shift stubs to enter the leaf class, only {lifted_count} did",
+        NARROW_SHIFT_STUBS.len()
+    );
+
+    let driver: String = narrow_shift_driver(&recovered_decls, &driver_body);
+    let driver_c: PathBuf = dir.join("narrow_shift_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write narrow shift driver");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "narrow_shift_harness.exe"
+    } else {
+        "narrow_shift_harness"
+    });
+    let link: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .arg(&object_path)
+        .output()
+        .expect("invoke cc to link narrow shift harness");
+    assert!(
+        link.status.success(),
+        "narrow shift harness link failed: {}\n--- driver.c ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run narrow shift harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "narrow variable-count shift differential FAILED ({lifted_count} cases): {stdout}\nstderr: {}\n--- driver.c ---\n{driver}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "narrow variable-count shift differential PASSED for {lifted_count} stubs ({HOST_ABI:?} ABI)"
+    );
+}
