@@ -7926,6 +7926,257 @@ fn fp_const_oracle_has_teeth_perturbing_the_constant_diverges() {
     println!("fp const oracle teeth confirmed: perturbing the rip-relative constant diverges");
 }
 
+const FP_DOUBLE_EDGE_BITS: &[(&str, u64)] = &[
+    ("pos_inf", 0x7ff0_0000_0000_0000),
+    ("neg_inf", 0xfff0_0000_0000_0000),
+    ("quiet_nan", 0x7ff8_0000_0000_0000),
+    ("signaling_nan", 0x7ff0_0000_0000_0001),
+    ("neg_zero", 0x8000_0000_0000_0000),
+    ("min_subnormal", 0x0000_0000_0000_0001),
+    ("max_subnormal", 0x000f_ffff_ffff_ffff),
+    ("integral_two", 0x4000_0000_0000_0000),
+    ("all_bits_set", 0xffff_ffff_ffff_ffff),
+];
+
+const FP_FLOAT_EDGE_BITS: &[(&str, u32)] = &[
+    ("pos_inf", 0x7f80_0000),
+    ("neg_inf", 0xff80_0000),
+    ("quiet_nan", 0x7fc0_0000),
+    ("neg_zero", 0x8000_0000),
+    ("min_subnormal", 0x0000_0001),
+    ("integral_two", 0x4000_0000),
+    ("all_bits_set", 0xffff_ffff),
+];
+
+fn recover_addsd_const_leaf(bits: u64) -> LeafRecovery {
+    let code: [u8; 9] = [0xf2, 0x0f, 0x58, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3];
+    let base: u64 = 0x1000;
+    let consts: [FpConstant; 1] = [FpConstant { site: base, bits }];
+    recover_leaf_function_const_abi(&code, base, HOST_ABI, &consts)
+        .expect("addsd xmm0,[rip] leaf must lift as a scalar double add of a rip-relative constant")
+}
+
+fn recover_addss_const_leaf(bits: u32) -> LeafRecovery {
+    let code: [u8; 9] = [0xf3, 0x0f, 0x58, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3];
+    let base: u64 = 0x1000;
+    let consts: [FpConstant; 1] = [FpConstant {
+        site: base,
+        bits: u64::from(bits),
+    }];
+    recover_leaf_function_const_abi(&code, base, HOST_ABI, &consts)
+        .expect("addss xmm0,[rip] leaf must lift as a scalar float add of a rip-relative constant")
+}
+
+#[test]
+fn recovered_double_constants_render_bit_exactly_for_every_edge_encoding() {
+    for &(name, bits) in FP_DOUBLE_EDGE_BITS {
+        let rec: LeafRecovery = recover_addsd_const_leaf(bits);
+        let needle: String = format!("fp_d_from_bits(0x{bits:x}ULL)");
+        assert!(
+            rec.source.contains(&needle),
+            "double constant {name} (bits {bits:#018x}) must lower to {needle} verbatim; source was:\n{}",
+            rec.source
+        );
+    }
+}
+
+#[test]
+fn recovered_float_constants_render_bit_exactly_for_every_edge_encoding() {
+    for &(name, bits) in FP_FLOAT_EDGE_BITS {
+        let rec: LeafRecovery = recover_addss_const_leaf(bits);
+        let needle: String = format!("fp_f_from_bits(0x{bits:x}U)");
+        assert!(
+            rec.source.contains(&needle),
+            "float constant {name} (bits {bits:#010x}) must lower to {needle} verbatim; source was:\n{}",
+            rec.source
+        );
+    }
+}
+
+fn strip_helper_lines(source: &str, from_name: &str, to_name: &str) -> String {
+    source
+        .replacen(
+            &format!("double {from_name}("),
+            &format!("double {to_name}("),
+            1,
+        )
+        .lines()
+        .filter(|l: &&str| {
+            !l.starts_with("#include") && !l.trim_start().starts_with("static inline")
+        })
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+#[test]
+fn recovered_non_finite_double_constants_recompile_to_bit_exact_values() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native double edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = clang() else {
+        eprintln!("skipping double edge-constant recompile: clang not on PATH");
+        return;
+    };
+    let mut decls: String = String::new();
+    let mut body: String = String::new();
+    for &(name, bits) in FP_DOUBLE_EDGE_BITS {
+        let rec: LeafRecovery = recover_addsd_const_leaf(bits);
+        let rec_name: String = format!("rec_d_{name}");
+        decls.push_str(&strip_helper_lines(&rec.source, "recovered", &rec_name));
+        decls.push('\n');
+        let _ = writeln!(
+            decls,
+            "double ref_d_{name}(double a0){{ uint64_t b = 0x{bits:x}ULL; double c; memcpy(&c,&b,8); return a0 + c; }}"
+        );
+        let _ = write!(
+            body,
+            "    for (size_t k = 0; k < n_seeds; k++) {{\n\
+             \x20       uint64_t want = d_bits(ref_d_{name}(seeds[k]));\n\
+             \x20       uint64_t got = d_bits(rec_d_{name}(seeds[k]));\n\
+             \x20       if (want != got) {{ printf(\"MISMATCH d_{name} seed=%g want=%llu got=%llu\\n\", seeds[k], (unsigned long long)want, (unsigned long long)got); return 1; }}\n\
+             \x20   }}\n"
+        );
+    }
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\n\
+         static inline double fp_d_from_bits(uint64_t b){{ double v; memcpy(&v,&b,8); return v; }}\n\
+         static inline uint64_t fp_d_to_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         static inline uint64_t d_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\n\
+         {decls}\n\
+         int main(void) {{\n\
+         \x20   double seeds[] = {{ 0.0, 1.0, -1.0, 2.5, -4.0, 7.25, 100.0, -0.5, 3.5, 42.0 }};\n\
+         \x20   size_t n_seeds = sizeof(seeds)/sizeof(seeds[0]);\n\
+         {body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    );
+    let dir: PathBuf = scratch_dir();
+    let driver_c: PathBuf = dir.join("fp_edge_double_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write fp_edge_double_driver.c");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "fp_edge_double.exe"
+    } else {
+        "fp_edge_double"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .output()
+        .expect("invoke clang for double edge-constant harness");
+    assert!(
+        link.status.success(),
+        "double edge-constant harness compile failed: {}\n--- driver ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run double edge-constant harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK"),
+        "double edge-constant recompile FAILED: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "double edge-constant recompile PASSED for {} non-finite/subnormal/integral encodings",
+        FP_DOUBLE_EDGE_BITS.len()
+    );
+}
+
+#[test]
+fn recovered_non_finite_float_constants_recompile_to_bit_exact_values() {
+    if !cfg!(windows) {
+        eprintln!(
+            "skipping host-native float edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
+        );
+        return;
+    }
+    let Some(builder): Option<String> = clang() else {
+        eprintln!("skipping float edge-constant recompile: clang not on PATH");
+        return;
+    };
+    let mut decls: String = String::new();
+    let mut body: String = String::new();
+    for &(name, bits) in FP_FLOAT_EDGE_BITS {
+        let rec: LeafRecovery = recover_addss_const_leaf(bits);
+        let rec_name: String = format!("rec_f_{name}");
+        decls.push_str(
+            &rec.source
+                .replacen("float recovered(", &format!("float {rec_name}("), 1)
+                .lines()
+                .filter(|l: &&str| {
+                    !l.starts_with("#include") && !l.trim_start().starts_with("static inline")
+                })
+                .collect::<Vec<&str>>()
+                .join("\n"),
+        );
+        decls.push('\n');
+        let _ = writeln!(
+            decls,
+            "float ref_f_{name}(float a0){{ uint32_t b = 0x{bits:x}U; float c; memcpy(&c,&b,4); return a0 + c; }}"
+        );
+        let _ = write!(
+            body,
+            "    for (size_t k = 0; k < n_seeds; k++) {{\n\
+             \x20       uint32_t want = f_bits(ref_f_{name}((float)seeds[k]));\n\
+             \x20       uint32_t got = f_bits(rec_f_{name}((float)seeds[k]));\n\
+             \x20       if (want != got) {{ printf(\"MISMATCH f_{name} seed=%g want=%u got=%u\\n\", seeds[k], want, got); return 1; }}\n\
+             \x20   }}\n"
+        );
+    }
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\n\
+         static inline float fp_f_from_bits(uint32_t b){{ float v; memcpy(&v,&b,4); return v; }}\n\
+         static inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
+         static inline uint32_t f_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n\
+         {decls}\n\
+         int main(void) {{\n\
+         \x20   double seeds[] = {{ 0.0, 1.0, -1.0, 2.5, -4.0, 7.25, 100.0, -0.5, 3.5, 42.0 }};\n\
+         \x20   size_t n_seeds = sizeof(seeds)/sizeof(seeds[0]);\n\
+         {body}\
+         \x20   printf(\"OK\\n\");\n\
+         \x20   return 0;\n\
+         }}\n"
+    );
+    let dir: PathBuf = scratch_dir();
+    let driver_c: PathBuf = dir.join("fp_edge_float_driver.c");
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write fp_edge_float_driver.c");
+    let harness_exe: PathBuf = dir.join(if cfg!(windows) {
+        "fp_edge_float.exe"
+    } else {
+        "fp_edge_float"
+    });
+    let link: std::process::Output = Command::new(&builder)
+        .args(["-O1", "-o"])
+        .arg(&harness_exe)
+        .arg(&driver_c)
+        .output()
+        .expect("invoke clang for float edge-constant harness");
+    assert!(
+        link.status.success(),
+        "float edge-constant harness compile failed: {}\n--- driver ---\n{driver}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run: std::process::Output = Command::new(&harness_exe)
+        .output()
+        .expect("run float edge-constant harness");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && stdout.contains("OK"),
+        "float edge-constant recompile FAILED: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    println!(
+        "float edge-constant recompile PASSED for {} non-finite/subnormal/integral encodings",
+        FP_FLOAT_EDGE_BITS.len()
+    );
+}
+
 const SQRT_BATTERY: &[FpCase] = &[
     FpCase {
         name: "sq_d",
