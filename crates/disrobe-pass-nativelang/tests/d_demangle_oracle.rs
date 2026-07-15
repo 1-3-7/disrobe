@@ -89,7 +89,7 @@ const ORACLE: &[(&str, &str)] = &[
     ),
     (
         "_D3std6base64__T10Base64ImplVai45Vai95Vai0Z12decodeLengthFNaNbNiNfImZm",
-        "pure nothrow @nogc @safe ulong std.base64.Base64Impl!('-', '_', '\\x00').decodeLength(in ulong)",
+        "pure nothrow @nogc @safe ulong std.base64.Base64Impl!('-', '_', \\x00).decodeLength(in ulong)",
     ),
     (
         "_D3std4meta__T10aliasSeqOfVSQBa5range__T4iotaTmTmZQkFmmZ6ResultS2i0i2Z4Impl6__initZ",
@@ -191,64 +191,103 @@ fn base64_third_arg(demangled: &str) -> Option<String> {
     inner[..close].rsplit(", ").next().map(str::to_owned)
 }
 
+fn base64_char_symbol(value: usize) -> String {
+    format!("_D3std6base64__T10Base64ImplVai45Vai95Vai{value}Z12decodeLengthFNaNbNiNfImZm")
+}
+
 #[test]
-fn char_template_value_quoting_matches_libiberty_dlang() {
-    if !dlang_reference_ready() {
-        eprintln!(
-            "\n=== c++filt -s dlang unavailable; libiberty cross-check skipped \
-             (committed char-literal expectations still enforced above) ===\n"
-        );
-        return;
-    }
+fn char_template_value_rendering_matches_the_d_runtime_demangler() {
+    let vector_symbol: &str = "_D8demangle29__T2fnVa97Va9Va0Vu257Vw65537Z2fnFZv";
+    let vector_expected: &str =
+        "void demangle.fn!('a', '\\t', \\x00, '\\u0101', '\\U00010001').fn()";
+    let vector: DemangledSymbol = demangle_d(vector_symbol)
+        .unwrap_or_else(|| panic!("failed to demangle druntime test vector {vector_symbol}"));
+    assert_eq!(
+        vector.demangled, vector_expected,
+        "the char/wchar/dchar template values must match the druntime demangler unittest vector byte for byte"
+    );
 
-    let values: [usize; 14] = [0, 1, 2, 3, 4, 5, 6, 14, 15, 16, 26, 31, 127, 128];
-    let mut compared: usize = 0;
-    for value in values {
-        let symbol: String =
-            format!("_D3std6base64__T10Base64ImplVai45Vai95Vai{value}Z12decodeLengthFNaNbNiNfImZm");
-        let reference: String = cppfilt_dlang(&symbol)
-            .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
-        assert_ne!(
-            reference, symbol,
-            "the libiberty reference must actually demangle {symbol}, not echo it back"
-        );
-        let reference_arg: String = base64_third_arg(&reference)
-            .unwrap_or_else(|| panic!("no template arg in reference output: {reference}"));
-        assert!(
-            reference_arg.starts_with('\'') && reference_arg.ends_with('\''),
-            "the reference wraps the char literal in quotes: {reference_arg}"
-        );
-
+    let table: [(usize, &str); 18] = [
+        (0, "\\x00"),
+        (1, "\\x01"),
+        (7, "'\\a'"),
+        (8, "'\\b'"),
+        (9, "'\\t'"),
+        (10, "'\\n'"),
+        (11, "'\\v'"),
+        (12, "'\\f'"),
+        (13, "'\\r'"),
+        (27, "\\x1b"),
+        (31, "\\x1f"),
+        (39, "'\\''"),
+        (65, "'A'"),
+        (92, "'\\\\'"),
+        (126, "'~'"),
+        (127, "\\x7f"),
+        (128, "\\x80"),
+        (255, "\\xff"),
+    ];
+    for (value, expected_arg) in table {
+        let symbol: String = base64_char_symbol(value);
         let recovered: DemangledSymbol =
             demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
         let recovered_arg: String = base64_third_arg(&recovered.demangled).unwrap_or_else(|| {
             panic!("no template arg in disrobe output: {}", recovered.demangled)
         });
         assert_eq!(
-            recovered_arg, reference_arg,
-            "char literal {value} must match the libiberty dlang demangler; disrobe={} reference={}",
-            recovered.demangled, reference
-        );
-        assert!(
-            !recovered.demangled.contains(&format!(", \\x{value:02x})")),
-            "the char literal must never render unquoted: {}",
+            recovered_arg, expected_arg,
+            "char value {value} must render the way ldc2/dmd ddemangle renders it; got {}",
             recovered.demangled
         );
-        compared += 1;
     }
-    assert!(
-        compared >= 10,
-        "expected a batch of char literals graded against the reference, got {compared}"
-    );
 
-    let null_reference: String =
-        cppfilt_dlang("_D3std6base64__T10Base64ImplVai45Vai95Vai0Z12decodeLengthFNaNbNiNfImZm")
-            .expect("reference null-char demangle");
-    assert_eq!(
-        base64_third_arg(&null_reference).as_deref(),
-        Some("'\\x00'"),
-        "the canonical null char must demangle to a quoted hex escape"
-    );
+    if !dlang_reference_ready() {
+        eprintln!(
+            "\n=== c++filt -s dlang unavailable; libiberty divergence cross-check skipped \
+             (committed druntime char expectations still enforced above) ===\n"
+        );
+        return;
+    }
+
+    for value in [65usize, 66, 90, 122] {
+        let symbol: String = base64_char_symbol(value);
+        let reference: String = cppfilt_dlang(&symbol)
+            .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
+        let recovered: DemangledSymbol =
+            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        assert_eq!(
+            base64_third_arg(&recovered.demangled),
+            base64_third_arg(&reference),
+            "on a printable char, disrobe and libiberty agree; disrobe={} reference={}",
+            recovered.demangled,
+            reference
+        );
+    }
+
+    for value in [0usize, 1, 27, 127, 255] {
+        let symbol: String = base64_char_symbol(value);
+        let reference: String = cppfilt_dlang(&symbol)
+            .unwrap_or_else(|| panic!("reference demangle failed for {value}"));
+        let reference_arg: String = base64_third_arg(&reference)
+            .unwrap_or_else(|| panic!("no template arg in reference output: {reference}"));
+        let recovered: DemangledSymbol =
+            demangle_d(&symbol).unwrap_or_else(|| panic!("disrobe failed to demangle {symbol}"));
+        let recovered_arg: String = base64_third_arg(&recovered.demangled).unwrap_or_else(|| {
+            panic!("no template arg in disrobe output: {}", recovered.demangled)
+        });
+        assert!(
+            reference_arg.starts_with('\'') && reference_arg.ends_with('\''),
+            "libiberty quotes a non-printable char literal: {reference_arg}"
+        );
+        assert!(
+            recovered_arg.starts_with("\\x"),
+            "the real D demangler leaves a non-printable char literal unquoted: {recovered_arg}"
+        );
+        assert_ne!(
+            recovered_arg, reference_arg,
+            "libiberty diverges from the real D demangler on a non-printable char, so it is not the char oracle; disrobe={recovered_arg} libiberty={reference_arg}"
+        );
+    }
 }
 
 fn bitsset_intermediate_join(demangled: &str) -> Option<String> {
