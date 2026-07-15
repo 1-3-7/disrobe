@@ -227,6 +227,38 @@ fn render_float_literal(value: f64) -> String {
     text
 }
 
+pub(crate) fn ruby_dq_body(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out: String = String::with_capacity(s.len() + 2);
+    let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '#' => match chars.peek() {
+                Some('{' | '$' | '@') => out.push_str("\\#"),
+                _ => out.push('#'),
+            },
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let byte: usize = c as usize;
+                out.push('\\');
+                out.push('x');
+                out.push(HEX[(byte >> 4) & 0xf] as char);
+                out.push(HEX[byte & 0xf] as char);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub(crate) fn ruby_string_literal(s: &str) -> String {
+    format!("\"{}\"", ruby_dq_body(s))
+}
+
 const fn unknown_ibf_object(index: u32, offset: u32) -> IbfObject {
     IbfObject {
         index,
@@ -404,7 +436,7 @@ fn resolve_regexp_literals(objects: &mut [IbfObject], recovered: &mut u32) {
 fn element_literal_text(obj: &IbfObject) -> Option<String> {
     let lit: &str = obj.literal.as_deref()?;
     let rendered: String = match obj.kind {
-        IbfObjectKind::String => format!("{lit:?}"),
+        IbfObjectKind::String => ruby_string_literal(lit),
         IbfObjectKind::Symbol => format!(":{}", symbol_element_text(lit)),
         _ => lit.to_owned(),
     };
@@ -452,7 +484,7 @@ fn symbol_element_text(name: &str) -> String {
     if simple || operatorish {
         name.to_owned()
     } else {
-        format!("{name:?}")
+        ruby_string_literal(name)
     }
 }
 
@@ -1234,6 +1266,24 @@ mod tests {
         assert_eq!(render_float_literal(f64::INFINITY), "(1.0 / 0.0)");
         assert_eq!(render_float_literal(f64::NEG_INFINITY), "(-1.0 / 0.0)");
         assert_eq!(render_float_literal(f64::NAN), "(0.0 / 0.0)");
+    }
+
+    #[test]
+    fn ruby_string_literal_escapes_so_it_reparses_to_the_same_bytes() {
+        assert_eq!(ruby_string_literal("plain"), "\"plain\"");
+        assert_eq!(ruby_dq_body("a#{b}c"), "a\\#{b}c");
+        assert_eq!(
+            ruby_dq_body("ivar #@a global #$b cvar #@@c"),
+            "ivar \\#@a global \\#$b cvar \\#@@c"
+        );
+        assert_eq!(ruby_dq_body("trailing #"), "trailing #");
+        assert_eq!(ruby_dq_body("hash #x mid"), "hash #x mid");
+        assert_eq!(ruby_dq_body("\u{0}7"), "\\x007");
+        assert_eq!(ruby_dq_body("\u{1}\u{1f}"), "\\x01\\x1F");
+        assert_eq!(ruby_dq_body("\u{7f}"), "\\x7F");
+        assert_eq!(ruby_dq_body("a\tb\nc\rd"), "a\\tb\\nc\\rd");
+        assert_eq!(ruby_dq_body("quote \" back \\"), "quote \\\" back \\\\");
+        assert_eq!(ruby_dq_body("caf\u{e9}"), "caf\u{e9}");
     }
 
     #[test]
