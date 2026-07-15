@@ -358,9 +358,11 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
             }
         }
         IbfObjectKind::Regexp => {
-            if let Some(src_pos) = after_tag.checked_add(1)
+            if let Some(&option) = bytes.get(after_tag)
+                && let Some(src_pos) = after_tag.checked_add(1)
                 && let Some((src_index, _)) = read_small_value(bytes, src_pos)
             {
+                element_count = Some(u32::from(option));
                 elements.push(u32::try_from(src_index).unwrap_or(u32::MAX));
             }
         }
@@ -429,10 +431,32 @@ fn resolve_regexp_literals(objects: &mut [IbfObject], recovered: &mut u32) {
             && obj.literal.is_none()
             && !src.contains(['\n', '\r'])
         {
-            obj.literal = Some(format!("/{}/", escape_regexp_slashes(&src)));
+            let flags: String = regexp_flag_suffix(obj.element_count.unwrap_or(0));
+            obj.literal = Some(format!("/{}/{}", escape_regexp_slashes(&src), flags));
             *recovered = recovered.saturating_add(1);
         }
     }
+}
+
+fn regexp_flag_suffix(option: u32) -> String {
+    const IGNORECASE: u32 = 1;
+    const EXTENDED: u32 = 2;
+    const MULTILINE: u32 = 4;
+    const NOENCODING: u32 = 32;
+    let mut out: String = String::with_capacity(4);
+    if option & MULTILINE != 0 {
+        out.push('m');
+    }
+    if option & IGNORECASE != 0 {
+        out.push('i');
+    }
+    if option & EXTENDED != 0 {
+        out.push('x');
+    }
+    if option & NOENCODING != 0 {
+        out.push('n');
+    }
+    out
 }
 
 fn element_literal_text(obj: &IbfObject) -> Option<String> {
@@ -1329,6 +1353,61 @@ mod tests {
         resolve_regexp_literals(&mut objects, &mut recovered);
         assert_eq!(objects[0].literal.as_deref(), Some("/\\Aregex/"));
         assert_eq!(recovered, 1);
+    }
+
+    #[test]
+    fn regexp_flag_suffix_matches_ruby_inspect_order() {
+        assert_eq!(regexp_flag_suffix(0), "");
+        assert_eq!(regexp_flag_suffix(1), "i");
+        assert_eq!(regexp_flag_suffix(2), "x");
+        assert_eq!(regexp_flag_suffix(4), "m");
+        assert_eq!(regexp_flag_suffix(7), "mix");
+        assert_eq!(regexp_flag_suffix(32), "n");
+        assert_eq!(regexp_flag_suffix(16), "");
+        assert_eq!(regexp_flag_suffix(1 | 4 | 32), "min");
+    }
+
+    #[test]
+    fn regexp_literal_preserves_option_flags() {
+        fn resolved(option: u32) -> Option<String> {
+            let mut objects: Vec<IbfObject> = vec![
+                IbfObject {
+                    index: 0,
+                    offset: 0,
+                    kind: IbfObjectKind::Regexp,
+                    literal: None,
+                    element_count: Some(option),
+                    elements: vec![1],
+                },
+                IbfObject {
+                    index: 1,
+                    offset: 0,
+                    kind: IbfObjectKind::String,
+                    literal: Some("abc".to_owned()),
+                    element_count: None,
+                    elements: Vec::new(),
+                },
+            ];
+            let mut recovered: u32 = 0;
+            resolve_regexp_literals(&mut objects, &mut recovered);
+            objects[0].literal.clone()
+        }
+        assert_eq!(resolved(1).as_deref(), Some("/abc/i"));
+        assert_eq!(resolved(4).as_deref(), Some("/abc/m"));
+        assert_eq!(resolved(2).as_deref(), Some("/abc/x"));
+        assert_eq!(resolved(7).as_deref(), Some("/abc/mix"));
+        assert_eq!(resolved(32).as_deref(), Some("/abc/n"));
+        assert_eq!(resolved(0).as_deref(), Some("/abc/"));
+    }
+
+    #[test]
+    fn regexp_decode_captures_option_byte() {
+        let mut bytes: Vec<u8> = vec![0x06, 0x01];
+        bytes.extend_from_slice(&dump_small_value(9));
+        let obj: IbfObject = decode_object(&bytes, 0, 0);
+        assert_eq!(obj.kind, IbfObjectKind::Regexp);
+        assert_eq!(obj.element_count, Some(1));
+        assert_eq!(obj.elements.first().copied(), Some(9));
     }
 
     #[test]
