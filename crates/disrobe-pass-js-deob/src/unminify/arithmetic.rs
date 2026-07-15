@@ -104,6 +104,16 @@ fn fold_mul_div(source: &str) -> (String, usize) {
         return (source.to_owned(), 0);
     };
     replace_in_code(source, &re, |caps: &Captures<'_>| {
+        let whole: regex::Match<'_> = caps.get(0)?;
+        if !fold_pair_is_safe(
+            source.as_bytes(),
+            whole.start(),
+            whole.end(),
+            &caps[1],
+            false,
+        ) {
+            return None;
+        }
         let lhs: i64 = parse_int(&caps[1])?;
         let rhs: i64 = parse_int(&caps[3])?;
         let result: Option<i64> = match &caps[2] {
@@ -127,6 +137,16 @@ fn fold_add_sub(source: &str) -> (String, usize) {
         return (source.to_owned(), 0);
     };
     replace_in_code(source, &re, |caps: &Captures<'_>| {
+        let whole: regex::Match<'_> = caps.get(0)?;
+        if !fold_pair_is_safe(
+            source.as_bytes(),
+            whole.start(),
+            whole.end(),
+            &caps[1],
+            true,
+        ) {
+            return None;
+        }
         let lhs: i64 = parse_int(&caps[1])?;
         let rhs: i64 = parse_int(&caps[3])?;
         let result: Option<i64> = match &caps[2] {
@@ -330,6 +350,69 @@ fn skip_regex(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+fn fold_pair_is_safe(bytes: &[u8], start: usize, end: usize, lhs: &str, additive: bool) -> bool {
+    if let Some(prev) = start.checked_sub(1)
+        && let Some(&b) = bytes.get(prev)
+        && (is_ident_byte(b) || b == b'.')
+    {
+        return false;
+    }
+    if let Some(&b) = bytes.get(end)
+        && (is_ident_byte(b) || b == b'.')
+    {
+        return false;
+    }
+    let before_sig: Option<u8> = significant_left(bytes, start);
+    let (after_sig, after_sig2): (Option<u8>, Option<u8>) = significant_right(bytes, end);
+    let signed: bool = matches!(lhs.trim_start().as_bytes().first(), Some(b'-' | b'+'));
+    if signed
+        && let Some(b) = before_sig
+        && is_value_end(b)
+    {
+        return false;
+    }
+    if additive {
+        if matches!(before_sig, Some(b'+' | b'-' | b'*' | b'/' | b'%')) {
+            return false;
+        }
+        if matches!(after_sig, Some(b'*' | b'/' | b'%')) {
+            return false;
+        }
+    } else {
+        if matches!(before_sig, Some(b'*' | b'/' | b'%')) {
+            return false;
+        }
+        if after_sig == Some(b'*') && after_sig2 == Some(b'*') {
+            return false;
+        }
+    }
+    true
+}
+
+fn significant_left(bytes: &[u8], start: usize) -> Option<u8> {
+    let mut i: usize = start;
+    while i > 0 {
+        i -= 1;
+        let b: u8 = bytes[i];
+        if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+            return Some(b);
+        }
+    }
+    None
+}
+
+fn significant_right(bytes: &[u8], end: usize) -> (Option<u8>, Option<u8>) {
+    let mut i: usize = end;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n') {
+        i += 1;
+    }
+    (bytes.get(i).copied(), bytes.get(i + 1).copied())
+}
+
+const fn is_value_end(b: u8) -> bool {
+    is_ident_byte(b) || matches!(b, b')' | b']' | b'}' | b'.' | b'`' | b'\'' | b'"')
+}
+
 fn parse_int(s: &str) -> Option<i64> {
     let trimmed: &str = s.trim();
     let Some(hex): Option<&str> = trimmed
@@ -421,6 +504,74 @@ mod tests {
     fn fold_still_applies_to_real_code_beside_a_regex() {
         let (out, n): (String, usize) = fold_binary("var re = /a-z0-9/; var x = 5 + 3;");
         assert_eq!(out, "var re = /a-z0-9/; var x = 8;");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn fold_leaves_higher_precedence_neighbor_untouched() {
+        for input in [
+            "var y = 2 + 3 * x;",
+            "var y = x * 2 + 1;",
+            "var y = 2 + 3 % x;",
+            "var y = 2 + 3 ** x;",
+            "var y = x % 2 + 3;",
+        ] {
+            let (out, n): (String, usize) = fold_binary(input);
+            assert_eq!(out, input, "must not cross multiplicative precedence");
+            assert_eq!(n, 0);
+        }
+    }
+
+    #[test]
+    fn fold_preserves_left_associativity_with_variable() {
+        for input in [
+            "var y = x - 2 + 3;",
+            "var y = a + 2 + 3;",
+            "var y = x / 2 * 4;",
+        ] {
+            let (out, n): (String, usize) = fold_binary(input);
+            assert_eq!(out, input, "must not re-associate around a variable");
+            assert_eq!(n, 0);
+        }
+    }
+
+    #[test]
+    fn fold_does_not_read_binary_minus_as_a_sign() {
+        let (out, n): (String, usize) = fold_binary("var y = x-2+3;");
+        assert_eq!(out, "var y = x-2+3;");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn fold_does_not_split_an_identifier_ending_in_digits() {
+        let (out, n): (String, usize) = fold_binary("var z = x2 + 3;");
+        assert_eq!(out, "var z = x2 + 3;");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn fold_does_not_absorb_a_decimal_or_exponent_tail() {
+        for input in ["var y = 2 + 3.5;", "var y = 2 * 3e5;", "var y = 2 + 3n;"] {
+            let (out, n): (String, usize) = fold_binary(input);
+            assert_eq!(
+                out, input,
+                "must not fold across a fractional/exponent/bigint tail"
+            );
+            assert_eq!(n, 0);
+        }
+    }
+
+    #[test]
+    fn fold_still_collapses_leftmost_safe_pair() {
+        let (out, n): (String, usize) = fold_binary("var y = 8 / 2 * x;");
+        assert_eq!(out, "var y = 4 * x;");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn fold_still_folds_when_outer_operator_is_looser() {
+        let (out, n): (String, usize) = fold_binary("var y = x << 2 + 3;");
+        assert_eq!(out, "var y = x << 5;");
         assert_eq!(n, 1);
     }
 }
