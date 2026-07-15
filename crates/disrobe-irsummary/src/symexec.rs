@@ -633,7 +633,17 @@ fn apply_instr(
         | NirOp::CondBranch { .. }
         | NirOp::Return
         | NirOp::Interrupt
-        | NirOp::Unmodeled { .. } => None,
+        | NirOp::Unmodeled { .. }
+        | NirOp::RawLoad { .. }
+        | NirOp::RawStore { .. }
+        | NirOp::Subpiece { .. }
+        | NirOp::Deposit { .. }
+        | NirOp::CallOther { .. }
+        | NirOp::Copy { .. }
+        | NirOp::Value { .. }
+        | NirOp::Piece { .. }
+        | NirOp::NoReturnCall { .. }
+        | NirOp::TailCall { .. } => None,
     }
 }
 

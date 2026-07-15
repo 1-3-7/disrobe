@@ -97,6 +97,16 @@ fn shape_token(op: &NirOp, reads_memory: bool, writes_memory: bool, byte_width: 
         NirOp::Return => "ret".to_owned(),
         NirOp::Interrupt => "int".to_owned(),
         NirOp::Unmodeled { opcode, .. } => format!("unmodeled.{opcode:#04x}"),
+        NirOp::RawLoad { .. } => "rawload".to_owned(),
+        NirOp::RawStore { .. } => "rawstore".to_owned(),
+        NirOp::Subpiece { .. } => "subpiece".to_owned(),
+        NirOp::Deposit { .. } => "deposit".to_owned(),
+        NirOp::CallOther { .. } => "callother".to_owned(),
+        NirOp::Copy { .. } => "copy".to_owned(),
+        NirOp::Value { op, .. } => format!("value.{}", op.mnemonic()),
+        NirOp::Piece { .. } => "piece".to_owned(),
+        NirOp::NoReturnCall { .. } => "call.noreturn".to_owned(),
+        NirOp::TailCall { .. } => "call.tail".to_owned(),
     };
     let mem_shape: &'static str = match (reads_memory, writes_memory) {
         (true, true) => ".rw",
