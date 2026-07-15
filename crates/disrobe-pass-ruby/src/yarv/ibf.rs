@@ -6,6 +6,7 @@ use crate::yarv::reader::YarvBinaryHeader;
 pub(crate) const IBF_OBJECT_LIST_ENTRY_CAP: u32 = 1_048_576;
 pub(crate) const IBF_STRING_LEN_CAP: usize = 16 * 1024 * 1024;
 pub(crate) const IBF_ARRAY_LEN_CAP: usize = 1_048_576;
+const IBF_FLOAT_ALIGN: usize = 8;
 const IBF_MAX_INSNS_PER_ISEQ: usize = 1_048_576;
 const IBF_MAX_ISEQ_BODIES: usize = 65_536;
 
@@ -325,7 +326,8 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
             }
         }
         IbfObjectKind::Float => {
-            if let Some((slice, _)) = checked_slice(bytes, after_tag, 8)
+            if let Some(body) = after_tag.checked_next_multiple_of(IBF_FLOAT_ALIGN)
+                && let Some((slice, _)) = checked_slice(bytes, body, 8)
                 && let Ok(bits) = <[u8; 8]>::try_from(slice)
             {
                 literal = Some(render_float_literal(f64::from_le_bytes(bits)));
@@ -1289,6 +1291,7 @@ mod tests {
     #[test]
     fn decode_object_recovers_float_literal() {
         let mut bytes: Vec<u8> = vec![0x04];
+        bytes.resize(IBF_FLOAT_ALIGN, 0);
         bytes.extend_from_slice(&0.299_f64.to_le_bytes());
         let obj: IbfObject = decode_object(&bytes, 0, 0);
         assert_eq!(obj.kind, IbfObjectKind::Float);
