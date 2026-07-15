@@ -1,3 +1,5 @@
+#[cfg(target_arch = "x86_64")]
+use std::arch::asm;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
@@ -11,9 +13,12 @@ use disrobe_lift_x86::decode_block_x86;
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 
-const EXPECTED_INSTRUCTIONS: usize = 95;
-const EXPECTED_MODELED: usize = 92;
-const EXPECTED_CALLOTHER: usize = 3;
+const EXPECTED_INSTRUCTIONS: usize = 281;
+const EXPECTED_MODELED: usize = 206;
+const EXPECTED_CALLOTHER: usize = 75;
+const LEGACY_INSTRUCTIONS: usize = 95;
+const EXPECTED_ADDED_MODELED: usize = 113;
+const EXPECTED_ADDED_CALLOTHER: usize = 73;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,6 +48,11 @@ enum Expression {
         space: Space,
     },
     Node(Varnode),
+    Select {
+        condition: Box<Self>,
+        when_true: Box<Self>,
+        when_false: Box<Self>,
+    },
     Unary {
         name: &'static str,
         input: Box<Self>,
@@ -59,6 +69,11 @@ impl Display for Expression {
                 space,
             } => write!(formatter, "load({space},{pointer},{size_bytes})"),
             Self::Node(node) => write!(formatter, "{node}"),
+            Self::Select {
+                condition,
+                when_true,
+                when_false,
+            } => write!(formatter, "select({condition},{when_true},{when_false})"),
             Self::Unary { name, input } => write!(formatter, "{name}({input})"),
         }
     }
@@ -97,9 +112,23 @@ fn committed_gcc_text_matches_gnu_objdump_boundaries_and_mnemonics() {
     assert_eq!(modeled, EXPECTED_MODELED);
     assert_eq!(call_other, EXPECTED_CALLOTHER);
     assert_eq!(modeled.saturating_add(call_other), EXPECTED_INSTRUCTIONS);
+    let added_modeled: usize = block
+        .instructions
+        .iter()
+        .skip(LEGACY_INSTRUCTIONS)
+        .filter(|instruction: &&PcodeInstr| instruction.status == DecodeStatus::Supported)
+        .count();
+    let added_call_other: usize = block
+        .instructions
+        .iter()
+        .skip(LEGACY_INSTRUCTIONS)
+        .filter(|instruction: &&PcodeInstr| instruction.status == DecodeStatus::CallOther)
+        .count();
+    assert_eq!(added_modeled, EXPECTED_ADDED_MODELED);
+    assert_eq!(added_call_other, EXPECTED_ADDED_CALLOTHER);
     let covered: usize = modeled.saturating_add(call_other);
     println!(
-        "x86-64 committed corpus: decode {covered}/{EXPECTED_INSTRUCTIONS}, modeled {modeled}, CALLOTHER {call_other}"
+        "x86-64 committed corpus: decode {covered}/{EXPECTED_INSTRUCTIONS}, modeled {modeled}, CALLOTHER {call_other}, added modeled {added_modeled}, added CALLOTHER {added_call_other}"
     );
 }
 
@@ -120,6 +149,8 @@ fn live_gcc_text_matches_live_gnu_objdump() {
         OsString::from("-std=c11"),
         OsString::from("-O2"),
         OsString::from("-m64"),
+        OsString::from("-march=x86-64-v2"),
+        OsString::from("-mno-avx"),
         OsString::from("-fcf-protection=branch"),
         OsString::from("-fno-if-conversion"),
         OsString::from("-fno-if-conversion2"),
@@ -209,6 +240,7 @@ fn normalized_effects_match_ghidra_pypcode() {
     assert!(raw.starts_with("pypcode 4.0.0\nx86:LE:64:default\n"));
     let mut headers: BTreeSet<String> = BTreeSet::new();
     let mut checked: usize = 0;
+    let mut added_checked: usize = 0;
     let mut call_other: usize = 0;
     let mut rows: usize = 0;
     for line in records
@@ -246,14 +278,251 @@ fn normalized_effects_match_ghidra_pypcode() {
             };
             assert_eq!(actual, fields[3], "{line}");
             checked = checked.saturating_add(1);
+            if rows >= LEGACY_INSTRUCTIONS {
+                added_checked = added_checked.saturating_add(1);
+            }
         }
         rows = rows.saturating_add(1);
     }
     assert_eq!(rows, EXPECTED_INSTRUCTIONS);
     assert_eq!(headers.len(), rows);
     assert_eq!(checked, EXPECTED_MODELED);
+    assert_eq!(added_checked, EXPECTED_ADDED_MODELED);
     assert_eq!(call_other, EXPECTED_CALLOTHER);
-    println!("x86-64 pypcode effects: {checked}/{EXPECTED_MODELED} modeled instructions agree");
+    println!(
+        "x86-64 pypcode effects: {checked}/{EXPECTED_MODELED} modeled instructions agree, added {added_checked}/{EXPECTED_ADDED_MODELED}"
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn native_xadd_results_and_flags_match_lifted_pcode() {
+    let block: DecodedBlock = decode_block_x86(&[0x48, 0x0f, 0xc1, 0xd8], 0x4000, 64);
+    assert_eq!(block.instructions.len(), 1);
+    let Some(instruction): Option<&PcodeInstr> = block.instructions.first() else {
+        return;
+    };
+    assert_eq!(instruction.status, DecodeStatus::Supported);
+    let cases: [(u64, u64); 8] = [
+        (0, 0),
+        (u64::MAX, 1),
+        (0x7fff_ffff_ffff_ffff, 1),
+        (0x8000_0000_0000_0000, 0x8000_0000_0000_0000),
+        (0x0f, 1),
+        (0x7f, 1),
+        (0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3211),
+        (0xaaaa_aaaa_aaaa_aaaa, 0x5555_5555_5555_5555),
+    ];
+    for case in cases {
+        let left_input: u64 = case.0;
+        let right_input: u64 = case.1;
+        let (native_left, native_right, native_flags): (u64, u64, u64) =
+            native_xadd(left_input, right_input);
+        let evaluated: Option<BTreeMap<Varnode, u64>> =
+            evaluate_xadd(&instruction.ops, left_input, right_input);
+        assert!(evaluated.is_some());
+        let Some(values): Option<BTreeMap<Varnode, u64>> = evaluated else {
+            continue;
+        };
+        assert_eq!(read_value(register_node(0, 8), &values), native_left);
+        assert_eq!(read_value(register_node(0x18, 8), &values), native_right);
+        for flag in [
+            (0x200_u64, 0_u32),
+            (0x202, 2),
+            (0x204, 4),
+            (0x206, 6),
+            (0x207, 7),
+            (0x20b, 11),
+        ] {
+            let expected: u64 = native_flags.checked_shr(flag.1).unwrap_or(0) & 1;
+            assert_eq!(
+                read_value(register_node(flag.0, 1), &values),
+                expected,
+                "left={left_input:#x} right={right_input:#x} flag={:#x}",
+                flag.0
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn native_xadd(mut left: u64, mut right: u64) -> (u64, u64, u64) {
+    let flags: u64;
+    unsafe {
+        asm!(
+            "xadd {left}, {right}",
+            "pushfq",
+            "pop {flags}",
+            left = inout(reg) left,
+            right = inout(reg) right,
+            flags = lateout(reg) flags,
+        );
+    }
+    (left, right, flags)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn evaluate_xadd(operations: &[PcodeOp], left: u64, right: u64) -> Option<BTreeMap<Varnode, u64>> {
+    let mut values: BTreeMap<Varnode, u64> =
+        BTreeMap::from([(register_node(0, 8), left), (register_node(0x18, 8), right)]);
+    for operation in operations {
+        let assignment: Option<(Varnode, u64)> = match operation {
+            PcodeOp::Copy { output, input } => Some((*output, read_value(*input, &values))),
+            PcodeOp::IntAdd {
+                output,
+                left,
+                right,
+            } => Some((
+                *output,
+                read_value(*left, &values).wrapping_add(read_value(*right, &values))
+                    & width_mask(output.size_bytes),
+            )),
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            } => Some((
+                *output,
+                read_value(*left, &values) & read_value(*right, &values),
+            )),
+            PcodeOp::IntCarry {
+                output,
+                left,
+                right,
+            } => {
+                let sum: u128 = u128::from(read_value(*left, &values))
+                    + u128::from(read_value(*right, &values));
+                Some((
+                    *output,
+                    u64::from(sum > u128::from(width_mask(left.size_bytes))),
+                ))
+            }
+            PcodeOp::IntEqual {
+                output,
+                left,
+                right,
+            } => Some((
+                *output,
+                u64::from(read_value(*left, &values) == read_value(*right, &values)),
+            )),
+            PcodeOp::IntNotEqual {
+                output,
+                left,
+                right,
+            } => Some((
+                *output,
+                u64::from(read_value(*left, &values) != read_value(*right, &values)),
+            )),
+            PcodeOp::IntSignedCarry {
+                output,
+                left,
+                right,
+            } => {
+                let bits: u32 = left.size_bytes.checked_mul(8).unwrap_or(0);
+                let sign_position: u32 = bits.checked_sub(1)?;
+                let sum: i128 = signed_value(read_value(*left, &values), bits)
+                    .checked_add(signed_value(read_value(*right, &values), bits))
+                    .unwrap_or(i128::MAX);
+                let boundary: i128 = 1_i128.checked_shl(sign_position).unwrap_or(0);
+                Some((*output, u64::from(sum < -boundary || sum >= boundary)))
+            }
+            PcodeOp::IntSignedLess {
+                output,
+                left,
+                right,
+            } => {
+                let bits: u32 = left.size_bytes.checked_mul(8).unwrap_or(0);
+                Some((
+                    *output,
+                    u64::from(
+                        signed_value(read_value(*left, &values), bits)
+                            < signed_value(read_value(*right, &values), bits),
+                    ),
+                ))
+            }
+            PcodeOp::IntXor {
+                output,
+                left,
+                right,
+            } => Some((
+                *output,
+                read_value(*left, &values) ^ read_value(*right, &values),
+            )),
+            PcodeOp::CallOther {
+                name,
+                output: Some(output),
+                inputs,
+            } if name == "x86_parity8_pure_v1" => {
+                let input: u64 = inputs
+                    .first()
+                    .map_or(0, |node: &Varnode| read_value(*node, &values));
+                Some((
+                    *output,
+                    u64::from((input & 0xff).count_ones().is_multiple_of(2)),
+                ))
+            }
+            _ => return None,
+        };
+        let Some((output, value)): Option<(Varnode, u64)> = assignment else {
+            continue;
+        };
+        let _: Option<u64> = values.insert(output, value & width_mask(output.size_bytes));
+    }
+    Some(values)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_value(node: Varnode, values: &BTreeMap<Varnode, u64>) -> u64 {
+    if node.space == Space::Constant {
+        node.offset & width_mask(node.size_bytes)
+    } else {
+        values.get(&node).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const fn register_node(offset: u64, size_bytes: u32) -> Varnode {
+    Varnode {
+        offset,
+        size_bytes,
+        space: Space::Register,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const fn width_mask(size_bytes: u32) -> u64 {
+    let bits: u32 = match size_bytes.checked_mul(8) {
+        Some(value) => value,
+        None => return 0,
+    };
+    if bits >= 64 {
+        u64::MAX
+    } else {
+        match 1_u64.checked_shl(bits) {
+            Some(value) => match value.checked_sub(1) {
+                Some(mask) => mask,
+                None => 0,
+            },
+            None => 0,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn signed_value(value: u64, bits: u32) -> i128 {
+    if bits == 0 || bits > 64 {
+        return 0;
+    }
+    let Some(sign_position): Option<u32> = bits.checked_sub(1) else {
+        return 0;
+    };
+    let boundary: u64 = 1_u64.checked_shl(sign_position).unwrap_or(0);
+    let masked: u64 = value & width_mask(bits / 8);
+    if masked & boundary == 0 {
+        i128::from(masked)
+    } else {
+        i128::from(masked) - 1_i128.checked_shl(bits).unwrap_or(0)
+    }
 }
 
 fn assert_block_matches(
@@ -312,11 +581,12 @@ fn objdump_boundaries(disassembly: &str, text_length: usize) -> Vec<Boundary> {
             continue;
         }
         let address: u64 = u64::from_str_radix(address_text, 16).unwrap_or(u64::MAX);
-        let mnemonic: Option<&str> = columns[2]
+        let instruction_text: &str = columns[2];
+        let mnemonic: Option<&str> = instruction_text
             .split_whitespace()
             .find(|token: &&str| !is_objdump_prefix(token));
         if let Some(name) = mnemonic {
-            starts.push((address, name.to_owned()));
+            starts.push((address, normalized_objdump_mnemonic(name, instruction_text)));
         }
     }
     let text_end: u64 = u64::try_from(text_length).unwrap_or(u64::MAX);
@@ -335,6 +605,24 @@ fn objdump_boundaries(disassembly: &str, text_length: usize) -> Vec<Boundary> {
             })
         })
         .collect()
+}
+
+fn normalized_objdump_mnemonic(name: &str, instruction_text: &str) -> String {
+    if !matches!(name, "movs" | "stos" | "lods" | "cmps" | "scas") {
+        return name.to_owned();
+    }
+    let suffix: Option<char> = if instruction_text.contains("QWORD PTR") {
+        Some('q')
+    } else if instruction_text.contains("DWORD PTR") {
+        Some('d')
+    } else if instruction_text.contains("WORD PTR") {
+        Some('w')
+    } else if instruction_text.contains("BYTE PTR") {
+        Some('b')
+    } else {
+        None
+    };
+    suffix.map_or_else(|| name.to_owned(), |width: char| format!("{name}{width}"))
 }
 
 fn is_objdump_prefix(token: &str) -> bool {
@@ -784,15 +1072,23 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 output,
                 left,
                 right,
-            } => record_binary(
-                *output,
-                "ne",
-                *left,
-                *right,
-                true,
-                &mut values,
-                &mut pending,
-            ),
+            } => {
+                let name: &'static str =
+                    if flag_name(*left).is_some() && flag_name(*right).is_some() {
+                        "boolxor"
+                    } else {
+                        "ne"
+                    };
+                record_binary(
+                    *output,
+                    name,
+                    *left,
+                    *right,
+                    true,
+                    &mut values,
+                    &mut pending,
+                );
+            }
             PcodeOp::IntOr {
                 output,
                 left,
@@ -1050,6 +1346,17 @@ fn record_unary(
                 input: Box::new(other),
             },
         }
+    } else if name == "boolnot" {
+        match resolved {
+            Expression::Unary {
+                name: "boolnot",
+                input,
+            } => *input,
+            other => Expression::Unary {
+                name,
+                input: Box::new(other),
+            },
+        }
     } else {
         Expression::Unary {
             name,
@@ -1069,14 +1376,41 @@ fn record_subpiece(
     let resolved_input: Expression = resolve(input, values);
     let resolved_offset: Expression = resolve(byte_offset, values);
     let expression: Expression =
-        low_signed_product(&resolved_input, &resolved_offset, output.size_bytes).unwrap_or_else(
-            || Expression::Binary {
+        register_subpiece(&resolved_input, &resolved_offset, output.size_bytes)
+            .or_else(|| low_signed_product(&resolved_input, &resolved_offset, output.size_bytes))
+            .unwrap_or_else(|| Expression::Binary {
                 name: "subpiece",
                 left: Box::new(resolved_input),
                 right: Box::new(resolved_offset),
-            },
-        );
+            });
     record(output, expression, values, facts);
+}
+
+fn register_subpiece(
+    input: &Expression,
+    offset: &Expression,
+    output_size: u32,
+) -> Option<Expression> {
+    let Expression::Node(input_node) = input else {
+        return None;
+    };
+    let Expression::Node(offset_node) = offset else {
+        return None;
+    };
+    if input_node.space != Space::Register || offset_node.space != Space::Constant {
+        return None;
+    }
+    let byte_offset: u64 = offset_node.offset;
+    let end: u64 = byte_offset.checked_add(u64::from(output_size))?;
+    if end > u64::from(input_node.size_bytes) {
+        return None;
+    }
+    let selected: Varnode = Varnode {
+        offset: input_node.offset.checked_add(byte_offset)?,
+        size_bytes: output_size,
+        space: Space::Register,
+    };
+    Some(Expression::Node(selected))
 }
 
 fn low_signed_product(
@@ -1135,13 +1469,36 @@ fn record(
         }
         return;
     }
-    let Some(base): Option<u64> = gpr_base(output) else {
+    if let Some(base) = gpr_base(output) {
+        if output.size_bytes == 8 {
+            for size_bytes in [1_u32, 2, 4] {
+                let prefix: String = format!("write(register:0x{base:x}:{size_bytes},");
+                facts.retain(|fact: &String| !fact.starts_with(&prefix));
+            }
+        }
+        let prefix: String = format!("write({output},");
+        facts.retain(|fact: &String| !fact.starts_with(&prefix));
+        facts.push(format!("{prefix}{expression})"));
+        return;
+    }
+    let Some(base): Option<u64> = xmm_base(output) else {
         return;
     };
-    if output.size_bytes == 8 {
-        for size_bytes in [1_u32, 2, 4] {
-            let prefix: String = format!("write(register:0x{base:x}:{size_bytes},");
-            facts.retain(|fact: &String| !fact.starts_with(&prefix));
+    if output.size_bytes == 16 {
+        for byte_offset in 0_u64..16 {
+            for size_bytes in [1_u32, 2, 4, 8] {
+                let Some(end): Option<u64> = byte_offset.checked_add(u64::from(size_bytes)) else {
+                    continue;
+                };
+                if end > 16 {
+                    continue;
+                }
+                let Some(offset): Option<u64> = base.checked_add(byte_offset) else {
+                    continue;
+                };
+                let prefix: String = format!("write(register:0x{offset:x}:{size_bytes},");
+                facts.retain(|fact: &String| !fact.starts_with(&prefix));
+            }
         }
     }
     let prefix: String = format!("write({output},");
@@ -1162,6 +1519,35 @@ fn binary(
 ) -> Expression {
     if name == "add" {
         return canonical_add(left, right, output_size);
+    }
+    if name == "or"
+        && let Some(selection) = masked_select(&left, &right)
+    {
+        return selection;
+    }
+    if name == "booland"
+        && let (
+            Expression::Unary {
+                name: "boolnot",
+                input: left_input,
+            },
+            Expression::Unary {
+                name: "boolnot",
+                input: right_input,
+            },
+        ) = (&left, &right)
+    {
+        let disjunction: Expression = binary(
+            "boolor",
+            left_input.as_ref().clone(),
+            right_input.as_ref().clone(),
+            true,
+            output_size,
+        );
+        return Expression::Unary {
+            name: "boolnot",
+            input: Box::new(disjunction),
+        };
     }
     if left == right {
         if matches!(name, "and" | "or") {
@@ -1200,6 +1586,98 @@ fn binary(
         name,
         left: Box::new(canonical_left),
         right: Box::new(canonical_right),
+    }
+}
+
+fn masked_select(left: &Expression, right: &Expression) -> Option<Expression> {
+    let left_term: (bool, &Expression, &Expression) = masked_term(left)?;
+    let right_term: (bool, &Expression, &Expression) = masked_term(right)?;
+    if left_term.0 == right_term.0 || left_term.2 != right_term.2 {
+        return None;
+    }
+    let (when_true, when_false): (&Expression, &Expression) = if left_term.0 {
+        (left_term.1, right_term.1)
+    } else {
+        (right_term.1, left_term.1)
+    };
+    Some(select_expression(
+        left_term.2.clone(),
+        when_true.clone(),
+        when_false.clone(),
+    ))
+}
+
+fn masked_term(expression: &Expression) -> Option<(bool, &Expression, &Expression)> {
+    let Expression::Binary {
+        name: "and",
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    if let Some(condition) = mask_condition(left) {
+        return Some((true, right, condition));
+    }
+    if let Some(condition) = mask_condition(right) {
+        return Some((true, left, condition));
+    }
+    if let Expression::Unary { name: "not", input } = left.as_ref()
+        && let Some(condition) = mask_condition(input)
+    {
+        return Some((false, right, condition));
+    }
+    if let Expression::Unary { name: "not", input } = right.as_ref()
+        && let Some(condition) = mask_condition(input)
+    {
+        return Some((false, left, condition));
+    }
+    None
+}
+
+fn mask_condition(expression: &Expression) -> Option<&Expression> {
+    let Expression::Binary {
+        name: "sub",
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    if !matches!(left.as_ref(), Expression::Node(node) if node.space == Space::Constant && node.offset == 0)
+    {
+        return None;
+    }
+    let Expression::Unary {
+        name: "zext",
+        input,
+    } = right.as_ref()
+    else {
+        return None;
+    };
+    Some(input)
+}
+
+fn select_expression(
+    condition: Expression,
+    when_true: Expression,
+    when_false: Expression,
+) -> Expression {
+    if let Expression::Unary {
+        name: "boolnot",
+        input,
+    } = condition
+    {
+        return Expression::Select {
+            condition: input,
+            when_true: Box::new(when_false),
+            when_false: Box::new(when_true),
+        };
+    }
+    Expression::Select {
+        condition: Box::new(condition),
+        when_true: Box::new(when_true),
+        when_false: Box::new(when_false),
     }
 }
 
@@ -1300,6 +1778,21 @@ fn flag_name(node: Varnode) -> Option<&'static str> {
         0x20b => Some("OF"),
         _ => None,
     }
+}
+
+fn xmm_base(node: Varnode) -> Option<u64> {
+    if node.space != Space::Register {
+        return None;
+    }
+    let relative: u64 = node.offset.checked_sub(0x1200)?;
+    let index: u64 = relative / 0x40;
+    if index >= 16 {
+        return None;
+    }
+    let base: u64 = 0x1200_u64.checked_add(index.checked_mul(0x40)?)?;
+    let within: u64 = node.offset.checked_sub(base)?;
+    let end: u64 = within.checked_add(u64::from(node.size_bytes))?;
+    (end <= 16).then_some(base)
 }
 
 fn gpr_base(node: Varnode) -> Option<u64> {

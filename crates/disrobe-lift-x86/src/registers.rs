@@ -6,7 +6,9 @@ pub(crate) const PF: Varnode = register_node(0x202, 1);
 pub(crate) const AF: Varnode = register_node(0x204, 1);
 pub(crate) const ZF: Varnode = register_node(0x206, 1);
 pub(crate) const SF: Varnode = register_node(0x207, 1);
+pub(crate) const DF: Varnode = register_node(0x20a, 1);
 pub(crate) const OF: Varnode = register_node(0x20b, 1);
+pub(crate) const MXCSR: Varnode = register_node(0x1094, 4);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct UniqueAllocator {
@@ -79,6 +81,28 @@ pub(crate) fn full_gpr(register: Register) -> Option<Varnode> {
     gpr_offset(full).map(|offset: u64| register_node(offset, 8))
 }
 
+pub(crate) const fn gpr32_by_offset(offset: u64) -> Register {
+    match offset {
+        0x00 => Register::EAX,
+        0x08 => Register::ECX,
+        0x10 => Register::EDX,
+        0x18 => Register::EBX,
+        0x20 => Register::ESP,
+        0x28 => Register::EBP,
+        0x30 => Register::ESI,
+        0x38 => Register::EDI,
+        0x80 => Register::R8D,
+        0x88 => Register::R9D,
+        0x90 => Register::R10D,
+        0x98 => Register::R11D,
+        0xa0 => Register::R12D,
+        0xa8 => Register::R13D,
+        0xb0 => Register::R14D,
+        0xb8 => Register::R15D,
+        _ => Register::None,
+    }
+}
+
 pub(crate) const fn segment_base(register: Register) -> Option<Varnode> {
     match register {
         Register::FS => Some(register_node(0x110, 8)),
@@ -89,6 +113,19 @@ pub(crate) const fn segment_base(register: Register) -> Option<Varnode> {
 
 pub(crate) fn is_gpr(register: Register) -> bool {
     gpr_offset(register).is_some()
+}
+
+pub(crate) fn xmm_lane(selected: Register, byte_offset: u32, size_bytes: u32) -> Option<Varnode> {
+    if !selected.is_xmm() || size_bytes == 0 {
+        return None;
+    }
+    let end: u32 = byte_offset.checked_add(size_bytes)?;
+    if end > 16 {
+        return None;
+    }
+    let full: Varnode = register(selected)?;
+    let offset: u64 = full.offset.checked_add(u64::from(byte_offset))?;
+    Some(register_node(offset, size_bytes))
 }
 
 fn gpr_offset(register: Register) -> Option<u64> {

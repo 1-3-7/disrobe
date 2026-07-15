@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use disrobe_lift_x86::{X86PcodeLifter, decode_block_x86};
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
@@ -405,12 +407,12 @@ fn division_uses_a_checked_typed_contract() {
 }
 
 #[test]
-fn string_lock_and_system_forms_have_memory_or_side_effect_summaries() {
+fn string_atomic_and_system_forms_have_memory_or_side_effect_summaries() {
     for (bytes, expected_name) in [
-        (&[0xf3, 0xa4][..], "x86_unmodeled_movsb_writes_mem_v1"),
+        (&[0xf3, 0xa4][..], "x86_rep_movsb_reads_writes_mem_v1"),
         (
             &[0xf0, 0x48, 0x01, 0x18][..],
-            "x86_unmodeled_add_side_effecting_v1",
+            "x86_atomic_add_side_effecting_v1",
         ),
         (&[0x0f, 0x05][..], "x86_unmodeled_syscall_side_effecting_v1"),
     ] {
@@ -429,7 +431,7 @@ fn string_lock_and_system_forms_have_memory_or_side_effect_summaries() {
         .ops
         .iter()
         .filter(|operation: &&PcodeOp| {
-            matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_unmodeled_add_side_effecting_v1")
+            matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_atomic_add_side_effecting_v1")
         })
         .count();
     assert_eq!(effect_count, 1);
@@ -442,12 +444,12 @@ fn string_lock_and_system_forms_have_memory_or_side_effect_summaries() {
                     name,
                     output: Some(output),
                     ..
-                } if name == "x86_unmodeled_add_side_effecting_v1" => Some(*output),
+                } if name == "x86_atomic_add_side_effecting_v1" => Some(*output),
                 _ => None,
             });
     assert!(matches!(effect_token, Some(token) if token.space == Space::Unique));
     assert!(locked_add.ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::CallOther { name, output: Some(_), inputs } if name == "x86_unmodeled_add_result_pure_v1" && effect_token.is_some_and(|token: Varnode| inputs.first() == Some(&token)))
+        matches!(operation, PcodeOp::CallOther { name, output: Some(_), inputs } if name == "x86_atomic_add_result_pure_v1" && effect_token.is_some_and(|token: Varnode| inputs.first() == Some(&token)))
     }));
     let rotate: PcodeInstr = single(&[0x48, 0xc1, 0xc0, 0x05], 0xcc10);
     assert_eq!(rotate.status, DecodeStatus::CallOther);
@@ -466,9 +468,418 @@ fn string_lock_and_system_forms_have_memory_or_side_effect_summaries() {
 }
 
 #[test]
-fn fallback_addresses_wrap_at_the_declared_address_size() {
+fn all_setcc_and_cmovcc_conditions_are_modeled() {
+    let set_cases: [(&[u8], &str); 16] = [
+        (&[0x0f, 0x90, 0xc0], "seto"),
+        (&[0x0f, 0x91, 0xc0], "setno"),
+        (&[0x0f, 0x92, 0xc0], "setb"),
+        (&[0x0f, 0x93, 0xc0], "setae"),
+        (&[0x0f, 0x94, 0xc0], "sete"),
+        (&[0x0f, 0x95, 0xc0], "setne"),
+        (&[0x0f, 0x96, 0xc0], "setbe"),
+        (&[0x0f, 0x97, 0xc0], "seta"),
+        (&[0x0f, 0x98, 0xc0], "sets"),
+        (&[0x0f, 0x99, 0xc0], "setns"),
+        (&[0x0f, 0x9a, 0xc0], "setp"),
+        (&[0x0f, 0x9b, 0xc0], "setnp"),
+        (&[0x0f, 0x9c, 0xc0], "setl"),
+        (&[0x0f, 0x9d, 0xc0], "setge"),
+        (&[0x0f, 0x9e, 0xc0], "setle"),
+        (&[0x0f, 0x9f, 0xc0], "setg"),
+    ];
+    for (bytes, mnemonic) in set_cases {
+        let instruction: PcodeInstr = single(bytes, 0xd400);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::Copy { output, .. } if output.space == Space::Register && output.offset == 0 && output.size_bytes == 1)
+        }));
+    }
+
+    let cmov_cases: [(&[u8], &str); 16] = [
+        (&[0x48, 0x0f, 0x40, 0xc3], "cmovo"),
+        (&[0x48, 0x0f, 0x41, 0xc3], "cmovno"),
+        (&[0x48, 0x0f, 0x42, 0xc3], "cmovb"),
+        (&[0x48, 0x0f, 0x43, 0xc3], "cmovae"),
+        (&[0x48, 0x0f, 0x44, 0xc3], "cmove"),
+        (&[0x48, 0x0f, 0x45, 0xc3], "cmovne"),
+        (&[0x48, 0x0f, 0x46, 0xc3], "cmovbe"),
+        (&[0x48, 0x0f, 0x47, 0xc3], "cmova"),
+        (&[0x48, 0x0f, 0x48, 0xc3], "cmovs"),
+        (&[0x48, 0x0f, 0x49, 0xc3], "cmovns"),
+        (&[0x48, 0x0f, 0x4a, 0xc3], "cmovp"),
+        (&[0x48, 0x0f, 0x4b, 0xc3], "cmovnp"),
+        (&[0x48, 0x0f, 0x4c, 0xc3], "cmovl"),
+        (&[0x48, 0x0f, 0x4d, 0xc3], "cmovge"),
+        (&[0x48, 0x0f, 0x4e, 0xc3], "cmovle"),
+        (&[0x48, 0x0f, 0x4f, 0xc3], "cmovg"),
+    ];
+    for (bytes, mnemonic) in cmov_cases {
+        let instruction: PcodeInstr = single(bytes, 0xd500);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::Copy { output, .. } if output.space == Space::Register && output.offset == 0 && output.size_bytes == 8)
+        }));
+        assert!(!instruction.ops.iter().any(PcodeOp::is_callother));
+    }
+
+    let memory_source: PcodeInstr = single(&[0x48, 0x0f, 0x45, 0x03], 0xd600);
+    assert_eq!(memory_source.status, DecodeStatus::Supported);
+    assert!(
+        memory_source
+            .ops
+            .iter()
+            .any(|operation: &PcodeOp| matches!(operation, PcodeOp::Load { .. }))
+    );
+}
+
+#[test]
+fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
+    let exact_cases: [(&[u8], &str); 18] = [
+        (&[0x48, 0x0f, 0xa3, 0xc8], "bt"),
+        (&[0x48, 0x0f, 0xab, 0xc8], "bts"),
+        (&[0x48, 0x0f, 0xb3, 0xc8], "btr"),
+        (&[0x48, 0x0f, 0xbb, 0xc8], "btc"),
+        (&[0x48, 0x0f, 0xc8], "bswap"),
+        (&[0x48, 0x0f, 0xc1, 0xd8], "xadd"),
+        (&[0x66, 0x98], "cbw"),
+        (&[0x98], "cwde"),
+        (&[0x48, 0x98], "cdqe"),
+        (&[0x66, 0x99], "cwd"),
+        (&[0x99], "cdq"),
+        (&[0x48, 0x99], "cqo"),
+        (&[0x48, 0x63, 0xc3], "movsxd"),
+        (&[0x48, 0x0f, 0xaf, 0xc3], "imul"),
+        (&[0x48, 0x6b, 0xc3, 0x07], "imul"),
+        (&[0x48, 0x0f, 0xa4, 0xd8, 0x04], "shld"),
+        (&[0x48, 0x0f, 0xac, 0xd8, 0x04], "shrd"),
+        (&[0x0f, 0xc8], "bswap"),
+    ];
+    for (bytes, mnemonic) in exact_cases {
+        let instruction: PcodeInstr = single(bytes, 0xd700);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
+    }
+
+    let opaque_cases: [(&[u8], &str, &str); 8] = [
+        (&[0x48, 0x0f, 0xbc, 0xc3], "bsf", "x86_bsf_result_pure_v1"),
+        (&[0x48, 0x0f, 0xbd, 0xc3], "bsr", "x86_bsr_result_pure_v1"),
+        (
+            &[0xf3, 0x48, 0x0f, 0xb8, 0xc3],
+            "popcnt",
+            "x86_popcount_pure_v1",
+        ),
+        (
+            &[0xf3, 0x48, 0x0f, 0xbc, 0xc3],
+            "tzcnt",
+            "x86_tzcount_pure_v1",
+        ),
+        (
+            &[0xf3, 0x48, 0x0f, 0xbd, 0xc3],
+            "lzcnt",
+            "x86_lzcount_pure_v1",
+        ),
+        (&[0x48, 0xd3, 0xe0], "shl", "x86_shift_shl_pure_v1"),
+        (&[0x48, 0x0f, 0xa5, 0xd8], "shld", "x86_shift_shld_pure_v1"),
+        (&[0x48, 0x0f, 0xad, 0xd8], "shrd", "x86_shift_shrd_pure_v1"),
+    ];
+    for (bytes, mnemonic, contract) in opaque_cases {
+        let instruction: PcodeInstr = single(bytes, 0xd800);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::CallOther, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::CallOther { name, .. } if name == contract)
+        }));
+    }
+
+    let memory_contracts: [(&[u8], &str); 4] = [
+        (&[0x48, 0x0f, 0xbc, 0x00], "x86_bsf_reads_mem_v1"),
+        (&[0xf3, 0x48, 0x0f, 0xb8, 0x00], "x86_popcount_reads_mem_v1"),
+        (&[0x48, 0xd3, 0x20], "x86_shift_shl_reads_writes_mem_v1"),
+        (
+            &[0x48, 0x0f, 0xa5, 0x18],
+            "x86_shift_shld_reads_writes_mem_v1",
+        ),
+    ];
+    for (bytes, contract) in memory_contracts {
+        let instruction: PcodeInstr = single(bytes, 0xd880);
+        assert_eq!(instruction.status, DecodeStatus::CallOther, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(
+                operation,
+                PcodeOp::CallOther {
+                    name,
+                    output: Some(output),
+                    ..
+                } if name == contract && output.space == Space::Unique
+            )
+        }));
+    }
+
+    let bit_test: PcodeInstr = single(&[0x48, 0x0f, 0xa3, 0xc8], 0xd900);
+    assert!(bit_test.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntNotEqual { output, .. } if output.space == Space::Register && output.offset == 0x200)
+    }));
+
+    let aliased_xadd: PcodeInstr = single(&[0x48, 0x0f, 0xc1, 0x00], 0xd910);
+    let load_pointer: Option<Varnode> =
+        aliased_xadd
+            .ops
+            .iter()
+            .find_map(|operation: &PcodeOp| match operation {
+                PcodeOp::Load { pointer, .. } => Some(*pointer),
+                _ => None,
+            });
+    let store_pointer: Option<Varnode> =
+        aliased_xadd
+            .ops
+            .iter()
+            .find_map(|operation: &PcodeOp| match operation {
+                PcodeOp::Store { pointer, .. } => Some(*pointer),
+                _ => None,
+            });
+    assert!(
+        matches!(load_pointer, Some(pointer) if pointer.space == Space::Register && pointer.offset == 0)
+    );
+    assert!(matches!(store_pointer, Some(pointer) if pointer.space == Space::Unique));
+    assert!(aliased_xadd.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Copy { output, input } if Some(*output) == store_pointer && Some(*input) == load_pointer)
+    }));
+
+    let dynamic_shift: PcodeInstr = single(&[0x48, 0xd3, 0xe0], 0xd920);
+    let shift_inputs: BTreeSet<u64> = dynamic_shift
+        .ops
+        .iter()
+        .filter_map(|operation: &PcodeOp| match operation {
+            PcodeOp::Copy { input, .. } if input.space == Space::Register => Some(input.offset),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        [0x200_u64, 0x202, 0x204, 0x206, 0x207, 0x20b]
+            .into_iter()
+            .all(|offset: u64| shift_inputs.contains(&offset))
+    );
+
+    let single_shrd: PcodeInstr = single(&[0x48, 0x0f, 0xac, 0xd8, 0x01], 0xd930);
+    assert!(single_shrd.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::BoolXor { output, .. } if output.space == Space::Register && output.offset == 0x20b)
+    }));
+}
+
+#[test]
+fn scalar_sse_moves_and_bitwise_ops_are_exact() {
+    let cases: [(&[u8], &str); 15] = [
+        (&[0xf3, 0x0f, 0x10, 0xc1], "movss"),
+        (&[0xf2, 0x0f, 0x10, 0xc1], "movsd"),
+        (&[0x0f, 0x28, 0xc1], "movaps"),
+        (&[0x0f, 0x10, 0xc1], "movups"),
+        (&[0x66, 0x0f, 0x6e, 0xc3], "movd"),
+        (&[0x66, 0x0f, 0x7e, 0xc3], "movd"),
+        (&[0x66, 0x48, 0x0f, 0x6e, 0xc3], "movq"),
+        (&[0x66, 0x48, 0x0f, 0x7e, 0xc3], "movq"),
+        (&[0xf3, 0x0f, 0x7e, 0xc1], "movq"),
+        (&[0x66, 0x0f, 0xef, 0xc1], "pxor"),
+        (&[0x0f, 0x57, 0xc1], "xorps"),
+        (&[0x66, 0x0f, 0x57, 0xc1], "xorpd"),
+        (&[0x0f, 0x54, 0xc1], "andps"),
+        (&[0x0f, 0x56, 0xc1], "orps"),
+        (&[0xf3, 0x0f, 0x11, 0x00], "movss"),
+    ];
+    for (bytes, mnemonic) in cases {
+        let instruction: PcodeInstr = single(bytes, 0xda00);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
+    }
+
+    let memory_load: PcodeInstr = single(&[0xf3, 0x0f, 0x10, 0x00], 0xdb00);
+    let written_lanes: BTreeSet<u64> = memory_load
+        .ops
+        .iter()
+        .filter_map(|operation: &PcodeOp| match operation {
+            PcodeOp::Copy { output, .. }
+                if output.space == Space::Register && output.size_bytes == 4 =>
+            {
+                Some(output.offset)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        written_lanes,
+        BTreeSet::from([0x1200, 0x1204, 0x1208, 0x120c])
+    );
+
+    let aligned_load: PcodeInstr = single(&[0x0f, 0x28, 0x00], 0xdb10);
+    assert_eq!(aligned_load.status, DecodeStatus::CallOther);
+    assert!(aligned_load.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_aligned_movaps_reads_mem_v1")
+    }));
+    assert!(!aligned_load.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
+    }));
+
+    let aligned_store: PcodeInstr = single(&[0x0f, 0x29, 0x00], 0xdb20);
+    assert_eq!(aligned_store.status, DecodeStatus::CallOther);
+    assert!(aligned_store.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_aligned_movaps_writes_mem_v1")
+    }));
+    assert!(!aligned_store.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
+    }));
+}
+
+#[test]
+fn mxcsr_sensitive_scalar_sse_ops_use_typed_contracts() {
+    let cases: [(&[u8], &str); 28] = [
+        (&[0xf3, 0x0f, 0x58, 0xc1], "addss"),
+        (&[0xf2, 0x0f, 0x58, 0xc1], "addsd"),
+        (&[0xf3, 0x0f, 0x5c, 0xc1], "subss"),
+        (&[0xf2, 0x0f, 0x5c, 0xc1], "subsd"),
+        (&[0xf3, 0x0f, 0x59, 0xc1], "mulss"),
+        (&[0xf2, 0x0f, 0x59, 0xc1], "mulsd"),
+        (&[0xf3, 0x0f, 0x5e, 0xc1], "divss"),
+        (&[0xf2, 0x0f, 0x5e, 0xc1], "divsd"),
+        (&[0xf3, 0x0f, 0x51, 0xc1], "sqrtss"),
+        (&[0xf2, 0x0f, 0x51, 0xc1], "sqrtsd"),
+        (&[0x0f, 0x2f, 0xc1], "comiss"),
+        (&[0x66, 0x0f, 0x2f, 0xc1], "comisd"),
+        (&[0x0f, 0x2e, 0xc1], "ucomiss"),
+        (&[0x66, 0x0f, 0x2e, 0xc1], "ucomisd"),
+        (&[0xf3, 0x0f, 0x2a, 0xc3], "cvtsi2ss"),
+        (&[0xf2, 0x0f, 0x2a, 0xc3], "cvtsi2sd"),
+        (&[0xf3, 0x48, 0x0f, 0x2a, 0xc3], "cvtsi2ss"),
+        (&[0xf2, 0x48, 0x0f, 0x2a, 0xc3], "cvtsi2sd"),
+        (&[0xf3, 0x0f, 0x2d, 0xc1], "cvtss2si"),
+        (&[0xf2, 0x0f, 0x2d, 0xc1], "cvtsd2si"),
+        (&[0xf3, 0x48, 0x0f, 0x2d, 0xc1], "cvtss2si"),
+        (&[0xf2, 0x48, 0x0f, 0x2d, 0xc1], "cvtsd2si"),
+        (&[0xf3, 0x0f, 0x2c, 0xc1], "cvttss2si"),
+        (&[0xf2, 0x0f, 0x2c, 0xc1], "cvttsd2si"),
+        (&[0xf3, 0x48, 0x0f, 0x2c, 0xc1], "cvttss2si"),
+        (&[0xf2, 0x48, 0x0f, 0x2c, 0xc1], "cvttsd2si"),
+        (&[0xf3, 0x0f, 0x5a, 0xc1], "cvtss2sd"),
+        (&[0xf2, 0x0f, 0x5a, 0xc1], "cvtsd2ss"),
+    ];
+    for (bytes, mnemonic) in cases {
+        let instruction: PcodeInstr = single(bytes, 0xdc00);
+        let expected: String = format!("x86_scalar_{mnemonic}_side_effecting_v1");
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::CallOther, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::CallOther { name, .. } if name == &expected)
+        }));
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::Copy { input, .. } if input.space == Space::Register && input.offset == 0x1094 && input.size_bytes == 4)
+        }));
+    }
+}
+
+#[test]
+fn string_iteration_and_repeat_contracts_are_distinct() {
+    let exact_cases: [(&[u8], &str); 5] = [
+        (&[0x48, 0xa5], "movsq"),
+        (&[0x48, 0xab], "stosq"),
+        (&[0x48, 0xad], "lodsq"),
+        (&[0x48, 0xa7], "cmpsq"),
+        (&[0x48, 0xaf], "scasq"),
+    ];
+    for (bytes, mnemonic) in exact_cases {
+        let instruction: PcodeInstr = single(bytes, 0xdd00);
+        assert_eq!(instruction.mnemonic, mnemonic, "{bytes:02x?}");
+        assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
+    }
+
+    let repeat_cases: [(&[u8], &str); 5] = [
+        (&[0xf3, 0xa4], "x86_rep_movsb_reads_writes_mem_v1"),
+        (&[0xf3, 0x48, 0xab], "x86_rep_stosq_writes_mem_v1"),
+        (&[0xf3, 0x48, 0xad], "x86_rep_lodsq_reads_mem_v1"),
+        (&[0xf3, 0xa6], "x86_repe_cmpsb_reads_mem_v1"),
+        (&[0xf2, 0xae], "x86_repne_scasb_reads_mem_v1"),
+    ];
+    for (bytes, contract) in repeat_cases {
+        let instruction: PcodeInstr = single(bytes, 0xde00);
+        assert_eq!(instruction.status, DecodeStatus::CallOther, "{bytes:02x?}");
+        assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::CallOther { name, .. } if name == contract)
+        }));
+        assert!(!instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
+        }));
+        let copied_registers: BTreeSet<u64> = instruction
+            .ops
+            .iter()
+            .filter_map(|operation: &PcodeOp| match operation {
+                PcodeOp::Copy { input, .. } if input.space == Space::Register => Some(input.offset),
+                _ => None,
+            })
+            .collect();
+        assert!(copied_registers.contains(&0x20a));
+    }
+
+    let repeating_compare: PcodeInstr = single(&[0xf3, 0xa6], 0xde10);
+    let comparison_inputs: BTreeSet<u64> = repeating_compare
+        .ops
+        .iter()
+        .filter_map(|operation: &PcodeOp| match operation {
+            PcodeOp::Copy { input, .. } if input.space == Space::Register => Some(input.offset),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        [0x200_u64, 0x202, 0x204, 0x206, 0x207, 0x20a, 0x20b]
+            .into_iter()
+            .all(|offset: u64| comparison_inputs.contains(&offset))
+    );
+}
+
+#[test]
+fn atomic_forms_use_one_ordering_boundary_without_plain_memory_ops() {
+    let cases: [(&[u8], &str); 6] = [
+        (
+            &[0xf0, 0x48, 0x01, 0x18],
+            "x86_atomic_add_side_effecting_v1",
+        ),
+        (
+            &[0xf0, 0x48, 0x0f, 0xc1, 0x18],
+            "x86_atomic_xadd_side_effecting_v1",
+        ),
+        (&[0x48, 0x87, 0x18], "x86_atomic_xchg_side_effecting_v1"),
+        (
+            &[0x48, 0x0f, 0xb1, 0x18],
+            "x86_atomic_cmpxchg_side_effecting_v1",
+        ),
+        (
+            &[0x0f, 0xc7, 0x0f],
+            "x86_atomic_cmpxchg8b_side_effecting_v1",
+        ),
+        (
+            &[0x48, 0x0f, 0xc7, 0x0f],
+            "x86_atomic_cmpxchg16b_side_effecting_v1",
+        ),
+    ];
+    for (bytes, contract) in cases {
+        let instruction: PcodeInstr = single(bytes, 0xdf00);
+        assert_eq!(instruction.status, DecodeStatus::CallOther, "{bytes:02x?}");
+        let boundaries: usize = instruction
+            .ops
+            .iter()
+            .filter(|operation: &&PcodeOp| {
+                matches!(operation, PcodeOp::CallOther { name, .. } if name == contract)
+            })
+            .count();
+        assert_eq!(boundaries, 1, "{bytes:02x?}");
+        assert!(!instruction.ops.iter().any(|operation: &PcodeOp| {
+            matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
+        }));
+    }
+}
+
+#[test]
+fn addresses_wrap_at_the_declared_address_size() {
     let instruction: PcodeInstr = single(&[0x67, 0x0f, 0x10, 0x44, 0x88, 0x10], 0xcc20);
-    assert_eq!(instruction.status, DecodeStatus::CallOther);
+    assert_eq!(instruction.status, DecodeStatus::Supported);
     assert!(instruction.ops.iter().any(|operation: &PcodeOp| {
         matches!(operation, PcodeOp::IntAdd { output, left, right } if output.size_bytes == 4 && left.size_bytes == 4 && right.size_bytes == 4)
     }));
@@ -479,8 +890,14 @@ fn fallback_addresses_wrap_at_the_declared_address_size() {
         &[0x67, 0x0f, 0x10, 0x04, 0x25, 0xff, 0xff, 0xff, 0xff],
         0xcc28,
     );
+    assert_eq!(absolute.status, DecodeStatus::Supported);
     assert!(absolute.ops.iter().any(|operation: &PcodeOp| {
         matches!(operation, PcodeOp::IntZext { output, input } if output.size_bytes == 8 && input.space == Space::Constant && input.offset == 0xffff_ffff && input.size_bytes == 4)
+    }));
+    let absolute64: PcodeInstr = single(&[0x0f, 0x10, 0x04, 0x25, 0xff, 0xff, 0xff, 0xff], 0xcc30);
+    assert_eq!(absolute64.status, DecodeStatus::Supported);
+    assert!(absolute64.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Load { pointer, .. } if pointer.space == Space::Constant && pointer.offset == u64::MAX && pointer.size_bytes == 8)
     }));
 }
 
@@ -512,7 +929,7 @@ fn lea_ignores_segment_bases_and_memory_exchange_is_atomic() {
         matches!(
             operation,
             PcodeOp::CallOther { name, .. }
-                if name == "x86_unmodeled_xchg_side_effecting_v1"
+                if name == "x86_atomic_xchg_side_effecting_v1"
         )
     }));
     let self_exchange: PcodeInstr = single(&[0x87, 0xc0], 0xce10);
