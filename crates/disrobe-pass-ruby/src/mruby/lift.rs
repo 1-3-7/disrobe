@@ -5,6 +5,7 @@ use crate::error::Result;
 use crate::mruby::disasm::{MrubyInstruction, disassemble_iseq};
 use crate::mruby::irep::{IrepRecord, IrepTree, PoolEntry, PoolKind};
 use crate::mruby::ops::MrubyOp;
+use crate::yarv::ibf::ruby_string_literal;
 
 const MAX_REGS: usize = 4096;
 const MAX_LIFT_DEPTH: u32 = 64;
@@ -50,7 +51,7 @@ impl RegVal {
             Self::False => "false".to_owned(),
             Self::Int(v) => v.to_string(),
             Self::Sym(s) => format!(":{s}"),
-            Self::Str(s) => format!("{s:?}"),
+            Self::Str(s) => ruby_string_literal(s),
             Self::PoolLit(s) => s.clone(),
             Self::Expr(s) | Self::Local(s) => s.clone(),
             Self::MethodProc(idx) => format!("<proc irep[{idx}]>"),
@@ -1694,6 +1695,77 @@ mod tests {
         };
         let src: String = lift_tree(&tree).expect("lift").source;
         assert!(src.contains("puts(\"hello world\")"), "got: {src}");
+    }
+
+    fn ruby_reproduces_bytes(emitted: &str, tag: usize) -> Option<Vec<u8>> {
+        let code: String = format!(
+            "# encoding: UTF-8\nx = {emitted}\n$stdout.binmode\n$stdout.write(x.bytes.pack('C*'))\n"
+        );
+        let mut path: std::path::PathBuf = std::env::temp_dir();
+        path.push(format!("disrobe_mruby_str_reemit_{tag}.rb"));
+        std::fs::write(&path, code.as_bytes()).ok()?;
+        let output: std::process::Output = std::process::Command::new("ruby")
+            .arg(&path)
+            .output()
+            .ok()?;
+        let _ = std::fs::remove_file(&path);
+        output.status.success().then_some(output.stdout)
+    }
+
+    #[test]
+    fn recovered_string_literals_escape_so_ruby_reproduces_the_bytes() {
+        let literals: &[&str] = &[
+            "a#{b}c",
+            "ivar #@a",
+            "cvar #@@c",
+            "gvar #$g",
+            "quote \" back \\ tab\tnl\ncr\r",
+            "ctrl\u{1}\u{1f}\u{7f}",
+            "caf\u{e9} \u{65e5}\u{672c}\u{8a9e}",
+            "trailing #",
+        ];
+        let ruby_present: bool = std::process::Command::new("ruby")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        for (tag, lit) in literals.iter().enumerate() {
+            let iseq: Vec<u8> = asm(&[("STRING", &[1, 0]), ("RETURN", &[1])]);
+            let pool: Vec<PoolEntry> = vec![PoolEntry {
+                kind: PoolKind::String,
+                value: Some((*lit).to_owned()),
+            }];
+            let src: String = lift_single(iseq, pool, vec![]);
+            let emitted: String = ruby_string_literal(lit);
+            assert!(
+                src.contains(&emitted),
+                "recovered source must carry the escaped literal {emitted:?}: {src}"
+            );
+            if ruby_present {
+                let bytes: Vec<u8> = ruby_reproduces_bytes(&emitted, tag)
+                    .expect("ruby must accept and evaluate the recovered literal");
+                assert_eq!(
+                    bytes,
+                    lit.as_bytes(),
+                    "ruby re-evaluated {emitted:?} to different bytes than the original"
+                );
+            }
+        }
+        let interp_src: String = lift_single(
+            asm(&[("STRING", &[1, 0]), ("RETURN", &[1])]),
+            vec![PoolEntry {
+                kind: PoolKind::String,
+                value: Some("a#{b}c".to_owned()),
+            }],
+            vec![],
+        );
+        assert!(
+            interp_src.contains("\"a\\#{b}c\""),
+            "interpolation sigil must be escaped: {interp_src}"
+        );
+        assert!(
+            !interp_src.contains("\"a#{b}c\""),
+            "live interpolation must not leak into recovered source: {interp_src}"
+        );
     }
 
     #[test]
