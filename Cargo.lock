@@ -2241,6 +2241,7 @@ name = "disrobe-nir-lift"
 version = "0.10.4"
 dependencies = [
  "blake3",
+ "disrobe-lift-x86",
  "disrobe-nir",
  "disrobe-pass-as3",
  "disrobe-pass-beam",
@@ -2252,6 +2253,7 @@ dependencies = [
  "disrobe-pass-wasm-deob",
  "disrobe-py-marshal",
  "disrobe-query",
+ "disrobe-sleigh",
  "thiserror 2.0.18",
  "wasmparser 0.250.0",
  "wat",

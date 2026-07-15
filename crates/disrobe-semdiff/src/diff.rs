@@ -65,6 +65,16 @@ fn op_token(insn: &NirInstr, labels: &BTreeMap<u64, String>) -> String {
         NirOp::Return => "return".to_owned(),
         NirOp::Interrupt => "interrupt".to_owned(),
         NirOp::Unmodeled { opcode, .. } => format!("unmodeled.{opcode:#04x}"),
+        NirOp::RawLoad { .. } => "rawload".to_owned(),
+        NirOp::RawStore { .. } => "rawstore".to_owned(),
+        NirOp::Subpiece { .. } => "subpiece".to_owned(),
+        NirOp::Deposit { .. } => "deposit".to_owned(),
+        NirOp::CallOther { .. } => "callother".to_owned(),
+        NirOp::Copy { .. } => "copy".to_owned(),
+        NirOp::Value { op, .. } => format!("value.{}", op.mnemonic()),
+        NirOp::Piece { .. } => "piece".to_owned(),
+        NirOp::NoReturnCall { target } => format!("call.noreturn->{}", call_label(*target, labels)),
+        NirOp::TailCall { target } => format!("call.tail->{}", call_label(*target, labels)),
     }
 }
 
