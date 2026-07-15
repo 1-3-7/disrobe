@@ -259,6 +259,10 @@ fn render_fstring(parts: &[PyExpr]) -> String {
                         '\n' => out.push_str("\\n"),
                         '\t' => out.push_str("\\t"),
                         '\r' => out.push_str("\\r"),
+                        c if (c as u32) < 0x20 => {
+                            let code: u32 = c as u32;
+                            push_text!(out, "\\x{code:02x}");
+                        }
                         _ => out.push(ch),
                     }
                 }
@@ -348,6 +352,10 @@ pub(super) fn render_string_literal(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 => {
+                let code: u32 = c as u32;
+                push_text!(out, "\\x{code:02x}");
+            }
             _ => out.push(ch),
         }
     }
@@ -372,4 +380,103 @@ fn render_bytes_literal(data: &[u8]) -> String {
     }
     out.push('\'');
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::{Const, PyExpr, render_fstring, render_string_literal};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    const BATTERY: &[&str] = &[
+        "\u{0}",
+        "key\u{0}sep\u{0}val",
+        "\u{1}\u{7}\u{8}\u{b}\u{c}\u{1b}\u{1f}",
+        "he said \"hi\" and 'bye'",
+        "a\\b\\\\c",
+        "line1\nline2\tcol\rret",
+        "caf\u{e9} \u{f1} \u{65e5}\u{672c}\u{8a9e} \u{1f600} \u{3a9}",
+        "100% done {name} %s %(key)s {0} {{lit}}",
+        "\u{feff}\u{200b}\u{2028}\u{2029}\u{85}\u{a0}",
+    ];
+
+    fn python3() -> Option<String> {
+        for candidate in ["py", "python", "python3"] {
+            let ok: bool = Command::new(candidate)
+                .args(["-c", "import sys;print(sys.version_info[0]==3)"])
+                .output()
+                .ok()
+                .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
+                .is_some_and(|s: String| s.trim() == "True");
+            if ok {
+                return Some(candidate.to_owned());
+            }
+        }
+        None
+    }
+
+    fn eval_codepoints(python: &str, literal: &str) -> Vec<u32> {
+        let seq: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path: std::path::PathBuf = std::env::temp_dir().join(format!(
+            "disrobe_abyss_reemit_{pid}_{seq}.py",
+            pid = std::process::id()
+        ));
+        let source: String = format!(
+            "x = {literal}\nimport sys\nsys.stdout.write(' '.join(str(ord(c)) for c in x))\n"
+        );
+        std::fs::write(&path, &source).expect("write emitted source");
+        let output: std::process::Output = Command::new(python)
+            .arg(&path)
+            .output()
+            .expect("run python");
+        let _: std::io::Result<()> = std::fs::remove_file(&path);
+        assert!(
+            output.status.success(),
+            "cpython rejected emitted source:\n{source}\nstderr: {stderr}",
+            stderr = String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout: String = String::from_utf8(output.stdout).expect("utf8 stdout");
+        stdout
+            .split_whitespace()
+            .map(|token: &str| token.parse::<u32>().expect("codepoint"))
+            .collect()
+    }
+
+    #[test]
+    fn render_string_literal_round_trips_through_cpython() {
+        let Some(python): Option<String> = python3() else {
+            eprintln!("skip: abyss string re-emit round-trip (python 3 absent)");
+            return;
+        };
+        for original in BATTERY {
+            let want: Vec<u32> = original.chars().map(|c: char| c as u32).collect();
+            let got: Vec<u32> = eval_codepoints(&python, &render_string_literal(original));
+            assert_eq!(
+                got, want,
+                "string literal round-trip mismatch for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_fstring_literal_round_trips_through_cpython() {
+        let Some(python): Option<String> = python3() else {
+            eprintln!("skip: abyss f-string re-emit round-trip (python 3 absent)");
+            return;
+        };
+        for original in BATTERY {
+            let want: Vec<u32> = original.chars().map(|c: char| c as u32).collect();
+            let part: PyExpr = PyExpr::ConstLit(Const::Str((*original).to_owned()));
+            let got: Vec<u32> =
+                eval_codepoints(&python, &render_fstring(std::slice::from_ref(&part)));
+            assert_eq!(
+                got, want,
+                "f-string literal round-trip mismatch for {original:?}"
+            );
+        }
+    }
 }
