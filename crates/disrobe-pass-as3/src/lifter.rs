@@ -299,6 +299,12 @@ fn render_double(v: f64) -> String {
         } else {
             "Infinity".to_owned()
         }
+    } else if v == 0.0 {
+        if v.is_sign_negative() {
+            "-0".to_owned()
+        } else {
+            "0".to_owned()
+        }
     } else if v.fract() == 0.0 && v.abs() < 1e15 {
         format!("{}", v as i64)
     } else {
@@ -4169,6 +4175,13 @@ mod tests {
     fn render_string_escapes() {
         assert_eq!(render_string_lit("a\"b"), "\"a\\\"b\"");
         assert_eq!(render_string_lit("x\ny"), "\"x\\ny\"");
+    }
+
+    #[test]
+    fn negative_zero_number_keeps_its_sign() {
+        assert_eq!(render_double(-0.0), "-0");
+        assert_eq!(render_double(0.0), "0");
+        assert_eq!(Expr::DoubleLit(-0.0).render(&names()), "-0");
     }
 
     #[test]
