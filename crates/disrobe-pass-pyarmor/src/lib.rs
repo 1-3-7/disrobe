@@ -86,6 +86,11 @@ mod v6v7;
 mod v8v9;
 mod wrap;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use bcc::recover::{
+    CallResolver, MapCallResolver, PyAbi, RecognizedCall, RecoverOptions, RecoveredBody,
+    recover_from_code, recover_from_nir,
+};
 pub use bcc::{
     BccLinkMap, BccLinkOutput, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord,
     LinkConfidence, LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature,

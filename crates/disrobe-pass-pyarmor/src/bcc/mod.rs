@@ -9,6 +9,8 @@ use crate::v8v9::BccBlob;
 mod dispatch;
 mod join;
 pub mod model;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod recover;
 mod residual;
 mod skeleton;
 mod stub;
@@ -18,6 +20,11 @@ mod map;
 pub use model::{
     BccLinkMap, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord, LinkConfidence,
     LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature, SourceIdentity,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use recover::{
+    CallResolver, MapCallResolver, PyAbi, RecognizedCall, RecoverOptions, RecoveredBody,
+    recover_from_code, recover_from_nir,
 };
 
 #[derive(Debug, Clone)]

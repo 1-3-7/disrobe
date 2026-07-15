@@ -37,6 +37,8 @@ disrobe-llm-metadata = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 disrobe-pass-native = { workspace = true }
+disrobe-nir = { workspace = true }
+disrobe-nir-lift = { workspace = true }
 
 [[bin]]
 name = "disrobe-pass-pyarmor-mock-proc"
