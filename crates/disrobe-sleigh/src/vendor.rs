@@ -131,6 +131,14 @@ pub fn riscv_sources(entry: &str) -> Result<BTreeMap<String, String>, SleighErro
             include_str!("../vendor/riscv/riscv.rv32m.sinc").to_owned(),
         ),
         (
+            "riscv.rv32f.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv32f.sinc").to_owned(),
+        ),
+        (
+            "riscv.rv32d.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv32d.sinc").to_owned(),
+        ),
+        (
             "riscv.rv64i.sinc".to_owned(),
             include_str!("../vendor/riscv/riscv.rv64i.sinc").to_owned(),
         ),
@@ -143,8 +151,24 @@ pub fn riscv_sources(entry: &str) -> Result<BTreeMap<String, String>, SleighErro
             include_str!("../vendor/riscv/riscv.rv64m.sinc").to_owned(),
         ),
         (
+            "riscv.rv64f.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv64f.sinc").to_owned(),
+        ),
+        (
+            "riscv.rv64d.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv64d.sinc").to_owned(),
+        ),
+        (
+            "riscv.csr.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.csr.sinc").to_owned(),
+        ),
+        (
             "riscv.rvc.sinc".to_owned(),
             include_str!("../vendor/riscv/riscv.rvc.sinc").to_owned(),
+        ),
+        (
+            "riscv.zi.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.zi.sinc").to_owned(),
         ),
     ]))
 }

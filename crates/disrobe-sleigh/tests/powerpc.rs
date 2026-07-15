@@ -213,16 +213,13 @@ fn applies_powerpc_big_endian_memory_and_r0_base_rules() {
 }
 
 #[test]
-fn marks_powerpc_division_edges_and_unmodeled_record_forms() {
+fn lifts_powerpc_division_and_marks_unmodeled_record_forms() {
     let words: [u32; 2] = [0x7f7c_ebd6, 0x7c64_2a15];
     let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_be_bytes).collect();
     let block: DecodedBlock = decode_block_for_language(Language::PowerPc32Be, &bytes, 0);
     assert_eq!(block.instructions[0].mnemonic, "divw");
-    assert_eq!(block.instructions[0].status, DecodeStatus::CallOther);
-    assert!(block.instructions[0].ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::CallOther { name, .. }
-            if name == "powerpc_division_edge_cases")
-    }));
+    assert_eq!(block.instructions[0].status, DecodeStatus::Supported);
+    assert!(!block.instructions[0].ops.iter().any(PcodeOp::is_callother));
     assert_eq!(block.instructions[1].mnemonic, "add.");
     assert_eq!(block.instructions[1].status, DecodeStatus::Unsupported);
 
@@ -230,6 +227,7 @@ fn marks_powerpc_division_edges_and_unmodeled_record_forms() {
     let alias_bytes: Vec<u8> = alias_words.into_iter().flat_map(u32::to_be_bytes).collect();
     let aliases: DecodedBlock = decode_block_for_language(Language::PowerPc32Be, &alias_bytes, 0);
     for instruction in &aliases.instructions {
+        assert_eq!(instruction.status, DecodeStatus::Supported);
         assert!(matches!(
             instruction.ops.as_slice(),
             [
@@ -241,14 +239,11 @@ fn marks_powerpc_division_edges_and_unmodeled_record_forms() {
                     output: right_snapshot,
                     ..
                 },
-                PcodeOp::IntSignedDiv { left, right, .. },
-                PcodeOp::CallOther { inputs, .. }
+                PcodeOp::IntSignedDiv { left, right, .. }
             ] if left_snapshot.space == Space::Unique
                 && right_snapshot.space == Space::Unique
                 && left == left_snapshot
                 && right == right_snapshot
-                && inputs.first() == Some(left_snapshot)
-                && inputs.get(1) == Some(right_snapshot)
         ));
     }
 }
@@ -306,16 +301,9 @@ fn decodes_powerpc64_scalar_memory_rotate_compare_and_control_forms() {
         "{block:#?}"
     );
     assert_eq!(block.consumed, bytes.len());
-    assert!(block.instructions.iter().enumerate().all(
-        |(index, instruction): (usize, &PcodeInstr)| {
-            let expected: DecodeStatus = if index == 7 {
-                DecodeStatus::CallOther
-            } else {
-                DecodeStatus::Supported
-            };
-            instruction.status == expected && instruction.length == 4
-        }
-    ));
+    assert!(block.instructions.iter().all(|instruction: &PcodeInstr| {
+        instruction.status == DecodeStatus::Supported && instruction.length == 4
+    }));
     assert!(matches!(
         block.instructions[0].ops.as_slice(),
         [PcodeOp::IntAdd { output: pointer, .. }, PcodeOp::Load { output, .. }]
@@ -351,11 +339,13 @@ fn decodes_powerpc64_scalar_memory_rotate_compare_and_control_forms() {
         matches!(operation, PcodeOp::IntLess { left, right, .. }
             if left.size_bytes == 8 && right.size_bytes == 8)
     }));
-    assert!(block.instructions[7].ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::CallOther { name, inputs, .. }
-            if name == "powerpc_division_edge_cases"
-                && inputs.iter().all(|input| input.size_bytes == 8))
-    }));
+    assert!(
+        block.instructions[7]
+            .ops
+            .iter()
+            .any(|operation: &PcodeOp| matches!(operation, PcodeOp::IntSignedDiv { .. }))
+    );
+    assert!(!block.instructions[7].ops.iter().any(PcodeOp::is_callother));
     assert!(block.instructions[9].ops.iter().any(|operation: &PcodeOp| {
         matches!(operation, PcodeOp::IntSub { output, right, .. }
             if output.size_bytes == 8 && right.size_bytes == 8)

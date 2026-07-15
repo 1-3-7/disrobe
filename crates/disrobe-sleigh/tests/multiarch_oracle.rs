@@ -33,10 +33,10 @@ fn committed_form_matrices_match_gnu_objdump() {
         ("arm32_thumb_forms", Language::Arm32(ArmMode::Thumb), 23, 0),
         ("mips32le_forms", Language::Mips32(Endian::Little), 28, 3),
         ("mips32be_forms", Language::Mips32(Endian::Big), 28, 3),
-        ("powerpc32_forms", Language::PowerPc32Be, 32, 1),
-        ("powerpc64_forms", Language::PowerPc64Be, 30, 2),
-        ("riscv32_forms", Language::RiscV(RiscVWidth::Rv32), 31, 6),
-        ("riscv64_forms", Language::RiscV(RiscVWidth::Rv64), 33, 6),
+        ("powerpc32_forms", Language::PowerPc32Be, 32, 0),
+        ("powerpc64_forms", Language::PowerPc64Be, 30, 0),
+        ("riscv32_forms", Language::RiscV(RiscVWidth::Rv32), 31, 2),
+        ("riscv64_forms", Language::RiscV(RiscVWidth::Rv64), 33, 2),
         (
             "riscv32c_forms",
             Language::RiscVCompressed(RiscVWidth::Rv32),
@@ -60,6 +60,18 @@ fn committed_form_matrices_match_gnu_objdump() {
             Language::RiscVCompressed(RiscVWidth::Rv64),
             12,
             12,
+        ),
+        (
+            "riscv32fd_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+            37,
+            30,
+        ),
+        (
+            "riscv64fd_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+            37,
+            30,
         ),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
@@ -87,14 +99,24 @@ fn committed_cross_gcc_functions_match_gnu_objdump() {
             Language::RiscVCompressed(RiscVWidth::Rv64),
             11,
         ),
+        (
+            "riscv32fd_oracle_o2",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+            21,
+        ),
+        (
+            "riscv64fd_oracle_o2",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+            21,
+        ),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
-        let callother: usize = if label.starts_with("riscv") && !label.contains("c_oracle") {
-            4
-        } else if label.starts_with("riscv") {
-            1
+        let callother: usize = if label.contains("fd_oracle") {
+            9
+        } else if label.starts_with("riscv") && !label.contains("c_oracle") {
+            3
         } else {
-            usize::from(label.starts_with("powerpc"))
+            0
         };
         assert_cross_check(label, &checked, expected, callother);
     }
@@ -164,7 +186,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
                 "-march=rv32im",
                 "-mabi=ilp32",
                 31,
-                6,
+                2,
             ),
             (
                 "riscv64-live",
@@ -173,7 +195,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
                 "-march=rv64im",
                 "-mabi=lp64",
                 33,
-                6,
+                2,
             ),
             (
                 "riscv32c-live",
@@ -211,6 +233,24 @@ fn live_cross_assemblers_match_gnu_objdump() {
                 12,
                 12,
             ),
+            (
+                "riscv32fd-live",
+                "riscv_fd_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imafdc_zicsr_zifencei",
+                "-mabi=ilp32d",
+                37,
+                30,
+            ),
+            (
+                "riscv64fd-live",
+                "riscv_fd_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imafdc_zicsr_zifencei",
+                "-mabi=lp64d",
+                37,
+                30,
+            ),
         ] {
             let options: Vec<&str> = vec![architecture, abi];
             let checked: CrossCheck =
@@ -229,7 +269,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
             Language::PowerPc32Be,
             &options,
         );
-        assert_cross_check("powerpc32-live", &checked, 32, 1);
+        assert_cross_check("powerpc32-live", &checked, 32, 0);
         let ppc64_options: Vec<&str> = vec!["-mcpu=powerpc64", "-m32", "-mbig", "-Wa,-mppc64"];
         let ppc64: CrossCheck = live_cross_check(
             &toolchain,
@@ -238,7 +278,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
             Language::PowerPc64Be,
             &ppc64_options,
         );
-        assert_cross_check("powerpc64-live", &ppc64, 30, 2);
+        assert_cross_check("powerpc64-live", &ppc64, 30, 0);
     } else {
         println!("PowerPC cross-toolchain unavailable; set DISROBE_POWERPC_GNU_BIN or PATH");
     }
@@ -310,7 +350,7 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
             options.extend([architecture, abi]);
             let checked: CrossCheck =
                 live_cross_check(&toolchain, label, "riscv_oracle.c", language, &options);
-            assert_cross_check(label, &checked, 11, 4);
+            assert_cross_check(label, &checked, 11, 3);
         }
         for (label, language, architecture, abi) in [
             (
@@ -331,7 +371,7 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
             options.extend([architecture, abi]);
             let checked: CrossCheck =
                 live_cross_check(&toolchain, label, "riscv_oracle.c", language, &options);
-            assert_cross_check(label, &checked, 11, 1);
+            assert_cross_check(label, &checked, 11, 0);
         }
         for (label, language, architecture, abi) in [
             (
@@ -358,6 +398,31 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
             );
             assert_cross_check_with_unsupported(label, &checked, 18, 6, 1);
         }
+        for (label, language, architecture, abi) in [
+            (
+                "riscv32-float-c-live",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imafdc",
+                "-mabi=ilp32d",
+            ),
+            (
+                "riscv64-float-c-live",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imafdc",
+                "-mabi=lp64d",
+            ),
+        ] {
+            let mut options: Vec<&str> = common.clone();
+            options.extend([architecture, abi]);
+            let checked: CrossCheck = live_cross_check(
+                &toolchain,
+                label,
+                "riscv_float_oracle.c",
+                language,
+                &options,
+            );
+            assert_cross_check(label, &checked, 21, 9);
+        }
     } else {
         println!("RISC-V cross-toolchain unavailable; set DISROBE_RISCV_GNU_BIN or PATH");
     }
@@ -377,7 +442,7 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
             Language::PowerPc32Be,
             &options,
         );
-        assert_cross_check("powerpc32-c-live", &checked, 11, 1);
+        assert_cross_check("powerpc32-c-live", &checked, 11, 0);
     } else {
         println!("PowerPC cross-toolchain unavailable; set DISROBE_POWERPC_GNU_BIN or PATH");
     }
