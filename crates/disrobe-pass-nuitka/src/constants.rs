@@ -1062,6 +1062,46 @@ mod tests {
     }
 
     #[test]
+    fn float_reemit_keeps_decimal_sign_and_boundary_form() {
+        assert_eq!(nuitka_float_repr(2.0), "2.0");
+        assert_eq!(nuitka_float_repr(100.0), "100.0");
+        assert_eq!(nuitka_float_repr(1e15), "1000000000000000.0");
+        assert_eq!(nuitka_float_repr(1e16), "1e+16");
+        assert_eq!(nuitka_float_repr(1e-4), "0.0001");
+        assert_eq!(nuitka_float_repr(1e-5), "1e-05");
+        assert_eq!(
+            nuitka_float_repr(1_234_567_890_123_456.0),
+            "1234567890123456.0"
+        );
+        assert_eq!(nuitka_float_repr(-0.0), "-0.0");
+        assert_eq!(
+            nuitka_value_repr(&PickleValue::Float(-0.0), 0usize).as_deref(),
+            Some("-0.0")
+        );
+    }
+
+    #[test]
+    fn high_byte_reemit_matches_cpython_escapes() {
+        assert_eq!(
+            nuitka_bytes_repr(&[0x80, 0xff, 0x00, 0x7f]),
+            "b'\\x80\\xff\\x00\\x7f'"
+        );
+        assert_eq!(nuitka_bytes_repr(&[0xe4, 0xb8, 0xad]), "b'\\xe4\\xb8\\xad'");
+        assert_eq!(nuitka_bytes_repr(b"'"), "b\"'\"");
+        assert_eq!(nuitka_bytes_repr(b"\""), "b'\"'");
+        assert_eq!(nuitka_bytes_repr(b"'\""), "b'\\'\"'");
+        assert_eq!(nuitka_string_repr("\u{e9}"), "'\u{e9}'");
+        assert_eq!(nuitka_string_repr("\u{4e2d}"), "'\u{4e2d}'");
+        assert_eq!(nuitka_string_repr("\u{1f600}"), "'\u{1f600}'");
+        assert_eq!(nuitka_string_repr("\u{7f}"), "'\\x7f'");
+        assert_eq!(nuitka_string_repr("\u{a0}"), "'\\xa0'");
+        assert_eq!(nuitka_string_repr("{x}=%s"), "'{x}=%s'");
+        assert_eq!(nuitka_string_repr("quote'here"), "\"quote'here\"");
+        assert_eq!(nuitka_string_repr("dq\"here"), "'dq\"here'");
+        assert_eq!(nuitka_string_repr("both'\"x"), "'both\\'\"x'");
+    }
+
+    #[test]
     fn dictionaries_use_nuitka_repr_digest_keys() {
         let value: PickleValue = PickleValue::Dict(vec![
             (
