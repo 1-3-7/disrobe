@@ -721,7 +721,9 @@ fn lower(
                 }
             }
             Op::Eq | Op::Lt | Op::Le => {
-                if let Some(consumed) =
+                if let Some(consumed) = emit_bool_chain(state, names, p, pc, dialect) {
+                    pc = consumed;
+                } else if let Some(consumed) =
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
                 {
                     pc = consumed;
@@ -733,7 +735,9 @@ fn lower(
                 }
             }
             Op::EqK => {
-                if let Some(consumed) =
+                if let Some(consumed) = emit_bool_chain(state, names, p, pc, dialect) {
+                    pc = consumed;
+                } else if let Some(consumed) =
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
                 {
                     pc = consumed;
@@ -748,7 +752,9 @@ fn lower(
                 }
             }
             Op::EqI | Op::LtI | Op::LeI | Op::GtI | Op::GeI => {
-                if let Some(consumed) =
+                if let Some(consumed) = emit_bool_chain(state, names, p, pc, dialect) {
+                    pc = consumed;
+                } else if let Some(consumed) =
                     emit_bool_materialize(state, names, live, p, &d, pc, dialect)
                 {
                     pc = consumed;
@@ -1160,6 +1166,9 @@ fn emit_bool_materialize(
     dialect: LuaDialect,
 ) -> Option<usize> {
     let dest: u32 = bool_materialize_dest(p, live, pc, dialect)?;
+    if region_has_external_entry(p, pc, pc + 3, dialect) {
+        return None;
+    }
     let value: String = compare_value_expr(state, p, d, dialect)?;
     define_at_merge(state, names, dest, value, pc + 4);
     Some(pc + 3)
@@ -1273,6 +1282,115 @@ fn emit_and_or(
     define_at_merge(state, names, d.a, expr, merge as usize);
     let _ = live;
     Some(pc + 2)
+}
+
+#[inline]
+fn is_chain_compare(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Eq | Op::Lt | Op::Le | Op::EqK | Op::EqI | Op::LtI | Op::LeI | Op::GtI | Op::GeI
+    )
+}
+
+#[must_use]
+fn negate_compare(d: &Decoded, dialect: LuaDialect) -> Decoded {
+    let mut nd: Decoded = *d;
+    if matches!(dialect, LuaDialect::Lua54) {
+        nd.k = !d.k;
+    } else {
+        nd.a = u32::from(d.a == 0);
+    }
+    nd
+}
+
+#[must_use]
+fn bool_load_sink(p: &LuaProto, q: usize, dialect: LuaDialect) -> Option<u32> {
+    let i2: Decoded = decode(*p.code.get(q)?, dialect);
+    let i3: Decoded = decode(*p.code.get(q + 1)?, dialect);
+    if matches!(dialect, LuaDialect::Lua54) {
+        if i2.op == Op::LFalseSkip && i3.op == Op::LoadTrue && i2.a == i3.a {
+            return Some(i2.a);
+        }
+        return None;
+    }
+    if i2.op == Op::LoadBool && i3.op == Op::LoadBool && i2.a == i3.a && i2.b == 0 && i3.b != 0 {
+        return Some(i2.a);
+    }
+    None
+}
+
+#[must_use]
+fn region_has_external_entry(p: &LuaProto, start: usize, pt: usize, dialect: LuaDialect) -> bool {
+    for j in 0..p.code.len() {
+        if j >= start && j <= pt {
+            continue;
+        }
+        let dj: Decoded = decode(p.code[j], dialect);
+        for t in branch_targets(p, j, &dj, dialect) {
+            if t > start as i64 && t <= pt as i64 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[must_use]
+fn emit_bool_chain(
+    state: &mut StructState,
+    names: &LocalNames,
+    p: &LuaProto,
+    pc: usize,
+    dialect: LuaDialect,
+) -> Option<usize> {
+    let mut nodes: Vec<usize> = Vec::new();
+    let mut q: usize = pc;
+    loop {
+        let node: Decoded = decode(*p.code.get(q)?, dialect);
+        if !is_chain_compare(node.op) {
+            break;
+        }
+        if decode(*p.code.get(q + 1)?, dialect).op != Op::Jmp {
+            break;
+        }
+        nodes.push(q);
+        q += 2;
+    }
+    if nodes.len() < 2 {
+        return None;
+    }
+    let dest: u32 = bool_load_sink(p, q, dialect)?;
+    let pf: usize = q;
+    let pt: usize = q + 1;
+    if region_has_external_entry(p, pc, pt, dialect) {
+        return None;
+    }
+    let mut acc: Option<String> = None;
+    for (idx, &node_pc) in nodes.iter().enumerate().rev() {
+        let node: Decoded = decode(p.code[node_pc], dialect);
+        let taken: i64 = cond_jump_target(p, node_pc, dialect)?;
+        if idx + 1 == nodes.len() {
+            if taken != pt as i64 {
+                return None;
+            }
+            acc = Some(compare_value_expr(state, p, &node, dialect)?);
+            continue;
+        }
+        let rest: String = acc.take()?;
+        if taken == pt as i64 {
+            let jexpr: String = compare_value_expr(state, p, &node, dialect)?;
+            acc = Some(format!("({jexpr} or {rest})"));
+        } else if taken == pf as i64 {
+            let neg: Decoded = negate_compare(&node, dialect);
+            let nexpr: String = compare_value_expr(state, p, &neg, dialect)?;
+            acc = Some(format!("({nexpr} and {rest})"));
+        } else {
+            return None;
+        }
+    }
+    let expr: String = acc?;
+    define_at_merge(state, names, dest, expr, pt + 1);
+    Some(pt)
 }
 
 #[inline]
