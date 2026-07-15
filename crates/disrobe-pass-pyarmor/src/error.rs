@@ -103,4 +103,7 @@ pub enum Error {
 
     #[error("DR-PYARM-0061: BCC native object could not be parsed for lift: {0}")]
     BccLiftParse(String),
+
+    #[error("DR-PYARM-0062: BCC function-to-source link found no residual module: {0}")]
+    BccLinkNoResidual(String),
 }
