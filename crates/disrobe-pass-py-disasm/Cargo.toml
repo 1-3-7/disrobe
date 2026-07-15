@@ -35,6 +35,7 @@ miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+unicode-general-category = "1.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 disrobe-pass-native = { workspace = true }
