@@ -209,7 +209,7 @@ fn quote_lua_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => {
                 let code: u32 = c as u32;
                 if chars
                     .peek()
@@ -1372,6 +1372,19 @@ mod tests {
     fn lift_string_escaping() {
         let s: String = quote_lua_string("a\"b\nc");
         assert_eq!(s, "\"a\\\"b\\nc\"");
+    }
+
+    #[test]
+    fn lift_string_escaping_roundtrip_pins() {
+        assert_eq!(quote_lua_string("\r\t"), "\"\\r\\t\"");
+        assert_eq!(quote_lua_string("\\"), "\"\\\\\"");
+        assert_eq!(quote_lua_string("\u{1}x"), "\"\\1x\"");
+        assert_eq!(quote_lua_string("\u{1}5"), "\"\\0015\"");
+        assert_eq!(quote_lua_string("\u{1f}9"), "\"\\0319\"");
+        assert_eq!(quote_lua_string("\u{7f}"), "\"\\127\"");
+        assert_eq!(quote_lua_string("\u{7f}9"), "\"\\1279\"");
+        assert_eq!(quote_lua_string("\u{2028}\u{2029}"), "\"\u{2028}\u{2029}\"");
+        assert_eq!(quote_lua_string("café"), "\"café\"");
     }
 
     #[test]
