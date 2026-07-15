@@ -309,3 +309,139 @@ fn intermediate_member_this_modifier_not_leaked_matches_libiberty_dlang() {
         recovered.demangled, reference
     );
 }
+
+const REAL_HEX_FLOAT_ORACLE: &[(&str, &str, &str, &str)] = &[
+    (
+        "_D7exotic2__T5RealVVee1CP1ZQo3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int exotic2.RealV!(0x1.Cp1).RealV.get()",
+        "0x1.Cp1",
+        "0x1Cp1",
+    ),
+    (
+        "_D7exotic2__T6FloatVVfe18P0ZQp3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int exotic2.FloatV!(0x1.8p0).FloatV.get()",
+        "0x1.8p0",
+        "0x18p0",
+    ),
+    (
+        "_D7exotic2__T7DoubleVVde12P1ZQq3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int exotic2.DoubleV!(0x1.2p1).DoubleV.get()",
+        "0x1.2p1",
+        "0x12p1",
+    ),
+    (
+        "_D5reals__T2RVVee134AP10ZQo3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int reals.RV!(0x1.34Ap10).RV.get()",
+        "0x1.34Ap10",
+        "0x134Ap10",
+    ),
+    (
+        "_D5reals__T2RVVeeN1CP1ZQm3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int reals.RV!(-0x1.Cp1).RV.get()",
+        "-0x1.Cp1",
+        "-0x1Cp1",
+    ),
+    (
+        "_D5reals__T2RVVee1PN1ZQl3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int reals.RV!(0x1.p-1).RV.get()",
+        "0x1.p-1",
+        "0x1p-1",
+    ),
+    (
+        "_D5reals__T2DVVde1921FB54442D10FBCP1ZQBa3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int reals.DV!(0x1.921FB54442D10FBCp1).DV.get()",
+        "0x1.921FB54442D10FBCp1",
+        "0x1921FB54442D10FBCp1",
+    ),
+    (
+        "_D5reals__T2DVVdeN1A36E2EB1C432CA58PN14ZQBd3getMFNaNbNiNfZi",
+        "pure nothrow @nogc @safe int reals.DV!(-0x1.A36E2EB1C432CA58p-14).DV.get()",
+        "-0x1.A36E2EB1C432CA58p-14",
+        "-0x1A36E2EB1C432CA58p-14",
+    ),
+];
+
+fn template_value_arg(demangled: &str) -> Option<String> {
+    let open: usize = demangled.find("!(")? + 2;
+    let bytes: &[u8] = demangled.as_bytes();
+    let mut depth: i32 = 1;
+    let mut i: usize = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(demangled[open..i].to_owned());
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+#[test]
+fn real_hex_float_value_carries_binary_point_matches_libiberty_dlang() {
+    for (mangled, expected, correct_token, buggy_token) in REAL_HEX_FLOAT_ORACLE {
+        let d: DemangledSymbol = demangle_d(mangled)
+            .unwrap_or_else(|| panic!("disrobe failed to demangle real ldc2 symbol {mangled}"));
+        assert_eq!(
+            d.demangled, *expected,
+            "hex-float template value must carry the implicit binary point for {mangled}"
+        );
+        assert!(
+            d.demangled.contains(correct_token),
+            "expected the pointed hex float {correct_token} in {}",
+            d.demangled
+        );
+        assert!(
+            !d.demangled.contains(buggy_token),
+            "the pointless hex float {buggy_token} must never render (off by a power of two): {}",
+            d.demangled
+        );
+    }
+
+    if !dlang_reference_ready() {
+        eprintln!(
+            "\n=== c++filt -s dlang unavailable; libiberty cross-check skipped \
+             (committed hex-float expectations still enforced above) ===\n"
+        );
+        return;
+    }
+
+    let mut compared: usize = 0;
+    for (mangled, _expected, correct_token, _buggy) in REAL_HEX_FLOAT_ORACLE {
+        let reference: String = cppfilt_dlang(mangled)
+            .unwrap_or_else(|| panic!("reference demangle failed for {mangled}"));
+        assert_ne!(
+            reference, *mangled,
+            "the libiberty reference must actually demangle {mangled}, not echo it back"
+        );
+        let reference_arg: String = template_value_arg(&reference)
+            .unwrap_or_else(|| panic!("no template value in reference output: {reference}"));
+        let recovered: DemangledSymbol =
+            demangle_d(mangled).unwrap_or_else(|| panic!("disrobe failed to demangle {mangled}"));
+        let recovered_arg: String = template_value_arg(&recovered.demangled).unwrap_or_else(|| {
+            panic!(
+                "no template value in disrobe output: {}",
+                recovered.demangled
+            )
+        });
+        assert_eq!(
+            recovered_arg, reference_arg,
+            "disrobe must match the libiberty dlang demangler on the hex-float value; disrobe={} reference={}",
+            recovered.demangled, reference
+        );
+        assert_eq!(
+            reference_arg, *correct_token,
+            "the libiberty reference renders the pointed hex float {correct_token}: {reference}"
+        );
+        compared += 1;
+    }
+    assert!(
+        compared >= 6,
+        "expected a batch of hex floats graded against the reference, got {compared}"
+    );
+}
