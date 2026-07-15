@@ -18,6 +18,7 @@ members = [
     "crates/disrobe-sleigh",
     "crates/disrobe-taint",
     "crates/disrobe-irsummary",
+    "crates/disrobe-lift-x86",
     "crates/disrobe-pass-as3",
     "crates/disrobe-plugin-host",
     "crates/disrobe-pass-beam",

@@ -1,0 +1,557 @@
+pypcode 4.0.0
+x86:LE:64:default
+0 f30f1efa endbr64
+IMARK ram[0:4]
+4 488d0411 lea
+IMARK ram[4:4]
+unique[9300:8] = RDX * 0x1
+unique[9500:8] = RCX + unique[9300:8]
+RAX = unique[9500:8]
+8 c3 ret
+IMARK ram[8:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+9 0f1f8000000000 nop
+IMARK ram[9:7]
+10 f30f1efa endbr64
+IMARK ram[10:4]
+14 488d0449 lea
+IMARK ram[14:4]
+unique[9300:8] = RCX * 0x2
+unique[9500:8] = RCX + unique[9300:8]
+RAX = unique[9500:8]
+18 4801d0 add
+IMARK ram[18:3]
+CF = carry(RAX, RDX)
+OF = scarry(RAX, RDX)
+RAX = RAX + RDX
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+1b 4835aa550000 xor
+IMARK ram[1b:6]
+CF = 0x0
+OF = 0x0
+RAX = RAX ^ 0x55aa
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+21 c3 ret
+IMARK ram[21:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+22 66662e0f1f840000000000 nop
+IMARK ram[22:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+2d 0f1f00 nop
+IMARK ram[2d:3]
+30 f30f1efa endbr64
+IMARK ram[30:4]
+34 85c9 test
+IMARK ram[34:2]
+CF = 0x0
+OF = 0x0
+unique[e0300:4] = ECX & ECX
+SF = unique[e0300:4] s< 0x0
+ZF = unique[e0300:4] == 0x0
+unique[58300:4] = unique[e0300:4] & 0xff
+unique[58400:1] = popcount(unique[58300:4])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+36 7408 je
+IMARK ram[36:2]
+if (ZF) goto ram[40:8]
+38 8d41ff lea
+IMARK ram[38:3]
+unique[8f00:8] = RCX + 0xffffffffffffffff
+EAX = SUBPIECE unique[8f00:8], 0x0
+RAX = zext(EAX)
+3b c3 ret
+IMARK ram[3b:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+3c 0f1f4000 nop
+IMARK ram[3c:4]
+40 b807000000 mov
+IMARK ram[40:5]
+RAX = 0x7
+45 c3 ret
+IMARK ram[45:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+46 662e0f1f840000000000 nop
+IMARK ram[46:10]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+50 f30f1efa endbr64
+IMARK ram[50:4]
+54 488b01 mov
+IMARK ram[54:3]
+unique[23e00:8] = *[ram]RCX
+RAX = unique[23e00:8]
+57 4801c2 add
+IMARK ram[57:3]
+CF = carry(RDX, RAX)
+OF = scarry(RDX, RAX)
+RDX = RDX + RAX
+SF = RDX s< 0x0
+ZF = RDX == 0x0
+unique[58300:8] = RDX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+5a 488911 mov
+IMARK ram[5a:3]
+unique[d500:8] = RDX
+*[ram]RCX = unique[d500:8]
+5d c3 ret
+IMARK ram[5d:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+5e 6690 xchg
+IMARK ram[5e:2]
+60 f30f1efa endbr64
+IMARK ram[60:4]
+64 488d4201 lea
+IMARK ram[64:4]
+unique[8f00:8] = RDX + 0x1
+RAX = unique[8f00:8]
+68 480fafc1 imul
+IMARK ram[68:4]
+unique[96800:16] = sext(RAX)
+unique[96900:16] = sext(RCX)
+unique[96b00:16] = unique[96800:16] * unique[96900:16]
+RAX = RAX * RCX
+unique[96e00:8] = SUBPIECE unique[96b00:16], 0x8
+unique[5a200:16] = sext(RAX)
+CF = unique[5a200:16] != unique[96b00:16]
+OF = CF
+6c c3 ret
+IMARK ram[6c:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+6d 0f1f00 nop
+IMARK ram[6d:3]
+70 f30f1efa endbr64
+IMARK ram[70:4]
+74 4889d0 mov
+IMARK ram[74:3]
+RAX = RDX
+77 4821c8 and
+IMARK ram[77:3]
+CF = 0x0
+OF = 0x0
+RAX = RAX & RCX
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+7a 4881f134120000 xor
+IMARK ram[7a:7]
+CF = 0x0
+OF = 0x0
+RCX = RCX ^ 0x1234
+SF = RCX s< 0x0
+ZF = RCX == 0x0
+unique[58300:8] = RCX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+81 4809c8 or
+IMARK ram[81:3]
+CF = 0x0
+OF = 0x0
+RAX = RAX | RCX
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+84 c3 ret
+IMARK ram[84:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+85 66662e0f1f840000000000 nop
+IMARK ram[85:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+90 f30f1efa endbr64
+IMARK ram[90:4]
+94 4889c8 mov
+IMARK ram[94:3]
+RAX = RCX
+97 48c1e903 shr
+IMARK ram[97:4]
+unique[dca00:4] = 0x3 & 0x3f
+unique[dcb00:8] = RCX
+RCX = RCX >> unique[dca00:4]
+unique[5ed00:1] = unique[dca00:4] != 0x0
+unique[5ee00:4] = unique[dca00:4] - 0x1
+unique[5ef00:8] = unique[dcb00:8] >> unique[5ee00:4]
+unique[5f000:8] = unique[5ef00:8] & 0x1
+unique[5f200:1] = unique[5f000:8] != 0x0
+unique[5f300:1] = !unique[5ed00:1]
+unique[5f400:1] = unique[5f300:1] & CF
+unique[5f500:1] = unique[5ed00:1] & unique[5f200:1]
+CF = unique[5f400:1] | unique[5f500:1]
+unique[5f800:1] = unique[dca00:4] == 0x1
+unique[5fa00:1] = unique[dcb00:8] s< 0x0
+unique[5fb00:1] = !unique[5f800:1]
+unique[5fc00:1] = unique[5fb00:1] & OF
+unique[5fd00:1] = unique[5f800:1] & unique[5fa00:1]
+OF = unique[5fc00:1] | unique[5fd00:1]
+unique[58800:1] = unique[dca00:4] != 0x0
+unique[58a00:1] = RCX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RCX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RCX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+9b 48c1e005 shl
+IMARK ram[9b:4]
+unique[d4b00:4] = 0x5 & 0x3f
+unique[d4c00:8] = RAX
+RAX = RAX << unique[d4b00:4]
+unique[5cb00:1] = unique[d4b00:4] != 0x0
+unique[5cc00:4] = unique[d4b00:4] - 0x1
+unique[5cd00:8] = unique[d4c00:8] << unique[5cc00:4]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d4b00:4] == 0x1
+unique[5d600:1] = RAX s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d4b00:4] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+9f 4831c8 xor
+IMARK ram[9f:3]
+CF = 0x0
+OF = 0x0
+RAX = RAX ^ RCX
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+a2 c3 ret
+IMARK ram[a2:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+a3 66662e0f1f840000000000 nop
+IMARK ram[a3:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+ae 6690 xchg
+IMARK ram[ae:2]
+b0 f30f1efa endbr64
+IMARK ram[b0:4]
+b4 4889c8 mov
+IMARK ram[b4:3]
+RAX = RCX
+b7 48c1f807 sar
+IMARK ram[b7:4]
+unique[d1000:4] = 0x7 & 0x3f
+unique[d1100:8] = RAX
+RAX = RAX s>> unique[d1000:4]
+unique[5de00:1] = unique[d1000:4] != 0x0
+unique[5df00:4] = unique[d1000:4] - 0x1
+unique[5e000:8] = unique[d1100:8] s>> unique[5df00:4]
+unique[5e100:8] = unique[5e000:8] & 0x1
+unique[5e300:1] = unique[5e100:8] != 0x0
+unique[5e400:1] = !unique[5de00:1]
+unique[5e500:1] = unique[5e400:1] & CF
+unique[5e600:1] = unique[5de00:1] & unique[5e300:1]
+CF = unique[5e500:1] | unique[5e600:1]
+unique[5e900:1] = unique[d1000:4] == 0x1
+unique[5ea00:1] = !unique[5e900:1]
+OF = unique[5ea00:1] & OF
+unique[58800:1] = unique[d1000:4] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+bb c3 ret
+IMARK ram[bb:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+bc 0f1f4000 nop
+IMARK ram[bc:4]
+c0 f30f1efa endbr64
+IMARK ram[c0:4]
+c4 4889c8 mov
+IMARK ram[c4:3]
+RAX = RCX
+c7 4889d1 mov
+IMARK ram[c7:3]
+RCX = RDX
+ca 31d2 xor
+IMARK ram[ca:2]
+CF = 0x0
+OF = 0x0
+EDX = EDX ^ EDX
+RDX = zext(EDX)
+SF = EDX s< 0x0
+ZF = EDX == 0x0
+unique[58300:4] = EDX & 0xff
+unique[58400:1] = popcount(unique[58300:4])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+cc 4883c901 or
+IMARK ram[cc:4]
+CF = 0x0
+OF = 0x0
+RCX = RCX | 0x1
+SF = RCX s< 0x0
+ZF = RCX == 0x0
+unique[58300:8] = RCX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+d0 48f7f1 div
+IMARK ram[d0:3]
+unique[88600:16] = zext(RCX)
+unique[88700:16] = zext(RDX)
+unique[88800:16] = unique[88700:16] << 0x40
+unique[88900:16] = zext(RAX)
+unique[88b00:16] = unique[88800:16] | unique[88900:16]
+unique[88d00:16] = unique[88b00:16] / unique[88600:16]
+RAX = SUBPIECE unique[88d00:16], 0x0
+unique[89000:16] = unique[88b00:16] % unique[88600:16]
+RDX = SUBPIECE unique[89000:16], 0x0
+d3 c3 ret
+IMARK ram[d3:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+d4 66662e0f1f840000000000 nop
+IMARK ram[d4:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+df 90 nop
+IMARK ram[df:1]
+e0 f30f1efa endbr64
+IMARK ram[e0:4]
+e4 4889c8 mov
+IMARK ram[e4:3]
+RAX = RCX
+e7 4889d1 mov
+IMARK ram[e7:3]
+RCX = RDX
+ea 4883c901 or
+IMARK ram[ea:4]
+CF = 0x0
+OF = 0x0
+RCX = RCX | 0x1
+SF = RCX s< 0x0
+ZF = RCX == 0x0
+unique[58300:8] = RCX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+ee 4899 cqo
+IMARK ram[ee:2]
+unique[7af00:16] = sext(RAX)
+RDX = SUBPIECE unique[7af00:16], 0x8
+f0 48f7f9 idiv
+IMARK ram[f0:3]
+unique[93900:16] = sext(RCX)
+unique[93a00:16] = zext(RDX)
+unique[93b00:16] = unique[93a00:16] << 0x40
+unique[93c00:16] = zext(RAX)
+unique[93e00:16] = unique[93b00:16] | unique[93c00:16]
+unique[94000:16] = unique[93e00:16] s/ unique[93900:16]
+RAX = SUBPIECE unique[94000:16], 0x0
+unique[94300:16] = unique[93e00:16] s% unique[93900:16]
+RDX = SUBPIECE unique[94300:16], 0x0
+f3 c3 ret
+IMARK ram[f3:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+f4 66662e0f1f840000000000 nop
+IMARK ram[f4:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+ff 90 nop
+IMARK ram[ff:1]
+100 f30f1efa endbr64
+IMARK ram[100:4]
+104 0fb601 movzx
+IMARK ram[104:3]
+unique[23b00:1] = *[ram]RCX
+EAX = zext(unique[23b00:1])
+RAX = zext(EAX)
+107 480fbe12 movsx
+IMARK ram[107:4]
+unique[23b00:1] = *[ram]RDX
+RDX = sext(unique[23b00:1])
+10b 4801d0 add
+IMARK ram[10b:3]
+CF = carry(RAX, RDX)
+OF = scarry(RAX, RDX)
+RAX = RAX + RDX
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+10e c3 ret
+IMARK ram[10e:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+10f 90 nop
+IMARK ram[10f:1]
+110 f30f1efa endbr64
+IMARK ram[110:4]
+114 488b44d118 mov
+IMARK ram[114:5]
+unique[9e00:8] = 0x18 + RCX
+unique[9f00:8] = RDX * 0x8
+unique[a100:8] = unique[9e00:8] + unique[9f00:8]
+unique[23e00:8] = *[ram]unique[a100:8]
+RAX = unique[23e00:8]
+119 c3 ret
+IMARK ram[119:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+11a 660f1f440000 nop
+IMARK ram[11a:6]
+unique[a200:8] = RAX * 0x1
+unique[a400:8] = RAX + unique[a200:8]
+120 f30f1efa endbr64
+IMARK ram[120:4]
+124 4883ec28 sub
+IMARK ram[124:4]
+CF = RSP < 0x28
+OF = sborrow(RSP, 0x28)
+RSP = RSP - 0x28
+SF = RSP s< 0x0
+ZF = RSP == 0x0
+unique[58300:8] = RSP & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+128 e8d3feffff call
+IMARK ram[128:5]
+RSP = RSP - 0x8
+*[ram]RSP = 0x12d
+call ram[0:8]
+12d 4883c428 add
+IMARK ram[12d:4]
+CF = carry(RSP, 0x28)
+OF = scarry(RSP, 0x28)
+RSP = RSP + 0x28
+SF = RSP s< 0x0
+ZF = RSP == 0x0
+unique[58300:8] = RSP & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+131 4883c001 add
+IMARK ram[131:4]
+CF = carry(RAX, 0x1)
+OF = scarry(RAX, 0x1)
+RAX = RAX + 0x1
+SF = RAX s< 0x0
+ZF = RAX == 0x0
+unique[58300:8] = RAX & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+135 c3 ret
+IMARK ram[135:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+136 90 nop
+IMARK ram[136:1]
+137 90 nop
+IMARK ram[137:1]
+138 90 nop
+IMARK ram[138:1]
+139 90 nop
+IMARK ram[139:1]
+13a 90 nop
+IMARK ram[13a:1]
+13b 90 nop
+IMARK ram[13b:1]
+13c 90 nop
+IMARK ram[13c:1]
+13d 90 nop
+IMARK ram[13d:1]
+13e 90 nop
+IMARK ram[13e:1]
+13f 90 nop
+IMARK ram[13f:1]
