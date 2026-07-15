@@ -10,6 +10,7 @@ use disrobe_pass_jvm::{
 };
 
 use crate::error::{LiftError, Result};
+use crate::operand::{f32_operand, f64_operand};
 use crate::usize_to_u32_saturating;
 
 const FUNCTION_STRIDE: u64 = 1 << 20;
@@ -422,6 +423,22 @@ fn const_operand(insn: &Instruction, class: &ClassFile) -> Vec<String> {
     match &insn.operands {
         Operands::Byte(value) | Operands::Short(value) => vec![value.to_string()],
         Operands::ConstPool(index) => ldc_operand(class, *index),
+        _ => implicit_const_operand(insn.opcode),
+    }
+}
+
+fn implicit_const_operand(opcode: u8) -> Vec<String> {
+    match opcode {
+        0x01 => vec!["null".to_owned()],
+        0x02 => vec!["-1".to_owned()],
+        0x03..=0x08 => vec![(i32::from(opcode) - 0x03).to_string()],
+        0x09 => vec!["0".to_owned()],
+        0x0A => vec!["1".to_owned()],
+        0x0B => vec![f32_operand(0.0f32.to_bits())],
+        0x0C => vec![f32_operand(1.0f32.to_bits())],
+        0x0D => vec![f32_operand(2.0f32.to_bits())],
+        0x0E => vec![f64_operand(0.0f64.to_bits())],
+        0x0F => vec![f64_operand(1.0f64.to_bits())],
         _ => Vec::new(),
     }
 }
@@ -430,8 +447,8 @@ fn ldc_operand(class: &ClassFile, index: u16) -> Vec<String> {
     match class.constant_pool.get(usize::from(index)) {
         Some(ConstantPoolEntry::Integer(value)) => vec![value.to_string()],
         Some(ConstantPoolEntry::Long(value)) => vec![value.to_string()],
-        Some(ConstantPoolEntry::Float(bits)) => vec![f32::from_bits(*bits).to_string()],
-        Some(ConstantPoolEntry::Double(bits)) => vec![f64::from_bits(*bits).to_string()],
+        Some(ConstantPoolEntry::Float(bits)) => vec![f32_operand(*bits)],
+        Some(ConstantPoolEntry::Double(bits)) => vec![f64_operand(*bits)],
         Some(ConstantPoolEntry::String { utf8_index }) => class
             .utf8_at(*utf8_index)
             .map_or_else(|_| Vec::new(), |text: &str| vec![text.to_owned()]),
@@ -457,5 +474,24 @@ fn memory_operands(insn: &Instruction) -> Vec<String> {
         vec!["[array]".to_owned()]
     } else {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implicit_const_macro_forms_carry_their_value() {
+        assert_eq!(implicit_const_operand(0x01), vec!["null".to_owned()]);
+        assert_eq!(implicit_const_operand(0x02), vec!["-1".to_owned()]);
+        assert_eq!(implicit_const_operand(0x03), vec!["0".to_owned()]);
+        assert_eq!(implicit_const_operand(0x08), vec!["5".to_owned()]);
+        assert_eq!(implicit_const_operand(0x09), vec!["0".to_owned()]);
+        assert_eq!(implicit_const_operand(0x0A), vec!["1".to_owned()]);
+        assert_eq!(implicit_const_operand(0x0B), vec!["0".to_owned()]);
+        assert_eq!(implicit_const_operand(0x0D), vec!["2".to_owned()]);
+        assert_eq!(implicit_const_operand(0x0F), vec!["1".to_owned()]);
+        assert!(implicit_const_operand(0x10).is_empty());
     }
 }

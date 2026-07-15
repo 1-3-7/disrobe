@@ -5,6 +5,7 @@ use disrobe_pass_wasm_deob::{FunctionSig, ModuleSignatures, extract_signatures};
 use wasmparser::{FunctionBody, Operator, Parser, Payload};
 
 use crate::error::{LiftError, Result};
+use crate::operand::{f32_operand, f64_operand};
 use crate::usize_to_u32_saturating;
 
 const FUNCTION_STRIDE: u64 = 1 << 20;
@@ -358,8 +359,8 @@ fn operands(op: &Operator<'_>, signatures: &ModuleSignatures) -> Vec<String> {
         }
         Operator::I32Const { value } => vec![value.to_string()],
         Operator::I64Const { value } => vec![value.to_string()],
-        Operator::F32Const { value } => vec![f32::from_bits(value.bits()).to_string()],
-        Operator::F64Const { value } => vec![f64::from_bits(value.bits()).to_string()],
+        Operator::F32Const { value } => vec![f32_operand(value.bits())],
+        Operator::F64Const { value } => vec![f64_operand(value.bits())],
         Operator::I32Load8U { memarg }
         | Operator::I32Load8S { memarg }
         | Operator::I64Load8U { memarg }
