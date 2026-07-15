@@ -126,6 +126,55 @@ fn run_asar_pack(src: &Path, out: &Path) -> bool {
     }
 }
 
+fn tricky_tree() -> Vec<(&'static str, Vec<u8>)> {
+    let mut url_js: Vec<u8> = Vec::new();
+    url_js.extend_from_slice(
+        "const endpoint = \"https://\u{4f8b}\u{3048}.\u{30c6}\u{30b9}\u{30c8}/p?q=caf\u{e9}&x=1#frag\";\n"
+            .as_bytes(),
+    );
+    url_js.extend_from_slice(br#"const meta = {"path":"C:\\Users\\a","tab":"x\ty"};"#);
+    url_js.extend_from_slice(&[0x00, 0xff, 0x80, 0xc0]);
+
+    let mut html: Vec<u8> = b"<!doctype html><title>".to_vec();
+    html.extend_from_slice("\u{2713}".as_bytes());
+    html.extend_from_slice(b"</title>");
+
+    vec![
+        ("index.html", html),
+        ("\u{65e5}\u{672c}\u{8a9e}/\u{6982}\u{8981}.js", url_js),
+        (
+            "\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}.css",
+            "body{content:\"\u{2713}\"}".as_bytes().to_vec(),
+        ),
+        ("emoji \u{1f600}.txt", vec![0x00, 0x01, 0x02, 0xfe, 0xff]),
+        ("a+b@c#d.json", br#"{"ok":true}"#.to_vec()),
+    ]
+}
+
+fn assert_round_trip(bytes: &[u8], expected: &[(&str, Vec<u8>)]) {
+    let assets: Vec<RecoveredAsset> = carve(bytes).unwrap();
+    let recovered: BTreeMap<String, Vec<u8>> = recovered_map(&assets);
+    let want: BTreeMap<String, Vec<u8>> = expected
+        .iter()
+        .map(|(path, body): &(&str, Vec<u8>)| ((*path).to_owned(), body.clone()))
+        .collect();
+    assert_eq!(
+        recovered.keys().collect::<Vec<&String>>(),
+        want.keys().collect::<Vec<&String>>(),
+        "recovered name set must equal the source tree"
+    );
+    for (path, body) in &want {
+        assert_eq!(
+            recovered.get(path),
+            Some(body),
+            "content mismatch for {path}"
+        );
+    }
+    for asset in &assets {
+        assert_eq!(asset.compression, Compression::None);
+    }
+}
+
 fn assert_matches_sample(assets: &[RecoveredAsset]) {
     let recovered: BTreeMap<String, Vec<u8>> = recovered_map(assets);
     let expected: BTreeMap<String, Vec<u8>> = sample_tree()
@@ -222,6 +271,27 @@ fn hostile_path_never_escapes_output_root() {
             .iter()
             .any(|asset: &RecoveredAsset| asset.path.ends_with("evil.js"))
     );
+}
+
+#[test]
+fn recovers_non_ascii_names_and_binary_content_byte_identically() {
+    let tree: Vec<(&str, Vec<u8>)> = tricky_tree();
+    assert_round_trip(&build_genuine_asar(&tree), &tree);
+
+    let workdir: PathBuf = unique_dir("webview-nonascii");
+    let dist: PathBuf = workdir.join("dist");
+    write_tree(&dist, &tree);
+    let asar_path: PathBuf = workdir.join("app.asar");
+    if run_asar_pack(&dist, &asar_path) {
+        let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
+        assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
+        assert_round_trip(&bytes, &tree);
+    } else {
+        eprintln!(
+            "CORPUS: @electron/asar CLI unavailable (node/npx not on PATH); graded the hand-built asar only"
+        );
+    }
+    let _ = fs::remove_dir_all(&workdir);
 }
 
 #[test]
