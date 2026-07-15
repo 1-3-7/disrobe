@@ -368,6 +368,24 @@ fn jsconfuser_deobfuscate_all_preserves_behavior() {
     assert_equivalent("jsconfuser/all", ORIGINAL_OPAQUE, &out.source);
 }
 
+const ORIGINAL_NONASCII_ESCAPE: &str = "print('caf\u{e9}\\x41');\nprint('\u{20ac}\\x39\u{1f600}');";
+
+#[test]
+fn jsconfuser_string_encoding_preserves_non_ascii_adjacent_to_escape() {
+    let want: String = eval_capture(ORIGINAL_NONASCII_ESCAPE).expect("orig evaluates");
+    let decoded: String = reverse_string_encoding(ORIGINAL_NONASCII_ESCAPE).rewritten_source;
+    let got: String = eval_capture(&decoded).expect("recovered evaluates");
+    assert_eq!(
+        want, got,
+        "a literal multi-byte code point next to an \\x escape must survive decoding byte-identical, not be split into Latin-1 units:\n--recovered--\n{decoded}"
+    );
+    assert_equivalent(
+        "jsconfuser/string-encoding/non-ascii",
+        ORIGINAL_NONASCII_ESCAPE,
+        &decoded,
+    );
+}
+
 const ORIGINAL_JSCRAMBLER: &str = r"
 function build() { return 'foo' + 'bar' + 'baz'; }
 print(build());
