@@ -166,13 +166,17 @@ impl ConstantPool {
         let mn: &Multiname = self.multiname_at(idx)?;
         let name: String = match mn {
             Multiname::QName { name_index, .. }
-            | Multiname::QNameA { name_index, .. }
             | Multiname::Multiname { name_index, .. }
+            | Multiname::RtqName { name_index } => self.string_at(*name_index)?.to_owned(),
+            Multiname::QNameA { name_index, .. }
             | Multiname::MultinameA { name_index, .. }
-            | Multiname::RtqName { name_index }
-            | Multiname::RtqNameA { name_index } => self.string_at(*name_index)?.to_owned(),
-            Multiname::RtqNameL | Multiname::RtqNameLA => "[ns]::[name]".to_owned(),
-            Multiname::MultinameL { .. } | Multiname::MultinameLA { .. } => "[name]".to_owned(),
+            | Multiname::RtqNameA { name_index } => {
+                format!("@{}", self.string_at(*name_index)?)
+            }
+            Multiname::RtqNameL => "[ns]::[name]".to_owned(),
+            Multiname::RtqNameLA => "@[ns]::[name]".to_owned(),
+            Multiname::MultinameL { .. } => "[name]".to_owned(),
+            Multiname::MultinameLA { .. } => "@[name]".to_owned(),
             Multiname::TypeName { .. } => {
                 let mut budget: u32 = MULTINAME_RENDER_BUDGET;
                 self.render_multiname_bounded(idx, &mut budget)?
@@ -1228,6 +1232,71 @@ mod tests {
             cp.render_multiname_property(1).expect("render"),
             "Point",
             "a member-access render is always the simple name, package handled by the import"
+        );
+    }
+
+    #[test]
+    fn attribute_multiname_property_render_prefixes_the_at_sigil() {
+        let cp: ConstantPool = ConstantPool {
+            strings: vec![
+                String::new(),
+                "public".to_owned(),
+                "id".to_owned(),
+                "cls".to_owned(),
+            ],
+            namespaces: vec![
+                Namespace {
+                    kind: 0,
+                    name_index: 0,
+                },
+                Namespace {
+                    kind: NS_KIND_PACKAGE,
+                    name_index: 1,
+                },
+            ],
+            ns_sets: vec![
+                NamespaceSet {
+                    namespaces: Vec::new(),
+                },
+                NamespaceSet {
+                    namespaces: vec![1],
+                },
+            ],
+            multinames: vec![
+                Multiname::QName {
+                    ns_index: 0,
+                    name_index: 0,
+                },
+                Multiname::QNameA {
+                    ns_index: 1,
+                    name_index: 2,
+                },
+                Multiname::MultinameA {
+                    name_index: 3,
+                    ns_set_index: 1,
+                },
+                Multiname::QName {
+                    ns_index: 1,
+                    name_index: 2,
+                },
+            ],
+            ..ConstantPool::default()
+        };
+        assert_eq!(
+            cp.render_multiname_property(1).expect("render qnamea"),
+            "@id",
+            "an E4X attribute name (QNameA) must re-emit with the @ sigil, not as a child property"
+        );
+        assert_eq!(
+            cp.render_multiname_property(2).expect("render multinamea"),
+            "@cls",
+            "a namespace-set attribute name (MultinameA) must re-emit with the @ sigil"
+        );
+        assert_eq!(
+            cp.render_multiname_property(3)
+                .expect("render qname control"),
+            "id",
+            "a non-attribute QName property must stay a bare simple name"
         );
     }
 

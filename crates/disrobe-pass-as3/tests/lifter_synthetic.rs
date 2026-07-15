@@ -47,6 +47,7 @@ struct PoolBuilder {
 #[derive(Clone)]
 enum MnSpec {
     QName { ns: u32, name: u32 },
+    QNameA { ns: u32, name: u32 },
 }
 
 impl PoolBuilder {
@@ -87,6 +88,12 @@ impl PoolBuilder {
         (self.multinames.len() - 1) as u32
     }
 
+    fn intern_qname_attr(&mut self, ns: u32, name: &str) -> u32 {
+        let name_idx: u32 = self.intern_string(name);
+        self.multinames.push(MnSpec::QNameA { ns, name: name_idx });
+        (self.multinames.len() - 1) as u32
+    }
+
     fn emit(&self, out: &mut Vec<u8>) {
         u30(self.integers.len() as u32, out);
         for v in &self.integers[1..] {
@@ -110,6 +117,11 @@ impl PoolBuilder {
             match mn {
                 MnSpec::QName { ns, name } => {
                     out.push(0x07);
+                    u30(*ns, out);
+                    u30(*name, out);
+                }
+                MnSpec::QNameA { ns, name } => {
+                    out.push(0x0D);
                     u30(*ns, out);
                     u30(*name, out);
                 }
@@ -280,6 +292,69 @@ fn lifts_property_call_with_string_literal() {
     assert!(
         lifted.fully_recovered,
         "body must be marked fully recovered (no dropped/opaque ops): {:?}",
+        lifted.fidelity_warning()
+    );
+}
+
+#[test]
+fn lifts_e4x_attribute_getproperty_with_at_sigil() {
+    let mut pool: PoolBuilder = PoolBuilder::new();
+    let pkg_ns: u32 = pool.intern_ns(0x16, "");
+    let class_mn: u32 = pool.intern_qname(pkg_ns, "Reader");
+    let obj_mn: u32 = pool.intern_qname(pkg_ns, "Object");
+    let read_mn: u32 = pool.intern_qname(pkg_ns, "readId");
+    let attr_mn: u32 = pool.intern_qname_attr(pkg_ns, "id");
+
+    let mut code: Vec<u8> = Vec::new();
+    code.push(0xD0);
+    code.push(0x66);
+    u30(attr_mn, &mut code);
+    code.push(0x48);
+
+    let spec: AbcSpec = AbcSpec {
+        pool,
+        methods: vec![
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![],
+                name: 0,
+                param_names: vec![],
+            },
+            MethodSpec {
+                return_type: 0,
+                param_types: vec![],
+                name: read_mn,
+                param_names: vec![],
+            },
+        ],
+        bodies: vec![BodySpec {
+            method: 1,
+            max_stack: 2,
+            local_count: 1,
+            code,
+        }],
+        class_name_mn: class_mn,
+        super_mn: obj_mn,
+        iinit: 0,
+        method_traits: vec![(read_mn, 1, 0x01)],
+    };
+
+    let abc: AbcFile = parse_fixture(&assemble(&spec));
+    let lifted: LiftedBody =
+        lift_body(&abc, &abc.method_bodies[0], abc.methods.get(1)).expect("lift");
+    let names: LocalNames = local_names_for(&abc, abc.methods.get(1));
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        rendered.contains("return this.@id;"),
+        "an E4X attribute access must decompile with the @ sigil, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("this.id"),
+        "the attribute accessor must not collapse to a child-property access, got:\n{rendered}"
+    );
+    assert!(
+        lifted.fully_recovered,
+        "attribute getproperty body must fully recover: {:?}",
         lifted.fidelity_warning()
     );
 }
