@@ -156,3 +156,33 @@ def checkcache(filename=None):
 ";
     assert_recompiles("terminating_handler_sibling_try", program);
 }
+
+#[test]
+fn else_arm_with_after_inlined_return_then() {
+    let program: &str = "\
+def f(argv):
+    if len(argv) == 1:
+        show(default_source())
+    else:
+        fn = argv[1]
+        with open(fn) as handle:
+            show(parse(handle, fn))
+";
+    assert_recompiles("else_arm_with_inlined_return", program);
+}
+
+#[test]
+fn else_arm_try_after_inlined_return_then() {
+    let program: &str = "\
+def f(argv):
+    if len(argv) == 1:
+        show(default_source())
+    else:
+        try:
+            fn = argv[1]
+            show(parse(fn))
+        except OSError as exc:
+            raise SystemExit(exc) from exc
+";
+    assert_recompiles("else_arm_try_inlined_return", program);
+}
