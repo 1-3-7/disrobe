@@ -104,6 +104,13 @@ impl Width {
             Self::W64 => 64,
         }
     }
+
+    const fn shift_count_mask(self) -> u32 {
+        match self {
+            Self::W64 => 63,
+            Self::W8 | Self::W16 | Self::W32 => 31,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -11563,7 +11570,7 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
         BinOp::Or => c_render(|cx| c_bin(BinaryOp::BitOr, cx.var(lhs), c_opaque(cx, rhs))),
         BinOp::Xor => c_render(|cx| c_bin(BinaryOp::BitXor, cx.var(lhs), c_opaque(cx, rhs))),
         BinOp::Shl => {
-            let shift_mask: u64 = u64::from(width.bits() - 1);
+            let shift_mask: u64 = u64::from(width.shift_count_mask());
             c_render(|cx| {
                 let masked_rhs: CExpr =
                     c_bin(BinaryOp::BitAnd, c_opaque(cx, rhs), CExpr::int(shift_mask));
@@ -11572,7 +11579,7 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
         }
         BinOp::Shr => {
             let mask: u128 = (1u128 << width.bits()) - 1;
-            let shift_mask: u64 = u64::from(width.bits() - 1);
+            let shift_mask: u64 = u64::from(width.shift_count_mask());
             c_render(|cx| {
                 let masked_lhs: CExpr = c_bin(BinaryOp::BitAnd, cx.var(lhs), c_hex_mask(mask));
                 let masked_rhs: CExpr =
@@ -11582,7 +11589,7 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
         }
         BinOp::Sar => {
             let bits: u32 = width.bits();
-            let shift_mask: u64 = u64::from(bits - 1);
+            let shift_mask: u64 = u64::from(width.shift_count_mask());
             c_render(|cx| {
                 let inner: CExpr = cx.var(lhs);
                 let narrowed: CExpr = c_cast(cx, &format!("int{bits}_t"), inner);
@@ -12900,7 +12907,7 @@ fn rs_reg_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
 
 fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
     let bits: u32 = width.bits();
-    let shift_mask: u32 = bits - 1;
+    let shift_mask: u32 = width.shift_count_mask();
     let (parsed_lhs, parsed_rhs): (Option<RustExpr>, Option<RustExpr>) =
         (parse_expr(lhs), parse_expr(rhs));
     match op {
