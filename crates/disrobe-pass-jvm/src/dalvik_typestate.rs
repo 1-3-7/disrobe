@@ -566,13 +566,9 @@ fn aget_result_type(regs: &RegState, array_reg: Option<u16>, op: u8) -> RegType 
 
 const fn numeric_cast_result(op: u8) -> RegType {
     match op {
-        0x81 | 0x86 => RegType::Long,
-        0x82 | 0x89 => RegType::Float,
-        0x83 | 0x8A => RegType::Double,
-        0x84 | 0x87 => RegType::Int,
-        0x85 | 0x88 => RegType::Float,
-        0x8B | 0x8E => RegType::Double,
-        0x8C => RegType::Float,
+        0x81 | 0x88 | 0x8B => RegType::Long,
+        0x82 | 0x85 | 0x8C => RegType::Float,
+        0x83 | 0x86 | 0x89 => RegType::Double,
         _ => RegType::Int,
     }
 }
