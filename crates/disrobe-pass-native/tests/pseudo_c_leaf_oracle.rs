@@ -103,6 +103,46 @@ const BATTERY: &[Case] = &[
         arity: 2,
         c_source: "int f_max32(int a, int b){ return a > b ? a : b; }",
     },
+    Case {
+        name: "f_prec_shladd",
+        arity: 2,
+        c_source: "int f_prec_shladd(int a, int b){ return (a + b) << 2; }",
+    },
+    Case {
+        name: "f_prec_addshl",
+        arity: 2,
+        c_source: "int f_prec_addshl(int a, int b){ return a + (b << 2); }",
+    },
+    Case {
+        name: "f_prec_sub3",
+        arity: 3,
+        c_source: "long long f_prec_sub3(long long a, long long b, long long c){ return a - b - c; }",
+    },
+    Case {
+        name: "f_prec_orand",
+        arity: 3,
+        c_source: "long long f_prec_orand(long long a, long long b, long long c){ return (a | b) & c; }",
+    },
+    Case {
+        name: "f_prec_negadd",
+        arity: 2,
+        c_source: "long long f_prec_negadd(long long a, long long b){ return -(a + b); }",
+    },
+    Case {
+        name: "f_prec_notadd",
+        arity: 2,
+        c_source: "long long f_prec_notadd(long long a, long long b){ return ~(a + b); }",
+    },
+    Case {
+        name: "f_prec_submul",
+        arity: 3,
+        c_source: "long long f_prec_submul(long long a, long long b, long long c){ return (a - b) * c; }",
+    },
+    Case {
+        name: "f_prec_nesttern",
+        arity: 3,
+        c_source: "long long f_prec_nesttern(long long a, long long b, long long c){ return a > b ? a : (b > c ? b : c); }",
+    },
 ];
 
 fn cc() -> Option<String> {
