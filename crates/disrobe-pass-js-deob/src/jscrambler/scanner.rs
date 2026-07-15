@@ -204,8 +204,9 @@ pub(super) fn decode_x_or_u_escapes(s: &str) -> Option<String> {
             i += 2;
             continue;
         }
-        out.push(b as char);
-        i += 1;
+        let ch: char = s.get(i..)?.chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
     }
     Some(out)
 }

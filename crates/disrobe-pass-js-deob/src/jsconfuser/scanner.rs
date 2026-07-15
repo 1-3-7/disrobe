@@ -287,8 +287,23 @@ pub(super) fn decode_string_literal_at(bytes: &[u8], start: usize) -> Option<(St
         if b == quote {
             return Some((literal, j + 1));
         }
-        literal.push(b as char);
-        j += 1;
+        if let Some(ch) = next_utf8_char(bytes, j) {
+            literal.push(ch);
+            j += ch.len_utf8();
+        } else {
+            literal.push(b as char);
+            j += 1;
+        }
+    }
+    None
+}
+
+fn next_utf8_char(bytes: &[u8], at: usize) -> Option<char> {
+    let end: usize = (at + 4).min(bytes.len());
+    for take in (at + 1)..=end {
+        if let Ok(chunk) = std::str::from_utf8(bytes.get(at..take)?) {
+            return chunk.chars().next();
+        }
     }
     None
 }
