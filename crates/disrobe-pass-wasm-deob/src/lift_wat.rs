@@ -2271,7 +2271,10 @@ fn local_ref(local_index: u32, sig: &FunctionSig) -> String {
 
 fn wat_f32(v: f32) -> String {
     if v.is_nan() {
-        "nan".to_owned()
+        let bits: u32 = v.to_bits();
+        let sign: &str = if bits >> 31 == 1 { "-" } else { "" };
+        let payload: u32 = bits & 0x007f_ffff;
+        format!("{sign}nan:0x{payload:x}")
     } else if v.is_infinite() {
         if v < 0.0 {
             "-inf".to_owned()
@@ -2285,7 +2288,10 @@ fn wat_f32(v: f32) -> String {
 
 fn wat_f64(v: f64) -> String {
     if v.is_nan() {
-        "nan".to_owned()
+        let bits: u64 = v.to_bits();
+        let sign: &str = if bits >> 63 == 1 { "-" } else { "" };
+        let payload: u64 = bits & 0x000f_ffff_ffff_ffff;
+        format!("{sign}nan:0x{payload:x}")
     } else if v.is_infinite() {
         if v < 0.0 {
             "-inf".to_owned()
