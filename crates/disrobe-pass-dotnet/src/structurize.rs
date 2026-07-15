@@ -428,6 +428,34 @@ pub(crate) fn csharp_string_literal(s: &str) -> String {
     format!("\"{}\"", escape(s))
 }
 
+fn csharp_double(v: f64) -> String {
+    if v.is_nan() {
+        "double.NaN".to_owned()
+    } else if v.is_infinite() {
+        if v.is_sign_negative() {
+            "double.NegativeInfinity".to_owned()
+        } else {
+            "double.PositiveInfinity".to_owned()
+        }
+    } else {
+        format!("{v}D")
+    }
+}
+
+fn csharp_single(v: f32) -> String {
+    if v.is_nan() {
+        "float.NaN".to_owned()
+    } else if v.is_infinite() {
+        if v.is_sign_negative() {
+            "float.NegativeInfinity".to_owned()
+        } else {
+            "float.PositiveInfinity".to_owned()
+        }
+    } else {
+        format!("{v}f")
+    }
+}
+
 fn escape(s: &str) -> String {
     let mut out: String = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -521,8 +549,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
 
     fn float_const(ins: &Instruction) -> String {
         match ins.operand {
-            OperandValue::F32Bits(b) => format!("{}f", f32::from_bits(b)),
-            OperandValue::F64Bits(b) => f64::from_bits(b).to_string(),
+            OperandValue::F32Bits(b) => csharp_single(f32::from_bits(b)),
+            OperandValue::F64Bits(b) => csharp_double(f64::from_bits(b)),
             _ => "0".to_owned(),
         }
     }
@@ -2348,5 +2376,51 @@ mod tests {
         assert!(!info.arg_is_byref(0));
         assert!(!info.arg_is_byref(1));
         assert!(info.arg_is_byref(2));
+    }
+
+    fn returned_literal(sig: &str, code: &[u8]) -> String {
+        let body: MethodBody = body_from(code);
+        let out: StructuredMethod = decompile_method(sig, &body, &HexNamer);
+        out.body
+    }
+
+    #[test]
+    fn integral_double_keeps_double_type() {
+        let body: String =
+            returned_literal("double M()", &[0x23, 0, 0, 0, 0, 0, 0, 0x08, 0x40, 0x2A]);
+        assert!(body.contains("return 3D;"), "got:\n{body}");
+        assert!(!body.contains("return 3;"), "got:\n{body}");
+    }
+
+    #[test]
+    fn double_specials_render_as_named_members() {
+        let nan: String =
+            returned_literal("double M()", &[0x23, 0, 0, 0, 0, 0, 0, 0xF8, 0x7F, 0x2A]);
+        assert!(nan.contains("return double.NaN;"), "got:\n{nan}");
+        let pinf: String =
+            returned_literal("double M()", &[0x23, 0, 0, 0, 0, 0, 0, 0xF0, 0x7F, 0x2A]);
+        assert!(
+            pinf.contains("return double.PositiveInfinity;"),
+            "got:\n{pinf}"
+        );
+        let ninf: String =
+            returned_literal("double M()", &[0x23, 0, 0, 0, 0, 0, 0, 0xF0, 0xFF, 0x2A]);
+        assert!(
+            ninf.contains("return double.NegativeInfinity;"),
+            "got:\n{ninf}"
+        );
+    }
+
+    #[test]
+    fn single_specials_render_as_named_members() {
+        let three: String = returned_literal("float M()", &[0x22, 0, 0, 0x40, 0x40, 0x2A]);
+        assert!(three.contains("return 3f;"), "got:\n{three}");
+        let nan: String = returned_literal("float M()", &[0x22, 0, 0, 0xC0, 0x7F, 0x2A]);
+        assert!(nan.contains("return float.NaN;"), "got:\n{nan}");
+        let pinf: String = returned_literal("float M()", &[0x22, 0, 0, 0x80, 0x7F, 0x2A]);
+        assert!(
+            pinf.contains("return float.PositiveInfinity;"),
+            "got:\n{pinf}"
+        );
     }
 }
