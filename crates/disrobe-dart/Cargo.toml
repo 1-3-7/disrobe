@@ -1,0 +1,24 @@
+[package]
+name = "disrobe-dart"
+description = "Static recovery of Dart AOT snapshot declarations and hierarchy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["dart", "flutter", "snapshot", "reverse-engineering"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+object = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

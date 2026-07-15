@@ -1,0 +1,62 @@
+{
+  "flutter_version": "3.44.6",
+  "flutter_channel": "stable",
+  "flutter_framework_revision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
+  "flutter_engine_revision": "83675ed27633283e7fc296c8bca22e841224c096",
+  "dart_version": "3.12.2",
+  "dart_sdk_revision": "d684a576bc01167dca2374cbfab1a5088b762ada",
+  "snapshot_compatibility_hash": "ace654289f5abc240509fc941453ebc5",
+  "target": "android-arm64",
+  "application_library": "package:disrobe_dart_fixture/main.dart",
+  "perturbation": {
+    "from": "ReceiptValidator",
+    "to": "VoucherValidator"
+  },
+  "builds": [
+    {
+      "name": "source",
+      "command": "flutter build apk --release",
+      "source": "receipt_validator.dart",
+      "artifact": "receipt_validator_arm64.so",
+      "sha256": "ed36ebd571c8705ef68c881f6303da4aa337ae11d26458e7ff27ccce98d81859",
+      "classes": 2182,
+      "methods": 7148,
+      "fields": 400,
+      "known_classes": ["FixtureApp", "ReceiptValidator"],
+      "known_methods": [
+        {"name": "FixtureApp.build", "parameter_count": null},
+        {"name": "ReceiptValidator.computeChecksum", "parameter_count": 1},
+        {"name": "ReceiptValidator.formatReceipt", "parameter_count": 1}
+      ],
+      "known_fields": ["ReceiptValidator.merchantTag", "ReceiptValidator.modulus"]
+    },
+    {
+      "name": "renamed",
+      "command": "flutter build apk --release",
+      "source": "voucher_validator.dart",
+      "artifact": "voucher_validator_arm64.so",
+      "sha256": "4b768825925a694edbd3a937347a7a08079261c962e13f76b028dc78c5f25a48",
+      "classes": 2182,
+      "methods": 7148,
+      "fields": 400,
+      "known_classes": ["FixtureApp", "VoucherValidator"],
+      "known_methods": [
+        {"name": "FixtureApp.build", "parameter_count": null},
+        {"name": "VoucherValidator.computeChecksum", "parameter_count": 1},
+        {"name": "VoucherValidator.formatReceipt", "parameter_count": 1}
+      ],
+      "known_fields": ["VoucherValidator.merchantTag", "VoucherValidator.modulus"]
+    },
+    {
+      "name": "obfuscated",
+      "command": "flutter build apk --release --obfuscate --split-debug-info=build/symbols",
+      "source": "receipt_validator.dart",
+      "artifact": "receipt_validator_obfuscated_arm64.so",
+      "sha256": "672d85a787ea0354682b2c2f8815895db50a670ad3b9913c81194f38eb71c94a",
+      "classes": 2132,
+      "methods": 1459,
+      "fields": 346,
+      "name_mode": "opaque"
+    }
+  ]
+}

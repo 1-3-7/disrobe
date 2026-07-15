@@ -4,6 +4,7 @@ members = [
     "crates/disrobe-binfmt",
     "crates/disrobe-bytes",
     "crates/disrobe-capabilities",
+    "crates/disrobe-dart",
     "crates/disrobe-cli",
     "crates/disrobe-core",
     "crates/disrobe-emit",
