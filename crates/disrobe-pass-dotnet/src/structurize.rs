@@ -465,7 +465,7 @@ fn escape(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
                 let _ = write!(out, "\\u{:04x}", c as u32);
             }
             c => out.push(c),
@@ -1973,6 +1973,48 @@ mod tests {
         let body: MethodBody = body_from(&code);
         let out: StructuredMethod = decompile_method("void M()", &body, &HexNamer);
         assert!(out.body.contains('"'), "got:\n{}", out.body);
+    }
+
+    struct LineSeparatorNamer;
+
+    impl TokenNamer for LineSeparatorNamer {
+        fn name(&self, _token: u32) -> String {
+            "start\u{2028}mid\u{2029}end".to_owned()
+        }
+    }
+
+    #[test]
+    fn line_separator_code_points_escape_for_recompile() {
+        assert_eq!(csharp_string_literal("a\u{2028}b"), "\"a\\u2028b\"");
+        assert_eq!(csharp_string_literal("x\u{2029}y"), "\"x\\u2029y\"");
+        let literal: String = csharp_string_literal("p\u{2028}q\u{2029}r");
+        assert!(
+            !literal.contains('\u{2028}'),
+            "raw line separator leaked: {literal}"
+        );
+        assert!(
+            !literal.contains('\u{2029}'),
+            "raw paragraph separator leaked: {literal}"
+        );
+    }
+
+    #[test]
+    fn ldstr_escapes_line_and_paragraph_separators() {
+        let mut code: Vec<u8> = vec![0x72];
+        code.extend_from_slice(&0x7000_0001u32.to_le_bytes());
+        code.push(0x2A);
+        let body: MethodBody = body_from(&code);
+        let out: StructuredMethod = decompile_method("void M()", &body, &LineSeparatorNamer);
+        assert!(
+            out.body.contains("\"start\\u2028mid\\u2029end\""),
+            "got:\n{}",
+            out.body
+        );
+        assert!(
+            !out.body.contains('\u{2028}') && !out.body.contains('\u{2029}'),
+            "raw separator leaked into recompilable output:\n{}",
+            out.body
+        );
     }
 
     #[test]
