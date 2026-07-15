@@ -680,11 +680,11 @@ fn lower(
             Op::MmBin | Op::MmBinI | Op::MmBinK => {}
             Op::Unm => {
                 let v: String = state.reg(d.b);
-                define(state, names, live, p, d.a, format!("-({v})"));
+                define(state, names, live, p, d.a, format!("(-({v}))"));
             }
             Op::BNot => {
                 let v: String = state.reg(d.b);
-                define(state, names, live, p, d.a, format!("~({v})"));
+                define(state, names, live, p, d.a, format!("(~({v}))"));
             }
             Op::Not => {
                 let v: String = state.reg(d.b);
@@ -692,7 +692,7 @@ fn lower(
             }
             Op::Len => {
                 let v: String = state.reg(d.b);
-                define(state, names, live, p, d.a, format!("#{v}"));
+                define(state, names, live, p, d.a, format!("(#({v}))"));
             }
             Op::Concat => {
                 let (start, end): (u32, u32) = if matches!(dialect, LuaDialect::Lua54) {
