@@ -497,6 +497,64 @@ fn variable_variable_assignment_recovers_dollar_dollar_form() {
     );
 }
 
+fn php_bin() -> Option<String> {
+    let candidate: &str = "php";
+    let ok: bool = std::process::Command::new(candidate)
+        .arg("--version")
+        .output()
+        .map(|o: std::process::Output| o.status.success())
+        .unwrap_or(false);
+    if ok { Some(candidate.to_owned()) } else { None }
+}
+
+fn php_eval_bool(php: &str, expr: &str) -> String {
+    let script: String = format!("$a=0;$b=0;$c=0; var_export((bool)({expr}));");
+    let out: std::process::Output = std::process::Command::new(php)
+        .arg("-r")
+        .arg(&script)
+        .output()
+        .expect("run php");
+    assert!(out.status.success(), "php failed on: {expr}");
+    String::from_utf8(out.stdout).expect("utf8")
+}
+
+#[test]
+fn relational_binds_tighter_than_equality_forces_parens() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("a").var("b").var("c");
+    b.op(op::IS_EQUAL, T_CV, T_CV, T_TMP, 0, 1, 5, 0, 2);
+    b.op(op::IS_SMALLER, T_TMP, T_CV, T_TMP, 5, 2, 6, 0, 2);
+    b.op(op::RETURN, T_TMP, T_UNUSED, T_UNUSED, 6, 0, 0, 0, 3);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed = parse_oparray(&bytes).expect("parse");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    let skel: &str = &decomp.php_skeleton;
+
+    assert!(
+        skel.contains("return ($a == $b) < $c;"),
+        "expected parenthesized relational-of-equality, got: {skel}"
+    );
+    assert!(
+        !skel.contains("return $a == $b < $c;"),
+        "unparenthesized emit re-parses as $a == ($b < $c): {skel}"
+    );
+
+    if let Some(php) = php_bin() {
+        let wrong: String = php_eval_bool(&php, "$a == $b < $c");
+        let ground_truth: String = php_eval_bool(&php, "($a == $b) < $c");
+        assert_ne!(
+            wrong, ground_truth,
+            "inputs must distinguish the two parses"
+        );
+        let emitted: String = php_eval_bool(&php, "($a == $b) < $c");
+        assert_eq!(
+            emitted, ground_truth,
+            "emitted expression must match relational-tighter semantics"
+        );
+    }
+}
+
 #[test]
 fn nested_depth_guard_rejects_pathological_nesting() {
     let mut out: Vec<u8> = Vec::new();
