@@ -1,4 +1,4 @@
-use crate::types::{NirInstr, NirOp};
+use crate::types::{CallOtherEffect, NirInstr, NirOp};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DefUse {
@@ -45,7 +45,14 @@ const RETURN_REGISTER: &str = "rax";
 #[must_use]
 pub fn def_use(instr: &NirInstr) -> DefUse {
     match &instr.op {
-        NirOp::Call { .. } | NirOp::IndirectCall | NirOp::ExternCall { .. } => call_def_use(instr),
+        NirOp::Call { target: None }
+        | NirOp::NoReturnCall { target: None }
+        | NirOp::TailCall { target: None }
+        | NirOp::IndirectCall => native_indirect_call_def_use(instr),
+        NirOp::Call { .. }
+        | NirOp::NoReturnCall { .. }
+        | NirOp::TailCall { .. }
+        | NirOp::ExternCall { .. } => call_def_use(instr),
         NirOp::Return => DefUse {
             defs: Vec::new(),
             uses: register_use(instr.operands.first())
@@ -53,14 +60,131 @@ pub fn def_use(instr: &NirInstr) -> DefUse {
                 .chain(std::iter::once(ValueId::register(RETURN_REGISTER)))
                 .collect(),
         },
+        NirOp::Branch { .. } | NirOp::CondBranch { .. } => DefUse {
+            defs: Vec::new(),
+            uses: instr
+                .operands
+                .first()
+                .and_then(|value: &String| native_value(value))
+                .into_iter()
+                .collect(),
+        },
+        NirOp::RawLoad { addr, .. } => DefUse {
+            defs: instr
+                .operands
+                .first()
+                .map(|value: &String| ValueId::register(value))
+                .into_iter()
+                .collect(),
+            uses: native_value(addr)
+                .into_iter()
+                .chain(std::iter::once(ValueId::memory(addr)))
+                .collect(),
+        },
+        NirOp::RawStore { addr, value, .. } => DefUse {
+            defs: vec![ValueId::memory(addr)],
+            uses: native_value(addr)
+                .into_iter()
+                .chain(native_value(value))
+                .collect(),
+        },
+        NirOp::Subpiece { src, .. } => DefUse {
+            defs: instr
+                .operands
+                .first()
+                .map(|value: &String| ValueId::register(value))
+                .into_iter()
+                .collect(),
+            uses: native_value(src).into_iter().collect(),
+        },
+        NirOp::Deposit {
+            cell,
+            value,
+            zero_upper,
+            ..
+        } => {
+            let mut uses: Vec<ValueId> = Vec::new();
+            if !zero_upper {
+                uses.push(ValueId::register(cell));
+            }
+            let input: Option<ValueId> = native_value(value);
+            if let Some(input) = input {
+                uses.push(input);
+            }
+            DefUse {
+                defs: vec![ValueId::register(cell)],
+                uses,
+            }
+        }
+        NirOp::CallOther { effect } => callother_def_use(effect),
+        NirOp::Copy { src, .. } => DefUse {
+            defs: instr
+                .operands
+                .first()
+                .map(|value: &String| ValueId::register(value))
+                .into_iter()
+                .collect(),
+            uses: native_value(src).into_iter().collect(),
+        },
+        NirOp::Value { inputs, .. } => DefUse {
+            defs: instr
+                .operands
+                .first()
+                .map(|value: &String| ValueId::register(value))
+                .into_iter()
+                .collect(),
+            uses: inputs
+                .iter()
+                .filter_map(|value: &String| native_value(value))
+                .collect(),
+        },
+        NirOp::Piece { high, low, .. } => DefUse {
+            defs: instr
+                .operands
+                .first()
+                .map(|value: &String| ValueId::register(value))
+                .into_iter()
+                .collect(),
+            uses: native_value(high)
+                .into_iter()
+                .chain(native_value(low))
+                .collect(),
+        },
         NirOp::BinOp { .. } | NirOp::Load | NirOp::Store | NirOp::Const => operand_def_use(instr),
-        NirOp::Nop
-        | NirOp::Branch { .. }
-        | NirOp::CondBranch { .. }
-        | NirOp::Phi
-        | NirOp::Interrupt
-        | NirOp::Unmodeled { .. } => DefUse::default(),
+        NirOp::Nop | NirOp::Phi | NirOp::Interrupt | NirOp::Unmodeled { .. } => DefUse::default(),
     }
+}
+
+fn native_value(value: &str) -> Option<ValueId> {
+    if is_immediate(value) {
+        None
+    } else {
+        Some(ValueId::register(value))
+    }
+}
+
+fn callother_def_use(effect: &CallOtherEffect) -> DefUse {
+    let mut defs: Vec<ValueId> = effect
+        .writes
+        .iter()
+        .map(|value: &String| ValueId::register(value))
+        .collect();
+    let mut uses: Vec<ValueId> = effect
+        .reads
+        .iter()
+        .filter_map(|value: &String| native_value(value))
+        .collect();
+    if effect.unknown_registers {
+        defs.push(ValueId::register("*"));
+        uses.push(ValueId::register("*"));
+    }
+    if effect.writes_memory {
+        defs.push(ValueId::memory("*"));
+    }
+    if effect.reads_memory {
+        uses.push(ValueId::memory("*"));
+    }
+    DefUse { defs, uses }
 }
 
 fn call_def_use(instr: &NirInstr) -> DefUse {
@@ -75,6 +199,17 @@ fn call_def_use(instr: &NirInstr) -> DefUse {
     DefUse {
         defs: vec![ValueId::register(RETURN_REGISTER)],
         uses,
+    }
+}
+
+fn native_indirect_call_def_use(instr: &NirInstr) -> DefUse {
+    DefUse {
+        defs: vec![ValueId::register(RETURN_REGISTER)],
+        uses: instr
+            .operands
+            .iter()
+            .filter_map(|operand: &String| native_value(operand))
+            .collect(),
     }
 }
 
@@ -142,8 +277,10 @@ fn memory_cell(operand: &str) -> &str {
 
 fn is_immediate(operand: &str) -> bool {
     let body: &str = operand.strip_prefix('-').unwrap_or(operand);
-    let body: &str = body.strip_prefix("0x").unwrap_or(body);
-    !body.is_empty() && body.bytes().all(|b: u8| b.is_ascii_hexdigit())
+    if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.bytes().all(|byte: u8| byte.is_ascii_hexdigit());
+    }
+    !body.is_empty() && body.bytes().all(|byte: u8| byte.is_ascii_digit())
 }
 
 fn is_symbol_operand(operand: &str) -> bool {
@@ -257,5 +394,85 @@ mod tests {
     fn empty_operands_yield_no_def_use() {
         let du: DefUse = def_use(&instr(NirOp::BinOp { op: BinaryOp::Add }, "add", &[]));
         assert!(du.is_empty());
+    }
+
+    #[test]
+    fn native_memory_alias_and_effect_ops_expose_exact_def_use() {
+        let load: DefUse = def_use(&instr(
+            NirOp::RawLoad {
+                addr: "rax".to_owned(),
+                size: 4,
+            },
+            "LOAD",
+            &["t0"],
+        ));
+        assert_eq!(load.defs, vec![ValueId::register("t0")]);
+        assert_eq!(
+            load.uses,
+            vec![ValueId::register("rax"), ValueId::memory("rax")]
+        );
+
+        let store: DefUse = def_use(&instr(
+            NirOp::RawStore {
+                addr: "rax".to_owned(),
+                value: "t0".to_owned(),
+                size: 4,
+            },
+            "STORE",
+            &[],
+        ));
+        assert_eq!(store.defs, vec![ValueId::memory("rax")]);
+        assert_eq!(
+            store.uses,
+            vec![ValueId::register("rax"), ValueId::register("t0")]
+        );
+
+        let deposit: DefUse = def_use(&instr(
+            NirOp::Deposit {
+                cell: "rax".to_owned(),
+                value: "t0".to_owned(),
+                offset: 0,
+                size: 4,
+                cell_size: 8,
+                zero_upper: true,
+            },
+            "DEPOSIT",
+            &[],
+        ));
+        assert_eq!(deposit.defs, vec![ValueId::register("rax")]);
+        assert_eq!(deposit.uses, vec![ValueId::register("t0")]);
+
+        let effect: CallOtherEffect = CallOtherEffect {
+            name: "x86_probe_reads_writes_mem_v1".to_owned(),
+            reads: vec!["rax".to_owned()],
+            writes: vec!["rdx".to_owned()],
+            reads_memory: true,
+            writes_memory: true,
+            unknown_registers: false,
+        };
+        let callother: DefUse = def_use(&instr(NirOp::CallOther { effect }, "CALLOTHER", &[]));
+        assert_eq!(
+            callother.defs,
+            vec![ValueId::register("rdx"), ValueId::memory("*")]
+        );
+        assert_eq!(
+            callother.uses,
+            vec![ValueId::register("rax"), ValueId::memory("*")]
+        );
+
+        let flags: DefUse = def_use(&instr(
+            NirOp::Value {
+                op: crate::types::ValueOp::BoolOr,
+                inputs: vec!["cf".to_owned(), "af".to_owned()],
+                input_sizes: vec![1, 1],
+                size: 1,
+            },
+            "BOOL_OR",
+            &["t0"],
+        ));
+        assert_eq!(
+            flags.uses,
+            vec![ValueId::register("cf"), ValueId::register("af")]
+        );
     }
 }

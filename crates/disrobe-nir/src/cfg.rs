@@ -25,8 +25,10 @@ pub struct NirBlock {
 fn effective_end(function: &NirFunction) -> u64 {
     let last_address: u64 = function
         .instructions
-        .last()
-        .map_or(function.end, |i: &NirInstr| i.address);
+        .iter()
+        .map(|instruction: &NirInstr| instruction.address)
+        .max()
+        .unwrap_or(function.end);
     function.end.max(last_address.saturating_add(1))
 }
 
@@ -36,18 +38,32 @@ pub fn basic_blocks(function: &NirFunction) -> Vec<NirBlock> {
         return Vec::new();
     }
     let end: u64 = effective_end(function);
-    let leaders: Vec<u64> = block_leaders(function);
+    let mut listing: Vec<NirInstr> = function.instructions.clone();
+    listing.sort_by_key(|instruction: &NirInstr| instruction.address);
+    let leaders: Vec<u64> = block_leaders(function.address, end, &listing);
     let mut blocks: Vec<NirBlock> = Vec::with_capacity(leaders.len());
+    let mut instruction_index: usize = 0;
     for (idx, leader) in leaders.iter().enumerate() {
         let next_leader: Option<u64> = leaders.get(idx + 1).copied();
         let block_end: u64 = next_leader.unwrap_or(end);
-        let mut insns: Vec<NirInstr> = function
-            .instructions
-            .iter()
-            .filter(|i: &&NirInstr| address_in_block(i.address, *leader, next_leader, end))
-            .cloned()
-            .collect();
-        insns.sort_by_key(|i: &NirInstr| i.address);
+        while listing
+            .get(instruction_index)
+            .is_some_and(|instruction: &NirInstr| instruction.address < *leader)
+        {
+            instruction_index = instruction_index.saturating_add(1);
+        }
+        let block_start_index: usize = instruction_index;
+        while listing
+            .get(instruction_index)
+            .is_some_and(|instruction: &NirInstr| {
+                address_in_block(instruction.address, *leader, next_leader, end)
+            })
+        {
+            instruction_index = instruction_index.saturating_add(1);
+        }
+        let insns: Vec<NirInstr> = listing
+            .get(block_start_index..instruction_index)
+            .map_or_else(Vec::new, <[NirInstr]>::to_vec);
         let Some(last): Option<&NirInstr> = insns.last() else {
             continue;
         };
@@ -65,15 +81,14 @@ pub fn basic_blocks(function: &NirFunction) -> Vec<NirBlock> {
     blocks
 }
 
-fn block_leaders(function: &NirFunction) -> Vec<u64> {
-    let end: u64 = effective_end(function);
+fn block_leaders(address: u64, end: u64, instructions: &[NirInstr]) -> Vec<u64> {
     let in_function =
-        |address: u64| address >= function.address && address_is_before_end(address, end);
+        |candidate: u64| candidate >= address && address_is_before_end(candidate, end);
     let mut starts: Vec<u64> = Vec::new();
-    if let Some(first) = function.instructions.first() {
+    if let Some(first) = instructions.first() {
         starts.push(first.address);
     }
-    for (idx, insn) in function.instructions.iter().enumerate() {
+    for (idx, insn) in instructions.iter().enumerate() {
         match insn.class() {
             NirClass::ConditionalJump | NirClass::UnconditionalJump => {
                 if let Some(target) = insn.direct_target()
@@ -81,12 +96,17 @@ fn block_leaders(function: &NirFunction) -> Vec<u64> {
                 {
                     starts.push(target);
                 }
-                if let Some(next) = function.instructions.get(idx + 1) {
+                if let Some(next) = instructions.get(idx + 1) {
                     starts.push(next.address);
                 }
             }
             NirClass::Return => {
-                if let Some(next) = function.instructions.get(idx + 1) {
+                if let Some(next) = instructions.get(idx + 1) {
+                    starts.push(next.address);
+                }
+            }
+            NirClass::Call if insn.op.is_terminal_call() => {
+                if let Some(next) = instructions.get(idx + 1) {
                     starts.push(next.address);
                 }
             }
@@ -138,6 +158,7 @@ fn terminator_edges(
             None => (BlockKind::Indirect, Vec::new()),
         },
         NirClass::Return => (BlockKind::Return, Vec::new()),
+        NirClass::Call if last.op.is_terminal_call() => (BlockKind::Return, Vec::new()),
         NirClass::Call | NirClass::Other => {
             let succ: Vec<u64> = fallthrough
                 .filter(|n: &u64| in_function(*n))
@@ -333,6 +354,30 @@ mod tests {
     }
 
     #[test]
+    fn terminal_calls_do_not_gain_fallthrough_edges() {
+        let f: NirFunction = NirFunction {
+            name: "terminal_call".to_owned(),
+            address: 0,
+            end: 3,
+            is_export: false,
+            instructions: vec![
+                instr(
+                    0,
+                    NirOp::NoReturnCall {
+                        target: Some(0x4000),
+                    },
+                ),
+                instr(2, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let blocks: Vec<NirBlock> = basic_blocks(&f);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].kind, BlockKind::Return);
+        assert!(blocks[0].successors.is_empty());
+    }
+
+    #[test]
     fn inverted_end_still_produces_a_block() {
         let f: NirFunction = NirFunction {
             name: "inverted".to_owned(),
@@ -363,5 +408,41 @@ mod tests {
         assert_eq!(blocks[0].instructions.len(), 1);
         assert_eq!(blocks[0].instructions[0].address, u64::MAX);
         assert_eq!(blocks[0].kind, BlockKind::Return);
+    }
+
+    #[test]
+    fn branch_heavy_listing_partitions_without_losing_edges() {
+        let count: u64 = 16_384;
+        let instructions: Vec<NirInstr> = (0_u64..count)
+            .map(|address: u64| {
+                let op: NirOp = if address.saturating_add(1) == count {
+                    NirOp::Return
+                } else {
+                    NirOp::Branch {
+                        target: Some(address.saturating_add(1)),
+                    }
+                };
+                instr(address, op)
+            })
+            .collect();
+        let f: NirFunction = NirFunction {
+            name: "branch_heavy".to_owned(),
+            address: 0,
+            end: count,
+            is_export: false,
+            instructions,
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let blocks: Vec<NirBlock> = basic_blocks(&f);
+        assert_eq!(blocks.len(), usize::try_from(count).unwrap_or(usize::MAX));
+        assert_eq!(blocks.first().map(|block: &NirBlock| block.start), Some(0));
+        assert_eq!(
+            blocks.last().map(|block: &NirBlock| block.kind),
+            Some(BlockKind::Return)
+        );
+        assert!(blocks.iter().all(|block: &NirBlock| {
+            block.instructions.len() == 1
+                && (block.kind == BlockKind::Return || block.successors.len() == 1)
+        }));
     }
 }

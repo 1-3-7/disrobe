@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-nir-lift"
-description = "Lifters that lower each pass's public recovered IR (wasm SSA/CFG, JVM and Dalvik bytecode CFG, .NET CIL method bodies, recovered Python AST) into the architecture-neutral normalized IR (the Mir rung), so the queryable-IR layer can run identical symbol / call / xref / capability / decoder queries across every front end."
+description = "Lifters from supported bytecode, recovered AST, and native P-code inputs into the instruction-based NIR control-flow representation."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true
@@ -16,6 +16,8 @@ workspace = true
 
 [dependencies]
 disrobe-nir = { workspace = true }
+disrobe-lift-x86 = { path = "../disrobe-lift-x86" }
+disrobe-sleigh = { path = "../disrobe-sleigh" }
 disrobe-pass-as3 = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true }
 disrobe-pass-jvm = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-nir"
-description = "Architecture- and language-neutral normalized IR (the Mir rung): a typed SSA-shaped control-flow representation that recovered native/wasm/jvm/python artifacts lower into, so one queryable form spans every source language."
+description = "Instruction-based normalized IR for control-flow, def-use, structuring, and source-level recovery across supported front-ends."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

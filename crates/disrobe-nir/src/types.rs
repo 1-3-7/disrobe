@@ -179,6 +179,136 @@ impl BinaryOp {
     Default,
 )]
 #[rkyv(derive(Debug))]
+pub struct CallOtherEffect {
+    pub name: String,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    pub reads_memory: bool,
+    pub writes_memory: bool,
+    pub unknown_registers: bool,
+}
+
+#[derive(
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+)]
+#[rkyv(derive(Debug))]
+#[serde(rename_all = "kebab-case")]
+pub enum ValueOp {
+    BoolAnd,
+    BoolNegate,
+    BoolOr,
+    BoolXor,
+    FloatAdd,
+    FloatDiv,
+    FloatEqual,
+    FloatLess,
+    FloatLessEqual,
+    FloatMult,
+    FloatSqrt,
+    FloatSub,
+    FloatToFloat,
+    FloatTrunc,
+    IntToFloat,
+    #[default]
+    IntAdd,
+    IntAnd,
+    IntCarry,
+    IntDiv,
+    IntEqual,
+    IntLeft,
+    IntLess,
+    IntLessEqual,
+    IntMult,
+    IntNegate,
+    IntNotEqual,
+    IntOr,
+    IntRem,
+    IntRight,
+    IntSignedBorrow,
+    IntSignedCarry,
+    IntSignedDiv,
+    IntSignedLess,
+    IntSignedLessEqual,
+    IntSignedRem,
+    IntSignedRight,
+    IntSub,
+    IntXor,
+    IntSext,
+    IntZext,
+}
+
+impl ValueOp {
+    #[must_use]
+    pub const fn mnemonic(self) -> &'static str {
+        match self {
+            Self::BoolAnd => "BOOL_AND",
+            Self::BoolNegate => "BOOL_NEGATE",
+            Self::BoolOr => "BOOL_OR",
+            Self::BoolXor => "BOOL_XOR",
+            Self::FloatAdd => "FLOAT_ADD",
+            Self::FloatDiv => "FLOAT_DIV",
+            Self::FloatEqual => "FLOAT_EQUAL",
+            Self::FloatLess => "FLOAT_LESS",
+            Self::FloatLessEqual => "FLOAT_LESSEQUAL",
+            Self::FloatMult => "FLOAT_MULT",
+            Self::FloatSqrt => "FLOAT_SQRT",
+            Self::FloatSub => "FLOAT_SUB",
+            Self::FloatToFloat => "FLOAT_FLOAT2FLOAT",
+            Self::FloatTrunc => "FLOAT_TRUNC",
+            Self::IntToFloat => "FLOAT_INT2FLOAT",
+            Self::IntAdd => "INT_ADD",
+            Self::IntAnd => "INT_AND",
+            Self::IntCarry => "INT_CARRY",
+            Self::IntDiv => "INT_DIV",
+            Self::IntEqual => "INT_EQUAL",
+            Self::IntLeft => "INT_LEFT",
+            Self::IntLess => "INT_LESS",
+            Self::IntLessEqual => "INT_LESSEQUAL",
+            Self::IntMult => "INT_MULT",
+            Self::IntNegate => "INT_NEGATE",
+            Self::IntNotEqual => "INT_NOTEQUAL",
+            Self::IntOr => "INT_OR",
+            Self::IntRem => "INT_REM",
+            Self::IntRight => "INT_RIGHT",
+            Self::IntSignedBorrow => "INT_SBORROW",
+            Self::IntSignedCarry => "INT_SCARRY",
+            Self::IntSignedDiv => "INT_SDIV",
+            Self::IntSignedLess => "INT_SLESS",
+            Self::IntSignedLessEqual => "INT_SLESSEQUAL",
+            Self::IntSignedRem => "INT_SREM",
+            Self::IntSignedRight => "INT_SRIGHT",
+            Self::IntSub => "INT_SUB",
+            Self::IntXor => "INT_XOR",
+            Self::IntSext => "INT_SEXT",
+            Self::IntZext => "INT_ZEXT",
+        }
+    }
+}
+
+#[derive(
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Default,
+)]
+#[rkyv(derive(Debug))]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum NirOp {
     #[default]
@@ -209,13 +339,65 @@ pub enum NirOp {
         opcode: u8,
         offset: u32,
     },
+    RawLoad {
+        addr: String,
+        size: u32,
+    },
+    RawStore {
+        addr: String,
+        value: String,
+        size: u32,
+    },
+    Subpiece {
+        src: String,
+        offset: u32,
+        size: u32,
+    },
+    Deposit {
+        cell: String,
+        value: String,
+        offset: u32,
+        size: u32,
+        cell_size: u32,
+        zero_upper: bool,
+    },
+    CallOther {
+        effect: CallOtherEffect,
+    },
+    Copy {
+        src: String,
+        size: u32,
+    },
+    Value {
+        op: ValueOp,
+        inputs: Vec<String>,
+        input_sizes: Vec<u32>,
+        size: u32,
+    },
+    Piece {
+        high: String,
+        low: String,
+        high_size: u32,
+        low_size: u32,
+        size: u32,
+    },
+    NoReturnCall {
+        target: Option<u64>,
+    },
+    TailCall {
+        target: Option<u64>,
+    },
 }
 
 impl NirOp {
     #[must_use]
     pub const fn class(&self) -> NirClass {
         match self {
-            Self::Call { .. } | Self::IndirectCall | Self::ExternCall { .. } => NirClass::Call,
+            Self::Call { .. }
+            | Self::NoReturnCall { .. }
+            | Self::TailCall { .. }
+            | Self::IndirectCall
+            | Self::ExternCall { .. } => NirClass::Call,
             Self::Branch { .. } => NirClass::UnconditionalJump,
             Self::CondBranch { .. } => NirClass::ConditionalJump,
             Self::Return => NirClass::Return,
@@ -226,7 +408,15 @@ impl NirOp {
             | Self::Store
             | Self::Phi
             | Self::Interrupt
-            | Self::Unmodeled { .. } => NirClass::Other,
+            | Self::Unmodeled { .. }
+            | Self::RawLoad { .. }
+            | Self::RawStore { .. }
+            | Self::Subpiece { .. }
+            | Self::Deposit { .. }
+            | Self::CallOther { .. }
+            | Self::Copy { .. }
+            | Self::Value { .. }
+            | Self::Piece { .. } => NirClass::Other,
         }
     }
 
@@ -246,11 +436,18 @@ impl NirOp {
     #[must_use]
     pub const fn direct_target(&self) -> Option<u64> {
         match self {
-            Self::Call { target } | Self::Branch { target } | Self::CondBranch { target } => {
-                *target
-            }
+            Self::Call { target }
+            | Self::NoReturnCall { target }
+            | Self::TailCall { target }
+            | Self::Branch { target }
+            | Self::CondBranch { target } => *target,
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub const fn is_terminal_call(&self) -> bool {
+        matches!(self, Self::NoReturnCall { .. } | Self::TailCall { .. })
     }
 }
 
@@ -481,6 +678,74 @@ mod tests {
         );
         assert_eq!(NirOp::Return.class(), NirClass::Return);
         assert_eq!(NirOp::Nop.class(), NirClass::Other);
+    }
+
+    #[test]
+    fn native_memory_alias_and_effect_ops_are_additive_other_ops() {
+        let effect: CallOtherEffect = CallOtherEffect {
+            name: "x86_probe_reads_writes_mem_v1".to_owned(),
+            reads: vec!["rax".to_owned()],
+            writes: vec!["rdx".to_owned()],
+            reads_memory: true,
+            writes_memory: true,
+            unknown_registers: false,
+        };
+        let operations: Vec<NirOp> = vec![
+            NirOp::RawLoad {
+                addr: "rax".to_owned(),
+                size: 4,
+            },
+            NirOp::RawStore {
+                addr: "rax".to_owned(),
+                value: "rdx".to_owned(),
+                size: 4,
+            },
+            NirOp::Subpiece {
+                src: "rax".to_owned(),
+                offset: 1,
+                size: 1,
+            },
+            NirOp::Deposit {
+                cell: "rax".to_owned(),
+                value: "t0".to_owned(),
+                offset: 0,
+                size: 4,
+                cell_size: 8,
+                zero_upper: true,
+            },
+            NirOp::CallOther { effect },
+        ];
+        assert!(operations.iter().all(|operation: &NirOp| {
+            operation.class() == NirClass::Other && !operation.is_unmodeled()
+        }));
+    }
+
+    #[test]
+    fn native_ops_round_trip_through_rkyv() {
+        let function: NirFunction = NirFunction {
+            name: "native".to_owned(),
+            address: 0x1000,
+            end: 0x1001,
+            is_export: false,
+            instructions: vec![instr(
+                0x1000,
+                NirOp::RawLoad {
+                    addr: "rax".to_owned(),
+                    size: 8,
+                },
+                "LOAD",
+            )],
+            source: SourceRef::new(SourceLang::NativeX86, 0x1000),
+        };
+        let module: NirModule = NirModule {
+            source_hash: [0x5a; 32],
+            lang: SourceLang::NativeX86,
+            functions: vec![function],
+            symbols: Vec::new(),
+        };
+        let bytes: Vec<u8> = encode_nir(&module).expect("encode native nir");
+        let decoded: NirModule = decode_nir(&bytes).expect("decode native nir");
+        assert_eq!(decoded, module);
     }
 
     #[test]

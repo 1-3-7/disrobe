@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_core::{AdjGraph, Dominators};
 use serde::Serialize;
 
 use crate::cfg::{BlockKind, NirBlock, basic_blocks};
 use crate::types::{
     BinaryOp, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef,
+    ValueOp,
 };
 
 const MAX_REGION_DEPTH: usize = 4096;
@@ -103,6 +105,10 @@ pub enum HirStmt {
     Dispatch {
         entry: u64,
         cases: Vec<HirDispatchCase>,
+    },
+    GotoGraph {
+        entry: u64,
+        blocks: Vec<HirDispatchCase>,
     },
     Empty,
 }
@@ -219,6 +225,8 @@ pub fn structurize_function(function: &NirFunction) -> HirFunction {
     let structured: bool = structurer.structured && structurer.placed == reachable.len();
     let body: HirStmt = if structured {
         append_unreachable_blocks(body, &index, &reachable, lang)
+    } else if uses_goto_fallback(function) {
+        goto_graph_all(&index, lang)
     } else {
         dispatch_all(&index, lang)
     };
@@ -237,6 +245,9 @@ struct BlockIndex<'a> {
     blocks: BTreeMap<u64, &'a NirBlock>,
     order: Vec<u64>,
     predecessors: BTreeMap<u64, Vec<u64>>,
+    node_ids: BTreeMap<u64, u32>,
+    dominators: Dominators,
+    natural_loops: BTreeMap<u64, BTreeSet<u64>>,
 }
 
 impl<'a> BlockIndex<'a> {
@@ -260,11 +271,48 @@ impl<'a> BlockIndex<'a> {
             preds.sort_unstable();
             preds.dedup();
         }
-        Self {
+        let node_ids: BTreeMap<u64, u32> = order
+            .iter()
+            .enumerate()
+            .filter_map(|(index, start): (usize, &u64)| {
+                u32::try_from(index).ok().map(|node: u32| (*start, node))
+            })
+            .collect();
+        let adjacency: Vec<Vec<u32>> = order
+            .iter()
+            .map(|start: &u64| {
+                by_start
+                    .get(start)
+                    .map_or_else(Vec::new, |block: &&NirBlock| {
+                        block
+                            .successors
+                            .iter()
+                            .filter_map(|successor: &u64| node_ids.get(successor).copied())
+                            .collect()
+                    })
+            })
+            .collect();
+        let graph: AdjGraph = AdjGraph::new(0, adjacency);
+        let dominators: Dominators = Dominators::compute(&graph);
+        let mut index: Self = Self {
             blocks: by_start,
             order,
             predecessors,
+            node_ids,
+            dominators,
+            natural_loops: BTreeMap::new(),
+        };
+        let headers: Vec<u64> = index
+            .order
+            .iter()
+            .copied()
+            .filter(|start: &u64| index.has_dominating_predecessor(*start))
+            .collect();
+        for header in headers {
+            let nodes: BTreeSet<u64> = index.compute_natural_loop(header);
+            index.natural_loops.insert(header, nodes);
         }
+        index
     }
 
     fn block(&self, start: u64) -> Option<&'a NirBlock> {
@@ -278,9 +326,48 @@ impl<'a> BlockIndex<'a> {
     }
 
     fn is_loop_header(&self, start: u64) -> bool {
+        self.natural_loops.contains_key(&start)
+    }
+
+    fn natural_loop(&self, start: u64) -> Option<&BTreeSet<u64>> {
+        self.natural_loops.get(&start)
+    }
+
+    fn has_dominating_predecessor(&self, start: u64) -> bool {
         self.predecessors(start)
             .iter()
-            .any(|pred: &u64| *pred >= start)
+            .any(|predecessor: &u64| self.dominates(start, *predecessor))
+    }
+
+    fn dominates(&self, candidate: u64, node: u64) -> bool {
+        let Some(candidate_node): Option<u32> = self.node_ids.get(&candidate).copied() else {
+            return false;
+        };
+        let Some(node_id): Option<u32> = self.node_ids.get(&node).copied() else {
+            return false;
+        };
+        self.dominators.dominates(candidate_node, node_id)
+    }
+
+    fn compute_natural_loop(&self, header: u64) -> BTreeSet<u64> {
+        let mut nodes: BTreeSet<u64> = BTreeSet::from([header]);
+        let mut pending: Vec<u64> = self
+            .predecessors(header)
+            .iter()
+            .copied()
+            .filter(|predecessor: &u64| self.dominates(header, *predecessor))
+            .collect();
+        while let Some(node) = pending.pop() {
+            if !nodes.insert(node) || node == header {
+                continue;
+            }
+            for predecessor in self.predecessors(node) {
+                if self.dominates(header, *predecessor) && !nodes.contains(predecessor) {
+                    pending.push(*predecessor);
+                }
+            }
+        }
+        nodes
     }
 
     fn reachable_from(&self, entry: u64) -> BTreeSet<u64> {
@@ -307,7 +394,7 @@ impl<'a> BlockIndex<'a> {
 struct Bounds {
     follows: Vec<u64>,
     loop_headers: Vec<u64>,
-    loop_follows: Vec<u64>,
+    loop_follows: Vec<(u64, u64)>,
 }
 
 impl Bounds {
@@ -327,7 +414,7 @@ impl Bounds {
         let mut next: Self = self.clone();
         next.loop_headers.push(header);
         if let Some(follow_block) = follow {
-            next.loop_follows.push(follow_block);
+            next.loop_follows.push((follow_block, header));
             if !next.follows.contains(&follow_block) {
                 next.follows.push(follow_block);
             }
@@ -344,8 +431,11 @@ impl Bounds {
     }
 
     fn loop_follow_label(&self, target: u64) -> Option<u64> {
-        let position: usize = self.loop_follows.iter().rposition(|f: &u64| *f == target)?;
-        self.loop_headers.get(position).copied()
+        self.loop_follows
+            .iter()
+            .rev()
+            .find(|(follow, _label): &&(u64, u64)| *follow == target)
+            .map(|(_follow, label): &(u64, u64)| *label)
     }
 }
 
@@ -373,14 +463,14 @@ impl<'a> Structurer<'a> {
             self.structured = false;
             return HirStmt::Empty;
         }
+        if let Some(label) = bounds.loop_follow_label(start) {
+            return HirStmt::Break { label };
+        }
         if bounds.is_follow(start) {
             return HirStmt::Empty;
         }
         if let Some(label) = bounds.loop_label_for(start) {
             return HirStmt::Continue { label };
-        }
-        if let Some(label) = bounds.loop_follow_label(start) {
-            return HirStmt::Break { label };
         }
         let Some(block): Option<&'a NirBlock> = self.index.block(start) else {
             self.structured = false;
@@ -400,7 +490,14 @@ impl<'a> Structurer<'a> {
 
     fn loop_region(&mut self, block: &'a NirBlock, bounds: &Bounds, depth: usize) -> HirStmt {
         let header: u64 = block.start;
-        let follow: Option<u64> = loop_follow(self.index, header);
+        let follow: Option<u64> = match loop_follow(self.index, header) {
+            LoopFollow::None => None,
+            LoopFollow::Single(target) => Some(target),
+            LoopFollow::Multiple => {
+                self.structured = false;
+                return HirStmt::Empty;
+            }
+        };
         let inner_bounds: Bounds = bounds.enter_loop(header, follow);
         let body: HirStmt = self.acyclic_region(block, &inner_bounds, depth + 1);
         let loop_stmt: HirStmt = HirStmt::Loop {
@@ -422,9 +519,7 @@ impl<'a> Structurer<'a> {
             BlockKind::Conditional => self.conditional_tail(block, bounds, depth),
             BlockKind::Jump => self.jump_tail(block, bounds, depth),
             BlockKind::FallThrough => self.fallthrough_tail(block, bounds, depth),
-            BlockKind::Return => HirStmt::Return {
-                value: return_value(block, self.lang),
-            },
+            BlockKind::Return => terminal_tail(block, self.lang),
             BlockKind::Indirect => {
                 self.structured = false;
                 HirStmt::Empty
@@ -495,42 +590,36 @@ impl<'a> Structurer<'a> {
     }
 }
 
-fn loop_follow(index: &BlockIndex<'_>, header: u64) -> Option<u64> {
-    let block: &NirBlock = index.block(header)?;
-    if block.kind == BlockKind::Conditional {
-        let taken: Option<u64> = block.instructions.last().and_then(NirInstr::direct_target);
-        for succ in &block.successors {
-            if *succ > header && Some(*succ) != taken {
-                return Some(*succ);
-            }
-        }
-        for succ in &block.successors {
-            if *succ > header {
-                return Some(*succ);
-            }
-        }
-    }
-    let latches: Vec<u64> = index
-        .predecessors(header)
-        .iter()
-        .copied()
-        .filter(|p: &u64| *p >= header)
-        .collect();
-    let mut candidate: Option<u64> = None;
-    for latch in latches {
-        let latch_block: Option<&NirBlock> = index.block(latch);
-        if let Some(latch_block) = latch_block {
-            for succ in &latch_block.successors {
-                if *succ != header
-                    && index.block(*succ).is_some()
-                    && candidate.is_none_or(|c: u64| *succ < c)
-                {
-                    candidate = Some(*succ);
-                }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoopFollow {
+    None,
+    Single(u64),
+    Multiple,
+}
+
+fn loop_follow(index: &BlockIndex<'_>, header: u64) -> LoopFollow {
+    let Some(nodes): Option<&BTreeSet<u64>> = index.natural_loop(header) else {
+        return LoopFollow::None;
+    };
+    let mut exits: BTreeSet<u64> = BTreeSet::new();
+    for node in nodes {
+        let Some(block): Option<&NirBlock> = index.block(*node) else {
+            continue;
+        };
+        for successor in &block.successors {
+            if index.block(*successor).is_some() && !nodes.contains(successor) {
+                exits.insert(*successor);
             }
         }
     }
-    candidate
+    match exits.len() {
+        0 => LoopFollow::None,
+        1 => exits
+            .first()
+            .copied()
+            .map_or(LoopFollow::None, LoopFollow::Single),
+        _ => LoopFollow::Multiple,
+    }
 }
 
 fn conditional_follow(index: &BlockIndex<'_>, block: &NirBlock) -> Option<u64> {
@@ -603,6 +692,27 @@ fn append_unreachable_blocks(
     sequence(parts)
 }
 
+fn uses_goto_fallback(function: &NirFunction) -> bool {
+    matches!(
+        function.source.lang,
+        SourceLang::NativeX86 | SourceLang::NativeArm
+    ) || function.instructions.iter().any(|instruction: &NirInstr| {
+        matches!(
+            instruction.op,
+            NirOp::RawLoad { .. }
+                | NirOp::RawStore { .. }
+                | NirOp::Subpiece { .. }
+                | NirOp::Deposit { .. }
+                | NirOp::CallOther { .. }
+                | NirOp::Copy { .. }
+                | NirOp::Value { .. }
+                | NirOp::Piece { .. }
+                | NirOp::NoReturnCall { .. }
+                | NirOp::TailCall { .. }
+        )
+    })
+}
+
 fn dispatch_all(index: &BlockIndex<'_>, lang: SourceLang) -> HirStmt {
     let entry: u64 = index.order.first().copied().unwrap_or(0);
     let cases: Vec<HirDispatchCase> = index
@@ -616,6 +726,24 @@ fn dispatch_all(index: &BlockIndex<'_>, lang: SourceLang) -> HirStmt {
         })
         .collect();
     HirStmt::Dispatch { entry, cases }
+}
+
+fn goto_graph_all(index: &BlockIndex<'_>, lang: SourceLang) -> HirStmt {
+    let entry: u64 = index.order.first().copied().unwrap_or(0);
+    let cases: Vec<HirDispatchCase> = index
+        .order
+        .iter()
+        .filter_map(|start: &u64| index.block(*start))
+        .map(|block: &NirBlock| HirDispatchCase {
+            block_start: block.start,
+            stmts: leaf_stmts(block, lang),
+            successors: block.successors.clone(),
+        })
+        .collect();
+    HirStmt::GotoGraph {
+        entry,
+        blocks: cases,
+    }
 }
 
 fn leaf_statement(block: &NirBlock, lang: SourceLang) -> HirStmt {
@@ -646,9 +774,30 @@ fn return_value(block: &NirBlock, lang: SourceLang) -> Option<HirExpr> {
         .map(|operand: &String| operand_expr(operand, lang))
 }
 
+fn terminal_tail(block: &NirBlock, lang: SourceLang) -> HirStmt {
+    let Some(last): Option<&NirInstr> = block.instructions.last() else {
+        return HirStmt::Return { value: None };
+    };
+    match last.op {
+        NirOp::NoReturnCall { .. } => HirStmt::Empty,
+        NirOp::TailCall { .. } => {
+            let (target, args): (Option<String>, Vec<HirExpr>) = call_parts(last, lang);
+            HirStmt::Return {
+                value: Some(HirExpr::Call { target, args }),
+            }
+        }
+        _ => HirStmt::Return {
+            value: return_value(block, lang),
+        },
+    }
+}
+
 fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
     match &instr.op {
-        NirOp::Call { .. } | NirOp::IndirectCall | NirOp::ExternCall { .. } => {
+        NirOp::Call { .. }
+        | NirOp::NoReturnCall { .. }
+        | NirOp::IndirectCall
+        | NirOp::ExternCall { .. } => {
             let (target, args): (Option<String>, Vec<HirExpr>) = call_parts(instr, lang);
             HirInstrStmt::Call { target, args }
         }
@@ -667,8 +816,111 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
             ),
         },
         NirOp::BinOp { op } => binop_assign(instr, *op, lang),
-        NirOp::Const | NirOp::Load => simple_assign(instr, lang),
+        NirOp::Copy { .. } | NirOp::Const | NirOp::Load => simple_assign(instr, lang),
+        NirOp::RawLoad { addr, size } => HirInstrStmt::Assign {
+            dst: destination_expr(instr, lang),
+            value: HirExpr::Mem {
+                cell: format!("{addr}:u{}", size.saturating_mul(8)),
+            },
+        },
+        NirOp::RawStore { addr, value, size } => HirInstrStmt::Store {
+            cell: HirExpr::Mem {
+                cell: format!("{addr}:u{}", size.saturating_mul(8)),
+            },
+            value: operand_expr(value, lang),
+        },
+        NirOp::Subpiece { src, offset, size } => native_assign(
+            instr,
+            "subpiece",
+            vec![
+                operand_expr(src, lang),
+                HirExpr::Const {
+                    text: offset.to_string(),
+                },
+                HirExpr::Const {
+                    text: size.to_string(),
+                },
+            ],
+            lang,
+        ),
+        NirOp::Deposit {
+            cell,
+            value,
+            offset,
+            size,
+            cell_size,
+            zero_upper,
+        } => {
+            let target: HirExpr = operand_expr(cell, lang);
+            let name: &str = if *zero_upper {
+                "zero_upper_deposit"
+            } else {
+                "deposit"
+            };
+            let mut args: Vec<HirExpr> = vec![
+                operand_expr(value, lang),
+                HirExpr::Const {
+                    text: offset.to_string(),
+                },
+                HirExpr::Const {
+                    text: size.to_string(),
+                },
+                HirExpr::Const {
+                    text: cell_size.to_string(),
+                },
+            ];
+            if !*zero_upper {
+                args.insert(0, target.clone());
+            }
+            HirInstrStmt::Assign {
+                dst: target,
+                value: intrinsic(name, args),
+            }
+        }
+        NirOp::CallOther { effect } => {
+            let args: Vec<HirExpr> = effect
+                .reads
+                .iter()
+                .map(|value: &String| operand_expr(value, lang))
+                .collect();
+            match effect.writes.first() {
+                Some(destination) => HirInstrStmt::Assign {
+                    dst: operand_expr(destination, lang),
+                    value: intrinsic(&effect.name, args),
+                },
+                None => HirInstrStmt::Call {
+                    target: Some(effect.name.clone()),
+                    args,
+                },
+            }
+        }
+        NirOp::Value { op, inputs, .. } => value_assign(instr, *op, inputs, lang),
+        NirOp::Piece {
+            high,
+            low,
+            high_size,
+            low_size,
+            size,
+        } => native_assign(
+            instr,
+            "piece",
+            vec![
+                operand_expr(high, lang),
+                operand_expr(low, lang),
+                HirExpr::Const {
+                    text: high_size.to_string(),
+                },
+                HirExpr::Const {
+                    text: low_size.to_string(),
+                },
+                HirExpr::Const {
+                    text: size.to_string(),
+                },
+            ],
+            lang,
+        ),
         NirOp::Nop
+        | NirOp::TailCall { .. }
         | NirOp::Phi
         | NirOp::Interrupt
         | NirOp::Branch { .. }
@@ -676,10 +928,108 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
         | NirOp::Return
         | NirOp::Unmodeled { .. } => HirInstrStmt::Effect {
             expr: HirExpr::Unknown {
-                text: instr.mnemonic.clone(),
+                text: if matches!(lang, SourceLang::NativeX86 | SourceLang::NativeArm) {
+                    String::new()
+                } else {
+                    instr.mnemonic.clone()
+                },
             },
         },
     }
+}
+
+fn value_assign(
+    instr: &NirInstr,
+    op: ValueOp,
+    inputs: &[String],
+    lang: SourceLang,
+) -> HirInstrStmt {
+    let values: Vec<HirExpr> = inputs
+        .iter()
+        .map(|value: &String| operand_expr(value, lang))
+        .collect();
+    let value: HirExpr = match (value_binary_op(op), values.as_slice()) {
+        (Some(binary), [left, right]) => HirExpr::Binary {
+            op: binary,
+            lhs: Box::new(left.clone()),
+            rhs: Box::new(right.clone()),
+        },
+        (_, [operand]) if op == ValueOp::IntNegate => HirExpr::Unary {
+            op: BinaryOp::Not,
+            operand: Box::new(operand.clone()),
+        },
+        _ => intrinsic(&op.mnemonic().to_ascii_lowercase(), values),
+    };
+    HirInstrStmt::Assign {
+        dst: destination_expr(instr, lang),
+        value,
+    }
+}
+
+const fn value_binary_op(op: ValueOp) -> Option<BinaryOp> {
+    match op {
+        ValueOp::IntAdd | ValueOp::FloatAdd => Some(BinaryOp::Add),
+        ValueOp::IntSub | ValueOp::FloatSub => Some(BinaryOp::Sub),
+        ValueOp::IntMult | ValueOp::FloatMult => Some(BinaryOp::Mul),
+        ValueOp::IntDiv | ValueOp::FloatDiv => Some(BinaryOp::Div),
+        ValueOp::IntRem => Some(BinaryOp::Rem),
+        ValueOp::IntAnd | ValueOp::BoolAnd => Some(BinaryOp::And),
+        ValueOp::IntOr | ValueOp::BoolOr => Some(BinaryOp::Or),
+        ValueOp::IntXor | ValueOp::BoolXor => Some(BinaryOp::Xor),
+        ValueOp::IntLeft => Some(BinaryOp::Shl),
+        ValueOp::IntRight => Some(BinaryOp::Shr),
+        ValueOp::BoolNegate
+        | ValueOp::FloatEqual
+        | ValueOp::FloatLess
+        | ValueOp::FloatLessEqual
+        | ValueOp::FloatSqrt
+        | ValueOp::FloatToFloat
+        | ValueOp::FloatTrunc
+        | ValueOp::IntToFloat
+        | ValueOp::IntCarry
+        | ValueOp::IntEqual
+        | ValueOp::IntLess
+        | ValueOp::IntLessEqual
+        | ValueOp::IntNegate
+        | ValueOp::IntNotEqual
+        | ValueOp::IntSignedBorrow
+        | ValueOp::IntSignedCarry
+        | ValueOp::IntSignedDiv
+        | ValueOp::IntSignedLess
+        | ValueOp::IntSignedLessEqual
+        | ValueOp::IntSignedRem
+        | ValueOp::IntSignedRight
+        | ValueOp::IntSext
+        | ValueOp::IntZext => None,
+    }
+}
+
+fn native_assign(
+    instr: &NirInstr,
+    name: &str,
+    args: Vec<HirExpr>,
+    lang: SourceLang,
+) -> HirInstrStmt {
+    HirInstrStmt::Assign {
+        dst: destination_expr(instr, lang),
+        value: intrinsic(name, args),
+    }
+}
+
+fn intrinsic(name: &str, args: Vec<HirExpr>) -> HirExpr {
+    HirExpr::Call {
+        target: Some(name.to_owned()),
+        args,
+    }
+}
+
+fn destination_expr(instr: &NirInstr, lang: SourceLang) -> HirExpr {
+    instr.operands.first().map_or(
+        HirExpr::Unknown {
+            text: String::new(),
+        },
+        |operand: &String| operand_expr(operand, lang),
+    )
 }
 
 fn binop_assign(instr: &NirInstr, op: BinaryOp, lang: SourceLang) -> HirInstrStmt {
@@ -721,10 +1071,16 @@ fn simple_assign(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
 fn call_parts(instr: &NirInstr, lang: SourceLang) -> (Option<String>, Vec<HirExpr>) {
     let target: Option<String> = match &instr.op {
         NirOp::ExternCall { symbol } => Some(symbol.clone()),
-        NirOp::Call { .. } => instr.operands.first().cloned(),
+        NirOp::Call { .. } | NirOp::NoReturnCall { .. } | NirOp::TailCall { .. } => {
+            instr.operands.first().cloned()
+        }
         _ => None,
     };
-    let arg_start: usize = usize::from(matches!(instr.op, NirOp::Call { .. }) && target.is_some());
+    let direct: bool = matches!(
+        instr.op,
+        NirOp::Call { .. } | NirOp::NoReturnCall { .. } | NirOp::TailCall { .. }
+    );
+    let arg_start: usize = usize::from(direct && target.is_some());
     let args: Vec<HirExpr> = instr
         .operands
         .iter()
@@ -758,14 +1114,10 @@ fn operand_expr(operand: &str, _lang: SourceLang) -> HirExpr {
 
 fn is_constant_literal(operand: &str) -> bool {
     let body: &str = operand.strip_prefix('-').unwrap_or(operand);
-    let hex: &str = body
-        .strip_prefix("0x")
-        .or_else(|| body.strip_prefix("0X"))
-        .unwrap_or(body);
-    if !hex.is_empty() && hex.bytes().all(|b: u8| b.is_ascii_hexdigit()) {
-        return true;
+    if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.bytes().all(|byte: u8| byte.is_ascii_hexdigit());
     }
-    !body.is_empty() && body.bytes().all(|b: u8| b.is_ascii_digit())
+    !body.is_empty() && body.bytes().all(|byte: u8| byte.is_ascii_digit())
 }
 
 fn sequence(parts: Vec<HirStmt>) -> HirStmt {
@@ -808,6 +1160,11 @@ fn collect_block_starts(stmt: &HirStmt, out: &mut BTreeSet<u64>) {
                 out.insert(case.block_start);
             }
         }
+        HirStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                out.insert(block.block_start);
+            }
+        }
         HirStmt::Break { .. }
         | HirStmt::Continue { .. }
         | HirStmt::Return { .. }
@@ -847,6 +1204,13 @@ fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
         HirStmt::Dispatch { cases, .. } => {
             for case in cases {
                 for leaf in &case.stmts {
+                    out.push(leaf.instr.clone());
+                }
+            }
+        }
+        HirStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                for leaf in &block.stmts {
                     out.push(leaf.instr.clone());
                 }
             }
@@ -971,5 +1335,164 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    #[test]
+    fn cycle_has_only_its_dominating_header() {
+        let blocks: Vec<NirBlock> = vec![
+            NirBlock {
+                start: 0,
+                end: 2,
+                instructions: Vec::new(),
+                successors: vec![2],
+                kind: BlockKind::FallThrough,
+            },
+            NirBlock {
+                start: 2,
+                end: 4,
+                instructions: Vec::new(),
+                successors: vec![4, 8],
+                kind: BlockKind::Conditional,
+            },
+            NirBlock {
+                start: 4,
+                end: 6,
+                instructions: Vec::new(),
+                successors: vec![6],
+                kind: BlockKind::FallThrough,
+            },
+            NirBlock {
+                start: 6,
+                end: 8,
+                instructions: Vec::new(),
+                successors: vec![2],
+                kind: BlockKind::Jump,
+            },
+            NirBlock {
+                start: 8,
+                end: 10,
+                instructions: Vec::new(),
+                successors: Vec::new(),
+                kind: BlockKind::Return,
+            },
+        ];
+        let index: BlockIndex<'_> = BlockIndex::build(&blocks);
+        assert!(index.is_loop_header(2));
+        assert!(!index.is_loop_header(4));
+        assert!(!index.is_loop_header(6));
+    }
+
+    fn first_loop_body(stmt: &HirStmt) -> Option<&HirStmt> {
+        match stmt {
+            HirStmt::Loop { body, .. } => Some(body),
+            HirStmt::Seq { body } => body.iter().find_map(first_loop_body),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => first_loop_body(then_branch).or_else(|| first_loop_body(else_branch)),
+            _ => None,
+        }
+    }
+
+    fn has_loop_transfer(stmt: &HirStmt, break_transfer: bool) -> bool {
+        match stmt {
+            HirStmt::Break { .. } => break_transfer,
+            HirStmt::Continue { .. } => !break_transfer,
+            HirStmt::Seq { body } => body
+                .iter()
+                .any(|child: &HirStmt| has_loop_transfer(child, break_transfer)),
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                has_loop_transfer(then_branch, break_transfer)
+                    || has_loop_transfer(else_branch, break_transfer)
+            }
+            HirStmt::Loop { body, .. } => has_loop_transfer(body, break_transfer),
+            _ => false,
+        }
+    }
+
+    fn assert_pretest_loop(f: &NirFunction, expected_body: u64, exit: u64) {
+        let hir: HirFunction = structurize_function(f);
+        assert!(hir.structured, "pre-test loop must structurize: {hir:?}");
+        let loop_body: &HirStmt = first_loop_body(&hir.body).expect("find loop body");
+        let mut starts: BTreeSet<u64> = BTreeSet::new();
+        collect_block_starts(loop_body, &mut starts);
+        assert!(starts.contains(&0));
+        assert!(starts.contains(&expected_body));
+        assert!(!starts.contains(&exit));
+        assert!(has_loop_transfer(loop_body, true));
+        assert!(has_loop_transfer(loop_body, false));
+    }
+
+    #[test]
+    fn pretest_loop_with_taken_exit_keeps_body_inside() {
+        let f: NirFunction = function(
+            vec![
+                instr(0, NirOp::CondBranch { target: Some(4) }, "jz", &["zf"]),
+                instr(2, NirOp::BinOp { op: BinaryOp::Add }, "add", &["rax", "1"]),
+                instr(3, NirOp::Branch { target: Some(0) }, "jmp", &["0"]),
+                instr(4, NirOp::Return, "ret", &["rax"]),
+            ],
+            5,
+        );
+        assert_pretest_loop(&f, 2, 4);
+    }
+
+    #[test]
+    fn pretest_loop_with_fallthrough_exit_keeps_body_inside() {
+        let f: NirFunction = function(
+            vec![
+                instr(0, NirOp::CondBranch { target: Some(4) }, "jnz", &["zf"]),
+                instr(2, NirOp::Return, "ret", &["rax"]),
+                instr(4, NirOp::BinOp { op: BinaryOp::Add }, "add", &["rax", "1"]),
+                instr(6, NirOp::Branch { target: Some(0) }, "jmp", &["0"]),
+            ],
+            7,
+        );
+        assert_pretest_loop(&f, 4, 2);
+    }
+
+    #[test]
+    fn unresolved_indirect_control_uses_explicit_goto_graph() {
+        let f: NirFunction = function(
+            vec![instr(0x0, NirOp::Branch { target: None }, "jmp", &["rax"])],
+            0x1,
+        );
+        let hir: HirFunction = structurize_function(&f);
+        assert!(!hir.structured);
+        assert!(matches!(hir.body, HirStmt::GotoGraph { entry: 0, .. }));
+    }
+
+    #[test]
+    fn non_native_unstructured_control_retains_dispatch_fallback() {
+        let mut f: NirFunction = function(
+            vec![instr(
+                0x0,
+                NirOp::Branch { target: None },
+                "jump",
+                &["dynamic"],
+            )],
+            0x1,
+        );
+        f.source = SourceRef::new(SourceLang::Jvm, 0);
+        let hir: HirFunction = structurize_function(&f);
+        assert!(!hir.structured);
+        assert!(matches!(hir.body, HirStmt::Dispatch { entry: 0, .. }));
+    }
+
+    #[test]
+    fn non_native_control_effect_retains_its_mnemonic() {
+        let legacy: NirInstr = instr(0, NirOp::Nop, "legacy_nop", &[]);
+        let lowered: HirInstrStmt = lower_instr(&legacy, SourceLang::Jvm);
+        assert!(matches!(
+            lowered,
+            HirInstrStmt::Effect {
+                expr: HirExpr::Unknown { text }
+            } if text == "legacy_nop"
+        ));
     }
 }
