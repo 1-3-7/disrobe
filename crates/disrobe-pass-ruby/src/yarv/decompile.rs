@@ -3551,7 +3551,113 @@ fn sanitize_method(method: &str) -> &str {
 fn emit_binop(_instr: &YarvIbfInstruction, stack: &mut Vec<String>, op: &str) {
     let rhs: String = pop(stack);
     let lhs: String = pop(stack);
+    let parent: u8 = ruby_binop_precedence(op).unwrap_or(0);
+    let lhs: String = parenthesize_operand(lhs, parent, false);
+    let rhs: String = parenthesize_operand(rhs, parent, true);
     push(stack, format!("{lhs} {op} {rhs}"));
+}
+
+fn parenthesize_operand(expr: String, parent_prec: u8, is_right: bool) -> String {
+    match top_level_binop_precedence(&expr) {
+        Some(child) if (is_right && child <= parent_prec) || (!is_right && child < parent_prec) => {
+            format!("({expr})")
+        }
+        _ => expr,
+    }
+}
+
+fn ruby_binop_precedence(op: &str) -> Option<u8> {
+    let prec: u8 = match op {
+        "**" => 12,
+        "*" | "/" | "%" => 10,
+        "+" | "-" => 9,
+        "<<" | ">>" => 8,
+        "&" => 7,
+        "|" | "^" => 6,
+        "<" | "<=" | ">" | ">=" => 5,
+        "<=>" | "==" | "===" | "!=" | "=~" | "!~" => 4,
+        "&&" => 3,
+        "||" => 2,
+        ".." | "..." => 1,
+        _ => return None,
+    };
+    Some(prec)
+}
+
+fn top_level_binop_precedence(expr: &str) -> Option<u8> {
+    let bytes: &[u8] = expr.as_bytes();
+    let len: usize = bytes.len();
+    let mut depth: i32 = 0;
+    let mut string_quote: Option<u8> = None;
+    let mut min_prec: Option<u8> = None;
+    let mut i: usize = 0;
+    while i < len {
+        let b: u8 = bytes[i];
+        if let Some(quote) = string_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == quote {
+                string_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => string_quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b' ' if depth == 0 => {
+                if let Some((prec, op_len)) = spaced_operator_at(bytes, i) {
+                    min_prec = Some(min_prec.map_or(prec, |current: u8| current.min(prec)));
+                    i += 1 + op_len;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    min_prec
+}
+
+fn spaced_operator_at(bytes: &[u8], space_idx: usize) -> Option<(u8, usize)> {
+    const OPERATORS: &[(&str, u8)] = &[
+        ("<=>", 4),
+        ("===", 4),
+        ("...", 1),
+        ("**", 12),
+        ("<<", 8),
+        (">>", 8),
+        ("<=", 5),
+        (">=", 5),
+        ("==", 4),
+        ("!=", 4),
+        ("=~", 4),
+        ("&&", 3),
+        ("||", 2),
+        ("..", 1),
+        ("+", 9),
+        ("-", 9),
+        ("*", 10),
+        ("/", 10),
+        ("%", 10),
+        ("&", 7),
+        ("|", 6),
+        ("^", 6),
+        ("<", 5),
+        (">", 5),
+    ];
+    let start: usize = space_idx + 1;
+    for (op, prec) in OPERATORS {
+        let op_bytes: &[u8] = op.as_bytes();
+        let end: usize = start + op_bytes.len();
+        if end < bytes.len() && &bytes[start..end] == op_bytes && bytes[end] == b' ' {
+            return Some((*prec, op_bytes.len()));
+        }
+    }
+    None
 }
 
 fn is_effecting_call(expr: &str) -> bool {
