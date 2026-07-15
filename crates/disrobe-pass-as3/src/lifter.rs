@@ -156,7 +156,14 @@ impl Expr {
                     .join(", ");
                 format!("{{{body}}}")
             }
-            Self::Unary { op, operand } => format!("{op}{}", operand.render(names)),
+            Self::Unary { op, operand } => {
+                let inner: String = operand.render(names);
+                if matches!(*op, "+" | "-") && inner.starts_with(*op) {
+                    format!("{op}({inner})")
+                } else {
+                    format!("{op}{inner}")
+                }
+            }
             Self::Binary { op, lhs, rhs } => {
                 format!("({} {} {})", lhs.render(names), op, rhs.render(names))
             }
@@ -4218,6 +4225,135 @@ mod tests {
             rhs: Box::new(Expr::IntLit(2)),
         };
         assert_eq!(e.render(&names()), "(1 + 2)");
+    }
+
+    #[test]
+    fn unary_prefix_signs_do_not_merge_into_inc_dec() {
+        let neg_neg: Expr = Expr::Unary {
+            op: "-",
+            operand: Box::new(Expr::Unary {
+                op: "-",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        let neg_render: String = neg_neg.render(&names());
+        assert_eq!(neg_render, "-(-loc1)");
+        assert!(
+            !neg_render.contains("--"),
+            "double negation must not collapse into a decrement token: {neg_render}"
+        );
+
+        let plus_plus: Expr = Expr::Unary {
+            op: "+",
+            operand: Box::new(Expr::Unary {
+                op: "+",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        let plus_render: String = plus_plus.render(&names());
+        assert_eq!(plus_render, "+(+loc1)");
+        assert!(
+            !plus_render.contains("++"),
+            "double unary plus must not collapse into an increment token: {plus_render}"
+        );
+
+        let neg_lit: Expr = Expr::Unary {
+            op: "-",
+            operand: Box::new(Expr::IntLit(-3)),
+        };
+        assert_eq!(neg_lit.render(&names()), "-(-3)");
+
+        let bitnot: Expr = Expr::Unary {
+            op: "~",
+            operand: Box::new(Expr::Unary {
+                op: "~",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        assert_eq!(bitnot.render(&names()), "~~loc1");
+        let not: Expr = Expr::Unary {
+            op: "!",
+            operand: Box::new(Expr::Unary {
+                op: "!",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        assert_eq!(not.render(&names()), "!!loc1");
+    }
+
+    #[test]
+    fn double_negate_bytecode_keeps_parentheses() {
+        let code: Vec<u8> = vec![0xD1, 0x90, 0x90, 0x48];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let rendered: String = render_body(&lifted, &names(), "");
+        assert!(
+            rendered.contains("return -(-loc1);"),
+            "nested negate must keep the operand parenthesized: {rendered}"
+        );
+        assert!(
+            !rendered.contains("--"),
+            "no decrement token in double-negate output: {rendered}"
+        );
+    }
+
+    fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success())
+    }
+
+    fn node_eval_with_loc1(expr_src: &str) -> Option<i64> {
+        let program: String = format!("var loc1 = 5; process.stdout.write(String(({expr_src})));");
+        let output: std::process::Output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(&program)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout)
+            .ok()?
+            .trim()
+            .parse::<i64>()
+            .ok()
+    }
+
+    #[test]
+    fn emitted_unary_recompiles_to_operator_tree_value() {
+        if !node_available() {
+            return;
+        }
+        let neg_neg: Expr = Expr::Unary {
+            op: "-",
+            operand: Box::new(Expr::Unary {
+                op: "-",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        let neg_render: String = neg_neg.render(&names());
+        assert_eq!(
+            node_eval_with_loc1(&neg_render),
+            Some(5),
+            "emitted {neg_render} must evaluate to loc1 (5), not a decrement"
+        );
+
+        let plus_plus: Expr = Expr::Unary {
+            op: "+",
+            operand: Box::new(Expr::Unary {
+                op: "+",
+                operand: Box::new(Expr::Local(1)),
+            }),
+        };
+        let plus_render: String = plus_plus.render(&names());
+        assert_eq!(
+            node_eval_with_loc1(&plus_render),
+            Some(5),
+            "emitted {plus_render} must evaluate to loc1 (5), not an increment"
+        );
     }
 
     #[test]
