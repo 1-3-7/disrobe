@@ -245,7 +245,12 @@ pub(crate) fn render_float(v: f64, out: &mut String) {
     } else if v.fract() == 0.0 && v.abs() < 1e16 {
         out.push_str(&format!("{v:.1}"));
     } else {
-        out.push_str(&v.to_string());
+        let rendered: String = v.to_string();
+        let is_float_literal: bool = rendered.contains(['.', 'e', 'E']);
+        out.push_str(&rendered);
+        if !is_float_literal {
+            out.push_str(".0");
+        }
     }
 }
 
@@ -326,6 +331,47 @@ mod tests {
     #[test]
     fn renders_empty_set() {
         assert_eq!(to_python(&PickleValue::Set(vec![])), "set()");
+    }
+
+    #[test]
+    fn large_integral_float_renders_as_a_float_literal_not_an_int() {
+        for v in [
+            1e16_f64,
+            1e17,
+            1e20,
+            1e300,
+            -1e16,
+            2.5e16,
+            123_456_789_012_345_680.0,
+        ] {
+            let rendered: String = to_python(&PickleValue::Float(v));
+            assert!(
+                rendered.contains(['.', 'e', 'E']),
+                "float {v:e} rendered as {rendered}, which Python parses as an int, not a float"
+            );
+            let parsed: Option<u64> = rendered.parse::<f64>().map(f64::to_bits).ok();
+            assert_eq!(
+                parsed,
+                Some(v.to_bits()),
+                "rendered literal {rendered} must round-trip to the same f64"
+            );
+        }
+    }
+
+    #[test]
+    fn integral_and_special_floats_stay_float_literals() {
+        for v in [42.0_f64, 0.0, -0.0, 0.1, 1e15, 9_007_199_254_740_992.0] {
+            let rendered: String = to_python(&PickleValue::Float(v));
+            assert!(
+                rendered.contains(['.', 'e', 'E']),
+                "float {v:e} rendered as {rendered}, which is not a float literal"
+            );
+            assert_eq!(
+                rendered.parse::<f64>().map(f64::to_bits).ok(),
+                Some(v.to_bits()),
+                "rendered literal {rendered} must round-trip to the same f64"
+            );
+        }
     }
 
     #[test]
