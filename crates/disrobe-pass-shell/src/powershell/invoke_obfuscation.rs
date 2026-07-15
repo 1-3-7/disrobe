@@ -231,6 +231,25 @@ pub fn reverse_launcher(input: &str) -> ReverseReport {
     }
 }
 
+fn ps_double_quoted(value: &str) -> String {
+    let mut out: String = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '`' => out.push_str("``"),
+            '"' => out.push_str("`\""),
+            '$' => out.push_str("`$"),
+            '\n' => out.push_str("`n"),
+            '\r' => out.push_str("`r"),
+            '\t' => out.push_str("`t"),
+            '\0' => out.push_str("`0"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn strip_backtick_escapes(s: &str) -> Option<String> {
     if !s.contains('`') {
         return None;
@@ -291,9 +310,7 @@ fn decode_char_array_concatenations(s: &str) -> Option<String> {
         if decoded.is_empty() {
             out.push_str(matched);
         } else {
-            out.push('"');
-            out.push_str(&decoded);
-            out.push('"');
+            out.push_str(&ps_double_quoted(&decoded));
         }
         last = m.end();
     }
@@ -367,7 +384,7 @@ fn decode_numeric_char_pipeline(s: &str) -> Option<String> {
                     None => return whole.to_owned(),
                 }
             }
-            format!("\"{decoded}\"")
+            ps_double_quoted(&decoded)
         });
     Some(result.into_owned())
 }
@@ -422,7 +439,7 @@ fn decode_multikey_xor_pipeline(s: &str) -> Option<String> {
                 }
             }
             changed = true;
-            format!("\"{decoded}\"")
+            ps_double_quoted(&decoded)
         });
     if changed {
         Some(result.into_owned())
@@ -476,7 +493,7 @@ fn collapse_splatting(s: &str) -> Option<String> {
             let stripped: &str = piece.trim_matches(|c: char| c == '"' || c == '\'');
             joined.push_str(stripped);
         }
-        format!("\"{joined}\"")
+        ps_double_quoted(&joined)
     });
     Some(result.into_owned())
 }
@@ -642,7 +659,7 @@ fn fold_format_strings(s: &str) -> Option<String> {
                         _ => out.push(c),
                     }
                 }
-                format!("\"{out}\"")
+                ps_double_quoted(&out)
             })
             .into_owned(),
     )
@@ -662,7 +679,7 @@ fn decode_ascii_chains(s: &str) -> Option<String> {
                 let hex: &str = c.get(1).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
                 u8::from_str_radix(hex, 16).map_or_else(
                     |_| format!("[char][byte]0x{hex}"),
-                    |b: u8| format!("\"{}\"", b as char),
+                    |b: u8| ps_double_quoted(&(b as char).to_string()),
                 )
             })
             .into_owned(),
@@ -773,6 +790,27 @@ mod tests {
     fn token_decodes_char_array() {
         let r: ReverseReport = reverse_token("[char]73 + [char]69 + [char]88");
         assert!(r.output.contains("\"IEX\""));
+    }
+
+    #[test]
+    fn token_char_array_escapes_quote_backtick_dollar() {
+        let quote: ReverseReport = reverse_token("[char]72 + [char]34 + [char]105");
+        assert_eq!(quote.output, "\"H`\"i\"", "embedded double-quote output");
+
+        let dollar: ReverseReport = reverse_token("[char]36 + [char]120");
+        assert_eq!(dollar.output, "\"`$x\"", "dollar output");
+
+        let backtick: ReverseReport = reverse_token("[char]96 + [char]97");
+        assert_eq!(backtick.output, "\"``a\"", "backtick output");
+
+        let newline: ReverseReport = reverse_token("[char]65 + [char]10 + [char]66");
+        assert_eq!(newline.output, "\"A`nB\"", "newline output");
+    }
+
+    #[test]
+    fn ascii_chain_escapes_special_chars() {
+        let r: ReverseReport = reverse_string("[char][byte]0x22");
+        assert_eq!(r.output, "\"`\"\"", "0x22 is a double-quote");
     }
 
     #[test]
