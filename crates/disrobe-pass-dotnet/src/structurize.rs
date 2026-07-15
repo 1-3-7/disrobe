@@ -842,9 +842,14 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             "dup" => {
                 let e: Expr = self.pop();
-                let r: String = e.render(self.lang, self.names);
-                self.push(e);
-                self.push(Expr::Raw(r));
+                if e.is_atom() {
+                    let r: String = e.render(self.lang, self.names);
+                    self.push(e);
+                    self.push(Expr::Raw(r));
+                } else {
+                    self.push(e.clone());
+                    self.push(e);
+                }
             }
             "pop" => {
                 let e: Expr = self.pop();
@@ -1963,6 +1968,22 @@ mod tests {
         let out: StructuredMethod = decompile_method("void Empty()", &body, &HexNamer);
         assert!(out.body.starts_with("void Empty()\n{\n"));
         assert!(out.body.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn dup_of_a_compound_keeps_parentheses_when_reused_as_a_binary_operand() {
+        let body: MethodBody = body_from(&[0x03, 0x04, 0x58, 0x25, 0x5A, 0x2A]);
+        let out: StructuredMethod = decompile_method("int M(int arg1, int arg2)", &body, &HexNamer);
+        assert!(
+            out.body.contains("return (arg1 + arg2) * (arg1 + arg2);"),
+            "a duplicated additive subexpression multiplied by itself must stay parenthesized so the value is (a+b)*(a+b); got:\n{}",
+            out.body
+        );
+        assert!(
+            !out.body.contains("* arg1 + arg2"),
+            "dropping the parentheses reassociates to (a+b)*a + b and changes the value; got:\n{}",
+            out.body
+        );
     }
 
     #[test]
