@@ -167,6 +167,10 @@ pub enum SurfaceStmt {
         entry: u64,
         cases: Vec<SurfaceCase>,
     },
+    GotoGraph {
+        entry: u64,
+        blocks: Vec<SurfaceCase>,
+    },
     Nop,
 }
 
@@ -427,6 +431,10 @@ impl Lifter {
                 entry: *entry,
                 cases: cases.iter().map(lift_case).collect(),
             },
+            HirStmt::GotoGraph { entry, blocks } => SurfaceStmt::GotoGraph {
+                entry: *entry,
+                blocks: blocks.iter().map(lift_case).collect(),
+            },
         }
     }
 }
@@ -537,6 +545,7 @@ fn body_return_type(stmt: &SurfaceStmt) -> SurfaceType {
         SurfaceStmt::Loop { body, .. } => body_return_type(body),
         SurfaceStmt::Return { value: None }
         | SurfaceStmt::Switch { .. }
+        | SurfaceStmt::GotoGraph { .. }
         | SurfaceStmt::Leaf { .. }
         | SurfaceStmt::Break { .. }
         | SurfaceStmt::Continue { .. }
@@ -554,6 +563,13 @@ fn collect_locals(stmt: &SurfaceStmt, out: &mut BTreeMap<String, SurfaceType>) {
         SurfaceStmt::Switch { cases, .. } => {
             for case in cases {
                 for leaf in &case.statements {
+                    leaf.stmt.collect_locals(out);
+                }
+            }
+        }
+        SurfaceStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                for leaf in &block.statements {
                     leaf.stmt.collect_locals(out);
                 }
             }
@@ -588,6 +604,11 @@ fn collect_block_starts(stmt: &SurfaceStmt, out: &mut BTreeSet<u64>) {
         SurfaceStmt::Switch { cases, .. } => {
             for case in cases {
                 out.insert(case.block_start);
+            }
+        }
+        SurfaceStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                out.insert(block.block_start);
             }
         }
         SurfaceStmt::Block { body } => {
@@ -625,6 +646,16 @@ fn collect_addresses(stmt: &SurfaceStmt, out: &mut BTreeSet<u64>) {
                 );
             }
         }
+        SurfaceStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                out.extend(
+                    block
+                        .statements
+                        .iter()
+                        .map(|statement: &SurfaceLeaf| statement.instr.address),
+                );
+            }
+        }
         SurfaceStmt::Block { body } => {
             for child in body {
                 collect_addresses(child, out);
@@ -656,6 +687,13 @@ fn collect_instructions(stmt: &SurfaceStmt, out: &mut Vec<NirInstr>) {
         SurfaceStmt::Switch { cases, .. } => {
             for case in cases {
                 for leaf in &case.statements {
+                    out.push(leaf.instr.clone());
+                }
+            }
+        }
+        SurfaceStmt::GotoGraph { blocks, .. } => {
+            for block in blocks {
+                for leaf in &block.statements {
                     out.push(leaf.instr.clone());
                 }
             }
@@ -734,6 +772,7 @@ mod tests {
             }
             SurfaceStmt::Leaf { .. }
             | SurfaceStmt::Switch { .. }
+            | SurfaceStmt::GotoGraph { .. }
             | SurfaceStmt::Break { .. }
             | SurfaceStmt::Continue { .. }
             | SurfaceStmt::Return { .. }
