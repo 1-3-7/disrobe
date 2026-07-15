@@ -30,12 +30,26 @@ pub enum RiscVWidth {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RiscVProfile {
+    Base,
+    Compressed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PowerPcWidth {
+    Ppc32,
+    Ppc64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Language {
     AArch64,
     Arm32(ArmMode),
     Mips32(crate::syntax::Endian),
     PowerPc32Be,
+    PowerPc64Be,
     RiscV(RiscVWidth),
+    RiscVCompressed(RiscVWidth),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,8 +146,12 @@ pub fn decode_block_for_language(language: Language, bytes: &[u8], address: u64)
         }
         Language::Arm32(mode) => arm32::decode_block(bytes, address, mode),
         Language::Mips32(endian) => mips32::decode_block(bytes, address, endian),
-        Language::PowerPc32Be => powerpc::decode_block(bytes, address),
-        Language::RiscV(width) => riscv::decode_block(bytes, address, width),
+        Language::PowerPc32Be => powerpc::decode_block(bytes, address, PowerPcWidth::Ppc32),
+        Language::PowerPc64Be => powerpc::decode_block(bytes, address, PowerPcWidth::Ppc64),
+        Language::RiscV(width) => riscv::decode_block(bytes, address, width, RiscVProfile::Base),
+        Language::RiscVCompressed(width) => {
+            riscv::decode_block(bytes, address, width, RiscVProfile::Compressed)
+        }
     }
 }
 

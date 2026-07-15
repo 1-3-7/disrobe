@@ -99,7 +99,9 @@ pub fn preprocessed_mips32le_source() -> Result<String, SleighError> {
 pub fn riscv_sources(entry: &str) -> Result<BTreeMap<String, String>, SleighError> {
     let root: String = match entry {
         "riscv32.slaspec" => include_str!("../vendor/riscv/riscv32.slaspec").to_owned(),
+        "riscv32c.slaspec" => include_str!("../vendor/riscv/riscv32c.slaspec").to_owned(),
         "riscv64.slaspec" => include_str!("../vendor/riscv/riscv64.slaspec").to_owned(),
+        "riscv64c.slaspec" => include_str!("../vendor/riscv/riscv64c.slaspec").to_owned(),
         _ => {
             return Err(SleighError::MissingSource {
                 path: entry.to_owned(),
@@ -121,6 +123,10 @@ pub fn riscv_sources(entry: &str) -> Result<BTreeMap<String, String>, SleighErro
             include_str!("../vendor/riscv/riscv.rv32i.sinc").to_owned(),
         ),
         (
+            "riscv.rv32a.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv32a.sinc").to_owned(),
+        ),
+        (
             "riscv.rv32m.sinc".to_owned(),
             include_str!("../vendor/riscv/riscv.rv32m.sinc").to_owned(),
         ),
@@ -129,8 +135,16 @@ pub fn riscv_sources(entry: &str) -> Result<BTreeMap<String, String>, SleighErro
             include_str!("../vendor/riscv/riscv.rv64i.sinc").to_owned(),
         ),
         (
+            "riscv.rv64a.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rv64a.sinc").to_owned(),
+        ),
+        (
             "riscv.rv64m.sinc".to_owned(),
             include_str!("../vendor/riscv/riscv.rv64m.sinc").to_owned(),
+        ),
+        (
+            "riscv.rvc.sinc".to_owned(),
+            include_str!("../vendor/riscv/riscv.rvc.sinc").to_owned(),
         ),
     ]))
 }
@@ -145,12 +159,33 @@ pub fn preprocessed_riscv64_source() -> Result<String, SleighError> {
     preprocess_sources("riscv64.slaspec", &sources, PreprocessorLimits::default())
 }
 
+pub fn preprocessed_riscv32c_source() -> Result<String, SleighError> {
+    let sources: BTreeMap<String, String> = riscv_sources("riscv32c.slaspec")?;
+    preprocess_sources("riscv32c.slaspec", &sources, PreprocessorLimits::default())
+}
+
+pub fn preprocessed_riscv64c_source() -> Result<String, SleighError> {
+    let sources: BTreeMap<String, String> = riscv_sources("riscv64c.slaspec")?;
+    preprocess_sources("riscv64c.slaspec", &sources, PreprocessorLimits::default())
+}
+
 pub fn powerpc32be_sources() -> BTreeMap<String, String> {
+    powerpc_sources(
+        "ppc32be.slaspec",
+        include_str!("../vendor/powerpc/ppc32be.slaspec").to_owned(),
+    )
+}
+
+fn powerpc64be_sources() -> BTreeMap<String, String> {
+    powerpc_sources(
+        "ppc64be.slaspec",
+        include_str!("../vendor/powerpc/ppc64be.slaspec").to_owned(),
+    )
+}
+
+fn powerpc_sources(entry: &str, root: String) -> BTreeMap<String, String> {
     BTreeMap::from([
-        (
-            "ppc32be.slaspec".to_owned(),
-            include_str!("../vendor/powerpc/ppc32be.slaspec").to_owned(),
-        ),
+        (entry.to_owned(), root),
         (
             "ppc_common.sinc".to_owned(),
             include_str!("../vendor/powerpc/ppc_common.sinc").to_owned(),
@@ -185,4 +220,9 @@ pub fn powerpc32be_sources() -> BTreeMap<String, String> {
 pub fn preprocessed_powerpc32be_source() -> Result<String, SleighError> {
     let sources: BTreeMap<String, String> = powerpc32be_sources();
     preprocess_sources("ppc32be.slaspec", &sources, PreprocessorLimits::default())
+}
+
+pub fn preprocessed_powerpc64be_source() -> Result<String, SleighError> {
+    let sources: BTreeMap<String, String> = powerpc64be_sources();
+    preprocess_sources("ppc64be.slaspec", &sources, PreprocessorLimits::default())
 }

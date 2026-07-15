@@ -116,8 +116,11 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
             "mips32le" => Some(Language::Mips32(Endian::Little)),
             "mips32be" => Some(Language::Mips32(Endian::Big)),
             "powerpc32" => Some(Language::PowerPc32Be),
+            "powerpc64" => Some(Language::PowerPc64Be),
             "riscv32" => Some(Language::RiscV(RiscVWidth::Rv32)),
             "riscv64" => Some(Language::RiscV(RiscVWidth::Rv64)),
+            "riscv32a" | "riscv32c" => Some(Language::RiscVCompressed(RiscVWidth::Rv32)),
+            "riscv64a" | "riscv64c" => Some(Language::RiscVCompressed(RiscVWidth::Rv64)),
             _ => None,
         };
         assert!(language.is_some(), "{line}");
@@ -132,9 +135,13 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
         let block: DecodedBlock = decode_block_for_language(language, &bytes, address);
         assert!(!block.instructions.is_empty(), "{line}");
         assert_eq!(block.instructions[0].mnemonic, fields[3], "{line}");
+        let atomic_record: bool = matches!(fields[0], "riscv32a" | "riscv64a");
+        let division_marker: bool =
+            fields[0] == "powerpc64" && matches!(fields[3], "divd" | "divw");
         let alignment_marker: bool =
-            fields[0].starts_with("riscv") && matches!(fields[3], "jalr" | "ret");
-        let expected_status: DecodeStatus = if alignment_marker {
+            matches!(fields[0], "riscv32" | "riscv64") && matches!(fields[3], "jalr" | "ret");
+        let expected_status: DecodeStatus = if atomic_record || division_marker || alignment_marker
+        {
             DecodeStatus::CallOther
         } else {
             DecodeStatus::Supported
@@ -147,25 +154,203 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
             "{line}: {:#?}",
             block.instructions
         );
-        if alignment_marker {
-            assert!(block.instructions.iter().any(|instruction: &PcodeInstr| {
-                instruction.ops.iter().any(|operation: &PcodeOp| {
-                    matches!(operation, PcodeOp::CallOther { name, .. }
-                        if name == "riscv_instruction_address_alignment")
-                })
-            }));
-        }
         let joined: String = architectural_facts(&block.ordered_ops).join("|");
         let actual: String = if joined.is_empty() {
             "none".to_owned()
         } else {
             joined
         };
-        assert_eq!(actual, fields[4], "{line}");
+        if atomic_record {
+            assert_atomic_reference(&block.instructions[0], &bytes, fields[4]);
+        } else {
+            if alignment_marker {
+                assert!(block.instructions[0].ops.iter().any(|op: &PcodeOp| {
+                    matches!(
+                        op,
+                        PcodeOp::CallOther { name, .. }
+                            if name == "riscv_instruction_address_alignment"
+                    )
+                }));
+            }
+            let compressed_indirect: bool =
+                fields[0].ends_with('c') && matches!(fields[3], "jr" | "jalr");
+            let powerpc_indirect: bool = matches!(fields[0], "powerpc32" | "powerpc64")
+                && matches!(fields[3], "bclr" | "blr" | "bctr");
+            let expected: String = if compressed_indirect {
+                let corrected: Option<String> =
+                    corrected_compressed_indirect_facts(fields[0], fields[3], fields[4]);
+                assert!(corrected.is_some(), "{line}");
+                corrected.unwrap_or_default()
+            } else if powerpc_indirect {
+                let corrected: Option<String> =
+                    corrected_powerpc_indirect_facts(fields[0], fields[3], fields[4]);
+                assert!(corrected.is_some(), "{line}");
+                corrected.unwrap_or_default()
+            } else {
+                fields[4].to_owned()
+            };
+            assert_eq!(actual, expected, "{line}");
+        }
         checked = checked.saturating_add(1);
     }
-    assert_eq!(checked, 118);
+    assert_eq!(checked, 209);
     assert_eq!(raw_headers.len(), checked);
+}
+
+fn assert_atomic_reference(instruction: &PcodeInstr, bytes: &[u8], pypcode_facts: &str) {
+    let extracted: Option<(&String, &Option<Varnode>, &Vec<Varnode>)> =
+        match instruction.ops.as_slice() {
+            [
+                PcodeOp::CallOther {
+                    name,
+                    output,
+                    inputs,
+                },
+            ] => Some((name, output, inputs)),
+            _ => None,
+        };
+    assert!(extracted.is_some(), "{instruction:#?}");
+    let Some((name, output, inputs)): Option<(&String, &Option<Varnode>, &Vec<Varnode>)> =
+        extracted
+    else {
+        return;
+    };
+    assert_eq!(name, "riscv_atomic_memory_v1");
+    assert_eq!(inputs.len(), 6);
+    assert_eq!(bytes.len(), 4, "{instruction:#?}");
+    let encoded_result: Result<[u8; 4], std::array::TryFromSliceError> = <[u8; 4]>::try_from(bytes);
+    assert!(encoded_result.is_ok(), "{instruction:#?}");
+    let Ok(encoded_bytes): Result<[u8; 4], std::array::TryFromSliceError> = encoded_result else {
+        return;
+    };
+    let encoded: u32 = u32::from_le_bytes(encoded_bytes);
+    let operation_code: u64 = match instruction.mnemonic.split('.').next() {
+        Some("lr") => 0,
+        Some("sc") => 1,
+        Some("amoswap") => 2,
+        Some("amoadd") => 3,
+        Some("amoand") => 4,
+        Some("amoor") => 5,
+        Some("amoxor") => 6,
+        Some("amomin") => 7,
+        Some("amomax") => 8,
+        _ => u64::MAX,
+    };
+    assert_eq!(inputs[2].offset, operation_code);
+    let access_size: u64 = if instruction.mnemonic.split('.').nth(1) == Some("d") {
+        8
+    } else {
+        4
+    };
+    assert_eq!(inputs[3].offset, access_size);
+    let ordering: Option<&str> = instruction.mnemonic.rsplit('.').next();
+    let acquire: u64 = u64::from(matches!(ordering, Some("aq" | "aqrl")));
+    let release: u64 = u64::from(matches!(ordering, Some("rl" | "aqrl")));
+    assert_eq!(inputs[4].offset, acquire);
+    assert_eq!(inputs[5].offset, release);
+    let register_size: u32 = inputs[0].size_bytes;
+    let source_address_index: u32 = (encoded >> 15) & 0x1f;
+    let source_operand_index: u32 = (encoded >> 20) & 0x1f;
+    let destination_index: u32 = (encoded >> 7) & 0x1f;
+    assert_ne!(source_address_index, 0);
+    assert_eq!(inputs[0].space, Space::Register);
+    assert_eq!(
+        inputs[0].offset,
+        0x2000_u64 + u64::from(source_address_index) * u64::from(register_size)
+    );
+    if operation_code == 0 {
+        assert_eq!(inputs[1].space, Space::Constant);
+        assert_eq!(inputs[1].offset, 0);
+    } else {
+        assert_ne!(source_operand_index, 0);
+        assert_eq!(inputs[1].space, Space::Register);
+        assert_eq!(
+            inputs[1].offset,
+            0x2000_u64 + u64::from(source_operand_index) * u64::from(register_size)
+        );
+    }
+    let address_fact: String =
+        format!("register:0x{:x}:{}", inputs[0].offset, inputs[0].size_bytes);
+    let load_fact: String = format!("load(ram,{address_fact},{access_size})");
+    assert!(output.is_some(), "{instruction:#?}");
+    let Some(output_node): Option<Varnode> = *output else {
+        return;
+    };
+    assert_ne!(destination_index, 0);
+    assert_eq!(output_node.space, Space::Register);
+    assert_eq!(output_node.size_bytes, register_size);
+    assert_eq!(
+        output_node.offset,
+        0x2000_u64 + u64::from(destination_index) * u64::from(register_size)
+    );
+    let output_fact: String = format!(
+        "write(register:0x{:x}:{}",
+        output_node.offset, output_node.size_bytes
+    );
+    assert!(pypcode_facts.contains(&output_fact), "{instruction:#?}");
+    if operation_code == 0 {
+        assert!(pypcode_facts.contains(&load_fact), "{instruction:#?}");
+        assert!(!pypcode_facts.contains("store(ram,"), "{instruction:#?}");
+    } else if operation_code == 1 {
+        let operand_fact: String =
+            format!("register:0x{:x}:{}", inputs[1].offset, inputs[1].size_bytes);
+        let store_fact: String = format!("store(ram,{address_fact},{operand_fact})");
+        assert!(pypcode_facts.contains("cbranch("), "{instruction:#?}");
+        assert!(pypcode_facts.contains(&store_fact), "{instruction:#?}");
+    } else {
+        let operand_fact: String =
+            format!("register:0x{:x}:{}", inputs[1].offset, inputs[1].size_bytes);
+        assert!(pypcode_facts.contains(&operand_fact), "{instruction:#?}");
+        assert!(pypcode_facts.contains(&load_fact), "{instruction:#?}");
+        assert!(
+            pypcode_facts.contains(&format!("store(ram,{address_fact},")),
+            "{instruction:#?}"
+        );
+    }
+}
+
+fn corrected_compressed_indirect_facts(
+    language: &str,
+    mnemonic: &str,
+    pypcode_facts: &str,
+) -> Option<String> {
+    let (mask, size): (&str, u32) = match language {
+        "riscv32c" => ("0xfffffffe", 4),
+        "riscv64c" => ("0xfffffffffffffffe", 8),
+        _ => return None,
+    };
+    let operation: &str = match mnemonic {
+        "jr" => "branchind(",
+        "jalr" => "callind(",
+        _ => return None,
+    };
+    let (prefix, target_with_close): (&str, &str) = pypcode_facts.rsplit_once(operation)?;
+    let target: &str = target_with_close.strip_suffix(')')?;
+    Some(format!(
+        "{prefix}{operation}and(const:{mask}:{size},{target}))"
+    ))
+}
+
+fn corrected_powerpc_indirect_facts(
+    language: &str,
+    mnemonic: &str,
+    pypcode_facts: &str,
+) -> Option<String> {
+    let (mask, size): (&str, u32) = match language {
+        "powerpc32" => ("0xfffffffc", 4),
+        "powerpc64" => ("0xfffffffffffffffc", 8),
+        _ => return None,
+    };
+    let operation: &str = if mnemonic == "blr" {
+        "return("
+    } else {
+        "branchind("
+    };
+    let (prefix, target_with_close): (&str, &str) = pypcode_facts.rsplit_once(operation)?;
+    let target: &str = target_with_close.strip_suffix(')')?;
+    Some(format!(
+        "{prefix}{operation}and(const:{mask}:{size},{target}))"
+    ))
 }
 
 #[test]
@@ -246,8 +431,13 @@ fn is_multiarch_raw_header(line: &str) -> bool {
                 | "mips32le"
                 | "mips32be"
                 | "powerpc32"
+                | "powerpc64"
                 | "riscv32"
                 | "riscv64"
+                | "riscv32a"
+                | "riscv64a"
+                | "riscv32c"
+                | "riscv64c"
         )
         && fields[1]
             .chars()
@@ -343,7 +533,11 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                     &mut ordered_facts,
                 );
             }
-            PcodeOp::CallOther { name, .. } if name == "riscv_instruction_address_alignment" => {}
+            PcodeOp::CallOther { name, .. }
+                if matches!(
+                    name.as_str(),
+                    "riscv_instruction_address_alignment" | "powerpc_division_edge_cases"
+                ) => {}
             PcodeOp::CallOther { name, .. } => {
                 push_ordered_fact(format!("callother({name})"), &mut facts, &mut ordered_facts);
             }

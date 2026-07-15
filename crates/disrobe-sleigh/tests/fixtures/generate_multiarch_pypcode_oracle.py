@@ -251,6 +251,95 @@ CORPORA = (
         ),
     ),
     Corpus(
+        "riscv32c",
+        "RISCV:LE:32:default",
+        "riscv32c_forms.text",
+        (
+            Sample(0, 2, "addi"),
+            Sample(2, 2, "li"),
+            Sample(4, 2, "lw"),
+            Sample(6, 2, "sw"),
+            Sample(8, 2, "j"),
+            Sample(10, 2, "jal"),
+            Sample(12, 2, "jr"),
+            Sample(14, 2, "jalr"),
+            Sample(16, 2, "beqz"),
+            Sample(18, 2, "bnez"),
+            Sample(20, 2, "mv"),
+            Sample(22, 2, "add"),
+            Sample(24, 2, "nop"),
+            Sample(26, 2, "addi"),
+            Sample(28, 2, "lw"),
+            Sample(30, 2, "sw"),
+            Sample(32, 2, "and"),
+            Sample(34, 2, "or"),
+            Sample(36, 2, "addi"),
+        ),
+    ),
+    Corpus(
+        "riscv64c",
+        "RISCV:LE:64:default",
+        "riscv64c_forms.text",
+        (
+            Sample(0, 2, "addi"),
+            Sample(2, 2, "li"),
+            Sample(4, 2, "lw"),
+            Sample(6, 2, "sw"),
+            Sample(8, 2, "ld"),
+            Sample(10, 2, "sd"),
+            Sample(12, 2, "j"),
+            Sample(14, 2, "jr"),
+            Sample(16, 2, "jalr"),
+            Sample(18, 2, "beqz"),
+            Sample(20, 2, "bnez"),
+            Sample(22, 2, "mv"),
+            Sample(24, 2, "add"),
+            Sample(26, 2, "nop"),
+            Sample(28, 2, "addi"),
+            Sample(30, 2, "lw"),
+            Sample(32, 2, "sw"),
+            Sample(34, 2, "and"),
+            Sample(36, 2, "or"),
+            Sample(38, 2, "addi"),
+        ),
+    ),
+    Corpus(
+        "riscv32a",
+        "RISCV:LE:32:default",
+        "riscv32a_forms.text",
+        (
+            Sample(0, 4, "lr.w"),
+            Sample(4, 4, "lr.w.aq"),
+            Sample(8, 4, "sc.w.rl"),
+            Sample(12, 4, "amoswap.w"),
+            Sample(16, 4, "amoadd.w.aqrl"),
+            Sample(20, 4, "amoand.w"),
+            Sample(24, 4, "amoor.w"),
+            Sample(28, 4, "amoxor.w"),
+            Sample(32, 4, "amomin.w"),
+            Sample(36, 4, "amomax.w"),
+        ),
+    ),
+    Corpus(
+        "riscv64a",
+        "RISCV:LE:64:default",
+        "riscv64a_forms.text",
+        (
+            Sample(0, 4, "lr.w"),
+            Sample(4, 4, "sc.w"),
+            Sample(8, 4, "amoadd.w.aq"),
+            Sample(12, 4, "lr.d.rl"),
+            Sample(16, 4, "sc.d.aqrl"),
+            Sample(20, 4, "amoswap.d"),
+            Sample(24, 4, "amoadd.d"),
+            Sample(28, 4, "amoand.d"),
+            Sample(32, 4, "amoor.d"),
+            Sample(36, 4, "amoxor.d"),
+            Sample(40, 4, "amomin.d"),
+            Sample(44, 4, "amomax.d"),
+        ),
+    ),
+    Corpus(
         "powerpc32",
         "PowerPC:BE:32:default",
         "powerpc32_forms.text",
@@ -288,10 +377,49 @@ CORPORA = (
             Sample(124, 4, "addi"),
         ),
     ),
+    Corpus(
+        "powerpc64",
+        "PowerPC:BE:64:default",
+        "powerpc64_forms.text",
+        (
+            Sample(0, 4, "ld"),
+            Sample(4, 4, "std"),
+            Sample(8, 4, "rldicl"),
+            Sample(12, 4, "rldicr"),
+            Sample(16, 4, "cmpd"),
+            Sample(20, 4, "cmpld"),
+            Sample(24, 4, "mulld"),
+            Sample(28, 4, "divd"),
+            Sample(32, 4, "beq"),
+            Sample(36, 4, "bdnz"),
+            Sample(40, 4, "blr"),
+            Sample(44, 4, "addi"),
+            Sample(48, 4, "add"),
+            Sample(52, 4, "subf"),
+            Sample(56, 4, "and"),
+            Sample(60, 4, "or"),
+            Sample(64, 4, "xor"),
+            Sample(68, 4, "slw"),
+            Sample(72, 4, "srw"),
+            Sample(76, 4, "cmpw"),
+            Sample(80, 4, "cmpwi"),
+            Sample(84, 4, "lwz"),
+            Sample(88, 4, "stw"),
+            Sample(92, 4, "lbz"),
+            Sample(96, 4, "stb"),
+            Sample(100, 4, "li"),
+            Sample(104, 4, "lis"),
+            Sample(108, 4, "mullw"),
+            Sample(112, 4, "divw"),
+            Sample(116, 4, "nop"),
+        ),
+    ),
 )
 
 
 def select_registers(language: str) -> None:
+    oracle.LITTLE_ENDIAN = ":LE:" in language
+    oracle.ADDRESS_SIZE = 8 if ":64:" in language else 4
     if language.startswith("ARM:"):
         names = ARM_REGISTERS
     elif language.startswith("MIPS:"):
@@ -305,6 +433,24 @@ def select_registers(language: str) -> None:
         return node.space.name == "register" and node.getRegisterName() in names
 
     oracle.architectural_register = architectural_register
+
+
+def canonical_mnemonic(mnemonic: str) -> str:
+    base = mnemonic.removeprefix("c.")
+    return {
+        "addi4spn": "addi",
+        "lwsp": "lw",
+        "swsp": "sw",
+    }.get(base, base)
+
+
+def mnemonic_matches(observed: str, expected: str) -> bool:
+    aliases = {
+        ("ldmia", "pop"),
+        ("blr", "bclr"),
+        ("ori", "nop"),
+    }
+    return canonical_mnemonic(observed) == expected or (observed, expected) in aliases
 
 
 def main() -> None:
@@ -331,6 +477,11 @@ def main() -> None:
             if len(disassembly.instructions) != 1:
                 raise RuntimeError(f"disassembly count {corpus.key} {sample.address:x}")
             instruction = disassembly.instructions[0]
+            if not mnemonic_matches(instruction.mnem, sample.mnemonic):
+                raise RuntimeError(
+                    f"mnemonic mismatch {corpus.key} {sample.address:x} "
+                    f"{instruction.mnem} != {sample.mnemonic}"
+                )
             expected_length = 4 if corpus.language.startswith("MIPS:") else sample.length
             if instruction.length != expected_length:
                 raise RuntimeError(
