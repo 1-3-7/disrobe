@@ -2096,6 +2096,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-dart"
+version = "0.10.4"
+dependencies = [
+ "clap",
+ "object",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "disrobe-emit"
 version = "0.10.3"
 dependencies = [
