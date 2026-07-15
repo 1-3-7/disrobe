@@ -371,7 +371,9 @@ fn const_operand(insn: &Instruction) -> Vec<String> {
     match &insn.operand {
         OperandValue::I32(v) => vec![v.to_string()],
         OperandValue::I64(v) => vec![v.to_string()],
-        OperandValue::U8(v) => vec![v.to_string()],
+        OperandValue::U8(v) => vec![i32::from(v.cast_signed()).to_string()],
+        OperandValue::F32Bits(bits) => vec![f32::from_bits(*bits).to_string()],
+        OperandValue::F64Bits(bits) => vec![f64::from_bits(*bits).to_string()],
         _ => Vec::new(),
     }
 }
