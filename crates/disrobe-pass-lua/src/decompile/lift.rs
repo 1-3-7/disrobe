@@ -605,11 +605,11 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             Op::MmBin | Op::MmBinI | Op::MmBinK => {}
             Op::Unm => {
                 let v: String = state.reg(d.b);
-                define(&mut state, d.a, format!("-({v})"));
+                define(&mut state, d.a, format!("(-({v}))"));
             }
             Op::BNot => {
                 let v: String = state.reg(d.b);
-                define(&mut state, d.a, format!("~({v})"));
+                define(&mut state, d.a, format!("(~({v}))"));
             }
             Op::Not => {
                 let v: String = state.reg(d.b);
@@ -617,7 +617,7 @@ pub fn lift_proto_dialect(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Li
             }
             Op::Len => {
                 let v: String = state.reg(d.b);
-                define(&mut state, d.a, format!("#{v}"));
+                define(&mut state, d.a, format!("(#({v}))"));
             }
             Op::Concat => {
                 let end: u32 = if matches!(dialect, LuaDialect::Lua54) {
