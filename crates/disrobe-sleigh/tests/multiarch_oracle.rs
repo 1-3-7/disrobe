@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_sleigh::coverage::{DecodeReport, decode_block_with_coverage_for_language};
-use disrobe_sleigh::lifter::{ArmMode, Language};
+use disrobe_sleigh::lifter::{ArmMode, Language, RiscVWidth};
 use disrobe_sleigh::syntax::Endian;
 
 const TOOL_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
@@ -33,6 +33,9 @@ fn committed_form_matrices_match_gnu_objdump() {
         ("arm32_thumb_forms", Language::Arm32(ArmMode::Thumb), 23, 0),
         ("mips32le_forms", Language::Mips32(Endian::Little), 28, 3),
         ("mips32be_forms", Language::Mips32(Endian::Big), 28, 3),
+        ("powerpc32_forms", Language::PowerPc32Be, 32, 1),
+        ("riscv32_forms", Language::RiscV(RiscVWidth::Rv32), 31, 6),
+        ("riscv64_forms", Language::RiscV(RiscVWidth::Rv64), 33, 6),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
         assert_cross_check(label, &checked, expected, callother);
@@ -46,9 +49,17 @@ fn committed_cross_gcc_functions_match_gnu_objdump() {
         ("arm32_thumb_oracle_o2", Language::Arm32(ArmMode::Thumb), 22),
         ("mips32le_oracle_o2", Language::Mips32(Endian::Little), 20),
         ("mips32be_oracle_o2", Language::Mips32(Endian::Big), 20),
+        ("powerpc32_oracle_o2", Language::PowerPc32Be, 11),
+        ("riscv32_oracle_o2", Language::RiscV(RiscVWidth::Rv32), 11),
+        ("riscv64_oracle_o2", Language::RiscV(RiscVWidth::Rv64), 11),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
-        assert_cross_check(label, &checked, expected, 0);
+        let callother: usize = if label.starts_with("riscv") {
+            4
+        } else {
+            usize::from(label.starts_with("powerpc"))
+        };
+        assert_cross_check(label, &checked, expected, callother);
     }
 }
 
@@ -93,6 +104,46 @@ fn live_cross_assemblers_match_gnu_objdump() {
         }
     } else {
         println!("MIPS cross-toolchain unavailable; set DISROBE_MIPS_GNU_BIN or PATH");
+    }
+    if let Some(toolchain) = find_riscv_toolchain() {
+        for (label, source, language, architecture, abi, expected) in [
+            (
+                "riscv32-live",
+                "riscv32_forms.s",
+                Language::RiscV(RiscVWidth::Rv32),
+                "-march=rv32im",
+                "-mabi=ilp32",
+                31,
+            ),
+            (
+                "riscv64-live",
+                "riscv64_forms.s",
+                Language::RiscV(RiscVWidth::Rv64),
+                "-march=rv64im",
+                "-mabi=lp64",
+                33,
+            ),
+        ] {
+            let options: Vec<&str> = vec![architecture, abi];
+            let checked: CrossCheck =
+                live_cross_check(&toolchain, label, source, language, &options);
+            assert_cross_check(label, &checked, expected, 6);
+        }
+    } else {
+        println!("RISC-V cross-toolchain unavailable; set DISROBE_RISCV_GNU_BIN or PATH");
+    }
+    if let Some(toolchain) = find_powerpc_toolchain() {
+        let options: Vec<&str> = vec!["-mcpu=powerpc", "-m32", "-mbig"];
+        let checked: CrossCheck = live_cross_check(
+            &toolchain,
+            "powerpc32-live",
+            "powerpc32_forms.s",
+            Language::PowerPc32Be,
+            &options,
+        );
+        assert_cross_check("powerpc32-live", &checked, 32, 1);
+    } else {
+        println!("PowerPC cross-toolchain unavailable; set DISROBE_POWERPC_GNU_BIN or PATH");
     }
 }
 
@@ -142,6 +193,50 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
         }
     } else {
         println!("MIPS cross-toolchain unavailable; set DISROBE_MIPS_GNU_BIN or PATH");
+    }
+    if let Some(toolchain) = find_riscv_toolchain() {
+        for (label, language, architecture, abi) in [
+            (
+                "riscv32-c-live",
+                Language::RiscV(RiscVWidth::Rv32),
+                "-march=rv32im",
+                "-mabi=ilp32",
+            ),
+            (
+                "riscv64-c-live",
+                Language::RiscV(RiscVWidth::Rv64),
+                "-march=rv64im",
+                "-mabi=lp64",
+            ),
+        ] {
+            let mut options: Vec<&str> = common.clone();
+            options.extend([architecture, abi]);
+            let checked: CrossCheck =
+                live_cross_check(&toolchain, label, "riscv_oracle.c", language, &options);
+            assert_cross_check(label, &checked, 11, 4);
+        }
+    } else {
+        println!("RISC-V cross-toolchain unavailable; set DISROBE_RISCV_GNU_BIN or PATH");
+    }
+    if let Some(toolchain) = find_powerpc_toolchain() {
+        let options: Vec<&str> = vec![
+            "-O2",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-mcpu=powerpc",
+            "-m32",
+            "-mbig",
+        ];
+        let checked: CrossCheck = live_cross_check(
+            &toolchain,
+            "powerpc32-c-live",
+            "powerpc_oracle.c",
+            Language::PowerPc32Be,
+            &options,
+        );
+        assert_cross_check("powerpc32-c-live", &checked, 11, 1);
+    } else {
+        println!("PowerPC cross-toolchain unavailable; set DISROBE_POWERPC_GNU_BIN or PATH");
     }
 }
 
@@ -237,26 +332,22 @@ fn objdump_mnemonics(disassembly: &str) -> Vec<String> {
     disassembly
         .lines()
         .filter_map(|line: &str| {
-            let mut parts: std::str::SplitWhitespace<'_> = line.split_whitespace();
-            let address: &str = parts.next()?;
-            let valid_address: bool = address.ends_with(':')
-                && address[..address.len().saturating_sub(1)]
+            let (address, body): (&str, &str) = line.split_once(':')?;
+            let indented: bool = line.as_bytes().first().is_some_and(u8::is_ascii_whitespace);
+            let valid_address: bool = indented
+                && !address.trim().is_empty()
+                && address
+                    .trim()
                     .chars()
                     .all(|character: char| character.is_ascii_hexdigit());
             if !valid_address {
                 return None;
             }
-            let mut mnemonic: Option<&str> = None;
-            for part in parts {
-                let encoding: bool = matches!(part.len(), 4 | 8)
-                    && part
-                        .chars()
-                        .all(|character: char| character.is_ascii_hexdigit());
-                if !encoding {
-                    mnemonic = Some(part);
-                    break;
-                }
-            }
+            let mnemonic: Option<&str> = body
+                .split('\t')
+                .filter(|column: &&str| !column.trim().is_empty())
+                .nth(1)
+                .and_then(|column: &str| column.split_whitespace().next());
             mnemonic.map(|value: &str| {
                 value
                     .strip_suffix(".n")
@@ -289,6 +380,50 @@ fn find_mips_toolchain() -> Option<Toolchain> {
         "mipsel-linux-android",
         "DISROBE_MIPS_GNU_BIN",
     )
+}
+
+fn find_riscv_toolchain() -> Option<Toolchain> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(configured) = env::var_os("DISROBE_RISCV_GNU_BIN") {
+        candidates.push(PathBuf::from(configured));
+    }
+    if let Some(path) = env::var_os("PATH") {
+        candidates.extend(env::split_paths(&path));
+    }
+    if let Some(local_data) = env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local_data)
+                .join("disrobe-tools")
+                .join("msys64-riscv")
+                .join("ucrt64")
+                .join("bin"),
+        );
+    }
+    candidates
+        .into_iter()
+        .find_map(|candidate: PathBuf| toolchain_in_directory(&candidate, "riscv64-unknown-elf"))
+}
+
+fn find_powerpc_toolchain() -> Option<Toolchain> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(configured) = env::var_os("DISROBE_POWERPC_GNU_BIN") {
+        candidates.push(PathBuf::from(configured));
+    }
+    if let Some(path) = env::var_os("PATH") {
+        candidates.extend(env::split_paths(&path));
+    }
+    if let Some(local_data) = env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local_data)
+                .join("disrobe-tools")
+                .join("powerpc-eabi-gcc-4.9.0")
+                .join("bin"),
+        );
+    }
+    candidates.into_iter().find_map(|candidate: PathBuf| {
+        toolchain_in_directory(&candidate, "powerpc-linux-gnu")
+            .or_else(|| toolchain_in_directory(&candidate, "powerpc-eabi"))
+    })
 }
 
 fn find_toolchain(directory: &str, prefix: &str, override_name: &str) -> Option<Toolchain> {

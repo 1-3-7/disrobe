@@ -178,16 +178,20 @@ def normalize(operations: list[object]) -> list[str]:
         "INT_ADD": ("add", True),
         "INT_AND": ("and", True),
         "INT_CARRY": ("carry", True),
+        "INT_DIV": ("udiv", False),
         "INT_EQUAL": ("eq", True),
         "INT_LEFT": ("shl", False),
         "INT_LESS": ("ult", False),
         "INT_MULT": ("mul", True),
         "INT_NOTEQUAL": ("ne", True),
         "INT_OR": ("or", True),
+        "INT_REM": ("urem", False),
         "INT_RIGHT": ("lshr", False),
         "INT_SBORROW": ("sborrow", False),
         "INT_SCARRY": ("scarry", True),
+        "INT_SDIV": ("sdiv", False),
         "INT_SLESS": ("slt", False),
+        "INT_SREM": ("srem", False),
         "INT_SRIGHT": ("ashr", False),
         "INT_SUB": ("sub", False),
         "INT_XOR": ("xor", True),
@@ -230,9 +234,10 @@ def normalize(operations: list[object]) -> list[str]:
                 ),
             )
             continue
-        if name == "INT_LESSEQUAL":
+        if name in {"INT_LESSEQUAL", "INT_SLESSEQUAL"}:
+            comparison_name = "ult" if name == "INT_LESSEQUAL" else "slt"
             comparison = binary(
-                "ult",
+                comparison_name,
                 resolve(operation.inputs[1]),
                 resolve(operation.inputs[0]),
                 False,

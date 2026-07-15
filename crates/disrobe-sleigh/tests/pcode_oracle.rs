@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 
 use disrobe_sleigh::decode_block;
-use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
+use disrobe_sleigh::lifter::{
+    ArmMode, DecodedBlock, Language, RiscVWidth, decode_block_for_language,
+};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 use disrobe_sleigh::syntax::Endian;
 
@@ -96,6 +98,10 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
     let records: &str = include_str!("corpus/multiarch_pypcode.tsv");
     let raw: &str = include_str!("corpus/multiarch_pypcode.raw");
     assert!(raw.starts_with("pypcode 4.0.0\n"));
+    let raw_headers: Vec<&str> = raw
+        .lines()
+        .filter(|line: &&str| is_multiarch_raw_header(line))
+        .collect();
     let mut checked: usize = 0;
     for line in records
         .lines()
@@ -109,6 +115,9 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
             "arm32-thumb" => Some(Language::Arm32(ArmMode::Thumb)),
             "mips32le" => Some(Language::Mips32(Endian::Little)),
             "mips32be" => Some(Language::Mips32(Endian::Big)),
+            "powerpc32" => Some(Language::PowerPc32Be),
+            "riscv32" => Some(Language::RiscV(RiscVWidth::Rv32)),
+            "riscv64" => Some(Language::RiscV(RiscVWidth::Rv64)),
             _ => None,
         };
         assert!(language.is_some(), "{line}");
@@ -118,17 +127,34 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
         let address: u64 = u64::from_str_radix(fields[1], 16).unwrap_or(u64::MAX);
         let bytes: Vec<u8> = decode_hex(fields[2]);
         assert!(!bytes.is_empty(), "{line}");
+        let raw_header: String = format!("{} {} {} {}", fields[0], fields[1], fields[2], fields[3]);
+        assert!(raw_headers.contains(&raw_header.as_str()), "{line}");
         let block: DecodedBlock = decode_block_for_language(language, &bytes, address);
         assert!(!block.instructions.is_empty(), "{line}");
         assert_eq!(block.instructions[0].mnemonic, fields[3], "{line}");
+        let alignment_marker: bool =
+            fields[0].starts_with("riscv") && matches!(fields[3], "jalr" | "ret");
+        let expected_status: DecodeStatus = if alignment_marker {
+            DecodeStatus::CallOther
+        } else {
+            DecodeStatus::Supported
+        };
         assert!(
             block
                 .instructions
                 .iter()
-                .all(|instruction: &PcodeInstr| instruction.status == DecodeStatus::Supported),
+                .all(|instruction: &PcodeInstr| { instruction.status == expected_status }),
             "{line}: {:#?}",
             block.instructions
         );
+        if alignment_marker {
+            assert!(block.instructions.iter().any(|instruction: &PcodeInstr| {
+                instruction.ops.iter().any(|operation: &PcodeOp| {
+                    matches!(operation, PcodeOp::CallOther { name, .. }
+                        if name == "riscv_instruction_address_alignment")
+                })
+            }));
+        }
         let joined: String = architectural_facts(&block.ordered_ops).join("|");
         let actual: String = if joined.is_empty() {
             "none".to_owned()
@@ -138,7 +164,8 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
         assert_eq!(actual, fields[4], "{line}");
         checked = checked.saturating_add(1);
     }
-    assert_eq!(checked, 31);
+    assert_eq!(checked, 118);
+    assert_eq!(raw_headers.len(), checked);
 }
 
 #[test]
@@ -206,6 +233,28 @@ fn is_raw_header(line: &str) -> bool {
         && fields[0]
             .chars()
             .chain(fields[1].chars())
+            .all(|character: char| character.is_ascii_hexdigit())
+}
+
+fn is_multiarch_raw_header(line: &str) -> bool {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    fields.len() == 4
+        && matches!(
+            fields[0],
+            "arm32-a32"
+                | "arm32-thumb"
+                | "mips32le"
+                | "mips32be"
+                | "powerpc32"
+                | "riscv32"
+                | "riscv64"
+        )
+        && fields[1]
+            .chars()
+            .all(|character: char| character.is_ascii_hexdigit())
+        && fields[2].len().is_multiple_of(2)
+        && fields[2]
+            .chars()
             .all(|character: char| character.is_ascii_hexdigit())
 }
 
@@ -294,6 +343,7 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                     &mut ordered_facts,
                 );
             }
+            PcodeOp::CallOther { name, .. } if name == "riscv_instruction_address_alignment" => {}
             PcodeOp::CallOther { name, .. } => {
                 push_ordered_fact(format!("callother({name})"), &mut facts, &mut ordered_facts);
             }
@@ -338,6 +388,19 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 &mut values,
                 &mut facts,
             ),
+            PcodeOp::IntDiv {
+                output,
+                left,
+                right,
+            } => record_binary(
+                *output,
+                "udiv",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
             PcodeOp::IntEqual {
                 output,
                 left,
@@ -369,11 +432,19 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 &mut values,
                 &mut facts,
             ),
+            PcodeOp::IntLessEqual {
+                output,
+                left,
+                right,
+            } => record_less_equal(*output, "ult", *left, *right, &mut values, &mut facts),
             PcodeOp::IntMult {
                 output,
                 left,
                 right,
             } => record_binary(*output, "mul", *left, *right, true, &mut values, &mut facts),
+            PcodeOp::IntNegate { output, input } => {
+                record_unary(*output, "not", *input, &mut values, &mut facts);
+            }
             PcodeOp::IntNotEqual {
                 output,
                 left,
@@ -384,6 +455,19 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 left,
                 right,
             } => record_binary(*output, "or", *left, *right, true, &mut values, &mut facts),
+            PcodeOp::IntRem {
+                output,
+                left,
+                right,
+            } => record_binary(
+                *output,
+                "urem",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
             PcodeOp::IntRight {
                 output,
                 input,
@@ -423,6 +507,19 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 &mut values,
                 &mut facts,
             ),
+            PcodeOp::IntSignedDiv {
+                output,
+                left,
+                right,
+            } => record_binary(
+                *output,
+                "sdiv",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
             PcodeOp::IntSignedLess {
                 output,
                 left,
@@ -430,6 +527,24 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
             } => record_binary(
                 *output,
                 "slt",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::IntSignedLessEqual {
+                output,
+                left,
+                right,
+            } => record_less_equal(*output, "slt", *left, *right, &mut values, &mut facts),
+            PcodeOp::IntSignedRem {
+                output,
+                left,
+                right,
+            } => record_binary(
+                *output,
+                "srem",
                 *left,
                 *right,
                 false,
@@ -467,6 +582,9 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 left,
                 right,
             } => record_binary(*output, "xor", *left, *right, true, &mut values, &mut facts),
+            PcodeOp::IntSext { output, input } => {
+                record_unary(*output, "sext", *input, &mut values, &mut facts);
+            }
             PcodeOp::IntZext { output, input } => {
                 record_unary(*output, "zext", *input, &mut values, &mut facts);
             }
@@ -482,6 +600,15 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 };
                 record(*output, expression, &mut values, &mut facts);
             }
+            PcodeOp::Piece { output, high, low } => record_binary(
+                *output,
+                "piece",
+                *high,
+                *low,
+                false,
+                &mut values,
+                &mut facts,
+            ),
             PcodeOp::Return { target } => {
                 let rendered: String = target.map_or_else(
                     || "none".to_owned(),
@@ -503,10 +630,18 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                 resolve(*pointer, &values),
                 resolve(*value, &values)
             )),
-            _ => push_ordered_fact(
-                format!("unhandled({})", operation.name()),
+            PcodeOp::Subpiece {
+                output,
+                input,
+                byte_offset,
+            } => record_binary(
+                *output,
+                "subpiece",
+                *input,
+                *byte_offset,
+                false,
+                &mut values,
                 &mut facts,
-                &mut ordered_facts,
             ),
         }
     }
@@ -560,6 +695,28 @@ fn record_unary(
             input: Box::new(resolved),
             name,
         },
+    };
+    record(output, expression, values, facts);
+}
+
+fn record_less_equal(
+    output: Varnode,
+    comparison_name: &'static str,
+    left: Varnode,
+    right: Varnode,
+    values: &mut BTreeMap<Varnode, Expression>,
+    facts: &mut Vec<String>,
+) {
+    let comparison: Expression = binary(
+        comparison_name,
+        resolve(right, values),
+        resolve(left, values),
+        false,
+        output.size_bytes,
+    );
+    let expression: Expression = Expression::Unary {
+        input: Box::new(comparison),
+        name: "boolnot",
     };
     record(output, expression, values, facts);
 }

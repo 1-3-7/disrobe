@@ -25,9 +25,9 @@ python -m pip install --require-hashes -r tests/fixtures/pypcode-requirements.tx
 python tests/fixtures/generate_pypcode_oracle.py
 ```
 
-The raw file preserves pypcode's rendered translation for all 64 instructions. The table removes instruction markers and non-architectural temporary writes, inlines temporary definitions, keeps the final value of each architectural register, folds constant-only operations, orders commutative operands, and records RAM operations and control-flow effects. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers. An instruction with no architectural effect uses `none`. Shift counts use four-byte constants in the normalized form. Pypcode's internal conditional branch for `csel` becomes `select(condition, true, false)`. Its unsigned subtraction carry form `right <= left` becomes the equivalent `boolnot(ult(left, right))`.
+The raw file preserves pypcode's rendered translation for all 64 instructions. The table removes instruction markers and non-architectural temporary writes, inlines temporary definitions, keeps the final value of each architectural register, folds constant-only operations, orders commutative operands, and records RAM operations and control-flow effects. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers. An instruction with no architectural effect uses `none`. Shift counts use four-byte constants in the normalized form. pypcode's internal conditional branch for `csel` becomes `select(condition, true, false)`. Its unsigned subtraction carry form `right <= left` becomes the equivalent `boolnot(ult(left, right))`.
 
-- `generate_pypcode_oracle.py`: `5E770757089F683383F12A3091A6750A950CF657E0FB6F74FFB951D88F196040`
+- `generate_pypcode_oracle.py`: `2B781A33F96BC497CDA408986124772CE7AC94729FBA7D1A1E8ABC8EFEDB06B8`
 - `aarch64_pypcode.raw`: `80611969425580A1A213B8FF7D30E4158A51DB21827F07E00F9C1656CB8D32B7`
 - `aarch64_pypcode.tsv`: `2A0E78B211244BB70F2DA7AA7B981371ED8C40942C06BB93970B5D1570DEC81A`
 
@@ -57,11 +57,56 @@ SHA-256 records:
 
 The committed form matrices contain 20 A32 instructions, 23 Thumb instructions, and 28 instructions in each MIPS byte order. The committed C corpora contain 19 A32 instructions, 22 Thumb instructions, and 20 instructions in each MIPS byte order. The tests optionally repeat all eight builds and compare fresh output with the same toolchain's objdump.
 
-# ARM32 and MIPS32 P-code corpus
+# RISC-V compiler corpora
 
-`multiarch_pypcode.raw` and `multiarch_pypcode.tsv` were produced with pypcode 4.0.0 from the committed form matrices. The languages are `ARM:LE:32:v7`, `ARM:LE:32:v8T`, `MIPS:LE:32:default`, and `MIPS:BE:32:default`.
+The RISC-V files were produced by the MSYS2 UCRT64 `riscv64-unknown-elf` GNU cross-toolchain. GCC reports version 16.1.0. GNU objcopy and objdump report Binutils 2.46.1. The compiler targets both widths through `-march=rv32im -mabi=ilp32` and `-march=rv64im -mabi=lp64`.
 
-The 31 records cover arithmetic, moves, loads, stores, wide moves, multiplication, direct calls, ARM branch exchange and stack returns, Thumb PC reads and writes, both MIPS byte orders, and a MIPS conditional branch whose delay-slot write precedes the transfer. The table retains final architectural register values, flags, RAM effects, and control-flow effects while removing instruction markers, internal temporaries, and decoder-context pcodeops. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers.
+Executable SHA-256 records:
+
+- `riscv64-unknown-elf-gcc.exe`: `188B5E309C52532D4B86F3CC8735036040CA4336EBA3F1E4F7EABD01C124F67A`
+- `riscv64-unknown-elf-objcopy.exe`: `F4E1B715E9B21D3E1F4A4591C27E1344A65B18955B626905342DBABFB685E7C7`
+- `riscv64-unknown-elf-objdump.exe`: `E5283CEF88C639A55C73F852F89F3AADA54F875926FC4A98F0BC1F73DEF973CD`
+
+The assembly matrices were compiled with their width-specific `-march` and `-mabi` flags. The C fixture was compiled with the same flags plus `-std=c11 -O2 -fno-asynchronous-unwind-tables -fno-stack-protector -fno-unwind-tables`. Each `.text` file was extracted with the matching `objcopy -O binary -j .text`; mnemonics came from the matching `objdump -d -z`.
+
+SHA-256 records:
+
+- `riscv32_forms.s`: `F03D3E0E7B78F40CF41121846244F323297E32AB07B86EFAE35BBE2B21DDED7B`
+- `riscv64_forms.s`: `1AF775D0528DBA78BD9C4DB9DE1AD8FEF2F00434D23A5E3C026A9DDE4E5B6466`
+- `riscv_oracle.c`: `6C6439AECFB59C6533CA659998C5EE19A06E55A3E53940F28ADA1C81EFB649C8`
+- `riscv32_forms.text`: `E760444C7FC25054384CB92B41DBDD8E305E29412D0362CD956F8B9CF739DB54`
+- `riscv64_forms.text`: `F72DDE0F5B70115FB6E1AE10EAF30FAD3A3259BE17AE03D656B5E3648A74B6FC`
+- `riscv32_oracle_o2.text`: `7BDFFECAF6CE953AD80386A6FCDF08100FF6D587108417474C6F21AEF33842CA`
+- `riscv64_oracle_o2.text`: `53FFE9E8CD1881895720549AF231502A53FD670E7897512001A3EE80BE1884DD`
+
+The RV32IM matrix contains 31 instructions and the RV64IM matrix contains 33. Both reach 100 percent constructor matching and exact objdump mnemonic agreement. Their `jalr`, `div`, `divu`, `rem`, `remu`, and `ret` forms are the six `CALLOTHER` records. Each `-O2` C corpus contains 11 instructions with one `divu` and three `ret` `CALLOTHER` records. The control-flow markers preserve the four-byte alignment boundary of the I/M-only profiles.
+
+# PPC32 big-endian compiler corpus
+
+The PPC corpus uses the Sysprogs PowerPC EABI GNU suite because the apt `powerpc-linux-gnu` package is not installable on Windows. GCC reports version 4.9.0. GNU objcopy and objdump report Binutils 2.24. The compiler emits `elf32-powerpc` big-endian objects. The downloaded installer SHA-256 was `E63904AEFCBFAB25022BC042445B4816AE996DE73A59D5D62FCD086D8E2079D6`.
+
+Executable SHA-256 records:
+
+- `powerpc-eabi-gcc.exe`: `F69422BAF96D5621DB1559C5080DA371735740D33B218105DBC7C3B79A8BCA67`
+- `powerpc-eabi-objcopy.exe`: `BA070B69A361AF0EC38F7F0243CBD583381350B16B4F5B95A174B09191611734`
+- `powerpc-eabi-objdump.exe`: `C46D73602190D543FC02ABCD3BE6039EB03D3865F6A55541BC6839E2281FB39F`
+
+The assembly matrix was compiled with `-mcpu=powerpc -m32 -mbig`. The C fixture was compiled with `-O2 -ffreestanding -fno-builtin -mcpu=powerpc -m32 -mbig`. Each `.text` file was extracted with the matching `objcopy -O binary -j .text`; mnemonics came from the matching `objdump -d -z`.
+
+SHA-256 records:
+
+- `powerpc32_forms.s`: `6C17372578D1245B124F478A8741E8AEE6774C377AF6C27C9CB981D1F016C22F`
+- `powerpc_oracle.c`: `F2C30FC7CDBA777E6B925C099628ACE0E2F5ABE0B9A67EFB0249EDF12A6338A4`
+- `powerpc32_forms.text`: `9A8FC4FBF455B27D5F008A2B21E47149EE1D0E7B19659C157E9C07111AD088D6`
+- `powerpc32_oracle_o2.text`: `6120A3F057A84ECB60673848284E129C77350C1B886DB3F8729634954D673AC3`
+
+The assembly matrix contains 32 instructions and the `-O2` C corpus contains 11. Both reach 100 percent constructor matching and exact objdump mnemonic agreement. `divw` is the sole `CALLOTHER` record in each corpus.
+
+# Multi-architecture P-code corpus
+
+`multiarch_pypcode.raw` and `multiarch_pypcode.tsv` were produced with pypcode 4.0.0 from the committed form matrices. The languages are `ARM:LE:32:v7`, `ARM:LE:32:v8T`, `MIPS:LE:32:default`, `MIPS:BE:32:default`, `RISCV:LE:32:default`, `RISCV:LE:64:default`, and `PowerPC:BE:32:default`.
+
+The 118 records contain 31 ARM/MIPS cases, 56 RISC-V cases, and 31 PPC32 cases. They cover arithmetic, loads, stores, multiplication, direct and indirect control flow, ARM branch exchange and stack returns, Thumb PC reads and writes, both MIPS byte orders, a MIPS delayed conditional transfer, RISC-V width-dependent effects and all multiply variants, PowerPC CR writes, PowerPC BO/BI plus CTR conditions, fall-through linking, nonzero BH, and absolute direct branches. The table retains final architectural register values, flags, RAM effects, and control-flow effects while removing instruction markers, internal temporaries, decoder-context pcodeops, and the separately asserted RISC-V alignment marker. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers.
 
 The generator is reproducible after the pinned pypcode installation:
 
@@ -69,8 +114,10 @@ The generator is reproducible after the pinned pypcode installation:
 python tests/fixtures/generate_multiarch_pypcode_oracle.py
 ```
 
-- `generate_multiarch_pypcode_oracle.py`: `30CEAFD226EBC7EDB607E0856CE2E676EDB005645EC1A008977153AD0C65CF3B`
-- `multiarch_pypcode.raw`: `1825B26D8B0784FF962859422483051616DD1CEADA2C86C189648AE1FF50491A`
-- `multiarch_pypcode.tsv`: `46DA12279AD8949B92F101444EE6A443E8C698BB614584269A60B545415A2F8D`
+The generator disassembles every selected byte slice with the matching pypcode language and rejects instruction-count or length drift before translation. The Rust comparison requires one raw translation header for every table row and checks each row's decoded mnemonic.
+
+- `generate_multiarch_pypcode_oracle.py`: `06943F1700DA369279141D812CBF5B104CAD2E83ECCD1F621B3B9AAE4207B1FF`
+- `multiarch_pypcode.raw`: `4AA9C29B4941F1BC48A15C91005C021EEC0D67E9A455BB2F1B0D2D25A466C7F8`
+- `multiarch_pypcode.tsv`: `2BAFF19B2B616751EAC19D07DDD1FA1DD3F7279969E29780C26C523652275294`
 
 `tests/pcode_oracle.rs` independently normalizes this crate's ordered P-code stream and compares every record with the pypcode-derived table.
