@@ -963,6 +963,49 @@ fn decode_escape(rest: &[u8]) -> (Option<char>, usize) {
     }
 }
 
+fn decode_escape_byte(rest: &[u8]) -> (Option<u8>, usize) {
+    if rest.is_empty() {
+        return (None, 0);
+    }
+    match rest[0] {
+        b'x' => {
+            let mut j: usize = 1;
+            while j < rest.len() && j <= 2 && rest[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j == 1 {
+                return (Some(b'x'), 1);
+            }
+            let Some(v): Option<u8> = parse_escape_u8(&rest[1..j], 16) else {
+                return (Some(b'\\'), 0);
+            };
+            (Some(v), j)
+        }
+        b'0'..=b'7' => {
+            let mut j: usize = 0;
+            while j < rest.len() && j < 3 && (b'0'..=b'7').contains(&rest[j]) {
+                j += 1;
+            }
+            let Some(v): Option<u32> = parse_escape_u32(&rest[..j], 8) else {
+                return (Some(b'\\'), 0);
+            };
+            (Some(v as u8), j)
+        }
+        b'n' => (Some(b'\n'), 1),
+        b't' => (Some(b'\t'), 1),
+        b'r' => (Some(b'\r'), 1),
+        b'\\' => (Some(b'\\'), 1),
+        b'\'' => (Some(b'\''), 1),
+        b'"' => (Some(b'"'), 1),
+        b'a' => (Some(0x07), 1),
+        b'b' => (Some(0x08), 1),
+        b'f' => (Some(0x0c), 1),
+        b'v' => (Some(0x0b), 1),
+        b'e' => (Some(0x1b), 1),
+        other => (Some(other), 1),
+    }
+}
+
 fn parse_escape_u8(bytes: &[u8], radix: u32) -> Option<u8> {
     let text: &str = std::str::from_utf8(bytes).ok()?;
     u8::from_str_radix(text, radix).ok()
@@ -1122,12 +1165,11 @@ fn initial_data(head: &str, env: &mut EvalEnv) -> Option<Vec<u8>> {
         if arg.is_runtime() {
             return None;
         }
-        let payload: String = if interpret_escapes {
-            decode_printf_escapes(arg.as_str())
+        let mut data: Vec<u8> = if interpret_escapes {
+            decode_printf_escape_bytes(arg.as_str())
         } else {
-            arg.into_string()
+            arg.into_string().into_bytes()
         };
-        let mut data: Vec<u8> = payload.into_bytes();
         if !suppress_newline {
             data.push(b'\n');
         }
@@ -1140,7 +1182,7 @@ fn initial_data(head: &str, env: &mut EvalEnv) -> Option<Vec<u8>> {
         if arg.is_runtime() {
             return None;
         }
-        return Some(decode_printf_escapes(arg.as_str()).into_bytes());
+        return Some(decode_printf_escape_bytes(arg.as_str()));
     }
     None
 }
@@ -1322,23 +1364,27 @@ fn expand_tr_set(set: &str) -> Vec<u8> {
     out
 }
 
-fn decode_printf_escapes(s: &str) -> String {
+fn decode_printf_escape_bytes(s: &str) -> Vec<u8> {
     let bytes: &[u8] = s.as_bytes();
-    let mut out: String = String::with_capacity(s.len());
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let mut i: usize = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            let (ch, consumed): (Option<char>, usize) = decode_escape(&bytes[i + 1..]);
-            if let Some(c) = ch {
-                out.push(c);
+            let (byte, consumed): (Option<u8>, usize) = decode_escape_byte(&bytes[i + 1..]);
+            if let Some(b) = byte {
+                out.push(b);
             }
             i += 1 + consumed;
             continue;
         }
-        out.push(bytes[i] as char);
+        out.push(bytes[i]);
         i += 1;
     }
     out
+}
+
+fn decode_printf_escapes(s: &str) -> String {
+    String::from_utf8_lossy(&decode_printf_escape_bytes(s)).into_owned()
 }
 
 pub(crate) fn substitute_ifs(input: &str) -> (String, bool) {
@@ -1509,6 +1555,18 @@ mod tests {
         let (out, _): (String, EvalEnv) = run(r#"printf '\167\150\157' | base64"#);
         let decoded: Vec<u8> = BASE64_STD.decode(out.trim()).expect("b64");
         assert_eq!(&decoded, b"who");
+    }
+
+    #[test]
+    fn printf_high_bytes_stay_single_bytes() {
+        let (out, _): (String, EvalEnv) = run(r#"printf '\x89\x50\x4e\x47' | base64"#);
+        assert_eq!(out.trim(), "iVBORw==", "out={out}");
+    }
+
+    #[test]
+    fn printf_high_octal_byte_feeds_xxd() {
+        let (out, _): (String, EvalEnv) = run(r#"printf '\377\376' | base64"#);
+        assert_eq!(out.trim(), "//4=", "out={out}");
     }
 
     #[test]
