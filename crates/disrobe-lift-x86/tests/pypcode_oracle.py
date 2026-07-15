@@ -68,6 +68,36 @@ def binary(
 ) -> Expression:
     if name == "add":
         return canonical_add(left, right, output_size)
+    if name == "subpiece":
+        left_node = left.values if left.kind == "node" else None
+        right_constant = constant_value(right)
+        if (
+            left_node is not None
+            and left_node[0] == "register"
+            and right_constant is not None
+            and right_constant[0] + output_size <= left_node[2]
+        ):
+            return Expression(
+                "node",
+                (
+                    "register",
+                    left_node[1] + right_constant[0],
+                    output_size,
+                ),
+            )
+    if (
+        name == "booland"
+        and left.kind == "boolnot"
+        and right.kind == "boolnot"
+    ):
+        disjunction = binary(
+            "boolor",
+            left.values[0],
+            right.values[0],
+            True,
+            output_size,
+        )
+        return Expression("boolnot", (disjunction,))
     if name in {"shl", "lshr", "ashr"}:
         right_constant = constant_value(right)
         if right_constant is not None:
@@ -151,7 +181,22 @@ def unary(name: str, value: Expression, output_size: int) -> Expression:
         return constant(~source[0], output_size)
     if source is not None and name == "boolnot":
         return constant(int(source[0] == 0), output_size)
+    if name == "boolnot" and value.kind == "boolnot":
+        return value.values[0]
     return Expression(name, (value,))
+
+
+def select(
+    condition: Expression,
+    when_true: Expression,
+    when_false: Expression,
+) -> Expression:
+    if condition.kind == "boolnot":
+        return Expression(
+            "select",
+            (condition.values[0], when_false, when_true),
+        )
+    return Expression("select", (condition, when_true, when_false))
 
 
 def canonical_add(
@@ -195,7 +240,7 @@ def architectural_register(node: object) -> bool:
     if node.space.name != "register":
         return False
     name = node.getRegisterName()
-    return name in {
+    return xmm_base(node) is not None or name in {
         "RAX", "RBX", "RCX", "RDX", "RSP", "RBP", "RSI", "RDI",
         "EAX", "EBX", "ECX", "EDX", "ESP", "EBP", "ESI", "EDI",
         "AX", "BX", "CX", "DX", "SP", "BP", "SI", "DI",
@@ -203,7 +248,41 @@ def architectural_register(node: object) -> bool:
     } or re.fullmatch(r"R(?:8|9|1[0-5])(?:D|W|B)?", name) is not None
 
 
-def normalize(operations: list[object]) -> list[str]:
+def xmm_base(node: object) -> int | None:
+    if node.space.name != "register" or node.offset < 0x1200:
+        return None
+    index = (node.offset - 0x1200) // 0x40
+    if index >= 16:
+        return None
+    base = 0x1200 + index * 0x40
+    within = node.offset - base
+    if within + node.size > 16:
+        return None
+    return base
+
+
+def gpr_base(node: object) -> int | None:
+    if node.space.name != "register":
+        return None
+    bases = tuple(range(0x00, 0x40, 8)) + tuple(range(0x80, 0xC0, 8))
+    for base in bases:
+        if base <= node.offset and node.offset + node.size <= base + 8:
+            return base
+    return None
+
+
+def boolean_register(node: object) -> bool:
+    return node.space.name == "register" and node.getRegisterName() in {
+        "AF",
+        "CF",
+        "OF",
+        "PF",
+        "SF",
+        "ZF",
+    }
+
+
+def normalize(operations: list[object], mnemonic: str) -> list[str]:
     values: dict[tuple[str, int, int], Expression] = {}
     facts: list[str] = []
     pending_facts: list[str] = []
@@ -245,8 +324,9 @@ def normalize(operations: list[object]) -> list[str]:
     def record(output: object, expression: Expression) -> None:
         nonlocal pending_condition
         key = node_key(output)
-        if pending_condition is not None and key in values:
-            expression = Expression("select", (pending_condition, values[key], expression))
+        if pending_condition is not None:
+            previous = values.get(key, node_expression(output))
+            expression = select(pending_condition, previous, expression)
             pending_condition = None
         values[key] = expression
         if output.space.name == "register":
@@ -266,9 +346,18 @@ def normalize(operations: list[object]) -> list[str]:
                     pending_facts.append(marker)
                 return
         if architectural_register(output):
-            if output.size == 8:
+            fact_output = node_expression(output)
+            fact_expression = expression
+            general_base = gpr_base(output)
+            fact_size = output.size
+            if general_base is not None and output.size == 4 and output.offset == general_base:
+                fact_output = Expression("node", ("register", general_base, 8))
+                fact_expression = unary("zext", expression, 8)
+                values[("register", general_base, 8)] = fact_expression
+                fact_size = 8
+            if fact_size == 8 and general_base is not None:
                 partial_prefixes = {
-                    f"write(register:0x{output.offset:x}:{size},"
+                    f"write(register:0x{general_base:x}:{size},"
                     for size in (1, 2, 4)
                 }
                 pending_facts[:] = [
@@ -276,11 +365,24 @@ def normalize(operations: list[object]) -> list[str]:
                     for fact in pending_facts
                     if not any(fact.startswith(prefix) for prefix in partial_prefixes)
                 ]
-            prefix = f"write({render(node_expression(output))},"
+            vector_base = xmm_base(output)
+            if vector_base is not None and output.size == 16:
+                partial_prefixes = {
+                    f"write(register:0x{vector_base + byte_offset:x}:{size},"
+                    for byte_offset in range(16)
+                    for size in (1, 2, 4, 8)
+                    if byte_offset + size <= 16
+                }
+                pending_facts[:] = [
+                    fact
+                    for fact in pending_facts
+                    if not any(fact.startswith(prefix) for prefix in partial_prefixes)
+                ]
+            prefix = f"write({render(fact_output)},"
             pending_facts[:] = [
                 fact for fact in pending_facts if not fact.startswith(prefix)
             ]
-            pending_facts.append(f"{prefix}{render(expression)})")
+            pending_facts.append(f"{prefix}{render(fact_expression)})")
 
     binary_names = {
         "BOOL_AND": ("booland", True),
@@ -319,10 +421,13 @@ def normalize(operations: list[object]) -> list[str]:
         "FLOAT_FLOAT2FLOAT": "float2float",
         "FLOAT_SQRT": "fsqrt",
         "FLOAT_INT2FLOAT": "int2float",
+        "FLOAT_NAN": "fnan",
+        "FLOAT_ROUND": "fround",
         "INT_NEGATE": "not",
         "INT_SEXT": "sext",
         "INT_ZEXT": "zext",
         "FLOAT_TRUNC": "trunc",
+        "LZCOUNT": "lzcount",
         "POPCOUNT": "popcount",
     }
     for operation in operations:
@@ -336,6 +441,29 @@ def normalize(operations: list[object]) -> list[str]:
             continue
         if name in binary_names:
             operation_name, commutative = binary_names[name]
+            if (
+                name == "INT_NOTEQUAL"
+                and boolean_register(operation.inputs[0])
+                and boolean_register(operation.inputs[1])
+            ):
+                operation_name = "boolxor"
+            if (
+                name == "INT_EQUAL"
+                and boolean_register(operation.inputs[0])
+                and boolean_register(operation.inputs[1])
+            ):
+                different = binary(
+                    "boolxor",
+                    resolve(operation.inputs[0]),
+                    resolve(operation.inputs[1]),
+                    True,
+                    operation.output.size,
+                )
+                record(
+                    operation.output,
+                    unary("boolnot", different, operation.output.size),
+                )
+                continue
             record(
                 operation.output,
                 binary(
@@ -431,7 +559,7 @@ def normalize(operations: list[object]) -> list[str]:
         if name == "CBRANCH":
             target = operation.inputs[0]
             condition = resolve(operation.inputs[1])
-            if target.space.name == "const":
+            if mnemonic.startswith("cmov") or target.space.name == "const":
                 pending_condition = condition
             else:
                 flush_facts()
@@ -460,7 +588,35 @@ def main() -> None:
     context = pypcode.Context(LANGUAGE)
     raw_lines = [f"pypcode {VERSION}", LANGUAGE]
     table_lines = ["address\tbytes\tmnemonic\tnormalized_architectural_effects"]
-    aliases = {"jz": "je", "sal": "shl", "retn": "ret"}
+    aliases = {
+        "cmovc": "cmovb",
+        "cmovna": "cmovbe",
+        "cmovnbe": "cmova",
+        "cmovnc": "cmovae",
+        "cmovng": "cmovle",
+        "cmovnge": "cmovl",
+        "cmovnl": "cmovge",
+        "cmovnle": "cmovg",
+        "cmovnz": "cmovne",
+        "cmovpe": "cmovp",
+        "cmovpo": "cmovnp",
+        "cmovz": "cmove",
+        "jz": "je",
+        "retn": "ret",
+        "sal": "shl",
+        "setc": "setb",
+        "setna": "setbe",
+        "setnbe": "seta",
+        "setnc": "setae",
+        "setng": "setle",
+        "setnge": "setl",
+        "setnl": "setge",
+        "setnle": "setg",
+        "setnz": "setne",
+        "setpe": "setp",
+        "setpo": "setnp",
+        "setz": "sete",
+    }
     for address, length, mnemonic in records:
         encoded = machine_code[address : address + length]
         if len(encoded) != length:
@@ -469,9 +625,15 @@ def main() -> None:
         if len(disassembly.instructions) != 1:
             raise RuntimeError(f"disassembly count {address:x}")
         decoded = disassembly.instructions[0]
-        observed = aliases.get(decoded.mnem.lower(), decoded.mnem.lower())
+        observed_raw = decoded.mnem.lower()
+        for suffix in (".lock", ".rep", ".repe", ".repne", ".repz", ".repnz"):
+            if observed_raw.endswith(suffix):
+                observed_raw = observed_raw.removesuffix(suffix)
+                break
+        observed = aliases.get(observed_raw, observed_raw)
         semantic_nop_alias = observed == "nop" and mnemonic == "xchg" and encoded == bytes.fromhex("6690")
-        if decoded.length != length or (observed != mnemonic and not semantic_nop_alias):
+        cmpsq_alias = observed == "cmpsd" and mnemonic == "cmpsq" and encoded.endswith(bytes.fromhex("48a7"))
+        if decoded.length != length or (observed != mnemonic and not semantic_nop_alias and not cmpsq_alias):
             raise RuntimeError(
                 f"disassembly mismatch {address:x}: {observed}/{decoded.length} != {mnemonic}/{length}"
             )
@@ -482,7 +644,7 @@ def main() -> None:
         )
         raw_lines.append(f"{address:x} {encoded.hex()} {mnemonic}")
         raw_lines.extend(str(translation).splitlines())
-        facts = normalize(list(translation.ops))
+        facts = normalize(list(translation.ops), mnemonic)
         normalized = "|".join(facts) if facts else "none"
         table_lines.append(
             f"{address:x}\t{encoded.hex()}\t{mnemonic}\t{normalized}"

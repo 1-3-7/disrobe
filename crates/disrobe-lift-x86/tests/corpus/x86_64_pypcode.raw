@@ -535,23 +535,2175 @@ IMARK ram[135:1]
 RIP = *[ram]RSP
 RSP = RSP + 0x8
 return RIP
-136 90 nop
-IMARK ram[136:1]
-137 90 nop
-IMARK ram[137:1]
-138 90 nop
-IMARK ram[138:1]
-139 90 nop
-IMARK ram[139:1]
-13a 90 nop
-IMARK ram[13a:1]
-13b 90 nop
-IMARK ram[13b:1]
-13c 90 nop
-IMARK ram[13c:1]
-13d 90 nop
-IMARK ram[13d:1]
-13e 90 nop
-IMARK ram[13e:1]
-13f 90 nop
-IMARK ram[13f:1]
+136 662e0f1f840000000000 nop
+IMARK ram[136:10]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+140 f30f1efa endbr64
+IMARK ram[140:4]
+144 0f90c0 seto
+IMARK ram[144:3]
+AL = OF
+147 0f91c0 setno
+IMARK ram[147:3]
+unique[24b00:1] = !OF
+AL = unique[24b00:1]
+14a 0f92c0 setb
+IMARK ram[14a:3]
+AL = CF
+14d 0f93c0 setae
+IMARK ram[14d:3]
+unique[24d00:1] = !CF
+AL = unique[24d00:1]
+150 0f94c0 sete
+IMARK ram[150:3]
+AL = ZF
+153 0f95c0 setne
+IMARK ram[153:3]
+unique[24f00:1] = !ZF
+AL = unique[24f00:1]
+156 0f96c0 setbe
+IMARK ram[156:3]
+unique[25100:1] = CF || ZF
+AL = unique[25100:1]
+159 0f97c0 seta
+IMARK ram[159:3]
+unique[25200:1] = CF || ZF
+unique[25400:1] = !unique[25200:1]
+AL = unique[25400:1]
+15c 0f98c0 sets
+IMARK ram[15c:3]
+AL = SF
+15f 0f99c0 setns
+IMARK ram[15f:3]
+unique[25600:1] = !SF
+AL = unique[25600:1]
+162 0f9ac0 setp
+IMARK ram[162:3]
+AL = PF
+165 0f9bc0 setnp
+IMARK ram[165:3]
+unique[25800:1] = !PF
+AL = unique[25800:1]
+168 0f9cc0 setl
+IMARK ram[168:3]
+unique[25a00:1] = OF != SF
+AL = unique[25a00:1]
+16b 0f9dc0 setge
+IMARK ram[16b:3]
+unique[25c00:1] = OF == SF
+AL = unique[25c00:1]
+16e 0f9ec0 setle
+IMARK ram[16e:3]
+unique[25d00:1] = OF != SF
+unique[25f00:1] = ZF || unique[25d00:1]
+AL = unique[25f00:1]
+171 0f9fc0 setg
+IMARK ram[171:3]
+unique[26000:1] = !ZF
+unique[26100:1] = OF == SF
+unique[26300:1] = unique[26000:1] && unique[26100:1]
+AL = unique[26300:1]
+174 0f9507 setne
+IMARK ram[174:3]
+unique[24f00:1] = !ZF
+unique[23b00:1] = unique[24f00:1]
+*[ram]RDI = unique[23b00:1]
+177 480f40c3 cmovo
+IMARK ram[177:4]
+unique[7b800:8] = RBX
+unique[7b900:1] = !OF
+if (unique[7b900:1]) goto ram[17b:8]
+RAX = unique[7b800:8]
+17b 480f41c3 cmovno
+IMARK ram[17b:4]
+unique[24b00:1] = !OF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[24b00:1]
+if (unique[7b900:1]) goto ram[17f:8]
+RAX = unique[7b800:8]
+17f 480f42c3 cmovb
+IMARK ram[17f:4]
+unique[7b800:8] = RBX
+unique[7b900:1] = !CF
+if (unique[7b900:1]) goto ram[183:8]
+RAX = unique[7b800:8]
+183 480f43c3 cmovae
+IMARK ram[183:4]
+unique[24d00:1] = !CF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[24d00:1]
+if (unique[7b900:1]) goto ram[187:8]
+RAX = unique[7b800:8]
+187 480f44c3 cmove
+IMARK ram[187:4]
+unique[7b800:8] = RBX
+unique[7b900:1] = !ZF
+if (unique[7b900:1]) goto ram[18b:8]
+RAX = unique[7b800:8]
+18b 480f45c3 cmovne
+IMARK ram[18b:4]
+unique[24f00:1] = !ZF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[24f00:1]
+if (unique[7b900:1]) goto ram[18f:8]
+RAX = unique[7b800:8]
+18f 480f46c3 cmovbe
+IMARK ram[18f:4]
+unique[25100:1] = CF || ZF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25100:1]
+if (unique[7b900:1]) goto ram[193:8]
+RAX = unique[7b800:8]
+193 480f47c3 cmova
+IMARK ram[193:4]
+unique[25200:1] = CF || ZF
+unique[25400:1] = !unique[25200:1]
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25400:1]
+if (unique[7b900:1]) goto ram[197:8]
+RAX = unique[7b800:8]
+197 480f48c3 cmovs
+IMARK ram[197:4]
+unique[7b800:8] = RBX
+unique[7b900:1] = !SF
+if (unique[7b900:1]) goto ram[19b:8]
+RAX = unique[7b800:8]
+19b 480f49c3 cmovns
+IMARK ram[19b:4]
+unique[25600:1] = !SF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25600:1]
+if (unique[7b900:1]) goto ram[19f:8]
+RAX = unique[7b800:8]
+19f 480f4ac3 cmovp
+IMARK ram[19f:4]
+unique[7b800:8] = RBX
+unique[7b900:1] = !PF
+if (unique[7b900:1]) goto ram[1a3:8]
+RAX = unique[7b800:8]
+1a3 480f4bc3 cmovnp
+IMARK ram[1a3:4]
+unique[25800:1] = !PF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25800:1]
+if (unique[7b900:1]) goto ram[1a7:8]
+RAX = unique[7b800:8]
+1a7 480f4cc3 cmovl
+IMARK ram[1a7:4]
+unique[25a00:1] = OF != SF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25a00:1]
+if (unique[7b900:1]) goto ram[1ab:8]
+RAX = unique[7b800:8]
+1ab 480f4dc3 cmovge
+IMARK ram[1ab:4]
+unique[25c00:1] = OF == SF
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25c00:1]
+if (unique[7b900:1]) goto ram[1af:8]
+RAX = unique[7b800:8]
+1af 480f4ec3 cmovle
+IMARK ram[1af:4]
+unique[25d00:1] = OF != SF
+unique[25f00:1] = ZF || unique[25d00:1]
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[25f00:1]
+if (unique[7b900:1]) goto ram[1b3:8]
+RAX = unique[7b800:8]
+1b3 480f4fc3 cmovg
+IMARK ram[1b3:4]
+unique[26000:1] = !ZF
+unique[26100:1] = OF == SF
+unique[26300:1] = unique[26000:1] && unique[26100:1]
+unique[7b800:8] = RBX
+unique[7b900:1] = !unique[26300:1]
+if (unique[7b900:1]) goto ram[1b7:8]
+RAX = unique[7b800:8]
+1b7 480f4507 cmovne
+IMARK ram[1b7:4]
+unique[24f00:1] = !ZF
+unique[23e00:8] = *[ram]RDI
+unique[7b800:8] = unique[23e00:8]
+unique[7b900:1] = !unique[24f00:1]
+if (unique[7b900:1]) goto ram[1bb:8]
+RAX = unique[7b800:8]
+1bb c3 ret
+IMARK ram[1bb:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+1bc 0f1f4000 nop
+IMARK ram[1bc:4]
+1c0 f30f1efa endbr64
+IMARK ram[1c0:4]
+1c4 480fa3d8 bt
+IMARK ram[1c4:4]
+unique[6e000:8] = RBX & 0x3f
+unique[6e100:8] = RAX >> unique[6e000:8]
+unique[6e200:8] = unique[6e100:8] & 0x1
+CF = unique[6e200:8] != 0x0
+1c8 480fabc8 bts
+IMARK ram[1c8:4]
+unique[76f00:8] = RCX & 0x3f
+unique[77000:8] = RAX >> unique[76f00:8]
+unique[77200:8] = unique[77000:8] & 0x1
+unique[77300:8] = 0x1 << unique[76f00:8]
+RAX = RAX | unique[77300:8]
+CF = unique[77200:8] != 0x0
+1cc 480fb3d0 btr
+IMARK ram[1cc:4]
+unique[73b00:8] = RDX & 0x3f
+unique[73c00:8] = RAX >> unique[73b00:8]
+unique[73e00:8] = unique[73c00:8] & 0x1
+unique[73f00:8] = 0x1 << unique[73b00:8]
+unique[74000:8] = ~unique[73f00:8]
+RAX = RAX & unique[74000:8]
+CF = unique[73e00:8] != 0x0
+1d0 480fbbf0 btc
+IMARK ram[1d0:4]
+unique[70900:8] = RSI & 0x3f
+unique[70a00:8] = RAX >> unique[70900:8]
+unique[70c00:8] = unique[70a00:8] & 0x1
+unique[70d00:8] = 0x1 << unique[70900:8]
+RAX = RAX ^ unique[70d00:8]
+CF = unique[70c00:8] != 0x0
+1d4 480fbae009 bt
+IMARK ram[1d4:5]
+unique[6f400:4] = 0x9 & 0x3f
+unique[6f500:8] = RAX >> unique[6f400:4]
+unique[6f600:8] = unique[6f500:8] & 0x1
+CF = unique[6f600:8] != 0x0
+1d9 480fa307 bt
+IMARK ram[1d9:4]
+unique[6e400:8] = RAX s>> 0x3
+unique[6e600:8] = RDI + unique[6e400:8]
+unique[6e700:1] = *[ram]unique[6e600:8]
+unique[6e800:8] = RAX & 0x7
+unique[6e900:1] = unique[6e700:1] >> unique[6e800:8]
+unique[6ea00:1] = unique[6e900:1] & 0x1
+CF = unique[6ea00:1] != 0x0
+1dd 480fab0f bts
+IMARK ram[1dd:4]
+unique[19df00:8] = RCX s>> 0x3
+unique[19e100:8] = RDI + unique[19df00:8]
+unique[19e300:8] = RCX & 0x7
+unique[19e400:1] = *[ram]unique[19e100:8]
+unique[19e500:1] = unique[19e400:1] >> unique[19e300:8]
+unique[19e700:1] = unique[19e500:1] & 0x1
+unique[19e800:1] = *[ram]unique[19e100:8]
+unique[19e900:1] = 0x1 << unique[19e300:8]
+unique[19ea00:1] = unique[19e800:1] | unique[19e900:1]
+*[ram]unique[19e100:8] = unique[19ea00:1]
+CF = unique[19e700:1] != 0x0
+1e1 480fb317 btr
+IMARK ram[1e1:4]
+unique[199a00:8] = RDX s>> 0x3
+unique[199c00:8] = RDI + unique[199a00:8]
+unique[199e00:8] = RDX & 0x7
+unique[199f00:1] = *[ram]unique[199c00:8]
+unique[19a000:1] = unique[199f00:1] >> unique[199e00:8]
+unique[19a200:1] = unique[19a000:1] & 0x1
+unique[19a300:1] = *[ram]unique[199c00:8]
+unique[19a400:1] = 0x1 << unique[199e00:8]
+unique[19a500:1] = ~unique[19a400:1]
+unique[19a600:1] = unique[19a300:1] & unique[19a500:1]
+*[ram]unique[199c00:8] = unique[19a600:1]
+CF = unique[19a200:1] != 0x0
+1e5 480fbb37 btc
+IMARK ram[1e5:4]
+unique[195700:8] = RSI s>> 0x3
+unique[195900:8] = RDI + unique[195700:8]
+unique[195b00:8] = RSI & 0x7
+unique[195c00:1] = *[ram]unique[195900:8]
+unique[195d00:1] = unique[195c00:1] >> unique[195b00:8]
+unique[195f00:1] = unique[195d00:1] & 0x1
+unique[196000:1] = *[ram]unique[195900:8]
+unique[196100:1] = 0x1 << unique[195b00:8]
+unique[196200:1] = unique[196000:1] ^ unique[196100:1]
+*[ram]unique[195900:8] = unique[196200:1]
+CF = unique[195f00:1] != 0x0
+1e9 480fba2709 bt
+IMARK ram[1e9:5]
+unique[6f400:4] = 0x9 & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[6f500:8] = unique[23e00:8] >> unique[6f400:4]
+unique[6f600:8] = unique[6f500:8] & 0x1
+CF = unique[6f600:8] != 0x0
+1ee 480fbcc3 bsf
+IMARK ram[1ee:4]
+unique[68900:8] = 0x0
+ZF = RBX == 0x0
+unique[68b00:1] = ZF == 0x1
+if (unique[68b00:1]) goto 0x7
+unique[68c00:8] = RBX >> unique[68900:8]
+unique[68d00:8] = unique[68c00:8] & 0x1
+unique[68e00:1] = unique[68d00:8] != 0x0
+if (unique[68e00:1]) goto 0x3
+unique[68900:8] = unique[68900:8] + 0x1
+goto 0xfffffffb
+RAX = unique[68900:8]
+1f2 480fbdc3 bsr
+IMARK ram[1f2:4]
+unique[69c00:8] = 0x3f
+ZF = RBX == 0x0
+unique[69e00:1] = ZF == 0x1
+if (unique[69e00:1]) goto 0x6
+unique[69f00:8] = RBX >> unique[69c00:8]
+unique[6a000:1] = unique[69f00:8] != 0x0
+if (unique[6a000:1]) goto 0x3
+unique[69c00:8] = unique[69c00:8] - 0x1
+goto 0xfffffffc
+RAX = unique[69c00:8]
+1f6 f3480fb8c3 popcnt
+IMARK ram[1f6:5]
+OF = 0x0
+SF = 0x0
+AF = 0x0
+CF = 0x0
+PF = 0x0
+ZF = RBX == 0x0
+RAX = popcount(RBX)
+1fb f3480fbcc3 tzcnt
+IMARK ram[1fb:5]
+unique[344c00:8] = 0x0
+unique[344d00:8] = RBX
+unique[344e00:8] = unique[344d00:8] & 0x1
+unique[344f00:1] = unique[344e00:8] != 0x0
+if (unique[344f00:1]) goto 0x5
+unique[344c00:8] = unique[344c00:8] + 0x1
+unique[345100:8] = unique[344d00:8] >> 0x1
+unique[344d00:8] = unique[345100:8] | 0x8000000000000000
+goto 0xfffffffa
+ZF = unique[344c00:8] == 0x0
+CF = RBX == 0x0
+RAX = unique[344c00:8]
+200 f3480fbdc3 lzcnt
+IMARK ram[200:5]
+RAX = lzcount(RBX)
+ZF = RAX == 0x0
+CF = RBX == 0x0
+205 480fbc07 bsf
+IMARK ram[205:4]
+unique[68900:8] = 0x0
+unique[23e00:8] = *[ram]RDI
+ZF = unique[23e00:8] == 0x0
+unique[68b00:1] = ZF == 0x1
+if (unique[68b00:1]) goto 0x8
+unique[23e00:8] = *[ram]RDI
+unique[68c00:8] = unique[23e00:8] >> unique[68900:8]
+unique[68d00:8] = unique[68c00:8] & 0x1
+unique[68e00:1] = unique[68d00:8] != 0x0
+if (unique[68e00:1]) goto 0x3
+unique[68900:8] = unique[68900:8] + 0x1
+goto 0xfffffffa
+RAX = unique[68900:8]
+209 480fbd07 bsr
+IMARK ram[209:4]
+unique[69c00:8] = 0x3f
+unique[23e00:8] = *[ram]RDI
+ZF = unique[23e00:8] == 0x0
+unique[69e00:1] = ZF == 0x1
+if (unique[69e00:1]) goto 0x7
+unique[23e00:8] = *[ram]RDI
+unique[69f00:8] = unique[23e00:8] >> unique[69c00:8]
+unique[6a000:1] = unique[69f00:8] != 0x0
+if (unique[6a000:1]) goto 0x3
+unique[69c00:8] = unique[69c00:8] - 0x1
+goto 0xfffffffb
+RAX = unique[69c00:8]
+20d f3480fb807 popcnt
+IMARK ram[20d:5]
+OF = 0x0
+SF = 0x0
+AF = 0x0
+CF = 0x0
+PF = 0x0
+unique[23e00:8] = *[ram]RDI
+ZF = unique[23e00:8] == 0x0
+unique[23e00:8] = *[ram]RDI
+RAX = popcount(unique[23e00:8])
+212 f3480fbc07 tzcnt
+IMARK ram[212:5]
+unique[344c00:8] = 0x0
+unique[23e00:8] = *[ram]RDI
+unique[344d00:8] = unique[23e00:8]
+unique[344e00:8] = unique[344d00:8] & 0x1
+unique[344f00:1] = unique[344e00:8] != 0x0
+if (unique[344f00:1]) goto 0x5
+unique[344c00:8] = unique[344c00:8] + 0x1
+unique[345100:8] = unique[344d00:8] >> 0x1
+unique[344d00:8] = unique[345100:8] | 0x8000000000000000
+goto 0xfffffffa
+ZF = unique[344c00:8] == 0x0
+unique[23e00:8] = *[ram]RDI
+CF = unique[23e00:8] == 0x0
+RAX = unique[344c00:8]
+217 f3480fbd07 lzcnt
+IMARK ram[217:5]
+unique[23e00:8] = *[ram]RDI
+RAX = lzcount(unique[23e00:8])
+ZF = RAX == 0x0
+unique[23e00:8] = *[ram]RDI
+CF = unique[23e00:8] == 0x0
+21c 480fc8 bswap
+IMARK ram[21c:3]
+unique[6ae00:8] = RAX & 0xff00000000000000
+unique[6b000:8] = unique[6ae00:8] >> 0x38
+unique[6b100:8] = RAX & 0xff000000000000
+unique[6b200:8] = unique[6b100:8] >> 0x28
+unique[6b000:8] = unique[6b000:8] | unique[6b200:8]
+unique[6b400:8] = RAX & 0xff0000000000
+unique[6b500:8] = unique[6b400:8] >> 0x18
+unique[6b000:8] = unique[6b000:8] | unique[6b500:8]
+unique[6b700:8] = RAX & 0xff00000000
+unique[6b800:8] = unique[6b700:8] >> 0x8
+unique[6b000:8] = unique[6b000:8] | unique[6b800:8]
+unique[6ba00:8] = RAX & 0xff000000
+unique[6bb00:8] = unique[6ba00:8] << 0x8
+unique[6b000:8] = unique[6b000:8] | unique[6bb00:8]
+unique[6bd00:8] = RAX & 0xff0000
+unique[6be00:8] = unique[6bd00:8] << 0x18
+unique[6b000:8] = unique[6b000:8] | unique[6be00:8]
+unique[6c000:8] = RAX & 0xff00
+unique[6c100:8] = unique[6c000:8] << 0x28
+unique[6b000:8] = unique[6b000:8] | unique[6c100:8]
+unique[6c300:8] = RAX & 0xff
+unique[6c400:8] = unique[6c300:8] << 0x38
+RAX = unique[6b000:8] | unique[6c400:8]
+21f 0fc9 bswap
+IMARK ram[21f:2]
+unique[6a200:4] = ECX & 0xff000000
+unique[6a400:4] = unique[6a200:4] >> 0x18
+unique[6a500:4] = ECX & 0xff0000
+unique[6a600:4] = unique[6a500:4] >> 0x8
+unique[6a400:4] = unique[6a400:4] | unique[6a600:4]
+unique[6a800:4] = ECX & 0xff00
+unique[6a900:4] = unique[6a800:4] << 0x8
+unique[6a400:4] = unique[6a400:4] | unique[6a900:4]
+unique[6ab00:4] = ECX & 0xff
+unique[6ac00:4] = unique[6ab00:4] << 0x18
+ECX = unique[6a400:4] | unique[6ac00:4]
+RCX = zext(ECX)
+221 480fc1d8 xadd
+IMARK ram[221:4]
+CF = carry(RAX, RBX)
+OF = scarry(RAX, RBX)
+unique[e2000:8] = RAX + RBX
+RBX = RAX
+RAX = unique[e2000:8]
+SF = unique[e2000:8] s< 0x0
+ZF = unique[e2000:8] == 0x0
+unique[58300:8] = unique[e2000:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+225 480fc11f xadd
+IMARK ram[225:4]
+unique[d500:8] = *[ram]RDI
+CF = carry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RDI
+OF = scarry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RDI
+unique[1a6000:8] = unique[d500:8] + RBX
+unique[d500:8] = *[ram]RDI
+RBX = unique[d500:8]
+unique[d500:8] = unique[1a6000:8]
+*[ram]RDI = unique[d500:8]
+SF = unique[1a6000:8] s< 0x0
+ZF = unique[1a6000:8] == 0x0
+unique[58300:8] = unique[1a6000:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+229 480fafc3 imul
+IMARK ram[229:4]
+unique[96800:16] = sext(RAX)
+unique[96900:16] = sext(RBX)
+unique[96b00:16] = unique[96800:16] * unique[96900:16]
+RAX = RAX * RBX
+unique[96e00:8] = SUBPIECE unique[96b00:16], 0x8
+unique[5a200:16] = sext(RAX)
+CF = unique[5a200:16] != unique[96b00:16]
+OF = CF
+22d 480faf07 imul
+IMARK ram[22d:4]
+unique[96800:16] = sext(RAX)
+unique[23e00:8] = *[ram]RDI
+unique[96900:16] = sext(unique[23e00:8])
+unique[96b00:16] = unique[96800:16] * unique[96900:16]
+unique[23e00:8] = *[ram]RDI
+RAX = RAX * unique[23e00:8]
+unique[96e00:8] = SUBPIECE unique[96b00:16], 0x8
+unique[5a200:16] = sext(RAX)
+CF = unique[5a200:16] != unique[96b00:16]
+OF = CF
+231 486bca07 imul
+IMARK ram[231:4]
+unique[97d00:16] = sext(RDX)
+unique[97e00:16] = sext(0x7)
+unique[98000:16] = unique[97d00:16] * unique[97e00:16]
+RCX = RDX * 0x7
+unique[98300:8] = SUBPIECE unique[98000:16], 0x8
+unique[5a200:16] = sext(RCX)
+CF = unique[5a200:16] != unique[98000:16]
+OF = CF
+235 486b0f07 imul
+IMARK ram[235:4]
+unique[23e00:8] = *[ram]RDI
+unique[97d00:16] = sext(unique[23e00:8])
+unique[97e00:16] = sext(0x7)
+unique[98000:16] = unique[97d00:16] * unique[97e00:16]
+unique[23e00:8] = *[ram]RDI
+RCX = unique[23e00:8] * 0x7
+unique[98300:8] = SUBPIECE unique[98000:16], 0x8
+unique[5a200:16] = sext(RCX)
+CF = unique[5a200:16] != unique[98000:16]
+OF = CF
+239 4863c1 movsxd
+IMARK ram[239:3]
+RAX = sext(ECX)
+23c 486307 movsxd
+IMARK ram[23c:3]
+unique[23d00:4] = *[ram]RDI
+RAX = sext(unique[23d00:4])
+23f 6698 cbw
+IMARK ram[23f:2]
+AX = sext(AL)
+241 98 cwde
+IMARK ram[241:1]
+EAX = sext(AX)
+RAX = zext(EAX)
+242 4898 cdqe
+IMARK ram[242:2]
+RAX = sext(EAX)
+244 6699 cwd
+IMARK ram[244:2]
+unique[7a900:4] = sext(AX)
+DX = SUBPIECE unique[7a900:4], 0x2
+246 99 cdq
+IMARK ram[246:1]
+unique[7ac00:8] = sext(EAX)
+EDX = SUBPIECE unique[7ac00:8], 0x4
+RDX = zext(EDX)
+247 4899 cqo
+IMARK ram[247:2]
+unique[7af00:16] = sext(RAX)
+RDX = SUBPIECE unique[7af00:16], 0x8
+249 480fa4d805 shld
+IMARK ram[249:5]
+unique[d6b00:4] = 0x5 & 0x3f
+unique[d6c00:8] = RAX
+unique[d6d00:8] = RAX << unique[d6b00:4]
+unique[d6e00:4] = 0x40 - unique[d6b00:4]
+unique[d6f00:8] = RBX >> unique[d6e00:4]
+RAX = unique[d6d00:8] | unique[d6f00:8]
+unique[5cb00:1] = unique[d6b00:4] != 0x0
+unique[5cc00:4] = unique[d6b00:4] - 0x1
+unique[5cd00:8] = unique[d6c00:8] << unique[5cc00:4]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d6b00:4] == 0x1
+unique[5d600:1] = RAX s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d6b00:4] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+24e 480facd807 shrd
+IMARK ram[24e:5]
+unique[d9500:4] = 0x7 & 0x3f
+unique[d9600:8] = RAX
+unique[d9700:8] = RAX >> unique[d9500:4]
+unique[d9800:4] = 0x40 - unique[d9500:4]
+unique[d9900:8] = RBX << unique[d9800:4]
+RAX = unique[d9700:8] | unique[d9900:8]
+unique[60000:1] = unique[d9500:4] != 0x0
+unique[60100:4] = unique[d9500:4] - 0x1
+unique[60200:8] = unique[d9600:8] >> unique[60100:4]
+unique[60300:8] = unique[60200:8] & 0x1
+unique[60500:1] = unique[60300:8] != 0x0
+unique[60600:1] = !unique[60000:1]
+unique[60700:1] = unique[60600:1] & CF
+unique[60800:1] = unique[60000:1] & unique[60500:1]
+CF = unique[60700:1] | unique[60800:1]
+unique[60b00:1] = unique[d9500:4] == 0x1
+unique[60c00:1] = unique[d9600:8] s< 0x0
+unique[60d00:1] = RAX s< 0x0
+unique[60f00:1] = unique[60c00:1] ^ unique[60d00:1]
+unique[61000:1] = !unique[60b00:1]
+unique[61100:1] = unique[61000:1] & OF
+unique[61200:1] = unique[60b00:1] & unique[60f00:1]
+OF = unique[61100:1] | unique[61200:1]
+unique[58800:1] = unique[d9500:4] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+253 480fa41f05 shld
+IMARK ram[253:5]
+unique[d6b00:4] = 0x5 & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d6c00:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[d6d00:8] = unique[23e00:8] << unique[d6b00:4]
+unique[d6e00:4] = 0x40 - unique[d6b00:4]
+unique[d6f00:8] = RBX >> unique[d6e00:4]
+unique[23e00:8] = unique[d6d00:8] | unique[d6f00:8]
+*[ram]RDI = unique[23e00:8]
+unique[5cb00:1] = unique[d6b00:4] != 0x0
+unique[5cc00:4] = unique[d6b00:4] - 0x1
+unique[5cd00:8] = unique[d6c00:8] << unique[5cc00:4]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d6b00:4] == 0x1
+unique[23e00:8] = *[ram]RDI
+unique[5d600:1] = unique[23e00:8] s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d6b00:4] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+258 480fac1f07 shrd
+IMARK ram[258:5]
+unique[d9500:4] = 0x7 & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d9600:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[d9700:8] = unique[23e00:8] >> unique[d9500:4]
+unique[d9800:4] = 0x40 - unique[d9500:4]
+unique[d9900:8] = RBX << unique[d9800:4]
+unique[23e00:8] = unique[d9700:8] | unique[d9900:8]
+*[ram]RDI = unique[23e00:8]
+unique[60000:1] = unique[d9500:4] != 0x0
+unique[60100:4] = unique[d9500:4] - 0x1
+unique[60200:8] = unique[d9600:8] >> unique[60100:4]
+unique[60300:8] = unique[60200:8] & 0x1
+unique[60500:1] = unique[60300:8] != 0x0
+unique[60600:1] = !unique[60000:1]
+unique[60700:1] = unique[60600:1] & CF
+unique[60800:1] = unique[60000:1] & unique[60500:1]
+CF = unique[60700:1] | unique[60800:1]
+unique[60b00:1] = unique[d9500:4] == 0x1
+unique[60c00:1] = unique[d9600:8] s< 0x0
+unique[23e00:8] = *[ram]RDI
+unique[60d00:1] = unique[23e00:8] s< 0x0
+unique[60f00:1] = unique[60c00:1] ^ unique[60d00:1]
+unique[61000:1] = !unique[60b00:1]
+unique[61100:1] = unique[61000:1] & OF
+unique[61200:1] = unique[60b00:1] & unique[60f00:1]
+OF = unique[61100:1] | unique[61200:1]
+unique[58800:1] = unique[d9500:4] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+25d 480fa5d8 shld
+IMARK ram[25d:4]
+unique[d7200:1] = CL & 0x3f
+unique[d7300:8] = RAX
+unique[d7400:8] = RAX << unique[d7200:1]
+unique[d7500:1] = 0x40 - unique[d7200:1]
+unique[d7600:8] = RBX >> unique[d7500:1]
+RAX = unique[d7400:8] | unique[d7600:8]
+unique[5cb00:1] = unique[d7200:1] != 0x0
+unique[5cc00:1] = unique[d7200:1] - 0x1
+unique[5cd00:8] = unique[d7300:8] << unique[5cc00:1]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d7200:1] == 0x1
+unique[5d600:1] = RAX s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d7200:1] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+261 480fadd8 shrd
+IMARK ram[261:4]
+unique[d9c00:1] = CL & 0x3f
+unique[d9d00:8] = RAX
+unique[d9e00:8] = RAX >> unique[d9c00:1]
+unique[d9f00:1] = 0x40 - unique[d9c00:1]
+unique[da000:8] = RBX << unique[d9f00:1]
+RAX = unique[d9e00:8] | unique[da000:8]
+unique[60000:1] = unique[d9c00:1] != 0x0
+unique[60100:1] = unique[d9c00:1] - 0x1
+unique[60200:8] = unique[d9d00:8] >> unique[60100:1]
+unique[60300:8] = unique[60200:8] & 0x1
+unique[60500:1] = unique[60300:8] != 0x0
+unique[60600:1] = !unique[60000:1]
+unique[60700:1] = unique[60600:1] & CF
+unique[60800:1] = unique[60000:1] & unique[60500:1]
+CF = unique[60700:1] | unique[60800:1]
+unique[60b00:1] = unique[d9c00:1] == 0x1
+unique[60c00:1] = unique[d9d00:8] s< 0x0
+unique[60d00:1] = RAX s< 0x0
+unique[60f00:1] = unique[60c00:1] ^ unique[60d00:1]
+unique[61000:1] = !unique[60b00:1]
+unique[61100:1] = unique[61000:1] & OF
+unique[61200:1] = unique[60b00:1] & unique[60f00:1]
+OF = unique[61100:1] | unique[61200:1]
+unique[58800:1] = unique[d9c00:1] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+265 48d3e0 shl
+IMARK ram[265:3]
+unique[d4700:1] = CL & 0x3f
+unique[d4800:8] = RAX
+RAX = RAX << unique[d4700:1]
+unique[5cb00:1] = unique[d4700:1] != 0x0
+unique[5cc00:1] = unique[d4700:1] - 0x1
+unique[5cd00:8] = unique[d4800:8] << unique[5cc00:1]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d4700:1] == 0x1
+unique[5d600:1] = RAX s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d4700:1] != 0x0
+unique[58a00:1] = RAX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RAX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RAX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+268 48d3eb shr
+IMARK ram[268:3]
+unique[dc600:1] = CL & 0x3f
+unique[dc700:8] = RBX
+RBX = RBX >> unique[dc600:1]
+unique[5ed00:1] = unique[dc600:1] != 0x0
+unique[5ee00:1] = unique[dc600:1] - 0x1
+unique[5ef00:8] = unique[dc700:8] >> unique[5ee00:1]
+unique[5f000:8] = unique[5ef00:8] & 0x1
+unique[5f200:1] = unique[5f000:8] != 0x0
+unique[5f300:1] = !unique[5ed00:1]
+unique[5f400:1] = unique[5f300:1] & CF
+unique[5f500:1] = unique[5ed00:1] & unique[5f200:1]
+CF = unique[5f400:1] | unique[5f500:1]
+unique[5f800:1] = unique[dc600:1] == 0x1
+unique[5fa00:1] = unique[dc700:8] s< 0x0
+unique[5fb00:1] = !unique[5f800:1]
+unique[5fc00:1] = unique[5fb00:1] & OF
+unique[5fd00:1] = unique[5f800:1] & unique[5fa00:1]
+OF = unique[5fc00:1] | unique[5fd00:1]
+unique[58800:1] = unique[dc600:1] != 0x0
+unique[58a00:1] = RBX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RBX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RBX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+26b 48d3fa sar
+IMARK ram[26b:3]
+unique[d0c00:1] = CL & 0x3f
+unique[d0d00:8] = RDX
+RDX = RDX s>> unique[d0c00:1]
+unique[5de00:1] = unique[d0c00:1] != 0x0
+unique[5df00:1] = unique[d0c00:1] - 0x1
+unique[5e000:8] = unique[d0d00:8] s>> unique[5df00:1]
+unique[5e100:8] = unique[5e000:8] & 0x1
+unique[5e300:1] = unique[5e100:8] != 0x0
+unique[5e400:1] = !unique[5de00:1]
+unique[5e500:1] = unique[5e400:1] & CF
+unique[5e600:1] = unique[5de00:1] & unique[5e300:1]
+CF = unique[5e500:1] | unique[5e600:1]
+unique[5e900:1] = unique[d0c00:1] == 0x1
+unique[5ea00:1] = !unique[5e900:1]
+OF = unique[5ea00:1] & OF
+unique[58800:1] = unique[d0c00:1] != 0x0
+unique[58a00:1] = RDX s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[59000:1] = RDX == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[59500:8] = RDX & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+26e 48d327 shl
+IMARK ram[26e:3]
+unique[d4700:1] = CL & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d4800:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[23e00:8] = unique[23e00:8] << unique[d4700:1]
+*[ram]RDI = unique[23e00:8]
+unique[5cb00:1] = unique[d4700:1] != 0x0
+unique[5cc00:1] = unique[d4700:1] - 0x1
+unique[5cd00:8] = unique[d4800:8] << unique[5cc00:1]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d4700:1] == 0x1
+unique[23e00:8] = *[ram]RDI
+unique[5d600:1] = unique[23e00:8] s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d4700:1] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+271 48d32f shr
+IMARK ram[271:3]
+unique[dc600:1] = CL & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[dc700:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[23e00:8] = unique[23e00:8] >> unique[dc600:1]
+*[ram]RDI = unique[23e00:8]
+unique[5ed00:1] = unique[dc600:1] != 0x0
+unique[5ee00:1] = unique[dc600:1] - 0x1
+unique[5ef00:8] = unique[dc700:8] >> unique[5ee00:1]
+unique[5f000:8] = unique[5ef00:8] & 0x1
+unique[5f200:1] = unique[5f000:8] != 0x0
+unique[5f300:1] = !unique[5ed00:1]
+unique[5f400:1] = unique[5f300:1] & CF
+unique[5f500:1] = unique[5ed00:1] & unique[5f200:1]
+CF = unique[5f400:1] | unique[5f500:1]
+unique[5f800:1] = unique[dc600:1] == 0x1
+unique[5fa00:1] = unique[dc700:8] s< 0x0
+unique[5fb00:1] = !unique[5f800:1]
+unique[5fc00:1] = unique[5fb00:1] & OF
+unique[5fd00:1] = unique[5f800:1] & unique[5fa00:1]
+OF = unique[5fc00:1] | unique[5fd00:1]
+unique[58800:1] = unique[dc600:1] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+274 48d33f sar
+IMARK ram[274:3]
+unique[d0c00:1] = CL & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d0d00:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[23e00:8] = unique[23e00:8] s>> unique[d0c00:1]
+*[ram]RDI = unique[23e00:8]
+unique[5de00:1] = unique[d0c00:1] != 0x0
+unique[5df00:1] = unique[d0c00:1] - 0x1
+unique[5e000:8] = unique[d0d00:8] s>> unique[5df00:1]
+unique[5e100:8] = unique[5e000:8] & 0x1
+unique[5e300:1] = unique[5e100:8] != 0x0
+unique[5e400:1] = !unique[5de00:1]
+unique[5e500:1] = unique[5e400:1] & CF
+unique[5e600:1] = unique[5de00:1] & unique[5e300:1]
+CF = unique[5e500:1] | unique[5e600:1]
+unique[5e900:1] = unique[d0c00:1] == 0x1
+unique[5ea00:1] = !unique[5e900:1]
+OF = unique[5ea00:1] & OF
+unique[58800:1] = unique[d0c00:1] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+277 480fa51f shld
+IMARK ram[277:4]
+unique[d7200:1] = CL & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d7300:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[d7400:8] = unique[23e00:8] << unique[d7200:1]
+unique[d7500:1] = 0x40 - unique[d7200:1]
+unique[d7600:8] = RBX >> unique[d7500:1]
+unique[23e00:8] = unique[d7400:8] | unique[d7600:8]
+*[ram]RDI = unique[23e00:8]
+unique[5cb00:1] = unique[d7200:1] != 0x0
+unique[5cc00:1] = unique[d7200:1] - 0x1
+unique[5cd00:8] = unique[d7300:8] << unique[5cc00:1]
+unique[5cf00:1] = unique[5cd00:8] s< 0x0
+unique[5d000:1] = !unique[5cb00:1]
+unique[5d100:1] = unique[5d000:1] & CF
+unique[5d200:1] = unique[5cb00:1] & unique[5cf00:1]
+CF = unique[5d100:1] | unique[5d200:1]
+unique[5d500:1] = unique[d7200:1] == 0x1
+unique[23e00:8] = *[ram]RDI
+unique[5d600:1] = unique[23e00:8] s< 0x0
+unique[5d800:1] = CF ^ unique[5d600:1]
+unique[5d900:1] = !unique[5d500:1]
+unique[5da00:1] = unique[5d900:1] & OF
+unique[5db00:1] = unique[5d500:1] & unique[5d800:1]
+OF = unique[5da00:1] | unique[5db00:1]
+unique[58800:1] = unique[d7200:1] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+27b 480fad1f shrd
+IMARK ram[27b:4]
+unique[d9c00:1] = CL & 0x3f
+unique[23e00:8] = *[ram]RDI
+unique[d9d00:8] = unique[23e00:8]
+unique[23e00:8] = *[ram]RDI
+unique[d9e00:8] = unique[23e00:8] >> unique[d9c00:1]
+unique[d9f00:1] = 0x40 - unique[d9c00:1]
+unique[da000:8] = RBX << unique[d9f00:1]
+unique[23e00:8] = unique[d9e00:8] | unique[da000:8]
+*[ram]RDI = unique[23e00:8]
+unique[60000:1] = unique[d9c00:1] != 0x0
+unique[60100:1] = unique[d9c00:1] - 0x1
+unique[60200:8] = unique[d9d00:8] >> unique[60100:1]
+unique[60300:8] = unique[60200:8] & 0x1
+unique[60500:1] = unique[60300:8] != 0x0
+unique[60600:1] = !unique[60000:1]
+unique[60700:1] = unique[60600:1] & CF
+unique[60800:1] = unique[60000:1] & unique[60500:1]
+CF = unique[60700:1] | unique[60800:1]
+unique[60b00:1] = unique[d9c00:1] == 0x1
+unique[60c00:1] = unique[d9d00:8] s< 0x0
+unique[23e00:8] = *[ram]RDI
+unique[60d00:1] = unique[23e00:8] s< 0x0
+unique[60f00:1] = unique[60c00:1] ^ unique[60d00:1]
+unique[61000:1] = !unique[60b00:1]
+unique[61100:1] = unique[61000:1] & OF
+unique[61200:1] = unique[60b00:1] & unique[60f00:1]
+OF = unique[61100:1] | unique[61200:1]
+unique[58800:1] = unique[d9c00:1] != 0x0
+unique[23e00:8] = *[ram]RDI
+unique[58a00:1] = unique[23e00:8] s< 0x0
+unique[58b00:1] = !unique[58800:1]
+unique[58c00:1] = unique[58b00:1] & SF
+unique[58d00:1] = unique[58800:1] & unique[58a00:1]
+SF = unique[58c00:1] | unique[58d00:1]
+unique[23e00:8] = *[ram]RDI
+unique[59000:1] = unique[23e00:8] == 0x0
+unique[59100:1] = !unique[58800:1]
+unique[59200:1] = unique[59100:1] & ZF
+unique[59300:1] = unique[58800:1] & unique[59000:1]
+ZF = unique[59200:1] | unique[59300:1]
+unique[23e00:8] = *[ram]RDI
+unique[59500:8] = unique[23e00:8] & 0xff
+unique[59600:1] = popcount(unique[59500:8])
+unique[59700:1] = unique[59600:1] & 0x1
+unique[59900:1] = unique[59700:1] == 0x0
+unique[59a00:1] = !unique[58800:1]
+unique[59b00:1] = unique[59a00:1] & PF
+unique[59c00:1] = unique[58800:1] & unique[59900:1]
+PF = unique[59b00:1] | unique[59c00:1]
+27f c3 ret
+IMARK ram[27f:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+280 f30f1efa endbr64
+IMARK ram[280:4]
+284 f30f10c1 movss
+IMARK ram[284:4]
+XMM0_Da = XMM1_Da
+288 f30f1000 movss
+IMARK ram[288:4]
+unique[d400:4] = *[ram]RAX
+XMM0_Da = unique[d400:4]
+XMM0_Db = 0x0
+XMM0_Dc = 0x0
+XMM0_Dd = 0x0
+28c f30f1100 movss
+IMARK ram[28c:4]
+unique[d400:4] = XMM0_Da
+*[ram]RAX = unique[d400:4]
+290 f20f10ca movsd
+IMARK ram[290:4]
+XMM1_Qa = XMM2_Qa
+294 f20f1008 movsd
+IMARK ram[294:4]
+unique[d500:8] = *[ram]RAX
+XMM1_Qa = unique[d500:8]
+XMM1_Qb = 0x0
+298 f20f1108 movsd
+IMARK ram[298:4]
+unique[d500:8] = XMM1_Qa
+*[ram]RAX = unique[d500:8]
+29c 0f28d3 movaps
+IMARK ram[29c:3]
+XMM2_Da = XMM3_Da
+XMM2_Db = XMM3_Db
+XMM2_Dc = XMM3_Dc
+XMM2_Dd = XMM3_Dd
+29f 0f2810 movaps
+IMARK ram[29f:3]
+unique[d700:16] = *[ram]RAX
+unique[117900:16] = unique[d700:16]
+XMM2_Da = unique[117900:4]
+XMM2_Db = unique[117904:4]
+XMM2_Dc = unique[117908:4]
+XMM2_Dd = unique[11790c:4]
+2a2 0f2910 movaps
+IMARK ram[2a2:3]
+unique[d700:16] = XMM2
+*[ram]RAX = unique[d700:16]
+2a5 0f10e5 movups
+IMARK ram[2a5:3]
+XMM4_Da = XMM5_Da
+XMM4_Db = XMM5_Db
+XMM4_Dc = XMM5_Dc
+XMM4_Dd = XMM5_Dd
+2a8 0f1020 movups
+IMARK ram[2a8:3]
+unique[d700:16] = *[ram]RAX
+unique[118a00:16] = unique[d700:16]
+XMM4_Da = unique[118a00:4]
+XMM4_Db = unique[118a04:4]
+XMM4_Dc = unique[118a08:4]
+XMM4_Dd = unique[118a0c:4]
+2ab 0f1120 movups
+IMARK ram[2ab:3]
+unique[d700:16] = XMM4
+*[ram]RAX = unique[d700:16]
+2ae 660f6ec0 movd
+IMARK ram[2ae:4]
+XMM0 = zext(EAX)
+2b2 660f7ec0 movd
+IMARK ram[2b2:4]
+EAX = SUBPIECE XMM0, 0x0
+RAX = zext(EAX)
+2b6 66480f6ec0 movq
+IMARK ram[2b6:5]
+XMM0 = zext(RAX)
+2bb 66480f7ec0 movq
+IMARK ram[2bb:5]
+RAX = SUBPIECE XMM0, 0x0
+2c0 660fefc1 pxor
+IMARK ram[2c0:4]
+XMM0 = XMM0 ^ XMM1
+2c4 0f57d3 xorps
+IMARK ram[2c4:3]
+XMM2_Da = XMM2_Da ^ XMM3_Da
+XMM2_Db = XMM2_Db ^ XMM3_Db
+XMM2_Dc = XMM2_Dc ^ XMM3_Dc
+XMM2_Dd = XMM2_Dd ^ XMM3_Dd
+2c7 660f57e5 xorpd
+IMARK ram[2c7:4]
+XMM4_Qa = XMM4_Qa ^ XMM5_Qa
+XMM4_Qb = XMM4_Qb ^ XMM5_Qb
+2cb 0f54f7 andps
+IMARK ram[2cb:3]
+XMM6_Da = XMM6_Da & XMM7_Da
+XMM6_Db = XMM6_Db & XMM7_Db
+XMM6_Dc = XMM6_Dc & XMM7_Dc
+XMM6_Dd = XMM6_Dd & XMM7_Dd
+2ce 0f56c1 orps
+IMARK ram[2ce:3]
+XMM0 = XMM0 | XMM1
+2d1 c3 ret
+IMARK ram[2d1:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+2d2 66662e0f1f840000000000 nop
+IMARK ram[2d2:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+2dd 0f1f00 nop
+IMARK ram[2dd:3]
+2e0 f30f1efa endbr64
+IMARK ram[2e0:4]
+2e4 f30f58c1 addss
+IMARK ram[2e4:4]
+XMM0_Da = XMM0_Da f+ XMM1_Da
+2e8 f20f58c1 addsd
+IMARK ram[2e8:4]
+XMM0_Qa = XMM0_Qa f+ XMM1_Qa
+2ec f30f5cc1 subss
+IMARK ram[2ec:4]
+XMM0_Da = XMM0_Da f- XMM1_Da
+2f0 f20f5cc1 subsd
+IMARK ram[2f0:4]
+XMM0_Qa = XMM0_Qa f- XMM1_Qa
+2f4 f30f59c1 mulss
+IMARK ram[2f4:4]
+XMM0_Da = XMM0_Da f* XMM1_Da
+2f8 f20f59c1 mulsd
+IMARK ram[2f8:4]
+XMM0_Qa = XMM0_Qa f* XMM1_Qa
+2fc f30f5ec1 divss
+IMARK ram[2fc:4]
+XMM0_Da = XMM0_Da f/ XMM1_Da
+300 f20f5ec1 divsd
+IMARK ram[300:4]
+XMM0_Qa = XMM0_Qa f/ XMM1_Qa
+304 f30f51c1 sqrtss
+IMARK ram[304:4]
+XMM0_Da = sqrt(XMM1_Da)
+308 f20f51c1 sqrtsd
+IMARK ram[308:4]
+XMM0_Qa = sqrt(XMM1_Qa)
+30c 0f2fc1 comiss
+IMARK ram[30c:3]
+unique[63000:1] = nan(XMM0_Da)
+unique[63100:1] = nan(XMM1_Da)
+PF = unique[63000:1] || unique[63100:1]
+unique[63300:1] = XMM0_Da f== XMM1_Da
+ZF = PF | unique[63300:1]
+unique[63500:1] = XMM0_Da f< XMM1_Da
+CF = PF | unique[63500:1]
+OF = 0x0
+AF = 0x0
+SF = 0x0
+30f 660f2fc1 comisd
+IMARK ram[30f:4]
+unique[63000:1] = nan(XMM0_Qa)
+unique[63100:1] = nan(XMM1_Qa)
+PF = unique[63000:1] || unique[63100:1]
+unique[63300:1] = XMM0_Qa f== XMM1_Qa
+ZF = PF | unique[63300:1]
+unique[63500:1] = XMM0_Qa f< XMM1_Qa
+CF = PF | unique[63500:1]
+OF = 0x0
+AF = 0x0
+SF = 0x0
+313 0f2ec1 ucomiss
+IMARK ram[313:3]
+unique[63000:1] = nan(XMM0_Da)
+unique[63100:1] = nan(XMM1_Da)
+PF = unique[63000:1] || unique[63100:1]
+unique[63300:1] = XMM0_Da f== XMM1_Da
+ZF = PF | unique[63300:1]
+unique[63500:1] = XMM0_Da f< XMM1_Da
+CF = PF | unique[63500:1]
+OF = 0x0
+AF = 0x0
+SF = 0x0
+316 660f2ec1 ucomisd
+IMARK ram[316:4]
+unique[63000:1] = nan(XMM0_Qa)
+unique[63100:1] = nan(XMM1_Qa)
+PF = unique[63000:1] || unique[63100:1]
+unique[63300:1] = XMM0_Qa f== XMM1_Qa
+ZF = PF | unique[63300:1]
+unique[63500:1] = XMM0_Qa f< XMM1_Qa
+CF = PF | unique[63500:1]
+OF = 0x0
+AF = 0x0
+SF = 0x0
+31a f3480f2ac0 cvtsi2ss
+IMARK ram[31a:5]
+XMM0_Da = int2float(RAX)
+31f f2480f2ac0 cvtsi2sd
+IMARK ram[31f:5]
+XMM0_Qa = int2float(RAX)
+324 f3480f2dc0 cvtss2si
+IMARK ram[324:5]
+unique[111800:4] = round(XMM0_Da)
+RAX = trunc(unique[111800:4])
+329 f2480f2dc0 cvtsd2si
+IMARK ram[329:5]
+unique[110800:8] = round(XMM0_Qa)
+RAX = trunc(unique[110800:8])
+32e f3480f2cc0 cvttss2si
+IMARK ram[32e:5]
+RAX = trunc(XMM0_Da)
+333 f2480f2cc0 cvttsd2si
+IMARK ram[333:5]
+RAX = trunc(XMM0_Qa)
+338 f30f5ac1 cvtss2sd
+IMARK ram[338:4]
+XMM0_Qa = float2float(XMM1_Da)
+33c f20f5ac1 cvtsd2ss
+IMARK ram[33c:4]
+XMM0_Da = float2float(XMM1_Qa)
+340 c3 ret
+IMARK ram[340:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+341 66662e0f1f840000000000 nop
+IMARK ram[341:11]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+34c 0f1f4000 nop
+IMARK ram[34c:4]
+350 f30f1efa endbr64
+IMARK ram[350:4]
+354 a4 movsb
+IMARK ram[354:1]
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[21000:1] = *[ram]unique[20b00:8]
+unique[22800:1] = unique[21000:1]
+*[ram]unique[22300:8] = unique[22800:1]
+355 66a5 movsw
+IMARK ram[355:2]
+unique[22900:8] = RDI
+unique[22a00:8] = RDI + 0x2
+unique[22b00:8] = zext(DF)
+unique[22c00:8] = 0x4 * unique[22b00:8]
+RDI = unique[22a00:8] - unique[22c00:8]
+unique[21100:8] = RSI
+unique[21200:8] = RSI + 0x2
+unique[21300:8] = zext(DF)
+unique[21400:8] = 0x4 * unique[21300:8]
+RSI = unique[21200:8] - unique[21400:8]
+unique[21600:2] = *[ram]unique[21100:8]
+unique[22e00:2] = unique[21600:2]
+*[ram]unique[22900:8] = unique[22e00:2]
+357 a5 movsd
+IMARK ram[357:1]
+unique[22f00:8] = RDI
+unique[23000:8] = RDI + 0x4
+unique[23100:8] = zext(DF)
+unique[23200:8] = 0x8 * unique[23100:8]
+RDI = unique[23000:8] - unique[23200:8]
+unique[21700:8] = RSI
+unique[21800:8] = RSI + 0x4
+unique[21900:8] = zext(DF)
+unique[21a00:8] = 0x8 * unique[21900:8]
+RSI = unique[21800:8] - unique[21a00:8]
+unique[21c00:4] = *[ram]unique[21700:8]
+unique[23400:4] = unique[21c00:4]
+*[ram]unique[22f00:8] = unique[23400:4]
+358 48a5 movsq
+IMARK ram[358:2]
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+unique[23a00:8] = unique[22200:8]
+*[ram]unique[23500:8] = unique[23a00:8]
+35a aa stosb
+IMARK ram[35a:1]
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[22800:1] = AL
+*[ram]unique[22300:8] = unique[22800:1]
+35b 66ab stosw
+IMARK ram[35b:2]
+unique[22900:8] = RDI
+unique[22a00:8] = RDI + 0x2
+unique[22b00:8] = zext(DF)
+unique[22c00:8] = 0x4 * unique[22b00:8]
+RDI = unique[22a00:8] - unique[22c00:8]
+unique[22e00:2] = AX
+*[ram]unique[22900:8] = unique[22e00:2]
+35d ab stosd
+IMARK ram[35d:1]
+unique[22f00:8] = RDI
+unique[23000:8] = RDI + 0x4
+unique[23100:8] = zext(DF)
+unique[23200:8] = 0x8 * unique[23100:8]
+RDI = unique[23000:8] - unique[23200:8]
+unique[23400:4] = EAX
+*[ram]unique[22f00:8] = unique[23400:4]
+35e 48ab stosq
+IMARK ram[35e:2]
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[23a00:8] = RAX
+*[ram]unique[23500:8] = unique[23a00:8]
+360 ac lodsb
+IMARK ram[360:1]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[21000:1] = *[ram]unique[20b00:8]
+AL = unique[21000:1]
+361 66ad lodsw
+IMARK ram[361:2]
+unique[21100:8] = RSI
+unique[21200:8] = RSI + 0x2
+unique[21300:8] = zext(DF)
+unique[21400:8] = 0x4 * unique[21300:8]
+RSI = unique[21200:8] - unique[21400:8]
+unique[21600:2] = *[ram]unique[21100:8]
+AX = unique[21600:2]
+363 ad lodsd
+IMARK ram[363:1]
+unique[21700:8] = RSI
+unique[21800:8] = RSI + 0x4
+unique[21900:8] = zext(DF)
+unique[21a00:8] = 0x8 * unique[21900:8]
+RSI = unique[21800:8] - unique[21a00:8]
+unique[21c00:4] = *[ram]unique[21700:8]
+EAX = unique[21c00:4]
+364 48ad lodsq
+IMARK ram[364:2]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+RAX = unique[22200:8]
+366 a6 cmpsb
+IMARK ram[366:1]
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[22800:1] = *[ram]unique[22300:8]
+unique[7f200:1] = unique[22800:1]
+unique[21000:1] = *[ram]unique[20b00:8]
+unique[7f300:1] = unique[21000:1]
+CF = unique[7f300:1] < unique[7f200:1]
+OF = sborrow(unique[7f300:1], unique[7f200:1])
+unique[7f500:1] = unique[7f300:1] - unique[7f200:1]
+SF = unique[7f500:1] s< 0x0
+ZF = unique[7f500:1] == 0x0
+unique[58300:1] = unique[7f500:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+367 66a7 cmpsw
+IMARK ram[367:2]
+unique[22900:8] = RDI
+unique[22a00:8] = RDI + 0x2
+unique[22b00:8] = zext(DF)
+unique[22c00:8] = 0x4 * unique[22b00:8]
+RDI = unique[22a00:8] - unique[22c00:8]
+unique[21100:8] = RSI
+unique[21200:8] = RSI + 0x2
+unique[21300:8] = zext(DF)
+unique[21400:8] = 0x4 * unique[21300:8]
+RSI = unique[21200:8] - unique[21400:8]
+unique[22e00:2] = *[ram]unique[22900:8]
+unique[7f600:2] = unique[22e00:2]
+unique[21600:2] = *[ram]unique[21100:8]
+unique[7f700:2] = unique[21600:2]
+CF = unique[7f700:2] < unique[7f600:2]
+OF = sborrow(unique[7f700:2], unique[7f600:2])
+unique[7f900:2] = unique[7f700:2] - unique[7f600:2]
+SF = unique[7f900:2] s< 0x0
+ZF = unique[7f900:2] == 0x0
+unique[58300:2] = unique[7f900:2] & 0xff
+unique[58400:1] = popcount(unique[58300:2])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+369 a7 cmpsd
+IMARK ram[369:1]
+unique[22f00:8] = RDI
+unique[23000:8] = RDI + 0x4
+unique[23100:8] = zext(DF)
+unique[23200:8] = 0x8 * unique[23100:8]
+RDI = unique[23000:8] - unique[23200:8]
+unique[21700:8] = RSI
+unique[21800:8] = RSI + 0x4
+unique[21900:8] = zext(DF)
+unique[21a00:8] = 0x8 * unique[21900:8]
+RSI = unique[21800:8] - unique[21a00:8]
+unique[23400:4] = *[ram]unique[22f00:8]
+unique[7fa00:4] = unique[23400:4]
+unique[21c00:4] = *[ram]unique[21700:8]
+unique[7fb00:4] = unique[21c00:4]
+CF = unique[7fb00:4] < unique[7fa00:4]
+OF = sborrow(unique[7fb00:4], unique[7fa00:4])
+unique[7fd00:4] = unique[7fb00:4] - unique[7fa00:4]
+SF = unique[7fd00:4] s< 0x0
+ZF = unique[7fd00:4] == 0x0
+unique[58300:4] = unique[7fd00:4] & 0xff
+unique[58400:1] = popcount(unique[58300:4])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+36a 48a7 cmpsq
+IMARK ram[36a:2]
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[7fe00:8] = unique[23a00:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+unique[7ff00:8] = unique[22200:8]
+CF = unique[7ff00:8] < unique[7fe00:8]
+OF = sborrow(unique[7ff00:8], unique[7fe00:8])
+unique[80100:8] = unique[7ff00:8] - unique[7fe00:8]
+SF = unique[80100:8] s< 0x0
+ZF = unique[80100:8] == 0x0
+unique[58300:8] = unique[80100:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+36c ae scasb
+IMARK ram[36c:1]
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[22800:1] = *[ram]unique[22300:8]
+CF = AL < unique[22800:1]
+unique[22800:1] = *[ram]unique[22300:8]
+OF = sborrow(AL, unique[22800:1])
+unique[22800:1] = *[ram]unique[22300:8]
+unique[d1400:1] = AL - unique[22800:1]
+SF = unique[d1400:1] s< 0x0
+ZF = unique[d1400:1] == 0x0
+unique[58300:1] = unique[d1400:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+36d 66af scasw
+IMARK ram[36d:2]
+unique[22900:8] = RDI
+unique[22a00:8] = RDI + 0x2
+unique[22b00:8] = zext(DF)
+unique[22c00:8] = 0x4 * unique[22b00:8]
+RDI = unique[22a00:8] - unique[22c00:8]
+unique[22e00:2] = *[ram]unique[22900:8]
+CF = AX < unique[22e00:2]
+unique[22e00:2] = *[ram]unique[22900:8]
+OF = sborrow(AX, unique[22e00:2])
+unique[22e00:2] = *[ram]unique[22900:8]
+unique[d1600:2] = AX - unique[22e00:2]
+SF = unique[d1600:2] s< 0x0
+ZF = unique[d1600:2] == 0x0
+unique[58300:2] = unique[d1600:2] & 0xff
+unique[58400:1] = popcount(unique[58300:2])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+36f af scasd
+IMARK ram[36f:1]
+unique[22f00:8] = RDI
+unique[23000:8] = RDI + 0x4
+unique[23100:8] = zext(DF)
+unique[23200:8] = 0x8 * unique[23100:8]
+RDI = unique[23000:8] - unique[23200:8]
+unique[23400:4] = *[ram]unique[22f00:8]
+CF = EAX < unique[23400:4]
+unique[23400:4] = *[ram]unique[22f00:8]
+OF = sborrow(EAX, unique[23400:4])
+unique[23400:4] = *[ram]unique[22f00:8]
+unique[d1800:4] = EAX - unique[23400:4]
+SF = unique[d1800:4] s< 0x0
+ZF = unique[d1800:4] == 0x0
+unique[58300:4] = unique[d1800:4] & 0xff
+unique[58400:1] = popcount(unique[58300:4])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+370 48af scasq
+IMARK ram[370:2]
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+CF = RAX < unique[23a00:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+OF = sborrow(RAX, unique[23a00:8])
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[d1a00:8] = RAX - unique[23a00:8]
+SF = unique[d1a00:8] s< 0x0
+ZF = unique[d1a00:8] == 0x0
+unique[58300:8] = unique[d1a00:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+372 f3a4 movsb
+IMARK ram[372:2]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[374:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[21000:1] = *[ram]unique[20b00:8]
+unique[22800:1] = unique[21000:1]
+*[ram]unique[22300:8] = unique[22800:1]
+goto ram[372:8]
+374 f348a5 movsq
+IMARK ram[374:3]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[377:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+unique[23a00:8] = unique[22200:8]
+*[ram]unique[23500:8] = unique[23a00:8]
+goto ram[374:8]
+377 f3aa stosb
+IMARK ram[377:2]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[379:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[22800:1] = AL
+*[ram]unique[22300:8] = unique[22800:1]
+goto ram[377:8]
+379 f348ab stosq
+IMARK ram[379:3]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[37c:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[23a00:8] = RAX
+*[ram]unique[23500:8] = unique[23a00:8]
+goto ram[379:8]
+37c f3ac lodsb
+IMARK ram[37c:2]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[37e:8]
+RCX = RCX - 0x1
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[21000:1] = *[ram]unique[20b00:8]
+AL = unique[21000:1]
+goto ram[37c:8]
+37e f348ad lodsq
+IMARK ram[37e:3]
+unique[26800:1] = RCX == 0x0
+if (unique[26800:1]) goto ram[381:8]
+RCX = RCX - 0x1
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+RAX = unique[22200:8]
+goto ram[37e:8]
+381 f3a6 cmpsb
+IMARK ram[381:2]
+unique[26e00:1] = RCX == 0x0
+if (unique[26e00:1]) goto ram[383:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[22800:1] = *[ram]unique[22300:8]
+unique[7f200:1] = unique[22800:1]
+unique[21000:1] = *[ram]unique[20b00:8]
+unique[7f300:1] = unique[21000:1]
+CF = unique[7f300:1] < unique[7f200:1]
+OF = sborrow(unique[7f300:1], unique[7f200:1])
+unique[7f500:1] = unique[7f300:1] - unique[7f200:1]
+SF = unique[7f500:1] s< 0x0
+ZF = unique[7f500:1] == 0x0
+unique[58300:1] = unique[7f500:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+if (ZF) goto ram[381:8]
+383 f348a7 cmpsq
+IMARK ram[383:3]
+unique[26e00:1] = RCX == 0x0
+if (unique[26e00:1]) goto ram[386:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[7fe00:8] = unique[23a00:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+unique[7ff00:8] = unique[22200:8]
+CF = unique[7ff00:8] < unique[7fe00:8]
+OF = sborrow(unique[7ff00:8], unique[7fe00:8])
+unique[80100:8] = unique[7ff00:8] - unique[7fe00:8]
+SF = unique[80100:8] s< 0x0
+ZF = unique[80100:8] == 0x0
+unique[58300:8] = unique[80100:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+if (ZF) goto ram[383:8]
+386 f2a6 cmpsb
+IMARK ram[386:2]
+unique[27400:1] = RCX == 0x0
+if (unique[27400:1]) goto ram[388:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[20b00:8] = RSI
+unique[20c00:8] = RSI + 0x1
+unique[20d00:8] = zext(DF)
+unique[20e00:8] = 0x2 * unique[20d00:8]
+RSI = unique[20c00:8] - unique[20e00:8]
+unique[22800:1] = *[ram]unique[22300:8]
+unique[7f200:1] = unique[22800:1]
+unique[21000:1] = *[ram]unique[20b00:8]
+unique[7f300:1] = unique[21000:1]
+CF = unique[7f300:1] < unique[7f200:1]
+OF = sborrow(unique[7f300:1], unique[7f200:1])
+unique[7f500:1] = unique[7f300:1] - unique[7f200:1]
+SF = unique[7f500:1] s< 0x0
+ZF = unique[7f500:1] == 0x0
+unique[58300:1] = unique[7f500:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+unique[27600:1] = !ZF
+if (unique[27600:1]) goto ram[386:8]
+388 f248a7 cmpsq
+IMARK ram[388:3]
+unique[27400:1] = RCX == 0x0
+if (unique[27400:1]) goto ram[38b:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[21d00:8] = RSI
+unique[21e00:8] = RSI + 0x8
+unique[21f00:8] = zext(DF)
+unique[22000:8] = 0x10 * unique[21f00:8]
+RSI = unique[21e00:8] - unique[22000:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[7fe00:8] = unique[23a00:8]
+unique[22200:8] = *[ram]unique[21d00:8]
+unique[7ff00:8] = unique[22200:8]
+CF = unique[7ff00:8] < unique[7fe00:8]
+OF = sborrow(unique[7ff00:8], unique[7fe00:8])
+unique[80100:8] = unique[7ff00:8] - unique[7fe00:8]
+SF = unique[80100:8] s< 0x0
+ZF = unique[80100:8] == 0x0
+unique[58300:8] = unique[80100:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+unique[27600:1] = !ZF
+if (unique[27600:1]) goto ram[388:8]
+38b f3ae scasb
+IMARK ram[38b:2]
+unique[26e00:1] = RCX == 0x0
+if (unique[26e00:1]) goto ram[38d:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[22800:1] = *[ram]unique[22300:8]
+CF = AL < unique[22800:1]
+unique[22800:1] = *[ram]unique[22300:8]
+OF = sborrow(AL, unique[22800:1])
+unique[22800:1] = *[ram]unique[22300:8]
+unique[d1400:1] = AL - unique[22800:1]
+SF = unique[d1400:1] s< 0x0
+ZF = unique[d1400:1] == 0x0
+unique[58300:1] = unique[d1400:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+if (ZF) goto ram[38b:8]
+38d f348af scasq
+IMARK ram[38d:3]
+unique[26e00:1] = RCX == 0x0
+if (unique[26e00:1]) goto ram[390:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+CF = RAX < unique[23a00:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+OF = sborrow(RAX, unique[23a00:8])
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[d1a00:8] = RAX - unique[23a00:8]
+SF = unique[d1a00:8] s< 0x0
+ZF = unique[d1a00:8] == 0x0
+unique[58300:8] = unique[d1a00:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+if (ZF) goto ram[38d:8]
+390 f2ae scasb
+IMARK ram[390:2]
+unique[27400:1] = RCX == 0x0
+if (unique[27400:1]) goto ram[392:8]
+RCX = RCX - 0x1
+unique[22300:8] = RDI
+unique[22400:8] = RDI + 0x1
+unique[22500:8] = zext(DF)
+unique[22600:8] = 0x2 * unique[22500:8]
+RDI = unique[22400:8] - unique[22600:8]
+unique[22800:1] = *[ram]unique[22300:8]
+CF = AL < unique[22800:1]
+unique[22800:1] = *[ram]unique[22300:8]
+OF = sborrow(AL, unique[22800:1])
+unique[22800:1] = *[ram]unique[22300:8]
+unique[d1400:1] = AL - unique[22800:1]
+SF = unique[d1400:1] s< 0x0
+ZF = unique[d1400:1] == 0x0
+unique[58300:1] = unique[d1400:1] & 0xff
+unique[58400:1] = popcount(unique[58300:1])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+unique[27600:1] = !ZF
+if (unique[27600:1]) goto ram[390:8]
+392 f248af scasq
+IMARK ram[392:3]
+unique[27400:1] = RCX == 0x0
+if (unique[27400:1]) goto ram[395:8]
+RCX = RCX - 0x1
+unique[23500:8] = RDI
+unique[23600:8] = RDI + 0x8
+unique[23700:8] = zext(DF)
+unique[23800:8] = 0x10 * unique[23700:8]
+RDI = unique[23600:8] - unique[23800:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+CF = RAX < unique[23a00:8]
+unique[23a00:8] = *[ram]unique[23500:8]
+OF = sborrow(RAX, unique[23a00:8])
+unique[23a00:8] = *[ram]unique[23500:8]
+unique[d1a00:8] = RAX - unique[23a00:8]
+SF = unique[d1a00:8] s< 0x0
+ZF = unique[d1a00:8] == 0x0
+unique[58300:8] = unique[d1a00:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+unique[27600:1] = !ZF
+if (unique[27600:1]) goto ram[392:8]
+395 c3 ret
+IMARK ram[395:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+396 662e0f1f840000000000 nop
+IMARK ram[396:10]
+unique[ab00:8] = RAX * 0x1
+unique[ad00:8] = RAX + unique[ab00:8]
+3a0 f30f1efa endbr64
+IMARK ram[3a0:4]
+3a4 f0480118 add
+IMARK ram[3a4:4]
+LOCK()
+unique[d500:8] = *[ram]RAX
+CF = carry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RAX
+OF = scarry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RAX
+unique[d500:8] = unique[d500:8] + RBX
+*[ram]RAX = unique[d500:8]
+unique[d500:8] = *[ram]RAX
+SF = unique[d500:8] s< 0x0
+unique[d500:8] = *[ram]RAX
+ZF = unique[d500:8] == 0x0
+unique[d500:8] = *[ram]RAX
+unique[58300:8] = unique[d500:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+UNLOCK()
+3a8 f0480fab08 bts
+IMARK ram[3a8:5]
+LOCK()
+unique[19df00:8] = RCX s>> 0x3
+unique[19e100:8] = RAX + unique[19df00:8]
+unique[19e300:8] = RCX & 0x7
+unique[19e400:1] = *[ram]unique[19e100:8]
+unique[19e500:1] = unique[19e400:1] >> unique[19e300:8]
+unique[19e700:1] = unique[19e500:1] & 0x1
+unique[19e800:1] = *[ram]unique[19e100:8]
+unique[19e900:1] = 0x1 << unique[19e300:8]
+unique[19ea00:1] = unique[19e800:1] | unique[19e900:1]
+*[ram]unique[19e100:8] = unique[19ea00:1]
+CF = unique[19e700:1] != 0x0
+UNLOCK()
+3ad f0480fc118 xadd
+IMARK ram[3ad:5]
+LOCK()
+unique[d500:8] = *[ram]RAX
+CF = carry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RAX
+OF = scarry(unique[d500:8], RBX)
+unique[d500:8] = *[ram]RAX
+unique[1a6000:8] = unique[d500:8] + RBX
+unique[d500:8] = *[ram]RAX
+RBX = unique[d500:8]
+unique[d500:8] = unique[1a6000:8]
+*[ram]RAX = unique[d500:8]
+SF = unique[1a6000:8] s< 0x0
+ZF = unique[1a6000:8] == 0x0
+unique[58300:8] = unique[1a6000:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+UNLOCK()
+3b2 488718 xchg
+IMARK ram[3b2:3]
+LOCK()
+unique[d500:8] = *[ram]RAX
+unique[1a6400:8] = unique[d500:8]
+unique[d500:8] = RBX
+*[ram]RAX = unique[d500:8]
+RBX = unique[1a6400:8]
+UNLOCK()
+3b5 480fb118 cmpxchg
+IMARK ram[3b5:4]
+unique[d500:8] = *[ram]RAX
+unique[1a0d00:8] = unique[d500:8]
+CF = RAX < unique[1a0d00:8]
+OF = sborrow(RAX, unique[1a0d00:8])
+unique[1a0f00:8] = RAX - unique[1a0d00:8]
+SF = unique[1a0f00:8] s< 0x0
+ZF = unique[1a0f00:8] == 0x0
+unique[58300:8] = unique[1a0f00:8] & 0xff
+unique[58400:1] = popcount(unique[58300:8])
+unique[58500:1] = unique[58400:1] & 0x1
+PF = unique[58500:1] == 0x0
+if (ZF) goto 0x3
+RAX = unique[1a0d00:8]
+goto 0x3
+unique[d500:8] = RBX
+*[ram]RAX = unique[d500:8]
+3b9 0fc708 cmpxchg8b
+IMARK ram[3b9:3]
+unique[d500:8] = *[ram]RAX
+unique[1a1000:8] = unique[d500:8]
+unique[1a1100:8] = zext(EDX)
+unique[1a1200:8] = unique[1a1100:8] << 0x20
+unique[1a1300:8] = zext(EAX)
+unique[1a1400:8] = unique[1a1200:8] | unique[1a1300:8]
+ZF = unique[1a1400:8] == unique[1a1000:8]
+unique[1a1600:1] = ZF == 0x1
+if (unique[1a1600:1]) goto 0x4
+EDX = SUBPIECE unique[1a1000:8], 0x4
+EAX = SUBPIECE unique[1a1000:8], 0x0
+goto 0x6
+unique[1a1900:8] = zext(ECX)
+unique[1a1a00:8] = unique[1a1900:8] << 0x20
+unique[1a1b00:8] = zext(EBX)
+unique[d500:8] = unique[1a1a00:8] | unique[1a1b00:8]
+*[ram]RAX = unique[d500:8]
+3bc 480fc708 cmpxchg16b
+IMARK ram[3bc:4]
+unique[d700:16] = *[ram]RAX
+unique[1a1d00:16] = unique[d700:16]
+unique[1a1e00:16] = zext(RDX)
+unique[1a1f00:16] = unique[1a1e00:16] << 0x40
+unique[1a2000:16] = zext(RAX)
+unique[1a2100:16] = unique[1a1f00:16] | unique[1a2000:16]
+ZF = unique[1a2100:16] == unique[1a1d00:16]
+unique[1a2300:1] = ZF == 0x1
+if (unique[1a2300:1]) goto 0x4
+RDX = SUBPIECE unique[1a1d00:16], 0x8
+RAX = SUBPIECE unique[1a1d00:16], 0x0
+goto 0x6
+unique[1a2600:16] = zext(RCX)
+unique[1a2700:16] = unique[1a2600:16] << 0x40
+unique[1a2800:16] = zext(RBX)
+unique[d700:16] = unique[1a2700:16] | unique[1a2800:16]
+*[ram]RAX = unique[d700:16]
+3c0 0faee8 lfence
+IMARK ram[3c0:3]
+3c3 0faef0 mfence
+IMARK ram[3c3:3]
+3c6 0faef8 sfence
+IMARK ram[3c6:3]
+3c9 c3 ret
+IMARK ram[3c9:1]
+RIP = *[ram]RSP
+RSP = RSP + 0x8
+return RIP
+3ca 90 nop
+IMARK ram[3ca:1]
+3cb 90 nop
+IMARK ram[3cb:1]
+3cc 90 nop
+IMARK ram[3cc:1]
+3cd 90 nop
+IMARK ram[3cd:1]
+3ce 90 nop
+IMARK ram[3ce:1]
+3cf 90 nop
+IMARK ram[3cf:1]

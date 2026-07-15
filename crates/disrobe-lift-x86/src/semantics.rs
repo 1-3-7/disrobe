@@ -7,9 +7,14 @@ use iced_x86::{
 };
 
 use crate::registers::{
-    AF, CF, OF, PF, SF, UniqueAllocator, ZF, constant, full_gpr, is_gpr, ram_address, register,
-    segment_base,
+    AF, CF, OF, PF, SF, UniqueAllocator, ZF, constant, full_gpr, gpr32_by_offset, is_gpr,
+    ram_address, register, segment_base,
 };
+
+mod conditions;
+mod contracts;
+mod integer;
+mod sse;
 
 #[derive(Clone, Copy, Debug)]
 enum Destination {
@@ -35,9 +40,19 @@ enum LogicKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShiftKind {
+    DoubleRight,
     Left,
     Right,
     SignedRight,
+}
+
+#[derive(Clone, Debug)]
+struct ContractSpec {
+    invocation_name: String,
+    result_name: String,
+    effectful: bool,
+    additional_inputs: Vec<Varnode>,
+    additional_outputs: Vec<Varnode>,
 }
 
 pub(crate) fn lift_instruction(
@@ -46,17 +61,30 @@ pub(crate) fn lift_instruction(
     allocator: &mut UniqueAllocator,
     information: &mut InstructionInfoFactory,
 ) -> (DecodeStatus, Vec<PcodeOp>) {
-    if instruction.has_lock_prefix() {
-        return fallback(instruction, mnemonic, allocator, information);
+    let opaque: Option<(DecodeStatus, Vec<PcodeOp>)> =
+        contracts::lift_opaque_family(instruction, mnemonic, allocator, information);
+    if let Some(result) = opaque {
+        return result;
     }
     let lifted: Option<Vec<PcodeOp>> = match instruction.mnemonic() {
         Mnemonic::Mov => lift_mov(instruction, allocator),
         Mnemonic::Movzx => lift_extension(instruction, false, allocator),
         Mnemonic::Movsx | Mnemonic::Movsxd => lift_extension(instruction, true, allocator),
+        Mnemonic::Movss | Mnemonic::Movaps | Mnemonic::Movups | Mnemonic::Movd | Mnemonic::Movq => {
+            sse::lift_move(instruction, allocator)
+        }
+        Mnemonic::Movsd => {
+            if instruction.is_string_instruction() {
+                contracts::lift_string_iteration(instruction, allocator, information)
+            } else {
+                sse::lift_move(instruction, allocator)
+            }
+        }
         Mnemonic::Lea => lift_lea(instruction, allocator),
         Mnemonic::Push => lift_push(instruction, allocator),
         Mnemonic::Pop => lift_pop(instruction, allocator),
         Mnemonic::Xchg => lift_xchg(instruction, allocator),
+        Mnemonic::Xadd => integer::lift_xadd(instruction, allocator),
         Mnemonic::Add => lift_add(instruction, allocator),
         Mnemonic::Sub => lift_sub(instruction, true, allocator),
         Mnemonic::Adc => lift_with_carry(instruction, false, allocator),
@@ -73,8 +101,73 @@ pub(crate) fn lift_instruction(
         Mnemonic::Shl | Mnemonic::Sal => lift_shift(instruction, ShiftKind::Left, allocator),
         Mnemonic::Shr => lift_shift(instruction, ShiftKind::Right, allocator),
         Mnemonic::Sar => lift_shift(instruction, ShiftKind::SignedRight, allocator),
+        Mnemonic::Shld | Mnemonic::Shrd => integer::lift_double_shift(instruction, allocator),
         Mnemonic::Mul => lift_multiply(instruction, false, allocator),
         Mnemonic::Imul => lift_multiply(instruction, true, allocator),
+        Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc => {
+            integer::lift_bit_test(instruction, allocator)
+        }
+        Mnemonic::Bswap => integer::lift_bswap(instruction, allocator),
+        Mnemonic::Cbw
+        | Mnemonic::Cwde
+        | Mnemonic::Cdqe
+        | Mnemonic::Cwd
+        | Mnemonic::Cdq
+        | Mnemonic::Cqo => integer::lift_sign_extension(instruction, allocator),
+        Mnemonic::Seta
+        | Mnemonic::Setae
+        | Mnemonic::Setb
+        | Mnemonic::Setbe
+        | Mnemonic::Sete
+        | Mnemonic::Setg
+        | Mnemonic::Setge
+        | Mnemonic::Setl
+        | Mnemonic::Setle
+        | Mnemonic::Setne
+        | Mnemonic::Setno
+        | Mnemonic::Setnp
+        | Mnemonic::Setns
+        | Mnemonic::Seto
+        | Mnemonic::Setp
+        | Mnemonic::Sets => conditions::lift_set(instruction, allocator),
+        Mnemonic::Cmova
+        | Mnemonic::Cmovae
+        | Mnemonic::Cmovb
+        | Mnemonic::Cmovbe
+        | Mnemonic::Cmove
+        | Mnemonic::Cmovg
+        | Mnemonic::Cmovge
+        | Mnemonic::Cmovl
+        | Mnemonic::Cmovle
+        | Mnemonic::Cmovne
+        | Mnemonic::Cmovno
+        | Mnemonic::Cmovnp
+        | Mnemonic::Cmovns
+        | Mnemonic::Cmovo
+        | Mnemonic::Cmovp
+        | Mnemonic::Cmovs => conditions::lift_cmov(instruction, allocator),
+        Mnemonic::Pxor | Mnemonic::Xorps | Mnemonic::Xorpd | Mnemonic::Andps | Mnemonic::Orps => {
+            sse::lift_bitwise(instruction, allocator)
+        }
+        Mnemonic::Movsb
+        | Mnemonic::Movsw
+        | Mnemonic::Movsq
+        | Mnemonic::Stosb
+        | Mnemonic::Stosw
+        | Mnemonic::Stosd
+        | Mnemonic::Stosq
+        | Mnemonic::Lodsb
+        | Mnemonic::Lodsw
+        | Mnemonic::Lodsd
+        | Mnemonic::Lodsq
+        | Mnemonic::Cmpsb
+        | Mnemonic::Cmpsw
+        | Mnemonic::Cmpsd
+        | Mnemonic::Cmpsq
+        | Mnemonic::Scasb
+        | Mnemonic::Scasw
+        | Mnemonic::Scasd
+        | Mnemonic::Scasq => contracts::lift_string_iteration(instruction, allocator, information),
         Mnemonic::Jmp => lift_jump(instruction, allocator),
         Mnemonic::Ja
         | Mnemonic::Jae
@@ -582,7 +675,7 @@ fn lift_shift(
             input,
             amount,
         },
-        ShiftKind::Right => PcodeOp::IntRight {
+        ShiftKind::DoubleRight | ShiftKind::Right => PcodeOp::IntRight {
             output: result,
             input,
             amount,
@@ -797,7 +890,8 @@ fn lift_conditional_branch(
         return None;
     }
     let mut ops: Vec<PcodeOp> = Vec::new();
-    let condition: Varnode = branch_condition(instruction.mnemonic(), allocator, &mut ops)?;
+    let condition: Varnode =
+        conditions::condition(instruction.condition_code(), allocator, &mut ops)?;
     ops.push(PcodeOp::CBranch {
         target: ram_address(instruction.near_branch_target()),
         condition,
@@ -1027,47 +1121,7 @@ fn effective_address(
     }
     let base_register: Register = instruction.memory_base();
     let index_register: Register = instruction.memory_index();
-    let address_width: u32 = if matches!(
-        base_register,
-        Register::EAX
-            | Register::ECX
-            | Register::EDX
-            | Register::EBX
-            | Register::ESP
-            | Register::EBP
-            | Register::ESI
-            | Register::EDI
-            | Register::R8D
-            | Register::R9D
-            | Register::R10D
-            | Register::R11D
-            | Register::R12D
-            | Register::R13D
-            | Register::R14D
-            | Register::R15D
-    ) || matches!(
-        index_register,
-        Register::EAX
-            | Register::ECX
-            | Register::EDX
-            | Register::EBX
-            | Register::ESP
-            | Register::EBP
-            | Register::ESI
-            | Register::EDI
-            | Register::R8D
-            | Register::R9D
-            | Register::R10D
-            | Register::R11D
-            | Register::R12D
-            | Register::R13D
-            | Register::R14D
-            | Register::R15D
-    ) {
-        4
-    } else {
-        8
-    };
+    let address_width: u32 = memory_address_width(instruction)?;
     let mut terms: Vec<Varnode> = Vec::new();
     if base_register != Register::None {
         let base: Varnode = register(base_register)?;
@@ -1131,6 +1185,88 @@ fn effective_address(
         }
     }
     Some(pointer)
+}
+
+fn memory_address_width(instruction: &Instruction) -> Option<u32> {
+    let base_width: Option<u32> = address_register_width(instruction.memory_base());
+    let index_width: Option<u32> = address_register_width(instruction.memory_index());
+    match (base_width, index_width) {
+        (Some(left), Some(right)) if left == right => Some(left),
+        (Some(width), None) | (None, Some(width)) => Some(width),
+        (Some(_), Some(_)) => None,
+        (None, None) => {
+            let displacement_width: u32 = instruction.memory_displ_size();
+            if displacement_width >= 2 {
+                return Some(displacement_width);
+            }
+            match instruction.code_size() {
+                CodeSize::Code16 => Some(2),
+                CodeSize::Code32 => Some(4),
+                CodeSize::Code64 | CodeSize::Unknown => Some(8),
+            }
+        }
+    }
+}
+
+const fn address_register_width(selected: Register) -> Option<u32> {
+    if matches!(
+        selected,
+        Register::AX
+            | Register::CX
+            | Register::DX
+            | Register::BX
+            | Register::SP
+            | Register::BP
+            | Register::SI
+            | Register::DI
+    ) {
+        return Some(2);
+    }
+    if matches!(
+        selected,
+        Register::EAX
+            | Register::ECX
+            | Register::EDX
+            | Register::EBX
+            | Register::ESP
+            | Register::EBP
+            | Register::ESI
+            | Register::EDI
+            | Register::R8D
+            | Register::R9D
+            | Register::R10D
+            | Register::R11D
+            | Register::R12D
+            | Register::R13D
+            | Register::R14D
+            | Register::R15D
+            | Register::EIP
+    ) {
+        return Some(4);
+    }
+    if matches!(
+        selected,
+        Register::RAX
+            | Register::RCX
+            | Register::RDX
+            | Register::RBX
+            | Register::RSP
+            | Register::RBP
+            | Register::RSI
+            | Register::RDI
+            | Register::R8
+            | Register::R9
+            | Register::R10
+            | Register::R11
+            | Register::R12
+            | Register::R13
+            | Register::R14
+            | Register::R15
+            | Register::RIP
+    ) {
+        return Some(8);
+    }
+    None
 }
 
 fn write_destination(
@@ -1448,7 +1584,9 @@ fn emit_shift_flags(
         FlagAction::Written => {
             let shift_count: u32 = match kind {
                 ShiftKind::Left => width_bits.checked_sub(count)?,
-                ShiftKind::Right | ShiftKind::SignedRight => count.checked_sub(1)?,
+                ShiftKind::DoubleRight | ShiftKind::Right | ShiftKind::SignedRight => {
+                    count.checked_sub(1)?
+                }
             };
             let shifted: Varnode = allocator.allocate(input.size_bytes)?;
             let low_bit: Varnode = allocator.allocate(input.size_bytes)?;
@@ -1496,6 +1634,25 @@ fn emit_shift_flags(
                     ops.push(PcodeOp::Copy {
                         output: OF,
                         input: sign,
+                    });
+                }
+                ShiftKind::DoubleRight => {
+                    let input_sign: Varnode = allocator.allocate(1)?;
+                    let result_sign: Varnode = allocator.allocate(1)?;
+                    ops.push(PcodeOp::IntSignedLess {
+                        output: input_sign,
+                        left: input,
+                        right: constant(0, input.size_bytes),
+                    });
+                    ops.push(PcodeOp::IntSignedLess {
+                        output: result_sign,
+                        left: result,
+                        right: constant(0, result.size_bytes),
+                    });
+                    ops.push(PcodeOp::BoolXor {
+                        output: OF,
+                        left: input_sign,
+                        right: result_sign,
                     });
                 }
                 ShiftKind::SignedRight => ops.push(PcodeOp::Copy {
@@ -1583,85 +1740,6 @@ fn emit_declared_undefined_flags(
     Some(())
 }
 
-fn branch_condition(
-    mnemonic: Mnemonic,
-    allocator: &mut UniqueAllocator,
-    ops: &mut Vec<PcodeOp>,
-) -> Option<Varnode> {
-    match mnemonic {
-        Mnemonic::Jo => Some(OF),
-        Mnemonic::Jno => bool_negate(OF, allocator, ops),
-        Mnemonic::Jb => Some(CF),
-        Mnemonic::Jae => bool_negate(CF, allocator, ops),
-        Mnemonic::Je => Some(ZF),
-        Mnemonic::Jne => bool_negate(ZF, allocator, ops),
-        Mnemonic::Jbe => bool_or(CF, ZF, allocator, ops),
-        Mnemonic::Ja => {
-            let below_or_equal: Varnode = bool_or(CF, ZF, allocator, ops)?;
-            bool_negate(below_or_equal, allocator, ops)
-        }
-        Mnemonic::Js => Some(SF),
-        Mnemonic::Jns => bool_negate(SF, allocator, ops),
-        Mnemonic::Jp => Some(PF),
-        Mnemonic::Jnp => bool_negate(PF, allocator, ops),
-        Mnemonic::Jl => bool_xor(SF, OF, allocator, ops),
-        Mnemonic::Jge => {
-            let less: Varnode = bool_xor(SF, OF, allocator, ops)?;
-            bool_negate(less, allocator, ops)
-        }
-        Mnemonic::Jle => {
-            let less: Varnode = bool_xor(SF, OF, allocator, ops)?;
-            bool_or(ZF, less, allocator, ops)
-        }
-        Mnemonic::Jg => {
-            let less: Varnode = bool_xor(SF, OF, allocator, ops)?;
-            let less_or_equal: Varnode = bool_or(ZF, less, allocator, ops)?;
-            bool_negate(less_or_equal, allocator, ops)
-        }
-        _ => None,
-    }
-}
-
-fn bool_negate(
-    input: Varnode,
-    allocator: &mut UniqueAllocator,
-    ops: &mut Vec<PcodeOp>,
-) -> Option<Varnode> {
-    let output: Varnode = allocator.allocate(1)?;
-    ops.push(PcodeOp::BoolNegate { output, input });
-    Some(output)
-}
-
-fn bool_or(
-    left: Varnode,
-    right: Varnode,
-    allocator: &mut UniqueAllocator,
-    ops: &mut Vec<PcodeOp>,
-) -> Option<Varnode> {
-    let output: Varnode = allocator.allocate(1)?;
-    ops.push(PcodeOp::BoolOr {
-        output,
-        left,
-        right,
-    });
-    Some(output)
-}
-
-fn bool_xor(
-    left: Varnode,
-    right: Varnode,
-    allocator: &mut UniqueAllocator,
-    ops: &mut Vec<PcodeOp>,
-) -> Option<Varnode> {
-    let output: Varnode = allocator.allocate(1)?;
-    ops.push(PcodeOp::BoolXor {
-        output,
-        left,
-        right,
-    });
-    Some(output)
-}
-
 fn emit_binary_flag(
     instruction: &Instruction,
     bit: u32,
@@ -1723,11 +1801,25 @@ fn fallback(
     allocator: &mut UniqueAllocator,
     information: &mut InstructionInfoFactory,
 ) -> (DecodeStatus, Vec<PcodeOp>) {
+    fallback_with_contract(instruction, mnemonic, allocator, information, None)
+}
+
+fn fallback_with_contract(
+    instruction: &Instruction,
+    mnemonic: &str,
+    allocator: &mut UniqueAllocator,
+    information: &mut InstructionInfoFactory,
+    specification: Option<ContractSpec>,
+) -> (DecodeStatus, Vec<PcodeOp>) {
     let details: &iced_x86::InstructionInfo = information.info(instruction);
     let used: Vec<UsedRegister> = details.used_registers().to_vec();
     let memory: Vec<UsedMemory> = details.used_memory().to_vec();
     let mut inputs: BTreeSet<Varnode> = BTreeSet::new();
     let mut outputs: BTreeSet<Varnode> = BTreeSet::new();
+    if let Some(contract) = specification.as_ref() {
+        inputs.extend(contract.additional_inputs.iter().copied());
+        outputs.extend(contract.additional_outputs.iter().copied());
+    }
     let mut has_unmapped_register: bool = false;
     for usage in &used {
         let node: Option<Varnode> = register(usage.register());
@@ -1780,6 +1872,12 @@ fn fallback(
         }
     }
     let has_memory: bool = !memory.is_empty();
+    let reads_memory: bool = memory.iter().any(|usage: &UsedMemory| {
+        matches!(
+            usage.access(),
+            OpAccess::Read | OpAccess::CondRead | OpAccess::ReadWrite | OpAccess::ReadCondWrite
+        )
+    });
     let writes_memory: bool = memory.iter().any(|usage: &UsedMemory| {
         matches!(
             usage.access(),
@@ -1794,16 +1892,36 @@ fn fallback(
         || instruction.flow_control() != FlowControl::Next
     {
         "side_effecting"
+    } else if reads_memory && writes_memory {
+        "reads_writes_mem"
     } else if writes_memory {
         "writes_mem"
-    } else if has_memory {
+    } else if reads_memory || has_memory {
         "reads_mem"
     } else if pure_register_effect {
         "pure"
     } else {
         "side_effecting"
     };
-    let name: String = format!("x86_unmodeled_{mnemonic}_{summary}_v1");
+    let (name, result_name, effectful): (String, String, bool) =
+        specification.as_ref().map_or_else(
+            || -> (String, String, bool) {
+                let generated: String = format!("x86_unmodeled_{mnemonic}_{summary}_v1");
+                let generated_result: String = if summary == "pure" {
+                    generated.clone()
+                } else {
+                    format!("x86_unmodeled_{mnemonic}_result_pure_v1")
+                };
+                (generated, generated_result, summary != "pure")
+            },
+            |contract: &ContractSpec| -> (String, String, bool) {
+                (
+                    contract.invocation_name.clone(),
+                    contract.result_name.clone(),
+                    contract.effectful,
+                )
+            },
+        );
     let input_values: Vec<Varnode> = inputs.into_iter().collect();
     let Some(input_nodes): Option<Vec<Varnode>> =
         snapshot_inputs(&input_values, allocator, &mut ops)
@@ -1815,7 +1933,6 @@ fn fallback(
         });
         return (DecodeStatus::CallOther, ops);
     };
-    let effectful: bool = summary != "pure";
     let mut result_inputs: Vec<Varnode> = input_nodes.clone();
     if effectful {
         let Some(effect_token): Option<Varnode> = allocator.allocate(8) else {
@@ -1827,23 +1944,18 @@ fn fallback(
             return (DecodeStatus::CallOther, ops);
         };
         ops.push(PcodeOp::CallOther {
-            name: name.clone(),
+            name,
             output: Some(effect_token),
             inputs: input_nodes,
         });
         result_inputs.insert(0, effect_token);
     } else if outputs.is_empty() {
         ops.push(PcodeOp::CallOther {
-            name: name.clone(),
+            name,
             output: None,
             inputs: input_nodes,
         });
     }
-    let result_name: String = if effectful {
-        format!("x86_unmodeled_{mnemonic}_result_pure_v1")
-    } else {
-        name
-    };
     for output in outputs {
         ops.push(PcodeOp::CallOther {
             name: result_name.clone(),
@@ -1851,7 +1963,7 @@ fn fallback(
             inputs: result_inputs.clone(),
         });
         if output.size_bytes == 4 {
-            let partial_register: Register = find_gpr_by_offset(output.offset);
+            let partial_register: Register = gpr32_by_offset(output.offset);
             let full: Option<Varnode> = full_gpr(partial_register);
             if let Some(full_output) = full {
                 ops.push(PcodeOp::IntZext {
@@ -1999,26 +2111,4 @@ fn used_memory_pointer(
         pointer = combined;
     }
     Some(pointer)
-}
-
-const fn find_gpr_by_offset(offset: u64) -> Register {
-    match offset {
-        0x00 => Register::EAX,
-        0x08 => Register::ECX,
-        0x10 => Register::EDX,
-        0x18 => Register::EBX,
-        0x20 => Register::ESP,
-        0x28 => Register::EBP,
-        0x30 => Register::ESI,
-        0x38 => Register::EDI,
-        0x80 => Register::R8D,
-        0x88 => Register::R9D,
-        0x90 => Register::R10D,
-        0x98 => Register::R11D,
-        0xa0 => Register::R12D,
-        0xa8 => Register::R13D,
-        0xb0 => Register::R14D,
-        0xb8 => Register::R15D,
-        _ => Register::None,
-    }
 }
