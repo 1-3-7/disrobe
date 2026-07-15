@@ -71,18 +71,18 @@ const NIM_OPERATOR_WORDS: &[(&str, &str)] = &[
     ("slash", "/"),
     ("backslash", "\\"),
     ("eq", "="),
-    ("less", "<"),
-    ("greater", ">"),
+    ("lt", "<"),
+    ("gt", ">"),
     ("bar", "|"),
     ("percent", "%"),
     ("amp", "&"),
     ("dollar", "$"),
     ("at", "@"),
-    ("hat", "^"),
+    ("roof", "^"),
     ("dot", "."),
     ("colon", ":"),
     ("tilde", "~"),
-    ("excl", "!"),
+    ("emark", "!"),
     ("qmark", "?"),
     ("plusplus", "++"),
 ];
@@ -415,6 +415,30 @@ mod tests {
         let p: DemangledSymbol = demangle_nim("_ZN6system12pluspercent_E3int3int").expect("d");
         assert_eq!(p.name, "+%");
         assert_eq!(p.demangled, "system.+%(int, int)");
+    }
+
+    #[test]
+    fn nim_decodes_comparison_and_index_operators() {
+        let lt: DemangledSymbol = demangle_nim("_ZN6system3lt_E3int3int").expect("d");
+        assert_eq!(lt.name, "<");
+        assert_eq!(lt.demangled, "system.<(int, int)");
+        let gt: DemangledSymbol = demangle_nim("_ZN6system3gt_E3int3int").expect("d");
+        assert_eq!(gt.name, ">");
+        assert_eq!(gt.demangled, "system.>(int, int)");
+        let lteq: DemangledSymbol = demangle_nim("_ZN6system5lteq_E3int3int").expect("d");
+        assert_eq!(lteq.name, "<=");
+        assert_eq!(lteq.demangled, "system.<=(int, int)");
+        let gteq: DemangledSymbol = demangle_nim("_ZN6system5gteq_E3int3int").expect("d");
+        assert_eq!(gteq.name, ">=");
+        let roof: DemangledSymbol = demangle_nim("_ZN6system5roof_E3int").expect("d");
+        assert_eq!(roof.name, "^");
+        assert_eq!(roof.demangled, "system.^(int)");
+        let ltpercent: DemangledSymbol =
+            demangle_nim("_ZN6system10ltpercent_E3int3int").expect("d");
+        assert_eq!(ltpercent.name, "<%");
+        let emark: DemangledSymbol = demangle_nim("_ZN7options6emark_E3int").expect("d");
+        assert_eq!(emark.name, "!");
+        assert_eq!(emark.module.as_deref(), Some("options"));
     }
 
     #[test]
