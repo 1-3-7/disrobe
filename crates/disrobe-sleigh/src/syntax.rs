@@ -1066,6 +1066,9 @@ fn parse_pattern(tokens: &[Lexeme]) -> PatternExpr {
     if stripped.is_empty() {
         return PatternExpr::True;
     }
+    if stripped.len() == 1 && stripped[0].text == "epsilon" {
+        return PatternExpr::True;
+    }
     if let Some(parts) = split_top_level(stripped, ";") {
         let mut expressions: Vec<PatternExpr> = parts.into_iter().map(parse_pattern).collect();
         let first: PatternExpr = expressions.remove(0);

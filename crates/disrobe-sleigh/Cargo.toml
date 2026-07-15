@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-sleigh"
-description = "Sleigh source front end and scalar AArch64 P-code lifter."
+description = "Sleigh source front end and scalar multi-architecture P-code lifter."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 readme = "README.md"
-keywords = ["sleigh", "aarch64", "pcode", "decoder", "lifter"]
+keywords = ["sleigh", "arm", "mips", "pcode", "lifter"]
 categories.workspace = true
 
 [lints]

@@ -62,6 +62,8 @@ def binary(
     commutative: bool,
     output_size: int,
 ) -> Expression:
+    if name == "add":
+        return canonical_add(left, right, output_size)
     if name in {"shl", "lshr", "ashr"}:
         right_constant = constant_value(right)
         if right_constant is not None:
@@ -97,6 +99,43 @@ def unary(name: str, value: Expression, output_size: int) -> Expression:
     return Expression(name, (value,))
 
 
+def canonical_add(
+    left: Expression,
+    right: Expression,
+    output_size: int,
+) -> Expression:
+    terms: list[Expression] = []
+    constant_total = 0
+    saw_constant = False
+
+    def collect(expression: Expression) -> None:
+        nonlocal constant_total, saw_constant
+        value = constant_value(expression)
+        if value is not None:
+            constant_total += value[0]
+            saw_constant = True
+            return
+        if expression.kind == "add":
+            collect(expression.values[0])
+            collect(expression.values[1])
+            return
+        terms.append(expression)
+
+    collect(left)
+    collect(right)
+    mask = (1 << (output_size * 8)) - 1 if output_size < 8 else (1 << 64) - 1
+    constant_total &= mask
+    if saw_constant and (constant_total != 0 or not terms):
+        terms.append(constant(constant_total, output_size))
+    terms.sort(key=render)
+    if not terms:
+        return constant(0, output_size)
+    result = terms[0]
+    for term in terms[1:]:
+        result = Expression("add", (result, term))
+    return result
+
+
 def architectural_register(node: object) -> bool:
     if node.space.name != "register":
         return False
@@ -107,7 +146,13 @@ def architectural_register(node: object) -> bool:
 def normalize(operations: list[object]) -> list[str]:
     values: dict[tuple[str, int, int], Expression] = {}
     facts: list[str] = []
+    pending_facts: list[str] = []
     pending_condition: Expression | None = None
+
+    def flush_facts() -> None:
+        pending_facts.sort()
+        facts.extend(pending_facts)
+        pending_facts.clear()
 
     def resolve(node: object) -> Expression:
         return values.get(node_key(node), node_expression(node))
@@ -121,8 +166,10 @@ def normalize(operations: list[object]) -> list[str]:
         values[key] = expression
         if architectural_register(output):
             prefix = f"write({render(node_expression(output))},"
-            facts[:] = [fact for fact in facts if not fact.startswith(prefix)]
-            facts.append(f"{prefix}{render(expression)})")
+            pending_facts[:] = [
+                fact for fact in pending_facts if not fact.startswith(prefix)
+            ]
+            pending_facts.append(f"{prefix}{render(expression)})")
 
     binary_names = {
         "BOOL_AND": ("booland", True),
@@ -154,6 +201,8 @@ def normalize(operations: list[object]) -> list[str]:
     for operation in operations:
         name = operation.opcode.name
         if name == "IMARK":
+            continue
+        if name == "CALLOTHER":
             continue
         if name == "COPY":
             record(operation.output, resolve(operation.inputs[0]))
@@ -201,25 +250,54 @@ def normalize(operations: list[object]) -> list[str]:
                 ),
             )
             continue
+        if name == "SUBPIECE":
+            record(
+                operation.output,
+                binary(
+                    "subpiece",
+                    resolve(operation.inputs[0]),
+                    resolve(operation.inputs[1]),
+                    False,
+                    operation.output.size,
+                ),
+            )
+            continue
+        if name == "PIECE":
+            record(
+                operation.output,
+                binary(
+                    "piece",
+                    resolve(operation.inputs[0]),
+                    resolve(operation.inputs[1]),
+                    False,
+                    operation.output.size,
+                ),
+            )
+            continue
         if name == "STORE":
             space = operation.inputs[0].getSpaceFromConst().name
-            facts.append(
+            pending_facts.append(
                 f"store({space},{render(resolve(operation.inputs[1]))},{render(resolve(operation.inputs[2]))})"
             )
             continue
         if name == "BRANCH":
+            flush_facts()
             facts.append(f"branch({render(resolve(operation.inputs[0]))})")
             continue
         if name == "BRANCHIND":
+            flush_facts()
             facts.append(f"branchind({render(resolve(operation.inputs[0]))})")
             continue
         if name == "CALL":
+            flush_facts()
             facts.append(f"call({render(resolve(operation.inputs[0]))})")
             continue
         if name == "CALLIND":
+            flush_facts()
             facts.append(f"callind({render(resolve(operation.inputs[0]))})")
             continue
         if name == "RETURN":
+            flush_facts()
             facts.append(f"return({render(resolve(operation.inputs[0]))})")
             continue
         if name == "CBRANCH":
@@ -228,12 +306,13 @@ def normalize(operations: list[object]) -> list[str]:
             if target.space.name == "const":
                 pending_condition = condition
             else:
+                flush_facts()
                 facts.append(f"cbranch({render(resolve(target))},{render(condition)})")
             continue
         raise RuntimeError(f"unsupported pypcode operation {name}")
     if pending_condition is not None:
         raise RuntimeError("unresolved internal pypcode branch")
-    facts.sort()
+    flush_facts()
     return facts
 
 

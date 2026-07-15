@@ -1,8 +1,14 @@
 use disrobe_sleigh::SleighError;
+use disrobe_sleigh::compiler::{
+    CompiledSpec, ConflictPolicy, ContextState, DecodeOutcome, compile_spec_with_policy,
+};
 use disrobe_sleigh::syntax::{
     AttachmentKind, Endian, PatternAtom, PatternExpr, SleighSpec, parse_spec,
 };
-use disrobe_sleigh::vendor::preprocessed_aarch64_source;
+use disrobe_sleigh::vendor::{
+    preprocessed_aarch64_source, preprocessed_arm32_source, preprocessed_mips32be_source,
+    preprocessed_mips32le_source,
+};
 
 #[test]
 fn parses_declarations_attachments_context_and_constructor_sections() {
@@ -95,6 +101,118 @@ fn parses_vendored_scalar_aarch64_spec() {
             constructor.table == "instruction" && constructor.mnemonic == mnemonic
         }));
     }
+}
+
+#[test]
+fn parses_vendored_arm32_and_thumb_spec() {
+    let source_result: Result<String, SleighError> = preprocessed_arm32_source();
+    assert!(source_result.is_ok(), "{source_result:?}");
+    let result: Result<SleighSpec, SleighError> = source_result
+        .as_deref()
+        .map_err(Clone::clone)
+        .and_then(parse_spec);
+    assert!(result.is_ok(), "{result:?}");
+    let Ok(spec) = result else {
+        return;
+    };
+    assert_eq!(spec.endian, Some(Endian::Little));
+    assert!(spec.contexts.iter().any(|context| context.name == "TMode"));
+    assert!(spec.tokens.iter().any(|token| token.bits == 16));
+    assert!(spec.tokens.iter().any(|token| token.bits == 32));
+    for mnemonic in ["add", "ldr", "stm", "bl", "bx", "push", "pop"] {
+        assert!(spec.constructors.iter().any(|constructor| {
+            constructor.table == "instruction" && constructor.mnemonic == mnemonic
+        }));
+    }
+}
+
+#[test]
+fn parses_vendored_mips32_specs_in_both_byte_orders() {
+    for source_result in [
+        preprocessed_mips32le_source(),
+        preprocessed_mips32be_source(),
+    ] {
+        assert!(source_result.is_ok(), "{source_result:?}");
+        let result: Result<SleighSpec, SleighError> = source_result
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(parse_spec);
+        assert!(result.is_ok(), "{result:?}");
+        let Ok(spec) = result else {
+            continue;
+        };
+        assert!(
+            spec.contexts
+                .iter()
+                .any(|context| context.name == "ISA_MODE")
+        );
+        assert!(spec.constructors.iter().any(|constructor| {
+            constructor.table == "instruction"
+                && constructor
+                    .semantic_tokens
+                    .iter()
+                    .any(|token| token == "delayslot")
+        }));
+        for mnemonic in ["addiu", "lw", "sw", "beq", "jal", "jr", "mult"] {
+            assert!(spec.constructors.iter().any(|constructor| {
+                constructor.table == "instruction" && constructor.mnemonic == mnemonic
+            }));
+        }
+    }
+}
+
+#[test]
+fn compiles_vendored_multiarch_decision_trees() {
+    for source_result in [
+        preprocessed_arm32_source(),
+        preprocessed_mips32le_source(),
+        preprocessed_mips32be_source(),
+    ] {
+        assert!(source_result.is_ok(), "{source_result:?}");
+        let parsed: Result<SleighSpec, SleighError> = source_result
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(parse_spec);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let compiled: Result<CompiledSpec, SleighError> =
+            parsed.and_then(|spec| compile_spec_with_policy(spec, ConflictPolicy::FirstDefined));
+        assert!(compiled.is_ok(), "{compiled:?}");
+        assert!(!compiled.map_or(true, |spec| spec.decision_nodes().is_empty()));
+    }
+}
+
+#[test]
+fn arm_decision_tree_selects_a32_and_thumb_constructors() {
+    let source: String = preprocessed_arm32_source().unwrap_or_default();
+    let spec: SleighSpec = parse_spec(&source).unwrap_or_default();
+    let compiled: Result<CompiledSpec, SleighError> =
+        compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
+    assert!(compiled.is_ok(), "{compiled:?}");
+    let Ok(compiled) = compiled else {
+        return;
+    };
+    let mut a32_context: ContextState = ContextState::new();
+    a32_context.insert("TMode".to_owned(), 0);
+    a32_context.insert("ARMcond".to_owned(), 1);
+    a32_context.insert("ARMcondCk".to_owned(), 1);
+    let a32: DecodeOutcome = compiled.decode(&0xe081_0182_u32.to_le_bytes(), 0, &a32_context);
+    assert!(matches!(a32, DecodeOutcome::Matched(_)), "{a32:?}");
+
+    let mut thumb_context: ContextState = ContextState::new();
+    thumb_context.insert("TMode".to_owned(), 1);
+    thumb_context.insert("ARMcondCk".to_owned(), 1);
+    let thumb: DecodeOutcome = compiled.decode(&[0x88, 0x18, 0x2a, 0x20], 0, &thumb_context);
+    let thumb_adds: Vec<_> = compiled
+        .source()
+        .constructors
+        .iter()
+        .filter(|constructor| constructor.mnemonic == "add")
+        .take(12)
+        .collect();
+    assert!(
+        matches!(thumb, DecodeOutcome::Matched(_)),
+        "{thumb:?} {thumb_adds:#?}"
+    );
 }
 
 fn has_residual(pattern: &PatternExpr) -> bool {

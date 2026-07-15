@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::{self, Write};
 
 use disrobe_sleigh::SleighError;
 use disrobe_sleigh::compiler::{
@@ -348,4 +349,74 @@ fn decision_tree_selects_real_aarch64_scalar_constructors() {
             "{word:08x}: expected {expected}, got {outcome:?}"
         );
     }
+}
+
+#[test]
+fn compiler_rejects_oversized_constructor_tables() {
+    let mut source: String = r"
+define endian=little;
+define token instruction(8)
+  opcode=(0,7)
+;
+"
+    .to_owned();
+    for index in 0_usize..2049 {
+        let write_result: fmt::Result = writeln!(source, ":op{index} is opcode=0 {{}}");
+        assert!(write_result.is_ok(), "{write_result:?}");
+    }
+    let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(spec) = parsed else {
+        return;
+    };
+    let compiled: Result<CompiledSpec, SleighError> =
+        compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
+    assert!(matches!(
+        compiled,
+        Err(SleighError::Parse { message, .. }) if message.contains("constructor count")
+    ));
+}
+
+#[test]
+fn decoding_reports_constructor_attempt_exhaustion() {
+    let mut source: String = r"
+define endian=little;
+define token first(8)
+  root=(0,0)
+;
+define token second(8)
+  value=(0,0)
+;
+"
+    .to_owned();
+    for index in 0_usize..2048 {
+        let write_result: fmt::Result = writeln!(
+            source,
+            "choice: \"choice{index}\" is value=1 {{ export value; }}"
+        );
+        assert!(write_result.is_ok(), "{write_result:?}");
+    }
+    for index in 0_usize..33 {
+        let write_result: fmt::Result = writeln!(
+            source,
+            ":root{index} choice is root=0 ; choice {{ export choice; }}"
+        );
+        assert!(write_result.is_ok(), "{write_result:?}");
+    }
+    let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(spec) = parsed else {
+        return;
+    };
+    let compiled: Result<CompiledSpec, SleighError> =
+        compile_spec_with_policy(spec, ConflictPolicy::FirstDefined);
+    assert!(compiled.is_ok(), "{compiled:?}");
+    let Ok(compiled) = compiled else {
+        return;
+    };
+    let outcome: DecodeOutcome = compiled.decode(&[0, 0], 0, &BTreeMap::new());
+    assert!(matches!(
+        outcome,
+        DecodeOutcome::ResourceLimit { attempts: 65_536 }
+    ));
 }

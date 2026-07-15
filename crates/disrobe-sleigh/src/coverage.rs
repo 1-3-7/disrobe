@@ -1,4 +1,5 @@
 use crate::decode_block;
+use crate::lifter::{Language, decode_block_for_language};
 use crate::pcode::{DecodeStatus, PcodeInstr, PcodeOp};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -31,6 +32,20 @@ pub struct DecodeReport {
 
 pub fn decode_block_with_coverage(bytes: &[u8], address: u64) -> DecodeReport {
     let instructions: Vec<PcodeInstr> = decode_block(bytes, address);
+    let coverage: DecodeCoverage = measure_coverage(&instructions);
+    DecodeReport {
+        coverage,
+        instructions,
+    }
+}
+
+pub fn decode_block_with_coverage_for_language(
+    language: Language,
+    bytes: &[u8],
+    address: u64,
+) -> DecodeReport {
+    let instructions: Vec<PcodeInstr> =
+        decode_block_for_language(language, bytes, address).instructions;
     let coverage: DecodeCoverage = measure_coverage(&instructions);
     DecodeReport {
         coverage,
