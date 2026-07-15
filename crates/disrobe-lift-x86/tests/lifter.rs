@@ -536,11 +536,16 @@ fn all_setcc_and_cmovcc_conditions_are_modeled() {
 
 #[test]
 fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
-    let exact_cases: [(&[u8], &str); 18] = [
+    let exact_cases: [(&[u8], &str); 29] = [
         (&[0x48, 0x0f, 0xa3, 0xc8], "bt"),
         (&[0x48, 0x0f, 0xab, 0xc8], "bts"),
         (&[0x48, 0x0f, 0xb3, 0xc8], "btr"),
         (&[0x48, 0x0f, 0xbb, 0xc8], "btc"),
+        (&[0x48, 0x0f, 0xa3, 0x07], "bt"),
+        (&[0x48, 0x0f, 0xab, 0x0f], "bts"),
+        (&[0x48, 0x0f, 0xb3, 0x17], "btr"),
+        (&[0x48, 0x0f, 0xbb, 0x37], "btc"),
+        (&[0x48, 0x0f, 0xba, 0x27, 0x09], "bt"),
         (&[0x48, 0x0f, 0xc8], "bswap"),
         (&[0x48, 0x0f, 0xc1, 0xd8], "xadd"),
         (&[0x66, 0x98], "cbw"),
@@ -554,6 +559,12 @@ fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
         (&[0x48, 0x6b, 0xc3, 0x07], "imul"),
         (&[0x48, 0x0f, 0xa4, 0xd8, 0x04], "shld"),
         (&[0x48, 0x0f, 0xac, 0xd8, 0x04], "shrd"),
+        (&[0x48, 0xd3, 0xe0], "shl"),
+        (&[0x48, 0xd3, 0xeb], "shr"),
+        (&[0x48, 0xd3, 0xfa], "sar"),
+        (&[0x48, 0xd3, 0x27], "shl"),
+        (&[0x48, 0x0f, 0xa5, 0xd8], "shld"),
+        (&[0x48, 0x0f, 0xad, 0xd8], "shrd"),
         (&[0x0f, 0xc8], "bswap"),
     ];
     for (bytes, mnemonic) in exact_cases {
@@ -562,7 +573,7 @@ fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
         assert_eq!(instruction.status, DecodeStatus::Supported, "{bytes:02x?}");
     }
 
-    let opaque_cases: [(&[u8], &str, &str); 8] = [
+    let opaque_cases: [(&[u8], &str, &str); 5] = [
         (&[0x48, 0x0f, 0xbc, 0xc3], "bsf", "x86_bsf_result_pure_v1"),
         (&[0x48, 0x0f, 0xbd, 0xc3], "bsr", "x86_bsr_result_pure_v1"),
         (
@@ -580,9 +591,6 @@ fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
             "lzcnt",
             "x86_lzcount_pure_v1",
         ),
-        (&[0x48, 0xd3, 0xe0], "shl", "x86_shift_shl_pure_v1"),
-        (&[0x48, 0x0f, 0xa5, 0xd8], "shld", "x86_shift_shld_pure_v1"),
-        (&[0x48, 0x0f, 0xad, 0xd8], "shrd", "x86_shift_shrd_pure_v1"),
     ];
     for (bytes, mnemonic, contract) in opaque_cases {
         let instruction: PcodeInstr = single(bytes, 0xd800);
@@ -593,14 +601,9 @@ fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
         }));
     }
 
-    let memory_contracts: [(&[u8], &str); 4] = [
+    let memory_contracts: [(&[u8], &str); 2] = [
         (&[0x48, 0x0f, 0xbc, 0x00], "x86_bsf_reads_mem_v1"),
         (&[0xf3, 0x48, 0x0f, 0xb8, 0x00], "x86_popcount_reads_mem_v1"),
-        (&[0x48, 0xd3, 0x20], "x86_shift_shl_reads_writes_mem_v1"),
-        (
-            &[0x48, 0x0f, 0xa5, 0x18],
-            "x86_shift_shld_reads_writes_mem_v1",
-        ),
     ];
     for (bytes, contract) in memory_contracts {
         let instruction: PcodeInstr = single(bytes, 0xd880);
@@ -648,19 +651,36 @@ fn bit_and_extended_integer_families_use_exact_or_named_contracts() {
     }));
 
     let dynamic_shift: PcodeInstr = single(&[0x48, 0xd3, 0xe0], 0xd920);
-    let shift_inputs: BTreeSet<u64> = dynamic_shift
+    assert_eq!(dynamic_shift.status, DecodeStatus::Supported);
+    let shift_flag_writes: BTreeSet<u64> = dynamic_shift
         .ops
         .iter()
         .filter_map(|operation: &PcodeOp| match operation {
-            PcodeOp::Copy { input, .. } if input.space == Space::Register => Some(input.offset),
+            PcodeOp::IntOr { output, .. } if output.space == Space::Register => Some(output.offset),
             _ => None,
         })
         .collect();
     assert!(
-        [0x200_u64, 0x202, 0x204, 0x206, 0x207, 0x20b]
+        [0x200_u64, 0x202, 0x206, 0x207, 0x20b]
             .into_iter()
-            .all(|offset: u64| shift_inputs.contains(&offset))
+            .all(|offset: u64| shift_flag_writes.contains(&offset))
     );
+    assert!(!shift_flag_writes.contains(&0x204));
+    assert!(dynamic_shift.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntLeft { output, amount, .. } if output.space == Space::Unique && amount.space == Space::Unique)
+    }));
+    assert!(dynamic_shift.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Copy { output, .. } if output.space == Space::Register && output.offset == 0 && output.size_bytes == 8)
+    }));
+
+    let memory_bit_set: PcodeInstr = single(&[0x48, 0x0f, 0xab, 0x0f], 0xd928);
+    assert_eq!(memory_bit_set.status, DecodeStatus::Supported);
+    assert!(memory_bit_set.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Store { space, .. } if *space == Space::Ram)
+    }));
+    assert!(memory_bit_set.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntNotEqual { output, .. } if output.space == Space::Register && output.offset == 0x200)
+    }));
 
     let single_shrd: PcodeInstr = single(&[0x48, 0x0f, 0xac, 0xd8, 0x01], 0xd930);
     assert!(single_shrd.ops.iter().any(|operation: &PcodeOp| {
@@ -712,21 +732,36 @@ fn scalar_sse_moves_and_bitwise_ops_are_exact() {
     );
 
     let aligned_load: PcodeInstr = single(&[0x0f, 0x28, 0x00], 0xdb10);
-    assert_eq!(aligned_load.status, DecodeStatus::CallOther);
-    assert!(aligned_load.ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_aligned_movaps_reads_mem_v1")
-    }));
-    assert!(!aligned_load.ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
-    }));
+    assert_eq!(aligned_load.status, DecodeStatus::Supported);
+    assert!(!aligned_load.ops.iter().any(PcodeOp::is_callother));
+    assert!(
+        aligned_load
+            .ops
+            .iter()
+            .any(|operation: &PcodeOp| matches!(operation, PcodeOp::Load { .. }))
+    );
+    let aligned_lanes: BTreeSet<u64> = aligned_load
+        .ops
+        .iter()
+        .filter_map(|operation: &PcodeOp| match operation {
+            PcodeOp::Copy { output, .. }
+                if output.space == Space::Register && output.size_bytes == 4 =>
+            {
+                Some(output.offset)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        aligned_lanes,
+        BTreeSet::from([0x1200, 0x1204, 0x1208, 0x120c])
+    );
 
     let aligned_store: PcodeInstr = single(&[0x0f, 0x29, 0x00], 0xdb20);
-    assert_eq!(aligned_store.status, DecodeStatus::CallOther);
+    assert_eq!(aligned_store.status, DecodeStatus::Supported);
+    assert!(!aligned_store.ops.iter().any(PcodeOp::is_callother));
     assert!(aligned_store.ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::CallOther { name, .. } if name == "x86_aligned_movaps_writes_mem_v1")
-    }));
-    assert!(!aligned_store.ops.iter().any(|operation: &PcodeOp| {
-        matches!(operation, PcodeOp::Load { .. } | PcodeOp::Store { .. })
+        matches!(operation, PcodeOp::Store { space, value, .. } if *space == Space::Ram && value.space == Space::Register && value.size_bytes == 16)
     }));
 }
 

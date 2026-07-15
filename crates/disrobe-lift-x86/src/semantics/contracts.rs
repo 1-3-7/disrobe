@@ -73,15 +73,6 @@ pub(super) fn lift_opaque_family(
             Some(specification),
         ));
     }
-    if let Some(specification) = aligned_move_contract(instruction) {
-        return Some(fallback_with_contract(
-            instruction,
-            mnemonic,
-            allocator,
-            information,
-            Some(specification),
-        ));
-    }
     if scalar_float_contract(instruction.mnemonic()) {
         let invocation_name: String = format!("x86_scalar_{mnemonic}_side_effecting_v1");
         let result_name: String = format!("x86_scalar_{mnemonic}_result_pure_v1");
@@ -100,7 +91,7 @@ pub(super) fn lift_opaque_family(
             Some(specification),
         ));
     }
-    if let Some(specification) = scalar_contract(instruction, mnemonic) {
+    if let Some(specification) = scalar_contract(instruction) {
         return Some(fallback_with_contract(
             instruction,
             mnemonic,
@@ -437,7 +428,7 @@ const fn scalar_float_contract(mnemonic: Mnemonic) -> bool {
     )
 }
 
-fn scalar_contract(instruction: &Instruction, mnemonic: &str) -> Option<ContractSpec> {
+fn scalar_contract(instruction: &Instruction) -> Option<ContractSpec> {
     let (stem, result_name, memory_summary): (String, String, Option<&'static str>) =
         match instruction.mnemonic() {
             Mnemonic::Bsf if instruction.op_count() == 2 => (
@@ -465,24 +456,6 @@ fn scalar_contract(instruction: &Instruction, mnemonic: &str) -> Option<Contract
                 "x86_lzcount_pure_v1".to_owned(),
                 (instruction.op_kind(1) == OpKind::Memory).then_some("reads_mem"),
             ),
-            Mnemonic::Shl | Mnemonic::Sal | Mnemonic::Shr | Mnemonic::Sar
-                if instruction.op_count() == 2 && instruction.op_kind(1) == OpKind::Register =>
-            {
-                (
-                    format!("shift_{mnemonic}"),
-                    format!("x86_shift_{mnemonic}_pure_v1"),
-                    (instruction.op_kind(0) == OpKind::Memory).then_some("reads_writes_mem"),
-                )
-            }
-            Mnemonic::Shld | Mnemonic::Shrd
-                if instruction.op_count() == 3 && instruction.op_kind(2) == OpKind::Register =>
-            {
-                (
-                    format!("shift_{mnemonic}"),
-                    format!("x86_shift_{mnemonic}_pure_v1"),
-                    (instruction.op_kind(0) == OpKind::Memory).then_some("reads_writes_mem"),
-                )
-            }
             _ => return None,
         };
     let effectful: bool = memory_summary.is_some();
@@ -494,39 +467,7 @@ fn scalar_contract(instruction: &Instruction, mnemonic: &str) -> Option<Contract
         invocation_name,
         result_name,
         effectful,
-        additional_inputs: if matches!(
-            instruction.mnemonic(),
-            Mnemonic::Shl
-                | Mnemonic::Sal
-                | Mnemonic::Shr
-                | Mnemonic::Sar
-                | Mnemonic::Shld
-                | Mnemonic::Shrd
-        ) {
-            CONDITIONALLY_PRESERVED_FLAGS.to_vec()
-        } else {
-            Vec::new()
-        },
-        additional_outputs: Vec::new(),
-    })
-}
-
-fn aligned_move_contract(instruction: &Instruction) -> Option<ContractSpec> {
-    if instruction.mnemonic() != Mnemonic::Movaps || instruction.op_count() != 2 {
-        return None;
-    }
-    let summary: &str = if instruction.op_kind(0) == OpKind::Memory {
-        "writes_mem"
-    } else if instruction.op_kind(1) == OpKind::Memory {
-        "reads_mem"
-    } else {
-        return None;
-    };
-    Some(ContractSpec {
-        invocation_name: format!("x86_aligned_movaps_{summary}_v1"),
-        result_name: "x86_aligned_movaps_result_pure_v1".to_owned(),
-        effectful: true,
-        additional_inputs: vec![constant(16, 4)],
+        additional_inputs: Vec::new(),
         additional_outputs: Vec::new(),
     })
 }

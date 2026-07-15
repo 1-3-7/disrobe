@@ -25,7 +25,7 @@ Corpus SHA-256 records:
 - `x86_64_oracle_o2.mnemonics`: `719EC72DD94CB77768934141E753D2B8A07E026B094173D7B391D48A7D55402A`
 - `x86_64_oracle_o2.boundaries`: `87D5F689F3AF8260BF6F47183584AFAAD59D4FD72F28CD0BA8219B058E06CD57`
 
-The corpus contains 281 instructions. All 281 decode to explicit records and match GNU objdump boundaries and mnemonics. There are 206 `Supported` records and 75 `CallOther` records. The added fixture region contains 186 instructions, of which 113 are modeled and 73 use typed contracts. The contract records cover checked division, memory bit-index forms, bit scans and counts, CL-controlled shifts, memory `movaps`, MXCSR-sensitive scalar floating-point operations and conversions, REP string loops, locked operations, memory exchanges, compare-exchanges, and fences.
+The corpus contains 281 instructions. All 281 decode to explicit records and match GNU objdump boundaries and mnemonics. There are 223 `Supported` records and 58 `CallOther` records. The added fixture region contains 186 instructions, of which 130 are modeled and 56 use typed contracts. The modeled records now include memory `bt`, `bts`, `btr`, and `btc`, CL-controlled `shl`, `shr`, `sar`, `shld`, and `shrd`, and memory `movaps`. The contract records cover checked division, bit scans and counts, MXCSR-sensitive scalar floating-point operations and conversions, REP string loops, locked operations, memory exchanges, compare-exchanges, and fences.
 
 # P-code effects corpus
 
@@ -53,11 +53,11 @@ pypcode disassembles `66 90` as the semantic alias `nop`; GNU objdump and iced-x
 
 One-byte flag inequality and boolean XOR are canonicalized together, as are flag equality and negated boolean XOR. A De Morgan rewrite canonicalizes the equivalent signed-condition predicates. Ghidra's instruction-local CMOV branch and the lifter's branchless bitmask choice are both recorded as a select expression. A subpiece of an XMM register is canonicalized to the same register-space byte slice used by the lifter. Aligned 32-bit GPR writes are recorded as their architecture-required zero-extension to the full 64-bit register; this makes pypcode's partial `lodsd` write explicit. These rules preserve the selected value and all architectural writes.
 
-The Rust test independently normalizes this crate's shared `PcodeOp` values and compares all 206 modeled instruction records with the pypcode-derived table. Typed `CALLOTHER` boundaries remain in the raw and normalized pypcode corpus but are not included in the effect-agreement numerator.
+The Rust test independently normalizes this crate's shared `PcodeOp` values and compares all 223 modeled instruction records with the pypcode-derived table. Typed `CALLOTHER` boundaries remain in the raw and normalized pypcode corpus but are not included in the effect-agreement numerator.
 
 - `x86_64_pypcode.raw`: `C25AB30869D96655E62619A95EB27462862F6EA82A2FE0B434674E85EB9FE289`
 - `x86_64_pypcode.tsv`: `11CC7B843035F56F759DFF38FB79F2B5DBC05AF2E9EAD0D10EC3089F449DCDA8`
 - `pypcode_oracle.py`: `D0BA61A80F16C1038D45A2D8A6EFC9E362CD87314FCE9CF200C74F4B0A4F8667`
 - `pypcode-requirements.txt`: `6FFF231C68BF648A6882DADCFC6FED003C6DCCBDD6E0E51201BE0FFD17F0C3EC`
 
-The measured effect agreement is 206 of 206 fully modeled instructions. The added fixture region contributes 113 of those agreements.
+The measured effect agreement is 223 of 223 fully modeled instructions. The added fixture region contributes 130 of those agreements.
