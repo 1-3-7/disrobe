@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use disrobe_nir::NirModule;
+use disrobe_nir::{NirModule, NirOp};
 use disrobe_nir_lift::lift_wasm_module;
 use disrobe_query::{
     Capability, DecoderMatch, FunctionMatch, Module, Query, QueryResult, XrefMatch, run,
@@ -114,6 +114,50 @@ fn network_import_call_is_a_capability_site() {
         vec!["connect".to_owned()],
         "the call $connect must surface a Network capability site: {sites:?}"
     );
+}
+
+const FLOAT_CONST_WAT: &str = r#"
+    (module
+      (func (export "floats") (result f64)
+        (drop (f32.const 0.1))
+        (drop (f32.const -0.0))
+        (drop (f32.const inf))
+        (drop (f64.const 123.456))
+        (drop (f64.const -0.0))
+        (drop (f64.const inf))
+        (f64.const 6.022e23)))
+"#;
+
+fn const_operands(wat: &str) -> Vec<String> {
+    let bytes: Vec<u8> = wat::parse_str(wat).expect("assemble wat fixture");
+    let nir: NirModule = lift_wasm_module(&bytes).expect("lift wasm module to NIR");
+    nir.functions
+        .iter()
+        .flat_map(|f| f.instructions.iter())
+        .filter(|i| matches!(i.op, NirOp::Const))
+        .filter_map(|i| i.operands.first().cloned())
+        .collect()
+}
+
+#[test]
+fn float_constants_are_lifted_with_their_pool_value() {
+    let operands: Vec<String> = const_operands(FLOAT_CONST_WAT);
+    assert_eq!(
+        operands,
+        vec![
+            (0.1f32).to_string(),
+            (-0.0f32).to_string(),
+            f32::INFINITY.to_string(),
+            (123.456f64).to_string(),
+            (-0.0f64).to_string(),
+            f64::INFINITY.to_string(),
+            (6.022e23f64).to_string(),
+        ],
+        "each f32/f64 const must carry its decoded value: {operands:?}"
+    );
+    assert_eq!(operands[1], "-0", "negative zero must keep its sign");
+    assert_ne!(operands[1], "0", "negative zero must not collapse to +0");
+    assert_eq!(operands[2], "inf", "positive infinity must round-trip");
 }
 
 #[test]
