@@ -204,3 +204,45 @@ fn bitwise_or_left_operand_of_add_is_parenthesized() {
     let skeleton: String = skeleton_of(&b);
     assert_case(&skeleton, "echo (1 | 2) + 4;", (1 | 2) + 4);
 }
+
+fn echo_binary_skeleton(opcode: u8, a: i64, b: i64) -> String {
+    let mut bld: OpArrayBuilder = OpArrayBuilder::main();
+    let la: u32 = bld.lit_long(a);
+    let lb: u32 = bld.lit_long(b);
+    bld.op(opcode, T_CONST, T_CONST, T_TMP, la, lb, 5);
+    bld.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 5, 0, 0);
+    bld.op(op::RETURN, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0);
+    skeleton_of(&bld)
+}
+
+fn assert_case_str(skeleton: &str, expected_line: &str, expected_stdout: &str) {
+    assert!(
+        skeleton.contains(expected_line),
+        "expected `{expected_line}` in skeleton:\n{skeleton}"
+    );
+    if let Some((ok, value)) = php_eval(skeleton) {
+        assert!(ok, "php rejected emitted source:\n{skeleton}");
+        assert_eq!(
+            value, expected_stdout,
+            "emitted source evaluates to the wrong value:\n{skeleton}"
+        );
+    }
+}
+
+#[test]
+fn division_reemits_as_slash_and_keeps_float_result() {
+    assert_case_str(&echo_binary_skeleton(op::DIV, 7, 2), "echo 7 / 2;", "3.5");
+    assert_case_str(
+        &echo_binary_skeleton(op::DIV, -7, 2),
+        "echo -7 / 2;",
+        "-3.5",
+    );
+    assert_case_str(&echo_binary_skeleton(op::DIV, 8, 2), "echo 8 / 2;", "4");
+}
+
+#[test]
+fn modulo_reemits_with_dividend_sign() {
+    assert_case_str(&echo_binary_skeleton(op::MOD, -7, 3), "echo -7 % 3;", "-1");
+    assert_case_str(&echo_binary_skeleton(op::MOD, 7, -3), "echo 7 % -3;", "1");
+    assert_case_str(&echo_binary_skeleton(op::MOD, -8, 3), "echo -8 % 3;", "-2");
+}
