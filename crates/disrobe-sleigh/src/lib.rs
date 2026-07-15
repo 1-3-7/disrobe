@@ -8,4 +8,6 @@ pub mod syntax;
 pub mod vendor;
 
 pub use error::SleighError;
-pub use lifter::{ArmMode, DecodedBlock, Language, decode_block, decode_block_for_language};
+pub use lifter::{
+    ArmMode, DecodedBlock, Language, RiscVWidth, decode_block, decode_block_for_language,
+};

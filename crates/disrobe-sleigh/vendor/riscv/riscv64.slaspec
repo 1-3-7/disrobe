@@ -1,0 +1,16 @@
+define endian=little;
+
+@define XLEN 8
+@define XLEN2 16
+@define FLEN 8
+@define CONTEXTLEN 4
+@define ADDRSIZE "64"
+@define FPSIZE "64"
+@define CSR_REG_START "0x0000"
+
+@include "riscv.reg.sinc"
+@include "riscv.table.sinc"
+@include "riscv.rv32i.sinc"
+@include "riscv.rv32m.sinc"
+@include "riscv.rv64i.sinc"
+@include "riscv.rv64m.sinc"

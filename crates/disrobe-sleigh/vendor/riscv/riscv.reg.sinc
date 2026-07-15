@@ -1,0 +1,245 @@
+
+define alignment=4;
+
+define space ram type=ram_space size=$(XLEN) default;
+define space register type=register_space size=4;
+
+define space csreg type=ram_space size=2 wordsize=$(XLEN); # really 12bit space, for 4096 registers
+
+define register offset=0x100 size=$(CONTEXTLEN) [ CONTEXT ];
+
+define register offset=0x1000 size=$(XLEN) [ pc ];
+
+
+#  08-31  reserved
+#  05-07  frm
+#         000 - RNE - round to nearest, ties to even
+#         001 - RTZ - round towards zero
+#         010 - RDN - round down (towards -inf)
+#         011 - RUP - round up (towards +inf)
+#         100 - RMM - round to nearest, ties to max magnitude
+#         101 - invalid
+#         110 - invalid
+#         111 - DYN - in rm field, selects dynamic rounding mode
+#                     in rounding mode register, invalid
+#  04     NV - invalid operation
+#  03     DZ - divide by zero
+#  02     OF - overflow
+#  01     UF - underflow
+#  00     NX - inexact
+#define register offset=0x1008 size=4 [ fcsr ];
+
+#TODO  FIXME
+#TODO  This is really broken
+#NOTE  This is stolen from ppc_common, so it has something similar
+define register offset=0x1010 size=$(XLEN) [ RESERVE_ADDRESS ];
+define register offset=0x1018 size=1 [ RESERVE ];
+define register offset=0x101C size=1 [ RESERVE_LENGTH ];
+#TODO  FIXME
+
+#ATTN  RV32E is the same instruction-set encoding, but only defines x0-x15
+# x0  x1  x2  x3  x4  x5  x6  x7  x8  x9  x10 x11 x12 x13 x14 x15
+# z   ra  sp  gp  tp  t0  t1  t2  s0  s1  a0  a1  a2  a3  a4  a5
+# x16 x17 x18 x19 x20 x21 x22 x23 x24 x25 x26 x27 x28 x29 x30 x31
+# a6  a7  s2  s3  s4  s5  s6  s7  s8  s9  s10 s11 t3  t4  t5  t6
+# register numbers 0x1000-0x101f
+define register offset=0x2000 size=$(XLEN) [ zero ra sp  gp  tp t0 t1 t2
+       			    	      	     s0   s1 a0  a1  a2 a3 a4 a5
+				       	     a6   a7 s2  s3  s4 s5 s6 s7
+				       	     s8   s9 s10 s11 t3 t4 t5 t6 ];
+
+# register numbers 0x1020-0x103f
+define register offset=0x3000 size=$(FLEN) [ ft0 ft1 ft2  ft3  ft4 ft5 ft6  ft7
+       			      	       	     fs0 fs1 fa0  fa1  fa2 fa3 fa4  fa5
+				       	     fa6 fa7 fs2  fs3  fs4 fs5 fs6  fs7
+				       	     fs8 fs9 fs10 fs11 ft8 ft9 ft10 ft11 ];
+
+#TODO  fix
+@define VLEN "32"
+define register offset=0x4000 size=$(VLEN) [ v0  v1  v2  v3  v4  v5  v6  v7
+       			      		     v8  v9  v10 v11 v12 v13 v14 v15
+					     v16 v17 v18 v19 v20 v21 v22 v23
+					     v24 v25 v26 v27 v28 v29 v30 v31 ];
+
+  
+
+
+
+
+define context CONTEXT
+  reserved=(0,3)
+  MXL=(4,5)   # MXL - Machine XLEN  {1: 32, 2: 64, 3: 128}
+;
+
+
+define token instr (32)
+  op0001=(0,1)
+  op0006=(0,6)
+  op0204=(2,4)
+  op0506=(5,6)
+  op0707=(7,7)
+  op0711=(7,11)
+  r0711=(7,11)
+  fr0711=(7,11)
+  v0711=(7,11)
+  op0808=(8,8)
+  op0809=(8,9)
+  op0811=(8,11)
+  op0911=(9,11)
+  op1011=(10,11)
+  op1213=(12,13)
+  op1214=(12,14)
+  funct3=(12,14)
+  op1219=(12,19)
+  op1231=(12,31)
+  sop1231=(12,31) signed
+  op1414=(14,14)
+  op1516=(15,16)
+  op1519=(15,19)
+  sop1519=(15,19) signed
+  subf5=(15,19)
+  r1519=(15,19)
+  fr1519=(15,19)
+  v1519=(15,19)
+  op1527=(15,27)
+  op1531=(15,31)
+  op1719=(17,19)
+  op2020=(20,20)
+  op2022=(20,22)
+  succ=(20,23)
+  op2023=(20,23)
+  op2024=(20,24)
+  r2024=(20,24)
+  fr2024=(20,24)
+  v2024=(20,24)
+  op2025=(20,25)
+  op2026=(20,26)
+  csr_0=(20,27)
+  csr_1=(20,27)
+  csr_2=(20,27)
+  csr_3=(20,27)
+  csr_4=(20,27)
+  csr_50=(20,26)
+  csr_58=(20,25)
+  csr_5C=(20,25)
+  csr_60=(20,26)
+  csr_68=(20,25)
+  csr_6C=(20,25)
+  csr_70=(20,26)
+  csr_78=(20,24)
+  csr_7A=(20,23)
+  csr_7B=(20,23)
+  csr_7C=(20,25)
+  csr_8=(20,27)
+  csr_90=(20,26)
+  csr_98=(20,25)
+  csr_9C=(20,25)
+  csr_A0=(20,26)
+  csr_A8=(20,25)
+  csr_AC=(20,25)
+  csr_B0=(20,26)
+  csr_B8=(20,25)
+  csr_BC=(20,25)
+  csr_C0=(20,26)
+  csr_C8=(20,25)
+  csr_CC=(20,25)
+  csr_D0=(20,26)
+  csr_D8=(20,25)
+  csr_DC=(20,25)
+  csr_E0=(20,26)
+  csr_E8=(20,25)
+  csr_EC=(20,25)
+  csr_F0=(20,26)
+  csr_F8=(20,25)
+  csr_FC=(20,25)
+  op2030=(20,30)
+  op2031=(20,31)
+  sop2031=(20,31) signed
+  op2121=(21,21)
+  op2122=(21,22)
+  op2130=(21,30)
+  op2222=(22,22)
+  op2230=(22,30)
+  op2323=(23,23)
+  op2324=(23,24)
+  op2330=(23,30)
+  op2424=(24,24)
+  op2427=(24,27)
+  pred=(24,27)
+  op2525=(25,25)
+  op2526=(25,26)
+  op2527=(25,27)
+  op2529=(25,29)
+  op2530=(25,30)
+  op2531=(25,31)
+  sop2531=(25,31) signed
+  funct7=(25,31)
+  wd=(26,26)
+  op2626=(26,26)
+  op2627=(26,27)
+  op2631=(26,31)
+  op2731=(27,31)
+  amoop=(27,31)
+  funct5=(27,31)
+  op2727=(27,27)
+  r2731=(27,31)
+  fr2731=(27,31)
+  op2828=(28,28)
+  op2829=(28,29)
+  fm=(28,31)
+  op2931=(29,31)
+  op3030=(30,30)
+  op3031=(30,31)
+  op3131=(31,31)
+  sop3131=(31,31) signed
+;
+
+define token cinstr (16)
+  cop0001=(0,1)
+  cop0202=(2,2)
+  cop0203=(2,3)
+  cop0204=(2,4)
+  cr0204s=(2,4)
+  cfr0204s=(2,4)
+  cop0205=(2,5)
+  cop0206=(2,6)
+  cr0206=(2,6)
+  cfr0206=(2,6)
+  cop0212=(2,12)
+  cop0303=(3,3)
+  cop0304=(3,4)
+  cop0305=(3,5)
+  cop0404=(4,4)
+  cop0406=(4,6)
+  cop0505=(5,5)
+  cop0506=(5,6)
+  cop0512=(5,12)
+  cop0606=(6,6)
+  cop0707=(7,7)
+  cop0708=(7,8)
+  cop0709=(7,9)
+  cr0709s=(7,9)
+  cd0709s=(7,9)
+  cfr0709s=(7,9)
+  cop0710=(7,10)
+  cop0711=(7,11)
+  cr0711=(7,11)
+  cd0711NoSp=(7,11)
+  cd0711=(7,11)  
+  cfr0711=(7,11)
+  cop0712=(7,12)
+  cop0808=(8,8)
+  cop0909=(9,9)
+  cop0910=(9,10)
+  cop0912=(9,12)
+  cop1010=(10,10)
+  cop1011=(10,11)
+  cop1012=(10,12)
+  cop1111=(11,11)
+  cop1112=(11,12)
+  cop1212=(12,12)
+  scop1212=(12,12) signed
+  cop1315=(13,15)
+;
+
+

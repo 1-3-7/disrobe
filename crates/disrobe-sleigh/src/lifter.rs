@@ -12,6 +12,8 @@ use crate::vendor::preprocessed_aarch64_source;
 
 mod arm32;
 mod mips32;
+mod powerpc;
+mod riscv;
 
 static AARCH64_SPEC: OnceLock<Result<CompiledSpec, SleighError>> = OnceLock::new();
 
@@ -22,10 +24,18 @@ pub enum ArmMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RiscVWidth {
+    Rv32,
+    Rv64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Language {
     AArch64,
     Arm32(ArmMode),
     Mips32(crate::syntax::Endian),
+    PowerPc32Be,
+    RiscV(RiscVWidth),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +132,8 @@ pub fn decode_block_for_language(language: Language, bytes: &[u8], address: u64)
         }
         Language::Arm32(mode) => arm32::decode_block(bytes, address, mode),
         Language::Mips32(endian) => mips32::decode_block(bytes, address, endian),
+        Language::PowerPc32Be => powerpc::decode_block(bytes, address),
+        Language::RiscV(width) => riscv::decode_block(bytes, address, width),
     }
 }
 

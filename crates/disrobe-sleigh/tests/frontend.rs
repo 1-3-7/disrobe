@@ -7,7 +7,8 @@ use disrobe_sleigh::syntax::{
 };
 use disrobe_sleigh::vendor::{
     preprocessed_aarch64_source, preprocessed_arm32_source, preprocessed_mips32be_source,
-    preprocessed_mips32le_source,
+    preprocessed_mips32le_source, preprocessed_powerpc32be_source, preprocessed_riscv32_source,
+    preprocessed_riscv64_source,
 };
 
 #[test]
@@ -162,11 +163,64 @@ fn parses_vendored_mips32_specs_in_both_byte_orders() {
 }
 
 #[test]
+fn parses_vendored_riscv_and_powerpc_specs() {
+    for (source_result, endian, register_name, register_size, alignment, mnemonics) in [
+        (
+            preprocessed_riscv32_source(),
+            Endian::Little,
+            "ra",
+            4,
+            4,
+            ["addi", "lw", "jal", "mul"],
+        ),
+        (
+            preprocessed_riscv64_source(),
+            Endian::Little,
+            "ra",
+            8,
+            4,
+            ["addi", "ld", "jal", "mul"],
+        ),
+        (
+            preprocessed_powerpc32be_source(),
+            Endian::Big,
+            "r0",
+            4,
+            2,
+            ["add", "cmp", "lwz", "blr"],
+        ),
+    ] {
+        assert!(source_result.is_ok(), "{source_result:?}");
+        let parsed: Result<SleighSpec, SleighError> = source_result
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(parse_spec);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(spec) = parsed else {
+            continue;
+        };
+        assert_eq!(spec.endian, Some(endian));
+        assert_eq!(spec.alignment, Some(alignment));
+        assert!(spec.registers.iter().any(|register| {
+            register.name == register_name && register.size_bytes == register_size
+        }));
+        for mnemonic in mnemonics {
+            assert!(spec.constructors.iter().any(|constructor| {
+                constructor.table == "instruction" && constructor.mnemonic == mnemonic
+            }));
+        }
+    }
+}
+
+#[test]
 fn compiles_vendored_multiarch_decision_trees() {
     for source_result in [
         preprocessed_arm32_source(),
         preprocessed_mips32le_source(),
         preprocessed_mips32be_source(),
+        preprocessed_riscv32_source(),
+        preprocessed_riscv64_source(),
+        preprocessed_powerpc32be_source(),
     ] {
         assert!(source_result.is_ok(), "{source_result:?}");
         let parsed: Result<SleighSpec, SleighError> = source_result

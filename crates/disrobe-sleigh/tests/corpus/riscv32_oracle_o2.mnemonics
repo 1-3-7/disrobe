@@ -1,0 +1,11 @@
+lw
+add
+sub
+xor
+sw
+add
+ret
+mul
+ret
+divu
+ret
