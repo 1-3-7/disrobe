@@ -136,15 +136,10 @@ pub fn recover_raw_marshal(
 }
 
 pub fn synthesize_pyc(marshal_bytes: &[u8], major: u8, minor: u8) -> Result<Vec<u8>> {
-    let magic: u32 = magic_for(PyVersion { major, minor })
+    let version: PyVersion = PyVersion::new(major, minor);
+    let magic: u32 = magic_for(version)
         .ok_or_else(|| Error::UnknownPycMagic((u32::from(major) << 8) | u32::from(minor)))?;
-    let header_len: usize = if (major, minor) >= (3, 7) {
-        16
-    } else if (major, minor) >= (3, 3) {
-        12
-    } else {
-        8
-    };
+    let header_len: usize = version.pyc_header_len();
     let mut out: Vec<u8> = Vec::with_capacity(header_len + marshal_bytes.len());
     out.extend_from_slice(&magic.to_le_bytes());
     out.extend(std::iter::repeat_n(0u8, header_len - 4));
