@@ -639,6 +639,13 @@ impl<'a> Demangler<'a> {
     }
 
     fn try_demangle_type_prefixed_function_annotation(&mut self) -> Option<NodeRef> {
+        if !self
+            .src
+            .get(self.pos..)
+            .is_some_and(|rest: &[u8]| rest.windows(2).any(|w: &[u8]| w == b"Yc" || w == b"YK"))
+        {
+            return None;
+        }
         let cp: Checkpoint = self.checkpoint();
         let ty: NodeRef = self.try_demangle_type()?;
         if self.peek() != Some(b'Y') {
@@ -2168,14 +2175,19 @@ impl<'a> Demangler<'a> {
     }
 
     fn pack_expansion_ahead(&mut self) -> bool {
+        if !self
+            .src
+            .get(self.pos..)
+            .is_some_and(|rest: &[u8]| rest.windows(2).any(|w: &[u8]| w == b"Qp"))
+        {
+            return false;
+        }
         let cp: Checkpoint = self.checkpoint();
-        let saved_budget: usize = self.node_budget;
         let saved_flags: (bool, bool, bool) = self.suppress_flags();
         let ahead: bool = self.demangle_type().is_some()
             && self.peek() == Some(b'Q')
             && self.peek_at(1) == Some(b'p');
         self.restore(cp);
-        self.node_budget = saved_budget;
         self.restore_suppress_flags(saved_flags);
         ahead
     }
@@ -4848,5 +4860,21 @@ mod tests {
             "method descriptor for Foundation.CustomNSError.errorUserInfo.getter : \
              [Swift.String : Any]"
         );
+    }
+
+    #[test]
+    fn demangle_wide_generic_tuple_init_matches_reference_and_stays_bounded() {
+        for width in [16_usize, 32, 64] {
+            let filler: String = "x".repeat(width - 1);
+            let mangled: String = format!("$ss6SIMD{width}VyAByxGx_{filler}tcfC");
+            let joined: String = vec!["A"; width].join(", ");
+            let expected: String =
+                format!("Swift.SIMD{width}.init({joined}) -> Swift.SIMD{width}<A>");
+            assert_eq!(
+                demangle(&mangled).expect("wide generic tuple init must demangle"),
+                expected,
+                "SIMD{width} initializer must recover every generic-parameter element"
+            );
+        }
     }
 }
