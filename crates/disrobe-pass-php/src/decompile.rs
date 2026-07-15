@@ -887,6 +887,7 @@ const PREC_MUL: u8 = 70;
 const PREC_ADD: u8 = 60;
 const PREC_SHIFT: u8 = 55;
 const PREC_CONCAT: u8 = 52;
+const PREC_REL: u8 = 51;
 const PREC_CMP: u8 = 50;
 const PREC_BITAND: u8 = 45;
 const PREC_BITXOR: u8 = 44;
@@ -1766,8 +1767,8 @@ const fn binary_symbol(opcode: u8) -> (&'static str, u8) {
         op::IS_NOT_IDENTICAL => ("!==", PREC_CMP),
         op::IS_EQUAL => ("==", PREC_CMP),
         op::IS_NOT_EQUAL => ("!=", PREC_CMP),
-        op::IS_SMALLER => ("<", PREC_CMP),
-        op::IS_SMALLER_OR_EQUAL => ("<=", PREC_CMP),
+        op::IS_SMALLER => ("<", PREC_REL),
+        op::IS_SMALLER_OR_EQUAL => ("<=", PREC_REL),
         op::COALESCE => ("??", PREC_COALESCE),
         _ => ("/* op */", PREC_ATOM),
     }
