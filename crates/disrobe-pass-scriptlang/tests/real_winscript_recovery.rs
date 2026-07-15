@@ -49,11 +49,13 @@ fn real_char_code_join_rebuild() {
     let cmd: String = format!("iex (([char[]]({codes})) -join '')");
     let r: WinScriptRecovery = rec(&cmd);
     assert!(r.techniques.contains(&WinTechnique::CharCodeJoin));
+    let escaped: String = REAL_IEX.replace('\'', "''");
     assert!(
-        r.recovered_text.contains(REAL_IEX),
+        r.recovered_text.contains(&escaped),
         "recovered: {}",
         r.recovered_text
     );
+    assert!(r.recovered_text.replace("''", "'").contains(REAL_IEX));
 }
 
 #[test]

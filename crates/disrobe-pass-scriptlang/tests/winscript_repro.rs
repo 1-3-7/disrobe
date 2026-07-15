@@ -27,3 +27,15 @@ fn format_operator_repeated_rewrite_shrinking_buffer() {
     assert!(out.contains("'CD'"));
     assert!(out.contains("'xyz'"));
 }
+
+#[test]
+fn rebuilt_literals_double_embedded_single_quotes() {
+    let concat: Option<String> = winscript::rebuild_string_concat("'a''b' + 'c'");
+    assert_eq!(concat.as_deref(), Some("'a''bc'"));
+
+    let char_codes: Option<String> = winscript::rebuild_char_codes("String.fromCharCode(39,97)");
+    assert_eq!(char_codes.as_deref(), Some("'''a'"));
+
+    let char_builder: Option<String> = winscript::rebuild_char_builder("Chr(39) & Chr(97)");
+    assert_eq!(char_builder.as_deref(), Some("'''a'"));
+}

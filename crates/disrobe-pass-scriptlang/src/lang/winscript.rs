@@ -728,6 +728,19 @@ fn first_int_literal(tail: &str) -> Option<u8> {
         .and_then(|v: u16| u8::try_from(v).ok())
 }
 
+fn emit_single_quoted(inner: &str) -> String {
+    let mut out: String = String::with_capacity(inner.len() + 2);
+    out.push('\'');
+    for c in inner.chars() {
+        if c == '\'' {
+            out.push('\'');
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
 #[must_use]
 pub fn rebuild_string_concat(text: &str) -> Option<String> {
     let mut out: String = String::with_capacity(text.len());
@@ -759,9 +772,7 @@ pub fn rebuild_string_concat(text: &str) -> Option<String> {
                 cursor = next_end;
                 changed = true;
             }
-            out.push('\'');
-            out.push_str(&combined);
-            out.push('\'');
+            out.push_str(&emit_single_quoted(&combined));
             i = cursor;
         } else {
             out.push(c as char);
@@ -847,9 +858,7 @@ pub fn rebuild_format_operator(text: &str) -> Option<String> {
         };
         let mut rebuilt: String = String::with_capacity(result.len());
         rebuilt.push_str(prefix);
-        rebuilt.push('\'');
-        rebuilt.push_str(&rendered);
-        rebuilt.push('\'');
+        rebuilt.push_str(&emit_single_quoted(&rendered));
         rebuilt.push_str(suffix);
         result = rebuilt;
         lower = result.to_ascii_lowercase();
@@ -1017,9 +1026,7 @@ pub fn rebuild_replace(text: &str) -> Option<String> {
                 applied = true;
             }
             if applied {
-                result.push('\'');
-                result.push_str(&subject);
-                result.push('\'');
+                result.push_str(&emit_single_quoted(&subject));
                 changed = true;
                 i = cursor;
                 continue;
@@ -1114,9 +1121,7 @@ pub fn rebuild_string_reverse(text: &str) -> Option<String> {
             && let Some(end) = match_reverse_suffix(bytes, &lower, after)
         {
             let reversed: String = literal.chars().rev().collect();
-            result.push('\'');
-            result.push_str(&reversed);
-            result.push('\'');
+            result.push_str(&emit_single_quoted(&reversed));
             changed = true;
             i = end;
             continue;
@@ -1192,9 +1197,7 @@ pub fn rebuild_char_builder(text: &str) -> Option<String> {
     let mut changed: bool = false;
     while i < bytes.len() {
         if let Some((decoded, end)) = match_char_builder_run(bytes, &lower, i) {
-            result.push('\'');
-            result.push_str(&decoded);
-            result.push('\'');
+            result.push_str(&emit_single_quoted(&decoded));
             i = end;
             changed = true;
         } else {
@@ -1436,9 +1439,7 @@ pub fn rebuild_char_codes(text: &str) -> Option<String> {
     let mut changed: bool = false;
     while i < bytes.len() {
         if let Some((decoded, end)) = match_char_code_run(text, i) {
-            result.push('\'');
-            result.push_str(&decoded);
-            result.push('\'');
+            result.push_str(&emit_single_quoted(&decoded));
             i = end;
             changed = true;
         } else {
