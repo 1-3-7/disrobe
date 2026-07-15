@@ -410,16 +410,7 @@ fn lift_binary(
                     input: arithmetic_output,
                 });
             }
-            ops.push(PcodeOp::CallOther {
-                name: "powerpc_division_edge_cases".to_owned(),
-                output: None,
-                inputs: vec![left_snapshot, right_snapshot, destination],
-            });
-            return Some(PowerPcLifted {
-                mnemonic: mnemonic.to_owned(),
-                ops,
-                status: DecodeStatus::CallOther,
-            });
+            return Some(supported(mnemonic, ops));
         }
         _ => return None,
     }

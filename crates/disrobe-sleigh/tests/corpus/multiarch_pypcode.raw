@@ -297,6 +297,18 @@ unique[d100:8] = zext(s2)
 unique[d300:8] = zext(s3)
 unique[d500:8] = unique[d100:8] * unique[d300:8]
 s1 = SUBPIECE unique[d500:8], 0x4
+riscv32 60 33ca6a03 div
+IMARK ram[60:4]
+s4 = s5 s/ s6
+riscv32 64 b35b9c03 divu
+IMARK ram[64:4]
+s7 = s8 / s9
+riscv32 68 33edcd03 rem
+IMARK ram[68:4]
+s10 = s11 s% t3
+riscv32 6c b37eff03 remu
+IMARK ram[6c:4]
+t4 = t5 % t6
 riscv32 70 13000000 nop
 IMARK ram[70:4]
 unique[3500:1] = 0x0
@@ -427,6 +439,18 @@ unique[d600:16] = zext(s2)
 unique[d800:16] = zext(s3)
 unique[da00:16] = unique[d600:16] * unique[d800:16]
 s1 = SUBPIECE unique[da00:16], 0x8
+riscv64 68 33ca6a03 div
+IMARK ram[68:4]
+s4 = s5 s/ s6
+riscv64 6c b35b9c03 divu
+IMARK ram[6c:4]
+s7 = s8 / s9
+riscv64 70 33edcd03 rem
+IMARK ram[70:4]
+s10 = s11 s% t3
+riscv64 74 b37eff03 remu
+IMARK ram[74:4]
+t4 = t5 % t6
 riscv64 78 13000000 nop
 IMARK ram[78:4]
 unique[3a00:1] = 0x0
@@ -811,6 +835,292 @@ a7 = unique[1e100:8]
 unique[1e200:1] = unique[1df00:8] s<= unique[1e100:8]
 if (unique[1e200:1]) goto ram[30:8]
 *[ram]unique[1de00:8] = unique[1df00:8]
+RISCV:LE:32:default
+riscv32fd 0 0720c500 flw
+IMARK ram[0:4]
+unique[b00:4] = 0xc
+unique[10100:4] = unique[b00:4] + a0
+unique[10200:4] = *[ram]unique[10100:4]
+ft0 = zext(unique[10200:4])
+riscv32fd 4 27a815fe fsw
+IMARK ram[4:4]
+unique[c00:4] = 0xfffffff0
+unique[500:4] = ft1
+unique[14800:4] = unique[c00:4] + a1
+*[ram]unique[14800:4] = unique[500:4]
+riscv32fd 8 53814100 fadd.s
+IMARK ram[8:4]
+unique[1200:1] = 0x0
+unique[500:4] = ft4
+unique[400:4] = ft3
+unique[ef00:4] = unique[400:4] f+ unique[500:4]
+ft2 = zext(unique[ef00:4])
+riscv32fd c d3127308 fsub.s
+IMARK ram[c:4]
+unique[1300:1] = 0x1
+unique[500:4] = ft7
+unique[400:4] = ft6
+unique[14600:4] = unique[400:4] f- unique[500:4]
+ft5 = zext(unique[14600:4])
+riscv32fd 10 53a5c510 fmul.s
+IMARK ram[10:4]
+unique[1400:1] = 0x2
+unique[500:4] = fa2
+unique[400:4] = fa1
+unique[11a00:4] = unique[400:4] f* unique[500:4]
+fa0 = zext(unique[11a00:4])
+riscv32fd 14 d336f718 fdiv.s
+IMARK ram[14:4]
+unique[1500:1] = 0x3
+unique[500:4] = fa5
+unique[400:4] = fa4
+unique[f900:4] = unique[400:4] f/ unique[500:4]
+fa3 = zext(unique[f900:4])
+riscv32fd 18 530005f0 fmv.w.x
+IMARK ram[18:4]
+unique[100:4] = a0
+ft0 = zext(unique[100:4])
+riscv32fd 20 530106d0 fcvt.s.w
+IMARK ram[20:4]
+unique[1200:1] = 0x0
+unique[100:4] = a2
+unique[f100:4] = int2float(unique[100:4])
+ft2 = zext(unique[f100:4])
+riscv32fd 2c 5327b5a0 feq.s
+IMARK ram[2c:4]
+unique[500:4] = fa1
+unique[400:4] = fa0
+unique[fa00:1] = unique[400:4] f== unique[500:4]
+a4 = zext(unique[fa00:1])
+riscv32fd 30 d317d6a0 flt.s
+IMARK ram[30:4]
+unique[500:4] = fa3
+unique[400:4] = fa2
+unique[fe00:1] = unique[400:4] f< unique[500:4]
+a5 = zext(unique[fe00:1])
+riscv32fd 34 5308f7a0 fle.s
+IMARK ram[34:4]
+unique[500:4] = fa5
+unique[400:4] = fa4
+unique[fc00:1] = unique[400:4] f<= unique[500:4]
+a6 = zext(unique[fc00:1])
+riscv32fd 38 53880858 fsqrt.s
+IMARK ram[38:4]
+unique[1200:1] = 0x0
+unique[400:4] = fa7
+unique[14400:4] = sqrt(unique[400:4])
+fa6 = zext(unique[14400:4])
+riscv32fd 3c 073e8601 fld
+IMARK ram[3c:4]
+unique[b00:4] = 0x18
+unique[15b00:4] = unique[b00:4] + a2
+ft8 = *[ram]unique[15b00:4]
+riscv32fd 40 27b0d6ff fsd
+IMARK ram[40:4]
+unique[c00:4] = 0xffffffe0
+unique[800:8] = ft9
+unique[17d00:4] = unique[c00:4] + a3
+*[ram]unique[17d00:4] = unique[800:8]
+riscv32fd 44 538f8f02 fadd.d
+IMARK ram[44:4]
+unique[1200:1] = 0x0
+unique[800:8] = fs0
+unique[700:8] = ft11
+ft10 = unique[700:8] f+ unique[800:8]
+riscv32fd 48 d314b50a fsub.d
+IMARK ram[48:4]
+unique[1300:1] = 0x1
+unique[800:8] = fa1
+unique[700:8] = fa0
+fs1 = unique[700:8] f- unique[800:8]
+riscv32fd 4c 53a6e612 fmul.d
+IMARK ram[4c:4]
+unique[1400:1] = 0x2
+unique[800:8] = fa4
+unique[700:8] = fa3
+fa2 = unique[700:8] f* unique[800:8]
+riscv32fd 50 d337181b fdiv.d
+IMARK ram[50:4]
+unique[1500:1] = 0x3
+unique[800:8] = fa7
+unique[700:8] = fa6
+fa5 = unique[700:8] f/ unique[800:8]
+riscv32fd 54 53890942 fcvt.d.s
+IMARK ram[54:4]
+unique[400:4] = fs3
+fs2 = float2float(unique[400:4])
+riscv32fd 58 538a1a40 fcvt.s.d
+IMARK ram[58:4]
+unique[1200:1] = 0x0
+unique[700:8] = fs5
+unique[15300:4] = float2float(unique[700:8])
+fs4 = zext(unique[15300:4])
+riscv32fd 60 d328bda3 feq.d
+IMARK ram[60:4]
+unique[800:8] = fs11
+unique[700:8] = fs10
+unique[15800:1] = unique[700:8] f== unique[800:8]
+a7 = zext(unique[15800:1])
+riscv32fd 64 5314dea3 flt.d
+IMARK ram[64:4]
+unique[800:8] = ft9
+unique[700:8] = ft8
+unique[15f00:1] = unique[700:8] f< unique[800:8]
+s0 = zext(unique[15f00:1])
+riscv32fd 68 d304ffa3 fle.d
+IMARK ram[68:4]
+unique[800:8] = ft11
+unique[700:8] = ft10
+unique[15d00:1] = unique[700:8] f<= unique[800:8]
+s1 = zext(unique[15d00:1])
+riscv32fd 6c 5385055a fsqrt.d
+IMARK ram[6c:4]
+unique[1200:1] = 0x0
+unique[700:8] = fa1
+fa0 = sqrt(unique[700:8])
+RISCV:LE:64:default
+riscv64fd 0 0720c500 flw
+IMARK ram[0:4]
+unique[f00:8] = 0xc
+unique[10700:8] = unique[f00:8] + a0
+unique[10800:4] = *[ram]unique[10700:8]
+ft0 = zext(unique[10800:4])
+riscv64fd 4 27a815fe fsw
+IMARK ram[4:4]
+unique[1000:8] = 0xfffffffffffffff0
+unique[700:4] = ft1
+unique[14e00:8] = unique[1000:8] + a1
+*[ram]unique[14e00:8] = unique[700:4]
+riscv64fd 8 53814100 fadd.s
+IMARK ram[8:4]
+unique[1700:1] = 0x0
+unique[700:4] = ft4
+unique[600:4] = ft3
+unique[f500:4] = unique[600:4] f+ unique[700:4]
+ft2 = zext(unique[f500:4])
+riscv64fd c d3127308 fsub.s
+IMARK ram[c:4]
+unique[1800:1] = 0x1
+unique[700:4] = ft7
+unique[600:4] = ft6
+unique[14c00:4] = unique[600:4] f- unique[700:4]
+ft5 = zext(unique[14c00:4])
+riscv64fd 10 53a5c510 fmul.s
+IMARK ram[10:4]
+unique[1900:1] = 0x2
+unique[700:4] = fa2
+unique[600:4] = fa1
+unique[12000:4] = unique[600:4] f* unique[700:4]
+fa0 = zext(unique[12000:4])
+riscv64fd 14 d336f718 fdiv.s
+IMARK ram[14:4]
+unique[1a00:1] = 0x3
+unique[700:4] = fa5
+unique[600:4] = fa4
+unique[ff00:4] = unique[600:4] f/ unique[700:4]
+fa3 = zext(unique[ff00:4])
+riscv64fd 18 530005f0 fmv.w.x
+IMARK ram[18:4]
+unique[100:4] = a0
+ft0 = zext(unique[100:4])
+riscv64fd 20 530106d0 fcvt.s.w
+IMARK ram[20:4]
+unique[1700:1] = 0x0
+unique[100:4] = a2
+unique[f700:4] = int2float(unique[100:4])
+ft2 = zext(unique[f700:4])
+riscv64fd 2c 5327b5a0 feq.s
+IMARK ram[2c:4]
+unique[700:4] = fa1
+unique[600:4] = fa0
+unique[10000:1] = unique[600:4] f== unique[700:4]
+a4 = zext(unique[10000:1])
+riscv64fd 30 d317d6a0 flt.s
+IMARK ram[30:4]
+unique[700:4] = fa3
+unique[600:4] = fa2
+unique[10400:1] = unique[600:4] f< unique[700:4]
+a5 = zext(unique[10400:1])
+riscv64fd 34 5308f7a0 fle.s
+IMARK ram[34:4]
+unique[700:4] = fa5
+unique[600:4] = fa4
+unique[10200:1] = unique[600:4] f<= unique[700:4]
+a6 = zext(unique[10200:1])
+riscv64fd 38 53880858 fsqrt.s
+IMARK ram[38:4]
+unique[1700:1] = 0x0
+unique[600:4] = fa7
+unique[14a00:4] = sqrt(unique[600:4])
+fa6 = zext(unique[14a00:4])
+riscv64fd 3c 073e8601 fld
+IMARK ram[3c:4]
+unique[f00:8] = 0x18
+unique[16100:8] = unique[f00:8] + a2
+ft8 = *[ram]unique[16100:8]
+riscv64fd 40 27b0d6ff fsd
+IMARK ram[40:4]
+unique[1000:8] = 0xffffffffffffffe0
+unique[a00:8] = ft9
+unique[18300:8] = unique[1000:8] + a3
+*[ram]unique[18300:8] = unique[a00:8]
+riscv64fd 44 538f8f02 fadd.d
+IMARK ram[44:4]
+unique[1700:1] = 0x0
+unique[a00:8] = fs0
+unique[900:8] = ft11
+ft10 = unique[900:8] f+ unique[a00:8]
+riscv64fd 48 d314b50a fsub.d
+IMARK ram[48:4]
+unique[1800:1] = 0x1
+unique[a00:8] = fa1
+unique[900:8] = fa0
+fs1 = unique[900:8] f- unique[a00:8]
+riscv64fd 4c 53a6e612 fmul.d
+IMARK ram[4c:4]
+unique[1900:1] = 0x2
+unique[a00:8] = fa4
+unique[900:8] = fa3
+fa2 = unique[900:8] f* unique[a00:8]
+riscv64fd 50 d337181b fdiv.d
+IMARK ram[50:4]
+unique[1a00:1] = 0x3
+unique[a00:8] = fa7
+unique[900:8] = fa6
+fa5 = unique[900:8] f/ unique[a00:8]
+riscv64fd 54 53890942 fcvt.d.s
+IMARK ram[54:4]
+unique[600:4] = fs3
+fs2 = float2float(unique[600:4])
+riscv64fd 58 538a1a40 fcvt.s.d
+IMARK ram[58:4]
+unique[1700:1] = 0x0
+unique[900:8] = fs5
+unique[15900:4] = float2float(unique[900:8])
+fs4 = zext(unique[15900:4])
+riscv64fd 60 d328bda3 feq.d
+IMARK ram[60:4]
+unique[a00:8] = fs11
+unique[900:8] = fs10
+unique[15e00:1] = unique[900:8] f== unique[a00:8]
+a7 = zext(unique[15e00:1])
+riscv64fd 64 5314dea3 flt.d
+IMARK ram[64:4]
+unique[a00:8] = ft9
+unique[900:8] = ft8
+unique[16500:1] = unique[900:8] f< unique[a00:8]
+s0 = zext(unique[16500:1])
+riscv64fd 68 d304ffa3 fle.d
+IMARK ram[68:4]
+unique[a00:8] = ft11
+unique[900:8] = ft10
+unique[16300:1] = unique[900:8] f<= unique[a00:8]
+s1 = zext(unique[16300:1])
+riscv64fd 6c 5385055a fsqrt.d
+IMARK ram[6c:4]
+unique[1700:1] = 0x0
+unique[900:8] = fa1
+fa0 = sqrt(unique[900:8])
 PowerPC:BE:32:default
 powerpc32 0 7c642a14 add
 IMARK ram[0:4]

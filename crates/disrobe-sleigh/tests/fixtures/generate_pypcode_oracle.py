@@ -203,6 +203,13 @@ def normalize(operations: list[object]) -> list[str]:
         "BOOL_AND": ("booland", True),
         "BOOL_OR": ("boolor", True),
         "BOOL_XOR": ("boolxor", True),
+        "FLOAT_ADD": ("fadd", True),
+        "FLOAT_DIV": ("fdiv", False),
+        "FLOAT_EQUAL": ("feq", True),
+        "FLOAT_LESS": ("flt", False),
+        "FLOAT_LESSEQUAL": ("fle", False),
+        "FLOAT_MULT": ("fmul", True),
+        "FLOAT_SUB": ("fsub", False),
         "INT_ADD": ("add", True),
         "INT_AND": ("and", True),
         "INT_CARRY": ("carry", True),
@@ -226,9 +233,13 @@ def normalize(operations: list[object]) -> list[str]:
     }
     unary_names = {
         "BOOL_NEGATE": "boolnot",
+        "FLOAT_FLOAT2FLOAT": "float2float",
+        "FLOAT_SQRT": "fsqrt",
+        "FLOAT_INT2FLOAT": "int2float",
         "INT_NEGATE": "not",
         "INT_SEXT": "sext",
         "INT_ZEXT": "zext",
+        "FLOAT_TRUNC": "trunc",
     }
     for operation in operations:
         name = operation.opcode.name

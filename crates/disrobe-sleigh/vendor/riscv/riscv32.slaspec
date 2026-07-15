@@ -14,3 +14,7 @@ define endian=little;
 @include "riscv.rv32i.sinc"
 @include "riscv.rv32a.sinc"
 @include "riscv.rv32m.sinc"
+@include "riscv.rv32f.sinc"
+@include "riscv.rv32d.sinc"
+@include "riscv.csr.sinc"
+@include "riscv.zi.sinc"

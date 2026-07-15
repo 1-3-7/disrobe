@@ -50,21 +50,30 @@ MIPS32 big-endian and little-endian support:
 
 MIPS trapping `add` and `sub` emit the arithmetic effect plus `CALLOTHER mips_overflow_trap`. `div` and `divu` emit quotient and remainder effects plus `CALLOTHER mips_division_edge_cases` because divide-by-zero and signed overflow behavior cannot be represented by the current straight-line P-code container. These forms are reported separately from fully supported forms.
 
-RISC-V supports RV32 and RV64 register widths. `Language::RiscV` selects the I, M, and A tables with four-byte instruction alignment. `Language::RiscVCompressed` adds the C table and uses two-byte instruction alignment:
+RISC-V supports RV32 and RV64 register widths. `Language::RiscV` selects the I, M, A, F, D, Zicsr, and Zifencei tables with four-byte instruction alignment. `Language::RiscVCompressed` adds the C table and uses two-byte instruction alignment:
 
 - `addi`, `add`, `sub`, `and`, `or`, `xor`, `sll`, `srl`, `sra`, and `slt`
 - `lw`, `sw`, `lui`, and `auipc`, plus RV64 `ld` and `sd`; RV64 `lw` sign-extends its 32-bit load
 - `beq`, `bne`, `blt`, `bge`, `jal`, and `jalr`
 - `mul`, `mulh`, `mulhsu`, `mulhu`, `div`, `divu`, `rem`, and `remu`
+- `flw`, `fsw`, `fld`, and `fsd`; single-precision loads and results are NaN-boxed in the eight-byte floating-point register file
+- `fadd`, `fsub`, `fmul`, `fdiv`, `fsqrt`, `feq`, `flt`, and `fle` in single and double precision
+- signed integer/float `fcvt.s.w` and `fcvt.w.s`, cross-format `fcvt.d.s` and `fcvt.s.d`, plus `fmv.w.x`, `fmv.x.w`, and RV64 `fmv.d.x` and `fmv.x.d`
+- `fmadd.s` and `fmadd.d`
+- `csrrw`, `csrrs`, `csrrc`, their three immediate forms, `fence`, and `fence.i`
 - the selected `nop` and `ret` constructor aliases
-- two-byte `addi`, `li`, `lw`, `sw`, `j`, RV32 `jal`, `jr`, `jalr`, `beqz`, `bnez`, `mv`, `add`, `nop`, `addi4spn`, `lwsp`, and `swsp` encodings, plus RV64 `ld` and `sd`
+- two-byte `addi`, `li`, `lw`, `sw`, `j`, RV32 `jal`, `jr`, `jalr`, `beqz`, `bnez`, `mv`, `add`, `nop`, `addi4spn`, `lwsp`, and `swsp` encodings, plus RV64 `ld` and `sd` and the matched compressed F/D memory forms
 - compressed `sub`, `and`, `or`, and `xor`; the GNU assembly matrices exercise all four, while the `-Os` compiler corpus emits `sub` and `xor`
 
-RISC-V division and remainder forms emit their arithmetic effect plus `CALLOTHER riscv_division_edge_cases`. This preserves the visible quotient or remainder while marking the divide-by-zero and signed-overflow cases that need control-sensitive lowering.
+RISC-V division and remainder are total straight-line P-code. A guarded nonzero divisor reaches `INT_SDIV`, `INT_UDIV`, `INT_SREM`, or `INT_UREM`; mask selection then supplies the specified all-ones quotient or original-dividend remainder for a zero divisor. Signed minimum divided by negative one yields the dividend, and its remainder is zero. No primitive divide receives a zero divisor or the signed-overflow pair.
+
+Floating-point arithmetic emits the matching `FLOAT_ADD`, `FLOAT_SUB`, `FLOAT_MULT`, `FLOAT_DIV`, `FLOAT_SQRT`, comparison, or conversion primitive into a candidate temporary. Versioned `riscv_fp_binary_v1`, `riscv_fp_unary_v1`, `riscv_fp_compare_v1`, and `riscv_fp_convert_v1` contracts produce the architectural result and own RISC-V rounding state, canonical-NaN behavior, and accrued exception flags. Fused multiply-add uses `riscv_fp_fused_v1` directly because a multiply followed by an add would round twice. These arithmetic, comparison, conversion, and fused forms have `DecodeStatus::CallOther`. The listed floating-point loads, stores, and moves are fully supported. Single-precision computational inputs validate the upper 32 bits and substitute canonical quiet NaN for an invalid box; single-precision destinations use `PIECE` with an all-ones upper half. Unsigned integer conversions, RV64 integer conversions, other fused variants, and other matched floating-point constructors remain explicit unsupported `CALLOTHER` output.
+
+`riscv_csr_v1` owns CSR access checks, traps, WARL/WPRI behavior, and side effects. Its optional output is `rd`; its five inputs are the CSR index, source, write/set/clear operation code, read-enabled bit, and write-enabled bit. The enable bits implement the Zicsr zero-register and zero-immediate suppression rules. `riscv_fence_v1` takes fence kind, predecessor mask, successor mask, and mode. Both contracts have `DecodeStatus::CallOther`.
 
 The A extension recognizes `lr.w`, `sc.w`, `amoswap`, `amoadd`, `amoand`, `amoor`, `amoxor`, `amomin`, and `amomax` word forms, plus their doubleword RV64 forms. Every atomic constructor reports `CALLOTHER riscv_atomic_memory_v1`. Its optional output is the destination register; `rd=x0` omits it. Its six inputs are the address, operand, operation code, access width, acquire bit, and release bit. The `lr` operand is zero and ignored. Operation codes 0 through 8 identify `lr`, `sc`, `amoswap`, `amoadd`, `amoand`, `amoor`, `amoxor`, `amomin`, and `amomax` in that order. `lr` and AMO outputs are the prior memory value, with RV64 word results sign-extended to XLEN. The `sc` output is its success or failure status. The call is an opaque memory, reservation, and ordering boundary, so downstream lowering must not replace it with sequential loads and stores.
 
-The base profiles retain four-byte instruction alignment. Dynamic `jalr` and `ret` targets keep their aligned-path effects plus `CALLOTHER riscv_instruction_address_alignment` until indirect-control lowering models the possible misalignment trap. The compressed profiles use two-byte instruction alignment. Their direct branches and `jal` accept targets on either two-byte boundary, and their `jr`, `jalr`, and `ret` effects clear target bit zero and are fully supported.
+The base profiles retain four-byte instruction alignment. `jalr` snapshots and masks its target before writing the return address, then emits `BRANCHIND`; `ret` emits `RETURN`. Dynamic base-profile targets keep these effects plus `CALLOTHER riscv_instruction_address_alignment` until indirect-control lowering models the possible misalignment trap. The compressed profiles use two-byte instruction alignment. Their direct branches and `jal` accept targets on either two-byte boundary, and their `jr`, `jalr`, and `ret` effects clear target bit zero and are fully supported.
 
 PowerPC supports PPC32 big-endian scalar forms:
 
@@ -74,7 +83,7 @@ PowerPC supports PPC32 big-endian scalar forms:
 - direct `b` and `bl`, absolute `ba` and `bla`, fall-through `bl`, `blr`, the exercised unconditional `bclr` with nonzero BH, `bctr`, and conditional branches whose BO and BI fields select CR tests, CTR decrement tests, or both
 - the `ori r0,r0,0` `nop` form with its in-spec P-code effect
 
-PowerPC `divw` emits signed division plus `CALLOTHER powerpc_division_edge_cases`. Record, overflow-enable, and other matched constructors outside this boundary remain explicit unsupported output.
+PowerPC `divw` emits `INT_SDIV`; PPC64 sign-extends its 32-bit word result to the eight-byte destination. The Power ISA leaves the destination undefined for a zero divisor or signed overflow, and the pinned plain Ghidra constructor likewise emits direct signed division, so no result is claimed for those inputs. Record, overflow-enable, and other matched constructors outside this boundary remain explicit unsupported output.
 
 PPC64 big-endian extends the same decoder and BO/BI branch path with:
 
@@ -83,7 +92,7 @@ PPC64 big-endian extends the same decoder and BO/BI branch path with:
 - the shared arithmetic, logical, word shift, word compare, byte and word memory, immediate, `mullw`, `divw`, and `nop` forms cross-checked at 64-bit register width
 - the PPC32 direct, indirect, CR-tested, and CTR-tested branch forms at 64-bit addresses
 
-PowerPC `divd` emits signed division plus `CALLOTHER powerpc_division_edge_cases` for the same zero-divisor and signed-overflow boundary as `divw`.
+PowerPC `divd` emits eight-byte `INT_SDIV` with the same undefined-result boundary.
 
 A matched constructor outside the listed boundary emits a source pcodeop `CALLOTHER` when available or a mnemonic-specific unsupported `CALLOTHER`. Truncated, ambiguous, unmatched, and specification-error states remain distinct.
 
@@ -103,23 +112,26 @@ The ARM32 and MIPS corpora are produced by real Android NDK r16b GNU cross-toolc
 
 The RISC-V corpora are produced by GCC 16.1.0 and GNU Binutils 2.46.1. The PPC32 big-endian corpora are produced by PowerPC EABI GCC 4.9.0 and GNU Binutils 2.24. Each corpus is graded against the objdump from the same installed toolchain:
 
-- RV32IM assembly matrix: 31 of 31 instructions matched a constructor, 25 fully supported, 6 `CALLOTHER` (`jalr`, `div`, `divu`, `rem`, `remu`, `ret`)
-- RV64IM assembly matrix: 33 of 33 instructions matched a constructor, 27 fully supported, 6 `CALLOTHER` (`jalr`, `div`, `divu`, `rem`, `remu`, `ret`)
+- RV32IM assembly matrix: 31 of 31 instructions matched a constructor, 29 fully supported, 2 alignment `CALLOTHER` forms (`jalr`, `ret`)
+- RV64IM assembly matrix: 33 of 33 instructions matched a constructor, 31 fully supported, 2 alignment `CALLOTHER` forms (`jalr`, `ret`)
 - RV32IMAC compressed matrix: 19 of 19 instructions matched a constructor, all 19 fully supported
 - RV64IMAC compressed matrix: 20 of 20 instructions matched a constructor, all 20 fully supported
 - RV32A atomic matrix: 10 of 10 instructions matched a constructor, all 10 reported through the atomic `CALLOTHER`
 - RV64A atomic matrix: 12 of 12 instructions matched a constructor, all 12 reported through the atomic `CALLOTHER`
-- PPC32 big-endian assembly matrix: 32 of 32 instructions matched a constructor, 31 fully supported, 1 `CALLOTHER` (`divw`)
-- PPC64 big-endian assembly matrix: 30 of 30 instructions matched a constructor, 28 fully supported, 2 `CALLOTHER` (`divw`, `divd`)
-- each RISC-V `-O2` C corpus: 11 of 11 instructions matched a constructor, 7 fully supported, 4 `CALLOTHER` (one `divu`, three `ret`)
-- each RISC-V compressed `-Os` C corpus: 11 of 11 instructions matched a constructor, 10 fully supported, 1 `CALLOTHER` (`divu`)
+- RV32FD/Zicsr/Zifencei assembly matrix: 37 of 37 instructions matched a constructor, 7 fully supported, 30 typed `CALLOTHER` forms
+- RV64FD/Zicsr/Zifencei assembly matrix: 37 of 37 instructions matched a constructor, 7 fully supported, 30 typed `CALLOTHER` forms
+- each `-march=rv32imafdc` or `-march=rv64imafdc` `-O2` C corpus: 21 of 21 instructions matched a constructor, 12 fully supported, 9 typed floating-point `CALLOTHER` forms
+- PPC32 big-endian assembly matrix: 32 of 32 instructions matched a constructor, all 32 reported `DecodeStatus::Supported`
+- PPC64 big-endian assembly matrix: 30 of 30 instructions matched a constructor, all 30 reported `DecodeStatus::Supported`
+- each RISC-V `-O2` C corpus: 11 of 11 instructions matched a constructor, 8 fully supported, 3 alignment `CALLOTHER` forms (`ret`)
+- each RISC-V compressed `-Os` C corpus: 11 of 11 instructions matched a constructor, all 11 fully supported
 - each RISC-V atomic `-O2` C corpus: 18 of 18 instructions matched a constructor, 12 fully supported, 5 atomic `CALLOTHER` forms, and 1 explicit unsupported `seqz` alias; 6 instructions contain a `CALLOTHER` including that unsupported record
-- PPC32 big-endian `-O2` C corpus: 11 of 11 instructions matched a constructor, 10 fully supported, 1 `CALLOTHER` (`divw`)
+- PPC32 big-endian `-O2` C corpus: 11 of 11 instructions matched a constructor, all 11 reported `DecodeStatus::Supported`
 
 The committed artifacts are always tested. When the cross-toolchains are present, tests compile and grade fresh assembler and C output against the same toolchain's objdump.
 
-`tests/pcode_oracle.rs` also compares 64 AArch64 records and 209 multi-architecture records against pypcode 4.0.0. The multi-architecture records use Ghidra languages `ARM:LE:32:v7`, `ARM:LE:32:v8T`, `MIPS:LE:32:default`, `MIPS:BE:32:default`, `RISCV:LE:32:default`, `RISCV:LE:64:default`, `PowerPC:BE:32:default`, and `PowerPC:BE:64:default`. They include 39 compressed RISC-V records, 22 atomic RISC-V records, and 30 PPC64 records. The atomic comparison ties each encoded register field to the versioned call contract, checks operation, access width, ordering, result, address, and operand facts, and preserves pypcode's detailed reference translation. It does not treat pypcode's load and store expansion as a replacement for atomicity. Base-profile `jalr` and `ret` compare their non-exceptional effects while the alignment marker is asserted separately. The compressed `jr` and `jalr` comparison restores the least-significant-bit clear required by their base `jalr` expansion because pypcode omits it only for the compressed constructors. The PowerPC `bclr`, `bctr`, and `blr` comparison similarly restores the required low-two-bit target clear that pypcode omits. The normalizers canonicalize independent effects within each control-flow segment while preserving segment order across transfers.
+`tests/pcode_oracle.rs` also compares 64 AArch64 records and 265 multi-architecture records against pypcode 4.0.0. The multi-architecture set adds 48 F/D primitive-dataflow and memory records plus all eight RV32/RV64 division and remainder records. Single-precision comparisons assume valid NaN-boxed inputs, while separate official-spec vectors exercise valid and invalid boxes. The expected pypcode single-precision register writes are corrected from zero extension to the required all-ones NaN box. Fused operations, CSR and fence side effects, RV64 `fmv.x.w`, and float-to-integer writes are not claimed as pypcode equivalence because the pinned Ghidra translation lacks the required fused primitive, opaque architectural state, or correct transfer effect. Division records compare the primitive operation and original operands; directed boundary vectors and deterministic nonzero identity tests separately grade the total result selection. The atomic comparison ties each encoded register field to the versioned call contract, checks operation, access width, ordering, result, address, and operand facts, and preserves pypcode's detailed reference translation. Base-profile `jalr` and `ret` compare their non-exceptional effects while the alignment marker is asserted separately. The compressed `jr` and `jalr` comparison restores the least-significant-bit clear and uses `BRANCHIND`. The PowerPC `bclr`, `bctr`, and `blr` comparison restores the required low-two-bit target clear that pypcode omits. The normalizers canonicalize independent effects within each control-flow segment while preserving segment order across transfers.
 
 The vendored language files are pinned to Ghidra commit `7462bcec30b597b0b51f549f0bb39a63a942c577`. Each architecture directory contains its Apache License 2.0 files, notice, selected upstream paths, and local scalar-entrypoint changes.
 
-The documented next increment is P-code to NIR-Mir lowering and completing real P-code semantics for the RISC-V `div`, `jalr`, and `ret` boundaries plus the PowerPC `divw` and `divd` division boundary. This crate does not yet depend on or modify the NIR crates.
+The documented next increment is P-code to NIR-Mir lowering. This crate does not yet depend on or modify the NIR crates.

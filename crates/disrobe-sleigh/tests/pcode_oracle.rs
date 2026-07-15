@@ -119,8 +119,12 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
             "powerpc64" => Some(Language::PowerPc64Be),
             "riscv32" => Some(Language::RiscV(RiscVWidth::Rv32)),
             "riscv64" => Some(Language::RiscV(RiscVWidth::Rv64)),
-            "riscv32a" | "riscv32c" => Some(Language::RiscVCompressed(RiscVWidth::Rv32)),
-            "riscv64a" | "riscv64c" => Some(Language::RiscVCompressed(RiscVWidth::Rv64)),
+            "riscv32a" | "riscv32c" | "riscv32fd" => {
+                Some(Language::RiscVCompressed(RiscVWidth::Rv32))
+            }
+            "riscv64a" | "riscv64c" | "riscv64fd" => {
+                Some(Language::RiscVCompressed(RiscVWidth::Rv64))
+            }
             _ => None,
         };
         assert!(language.is_some(), "{line}");
@@ -136,12 +140,14 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
         assert!(!block.instructions.is_empty(), "{line}");
         assert_eq!(block.instructions[0].mnemonic, fields[3], "{line}");
         let atomic_record: bool = matches!(fields[0], "riscv32a" | "riscv64a");
-        let division_marker: bool =
-            fields[0] == "powerpc64" && matches!(fields[3], "divd" | "divw");
+        let float_record: bool = matches!(fields[0], "riscv32fd" | "riscv64fd");
+        let division_record: bool = matches!(fields[0], "riscv32" | "riscv64")
+            && matches!(fields[3], "div" | "divu" | "rem" | "remu");
+        let float_contract: bool =
+            float_record && !matches!(fields[3], "flw" | "fsw" | "fld" | "fsd" | "fmv.w.x");
         let alignment_marker: bool =
             matches!(fields[0], "riscv32" | "riscv64") && matches!(fields[3], "jalr" | "ret");
-        let expected_status: DecodeStatus = if atomic_record || division_marker || alignment_marker
-        {
+        let expected_status: DecodeStatus = if atomic_record || alignment_marker || float_contract {
             DecodeStatus::CallOther
         } else {
             DecodeStatus::Supported
@@ -154,7 +160,11 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
             "{line}: {:#?}",
             block.instructions
         );
-        let joined: String = architectural_facts(&block.ordered_ops).join("|");
+        let joined: String = if division_record {
+            riscv_division_core_facts(&block.instructions[0]).unwrap_or_default()
+        } else {
+            architectural_facts(&block.ordered_ops).join("|")
+        };
         let actual: String = if joined.is_empty() {
             "none".to_owned()
         } else {
@@ -186,6 +196,8 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
                     corrected_powerpc_indirect_facts(fields[0], fields[3], fields[4]);
                 assert!(corrected.is_some(), "{line}");
                 corrected.unwrap_or_default()
+            } else if float_record {
+                corrected_riscv_float_facts(fields[4])
             } else {
                 fields[4].to_owned()
             };
@@ -193,7 +205,7 @@ fn multiarch_architectural_effects_match_ghidra_pypcode() {
         }
         checked = checked.saturating_add(1);
     }
-    assert_eq!(checked, 209);
+    assert_eq!(checked, 265);
     assert_eq!(raw_headers.len(), checked);
 }
 
@@ -309,6 +321,67 @@ fn assert_atomic_reference(instruction: &PcodeInstr, bytes: &[u8], pypcode_facts
     }
 }
 
+fn riscv_division_core_facts(instruction: &PcodeInstr) -> Option<String> {
+    if instruction.status != DecodeStatus::Supported
+        || instruction.ops.iter().any(PcodeOp::is_callother)
+    {
+        return None;
+    }
+    let (left_snapshot, left_input): (Varnode, Varnode) = match instruction.ops.first()? {
+        PcodeOp::Copy { output, input } => (*output, *input),
+        _ => return None,
+    };
+    let (right_snapshot, right_input): (Varnode, Varnode) = match instruction.ops.get(1)? {
+        PcodeOp::Copy { output, input } => (*output, *input),
+        _ => return None,
+    };
+    let mut arithmetic: Option<(&str, Varnode)> = None;
+    for operation in &instruction.ops {
+        let candidate: Option<(&str, Varnode, Varnode, Varnode)> = match operation {
+            PcodeOp::IntSignedDiv {
+                output,
+                left,
+                right,
+            } => Some(("sdiv", *output, *left, *right)),
+            PcodeOp::IntDiv {
+                output,
+                left,
+                right,
+            } => Some(("udiv", *output, *left, *right)),
+            PcodeOp::IntSignedRem {
+                output,
+                left,
+                right,
+            } => Some(("srem", *output, *left, *right)),
+            PcodeOp::IntRem {
+                output,
+                left,
+                right,
+            } => Some(("urem", *output, *left, *right)),
+            _ => None,
+        };
+        if let Some((name, output, left, right)) = candidate {
+            if arithmetic.is_some() || left != left_snapshot || right == right_snapshot {
+                return None;
+            }
+            arithmetic = Some((name, output));
+        }
+    }
+    let (name, arithmetic_output): (&str, Varnode) = arithmetic?;
+    if !instruction.ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntAnd { left, .. } if *left == arithmetic_output)
+    }) {
+        return None;
+    }
+    let destination: Varnode = match instruction.ops.last()? {
+        PcodeOp::IntOr { output, .. } => *output,
+        _ => return None,
+    };
+    Some(format!(
+        "write({destination},{name}({left_input},{right_input}))"
+    ))
+}
+
 fn corrected_compressed_indirect_facts(
     language: &str,
     mnemonic: &str,
@@ -326,8 +399,13 @@ fn corrected_compressed_indirect_facts(
     };
     let (prefix, target_with_close): (&str, &str) = pypcode_facts.rsplit_once(operation)?;
     let target: &str = target_with_close.strip_suffix(')')?;
+    let corrected_operation: &str = if mnemonic == "jalr" {
+        "branchind("
+    } else {
+        operation
+    };
     Some(format!(
-        "{prefix}{operation}and(const:{mask}:{size},{target}))"
+        "{prefix}{corrected_operation}and(const:{mask}:{size},{target}))"
     ))
 }
 
@@ -351,6 +429,28 @@ fn corrected_powerpc_indirect_facts(
     Some(format!(
         "{prefix}{operation}and(const:{mask}:{size},{target}))"
     ))
+}
+
+fn corrected_riscv_float_facts(pypcode_facts: &str) -> String {
+    pypcode_facts
+        .split('|')
+        .map(|fact: &str| {
+            let floating_write: bool = fact
+                .strip_prefix("write(register:0x")
+                .and_then(|rest: &str| rest.split_once(':'))
+                .and_then(|(offset, rest): (&str, &str)| {
+                    let parsed: u64 = u64::from_str_radix(offset, 16).ok()?;
+                    Some((0x3000..0x3100).contains(&parsed) && rest.starts_with("8,zext("))
+                })
+                .unwrap_or(false);
+            if floating_write {
+                fact.replacen(",zext(", ",piece(const:0xffffffff:4,", 1)
+            } else {
+                fact.to_owned()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("|")
 }
 
 #[test]
@@ -438,6 +538,8 @@ fn is_multiarch_raw_header(line: &str) -> bool {
                 | "riscv64a"
                 | "riscv32c"
                 | "riscv64c"
+                | "riscv32fd"
+                | "riscv64fd"
         )
         && fields[1]
             .chars()
@@ -533,17 +635,126 @@ fn architectural_facts(operations: &[PcodeOp]) -> Vec<String> {
                     &mut ordered_facts,
                 );
             }
-            PcodeOp::CallOther { name, .. }
-                if matches!(
-                    name.as_str(),
-                    "riscv_instruction_address_alignment" | "powerpc_division_edge_cases"
-                ) => {}
+            PcodeOp::CallOther {
+                name,
+                output: Some(output),
+                inputs,
+            } if matches!(
+                name.as_str(),
+                "riscv_fp_binary_v1"
+                    | "riscv_fp_unary_v1"
+                    | "riscv_fp_convert_v1"
+                    | "riscv_fp_compare_v1"
+            ) =>
+            {
+                let input: Option<Varnode> = inputs.last().copied();
+                if let Some(value) = input {
+                    let expression: Expression = resolve(value, &values);
+                    record(*output, expression, &mut values, &mut facts);
+                }
+            }
+            PcodeOp::CallOther { name, .. } if name == "riscv_instruction_address_alignment" => {}
             PcodeOp::CallOther { name, .. } => {
                 push_ordered_fact(format!("callother({name})"), &mut facts, &mut ordered_facts);
             }
             PcodeOp::Copy { output, input } => {
                 let expression: Expression = resolve(*input, &values);
                 record(*output, expression, &mut values, &mut facts);
+            }
+            PcodeOp::FloatAdd {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "fadd",
+                *left,
+                *right,
+                true,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatDiv {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "fdiv",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatEqual {
+                output,
+                left,
+                right,
+            } => record_float_binary(*output, "feq", *left, *right, true, &mut values, &mut facts),
+            PcodeOp::FloatLess {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "flt",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatLessEqual {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "fle",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatMult {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "fmul",
+                *left,
+                *right,
+                true,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatSqrt { output, input } => {
+                record_float_unary(*output, "fsqrt", *input, &mut values, &mut facts);
+            }
+            PcodeOp::FloatSub {
+                output,
+                left,
+                right,
+            } => record_float_binary(
+                *output,
+                "fsub",
+                *left,
+                *right,
+                false,
+                &mut values,
+                &mut facts,
+            ),
+            PcodeOp::FloatToFloat { output, input } => {
+                record_float_unary(*output, "float2float", *input, &mut values, &mut facts);
+            }
+            PcodeOp::FloatTrunc { output, input } => {
+                record_float_unary(*output, "trunc", *input, &mut values, &mut facts);
+            }
+            PcodeOp::IntToFloat { output, input } => {
+                record_unary(*output, "int2float", *input, &mut values, &mut facts);
             }
             PcodeOp::IntAdd {
                 output,
@@ -867,6 +1078,72 @@ fn record_binary(
         output.size_bytes,
     );
     record(output, expression, values, facts);
+}
+
+fn record_float_binary(
+    output: Varnode,
+    name: &'static str,
+    left: Varnode,
+    right: Varnode,
+    commutative: bool,
+    values: &mut BTreeMap<Varnode, Expression>,
+    facts: &mut Vec<String>,
+) {
+    let expression: Expression = binary(
+        name,
+        resolve_float_input(left, values),
+        resolve_float_input(right, values),
+        commutative,
+        output.size_bytes,
+    );
+    record(output, expression, values, facts);
+}
+
+fn record_float_unary(
+    output: Varnode,
+    name: &'static str,
+    input: Varnode,
+    values: &mut BTreeMap<Varnode, Expression>,
+    facts: &mut Vec<String>,
+) {
+    let expression: Expression = Expression::Unary {
+        input: Box::new(resolve_float_input(input, values)),
+        name,
+    };
+    record(output, expression, values, facts);
+}
+
+fn resolve_float_input(node: Varnode, values: &BTreeMap<Varnode, Expression>) -> Expression {
+    let resolved: Expression = resolve(node, values);
+    let selected: Expression = match resolved {
+        Expression::Select { when_true, .. } => *when_true,
+        other => other,
+    };
+    match selected {
+        Expression::Binary {
+            name: "subpiece",
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::Node(offset)
+            if offset.space == Space::Constant && offset.offset == 0) =>
+        {
+            match *left {
+                Expression::Node(register) if register.space == Space::Register => {
+                    Expression::Node(Varnode {
+                        offset: register.offset,
+                        size_bytes: node.size_bytes,
+                        space: Space::Register,
+                    })
+                }
+                other => Expression::Binary {
+                    name: "subpiece",
+                    left: Box::new(other),
+                    right,
+                },
+            }
+        }
+        other => other,
+    }
 }
 
 fn record_unary(

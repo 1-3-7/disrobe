@@ -299,6 +299,15 @@ fn lift_constructor(
     allocator: &mut UniqueAllocator,
 ) -> Option<RiscVLifted> {
     let mnemonic: &str = constructor.mnemonic.as_str();
+    if matches!(word & 0x7f, 0x07 | 0x27 | 0x43 | 0x47 | 0x4b | 0x4f | 0x53) {
+        return lift_float(spec, mnemonic, word, width, allocator);
+    }
+    if word & 0x7f == 0x73 && bits(word, 12, 3) != 0 {
+        return lift_csr(spec, word, width);
+    }
+    if word & 0x7f == 0x0f {
+        return lift_fence(word);
+    }
     if mnemonic == "nop" {
         return (word == 0x0000_0013).then(|| supported("nop", Vec::new()));
     }
@@ -359,7 +368,22 @@ fn lift_compressed(
     }
     if matches!(
         mnemonic,
-        "c.lw" | "c.sw" | "c.ld" | "c.sd" | "c.lwsp" | "c.swsp"
+        "c.lw"
+            | "c.sw"
+            | "c.ld"
+            | "c.sd"
+            | "c.lwsp"
+            | "c.swsp"
+            | "c.ldsp"
+            | "c.sdsp"
+            | "c.flw"
+            | "c.fsw"
+            | "c.fld"
+            | "c.fsd"
+            | "c.flwsp"
+            | "c.fswsp"
+            | "c.fldsp"
+            | "c.fsdsp"
     ) {
         return lift_compressed_memory(spec, mnemonic, encoded, width, allocator);
     }
@@ -505,10 +529,11 @@ fn lift_compressed_memory(
     allocator: &mut UniqueAllocator,
 ) -> Option<RiscVLifted> {
     let size_bytes: u32 = width.size_bytes();
-    let stack_form: bool = matches!(mnemonic, "c.lwsp" | "c.swsp");
-    let store: bool = matches!(mnemonic, "c.sw" | "c.sd" | "c.swsp");
-    let doubleword: bool = matches!(mnemonic, "c.ld" | "c.sd");
-    if doubleword && width != RiscVWidth::Rv64 {
+    let float: bool = mnemonic.starts_with("c.f");
+    let stack_form: bool = mnemonic.ends_with("sp");
+    let store: bool = mnemonic.starts_with("c.s") || mnemonic.starts_with("c.fs");
+    let doubleword: bool = mnemonic.contains("ld") || mnemonic.contains("sd");
+    if doubleword && !float && width != RiscVWidth::Rv64 {
         return None;
     }
     let access_size: u32 = if doubleword { 8 } else { 4 };
@@ -526,21 +551,27 @@ fn lift_compressed_memory(
     } else {
         bits(encoded, 2, 3).saturating_add(8)
     };
-    if !store && data_index == 0 {
+    if !float && !store && data_index == 0 {
         return None;
     }
-    let immediate: u64 = if mnemonic == "c.lw" || mnemonic == "c.sw" {
+    let immediate: u64 = if !stack_form && access_size == 4 {
         u64::from(
             (bits(encoded, 10, 3) << 3) | (bits(encoded, 6, 1) << 2) | (bits(encoded, 5, 1) << 6),
         )
-    } else if doubleword {
+    } else if !stack_form {
         u64::from((bits(encoded, 10, 3) << 3) | (bits(encoded, 5, 2) << 6))
-    } else if mnemonic == "c.lwsp" {
+    } else if !store && access_size == 4 {
         u64::from(
             (bits(encoded, 12, 1) << 5) | (bits(encoded, 4, 3) << 2) | (bits(encoded, 2, 2) << 6),
         )
-    } else {
+    } else if store && access_size == 4 {
         u64::from((bits(encoded, 7, 2) << 6) | (bits(encoded, 9, 4) << 2))
+    } else if !store {
+        u64::from(
+            (bits(encoded, 12, 1) << 5) | (bits(encoded, 5, 2) << 3) | (bits(encoded, 2, 3) << 6),
+        )
+    } else {
+        u64::from((bits(encoded, 10, 3) << 3) | (bits(encoded, 7, 3) << 6))
     };
     let base: Varnode = riscv_input(spec, base_index, size_bytes)?;
     let pointer: Varnode = allocator.allocate(size_bytes)?;
@@ -549,7 +580,11 @@ fn lift_compressed_memory(
         left: base,
         right: constant(immediate, size_bytes),
     }];
-    let lifted_mnemonic: &str = if doubleword {
+    let lifted_mnemonic: &str = if float && doubleword {
+        if store { "fsd" } else { "fld" }
+    } else if float {
+        if store { "fsw" } else { "flw" }
+    } else if doubleword {
         if store { "sd" } else { "ld" }
     } else if store {
         "sw"
@@ -557,17 +592,40 @@ fn lift_compressed_memory(
         "lw"
     };
     if store {
-        let input: Varnode = riscv_input(spec, data_index, size_bytes)?;
-        let value: Varnode = Varnode {
-            offset: input.offset,
-            size_bytes: access_size,
-            space: input.space,
+        let input: Varnode = if float {
+            riscv_float_register(spec, data_index)?
+        } else {
+            riscv_input(spec, data_index, size_bytes)?
         };
+        let value: Varnode = sized_varnode(input, access_size)?;
         ops.push(PcodeOp::Store {
             space: Space::Ram,
             pointer,
             value,
         });
+        return Some(supported(lifted_mnemonic, ops));
+    }
+    if float {
+        let destination: Varnode = riscv_float_register(spec, data_index)?;
+        if access_size == 8 {
+            ops.push(PcodeOp::Load {
+                output: destination,
+                space: Space::Ram,
+                pointer,
+            });
+        } else {
+            let loaded: Varnode = allocator.allocate(4)?;
+            ops.push(PcodeOp::Load {
+                output: loaded,
+                space: Space::Ram,
+                pointer,
+            });
+            ops.push(PcodeOp::Piece {
+                output: destination,
+                high: constant(u64::from(u32::MAX), 4),
+                low: loaded,
+            });
+        }
         return Some(supported(lifted_mnemonic, ops));
     }
     let output: Option<Varnode> = riscv_output(spec, data_index);
@@ -686,7 +744,7 @@ fn lift_compressed_control(
             output: link,
             input: constant(mask_address(address.wrapping_add(2), width), size_bytes),
         });
-        ops.push(PcodeOp::CallIndirect { target });
+        ops.push(PcodeOp::BranchIndirect { target });
         return Some(supported("jalr", ops));
     }
     ops.push(PcodeOp::BranchIndirect { target });
@@ -996,6 +1054,642 @@ fn lift_memory(
     Some(supported(mnemonic, ops))
 }
 
+fn lift_float(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    width: RiscVWidth,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    if matches!(mnemonic, "flw" | "fsw" | "fld" | "fsd") {
+        return lift_float_memory(spec, mnemonic, word, width, allocator);
+    }
+    if matches!(mnemonic, "fmv.w.x" | "fmv.x.w" | "fmv.d.x" | "fmv.x.d") {
+        return lift_float_move(spec, mnemonic, word, width);
+    }
+    if matches!(mnemonic, "fmadd.s" | "fmadd.d") {
+        return lift_float_fused(spec, mnemonic, word, allocator);
+    }
+    if matches!(
+        mnemonic,
+        "fadd.s" | "fsub.s" | "fmul.s" | "fdiv.s" | "fadd.d" | "fsub.d" | "fmul.d" | "fdiv.d"
+    ) {
+        return lift_float_binary(spec, mnemonic, word, allocator);
+    }
+    if matches!(
+        mnemonic,
+        "feq.s" | "flt.s" | "fle.s" | "feq.d" | "flt.d" | "fle.d"
+    ) {
+        return lift_float_compare(spec, mnemonic, word, allocator);
+    }
+    if matches!(mnemonic, "fsqrt.s" | "fsqrt.d") {
+        return lift_float_sqrt(spec, mnemonic, word, allocator);
+    }
+    if matches!(mnemonic, "fcvt.s.w" | "fcvt.w.s" | "fcvt.d.s" | "fcvt.s.d") {
+        return lift_float_convert(spec, mnemonic, word, width, allocator);
+    }
+    None
+}
+
+fn lift_float_memory(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    width: RiscVWidth,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let address_size: u32 = width.size_bytes();
+    let access_size: u32 = if matches!(mnemonic, "fld" | "fsd") {
+        8
+    } else {
+        4
+    };
+    let store: bool = matches!(mnemonic, "fsw" | "fsd");
+    let base: Varnode = riscv_input(spec, bits(word, 15, 5), address_size)?;
+    let immediate: i64 = if store {
+        let encoded: u64 = u64::from(bits(word, 7, 5) | (bits(word, 25, 7) << 5));
+        sign_extend_u64(encoded, 12)
+    } else {
+        sign_extend_u64(u64::from(bits(word, 20, 12)), 12)
+    };
+    let pointer: Varnode = allocator.allocate(address_size)?;
+    let mut ops: Vec<PcodeOp> = vec![PcodeOp::IntAdd {
+        output: pointer,
+        left: base,
+        right: signed_constant(immediate, address_size),
+    }];
+    if store {
+        let input: Varnode = riscv_float_register(spec, bits(word, 20, 5))?;
+        ops.push(PcodeOp::Store {
+            space: Space::Ram,
+            pointer,
+            value: sized_varnode(input, access_size)?,
+        });
+        return Some(supported(mnemonic, ops));
+    }
+    let destination: Varnode = riscv_float_register(spec, bits(word, 7, 5))?;
+    if access_size == 8 {
+        ops.push(PcodeOp::Load {
+            output: destination,
+            space: Space::Ram,
+            pointer,
+        });
+    } else {
+        let loaded: Varnode = allocator.allocate(4)?;
+        ops.push(PcodeOp::Load {
+            output: loaded,
+            space: Space::Ram,
+            pointer,
+        });
+        ops.push(PcodeOp::Piece {
+            output: destination,
+            high: constant(u64::from(u32::MAX), 4),
+            low: loaded,
+        });
+    }
+    Some(supported(mnemonic, ops))
+}
+
+fn lift_float_move(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    width: RiscVWidth,
+) -> Option<RiscVLifted> {
+    let integer_size: u32 = width.size_bytes();
+    let integer_to_float: bool = matches!(mnemonic, "fmv.w.x" | "fmv.d.x");
+    let integer_index: u32 = if integer_to_float {
+        bits(word, 15, 5)
+    } else {
+        bits(word, 7, 5)
+    };
+    let float_index: u32 = if integer_to_float {
+        bits(word, 7, 5)
+    } else {
+        bits(word, 15, 5)
+    };
+    let float_register: Varnode = riscv_float_register(spec, float_index)?;
+    if matches!(mnemonic, "fmv.w.x" | "fmv.d.x") {
+        let integer: Varnode = riscv_input(spec, integer_index, integer_size)?;
+        if mnemonic == "fmv.d.x" {
+            if width != RiscVWidth::Rv64 {
+                return None;
+            }
+            return Some(supported(
+                mnemonic,
+                vec![PcodeOp::Copy {
+                    output: float_register,
+                    input: integer,
+                }],
+            ));
+        }
+        return Some(supported(
+            mnemonic,
+            vec![PcodeOp::Piece {
+                output: float_register,
+                high: constant(u64::from(u32::MAX), 4),
+                low: sized_varnode(integer, 4)?,
+            }],
+        ));
+    }
+    let output: Option<Varnode> = riscv_output(spec, integer_index);
+    let destination: Varnode = match output {
+        Some(value) => value,
+        None => return Some(supported(mnemonic, Vec::new())),
+    };
+    if mnemonic == "fmv.x.d" {
+        if width != RiscVWidth::Rv64 {
+            return None;
+        }
+        return Some(supported(
+            mnemonic,
+            vec![PcodeOp::Copy {
+                output: destination,
+                input: float_register,
+            }],
+        ));
+    }
+    let input: Varnode = sized_varnode(float_register, 4)?;
+    let operation: PcodeOp = if integer_size == 4 {
+        PcodeOp::Copy {
+            output: destination,
+            input,
+        }
+    } else {
+        PcodeOp::IntSext {
+            output: destination,
+            input,
+        }
+    };
+    Some(supported(mnemonic, vec![operation]))
+}
+
+fn lift_float_binary(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let format_size: u32 = float_format_size(mnemonic);
+    let left_register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+    let right_register: Varnode = riscv_float_register(spec, bits(word, 20, 5))?;
+    let destination: Varnode = riscv_float_register(spec, bits(word, 7, 5))?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let left: Varnode = float_input(left_register, format_size, allocator, &mut ops)?;
+    let right: Varnode = float_input(right_register, format_size, allocator, &mut ops)?;
+    let primitive: Varnode = allocator.allocate(format_size)?;
+    let exact: Varnode = allocator.allocate(format_size)?;
+    let operation_code: u64 = match mnemonic.as_bytes().get(1).copied() {
+        Some(b'a') => 0,
+        Some(b's') => 1,
+        Some(b'm') => 2,
+        Some(b'd') => 3,
+        _ => return None,
+    };
+    let operation: PcodeOp = match operation_code {
+        0 => PcodeOp::FloatAdd {
+            output: primitive,
+            left,
+            right,
+        },
+        1 => PcodeOp::FloatSub {
+            output: primitive,
+            left,
+            right,
+        },
+        2 => PcodeOp::FloatMult {
+            output: primitive,
+            left,
+            right,
+        },
+        3 => PcodeOp::FloatDiv {
+            output: primitive,
+            left,
+            right,
+        },
+        _ => return None,
+    };
+    ops.push(operation);
+    ops.push(PcodeOp::CallOther {
+        name: "riscv_fp_binary_v1".to_owned(),
+        output: Some(exact),
+        inputs: vec![
+            constant(operation_code, 1),
+            constant(u64::from(format_size), 1),
+            constant(u64::from(bits(word, 12, 3)), 1),
+            left,
+            right,
+            primitive,
+        ],
+    });
+    float_output(destination, exact, format_size, &mut ops);
+    Some(callother(mnemonic, ops))
+}
+
+fn lift_float_sqrt(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let format_size: u32 = float_format_size(mnemonic);
+    let source_register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+    let destination: Varnode = riscv_float_register(spec, bits(word, 7, 5))?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let source: Varnode = float_input(source_register, format_size, allocator, &mut ops)?;
+    let primitive: Varnode = allocator.allocate(format_size)?;
+    let exact: Varnode = allocator.allocate(format_size)?;
+    ops.push(PcodeOp::FloatSqrt {
+        output: primitive,
+        input: source,
+    });
+    ops.push(PcodeOp::CallOther {
+        name: "riscv_fp_unary_v1".to_owned(),
+        output: Some(exact),
+        inputs: vec![
+            constant(0, 1),
+            constant(u64::from(format_size), 1),
+            constant(u64::from(bits(word, 12, 3)), 1),
+            source,
+            primitive,
+        ],
+    });
+    float_output(destination, exact, format_size, &mut ops);
+    Some(callother(mnemonic, ops))
+}
+
+fn lift_float_compare(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let format_size: u32 = float_format_size(mnemonic);
+    let left_register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+    let right_register: Varnode = riscv_float_register(spec, bits(word, 20, 5))?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let left: Varnode = float_input(left_register, format_size, allocator, &mut ops)?;
+    let right: Varnode = float_input(right_register, format_size, allocator, &mut ops)?;
+    let primitive: Varnode = allocator.allocate(1)?;
+    let exact: Varnode = allocator.allocate(1)?;
+    let operation_code: u64 = match mnemonic.as_bytes().get(1).copied() {
+        Some(b'e') => 0,
+        Some(b'l') if mnemonic.starts_with("flt") => 1,
+        Some(b'l') => 2,
+        _ => return None,
+    };
+    let operation: PcodeOp = match operation_code {
+        0 => PcodeOp::FloatEqual {
+            output: primitive,
+            left,
+            right,
+        },
+        1 => PcodeOp::FloatLess {
+            output: primitive,
+            left,
+            right,
+        },
+        2 => PcodeOp::FloatLessEqual {
+            output: primitive,
+            left,
+            right,
+        },
+        _ => return None,
+    };
+    ops.push(operation);
+    ops.push(PcodeOp::CallOther {
+        name: "riscv_fp_compare_v1".to_owned(),
+        output: Some(exact),
+        inputs: vec![
+            constant(operation_code, 1),
+            constant(u64::from(format_size), 1),
+            left,
+            right,
+            primitive,
+        ],
+    });
+    if let Some(destination) = riscv_output(spec, bits(word, 7, 5)) {
+        ops.push(PcodeOp::IntZext {
+            output: destination,
+            input: exact,
+        });
+    }
+    Some(callother(mnemonic, ops))
+}
+
+fn lift_float_fused(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let format_size: u32 = float_format_size(mnemonic);
+    let left_register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+    let right_register: Varnode = riscv_float_register(spec, bits(word, 20, 5))?;
+    let addend_register: Varnode = riscv_float_register(spec, bits(word, 27, 5))?;
+    let destination: Varnode = riscv_float_register(spec, bits(word, 7, 5))?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let left: Varnode = float_input(left_register, format_size, allocator, &mut ops)?;
+    let right: Varnode = float_input(right_register, format_size, allocator, &mut ops)?;
+    let addend: Varnode = float_input(addend_register, format_size, allocator, &mut ops)?;
+    let exact: Varnode = allocator.allocate(format_size)?;
+    ops.push(PcodeOp::CallOther {
+        name: "riscv_fp_fused_v1".to_owned(),
+        output: Some(exact),
+        inputs: vec![
+            constant(0, 1),
+            constant(u64::from(format_size), 1),
+            constant(u64::from(bits(word, 12, 3)), 1),
+            left,
+            right,
+            addend,
+        ],
+    });
+    float_output(destination, exact, format_size, &mut ops);
+    Some(callother(mnemonic, ops))
+}
+
+fn lift_float_convert(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    width: RiscVWidth,
+    allocator: &mut UniqueAllocator,
+) -> Option<RiscVLifted> {
+    let integer_size: u32 = width.size_bytes();
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let operation_code: u64;
+    let source: Varnode;
+    let primitive: Varnode;
+    let exact: Varnode;
+    let source_size: u32;
+    let destination_size: u32;
+    let float_destination: bool;
+    match mnemonic {
+        "fcvt.s.w" => {
+            operation_code = 0;
+            source_size = 4;
+            destination_size = 4;
+            float_destination = true;
+            source = sized_varnode(riscv_input(spec, bits(word, 15, 5), integer_size)?, 4)?;
+            primitive = allocator.allocate(4)?;
+            exact = allocator.allocate(4)?;
+            ops.push(PcodeOp::IntToFloat {
+                output: primitive,
+                input: source,
+            });
+        }
+        "fcvt.w.s" => {
+            operation_code = 1;
+            source_size = 4;
+            destination_size = 4;
+            float_destination = false;
+            let register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+            source = float_input(register, 4, allocator, &mut ops)?;
+            primitive = allocator.allocate(4)?;
+            exact = allocator.allocate(4)?;
+            ops.push(PcodeOp::FloatTrunc {
+                output: primitive,
+                input: source,
+            });
+        }
+        "fcvt.d.s" => {
+            operation_code = 2;
+            source_size = 4;
+            destination_size = 8;
+            float_destination = true;
+            let register: Varnode = riscv_float_register(spec, bits(word, 15, 5))?;
+            source = float_input(register, 4, allocator, &mut ops)?;
+            primitive = allocator.allocate(8)?;
+            exact = allocator.allocate(8)?;
+            ops.push(PcodeOp::FloatToFloat {
+                output: primitive,
+                input: source,
+            });
+        }
+        "fcvt.s.d" => {
+            operation_code = 3;
+            source_size = 8;
+            destination_size = 4;
+            float_destination = true;
+            source = riscv_float_register(spec, bits(word, 15, 5))?;
+            primitive = allocator.allocate(4)?;
+            exact = allocator.allocate(4)?;
+            ops.push(PcodeOp::FloatToFloat {
+                output: primitive,
+                input: source,
+            });
+        }
+        _ => return None,
+    }
+    ops.push(PcodeOp::CallOther {
+        name: "riscv_fp_convert_v1".to_owned(),
+        output: Some(exact),
+        inputs: vec![
+            constant(operation_code, 1),
+            constant(u64::from(source_size), 1),
+            constant(u64::from(destination_size), 1),
+            constant(u64::from(bits(word, 12, 3)), 1),
+            source,
+            primitive,
+        ],
+    });
+    if float_destination {
+        let destination: Varnode = riscv_float_register(spec, bits(word, 7, 5))?;
+        float_output(destination, exact, destination_size, &mut ops);
+    } else if let Some(destination) = riscv_output(spec, bits(word, 7, 5)) {
+        if integer_size == destination_size {
+            ops.push(PcodeOp::Copy {
+                output: destination,
+                input: exact,
+            });
+        } else {
+            ops.push(PcodeOp::IntSext {
+                output: destination,
+                input: exact,
+            });
+        }
+    }
+    Some(callother(mnemonic, ops))
+}
+
+fn float_input(
+    register: Varnode,
+    format_size: u32,
+    allocator: &mut UniqueAllocator,
+    ops: &mut Vec<PcodeOp>,
+) -> Option<Varnode> {
+    if format_size == 8 {
+        return Some(register);
+    }
+    let low: Varnode = allocator.allocate(4)?;
+    let high: Varnode = allocator.allocate(4)?;
+    let valid: Varnode = allocator.allocate(1)?;
+    let invalid: Varnode = allocator.allocate(1)?;
+    let valid_value: Varnode = allocator.allocate(4)?;
+    let invalid_value: Varnode = allocator.allocate(4)?;
+    let boxed_value: Varnode = allocator.allocate(4)?;
+    let canonical_nan: Varnode = allocator.allocate(4)?;
+    let selected: Varnode = allocator.allocate(4)?;
+    ops.extend([
+        PcodeOp::Subpiece {
+            output: low,
+            input: register,
+            byte_offset: constant(0, 4),
+        },
+        PcodeOp::Subpiece {
+            output: high,
+            input: register,
+            byte_offset: constant(4, 4),
+        },
+        PcodeOp::IntEqual {
+            output: valid,
+            left: high,
+            right: constant(u64::from(u32::MAX), 4),
+        },
+        PcodeOp::IntZext {
+            output: valid_value,
+            input: valid,
+        },
+        PcodeOp::BoolNegate {
+            output: invalid,
+            input: valid,
+        },
+        PcodeOp::IntZext {
+            output: invalid_value,
+            input: invalid,
+        },
+        PcodeOp::IntMult {
+            output: boxed_value,
+            left: low,
+            right: valid_value,
+        },
+        PcodeOp::IntMult {
+            output: canonical_nan,
+            left: constant(0x7fc0_0000, 4),
+            right: invalid_value,
+        },
+        PcodeOp::IntAdd {
+            output: selected,
+            left: boxed_value,
+            right: canonical_nan,
+        },
+    ]);
+    Some(selected)
+}
+
+fn float_output(destination: Varnode, value: Varnode, format_size: u32, ops: &mut Vec<PcodeOp>) {
+    if format_size == 4 {
+        ops.push(PcodeOp::Piece {
+            output: destination,
+            high: constant(u64::from(u32::MAX), 4),
+            low: value,
+        });
+    } else {
+        ops.push(PcodeOp::Copy {
+            output: destination,
+            input: value,
+        });
+    }
+}
+
+fn lift_csr(spec: &SleighSpec, word: u32, width: RiscVWidth) -> Option<RiscVLifted> {
+    let function: u32 = bits(word, 12, 3);
+    let immediate: bool = function >= 5;
+    let operation_code: u64 = match function {
+        1 | 5 => 0,
+        2 | 6 => 1,
+        3 | 7 => 2,
+        _ => return None,
+    };
+    let source_index: u32 = bits(word, 15, 5);
+    let source: Varnode = if immediate {
+        constant(u64::from(source_index), width.size_bytes())
+    } else {
+        riscv_input(spec, source_index, width.size_bytes())?
+    };
+    let destination_index: u32 = bits(word, 7, 5);
+    let output: Option<Varnode> = riscv_output(spec, destination_index);
+    let read_enabled: bool = operation_code != 0 || destination_index != 0;
+    let write_enabled: bool = operation_code == 0 || source_index != 0;
+    let mnemonic: &str = match function {
+        1 => "csrrw",
+        2 => "csrrs",
+        3 => "csrrc",
+        5 => "csrrwi",
+        6 => "csrrsi",
+        7 => "csrrci",
+        _ => return None,
+    };
+    Some(callother(
+        mnemonic,
+        vec![PcodeOp::CallOther {
+            name: "riscv_csr_v1".to_owned(),
+            output,
+            inputs: vec![
+                constant(u64::from(bits(word, 20, 12)), 2),
+                source,
+                constant(operation_code, 1),
+                constant(u64::from(read_enabled), 1),
+                constant(u64::from(write_enabled), 1),
+            ],
+        }],
+    ))
+}
+
+fn lift_fence(word: u32) -> Option<RiscVLifted> {
+    let function: u32 = bits(word, 12, 3);
+    let kind: u64 = match function {
+        0 => 0,
+        1 => 1,
+        _ => return None,
+    };
+    let predecessor: u64 = if kind == 0 {
+        u64::from(bits(word, 24, 4))
+    } else {
+        0
+    };
+    let successor: u64 = if kind == 0 {
+        u64::from(bits(word, 20, 4))
+    } else {
+        0
+    };
+    let mode: u64 = if kind == 0 {
+        u64::from(bits(word, 28, 4))
+    } else {
+        0
+    };
+    Some(callother(
+        if kind == 0 { "fence" } else { "fence.i" },
+        vec![PcodeOp::CallOther {
+            name: "riscv_fence_v1".to_owned(),
+            output: None,
+            inputs: vec![
+                constant(kind, 1),
+                constant(predecessor, 1),
+                constant(successor, 1),
+                constant(mode, 1),
+            ],
+        }],
+    ))
+}
+
+fn float_format_size(mnemonic: &str) -> u32 {
+    if mnemonic.as_bytes().last().copied() == Some(b's') {
+        4
+    } else {
+        8
+    }
+}
+
+fn sized_varnode(varnode: Varnode, size_bytes: u32) -> Option<Varnode> {
+    (size_bytes <= varnode.size_bytes).then_some(Varnode {
+        offset: varnode.offset,
+        size_bytes,
+        space: varnode.space,
+    })
+}
+
 fn lift_control(
     spec: &SleighSpec,
     mnemonic: &str,
@@ -1187,11 +1881,7 @@ fn lift_jalr(
             input: constant(mask_address(address.wrapping_add(4), width), size_bytes),
         });
     }
-    if matches!(destination_index, 1 | 5) {
-        ops.push(PcodeOp::CallIndirect { target });
-    } else {
-        ops.push(PcodeOp::BranchIndirect { target });
-    }
+    ops.push(PcodeOp::BranchIndirect { target });
     Some(RiscVLifted {
         mnemonic: mnemonic.to_owned(),
         ops,
@@ -1277,49 +1967,151 @@ fn lift_multiply_divide(
     }
     let left_snapshot: Varnode = allocator.allocate(size_bytes)?;
     let right_snapshot: Varnode = allocator.allocate(size_bytes)?;
+    let division_by_zero: Varnode = allocator.allocate(1)?;
+    let unsafe_operation: Varnode;
+    let mut ops: Vec<PcodeOp> = vec![
+        PcodeOp::Copy {
+            output: left_snapshot,
+            input: left,
+        },
+        PcodeOp::Copy {
+            output: right_snapshot,
+            input: right,
+        },
+        PcodeOp::IntEqual {
+            output: division_by_zero,
+            left: right_snapshot,
+            right: constant(0, size_bytes),
+        },
+    ];
+    if matches!(mnemonic, "div" | "rem") {
+        let minimum_dividend: Varnode = allocator.allocate(1)?;
+        let negative_one_divisor: Varnode = allocator.allocate(1)?;
+        let signed_overflow: Varnode = allocator.allocate(1)?;
+        unsafe_operation = allocator.allocate(1)?;
+        ops.extend([
+            PcodeOp::IntEqual {
+                output: minimum_dividend,
+                left: left_snapshot,
+                right: constant(1_u64 << width.bit_width().saturating_sub(1), size_bytes),
+            },
+            PcodeOp::IntEqual {
+                output: negative_one_divisor,
+                left: right_snapshot,
+                right: constant(mask_for_bytes(size_bytes), size_bytes),
+            },
+            PcodeOp::BoolAnd {
+                output: signed_overflow,
+                left: minimum_dividend,
+                right: negative_one_divisor,
+            },
+            PcodeOp::BoolOr {
+                output: unsafe_operation,
+                left: division_by_zero,
+                right: signed_overflow,
+            },
+        ]);
+    } else {
+        unsafe_operation = division_by_zero;
+    }
+    let unsafe_value: Varnode = allocator.allocate(size_bytes)?;
+    let unsafe_mask: Varnode = allocator.allocate(size_bytes)?;
+    let safe_mask: Varnode = allocator.allocate(size_bytes)?;
+    let safe_right_part: Varnode = allocator.allocate(size_bytes)?;
+    let safe_divisor: Varnode = allocator.allocate(size_bytes)?;
+    let arithmetic_output: Varnode = allocator.allocate(size_bytes)?;
+    let zero_value: Varnode = allocator.allocate(size_bytes)?;
+    let zero_mask: Varnode = allocator.allocate(size_bytes)?;
+    let nonzero_mask: Varnode = allocator.allocate(size_bytes)?;
+    let normal_result: Varnode = allocator.allocate(size_bytes)?;
+    let exceptional_result: Varnode = allocator.allocate(size_bytes)?;
+    ops.extend([
+        PcodeOp::IntZext {
+            output: unsafe_value,
+            input: unsafe_operation,
+        },
+        PcodeOp::IntSub {
+            output: unsafe_mask,
+            left: constant(0, size_bytes),
+            right: unsafe_value,
+        },
+        PcodeOp::IntNegate {
+            output: safe_mask,
+            input: unsafe_mask,
+        },
+        PcodeOp::IntAnd {
+            output: safe_right_part,
+            left: right_snapshot,
+            right: safe_mask,
+        },
+        PcodeOp::IntOr {
+            output: safe_divisor,
+            left: safe_right_part,
+            right: unsafe_value,
+        },
+    ]);
     let arithmetic: PcodeOp = match mnemonic {
         "div" => PcodeOp::IntSignedDiv {
-            output: destination,
+            output: arithmetic_output,
             left: left_snapshot,
-            right: right_snapshot,
+            right: safe_divisor,
         },
         "divu" => PcodeOp::IntDiv {
-            output: destination,
+            output: arithmetic_output,
             left: left_snapshot,
-            right: right_snapshot,
+            right: safe_divisor,
         },
         "rem" => PcodeOp::IntSignedRem {
-            output: destination,
+            output: arithmetic_output,
             left: left_snapshot,
-            right: right_snapshot,
+            right: safe_divisor,
         },
         "remu" => PcodeOp::IntRem {
-            output: destination,
+            output: arithmetic_output,
             left: left_snapshot,
-            right: right_snapshot,
+            right: safe_divisor,
         },
         _ => return None,
     };
-    Some(RiscVLifted {
-        mnemonic: mnemonic.to_owned(),
-        ops: vec![
-            PcodeOp::Copy {
-                output: left_snapshot,
-                input: left,
-            },
-            PcodeOp::Copy {
-                output: right_snapshot,
-                input: right,
-            },
-            arithmetic,
-            PcodeOp::CallOther {
-                name: "riscv_division_edge_cases".to_owned(),
-                output: None,
-                inputs: vec![left_snapshot, right_snapshot, destination],
-            },
-        ],
-        status: DecodeStatus::CallOther,
-    })
+    ops.push(arithmetic);
+    ops.extend([
+        PcodeOp::IntZext {
+            output: zero_value,
+            input: division_by_zero,
+        },
+        PcodeOp::IntSub {
+            output: zero_mask,
+            left: constant(0, size_bytes),
+            right: zero_value,
+        },
+        PcodeOp::IntNegate {
+            output: nonzero_mask,
+            input: zero_mask,
+        },
+        PcodeOp::IntAnd {
+            output: normal_result,
+            left: arithmetic_output,
+            right: nonzero_mask,
+        },
+    ]);
+    if matches!(mnemonic, "div" | "divu") {
+        ops.push(PcodeOp::Copy {
+            output: exceptional_result,
+            input: zero_mask,
+        });
+    } else {
+        ops.push(PcodeOp::IntAnd {
+            output: exceptional_result,
+            left: left_snapshot,
+            right: zero_mask,
+        });
+    }
+    ops.push(PcodeOp::IntOr {
+        output: destination,
+        left: normal_result,
+        right: exceptional_result,
+    });
+    Some(supported(mnemonic, ops))
 }
 
 fn instruction_alignment(inputs: Vec<Varnode>) -> PcodeOp {
@@ -1335,6 +2127,14 @@ fn supported(mnemonic: &str, ops: Vec<PcodeOp>) -> RiscVLifted {
         mnemonic: mnemonic.to_owned(),
         ops,
         status: DecodeStatus::Supported,
+    }
+}
+
+fn callother(mnemonic: &str, ops: Vec<PcodeOp>) -> RiscVLifted {
+    RiscVLifted {
+        mnemonic: mnemonic.to_owned(),
+        ops,
+        status: DecodeStatus::CallOther,
     }
 }
 
@@ -1357,6 +2157,17 @@ fn riscv_register(spec: &SleighSpec, index: u32) -> Option<Varnode> {
         "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",
         "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4",
         "t5", "t6",
+    ];
+    let position: usize = usize::try_from(index).ok()?;
+    let name: &&str = names.get(position)?;
+    named_register(spec, name)
+}
+
+fn riscv_float_register(spec: &SleighSpec, index: u32) -> Option<Varnode> {
+    let names: [&str; 32] = [
+        "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2",
+        "fa3", "fa4", "fa5", "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9",
+        "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
     ];
     let position: usize = usize::try_from(index).ok()?;
     let name: &&str = names.get(position)?;
