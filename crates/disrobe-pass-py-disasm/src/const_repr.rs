@@ -1,6 +1,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 use disrobe_py_marshal::{BigInt, CodeObject, Object};
+use unicode_general_category::GeneralCategory;
 
 const CODE_REPR_ADDRESS: &str = "0x0000000000000000";
 const MAX_RENDER_DEPTH: usize = 64;
@@ -231,30 +232,19 @@ fn push_str_char(out: &mut String, ch: char) {
 }
 
 fn is_python_printable(ch: char) -> bool {
-    let code: u32 = ch as u32;
-    if code < 0x20 || code == 0x7f {
-        return false;
-    }
-    if code < 0x7f {
+    if ch == ' ' {
         return true;
     }
-    if (0x80..=0xa0).contains(&code) {
-        return false;
-    }
-    !ch.is_control() && !is_separator_or_other(ch)
-}
-
-const fn is_separator_or_other(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{00a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202f}'
-                | '\u{205f}'
-                | '\u{3000}'
-                | '\u{feff}'
+    !matches!(
+        unicode_general_category::get_general_category(ch),
+        GeneralCategory::Control
+            | GeneralCategory::Format
+            | GeneralCategory::Surrogate
+            | GeneralCategory::PrivateUse
+            | GeneralCategory::Unassigned
+            | GeneralCategory::LineSeparator
+            | GeneralCategory::ParagraphSeparator
+            | GeneralCategory::SpaceSeparator
     )
 }
 
@@ -422,6 +412,46 @@ mod tests {
         let triple: Object = Object::Tuple(vec![Object::Int(1), Object::Int(2), Object::Int(3)]);
         assert_eq!(repr_const(&triple), "(1, 2, 3)");
         assert_eq!(repr_const(&Object::Tuple(vec![])), "()");
+    }
+
+    #[test]
+    fn nonprintable_code_points_escape_like_python_repr() {
+        let cases: [(&str, &str); 12] = [
+            ("\u{ad}", "'\\xad'"),
+            ("\u{200b}", "'\\u200b'"),
+            ("\u{200d}", "'\\u200d'"),
+            ("abc\u{ad}def", "'abc\\xaddef'"),
+            ("\u{e000}", "'\\ue000'"),
+            ("\u{2065}", "'\\u2065'"),
+            ("\u{0602}", "'\\u0602'"),
+            ("\u{180e}", "'\\u180e'"),
+            ("\u{e0001}", "'\\U000e0001'"),
+            ("\u{a0}", "'\\xa0'"),
+            ("\u{feff}", "'\\ufeff'"),
+            ("tab\tnl\n\u{200b}x\u{ad}", "'tab\\tnl\\n\\u200bx\\xad'"),
+        ];
+        for (value, expected) in cases {
+            let object: Object = Object::Unicode {
+                value: value.to_owned(),
+                interned: false,
+            };
+            assert_eq!(repr_const(&object), expected, "repr of {value:?}");
+        }
+    }
+
+    #[test]
+    fn printable_high_code_points_stay_literal() {
+        for value in ["\u{e9}", "\u{1f600}", "\u{4e2d}", " "] {
+            let object: Object = Object::Unicode {
+                value: value.to_owned(),
+                interned: false,
+            };
+            assert_eq!(
+                repr_const(&object),
+                format!("'{value}'"),
+                "repr of {value:?}"
+            );
+        }
     }
 
     #[test]
