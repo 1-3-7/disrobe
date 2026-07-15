@@ -175,6 +175,7 @@ enum FunctionConvention {
     Swift,
     C,
     Block,
+    Autoclosure,
 }
 
 impl FunctionConvention {
@@ -183,6 +184,7 @@ impl FunctionConvention {
             Self::Swift => None,
             Self::C => Some("@convention(c) "),
             Self::Block => Some("@convention(block) "),
+            Self::Autoclosure => Some("@autoclosure "),
         }
     }
 }
@@ -1753,6 +1755,10 @@ impl<'a> Demangler<'a> {
                     self.pos += 2;
                     Some(FunctionConvention::Swift)
                 }
+                Some(b'K') => {
+                    self.pos += 2;
+                    Some(FunctionConvention::Autoclosure)
+                }
                 _ => None,
             },
             _ => None,
@@ -2204,7 +2210,7 @@ impl<'a> Demangler<'a> {
     fn peek_function_kind_after(&self, ahead: usize) -> bool {
         match self.peek_at(ahead) {
             Some(b'c') => true,
-            Some(b'X') => matches!(self.peek_at(ahead + 1), Some(b'C' | b'B')),
+            Some(b'X') => matches!(self.peek_at(ahead + 1), Some(b'C' | b'B' | b'K')),
             _ => false,
         }
     }
@@ -2222,6 +2228,10 @@ impl<'a> Demangler<'a> {
             Some(b'X') if self.peek_at(1) == Some(b'B') => {
                 self.pos += 2;
                 Some(FunctionConvention::Block)
+            }
+            Some(b'X') if self.peek_at(1) == Some(b'K') => {
+                self.pos += 2;
+                Some(FunctionConvention::Autoclosure)
             }
             _ => None,
         }
@@ -4439,6 +4449,22 @@ mod tests {
         assert_eq!(
             demangle_type("ySvSgXCSg").as_deref(),
             Some("(@convention(c) (Swift.UnsafeMutableRawPointer?) -> ())?")
+        );
+    }
+
+    #[test]
+    fn demangle_type_autoclosure_function() {
+        assert_eq!(
+            demangle_type("SiyXK").as_deref(),
+            Some("@autoclosure () -> Swift.Int")
+        );
+    }
+
+    #[test]
+    fn demangle_autoclosure_parameter_in_function() {
+        assert_eq!(
+            demangle("$s2b26autoclyySiyXKF").expect("d"),
+            "b2.autocl(@autoclosure () -> Swift.Int) -> ()"
         );
     }
 
