@@ -203,7 +203,7 @@ fn classify(
         return (NirOp::Store, memory_operands(insn.op));
     }
     if is_const(insn.op) {
-        return (NirOp::Const, Vec::new());
+        return (NirOp::Const, const_operand(insn, dex));
     }
     if insn.op == OP_NOP {
         return (NirOp::Nop, Vec::new());
@@ -332,6 +332,34 @@ fn memory_operands(op: u8) -> Vec<String> {
     } else {
         vec!["[array]".to_owned()]
     }
+}
+
+const HIGH16_INT_SHIFT: u32 = 16;
+const HIGH16_WIDE_SHIFT: u32 = 48;
+
+fn const_operand(insn: &DalvikInsn, dex: &DexFile) -> Vec<String> {
+    match insn.op {
+        0x15 => shifted_literal(insn, HIGH16_INT_SHIFT),
+        0x19 => shifted_literal(insn, HIGH16_WIDE_SHIFT),
+        0x1A | 0x1B => index_operand(insn, &dex.strings),
+        0x1C => index_operand(insn, &dex.type_names),
+        _ => insn
+            .literal
+            .map_or_else(Vec::new, |value: i64| vec![value.to_string()]),
+    }
+}
+
+fn shifted_literal(insn: &DalvikInsn, shift: u32) -> Vec<String> {
+    insn.literal.map_or_else(Vec::new, |raw: i64| {
+        let value: i64 = raw.wrapping_shl(shift);
+        vec![value.to_string()]
+    })
+}
+
+fn index_operand(insn: &DalvikInsn, pool: &[String]) -> Vec<String> {
+    insn.index
+        .and_then(|index: u32| pool.get(index as usize))
+        .map_or_else(Vec::new, |text: &String| vec![text.clone()])
 }
 
 const fn binary_op(op: u8) -> Option<BinaryOp> {
