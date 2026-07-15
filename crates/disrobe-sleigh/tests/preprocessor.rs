@@ -160,3 +160,46 @@ fn permits_comments_after_argumentless_directives() {
         preprocess_sources("root.slaspec", &sources, PreprocessorLimits::default());
     assert!(result.is_ok(), "{result:?}");
 }
+
+#[test]
+fn evaluates_boolean_conditions_used_by_arm_sources() {
+    let sources: BTreeMap<String, String> = BTreeMap::from([(
+        "root.slaspec".to_owned(),
+        "@define SIMD 1\n@define VERSION_7 1\n@if (defined (SIMD) || defined(VFPv3)) && !defined(DISABLED)\nselected\n@else\nrejected\n@endif\n@if VERSION_7 == 1 && SIMD != 0\nversion\n@endif\n"
+            .to_owned(),
+    )]);
+    let result: Result<String, _> =
+        preprocess_sources("root.slaspec", &sources, PreprocessorLimits::default());
+    assert!(result.is_ok(), "{result:?}");
+    let output: String = result.unwrap_or_default();
+    assert!(output.contains("selected"));
+    assert!(output.contains("version"));
+    assert!(!output.contains("rejected"));
+}
+
+#[test]
+fn rejects_malformed_or_excessively_nested_boolean_conditions() {
+    for condition in [
+        "defined(NAME) ||",
+        "defined(NAME) &&& defined(OTHER)",
+        "(defined(NAME)",
+        "defined()",
+    ] {
+        let sources: BTreeMap<String, String> = BTreeMap::from([(
+            "root.slaspec".to_owned(),
+            format!("@if {condition}\n@endif\n"),
+        )]);
+        let result: Result<String, _> =
+            preprocess_sources("root.slaspec", &sources, PreprocessorLimits::default());
+        assert!(result.is_err(), "{condition}");
+    }
+
+    let nesting: String = format!("{}MISSING{}", "(".repeat(80), ")".repeat(80));
+    let sources: BTreeMap<String, String> = BTreeMap::from([(
+        "root.slaspec".to_owned(),
+        format!("@if {nesting}\n@endif\n"),
+    )]);
+    let result: Result<String, _> =
+        preprocess_sources("root.slaspec", &sources, PreprocessorLimits::default());
+    assert!(result.is_err());
+}

@@ -1,0 +1,193 @@
+pypcode 4.0.0
+ARM:LE:32:v7
+arm32-a32 0 820181e0 add
+IMARK ram[0:4]
+unique[6500:4] = 0x20 - 0x3
+unique[6600:4] = r2 >> unique[6500:4]
+unique[6800:4] = unique[6600:4] & 0x1
+shift_carry = SUBPIECE unique[6800:4], 0x0
+unique[6b00:4] = r2 << 0x3
+tmpCY = carry(r1, unique[6b00:4])
+tmpOV = scarry(r1, unique[6b00:4])
+r0 = r1 + unique[6b00:4]
+tmpNG = r0 s< 0x0
+tmpZR = r0 == 0x0
+arm32-a32 18 345201e3 movw
+IMARK ram[18:4]
+r5 = 0x1234
+arm32-a32 20 970806e0 mul
+IMARK ram[20:4]
+r6 = r7 * r8
+tmpNG = r6 s< 0x0
+tmpZR = r6 == 0x0
+arm32-a32 2c 0c2093e5 ldr
+IMARK ram[2c:4]
+unique[10500:4] = r3 + 0xc
+r2 = *[ram]unique[10500:4]
+arm32-a32 30 084005e5 str
+IMARK ram[30:4]
+unique[10700:4] = r5 + 0xfffffff8
+*[ram]unique[10700:4] = r4
+arm32-a32 40 000000eb bl
+IMARK ram[40:4]
+lr = 0x44
+call ram[48:4]
+arm32-a32 44 1eff2fe1 bx
+IMARK ram[44:4]
+unique[0:4] = lr & 0x1
+TB = unique[0:4] != 0x0
+setISAMode(TB)
+pc = lr & 0xfffffffe
+return pc
+arm32-a32 4c f080bde8 pop
+IMARK ram[4c:4]
+mult_addr = sp
+r4 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r5 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r6 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r7 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+pc = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+sp = mult_addr
+unique[0:4] = pc & 0x1
+TB = unique[0:4] != 0x0
+setISAMode(TB)
+pc = pc & 0xfffffffe
+return pc
+ARM:LE:32:v8T
+arm32-thumb 0 8818 adds
+IMARK ram[0:2]
+tmpCY = carry(r1, r2)
+tmpOV = scarry(r1, r2)
+r0 = r1 + r2
+tmpNG = r0 s< 0x0
+tmpZR = r0 == 0x0
+CY = tmpCY
+ZR = tmpZR
+NG = tmpNG
+OV = tmpOV
+arm32-thumb c 2a20 movs
+IMARK ram[c:2]
+r0 = 0x2a
+tmpNG = r0 s< 0x0
+tmpZR = r0 == 0x0
+ZR = tmpZR
+NG = tmpNG
+arm32-thumb e 41f23424 movw
+IMARK ram[e:4]
+r4 = zext(0x1234)
+tmpNG = r4 s< 0x0
+tmpZR = r4 == 0x0
+arm32-thumb 1a c868 ldr
+IMARK ram[1a:2]
+unique[150a00:4] = r1 + 0xc
+r0 = *[ram]unique[150a00:4]
+arm32-thumb 1c 9a60 str
+IMARK ram[1c:2]
+unique[150a00:4] = r3 + 0x8
+*[ram]unique[150a00:4] = r2
+arm32-thumb 24 00f001f8 bl
+IMARK ram[24:4]
+lr = 0x28 | 0x1
+TB = 0x1
+setISAMode(TB)
+call ram[2a:4]
+arm32-thumb 28 7047 bx
+IMARK ram[28:2]
+unique[0:4] = lr & 0x1
+TB = unique[0:4] != 0x0
+setISAMode(TB)
+pc = lr & 0xfffffffe
+return pc
+arm32-thumb 2c f0bd pop
+IMARK ram[2c:2]
+mult_addr = sp
+r4 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r5 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r6 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+r7 = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+pc = *[ram]mult_addr
+mult_addr = mult_addr + 0x4
+sp = mult_addr
+unique[0:4] = pc & 0x1
+TB = unique[0:4] != 0x0
+setISAMode(TB)
+pc = pc & 0xfffffffe
+return pc
+arm32-thumb 2e 7846 mov
+IMARK ram[2e:2]
+unique[139600:4] = 0x2e + 0x4
+r0 = unique[139600:4]
+arm32-thumb 30 8746 mov
+IMARK ram[30:2]
+unique[139200:4] = 0x30 + 0x4
+pc = r0 & 0xfffffffe
+goto [pc]
+arm32-thumb 32 8744 add
+IMARK ram[32:2]
+unique[139200:4] = 0x32 + 0x4
+unique[153d00:4] = unique[139200:4] + r0
+pc = unique[153d00:4] & 0xfffffffe
+goto [pc]
+MIPS:LE:32:default
+mips32le 4 2128c700 addu
+IMARK ram[4:4]
+a1 = a2 + a3
+mips32le 8 f4ff2825 addiu
+IMARK ram[8:4]
+t0 = t1 + 0xfffffff4
+mips32le 28 1000c58c lw
+IMARK ram[28:4]
+unique[200:4] = a2 + 0x10
+unique[300:4] = 0x0
+unique[300:4] = unique[200:4]
+a1 = *[ram]unique[300:4]
+mips32le 2c ecff07ad sw
+IMARK ram[2c:4]
+unique[200:4] = t0 + 0xffffffec
+unique[300:4] = 0x0
+unique[300:4] = unique[200:4]
+*[ram]unique[300:4] = a3
+mips32le 30 3412093c lui
+IMARK ram[30:4]
+t1 = 0x1234 << 0x10
+mips32le 34 0c00431001008424 beq
+IMARK ram[34:4], ram[38:4]
+unique[2400:1] = v0 == v1
+a0 = a0 + 0x1
+if (unique[2400:1]) goto ram[68:4]
+MIPS:BE:32:default
+mips32be 4 00c72821 addu
+IMARK ram[4:4]
+a1 = a2 + a3
+mips32be 8 2528fff4 addiu
+IMARK ram[8:4]
+t0 = t1 + 0xfffffff4
+mips32be 28 8cc50010 lw
+IMARK ram[28:4]
+unique[200:4] = a2 + 0x10
+unique[300:4] = 0x0
+unique[300:4] = unique[200:4]
+a1 = *[ram]unique[300:4]
+mips32be 2c ad07ffec sw
+IMARK ram[2c:4]
+unique[200:4] = t0 + 0xffffffec
+unique[300:4] = 0x0
+unique[300:4] = unique[200:4]
+*[ram]unique[300:4] = a3
+mips32be 30 3c091234 lui
+IMARK ram[30:4]
+t1 = 0x1234 << 0x10
+mips32be 34 1043000c24840001 beq
+IMARK ram[34:4], ram[38:4]
+unique[2400:1] = v0 == v1
+a0 = a0 + 0x1
+if (unique[2400:1]) goto ram[68:4]

@@ -10,7 +10,30 @@ use crate::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 use crate::syntax::{Constructor, SleighSpec, parse_spec};
 use crate::vendor::preprocessed_aarch64_source;
 
+mod arm32;
+mod mips32;
+
 static AARCH64_SPEC: OnceLock<Result<CompiledSpec, SleighError>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmMode {
+    A32,
+    Thumb,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Language {
+    AArch64,
+    Arm32(ArmMode),
+    Mips32(crate::syntax::Endian),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedBlock {
+    pub consumed: usize,
+    pub instructions: Vec<PcodeInstr>,
+    pub ordered_ops: Vec<PcodeOp>,
+}
 
 #[derive(Debug)]
 struct Lifted {
@@ -78,6 +101,30 @@ pub fn decode_block(bytes: &[u8], address: u64) -> Vec<PcodeInstr> {
     instructions
 }
 
+pub fn decode_block_for_language(language: Language, bytes: &[u8], address: u64) -> DecodedBlock {
+    match language {
+        Language::AArch64 => {
+            let instructions: Vec<PcodeInstr> = decode_block(bytes, address);
+            let ordered_ops: Vec<PcodeOp> = instructions
+                .iter()
+                .flat_map(|instruction: &PcodeInstr| instruction.ops.iter().cloned())
+                .collect();
+            let consumed: usize = instructions
+                .iter()
+                .map(|instruction: &PcodeInstr| instruction.length)
+                .sum::<usize>()
+                .min(bytes.len());
+            DecodedBlock {
+                consumed,
+                instructions,
+                ordered_ops,
+            }
+        }
+        Language::Arm32(mode) => arm32::decode_block(bytes, address, mode),
+        Language::Mips32(endian) => mips32::decode_block(bytes, address, endian),
+    }
+}
+
 fn compile_aarch64() -> Result<CompiledSpec, SleighError> {
     let source: String = preprocessed_aarch64_source()?;
     let spec: SleighSpec = parse_spec(&source)?;
@@ -109,6 +156,19 @@ fn lift_outcome(
                 status: DecodeStatus::NoMatch,
             }
         }
+        DecodeOutcome::ResourceLimit { attempts } => PcodeInstr {
+            address,
+            bytes: bytes.to_vec(),
+            length: bytes.len(),
+            mnemonic: ".resource_limit".to_owned(),
+            operands: attempts.to_string(),
+            ops: vec![PcodeOp::CallOther {
+                name: "decode_resource_limit".to_owned(),
+                output: None,
+                inputs: Vec::new(),
+            }],
+            status: DecodeStatus::SpecError,
+        },
         DecodeOutcome::Ambiguous { constructors } => PcodeInstr {
             address,
             bytes: bytes.to_vec(),
@@ -169,6 +229,17 @@ fn lift_match(
             status: DecodeStatus::Supported,
         };
     }
+    unsupported_constructor(compiled, matched, bytes, mnemonic)
+}
+
+fn unsupported_constructor(
+    compiled: &CompiledSpec,
+    matched: DecodeMatch,
+    bytes: &[u8],
+    mnemonic: String,
+) -> PcodeInstr {
+    let constructor: Option<&Constructor> =
+        compiled.source().constructors.get(matched.constructor_id);
     let pcodeop: Option<String> = constructor.and_then(|selected: &Constructor| {
         selected
             .semantic_tokens

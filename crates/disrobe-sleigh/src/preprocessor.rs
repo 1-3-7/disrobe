@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::SleighError;
 
+const MAX_CONDITION_DEPTH: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PreprocessorLimits {
     pub conditional_depth: usize,
@@ -43,6 +45,13 @@ struct Preprocessor<'a> {
     source_bytes: usize,
     source_count: usize,
     sources: &'a BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct ConditionParser<'a> {
+    expression: &'a str,
+    index: usize,
+    macros: &'a BTreeMap<String, String>,
 }
 
 pub fn preprocess_sources(
@@ -223,45 +232,16 @@ impl Preprocessor<'_> {
 
     fn evaluate_condition(&self, expression: &str) -> Result<bool, SleighError> {
         let cleaned: &str = strip_directive_comment(expression);
-        if let Some(name) = cleaned
-            .strip_prefix("defined(")
-            .and_then(|rest: &str| rest.strip_suffix(')'))
-        {
-            let symbol: &str =
-                directive_identifier(name).ok_or_else(|| SleighError::ConditionalSyntax {
-                    line: expression.to_owned(),
-                })?;
-            return Ok(self.macros.contains_key(symbol));
-        }
-        for operator in ["==", "!="] {
-            if let Some((name, raw_value)) = cleaned.split_once(operator) {
-                let key: &str =
-                    directive_identifier(name).ok_or_else(|| SleighError::ConditionalSyntax {
-                        line: expression.to_owned(),
-                    })?;
-                let trimmed_value: &str = raw_value.trim();
-                if trimmed_value.is_empty() {
-                    return Err(SleighError::ConditionalSyntax {
-                        line: expression.to_owned(),
-                    });
-                }
-                let expected: String = if trimmed_value.starts_with('"') {
-                    parse_quoted(trimmed_value).ok_or_else(|| SleighError::ConditionalSyntax {
-                        line: expression.to_owned(),
-                    })?
-                } else {
-                    trimmed_value.to_owned()
-                };
-                let actual: Option<&String> = self.macros.get(key);
-                let equal: bool = actual.is_some_and(|value: &String| value == &expected);
-                return Ok(if operator == "==" { equal } else { !equal });
-            }
-        }
-        let symbol: &str =
-            directive_identifier(cleaned).ok_or_else(|| SleighError::ConditionalSyntax {
+        let mut parser: ConditionParser<'_> = ConditionParser {
+            expression: cleaned,
+            index: 0,
+            macros: &self.macros,
+        };
+        parser
+            .parse()
+            .ok_or_else(|| SleighError::ConditionalSyntax {
                 line: expression.to_owned(),
-            })?;
-        Ok(self.macros.contains_key(symbol))
+            })
     }
 
     fn push_condition(&mut self, condition: bool) -> Result<(), SleighError> {
@@ -385,6 +365,158 @@ impl Preprocessor<'_> {
         self.output.push_str(line);
         self.output.push('\n');
         Ok(())
+    }
+}
+
+impl ConditionParser<'_> {
+    fn parse(&mut self) -> Option<bool> {
+        let value: bool = self.parse_or(0)?;
+        self.skip_whitespace();
+        (self.index == self.expression.len()).then_some(value)
+    }
+
+    fn parse_or(&mut self, depth: usize) -> Option<bool> {
+        let mut value: bool = self.parse_and(depth)?;
+        loop {
+            self.skip_whitespace();
+            if !self.consume("||") {
+                return Some(value);
+            }
+            let right: bool = self.parse_and(depth)?;
+            value |= right;
+        }
+    }
+
+    fn parse_and(&mut self, depth: usize) -> Option<bool> {
+        let mut value: bool = self.parse_unary(depth)?;
+        loop {
+            self.skip_whitespace();
+            if !self.consume("&&") {
+                return Some(value);
+            }
+            let right: bool = self.parse_unary(depth)?;
+            value &= right;
+        }
+    }
+
+    fn parse_unary(&mut self, depth: usize) -> Option<bool> {
+        if depth >= MAX_CONDITION_DEPTH {
+            return None;
+        }
+        self.skip_whitespace();
+        if self.consume("!") {
+            return self
+                .parse_unary(depth.saturating_add(1))
+                .map(|value: bool| !value);
+        }
+        self.parse_primary(depth)
+    }
+
+    fn parse_primary(&mut self, depth: usize) -> Option<bool> {
+        self.skip_whitespace();
+        if self.consume("(") {
+            let value: bool = self.parse_or(depth.saturating_add(1))?;
+            self.skip_whitespace();
+            return self.consume(")").then_some(value);
+        }
+        let identifier: String = self.parse_identifier()?;
+        if identifier == "defined" {
+            self.skip_whitespace();
+            if !self.consume("(") {
+                return None;
+            }
+            self.skip_whitespace();
+            let symbol: String = self.parse_identifier()?;
+            self.skip_whitespace();
+            if !self.consume(")") {
+                return None;
+            }
+            return Some(self.macros.contains_key(&symbol));
+        }
+        self.skip_whitespace();
+        let operator: Option<bool> = if self.consume("==") {
+            Some(true)
+        } else if self.consume("!=") {
+            Some(false)
+        } else {
+            None
+        };
+        let Some(equal_operator) = operator else {
+            return Some(self.macros.contains_key(&identifier));
+        };
+        self.skip_whitespace();
+        let expected: String = self.parse_value()?;
+        let equal: bool = self
+            .macros
+            .get(&identifier)
+            .is_some_and(|value: &String| value == &expected);
+        Some(if equal_operator { equal } else { !equal })
+    }
+
+    fn parse_identifier(&mut self) -> Option<String> {
+        let start: usize = self.index;
+        let first: u8 = *self.expression.as_bytes().get(start)?;
+        if first != b'_' && !first.is_ascii_alphabetic() {
+            return None;
+        }
+        self.index = self.index.saturating_add(1);
+        while let Some(byte) = self.expression.as_bytes().get(self.index) {
+            if *byte != b'_' && !byte.is_ascii_alphanumeric() {
+                break;
+            }
+            self.index = self.index.saturating_add(1);
+        }
+        self.expression.get(start..self.index).map(str::to_owned)
+    }
+
+    fn parse_value(&mut self) -> Option<String> {
+        if self.expression.as_bytes().get(self.index) == Some(&b'"') {
+            let start: usize = self.index;
+            self.index = self.index.saturating_add(1);
+            while let Some(byte) = self.expression.as_bytes().get(self.index) {
+                self.index = self.index.saturating_add(1);
+                if *byte == b'"' {
+                    let value: &str = self.expression.get(start..self.index)?;
+                    return parse_quoted(value);
+                }
+            }
+            return None;
+        }
+        let start: usize = self.index;
+        while let Some(byte) = self.expression.as_bytes().get(self.index) {
+            if byte.is_ascii_whitespace() || matches!(*byte, b')' | b'&' | b'|') {
+                break;
+            }
+            self.index = self.index.saturating_add(1);
+        }
+        (self.index > start).then(|| {
+            self.expression
+                .get(start..self.index)
+                .unwrap_or_default()
+                .to_owned()
+        })
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .expression
+            .as_bytes()
+            .get(self.index)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.index = self.index.saturating_add(1);
+        }
+    }
+
+    fn consume(&mut self, expected: &str) -> bool {
+        let Some(rest): Option<&str> = self.expression.get(self.index..) else {
+            return false;
+        };
+        if !rest.starts_with(expected) {
+            return false;
+        }
+        self.index = self.index.saturating_add(expected.len());
+        true
     }
 }
 

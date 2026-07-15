@@ -7,6 +7,8 @@ use crate::syntax::{
 
 const MAX_EVALUATION_DEPTH: usize = 128;
 const MAX_PATTERN_CLAUSES: usize = 4_096;
+const MAX_TABLE_CONSTRUCTORS: usize = 2_048;
+const MAX_DECODE_CONSTRUCTOR_ATTEMPTS: usize = 65_536;
 
 pub type ContextState = BTreeMap<String, i64>;
 
@@ -35,6 +37,7 @@ pub enum DecodeOutcome {
     Ambiguous { constructors: Vec<usize> },
     Matched(DecodeMatch),
     NoMatch,
+    ResourceLimit { attempts: usize },
     Truncated { available: usize, needed: usize },
 }
 
@@ -88,11 +91,36 @@ struct MatchResult {
 
 #[derive(Debug)]
 struct Evaluator<'a> {
+    budget: &'a mut EvaluationBudget,
     bytes: &'a [u8],
     compiled: &'a CompiledSpec,
     context: &'a ContextState,
     needed: usize,
     table_stack: Vec<String>,
+}
+
+#[derive(Debug)]
+struct EvaluationBudget {
+    exceeded: bool,
+    remaining: usize,
+}
+
+impl EvaluationBudget {
+    const fn new() -> Self {
+        Self {
+            exceeded: false,
+            remaining: MAX_DECODE_CONSTRUCTOR_ATTEMPTS,
+        }
+    }
+
+    const fn consume(&mut self) -> bool {
+        if self.remaining == 0 {
+            self.exceeded = true;
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -158,6 +186,21 @@ pub fn compile_spec_with_policy(
             .entry(constructor.table.clone())
             .or_default()
             .push(constructor_id);
+    }
+    if let Some((table, constructors)) =
+        tables
+            .iter()
+            .find(|(_, constructors): &(&String, &Vec<usize>)| {
+                constructors.len() > MAX_TABLE_CONSTRUCTORS
+            })
+    {
+        return Err(SleighError::Parse {
+            message: format!(
+                "Sleigh table {table} constructor count {} exceeds {MAX_TABLE_CONSTRUCTORS}",
+                constructors.len()
+            ),
+            offset: 0,
+        });
     }
     let contexts: BTreeSet<String> = spec
         .contexts
@@ -646,14 +689,49 @@ impl CompiledSpec {
     }
 
     pub fn decode(&self, bytes: &[u8], address: u64, context: &ContextState) -> DecodeOutcome {
-        let candidates: Vec<usize> = self.decision_candidates(bytes).map_or_else(
+        self.decode_internal(bytes, address, context, false)
+    }
+
+    pub(crate) fn decode_complete(
+        &self,
+        bytes: &[u8],
+        address: u64,
+        context: &ContextState,
+    ) -> DecodeOutcome {
+        self.decode_internal(bytes, address, context, true)
+    }
+
+    fn decode_internal(
+        &self,
+        bytes: &[u8],
+        address: u64,
+        context: &ContextState,
+        complete_before_truncated: bool,
+    ) -> DecodeOutcome {
+        let mut candidates: Vec<usize> = self.decision_candidates(bytes).map_or_else(
             || self.tables.get("instruction").cloned().unwrap_or_default(),
             <[usize]>::to_vec,
         );
+        if self.spec.tokens.len() > 1 {
+            let mut merged: BTreeSet<usize> = candidates.into_iter().collect();
+            merged.extend(
+                self.tables
+                    .get("instruction")
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+            candidates = merged.into_iter().collect();
+        }
         let mut matches: Vec<(usize, MatchResult)> = Vec::new();
         let mut truncated_needed: Option<usize> = None;
+        let mut budget: EvaluationBudget = EvaluationBudget::new();
         for constructor_id in candidates {
+            if !budget.consume() {
+                break;
+            }
             let mut evaluator: Evaluator<'_> = Evaluator {
+                budget: &mut budget,
                 bytes,
                 compiled: self,
                 context,
@@ -671,13 +749,24 @@ impl CompiledSpec {
                     }));
             }
         }
-        if let Some(needed) = truncated_needed {
+        if budget.exceeded {
+            return DecodeOutcome::ResourceLimit {
+                attempts: MAX_DECODE_CONSTRUCTOR_ATTEMPTS,
+            };
+        }
+        if !complete_before_truncated && let Some(needed) = truncated_needed {
             return DecodeOutcome::Truncated {
                 available: bytes.len(),
                 needed,
             };
         }
         if matches.is_empty() {
+            if let Some(needed) = truncated_needed {
+                return DecodeOutcome::Truncated {
+                    available: bytes.len(),
+                    needed,
+                };
+            }
             return DecodeOutcome::NoMatch;
         }
         let Some(selected_index) = self.select_match(&matches) else {
@@ -1020,6 +1109,9 @@ impl Evaluator<'_> {
         let mut matches: Vec<(usize, MatchResult)> = Vec::new();
         let mut truncated_needed: usize = 0;
         for constructor_id in constructors {
+            if !self.budget.consume() {
+                break;
+            }
             let constructor: &Constructor = &self.compiled.spec.constructors[constructor_id];
             let (result, needed): (Option<MatchResult>, usize) =
                 self.isolated_match_pattern(&constructor.pattern, cursor, depth.saturating_add(1));
@@ -1027,6 +1119,11 @@ impl Evaluator<'_> {
             if let Some(result) = result {
                 matches.push((constructor_id, result));
             }
+        }
+        if self.budget.exceeded {
+            let removed: Option<String> = self.table_stack.pop();
+            drop(removed);
+            return None;
         }
         let removed: Option<String> = self.table_stack.pop();
         drop(removed);
