@@ -1276,7 +1276,9 @@ impl Demangler<'_> {
         while self.front().is_ascii_hexdigit() {
             self.pos += 1;
         }
-        let mantissa: &[u8] = &self.buf[beg..self.pos];
+        let mantissa: &str = std::str::from_utf8(&self.buf[beg..self.pos]).ok()?;
+        let lead: &str = mantissa.get(..1)?;
+        let frac: &str = mantissa.get(1..)?;
         let sign: &str = if negative { "-" } else { "" };
         if self.match_char(b'P') {
             let exp_neg: bool = self.match_char(b'N');
@@ -1284,14 +1286,11 @@ impl Demangler<'_> {
             while is_digit(self.front()) {
                 self.pos += 1;
             }
-            let exponent: &[u8] = &self.buf[exp_beg..self.pos];
-            let mant: &str = std::str::from_utf8(mantissa).ok()?;
-            let exp: &str = std::str::from_utf8(exponent).ok()?;
+            let exp: &str = std::str::from_utf8(&self.buf[exp_beg..self.pos]).ok()?;
             let esign: &str = if exp_neg { "-" } else { "" };
-            return self.put(&format!("{sign}0x{mant}p{esign}{exp}"));
+            return self.put(&format!("{sign}0x{lead}.{frac}p{esign}{exp}"));
         }
-        let mant: &str = std::str::from_utf8(mantissa).ok()?;
-        self.put(&format!("{sign}0x{mant}"))
+        self.put(&format!("{sign}0x{lead}.{frac}"))
     }
 
     fn put_comma(&mut self, n: usize) -> Option<()> {
