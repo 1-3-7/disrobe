@@ -557,7 +557,8 @@ impl<'a> Reader<'a> {
         if interned {
             self.interned_strings.push(value.clone());
         }
-        if tag == b'u' {
+        let is_unicode: bool = tag == b'u' || (tag == b't' && self.version.major >= 3);
+        if is_unicode {
             return Ok(Object::Unicode { value, interned });
         }
         Ok(Object::String { value, interned })
@@ -1429,6 +1430,38 @@ mod tests {
         let bytes: Vec<u8> = crate::writer::dump(&original, PyVersion::PY27).unwrap();
         let back: Object = load(&bytes, PyVersion::PY27).unwrap();
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn interned_non_ascii_decodes_as_utf8_unicode_under_py3() {
+        const DATA: &[u8] = b"\xf4\x02\x00\x00\x00\xc3\xa9";
+        let obj: Object = load(DATA, PyVersion::PY314).unwrap();
+        let Object::Unicode { value, interned } = &obj else {
+            panic!("py3 TYPE_INTERNED must decode as Unicode, got {obj:?}");
+        };
+        assert_eq!(value, "\u{e9}");
+        assert!(*interned);
+        let out: Vec<u8> = crate::writer::dump(&obj, PyVersion::PY314).unwrap();
+        assert_eq!(
+            out[0], b'u',
+            "interned unicode must re-emit under a utf8 tag, never an ascii tag"
+        );
+        assert!(out.ends_with(&[0xc3, 0xa9]));
+        let back: Object = load(&out, PyVersion::PY314).unwrap();
+        let Object::Unicode { value: rv, .. } = &back else {
+            panic!("re-dump must stay unicode, got {back:?}");
+        };
+        assert_eq!(rv, "\u{e9}");
+    }
+
+    #[test]
+    fn interned_tag_stays_bytes_string_under_py2() {
+        const DATA: &[u8] = b"t\x03\x00\x00\x00abc";
+        let obj: Object = load(DATA, PyVersion::PY27).unwrap();
+        assert!(
+            matches!(&obj, Object::String { value, interned: true } if value == "abc"),
+            "py2 TYPE_INTERNED must stay a byte string, got {obj:?}"
+        );
     }
 
     #[test]
