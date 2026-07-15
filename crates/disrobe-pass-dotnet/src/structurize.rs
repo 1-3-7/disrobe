@@ -399,7 +399,8 @@ fn map_binary_op(op: &str, lang: TargetLang) -> &'static str {
         ("|", _) => "|",
         ("^", _) => "^",
         ("<<", _) => "<<",
-        (">>", _) => ">>",
+        (">>", _) | (">>>", TargetLang::VbNet) => ">>",
+        (">>>", _) => ">>>",
         ("==", _) => "==",
         ("!=", _) => "!=",
         (">", _) => ">",
@@ -421,6 +422,26 @@ fn map_unary_op(op: &str, lang: TargetLang) -> &'static str {
         ("~", _) => "~",
         _ => "!",
     }
+}
+
+fn conv_csharp_target(name: &str) -> Option<(&'static str, bool)> {
+    let checked: bool = name.starts_with("conv.ovf.");
+    let ty: &'static str = match name {
+        "conv.i1" | "conv.ovf.i1" | "conv.ovf.i1.un" => "sbyte",
+        "conv.u1" | "conv.ovf.u1" | "conv.ovf.u1.un" => "byte",
+        "conv.i2" | "conv.ovf.i2" | "conv.ovf.i2.un" => "short",
+        "conv.u2" | "conv.ovf.u2" | "conv.ovf.u2.un" => "ushort",
+        "conv.i4" | "conv.ovf.i4" | "conv.ovf.i4.un" => "int",
+        "conv.u4" | "conv.ovf.u4" | "conv.ovf.u4.un" => "uint",
+        "conv.i8" | "conv.ovf.i8" | "conv.ovf.i8.un" => "long",
+        "conv.u8" | "conv.ovf.u8" | "conv.ovf.u8.un" => "ulong",
+        "conv.i" | "conv.ovf.i" | "conv.ovf.i.un" => "nint",
+        "conv.u" | "conv.ovf.u" | "conv.ovf.u.un" => "nuint",
+        "conv.r4" => "float",
+        "conv.r8" | "conv.r.un" => "double",
+        _ => return None,
+    };
+    Some((ty, checked))
 }
 
 #[must_use]
@@ -538,6 +559,27 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     fn unary(&mut self, op: &'static str) {
         let a: Expr = self.pop();
         self.push(Expr::Unary(op, Box::new(a)));
+    }
+
+    fn emit_conv(&mut self, name: &str) {
+        if self.lang != TargetLang::CSharp {
+            return;
+        }
+        let Some((ty, is_checked)): Option<(&'static str, bool)> = conv_csharp_target(name) else {
+            return;
+        };
+        let e: Expr = self.pop();
+        let operand_is_const: bool = matches!(e, Expr::Const(_));
+        let cast: Expr = Expr::Cast(ty.to_owned(), Box::new(e));
+        if is_checked {
+            let rendered: String = cast.render(self.lang, self.names);
+            self.push(Expr::Raw(format!("checked({rendered})")));
+        } else if operand_is_const {
+            let rendered: String = cast.render(self.lang, self.names);
+            self.push(Expr::Raw(format!("unchecked({rendered})")));
+        } else {
+            self.push(cast);
+        }
     }
 
     fn token_name(&self, ins: &Instruction) -> String {
@@ -874,7 +916,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "or" => self.binary("|"),
             "xor" => self.binary("^"),
             "shl" => self.binary("<<"),
-            "shr" | "shr.un" => self.binary(">>"),
+            "shr" => self.binary(">>"),
+            "shr.un" => self.binary(">>>"),
             "neg" => self.unary("-"),
             "not" => self.unary("~"),
             "ceq" => self.binary("=="),
@@ -1093,7 +1136,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 });
             }
             n if n.starts_with("stloc") => self.store_loc(ins, n),
-            n if n.starts_with("conv.") => {}
+            n if n.starts_with("conv.") => self.emit_conv(n),
             n if n.starts_with("ldind.") => {
                 let addr: Expr = self.pop();
                 self.push(Expr::Deref(Box::new(addr)));
