@@ -1452,12 +1452,32 @@ fn int_literal_as_bool(c: &str) -> Option<&'static str> {
     }
 }
 
+const fn narrow_int_param_bounds(want: &JavaType) -> Option<(&'static str, i32, i32)> {
+    match want {
+        JavaType::Byte => Some(("byte", -128, 127)),
+        JavaType::Short => Some(("short", -32768, 32767)),
+        JavaType::Char => Some(("char", 0, 65535)),
+        _ => None,
+    }
+}
+
 fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
     if matches!(want, JavaType::Boolean)
         && let Expr::Const(c) = &arg
         && let Some(b) = int_literal_as_bool(c)
     {
         return Expr::Const(b.to_string());
+    }
+    if let Some((ty, lo, hi)) = narrow_int_param_bounds(want)
+        && let Expr::Const(c) = &arg
+        && let Some(value) = parse_int_literal(c)
+        && value >= lo
+        && value <= hi
+    {
+        return Expr::Cast {
+            ty: ty.to_string(),
+            value: Box::new(arg),
+        };
     }
     if let JavaType::Object(internal) = want
         && internal != "java/lang/Object"
