@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::yarv::ibf::{
     CatchType, IbfImage, IbfObjectKind, YarvCatchEntry, YarvIbfInstruction, YarvIseqBody,
-    YarvOperand,
+    YarvOperand, ruby_string_literal,
 };
 
 const MAX_STACK: usize = 8192;
@@ -1603,7 +1603,7 @@ fn symbol_literal(s: &str) -> String {
     if is_bare_symbol(s) {
         s.to_owned()
     } else {
-        format!("{s:?}")
+        ruby_string_literal(s)
     }
 }
 
@@ -3616,7 +3616,7 @@ fn getspecial_name(instr: &YarvIbfInstruction) -> String {
 
 fn operand_value(instr: &YarvIbfInstruction, idx: usize) -> String {
     match instr.operands.get(idx) {
-        Some(YarvOperand::Literal(s) | YarvOperand::StrLiteral(s)) => format!("{s:?}"),
+        Some(YarvOperand::Literal(s) | YarvOperand::StrLiteral(s)) => ruby_string_literal(s),
         Some(YarvOperand::SymLiteral(s)) => format!(":{}", symbol_literal(s)),
         Some(YarvOperand::NumLiteral(s)) => s.clone(),
         Some(YarvOperand::Id(s)) => format!(":{s}"),
