@@ -2043,6 +2043,17 @@ pub(super) fn structure_stmts(
         join = hi;
         orelse_start = Some(target);
     }
+    if orelse_start.is_none()
+        && then_arm_is_fallthrough
+        && target < hi
+        && region_ends_in_hard_terminator(stream, jump_idx + 1, body_end)
+        && then_arm_unconditionally_terminates(stream, jump_idx + 1, body_end)
+        && then_arm_opens_handler_after(stream, jump_idx + 1, target)
+        && then_handler_arm_is_terminating_else(stream, jump_idx + 1, target, hi)
+    {
+        join = hi;
+        orelse_start = Some(target);
+    }
     let body_real_end: usize = then_jump_at.unwrap_or(if else_via_continue {
         elif_body_end
     } else {
@@ -4198,6 +4209,50 @@ fn then_arm_opens_handler_after(stream: &DecodedStream, then_lo: usize, target: 
         .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
             e.start >= then_off && e.start < target_off && e.target >= target_off
         })
+}
+
+fn then_handler_arm_is_terminating_else(
+    stream: &DecodedStream,
+    then_lo: usize,
+    target: usize,
+    hi: usize,
+) -> bool {
+    let (Some(&then_off), Some(&target_off)): (Option<&u32>, Option<&u32>) =
+        (stream.offsets.get(then_lo), stream.offsets.get(target))
+    else {
+        return false;
+    };
+    let Some(cold_off): Option<u32> = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            e.start >= then_off && e.start < target_off && e.target >= target_off
+        })
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.target)
+        .min()
+    else {
+        return false;
+    };
+    let Some(cold_start): Option<usize> = stream.index_for_offset(cold_off) else {
+        return false;
+    };
+    if cold_start <= target || cold_start >= hi {
+        return false;
+    }
+    if !region_ends_in_hard_terminator(stream, target, cold_start) {
+        return false;
+    }
+    !(cold_start..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .and_then(|t: usize| stream.offsets.get(t).copied())
+            .is_some_and(|toff: u32| toff >= target_off && toff < cold_off)
+    })
 }
 
 fn hard_terminator_else_end(

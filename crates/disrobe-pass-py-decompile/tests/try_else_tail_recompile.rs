@@ -11,7 +11,16 @@ const TARGET_VERSIONS: &[&str] = &["3.12", "3.14"];
 const PRERELEASE: &[&str] = &["3.15"];
 
 fn assert_recompiles(label: &str, program: &str) {
-    let band: Vec<BandInterpreter> = resolve_band(TARGET_VERSIONS, PRERELEASE);
+    assert_recompiles_on(label, program, TARGET_VERSIONS, PRERELEASE);
+}
+
+fn assert_recompiles_on(
+    label: &str,
+    program: &str,
+    target_versions: &[&'static str],
+    prerelease: &[&'static str],
+) {
+    let band: Vec<BandInterpreter> = resolve_band(target_versions, prerelease);
     if band.is_empty() {
         return;
     }
@@ -185,4 +194,32 @@ def f(argv):
             raise SystemExit(exc) from exc
 ";
     assert_recompiles("else_arm_try_inlined_return", program);
+}
+
+#[test]
+fn both_arms_with_return_keeps_else() {
+    let program: &str = "\
+class FileLoader:
+    def get_data(self, path):
+        if isinstance(self, (SourceLoader, SourcelessFileLoader, ExtensionFileLoader)):
+            with _io.open_code(str(path)) as file:
+                return file.read()
+        else:
+            with _io.FileIO(path, 'r') as file:
+                return file.read()
+";
+    assert_recompiles_on("both_arms_with_return", program, &["3.14"], &[]);
+}
+
+#[test]
+fn conditional_then_arm_sibling_stays_sibling() {
+    let program: &str = "\
+def to_list(self, rowdict):
+    if self.extrasaction == 'raise':
+        wrong = rowdict.keys() - self.fieldnames
+        if wrong:
+            raise ValueError('bad: ' + ', '.join([repr(x) for x in wrong]))
+    return (rowdict.get(key, self.restval) for key in self.fieldnames)
+";
+    assert_recompiles("conditional_then_sibling", program);
 }
