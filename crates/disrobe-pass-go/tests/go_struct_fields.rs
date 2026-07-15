@@ -48,6 +48,51 @@ func main() {
 }
 "#;
 
+const SCALAR_SOURCE: &str = r#"package main
+
+import (
+	"fmt"
+	"os"
+	"reflect"
+	"unsafe"
+)
+
+type Scalars struct {
+	Bl   bool
+	I    int
+	I8   int8
+	I16  int16
+	I32  int32
+	I64  int64
+	U    uint
+	U8   uint8
+	U16  uint16
+	U32  uint32
+	U64  uint64
+	Up   uintptr
+	F32  float32
+	F64  float64
+	C64  complex64
+	C128 complex128
+	Str  string
+	Ptr  unsafe.Pointer
+}
+
+func (Scalars) Mark() {}
+
+var sink interface{ Mark() }
+
+func main() {
+	sink = Scalars{}
+	_ = sink
+	t := reflect.TypeOf(Scalars{})
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		fmt.Fprintf(os.Stdout, "%s\t%d\t%s\t%t\t%t\t%s\t%s\n", f.Name, f.Offset, string(f.Tag), f.Anonymous, f.IsExported(), f.Type.String(), f.Type.Kind())
+	}
+}
+"#;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReflectField {
     name: String,
@@ -91,15 +136,16 @@ fn reflect_truth(dir: &Path) -> Vec<ReflectField> {
         .collect()
 }
 
-fn recovered_fields(binary: &Path) -> Vec<ReflectField> {
+fn recovered_fields(binary: &Path, type_name: &str) -> Vec<ReflectField> {
     let bytes: Vec<u8> = std::fs::read(binary).expect("read cross-built binary");
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze cross-built binary");
     let record: &GoTypeRef = analysis
         .typemeta
         .types
         .iter()
-        .find(|ty: &&GoTypeRef| ty.name.as_deref() == Some("main.Record"))
+        .find(|ty: &&GoTypeRef| ty.name.as_deref() == Some(type_name))
         .unwrap_or_else(|| {
+            let short: &str = type_name.rsplit('.').next().unwrap_or(type_name);
             let candidates: Vec<&GoTypeRef> = analysis
                 .typemeta
                 .types
@@ -107,10 +153,10 @@ fn recovered_fields(binary: &Path) -> Vec<ReflectField> {
                 .filter(|ty: &&GoTypeRef| {
                     ty.name
                         .as_deref()
-                        .is_some_and(|name: &str| name.contains("Record"))
+                        .is_some_and(|name: &str| name.contains(short))
                 })
                 .collect();
-            panic!("main.Record must be reachable through typelinks: {candidates:?}")
+            panic!("{type_name} must be reachable through typelinks: {candidates:?}")
         });
     assert!(
         !record.fields_rejected,
@@ -152,7 +198,7 @@ fn struct_fields_match_reflect_across_go126_cross_builds() {
     for (name, goos, goarch) in targets {
         let binary: PathBuf = common::go_build_cross(&scratch, name, goos, goarch, &[])
             .unwrap_or_else(|| panic!("go1.26 cross-build failed for {goos}/{goarch}"));
-        let recovered: Vec<ReflectField> = recovered_fields(&binary);
+        let recovered: Vec<ReflectField> = recovered_fields(&binary, "main.Record");
         let hit: usize = truth
             .iter()
             .zip(&recovered)
@@ -165,6 +211,73 @@ fn struct_fields_match_reflect_across_go126_cross_builds() {
         assert_eq!(
             recovered, truth,
             "struct fields must match live reflect output for {goos}/{goarch}"
+        );
+    }
+}
+
+#[test]
+fn scalar_widths_and_signedness_match_reflect_across_go126_cross_builds() {
+    if !common::require_go() {
+        return;
+    }
+    let scratch: common::GoBuildScratch = common::new_scratch("scalar_widths");
+    common::write_module(&scratch, "disrobe.example/scalarwidths", SCALAR_SOURCE);
+    let truth: Vec<ReflectField> = reflect_truth(scratch.path());
+    assert_eq!(
+        truth.len(),
+        18,
+        "the width probe must exercise eighteen scalar fields"
+    );
+    let kinds: Vec<&str> = truth
+        .iter()
+        .map(|f: &ReflectField| f.kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "bool",
+            "int",
+            "int8",
+            "int16",
+            "int32",
+            "int64",
+            "uint",
+            "uint8",
+            "uint16",
+            "uint32",
+            "uint64",
+            "uintptr",
+            "float32",
+            "float64",
+            "complex64",
+            "complex128",
+            "string",
+            "unsafe.Pointer",
+        ],
+        "reflect must report every scalar width and signedness distinctly"
+    );
+
+    let targets: [(&str, &str, &str); 3] = [
+        ("scalar_windows_amd64.exe", "windows", "amd64"),
+        ("scalar_linux_amd64", "linux", "amd64"),
+        ("scalar_linux_386", "linux", "386"),
+    ];
+    for (name, goos, goarch) in targets {
+        let binary: PathBuf = common::go_build_cross(&scratch, name, goos, goarch, &[])
+            .unwrap_or_else(|| panic!("go1.26 cross-build failed for {goos}/{goarch}"));
+        let recovered: Vec<ReflectField> = recovered_fields(&binary, "main.Scalars");
+        let recovered_widths: Vec<(String, String)> = recovered
+            .iter()
+            .map(|f: &ReflectField| (f.type_name.clone(), f.kind.clone()))
+            .collect();
+        let truth_widths: Vec<(String, String)> = truth
+            .iter()
+            .map(|f: &ReflectField| (f.type_name.clone(), f.kind.clone()))
+            .collect();
+        eprintln!("go1.26 {goos}/{goarch}: scalar-width recovery {recovered_widths:?}");
+        assert_eq!(
+            recovered_widths, truth_widths,
+            "scalar width and signedness must match live reflect output for {goos}/{goarch}"
         );
     }
 }
