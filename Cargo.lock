@@ -2643,6 +2643,8 @@ dependencies = [
  "ctr",
  "disrobe-core",
  "disrobe-llm-metadata",
+ "disrobe-nir",
+ "disrobe-nir-lift",
  "disrobe-pass-native",
  "disrobe-py-marshal",
  "divan",
