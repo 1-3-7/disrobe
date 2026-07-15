@@ -7,8 +7,9 @@ use disrobe_sleigh::syntax::{
 };
 use disrobe_sleigh::vendor::{
     preprocessed_aarch64_source, preprocessed_arm32_source, preprocessed_mips32be_source,
-    preprocessed_mips32le_source, preprocessed_powerpc32be_source, preprocessed_riscv32_source,
-    preprocessed_riscv64_source,
+    preprocessed_mips32le_source, preprocessed_powerpc32be_source, preprocessed_powerpc64be_source,
+    preprocessed_riscv32_source, preprocessed_riscv32c_source, preprocessed_riscv64_source,
+    preprocessed_riscv64c_source,
 };
 
 #[test]
@@ -182,12 +183,36 @@ fn parses_vendored_riscv_and_powerpc_specs() {
             ["addi", "ld", "jal", "mul"],
         ),
         (
+            preprocessed_riscv32c_source(),
+            Endian::Little,
+            "ra",
+            4,
+            2,
+            ["c.addi", "c.lw", "c.j", "c.add"],
+        ),
+        (
+            preprocessed_riscv64c_source(),
+            Endian::Little,
+            "ra",
+            8,
+            2,
+            ["c.addi", "c.ld", "c.j", "c.add"],
+        ),
+        (
             preprocessed_powerpc32be_source(),
             Endian::Big,
             "r0",
             4,
             2,
             ["add", "cmp", "lwz", "blr"],
+        ),
+        (
+            preprocessed_powerpc64be_source(),
+            Endian::Big,
+            "r0",
+            8,
+            2,
+            ["add", "ld", "rldicl", "mulld"],
         ),
     ] {
         assert!(source_result.is_ok(), "{source_result:?}");
@@ -219,8 +244,11 @@ fn compiles_vendored_multiarch_decision_trees() {
         preprocessed_mips32le_source(),
         preprocessed_mips32be_source(),
         preprocessed_riscv32_source(),
+        preprocessed_riscv32c_source(),
         preprocessed_riscv64_source(),
+        preprocessed_riscv64c_source(),
         preprocessed_powerpc32be_source(),
+        preprocessed_powerpc64be_source(),
     ] {
         assert!(source_result.is_ok(), "{source_result:?}");
         let parsed: Result<SleighSpec, SleighError> = source_result

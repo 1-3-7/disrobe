@@ -34,8 +34,33 @@ fn committed_form_matrices_match_gnu_objdump() {
         ("mips32le_forms", Language::Mips32(Endian::Little), 28, 3),
         ("mips32be_forms", Language::Mips32(Endian::Big), 28, 3),
         ("powerpc32_forms", Language::PowerPc32Be, 32, 1),
+        ("powerpc64_forms", Language::PowerPc64Be, 30, 2),
         ("riscv32_forms", Language::RiscV(RiscVWidth::Rv32), 31, 6),
         ("riscv64_forms", Language::RiscV(RiscVWidth::Rv64), 33, 6),
+        (
+            "riscv32c_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+            19,
+            0,
+        ),
+        (
+            "riscv64c_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+            20,
+            0,
+        ),
+        (
+            "riscv32a_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+            10,
+            10,
+        ),
+        (
+            "riscv64a_forms",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+            12,
+            12,
+        ),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
         assert_cross_check(label, &checked, expected, callother);
@@ -52,14 +77,39 @@ fn committed_cross_gcc_functions_match_gnu_objdump() {
         ("powerpc32_oracle_o2", Language::PowerPc32Be, 11),
         ("riscv32_oracle_o2", Language::RiscV(RiscVWidth::Rv32), 11),
         ("riscv64_oracle_o2", Language::RiscV(RiscVWidth::Rv64), 11),
+        (
+            "riscv32c_oracle_os",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+            11,
+        ),
+        (
+            "riscv64c_oracle_os",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+            11,
+        ),
     ] {
         let checked: CrossCheck = corpus_cross_check(label, language);
-        let callother: usize = if label.starts_with("riscv") {
+        let callother: usize = if label.starts_with("riscv") && !label.contains("c_oracle") {
             4
+        } else if label.starts_with("riscv") {
+            1
         } else {
             usize::from(label.starts_with("powerpc"))
         };
         assert_cross_check(label, &checked, expected, callother);
+    }
+    for (label, language) in [
+        (
+            "riscv32a_oracle_o2",
+            Language::RiscVCompressed(RiscVWidth::Rv32),
+        ),
+        (
+            "riscv64a_oracle_o2",
+            Language::RiscVCompressed(RiscVWidth::Rv64),
+        ),
+    ] {
+        let checked: CrossCheck = corpus_cross_check(label, language);
+        assert_cross_check_with_unsupported(label, &checked, 18, 6, 1);
     }
 }
 
@@ -106,7 +156,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
         println!("MIPS cross-toolchain unavailable; set DISROBE_MIPS_GNU_BIN or PATH");
     }
     if let Some(toolchain) = find_riscv_toolchain() {
-        for (label, source, language, architecture, abi, expected) in [
+        for (label, source, language, architecture, abi, expected, callother) in [
             (
                 "riscv32-live",
                 "riscv32_forms.s",
@@ -114,6 +164,7 @@ fn live_cross_assemblers_match_gnu_objdump() {
                 "-march=rv32im",
                 "-mabi=ilp32",
                 31,
+                6,
             ),
             (
                 "riscv64-live",
@@ -122,12 +173,49 @@ fn live_cross_assemblers_match_gnu_objdump() {
                 "-march=rv64im",
                 "-mabi=lp64",
                 33,
+                6,
+            ),
+            (
+                "riscv32c-live",
+                "riscv32c_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imac",
+                "-mabi=ilp32",
+                19,
+                0,
+            ),
+            (
+                "riscv64c-live",
+                "riscv64c_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imac",
+                "-mabi=lp64",
+                20,
+                0,
+            ),
+            (
+                "riscv32a-live",
+                "riscv32a_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imac",
+                "-mabi=ilp32",
+                10,
+                10,
+            ),
+            (
+                "riscv64a-live",
+                "riscv64a_forms.s",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imac",
+                "-mabi=lp64",
+                12,
+                12,
             ),
         ] {
             let options: Vec<&str> = vec![architecture, abi];
             let checked: CrossCheck =
                 live_cross_check(&toolchain, label, source, language, &options);
-            assert_cross_check(label, &checked, expected, 6);
+            assert_cross_check(label, &checked, expected, callother);
         }
     } else {
         println!("RISC-V cross-toolchain unavailable; set DISROBE_RISCV_GNU_BIN or PATH");
@@ -142,6 +230,15 @@ fn live_cross_assemblers_match_gnu_objdump() {
             &options,
         );
         assert_cross_check("powerpc32-live", &checked, 32, 1);
+        let ppc64_options: Vec<&str> = vec!["-mcpu=powerpc64", "-m32", "-mbig", "-Wa,-mppc64"];
+        let ppc64: CrossCheck = live_cross_check(
+            &toolchain,
+            "powerpc64-live",
+            "powerpc64_forms.s",
+            Language::PowerPc64Be,
+            &ppc64_options,
+        );
+        assert_cross_check("powerpc64-live", &ppc64, 30, 2);
     } else {
         println!("PowerPC cross-toolchain unavailable; set DISROBE_POWERPC_GNU_BIN or PATH");
     }
@@ -214,6 +311,52 @@ fn live_cross_gcc_functions_match_gnu_objdump() {
             let checked: CrossCheck =
                 live_cross_check(&toolchain, label, "riscv_oracle.c", language, &options);
             assert_cross_check(label, &checked, 11, 4);
+        }
+        for (label, language, architecture, abi) in [
+            (
+                "riscv32-c-compressed-live",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imc",
+                "-mabi=ilp32",
+            ),
+            (
+                "riscv64-c-compressed-live",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imac",
+                "-mabi=lp64",
+            ),
+        ] {
+            let mut options: Vec<&str> = common.clone();
+            options.push("-Os");
+            options.extend([architecture, abi]);
+            let checked: CrossCheck =
+                live_cross_check(&toolchain, label, "riscv_oracle.c", language, &options);
+            assert_cross_check(label, &checked, 11, 1);
+        }
+        for (label, language, architecture, abi) in [
+            (
+                "riscv32-c-atomic-live",
+                Language::RiscVCompressed(RiscVWidth::Rv32),
+                "-march=rv32imac",
+                "-mabi=ilp32",
+            ),
+            (
+                "riscv64-c-atomic-live",
+                Language::RiscVCompressed(RiscVWidth::Rv64),
+                "-march=rv64imac",
+                "-mabi=lp64",
+            ),
+        ] {
+            let mut options: Vec<&str> = common.clone();
+            options.extend([architecture, abi]);
+            let checked: CrossCheck = live_cross_check(
+                &toolchain,
+                label,
+                "riscv_atomic_oracle.c",
+                language,
+                &options,
+            );
+            assert_cross_check_with_unsupported(label, &checked, 18, 6, 1);
         }
     } else {
         println!("RISC-V cross-toolchain unavailable; set DISROBE_RISCV_GNU_BIN or PATH");
@@ -289,7 +432,7 @@ fn live_cross_check(
     let disassembly: String = disassembly_output
         .map(|output: CapturedOutput| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default();
-    let reference: Vec<String> = objdump_mnemonics(&disassembly);
+    let reference: Vec<String> = objdump_mnemonics(&disassembly, language);
     let remove_object: io::Result<()> = fs::remove_file(&object);
     let remove_text: io::Result<()> = fs::remove_file(&text);
     let remove_directory: io::Result<()> = fs::remove_dir(&directory);
@@ -315,6 +458,16 @@ fn corpus_cross_check(label: &str, language: Language) -> CrossCheck {
 }
 
 fn assert_cross_check(label: &str, checked: &CrossCheck, expected: usize, callother: usize) {
+    assert_cross_check_with_unsupported(label, checked, expected, callother, 0);
+}
+
+fn assert_cross_check_with_unsupported(
+    label: &str,
+    checked: &CrossCheck,
+    expected: usize,
+    callother: usize,
+    unsupported: usize,
+) {
     let decoded: Vec<String> = checked
         .report
         .instructions
@@ -325,10 +478,10 @@ fn assert_cross_check(label: &str, checked: &CrossCheck, expected: usize, callot
     assert_eq!(decoded, checked.reference, "{label}");
     assert!((checked.report.coverage.decode_coverage_percent() - 100.0).abs() < f64::EPSILON);
     assert_eq!(checked.report.coverage.callother, callother, "{label}");
-    assert_eq!(checked.report.coverage.unsupported, 0, "{label}");
+    assert_eq!(checked.report.coverage.unsupported, unsupported, "{label}");
 }
 
-fn objdump_mnemonics(disassembly: &str) -> Vec<String> {
+fn objdump_mnemonics(disassembly: &str, language: Language) -> Vec<String> {
     disassembly
         .lines()
         .filter_map(|line: &str| {
@@ -349,11 +502,15 @@ fn objdump_mnemonics(disassembly: &str) -> Vec<String> {
                 .nth(1)
                 .and_then(|column: &str| column.split_whitespace().next());
             mnemonic.map(|value: &str| {
-                value
-                    .strip_suffix(".n")
-                    .or_else(|| value.strip_suffix(".w"))
-                    .unwrap_or(value)
-                    .to_owned()
+                if matches!(language, Language::Arm32(_)) {
+                    value
+                        .strip_suffix(".n")
+                        .or_else(|| value.strip_suffix(".w"))
+                        .unwrap_or(value)
+                        .to_owned()
+                } else {
+                    value.to_owned()
+                }
             })
         })
         .collect()

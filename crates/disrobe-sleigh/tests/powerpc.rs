@@ -41,7 +41,21 @@ fn decodes_powerpc_integer_alias_memory_and_control_forms() {
     ));
     assert!(matches!(
         block.instructions[10].ops.as_slice(),
-        [PcodeOp::Return { .. }]
+        [
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            },
+            PcodeOp::Return {
+                target: Some(target)
+            }
+        ] if output == target
+            && output.size_bytes == 4
+            && left.space == Space::Register
+            && left.offset == 0x1020
+            && right.space == Space::Constant
+            && right.offset == 0xffff_fffc
     ));
 }
 
@@ -103,9 +117,10 @@ fn models_powerpc_condition_register_and_bo_bi_branches() {
 
 #[test]
 fn distinguishes_powerpc_branch_constructor_variants() {
-    let cases: [(u32, u64, &str); 4] = [
+    let cases: [(u32, u64, &str); 5] = [
         (0x4800_0005, 0x1000, "bl"),
         (0x4e80_0820, 0x2000, "bclr"),
+        (0x4e80_0420, 0x2800, "bctr"),
         (0x4800_0006, 0x3000, "ba"),
         (0x4800_0007, 0x4000, "bla"),
     ];
@@ -128,16 +143,43 @@ fn distinguishes_powerpc_branch_constructor_variants() {
     ));
     assert!(matches!(
         decoded[1].ops.as_slice(),
-        [PcodeOp::BranchIndirect { target }]
-            if target.space == Space::Register && target.offset == 0x1020
+        [
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            },
+            PcodeOp::BranchIndirect { target }
+        ] if output == target
+            && output.size_bytes == 4
+            && left.space == Space::Register
+            && left.offset == 0x1020
+            && right.space == Space::Constant
+            && right.offset == 0xffff_fffc
     ));
     assert!(matches!(
         decoded[2].ops.as_slice(),
+        [
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            },
+            PcodeOp::BranchIndirect { target }
+        ] if output == target
+            && output.size_bytes == 4
+            && left.space == Space::Register
+            && left.offset == 0x1024
+            && right.space == Space::Constant
+            && right.offset == 0xffff_fffc
+    ));
+    assert!(matches!(
+        decoded[3].ops.as_slice(),
         [PcodeOp::Branch { target }]
             if target.space == Space::Ram && target.offset == 4
     ));
     assert!(matches!(
-        decoded[3].ops.as_slice(),
+        decoded[4].ops.as_slice(),
         [PcodeOp::Copy { .. }, PcodeOp::Call { target }]
             if target.space == Space::Ram && target.offset == 4
     ));
@@ -230,4 +272,141 @@ fn handles_powerpc_fragments_and_wrapping_addresses() {
                 .all(|instruction: &PcodeInstr| instruction.length > 0)
         );
     }
+}
+
+#[test]
+fn decodes_powerpc64_scalar_memory_rotate_compare_and_control_forms() {
+    let words: [u32; 12] = [
+        0xe864_0000,
+        0xf8a6_0008,
+        0x7907_4a80,
+        0x7949_5b04,
+        0x7d2b_6000,
+        0x7dad_7040,
+        0x7df0_89d2,
+        0x7e53_a3d2,
+        0x4182_000c,
+        0x4200_0008,
+        0x4e80_0020,
+        0x3ab6_0007,
+    ];
+    let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_be_bytes).collect();
+    let block: DecodedBlock =
+        decode_block_for_language(Language::PowerPc64Be, &bytes, 0x1_0000_0000);
+    assert_eq!(
+        block
+            .instructions
+            .iter()
+            .map(|instruction: &PcodeInstr| instruction.mnemonic.as_str())
+            .collect::<Vec<&str>>(),
+        [
+            "ld", "std", "rldicl", "rldicr", "cmpd", "cmpld", "mulld", "divd", "beq", "bdnz",
+            "blr", "addi",
+        ],
+        "{block:#?}"
+    );
+    assert_eq!(block.consumed, bytes.len());
+    assert!(block.instructions.iter().enumerate().all(
+        |(index, instruction): (usize, &PcodeInstr)| {
+            let expected: DecodeStatus = if index == 7 {
+                DecodeStatus::CallOther
+            } else {
+                DecodeStatus::Supported
+            };
+            instruction.status == expected && instruction.length == 4
+        }
+    ));
+    assert!(matches!(
+        block.instructions[0].ops.as_slice(),
+        [PcodeOp::IntAdd { output: pointer, .. }, PcodeOp::Load { output, .. }]
+            if pointer.size_bytes == 8 && output.size_bytes == 8
+    ));
+    assert!(block.instructions[1].ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::Store { pointer, value, .. }
+            if pointer.size_bytes == 8 && value.size_bytes == 8)
+    }));
+    assert!(
+        block.instructions[2..4]
+            .iter()
+            .all(|instruction: &PcodeInstr| {
+                instruction.ops.iter().any(|operation: &PcodeOp| {
+                    matches!(operation, PcodeOp::IntAnd { output, right, .. }
+                if output.size_bytes == 8
+                    && right.space == Space::Unique
+                    && right.size_bytes == 8)
+                }) && instruction.ops.iter().any(|operation: &PcodeOp| {
+                    matches!(operation, PcodeOp::IntLeft { output, input, .. }
+                | PcodeOp::IntRight { output, input, .. }
+                if output.size_bytes == 8
+                    && input.space == Space::Constant
+                    && input.offset == u64::MAX)
+                })
+            })
+    );
+    assert!(block.instructions[4].ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntSignedLess { left, right, .. }
+            if left.size_bytes == 8 && right.size_bytes == 8)
+    }));
+    assert!(block.instructions[5].ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntLess { left, right, .. }
+            if left.size_bytes == 8 && right.size_bytes == 8)
+    }));
+    assert!(block.instructions[7].ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::CallOther { name, inputs, .. }
+            if name == "powerpc_division_edge_cases"
+                && inputs.iter().all(|input| input.size_bytes == 8))
+    }));
+    assert!(block.instructions[9].ops.iter().any(|operation: &PcodeOp| {
+        matches!(operation, PcodeOp::IntSub { output, right, .. }
+            if output.size_bytes == 8 && right.size_bytes == 8)
+    }));
+    assert!(matches!(
+        block.instructions[10].ops.as_slice(),
+        [
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            },
+            PcodeOp::Return {
+                target: Some(target)
+            }
+        ] if output == target
+            && output.size_bytes == 8
+            && left.space == Space::Register
+            && left.offset == 0x1040
+            && right.space == Space::Constant
+            && right.offset == 0xffff_ffff_ffff_fffc
+    ));
+
+    let counter_branch: DecodedBlock =
+        decode_block_for_language(Language::PowerPc64Be, &0x4e80_0420_u32.to_be_bytes(), 0);
+    assert!(matches!(
+        counter_branch.instructions[0].ops.as_slice(),
+        [
+            PcodeOp::IntAnd {
+                output,
+                left,
+                right,
+            },
+            PcodeOp::BranchIndirect { target }
+        ] if output == target
+            && output.size_bytes == 8
+            && left.space == Space::Register
+            && left.offset == 0x1048
+            && right.space == Space::Constant
+            && right.offset == 0xffff_ffff_ffff_fffc
+    ));
+}
+
+#[test]
+fn powerpc64_branch_targets_preserve_high_address_bits() {
+    let branch: [u8; 4] = 0x4800_0004_u32.to_be_bytes();
+    let block: DecodedBlock =
+        decode_block_for_language(Language::PowerPc64Be, &branch, 0x1_0000_0000);
+    assert!(matches!(
+        block.instructions[0].ops.as_slice(),
+        [PcodeOp::Branch { target }]
+            if target.size_bytes == 8 && target.offset == 0x1_0000_0004
+    ));
 }

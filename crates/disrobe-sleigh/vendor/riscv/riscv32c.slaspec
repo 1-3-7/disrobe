@@ -7,10 +7,11 @@ define endian=little;
 @define ADDRSIZE "32"
 @define FPSIZE "64"
 @define CSR_REG_START "0x0000"
-@define ALIGNMENT "4"
+@define ALIGNMENT "2"
 
 @include "riscv.reg.sinc"
 @include "riscv.table.sinc"
 @include "riscv.rv32i.sinc"
 @include "riscv.rv32a.sinc"
 @include "riscv.rv32m.sinc"
+@include "riscv.rvc.sinc"

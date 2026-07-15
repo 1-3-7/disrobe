@@ -9,6 +9,8 @@ import pypcode
 
 LANGUAGE = "AARCH64:LE:64:v8A"
 VERSION = "4.0.0"
+LITTLE_ENDIAN = True
+ADDRESS_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -22,9 +24,10 @@ def node_key(node: object) -> tuple[str, int, int]:
 
 
 def node_expression(node: object, size: int | None = None) -> Expression:
+    node_size = ADDRESS_SIZE if node.space.name == "ram" and size is None else node.size
     return Expression(
         "node",
-        (node.space.name, node.offset, node.size if size is None else size),
+        (node.space.name, node.offset, node_size if size is None else size),
     )
 
 
@@ -155,7 +158,32 @@ def normalize(operations: list[object]) -> list[str]:
         pending_facts.clear()
 
     def resolve(node: object) -> Expression:
-        return values.get(node_key(node), node_expression(node))
+        exact = values.get(node_key(node))
+        if exact is not None:
+            return exact
+        if node.space.name != "unique":
+            return node_expression(node)
+        node_start = node.offset
+        node_end = node.offset + node.size
+        candidates = [
+            (key, expression)
+            for key, expression in values.items()
+            if key[0] == "unique"
+            and key[1] <= node_start
+            and node_end <= key[1] + key[2]
+        ]
+        if not candidates:
+            return node_expression(node)
+        key, expression = min(candidates, key=lambda item: item[0][2])
+        byte_offset = (
+            node_start - key[1]
+            if LITTLE_ENDIAN
+            else key[1] + key[2] - node_end
+        )
+        return Expression(
+            "subpiece",
+            (expression, constant(byte_offset, 4)),
+        )
 
     def record(output: object, expression: Expression) -> None:
         nonlocal pending_condition

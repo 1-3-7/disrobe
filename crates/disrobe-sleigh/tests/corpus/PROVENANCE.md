@@ -27,7 +27,7 @@ python tests/fixtures/generate_pypcode_oracle.py
 
 The raw file preserves pypcode's rendered translation for all 64 instructions. The table removes instruction markers and non-architectural temporary writes, inlines temporary definitions, keeps the final value of each architectural register, folds constant-only operations, orders commutative operands, and records RAM operations and control-flow effects. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers. An instruction with no architectural effect uses `none`. Shift counts use four-byte constants in the normalized form. pypcode's internal conditional branch for `csel` becomes `select(condition, true, false)`. Its unsigned subtraction carry form `right <= left` becomes the equivalent `boolnot(ult(left, right))`.
 
-- `generate_pypcode_oracle.py`: `2B781A33F96BC497CDA408986124772CE7AC94729FBA7D1A1E8ABC8EFEDB06B8`
+- `generate_pypcode_oracle.py`: `E4B77DCC5A21E2D6C8C7C2C648B560A84B4494A62F2F2C4C0E37AAEBF27163C2`
 - `aarch64_pypcode.raw`: `80611969425580A1A213B8FF7D30E4158A51DB21827F07E00F9C1656CB8D32B7`
 - `aarch64_pypcode.tsv`: `2A0E78B211244BB70F2DA7AA7B981371ED8C40942C06BB93970B5D1570DEC81A`
 
@@ -59,7 +59,7 @@ The committed form matrices contain 20 A32 instructions, 23 Thumb instructions, 
 
 # RISC-V compiler corpora
 
-The RISC-V files were produced by the MSYS2 UCRT64 `riscv64-unknown-elf` GNU cross-toolchain. GCC reports version 16.1.0. GNU objcopy and objdump report Binutils 2.46.1. The compiler targets both widths through `-march=rv32im -mabi=ilp32` and `-march=rv64im -mabi=lp64`.
+The RISC-V files were produced by the MSYS2 UCRT64 `riscv64-unknown-elf` GNU cross-toolchain. GCC reports version 16.1.0. GNU objcopy and objdump report Binutils 2.46.1. The base compiler targets use `-march=rv32im -mabi=ilp32` and `-march=rv64im -mabi=lp64`. The compressed and atomic targets use `-march=rv32imc` or `-march=rv32imac` with `-mabi=ilp32`, and `-march=rv64imac -mabi=lp64`.
 
 Executable SHA-256 records:
 
@@ -67,21 +67,34 @@ Executable SHA-256 records:
 - `riscv64-unknown-elf-objcopy.exe`: `F4E1B715E9B21D3E1F4A4591C27E1344A65B18955B626905342DBABFB685E7C7`
 - `riscv64-unknown-elf-objdump.exe`: `E5283CEF88C639A55C73F852F89F3AADA54F875926FC4A98F0BC1F73DEF973CD`
 
-The assembly matrices were compiled with their width-specific `-march` and `-mabi` flags. The C fixture was compiled with the same flags plus `-std=c11 -O2 -fno-asynchronous-unwind-tables -fno-stack-protector -fno-unwind-tables`. Each `.text` file was extracted with the matching `objcopy -O binary -j .text`; mnemonics came from the matching `objdump -d -z`.
+The assembly matrices were compiled with their width-specific `-march` and `-mabi` flags. `riscv_oracle.c` was compiled at `-Os` for the compressed corpora. `riscv_atomic_oracle.c` was compiled at `-O2` for the atomic corpora. The C commands also used `-std=c11 -fno-asynchronous-unwind-tables -fno-stack-protector -fno-unwind-tables`. Each `.text` file was extracted with the matching `objcopy -O binary -j .text`; mnemonics came from the matching `objdump -d -z`.
 
 SHA-256 records:
 
 - `riscv32_forms.s`: `F03D3E0E7B78F40CF41121846244F323297E32AB07B86EFAE35BBE2B21DDED7B`
 - `riscv64_forms.s`: `1AF775D0528DBA78BD9C4DB9DE1AD8FEF2F00434D23A5E3C026A9DDE4E5B6466`
+- `riscv32c_forms.s`: `03D271BBE731438D31B1F7972C4C889BC2AF988A5385BFC9AA3D1F6C883FD0E8`
+- `riscv64c_forms.s`: `EFD18F11267D6939C748CFE6A0600884D551FFFCEF940FB6B5E04B8419F79E4B`
+- `riscv32a_forms.s`: `E7ADE4FA74B261F667E6F781268238D21CE55D886785CB3559A146E672FC20DD`
+- `riscv64a_forms.s`: `0BBA03ECEE0936665D2C974E5AC66F4671726C95BD7731A0EDE9676D049AE293`
 - `riscv_oracle.c`: `6C6439AECFB59C6533CA659998C5EE19A06E55A3E53940F28ADA1C81EFB649C8`
+- `riscv_atomic_oracle.c`: `59BBC48D8F07CA56F5C8775AB4053AD9ECAF6B87DCD668BDB569F4470C22442D`
 - `riscv32_forms.text`: `E760444C7FC25054384CB92B41DBDD8E305E29412D0362CD956F8B9CF739DB54`
 - `riscv64_forms.text`: `F72DDE0F5B70115FB6E1AE10EAF30FAD3A3259BE17AE03D656B5E3648A74B6FC`
+- `riscv32c_forms.text`: `04CB400C42F63B12E13C8DC665FEDAECCC9CCD06CB25930FE42856C3B67C3186`
+- `riscv64c_forms.text`: `81DD9AE5659F3F5E1C9C34296CE73590D8B2A66835DDE1AAADEDBEBCBE58211F`
+- `riscv32a_forms.text`: `163B3F5325A506E7D1F257654CE6A9B7501F446C20821D3571BB5C7056EF7475`
+- `riscv64a_forms.text`: `81538CBC4CED405651D847B87E7EA9E5EA386A59B2769433B51B6551FB479CFD`
 - `riscv32_oracle_o2.text`: `7BDFFECAF6CE953AD80386A6FCDF08100FF6D587108417474C6F21AEF33842CA`
 - `riscv64_oracle_o2.text`: `53FFE9E8CD1881895720549AF231502A53FD670E7897512001A3EE80BE1884DD`
+- `riscv32c_oracle_os.text`: `798BB6C7849623635805117A33FBD9E999C37FD5519754C4AB8716FF574C876E`
+- `riscv64c_oracle_os.text`: `79518F68C2CF0744DE58CC7DD3800140264676BCB202DE5C81B6C91B9AAD0B58`
+- `riscv32a_oracle_o2.text`: `CBE01C7BCAD77E31CF81FC4F79E8AD3C435FE13317636F0EB0CBA18389FE4311`
+- `riscv64a_oracle_o2.text`: `EC0FC0F638B639FAE147F812A91B7EF0F3C2C3F792F8B7A93F0978EF9126D69F`
 
-The RV32IM matrix contains 31 instructions and the RV64IM matrix contains 33. Both reach 100 percent constructor matching and exact objdump mnemonic agreement. Their `jalr`, `div`, `divu`, `rem`, `remu`, and `ret` forms are the six `CALLOTHER` records. Each `-O2` C corpus contains 11 instructions with one `divu` and three `ret` `CALLOTHER` records. The control-flow markers preserve the four-byte alignment boundary of the I/M-only profiles.
+The RV32IM matrix contains 31 instructions and the RV64IM matrix contains 33. The RV32 compressed matrix contains 19 instructions and the RV64 compressed matrix contains 20. The RV32 atomic matrix contains 10 instructions and the RV64 atomic matrix contains 12. Every matrix reaches 100 percent constructor matching and exact objdump mnemonic agreement. Each compressed `-Os` C corpus contains 11 instructions. Each atomic `-O2` C corpus contains 18 instructions and preserves the compiler-emitted acquire and release suffixes. The compressed profiles use two-byte instruction alignment.
 
-# PPC32 big-endian compiler corpus
+# PowerPC big-endian compiler corpora
 
 The PPC corpus uses the Sysprogs PowerPC EABI GNU suite because the apt `powerpc-linux-gnu` package is not installable on Windows. GCC reports version 4.9.0. GNU objcopy and objdump report Binutils 2.24. The compiler emits `elf32-powerpc` big-endian objects. The downloaded installer SHA-256 was `E63904AEFCBFAB25022BC042445B4816AE996DE73A59D5D62FCD086D8E2079D6`.
 
@@ -93,20 +106,26 @@ Executable SHA-256 records:
 
 The assembly matrix was compiled with `-mcpu=powerpc -m32 -mbig`. The C fixture was compiled with `-O2 -ffreestanding -fno-builtin -mcpu=powerpc -m32 -mbig`. Each `.text` file was extracted with the matching `objcopy -O binary -j .text`; mnemonics came from the matching `objdump -d -z`.
 
+No `powerpc64-linux-gnu-gcc` or other PPC64 ABI C compiler is installed in this Windows environment. The installed PowerPC EABI assembler accepts the 64-bit ISA through `-mppc64`, so `powerpc64_forms.s` was assembled through the GCC driver with `-mcpu=powerpc64 -m32 -mbig -Wa,-mppc64`. It produces an `elf32-powerpc` container whose `.text` holds PPC64 instructions. The matching GNU objdump verifies every committed encoding and mnemonic. No PPC64 C-compiler coverage is claimed.
+
+PPC64 word-result widths are also checked against Book I of the [Power ISA Version 3.1C](https://openpowerfoundation.org/specifications/isa/) and the matching pypcode language. In particular, `mullw` uses the low 32 bits of each source as signed operands and writes their full 64-bit product in 64-bit mode.
+
 SHA-256 records:
 
 - `powerpc32_forms.s`: `6C17372578D1245B124F478A8741E8AEE6774C377AF6C27C9CB981D1F016C22F`
 - `powerpc_oracle.c`: `F2C30FC7CDBA777E6B925C099628ACE0E2F5ABE0B9A67EFB0249EDF12A6338A4`
+- `powerpc64_forms.s`: `414385D3DD80BE35E7EACC892815594A8A04712E33167AC8A59818C991F76CC0`
 - `powerpc32_forms.text`: `9A8FC4FBF455B27D5F008A2B21E47149EE1D0E7B19659C157E9C07111AD088D6`
 - `powerpc32_oracle_o2.text`: `6120A3F057A84ECB60673848284E129C77350C1B886DB3F8729634954D673AC3`
+- `powerpc64_forms.text`: `96C8B1DA12C8AB141C5950D82AFC0D608F3A9751E61BB18F01B4C77D5A7FEB10`
 
-The assembly matrix contains 32 instructions and the `-O2` C corpus contains 11. Both reach 100 percent constructor matching and exact objdump mnemonic agreement. `divw` is the sole `CALLOTHER` record in each corpus.
+The PPC32 assembly matrix contains 32 instructions and its `-O2` C corpus contains 11. The PPC64 hand-assembled matrix contains 30 instructions. All three reach 100 percent constructor matching and exact objdump mnemonic agreement. `divw` is the sole `CALLOTHER` record in each PPC32 corpus. `divw` and `divd` are the two `CALLOTHER` records in the PPC64 matrix.
 
 # Multi-architecture P-code corpus
 
-`multiarch_pypcode.raw` and `multiarch_pypcode.tsv` were produced with pypcode 4.0.0 from the committed form matrices. The languages are `ARM:LE:32:v7`, `ARM:LE:32:v8T`, `MIPS:LE:32:default`, `MIPS:BE:32:default`, `RISCV:LE:32:default`, `RISCV:LE:64:default`, and `PowerPC:BE:32:default`.
+`multiarch_pypcode.raw` and `multiarch_pypcode.tsv` were produced with pypcode 4.0.0 from the committed form matrices. The languages are `ARM:LE:32:v7`, `ARM:LE:32:v8T`, `MIPS:LE:32:default`, `MIPS:BE:32:default`, `RISCV:LE:32:default`, `RISCV:LE:64:default`, `PowerPC:BE:32:default`, and `PowerPC:BE:64:default`.
 
-The 118 records contain 31 ARM/MIPS cases, 56 RISC-V cases, and 31 PPC32 cases. They cover arithmetic, loads, stores, multiplication, direct and indirect control flow, ARM branch exchange and stack returns, Thumb PC reads and writes, both MIPS byte orders, a MIPS delayed conditional transfer, RISC-V width-dependent effects and all multiply variants, PowerPC CR writes, PowerPC BO/BI plus CTR conditions, fall-through linking, nonzero BH, and absolute direct branches. The table retains final architectural register values, flags, RAM effects, and control-flow effects while removing instruction markers, internal temporaries, decoder-context pcodeops, and the separately asserted RISC-V alignment marker. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers.
+The 209 records contain 31 ARM/MIPS cases, 117 RISC-V cases, and 61 PowerPC cases. The added records cover compressed RISC-V arithmetic, memory, stack, direct control, and indirect control effects, all 22 atomic matrix records, and 30 PPC64 arithmetic, memory, rotate, compare, multiply, divide, and BO/BI branch records. The atomic comparison checks the encoded register fields, operation code, access width, acquire and release bits, result, address, operand, and pypcode reference access shape against `riscv_atomic_memory_v1`. It does not claim that pypcode's load and store expansion preserves atomicity. Its compressed `C.JR` and `C.JALR` translations omit the least-significant-bit clear emitted by its base `JALR` translation and required by the compressed instructions' base expansion. Its PowerPC `bclr`, `bctr`, and `blr` translations likewise omit the architectural low-two-bit target clear. The raw corpus preserves those outputs. The Rust comparison applies only the missing target masks before comparing the affected records. The table retains final architectural register values, flags, RAM effects, and control-flow effects while removing instruction markers, internal temporaries, decoder-context pcodeops, and separately asserted `CALLOTHER` markers. Independent facts are canonicalized within each control-flow segment while segment order remains intact across transfers.
 
 The generator is reproducible after the pinned pypcode installation:
 
@@ -116,8 +135,8 @@ python tests/fixtures/generate_multiarch_pypcode_oracle.py
 
 The generator disassembles every selected byte slice with the matching pypcode language and rejects instruction-count or length drift before translation. The Rust comparison requires one raw translation header for every table row and checks each row's decoded mnemonic.
 
-- `generate_multiarch_pypcode_oracle.py`: `06943F1700DA369279141D812CBF5B104CAD2E83ECCD1F621B3B9AAE4207B1FF`
-- `multiarch_pypcode.raw`: `4AA9C29B4941F1BC48A15C91005C021EEC0D67E9A455BB2F1B0D2D25A466C7F8`
-- `multiarch_pypcode.tsv`: `2BAFF19B2B616751EAC19D07DDD1FA1DD3F7279969E29780C26C523652275294`
+- `generate_multiarch_pypcode_oracle.py`: `A68D961CECF94A292AA0FE4AFFAD5DDD4642447B9D51911E6A345ABEBF858163`
+- `multiarch_pypcode.raw`: `CDAD6FC056612BCA823034A622BC530E98271D1821AC316351A7A93E0EAD7DC3`
+- `multiarch_pypcode.tsv`: `88EC792F9AB5850B805E7E95F80DA547FFD88E8C6D1B6BABD5DE6F3D3D4FACD4`
 
 `tests/pcode_oracle.rs` independently normalizes this crate's ordered P-code stream and compares every record with the pypcode-derived table.
