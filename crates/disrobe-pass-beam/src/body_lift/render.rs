@@ -324,8 +324,13 @@ fn needs_quoting(a: &str) -> bool {
     if !first.is_ascii_lowercase() {
         return true;
     }
-    !a.chars()
+    if !a
+        .chars()
         .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '@')
+    {
+        return true;
+    }
+    crate::symbolic::RESERVED_WORDS.contains(&a)
 }
 
 fn render_char(c: u32) -> String {
@@ -448,5 +453,26 @@ mod tests {
         let bytes: Vec<u8> = vec![0xff, 0x00, 0x80];
         let rendered: String = render_expr(&Expr::BinaryLit(bytes));
         assert_eq!(rendered, "<<255, 0, 128>>");
+    }
+
+    #[test]
+    fn reserved_word_atoms_are_quoted() {
+        for word in crate::symbolic::RESERVED_WORDS {
+            assert_eq!(render_atom(word), format!("'{word}'"));
+        }
+        assert_eq!(render_atom("if"), "'if'");
+        assert_eq!(render_atom("end"), "'end'");
+        assert_eq!(render_atom("else"), "'else'");
+        assert_eq!(render_atom("maybe"), "'maybe'");
+    }
+
+    #[test]
+    fn non_reserved_atoms_stay_bare() {
+        assert_eq!(render_atom("query"), "query");
+        assert_eq!(render_atom("iffy"), "iffy");
+        assert_eq!(render_atom("case_"), "case_");
+        assert_eq!(render_atom("andalso2"), "andalso2");
+        assert_eq!(render_atom("ok"), "ok");
+        assert_eq!(render_atom("handle_call"), "handle_call");
     }
 }

@@ -1148,10 +1148,10 @@ fn render_atom_literal(name: &str) -> String {
     }
 }
 
-const RESERVED_WORDS: &[&str] = &[
+pub(crate) const RESERVED_WORDS: &[&str] = &[
     "after", "and", "andalso", "band", "begin", "bnot", "bor", "bsl", "bsr", "bxor", "case",
-    "catch", "cond", "div", "end", "fun", "if", "let", "maybe", "not", "of", "or", "orelse",
-    "receive", "rem", "try", "when", "xor",
+    "catch", "cond", "div", "else", "end", "fun", "if", "let", "maybe", "not", "of", "or",
+    "orelse", "receive", "rem", "try", "when", "xor",
 ];
 
 fn is_unquoted_atom(name: &str) -> bool {
