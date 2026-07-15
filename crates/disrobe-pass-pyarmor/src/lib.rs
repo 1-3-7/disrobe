@@ -57,6 +57,7 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+pub mod bcc;
 mod bcc_lift;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
@@ -85,6 +86,11 @@ mod v6v7;
 mod v8v9;
 mod wrap;
 
+pub use bcc::{
+    BccLinkMap, BccLinkOutput, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord,
+    LinkConfidence, LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature,
+    SourceIdentity, link_bcc_from_unpack, link_bcc_module,
+};
 pub use bcc_lift::{
     BccLiftOutput, FunctionId, PseudoCFunction, lift_bcc_code_region, lift_bcc_native,
 };
