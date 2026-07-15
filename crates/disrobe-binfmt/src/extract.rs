@@ -2984,7 +2984,7 @@ fn extract_sevenz(
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let violations: Vec<String> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
     let mut sz_reader: sevenz_rust2::SevenZReader<Cursor<&[u8]>> =
         sevenz_rust2::SevenZReader::new(reader, sevenz_rust2::Password::empty())
             .map_err(|e| Error::SevenZ(e.to_string()))?;
@@ -2997,7 +2997,10 @@ fn extract_sevenz(
                 let raw_name: String = entry.name().to_owned();
                 let safe_name: String = match sanitize_entry_path(&raw_name) {
                     Ok(s) => s,
-                    Err(_) => return Ok(true),
+                    Err(e) => {
+                        violations.push(format!("sevenz-slip: {e}"));
+                        return Ok(true);
+                    }
                 };
                 let uncompressed_size: u64 = entry.size();
                 let compressed_size: u64 = entry.compressed_size;
@@ -5168,6 +5171,116 @@ mod tests {
             extract_to_with_quota(ContainerKind::Zip, &bytes, &out, tight).unwrap_err();
         assert!(
             matches!(err, Error::QuotaExceeded { reason, .. } if reason.contains("entry count"))
+        );
+    }
+
+    #[test]
+    fn extract_zip_recovers_reference_utf8_names_byte_identically() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/containers/utf8_names_zip.bin");
+        let out: PathBuf = temp_dir("zip-utf8-names");
+        let result: ExtractionResult =
+            extract_to(ContainerKind::Zip, bytes, &out).expect("extract reference zip");
+        let cafe: &ExtractedEntry = result
+            .entries
+            .iter()
+            .find(|e: &&ExtractedEntry| e.name == "café.txt")
+            .expect("café.txt entry present");
+        assert_eq!(
+            cafe.name.as_bytes(),
+            &[0x63, 0x61, 0x66, 0xC3, 0xA9, 0x2E, 0x74, 0x78, 0x74],
+            "café must stay UTF-8, not Latin-1-split or double-encoded"
+        );
+        let cjk: &ExtractedEntry = result
+            .entries
+            .iter()
+            .find(|e: &&ExtractedEntry| e.name == "日本語.bin")
+            .expect("日本語.bin entry present");
+        assert_eq!(cjk.name.as_bytes(), "日本語.bin".as_bytes());
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|e: &ExtractedEntry| e.name == "nested/deep/path.txt")
+        );
+        assert!(
+            !result
+                .entries
+                .iter()
+                .any(|e: &ExtractedEntry| e.name.contains("evil"))
+        );
+        assert_eq!(
+            std::fs::read(out.join("café.txt")).expect("café file written"),
+            b"PAYLOAD-DATA-1234"
+        );
+        assert_eq!(
+            std::fs::read(out.join("nested/deep/path.txt")).expect("nested file written"),
+            b"PAYLOAD-DATA-1234"
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|v: &String| v.contains("zip-slip"))
+        );
+        let escaped: PathBuf = out.parent().expect("parent dir").join("evil.txt");
+        assert!(
+            !escaped.exists(),
+            "traversal entry must not escape the root"
+        );
+        for entry in &result.entries {
+            if let Some(disk) = &entry.disk_path {
+                assert!(
+                    disk.starts_with(&out),
+                    "recovered path escaped root: {disk:?}"
+                );
+            }
+        }
+    }
+
+    fn synth_sevenz(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut writer: sevenz_rust2::SevenZWriter<Cursor<Vec<u8>>> =
+            sevenz_rust2::SevenZWriter::new(cursor).expect("7z writer");
+        for (name, body) in files {
+            let entry: sevenz_rust2::SevenZArchiveEntry =
+                sevenz_rust2::SevenZArchiveEntry::new_file(name);
+            writer
+                .push_archive_entry::<&[u8]>(entry, Some(*body))
+                .expect("push 7z entry");
+        }
+        writer.finish().expect("finish 7z").into_inner()
+    }
+
+    #[test]
+    fn extract_sevenz_records_slip_violation_for_unsafe_entry() {
+        let bytes: Vec<u8> = synth_sevenz(&[("ok/data.bin", b"good"), ("../evil.txt", b"bad")]);
+        let out: PathBuf = temp_dir("7z-slip");
+        let result: ExtractionResult =
+            extract_to(ContainerKind::SevenZ, &bytes, &out).expect("extract 7z");
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|e: &ExtractedEntry| e.name == "ok/data.bin")
+        );
+        assert!(
+            !result
+                .entries
+                .iter()
+                .any(|e: &ExtractedEntry| e.name.contains("evil"))
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|v: &String| v.contains("sevenz-slip")),
+            "unsafe 7z entry must be surfaced, not silently dropped: {:?}",
+            result.integrity_violations
+        );
+        let escaped: PathBuf = out.parent().expect("parent dir").join("evil.txt");
+        assert!(
+            !escaped.exists(),
+            "traversal entry must not escape the root"
         );
     }
 
