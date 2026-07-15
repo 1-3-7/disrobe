@@ -322,6 +322,16 @@ fn render_string_lit(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            other if (other as u32) < 0x20 => {
+                let code: u32 = other as u32;
+                out.push_str("\\x");
+                out.push(char::from_digit(code >> 4, 16).unwrap_or('0'));
+                out.push(char::from_digit(code & 0x0F, 16).unwrap_or('0'));
+            }
             other => out.push(other),
         }
     }
@@ -4175,6 +4185,22 @@ mod tests {
     fn render_string_escapes() {
         assert_eq!(render_string_lit("a\"b"), "\"a\\\"b\"");
         assert_eq!(render_string_lit("x\ny"), "\"x\\ny\"");
+    }
+
+    #[test]
+    fn render_string_escapes_control_and_line_separators() {
+        assert_eq!(render_string_lit("\u{08}\u{0C}"), "\"\\b\\f\"");
+        assert_eq!(
+            render_string_lit("\u{00}\u{07}\u{0B}\u{1F}"),
+            "\"\\x00\\x07\\x0b\\x1f\""
+        );
+        assert_eq!(render_string_lit("\u{2028}\u{2029}"), "\"\\u2028\\u2029\"");
+    }
+
+    #[test]
+    fn render_string_keeps_printable_high_bytes_literal() {
+        assert_eq!(render_string_lit("café €"), "\"café €\"");
+        assert_eq!(render_string_lit("日本語"), "\"日本語\"");
     }
 
     #[test]
