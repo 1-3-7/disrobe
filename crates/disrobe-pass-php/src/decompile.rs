@@ -1551,7 +1551,13 @@ impl<'a> Lifter<'a> {
         let rhs: Option<Expr> = self.operand_expr(op.op2_type, op.op2);
         if let (Some(l), Some(r)) = (lhs, rhs) {
             let (sym, prec): (&str, u8) = binary_symbol(op.opcode);
-            let text: String = format!("{} {} {}", l.wrapped(prec), sym, r.wrapped(prec + 1));
+            let (left_prec, right_prec): (u8, u8) = if is_right_associative(op.opcode) {
+                (prec + 1, prec)
+            } else {
+                (prec, prec + 1)
+            };
+            let text: String =
+                format!("{} {} {}", l.wrapped(left_prec), sym, r.wrapped(right_prec));
             self.store_result(op, Expr { text, prec });
         }
     }
@@ -1701,6 +1707,11 @@ fn slot_fallback(kind: OperandType, value: u32) -> String {
         OperandType::Var => format!("$var{value}"),
         _ => format!("$slot{value}"),
     }
+}
+
+#[must_use]
+const fn is_right_associative(opcode: u8) -> bool {
+    opcode == op::POW
 }
 
 #[must_use]
