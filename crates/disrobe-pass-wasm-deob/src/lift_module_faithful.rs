@@ -811,7 +811,9 @@ fn ref_type_keyword(ty: RefType) -> String {
 fn const_f32(bits: u32) -> String {
     let v: f32 = f32::from_bits(bits);
     if v.is_nan() {
-        "nan".to_owned()
+        let sign: &str = if bits >> 31 == 1 { "-" } else { "" };
+        let payload: u32 = bits & 0x007f_ffff;
+        format!("{sign}nan:0x{payload:x}")
     } else if v.is_infinite() {
         if v < 0.0 {
             "-inf".to_owned()
@@ -826,7 +828,9 @@ fn const_f32(bits: u32) -> String {
 fn const_f64(bits: u64) -> String {
     let v: f64 = f64::from_bits(bits);
     if v.is_nan() {
-        "nan".to_owned()
+        let sign: &str = if bits >> 63 == 1 { "-" } else { "" };
+        let payload: u64 = bits & 0x000f_ffff_ffff_ffff;
+        format!("{sign}nan:0x{payload:x}")
     } else if v.is_infinite() {
         if v < 0.0 {
             "-inf".to_owned()
