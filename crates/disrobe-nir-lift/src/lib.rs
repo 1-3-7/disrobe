@@ -8,6 +8,7 @@ mod dalvik;
 mod error;
 mod jvm;
 mod lua;
+mod operand;
 mod python;
 mod wasm;
 mod yarv;

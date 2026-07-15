@@ -9,6 +9,7 @@ use disrobe_pass_dotnet::{
 };
 
 use crate::error::{LiftError, Result};
+use crate::operand::{f32_operand, f64_operand};
 use crate::usize_to_u32_saturating;
 
 const FUNCTION_STRIDE: u64 = 1 << 20;
@@ -372,8 +373,16 @@ fn const_operand(insn: &Instruction) -> Vec<String> {
         OperandValue::I32(v) => vec![v.to_string()],
         OperandValue::I64(v) => vec![v.to_string()],
         OperandValue::U8(v) => vec![i32::from(v.cast_signed()).to_string()],
-        OperandValue::F32Bits(bits) => vec![f32::from_bits(*bits).to_string()],
-        OperandValue::F64Bits(bits) => vec![f64::from_bits(*bits).to_string()],
+        OperandValue::F32Bits(bits) => vec![f32_operand(*bits)],
+        OperandValue::F64Bits(bits) => vec![f64_operand(*bits)],
+        _ => implicit_ldc_i4_operand(insn.opcode),
+    }
+}
+
+fn implicit_ldc_i4_operand(opcode: u16) -> Vec<String> {
+    match opcode {
+        0x15 => vec!["-1".to_owned()],
+        0x16..=0x1E => vec![(i32::from(opcode) - 0x16).to_string()],
         _ => Vec::new(),
     }
 }
@@ -469,5 +478,14 @@ mod tests {
         assert_eq!(switch_operand_bytes(0), 4);
         assert_eq!(switch_operand_bytes(1), 8);
         assert_eq!(switch_operand_bytes(usize::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn implicit_ldc_i4_macro_forms_carry_their_value() {
+        assert_eq!(implicit_ldc_i4_operand(0x15), vec!["-1".to_owned()]);
+        assert_eq!(implicit_ldc_i4_operand(0x16), vec!["0".to_owned()]);
+        assert_eq!(implicit_ldc_i4_operand(0x1A), vec!["4".to_owned()]);
+        assert_eq!(implicit_ldc_i4_operand(0x1E), vec!["8".to_owned()]);
+        assert!(implicit_ldc_i4_operand(0x20).is_empty());
     }
 }
