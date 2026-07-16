@@ -154,7 +154,7 @@ impl MethodModel {
             rendered.push(format!(
                 "{} {}",
                 p.render_in(TargetLang::CSharp),
-                self.param_name(i)
+                crate::structurize::csharp_escape_identifier(&self.param_name(i))
             ));
         }
         format!("{vis}{stat}{ret} {display_name}({})", rendered.join(", "))
@@ -1987,6 +1987,31 @@ mod tests {
         assert_eq!(generic_arity("Dictionary`2"), 2);
         assert_eq!(generic_arity("Enumerator"), 0);
         assert_eq!(generic_arity("Weird`x"), 0);
+    }
+
+    #[test]
+    fn csharp_signature_escapes_keyword_parameter_name() {
+        let method: MethodModel = MethodModel {
+            token: 0x0600_0001,
+            name: "Sample.K::M".to_owned(),
+            flags: METHOD_PUBLIC | METHOD_STATIC,
+            impl_flags: 0,
+            rva: 0,
+            signature: MethodSig {
+                calling_convention: 0,
+                has_this: false,
+                explicit_this: false,
+                generic_param_count: 0,
+                return_type: crate::signature::TypeSigOrVoid::Void,
+                params: vec![TypeSig::I4],
+            },
+            parameters: vec![ParamModel {
+                sequence: 1,
+                name: "object".to_owned(),
+            }],
+        };
+        let sig: String = method.csharp_signature();
+        assert!(sig.ends_with("M(int @object)"), "got: {sig}");
     }
 
     #[test]
