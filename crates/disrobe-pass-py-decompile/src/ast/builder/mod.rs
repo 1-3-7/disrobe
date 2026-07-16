@@ -1079,11 +1079,39 @@ thread_local! {
     static STRUCTURE_ACTIVE: std::cell::RefCell<Vec<(usize, usize)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     static STRUCTURE_HI_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static THEN_ARM_END_CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static CODEOBJ_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn structure_hi_cap() -> usize {
     STRUCTURE_HI_CAP.with(|slot: &std::cell::Cell<usize>| slot.get())
+}
+
+fn then_arm_end_cap() -> usize {
+    THEN_ARM_END_CAP.with(|slot: &std::cell::Cell<usize>| slot.get())
+}
+
+#[derive(Debug)]
+struct ThenArmEndCapGuard {
+    restore: usize,
+}
+
+impl ThenArmEndCapGuard {
+    fn enter(cap: usize) -> Self {
+        let restore: usize = THEN_ARM_END_CAP.with(|slot: &std::cell::Cell<usize>| {
+            let prev: usize = slot.get();
+            let next: usize = if prev == 0 { cap } else { prev.min(cap) };
+            slot.set(next);
+            prev
+        });
+        Self { restore }
+    }
+}
+
+impl Drop for ThenArmEndCapGuard {
+    fn drop(&mut self) {
+        THEN_ARM_END_CAP.with(|slot: &std::cell::Cell<usize>| slot.set(self.restore));
+    }
 }
 
 #[derive(Debug)]

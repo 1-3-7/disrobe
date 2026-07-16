@@ -12,8 +12,9 @@ use super::stmts::{
     test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
 };
 use super::{
-    DecodedStream, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard, active_version,
-    loop_continue_target, loop_frame_depth, none_jump_test, structure_hi_cap,
+    DecodedStream, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard, ThenArmEndCapGuard,
+    active_version, loop_continue_target, loop_frame_depth, none_jump_test, structure_hi_cap,
+    then_arm_end_cap,
 };
 use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
 use crate::bytecode::opcode::CanonicalOp;
@@ -1767,8 +1768,15 @@ pub(super) fn try_structure_guarded_try(
         protected_body_end_with_return(stream, region.try_start, comp_end, region.handler_start);
     let body_end: usize =
         extend_body_over_trailing_guard(stream, region.try_start, body_end, false_target);
-    let continuation_end: usize =
-        trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+    let continuation_end: usize = {
+        let raw: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+        let cap: usize = then_arm_end_cap();
+        if cap != 0 && cap >= false_target && cap < raw {
+            cap
+        } else {
+            raw
+        }
+    };
     let dup_pop_except: Option<usize> = handler_return_idiom_duplicates_continuation(
         stream,
         region.handler_start,
@@ -1777,9 +1785,17 @@ pub(super) fn try_structure_guarded_try(
         continuation_end,
     );
     let handler_region_end: usize = dup_pop_except.map_or(region.region_end, |pop: usize| pop + 1);
+    let else_join: Option<usize> = then_terminating_jump(stream, region.try_start, false_target)
+        .and_then(|j: usize| resolve_jump_target(stream, j, &stream.ops[j]))
+        .filter(|t: &usize| *t > false_target && *t < region.handler_start);
+    let cap_then_arm: bool = else_join.is_some()
+        && region.region_end > false_target
+        && first_significant(stream, false_target, region.region_end).is_some();
     let if_body: Vec<Stmt> = if inner_guard_before_try {
         let body_start: usize =
             first_significant(stream, guard + 1, false_target).unwrap_or(guard + 1);
+        let _then_cap: Option<ThenArmEndCapGuard> =
+            cap_then_arm.then(|| ThenArmEndCapGuard::enter(false_target));
         structure_stmts(code, stream, body_start, region.region_end)?
     } else {
         let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
@@ -1814,9 +1830,6 @@ pub(super) fn try_structure_guarded_try(
         body
     };
 
-    let else_join: Option<usize> = then_terminating_jump(stream, region.try_start, false_target)
-        .and_then(|j: usize| resolve_jump_target(stream, j, &stream.ops[j]))
-        .filter(|t: &usize| *t > false_target && *t < region.handler_start);
     let trailing_is_continuation: bool = else_join.is_none()
         && (dup_pop_except.is_some()
             || handler_normal_exit_backjumps_to(
@@ -2059,8 +2072,15 @@ pub(super) fn try_structure_multibranch_guarded_try(
         protected_body_end_with_return(stream, region.try_start, comp_end, region.handler_start);
     let body_end: usize =
         extend_body_over_trailing_guard(stream, region.try_start, body_end, false_target);
-    let continuation_end: usize =
-        trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+    let continuation_end: usize = {
+        let raw: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+        let cap: usize = then_arm_end_cap();
+        if cap != 0 && cap >= false_target && cap < raw {
+            cap
+        } else {
+            raw
+        }
+    };
     let dup_pop_except: Option<usize> = handler_return_idiom_duplicates_continuation(
         stream,
         region.handler_start,
