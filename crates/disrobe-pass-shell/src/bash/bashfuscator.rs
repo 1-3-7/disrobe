@@ -396,6 +396,21 @@ fn decode_ansi_c_inner(inner: &[u8]) -> Vec<u8> {
                 out.push(b'?');
                 i += 2;
             }
+            b'c' => {
+                if i + 2 < inner.len() {
+                    let ctrl_src: u8 = inner[i + 2];
+                    out.push(if ctrl_src == b'?' {
+                        0x7f
+                    } else {
+                        ctrl_src & 0x1f
+                    });
+                    i += 3;
+                } else {
+                    out.push(b'\\');
+                    out.push(b'c');
+                    i += 2;
+                }
+            }
             b'x' | b'X' => {
                 let hex_end: usize = (i + 4).min(inner.len());
                 let hex: &str = std::str::from_utf8(&inner[i + 2..hex_end]).unwrap_or("");
@@ -1027,6 +1042,25 @@ mod tests {
         let mut steps: Vec<String> = Vec::new();
         let out: String = decode_ansi_c_quoting(s, &mut steps);
         assert_eq!(out, "printf");
+    }
+
+    #[test]
+    fn ansi_c_quoting_decodes_control_escapes() {
+        let mut steps: Vec<String> = Vec::new();
+        assert_eq!(
+            decode_ansi_c_inner(br"\cA"),
+            vec![0x01u8],
+            "\\cA is control-A (0x01), not the literal bytes cA"
+        );
+        assert_eq!(decode_ansi_c_inner(br"\ca"), vec![0x01u8]);
+        assert_eq!(decode_ansi_c_inner(br"\cz"), vec![0x1au8]);
+        assert_eq!(decode_ansi_c_inner(br"\c@"), vec![0x00u8]);
+        assert_eq!(decode_ansi_c_inner(br"\c["), vec![0x1bu8]);
+        assert_eq!(decode_ansi_c_inner(br"\c?"), vec![0x7fu8]);
+        assert_eq!(decode_ansi_c_inner(br"\c1"), vec![0x11u8]);
+        assert_eq!(decode_ansi_c_inner(br"\c"), b"\\c".to_vec());
+        let mixed: String = decode_ansi_c_quoting(r"$'ab\cAcd'", &mut steps);
+        assert_eq!(mixed.as_bytes(), b"ab\x01cd");
     }
 
     #[test]
