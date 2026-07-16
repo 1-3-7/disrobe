@@ -515,7 +515,7 @@ fn rewrite_iat(
     }
     let mut idx: u32 = 0;
     loop {
-        let desc_rva: u32 = imp_rva + idx * 20;
+        let desc_rva: u32 = imp_rva.saturating_add(idx.saturating_mul(20));
         let desc_off: usize = match rva_to_file_off(pe, desc_rva) {
             Some(o) => o,
             None => break,
@@ -540,7 +540,10 @@ fn rewrite_iat(
         };
         let mut t: u32 = 0;
         loop {
-            let thunk_rva: u32 = thunk_table_rva + t * 4;
+            if t > 256 {
+                break;
+            }
+            let thunk_rva: u32 = thunk_table_rva.saturating_add(t.saturating_mul(4));
             let thunk_off: usize = match rva_to_file_off(pe, thunk_rva) {
                 Some(o) => o,
                 None => break,
@@ -564,7 +567,7 @@ fn rewrite_iat(
                 }
             };
             let func_name: String = read_cstr(packed, func_off + 2, 96).unwrap_or_default();
-            let iat_thunk_rva: u32 = first_thunk_rva + t * 4;
+            let iat_thunk_rva: u32 = first_thunk_rva.saturating_add(t.saturating_mul(4));
             let iat_addr: u64 = u64::from(pe.image_base) + u64::from(iat_thunk_rva);
             let resolved: u64 = match env.export_addr(&func_name) {
                 Some(stub) => stub,
@@ -752,6 +755,58 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_millis(500),
             "rejection must be immediate, never allocating gigabytes"
+        );
+    }
+
+    #[test]
+    fn rewrite_iat_bounds_hostile_near_max_thunk_table() {
+        let mut packed: Vec<u8> = vec![0u8; 0x10800];
+        packed[0..2].copy_from_slice(b"MZ");
+        let e_lfanew: u32 = 0x80;
+        packed[0x3C..0x40].copy_from_slice(&e_lfanew.to_le_bytes());
+        let nt: usize = e_lfanew as usize;
+        packed[nt..nt + 4].copy_from_slice(b"PE\x00\x00");
+        let coff: usize = nt + 4;
+        packed[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes());
+        packed[coff + 16..coff + 18].copy_from_slice(&0xE0u16.to_le_bytes());
+        let opt: usize = coff + 20;
+        packed[opt + 16..opt + 20].copy_from_slice(&0u32.to_le_bytes());
+        packed[opt + 28..opt + 32].copy_from_slice(&0x0040_0000u32.to_le_bytes());
+        packed[opt + 56..opt + 60].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        packed[opt + 60..opt + 64].copy_from_slice(&0x400u32.to_le_bytes());
+        packed[opt + 104..opt + 108].copy_from_slice(&0xFFFF_0000u32.to_le_bytes());
+        let sec: usize = opt + 0xE0;
+        packed[sec + 8..sec + 12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        packed[sec + 12..sec + 16].copy_from_slice(&0xFFFF_0000u32.to_le_bytes());
+        packed[sec + 16..sec + 20].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        packed[sec + 20..sec + 24].copy_from_slice(&0x400u32.to_le_bytes());
+        packed[0x400..0x404].copy_from_slice(&0xFFFF_0020u32.to_le_bytes());
+        packed[0x410..0x414].copy_from_slice(&0xFFFF_0020u32.to_le_bytes());
+        for off in (0x420..0x10800).step_by(4) {
+            packed[off..off + 4].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        }
+
+        let pe: PeLayout = parse_pe_layout(&packed).expect("crafted layout must parse");
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        let env: crate::stub_emu::SyntheticWindows =
+            crate::stub_emu::install_synthetic_windows(&mut cpu).expect("synthetic env");
+        let mut host: PetiteHost = PetiteHost::new(
+            EMU_HEAP_BASE,
+            EMU_HEAP_SIZE,
+            u64::from(pe.image_base),
+            0x0001_0000,
+            env.clone(),
+        );
+
+        let start: std::time::Instant = std::time::Instant::now();
+        let r: Result<()> = rewrite_iat(&packed, &pe, &mut cpu, &mut host, &env);
+        assert!(
+            r.is_ok(),
+            "a thunk table walking toward the 32-bit RVA ceiling must resolve, never fault"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "the import walk must stay bounded on a hostile thunk table, never overflow or spin"
         );
     }
 }

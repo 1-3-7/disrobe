@@ -248,7 +248,8 @@ fn decode_petite_stream(packed: &PackedPetite<'_>) -> Result<DecodedStream> {
             had: packed.raw.len(),
         });
     }
-    let target_size: usize = sec.virtual_size as usize;
+    let target_size: usize = (sec.virtual_size as usize)
+        .min(PETITE_MAX_PREALLOC.min(packed.raw.len().saturating_mul(PETITE_MAX_IMAGE_RATIO)));
     let stub_params: Option<PhaseOneParams> = parse_phase_one_stub(packed);
     if let Some(p) = stub_params {
         let (phase1, phase1_ok): (Vec<u8>, bool) =
@@ -446,7 +447,8 @@ fn decode_petite_stream_v2(
         .min(compressed.len().saturating_mul(64))
         .min(PETITE_MAX_PREALLOC);
     let mut output: Vec<u8> = Vec::with_capacity(prealloc_cap);
-    let mut remaining: i64 = i64::from(output_size);
+    let mut remaining: i64 =
+        i64::from(output_size).min(i64::try_from(prealloc_cap).unwrap_or(i64::MAX));
     let mut last_offset: u32 = 0xFFFF_FFFF;
     let mut steps: u64 = 0;
     let step_cap: u64 = u64::from(output_size)
@@ -1051,6 +1053,7 @@ fn reconstruct_from_memory_image(
 }
 
 fn detect_section_starts(mem: &[u8], size_of_image: u32, section_alignment: u32) -> Vec<u32> {
+    let section_alignment: u32 = section_alignment.max(SECTION_ALIGNMENT_DEFAULT);
     let mut starts: Vec<u32> = vec![section_alignment];
     let page_has_content = |page: u32| -> bool {
         let lo: usize = page as usize;
@@ -1496,5 +1499,69 @@ mod tests {
                 image.len()
             );
         }
+    }
+
+    #[test]
+    fn oversized_virtual_size_with_valid_raw_size_stays_bounded() {
+        let payload: Vec<u8> = vec![0u8; 32];
+        let petite_meta: Vec<u8> = synth_petite_metadata();
+        let mut pe: Vec<u8> = build_minimal_petite_pe(&payload, &petite_meta);
+        let nt: usize = 0xE8;
+        let opt: usize = nt + 4 + COFF_HEADER_LEN;
+        let sec0: usize = opt + IMAGE_NT_OPTIONAL_HDR32_SIZE as usize;
+        pe[sec0 + 8..sec0 + 12].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        let start: std::time::Instant = std::time::Instant::now();
+        let result: Result<Vec<u8>> = unpack_petite(&pe);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "a 4 GiB virtual size over a small valid raw section must never drive a 4 GiB allocation"
+        );
+        if let Ok(image) = result {
+            assert!(
+                image.len() <= PETITE_MAX_PREALLOC,
+                "padded fallback stream must respect the {PETITE_MAX_PREALLOC}-byte ceiling, got {}",
+                image.len()
+            );
+        }
+    }
+
+    #[test]
+    fn v2_decode_output_is_input_proportional_not_declared_size() {
+        let compressed: Vec<u8> = vec![0xABu8; 64];
+        let declared_output: u32 = 0xFFFF_FFFF;
+        let start: std::time::Instant = std::time::Instant::now();
+        let (out, fully): (Vec<u8>, bool) =
+            decode_petite_stream_v2(&compressed, 0, declared_output);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "a 4 GiB declared output over a 64-byte stream must never allocate the declared size"
+        );
+        let bound: usize = compressed.len().saturating_mul(64).min(PETITE_MAX_PREALLOC);
+        assert!(
+            out.len() <= bound,
+            "decoded output must stay within the input-proportional bound {bound}, got {}",
+            out.len()
+        );
+        assert!(
+            !fully,
+            "a hostile declared size can never report a full decode"
+        );
+    }
+
+    #[test]
+    fn detect_section_starts_bounds_scan_under_tiny_alignment() {
+        let mem: Vec<u8> = vec![0u8; 0x4000];
+        let start: std::time::Instant = std::time::Instant::now();
+        let starts: Vec<u32> = detect_section_starts(&mem, 1_000_000_000, 1);
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(300),
+            "a 1-byte SectionAlignment with a 1 GB SizeOfImage must not drive a billion-iteration scan"
+        );
+        assert!(
+            starts
+                .iter()
+                .all(|s: &u32| s % SECTION_ALIGNMENT_DEFAULT == 0),
+            "the clamped alignment must page-align every detected section start: {starts:?}"
+        );
     }
 }

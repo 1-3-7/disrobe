@@ -129,8 +129,10 @@ pub fn unpack_kkrunchy_phase2_emulated(packed: &[u8]) -> Result<KkrunchyPhaseTwo
         .max(u64::from(pe_layout.last_section_end_va))
         .min(MAX_MAP_BYTES);
     cpu.mem.map(packed_base, packed_capacity, Perm::RWX)?;
-    cpu.mem
-        .write(packed_base, &packed[..packed.len().min(packed.len())])?;
+    cpu.mem.write(
+        packed_base,
+        &packed[..packed.len().min(packed_capacity as usize)],
+    )?;
 
     cpu.mem.map(OEP_IMAGE_BASE, OEP_REGION_SIZE, Perm::RWX)?;
     cpu.mem.map(EMU_STACK_BASE, EMU_STACK_SIZE, Perm::RW)?;
@@ -324,7 +326,8 @@ fn rebuild_import_table(
     let name_rva: u32 = u32::from_le_bytes(text[desc_off + 12..desc_off + 16].try_into().ok()?);
     let iat_rva: u32 = u32::from_le_bytes(text[desc_off + 16..desc_off + 20].try_into().ok()?);
 
-    let thunk_table_end: u32 = iat_rva + (functions.len() as u32 + 1) * 4;
+    let thunk_table_end: u32 =
+        iat_rva.saturating_add((functions.len() as u32).saturating_add(1).saturating_mul(4));
     let mut name_cursor: u32 = thunk_table_end;
     let mut name_rvas: Vec<u32> = Vec::with_capacity(functions.len());
     for func in &functions {
@@ -337,7 +340,7 @@ fn rebuild_import_table(
         write_cstr(text, off + 2, func)?;
         name_rvas.push(name_cursor);
         let advance: u32 = 2 + func.len() as u32 + 1;
-        name_cursor += advance;
+        name_cursor = name_cursor.saturating_add(advance);
     }
 
     let dll_off: usize = name_rva.checked_sub(text_va)? as usize;
