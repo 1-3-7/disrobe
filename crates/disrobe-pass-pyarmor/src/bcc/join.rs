@@ -225,6 +225,7 @@ fn build_record(
         confidence,
         name_status,
         evidence,
+        recovered_body: None,
     }
 }
 
@@ -263,6 +264,7 @@ fn unlinked_native_record(
             EvidenceSource::DispatchTable,
             EvidenceSource::NativeNameTable,
         ],
+        recovered_body: None,
     }
 }
 

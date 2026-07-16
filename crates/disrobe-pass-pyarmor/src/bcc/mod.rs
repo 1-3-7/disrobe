@@ -6,6 +6,8 @@ use crate::error::{Error, Result};
 use crate::unpack::UnpackOutput;
 use crate::v8v9::BccBlob;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod body_recover;
 mod dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch_recover;
@@ -67,12 +69,14 @@ pub fn link_bcc_module(
             index,
         ));
     }
-    let map: BccLinkMap = join::link(
+    let mut map: BccLinkMap = join::link(
         &residual,
         &dispatch_entries,
         &stub,
         python_version.to_owned(),
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    body_recover::populate(&mut map, module_code, blobs, &dispatch_entries);
     let skeleton: String = skeleton::render(&residual, &map);
     BccLinkOutput { map, skeleton }
 }

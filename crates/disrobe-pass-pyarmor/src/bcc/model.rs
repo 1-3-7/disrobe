@@ -143,6 +143,8 @@ pub struct FunctionRecord {
     pub confidence: LinkConfidence,
     pub name_status: NameStatus,
     pub evidence: Vec<EvidenceSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovered_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
