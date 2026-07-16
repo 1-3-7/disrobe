@@ -329,6 +329,11 @@ impl<'a> Reader<'a> {
     }
 }
 
+#[inline]
+fn bounded_capacity(count: u16, remaining: usize) -> usize {
+    usize::from(count).min(remaining)
+}
+
 pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
     let mut r: Reader<'_> = Reader::new(bytes);
     let magic: u32 = r.u32()?;
@@ -343,7 +348,8 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
         });
     }
     let cp_count: u16 = r.u16()?;
-    let mut cp: Vec<ConstantPoolEntry> = Vec::with_capacity(usize::from(cp_count));
+    let mut cp: Vec<ConstantPoolEntry> =
+        Vec::with_capacity(bounded_capacity(cp_count, r.remaining()));
     cp.push(ConstantPoolEntry::Placeholder);
     let mut i: usize = 1;
     while i < usize::from(cp_count) {
@@ -419,22 +425,26 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
     let this_class: u16 = r.u16()?;
     let super_class: u16 = r.u16()?;
     let interfaces_count: u16 = r.u16()?;
-    let mut interfaces: Vec<u16> = Vec::with_capacity(usize::from(interfaces_count));
+    let mut interfaces: Vec<u16> =
+        Vec::with_capacity(bounded_capacity(interfaces_count, r.remaining()));
     for _ in 0..interfaces_count {
         interfaces.push(r.u16()?);
     }
     let fields_count: u16 = r.u16()?;
-    let mut fields: Vec<FieldInfo> = Vec::with_capacity(usize::from(fields_count));
+    let mut fields: Vec<FieldInfo> =
+        Vec::with_capacity(bounded_capacity(fields_count, r.remaining()));
     for _ in 0..fields_count {
         fields.push(parse_field(&mut r)?);
     }
     let methods_count: u16 = r.u16()?;
-    let mut methods: Vec<MethodInfo> = Vec::with_capacity(usize::from(methods_count));
+    let mut methods: Vec<MethodInfo> =
+        Vec::with_capacity(bounded_capacity(methods_count, r.remaining()));
     for _ in 0..methods_count {
         methods.push(parse_method(&mut r)?);
     }
     let attrs_count: u16 = r.u16()?;
-    let mut attributes: Vec<Attribute> = Vec::with_capacity(usize::from(attrs_count));
+    let mut attributes: Vec<Attribute> =
+        Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
         attributes.push(parse_attribute(&mut r)?);
     }
@@ -457,7 +467,8 @@ fn parse_field(r: &mut Reader<'_>) -> Result<FieldInfo> {
     let name_index: u16 = r.u16()?;
     let descriptor_index: u16 = r.u16()?;
     let attrs_count: u16 = r.u16()?;
-    let mut attributes: Vec<Attribute> = Vec::with_capacity(usize::from(attrs_count));
+    let mut attributes: Vec<Attribute> =
+        Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
         attributes.push(parse_attribute(r)?);
     }
@@ -474,7 +485,8 @@ fn parse_method(r: &mut Reader<'_>) -> Result<MethodInfo> {
     let name_index: u16 = r.u16()?;
     let descriptor_index: u16 = r.u16()?;
     let attrs_count: u16 = r.u16()?;
-    let mut attributes: Vec<Attribute> = Vec::with_capacity(usize::from(attrs_count));
+    let mut attributes: Vec<Attribute> =
+        Vec::with_capacity(bounded_capacity(attrs_count, r.remaining()));
     for _ in 0..attrs_count {
         attributes.push(parse_attribute(r)?);
     }
@@ -684,5 +696,195 @@ mod tests {
         let s: String = decode_modified_utf8(&bytes)
             .expect("an unpaired surrogate mid-string does not abort the whole constant");
         assert_eq!(s, "a\u{FFFD}\u{BAB4}z");
+    }
+
+    fn minimal_class() -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&52u16.to_be_bytes());
+        v.extend_from_slice(&1u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v
+    }
+
+    #[test]
+    fn well_formed_minimal_class_still_parses_identically() {
+        let bytes: Vec<u8> = minimal_class();
+        let a: ClassFile = parse(&bytes).expect("minimal class parses");
+        let b: ClassFile = parse(&bytes).expect("re-parse");
+        assert_eq!(a, b);
+        assert_eq!(a.major_version, 52);
+        assert_eq!(a.constant_pool.len(), 1);
+        assert!(a.fields.is_empty() && a.methods.is_empty() && a.attributes.is_empty());
+    }
+
+    #[test]
+    fn bounded_capacity_caps_to_remaining_input() {
+        assert_eq!(bounded_capacity(65535, 40), 40);
+        assert_eq!(bounded_capacity(65535, 0), 0);
+        assert_eq!(bounded_capacity(10, 40), 10);
+        assert_eq!(bounded_capacity(0, 40), 0);
+        assert_eq!(bounded_capacity(40, 40), 40);
+    }
+
+    #[test]
+    fn declared_count_does_not_drive_preallocation() {
+        let entry_size: usize = std::mem::size_of::<ConstantPoolEntry>();
+        let untethered_bytes: usize = 65535 * entry_size;
+        let capped_bytes: usize = bounded_capacity(65535, 40) * entry_size;
+        assert!(capped_bytes * 100 < untethered_bytes);
+        assert_eq!(capped_bytes, 40 * entry_size);
+    }
+
+    fn malformed_battery() -> Vec<Vec<u8>> {
+        let mut cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            vec![0xCA, 0xFE, 0xBA],
+            vec![0xCA, 0xFE, 0xBA, 0xBE, 0x00],
+            vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x34],
+        ];
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&52u16.to_be_bytes());
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&52u16.to_be_bytes());
+            v.extend_from_slice(&2u16.to_be_bytes());
+            v.push(1);
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&52u16.to_be_bytes());
+            v.extend_from_slice(&2u16.to_be_bytes());
+            v.push(200);
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = minimal_class();
+            let len: usize = v.len();
+            v.truncate(len - 8);
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = minimal_class();
+            let len: usize = v.len();
+            v.truncate(len - 6);
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = minimal_class();
+            let len: usize = v.len();
+            v.truncate(len - 4);
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = minimal_class();
+            let len: usize = v.len();
+            v.truncate(len - 2);
+            v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&52u16.to_be_bytes());
+            v.extend_from_slice(&2u16.to_be_bytes());
+            v.push(5);
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&99u16.to_be_bytes());
+            cases.push(v);
+        }
+        {
+            let mut v: Vec<u8> = Vec::new();
+            v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&52u16.to_be_bytes());
+            v.extend_from_slice(&1u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&1u16.to_be_bytes());
+            v.extend_from_slice(&0u16.to_be_bytes());
+            v.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+            cases.push(v);
+        }
+        cases
+    }
+
+    #[test]
+    fn malformed_inputs_error_without_panic() {
+        for (n, case) in malformed_battery().into_iter().enumerate() {
+            let outcome: std::thread::Result<Result<ClassFile>> =
+                std::panic::catch_unwind(move || parse(&case));
+            assert!(outcome.is_ok(), "case {n} panicked in the parser");
+            let parsed: Result<ClassFile> = outcome.unwrap();
+            assert!(parsed.is_err(), "case {n} should error");
+        }
+    }
+
+    #[test]
+    fn random_bytes_smoke_never_panics() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for iteration in 0..4096u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len: usize = (state as usize) % 512;
+            let mut buf: Vec<u8> = Vec::with_capacity(len);
+            let mut s: u64 = state ^ u64::from(iteration);
+            for _ in 0..len {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                buf.push((s & 0xFF) as u8);
+            }
+            let outcome: std::thread::Result<Result<ClassFile>> =
+                std::panic::catch_unwind(move || parse(&buf));
+            assert!(
+                outcome.is_ok(),
+                "random input at iteration {iteration} panicked"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_count_far_beyond_input_errors_fast() {
+        let mut v: Vec<u8> = Vec::new();
+        v.extend_from_slice(&CLASS_MAGIC.to_be_bytes());
+        v.extend_from_slice(&0u16.to_be_bytes());
+        v.extend_from_slice(&52u16.to_be_bytes());
+        v.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        let err: Error = parse(&v).expect_err("huge constant pool over a tiny buffer must error");
+        assert!(matches!(err, Error::Truncated { .. }));
     }
 }
