@@ -110,21 +110,30 @@ fn scan_section_for_runs(
 ) {
     let base: u64 = sec.address;
     let len: u64 = sec.data.len() as u64;
+    let mut probe_budget: usize = sec.data.len();
     let mut pos: u64 = 0;
     while pos <= len.saturating_sub(EMBED_FILE_STRIDE) {
+        if probe_budget == 0 {
+            break;
+        }
         let Some(first_va): Option<u64> = base.checked_add(pos) else {
             break;
         };
+        probe_budget -= 1;
         let Some(first): Option<EmbedEntry> = read_embed_entry(image, first_va) else {
             pos += 8;
             continue;
         };
         let mut run: Vec<EmbedEntry> = vec![first];
         let mut k: u64 = pos + EMBED_FILE_STRIDE;
-        while k <= len.saturating_sub(EMBED_FILE_STRIDE) && run.len() < MAX_RUN_ENTRIES {
+        while k <= len.saturating_sub(EMBED_FILE_STRIDE)
+            && run.len() < MAX_RUN_ENTRIES
+            && probe_budget != 0
+        {
             let Some(entry_va): Option<u64> = base.checked_add(k) else {
                 break;
             };
+            probe_budget -= 1;
             let Some(entry): Option<EmbedEntry> = read_embed_entry(image, entry_va) else {
                 break;
             };
@@ -473,5 +482,50 @@ mod tests {
         };
 
         assert!(read_embed_entry(&image, u64::MAX - 16).is_none());
+    }
+
+    fn aliased_dir_entry_section(entry_count: usize) -> Vec<u8> {
+        let stride: usize = EMBED_FILE_STRIDE as usize;
+        let name_off: usize = stride * entry_count;
+        let mut buf: Vec<u8> = vec![0u8; name_off + 4];
+        let name_va: u64 = 0x1000 + name_off as u64;
+        for i in 0..entry_count {
+            let o: usize = i * stride;
+            buf[o..o + 8].copy_from_slice(&name_va.to_le_bytes());
+            buf[o + 8..o + 16].copy_from_slice(&2u64.to_le_bytes());
+        }
+        buf[name_off..name_off + 2].copy_from_slice(b"d/");
+        buf
+    }
+
+    #[test]
+    fn aliased_dir_entries_do_not_blow_up() {
+        let buf: Vec<u8> = aliased_dir_entry_section(30_000);
+        let image: GoImage<'_> = flat_image(&buf);
+        let start: std::time::Instant = std::time::Instant::now();
+        let report: EmbedReport = extract_embed(&image);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            report.files.is_empty(),
+            "directory-only aliased run yields no files"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "aliased dir-entry section must stay bounded, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn scan_bounded_random_bytes_never_hang() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut buf: Vec<u8> = vec![0u8; 65_536];
+        for byte in &mut buf {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *byte = (state >> 33) as u8;
+        }
+        let image: GoImage<'_> = flat_image(&buf);
+        let _: EmbedReport = extract_embed(&image);
     }
 }
