@@ -269,6 +269,106 @@ fn yarv_small_value_truncated_at_eof_is_safe() {
     assert!(yarv.ibf.iseqs.iter().all(|b| b.instructions.is_empty()));
 }
 
+fn encode_small_value(value: u64) -> Vec<u8> {
+    if value < 0x80 {
+        return vec![(u8::try_from(value).expect("fits") << 1) | 1];
+    }
+    let mut width: usize = 2;
+    while width < 9 {
+        let payload_bits: u32 = u32::try_from((width - 1) * 8 + (8 - width)).expect("bits");
+        if payload_bits >= 64 || value < (1u64 << payload_bits) {
+            break;
+        }
+        width += 1;
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(width);
+    let high_bits: u32 = u32::try_from(8 - width).expect("high bits");
+    let high: u8 = if high_bits == 0 {
+        0
+    } else {
+        u8::try_from((value >> ((width - 1) * 8)) & ((1u64 << high_bits) - 1)).expect("high")
+    };
+    let marker: u8 = 1u8 << (width - 1);
+    out.push((high << width) | marker);
+    for i in (0..width - 1).rev() {
+        out.push(u8::try_from((value >> (i * 8)) & 0xff).expect("byte"));
+    }
+    out
+}
+
+#[test]
+fn small_value_encoder_matches_reader_expectations() {
+    let mut v: Vec<u8> = yarv_header(3, 4, 0, 0, 1, 36, 40);
+    v.extend_from_slice(&0u32.to_le_bytes());
+    v.extend_from_slice(&44u32.to_le_bytes());
+    v.push(0x05);
+    v.extend_from_slice(&encode_small_value(0));
+    v.extend_from_slice(&encode_small_value(4));
+    v.extend_from_slice(b"data");
+    let yarv = analyze_bytes(&v, "x.yarvc")
+        .expect("ok")
+        .yarv
+        .expect("yarv");
+    assert_eq!(yarv.ibf.objects[0].literal.as_deref(), Some("data"));
+}
+
+#[test]
+fn yarv_object_table_aliasing_does_not_amplify_allocation() {
+    const ENTRIES: u32 = 2000;
+    const STRING_LEN: u64 = 40_000;
+    let string_off: u32 = 36 + ENTRIES * 4;
+    let mut v: Vec<u8> = yarv_header(3, 4, 0, 0, ENTRIES, 0, 36);
+    for _ in 0..ENTRIES {
+        v.extend_from_slice(&string_off.to_le_bytes());
+    }
+    assert_eq!(v.len(), string_off as usize);
+    v.push(0x05);
+    v.extend_from_slice(&encode_small_value(0));
+    v.extend_from_slice(&encode_small_value(STRING_LEN));
+    v.resize(v.len() + STRING_LEN as usize, b'A');
+    let input_len: usize = v.len();
+    let yarv = analyze_bytes(&v, "alias.yarvc")
+        .expect("must not OOM on aliased object table")
+        .yarv
+        .expect("yarv");
+    assert_eq!(
+        yarv.ibf.objects.len(),
+        ENTRIES as usize,
+        "every declared object slot is still present"
+    );
+    let total_literal_bytes: usize = yarv
+        .ibf
+        .objects
+        .iter()
+        .filter_map(|o| o.literal.as_deref())
+        .map(str::len)
+        .sum();
+    let unbounded: usize = ENTRIES as usize * STRING_LEN as usize;
+    assert!(
+        total_literal_bytes < 2_000_000,
+        "recovered literal bytes must stay input-bounded, got {total_literal_bytes} from a {input_len}-byte file (unbounded would be {unbounded})"
+    );
+}
+
+#[test]
+fn yarv_random_bytes_with_magic_never_panics() {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    for _ in 0..256 {
+        let mut buf: Vec<u8> = Vec::with_capacity(512);
+        buf.extend_from_slice(b"YARB");
+        for _ in 0..508 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            buf.push((state & 0xff) as u8);
+        }
+        let result = std::panic::catch_unwind(|| {
+            let _ = analyze_bytes(&buf, "fuzz.yarvc");
+        });
+        assert!(result.is_ok(), "random YARB-prefixed input must not panic");
+    }
+}
+
 #[test]
 fn empty_and_tiny_inputs_never_panic() {
     assert!(matches!(

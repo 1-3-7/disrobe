@@ -9,6 +9,32 @@ pub(crate) const IBF_ARRAY_LEN_CAP: usize = 1_048_576;
 const IBF_FLOAT_ALIGN: usize = 8;
 const IBF_MAX_INSNS_PER_ISEQ: usize = 1_048_576;
 const IBF_MAX_ISEQ_BODIES: usize = 65_536;
+const IBF_LITERAL_BUDGET_MULT: usize = 16;
+const IBF_LITERAL_BUDGET_FLOOR: usize = 1 << 20;
+
+struct DecodeBudget {
+    remaining: usize,
+}
+
+impl DecodeBudget {
+    fn new(input_len: usize) -> Self {
+        Self {
+            remaining: input_len
+                .saturating_mul(IBF_LITERAL_BUDGET_MULT)
+                .max(IBF_LITERAL_BUDGET_FLOOR),
+        }
+    }
+
+    const fn take(&mut self, n: usize) -> bool {
+        match self.remaining.checked_sub(n) {
+            Some(rest) => {
+                self.remaining = rest;
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -282,7 +308,7 @@ fn checked_slice(bytes: &[u8], pos: usize, len: usize) -> Option<(&[u8], usize)>
     Some((slice, end))
 }
 
-fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
+fn decode_object(bytes: &[u8], index: u32, offset: u32, budget: &mut DecodeBudget) -> IbfObject {
     let off: usize = offset as usize;
     let Some(tag): Option<u8> = bytes.get(off).copied() else {
         return unknown_ibf_object(index, offset);
@@ -300,6 +326,7 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
                 && let Some((len, p2)) = read_small_value(bytes, p1)
                 && let Some(len_usize) = capped_usize(len, IBF_STRING_LEN_CAP)
                 && let Some((slice, _)) = checked_slice(bytes, p2, len_usize)
+                && budget.take(slice.len())
             {
                 literal = Some(String::from_utf8_lossy(slice).into_owned());
             }
@@ -315,6 +342,9 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
                     else {
                         break;
                     };
+                    if !budget.take(4) {
+                        break;
+                    }
                     elements.push(u32::try_from(elem).unwrap_or(u32::MAX));
                     ep = next;
                 }
@@ -352,6 +382,9 @@ fn decode_object(bytes: &[u8], index: u32, offset: u32) -> IbfObject {
                     else {
                         break;
                     };
+                    if !budget.take(4) {
+                        break;
+                    }
                     elements.push(u32::try_from(elem).unwrap_or(u32::MAX));
                     ep = next;
                 }
@@ -411,7 +444,11 @@ fn decode_range_fields(bytes: &[u8], offset: usize) -> Option<(u32, u32, u32)> {
     None
 }
 
-fn resolve_regexp_literals(objects: &mut [IbfObject], recovered: &mut u32) {
+fn resolve_regexp_literals(
+    objects: &mut [IbfObject],
+    recovered: &mut u32,
+    budget: &mut DecodeBudget,
+) {
     let sources: Vec<Option<String>> = objects
         .iter()
         .map(|o| {
@@ -432,8 +469,11 @@ fn resolve_regexp_literals(objects: &mut [IbfObject], recovered: &mut u32) {
             && !src.contains(['\n', '\r'])
         {
             let flags: String = regexp_flag_suffix(obj.element_count.unwrap_or(0));
-            obj.literal = Some(format!("/{}/{}", escape_regexp_slashes(&src), flags));
-            *recovered = recovered.saturating_add(1);
+            let rendered: String = format!("/{}/{}", escape_regexp_slashes(&src), flags);
+            if budget.take(rendered.len()) {
+                obj.literal = Some(rendered);
+                *recovered = recovered.saturating_add(1);
+            }
         }
     }
 }
@@ -514,16 +554,27 @@ fn symbol_element_text(name: &str) -> String {
     }
 }
 
-fn resolve_array_literals(objects: &mut [IbfObject], recovered: &mut u32) {
-    let rendered: Vec<Option<String>> = objects
-        .iter()
-        .map(|obj| match obj.kind {
-            IbfObjectKind::Array if obj.literal.is_none() => render_array_literal(objects, obj),
-            IbfObjectKind::Hash if obj.literal.is_none() => render_hash_literal(objects, obj),
-            IbfObjectKind::Range if obj.literal.is_none() => render_range_literal(objects, obj),
+fn resolve_array_literals(
+    objects: &mut [IbfObject],
+    recovered: &mut u32,
+    budget: &mut DecodeBudget,
+) {
+    let mut rendered: Vec<Option<String>> = Vec::with_capacity(objects.len());
+    for obj in objects.iter() {
+        let text: Option<String> = match obj.kind {
+            IbfObjectKind::Array if obj.literal.is_none() => {
+                render_array_literal(objects, obj, budget)
+            }
+            IbfObjectKind::Hash if obj.literal.is_none() => {
+                render_hash_literal(objects, obj, budget)
+            }
+            IbfObjectKind::Range if obj.literal.is_none() => {
+                render_range_literal(objects, obj, budget)
+            }
             _ => None,
-        })
-        .collect();
+        };
+        rendered.push(text);
+    }
     for (obj, text) in objects.iter_mut().zip(rendered) {
         if let Some(text) = text {
             obj.literal = Some(text);
@@ -532,16 +583,28 @@ fn resolve_array_literals(objects: &mut [IbfObject], recovered: &mut u32) {
     }
 }
 
-fn render_array_literal(objects: &[IbfObject], obj: &IbfObject) -> Option<String> {
-    let mut parts: Vec<String> = Vec::with_capacity(obj.elements.len());
+fn render_array_literal(
+    objects: &[IbfObject],
+    obj: &IbfObject,
+    budget: &mut DecodeBudget,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::with_capacity(obj.elements.len().min(64));
     for &elem in &obj.elements {
         let referenced: &IbfObject = objects.get(elem as usize)?;
-        parts.push(element_literal_text(referenced)?);
+        let text: String = element_literal_text(referenced)?;
+        if !budget.take(text.len().saturating_add(2)) {
+            return None;
+        }
+        parts.push(text);
     }
     Some(format!("[{}]", parts.join(", ")))
 }
 
-fn render_range_literal(objects: &[IbfObject], obj: &IbfObject) -> Option<String> {
+fn render_range_literal(
+    objects: &[IbfObject],
+    obj: &IbfObject,
+    budget: &mut DecodeBudget,
+) -> Option<String> {
     let &[beg_idx, end_idx]: &[u32; 2] = obj.elements.first_chunk::<2>()?;
     let beg: &IbfObject = objects.get(beg_idx as usize)?;
     let end: &IbfObject = objects.get(end_idx as usize)?;
@@ -560,27 +623,36 @@ fn render_range_literal(objects: &[IbfObject], obj: &IbfObject) -> Option<String
     } else {
         ".."
     };
-    Some(format!("({beg_text}{dots}{end_text})"))
+    let rendered: String = format!("({beg_text}{dots}{end_text})");
+    budget.take(rendered.len()).then_some(rendered)
 }
 
-fn render_hash_literal(objects: &[IbfObject], obj: &IbfObject) -> Option<String> {
+fn render_hash_literal(
+    objects: &[IbfObject],
+    obj: &IbfObject,
+    budget: &mut DecodeBudget,
+) -> Option<String> {
     if obj.elements.is_empty() {
         return Some("{}".to_owned());
     }
     if !obj.elements.len().is_multiple_of(2) {
         return None;
     }
-    let mut pairs: Vec<String> = Vec::with_capacity(obj.elements.len() / 2);
+    let mut pairs: Vec<String> = Vec::with_capacity((obj.elements.len() / 2).min(64));
     for chunk in obj.elements.chunks_exact(2) {
         let key: &IbfObject = objects.get(chunk[0] as usize)?;
         let value: &IbfObject = objects.get(chunk[1] as usize)?;
         let value_text: String = element_literal_text(value)?;
-        if key.kind == IbfObjectKind::Symbol {
+        let pair: String = if key.kind == IbfObjectKind::Symbol {
             let name: &str = key.literal.as_deref()?;
-            pairs.push(format!("{}: {value_text}", symbol_element_text(name)));
+            format!("{}: {value_text}", symbol_element_text(name))
         } else {
-            pairs.push(format!("{} => {value_text}", element_literal_text(key)?));
+            format!("{} => {value_text}", element_literal_text(key)?)
+        };
+        if !budget.take(pair.len().saturating_add(2)) {
+            return None;
         }
+        pairs.push(pair);
     }
     Some(format!("{{ {} }}", pairs.join(", ")))
 }
@@ -1078,6 +1150,7 @@ pub(crate) fn parse_image(
 
     let mut objects: Vec<IbfObject> = Vec::with_capacity(obj_n.min(4096));
     let mut recovered_literal_count: u32 = 0;
+    let mut budget: DecodeBudget = DecodeBudget::new(total);
     for i in 0..obj_n {
         let at: usize = match obj_base.checked_add(i.wrapping_mul(4)) {
             Some(at) => at,
@@ -1098,15 +1171,15 @@ pub(crate) fn parse_image(
             });
             continue;
         }
-        let obj: IbfObject = decode_object(bytes, index, obj_off);
+        let obj: IbfObject = decode_object(bytes, index, obj_off, &mut budget);
         if obj.literal.is_some() {
             recovered_literal_count += 1;
         }
         objects.push(obj);
     }
 
-    resolve_regexp_literals(&mut objects, &mut recovered_literal_count);
-    resolve_array_literals(&mut objects, &mut recovered_literal_count);
+    resolve_regexp_literals(&mut objects, &mut recovered_literal_count, &mut budget);
+    resolve_array_literals(&mut objects, &mut recovered_literal_count, &mut budget);
 
     let mut iseqs: Vec<YarvIseqBody> = Vec::new();
     let mut recovered_instruction_count: u32 = 0;
@@ -1317,7 +1390,7 @@ mod tests {
         let mut bytes: Vec<u8> = vec![0x04];
         bytes.resize(IBF_FLOAT_ALIGN, 0);
         bytes.extend_from_slice(&0.299_f64.to_le_bytes());
-        let obj: IbfObject = decode_object(&bytes, 0, 0);
+        let obj: IbfObject = decode_object(&bytes, 0, 0, &mut unbounded_budget());
         assert_eq!(obj.kind, IbfObjectKind::Float);
         assert_eq!(obj.literal.as_deref(), Some("0.299"));
     }
@@ -1350,7 +1423,7 @@ mod tests {
             },
         ];
         let mut recovered: u32 = 0;
-        resolve_regexp_literals(&mut objects, &mut recovered);
+        resolve_regexp_literals(&mut objects, &mut recovered, &mut unbounded_budget());
         assert_eq!(objects[0].literal.as_deref(), Some("/\\Aregex/"));
         assert_eq!(recovered, 1);
     }
@@ -1389,7 +1462,7 @@ mod tests {
                 },
             ];
             let mut recovered: u32 = 0;
-            resolve_regexp_literals(&mut objects, &mut recovered);
+            resolve_regexp_literals(&mut objects, &mut recovered, &mut unbounded_budget());
             objects[0].literal.clone()
         }
         assert_eq!(resolved(1).as_deref(), Some("/abc/i"));
@@ -1404,7 +1477,7 @@ mod tests {
     fn regexp_decode_captures_option_byte() {
         let mut bytes: Vec<u8> = vec![0x06, 0x01];
         bytes.extend_from_slice(&dump_small_value(9));
-        let obj: IbfObject = decode_object(&bytes, 0, 0);
+        let obj: IbfObject = decode_object(&bytes, 0, 0, &mut unbounded_budget());
         assert_eq!(obj.kind, IbfObjectKind::Regexp);
         assert_eq!(obj.element_count, Some(1));
         assert_eq!(obj.elements.first().copied(), Some(9));
@@ -1415,7 +1488,7 @@ mod tests {
         let mut bytes: Vec<u8> = vec![0x00; 4];
         bytes.push(0x35);
         bytes.extend_from_slice(&dump_small_value((2 << 1) | 1));
-        let obj: IbfObject = decode_object(&bytes, 0, 4);
+        let obj: IbfObject = decode_object(&bytes, 0, 4, &mut unbounded_budget());
         assert_eq!(obj.kind, IbfObjectKind::Fixnum);
         assert_eq!(obj.literal.as_deref(), Some("2"));
     }
@@ -1457,7 +1530,7 @@ mod tests {
         bytes.push(0x03);
         bytes.push(0x17);
         bytes.extend_from_slice(b"hello world");
-        let obj: IbfObject = decode_object(&bytes, 0, 4);
+        let obj: IbfObject = decode_object(&bytes, 0, 4, &mut unbounded_budget());
         assert_eq!(obj.kind, IbfObjectKind::String);
         assert_eq!(obj.literal.as_deref(), Some("hello world"));
     }
@@ -1467,14 +1540,14 @@ mod tests {
         let bytes: Vec<u8> = vec![
             0x45, 0x03, 0x80, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
         ];
-        let obj: IbfObject = decode_object(&bytes, 0, 0);
+        let obj: IbfObject = decode_object(&bytes, 0, 0, &mut unbounded_budget());
         assert!(obj.literal.is_none());
     }
 
     #[test]
     fn out_of_bounds_object_offset_is_unknown() {
         let bytes: [u8; 1] = [0x11];
-        let obj: IbfObject = decode_object(&bytes, 7, 128);
+        let obj: IbfObject = decode_object(&bytes, 7, 128, &mut unbounded_budget());
         assert_eq!(obj.kind, IbfObjectKind::Unknown);
         assert!(obj.literal.is_none());
         assert!(obj.elements.is_empty());
@@ -1506,6 +1579,10 @@ mod tests {
         );
     }
 
+    fn unbounded_budget() -> DecodeBudget {
+        DecodeBudget::new(usize::MAX)
+    }
+
     fn leaf(index: u32, kind: IbfObjectKind, literal: Option<&str>) -> IbfObject {
         IbfObject {
             index,
@@ -1519,13 +1596,22 @@ mod tests {
 
     #[test]
     fn immediates_decode_to_keyword_literals() {
-        assert_eq!(decode_object(&[0x11], 0, 0).literal.as_deref(), Some("nil"));
         assert_eq!(
-            decode_object(&[0x12], 0, 0).literal.as_deref(),
+            decode_object(&[0x11], 0, 0, &mut unbounded_budget())
+                .literal
+                .as_deref(),
+            Some("nil")
+        );
+        assert_eq!(
+            decode_object(&[0x12], 0, 0, &mut unbounded_budget())
+                .literal
+                .as_deref(),
             Some("true")
         );
         assert_eq!(
-            decode_object(&[0x13], 0, 0).literal.as_deref(),
+            decode_object(&[0x13], 0, 0, &mut unbounded_budget())
+                .literal
+                .as_deref(),
             Some("false")
         );
         assert_eq!(classify_tag(0x09), IbfObjectKind::Range);
@@ -1547,7 +1633,7 @@ mod tests {
             leaf(3, IbfObjectKind::Symbol, Some("ok")),
         ];
         let mut recovered: u32 = 0;
-        resolve_array_literals(&mut objects, &mut recovered);
+        resolve_array_literals(&mut objects, &mut recovered, &mut unbounded_budget());
         assert_eq!(objects[0].literal.as_deref(), Some("[2, \"hi\", :ok]"));
         assert_eq!(recovered, 1);
     }
@@ -1569,7 +1655,7 @@ mod tests {
             leaf(4, IbfObjectKind::False, Some("false")),
         ];
         let mut recovered: u32 = 0;
-        resolve_array_literals(&mut objects, &mut recovered);
+        resolve_array_literals(&mut objects, &mut recovered, &mut unbounded_budget());
         assert_eq!(
             objects[0].literal.as_deref(),
             Some("{ timeout: 30, debug: false }")
@@ -1587,7 +1673,7 @@ mod tests {
             elements: Vec::new(),
         }];
         let mut recovered: u32 = 0;
-        resolve_array_literals(&mut objects, &mut recovered);
+        resolve_array_literals(&mut objects, &mut recovered, &mut unbounded_budget());
         assert_eq!(objects[0].literal.as_deref(), Some("{}"));
     }
 
@@ -1623,7 +1709,7 @@ mod tests {
             leaf(5, IbfObjectKind::Nil, Some("nil")),
         ];
         let mut recovered: u32 = 0;
-        resolve_array_literals(&mut objects, &mut recovered);
+        resolve_array_literals(&mut objects, &mut recovered, &mut unbounded_budget());
         assert_eq!(objects[0].literal.as_deref(), Some("(1..10)"));
         assert_eq!(objects[1].literal.as_deref(), Some("(1...10)"));
         assert_eq!(objects[2].literal.as_deref(), Some("(1..)"));
