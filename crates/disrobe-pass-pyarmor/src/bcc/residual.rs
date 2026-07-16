@@ -1,3 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::BTreeMap;
+
 use disrobe_py_marshal::{CodeObject, Object};
 
 use super::model::{
@@ -58,6 +61,91 @@ pub(crate) fn extract_module(module_code: &CodeObject) -> ResidualModule {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone)]
+pub(crate) struct FunctionArtifacts {
+    pub(crate) const_ints: Vec<Option<i128>>,
+    pub(crate) param_names: Vec<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn collect_function_artifacts(
+    module_code: &CodeObject,
+) -> BTreeMap<String, FunctionArtifacts> {
+    let mut out: BTreeMap<String, FunctionArtifacts> = BTreeMap::new();
+    let mut budget: usize = MAX_TREE_NODES;
+    walk_artifacts(module_code, 0, &mut budget, "", false, &mut out);
+    out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn walk_artifacts(
+    co: &CodeObject,
+    depth: usize,
+    budget: &mut usize,
+    parent_qual: &str,
+    parent_is_function: bool,
+    out: &mut BTreeMap<String, FunctionArtifacts>,
+) {
+    let (_, qualname, kind): (String, String, NodeKind) =
+        node_identity(co, parent_qual, parent_is_function);
+    let this_is_function: bool = matches!(kind, NodeKind::Function { .. });
+    if this_is_function {
+        out.entry(qualname.clone())
+            .or_insert_with(|| FunctionArtifacts {
+                const_ints: const_int_tuple(co),
+                param_names: positional_param_names(co),
+            });
+    }
+    if depth < MAX_TREE_DEPTH {
+        for constant in &co.consts {
+            if *budget == 0 {
+                break;
+            }
+            if let Object::Code(child) = constant {
+                *budget -= 1;
+                walk_artifacts(child, depth + 1, budget, &qualname, this_is_function, out);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn const_int_tuple(co: &CodeObject) -> Vec<Option<i128>> {
+    match co.consts.get(2) {
+        Some(Object::Tuple(items)) => items.iter().map(object_int).collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn object_int(obj: &Object) -> Option<i128> {
+    match obj {
+        Object::Int(value) => Some(i128::from(*value)),
+        Object::Int64(value) => Some(i128::from(*value)),
+        Object::Long(big) => {
+            let mut magnitude: i128 = 0;
+            for (index, digit) in big.digits.iter().enumerate() {
+                let shift: u32 = u32::try_from(index).ok()?.checked_mul(15)?;
+                let term: i128 = i128::from(*digit).checked_shl(shift)?;
+                magnitude = magnitude.checked_add(term)?;
+            }
+            Some(magnitude.checked_mul(i128::from(big.sign))?)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn positional_param_names(co: &CodeObject) -> Vec<String> {
+    let count: usize = usize::try_from(co.argcount.max(0)).unwrap_or(0);
+    co.varnames
+        .iter()
+        .take(count)
+        .filter_map(object_str)
+        .collect()
+}
+
 fn interpret_filename(filename: Option<&str>) -> (Option<String>, Option<String>) {
     let Some(name): Option<&str> = filename else {
         return (None, None);
@@ -75,6 +163,19 @@ fn interpret_filename(filename: Option<&str>) -> (Option<String>, Option<String>
     (None, Some(trimmed.to_owned()))
 }
 
+fn node_identity(
+    co: &CodeObject,
+    parent_qual: &str,
+    parent_is_function: bool,
+) -> (String, String, NodeKind) {
+    let name: String = object_str(&co.name).unwrap_or_default();
+    let qualname: String = object_str(&co.qualname)
+        .filter(|q: &String| !q.is_empty())
+        .unwrap_or_else(|| reconstruct_qualname(parent_qual, parent_is_function, &name));
+    let kind: NodeKind = classify_node(co, &name, &qualname);
+    (name, qualname, kind)
+}
+
 fn build_node(
     co: &CodeObject,
     depth: usize,
@@ -82,11 +183,8 @@ fn build_node(
     parent_qual: &str,
     parent_is_function: bool,
 ) -> ResidualNode {
-    let name: String = object_str(&co.name).unwrap_or_default();
-    let qualname: String = object_str(&co.qualname)
-        .filter(|q: &String| !q.is_empty())
-        .unwrap_or_else(|| reconstruct_qualname(parent_qual, parent_is_function, &name));
-    let kind: NodeKind = classify_node(co, &name, &qualname);
+    let (name, qualname, kind): (String, String, NodeKind) =
+        node_identity(co, parent_qual, parent_is_function);
     let this_is_function: bool = matches!(kind, NodeKind::Function { .. });
     let mut children: Vec<ResidualNode> = Vec::new();
     if depth < MAX_TREE_DEPTH {

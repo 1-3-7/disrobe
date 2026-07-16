@@ -68,6 +68,29 @@ fn enumerate_sections(blob: &[u8]) -> Vec<SectionView> {
     enumerate_object_sections(blob)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn code_at(blob: &[u8], va: u64, size: u64) -> Option<Vec<u8>> {
+    for view in &enumerate_sections(blob) {
+        if !view.is_text {
+            continue;
+        }
+        let len: u64 = u64::try_from(view.data.len()).ok()?;
+        let end: u64 = view.addr.checked_add(len)?;
+        if va < view.addr || va >= end {
+            continue;
+        }
+        let start: usize = usize::try_from(va - view.addr).ok()?;
+        let want: usize = usize::try_from(size).unwrap_or(0);
+        let available: usize = view.data.len().saturating_sub(start);
+        let take: usize = want.min(available);
+        if take == 0 {
+            return None;
+        }
+        return view.data.get(start..start + take).map(<[u8]>::to_vec);
+    }
+    None
+}
+
 fn enumerate_elf_sections(blob: &[u8]) -> Vec<SectionView> {
     if blob.len() < 64 || blob[4] != 2 || blob[5] != 1 {
         return Vec::new();
