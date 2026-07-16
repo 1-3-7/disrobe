@@ -5760,6 +5760,33 @@ fn finally_runs_match(stream: &DecodedStream, a: usize, b: usize, len: usize) ->
     })
 }
 
+fn is_targeted_jump(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::ContinueLoop(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+    )
+}
+
+fn finally_copy_op_eq(a: &CanonicalOp, b: &CanonicalOp) -> bool {
+    if is_targeted_jump(a) && is_targeted_jump(b) {
+        std::mem::discriminant(a) == std::mem::discriminant(b)
+    } else {
+        a == b
+    }
+}
+
 fn finally_inline_copy_end(
     stream: &DecodedStream,
     copy_start: usize,
@@ -5777,7 +5804,7 @@ fn finally_inline_copy_end(
         match &stream.ops[k] {
             CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
             op => {
-                if op == fin_ops[matched] {
+                if finally_copy_op_eq(op, fin_ops[matched]) {
                     matched += 1;
                 } else {
                     return None;
