@@ -8,6 +8,8 @@ use super::recover::{PyExpr, RecognizedCall, RecoverOptions, RecoveredBody};
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const SLOT_BINOP: u64 = 0x20;
+const SLOT_COMPARE: u64 = 0x40;
+const SLOT_ISTRUE: u64 = 0x198;
 const SLOT_UNPACK: u64 = 0x98;
 const TUPLE_ITEM0: u64 = 0x18;
 const PTR: u64 = 8;
@@ -200,6 +202,14 @@ impl<'a> BccMachine<'a> {
                 self.step_unpack();
                 BccVal::Unknown
             }
+            BccVal::RuntimeSlot(SLOT_COMPARE) => {
+                self.record_opaque_dispatch(instruction.address, "PyObject_RichCompare");
+                BccVal::Unknown
+            }
+            BccVal::RuntimeSlot(SLOT_ISTRUE) => {
+                self.record_opaque_dispatch(instruction.address, "PyObject_IsTrue");
+                BccVal::Unknown
+            }
             BccVal::RuntimeSlot(slot) if IGNORED_SLOTS.contains(&slot) => BccVal::Unknown,
             BccVal::RuntimeSlot(slot) => {
                 self.bail = Some(format!(
@@ -257,6 +267,20 @@ impl<'a> BccMachine<'a> {
         };
         self.call_exprs.push(expr);
         result
+    }
+
+    fn record_opaque_dispatch(&mut self, address: u64, symbol: &str) {
+        if self.dispatch_index.contains_key(&address) {
+            return;
+        }
+        let index: usize = self.call_exprs.len();
+        self.dispatch_index.insert(address, index);
+        self.dispatch_calls.push(RecognizedCall {
+            call_site: address,
+            symbol: Some(symbol.to_owned()),
+            python: None,
+        });
+        self.call_exprs.push(None);
     }
 
     fn step_unpack(&mut self) {
@@ -682,12 +706,21 @@ pub fn recover_bcc_arith(
     let mut machine: BccMachine<'_> = BccMachine::new(options, consts);
     machine.run(&nir);
 
-    if let Some(reason) = machine.bail.clone() {
-        notes.push(reason);
-        return degraded(options, &machine, notes);
+    let bail: Option<String> = machine.bail.clone();
+    let mut recovered_python: Option<String> = if bail.is_some() {
+        None
+    } else {
+        machine.recovered_body(&mut notes)
+    };
+    if recovered_python.is_none() {
+        recovered_python = super::stmt_structure::recover_structured(&nir, options, &mut notes);
+        if recovered_python.is_none()
+            && let Some(reason) = bail
+        {
+            notes.push(reason);
+            return degraded(options, &machine, notes);
+        }
     }
-
-    let recovered_python: Option<String> = machine.recovered_body(&mut notes);
 
     let total: usize = machine.dispatch_calls.len();
     let recognized: usize = machine

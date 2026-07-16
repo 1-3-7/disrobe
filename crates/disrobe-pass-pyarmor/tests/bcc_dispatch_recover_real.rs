@@ -302,6 +302,27 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
         clamp.recovered_python.is_none(),
         "clamp has real control flow and must degrade, never fabricate"
     );
+    let clamp_symbols: Vec<&str> = clamp
+        .calls
+        .iter()
+        .filter_map(|c: &disrobe_pass_pyarmor::RecognizedCall| c.symbol.as_deref())
+        .collect();
+    assert!(
+        clamp_symbols.contains(&"PyObject_RichCompare"),
+        "clamp's compare dispatch (slot 0x40) is recognized, not walled: {clamp_symbols:?}"
+    );
+    assert!(
+        clamp_symbols.contains(&"PyObject_IsTrue"),
+        "clamp's truth-test dispatch (slot 0x198) is recognized, not walled: {clamp_symbols:?}"
+    );
+    assert!(
+        !clamp
+            .notes
+            .iter()
+            .any(|note: &String| note.contains("unmodeled runtime dispatch slot")),
+        "clamp no longer degrades on an unmodeled dispatch slot: {:?}",
+        clamp.notes
+    );
 
     let main: RecoveredBody = recover_named(&prep, "main").expect("main native record");
     assert!(
