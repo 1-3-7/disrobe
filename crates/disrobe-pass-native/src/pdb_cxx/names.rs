@@ -65,20 +65,37 @@ fn is_cxx_keyword(name: &str) -> bool {
         "alignas"
             | "alignof"
             | "and"
+            | "and_eq"
             | "asm"
             | "auto"
+            | "bitand"
+            | "bitor"
             | "bool"
             | "break"
             | "case"
             | "catch"
             | "char"
+            | "char8_t"
+            | "char16_t"
+            | "char32_t"
             | "class"
+            | "co_await"
+            | "co_return"
+            | "co_yield"
+            | "compl"
+            | "concept"
             | "const"
+            | "const_cast"
+            | "consteval"
+            | "constexpr"
+            | "constinit"
             | "continue"
+            | "decltype"
             | "default"
             | "delete"
             | "do"
             | "double"
+            | "dynamic_cast"
             | "else"
             | "enum"
             | "explicit"
@@ -96,20 +113,31 @@ fn is_cxx_keyword(name: &str) -> bool {
             | "mutable"
             | "namespace"
             | "new"
+            | "noexcept"
+            | "not"
+            | "not_eq"
+            | "nullptr"
             | "operator"
+            | "or"
+            | "or_eq"
             | "private"
             | "protected"
             | "public"
             | "register"
+            | "reinterpret_cast"
+            | "requires"
             | "return"
             | "short"
             | "signed"
             | "sizeof"
             | "static"
+            | "static_assert"
+            | "static_cast"
             | "struct"
             | "switch"
             | "template"
             | "this"
+            | "thread_local"
             | "throw"
             | "true"
             | "try"
@@ -124,6 +152,8 @@ fn is_cxx_keyword(name: &str) -> bool {
             | "volatile"
             | "wchar_t"
             | "while"
+            | "xor"
+            | "xor_eq"
     )
 }
 
@@ -161,5 +191,105 @@ mod tests {
         assert_eq!(d.assign("Foo"), "Foo_1");
         assert_eq!(d.assign("Foo"), "Foo_2");
         assert_eq!(d.assign("Bar"), "Bar");
+    }
+
+    const CXX_RESERVED_MEMBER_NAMES: &[&str] = &[
+        "or",
+        "not",
+        "xor",
+        "bitand",
+        "bitor",
+        "compl",
+        "and_eq",
+        "or_eq",
+        "xor_eq",
+        "not_eq",
+        "nullptr",
+        "constexpr",
+        "decltype",
+        "noexcept",
+        "static_assert",
+        "thread_local",
+        "concept",
+        "requires",
+        "char16_t",
+        "char32_t",
+    ];
+
+    #[test]
+    fn sanitize_guards_cxx_alternative_tokens_and_modern_keywords() {
+        for reserved in CXX_RESERVED_MEMBER_NAMES {
+            let sanitized: String = sanitize_identifier(reserved);
+            assert_eq!(
+                sanitized,
+                format!("{reserved}_ty"),
+                "identifier `{reserved}` is a reserved word in C++ and must be renamed"
+            );
+        }
+    }
+
+    fn cxx_compiler() -> Option<String> {
+        for compiler in ["g++", "clang++", "c++"] {
+            if std::process::Command::new(compiler)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o: std::process::Output| o.status.success())
+            {
+                return Some(compiler.to_owned());
+            }
+        }
+        None
+    }
+
+    fn compiles_as_cxx(compiler: &str, std_flag: &str, source: &str, tag: &str) -> bool {
+        let dir: std::path::PathBuf =
+            std::env::temp_dir().join(format!("disrobe-pdb-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let src: std::path::PathBuf = dir.join(format!("names_{tag}.cpp"));
+        std::fs::write(&src, source.as_bytes()).expect("write source");
+        std::process::Command::new(compiler)
+            .args([std_flag, "-fsyntax-only"])
+            .arg(&src)
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success())
+    }
+
+    #[test]
+    fn sanitized_reserved_member_names_compile_as_cxx() {
+        let Some(compiler): Option<String> = cxx_compiler() else {
+            return;
+        };
+        let std_flag: &str = if compiles_as_cxx(
+            &compiler,
+            "-std=c++20",
+            "struct Probe { int m; };\n",
+            "std_probe",
+        ) {
+            "-std=c++20"
+        } else {
+            "-std=c++17"
+        };
+        let mut reserved_seen: u32 = 0;
+        for reserved in CXX_RESERVED_MEMBER_NAMES {
+            let sanitized: String = sanitize_identifier(reserved);
+            let fixed_source: String = format!("struct S {{ int {sanitized}; }};\n");
+            assert!(
+                compiles_as_cxx(
+                    &compiler,
+                    std_flag,
+                    &fixed_source,
+                    &format!("fixed_{reserved}")
+                ),
+                "expected sanitized member `int {sanitized};` to compile as C++"
+            );
+            let raw_source: String = format!("struct S {{ int {reserved}; }};\n");
+            if !compiles_as_cxx(&compiler, std_flag, &raw_source, &format!("raw_{reserved}")) {
+                reserved_seen += 1;
+            }
+        }
+        assert!(
+            reserved_seen >= 10,
+            "expected the C++ compiler to reject most reserved names as members, only {reserved_seen} rejected"
+        );
     }
 }
