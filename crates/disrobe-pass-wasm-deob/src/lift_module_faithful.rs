@@ -463,8 +463,8 @@ fn collect_import(
     table_index: &mut u32,
     global_index: &mut u32,
 ) {
-    let module: &str = imp.module;
-    let field: &str = imp.name;
+    let module: String = escape_wat_name(imp.module);
+    let field: String = escape_wat_name(imp.name);
     match imp.ty {
         TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
             let abs: u32 = scaffold.imported_func_count;
@@ -593,7 +593,22 @@ fn render_export(exp: &wasmparser::Export<'_>) -> String {
         ExternalKind::Global => format!("$g{}", exp.index),
         ExternalKind::Tag => format!("$tag{}", exp.index),
     };
-    format!("(export \"{}\" ({kind} {target}))", exp.name)
+    format!(
+        "(export \"{}\" ({kind} {target}))",
+        escape_wat_name(exp.name)
+    )
+}
+
+fn escape_wat_name(name: &str) -> String {
+    let mut s: String = String::with_capacity(name.len());
+    for &byte in name.as_bytes() {
+        if matches!(byte, 0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e) {
+            s.push(byte as char);
+        } else {
+            push_text!(s, "\\{byte:02x}");
+        }
+    }
+    s
 }
 
 fn table_target_name(index: u32) -> String {
@@ -943,5 +958,38 @@ mod tests {
         let out: String = lift(SRC);
         assert!(out.contains("(global $g0 i64 (i64.const -7))"), "{out}");
         let _: Vec<u8> = reassembles(&out);
+    }
+
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        needle.len() <= haystack.len() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn export_name_with_quote_reassembles_to_same_name() {
+        const SRC: &str = r#"(module (func) (export "a\22b" (func 0)))"#;
+        let out: String = lift(SRC);
+        assert!(out.contains(r#"(export "a\22b" (func $f0))"#), "{out}");
+        let bytes: Vec<u8> = reassembles(&out);
+        assert!(contains_bytes(&bytes, b"a\"b"), "{out}");
+    }
+
+    #[test]
+    fn export_name_with_backslash_reassembles_to_same_name() {
+        const SRC: &str = r#"(module (func) (export "a\5cb" (func 0)))"#;
+        let out: String = lift(SRC);
+        assert!(out.contains(r#"(export "a\5cb" (func $f0))"#), "{out}");
+        let bytes: Vec<u8> = reassembles(&out);
+        assert!(contains_bytes(&bytes, b"a\\b"), "{out}");
+    }
+
+    #[test]
+    fn import_names_with_control_bytes_reassemble() {
+        const SRC: &str = r#"(module (import "mod\0a" "fld\09" (func)))"#;
+        let out: String = lift(SRC);
+        assert!(out.contains(r#""mod\0a""#), "{out}");
+        assert!(out.contains(r#""fld\09""#), "{out}");
+        let bytes: Vec<u8> = reassembles(&out);
+        assert!(contains_bytes(&bytes, b"mod\x0a"), "{out}");
+        assert!(contains_bytes(&bytes, b"fld\x09"), "{out}");
     }
 }
