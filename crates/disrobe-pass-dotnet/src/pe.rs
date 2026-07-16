@@ -7,6 +7,18 @@ pub const NT_SIGNATURE: u32 = 0x0000_4550;
 pub const PE32_MAGIC: u16 = 0x010B;
 pub const PE32PLUS_MAGIC: u16 = 0x020B;
 pub const CLR_DIRECTORY_INDEX: usize = 14;
+const SECTION_HEADER_LEN: usize = 40;
+
+#[inline]
+const fn section_prealloc(number_of_sections: u16, remaining: usize) -> usize {
+    let claimed: usize = number_of_sections as usize;
+    let affordable: usize = remaining / SECTION_HEADER_LEN;
+    if claimed < affordable {
+        claimed
+    } else {
+        affordable
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PeBitness {
@@ -167,7 +179,8 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage> {
     }
     let sections_start: usize = opt_start + size_of_optional_header as usize;
     r.seek(sections_start)?;
-    let mut sections: Vec<SectionHeader> = Vec::with_capacity(number_of_sections as usize);
+    let sec_prealloc: usize = section_prealloc(number_of_sections, r.remaining());
+    let mut sections: Vec<SectionHeader> = Vec::with_capacity(sec_prealloc);
     for _ in 0..number_of_sections {
         let name_bytes: &[u8] = r.take(8)?;
         let name: String = String::from_utf8_lossy(
@@ -385,5 +398,53 @@ mod tests {
         };
         assert_eq!(img.rva_to_offset(0x2050), Some(0x250));
         assert_eq!(img.rva_to_offset(0x9999), None);
+    }
+
+    #[test]
+    fn section_prealloc_caps_to_remaining_input() {
+        assert_eq!(section_prealloc(0xFFFF, 0), 0);
+        assert_eq!(section_prealloc(0xFFFF, 80), 2);
+        assert_eq!(section_prealloc(0xFFFF, 39), 0);
+        assert_eq!(section_prealloc(3, 80), 2);
+        assert_eq!(section_prealloc(3, 120), 3);
+        assert_eq!(section_prealloc(3, 4096), 3);
+        assert_eq!(section_prealloc(0, 4096), 0);
+    }
+
+    fn crafted_pe_declaring_sections(number_of_sections: u16, tail: usize) -> Vec<u8> {
+        let pe_off: usize = 0x80;
+        let mut bytes: Vec<u8> = vec![0u8; pe_off + 24 + 96 + tail];
+        bytes[0] = 0x4D;
+        bytes[1] = 0x5A;
+        bytes[0x3C..0x40].copy_from_slice(&(pe_off as u32).to_le_bytes());
+        bytes[pe_off..pe_off + 4].copy_from_slice(&NT_SIGNATURE.to_le_bytes());
+        bytes[pe_off + 4..pe_off + 6].copy_from_slice(&0x014Cu16.to_le_bytes());
+        bytes[pe_off + 6..pe_off + 8].copy_from_slice(&number_of_sections.to_le_bytes());
+        let opt_size: u16 = 96;
+        bytes[pe_off + 20..pe_off + 22].copy_from_slice(&opt_size.to_le_bytes());
+        let opt_start: usize = pe_off + 24;
+        bytes[opt_start..opt_start + 2].copy_from_slice(&PE32_MAGIC.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn giant_section_count_short_buffer_errs_without_panic() {
+        let bytes: Vec<u8> = crafted_pe_declaring_sections(0xFFFF, 0);
+        let outcome: std::thread::Result<Result<PeImage>> =
+            std::panic::catch_unwind(move || parse(&bytes));
+        let parsed: Result<PeImage> = outcome.expect("parser must not panic");
+        assert!(parsed.is_err(), "declared sections absent from buffer");
+    }
+
+    #[test]
+    fn well_formed_section_count_still_parses() {
+        let mut bytes: Vec<u8> = crafted_pe_declaring_sections(1, SECTION_HEADER_LEN);
+        let opt_start: usize = 0x80 + 24;
+        let sec_start: usize = opt_start + 96;
+        bytes[sec_start..sec_start + 5].copy_from_slice(b".text");
+        let img: PeImage = parse(&bytes).expect("one present section parses");
+        assert_eq!(img.number_of_sections, 1);
+        assert_eq!(img.sections.len(), 1);
+        assert_eq!(img.sections[0].name, ".text");
     }
 }
