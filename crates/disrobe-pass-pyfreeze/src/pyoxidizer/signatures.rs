@@ -57,6 +57,8 @@ const RES_END_OF_ENTRY: u8 = 0xff;
 
 const RESOURCE_FIELD_SLOTS: usize = 256;
 const MAX_BLOB_SLICE: usize = 256 * 1024 * 1024;
+const MAX_RESOURCE_ENTRIES: usize = 1_000_000;
+const MAX_BLOB_SECTIONS: usize = 4096;
 
 #[must_use]
 pub fn scan(bytes: &[u8]) -> Vec<String> {
@@ -302,6 +304,9 @@ fn parse_blob_index(region: &[u8], start: usize, index_len: usize) -> Option<Vec
             BLOB_END_OF_ENTRY => {
                 let resource_field: u8 = field?;
                 let raw_payload_length: usize = payload_len?;
+                if sections.len() >= MAX_BLOB_SECTIONS {
+                    return None;
+                }
                 sections.push(BlobSection {
                     resource_field,
                     raw_payload_length,
@@ -431,6 +436,9 @@ fn parse_structured_region(region: &[u8]) -> Option<PackedResourcesParse> {
             RES_END_OF_ENTRY => {
                 let entry: RawEntry = current.take()?;
                 let name: String = entry.name.clone()?;
+                if entries.len() >= MAX_RESOURCE_ENTRIES {
+                    return None;
+                }
                 let tier: ResourceTier = tier_for_entry(&entry, &name);
                 let (content_offset, content_len): (usize, usize) =
                     primary_payload(&entry).unwrap_or((0, 0));
@@ -671,6 +679,9 @@ fn extract_modules_structured(region: &[u8]) -> Option<Vec<ExtractedModule>> {
             RES_END_OF_ENTRY => {
                 let m: RawModule = current.take()?;
                 let name: String = m.name?;
+                if modules.len() >= MAX_RESOURCE_ENTRIES {
+                    return None;
+                }
                 modules.push(ExtractedModule {
                     name,
                     is_package: m.is_package,
@@ -877,6 +888,9 @@ fn heuristic_walk(
     for (needle, tier) in needles {
         let mut start: usize = 0;
         while let Some(pos) = find_from(blob, needle, start) {
+            if entries.len() >= MAX_RESOURCE_ENTRIES {
+                break;
+            }
             let name_start: usize = scan_name_start(blob, pos);
             let name_end: usize = pos + needle.len();
             let raw_name: &[u8] = &blob[name_start..name_end];
