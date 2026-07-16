@@ -700,9 +700,9 @@ pub fn resolve_ref(cf: &ClassFile, index: u16) -> Option<String> {
             cf.utf8_at(*utf8_index).ok().map(escape_java_string)
         }
         ConstantPoolEntry::Integer(v) => Some(v.to_string()),
-        ConstantPoolEntry::Float(bits) => Some(java_float_literal(f32::from_bits(*bits))),
+        ConstantPoolEntry::Float(bits) => Some(java_float_literal(*bits)),
         ConstantPoolEntry::Long(v) => Some(format!("{v}L")),
-        ConstantPoolEntry::Double(bits) => Some(java_double_literal(f64::from_bits(*bits))),
+        ConstantPoolEntry::Double(bits) => Some(java_double_literal(*bits)),
         _ => None,
     }
 }
@@ -751,9 +751,13 @@ pub fn class_internal_name_at(cf: &ClassFile, index: u16) -> Option<String> {
     cf.class_name(index).ok().map(str::to_string)
 }
 
-fn java_float_literal(v: f32) -> String {
+fn java_float_literal(bits: u32) -> String {
+    let v: f32 = f32::from_bits(bits);
     if v.is_nan() {
-        return "Float.NaN".to_string();
+        if bits == f32::NAN.to_bits() {
+            return "Float.NaN".to_string();
+        }
+        return format!("Float.intBitsToFloat(0x{bits:08x})");
     }
     if v.is_infinite() {
         return if v < 0.0 {
@@ -766,9 +770,13 @@ fn java_float_literal(v: f32) -> String {
     format!("{body}f")
 }
 
-fn java_double_literal(v: f64) -> String {
+fn java_double_literal(bits: u64) -> String {
+    let v: f64 = f64::from_bits(bits);
     if v.is_nan() {
-        return "Double.NaN".to_string();
+        if bits == f64::NAN.to_bits() {
+            return "Double.NaN".to_string();
+        }
+        return format!("Double.longBitsToDouble(0x{bits:016x}L)");
     }
     if v.is_infinite() {
         return if v < 0.0 {
@@ -817,6 +825,46 @@ mod tests {
         assert_eq!(insns.len(), 2);
         assert_eq!(insns[0].mnemonic, "iconst_1");
         assert_eq!(insns[1].mnemonic, "ireturn");
+    }
+
+    #[test]
+    fn float_literal_preserves_noncanonical_nan_bits() {
+        assert_eq!(java_float_literal(0x7fc0_0000), "Float.NaN");
+        assert_eq!(java_float_literal(f32::NAN.to_bits()), "Float.NaN");
+        assert_eq!(
+            java_float_literal(0x7f80_0001),
+            "Float.intBitsToFloat(0x7f800001)"
+        );
+        assert_eq!(
+            java_float_literal(0xff80_0001),
+            "Float.intBitsToFloat(0xff800001)"
+        );
+        assert_eq!(java_float_literal(0x7f80_0000), "Float.POSITIVE_INFINITY");
+        assert_eq!(java_float_literal(0xff80_0000), "Float.NEGATIVE_INFINITY");
+        assert_eq!(java_float_literal(1.0f32.to_bits()), "1e0f");
+    }
+
+    #[test]
+    fn double_literal_preserves_noncanonical_nan_bits() {
+        assert_eq!(java_double_literal(0x7ff8_0000_0000_0000), "Double.NaN");
+        assert_eq!(java_double_literal(f64::NAN.to_bits()), "Double.NaN");
+        assert_eq!(
+            java_double_literal(0xfff8_0000_0000_0001),
+            "Double.longBitsToDouble(0xfff8000000000001L)"
+        );
+        assert_eq!(
+            java_double_literal(0x7ff0_0000_0000_0001),
+            "Double.longBitsToDouble(0x7ff0000000000001L)"
+        );
+        assert_eq!(
+            java_double_literal(0x7ff0_0000_0000_0000),
+            "Double.POSITIVE_INFINITY"
+        );
+        assert_eq!(
+            java_double_literal(0xfff0_0000_0000_0000),
+            "Double.NEGATIVE_INFINITY"
+        );
+        assert_eq!(java_double_literal(1.0f64.to_bits()), "1e0");
     }
 
     #[test]
