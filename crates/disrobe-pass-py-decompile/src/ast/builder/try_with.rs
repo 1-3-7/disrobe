@@ -769,7 +769,7 @@ pub(super) fn try_structure_cold_sibling_try(
         region.protected_end,
         region.handler_start.min(hi),
     );
-    let guard_wrap: Option<(Vec<Stmt>, Expr, usize)> =
+    let guard_wrap: Option<ColdSiblingGuard> =
         cold_sibling_guard_wrap(code, stream, body_start, &region, body_end, hi)?;
     let body: Vec<Stmt> = {
         let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(body_end);
@@ -780,7 +780,20 @@ pub(super) fn try_structure_cold_sibling_try(
     if handlers.is_empty() {
         return Ok(None);
     }
-    let tail: Vec<Stmt> = structure_stmts(code, stream, body_end, hi)?;
+    let cold_else: Option<(usize, usize, usize)> =
+        guard_wrap.as_ref().and_then(|wrap: &ColdSiblingGuard| {
+            then_terminating_jump(stream, wrap.guard + 1, wrap.false_target)
+                .and_then(|jump: usize| {
+                    resolve_jump_target(stream, jump, &stream.ops[jump])
+                        .filter(|&join: &usize| join > wrap.false_target && join <= hi)
+                        .map(|join: usize| (jump, wrap.false_target, join))
+                })
+                .filter(|&(_, false_target, join): &(usize, usize, usize)| {
+                    first_significant(stream, false_target, join).is_some()
+                })
+        });
+    let tail_lo: usize = cold_else.map_or(body_end, |(_, _, join): (usize, usize, usize)| join);
+    let tail: Vec<Stmt> = structure_stmts(code, stream, tail_lo, hi)?;
     let handlers: Vec<ExceptHandler> = match tail.last() {
         Some(last) => strip_shared_exit_return(handlers, std::slice::from_ref(last)),
         None => handlers,
@@ -792,14 +805,22 @@ pub(super) fn try_structure_cold_sibling_try(
         finalbody: Vec::new(),
         line: None,
     };
-    if let Some((guarded_head, test, guard)) = guard_wrap {
-        let mut if_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
+    if let Some(wrap) = guard_wrap {
+        let mut if_body: Vec<Stmt> =
+            structure_stmts(code, stream, wrap.guard + 1, region.try_start)?;
         if_body.push(try_stmt);
-        let mut out: Vec<Stmt> = guarded_head;
+        let orelse: Vec<Stmt> = match cold_else {
+            Some((jump, false_target, join)) => {
+                if_body.extend(structure_stmts(code, stream, body_end, jump)?);
+                structure_stmts(code, stream, false_target, join)?
+            }
+            None => Vec::new(),
+        };
+        let mut out: Vec<Stmt> = wrap.head;
         out.push(Stmt::If {
-            test,
+            test: wrap.test,
             body: non_empty(if_body),
-            orelse: Vec::new(),
+            orelse,
             line: None,
         });
         out.extend(tail);
@@ -815,6 +836,14 @@ pub(super) fn try_structure_cold_sibling_try(
     Ok(Some(out))
 }
 
+#[derive(Debug)]
+struct ColdSiblingGuard {
+    head: Vec<Stmt>,
+    test: Expr,
+    guard: usize,
+    false_target: usize,
+}
+
 fn cold_sibling_guard_wrap(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -822,7 +851,7 @@ fn cold_sibling_guard_wrap(
     region: &TryRegion,
     body_end: usize,
     hi: usize,
-) -> Result<Option<(Vec<Stmt>, Expr, usize)>> {
+) -> Result<Option<ColdSiblingGuard>> {
     let Some(guard): Option<usize> = (body_start..region.try_start).find(|&k: &usize| {
         is_forward_cond_jump(&stream.ops[k])
             && !is_chain_cond_jump(&stream.ops, k)
@@ -830,7 +859,7 @@ fn cold_sibling_guard_wrap(
     }) else {
         return Ok(None);
     };
-    let Some(_false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+    let Some(false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
         .filter(|&t: &usize| t > region.try_start && t >= body_end && t <= hi)
     else {
         return Ok(None);
@@ -863,7 +892,12 @@ fn cold_sibling_guard_wrap(
             operand: Box::new(test),
         }
     };
-    Ok(Some((head, test, guard)))
+    Ok(Some(ColdSiblingGuard {
+        head,
+        test,
+        guard,
+        false_target,
+    }))
 }
 
 fn empty_try_handler_start(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
