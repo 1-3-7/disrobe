@@ -72,6 +72,7 @@ mod tests {
             emitted_name: "Point".to_owned(),
             original_name: "Point".to_owned(),
             byte_size: 8,
+            bases: Vec::new(),
             fields: vec![
                 EmittedField {
                     emitted_name: "x".to_owned(),

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Result;
 use crate::pdb_cxx::catalog::{TypeCatalog, UdtFamily};
@@ -6,11 +6,12 @@ use crate::pdb_cxx::functions::resolve_free_function_signature;
 use crate::pdb_cxx::names::{Deduper, sanitize_identifier};
 use crate::pdb_cxx::spelling::{self, ResolvedSpelling, SpellError};
 use crate::pdb_cxx::{
-    BitfieldSpec, EmittedEnum, EmittedEnumerator, EmittedField, EmittedFunction, EmittedGlobal,
-    EmittedTypedef, EmittedUdt, RejectReason, UdtTagKeyword,
+    BitfieldSpec, EmittedBase, EmittedEnum, EmittedEnumerator, EmittedField, EmittedFunction,
+    EmittedGlobal, EmittedTypedef, EmittedUdt, RejectReason, UdtTagKeyword,
 };
 
 const MAX_FIELDLIST_CHAIN: usize = 256;
+const VFPTR_MEMBER_NAME: &str = "__vfptr";
 
 pub(crate) type BuildFailure = (RejectReason, String);
 pub(crate) type BuildResult<T> = std::result::Result<T, BuildFailure>;
@@ -21,6 +22,7 @@ pub(crate) fn build_class(
     idx: pdb::TypeIndex,
     c: &pdb::ClassType<'_>,
     emitted_name: String,
+    name_map: &BTreeMap<u32, String>,
     opaque_out: &mut OpaqueRefs,
 ) -> BuildResult<EmittedUdt> {
     let Some(fieldlist_idx) = c.fields else {
@@ -36,14 +38,7 @@ pub(crate) fn build_class(
                 format!("field list unreadable: {e}"),
             )
         })?;
-    if let Some(reason) = disqualifying_reason(
-        catalog,
-        c.derived_from.is_some(),
-        c.vtable_shape.is_some(),
-        &field_records,
-    ) {
-        return Err((RejectReason::InheritanceOrVirtualDispatch, reason));
-    }
+    let inheritance: Inheritance = collect_inheritance(catalog, name_map, &field_records)?;
     let tag_keyword: UdtTagKeyword = match c.kind {
         pdb::ClassKind::Class | pdb::ClassKind::Interface => UdtTagKeyword::Class,
         pdb::ClassKind::Struct => UdtTagKeyword::Struct,
@@ -55,8 +50,74 @@ pub(crate) fn build_class(
         original_name: c.name.to_string().into_owned(),
         byte_size: c.size,
         packed: c.properties.packed(),
+        bases: inheritance.bases,
+        base_deps: inheritance.base_deps,
+        synth_vfptr: inheritance.synth_vfptr,
     };
     build_fields(catalog, &field_records, header, opaque_out)
+}
+
+#[derive(Debug)]
+struct Inheritance {
+    bases: Vec<EmittedBase>,
+    base_deps: Vec<u32>,
+    synth_vfptr: bool,
+}
+
+fn collect_inheritance(
+    catalog: &TypeCatalog<'_>,
+    name_map: &BTreeMap<u32, String>,
+    fields: &[pdb::TypeData<'_>],
+) -> BuildResult<Inheritance> {
+    let mut bases: Vec<EmittedBase> = Vec::new();
+    let mut base_deps: Vec<u32> = Vec::new();
+    let mut synth_vfptr: bool = false;
+    for f in fields {
+        match f {
+            pdb::TypeData::VirtualBaseClass(_) => {
+                return Err((
+                    RejectReason::InheritanceOrVirtualDispatch,
+                    "virtual (vbtable) base layout is not modeled".to_owned(),
+                ));
+            }
+            pdb::TypeData::BaseClass(bc) => {
+                let (base_def_idx, _base_data): (pdb::TypeIndex, pdb::TypeData<'_>) =
+                    catalog.resolve(bc.base_class).map_err(|e| {
+                        (
+                            RejectReason::UnresolvableMember,
+                            format!("base class type could not be resolved: {e}"),
+                        )
+                    })?;
+                let Some(base_name) = name_map.get(&base_def_idx.0) else {
+                    return Err((
+                        RejectReason::UnresolvableMember,
+                        "base class is not among the emitted user types".to_owned(),
+                    ));
+                };
+                bases.push(EmittedBase {
+                    base_name: base_name.clone(),
+                    offset: u64::from(bc.offset),
+                });
+                base_deps.push(base_def_idx.0);
+            }
+            pdb::TypeData::VirtualFunctionTablePointer(_) => {
+                synth_vfptr = true;
+            }
+            _ => {}
+        }
+    }
+    if synth_vfptr && !bases.is_empty() {
+        return Err((
+            RejectReason::InheritanceOrVirtualDispatch,
+            "class introduces its own vtable atop base classes (secondary vftable layout not modeled)"
+                .to_owned(),
+        ));
+    }
+    Ok(Inheritance {
+        bases,
+        base_deps,
+        synth_vfptr,
+    })
 }
 
 pub(crate) fn build_union(
@@ -73,9 +134,6 @@ pub(crate) fn build_union(
                 format!("field list unreadable: {e}"),
             )
         })?;
-    if let Some(reason) = disqualifying_reason(catalog, false, false, &field_records) {
-        return Err((RejectReason::InheritanceOrVirtualDispatch, reason));
-    }
     let header: UdtHeader = UdtHeader {
         idx,
         tag_keyword: UdtTagKeyword::Union,
@@ -83,6 +141,9 @@ pub(crate) fn build_union(
         original_name: u.name.to_string().into_owned(),
         byte_size: u.size,
         packed: u.properties.packed(),
+        bases: Vec::new(),
+        base_deps: Vec::new(),
+        synth_vfptr: false,
     };
     build_fields(catalog, &field_records, header, opaque_out)
 }
@@ -95,57 +156,9 @@ struct UdtHeader {
     original_name: String,
     byte_size: u64,
     packed: bool,
-}
-
-fn disqualifying_reason(
-    catalog: &TypeCatalog<'_>,
-    derived_from: bool,
-    vtable_shape: bool,
-    fields: &[pdb::TypeData<'_>],
-) -> Option<String> {
-    if derived_from {
-        return Some("has a base class (derived_from set); base-layout and vtable slot ordering are not modeled this round".to_owned());
-    }
-    if vtable_shape {
-        return Some("has an explicit vtable shape".to_owned());
-    }
-    for f in fields {
-        match f {
-            pdb::TypeData::BaseClass(_)
-            | pdb::TypeData::VirtualBaseClass(_)
-            | pdb::TypeData::VirtualFunctionTablePointer(_) => {
-                return Some("field list contains a base-class or vtable-pointer entry".to_owned());
-            }
-            pdb::TypeData::Method(m)
-                if m.attributes.is_virtual()
-                    || m.attributes.is_pure_virtual()
-                    || m.attributes.is_intro_virtual() =>
-            {
-                return Some(format!("method '{}' is virtual", m.name));
-            }
-            pdb::TypeData::OverloadedMethod(ov)
-                if method_list_has_virtual(catalog, ov.method_list) =>
-            {
-                return Some(format!(
-                    "overload set '{}' contains a virtual method",
-                    ov.name
-                ));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn method_list_has_virtual(catalog: &TypeCatalog<'_>, method_list_idx: pdb::TypeIndex) -> bool {
-    let Ok(pdb::TypeData::MethodList(list)) = catalog.get(method_list_idx) else {
-        return false;
-    };
-    list.methods.iter().any(|entry: &pdb::MethodListEntry| {
-        entry.attributes.is_virtual()
-            || entry.attributes.is_pure_virtual()
-            || entry.attributes.is_intro_virtual()
-    })
+    bases: Vec<EmittedBase>,
+    base_deps: Vec<u32>,
+    synth_vfptr: bool,
 }
 
 fn build_fields(
@@ -156,8 +169,20 @@ fn build_fields(
 ) -> BuildResult<EmittedUdt> {
     let mut fields: Vec<EmittedField> = Vec::new();
     let mut degraded: bool = header.packed;
-    let mut depends_on: Vec<u32> = Vec::new();
+    let mut depends_on: Vec<u32> = header.base_deps.clone();
     let mut dedup: Deduper = Deduper::new();
+    if header.synth_vfptr {
+        let vfptr_name: String = dedup.assign(VFPTR_MEMBER_NAME);
+        fields.push(EmittedField {
+            emitted_name: vfptr_name.clone(),
+            original_name: vfptr_name,
+            declaration: "void **__vfptr".to_owned(),
+            offset: 0,
+            byte_size: Some(8),
+            bitfield: None,
+            is_static: false,
+        });
+    }
     for record in field_records {
         match record {
             pdb::TypeData::Member(m) => {
@@ -226,6 +251,7 @@ fn build_fields(
         emitted_name: header.emitted_name,
         original_name: header.original_name,
         byte_size: header.byte_size,
+        bases: header.bases,
         fields,
         degraded,
         depends_on,
