@@ -1909,11 +1909,12 @@ fn fallback_with_contract(
     let (name, result_name, effectful): (String, String, bool) =
         specification.as_ref().map_or_else(
             || -> (String, String, bool) {
-                let generated: String = format!("x86_unmodeled_{mnemonic}_{summary}_v1");
+                let mnemonic_id: String = sanitize_identifier_fragment(mnemonic);
+                let generated: String = format!("x86_unmodeled_{mnemonic_id}_{summary}_v1");
                 let generated_result: String = if summary == "pure" {
                     generated.clone()
                 } else {
-                    format!("x86_unmodeled_{mnemonic}_result_pure_v1")
+                    format!("x86_unmodeled_{mnemonic_id}_result_pure_v1")
                 };
                 (generated, generated_result, summary != "pure")
             },
@@ -2026,6 +2027,19 @@ fn opaque_register_descriptor(selected: Register) -> Varnode {
     constant(0x7838_3600_0000_0000_u64 | encoded, 8)
 }
 
+fn sanitize_identifier_fragment(fragment: &str) -> String {
+    fragment
+        .chars()
+        .map(|character: char| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 const fn pure_scalar_fallback(mnemonic: Mnemonic) -> bool {
     matches!(
         mnemonic,
@@ -2114,4 +2128,21 @@ fn used_memory_pointer(
         pointer = combined;
     }
     Some(pointer)
+}
+
+#[cfg(test)]
+mod sanitize_identifier_tests {
+    use super::sanitize_identifier_fragment;
+
+    #[test]
+    fn non_identifier_characters_become_underscores() {
+        assert_eq!(sanitize_identifier_fragment("vfmadd132ps"), "vfmadd132ps");
+        assert_eq!(sanitize_identifier_fragment("foo.bar"), "foo_bar");
+        assert_eq!(sanitize_identifier_fragment("a b-c"), "a_b_c");
+        assert!(
+            sanitize_identifier_fragment("k1{k2}@x")
+                .chars()
+                .all(|character: char| character.is_ascii_alphanumeric() || character == '_')
+        );
+    }
 }
