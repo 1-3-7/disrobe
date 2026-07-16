@@ -6,6 +6,7 @@ const RECORD_STRIDE: usize = 32;
 const MAX_RECORDS: usize = 65_536;
 const MAX_NAME_LEN: usize = 128;
 const MAX_SECTIONS: usize = 4096;
+const SECTION_COPY_FACTOR: usize = 16;
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const SHF_EXECINSTR: u64 = 0x4;
 const SHT_NOBITS: u32 = 8;
@@ -103,6 +104,8 @@ fn enumerate_elf_sections(blob: &[u8]) -> Vec<SectionView> {
     if shentsize < 64 {
         return Vec::new();
     }
+    let cap: usize = blob.len().saturating_mul(SECTION_COPY_FACTOR);
+    let mut copied: usize = 0;
     let mut views: Vec<SectionView> = Vec::new();
     for i in 0..shnum {
         let Some(base): Option<usize> = i
@@ -135,6 +138,13 @@ fn enumerate_elf_sections(blob: &[u8]) -> Vec<SectionView> {
         else {
             continue;
         };
+        let Some(next_copied): Option<usize> = copied
+            .checked_add(data.len())
+            .filter(|total: &usize| *total <= cap)
+        else {
+            break;
+        };
+        copied = next_copied;
         views.push(SectionView {
             addr: sh_addr,
             data: data.to_vec(),
@@ -148,6 +158,8 @@ fn enumerate_object_sections(blob: &[u8]) -> Vec<SectionView> {
     let Ok(file): Result<object::File<'_>, object::Error> = object::File::parse(blob) else {
         return Vec::new();
     };
+    let cap: usize = blob.len().saturating_mul(SECTION_COPY_FACTOR);
+    let mut copied: usize = 0;
     let mut views: Vec<SectionView> = Vec::new();
     for section in file.sections() {
         let Ok(data): Result<&[u8], object::Error> = section.data() else {
@@ -157,6 +169,13 @@ fn enumerate_object_sections(blob: &[u8]) -> Vec<SectionView> {
         if addr == 0 || data.is_empty() {
             continue;
         }
+        let Some(next_copied): Option<usize> = copied
+            .checked_add(data.len())
+            .filter(|total: &usize| *total <= cap)
+        else {
+            break;
+        };
+        copied = next_copied;
         views.push(SectionView {
             addr,
             data: data.to_vec(),
@@ -315,6 +334,41 @@ mod tests {
         blob[0x3c..0x3e].copy_from_slice(&9000u16.to_le_bytes());
         let entries: Vec<DispatchEntry> = parse_dispatch(&blob, BccArch::WinX64, 0);
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn cumulative_section_bytes_are_capped() {
+        let section_count: usize = 200;
+        let blob: Vec<u8> = build_whole_file_sections_elf(section_count);
+        let views: Vec<SectionView> = enumerate_elf_sections(&blob);
+        assert_eq!(
+            views.len(),
+            SECTION_COPY_FACTOR,
+            "enumeration stops once copied bytes reach the cap"
+        );
+        assert!(section_count > SECTION_COPY_FACTOR);
+    }
+
+    fn build_whole_file_sections_elf(section_count: usize) -> Vec<u8> {
+        let header_len: usize = 64;
+        let shentsize: usize = 64;
+        let total_len: usize = header_len + section_count * shentsize;
+        let mut blob: Vec<u8> = vec![0u8; total_len];
+        blob[..4].copy_from_slice(&ELF_MAGIC);
+        blob[4] = 2;
+        blob[5] = 1;
+        blob[0x28..0x30].copy_from_slice(&(header_len as u64).to_le_bytes());
+        blob[0x3a..0x3c].copy_from_slice(&(shentsize as u16).to_le_bytes());
+        blob[0x3c..0x3e].copy_from_slice(&(section_count as u16).to_le_bytes());
+        for i in 0..section_count {
+            let base: usize = header_len + i * shentsize;
+            blob[base + 4..base + 8].copy_from_slice(&1u32.to_le_bytes());
+            let addr: u64 = 0x1000 + (i as u64) * 0x100;
+            blob[base + 16..base + 24].copy_from_slice(&addr.to_le_bytes());
+            blob[base + 24..base + 32].copy_from_slice(&0u64.to_le_bytes());
+            blob[base + 32..base + 40].copy_from_slice(&(total_len as u64).to_le_bytes());
+        }
+        blob
     }
 
     #[test]
