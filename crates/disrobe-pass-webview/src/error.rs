@@ -12,7 +12,7 @@ pub enum Error {
     NotDetected,
 
     #[error(
-        "DR-WEBVIEW-0002: {family} frontend detected but static extraction is not yet implemented"
+        "DR-WEBVIEW-0002: {family} frontend detected but the asset table could not be located (abstaining rather than guessing)"
     )]
     FamilyNotExtractable { family: WebviewFamily },
 
@@ -36,6 +36,14 @@ pub enum Error {
 
     #[error("DR-WEBVIEW-0009: nested asset depth exceeds cap {0}")]
     DepthExceeded(usize),
+
+    #[error("DR-WEBVIEW-0010: native container parse failed: {0}")]
+    NativeParse(String),
+
+    #[error(
+        "DR-WEBVIEW-0011: embedded asset table could not be located (no {0}-record run locked)"
+    )]
+    NoEmbeddedTable(usize),
 }
 
 impl From<ByteReadError> for Error {

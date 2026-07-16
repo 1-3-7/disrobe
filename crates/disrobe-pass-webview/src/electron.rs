@@ -3,15 +3,19 @@ use std::collections::BTreeMap;
 use disrobe_binfmt::{QuotaGuard, sanitize_entry_path};
 use disrobe_bytes::{ByteReader, align_up_u32};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::CarveConfig;
 use crate::detect::find_from;
 use crate::error::{Error, Result};
-use crate::model::{CarveReport, Compression, RecoveredAsset, WebviewFamily};
+use crate::model::{
+    CarveReport, Compression, IntegrityStatus, RecoveredAsset, SymlinkEntry, WebviewFamily,
+};
 
 const ANCHOR: &[u8] = b"{\"files\":";
 const PREFIX_LEN: usize = 16;
 const SIZE_PICKLE_PAYLOAD: u32 = 4;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AsarHeader {
@@ -30,6 +34,24 @@ struct RawNode {
     size: Option<u64>,
     #[serde(default)]
     unpacked: Option<bool>,
+    #[serde(default)]
+    executable: Option<bool>,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    integrity: Option<Integrity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Integrity {
+    #[serde(default)]
+    algorithm: Option<String>,
+    #[serde(default)]
+    hash: Option<String>,
+    #[serde(rename = "blockSize", default)]
+    block_size: Option<u64>,
+    #[serde(default)]
+    blocks: Vec<String>,
 }
 
 pub(crate) fn locate_header(bytes: &[u8], max_candidates: usize) -> Option<AsarHeader> {
@@ -98,13 +120,19 @@ pub(crate) fn extract(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport> {
         guard: QuotaGuard::new(cfg.quota),
         assets: Vec::new(),
         external: Vec::new(),
+        symlinks: Vec::new(),
     };
     let mut path_stack: Vec<String> = Vec::new();
     walk.descend(&root, &mut path_stack, 0)?;
+    let recovered: usize = walk.assets.len();
     Ok(CarveReport {
         family: WebviewFamily::Electron,
         assets: walk.assets,
         external_unpacked: walk.external,
+        symlinks: walk.symlinks,
+        directories: Vec::new(),
+        declared: recovered,
+        recovered,
     })
 }
 
@@ -115,6 +143,7 @@ struct Walk<'a> {
     guard: QuotaGuard,
     assets: Vec<RecoveredAsset>,
     external: Vec<String>,
+    symlinks: Vec<SymlinkEntry>,
 }
 
 impl Walk<'_> {
@@ -135,10 +164,19 @@ impl Walk<'_> {
             }
             return Ok(());
         }
+        let joined: String = path_stack.join("/");
+        if let Some(target) = node.link.as_deref() {
+            if let Ok(safe) = sanitize_entry_path(&joined) {
+                self.symlinks.push(SymlinkEntry {
+                    path: safe,
+                    target: target.to_owned(),
+                });
+            }
+            return Ok(());
+        }
         let Some(offset_str) = node.offset.as_deref() else {
             return Ok(());
         };
-        let joined: String = path_stack.join("/");
         let Ok(safe) = sanitize_entry_path(&joined) else {
             return Ok(());
         };
@@ -150,13 +188,65 @@ impl Walk<'_> {
         let slice: &[u8] = read_entry(self.bytes, self.data_base, &safe, offset_str, size)?;
         self.guard
             .admit_entry(&safe, slice.len() as u64, slice.len() as u64)?;
+        let integrity: IntegrityStatus = verify_integrity(slice, node.integrity.as_ref());
         self.assets.push(RecoveredAsset {
             path: safe,
             bytes: slice.to_vec(),
             compression: Compression::None,
+            executable: node.executable.unwrap_or(false),
+            integrity,
         });
         Ok(())
     }
+}
+
+fn verify_integrity(data: &[u8], integrity: Option<&Integrity>) -> IntegrityStatus {
+    let Some(integrity) = integrity else {
+        return IntegrityStatus::Absent;
+    };
+    let Some(expected) = integrity.hash.as_deref() else {
+        return IntegrityStatus::Absent;
+    };
+    let algorithm_ok: bool = integrity
+        .algorithm
+        .as_deref()
+        .is_none_or(|value: &str| value.eq_ignore_ascii_case("SHA256"));
+    if !algorithm_ok {
+        return IntegrityStatus::Absent;
+    }
+    if !sha256_hex(data).eq_ignore_ascii_case(expected) {
+        return IntegrityStatus::Mismatch;
+    }
+    if let Some(block_size) = integrity.block_size
+        && let Ok(block_size) = usize::try_from(block_size)
+        && block_size > 0
+        && !blocks_match(data, block_size, &integrity.blocks)
+    {
+        return IntegrityStatus::Mismatch;
+    }
+    IntegrityStatus::Verified
+}
+
+fn blocks_match(data: &[u8], block_size: usize, blocks: &[String]) -> bool {
+    for (index, chunk) in data.chunks(block_size).enumerate() {
+        let Some(expected) = blocks.get(index) else {
+            break;
+        };
+        if !sha256_hex(chunk).eq_ignore_ascii_case(expected) {
+            return false;
+        }
+    }
+    true
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(data).into();
+    let mut out: String = String::with_capacity(digest.len() * 2);
+    for &byte in &digest {
+        out.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        out.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn read_entry<'a>(

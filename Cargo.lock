@@ -2849,8 +2849,10 @@ dependencies = [
  "disrobe-binfmt",
  "disrobe-bytes",
  "miette",
+ "object",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
 ]
 

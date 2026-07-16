@@ -17,6 +17,8 @@ workspace = true
 [dependencies]
 disrobe-bytes = { workspace = true }
 disrobe-binfmt = { workspace = true }
+object = { workspace = true }
+sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -24,3 +26,4 @@ miette = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+sha2 = { workspace = true }
