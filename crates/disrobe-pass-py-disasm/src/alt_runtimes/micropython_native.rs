@@ -2,6 +2,7 @@
 use disrobe_pass_native::{Arch as NativeArch_, DisasmInsn, disassemble};
 use serde::{Deserialize, Serialize};
 
+use crate::alt_runtimes::micropython::{MAX_TABLE_PREALLOC, bounded_table_count};
 use crate::alt_runtimes::{AltRuntimeError, Result};
 
 #[cfg(target_arch = "wasm32")]
@@ -167,6 +168,10 @@ impl<'a> Reader<'a> {
         Ok(b)
     }
 
+    const fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
     fn uint(&mut self) -> Result<u64> {
         let mut value: u64 = 0;
         loop {
@@ -233,11 +238,13 @@ pub fn parse(bytes: &[u8]) -> Result<MicroPythonNativeModule> {
     };
     let n_qstr: u64 = reader.uint()?;
     let n_obj: u64 = reader.uint()?;
-    let mut qstrs: Vec<String> = Vec::new();
-    for _ in 0..n_qstr {
+    let qstr_count: usize = bounded_table_count(n_qstr, reader.remaining(), "n_qstr", reader.pos)?;
+    let mut qstrs: Vec<String> = Vec::with_capacity(qstr_count.min(MAX_TABLE_PREALLOC));
+    for _ in 0..qstr_count {
         qstrs.push(read_qstr(&mut reader)?);
     }
-    for _ in 0..n_obj {
+    let obj_count: usize = bounded_table_count(n_obj, reader.remaining(), "n_obj", reader.pos)?;
+    for _ in 0..obj_count {
         skip_obj(&mut reader, 0)?;
     }
     let function: NativeFunction = read_raw_code(&mut reader, arch, 0)?;
@@ -304,7 +311,13 @@ fn read_raw_code(reader: &mut Reader<'_>, arch: NativeArch, depth: u8) -> Result
     let mut children: Vec<NativeFunction> = Vec::new();
     if has_children {
         let n_children: u64 = reader.uint()?;
-        for _ in 0..n_children {
+        let child_count: usize = bounded_table_count(
+            n_children,
+            reader.remaining(),
+            "raw_code_children",
+            reader.pos,
+        )?;
+        for _ in 0..child_count {
             children.push(read_raw_code(reader, arch, depth + 1)?);
         }
     }
@@ -624,5 +637,111 @@ mod tests {
         let mut reader: Reader<'_> = Reader::new(&payload);
         let err: AltRuntimeError = skip_obj(&mut reader, 0).expect_err("must bound recursion");
         assert!(matches!(err, AltRuntimeError::BadEncoding { .. }));
+    }
+
+    fn native_header(arch_id: u8) -> Vec<u8> {
+        vec![MPY_MAGIC, 6, arch_id << 2, 31]
+    }
+
+    #[test]
+    fn huge_n_qstr_rejected_before_allocation() {
+        let mut bytes: Vec<u8> = native_header(2);
+        push_uint(&mut bytes, u64::MAX);
+        push_uint(&mut bytes, 0u64);
+        let err: AltRuntimeError =
+            parse(&bytes).expect_err("declared qstr count exceeding input must be rejected");
+        assert!(
+            matches!(
+                err,
+                AltRuntimeError::BadEncoding {
+                    field: "n_qstr",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn huge_n_obj_rejected_before_allocation() {
+        let mut bytes: Vec<u8> = native_header(2);
+        push_uint(&mut bytes, 0u64);
+        push_uint(&mut bytes, u64::MAX);
+        let err: AltRuntimeError =
+            parse(&bytes).expect_err("declared object count exceeding input must be rejected");
+        assert!(
+            matches!(err, AltRuntimeError::BadEncoding { field: "n_obj", .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn huge_child_count_rejected_before_allocation() {
+        let mut bytes: Vec<u8> = native_header(2);
+        push_uint(&mut bytes, 0u64);
+        push_uint(&mut bytes, 0u64);
+        let has_children_native_py: u64 = 0b101;
+        push_uint(&mut bytes, has_children_native_py);
+        push_uint(&mut bytes, 0u64);
+        push_uint(&mut bytes, u64::MAX);
+        let err: AltRuntimeError =
+            parse(&bytes).expect_err("declared child count exceeding input must be rejected");
+        assert!(
+            matches!(
+                err,
+                AltRuntimeError::BadEncoding {
+                    field: "raw_code_children",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn valid_native_module_still_parses_after_count_bounds() {
+        let machine: [u8; 4] = [0x55, 0x48, 0x89, 0xE5];
+        let module: MicroPythonNativeModule =
+            parse(&build_native_py_module(2, &machine, &[0u8, 0u8, 0u8])).expect("valid parse");
+        assert_eq!(module.function.machine_code, machine.to_vec());
+        assert!(!module.function.disassembly.is_empty());
+    }
+
+    #[test]
+    fn adversarial_and_random_headers_never_panic() {
+        let mut probes: Vec<Vec<u8>> = Vec::new();
+        for extra in [0usize, 1, 2, 3, 7, 33, 200] {
+            let mut b: Vec<u8> = native_header(2);
+            push_uint(&mut b, u64::MAX);
+            push_uint(&mut b, u64::MAX);
+            b.extend(std::iter::repeat_n(0x01u8, extra));
+            probes.push(b);
+        }
+        for arch_id in 0u8..=15 {
+            let mut b: Vec<u8> = native_header(arch_id);
+            push_uint(&mut b, 4u64);
+            push_uint(&mut b, 4u64);
+            b.extend(std::iter::repeat_n(0xFFu8, 64));
+            probes.push(b);
+        }
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        for _ in 0..2000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len: usize = (state as usize) % 384;
+            let bytes: Vec<u8> = (0..len)
+                .map(|i: usize| (state.rotate_left(i as u32 & 63) & 0xff) as u8)
+                .collect();
+            probes.push(bytes);
+        }
+        for probe in &probes {
+            let result: std::thread::Result<()> =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = detect(probe);
+                    let _ = parse(probe);
+                }));
+            assert!(result.is_ok(), "native parse unwound on probe {probe:?}");
+        }
     }
 }
