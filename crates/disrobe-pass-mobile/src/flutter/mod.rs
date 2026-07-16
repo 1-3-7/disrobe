@@ -19,6 +19,7 @@ pub mod libapp_parser;
 pub mod object_pool;
 pub mod snapshot;
 pub mod string_pool;
+pub mod structured;
 
 pub use aot_lift::{
     AotLiftReport, DartCallKind, DartCallSite, DartCheckKind, DartElidedCheck, DartLiftedFunction,

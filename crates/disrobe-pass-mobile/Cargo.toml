@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
+disrobe-nir = { workspace = true }
 object = { workspace = true }
 yaxpeax-arch = { workspace = true }
 yaxpeax-arm = { workspace = true }

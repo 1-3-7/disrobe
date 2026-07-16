@@ -110,6 +110,7 @@ pub struct DartLiftedFunction {
     pub source_conditional_estimate: usize,
     pub has_loop_back_edge: bool,
     pub ends_in_return: bool,
+    pub structured_body: Option<String>,
 }
 
 impl DartLiftedFunction {
@@ -120,6 +121,18 @@ impl DartLiftedFunction {
             .filter(|c: &&DartCallSite| c.kind == DartCallKind::Static)
             .filter_map(|c: &DartCallSite| c.target_name.as_deref())
             .collect::<Vec<&str>>()
+    }
+
+    #[must_use]
+    pub fn is_structured(&self) -> bool {
+        self.structured_body.is_some()
+    }
+
+    #[must_use]
+    pub fn best_pseudo_dart(&self) -> String {
+        self.structured_body
+            .clone()
+            .unwrap_or_else(|| self.to_pseudo_dart())
     }
 
     #[must_use]
@@ -189,6 +202,8 @@ pub struct AotLiftReport {
     pub abi_resolved: bool,
     pub function_count: usize,
     pub named_function_count: usize,
+    pub structured_function_count: usize,
+    pub flat_fallback_count: usize,
     pub functions: Vec<DartLiftedFunction>,
     pub static_call_edges: usize,
     pub named_static_call_edges: usize,
@@ -285,6 +300,11 @@ pub fn lift_functions(
         .iter()
         .filter(|f: &&DartLiftedFunction| f.name.is_some())
         .count();
+    let structured_function_count: usize = functions
+        .iter()
+        .filter(|f: &&DartLiftedFunction| f.is_structured())
+        .count();
+    let flat_fallback_count: usize = functions.len().saturating_sub(structured_function_count);
     let mut static_call_edges: usize = 0;
     let mut named_static_call_edges: usize = 0;
     let mut instance_call_sites: usize = 0;
@@ -371,6 +391,8 @@ pub fn lift_functions(
         abi_resolved,
         function_count: functions.len(),
         named_function_count,
+        structured_function_count,
+        flat_fallback_count,
         functions,
         static_call_edges,
         named_static_call_edges,
@@ -435,11 +457,30 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
     let source_conditional_estimate: usize =
         conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
+    let arg_registers: u8 = infer_arg_registers(func);
+    let structured_body: Option<String> = if abi_resolved {
+        let label: String = func
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("sub_{:#010x}", func.entry_offset));
+        let resolve = |target: u64| index.resolve(target).map(str::to_owned);
+        let abi: super::structured::DartAbi<'_> = super::structured::DartAbi {
+            fn_start: start,
+            fn_end: end,
+            label: &label,
+            arg_registers,
+            resolve: &resolve,
+        };
+        super::structured::structure_dart_function(func, &abi)
+    } else {
+        None
+    };
+
     DartLiftedFunction {
         offset: func.entry_offset,
         name: func.name.clone(),
         instruction_count: func.instructions.len(),
-        arg_registers: infer_arg_registers(func),
+        arg_registers,
         calls,
         elided_checks,
         pool_refs,
@@ -449,6 +490,7 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
         source_conditional_estimate,
         has_loop_back_edge,
         ends_in_return: func.ends_in_return,
+        structured_body,
     }
 }
 
@@ -630,7 +672,10 @@ fn loads_closure_entry(
 }
 
 #[must_use]
-fn classify_guard(instructions: &[Arm64Instruction], at: usize) -> Option<DartCheckKind> {
+pub(crate) fn classify_guard(
+    instructions: &[Arm64Instruction],
+    at: usize,
+) -> Option<DartCheckKind> {
     let raw: u32 = instructions[at].bytes;
     if let Some((rt, _, _)) = tbz_tbnz(raw)
         && rt != SYS_SP_REG
@@ -909,7 +954,7 @@ fn movk(raw: u32) -> Option<(u8, u64, u32)> {
 }
 
 #[must_use]
-fn subs_shifted_reg(raw: u32) -> Option<(u8, u8, u8)> {
+pub(crate) fn subs_shifted_reg(raw: u32) -> Option<(u8, u8, u8)> {
     if raw & 0xFF20_0000 != 0xEB00_0000 {
         return None;
     }
@@ -920,7 +965,7 @@ fn subs_shifted_reg(raw: u32) -> Option<(u8, u8, u8)> {
 }
 
 #[must_use]
-fn subs_imm(raw: u32) -> Option<(u8, u8, u64)> {
+pub(crate) fn subs_imm(raw: u32) -> Option<(u8, u8, u64)> {
     if raw & 0xFF00_0000 != 0xF100_0000 {
         return None;
     }
@@ -931,7 +976,7 @@ fn subs_imm(raw: u32) -> Option<(u8, u8, u64)> {
 }
 
 #[must_use]
-fn bcond(raw: u32) -> Option<u8> {
+pub(crate) fn bcond(raw: u32) -> Option<u8> {
     if raw & 0xFF00_0010 != 0x5400_0000 {
         return None;
     }
@@ -939,7 +984,7 @@ fn bcond(raw: u32) -> Option<u8> {
 }
 
 #[must_use]
-fn tbz_tbnz(raw: u32) -> Option<(u8, u32, bool)> {
+pub(crate) fn tbz_tbnz(raw: u32) -> Option<(u8, u32, bool)> {
     if raw & 0x7F00_0000 != 0x3600_0000 {
         return None;
     }
