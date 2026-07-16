@@ -168,6 +168,18 @@ fn quoted_payload(rest: &str) -> Option<String> {
 }
 
 #[must_use]
+fn vba_string_literal(rest: &str) -> String {
+    let Some(payload): Option<String> = quoted_payload(rest) else {
+        return "\"\"".to_owned();
+    };
+    let inner: &str = payload
+        .strip_prefix('"')
+        .and_then(|s: &str| s.strip_suffix('"'))
+        .unwrap_or(payload.as_str());
+    format!("\"{}\"", inner.replace('"', "\"\""))
+}
+
+#[must_use]
 fn call_arg_count(rest: &str) -> usize {
     rest.split_whitespace()
         .find_map(|tok: &str| {
@@ -356,8 +368,7 @@ fn apply(l: &mut Lifter, mnem: &str, rest: &str, line: &RealPCodeLine) -> bool {
                 let inner: &str = body.trim_matches('"');
                 l.stack.push(format!("'{inner}"));
             } else {
-                l.stack
-                    .push(quoted_payload(rest).unwrap_or_else(|| "\"\"".to_owned()));
+                l.stack.push(vba_string_literal(rest));
             }
             true
         }
@@ -1415,6 +1426,47 @@ mod tests {
         assert!(pc.contains("Erase arr"), "{pc}");
         assert_eq!(r.unlifted_lines, 0, "{pc}");
         assert!(r.walls.is_empty(), "walls={:?}", r.walls);
+    }
+
+    #[test]
+    fn litstr_embedded_quotes_are_doubled() {
+        let m: RealModuleDisasm = module(
+            "M",
+            vec![
+                line(0, "FuncDefn func_00000000"),
+                line(1, "LitStr 0x0007 \"Say \"hi\"\"\nArgsCall MsgBox 0x0001"),
+                line(2, "EndSub"),
+            ],
+        );
+        let r: SemanticLift = semantic_lift(&m);
+        assert!(
+            r.pseudocode.contains("MsgBox \"Say \"\"hi\"\"\""),
+            "embedded quotes must be doubled for a re-parseable literal:\n{}",
+            r.pseudocode
+        );
+        assert!(
+            !r.pseudocode.contains("MsgBox \"Say \"hi\"\""),
+            "raw single quotes must not survive:\n{}",
+            r.pseudocode
+        );
+    }
+
+    #[test]
+    fn litstr_trailing_quote_char_is_doubled() {
+        let m: RealModuleDisasm = module("M", vec![line(0, "LitStr 0x0003 \"ab\"\"\nSt s")]);
+        let r: SemanticLift = semantic_lift(&m);
+        assert!(
+            r.pseudocode.contains("s = \"ab\"\"\""),
+            "string ending in a quote must round-trip:\n{}",
+            r.pseudocode
+        );
+    }
+
+    #[test]
+    fn litstr_plain_string_unchanged() {
+        let m: RealModuleDisasm = module("M", vec![line(0, "LitStr 0x0005 \"plain\"\nSt s")]);
+        let r: SemanticLift = semantic_lift(&m);
+        assert!(r.pseudocode.contains("s = \"plain\""), "{}", r.pseudocode);
     }
 
     #[test]
