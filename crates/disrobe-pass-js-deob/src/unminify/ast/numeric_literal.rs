@@ -19,7 +19,10 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, NumericLiteralStats) {
         return (RuleOutcome::empty(), NumericLiteralStats::default());
     }
 
-    let mut collector: Collector = Collector { edits: Vec::new() };
+    let mut collector: Collector = Collector {
+        source,
+        edits: Vec::new(),
+    };
     collector.visit_program(&parsed.program);
 
     if collector.edits.is_empty() {
@@ -36,11 +39,12 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, NumericLiteralStats) {
     )
 }
 
-struct Collector {
+struct Collector<'s> {
+    source: &'s str,
     edits: Vec<Edit>,
 }
 
-impl<'a> Visit<'a> for Collector {
+impl<'a> Visit<'a> for Collector<'_> {
     fn visit_numeric_literal(&mut self, literal: &NumericLiteral<'a>) {
         let Some(raw): Option<&str> = literal.raw.as_ref().map(oxc_span::Atom::as_str) else {
             return;
@@ -51,12 +55,25 @@ impl<'a> Visit<'a> for Collector {
         if raw == canonical {
             return;
         }
+        let end: usize = literal.span.end as usize;
+        let replacement: String = if needs_member_guard(&canonical, self.source, end) {
+            format!("({canonical})")
+        } else {
+            canonical
+        };
         self.edits.push(Edit {
             start: literal.span.start as usize,
-            end: literal.span.end as usize,
-            replacement: canonical,
+            end,
+            replacement,
         });
     }
+}
+
+fn needs_member_guard(canonical: &str, source: &str, literal_end: usize) -> bool {
+    if !canonical.bytes().all(|b: u8| b.is_ascii_digit()) {
+        return false;
+    }
+    source.as_bytes().get(literal_end) == Some(&b'.')
 }
 
 fn canonical_decimal(value: f64) -> Option<String> {
@@ -128,6 +145,32 @@ mod tests {
             apply("var big = 0x38D7EA4C68000;"),
             "var big = 1000000000000000;"
         );
+    }
+
+    #[test]
+    fn hex_member_object_is_parenthesized() {
+        assert_eq!(apply("0xff.toString();"), "(255).toString();");
+    }
+
+    #[test]
+    fn octal_and_binary_member_objects_are_parenthesized() {
+        assert_eq!(apply("0o17.toString(2);"), "(15).toString(2);");
+        assert_eq!(apply("0b101.valueOf();"), "(5).valueOf();");
+    }
+
+    #[test]
+    fn hex_member_with_separators_is_parenthesized() {
+        assert_eq!(apply("0xff_ff.toString();"), "(65535).toString();");
+    }
+
+    #[test]
+    fn computed_member_after_hex_is_not_parenthesized() {
+        assert_eq!(apply("a = 0xff[k];"), "a = 255[k];");
+    }
+
+    #[test]
+    fn hex_not_followed_by_member_stays_bare() {
+        assert_eq!(apply("var x = 0xff + 1;"), "var x = 255 + 1;");
     }
 
     #[test]
