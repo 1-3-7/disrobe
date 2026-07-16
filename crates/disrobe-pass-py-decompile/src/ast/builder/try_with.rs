@@ -4505,8 +4505,10 @@ fn structure_try_except_family(
             inline_copy_len,
         )?
     } else if normal_region.is_some() || continuation_region.is_some() {
+        let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(protected_end);
         structure_stmts(code, stream, region.try_start, protected_end)?
     } else {
+        let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(extended_body_end);
         structure_stmts(code, stream, region.try_start, extended_body_end)?
     };
     let lifted_tail: Vec<Stmt> =

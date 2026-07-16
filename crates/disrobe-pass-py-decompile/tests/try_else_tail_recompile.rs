@@ -223,3 +223,47 @@ def to_list(self, rowdict):
 ";
     assert_recompiles("conditional_then_sibling", program);
 }
+
+#[test]
+fn try_except_else_nested_try_body_not_duplicated() {
+    let program: &str = "\
+def move(self, target):
+    try:
+        target = self.with_segments(target)
+    except TypeError:
+        pass
+    else:
+        ensure_different_files(self, target)
+        try:
+            os.replace(self, target)
+        except OSError as err:
+            if err.errno != EXDEV:
+                raise
+        else:
+            return target.joinpath()
+    target = self.copy(target, follow_symlinks=False, preserve_metadata=True)
+    self._delete()
+    return target
+";
+    assert_recompiles("try_else_nested_try_no_dup_handler", program);
+}
+
+#[test]
+fn try_except_import_else_nested_try_not_duplicated() {
+    let program: &str = "\
+def win32_edition():
+    try:
+        import winreg
+    except ImportError:
+        pass
+    else:
+        try:
+            cvkey = 'SOFTWARE'
+            with winreg.OpenKeyEx(winreg.HKEY_LOCAL_MACHINE, cvkey) as key:
+                return winreg.QueryValueEx(key, 'EditionId')[0]
+        except OSError:
+            pass
+    return None
+";
+    assert_recompiles("try_import_else_nested_try_no_dup", program);
+}
