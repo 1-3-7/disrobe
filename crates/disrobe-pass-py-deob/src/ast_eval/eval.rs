@@ -1005,7 +1005,10 @@ fn repr_str(s: &str, ascii_only: bool) -> String {
                     push_lower_hex_fixed(&mut out, code, 8);
                 }
             }
-            c if (c as u32) < 0x20 => {
+            c if (c as u32) < 0x20
+                || c as u32 == 0x7f
+                || (!ascii_only && (0x80..=0xa0).contains(&(c as u32))) =>
+            {
                 out.push_str("\\x");
                 push_lower_hex_fixed(&mut out, c as u32, 2);
             }
@@ -1144,5 +1147,44 @@ fn bind_target(
             Ok(())
         }
         _ => Err(EvalError::Unsupported),
+    }
+}
+
+#[cfg(test)]
+mod repr_tests {
+    use super::{Value, py_repr};
+
+    fn repr_of(chars: &[char]) -> String {
+        py_repr(&Value::Str(chars.iter().collect::<String>()), false)
+    }
+
+    fn ascii_of(chars: &[char]) -> String {
+        py_repr(&Value::Str(chars.iter().collect::<String>()), true)
+    }
+
+    #[test]
+    fn escapes_delete_control_in_repr_and_ascii() {
+        let del: char = '\u{7f}';
+        assert_eq!(repr_of(&[del]), "'\\x7f'");
+        assert_eq!(ascii_of(&[del]), "'\\x7f'");
+    }
+
+    #[test]
+    fn escapes_c1_control_range_in_repr() {
+        assert_eq!(repr_of(&['\u{80}']), "'\\x80'");
+        assert_eq!(repr_of(&['\u{9f}']), "'\\x9f'");
+        assert_eq!(repr_of(&['\u{a0}']), "'\\xa0'");
+    }
+
+    #[test]
+    fn keeps_printable_latin1_unescaped_in_repr() {
+        assert_eq!(repr_of(&['\u{a1}']), "'\u{a1}'");
+        assert_eq!(repr_of(&['\u{e9}']), "'\u{e9}'");
+    }
+
+    #[test]
+    fn ascii_escapes_nonascii_printable() {
+        assert_eq!(ascii_of(&['\u{a1}']), "'\\xa1'");
+        assert_eq!(ascii_of(&['\u{e9}']), "'\\xe9'");
     }
 }
