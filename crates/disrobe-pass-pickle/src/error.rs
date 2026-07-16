@@ -105,4 +105,16 @@ pub enum Error {
         offset: usize,
         expected: &'static str,
     },
+
+    #[error(
+        "DR-PICKLE-0023: LONG literal body {declared} bytes at offset {offset} exceeds limit {limit}"
+    )]
+    LongTooLong {
+        declared: usize,
+        limit: usize,
+        offset: usize,
+    },
+
+    #[error("DR-PICKLE-0024: cumulative LONG literal bytes exceed budget {limit}")]
+    LongBudget { limit: usize },
 }
