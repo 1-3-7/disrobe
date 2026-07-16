@@ -111,9 +111,18 @@ fn bcc_pass_output_carries_recovered_bodies() {
     );
 
     let clamp: &FunctionRecord = record(&output, "clamp");
+    let clamp_body: &str = clamp
+        .recovered_body
+        .as_deref()
+        .expect("clamp body reconstructed from the guarded native result-local chain");
+    println!("clamp recovered body:\n{clamp_body}");
     assert!(
-        clamp.recovered_body.is_none(),
-        "clamp has two conditional branches and a mutated local; it degrades, never fabricates"
+        clamp_body.starts_with("def clamp(")
+            && clamp_body.matches("if result").count() == 2
+            && clamp_body.contains("result < ")
+            && clamp_body.contains("result > ")
+            && clamp_body.trim_end().ends_with("return result"),
+        "clamp recovers the two-guard result-local shape: {clamp_body}"
     );
     let main: &FunctionRecord = record(&output, "main");
     assert!(
@@ -147,11 +156,11 @@ fn bcc_pass_output_carries_recovered_bodies() {
         );
         return;
     };
-    behavioral_match(&py, &dir, mix_body, poly_body);
-    println!("recovered mix_add and poly match the original CPython semantics end-to-end");
+    behavioral_match(&py, &dir, mix_body, poly_body, clamp_body);
+    println!("recovered mix_add, poly, and clamp match the original CPython semantics end-to-end");
 }
 
-fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str) {
+fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str, clamp_body: &str) {
     let reference_dir: PathBuf = dir.parent().expect("corpus parent").to_owned();
     let script: String = format!(
         "import sys, itertools\n\
@@ -160,8 +169,10 @@ fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str) {
          ns = {{}}\n\
          exec({mix:?}, ns)\n\
          exec({poly:?}, ns)\n\
+         exec({clamp:?}, ns)\n\
          mix = ns['mix_add']\n\
          poly = ns['poly']\n\
+         clamp = ns['clamp']\n\
          vals = [-7, -3, -1, 0, 1, 2, 5, 11, 123, -456, 1000]\n\
          for a, b in itertools.product(vals, repeat=2):\n\
          \x20   if mix(a, b) != ref.mix_add(a, b):\n\
@@ -169,10 +180,14 @@ fn behavioral_match(py: &str, dir: &Path, mix_body: &str, poly_body: &str) {
          for x in vals:\n\
          \x20   if poly(x) != ref.poly(x):\n\
          \x20       print('POLY MISMATCH', x); sys.exit(1)\n\
+         for a, b, c in itertools.product(vals, repeat=3):\n\
+         \x20   if clamp(a, b, c) != ref.clamp(a, b, c):\n\
+         \x20       print('CLAMP MISMATCH', a, b, c); sys.exit(1)\n\
          print('OK')\n",
         ref_dir = reference_dir.to_string_lossy(),
         mix = mix_body,
         poly = poly_body,
+        clamp = clamp_body,
     );
     let scratch: PathBuf =
         std::env::temp_dir().join(format!("disrobe-bcc-e2e-{}", std::process::id()));

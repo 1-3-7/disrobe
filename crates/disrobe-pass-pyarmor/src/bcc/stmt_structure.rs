@@ -393,6 +393,17 @@ pub(crate) fn recover_structured(
     options: &RecoverOptions,
     notes: &mut Vec<String>,
 ) -> Option<String> {
+    if let Some(body) = real::recover_real_bcc(nir, options, notes) {
+        return Some(body);
+    }
+    recover_idealized(nir, options, notes)
+}
+
+fn recover_idealized(
+    nir: &NirFunction,
+    options: &RecoverOptions,
+    notes: &mut Vec<String>,
+) -> Option<String> {
     let blocks: Vec<NirBlock> = basic_blocks(nir);
     let entry: &NirBlock = blocks.first()?;
     let view: BlockView<'_> = BlockView::new(&blocks);
@@ -623,6 +634,786 @@ fn finish(options: &RecoverOptions, machine: &Machine<'_>, ret: &PyExpr) -> Stri
     }
     let _ = writeln!(out, "    return {}", ret.render());
     out
+}
+
+mod real {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::fmt::Write as _;
+
+    use disrobe_nir::{NirBlock, NirClass, NirInstr, NirOp, ValueOp, basic_blocks};
+
+    use super::super::recover::RecoverOptions;
+    use super::{parse_immediate, richcompare_selector};
+
+    const SLOT_COMPARE: u64 = 0x40;
+    const SLOT_ISTRUE: u64 = 0x198;
+    const SLOT_UNPACK: u64 = 0x98;
+    const PTR: i64 = 8;
+    const WALK_BUDGET: usize = 20_000;
+    const PROBE_BUDGET: usize = 512;
+    const REACH_BUDGET: usize = 512;
+    const MAX_GUARDS: usize = 8;
+
+    #[derive(Clone)]
+    enum RVal {
+        Param(usize),
+        Machine(u64),
+        FramePtr(i64),
+        RuntimeBase,
+        RuntimeSlotAddr(u64),
+        RuntimeSlot(u64),
+        FuncObj,
+        Compare(usize),
+        Truthy(usize),
+        Pred { compare: usize, want_true: bool },
+        Unknown,
+    }
+
+    #[derive(Clone)]
+    struct CompareFact {
+        op: Option<&'static str>,
+        left_slot: Option<i64>,
+        right: Option<usize>,
+    }
+
+    struct RMachine<'a> {
+        options: &'a RecoverOptions,
+        abi_args: &'static [&'static str],
+        regs: BTreeMap<String, RVal>,
+        slot_of: BTreeMap<String, i64>,
+        trunc_of: BTreeMap<String, String>,
+        frame: BTreeMap<i64, RVal>,
+        param_slot_stores: BTreeMap<i64, usize>,
+        compares: Vec<CompareFact>,
+    }
+
+    impl<'a> RMachine<'a> {
+        fn new(options: &'a RecoverOptions) -> Self {
+            let abi_args: &'static [&'static str] = options.abi.arg_registers();
+            let mut regs: BTreeMap<String, RVal> = BTreeMap::new();
+            if let Some(first) = abi_args.first() {
+                regs.insert((*first).to_owned(), RVal::FuncObj);
+            }
+            regs.insert("rsp".to_owned(), RVal::FramePtr(0));
+            Self {
+                options,
+                abi_args,
+                regs,
+                slot_of: BTreeMap::new(),
+                trunc_of: BTreeMap::new(),
+                frame: BTreeMap::new(),
+                param_slot_stores: BTreeMap::new(),
+                compares: Vec::new(),
+            }
+        }
+
+        fn clone_state(&self) -> Self {
+            Self {
+                options: self.options,
+                abi_args: self.abi_args,
+                regs: self.regs.clone(),
+                slot_of: self.slot_of.clone(),
+                trunc_of: self.trunc_of.clone(),
+                frame: self.frame.clone(),
+                param_slot_stores: self.param_slot_stores.clone(),
+                compares: self.compares.clone(),
+            }
+        }
+
+        fn eval(&self, name: &str) -> RVal {
+            if let Some(value) = parse_immediate(name) {
+                return RVal::Machine(value);
+            }
+            self.regs.get(name).cloned().unwrap_or(RVal::Unknown)
+        }
+
+        fn arg(&self, index: usize) -> RVal {
+            self.abi_args
+                .get(index)
+                .map_or(RVal::Unknown, |name: &&str| self.eval(name))
+        }
+
+        fn origin(&self, name: &str) -> String {
+            self.trunc_of
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.to_owned())
+        }
+
+        fn set(&mut self, name: &str, value: RVal) {
+            self.regs.insert(name.to_owned(), value);
+            self.slot_of.remove(name);
+            self.trunc_of.remove(name);
+        }
+
+        fn step(&mut self, instruction: &NirInstr) {
+            match instruction.class() {
+                NirClass::Call => self.step_call(instruction),
+                NirClass::Other => self.step_dataflow(instruction),
+                _ => {}
+            }
+        }
+
+        fn step_dataflow(&mut self, instruction: &NirInstr) {
+            match &instruction.op {
+                NirOp::Copy { src, .. } => {
+                    let value: RVal = self.eval(src);
+                    if let Some(dest) = instruction.operands.first() {
+                        self.set(dest, value);
+                        if let Some(slot) = self.slot_of.get(src).copied() {
+                            self.slot_of.insert(dest.clone(), slot);
+                        }
+                        let source: String = self.origin(src);
+                        self.trunc_of.insert(dest.clone(), source);
+                    }
+                }
+                NirOp::Subpiece { src, offset, .. } if *offset == 0 => {
+                    let value: RVal = passthrough(self.eval(src));
+                    if let Some(dest) = instruction.operands.first() {
+                        self.set(dest, value);
+                        let source: String = self.origin(src);
+                        self.trunc_of.insert(dest.clone(), source);
+                    }
+                }
+                NirOp::Deposit {
+                    cell,
+                    value,
+                    offset,
+                    zero_upper,
+                    ..
+                } if *zero_upper && *offset == 0 => {
+                    let evaluated: RVal = passthrough(self.eval(value));
+                    let source: String = self.origin(value);
+                    self.set(cell, evaluated);
+                    self.trunc_of.insert(cell.clone(), source);
+                }
+                NirOp::Value {
+                    op, inputs, size, ..
+                } => {
+                    let folded: RVal = self.fold_value(*op, inputs, *size);
+                    if let Some(dest) = instruction.operands.first() {
+                        self.set(dest, folded);
+                    }
+                }
+                NirOp::RawLoad { addr, .. } => {
+                    let address: RVal = self.eval(addr);
+                    let value: RVal = self.load(&address);
+                    if let Some(dest) = instruction.operands.first() {
+                        self.set(dest, value);
+                        if let RVal::FramePtr(offset) = address {
+                            self.slot_of.insert(dest.clone(), offset);
+                        }
+                    }
+                }
+                NirOp::RawStore { addr, value, .. } => {
+                    let address: RVal = self.eval(addr);
+                    let stored: RVal = self.eval(value);
+                    if let RVal::FramePtr(offset) = address {
+                        if let RVal::Param(index) = stored {
+                            self.param_slot_stores.insert(offset, index);
+                        }
+                        self.frame.insert(offset, stored);
+                    }
+                }
+                _ => {
+                    if let Some(dest) = instruction.operands.first() {
+                        self.set(dest, RVal::Unknown);
+                    }
+                }
+            }
+        }
+
+        fn fold_value(&self, op: ValueOp, inputs: &[String], size: u32) -> RVal {
+            let first: RVal = inputs
+                .first()
+                .map_or(RVal::Unknown, |n: &String| self.eval(n));
+            let second: RVal = inputs
+                .get(1)
+                .map_or(RVal::Unknown, |n: &String| self.eval(n));
+            let same: bool = match (inputs.first(), inputs.get(1)) {
+                (Some(a), Some(b)) => a == b || self.origin(a) == self.origin(b),
+                _ => false,
+            };
+            match op {
+                ValueOp::IntZext | ValueOp::IntSext => passthrough(first),
+                ValueOp::IntAdd => match (&first, &second) {
+                    (RVal::FramePtr(offset), RVal::Machine(value))
+                    | (RVal::Machine(value), RVal::FramePtr(offset)) => {
+                        RVal::FramePtr(offset.saturating_add(i64_of(*value)))
+                    }
+                    (RVal::RuntimeBase, RVal::Machine(value))
+                    | (RVal::Machine(value), RVal::RuntimeBase) => RVal::RuntimeSlotAddr(*value),
+                    (RVal::Machine(a), RVal::Machine(b)) => RVal::Machine(a.wrapping_add(*b)),
+                    _ => RVal::Unknown,
+                },
+                ValueOp::IntSub => match (&first, &second) {
+                    (RVal::FramePtr(offset), RVal::Machine(value)) => {
+                        RVal::FramePtr(offset.saturating_sub(i64_of(*value)))
+                    }
+                    (RVal::Machine(a), RVal::Machine(b)) => {
+                        RVal::Machine(mask_for(a.wrapping_sub(*b), size))
+                    }
+                    _ if same => RVal::Machine(0),
+                    _ => RVal::Unknown,
+                },
+                ValueOp::IntXor => {
+                    if same {
+                        RVal::Machine(0)
+                    } else if let (RVal::Machine(a), RVal::Machine(b)) = (&first, &second) {
+                        RVal::Machine(mask_for(a ^ b, size))
+                    } else {
+                        RVal::Unknown
+                    }
+                }
+                ValueOp::IntAnd => {
+                    if let (RVal::Truthy(a), RVal::Truthy(b)) = (&first, &second)
+                        && a == b
+                    {
+                        return RVal::Truthy(*a);
+                    }
+                    match (&first, &second) {
+                        (RVal::Machine(a), RVal::Machine(b)) => RVal::Machine(a & b),
+                        _ if same => first,
+                        _ => RVal::Unknown,
+                    }
+                }
+                ValueOp::IntEqual => match (&first, &second) {
+                    (RVal::Truthy(index), RVal::Machine(0)) => RVal::Pred {
+                        compare: *index,
+                        want_true: false,
+                    },
+                    (RVal::Machine(a), RVal::Machine(b)) => RVal::Machine(u64::from(a == b)),
+                    _ => RVal::Unknown,
+                },
+                ValueOp::BoolNegate => match first {
+                    RVal::Pred { compare, want_true } => RVal::Pred {
+                        compare,
+                        want_true: !want_true,
+                    },
+                    _ => RVal::Unknown,
+                },
+                _ => RVal::Unknown,
+            }
+        }
+
+        fn load(&self, address: &RVal) -> RVal {
+            match address {
+                RVal::Machine(_) => RVal::RuntimeBase,
+                RVal::RuntimeSlotAddr(offset) => RVal::RuntimeSlot(*offset),
+                RVal::FramePtr(offset) => self.frame.get(offset).cloned().unwrap_or(RVal::Unknown),
+                _ => RVal::Unknown,
+            }
+        }
+
+        fn step_call(&mut self, instruction: &NirInstr) {
+            let called: RVal = match &instruction.op {
+                NirOp::IndirectCall => instruction
+                    .operands
+                    .first()
+                    .map_or(RVal::Unknown, |name: &String| self.eval(name)),
+                _ => RVal::Unknown,
+            };
+            let result: RVal = match called {
+                RVal::RuntimeSlot(SLOT_UNPACK) => {
+                    self.step_unpack();
+                    RVal::Unknown
+                }
+                RVal::RuntimeSlot(SLOT_COMPARE) => self.step_compare(),
+                RVal::RuntimeSlot(SLOT_ISTRUE) => self.step_istrue(),
+                _ => RVal::Unknown,
+            };
+            self.clobber_after_call();
+            self.set("rax", result);
+        }
+
+        fn step_unpack(&mut self) {
+            let RVal::FramePtr(base): RVal = self.arg(3) else {
+                return;
+            };
+            let count: usize = match self.arg(2) {
+                RVal::Machine(value) => usize::try_from(value).unwrap_or(0),
+                _ => 0,
+            };
+            let bound: usize = count.min(self.options.argcount);
+            for index in 0..bound {
+                let stride: i64 = i64::try_from(index).unwrap_or(0).saturating_mul(PTR);
+                self.frame
+                    .insert(base.saturating_add(stride), RVal::Param(index));
+            }
+        }
+
+        fn step_compare(&mut self) -> RVal {
+            let op: Option<&'static str> = match self.arg(1) {
+                RVal::Machine(selector) => richcompare_selector(selector),
+                _ => None,
+            };
+            let left_slot: Option<i64> = self
+                .abi_args
+                .get(2)
+                .and_then(|name: &&str| self.slot_of.get(*name).copied());
+            let right: Option<usize> = match self.arg(3) {
+                RVal::Param(index) => Some(index),
+                _ => None,
+            };
+            let index: usize = self.compares.len();
+            self.compares.push(CompareFact {
+                op,
+                left_slot,
+                right,
+            });
+            RVal::Compare(index)
+        }
+
+        fn step_istrue(&self) -> RVal {
+            match self.arg(0) {
+                RVal::Compare(index) => RVal::Truthy(index),
+                _ => RVal::Unknown,
+            }
+        }
+
+        fn clobber_after_call(&mut self) {
+            for register in self.options.abi.volatile_registers() {
+                self.regs.remove(*register);
+                self.slot_of.remove(*register);
+                self.trunc_of.remove(*register);
+            }
+            if let RVal::FramePtr(offset) = self.eval("rsp") {
+                self.regs
+                    .insert("rsp".to_owned(), RVal::FramePtr(offset.saturating_add(PTR)));
+            }
+        }
+    }
+
+    const fn passthrough(value: RVal) -> RVal {
+        match value {
+            RVal::Param(_)
+            | RVal::Machine(_)
+            | RVal::FuncObj
+            | RVal::Compare(_)
+            | RVal::Truthy(_)
+            | RVal::Pred { .. } => value,
+            _ => RVal::Unknown,
+        }
+    }
+
+    const fn i64_of(value: u64) -> i64 {
+        i64::from_ne_bytes(value.to_ne_bytes())
+    }
+
+    const fn mask_for(value: u64, size: u32) -> u64 {
+        let bits: u32 = size.saturating_mul(8);
+        if bits >= 64 {
+            value
+        } else {
+            match 1_u64.checked_shl(bits) {
+                Some(shifted) => value & (shifted - 1),
+                None => value,
+            }
+        }
+    }
+
+    struct Cfg<'a> {
+        by_start: BTreeMap<u64, &'a NirBlock>,
+    }
+
+    impl<'a> Cfg<'a> {
+        fn new(blocks: &'a [NirBlock]) -> Self {
+            let mut by_start: BTreeMap<u64, &'a NirBlock> = BTreeMap::new();
+            for block in blocks {
+                by_start.entry(block.start).or_insert(block);
+            }
+            Self { by_start }
+        }
+
+        fn block(&self, start: u64) -> Option<&'a NirBlock> {
+            self.by_start.get(&start).copied()
+        }
+    }
+
+    enum Term {
+        Return,
+        Goto(u64),
+        Cond { pred: String, taken: u64, fall: u64 },
+        Dead,
+    }
+
+    fn terminator(block: &NirBlock) -> Term {
+        let Some(last): Option<&NirInstr> = block.instructions.last() else {
+            return block
+                .successors
+                .first()
+                .copied()
+                .map_or(Term::Dead, Term::Goto);
+        };
+        match last.class() {
+            NirClass::Return => Term::Return,
+            NirClass::ConditionalJump => {
+                let (Some(pred), Some(taken)): (Option<&String>, Option<u64>) =
+                    (last.operands.first(), last.direct_target())
+                else {
+                    return Term::Dead;
+                };
+                let Some(fall): Option<u64> =
+                    block.successors.iter().copied().find(|s: &u64| *s != taken)
+                else {
+                    return Term::Dead;
+                };
+                Term::Cond {
+                    pred: pred.clone(),
+                    taken,
+                    fall,
+                }
+            }
+            NirClass::UnconditionalJump => last.direct_target().map_or(Term::Dead, Term::Goto),
+            _ => block
+                .successors
+                .first()
+                .copied()
+                .map_or(Term::Dead, Term::Goto),
+        }
+    }
+
+    fn reaches(cfg: &Cfg<'_>, from: u64, wanted: &BTreeSet<u64>) -> bool {
+        let mut stack: Vec<u64> = vec![from];
+        let mut seen: BTreeSet<u64> = BTreeSet::new();
+        let mut steps: usize = 0;
+        while let Some(current) = stack.pop() {
+            steps = steps.saturating_add(1);
+            if steps > REACH_BUDGET {
+                return false;
+            }
+            if wanted.contains(&current) {
+                return true;
+            }
+            if !seen.insert(current) {
+                continue;
+            }
+            if let Some(block) = cfg.block(current) {
+                stack.extend(block.successors.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn reaches_return(cfg: &Cfg<'_>, from: u64) -> bool {
+        let mut stack: Vec<u64> = vec![from];
+        let mut seen: BTreeSet<u64> = BTreeSet::new();
+        let mut steps: usize = 0;
+        while let Some(current) = stack.pop() {
+            steps = steps.saturating_add(1);
+            if steps > REACH_BUDGET {
+                return false;
+            }
+            if !seen.insert(current) {
+                continue;
+            }
+            let Some(block): Option<&NirBlock> = cfg.block(current) else {
+                continue;
+            };
+            if matches!(terminator(block), Term::Return) {
+                return true;
+            }
+            stack.extend(block.successors.iter().copied());
+        }
+        false
+    }
+
+    fn compare_call_blocks(cfg: &Cfg<'_>, options: &RecoverOptions) -> BTreeSet<u64> {
+        let mut found: BTreeSet<u64> = BTreeSet::new();
+        let mut visited: BTreeSet<u64> = BTreeSet::new();
+        let mut stack: Vec<(u64, Box<RMachine<'_>>)> = Vec::new();
+        let entry: u64 = match cfg.by_start.keys().next() {
+            Some(start) => *start,
+            None => return found,
+        };
+        stack.push((entry, Box::new(RMachine::new(options))));
+        let mut budget: usize = 0;
+        while let Some((start, state)) = stack.pop() {
+            budget = budget.saturating_add(1);
+            if budget > WALK_BUDGET {
+                break;
+            }
+            if !visited.insert(start) {
+                continue;
+            }
+            let Some(block): Option<&NirBlock> = cfg.block(start) else {
+                continue;
+            };
+            let mut local: RMachine<'_> = *state;
+            for instruction in &block.instructions {
+                if is_compare_call(&local, instruction) {
+                    found.insert(block.start);
+                }
+                local.step(instruction);
+            }
+            for successor in &block.successors {
+                stack.push((*successor, Box::new(local.clone_state())));
+            }
+        }
+        found
+    }
+
+    fn is_compare_call(machine: &RMachine<'_>, instruction: &NirInstr) -> bool {
+        if !matches!(instruction.op, NirOp::IndirectCall) {
+            return false;
+        }
+        matches!(
+            instruction
+                .operands
+                .first()
+                .map(|name: &String| machine.eval(name)),
+            Some(RVal::RuntimeSlot(SLOT_COMPARE))
+        )
+    }
+
+    #[derive(Clone)]
+    struct GuardRec {
+        op: &'static str,
+        right: usize,
+        reassign: usize,
+    }
+
+    struct Ctx<'a, 'c> {
+        cfg: &'c Cfg<'a>,
+        compares_total: usize,
+        compare_blocks: BTreeSet<u64>,
+        budget: std::cell::Cell<usize>,
+    }
+
+    struct Path {
+        result_slot: Option<i64>,
+        init: Option<usize>,
+        guards: Vec<GuardRec>,
+        compares_seen: usize,
+        visited: BTreeSet<u64>,
+    }
+
+    impl Clone for Path {
+        fn clone(&self) -> Self {
+            Self {
+                result_slot: self.result_slot,
+                init: self.init,
+                guards: self.guards.clone(),
+                compares_seen: self.compares_seen,
+                visited: self.visited.clone(),
+            }
+        }
+    }
+
+    pub(crate) fn recover_real_bcc(
+        nir: &disrobe_nir::NirFunction,
+        options: &RecoverOptions,
+        notes: &mut Vec<String>,
+    ) -> Option<String> {
+        if options.argcount == 0 {
+            return None;
+        }
+        let blocks: Vec<NirBlock> = basic_blocks(nir);
+        let cfg: Cfg<'_> = Cfg::new(&blocks);
+        let entry: u64 = *cfg.by_start.keys().next()?;
+        let compare_blocks: BTreeSet<u64> = compare_call_blocks(&cfg, options);
+        if compare_blocks.is_empty() {
+            return None;
+        }
+        let ctx: Ctx<'_, '_> = Ctx {
+            cfg: &cfg,
+            compares_total: compare_blocks.len(),
+            compare_blocks,
+            budget: std::cell::Cell::new(WALK_BUDGET),
+        };
+        let path: Path = Path {
+            result_slot: None,
+            init: None,
+            guards: Vec::new(),
+            compares_seen: 0,
+            visited: BTreeSet::new(),
+        };
+        let Some((init, guards)): Option<(usize, Vec<GuardRec>)> =
+            walk(&ctx, RMachine::new(options), entry, path)
+        else {
+            if ctx.compares_total > 0 {
+                note_blocked(
+                    notes,
+                    "compare/istrue sites present but the guarded result-local chain did not fully resolve",
+                );
+            }
+            return None;
+        };
+        Some(emit(options, init, &guards))
+    }
+
+    fn walk(
+        ctx: &Ctx<'_, '_>,
+        machine: RMachine<'_>,
+        start: u64,
+        path: Path,
+    ) -> Option<(usize, Vec<GuardRec>)> {
+        let mut machine: RMachine<'_> = machine;
+        let mut path: Path = path;
+        let mut current: u64 = start;
+        loop {
+            let remaining: usize = ctx.budget.get();
+            if remaining == 0 {
+                return None;
+            }
+            ctx.budget.set(remaining - 1);
+
+            if path.compares_seen == ctx.compares_total
+                && path.guards.len() == ctx.compares_total
+                && let (Some(_), Some(init)) = (path.result_slot, path.init)
+                && reaches_return(ctx.cfg, current)
+            {
+                return Some((init, path.guards));
+            }
+
+            if !path.visited.insert(current) {
+                return None;
+            }
+            let block: &NirBlock = ctx.cfg.block(current)?;
+            let count: usize = block.instructions.len();
+            for (index, instruction) in block.instructions.iter().enumerate() {
+                let is_last: bool = index + 1 == count;
+                if is_last
+                    && matches!(
+                        instruction.class(),
+                        NirClass::ConditionalJump | NirClass::Return | NirClass::UnconditionalJump
+                    )
+                {
+                    break;
+                }
+                if is_compare_call(&machine, instruction) {
+                    machine.step(instruction);
+                    path.compares_seen = path.compares_seen.saturating_add(1);
+                    let fact: &CompareFact = machine.compares.last()?;
+                    let slot: i64 = fact.left_slot?;
+                    match path.result_slot {
+                        None => {
+                            path.result_slot = Some(slot);
+                            path.init = machine.param_slot_stores.get(&slot).copied();
+                        }
+                        Some(existing) if existing != slot => return None,
+                        Some(_) => {}
+                    }
+                    continue;
+                }
+                machine.step(instruction);
+            }
+
+            match terminator(block) {
+                Term::Return => {
+                    if path.compares_seen == ctx.compares_total
+                        && path.guards.len() == ctx.compares_total
+                        && let Some(init) = path.init
+                        && path.result_slot.is_some()
+                    {
+                        return Some((init, path.guards));
+                    }
+                    return None;
+                }
+                Term::Dead => return None,
+                Term::Goto(target) => current = target,
+                Term::Cond { pred, taken, fall } => {
+                    if let RVal::Pred { compare, want_true } = machine.eval(&pred) {
+                        let fact: CompareFact = machine.compares.get(compare)?.clone();
+                        let (op, right): (&'static str, usize) = (fact.op?, fact.right?);
+                        let true_arm: u64 = if want_true { taken } else { fall };
+                        let skip_arm: u64 = if want_true { fall } else { taken };
+                        let slot: i64 = path.result_slot?;
+                        let reassign: usize = probe_reassign(ctx.cfg, &machine, true_arm, slot)?;
+                        if path.guards.len() >= MAX_GUARDS {
+                            return None;
+                        }
+                        path.guards.push(GuardRec {
+                            op,
+                            right,
+                            reassign,
+                        });
+                        current = skip_arm;
+                    } else {
+                        let want_return: bool = path.compares_seen >= ctx.compares_total;
+                        for candidate in [taken, fall] {
+                            let reachable: bool = if want_return {
+                                reaches_return(ctx.cfg, candidate)
+                            } else {
+                                reaches(ctx.cfg, candidate, &ctx.compare_blocks)
+                            };
+                            if !reachable {
+                                continue;
+                            }
+                            if let Some(result) =
+                                walk(ctx, machine.clone_state(), candidate, path.clone())
+                            {
+                                return Some(result);
+                            }
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    fn probe_reassign(
+        cfg: &Cfg<'_>,
+        machine: &RMachine<'_>,
+        arm: u64,
+        result_slot: i64,
+    ) -> Option<usize> {
+        let mut stack: Vec<(u64, Box<RMachine<'_>>)> = vec![(arm, Box::new(machine.clone_state()))];
+        let mut visited: BTreeSet<u64> = BTreeSet::new();
+        let mut budget: usize = 0;
+        while let Some((start, state)) = stack.pop() {
+            budget = budget.saturating_add(1);
+            if budget > PROBE_BUDGET {
+                return None;
+            }
+            if !visited.insert(start) {
+                continue;
+            }
+            let Some(block): Option<&NirBlock> = cfg.block(start) else {
+                continue;
+            };
+            let mut local: RMachine<'_> = *state;
+            for instruction in &block.instructions {
+                if let NirOp::RawStore { addr, value, .. } = &instruction.op
+                    && let RVal::FramePtr(offset) = local.eval(addr)
+                    && offset == result_slot
+                    && let RVal::Param(index) = local.eval(value)
+                {
+                    return Some(index);
+                }
+                local.step(instruction);
+            }
+            for successor in &block.successors {
+                stack.push((*successor, Box::new(local.clone_state())));
+            }
+        }
+        None
+    }
+
+    fn emit(options: &RecoverOptions, init: usize, guards: &[GuardRec]) -> String {
+        let params: Vec<String> = (0..options.argcount)
+            .map(|index: usize| options.param(index))
+            .collect();
+        let local: String = super::local_identifier(options);
+        let mut out: String = format!("def {}({}):\n", options.func_name, params.join(", "));
+        let _ = writeln!(out, "    {local} = {}", options.param(init));
+        for guard in guards {
+            let _ = writeln!(
+                out,
+                "    if {local} {} {}:",
+                guard.op,
+                options.param(guard.right)
+            );
+            let _ = writeln!(out, "        {local} = {}", options.param(guard.reassign));
+        }
+        let _ = writeln!(out, "    return {local}");
+        out
+    }
+
+    fn note_blocked(notes: &mut Vec<String>, reason: &str) {
+        notes.push(format!("real bcc structurer: {reason}"));
+    }
 }
 
 #[cfg(test)]
