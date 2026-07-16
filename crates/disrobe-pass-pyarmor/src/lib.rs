@@ -87,6 +87,8 @@ mod v8v9;
 mod wrap;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub use bcc::dispatch_recover::{binop_selector, recover_bcc_arith};
+#[cfg(not(target_arch = "wasm32"))]
 pub use bcc::recover::{
     CallResolver, MapCallResolver, PyAbi, RecognizedCall, RecoverOptions, RecoveredBody,
     recover_from_code, recover_from_nir,
