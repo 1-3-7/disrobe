@@ -331,9 +331,11 @@ pub struct LegacySsaFunction {
 
 #[must_use]
 pub fn promote_locals_to_ssa(cfg: &FunctionCfg, local_count: u32) -> LegacySsaFunction {
+    let cap: u32 = u32::try_from(MAX_FUNCTION_LOCALS).unwrap_or(u32::MAX);
+    let bounded_count: u32 = local_count.min(cap);
     let mut next_version: u32 = 0u32;
     let mut current_versions: IndexMap<LocalId, SsaValue> = IndexMap::new();
-    for local in 0..local_count {
+    for local in 0..bounded_count {
         let lid: LocalId = LocalId(local);
         current_versions.insert(
             lid,
@@ -1369,6 +1371,27 @@ mod tests {
         assert_eq!(block0.locals_in[&LocalId(0)].version, 0);
         assert_eq!(block0.locals_in[&LocalId(1)].version, 1);
         assert_eq!(block0.locals_in[&LocalId(2)].version, 2);
+    }
+
+    #[test]
+    fn promote_locals_caps_hostile_local_count() {
+        let cfg: FunctionCfg = FunctionCfg {
+            blocks: vec![CfgBlock {
+                id: BlockId(0),
+                ..Default::default()
+            }],
+            edges: Vec::new(),
+            entry: BlockId(0),
+        };
+        let cap: u32 = u32::try_from(MAX_FUNCTION_LOCALS).unwrap_or(u32::MAX);
+
+        let under: LegacySsaFunction = promote_locals_to_ssa(&cfg, cap - 1);
+        assert_eq!(under.next_version, cap - 1);
+        assert_eq!(under.blocks[0].locals_in.len(), (cap - 1) as usize);
+
+        let over: LegacySsaFunction = promote_locals_to_ssa(&cfg, u32::MAX);
+        assert_eq!(over.next_version, cap);
+        assert_eq!(over.blocks[0].locals_in.len(), MAX_FUNCTION_LOCALS);
     }
 
     #[test]
