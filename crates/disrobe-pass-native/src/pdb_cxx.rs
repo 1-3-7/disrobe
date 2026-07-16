@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
 use pdb::FallibleIterator as _;
@@ -69,12 +69,19 @@ pub struct EmittedField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmittedBase {
+    pub base_name: String,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmittedUdt {
     pub type_index: u32,
     pub tag_keyword: UdtTagKeyword,
     pub emitted_name: String,
     pub original_name: String,
     pub byte_size: u64,
+    pub bases: Vec<EmittedBase>,
     pub fields: Vec<EmittedField>,
     pub degraded: bool,
     pub depends_on: Vec<u32>,
@@ -160,15 +167,17 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
 
     let mut opaque_refs: OpaqueRefs = Vec::new();
     let mut rejected: Vec<RejectedType> = Vec::new();
-    let mut name_dedup: Deduper = Deduper::new();
+    let name_map: BTreeMap<u32, String> = assign_udt_names(&catalog);
 
     let mut enums: Vec<EmittedEnum> = Vec::new();
     for idx in catalog.defining_indices(UdtFamily::Enum) {
         let Ok(pdb::TypeData::Enumeration(e)) = catalog.get(idx) else {
             continue;
         };
+        let Some(emitted_name) = name_map.get(&idx.0).cloned() else {
+            continue;
+        };
         let raw_name: String = e.name.to_string().into_owned();
-        let emitted_name: String = name_dedup.assign(&sanitize_identifier(&raw_name));
         match emit::build_enum(&catalog, idx, &e, emitted_name, &mut opaque_refs) {
             Ok(built) => enums.push(built),
             Err((reason, detail)) => rejected.push(RejectedType {
@@ -186,9 +195,11 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
         let Ok(pdb::TypeData::Class(c)) = catalog.get(idx) else {
             continue;
         };
+        let Some(emitted_name) = name_map.get(&idx.0).cloned() else {
+            continue;
+        };
         let raw_name: String = c.name.to_string().into_owned();
-        let emitted_name: String = name_dedup.assign(&sanitize_identifier(&raw_name));
-        match emit::build_class(&catalog, idx, &c, emitted_name, &mut opaque_refs) {
+        match emit::build_class(&catalog, idx, &c, emitted_name, &name_map, &mut opaque_refs) {
             Ok(built) => udts.push(built),
             Err((reason, detail)) => rejected.push(RejectedType {
                 type_index: idx.0,
@@ -202,8 +213,10 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
         let Ok(pdb::TypeData::Union(u)) = catalog.get(idx) else {
             continue;
         };
+        let Some(emitted_name) = name_map.get(&idx.0).cloned() else {
+            continue;
+        };
         let raw_name: String = u.name.to_string().into_owned();
-        let emitted_name: String = name_dedup.assign(&sanitize_identifier(&raw_name));
         match emit::build_union(&catalog, idx, &u, emitted_name, &mut opaque_refs) {
             Ok(built) => udts.push(built),
             Err((reason, detail)) => rejected.push(RejectedType {
@@ -280,6 +293,32 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
         rejected,
         header_text,
     })
+}
+
+fn assign_udt_names(catalog: &TypeCatalog<'_>) -> BTreeMap<u32, String> {
+    let mut name_dedup: Deduper = Deduper::new();
+    let mut name_map: BTreeMap<u32, String> = BTreeMap::new();
+    for family in [UdtFamily::Enum, UdtFamily::ClassLike, UdtFamily::Union] {
+        for idx in catalog.defining_indices(family) {
+            let raw_name: Option<String> = match catalog.get(idx) {
+                Ok(pdb::TypeData::Enumeration(e)) if family == UdtFamily::Enum => {
+                    Some(e.name.to_string().into_owned())
+                }
+                Ok(pdb::TypeData::Class(c)) if family == UdtFamily::ClassLike => {
+                    Some(c.name.to_string().into_owned())
+                }
+                Ok(pdb::TypeData::Union(u)) if family == UdtFamily::Union => {
+                    Some(u.name.to_string().into_owned())
+                }
+                _ => None,
+            };
+            if let Some(raw) = raw_name {
+                let emitted: String = name_dedup.assign(&sanitize_identifier(&raw));
+                name_map.insert(idx.0, emitted);
+            }
+        }
+    }
+    name_map
 }
 
 fn topologically_order_udts(mut udts: Vec<EmittedUdt>) -> Vec<EmittedUdt> {
@@ -393,7 +432,21 @@ fn render_enum(e: &EmittedEnum) -> String {
 }
 
 fn render_udt(u: &EmittedUdt) -> String {
-    let mut out: String = format!("{} {} {{\n", u.tag_keyword.keyword(), u.emitted_name);
+    let base_clause: String = if u.bases.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<&str> = u
+            .bases
+            .iter()
+            .map(|b: &EmittedBase| b.base_name.as_str())
+            .collect();
+        format!(" : public {}", names.join(", public "))
+    };
+    let mut out: String = format!(
+        "{} {}{base_clause} {{\n",
+        u.tag_keyword.keyword(),
+        u.emitted_name
+    );
     for field in &u.fields {
         out.push_str(&format!("    {};\n", field.declaration));
     }

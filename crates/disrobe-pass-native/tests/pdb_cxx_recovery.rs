@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use disrobe_core::subprocess::{self, CapturedOutput};
 use disrobe_pass_native::{
-    EmittedUdt, PdbCxxReconstruction, perturb_first_offset, reconstruct_pdb_cxx,
+    EmittedBase, EmittedUdt, PdbCxxReconstruction, perturb_first_offset, reconstruct_pdb_cxx,
     render_static_assert_tu,
 };
 
@@ -254,6 +254,70 @@ fn recovers_the_real_msvc_pdb_type_graph() {
         .find(|e| e.original_name == "ColorTag")
         .expect("ColorTag present");
     assert_eq!(color_tag.underlying_type_text, "unsigned char");
+
+    let find_udt = |name: &str| -> &EmittedUdt {
+        rec.udts
+            .iter()
+            .find(|u: &&EmittedUdt| u.original_name == name)
+            .unwrap_or_else(|| panic!("must recover {name}"))
+    };
+
+    let derived: &EmittedUdt = find_udt("Derived");
+    assert_eq!(
+        derived.bases,
+        vec![EmittedBase {
+            base_name: "Base".to_owned(),
+            offset: 0,
+        }],
+        "Derived must inherit Base at offset 0, got {:?}",
+        derived.bases
+    );
+    assert!(
+        derived
+            .fields
+            .iter()
+            .any(|f| f.original_name == "derived_c"),
+        "Derived must keep its own member derived_c"
+    );
+
+    let multi: &EmittedUdt = find_udt("Multi");
+    assert_eq!(
+        multi.bases,
+        vec![
+            EmittedBase {
+                base_name: "LeftMix".to_owned(),
+                offset: 0,
+            },
+            EmittedBase {
+                base_name: "RightMix".to_owned(),
+                offset: 4,
+            },
+        ],
+        "Multi must carry both non-virtual bases at their recorded offsets, got {:?}",
+        multi.bases
+    );
+
+    let shape: &EmittedUdt = find_udt("Shape");
+    let vfptr = shape
+        .fields
+        .first()
+        .expect("Shape must have at least the synthesized vfptr");
+    assert_eq!(vfptr.offset, 0, "vfptr must lead the polymorphic layout");
+    assert!(
+        vfptr.declaration.contains("__vfptr") && vfptr.declaration.contains('*'),
+        "Shape must synthesize a leading vfptr member, got {:?}",
+        vfptr.declaration
+    );
+    let shape_tag = shape
+        .fields
+        .iter()
+        .find(|f| f.original_name == "shape_tag")
+        .expect("Shape::shape_tag present");
+    assert_eq!(
+        shape_tag.offset, 8,
+        "shape_tag must sit past the 8-byte vfptr, got offset {}",
+        shape_tag.offset
+    );
 }
 
 #[test]

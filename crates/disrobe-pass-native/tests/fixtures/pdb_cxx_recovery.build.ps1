@@ -10,7 +10,7 @@ $env:LIB = "$VcRoot\lib\x64;$SdkLibRoot\um\x64;$SdkLibRoot\ucrt\x64"
 $env:INCLUDE = "$VcRoot\include;$SdkIncludeRoot\ucrt;$SdkIncludeRoot\shared;$SdkIncludeRoot\um"
 
 Push-Location $here
-& $ClPath /Zi /nologo /std:c++17 /GS- /c pdb_cxx_recovery.cpp /Fo:pdb_cxx_recovery.obj
+& $ClPath /Zi /nologo /std:c++17 /GS- /GR- /c pdb_cxx_recovery.cpp /Fo:pdb_cxx_recovery.obj
 & $ClPath /Zi /nologo pdb_cxx_recovery.obj /Fe:pdb_cxx_recovery.exe /link /NODEFAULTLIB /ENTRY:EntryPoint /SUBSYSTEM:CONSOLE kernel32.lib
 Remove-Item pdb_cxx_recovery.obj, pdb_cxx_recovery.exe, pdb_cxx_recovery.ilk -ErrorAction SilentlyContinue
 Pop-Location
