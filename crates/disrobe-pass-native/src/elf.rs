@@ -197,6 +197,10 @@ impl Endian {
     }
 }
 
+fn read_slice(bytes: &[u8], off: usize, len: usize) -> Option<&[u8]> {
+    bytes.get(off..off.checked_add(len)?)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Header {
     class: ElfClass,
@@ -403,7 +407,7 @@ fn parse_program_headers(bytes: &[u8], header: &Header) -> Vec<ProgramHeader> {
             Some(value) => value,
             None => break,
         };
-        let Some(slice): Option<&[u8]> = bytes.get(base..base + entsize) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, base, entsize) else {
             break;
         };
         let Some(ph): Option<ProgramHeader> = parse_one_program_header(slice, header) else {
@@ -508,7 +512,7 @@ fn read_dynamic_entries(
     let mut cursor: usize = start;
     let limit: usize = start.saturating_add(span);
     while cursor + entry_size <= limit && out.len() < MAX_DYNAMIC_ENTRIES {
-        let Some(slice): Option<&[u8]> = bytes.get(cursor..cursor + entry_size) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, cursor, entry_size) else {
             break;
         };
         let (tag, value): (u64, u64) = match header.class {
@@ -627,7 +631,7 @@ fn read_pointer_array(
             Some(value) => value,
             None => break,
         };
-        let Some(slice): Option<&[u8]> = bytes.get(base..base + ptr_size) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, base, ptr_size) else {
             break;
         };
         let value: u64 = match header.class {
@@ -684,9 +688,9 @@ fn gnu_hash_symbol_count(
 ) -> Option<usize> {
     let base: usize = vaddr_to_file_offset(segments, gnu_hash_va)?;
     let e: Endian = header.endian;
-    let nbuckets: u32 = e.u32(bytes.get(base..base + 4)?)?;
-    let symoffset: u32 = e.u32(bytes.get(base + 4..base + 8)?)?;
-    let bloom_size: u32 = e.u32(bytes.get(base + 8..base + 12)?)?;
+    let nbuckets: u32 = e.u32(read_slice(bytes, base, 4)?)?;
+    let symoffset: u32 = e.u32(read_slice(bytes, base.checked_add(4)?, 4)?)?;
+    let bloom_size: u32 = e.u32(read_slice(bytes, base.checked_add(8)?, 4)?)?;
     if nbuckets == 0 || nbuckets as usize > MAX_GNU_HASH_BUCKETS {
         return None;
     }
@@ -700,7 +704,7 @@ fn gnu_hash_symbol_count(
     let mut max_symbol: u32 = symoffset;
     for i in 0..nbuckets as usize {
         let off: usize = buckets_off.checked_add(i.checked_mul(4)?)?;
-        let bucket: u32 = e.u32(bytes.get(off..off + 4)?)?;
+        let bucket: u32 = e.u32(read_slice(bytes, off, 4)?)?;
         if bucket > max_symbol {
             max_symbol = bucket;
         }
@@ -713,7 +717,7 @@ fn gnu_hash_symbol_count(
     loop {
         let rel: u32 = symbol_index.checked_sub(symoffset)?;
         let off: usize = chain_base.checked_add((rel as usize).checked_mul(4)?)?;
-        let chain: u32 = e.u32(bytes.get(off..off + 4)?)?;
+        let chain: u32 = e.u32(read_slice(bytes, off, 4)?)?;
         let count: usize = (symbol_index as usize).checked_add(1)?;
         if count > MAX_SYMBOLS {
             return Some(MAX_SYMBOLS);
@@ -733,7 +737,7 @@ fn sysv_hash_symbol_count(
 ) -> Option<usize> {
     let base: usize = vaddr_to_file_offset(segments, hash_va)?;
     let e: Endian = header.endian;
-    let nchain: u32 = e.u32(bytes.get(base + 4..base + 8)?)?;
+    let nchain: u32 = e.u32(read_slice(bytes, base.checked_add(4)?, 4)?)?;
     (nchain as usize <= MAX_SYMBOLS).then_some(nchain as usize)
 }
 
@@ -786,7 +790,7 @@ fn read_dynamic_symbols(
             Some(value) => value,
             None => break,
         };
-        let Some(slice): Option<&[u8]> = bytes.get(base..base + syment) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, base, syment) else {
             break;
         };
         let Some(sym): Option<DynamicSymbol> =
@@ -970,7 +974,7 @@ fn read_rela(
             Some(value) => value,
             None => return,
         };
-        let Some(slice): Option<&[u8]> = bytes.get(base..base + ent) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, base, ent) else {
             return;
         };
         let reloc: Relocation = match header.class {
@@ -1048,7 +1052,7 @@ fn read_rel(
             Some(value) => value,
             None => return,
         };
-        let Some(slice): Option<&[u8]> = bytes.get(base..base + ent) else {
+        let Some(slice): Option<&[u8]> = read_slice(bytes, base, ent) else {
             return;
         };
         let reloc: Relocation = match header.class {
