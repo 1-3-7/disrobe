@@ -4,6 +4,8 @@ use crate::error::{Error, Result};
 use crate::opcode::{ArgKind, Effect, OpInfo, lookup};
 
 const OPCODE_BUDGET: usize = 5_000_000;
+const MAX_LONG_BODY: usize = 4_096;
+const LONG_BODY_BUDGET: usize = 1 << 18;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
@@ -40,12 +42,31 @@ pub struct Disassembly {
 struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
+    long_budget: usize,
 }
 
 impl<'a> Cursor<'a> {
     #[inline]
     const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
+        Self {
+            bytes,
+            pos: 0,
+            long_budget: LONG_BODY_BUDGET,
+        }
+    }
+
+    fn charge_long(&mut self, n: usize) -> Result<()> {
+        if n > MAX_LONG_BODY {
+            return Err(Error::LongTooLong {
+                declared: n,
+                limit: MAX_LONG_BODY,
+                offset: self.pos,
+            });
+        }
+        self.long_budget = self.long_budget.checked_sub(n).ok_or(Error::LongBudget {
+            limit: LONG_BODY_BUDGET,
+        })?;
+        Ok(())
     }
 
     #[inline]
@@ -167,13 +188,15 @@ fn decode_arg(cur: &mut Cursor<'_>, info: &OpInfo) -> Result<DecodedArg> {
         }
         ArgKind::Long1 => {
             let n: usize = cur.take(1, "long1-len")?[0] as usize;
+            cur.charge_long(n)?;
             let body: &[u8] = cur.take(n, "long1-body")?;
             Ok(long_arg(body))
         }
         ArgKind::Long4 => {
             let lb: &[u8] = cur.take(4, "long4-len")?;
-            let n: u32 = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]);
-            let body: &[u8] = cur.take(n as usize, "long4-body")?;
+            let n: usize = u32::from_le_bytes([lb[0], lb[1], lb[2], lb[3]]) as usize;
+            cur.charge_long(n)?;
+            let body: &[u8] = cur.take(n, "long4-body")?;
             Ok(long_arg(body))
         }
         ArgKind::Float8 => {
