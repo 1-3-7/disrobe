@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::dex::{CodeItem, DexFile, parse as parse_dex, parse_code_items};
-use crate::dex_builder::{filled_new_array_string_sample, infinite_loop_sample};
+use crate::dex_builder::{filled_new_array_string_sample, heap_bomb_sample, infinite_loop_sample};
 
 fn find_method<'a>(items: &'a [CodeItem], name: &str) -> &'a CodeItem {
     items
@@ -111,4 +111,15 @@ fn an_unconditional_backward_loop_terminates_via_a_typed_budget_skip_not_a_hang(
         Interp::new(&dex, "Lcom/disrobe/sample/GenericInfiniteLoop;", &items);
     let regs: Vec<RegSlot> = vec![RegSlot::Undefined; usize::from(spin.registers_size).max(1)];
     assert_eq!(interp.execute(spin, regs), Err(SkipReason::BudgetExhausted));
+}
+
+#[test]
+fn a_loop_that_allocates_forever_stops_at_the_heap_budget_not_a_hang_or_oom() {
+    let bytes: Vec<u8> = heap_bomb_sample();
+    let dex: DexFile = parse_dex(&bytes).expect("fixture parses");
+    let items: Vec<CodeItem> = parse_code_items(&dex, &bytes);
+    let bomb: &CodeItem = find_method(&items, "bomb");
+    let mut interp: Interp<'_> = Interp::new(&dex, "Lcom/disrobe/sample/GenericHeapBomb;", &items);
+    let regs: Vec<RegSlot> = vec![RegSlot::Undefined; usize::from(bomb.registers_size).max(1)];
+    assert_eq!(interp.execute(bomb, regs), Err(SkipReason::OutputTooLarge));
 }

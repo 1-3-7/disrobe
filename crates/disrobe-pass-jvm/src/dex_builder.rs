@@ -2783,6 +2783,50 @@ pub fn infinite_loop_sample() -> Vec<u8> {
     builder.build()
 }
 
+#[must_use]
+pub fn heap_bomb_sample() -> Vec<u8> {
+    let class: String = "Lcom/disrobe/sample/GenericHeapBomb;".to_owned();
+    let object: String = "Ljava/lang/Object;".to_owned();
+    let void_t: String = "V".to_owned();
+    let byte_arr: String = "[B".to_owned();
+
+    let mut bomb: MethodBuilder = MethodBuilder::default();
+    bomb.op21s(0x13, 0, 32_767);
+    let loop_start: usize = bomb.mark();
+    bomb.new_array(1, 0, &byte_arr);
+    bomb.goto_back(loop_start);
+
+    let bomb_method: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: class.clone(),
+            proto: ProtoRef {
+                return_type: void_t,
+                params: Vec::new(),
+            },
+            name: "bomb".to_owned(),
+        },
+        access_flags: 0x000A,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 0,
+        insns: bomb.units,
+        relocations: bomb.relocations,
+    };
+
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class,
+        super_class: object,
+        access_flags: 0x11,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![bomb_method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
 pub mod insn {
     #[must_use]
     pub fn fmt10x(op: u8) -> Vec<u16> {
