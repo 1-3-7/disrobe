@@ -270,12 +270,133 @@ fn repr_set(object: &Object, items: &[Object], depth: usize) -> String {
             "set()".to_owned()
         };
     }
-    let body: String = join_items(items, depth);
+    let body: String = cpython_set_order(items).map_or_else(
+        || join_items(items, depth),
+        |order: Vec<usize>| {
+            order
+                .iter()
+                .map(|index: &usize| repr_object(&items[*index], depth + 1))
+                .collect::<Vec<String>>()
+                .join(", ")
+        },
+    );
     if is_frozen {
         format!("frozenset({{{body}}})")
     } else {
         format!("{{{body}}}")
     }
+}
+
+const PY_HASH_MODULUS: u128 = (1u128 << 61) - 1;
+const SET_MIN_SIZE: usize = 8;
+const SET_LINEAR_PROBES: u64 = 9;
+const SET_PERTURB_SHIFT: u32 = 5;
+const SET_LARGE_GROWTH_THRESHOLD: u64 = 50_000;
+const MAX_SET_SIMULATION: usize = 1 << 20;
+
+fn cpython_set_order(items: &[Object]) -> Option<Vec<usize>> {
+    if items.len() > MAX_SET_SIMULATION {
+        return None;
+    }
+    let hashes: Vec<i64> = items
+        .iter()
+        .map(int_like_hash)
+        .collect::<Option<Vec<i64>>>()?;
+    Some(simulate_set_table(&hashes))
+}
+
+fn int_like_hash(object: &Object) -> Option<i64> {
+    match object {
+        Object::True => Some(1),
+        Object::False => Some(0),
+        Object::Int(value) => Some(py_int_hash(i128::from(*value))),
+        Object::Int64(value) => Some(py_int_hash(i128::from(*value))),
+        Object::Long(big) => Some(py_bigint_hash(big)),
+        _ => None,
+    }
+}
+
+const fn py_int_hash(value: i128) -> i64 {
+    let magnitude: i64 = (value.unsigned_abs() % PY_HASH_MODULUS) as i64;
+    let signed: i64 = if value < 0 { -magnitude } else { magnitude };
+    if signed == -1 { -2 } else { signed }
+}
+
+fn py_bigint_hash(big: &BigInt) -> i64 {
+    if big.sign == 0 || big.digits.is_empty() {
+        return 0;
+    }
+    let mut acc: u128 = 0;
+    for &digit in big.digits.iter().rev() {
+        acc = (acc << 15) % PY_HASH_MODULUS;
+        acc = (acc + u128::from(digit)) % PY_HASH_MODULUS;
+    }
+    let signed: i64 = if big.sign < 0 {
+        -(acc as i64)
+    } else {
+        acc as i64
+    };
+    if signed == -1 { -2 } else { signed }
+}
+
+fn simulate_set_table(hashes: &[i64]) -> Vec<usize> {
+    let mut table: Vec<Option<usize>> = vec![None; SET_MIN_SIZE];
+    let mut mask: u64 = (SET_MIN_SIZE - 1) as u64;
+    let mut used: u64 = 0;
+    for (index, &hash) in hashes.iter().enumerate() {
+        set_insert_clean(&mut table, mask, index, hash);
+        used += 1;
+        if used * 5 >= mask * 3 {
+            let minused: u64 = if used > SET_LARGE_GROWTH_THRESHOLD {
+                used * 2
+            } else {
+                used * 4
+            };
+            let (grown, grown_mask): (Vec<Option<usize>>, u64) =
+                set_resize(&table, hashes, minused);
+            table = grown;
+            mask = grown_mask;
+        }
+    }
+    table
+        .iter()
+        .filter_map(|slot: &Option<usize>| *slot)
+        .collect()
+}
+
+fn set_insert_clean(table: &mut [Option<usize>], mask: u64, index: usize, hash: i64) {
+    let mut perturb: u64 = hash as u64;
+    let mut i: u64 = (hash as u64) & mask;
+    loop {
+        if table[i as usize].is_none() {
+            table[i as usize] = Some(index);
+            return;
+        }
+        if i + SET_LINEAR_PROBES <= mask {
+            for offset in 1..=SET_LINEAR_PROBES {
+                let slot: usize = (i + offset) as usize;
+                if table[slot].is_none() {
+                    table[slot] = Some(index);
+                    return;
+                }
+            }
+        }
+        perturb >>= SET_PERTURB_SHIFT;
+        i = i.wrapping_mul(5).wrapping_add(1).wrapping_add(perturb) & mask;
+    }
+}
+
+fn set_resize(old: &[Option<usize>], hashes: &[i64], minused: u64) -> (Vec<Option<usize>>, u64) {
+    let mut newsize: usize = SET_MIN_SIZE;
+    while (newsize as u64) <= minused {
+        newsize <<= 1;
+    }
+    let mut table: Vec<Option<usize>> = vec![None; newsize];
+    let mask: u64 = (newsize - 1) as u64;
+    for index in old.iter().flatten() {
+        set_insert_clean(&mut table, mask, *index, hashes[*index]);
+    }
+    (table, mask)
 }
 
 fn repr_dict<'a>(entries: impl Iterator<Item = (&'a Object, &'a Object)>, depth: usize) -> String {
@@ -452,6 +573,58 @@ mod tests {
                 "repr of {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn frozenset_of_ints_matches_cpython_iteration_order() {
+        let cases: [(&[i64], &str); 6] = [
+            (&[7, 8], "frozenset({8, 7})"),
+            (&[5, 13, 21, 29], "frozenset({29, 13, 21, 5})"),
+            (&[3, 7, 42, 100, 999], "frozenset({3, 100, 999, 7, 42})"),
+            (&[0, 8, 16, 24], "frozenset({0, 8, 16, 24})"),
+            (&[1, 9], "frozenset({1, 9})"),
+            (
+                &[-3, -2, -1, 5, 1000000],
+                "frozenset({1000000, 5, -1, -3, -2})",
+            ),
+        ];
+        for (values, expected) in cases {
+            let items: Vec<Object> = values.iter().map(|v: &i64| Object::Int64(*v)).collect();
+            let object: Object = Object::FrozenSet(items);
+            assert_eq!(repr_const(&object), expected, "order for {values:?}");
+        }
+    }
+
+    #[test]
+    fn set_of_ints_forces_resize_and_matches_cpython() {
+        let values: Vec<i64> = (0..20).collect();
+        let items: Vec<Object> = values.iter().map(|v: &i64| Object::Int64(*v)).collect();
+        let object: Object = Object::Set(items);
+        assert_eq!(
+            repr_const(&object),
+            "{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}"
+        );
+    }
+
+    #[test]
+    fn frozenset_with_non_integer_element_keeps_storage_order() {
+        let items: Vec<Object> = vec![
+            Object::Int64(7),
+            Object::ShortAscii {
+                value: "x".to_owned(),
+                interned: false,
+            },
+            Object::Int64(8),
+        ];
+        let object: Object = Object::FrozenSet(items);
+        assert_eq!(repr_const(&object), "frozenset({7, 'x', 8})");
+    }
+
+    #[test]
+    fn bool_elements_hash_like_zero_and_one() {
+        let items: Vec<Object> = vec![Object::Int64(8), Object::True, Object::Int64(7)];
+        let object: Object = Object::FrozenSet(items);
+        assert_eq!(repr_const(&object), "frozenset({8, True, 7})");
     }
 
     #[test]
