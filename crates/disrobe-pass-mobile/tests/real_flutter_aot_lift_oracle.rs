@@ -85,6 +85,67 @@ fn find_lifted<'a>(report: &'a AotLiftReport, name: &str) -> Option<&'a DartLift
 }
 
 #[test]
+fn fibonacci_step_recovers_nested_pseudocode() {
+    let report: AotLiftReport = aot_report();
+    let fib: &DartLiftedFunction =
+        find_lifted(&report, "fibonacciStep").expect("fibonacciStep must lift");
+
+    assert!(
+        fib.is_structured(),
+        "the shared structurer must recover fibonacciStep to nested pseudocode; it fell back to the flat call-list"
+    );
+    let dart: String = fib.best_pseudo_dart();
+    eprintln!("--- fibonacciStep structured pseudo-Dart ---\n{}", dart);
+
+    assert!(
+        dart.contains("if (") && dart.contains("} else {"),
+        "the source `if (depth < 2) ... else ...` must recover as a nested if/else, got:\n{dart}"
+    );
+    assert!(
+        dart.matches("fibonacciStep(").count() >= 3,
+        "the signature plus the two recursive self-calls must render as fibonacciStep(...), got:\n{dart}"
+    );
+    assert!(
+        dart.contains("return;"),
+        "both arms return; the structured body must render return statements, got:\n{dart}"
+    );
+}
+
+#[test]
+fn structuring_reports_structured_and_fallback_counts() {
+    let report: AotLiftReport = aot_report();
+    eprintln!(
+        "structuring: structured={} flat_fallback={} of function_count={}",
+        report.structured_function_count, report.flat_fallback_count, report.function_count,
+    );
+    assert_eq!(
+        report.structured_function_count + report.flat_fallback_count,
+        report.function_count,
+        "every function is either structured or falls back to the flat list"
+    );
+    assert!(
+        report.structured_function_count >= 1,
+        "at least fibonacciStep structures on the real sample, got {}",
+        report.structured_function_count
+    );
+    assert!(
+        report.flat_fallback_count >= 1,
+        "functions with unrecovered control flow must honestly fall back to the flat list, got {}",
+        report.flat_fallback_count
+    );
+
+    for func in &report.functions {
+        if !func.is_structured() {
+            assert_eq!(
+                func.best_pseudo_dart(),
+                func.to_pseudo_dart(),
+                "a fallback function's best rendering must equal its unchanged flat call-list"
+            );
+        }
+    }
+}
+
+#[test]
 fn abi_is_version_pinned_and_functions_lift() {
     let report: AotLiftReport = aot_report();
     assert!(
