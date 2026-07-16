@@ -174,10 +174,15 @@ impl PyExpr {
             Self::Unary(op, inner) => format!("{op}{}", parenthesize(inner, 60)),
             Self::Binary(left, op, right) => {
                 let level: u8 = binary_precedence(op);
+                let (left_min, right_min): (u8, u8) = if is_right_associative(op) {
+                    (level.saturating_add(1), level)
+                } else {
+                    (level, level.saturating_add(1))
+                };
                 format!(
                     "{} {op} {}",
-                    parenthesize(left, level),
-                    parenthesize(right, level.saturating_add(1))
+                    parenthesize(left, left_min),
+                    parenthesize(right, right_min)
                 )
             }
             Self::Compare(left, op, right) => {
@@ -210,6 +215,10 @@ fn binary_precedence(op: &str) -> u8 {
         "**" => 70,
         _ => 50,
     }
+}
+
+fn is_right_associative(op: &str) -> bool {
+    op == "**"
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -739,6 +748,40 @@ mod tests {
             Box::new(PyExpr::Name("c".to_owned())),
         );
         assert_eq!(expr.render(), "(a + b) * c");
+    }
+
+    #[test]
+    fn power_renders_right_associatively() {
+        let left_nested: PyExpr = PyExpr::Binary(
+            Box::new(PyExpr::Binary(
+                Box::new(PyExpr::Name("a".to_owned())),
+                "**",
+                Box::new(PyExpr::Name("b".to_owned())),
+            )),
+            "**",
+            Box::new(PyExpr::Name("c".to_owned())),
+        );
+        assert_eq!(left_nested.render(), "(a ** b) ** c");
+
+        let right_nested: PyExpr = PyExpr::Binary(
+            Box::new(PyExpr::Name("a".to_owned())),
+            "**",
+            Box::new(PyExpr::Binary(
+                Box::new(PyExpr::Name("b".to_owned())),
+                "**",
+                Box::new(PyExpr::Name("c".to_owned())),
+            )),
+        );
+        assert_eq!(right_nested.render(), "a ** b ** c");
+
+        let left_grouped: i128 = 2_i128.pow(3).pow(2);
+        let right_grouped: i128 = 2_i128.pow(3_u32.pow(2));
+        assert_eq!(left_grouped, 64);
+        assert_eq!(right_grouped, 512);
+        assert_ne!(
+            left_grouped, right_grouped,
+            "left- and right-grouped power evaluate differently, so the parens change meaning"
+        );
     }
 
     #[test]

@@ -74,6 +74,7 @@ struct BccMachine<'a> {
     dispatch_calls: Vec<RecognizedCall>,
     dispatch_index: BTreeMap<u64, usize>,
     returns: Vec<BccVal>,
+    saw_branch: bool,
     bail: Option<String>,
 }
 
@@ -95,6 +96,7 @@ impl<'a> BccMachine<'a> {
             dispatch_calls: Vec::new(),
             dispatch_index: BTreeMap::new(),
             returns: Vec::new(),
+            saw_branch: false,
             bail: None,
         }
     }
@@ -158,6 +160,7 @@ impl<'a> BccMachine<'a> {
                         pc = *next;
                     }
                     NirClass::ConditionalJump => {
+                        self.saw_branch = true;
                         if let Some(dest) = instruction.direct_target()
                             && visited.insert(dest)
                             && let Some(next) = addr_to_index.get(&dest)
@@ -321,9 +324,12 @@ impl<'a> BccMachine<'a> {
                 self.assign(cell, folded);
             }
             NirOp::Value {
-                op, inputs, size, ..
+                op,
+                inputs,
+                input_sizes,
+                size,
             } => {
-                let folded: BccVal = self.fold_value(*op, inputs, *size);
+                let folded: BccVal = self.fold_value(*op, inputs, input_sizes, *size);
                 if let Some(dest) = instruction.operands.first() {
                     self.assign(dest, folded);
                 }
@@ -370,7 +376,7 @@ impl<'a> BccMachine<'a> {
         }
     }
 
-    fn fold_value(&self, op: ValueOp, inputs: &[String], size: u32) -> BccVal {
+    fn fold_value(&self, op: ValueOp, inputs: &[String], input_sizes: &[u32], size: u32) -> BccVal {
         let first: BccVal = inputs
             .first()
             .map_or(BccVal::Unknown, |n: &String| self.eval(n));
@@ -396,8 +402,15 @@ impl<'a> BccMachine<'a> {
                 }
                 _ => BccVal::Unknown,
             },
-            ValueOp::IntZext | ValueOp::IntSext => match &first {
+            ValueOp::IntZext => match &first {
                 BccVal::Machine(value) => BccVal::Machine(*value),
+                other => other.clone(),
+            },
+            ValueOp::IntSext => match &first {
+                BccVal::Machine(value) => {
+                    let source_width: u32 = input_sizes.first().copied().unwrap_or(size);
+                    BccVal::Machine(sign_extend(*value, source_width))
+                }
                 other => other.clone(),
             },
             _ => match (&first, &second) {
@@ -433,6 +446,62 @@ impl<'a> BccMachine<'a> {
             }
         }
         best.and_then(|index: usize| self.call_exprs.get(index).and_then(Option::as_ref))
+    }
+
+    fn resolved_returns_render_identically(&self) -> bool {
+        let mut rendered: Option<String> = None;
+        for value in &self.returns {
+            let Some(expr): Option<PyExpr> = self.to_expr(value) else {
+                continue;
+            };
+            let text: String = expr.render();
+            match &rendered {
+                Some(existing) if *existing != text => return false,
+                _ => rendered = Some(text),
+            }
+        }
+        rendered.is_some()
+    }
+
+    fn recovered_body(&self, notes: &mut Vec<String>) -> Option<String> {
+        let total: usize = self.dispatch_calls.len();
+        let recognized: usize = self
+            .dispatch_calls
+            .iter()
+            .filter(|call: &&RecognizedCall| call.python.is_some())
+            .count();
+        if total == 0 {
+            notes.push("no binary-op dispatcher call site present in the body".to_owned());
+            return None;
+        }
+        if recognized != total {
+            notes
+                .push("not every dispatcher selector resolved to a supported binary op".to_owned());
+            return None;
+        }
+        if self.saw_branch && !self.resolved_returns_render_identically() {
+            notes.push(
+                "control flow present; structured recovery of branches and loops is a later increment"
+                    .to_owned(),
+            );
+            return None;
+        }
+        let Some(expr): Option<&PyExpr> = self.resolved_return() else {
+            notes.push(
+                "the return value did not reduce to a single resolved dispatcher expression"
+                    .to_owned(),
+            );
+            return None;
+        };
+        let params: Vec<String> = (0..self.options.argcount)
+            .map(|index: usize| self.options.param(index))
+            .collect();
+        Some(format!(
+            "def {}({}):\n    return {}\n",
+            self.options.func_name,
+            params.join(", "),
+            expr.render()
+        ))
     }
 }
 
@@ -506,6 +575,20 @@ fn mask_to_size(value: u64, size: u32) -> u64 {
             .checked_shl(bits)
             .map_or(u64::MAX, |shifted: u64| shifted - 1);
         value & ceiling
+    }
+}
+
+fn sign_extend(value: u64, size_bytes: u32) -> u64 {
+    let bits: u32 = size_bytes.saturating_mul(8);
+    if bits == 0 || bits >= 64 {
+        return value;
+    }
+    let sign_bit: u64 = 1_u64 << (bits - 1);
+    let masked: u64 = mask_to_size(value, size_bytes);
+    if masked & sign_bit != 0 {
+        masked | !mask_to_size(u64::MAX, size_bytes)
+    } else {
+        masked
     }
 }
 
@@ -604,42 +687,14 @@ pub fn recover_bcc_arith(
         return degraded(options, &machine, notes);
     }
 
+    let recovered_python: Option<String> = machine.recovered_body(&mut notes);
+
     let total: usize = machine.dispatch_calls.len();
     let recognized: usize = machine
         .dispatch_calls
         .iter()
         .filter(|call: &&RecognizedCall| call.python.is_some())
         .count();
-    let return_expr: Option<String> = machine.resolved_return().map(PyExpr::render);
-
-    let recovered_python: Option<String> = match return_expr {
-        Some(expr) if total > 0 && recognized == total => {
-            let params: Vec<String> = (0..options.argcount)
-                .map(|index: usize| options.param(index))
-                .collect();
-            Some(format!(
-                "def {}({}):\n    return {}\n",
-                options.func_name,
-                params.join(", "),
-                expr
-            ))
-        }
-        _ => None,
-    };
-    if recovered_python.is_none() {
-        if total == 0 {
-            notes.push("no binary-op dispatcher call site present in the body".to_owned());
-        } else if recognized != total {
-            notes
-                .push("not every dispatcher selector resolved to a supported binary op".to_owned());
-        } else {
-            notes.push(
-                "the return value did not reduce to a single resolved dispatcher expression"
-                    .to_owned(),
-            );
-        }
-    }
-
     let annotation: String = render_annotation(options, &machine.dispatch_calls, total, recognized);
     RecoveredBody {
         func_name: options.func_name.clone(),
@@ -655,7 +710,108 @@ pub fn recover_bcc_arith(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use disrobe_nir::{SourceLang, SourceRef};
+
     use super::*;
+
+    fn instr(address: u64, op: NirOp, operands: &[&str]) -> NirInstr {
+        NirInstr {
+            address,
+            op,
+            mnemonic: String::new(),
+            operands: operands.iter().map(|s: &&str| (*s).to_owned()).collect(),
+            reads_memory: false,
+            writes_memory: false,
+            byte_width: false,
+            source: SourceRef::new(SourceLang::NativeX86, address),
+        }
+    }
+
+    fn copy(address: u64, dest: &str, src: &str) -> NirInstr {
+        instr(
+            address,
+            NirOp::Copy {
+                src: src.to_owned(),
+                size: 8,
+            },
+            &[dest],
+        )
+    }
+
+    fn two_arm_branch_body(selector_a: u64, selector_b: u64) -> NirFunction {
+        let arm = |base: u64, selector: u64| -> Vec<NirInstr> {
+            vec![
+                copy(base, "rcx", "rsi"),
+                copy(base + 4, "rdx", "rdi"),
+                copy(base + 8, "r8", &format!("{selector:#x}")),
+                copy(base + 12, "r10", "rbx"),
+                instr(base + 16, NirOp::IndirectCall, &["r10"]),
+                instr(base + 20, NirOp::Return, &["rax"]),
+            ]
+        };
+        let mut instructions: Vec<NirInstr> =
+            vec![instr(0x00, NirOp::CondBranch { target: Some(0x50) }, &[])];
+        instructions.extend(arm(0x08, selector_a));
+        instructions.extend(arm(0x50, selector_b));
+        NirFunction {
+            name: "f".to_owned(),
+            address: 0,
+            end: 0x68,
+            is_export: false,
+            instructions,
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        }
+    }
+
+    fn seed_branch_machine<'a>(
+        options: &'a RecoverOptions,
+        consts: &'a [Option<i128>],
+        nir: &NirFunction,
+    ) -> BccMachine<'a> {
+        let mut machine: BccMachine<'a> = BccMachine::new(options, consts);
+        machine.registers.insert("rsi".to_owned(), BccVal::Param(0));
+        machine.registers.insert("rdi".to_owned(), BccVal::Param(1));
+        machine
+            .registers
+            .insert("rbx".to_owned(), BccVal::RuntimeSlot(SLOT_BINOP));
+        machine.run(nir);
+        machine
+    }
+
+    #[test]
+    fn divergent_branch_arms_degrade_to_opaque() {
+        let options: RecoverOptions = RecoverOptions::new("f", crate::PyAbi::Win64, 2);
+        let consts: Vec<Option<i128>> = Vec::new();
+        let nir: NirFunction = two_arm_branch_body(0x07, 0x24);
+        let machine: BccMachine<'_> = seed_branch_machine(&options, &consts, &nir);
+        assert!(machine.saw_branch, "conditional jump must record a branch");
+        assert_eq!(machine.returns.len(), 2, "both arms reach a return");
+        assert!(
+            !machine.resolved_returns_render_identically(),
+            "the two arms compute different expressions"
+        );
+        let mut notes: Vec<String> = Vec::new();
+        let body: Option<String> = machine.recovered_body(&mut notes);
+        assert!(
+            body.is_none(),
+            "divergent branch arms must degrade rather than emit one arm: {body:?}"
+        );
+    }
+
+    #[test]
+    fn identical_branch_arms_recover_shared_expression() {
+        let options: RecoverOptions = RecoverOptions::new("f", crate::PyAbi::Win64, 2);
+        let consts: Vec<Option<i128>> = Vec::new();
+        let nir: NirFunction = two_arm_branch_body(0x07, 0x07);
+        let machine: BccMachine<'_> = seed_branch_machine(&options, &consts, &nir);
+        assert!(machine.saw_branch);
+        assert!(machine.resolved_returns_render_identically());
+        let mut notes: Vec<String> = Vec::new();
+        let body: String = machine
+            .recovered_body(&mut notes)
+            .expect("identical arms recover the shared expression");
+        assert!(body.contains("return arg_0 + arg_1"), "recovered: {body}");
+    }
 
     #[test]
     fn selector_table_matches_runtime_dispatcher() {
