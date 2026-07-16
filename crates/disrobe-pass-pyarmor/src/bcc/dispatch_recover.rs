@@ -713,7 +713,16 @@ pub fn recover_bcc_arith(
         machine.recovered_body(&mut notes)
     };
     if recovered_python.is_none() {
-        recovered_python = super::stmt_structure::recover_structured(&nir, options, &mut notes);
+        let (normalized, diamonds): (NirFunction, super::normalize::DiamondReport) =
+            super::normalize::collapse_refcount_diamonds(&nir);
+        if diamonds.collapsed > 0 {
+            notes.push(format!(
+                "collapsed {} refcount-increment fast-path guards before structuring",
+                diamonds.collapsed
+            ));
+        }
+        recovered_python =
+            super::stmt_structure::recover_structured(&normalized, options, &mut notes);
         if recovered_python.is_none()
             && let Some(reason) = bail
         {

@@ -323,6 +323,23 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
         "clamp no longer degrades on an unmodeled dispatch slot: {:?}",
         clamp.notes
     );
+    let collapse_note: Option<&String> = clamp
+        .notes
+        .iter()
+        .find(|note: &&String| note.contains("refcount-increment fast-path guards"));
+    assert!(
+        collapse_note.is_some(),
+        "the refcount fast-path normalizer fires on the real clamp body: {:?}",
+        clamp.notes
+    );
+    let collapsed: usize = collapse_note
+        .and_then(|note: &String| note.split_whitespace().nth(1))
+        .and_then(|token: &str| token.parse::<usize>().ok())
+        .unwrap_or(0);
+    assert!(
+        collapsed >= 1,
+        "at least one refcount-increment diamond collapses in the real clamp body: {collapsed}"
+    );
 
     let main: RecoveredBody = recover_named(&prep, "main").expect("main native record");
     assert!(

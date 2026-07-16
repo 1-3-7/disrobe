@@ -14,6 +14,8 @@ pub mod dispatch_recover;
 mod join;
 pub mod model;
 #[cfg(not(target_arch = "wasm32"))]
+mod normalize;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod recover;
 mod residual;
 mod skeleton;
