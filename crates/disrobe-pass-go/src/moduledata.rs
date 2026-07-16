@@ -727,28 +727,79 @@ fn unquote(s: &str) -> Option<String> {
     if bytes.len() < 2 || *bytes.last()? != quote {
         return None;
     }
-    let inner: &str = &s[1..s.len() - 1];
+    let inner: &[u8] = &bytes[1..bytes.len() - 1];
     if quote == b'`' {
-        return Some(inner.to_owned());
+        return Some(String::from_utf8_lossy(inner).into_owned());
     }
-    let mut out: String = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut i: usize = 0;
+    while i < inner.len() {
+        let b: u8 = inner[i];
+        if b != b'\\' {
+            out.push(b);
+            i += 1;
             continue;
         }
-        match chars.next()? {
-            'n' => out.push('\n'),
-            't' => out.push('\t'),
-            'r' => out.push('\r'),
-            '\\' => out.push('\\'),
-            '"' => out.push('"'),
-            '\'' => out.push('\''),
-            other => out.push(other),
+        i += 1;
+        let esc: u8 = *inner.get(i)?;
+        i += 1;
+        match esc {
+            b'a' => out.push(0x07),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0c),
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'v' => out.push(0x0b),
+            b'\\' => out.push(b'\\'),
+            b'\'' => out.push(b'\''),
+            b'"' => out.push(b'"'),
+            b'x' => out.push(u8::try_from(take_hex(inner, &mut i, 2)?).ok()?),
+            b'u' => push_rune(&mut out, take_hex(inner, &mut i, 4)?)?,
+            b'U' => push_rune(&mut out, take_hex(inner, &mut i, 8)?)?,
+            b'0'..=b'7' => {
+                let d1: u32 = octal_digit(*inner.get(i)?)?;
+                let d2: u32 = octal_digit(*inner.get(i + 1)?)?;
+                i += 2;
+                let value: u32 = u32::from(esc - b'0') * 64 + d1 * 8 + d2;
+                out.push(u8::try_from(value).ok()?);
+            }
+            _ => return None,
         }
     }
-    Some(out)
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+fn take_hex(inner: &[u8], i: &mut usize, count: usize) -> Option<u32> {
+    let mut value: u32 = 0;
+    for _ in 0..count {
+        value = value * 16 + hex_digit(*inner.get(*i)?)?;
+        *i += 1;
+    }
+    Some(value)
+}
+
+fn hex_digit(b: u8) -> Option<u32> {
+    match b {
+        b'0'..=b'9' => Some(u32::from(b - b'0')),
+        b'a'..=b'f' => Some(u32::from(b - b'a' + 10)),
+        b'A'..=b'F' => Some(u32::from(b - b'A' + 10)),
+        _ => None,
+    }
+}
+
+fn octal_digit(b: u8) -> Option<u32> {
+    match b {
+        b'0'..=b'7' => Some(u32::from(b - b'0')),
+        _ => None,
+    }
+}
+
+fn push_rune(out: &mut Vec<u8>, cp: u32) -> Option<()> {
+    let c: char = char::from_u32(cp)?;
+    let mut buf: [u8; 4] = [0; 4];
+    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    Some(())
 }
 
 fn bounded_owned(value: &str) -> Option<String> {
@@ -941,6 +992,106 @@ mod tests {
         );
         assert_eq!(parse_build_setting("=novalue"), None);
         assert_eq!(parse_build_setting("nokey"), None);
+    }
+
+    #[test]
+    fn unquote_decodes_full_go_escape_set() {
+        assert_eq!(
+            unquote("\"col1\\tcol2\\vcol3\"").as_deref(),
+            Some("col1\tcol2\u{0b}col3")
+        );
+        assert_eq!(unquote("\"a b\\x00c\"").as_deref(), Some("a b\u{00}c"));
+        assert_eq!(
+            unquote("\"ring\\a bell\"").as_deref(),
+            Some("ring\u{07} bell")
+        );
+        assert_eq!(unquote("\"e\\x1b[0m x\"").as_deref(), Some("e\u{1b}[0m x"));
+        assert_eq!(
+            unquote("\"tab\\tform\\ffeed\"").as_deref(),
+            Some("tab\tform\u{0c}feed")
+        );
+        assert_eq!(
+            unquote("\"back\\bspace\"").as_deref(),
+            Some("back\u{08}space")
+        );
+        assert_eq!(
+            unquote("\"snow\\u2603 man\"").as_deref(),
+            Some("snow\u{2603} man")
+        );
+        assert_eq!(
+            unquote("\"grin\\U0001F600face\"").as_deref(),
+            Some("grin\u{1f600}face")
+        );
+        assert_eq!(unquote("\"nul\\000end\"").as_deref(), Some("nul\u{00}end"));
+        assert_eq!(unquote("\"esc\\033seq\"").as_deref(), Some("esc\u{1b}seq"));
+        assert_eq!(unquote("`raw\\tstays`").as_deref(), Some("raw\\tstays"));
+        assert_eq!(unquote("\"bad\\q\""), None);
+        assert_eq!(unquote("\"trunc\\x1\""), None);
+    }
+
+    #[cfg(not(miri))]
+    #[test]
+    fn unquote_inverts_go_strconv_quote() {
+        let go: std::path::PathBuf = match std::env::var_os("PATH").and_then(|_| which_go()) {
+            Some(p) => p,
+            None => return,
+        };
+        let values: [&str; 8] = [
+            "col1\tcol2\u{0b}col3",
+            "a b\u{00}c",
+            "ring\u{07} bell",
+            "e\u{1b}[0m x",
+            "tab\tform\u{0c}feed",
+            "snow\u{2603} man\tx",
+            "grin\u{1f600}face\tx",
+            "back\u{08} space\"end",
+        ];
+        for value in values {
+            let quoted: String = go_strconv_quote(&go, value);
+            assert_eq!(
+                unquote(&quoted).as_deref(),
+                Some(value),
+                "unquote must invert strconv.Quote for {value:?} (quoted {quoted:?})"
+            );
+        }
+    }
+
+    #[cfg(not(miri))]
+    fn which_go() -> Option<std::path::PathBuf> {
+        let out: std::process::Output = std::process::Command::new("go")
+            .arg("version")
+            .output()
+            .ok()?;
+        out.status.success().then(|| std::path::PathBuf::from("go"))
+    }
+
+    #[cfg(not(miri))]
+    fn go_strconv_quote(go: &std::path::Path, value: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let unique: u64 = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir: std::path::PathBuf =
+            std::env::temp_dir().join(format!("disrobe_go_quote_{}_{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src: &str = "package main\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strconv\"\n)\nfunc main() {\n\tb, _ := os.ReadFile(os.Args[1])\n\tfmt.Print(strconv.Quote(string(b)))\n}\n";
+        let src_path: std::path::PathBuf = dir.join("main.go");
+        let in_path: std::path::PathBuf = dir.join("in.bin");
+        std::fs::write(&src_path, src).unwrap();
+        std::fs::write(&in_path, value.as_bytes()).unwrap();
+        let out: std::process::Output = std::process::Command::new(go)
+            .arg("run")
+            .arg(&src_path)
+            .arg(&in_path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "go run failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let quoted: String = String::from_utf8(out.stdout).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        quoted
     }
 
     #[test]
