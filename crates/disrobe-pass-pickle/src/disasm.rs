@@ -564,6 +564,50 @@ pub fn disassemble(bytes: &[u8]) -> Result<Disassembly> {
     Ok(result)
 }
 
+fn py_float_repr(v: f64) -> String {
+    if v.is_nan() {
+        return "nan".to_string();
+    }
+    if v.is_infinite() {
+        return if v < 0.0 {
+            "-inf".to_string()
+        } else {
+            "inf".to_string()
+        };
+    }
+    let sign: &str = if v.is_sign_negative() { "-" } else { "" };
+    let sci: String = format!("{:e}", v.abs());
+    let Some((mantissa, exp_str)): Option<(&str, &str)> = sci.split_once('e') else {
+        return format!("{sign}{sci}");
+    };
+    let exp: i32 = exp_str.parse::<i32>().unwrap_or(0);
+    let digits: String = mantissa.chars().filter(|c: &char| *c != '.').collect();
+    let ndigits: i32 = digits.len() as i32;
+    let decpt: i32 = exp + 1;
+    let body: String = if decpt <= -4 || decpt > 16 {
+        let exp2: i32 = decpt - 1;
+        let esign: &str = if exp2 < 0 { "-" } else { "+" };
+        let mut m: String = String::with_capacity(digits.len() + 1);
+        m.push_str(&digits[..1]);
+        if ndigits > 1 {
+            m.push('.');
+            m.push_str(&digits[1..]);
+        }
+        format!("{m}e{esign}{:02}", exp2.abs())
+    } else if decpt <= 0 {
+        format!("0.{}{digits}", "0".repeat((-decpt) as usize))
+    } else if decpt >= ndigits {
+        format!("{digits}{}.0", "0".repeat((decpt - ndigits) as usize))
+    } else {
+        format!(
+            "{}.{}",
+            &digits[..decpt as usize],
+            &digits[decpt as usize..]
+        )
+    };
+    format!("{sign}{body}")
+}
+
 #[must_use]
 pub fn render(dis: &Disassembly) -> String {
     let mut out: String = String::new();
@@ -578,7 +622,7 @@ pub fn render(dis: &Disassembly) -> String {
             DecodedArg::Bool(b) => if *b { "True" } else { "False" }.to_owned(),
             DecodedArg::Int(v) => v.to_string(),
             DecodedArg::BigInt(s) => s.clone(),
-            DecodedArg::Float(v) => v.to_string(),
+            DecodedArg::Float(v) => py_float_repr(*v),
             DecodedArg::Str(s) => format!("{s:?}"),
             DecodedArg::Bytes(b) => format!("<{} bytes>", b.len()),
             DecodedArg::GlobalPair { module, name } => format!("{module} {name}"),
@@ -746,6 +790,55 @@ mod tests {
             DecodedArg::Str("a\\xg z".to_string()),
             "CPython raises on a bad \\x; a deobfuscator keeps the literal sequence and the rest of the stream"
         );
+    }
+
+    #[test]
+    fn float_repr_matches_cpython_float_repr() {
+        let cases: &[(f64, &str)] = &[
+            (1.0, "1.0"),
+            (2.5, "2.5"),
+            (0.1, "0.1"),
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+            (-2.5, "-2.5"),
+            (100.0, "100.0"),
+            (100_000_000.0, "100000000.0"),
+            (12345.678, "12345.678"),
+            (0.375, "0.375"),
+            (0.01, "0.01"),
+            (0.0001, "0.0001"),
+            (1_234_567_890_123_456.0, "1234567890123456.0"),
+            (9_999_999_999_999_998.0, "9999999999999998.0"),
+            (1e16, "1e+16"),
+            (1e20, "1e+20"),
+            (1e100, "1e+100"),
+            (1e-5, "1e-05"),
+            (1e-100, "1e-100"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (f64::NAN, "nan"),
+        ];
+        for &(value, expected) in cases {
+            assert_eq!(
+                py_float_repr(value),
+                expected,
+                "py_float_repr({value}) must match CPython repr(float)"
+            );
+        }
+    }
+
+    #[test]
+    fn binfloat_one_renders_as_float_not_int() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02, b'G'];
+        bytes.extend_from_slice(&1.0f64.to_be_bytes());
+        bytes.push(b'.');
+        let dis: Disassembly = disassemble(&bytes).expect("BINFLOAT disasm");
+        let text: String = render(&dis);
+        assert!(
+            text.contains("BINFLOAT 1.0"),
+            "BINFLOAT 1.0 must render as 1.0 like pickletools, not 1; got:\n{text}"
+        );
+        assert!(!text.contains("BINFLOAT 1\n"));
     }
 
     #[test]
