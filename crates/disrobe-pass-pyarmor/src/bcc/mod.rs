@@ -17,6 +17,8 @@ pub mod model;
 pub mod recover;
 mod residual;
 mod skeleton;
+#[cfg(not(target_arch = "wasm32"))]
+mod stmt_structure;
 mod stub;
 
 mod map;
