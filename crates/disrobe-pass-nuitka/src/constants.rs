@@ -126,40 +126,7 @@ const fn literal_quote(has_single_quote: bool, has_double_quote: bool) -> char {
 }
 
 fn python_repr_needs_escape(character: char) -> bool {
-    let codepoint: u32 = u32::from(character);
-    character.is_control()
-        || (character.is_whitespace() && character != ' ')
-        || matches!(
-            codepoint,
-            0x00ad
-                | 0x0600..=0x0605
-                | 0x061c
-                | 0x06dd
-                | 0x070f
-                | 0x0890..=0x0891
-                | 0x08e2
-                | 0x180e
-                | 0x200b..=0x200f
-                | 0x202a..=0x202e
-                | 0x2060..=0x2064
-                | 0x2066..=0x206f
-                | 0xfeff
-                | 0xfff9..=0xfffb
-                | 0x110bd
-                | 0x110cd
-                | 0x13430..=0x1343f
-                | 0x1bca0..=0x1bca3
-                | 0x1d173..=0x1d17a
-                | 0xe0001
-                | 0xe0020..=0xe007f
-                | 0xfdd0..=0xfdef
-        )
-        || codepoint & 0xffff == 0xfffe
-        || codepoint & 0xffff == 0xffff
-        || matches!(
-            codepoint,
-            0xE000..=0xF8FF | 0xF_0000..=0xF_FFFD | 0x10_0000..=0x10_FFFD
-        )
+    !disrobe_pass_py_disasm::is_python_printable(character)
 }
 
 fn append_python_codepoint_escape(rendered: &mut String, codepoint: u32) {
@@ -883,6 +850,15 @@ mod tests {
             value,
         });
         index_pending_dicts(pool, entry_index, pending_dicts);
+    }
+
+    #[test]
+    fn unassigned_codepoints_escape_like_cpython() {
+        assert!(python_repr_needs_escape('\u{0378}'));
+        assert!(python_repr_needs_escape('\u{feff}'));
+        assert!(!python_repr_needs_escape('a'));
+        assert!(!python_repr_needs_escape('\u{00e9}'));
+        assert!(!nuitka_string_repr("\u{0378}").contains('\u{0378}'));
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod cfg;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
 mod const_repr;
+pub use const_repr::is_python_printable;
 pub(crate) mod debug;
 mod exception_table;
 pub mod format_wire;

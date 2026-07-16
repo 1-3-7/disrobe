@@ -231,7 +231,7 @@ fn push_str_char(out: &mut String, ch: char) {
     }
 }
 
-fn is_python_printable(ch: char) -> bool {
+pub fn is_python_printable(ch: char) -> bool {
     if ch == ' ' {
         return true;
     }
