@@ -7,9 +7,11 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveReport, Compression, RecoveredAsset, WebviewFamily, carve, carve_report, detect_family,
+    CarveReport, Compression, IntegrityStatus, RecoveredAsset, WebviewFamily, carve, carve_report,
+    detect_family,
 };
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -214,7 +216,88 @@ fn carves_real_electron_asar_from_cli() {
     assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
     let assets: Vec<RecoveredAsset> = carve(&bytes).unwrap();
     assert_matches_sample(&assets);
+    assert!(
+        assets
+            .iter()
+            .all(|asset: &RecoveredAsset| asset.integrity != IntegrityStatus::Mismatch),
+        "real @electron/asar integrity blocks must not report a false mismatch"
+    );
+    assert!(
+        assets
+            .iter()
+            .any(|asset: &RecoveredAsset| asset.integrity == IntegrityStatus::Verified),
+        "at least one real integrity block must verify against the recovered bytes"
+    );
     let _ = fs::remove_dir_all(&workdir);
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(data).into();
+    let hex: &[u8; 16] = b"0123456789abcdef";
+    let mut out: String = String::with_capacity(digest.len() * 2);
+    for &byte in &digest {
+        out.push(hex[(byte >> 4) as usize] as char);
+        out.push(hex[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[test]
+fn recovers_symlink_executable_and_verifies_integrity() {
+    let data: &[u8] = b"X#!/bin/sh\nGB";
+    let good_hash: String = sha256_hex(b"G");
+    let root: Value = serde_json::json!({
+        "files": {
+            "app.js": {"size": 1, "offset": "0"},
+            "run.sh": {"size": 10, "offset": "1", "executable": true},
+            "link.js": {"link": "app.js"},
+            "good.js": {
+                "size": 1,
+                "offset": "11",
+                "integrity": {
+                    "algorithm": "SHA256",
+                    "hash": good_hash.as_str(),
+                    "blockSize": 4_194_304,
+                    "blocks": [good_hash.as_str()]
+                }
+            },
+            "bad.js": {
+                "size": 1,
+                "offset": "12",
+                "integrity": {
+                    "algorithm": "SHA256",
+                    "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+            }
+        }
+    });
+    let json: Vec<u8> = serde_json::to_vec(&root).unwrap();
+    let bytes: Vec<u8> = pickle_wrap(&json, data);
+    let report: CarveReport = carve_report(&bytes).unwrap();
+
+    let by_path = |name: &str| -> RecoveredAsset {
+        report
+            .assets
+            .iter()
+            .find(|asset: &&RecoveredAsset| asset.path == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    assert!(!by_path("app.js").executable);
+    assert!(by_path("run.sh").executable);
+    assert_eq!(by_path("run.sh").bytes, b"#!/bin/sh\n");
+    assert_eq!(by_path("good.js").integrity, IntegrityStatus::Verified);
+    assert_eq!(by_path("bad.js").integrity, IntegrityStatus::Mismatch);
+    assert!(
+        !report
+            .assets
+            .iter()
+            .any(|asset: &RecoveredAsset| asset.path == "link.js"),
+        "a symlink must be recorded, not emitted as a file asset"
+    );
+    assert_eq!(report.symlinks.len(), 1);
+    assert_eq!(report.symlinks[0].path, "link.js");
+    assert_eq!(report.symlinks[0].target, "app.js");
 }
 
 #[test]

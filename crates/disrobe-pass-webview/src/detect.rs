@@ -32,6 +32,14 @@ pub fn detect_family(bytes: &[u8]) -> Option<WebviewFamily> {
     None
 }
 
+pub(crate) fn family_guess(bytes: &[u8]) -> WebviewFamily {
+    if contains_any(bytes, &TAURI_MARKERS) {
+        WebviewFamily::Tauri
+    } else {
+        WebviewFamily::Wails
+    }
+}
+
 fn contains_any(hay: &[u8], needles: &[&[u8]]) -> bool {
     needles.iter().any(|needle: &&[u8]| contains(hay, needle))
 }
