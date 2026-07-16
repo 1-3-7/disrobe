@@ -485,6 +485,9 @@ fn build_name_table(
         .collect();
     if lang == TargetLang::CSharp {
         infer_param_names_from_field_stores(resolver, m, body, &mut param_names);
+        for name in &mut param_names {
+            *name = crate::structurize::csharp_escape_identifier(name);
+        }
     }
     let local_types: Vec<String> = resolver.local_types(body.local_var_sig_tok, lang);
     NameTable::new(!m.is_static(), param_names, param_types, local_types)
@@ -553,95 +556,7 @@ fn param_name_from_field(field: &str) -> Option<String> {
     let mut chars: std::str::Chars<'_> = core.chars();
     let first: char = chars.next()?;
     let lowered: String = first.to_ascii_lowercase().to_string() + chars.as_str();
-    let safe: String = if is_csharp_keyword(&lowered) {
-        format!("@{lowered}")
-    } else {
-        lowered
-    };
-    Some(safe)
-}
-
-fn is_csharp_keyword(s: &str) -> bool {
-    matches!(
-        s,
-        "abstract"
-            | "as"
-            | "base"
-            | "bool"
-            | "break"
-            | "byte"
-            | "case"
-            | "catch"
-            | "char"
-            | "checked"
-            | "class"
-            | "const"
-            | "continue"
-            | "decimal"
-            | "default"
-            | "delegate"
-            | "do"
-            | "double"
-            | "else"
-            | "enum"
-            | "event"
-            | "explicit"
-            | "extern"
-            | "false"
-            | "finally"
-            | "fixed"
-            | "float"
-            | "for"
-            | "foreach"
-            | "goto"
-            | "if"
-            | "implicit"
-            | "in"
-            | "int"
-            | "interface"
-            | "internal"
-            | "is"
-            | "lock"
-            | "long"
-            | "namespace"
-            | "new"
-            | "null"
-            | "object"
-            | "operator"
-            | "out"
-            | "override"
-            | "params"
-            | "private"
-            | "protected"
-            | "public"
-            | "readonly"
-            | "ref"
-            | "return"
-            | "sbyte"
-            | "sealed"
-            | "short"
-            | "sizeof"
-            | "stackalloc"
-            | "static"
-            | "string"
-            | "struct"
-            | "switch"
-            | "this"
-            | "throw"
-            | "true"
-            | "try"
-            | "typeof"
-            | "uint"
-            | "ulong"
-            | "unchecked"
-            | "unsafe"
-            | "ushort"
-            | "using"
-            | "virtual"
-            | "void"
-            | "volatile"
-            | "while"
-    )
+    Some(crate::structurize::csharp_escape_identifier(&lowered))
 }
 
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

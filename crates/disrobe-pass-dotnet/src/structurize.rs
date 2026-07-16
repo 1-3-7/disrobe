@@ -449,6 +449,98 @@ pub(crate) fn csharp_string_literal(s: &str) -> String {
     format!("\"{}\"", escape(s))
 }
 
+#[must_use]
+pub(crate) fn csharp_escape_identifier(name: &str) -> String {
+    if name.is_empty() || name.starts_with('@') || !is_csharp_keyword(name) {
+        name.to_owned()
+    } else {
+        format!("@{name}")
+    }
+}
+
+fn is_csharp_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "abstract"
+            | "as"
+            | "base"
+            | "bool"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "checked"
+            | "class"
+            | "const"
+            | "continue"
+            | "decimal"
+            | "default"
+            | "delegate"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "event"
+            | "explicit"
+            | "extern"
+            | "false"
+            | "finally"
+            | "fixed"
+            | "float"
+            | "for"
+            | "foreach"
+            | "goto"
+            | "if"
+            | "implicit"
+            | "in"
+            | "int"
+            | "interface"
+            | "internal"
+            | "is"
+            | "lock"
+            | "long"
+            | "namespace"
+            | "new"
+            | "null"
+            | "object"
+            | "operator"
+            | "out"
+            | "override"
+            | "params"
+            | "private"
+            | "protected"
+            | "public"
+            | "readonly"
+            | "ref"
+            | "return"
+            | "sbyte"
+            | "sealed"
+            | "short"
+            | "sizeof"
+            | "stackalloc"
+            | "static"
+            | "string"
+            | "struct"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "uint"
+            | "ulong"
+            | "unchecked"
+            | "unsafe"
+            | "ushort"
+            | "using"
+            | "virtual"
+            | "void"
+            | "volatile"
+            | "while"
+    )
+}
+
 fn csharp_double(v: f64) -> String {
     if v.is_nan() {
         "double.NaN".to_owned()
@@ -2045,6 +2137,25 @@ mod tests {
         fn name(&self, _token: u32) -> String {
             "start\u{2028}mid\u{2029}end".to_owned()
         }
+    }
+
+    #[test]
+    fn keyword_identifiers_take_the_at_prefix() {
+        assert_eq!(csharp_escape_identifier("object"), "@object");
+        assert_eq!(csharp_escape_identifier("string"), "@string");
+        assert_eq!(csharp_escape_identifier("event"), "@event");
+        assert_eq!(csharp_escape_identifier("ref"), "@ref");
+        assert_eq!(csharp_escape_identifier("params"), "@params");
+    }
+
+    #[test]
+    fn non_keyword_and_already_escaped_identifiers_are_unchanged() {
+        assert_eq!(csharp_escape_identifier("count"), "count");
+        assert_eq!(csharp_escape_identifier("var"), "var");
+        assert_eq!(csharp_escape_identifier("value"), "value");
+        assert_eq!(csharp_escape_identifier("async"), "async");
+        assert_eq!(csharp_escape_identifier("@object"), "@object");
+        assert_eq!(csharp_escape_identifier(""), "");
     }
 
     #[test]
