@@ -7,6 +7,8 @@ use crate::unpack::UnpackOutput;
 use crate::v8v9::BccBlob;
 
 mod dispatch;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dispatch_recover;
 mod join;
 pub mod model;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,6 +19,8 @@ mod stub;
 
 mod map;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use dispatch_recover::{binop_selector, recover_bcc_arith};
 pub use model::{
     BccLinkMap, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord, LinkConfidence,
     LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature, SourceIdentity,

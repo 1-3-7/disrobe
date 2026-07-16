@@ -23,14 +23,14 @@ impl PyAbi {
         }
     }
 
-    const fn arg_registers(self) -> &'static [&'static str] {
+    pub(crate) const fn arg_registers(self) -> &'static [&'static str] {
         match self {
             Self::SysV => &["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
             Self::Win64 => &["rcx", "rdx", "r8", "r9"],
         }
     }
 
-    const fn volatile_registers(self) -> &'static [&'static str] {
+    pub(crate) const fn volatile_registers(self) -> &'static [&'static str] {
         match self {
             Self::SysV => &["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"],
             Self::Win64 => &["rax", "rcx", "rdx", "r8", "r9", "r10", "r11"],
@@ -95,7 +95,7 @@ impl RecoverOptions {
         }
     }
 
-    fn param(&self, index: usize) -> String {
+    pub(crate) fn param(&self, index: usize) -> String {
         self.param_names
             .get(index)
             .cloned()
@@ -147,7 +147,7 @@ enum SymValue {
 }
 
 #[derive(Debug, Clone)]
-enum PyExpr {
+pub(crate) enum PyExpr {
     Name(String),
     Num(i128),
     Binary(Box<Self>, &'static str, Box<Self>),
@@ -166,7 +166,7 @@ impl PyExpr {
         }
     }
 
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         match self {
             Self::Name(name) => name.clone(),
             Self::Num(value) => value.to_string(),
@@ -207,6 +207,7 @@ fn binary_precedence(op: &str) -> u8 {
         "<<" | ">>" => 26,
         "+" | "-" => 30,
         "*" | "/" | "//" | "%" | "@" => 40,
+        "**" => 70,
         _ => 50,
     }
 }
