@@ -298,9 +298,20 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
         "clamp: {}/{} dispatcher sites, python={:?}, notes={:?}",
         clamp.recognized_call_sites, clamp.total_call_sites, clamp.recovered_python, clamp.notes
     );
+    let clamp_def: String = clamp
+        .recovered_python
+        .clone()
+        .expect("clamp recovers its guarded result-local body from the real BCC ABI");
+    assert_eq!(
+        clamp_def.matches("if result").count(),
+        2,
+        "clamp recovers exactly two guards: {clamp_def}"
+    );
     assert!(
-        clamp.recovered_python.is_none(),
-        "clamp has real control flow and must degrade, never fabricate"
+        clamp_def.contains("result < ")
+            && clamp_def.contains("result > ")
+            && clamp_def.trim_end().ends_with("return result"),
+        "clamp recovers the two-guard result-local shape (< then >): {clamp_def}"
     );
     let clamp_symbols: Vec<&str> = clamp
         .calls
@@ -379,5 +390,20 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
         "    return a * a * a + 2 * a * a - 5 * a + 7",
         &poly_def,
     );
-    println!("mix_add and poly recovered and behaviorally matched real CPython 3.12 semantics");
+    let clamp_name: &str = clamp_def
+        .lines()
+        .next()
+        .and_then(|l: &str| l.strip_prefix("def "))
+        .and_then(|l: &str| l.split('(').next())
+        .unwrap_or("clamp");
+    behavioral_check(
+        &py,
+        clamp_name,
+        3,
+        "    result = a\n    if result < b:\n        result = b\n    if result > c:\n        result = c\n    return result",
+        &clamp_def,
+    );
+    println!(
+        "mix_add, poly, and clamp recovered and behaviorally matched real CPython 3.12 semantics"
+    );
 }
