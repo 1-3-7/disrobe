@@ -156,8 +156,9 @@ fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<Vec<String>> {
     let is_utf8: bool = flags & FLAG_UTF8 != 0;
 
     let offsets_base: usize = chunk_off + header_size as usize;
+    let available_slots: usize = bytes.len().saturating_sub(offsets_base) / 4;
     let mut off_reader: Reader<'_> = Reader::new(bytes, offsets_base);
-    let mut offsets: Vec<u32> = Vec::with_capacity(string_count as usize);
+    let mut offsets: Vec<u32> = Vec::with_capacity((string_count as usize).min(available_slots));
     for _ in 0..string_count {
         offsets.push(off_reader.u32()?);
     }
@@ -411,11 +412,20 @@ fn parse_type_chunk(
         .cloned()
         .unwrap_or_else(|| format!("type{type_id}"));
 
-    let index_base: usize = chunk_off + header_size as usize;
+    let index_base: usize = chunk_off
+        .checked_add(header_size as usize)
+        .ok_or(Error::ArscTruncated)?;
+    (entry_count as usize)
+        .checked_mul(4)
+        .and_then(|span: usize| index_base.checked_add(span))
+        .filter(|end: &usize| *end <= chunk_end)
+        .ok_or(Error::ArscTruncated)?;
     let data_base: usize = chunk_off
         .checked_add(entries_start as usize)
         .filter(|b: &usize| *b <= chunk_end)
         .ok_or(Error::ArscTruncated)?;
+    let body_capacity: usize = (chunk_end - data_base) / 8;
+    let mut emitted: usize = 0;
 
     let mut index_reader: Reader<'_> = Reader::new(bytes, index_base);
     for entry_index in 0..entry_count {
@@ -460,6 +470,10 @@ fn parse_type_chunk(
                 raw_data,
             },
         );
+        emitted += 1;
+        if emitted > body_capacity {
+            return Err(Error::ArscTruncated);
+        }
     }
     Ok(())
 }
@@ -621,5 +635,108 @@ mod tests {
         let err: Error = parse_declared_package_string_pool(&bytes, 16, 32, 20)
             .expect_err("declared pool outside package must fail");
         assert!(matches!(err, Error::ArscTruncated));
+    }
+
+    fn wr_u16(v: &mut [u8], at: usize, value: u16) {
+        v[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn wr_u32(v: &mut [u8], at: usize, value: u32) {
+        v[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn build_type_arsc(index_offsets: &[u32], body_count: usize) -> Vec<u8> {
+        let slots: usize = index_offsets.len();
+        let index_bytes: usize = slots * 4;
+        let entries_region: usize = 8 * body_count.max(1);
+        let type_total: usize = 20 + index_bytes + entries_region;
+        let total: usize = 300 + type_total;
+        let entries_start: usize = 20 + index_bytes;
+        let mut v: Vec<u8> = vec![0u8; total];
+        wr_u16(&mut v, 0, 0x0002);
+        wr_u16(&mut v, 2, 12);
+        wr_u32(&mut v, 4, total as u32);
+        wr_u32(&mut v, 8, 1);
+        wr_u16(&mut v, 12, 0x0200);
+        wr_u16(&mut v, 14, 288);
+        wr_u32(&mut v, 16, (total - 12) as u32);
+        wr_u32(&mut v, 20, 0x7f);
+        wr_u32(&mut v, 280, 0);
+        wr_u32(&mut v, 288, 0);
+        wr_u16(&mut v, 300, 0x0201);
+        wr_u16(&mut v, 302, 20);
+        wr_u32(&mut v, 304, type_total as u32);
+        v[308] = 1;
+        wr_u32(&mut v, 312, slots as u32);
+        wr_u32(&mut v, 316, entries_start as u32);
+        for (slot, off) in index_offsets.iter().enumerate() {
+            wr_u32(&mut v, 320 + slot * 4, *off);
+        }
+        let data_base: usize = 300 + entries_start;
+        for i in 0..body_count {
+            let entry: usize = data_base + i * 8;
+            if entry + 8 <= total {
+                wr_u16(&mut v, entry, 8);
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn aliased_type_index_cannot_amplify_entries() {
+        let count: usize = 100_000;
+        let offsets: Vec<u32> = vec![0u32; count];
+        let bytes: Vec<u8> = build_type_arsc(&offsets, 1);
+        let produced: usize = match parse(&bytes) {
+            Ok(res) => res.resource_count(),
+            Err(_) => 0,
+        };
+        assert!(
+            produced <= 4,
+            "aliased index amplified {} entries from a {}-byte input",
+            produced,
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn dense_type_entries_still_parse() {
+        let offsets: [u32; 2] = [0, 8];
+        let bytes: Vec<u8> = build_type_arsc(&offsets, 2);
+        let res: ArscResources = parse(&bytes).expect("dense type must parse");
+        assert_eq!(res.resource_count(), 2);
+    }
+
+    #[test]
+    fn oversized_string_pool_count_stays_bounded() {
+        let mut v: Vec<u8> = vec![0u8; 40];
+        wr_u16(&mut v, 0, 0x0001);
+        wr_u16(&mut v, 2, 28);
+        wr_u32(&mut v, 4, 40);
+        wr_u32(&mut v, 8, 0x00ff_ffff);
+        wr_u32(&mut v, 12, 0);
+        wr_u32(&mut v, 16, 0);
+        wr_u32(&mut v, 20, 28);
+        wr_u32(&mut v, 24, 0);
+        let err: Error = parse_string_pool(&v, 0).expect_err("overlong count must fail");
+        assert!(matches!(
+            err,
+            Error::ArscTruncated | Error::ArscBadStringPool
+        ));
+    }
+
+    #[test]
+    fn random_and_truncated_inputs_never_panic() {
+        let mut state: u64 = 0x2468_ace0_1357_9bdf;
+        for _ in 0..2_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let len: usize = (state % 512) as usize;
+            let bytes: Vec<u8> = (0..len).map(|i: usize| (state >> (i % 56)) as u8).collect();
+            let result: std::thread::Result<Result<ArscResources>> =
+                std::panic::catch_unwind(|| parse(&bytes));
+            assert!(result.is_ok(), "parse panicked on {len}-byte input");
+        }
     }
 }
