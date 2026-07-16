@@ -459,7 +459,7 @@ fn rewrite_bootstrap_iat(
     }
     let mut idx: usize = 0;
     loop {
-        let desc_rva: u32 = imp.virtual_address + (idx * 20) as u32;
+        let desc_rva: u32 = imp.virtual_address.saturating_add((idx * 20) as u32);
         let Some(desc_off): Option<usize> = rva_to_off(img, desc_rva) else {
             break;
         };
@@ -475,7 +475,9 @@ fn rewrite_bootstrap_iat(
         let thunk_table: u32 = if oft != 0 { oft } else { ft };
         let mut t: u32 = 0;
         loop {
-            let Some(thunk_off): Option<usize> = rva_to_off(img, thunk_table + t * 4) else {
+            let Some(thunk_off): Option<usize> =
+                rva_to_off(img, thunk_table.saturating_add(t.saturating_mul(4)))
+            else {
                 break;
             };
             if thunk_off + 4 > packed.len() {
@@ -492,7 +494,8 @@ fn rewrite_bootstrap_iat(
                     let classified: &'static str = classify(&func);
                     if classified != "Other" {
                         let synth: u64 = SYNTH_IAT_BASE + 0x100 + u64::from(t + idx as u32 * 0x40);
-                        let iat_slot: u64 = image_base_iat(img, ft + t * 4);
+                        let iat_slot: u64 =
+                            image_base_iat(img, ft.saturating_add(t.saturating_mul(4)));
                         cpu.mem.write_u32(iat_slot, synth as u32)?;
                         host.iat.insert(synth, classified);
                     }

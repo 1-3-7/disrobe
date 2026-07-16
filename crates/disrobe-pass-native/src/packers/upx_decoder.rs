@@ -328,7 +328,10 @@ fn decode_multiblock(packed: &[u8], header: &UpxPackHeader) -> Option<(Vec<u8>, 
             return Some(result);
         }
     }
-    let scan_limit: usize = packed.len().saturating_sub(B_INFO_LEN);
+    let scan_limit: usize = packed
+        .len()
+        .saturating_sub(B_INFO_LEN)
+        .min(MAX_BRUTE_FORCE_OFFSETS);
     for start in 0..scan_limit {
         let Some(first): Option<BInfo> = BInfo::parse_at(packed, start) else {
             continue;
@@ -873,6 +876,23 @@ mod tests {
             r.is_err(),
             "noise cannot decode to the declared adler, but the affordable offsets must still be \
              attempted (the bound only screens the implausible tail)"
+        );
+    }
+
+    #[test]
+    fn multiblock_offset_scan_is_capped_to_the_brute_force_window() {
+        let header: UpxPackHeader = header_with_lengths(64, 32, 1);
+        let packed: Vec<u8> = vec![0u8; 600_000_000];
+        let start: std::time::Instant = std::time::Instant::now();
+        let r: Option<(Vec<u8>, usize, usize)> = decode_multiblock(&packed, &header);
+        assert!(
+            r.is_none(),
+            "an all-zero image cannot form a valid block chain at any offset"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(150),
+            "the multiblock offset scan must stop at the brute-force window, never walk the whole \
+             attacker-sized input"
         );
     }
 }
