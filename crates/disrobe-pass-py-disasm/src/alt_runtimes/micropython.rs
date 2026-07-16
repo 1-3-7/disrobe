@@ -289,9 +289,9 @@ pub fn parse_bytecode(bytes: &[u8]) -> Result<MpyBytecodeModule> {
     })
 }
 
-const MAX_TABLE_PREALLOC: usize = 4096;
+pub(crate) const MAX_TABLE_PREALLOC: usize = 4096;
 
-fn bounded_table_count(
+pub(crate) fn bounded_table_count(
     declared: u64,
     remaining: usize,
     field: &'static str,
