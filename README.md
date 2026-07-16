@@ -375,7 +375,7 @@ This section names the supported surface and its residual. Measured scores live 
 | PHP | Partial: source + bytecode skeleton recovery, Phar decode, Zend legacy XOR decrypt. Detect-only: ionCube, SourceGuardian, Zend Guard (native-loader-resident key). |
 | BEAM | Recover: `.beam`/`.ez` chunk parse + Core Erlang lift + Elixir `Dbgi` quoted-AST (100% with Dbgi). Partial: Erlang without Dbgi (register names absent from bytecode). |
 | AS3 / Flash | Recover: SWF (uncompressed, zlib, LZMA) + ABC bytecode disasm and method-body source. Partial: full control-flow restructuring into while/for not attempted. |
-| React Native Hermes / Flutter | Recover: Hermes bytecode v60-v96 and Flutter Dart-kernel byte-exact body recovery. Production Hermes parse-scale and CI op-coverage are listed in Benchmarks. Partial: Flutter release ARM64 AOT recovers class membership and method-to-class attribution from the snapshot (instance-field names and bodies erased by the AOT compiler). Routes Hermes, Xamarin, Cordova, Capacitor, NativeScript out of `.apk`/`.ipa`. |
+| React Native Hermes / Flutter | Recover: Hermes bytecode v60-v96 and Flutter Dart-kernel byte-exact body recovery. Production Hermes parse-scale and CI op-coverage are listed in Benchmarks. Partial: Flutter release ARM64 AOT recovers class membership, method-to-class attribution, and per-function nested if/else/while pseudocode lifted through the shared structurer and gated by a source-free CFG round-trip that falls back to a flat call-list (instance-field names erased by the AOT compiler). Routes Hermes, Xamarin, Cordova, Capacitor, NativeScript out of `.apk`/`.ipa`. |
 
 ### Shell, scripting, other native langs
 
