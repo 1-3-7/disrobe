@@ -29,6 +29,7 @@ pub struct PcodeLiftConfig {
     return_value: Option<String>,
     x86_callother_contracts: bool,
     discarded_registers: BTreeSet<String>,
+    fold_condition_codes: bool,
 }
 
 impl PcodeLiftConfig {
@@ -44,6 +45,7 @@ impl PcodeLiftConfig {
             return_value: None,
             x86_callother_contracts: false,
             discarded_registers: BTreeSet::new(),
+            fold_condition_codes: false,
         }
     }
 
@@ -126,7 +128,9 @@ impl PcodeLiftConfig {
             RegisterCell::new(0x102, 1, "cy", None),
             RegisterCell::new(0x103, 1, "ov", None),
         ]);
-        let mut config: Self = Self::new(SourceLang::NativeArm, registers).with_return_value("x0");
+        let mut config: Self = Self::new(SourceLang::NativeArm, registers)
+            .with_return_value("x0")
+            .with_condition_code_folding();
         for name in ["ng", "zr", "cy", "ov"] {
             config.discarded_registers.insert(name.to_owned());
         }
@@ -169,6 +173,12 @@ impl PcodeLiftConfig {
     #[must_use]
     pub const fn with_x86_callother_contracts(mut self) -> Self {
         self.x86_callother_contracts = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_condition_code_folding(mut self) -> Self {
+        self.fold_condition_codes = true;
         self
     }
 
@@ -260,6 +270,11 @@ pub fn lower_pcode_block(
         lower_instruction(instruction, config, &mut lowerer, &mut instructions)?;
         previous_stops_fallthrough = instruction_stops_fallthrough(instruction, config);
     }
+    let instructions: Vec<NirInstr> = if config.fold_condition_codes {
+        flags::fold_condition_codes(instructions, &config.registers)
+    } else {
+        instructions
+    };
     let instructions: Vec<NirInstr> =
         flags::eliminate_dead_values(instructions, &config.registers, &config.discarded_registers);
     let first: &PcodeInstr = block.instructions.first().ok_or(LiftError::Empty)?;
