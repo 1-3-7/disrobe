@@ -55,36 +55,35 @@ fn drain(py: Python<'_>) -> PyResult<Vec<Vec<u8>>> {
     sys.call_method1("settrace", (py.None(),))?;
 
     let marshal: Bound<'_, PyModule> = py.import("marshal")?;
-    let mut guard: std::sync::MutexGuard<'_, Vec<Py<PyAny>>> = CAPTURED
-        .lock()
-        .map_err(|_| PyRuntimeError::new_err("capture lock poisoned"))?;
-    let drained: Vec<Py<PyAny>> = core::mem::take(&mut *guard);
-    drop(guard);
+    let drained: Vec<Py<PyAny>> = {
+        let mut guard: std::sync::MutexGuard<'_, Vec<Py<PyAny>>> = CAPTURED
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("capture lock poisoned"))?;
+        core::mem::take(&mut *guard)
+    };
 
     *INSTALLED
         .lock()
         .map_err(|_| PyRuntimeError::new_err("install lock poisoned"))? = false;
 
-    let mut out: Vec<Vec<u8>> = Vec::with_capacity(drain_reserve(drained.len()));
-    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let fingerprints: Vec<CapturedFingerprint> = drained
+        .iter()
+        .map(|obj: &Py<PyAny>| fingerprint_of(obj.bind(py)))
+        .collect();
+    let keep: Vec<usize> = survivor_indices(&fingerprints);
+
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(drain_reserve(keep.len()));
     let mut total_bytes: usize = 0;
-    for obj in drained {
+    for &idx in &keep {
         if out.len() >= MAX_DRAIN_OUTPUTS {
             return Err(PyRuntimeError::new_err(format!(
                 "drain output exceeds {MAX_DRAIN_OUTPUTS} code objects"
             )));
         }
-        let bound: &Bound<'_, PyAny> = obj.bind(py);
-        let hash_key: Option<usize> = bound
-            .call_method0("__hash__")
-            .ok()
-            .and_then(|h: Bound<'_, PyAny>| h.extract::<isize>().ok())
-            .map(|h: isize| h.cast_unsigned());
-        if let Some(key) = hash_key
-            && !seen.insert(key)
-        {
+        let Some(obj): Option<&Py<PyAny>> = drained.get(idx) else {
             continue;
-        }
+        };
+        let bound: &Bound<'_, PyAny> = obj.bind(py);
         let Ok(bytes_obj) = marshal.call_method1("dumps", (bound, 4i32)) else {
             continue;
         };
@@ -95,6 +94,29 @@ fn drain(py: Python<'_>) -> PyResult<Vec<Vec<u8>>> {
         out.push(bytes);
     }
     Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CapturedFingerprint {
+    hash: usize,
+    identity: usize,
+}
+
+fn fingerprint_of(bound: &Bound<'_, PyAny>) -> CapturedFingerprint {
+    let identity: usize = bound.as_ptr() as usize;
+    let hash: usize = bound.hash().ok().map_or(0, isize::cast_unsigned);
+    CapturedFingerprint { hash, identity }
+}
+
+fn survivor_indices(fingerprints: &[CapturedFingerprint]) -> Vec<usize> {
+    let mut seen: BTreeSet<CapturedFingerprint> = BTreeSet::new();
+    let mut keep: Vec<usize> = Vec::with_capacity(fingerprints.len());
+    for (idx, fingerprint) in fingerprints.iter().enumerate() {
+        if seen.insert(*fingerprint) {
+            keep.push(idx);
+        }
+    }
+    keep
 }
 
 #[pyfunction]
@@ -241,5 +263,14 @@ pub mod test_support {
     #[must_use]
     pub const fn drain_total_is_err(current: usize, next: usize) -> bool {
         super::checked_drain_total_raw(current, next).is_err()
+    }
+
+    #[must_use]
+    pub fn survivor_indices(fingerprints: &[(usize, usize)]) -> Vec<usize> {
+        let mapped: Vec<super::CapturedFingerprint> = fingerprints
+            .iter()
+            .map(|&(hash, identity): &(usize, usize)| super::CapturedFingerprint { hash, identity })
+            .collect();
+        super::survivor_indices(&mapped)
     }
 }
