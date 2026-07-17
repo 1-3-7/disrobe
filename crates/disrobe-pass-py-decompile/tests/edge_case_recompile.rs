@@ -8,8 +8,6 @@
     clippy::literal_string_with_formatting_args
 )]
 
-//! Recompile-equivalence coverage for Python decompilation edge cases drawn from other decompilers' documented bug histories.
-
 mod common;
 
 use std::path::PathBuf;

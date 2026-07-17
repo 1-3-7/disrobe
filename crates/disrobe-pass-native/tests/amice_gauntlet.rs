@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! amice gauntlet.
 
 use disrobe_pass_native::{
     ObfuscatorFamily, ObfuscatorHit, XorStringHit, detect_obfuscators, recover_amice_xor_strings,

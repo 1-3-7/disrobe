@@ -1,20 +1,3 @@
-#![doc = "Polynomial / affine linear MBA solver over Z/2^n with an exact algebraic proof."]
-#![doc = ""]
-#![doc = "A linear mixed Boolean-arithmetic expression is an affine sum of"]
-#![doc = "integer-scaled, width-uniform bitwise terms over a variable set. The `SiMBA`"]
-#![doc = "signature evaluates the whole fixed-width expression on every assignment of"]
-#![doc = "numeric zero and one to those variables. Two linear MBAs are equal over"]
-#![doc = "Z/2^n exactly when these signatures are equal modulo 2^n. Whole-expression"]
-#![doc = "evaluation handles arithmetic constants and bitwise negation without replacing"]
-#![doc = "them by one-bit logical values. Partial masks and cross-bit operations remain"]
-#![doc = "outside the proof grammar."]
-#![doc = ""]
-#![doc = "This module recovers the simplest linear form of an expression by solving for"]
-#![doc = "its coefficient vector over the canonical minterm basis, then proves the result"]
-#![doc = "with [`columns_equal_mod_width`]. The proof is structural over the modeled"]
-#![doc = "width, not a sampled check, so it holds at W16, W32, and W64 and for more"]
-#![doc = "variables than the exhaustive bitvector core can enumerate."]
-
 use crate::expr::{BinOp, Expr, UnOp, Width};
 
 pub const MAX_SOLVER_VARS: u32 = 8;

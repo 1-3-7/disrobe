@@ -6,7 +6,6 @@
     clippy::doc_markdown,
     unused_must_use
 )]
-//! ArmDot-specific devirtualization is acquisition-gated: ArmDot is a paid commercial protector and no real ArmDot sample is on hand, so its native VM wire format is unverified here.
 
 mod common;
 

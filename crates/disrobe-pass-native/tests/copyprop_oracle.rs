@@ -1,5 +1,3 @@
-//! Register copy-propagation + dead-store elimination, a D-810 / Hex-Rays-microcode-class peephole disrobe previously lacked.
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

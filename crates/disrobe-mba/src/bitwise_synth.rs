@@ -1,22 +1,3 @@
-#![doc = "Minimal-form synthesis for multi-variable bitwise functions with partial-mask constants."]
-#![doc = ""]
-#![doc = "A pure bitwise expression over variables `v0..v_{k-1}` acts strictly per bit: the"]
-#![doc = "operators `~`, `&`, `|`, `^` and any mask constant never move data between bit"]
-#![doc = "positions. So at width `W` the value is fully described by, for each output bit"]
-#![doc = "position `i < W`, a boolean function `g_i(v0[i], .., v_{k-1}[i])` of the `k` input"]
-#![doc = "bits at that position. A partial-mask bitwise function is one where different"]
-#![doc = "positions compute different `g_i`; the mask constants name which positions do what."]
-#![doc = ""]
-#![doc = "This synthesizer reads out every position's `g_i` with `2^k` word evaluations, groups"]
-#![doc = "positions by their boolean truth table, synthesizes a minimal bitwise expression per"]
-#![doc = "distinct truth table by a breadth-first search over the `~`/`&`/`|`/`^` operator DAG,"]
-#![doc = "and recombines them as `Σ_g (expr_g & positions_mask_g) | one_mask`. The masks are"]
-#![doc = "pairwise disjoint by construction, so the OR is a partition, not an approximation."]
-#![doc = "The result is width-independent, so the caller's non-circular oracle (exhaustive"]
-#![doc = "bitvector at narrow widths, the bit-blast verifier at wide ones) can prove it before"]
-#![doc = "it is emitted. This generalizes the single-variable universal partial-mask form to"]
-#![doc = "`k` variables."]
-
 use crate::expr::{BinOp, Expr, UnOp, Width};
 use std::collections::BTreeMap;
 

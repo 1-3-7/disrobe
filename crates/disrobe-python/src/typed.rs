@@ -126,7 +126,6 @@ macro_rules! typed_report {
         accessors { $( $method:ident -> $ret:ty : $body:expr ),* }
         extra { $( $extra:tt )* }
     ) => {
-        #[doc = $doc]
         #[pyclass(module = "disrobe", name = $pyname, frozen, skip_from_py_object)]
         #[derive(Debug, Clone)]
         pub(crate) struct $name {

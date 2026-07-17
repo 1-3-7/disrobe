@@ -1,7 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Symmetry check for disrobe's own LZX chunk compressor against its own decoder.
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

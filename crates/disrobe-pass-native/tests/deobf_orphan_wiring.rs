@@ -1,5 +1,3 @@
-//! Reachability gate proving the three native anti-obfuscation defeats (copy-propagation + dead-store elimination, MBA opaque-predicate simplification, correlated-branch dead-path proof) are wired to the production entry point.
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

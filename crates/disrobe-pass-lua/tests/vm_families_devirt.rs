@@ -8,8 +8,6 @@
     clippy::cast_possible_wrap
 )]
 
-//! Scope: every payload uses disrobe's own reference VM container (`DVM1`/`DPB1`), not any named obfuscator's real wire format.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;

@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real obfusheader.h gauntlet.
 
 use disrobe_pass_native::{ObfuscatorFamily, ObfuscatorHit, detect_obfuscators};
 

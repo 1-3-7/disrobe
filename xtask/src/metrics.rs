@@ -13,7 +13,6 @@ const OPEN_SUFFIX: &str = " -->";
 const CLOSE: &str = "<!-- /m -->";
 const IGNORE_MARKER: &str = "<!-- m:ignore -->";
 
-/// Whether `metrics` rewrites the markered docs or only verifies them.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode {
     Write,

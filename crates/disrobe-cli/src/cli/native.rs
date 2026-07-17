@@ -213,6 +213,45 @@ fn decompile_native(
         }));
     }
 
+    let mut typed_functions: Vec<serde_json::Value> = Vec::with_capacity(program_functions.len());
+    let mut type_slots_recovered: usize = 0;
+    for pf in &program_functions {
+        let recovered_types: disrobe_typerec::RecoveredFunction =
+            disrobe_typerec::recover_function(&pf.code, pf.address);
+        if recovered_types.rbp_slots.is_empty() {
+            continue;
+        }
+        let mut slots: Vec<serde_json::Value> = Vec::with_capacity(recovered_types.rbp_slots.len());
+        for (disp, scalar) in &recovered_types.rbp_slots {
+            type_slots_recovered += 1;
+            slots.push(serde_json::json!({
+                "rbp_disp": disp,
+                "width": format!("{:?}", scalar.width),
+                "sign": format!("{:?}", scalar.sign),
+                "sign_conflict": scalar.sign_conflict,
+            }));
+        }
+        typed_functions.push(serde_json::json!({
+            "name": pf.name,
+            "address": pf.address,
+            "has_frame_pointer": recovered_types.has_frame_pointer,
+            "slots": slots,
+        }));
+    }
+    let types_manifest: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.native.types/v1",
+        "input": input.display().to_string(),
+        "functions_typed": typed_functions.len(),
+        "slots_recovered": type_slots_recovered,
+        "functions": typed_functions,
+    });
+    std::fs::write(
+        out_dir.join("types.json"),
+        serde_json::to_vec_pretty(&types_manifest)
+            .map_err(|e| miette::miette!("DR-NATIVE-0167: serialize recovered types: {e}"))?,
+    )
+    .map_err(|e| miette::miette!("DR-NATIVE-0168: cannot write recovered types: {e}"))?;
+
     let mut source_text: String = String::new();
     if matches!(format, DecompileLang::C) {
         for inc in &includes {
@@ -239,7 +278,10 @@ fn decompile_native(
         "functions_total": total,
         "functions_recovered": recovered.len(),
         "functions_unrecovered": unrecovered.len(),
+        "functions_typed": typed_functions.len(),
+        "type_slots_recovered": type_slots_recovered,
         "source": src_path.display().to_string(),
+        "types": out_dir.join("types.json").display().to_string(),
         "recovered": recovered,
         "unrecovered": unrecovered,
     });
@@ -251,10 +293,12 @@ fn decompile_native(
     .map_err(|e| miette::miette!("DR-NATIVE-0166: cannot write manifest: {e}"))?;
 
     println!(
-        "native decompile (in-tree x86-64 -> {}): recovered {}/{} function(s) -> {}",
+        "native decompile (in-tree x86-64 -> {}): recovered {}/{} function(s), {} typed slot(s) across {} function(s) -> {}",
         format.label(),
         recovered.len(),
         total,
+        type_slots_recovered,
+        typed_functions.len(),
         src_path.display()
     );
     Ok(())

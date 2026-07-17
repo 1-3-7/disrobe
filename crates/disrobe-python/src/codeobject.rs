@@ -57,7 +57,6 @@ fn parse_symbol_kind(label: &str) -> PyResult<DisasmSymbolKind> {
     }
 }
 
-#[doc = "A single recovered disassembly instruction with editable fields."]
 #[pyclass(module = "disrobe", name = "Instruction", from_py_object)]
 #[derive(Debug, Clone)]
 pub(crate) struct Instruction {
@@ -153,7 +152,6 @@ impl Instruction {
     }
 }
 
-#[doc = "A single recovered symbol with editable address, name, and kind."]
 #[pyclass(module = "disrobe", name = "Symbol", from_py_object)]
 #[derive(Debug, Clone)]
 pub(crate) struct Symbol {
@@ -215,7 +213,6 @@ impl Symbol {
     }
 }
 
-#[doc = "A mutable, re-serializable recovered code object backed by a .dr envelope.\n\nLoad an existing Disasm-rung .dr envelope, edit its instructions, symbols,\nprovenance metadata, capabilities, or attached LLM sidecar, then call\n`to_dr()` to produce a fresh, integrity-hashed .dr envelope."]
 #[pyclass(module = "disrobe", name = "CodeObject")]
 #[derive(Debug)]
 pub(crate) struct CodeObject {

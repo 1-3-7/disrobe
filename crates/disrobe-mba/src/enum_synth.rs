@@ -1,18 +1,3 @@
-#![doc = "Bounded enumerative synthesis (L6): the final MBA layer, sound-or-abstain."]
-#![doc = ""]
-#![doc = "When the algebraic layers L0 through L5 leave an expression unsimplified, this"]
-#![doc = "layer treats the maximal subterms outside the ring/bitwise grammar (a right shift,"]
-#![doc = "a memory read, an unresolved select) as opaque leaves and runs a bounded bottom-up"]
-#![doc = "enumerative search over the grammar `+ - * & | ^ ~ <<` applied to those leaves and a"]
-#![doc = "small constant set. Candidates are pruned by observational equivalence against a"]
-#![doc = "fixed sample-point set: only a candidate whose sample vector matches the target and"]
-#![doc = "whose node count is strictly below the input is a hypothesis. Every hypothesis is"]
-#![doc = "then proven over the whole word domain by the same gate the earlier heuristic layers"]
-#![doc = "use (exhaustive small-domain evaluation cross-checked against the bit-blasting"]
-#![doc = "verifier, avoiding the memory-read evaluation hole). A hypothesis that the gate does"]
-#![doc = "not prove is discarded and the search continues; on budget exhaustion the input is"]
-#![doc = "returned untouched. The search never emits a rewrite it has not proven equivalent."]
-
 use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::rewrite::order_key;
 use crate::simplify::{Verification, accept_verified};

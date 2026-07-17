@@ -30,7 +30,6 @@ fn put_u64(buf: &mut [u8], off: usize, value: u64) {
     buf[off..off + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-/// Hand-build a minimal but valid PE32+ standalone image with a multi-hundred-MB `.text` and a `.rdata` carrying the Nuitka standalone marker strings.
 fn synth_large_standalone() -> Vec<u8> {
     let mut rdata: Vec<u8> = Vec::new();
     rdata.extend_from_slice(b"__nuitka_version__\0");
