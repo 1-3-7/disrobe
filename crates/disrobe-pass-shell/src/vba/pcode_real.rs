@@ -13,6 +13,7 @@ const BIG_ENDIAN_MARKER: u16 = 0x000E;
 const MAX_CFB_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CFB_STREAM_RESERVE: usize = 4 * 1024 * 1024;
 const MAX_OVBA_DECOMPRESSED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FUNC_ARG_CHAIN: usize = 4096;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RealPCodeReport {
@@ -1445,6 +1446,7 @@ fn disasm_func(dword: u32, op_type: u16, ctx: &LineContext) -> String {
     let mut arg_list: Vec<String> = Vec::new();
     while arg_offset != 0xFFFF_FFFF
         && arg_offset != 0
+        && arg_list.len() < MAX_FUNC_ARG_CHAIN
         && has_range(indirect, arg_offset as usize, 26)
     {
         let arg_base: usize = arg_offset as usize;
@@ -2415,6 +2417,36 @@ mod tests {
         asm.opcode(OP_FUNCDEFN).dword(0xDEAD_BEEF);
         let text: String = disasm_line(&asm, &[], 6, false);
         assert_eq!(text, "FuncDefn func_DEADBEEF\n");
+    }
+
+    #[test]
+    fn cyclic_func_arg_chain_terminates_bounded() {
+        let mut indirect: Vec<u8> = vec![0u8; 64];
+        indirect[6..8].copy_from_slice(&(0x100u16 << 1).to_le_bytes());
+        indirect[40..44].copy_from_slice(&4u32.to_le_bytes());
+        indirect[24..28].copy_from_slice(&4u32.to_le_bytes());
+        let identifiers: Vec<String> = vec!["ARG".to_owned()];
+        let tables: ModuleTables = ModuleTables {
+            indirect: &indirect,
+            object: &[],
+            declaration: &[],
+        };
+        let ctx: LineContext = LineContext {
+            identifiers: &identifiers,
+            tables,
+            vba_ver: 6,
+            is_64bit: false,
+            endian: Endian::Little,
+        };
+        let mut asm: PCodeAsm = PCodeAsm::new();
+        asm.opcode(OP_FUNCDEFN).dword(0);
+        let (_, text): (Vec<PCodeInstruction>, String) = walk_pcode_line(asm.finish(), 0, &ctx);
+        assert_eq!(
+            text.matches("ARG").count(),
+            MAX_FUNC_ARG_CHAIN,
+            "self-referential arg chain must stop at the cap, not walk forever"
+        );
+        assert!(text.len() < 1 << 20, "capped arg chain must stay bounded");
     }
 
     #[test]
