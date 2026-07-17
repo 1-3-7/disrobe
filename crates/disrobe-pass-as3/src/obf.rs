@@ -9,8 +9,6 @@ pub enum ObfuscationSignal {
     StringEncryption,
     NameMangling,
     ControlFlowFlattening,
-    DeadCodeInsertion,
-    NumericLiteralBloat,
     RegisterShuffle,
     StringPoolRebuildCandidate,
 }
@@ -154,7 +152,7 @@ fn control_flow_jump_density(abc: &AbcFile) -> u8 {
     if total == 0 {
         return 0;
     }
-    ((jumps * 1000) / total).min(100) as u8
+    ((jumps * 100) / total).min(100) as u8
 }
 
 const STACK_SHUFFLE_OPCODES: &[u8] = &[0x29, 0x2A, 0x2B];
@@ -173,7 +171,7 @@ fn register_shuffle_density(abc: &AbcFile) -> u8 {
     if total == 0 {
         return 0;
     }
-    ((shuffles * 1000) / total).min(100) as u8
+    ((shuffles * 100) / total).min(100) as u8
 }
 
 fn string_pool_rebuild_ratio(abc: &AbcFile) -> u8 {
@@ -419,6 +417,27 @@ mod tests {
             Some(&ConfidenceScore::HIGH)
         );
         assert!(report.tools.contains(&KnownTool::GenericStringEncryptor));
+    }
+
+    #[test]
+    fn density_fields_report_true_percent_not_per_mille() {
+        let mut shuffle_body: Vec<u8> = vec![0x2A, 0x2A];
+        shuffle_body.extend(std::iter::repeat_n(0xD0u8, 18));
+        let abc: AbcFile = abc_with(vec![String::new()], vec![shuffle_body]);
+        let report: ObfuscationReport = analyze(&abc);
+        assert_eq!(
+            report.register_shuffle_density_percent, 10,
+            "2 shuffle opcodes in 20 code bytes is 10 percent, not 100 per-mille"
+        );
+
+        let mut jump_body: Vec<u8> = vec![0x10];
+        jump_body.extend(std::iter::repeat_n(0xD0u8, 19));
+        let abc: AbcFile = abc_with(vec![String::new()], vec![jump_body]);
+        let report: ObfuscationReport = analyze(&abc);
+        assert_eq!(
+            report.control_flow_jump_density_percent, 5,
+            "1 jump opcode in 20 code bytes is 5 percent, not 50 per-mille"
+        );
     }
 
     #[test]
