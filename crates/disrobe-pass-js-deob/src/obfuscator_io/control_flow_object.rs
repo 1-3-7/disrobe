@@ -64,6 +64,12 @@ pub(super) fn merge_control_flow_objects(source: &str) -> ControlFlowObjectResul
         }
         let refs: Vec<MemberRef> = collect_member_refs(source, obj);
         if refs.is_empty() {
+            if !reassigned_outside_decl(source, obj)
+                && !has_unaccounted_reference(source, obj, &refs)
+            {
+                edits.push((obj.decl_range.clone(), Some(obj.decl_replacement.clone())));
+                objects_merged += 1;
+            }
             continue;
         }
         if refs.iter().any(|r: &MemberRef| {
@@ -1056,6 +1062,33 @@ mod tests {
         assert!(
             r.rewritten_source.contains("const obj="),
             "the object declaration itself must not be deleted while obj[decode(2)] still references it; out:\n{}",
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn removes_dead_proxy_declaration_with_no_remaining_member_refs() {
+        let src: &str = "function f(a,b){const _0x1={'WOfoz':function(x,y){return x+y;},'aBcDe':'lit'};return (a+b);}";
+        let r: ControlFlowObjectResult = merge_control_flow_objects(src);
+        assert!(
+            !r.rewritten_source.contains("WOfoz") && !r.rewritten_source.contains("_0x1="),
+            "a fully-inlined proxy object with no surviving member references must be removed; got: {}",
+            r.rewritten_source
+        );
+        assert!(
+            r.rewritten_source.contains("return (a+b);"),
+            "surrounding code must survive intact; got: {}",
+            r.rewritten_source
+        );
+    }
+
+    #[test]
+    fn keeps_proxy_shaped_object_still_referenced_by_bare_name() {
+        let src: &str = "function f(a,b){const _0x1={'WOfoz':function(x,y){return x+y;}};register(_0x1);return (a+b);}";
+        let r: ControlFlowObjectResult = merge_control_flow_objects(src);
+        assert!(
+            r.rewritten_source.contains("_0x1="),
+            "an object passed by bare name is still live and must survive; got: {}",
             r.rewritten_source
         );
     }
