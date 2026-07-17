@@ -42,6 +42,7 @@ pub(crate) mod dalvik_interp;
 pub mod dalvik_lift;
 pub mod dalvik_pack_recover;
 pub mod dalvik_pack_stub_loader;
+pub mod dalvik_r8_inline;
 pub(crate) mod dalvik_split;
 pub mod dalvik_strdec;
 pub mod dalvik_strdec_generic;

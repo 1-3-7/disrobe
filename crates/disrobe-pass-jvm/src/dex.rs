@@ -277,7 +277,7 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
     let class_def_size: usize = 32;
     for i in 0..count_cap(header.class_defs_size, class_def_size, bytes.len()) {
         let cd_off: usize = header.class_defs_off as usize + i * class_def_size;
-        if cd_off + 8 > bytes.len() {
+        if cd_off + 12 > bytes.len() {
             break;
         }
         let class_idx: u32 = u32::from_le_bytes([
@@ -287,10 +287,10 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
             bytes[cd_off + 3],
         ]);
         let superclass_idx: u32 = u32::from_le_bytes([
-            bytes[cd_off + 4],
-            bytes[cd_off + 5],
-            bytes[cd_off + 6],
-            bytes[cd_off + 7],
+            bytes[cd_off + 8],
+            bytes[cd_off + 9],
+            bytes[cd_off + 10],
+            bytes[cd_off + 11],
         ]);
         let idx: usize = class_idx as usize;
         if idx < type_names.len() {
