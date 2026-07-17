@@ -237,7 +237,9 @@ fn live_pypcode_reproduces_committed_effects() {
 fn normalized_effects_match_ghidra_pypcode() {
     let records: &str = include_str!("corpus/x86_64_pypcode.tsv");
     let raw: &str = include_str!("corpus/x86_64_pypcode.raw");
-    assert!(raw.starts_with("pypcode 4.0.0\nx86:LE:64:default\n"));
+    let mut banner: std::str::Lines<'_> = raw.lines();
+    assert_eq!(banner.next(), Some("pypcode 4.0.0"));
+    assert_eq!(banner.next(), Some("x86:LE:64:default"));
     let mut headers: BTreeSet<String> = BTreeSet::new();
     let mut checked: usize = 0;
     let mut added_checked: usize = 0;
