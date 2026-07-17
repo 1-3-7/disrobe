@@ -456,6 +456,10 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
+    const fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
     fn u8(&mut self) -> Result<u8> {
         self.need(1)?;
         let v: u8 = self.buf[self.pos];
@@ -508,6 +512,16 @@ impl<'a> Cursor<'a> {
     }
 }
 
+fn ensure_count_fits(cur: &Cursor<'_>, count: u32) -> Result<()> {
+    if count as usize > cur.remaining() {
+        return Err(Error::OpArrayTruncated {
+            offset: cur.pos,
+            need: count as usize,
+        });
+    }
+    Ok(())
+}
+
 pub fn parse_oparray(bytes: &[u8]) -> Result<OpArray> {
     let mut cur: Cursor<'_> = Cursor::new(bytes);
     cur.need(5)?;
@@ -555,6 +569,7 @@ fn parse_one(cur: &mut Cursor<'_>, version: u8, depth: u32) -> Result<OpArray> {
             cap: SANE_CHILD_CAP,
         });
     }
+    ensure_count_fits(cur, child_count)?;
     let mut children: Vec<OpArray> = Vec::with_capacity((child_count as usize).min(MAX_PREALLOC));
     for _ in 0..child_count {
         children.push(parse_one(cur, version, depth + 1)?);
@@ -580,6 +595,7 @@ fn parse_var_names(cur: &mut Cursor<'_>) -> Result<Vec<Option<String>>> {
             cap: SANE_VAR_CAP,
         });
     }
+    ensure_count_fits(cur, count)?;
     let mut out: Vec<Option<String>> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
     for _ in 0..count {
         out.push(read_opt_string(cur)?);
@@ -604,6 +620,7 @@ fn parse_literals(cur: &mut Cursor<'_>) -> Result<Vec<Literal>> {
             cap: SANE_LITERAL_CAP,
         });
     }
+    ensure_count_fits(cur, count)?;
     let mut out: Vec<Literal> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
     for _ in 0..count {
         let tag: u8 = cur.u8()?;
@@ -630,6 +647,7 @@ fn parse_ops(cur: &mut Cursor<'_>) -> Result<Vec<Op>> {
             cap: SANE_OP_CAP,
         });
     }
+    ensure_count_fits(cur, count)?;
     let mut out: Vec<Op> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
     for _ in 0..count {
         let opcode: u8 = cur.u8()?;
@@ -1829,5 +1847,31 @@ mod render_tests {
         assert_eq!(Literal::Double(f64::INFINITY).render(), "INF");
         assert_eq!(Literal::Double(f64::NEG_INFINITY).render(), "-INF");
         assert_eq!(Literal::Double(f64::NAN).render(), "NAN");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod oparray_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn declared_ops_count_exceeding_remaining_input_is_rejected_before_reserving() {
+        const DECLARED: u32 = 3_000_000;
+        let mut wire: Vec<u8> = Vec::new();
+        wire.extend_from_slice(&OPARRAY_MAGIC[..]);
+        wire.push(OPARRAY_VERSION);
+        wire.push(0);
+        wire.push(0);
+        wire.push(0);
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&DECLARED.to_le_bytes());
+        let err: Error = parse_oparray(&wire).expect_err("oversized ops count must be rejected");
+        assert!(
+            matches!(err, Error::OpArrayTruncated { need, .. } if need as u32 == DECLARED),
+            "declared count must be rejected against remaining input, got {err:?}"
+        );
     }
 }
