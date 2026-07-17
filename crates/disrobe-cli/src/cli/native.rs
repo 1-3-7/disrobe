@@ -108,11 +108,16 @@ fn decompile_native(
     let module: disrobe_query::Module = load_native_module(&input, &bytes)?;
     let obj: object::File<'_> = object::File::parse(bytes.as_slice())
         .map_err(|e| miette::miette!("DR-NATIVE-0161: cannot parse native object: {e}"))?;
-    if obj.architecture() != object::Architecture::X86_64 {
-        return Err(miette::miette!(
-            "DR-NATIVE-0162: the in-tree decompiler currently supports x86-64 only (got {:?}); use --backend ghidra for other architectures",
-            obj.architecture()
-        ));
+    match obj.architecture() {
+        object::Architecture::X86_64 => {}
+        object::Architecture::Aarch64 => {
+            return decompile_native_aarch64(&input, &obj, &module, out, format);
+        }
+        other => {
+            return Err(miette::miette!(
+                "DR-NATIVE-0162: the in-tree decompiler supports x86-64 and aarch64 only (got {other:?}); use --backend ghidra for other architectures"
+            ));
+        }
     }
     let abi: PseudoAbi = if matches!(
         obj.format(),
@@ -302,6 +307,137 @@ fn decompile_native(
         src_path.display()
     );
     Ok(())
+}
+
+#[cfg(feature = "nir-lift")]
+fn aarch64_recover_source(code: &[u8], address: u64, name: &str) -> Result<(String, bool), String> {
+    use disrobe_nir::{
+        HirFunction, NirFunction, SurfaceFunction, emit_pseudo_source, structurize_function,
+        surfacify_function,
+    };
+    use disrobe_nir_lift::lower_aarch64;
+
+    let nir: NirFunction =
+        lower_aarch64(code, address, name).map_err(|e| format!("aarch64 lift failed: {e}"))?;
+    let hir: HirFunction = structurize_function(&nir);
+    let surface: SurfaceFunction = surfacify_function(&hir);
+    let source: String =
+        emit_pseudo_source(&surface).map_err(|e| format!("pseudo-source emit failed: {e}"))?;
+    Ok((source, surface.structured))
+}
+
+#[cfg(feature = "nir-lift")]
+fn decompile_native_aarch64(
+    input: &Path,
+    obj: &object::File<'_>,
+    module: &disrobe_query::Module,
+    out: Option<PathBuf>,
+    format: DecompileLang,
+) -> miette::Result<()> {
+    use std::fmt::Write as _;
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("native")
+        .to_owned();
+    let out_dir: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-native-decompiled")));
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| miette::miette!("DR-NATIVE-0170: cannot create out dir: {e}"))?;
+
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut bodies: String = String::new();
+    let mut recovered: Vec<serde_json::Value> = Vec::new();
+    let mut unrecovered: Vec<serde_json::Value> = Vec::new();
+    let mut structured_count: usize = 0;
+
+    for f in module.functions() {
+        let Some(code): Option<Vec<u8>> = bytes_for_va_range(obj, f.address, f.end) else {
+            unrecovered.push(serde_json::json!({
+                "name": f.name, "address": f.address, "reason": "no mapped code bytes for the function range"
+            }));
+            continue;
+        };
+        let emitted_name: String = unique_c_name(&f.name, f.address, &mut seen);
+        let (source, structured): (String, bool) =
+            match aarch64_recover_source(&code, f.address, &emitted_name) {
+                Ok(value) => value,
+                Err(reason) => {
+                    unrecovered.push(serde_json::json!({
+                        "name": f.name, "address": f.address, "reason": reason
+                    }));
+                    continue;
+                }
+            };
+        if structured {
+            structured_count += 1;
+        }
+        let note: &str = if structured {
+            ""
+        } else {
+            " (unstructured control flow)"
+        };
+        let _ = writeln!(
+            bodies,
+            "/* {} @ {:#x}{note} */\n{}\n",
+            f.name,
+            f.address,
+            source.trim()
+        );
+        recovered.push(serde_json::json!({
+            "name": f.name, "address": f.address, "emitted_as": emitted_name, "structured": structured
+        }));
+    }
+
+    let src_path: PathBuf = out_dir.join(format!("{stem}.c"));
+    std::fs::write(&src_path, bodies.as_bytes())
+        .map_err(|e| miette::miette!("DR-NATIVE-0171: cannot write decompiled output: {e}"))?;
+
+    let total: usize = module.functions().len();
+    let manifest: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.native.decompile/v1",
+        "backend": "native-in-tree-aarch64",
+        "language": "pseudo-C",
+        "requested_language": format.label(),
+        "input": input.display().to_string(),
+        "functions_total": total,
+        "functions_recovered": recovered.len(),
+        "functions_structured": structured_count,
+        "functions_unrecovered": unrecovered.len(),
+        "source": src_path.display().to_string(),
+        "recovered": recovered,
+        "unrecovered": unrecovered,
+    });
+    std::fs::write(
+        out_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| miette::miette!("DR-NATIVE-0172: serialize manifest: {e}"))?,
+    )
+    .map_err(|e| miette::miette!("DR-NATIVE-0173: cannot write manifest: {e}"))?;
+
+    println!(
+        "native decompile (in-tree aarch64 -> pseudo-C): recovered {}/{} function(s), {} structured -> {}",
+        recovered.len(),
+        total,
+        structured_count,
+        src_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "nir-lift"))]
+fn decompile_native_aarch64(
+    input: &Path,
+    _obj: &object::File<'_>,
+    _module: &disrobe_query::Module,
+    _out: Option<PathBuf>,
+    _format: DecompileLang,
+) -> miette::Result<()> {
+    Err(miette::miette!(
+        "DR-NATIVE-0169: aarch64 in-tree decompile needs the nir-lift feature, which is not built into this binary; rebuild with a default (full) build or `--features nir-lift`, or use --backend ghidra for {}",
+        input.display()
+    ))
 }
 
 fn bytes_for_va_range(obj: &object::File<'_>, start_va: u64, end_va: u64) -> Option<Vec<u8>> {
@@ -2849,5 +2985,22 @@ mod tests {
         assert!(text.trim_end().ends_with("</svg>"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(feature = "nir-lift")]
+    #[test]
+    fn aarch64_leaf_renders_to_pseudo_source() {
+        let bytes: Vec<u8> = [0x8b01_0000_u32, 0xd65f_03c0]
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let (source, structured): (String, bool) =
+            aarch64_recover_source(&bytes, 0x1000, "arith").expect("aarch64 leaf recovers");
+        assert!(structured, "leaf must structure:\n{source}");
+        assert!(
+            source.contains("return x0"),
+            "return value missing:\n{source}"
+        );
+        assert!(source.contains('+'), "addition missing:\n{source}");
     }
 }
