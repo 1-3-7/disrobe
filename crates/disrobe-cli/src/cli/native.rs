@@ -223,7 +223,7 @@ fn decompile_native(
     let mut typed_functions: Vec<serde_json::Value> = Vec::with_capacity(program_functions.len());
     let mut type_slots_recovered: usize = 0;
     for pf in &program_functions {
-        let recovered_types: disrobe_typerec::RecoveredFunction =
+        let recovered_types: disrobe_typerec::TypedFunction =
             disrobe_typerec::recover_function(&pf.code, pf.address);
         if recovered_types.rbp_slots.is_empty() {
             continue;

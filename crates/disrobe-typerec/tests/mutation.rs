@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, GradeReport};
 use disrobe_typerec::lattice::{Sign, Width};
-use disrobe_typerec::recover::{RecoveredFunction, RecoveredScalar};
+use disrobe_typerec::recover::{RecoveredScalar, TypedFunction};
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -43,12 +43,12 @@ fn other_width(width: Width) -> Width {
 }
 
 fn mutate(
-    recovered: &[RecoveredFunction],
+    recovered: &[TypedFunction],
     mutator: impl Fn(RecoveredScalar) -> RecoveredScalar,
-) -> Vec<RecoveredFunction> {
+) -> Vec<TypedFunction> {
     recovered
         .iter()
-        .map(|function: &RecoveredFunction| RecoveredFunction {
+        .map(|function: &TypedFunction| TypedFunction {
             has_frame_pointer: function.has_frame_pointer,
             objects: function.objects.clone(),
             rbp_slots: function
@@ -63,7 +63,7 @@ fn mutate(
 #[test]
 fn grader_rejects_flipped_signedness() {
     let image: DebugImage = stripped_input();
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
 
     let baseline: GradeReport = grade::grade_functions(&image.functions, &recovered);
     assert!((baseline.sign.precision() - 1.0).abs() < f64::EPSILON);
@@ -73,7 +73,7 @@ fn grader_rejects_flipped_signedness() {
         "baseline must predict some signs"
     );
 
-    let flipped: Vec<RecoveredFunction> =
+    let flipped: Vec<TypedFunction> =
         mutate(&recovered, |scalar: RecoveredScalar| RecoveredScalar {
             sign: flip_sign(scalar.sign),
             ..scalar
@@ -93,13 +93,13 @@ fn grader_rejects_flipped_signedness() {
 #[test]
 fn grader_rejects_halved_width() {
     let image: DebugImage = stripped_input();
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
 
     let baseline: GradeReport = grade::grade_functions(&image.functions, &recovered);
     assert!((baseline.width.precision() - 1.0).abs() < f64::EPSILON);
     assert!(baseline.width_mismatches.is_empty());
 
-    let widened: Vec<RecoveredFunction> =
+    let widened: Vec<TypedFunction> =
         mutate(&recovered, |scalar: RecoveredScalar| RecoveredScalar {
             width: other_width(scalar.width),
             ..scalar
@@ -115,9 +115,9 @@ fn grader_rejects_halved_width() {
 #[test]
 fn grader_rejects_demoted_sign_to_unknown_only_on_recall() {
     let image: DebugImage = stripped_input();
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
 
-    let demoted: Vec<RecoveredFunction> =
+    let demoted: Vec<TypedFunction> =
         mutate(&recovered, |scalar: RecoveredScalar| RecoveredScalar {
             sign: Sign::Unknown,
             ..scalar

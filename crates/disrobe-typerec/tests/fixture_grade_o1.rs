@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, GradeReport, IdentityReport};
-use disrobe_typerec::recover::{RecoveredFunction, RecoveredObject};
+use disrobe_typerec::recover::{RecoveredObject, TypedFunction};
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -32,7 +32,7 @@ fn o1_slot_reuse_split_is_sound_and_lifts_sign_recall() {
     let image: DebugImage = stripped_input();
     assert_eq!(image.functions.len(), 4, "committed O1 function count");
 
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
 
     let identity: IdentityReport = grade::grade_identity(&image.functions, &recovered);
     eprintln!(
@@ -112,11 +112,11 @@ fn o1_slot_reuse_split_is_sound_and_lifts_sign_recall() {
 #[test]
 fn grader_detects_a_seeded_merge() {
     let image: DebugImage = stripped_input();
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
     let clean: IdentityReport = grade::grade_identity(&image.functions, &recovered);
     assert_eq!(clean.false_merges, 0);
 
-    let merged: Vec<RecoveredFunction> = recovered.iter().map(collapse_offset_zero).collect();
+    let merged: Vec<TypedFunction> = recovered.iter().map(collapse_offset_zero).collect();
     let report: IdentityReport = grade::grade_identity(&image.functions, &merged);
     assert!(
         report.false_merges > 0,
@@ -127,11 +127,11 @@ fn grader_detects_a_seeded_merge() {
 #[test]
 fn grader_detects_a_seeded_split() {
     let image: DebugImage = stripped_input();
-    let recovered: Vec<RecoveredFunction> = grade::recover_image(&image);
+    let recovered: Vec<TypedFunction> = grade::recover_image(&image);
     let clean: IdentityReport = grade::grade_identity(&image.functions, &recovered);
     assert_eq!(clean.false_splits, 0);
 
-    let fragmented: Vec<RecoveredFunction> = recovered.iter().map(fragment_objects).collect();
+    let fragmented: Vec<TypedFunction> = recovered.iter().map(fragment_objects).collect();
     let report: IdentityReport = grade::grade_identity(&image.functions, &fragmented);
     assert!(
         report.false_splits > 0,
@@ -139,7 +139,7 @@ fn grader_detects_a_seeded_split() {
     );
 }
 
-fn collapse_offset_zero(function: &RecoveredFunction) -> RecoveredFunction {
+fn collapse_offset_zero(function: &TypedFunction) -> TypedFunction {
     let mut lo: u64 = u64::MAX;
     let mut hi: u64 = 0;
     for object in &function.objects {
@@ -165,14 +165,14 @@ fn collapse_offset_zero(function: &RecoveredFunction) -> RecoveredFunction {
             escaped: false,
         });
     }
-    RecoveredFunction {
+    TypedFunction {
         rbp_slots: function.rbp_slots.clone(),
         objects,
         has_frame_pointer: function.has_frame_pointer,
     }
 }
 
-fn fragment_objects(function: &RecoveredFunction) -> RecoveredFunction {
+fn fragment_objects(function: &TypedFunction) -> TypedFunction {
     let mut objects: Vec<RecoveredObject> = Vec::new();
     for object in &function.objects {
         objects.push(*object);
@@ -182,7 +182,7 @@ fn fragment_objects(function: &RecoveredFunction) -> RecoveredFunction {
             ..*object
         });
     }
-    RecoveredFunction {
+    TypedFunction {
         rbp_slots: function.rbp_slots.clone(),
         objects,
         has_frame_pointer: function.has_frame_pointer,
