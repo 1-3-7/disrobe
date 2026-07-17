@@ -30,7 +30,7 @@ Oracle strength: `strong` = external-equivalence, execution, or byte-identity; `
 | pyarmor | disrobe statically unpacks every PyArmor sample in the committed free-mode corpus. | 72 recovered / 72 detected | strong | [local] | static unpack + decompile of each committed PyArmor sample (real corpus; BCC and super mode remain a shared native wall) | `cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus (local-only: license-restricted and large samples live outside the tree)` |
 | ruby | disrobe decompiles Ruby YARV bytecode to source whose recompiled instruction multiset matches the original under the real MRI interpreter. | 98.00% | strong | [CI] | real MRI (ruby): recompile the recovered source, compare the YARV opcode multiset | `cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle` |
 | swift | disrobe demangles the Swift-mangled symbols carried in a real Mach-O's own LC_SYMTAB, recovering class names, type metadata, and field offsets that match the reference swift-demangle. | 37/37 (100.0%) | strong | [local] | the binary's own LC_SYMTAB Swift-mangled symbols (a non-circular, in-artifact ground truth); reference parity is the swift-demangle tool | `cargo test -p disrobe-pass-swift-objc --test real_swift_demangle  (harvested by cargo run -p disrobe-bench-head-to-head)` |
-| wasm | disrobe lifts WebAssembly to structured source that re-parses with every operator lowered, and the execution-eligible functions execute equivalently to the original under wasmtime. | 98.41% | strong | [CI] | wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 50 execution-eligible functions; output re-parse for op-coverage | `cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)` |
+| wasm | disrobe lifts WebAssembly to structured source that re-parses with every operator lowered, and the execution-eligible functions execute equivalently to the original under wasmtime. | 100.00% | strong | [CI] | wasmtime execution differential (original vs recovered: return values, trap parity, linear memory) for the 50 execution-eligible functions; output re-parse for op-coverage | `cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox  (op-coverage: cargo test -p disrobe-pass-wasm-deob --test semantic_recovery_corpus)` |
 
 ## Head-to-head comparisons
 
@@ -90,4 +90,4 @@ Floors sit a declared margin below the measured value so a regression masked by 
 | pyarmor-corpus | 72 recovered / 72 detected | n/a | n/a |
 | ruby-yarv-recompile | 98.00% | 96.00 | yes |
 | swift-demangle | 37/37 (100.0%) | 95.00 | yes |
-| wasm-wasmtime-diff | 98.41% | 76.00 | yes |
+| wasm-wasmtime-diff | 100.00% | 76.00 | yes |
