@@ -168,6 +168,7 @@ fn collapse_offset_zero(function: &TypedFunction) -> TypedFunction {
     TypedFunction {
         rbp_slots: function.rbp_slots.clone(),
         objects,
+        structs: function.structs.clone(),
         has_frame_pointer: function.has_frame_pointer,
     }
 }
@@ -185,6 +186,7 @@ fn fragment_objects(function: &TypedFunction) -> TypedFunction {
     TypedFunction {
         rbp_slots: function.rbp_slots.clone(),
         objects,
+        structs: function.structs.clone(),
         has_frame_pointer: function.has_frame_pointer,
     }
 }

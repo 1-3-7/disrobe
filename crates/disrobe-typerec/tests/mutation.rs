@@ -51,6 +51,7 @@ fn mutate(
         .map(|function: &TypedFunction| TypedFunction {
             has_frame_pointer: function.has_frame_pointer,
             objects: function.objects.clone(),
+            structs: function.structs.clone(),
             rbp_slots: function
                 .rbp_slots
                 .iter()

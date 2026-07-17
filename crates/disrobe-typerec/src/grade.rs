@@ -1,6 +1,11 @@
-use crate::dwarf_gt::{DebugImage, GroundTruthFunction, GroundTruthVar};
+use std::collections::BTreeSet;
+
+use crate::dwarf_gt::{
+    DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction, GroundTruthVar,
+};
 use crate::lattice::Width;
 use crate::recover::{RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
+use crate::structrec::{FieldNameTier, RecoveredField, RecoveredStruct};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AxisScore {
@@ -279,6 +284,161 @@ fn score_sign(
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NameGrade {
+    pub typed_emitted: usize,
+    pub typed_matched: usize,
+    pub offset_emitted: usize,
+}
+
+impl NameGrade {
+    #[must_use]
+    pub fn typed_precision(self) -> f64 {
+        if self.typed_emitted == 0 {
+            1.0
+        } else {
+            f64::from(u32::try_from(self.typed_matched).unwrap_or(u32::MAX))
+                / f64::from(u32::try_from(self.typed_emitted).unwrap_or(u32::MAX))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StructGradeReport {
+    pub offset: AxisScore,
+    pub width: AxisScore,
+    pub aggregates_total: usize,
+    pub aggregates_mapped: usize,
+    pub union_total: usize,
+    pub union_correct: usize,
+    pub names: NameGrade,
+    pub missing_leaves: Vec<AxisMismatch>,
+    pub spurious_leaves: Vec<AxisMismatch>,
+}
+
+#[must_use]
+pub fn grade_struct_image(image: &DebugImage) -> StructGradeReport {
+    let recovered: Vec<TypedFunction> = recover_image(image);
+    grade_structs(&image.functions, &recovered)
+}
+
+#[must_use]
+pub fn grade_structs(
+    functions: &[GroundTruthFunction],
+    recovered: &[TypedFunction],
+) -> StructGradeReport {
+    let mut report: StructGradeReport = StructGradeReport::default();
+    for (function, recovery) in functions.iter().zip(recovered.iter()) {
+        grade_structs_one(&mut report, function, recovery);
+    }
+    report
+}
+
+fn grade_structs_one(
+    report: &mut StructGradeReport,
+    function: &GroundTruthFunction,
+    recovery: &TypedFunction,
+) {
+    for aggregate in &function.aggregates {
+        report.aggregates_total += 1;
+        if aggregate.is_union {
+            report.union_total += 1;
+        }
+        let gt_offsets: BTreeSet<i64> = aggregate
+            .fields
+            .iter()
+            .filter(|field: &&GroundTruthField| field.width != Width::Unknown)
+            .map(|field: &GroundTruthField| field.offset)
+            .collect();
+        let gt_leaves: BTreeSet<(i64, Width)> = aggregate.field_slots();
+        report.offset.total += gt_offsets.len();
+        report.width.total += gt_leaves.len();
+
+        let Some(recovered_struct): Option<&RecoveredStruct> =
+            recovery.struct_at(aggregate.rbp_disp)
+        else {
+            for (offset, width) in &gt_leaves {
+                report.missing_leaves.push(AxisMismatch {
+                    function: function.name.clone(),
+                    variable: format!("{}@{:#x}", aggregate.type_name, aggregate.rbp_disp),
+                    expected: format!("{offset:#x}:{width:?}"),
+                    got: "absent".to_owned(),
+                });
+            }
+            continue;
+        };
+        report.aggregates_mapped += 1;
+        if aggregate.is_union && recovered_struct.is_union {
+            report.union_correct += 1;
+        }
+        let rec_offsets: BTreeSet<i64> = recovered_struct
+            .fields
+            .iter()
+            .filter(|field: &&RecoveredField| field.width != Width::Unknown)
+            .map(|field: &RecoveredField| field.offset)
+            .collect();
+        let rec_leaves: BTreeSet<(i64, Width)> = recovered_struct.field_slots();
+
+        report.offset.correct += gt_offsets.intersection(&rec_offsets).count();
+        report.width.correct += gt_leaves.intersection(&rec_leaves).count();
+        for (offset, width) in gt_leaves.difference(&rec_leaves) {
+            report.missing_leaves.push(AxisMismatch {
+                function: function.name.clone(),
+                variable: format!("{}@{:#x}", aggregate.type_name, aggregate.rbp_disp),
+                expected: format!("{offset:#x}:{width:?}"),
+                got: "absent".to_owned(),
+            });
+        }
+        grade_field_names(report, aggregate, recovered_struct);
+    }
+
+    for recovered_struct in &recovery.structs {
+        let matching: Option<&GroundTruthAggregate> = function
+            .aggregates
+            .iter()
+            .find(|aggregate: &&GroundTruthAggregate| aggregate.rbp_disp == recovered_struct.slot);
+        let rec_offsets: BTreeSet<i64> = recovered_struct
+            .fields
+            .iter()
+            .filter(|field: &&RecoveredField| field.width != Width::Unknown)
+            .map(|field: &RecoveredField| field.offset)
+            .collect();
+        let rec_leaves: BTreeSet<(i64, Width)> = recovered_struct.field_slots();
+        report.offset.predicted += rec_offsets.len();
+        report.width.predicted += rec_leaves.len();
+        let gt_leaves: BTreeSet<(i64, Width)> =
+            matching.map_or_else(BTreeSet::new, GroundTruthAggregate::field_slots);
+        for (offset, width) in rec_leaves.difference(&gt_leaves) {
+            report.spurious_leaves.push(AxisMismatch {
+                function: function.name.clone(),
+                variable: format!("slot {:#x}", recovered_struct.slot),
+                expected: "absent".to_owned(),
+                got: format!("{offset:#x}:{width:?}"),
+            });
+        }
+    }
+}
+
+fn grade_field_names(
+    report: &mut StructGradeReport,
+    aggregate: &GroundTruthAggregate,
+    recovered_struct: &RecoveredStruct,
+) {
+    for field in &recovered_struct.fields {
+        match field.name_tier {
+            FieldNameTier::Typed => {
+                report.names.typed_emitted += 1;
+                if aggregate.fields.iter().any(|gt: &GroundTruthField| {
+                    gt.offset == field.offset && gt.width == field.width && gt.name == field.name
+                }) {
+                    report.names.typed_matched += 1;
+                }
+            }
+            FieldNameTier::Offset => report.names.offset_emitted += 1,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -306,6 +466,7 @@ mod tests {
                 gt_var("a", 16, Width::Dword, Sign::Signed),
                 gt_var("b", 24, Width::Byte, Sign::Unsigned),
             ],
+            aggregates: Vec::new(),
         }
     }
 
@@ -316,6 +477,7 @@ mod tests {
         TypedFunction {
             rbp_slots: slots,
             objects: Vec::new(),
+            structs: Vec::new(),
             has_frame_pointer: true,
         }
     }
@@ -405,6 +567,7 @@ mod tests {
                     scope_hi: 0x2040,
                 },
             ],
+            aggregates: Vec::new(),
         }
     }
 
@@ -429,6 +592,7 @@ mod tests {
                 object(0, Sign::Signed, 0x2004, 0x2010),
                 object(0, Sign::Unsigned, 0x2024, 0x2030),
             ],
+            structs: Vec::new(),
             has_frame_pointer: true,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
@@ -444,6 +608,7 @@ mod tests {
         let recovery: TypedFunction = TypedFunction {
             rbp_slots: BTreeMap::new(),
             objects: vec![object(0, Sign::Unknown, 0x2004, 0x2030)],
+            structs: Vec::new(),
             has_frame_pointer: true,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
@@ -460,6 +625,7 @@ mod tests {
                 object(16, Sign::Signed, 0x1000, 0x1004),
                 object(16, Sign::Signed, 0x1006, 0x100a),
             ],
+            structs: Vec::new(),
             has_frame_pointer: true,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
