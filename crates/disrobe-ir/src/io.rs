@@ -84,9 +84,8 @@ fn envelope_len_from_header(header: &[u8; HEADER_SIZE]) -> Result<usize> {
     if version != ENVELOPE_FORMAT_VERSION {
         return Err(EnvelopeError::BadVersion(version));
     }
-    match header[10] {
-        0..=4 => {}
-        other => return Err(EnvelopeError::BadRung(other)),
+    if Rung::from_u8(header[10]).is_none() {
+        return Err(EnvelopeError::BadRung(header[10]));
     }
     let hot_len: usize =
         u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as usize;
@@ -150,13 +149,8 @@ pub fn mmap_envelope_view(path: impl AsRef<Path>) -> Result<MmapView> {
     if version != ENVELOPE_FORMAT_VERSION {
         return Err(EnvelopeError::BadVersion(version));
     }
-    let rung: Rung = match bytes[10] {
-        0 => Rung::Raw,
-        1 => Rung::Disasm,
-        2 => Rung::Mir,
-        3 => Rung::Hir,
-        4 => Rung::Surface,
-        other => return Err(EnvelopeError::BadRung(other)),
+    let Some(rung): Option<Rung> = Rung::from_u8(bytes[10]) else {
+        return Err(EnvelopeError::BadRung(bytes[10]));
     };
     let flags: u8 = bytes[11];
     let hot_len: usize = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
