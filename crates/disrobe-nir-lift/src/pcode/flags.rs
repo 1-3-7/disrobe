@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use disrobe_nir::{
-    CallOtherEffect, DefUse, NirClass, NirFunction, NirInstr, NirOp, ValueId, ValueOp,
-    basic_blocks, def_use,
+    CallOtherEffect, DefUse, NirBlock, NirClass, NirFunction, NirInstr, NirOp, SourceRef, ValueId,
+    ValueOp, basic_blocks, def_use,
 };
 
 use super::varnode::RegisterCell;
@@ -499,4 +499,510 @@ const fn value_may_trap(op: ValueOp) -> bool {
             | ValueOp::IntSignedDiv
             | ValueOp::IntSignedRem
     )
+}
+
+const MAX_FOLD_DEPTH: usize = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CmpTerm {
+    Eq,
+    Ne,
+    UnsignedLess,
+    UnsignedLessEqual,
+    UnsignedGreater,
+    UnsignedGreaterEqual,
+    SignedLess,
+    SignedLessEqual,
+    SignedGreater,
+    SignedGreaterEqual,
+    SignBit,
+    OverflowBit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompareKey {
+    left: String,
+    right: String,
+    width: u32,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedCondition {
+    term: CmpTerm,
+    compare: CompareKey,
+    earliest_read: usize,
+}
+
+pub(super) fn fold_condition_codes(
+    instructions: Vec<NirInstr>,
+    registers: &[RegisterCell],
+) -> Vec<NirInstr> {
+    if instructions.is_empty() {
+        return instructions;
+    }
+    let function: NirFunction = fold_scratch_function(&instructions);
+    let blocks: Vec<NirBlock> = basic_blocks(&function);
+    let mut sorted: Vec<NirInstr> = instructions.clone();
+    sorted.sort_by_key(|instruction: &NirInstr| instruction.address);
+    let block_addresses: Vec<u64> = blocks
+        .iter()
+        .flat_map(|block: &NirBlock| {
+            block
+                .instructions
+                .iter()
+                .map(|item: &NirInstr| item.address)
+        })
+        .collect();
+    let sorted_addresses: Vec<u64> = sorted
+        .iter()
+        .map(|instruction: &NirInstr| instruction.address)
+        .collect();
+    if block_addresses != sorted_addresses {
+        return instructions;
+    }
+    let mut next_temp: u64 = fresh_temp_base(&sorted, registers);
+    let mut out: Vec<NirInstr> = Vec::with_capacity(sorted.len().saturating_add(blocks.len()));
+    for block in &blocks {
+        match fold_conditional_block(&block.instructions, &mut next_temp) {
+            Some(folded) => out.extend(folded),
+            None => out.extend(block.instructions.iter().cloned()),
+        }
+    }
+    out
+}
+
+fn fold_scratch_function(instructions: &[NirInstr]) -> NirFunction {
+    let first: Option<&NirInstr> = instructions.first();
+    let address: u64 = first.map_or(0, |instruction: &NirInstr| instruction.address);
+    let end: u64 = instructions
+        .iter()
+        .map(|instruction: &NirInstr| instruction.address.saturating_add(1))
+        .max()
+        .unwrap_or(address);
+    NirFunction {
+        name: String::new(),
+        address,
+        end,
+        is_export: false,
+        instructions: instructions.to_vec(),
+        source: first.map_or_else(SourceRef::default, |instruction: &NirInstr| {
+            instruction.source.clone()
+        }),
+    }
+}
+
+fn fold_conditional_block(block: &[NirInstr], next_temp: &mut u64) -> Option<Vec<NirInstr>> {
+    let cbranch_index: usize = block.len().checked_sub(1)?;
+    let cbranch: &NirInstr = block.get(cbranch_index)?;
+    if !matches!(cbranch.op, NirOp::CondBranch { .. }) {
+        return None;
+    }
+    let condition: &String = cbranch.operands.first()?;
+    let context: BlockContext = BlockContext::build(block);
+    let resolved: ResolvedCondition = context.resolve(condition, 0)?;
+    let (op, swap): (ValueOp, bool) = comparison_for(resolved.term)?;
+    let (left, right): (String, String) = if swap {
+        (resolved.compare.right, resolved.compare.left)
+    } else {
+        (resolved.compare.left, resolved.compare.right)
+    };
+    if redefines_operand(block, resolved.earliest_read, cbranch_index, &left, &right) {
+        return None;
+    }
+    let fresh: String = format!("t{next_temp}");
+    *next_temp = next_temp.saturating_add(1);
+    let comparison: NirInstr = NirInstr {
+        address: cbranch.address,
+        op: NirOp::Value {
+            op,
+            inputs: vec![left.clone(), right.clone()],
+            input_sizes: vec![resolved.compare.width, resolved.compare.width],
+            size: 1,
+        },
+        mnemonic: op.mnemonic().to_owned(),
+        operands: vec![fresh.clone(), left, right],
+        reads_memory: false,
+        writes_memory: false,
+        byte_width: false,
+        source: cbranch.source.clone(),
+    };
+    let mut folded: Vec<NirInstr> = Vec::with_capacity(block.len().saturating_add(1));
+    folded.extend(block.get(..cbranch_index)?.iter().cloned());
+    folded.push(comparison);
+    let mut rewritten: NirInstr = cbranch.clone();
+    rewritten.operands = vec![fresh];
+    folded.push(rewritten);
+    Some(folded)
+}
+
+#[derive(Debug)]
+struct BlockContext<'a> {
+    block: &'a [NirInstr],
+    definition_counts: BTreeMap<String, usize>,
+    value_definitions: BTreeMap<String, usize>,
+}
+
+impl<'a> BlockContext<'a> {
+    fn build(block: &'a [NirInstr]) -> Self {
+        let mut definition_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut value_definitions: BTreeMap<String, usize> = BTreeMap::new();
+        for (index, instruction) in block.iter().enumerate() {
+            for name in defined_names(instruction) {
+                let key: String = name.to_ascii_lowercase();
+                *definition_counts.entry(key.clone()).or_insert(0) += 1;
+                if matches!(instruction.op, NirOp::Value { .. }) {
+                    value_definitions.insert(key, index);
+                }
+            }
+        }
+        Self {
+            block,
+            definition_counts,
+            value_definitions,
+        }
+    }
+
+    fn value_definition(&self, name: &str) -> Option<(usize, ValueOp, &'a [String], &'a [u32])> {
+        let key: String = name.to_ascii_lowercase();
+        if self.definition_counts.get(&key).copied() != Some(1) {
+            return None;
+        }
+        let index: usize = *self.value_definitions.get(&key)?;
+        match &self.block.get(index)?.op {
+            NirOp::Value {
+                op,
+                inputs,
+                input_sizes,
+                ..
+            } => Some((index, *op, inputs.as_slice(), input_sizes.as_slice())),
+            _ => None,
+        }
+    }
+
+    fn resolve(&self, name: &str, depth: usize) -> Option<ResolvedCondition> {
+        if depth > MAX_FOLD_DEPTH {
+            return None;
+        }
+        let (index, op, inputs, sizes): (usize, ValueOp, &[String], &[u32]) =
+            self.value_definition(name)?;
+        match op {
+            ValueOp::IntEqual => {
+                if is_zero_operand(inputs.get(1)?) {
+                    let (read_index, compare): (usize, CompareKey) =
+                        self.resolve_subtraction(inputs.first()?)?;
+                    return Some(ResolvedCondition {
+                        term: CmpTerm::Eq,
+                        compare,
+                        earliest_read: read_index,
+                    });
+                }
+                let equality: ResolvedCondition = self.combine(inputs, depth, combine_xor)?;
+                Some(ResolvedCondition {
+                    term: negate_term(equality.term)?,
+                    compare: equality.compare,
+                    earliest_read: equality.earliest_read,
+                })
+            }
+            ValueOp::IntNotEqual => {
+                if is_zero_operand(inputs.get(1)?) {
+                    let (read_index, compare): (usize, CompareKey) =
+                        self.resolve_subtraction(inputs.first()?)?;
+                    return Some(ResolvedCondition {
+                        term: CmpTerm::Ne,
+                        compare,
+                        earliest_read: read_index,
+                    });
+                }
+                self.combine(inputs, depth, combine_xor)
+            }
+            ValueOp::IntSignedLess => {
+                if !is_zero_operand(inputs.get(1)?) {
+                    return None;
+                }
+                let (read_index, compare): (usize, CompareKey) =
+                    self.resolve_subtraction(inputs.first()?)?;
+                Some(ResolvedCondition {
+                    term: CmpTerm::SignBit,
+                    compare,
+                    earliest_read: read_index,
+                })
+            }
+            ValueOp::IntSignedBorrow => Some(ResolvedCondition {
+                term: CmpTerm::OverflowBit,
+                compare: CompareKey {
+                    left: inputs.first()?.clone(),
+                    right: inputs.get(1)?.clone(),
+                    width: *sizes.first()?,
+                },
+                earliest_read: index,
+            }),
+            ValueOp::IntLess => Some(ResolvedCondition {
+                term: CmpTerm::UnsignedLess,
+                compare: CompareKey {
+                    left: inputs.first()?.clone(),
+                    right: inputs.get(1)?.clone(),
+                    width: *sizes.first()?,
+                },
+                earliest_read: index,
+            }),
+            ValueOp::BoolNegate => {
+                let inner: ResolvedCondition = self.resolve(inputs.first()?, depth + 1)?;
+                Some(ResolvedCondition {
+                    term: negate_term(inner.term)?,
+                    compare: inner.compare,
+                    earliest_read: inner.earliest_read,
+                })
+            }
+            ValueOp::BoolXor => self.combine(inputs, depth, combine_xor),
+            ValueOp::BoolOr => self.combine(inputs, depth, combine_or),
+            ValueOp::BoolAnd => self.combine(inputs, depth, combine_and),
+            _ => None,
+        }
+    }
+
+    fn resolve_subtraction(&self, name: &str) -> Option<(usize, CompareKey)> {
+        let (index, op, inputs, sizes): (usize, ValueOp, &[String], &[u32]) =
+            self.value_definition(name)?;
+        if op != ValueOp::IntSub {
+            return None;
+        }
+        Some((
+            index,
+            CompareKey {
+                left: inputs.first()?.clone(),
+                right: inputs.get(1)?.clone(),
+                width: *sizes.first()?,
+            },
+        ))
+    }
+
+    fn combine(
+        &self,
+        inputs: &[String],
+        depth: usize,
+        rule: fn(CmpTerm, CmpTerm) -> Option<CmpTerm>,
+    ) -> Option<ResolvedCondition> {
+        let left: ResolvedCondition = self.resolve(inputs.first()?, depth + 1)?;
+        let right: ResolvedCondition = self.resolve(inputs.get(1)?, depth + 1)?;
+        if left.compare != right.compare {
+            return None;
+        }
+        let term: CmpTerm = rule(left.term, right.term)?;
+        Some(ResolvedCondition {
+            term,
+            compare: left.compare,
+            earliest_read: left.earliest_read.min(right.earliest_read),
+        })
+    }
+}
+
+fn defined_names(instruction: &NirInstr) -> Vec<String> {
+    match &instruction.op {
+        NirOp::Value { .. }
+        | NirOp::Copy { .. }
+        | NirOp::Subpiece { .. }
+        | NirOp::RawLoad { .. }
+        | NirOp::Piece { .. } => instruction.operands.first().cloned().into_iter().collect(),
+        NirOp::Deposit { cell, .. } => vec![cell.clone()],
+        NirOp::CallOther { effect } => effect.writes.clone(),
+        NirOp::Nop
+        | NirOp::Const
+        | NirOp::BinOp { .. }
+        | NirOp::Load
+        | NirOp::Store
+        | NirOp::Call { .. }
+        | NirOp::NoReturnCall { .. }
+        | NirOp::TailCall { .. }
+        | NirOp::IndirectCall
+        | NirOp::ExternCall { .. }
+        | NirOp::Branch { .. }
+        | NirOp::CondBranch { .. }
+        | NirOp::Phi
+        | NirOp::Return
+        | NirOp::Interrupt
+        | NirOp::RawStore { .. }
+        | NirOp::Unmodeled { .. } => Vec::new(),
+    }
+}
+
+fn redefines_operand(
+    block: &[NirInstr],
+    earliest_read: usize,
+    cbranch_index: usize,
+    left: &str,
+    right: &str,
+) -> bool {
+    let targets: Vec<ValueId> = [left, right]
+        .into_iter()
+        .filter(|name: &&str| !is_operand_constant(name))
+        .map(ValueId::register)
+        .collect();
+    if targets.is_empty() {
+        return false;
+    }
+    let start: usize = earliest_read.saturating_add(1);
+    for index in start..cbranch_index {
+        let Some(instruction): Option<&NirInstr> = block.get(index) else {
+            continue;
+        };
+        let flow: DefUse = def_use(instruction);
+        if flow
+            .defs
+            .iter()
+            .any(|definition: &ValueId| targets.contains(definition))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+const fn negate_term(term: CmpTerm) -> Option<CmpTerm> {
+    Some(match term {
+        CmpTerm::Eq => CmpTerm::Ne,
+        CmpTerm::Ne => CmpTerm::Eq,
+        CmpTerm::UnsignedLess => CmpTerm::UnsignedGreaterEqual,
+        CmpTerm::UnsignedGreaterEqual => CmpTerm::UnsignedLess,
+        CmpTerm::UnsignedLessEqual => CmpTerm::UnsignedGreater,
+        CmpTerm::UnsignedGreater => CmpTerm::UnsignedLessEqual,
+        CmpTerm::SignedLess => CmpTerm::SignedGreaterEqual,
+        CmpTerm::SignedGreaterEqual => CmpTerm::SignedLess,
+        CmpTerm::SignedLessEqual => CmpTerm::SignedGreater,
+        CmpTerm::SignedGreater => CmpTerm::SignedLessEqual,
+        CmpTerm::SignBit | CmpTerm::OverflowBit => return None,
+    })
+}
+
+const fn combine_xor(left: CmpTerm, right: CmpTerm) -> Option<CmpTerm> {
+    match (left, right) {
+        (CmpTerm::SignBit, CmpTerm::OverflowBit) | (CmpTerm::OverflowBit, CmpTerm::SignBit) => {
+            Some(CmpTerm::SignedLess)
+        }
+        _ => None,
+    }
+}
+
+const fn combine_or(left: CmpTerm, right: CmpTerm) -> Option<CmpTerm> {
+    match (left, right) {
+        (CmpTerm::Eq, CmpTerm::SignedLess) | (CmpTerm::SignedLess, CmpTerm::Eq) => {
+            Some(CmpTerm::SignedLessEqual)
+        }
+        (CmpTerm::Eq, CmpTerm::SignedGreater) | (CmpTerm::SignedGreater, CmpTerm::Eq) => {
+            Some(CmpTerm::SignedGreaterEqual)
+        }
+        (CmpTerm::Eq, CmpTerm::UnsignedLess) | (CmpTerm::UnsignedLess, CmpTerm::Eq) => {
+            Some(CmpTerm::UnsignedLessEqual)
+        }
+        (CmpTerm::Eq, CmpTerm::UnsignedGreater) | (CmpTerm::UnsignedGreater, CmpTerm::Eq) => {
+            Some(CmpTerm::UnsignedGreaterEqual)
+        }
+        _ => None,
+    }
+}
+
+const fn combine_and(left: CmpTerm, right: CmpTerm) -> Option<CmpTerm> {
+    match (left, right) {
+        (CmpTerm::UnsignedGreaterEqual, CmpTerm::Ne)
+        | (CmpTerm::Ne, CmpTerm::UnsignedGreaterEqual) => Some(CmpTerm::UnsignedGreater),
+        (CmpTerm::SignedGreaterEqual, CmpTerm::Ne) | (CmpTerm::Ne, CmpTerm::SignedGreaterEqual) => {
+            Some(CmpTerm::SignedGreater)
+        }
+        (CmpTerm::UnsignedLessEqual, CmpTerm::Ne) | (CmpTerm::Ne, CmpTerm::UnsignedLessEqual) => {
+            Some(CmpTerm::UnsignedLess)
+        }
+        (CmpTerm::SignedLessEqual, CmpTerm::Ne) | (CmpTerm::Ne, CmpTerm::SignedLessEqual) => {
+            Some(CmpTerm::SignedLess)
+        }
+        _ => None,
+    }
+}
+
+const fn comparison_for(term: CmpTerm) -> Option<(ValueOp, bool)> {
+    Some(match term {
+        CmpTerm::Eq => (ValueOp::IntEqual, false),
+        CmpTerm::Ne => (ValueOp::IntNotEqual, false),
+        CmpTerm::UnsignedLess => (ValueOp::IntLess, false),
+        CmpTerm::UnsignedLessEqual => (ValueOp::IntLessEqual, false),
+        CmpTerm::UnsignedGreater => (ValueOp::IntLess, true),
+        CmpTerm::UnsignedGreaterEqual => (ValueOp::IntLessEqual, true),
+        CmpTerm::SignedLess => (ValueOp::IntSignedLess, false),
+        CmpTerm::SignedLessEqual => (ValueOp::IntSignedLessEqual, false),
+        CmpTerm::SignedGreater => (ValueOp::IntSignedLess, true),
+        CmpTerm::SignedGreaterEqual => (ValueOp::IntSignedLessEqual, true),
+        CmpTerm::SignBit | CmpTerm::OverflowBit => return None,
+    })
+}
+
+fn is_zero_operand(operand: &str) -> bool {
+    let body: &str = operand.strip_prefix('-').unwrap_or(operand);
+    if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.bytes().all(|byte: u8| byte == b'0');
+    }
+    !body.is_empty() && body.bytes().all(|byte: u8| byte == b'0')
+}
+
+fn is_operand_constant(operand: &str) -> bool {
+    let body: &str = operand.strip_prefix('-').unwrap_or(operand);
+    if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.bytes().all(|byte: u8| byte.is_ascii_hexdigit());
+    }
+    !body.is_empty() && body.bytes().all(|byte: u8| byte.is_ascii_digit())
+}
+
+fn fresh_temp_base(instructions: &[NirInstr], registers: &[RegisterCell]) -> u64 {
+    let mut highest: Option<u64> = None;
+    let mut consider = |name: &str| {
+        if let Some(rest) = name.strip_prefix('t')
+            && !rest.is_empty()
+            && rest.bytes().all(|byte: u8| byte.is_ascii_digit())
+            && let Ok(value) = rest.parse::<u64>()
+        {
+            highest = Some(highest.map_or(value, |current: u64| current.max(value)));
+        }
+    };
+    for instruction in instructions {
+        for operand in &instruction.operands {
+            consider(operand);
+        }
+        for name in embedded_names(instruction) {
+            consider(&name);
+        }
+    }
+    for cell in registers {
+        consider(&cell.name);
+    }
+    highest.map_or(0, |value: u64| value.saturating_add(1))
+}
+
+fn embedded_names(instruction: &NirInstr) -> Vec<String> {
+    match &instruction.op {
+        NirOp::Value { inputs, .. } => inputs.clone(),
+        NirOp::Copy { src, .. } | NirOp::Subpiece { src, .. } => vec![src.clone()],
+        NirOp::RawLoad { addr, .. } => vec![addr.clone()],
+        NirOp::RawStore { addr, value, .. } => vec![addr.clone(), value.clone()],
+        NirOp::Deposit { cell, value, .. } => vec![cell.clone(), value.clone()],
+        NirOp::Piece { high, low, .. } => vec![high.clone(), low.clone()],
+        NirOp::CallOther { effect } => effect
+            .reads
+            .iter()
+            .chain(effect.writes.iter())
+            .cloned()
+            .collect(),
+        NirOp::Nop
+        | NirOp::Const
+        | NirOp::BinOp { .. }
+        | NirOp::Load
+        | NirOp::Store
+        | NirOp::Call { .. }
+        | NirOp::NoReturnCall { .. }
+        | NirOp::TailCall { .. }
+        | NirOp::IndirectCall
+        | NirOp::ExternCall { .. }
+        | NirOp::Branch { .. }
+        | NirOp::CondBranch { .. }
+        | NirOp::Phi
+        | NirOp::Return
+        | NirOp::Interrupt
+        | NirOp::Unmodeled { .. } => Vec::new(),
+    }
 }
