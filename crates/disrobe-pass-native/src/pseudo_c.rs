@@ -111,6 +111,16 @@ impl Width {
             Self::W8 | Self::W16 | Self::W32 => 31,
         }
     }
+
+    const fn from_typerec(width: disrobe_typerec::Width) -> Option<Self> {
+        match width {
+            disrobe_typerec::Width::Byte => Some(Self::W8),
+            disrobe_typerec::Width::Word => Some(Self::W16),
+            disrobe_typerec::Width::Dword => Some(Self::W32),
+            disrobe_typerec::Width::Qword => Some(Self::W64),
+            disrobe_typerec::Width::Unknown | disrobe_typerec::Width::Oword => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1704,6 +1714,32 @@ fn build_leaf_items(
     })
 }
 
+fn typed_frame_slots(
+    machine_code: &[u8],
+    base: u64,
+    frame: Option<&FramePlan>,
+) -> (Option<Reg>, BTreeMap<i64, SlotCType>) {
+    let Some(frame): Option<&FramePlan> = frame else {
+        return (None, BTreeMap::new());
+    };
+    if frame.base != Reg::Rbp {
+        return (None, BTreeMap::new());
+    }
+    let typed: disrobe_typerec::TypedFunction =
+        disrobe_typerec::recover_function(machine_code, base);
+    let mut slots: BTreeMap<i64, SlotCType> = BTreeMap::new();
+    for (disp, cint) in typed.typed_slots() {
+        if let Some(slot) = SlotCType::from_typerec(cint) {
+            slots.insert(disp, slot);
+        }
+    }
+    if slots.is_empty() {
+        (None, slots)
+    } else {
+        (Some(Reg::Rbp), slots)
+    }
+}
+
 fn recover_leaf_function_calls_impl(
     machine_code: &[u8],
     base: u64,
@@ -1748,8 +1784,12 @@ fn recover_leaf_function_calls_impl(
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns))?;
-    let aggregate_plan: AggregatePlan =
+    let mut aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame_plan.as_ref());
+    let (frame_base, frame_slots): (Option<Reg>, BTreeMap<i64, SlotCType>) =
+        typed_frame_slots(machine_code, base, frame_plan.as_ref());
+    aggregate_plan.frame_base = frame_base;
+    aggregate_plan.frame_slots = frame_slots;
     let source: String = emit_c(
         &structured.body,
         &signature,
@@ -8359,6 +8399,26 @@ fn deref_expr(mem: &MemRef, plan: &AggregatePlan) -> String {
     format!("({rendered})")
 }
 
+fn slot_typed_lvalue(mem: &MemRef, plan: &AggregatePlan) -> Option<String> {
+    let slot: SlotCType = plan.signed_frame_slot(mem)?;
+    let addr: String = addr_expr(mem.base, mem.index, mem.disp);
+    let rendered: String = c_render(|cx| c_deref(cx, slot.c_name(), &addr));
+    Some(format!("({rendered})"))
+}
+
+fn slot_typed_rvalue(mem: &MemRef, plan: &AggregatePlan) -> Option<String> {
+    let slot: SlotCType = plan.signed_frame_slot(mem)?;
+    let addr: String = addr_expr(mem.base, mem.index, mem.disp);
+    Some(c_render(|cx| {
+        let deref: CExpr = c_deref(cx, slot.c_name(), &addr);
+        let narrowed: CExpr = match slot.width {
+            Width::W64 => deref,
+            other => c_cast(cx, width_c_uint(other), deref),
+        };
+        c_cast(cx, "uint64_t", narrowed)
+    }))
+}
+
 fn call_display_name(target: u64, name: Option<&str>) -> String {
     name.map_or_else(|| format!("sub_{target:x}"), str::to_owned)
 }
@@ -8434,6 +8494,9 @@ fn source_expr(src: &Source, width: Width, plan: &AggregatePlan) -> String {
         }
         Source::Lea { base, index, disp } => addr_expr(*base, *index, *disp),
         Source::Mem(mem) => {
+            if let Some(typed) = slot_typed_rvalue(mem, plan) {
+                return typed;
+            }
             let (d, pointer): (String, bool) =
                 aggregate_c_mem_expr(mem, plan, AggregateScalar::Integer(mem.width))
                     .unwrap_or_else(|| (deref_expr(mem, plan), false));
@@ -8524,9 +8587,39 @@ struct AggregateRootPlan {
     origin: Option<AggregateOrigin>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SlotCType {
+    width: Width,
+    signed: bool,
+}
+
+impl SlotCType {
+    fn from_typerec(cint: disrobe_typerec::CIntType) -> Option<Self> {
+        Some(Self {
+            width: Width::from_typerec(cint.width())?,
+            signed: cint.is_signed(),
+        })
+    }
+
+    const fn c_name(self) -> &'static str {
+        match (self.width, self.signed) {
+            (Width::W8, false) => "uint8_t",
+            (Width::W8, true) => "int8_t",
+            (Width::W16, false) => "uint16_t",
+            (Width::W16, true) => "int16_t",
+            (Width::W32, false) => "uint32_t",
+            (Width::W32, true) => "int32_t",
+            (Width::W64, false) => "uint64_t",
+            (Width::W64, true) => "int64_t",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct AggregatePlan {
     roots: Vec<AggregateRootPlan>,
+    frame_base: Option<Reg>,
+    frame_slots: BTreeMap<i64, SlotCType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8554,6 +8647,18 @@ impl AggregatePlan {
         self.roots
             .iter()
             .position(|root: &AggregateRootPlan| root.reg == reg || root.aliases.contains(&reg))
+    }
+
+    fn frame_slot(&self, mem: &MemRef) -> Option<SlotCType> {
+        if mem.index.is_some() || self.frame_base.is_none() || mem.base != self.frame_base {
+            return None;
+        }
+        let slot: SlotCType = self.frame_slots.get(&mem.disp).copied()?;
+        (slot.width == mem.width).then_some(slot)
+    }
+
+    fn signed_frame_slot(&self, mem: &MemRef) -> Option<SlotCType> {
+        self.frame_slot(mem).filter(|slot: &SlotCType| slot.signed)
     }
 
     fn linked_child(&self, parent: Reg, disp: i64) -> Option<usize> {
@@ -10951,7 +11056,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, &sel_var(*var), &cond)
         }
         Stmt::Store { addr, src } => {
-            let target: String = deref_expr(addr, aggregates);
+            let target: String =
+                slot_typed_lvalue(addr, aggregates).unwrap_or_else(|| deref_expr(addr, aggregates));
             let value: String = source_expr(src, addr.width, aggregates);
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &value);

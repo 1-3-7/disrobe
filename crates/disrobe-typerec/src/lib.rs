@@ -21,5 +21,5 @@ pub use grade::{
 };
 pub use lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
 pub use memssa::{MemSsa, VersionInfo};
-pub use recover::{RecoveredFunction, RecoveredObject, RecoveredScalar, recover_function};
+pub use recover::{CIntType, RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
 pub use region::{MemoryAccess, Region, RegionModel, may_alias};

@@ -1,6 +1,6 @@
 use crate::dwarf_gt::{DebugImage, GroundTruthFunction, GroundTruthVar};
 use crate::lattice::Width;
-use crate::recover::{RecoveredFunction, RecoveredObject, RecoveredScalar, recover_function};
+use crate::recover::{RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AxisScore {
@@ -81,7 +81,7 @@ fn rate(count: usize, total: usize) -> f64 {
 }
 
 #[must_use]
-pub fn recover_image(image: &DebugImage) -> Vec<RecoveredFunction> {
+pub fn recover_image(image: &DebugImage) -> Vec<TypedFunction> {
     image
         .functions
         .iter()
@@ -96,34 +96,34 @@ pub fn recover_image(image: &DebugImage) -> Vec<RecoveredFunction> {
 
 #[must_use]
 pub fn grade_image(image: &DebugImage) -> GradeReport {
-    let recovered: Vec<RecoveredFunction> = recover_image(image);
+    let recovered: Vec<TypedFunction> = recover_image(image);
     grade_functions(&image.functions, &recovered)
 }
 
 #[must_use]
 pub fn grade_functions(
     functions: &[GroundTruthFunction],
-    recovered: &[RecoveredFunction],
+    recovered: &[TypedFunction],
 ) -> GradeReport {
     grade_with(
         functions,
         recovered,
-        |recovery: &RecoveredFunction, var: &GroundTruthVar| recovery.slot(var.rbp_disp),
+        |recovery: &TypedFunction, var: &GroundTruthVar| recovery.slot(var.rbp_disp),
     )
 }
 
 #[must_use]
 pub fn grade_functions_split(
     functions: &[GroundTruthFunction],
-    recovered: &[RecoveredFunction],
+    recovered: &[TypedFunction],
 ) -> GradeReport {
     grade_with(functions, recovered, split_scalar)
 }
 
 fn grade_with(
     functions: &[GroundTruthFunction],
-    recovered: &[RecoveredFunction],
-    lookup: impl Fn(&RecoveredFunction, &GroundTruthVar) -> Option<RecoveredScalar>,
+    recovered: &[TypedFunction],
+    lookup: impl Fn(&TypedFunction, &GroundTruthVar) -> Option<RecoveredScalar>,
 ) -> GradeReport {
     let mut report: GradeReport = GradeReport::default();
     for (function, recovery) in functions.iter().zip(recovered.iter()) {
@@ -142,7 +142,7 @@ fn grade_with(
     report
 }
 
-fn split_scalar(recovery: &RecoveredFunction, var: &GroundTruthVar) -> Option<RecoveredScalar> {
+fn split_scalar(recovery: &TypedFunction, var: &GroundTruthVar) -> Option<RecoveredScalar> {
     let mut objects: Vec<RecoveredObject> =
         recovery.objects_covering(var.rbp_disp, var.scope_lo, var.scope_hi);
     objects.sort_by_key(|object: &RecoveredObject| object.live_lo);
@@ -152,7 +152,7 @@ fn split_scalar(recovery: &RecoveredFunction, var: &GroundTruthVar) -> Option<Re
 #[must_use]
 pub fn grade_identity(
     functions: &[GroundTruthFunction],
-    recovered: &[RecoveredFunction],
+    recovered: &[TypedFunction],
 ) -> IdentityReport {
     let mut report: IdentityReport = IdentityReport::default();
     for (function, recovery) in functions.iter().zip(recovered.iter()) {
@@ -164,7 +164,7 @@ pub fn grade_identity(
 fn grade_identity_one(
     report: &mut IdentityReport,
     function: &GroundTruthFunction,
-    recovery: &RecoveredFunction,
+    recovery: &TypedFunction,
 ) {
     for (position, var) in function.vars.iter().enumerate() {
         report.variables += 1;
@@ -309,11 +309,11 @@ mod tests {
         }
     }
 
-    fn recovered(a: RecoveredScalar, b: RecoveredScalar) -> RecoveredFunction {
+    fn recovered(a: RecoveredScalar, b: RecoveredScalar) -> TypedFunction {
         let mut slots: BTreeMap<i64, RecoveredScalar> = BTreeMap::new();
         slots.insert(16, a);
         slots.insert(24, b);
-        RecoveredFunction {
+        TypedFunction {
             rbp_slots: slots,
             objects: Vec::new(),
             has_frame_pointer: true,
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn perfect_recovery_scores_full_marks() {
-        let rec: RecoveredFunction = recovered(
+        let rec: TypedFunction = recovered(
             RecoveredScalar {
                 width: Width::Dword,
                 sign: Sign::Signed,
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn abstained_sign_lowers_recall_not_precision() {
-        let rec: RecoveredFunction = recovered(
+        let rec: TypedFunction = recovered(
             RecoveredScalar {
                 width: Width::Dword,
                 sign: Sign::Signed,
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn wrong_sign_is_detected_by_grader() {
-        let rec: RecoveredFunction = recovered(
+        let rec: TypedFunction = recovered(
             RecoveredScalar {
                 width: Width::Dword,
                 sign: Sign::Unsigned,
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn split_recovery_has_no_false_merge() {
         let function: GroundTruthFunction = reuse_function();
-        let recovery: RecoveredFunction = RecoveredFunction {
+        let recovery: TypedFunction = TypedFunction {
             rbp_slots: BTreeMap::new(),
             objects: vec![
                 object(0, Sign::Signed, 0x2004, 0x2010),
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn merged_recovery_flags_false_merge() {
         let function: GroundTruthFunction = reuse_function();
-        let recovery: RecoveredFunction = RecoveredFunction {
+        let recovery: TypedFunction = TypedFunction {
             rbp_slots: BTreeMap::new(),
             objects: vec![object(0, Sign::Unknown, 0x2004, 0x2030)],
             has_frame_pointer: true,
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn over_split_recovery_flags_false_split() {
         let function: GroundTruthFunction = gt_function();
-        let recovery: RecoveredFunction = RecoveredFunction {
+        let recovery: TypedFunction = TypedFunction {
             rbp_slots: BTreeMap::new(),
             objects: vec![
                 object(16, Sign::Signed, 0x1000, 0x1004),

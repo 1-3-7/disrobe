@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cells::CellType;
 use crate::constraint::solve;
@@ -40,14 +40,71 @@ impl RecoveredObject {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CIntType {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+}
+
+impl CIntType {
+    #[must_use]
+    pub const fn c_name(self) -> &'static str {
+        match self {
+            Self::I8 => "int8_t",
+            Self::U8 => "uint8_t",
+            Self::I16 => "int16_t",
+            Self::U16 => "uint16_t",
+            Self::I32 => "int32_t",
+            Self::U32 => "uint32_t",
+            Self::I64 => "int64_t",
+            Self::U64 => "uint64_t",
+        }
+    }
+
+    #[must_use]
+    pub const fn width(self) -> Width {
+        match self {
+            Self::I8 | Self::U8 => Width::Byte,
+            Self::I16 | Self::U16 => Width::Word,
+            Self::I32 | Self::U32 => Width::Dword,
+            Self::I64 | Self::U64 => Width::Qword,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
+    }
+
+    const fn from_width_sign(width: Width, sign: Sign) -> Option<Self> {
+        match (width, sign) {
+            (Width::Byte, Sign::Signed) => Some(Self::I8),
+            (Width::Byte, Sign::Unsigned) => Some(Self::U8),
+            (Width::Word, Sign::Signed) => Some(Self::I16),
+            (Width::Word, Sign::Unsigned) => Some(Self::U16),
+            (Width::Dword, Sign::Signed) => Some(Self::I32),
+            (Width::Dword, Sign::Unsigned) => Some(Self::U32),
+            (Width::Qword, Sign::Signed) => Some(Self::I64),
+            (Width::Qword, Sign::Unsigned) => Some(Self::U64),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct RecoveredFunction {
+pub struct TypedFunction {
     pub rbp_slots: BTreeMap<i64, RecoveredScalar>,
     pub objects: Vec<RecoveredObject>,
     pub has_frame_pointer: bool,
 }
 
-impl RecoveredFunction {
+impl TypedFunction {
     #[must_use]
     pub fn slot(&self, rbp_disp: i64) -> Option<RecoveredScalar> {
         self.rbp_slots.get(&rbp_disp).copied()
@@ -61,14 +118,43 @@ impl RecoveredFunction {
             .copied()
             .collect()
     }
+
+    #[must_use]
+    pub fn typed_slot(&self, rbp_disp: i64) -> Option<CIntType> {
+        let live: Vec<&RecoveredObject> = self
+            .objects
+            .iter()
+            .filter(|object: &&RecoveredObject| object.offset == rbp_disp)
+            .collect();
+        let [object]: [&RecoveredObject; 1] = live.try_into().ok()?;
+        if object.escaped || object.sign_conflict {
+            return None;
+        }
+        CIntType::from_width_sign(object.width, object.sign)
+    }
+
+    #[must_use]
+    pub fn typed_slots(&self) -> BTreeMap<i64, CIntType> {
+        let mut offsets: BTreeSet<i64> = BTreeSet::new();
+        for object in &self.objects {
+            offsets.insert(object.offset);
+        }
+        let mut out: BTreeMap<i64, CIntType> = BTreeMap::new();
+        for offset in offsets {
+            if let Some(cint) = self.typed_slot(offset) {
+                out.insert(offset, cint);
+            }
+        }
+        out
+    }
 }
 
 #[must_use]
-pub fn recover_function(bytes: &[u8], base: u64) -> RecoveredFunction {
+pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
     let (rbp_slots, has_frame_pointer): (BTreeMap<i64, RecoveredScalar>, bool) =
         recover_merge(bytes, base);
     let objects: Vec<RecoveredObject> = recover_split(bytes, base);
-    RecoveredFunction {
+    TypedFunction {
         rbp_slots,
         objects,
         has_frame_pointer,
@@ -151,7 +237,7 @@ mod tests {
             0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x48, 0xc1,
             0xf8, 0x03, 0x5d, 0xc3,
         ];
-        let recovered: RecoveredFunction = recover_function(bytes, 0x1000);
+        let recovered: TypedFunction = recover_function(bytes, 0x1000);
         assert!(recovered.has_frame_pointer);
         let slot: RecoveredScalar = recovered.slot(0x10).expect("slot present");
         assert_eq!(slot.width, Width::Qword);
@@ -165,7 +251,7 @@ mod tests {
             0x7d, 0x00, 0x02, 0xeb, 0x08, 0x48, 0x89, 0x45, 0x00, 0x48, 0xd1, 0x6d, 0x00, 0x48,
             0x8b, 0x45, 0x00, 0x5d, 0xc3,
         ];
-        let recovered: RecoveredFunction = recover_function(bytes, 0x1000);
+        let recovered: TypedFunction = recover_function(bytes, 0x1000);
         let at_zero: Vec<&RecoveredObject> = recovered
             .objects
             .iter()
@@ -187,5 +273,49 @@ mod tests {
             Sign::Unknown,
             "the merge view abstains on the conflicting reuse",
         );
+    }
+
+    #[test]
+    fn typed_slot_reports_signed_qword_when_single_and_determined() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x48, 0xc1,
+            0xf8, 0x03, 0x5d, 0xc3,
+        ];
+        let recovered: TypedFunction = recover_function(bytes, 0x1000);
+        assert_eq!(recovered.typed_slot(0x10), Some(CIntType::I64));
+        assert!(recovered.typed_slots().get(&0x10) == Some(&CIntType::I64));
+    }
+
+    #[test]
+    fn typed_slot_abstains_on_a_reused_slot_with_two_versions() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x85, 0xc9, 0x7e, 0x0a, 0x48, 0x89, 0x4d, 0x00, 0x48, 0xc1,
+            0x7d, 0x00, 0x02, 0xeb, 0x08, 0x48, 0x89, 0x45, 0x00, 0x48, 0xd1, 0x6d, 0x00, 0x48,
+            0x8b, 0x45, 0x00, 0x5d, 0xc3,
+        ];
+        let recovered: TypedFunction = recover_function(bytes, 0x1000);
+        assert_eq!(recovered.typed_slot(0), None);
+        assert!(!recovered.typed_slots().contains_key(&0));
+    }
+
+    #[test]
+    fn typed_slot_abstains_on_an_escaped_address_taken_slot() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x45, 0x10, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b,
+            0x45, 0x10, 0x5d, 0xc3,
+        ];
+        let recovered: TypedFunction = recover_function(bytes, 0x1000);
+        assert_eq!(recovered.typed_slot(0x10), None);
+    }
+
+    #[test]
+    fn c_int_type_names_and_widths_are_stable() {
+        assert_eq!(CIntType::I32.c_name(), "int32_t");
+        assert_eq!(CIntType::U32.c_name(), "uint32_t");
+        assert_eq!(CIntType::I8.c_name(), "int8_t");
+        assert_eq!(CIntType::U64.c_name(), "uint64_t");
+        assert_eq!(CIntType::I16.width(), Width::Word);
+        assert!(CIntType::I64.is_signed());
+        assert!(!CIntType::U8.is_signed());
     }
 }
