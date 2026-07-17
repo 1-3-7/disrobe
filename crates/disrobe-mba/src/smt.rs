@@ -2,11 +2,13 @@ use std::collections::BTreeMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
-use oxiz::resource_limits::ResourceLimits;
-use oxiz::{Solver, SolverResult, TermId, TermManager};
+use oxiz::{TermId, TermManager};
 
 use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::opaque::{CmpOp, Predicate};
+use crate::symexec::solver_cert::{CertBudget, Certified, certified_check};
+
+const CERT_NODE_BUDGET: usize = 1usize << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmtVerdict {
@@ -303,21 +305,16 @@ fn solve(
         };
         asserted.push(term);
     }
-    let mut solver: Solver = Solver::new();
-    for term in asserted {
-        solver.assert(term, &mut encoder.manager);
-    }
-    solver.set_timeout(budget.timeout);
-    solver.set_conflict_limit(budget.max_conflicts);
-    solver.set_decision_limit(budget.max_decisions);
-    let limits: ResourceLimits = ResourceLimits::new()
-        .with_timeout(budget.timeout)
-        .with_max_conflicts(budget.max_conflicts)
-        .with_max_decisions(budget.max_decisions);
-    match solver.check_with_limits(&mut encoder.manager, &limits) {
-        Ok(SolverResult::Unsat) => SmtVerdict::Unsat,
-        Ok(SolverResult::Sat) => SmtVerdict::Sat,
-        Ok(SolverResult::Unknown) | Err(_) => SmtVerdict::Indeterminate,
+    let cert_budget: CertBudget = CertBudget {
+        timeout: budget.timeout,
+        max_conflicts: budget.max_conflicts,
+        max_decisions: budget.max_decisions,
+        node_budget: CERT_NODE_BUDGET,
+    };
+    match certified_check(&mut encoder.manager, &asserted, cert_budget) {
+        Certified::Unsat => SmtVerdict::Unsat,
+        Certified::Sat => SmtVerdict::Sat,
+        Certified::Abstain => SmtVerdict::Indeterminate,
     }
 }
 

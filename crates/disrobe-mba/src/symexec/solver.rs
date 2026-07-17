@@ -1,10 +1,11 @@
-use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
-use oxiz::resource_limits::ResourceLimits;
-use oxiz::{Solver, SolverResult, TermId, TermManager};
+use oxiz::{TermId, TermManager};
 
+use super::solver_cert::{CertBudget, Certified, certified_check};
 use super::value::{AluOp, BitWidth, CmpOp, Sym, UnaryOp, fold_alu, fold_unary};
+
+const CERT_NODE_BUDGET: usize = 1usize << 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SolverBudget {
@@ -255,28 +256,20 @@ impl SymSolver {
 
     fn check(&mut self, assumptions: &[TermId]) -> Feasible {
         let start: Instant = Instant::now();
-        let timeout: Duration = self.budget.per_query_timeout;
-        let limits: ResourceLimits = ResourceLimits::new()
-            .with_timeout(timeout)
-            .with_max_conflicts(self.budget.max_conflicts)
-            .with_max_decisions(self.budget.max_decisions);
-        let manager: &mut TermManager = &mut self.manager;
-        let outcome: Result<Feasible, Box<dyn std::any::Any + Send>> =
-            panic::catch_unwind(AssertUnwindSafe(|| {
-                let mut solver: Solver = Solver::new();
-                for &term in assumptions {
-                    solver.assert(term, manager);
-                }
-                solver.set_timeout(timeout);
-                match solver.check_with_limits(manager, &limits) {
-                    Ok(SolverResult::Sat) => Feasible::Sat,
-                    Ok(SolverResult::Unsat) => Feasible::Unsat,
-                    Ok(SolverResult::Unknown) | Err(_) => Feasible::Unknown,
-                }
-            }));
+        let cert_budget: CertBudget = CertBudget {
+            timeout: self.budget.per_query_timeout,
+            max_conflicts: self.budget.max_conflicts,
+            max_decisions: self.budget.max_decisions,
+            node_budget: CERT_NODE_BUDGET,
+        };
+        let verdict: Certified = certified_check(&mut self.manager, assumptions, cert_budget);
         self.elapsed = self.elapsed.saturating_add(start.elapsed());
         self.queries = self.queries.wrapping_add(1);
-        outcome.unwrap_or(Feasible::Unknown)
+        match verdict {
+            Certified::Sat => Feasible::Sat,
+            Certified::Unsat => Feasible::Unsat,
+            Certified::Abstain => Feasible::Unknown,
+        }
     }
 }
 

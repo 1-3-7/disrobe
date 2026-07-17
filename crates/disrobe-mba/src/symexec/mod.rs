@@ -11,6 +11,7 @@ pub(crate) mod memory;
 pub(crate) mod nir_devirt;
 pub(crate) mod opaque;
 pub(crate) mod solver;
+pub(crate) mod solver_cert;
 pub(crate) mod state;
 pub(crate) mod value;
 
