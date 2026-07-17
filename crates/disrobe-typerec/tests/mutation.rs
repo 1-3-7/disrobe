@@ -50,6 +50,7 @@ fn mutate(
         .iter()
         .map(|function: &RecoveredFunction| RecoveredFunction {
             has_frame_pointer: function.has_frame_pointer,
+            objects: function.objects.clone(),
             rbp_slots: function
                 .rbp_slots
                 .iter()

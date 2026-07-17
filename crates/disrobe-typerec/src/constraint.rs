@@ -33,6 +33,12 @@ impl Constraint {
                 if cb.class.sign().is_determined() {
                     changed |= store.apply_sign(a, cb.class.sign(), cb.sign_conf);
                 }
+                if ca.class.sign() == Sign::Conflict {
+                    changed |= store.mark_sign_conflict(b);
+                }
+                if cb.class.sign() == Sign::Conflict {
+                    changed |= store.mark_sign_conflict(a);
+                }
                 changed
             }
             Self::Width(a, width, conf) => store.apply_width(a, width, conf),
@@ -136,5 +142,24 @@ mod tests {
         let cell: CellType = store.resolved(a);
         assert_eq!(cell.class.width(), Width::Qword);
         assert_eq!(cell.class.sign(), Sign::Signed);
+    }
+
+    #[test]
+    fn conflict_propagates_across_sign_link_and_abstains() {
+        let mut store: CellStore = CellStore::new();
+        let slot: TypeVar = store.fresh(TypeClass::Top);
+        let reg: TypeVar = store.fresh(TypeClass::Top);
+        let constraints: Vec<Constraint> = vec![
+            Constraint::Sign(slot, Sign::Signed, Confidence::UsageIdiom),
+            Constraint::Sign(slot, Sign::Unsigned, Confidence::UsageIdiom),
+            Constraint::SignLink(reg, slot),
+        ];
+        solve(&mut store, &constraints);
+        assert_eq!(store.resolved(slot).class.sign(), Sign::Conflict);
+        assert_eq!(
+            store.resolved(reg).class.sign(),
+            Sign::Conflict,
+            "a value linked to a contested slot must abstain, never inherit a stale sign",
+        );
     }
 }

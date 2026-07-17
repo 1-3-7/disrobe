@@ -1,6 +1,6 @@
-use crate::dwarf_gt::{DebugImage, GroundTruthFunction};
+use crate::dwarf_gt::{DebugImage, GroundTruthFunction, GroundTruthVar};
 use crate::lattice::Width;
-use crate::recover::{RecoveredFunction, RecoveredScalar, recover_function};
+use crate::recover::{RecoveredFunction, RecoveredObject, RecoveredScalar, recover_function};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AxisScore {
@@ -50,6 +50,36 @@ pub struct GradeReport {
     pub sign_mismatches: Vec<AxisMismatch>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdentityReport {
+    pub variables: usize,
+    pub mapped: usize,
+    pub reused: usize,
+    pub false_merges: usize,
+    pub false_splits: usize,
+}
+
+impl IdentityReport {
+    #[must_use]
+    pub fn false_merge_rate(self) -> f64 {
+        rate(self.false_merges, self.mapped)
+    }
+
+    #[must_use]
+    pub fn false_split_rate(self) -> f64 {
+        rate(self.false_splits, self.mapped)
+    }
+}
+
+fn rate(count: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        f64::from(u32::try_from(count).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(total).unwrap_or(u32::MAX))
+    }
+}
+
 #[must_use]
 pub fn recover_image(image: &DebugImage) -> Vec<RecoveredFunction> {
     image
@@ -75,31 +105,139 @@ pub fn grade_functions(
     functions: &[GroundTruthFunction],
     recovered: &[RecoveredFunction],
 ) -> GradeReport {
+    grade_with(
+        functions,
+        recovered,
+        |recovery: &RecoveredFunction, var: &GroundTruthVar| recovery.slot(var.rbp_disp),
+    )
+}
+
+#[must_use]
+pub fn grade_functions_split(
+    functions: &[GroundTruthFunction],
+    recovered: &[RecoveredFunction],
+) -> GradeReport {
+    grade_with(functions, recovered, split_scalar)
+}
+
+fn grade_with(
+    functions: &[GroundTruthFunction],
+    recovered: &[RecoveredFunction],
+    lookup: impl Fn(&RecoveredFunction, &GroundTruthVar) -> Option<RecoveredScalar>,
+) -> GradeReport {
     let mut report: GradeReport = GradeReport::default();
     for (function, recovery) in functions.iter().zip(recovered.iter()) {
-        grade_one(&mut report, function, recovery);
+        for var in &function.vars {
+            report.total_vars += 1;
+            report.width.total += 1;
+            report.sign.total += 1;
+            let Some(scalar): Option<RecoveredScalar> = lookup(recovery, var) else {
+                continue;
+            };
+            report.mapped_vars += 1;
+            score_width(&mut report, function, var, scalar);
+            score_sign(&mut report, function, var, scalar);
+        }
     }
     report
 }
 
-fn grade_one(report: &mut GradeReport, gt: &GroundTruthFunction, recovery: &RecoveredFunction) {
-    for var in &gt.vars {
-        report.total_vars += 1;
-        report.width.total += 1;
-        report.sign.total += 1;
-        let Some(recovered): Option<RecoveredScalar> = recovery.slot(var.rbp_disp) else {
-            continue;
-        };
-        report.mapped_vars += 1;
-        score_width(report, gt, var, recovered);
-        score_sign(report, gt, var, recovered);
+fn split_scalar(recovery: &RecoveredFunction, var: &GroundTruthVar) -> Option<RecoveredScalar> {
+    let mut objects: Vec<RecoveredObject> =
+        recovery.objects_covering(var.rbp_disp, var.scope_lo, var.scope_hi);
+    objects.sort_by_key(|object: &RecoveredObject| object.live_lo);
+    objects.first().map(RecoveredObject::scalar)
+}
+
+#[must_use]
+pub fn grade_identity(
+    functions: &[GroundTruthFunction],
+    recovered: &[RecoveredFunction],
+) -> IdentityReport {
+    let mut report: IdentityReport = IdentityReport::default();
+    for (function, recovery) in functions.iter().zip(recovered.iter()) {
+        grade_identity_one(&mut report, function, recovery);
     }
+    report
+}
+
+fn grade_identity_one(
+    report: &mut IdentityReport,
+    function: &GroundTruthFunction,
+    recovery: &RecoveredFunction,
+) {
+    for (position, var) in function.vars.iter().enumerate() {
+        report.variables += 1;
+        if shares_offset_with_other_type(function, position, var) {
+            report.reused += 1;
+        }
+        let objects: Vec<RecoveredObject> =
+            recovery.objects_covering(var.rbp_disp, var.scope_lo, var.scope_hi);
+        if objects.is_empty() {
+            continue;
+        }
+        report.mapped += 1;
+        if objects.len() >= 2 {
+            report.false_splits += 1;
+        }
+        if objects
+            .iter()
+            .any(|object: &RecoveredObject| covers_differently_typed(function, position, *object))
+        {
+            report.false_merges += 1;
+        }
+    }
+}
+
+fn shares_offset_with_other_type(
+    function: &GroundTruthFunction,
+    subject: usize,
+    var: &GroundTruthVar,
+) -> bool {
+    for (other, candidate) in function.vars.iter().enumerate() {
+        if other == subject {
+            continue;
+        }
+        if candidate.rbp_disp == var.rbp_disp && differing_type(candidate, var) {
+            return true;
+        }
+    }
+    false
+}
+
+fn covers_differently_typed(
+    function: &GroundTruthFunction,
+    subject: usize,
+    object: RecoveredObject,
+) -> bool {
+    let subject_var: &GroundTruthVar = &function.vars[subject];
+    for (other, candidate) in function.vars.iter().enumerate() {
+        if other == subject {
+            continue;
+        }
+        if candidate.rbp_disp != object.offset {
+            continue;
+        }
+        if object.covers(candidate.scope_lo, candidate.scope_hi)
+            && differing_type(candidate, subject_var)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn differing_type(a: &GroundTruthVar, b: &GroundTruthVar) -> bool {
+    if a.width != b.width {
+        return true;
+    }
+    a.sign.is_determined() && b.sign.is_determined() && a.sign != b.sign
 }
 
 fn score_width(
     report: &mut GradeReport,
     gt: &GroundTruthFunction,
-    var: &crate::dwarf_gt::GroundTruthVar,
+    var: &GroundTruthVar,
     recovered: RecoveredScalar,
 ) {
     if recovered.width == Width::Unknown {
@@ -121,7 +259,7 @@ fn score_width(
 fn score_sign(
     report: &mut GradeReport,
     gt: &GroundTruthFunction,
-    var: &crate::dwarf_gt::GroundTruthVar,
+    var: &GroundTruthVar,
     recovered: RecoveredScalar,
 ) {
     if !recovered.sign.is_determined() {
@@ -145,9 +283,19 @@ fn score_sign(
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::dwarf_gt::GroundTruthVar;
     use crate::lattice::Sign;
     use std::collections::BTreeMap;
+
+    fn gt_var(name: &str, disp: i64, width: Width, sign: Sign) -> GroundTruthVar {
+        GroundTruthVar {
+            name: name.to_owned(),
+            rbp_disp: disp,
+            width,
+            sign,
+            scope_lo: 0x1000,
+            scope_hi: 0x1010,
+        }
+    }
 
     fn gt_function() -> GroundTruthFunction {
         GroundTruthFunction {
@@ -155,18 +303,8 @@ mod tests {
             low_pc: 0x1000,
             high_pc: 0x1010,
             vars: vec![
-                GroundTruthVar {
-                    name: "a".to_owned(),
-                    rbp_disp: 16,
-                    width: Width::Dword,
-                    sign: Sign::Signed,
-                },
-                GroundTruthVar {
-                    name: "b".to_owned(),
-                    rbp_disp: 24,
-                    width: Width::Byte,
-                    sign: Sign::Unsigned,
-                },
+                gt_var("a", 16, Width::Dword, Sign::Signed),
+                gt_var("b", 24, Width::Byte, Sign::Unsigned),
             ],
         }
     }
@@ -177,6 +315,7 @@ mod tests {
         slots.insert(24, b);
         RecoveredFunction {
             rbp_slots: slots,
+            objects: Vec::new(),
             has_frame_pointer: true,
         }
     }
@@ -241,5 +380,89 @@ mod tests {
         let report: GradeReport = grade_functions(&[gt_function()], &[rec]);
         assert!(report.sign.precision() < 1.0);
         assert_eq!(report.sign_mismatches.len(), 1);
+    }
+
+    fn reuse_function() -> GroundTruthFunction {
+        GroundTruthFunction {
+            name: "reuse".to_owned(),
+            low_pc: 0x2000,
+            high_pc: 0x2040,
+            vars: vec![
+                GroundTruthVar {
+                    name: "a".to_owned(),
+                    rbp_disp: 0,
+                    width: Width::Qword,
+                    sign: Sign::Signed,
+                    scope_lo: 0x2000,
+                    scope_hi: 0x2020,
+                },
+                GroundTruthVar {
+                    name: "b".to_owned(),
+                    rbp_disp: 0,
+                    width: Width::Qword,
+                    sign: Sign::Unsigned,
+                    scope_lo: 0x2020,
+                    scope_hi: 0x2040,
+                },
+            ],
+        }
+    }
+
+    fn object(offset: i64, sign: Sign, lo: u64, hi: u64) -> RecoveredObject {
+        RecoveredObject {
+            offset,
+            width: Width::Qword,
+            sign,
+            sign_conflict: false,
+            live_lo: lo,
+            live_hi: hi,
+            escaped: false,
+        }
+    }
+
+    #[test]
+    fn split_recovery_has_no_false_merge() {
+        let function: GroundTruthFunction = reuse_function();
+        let recovery: RecoveredFunction = RecoveredFunction {
+            rbp_slots: BTreeMap::new(),
+            objects: vec![
+                object(0, Sign::Signed, 0x2004, 0x2010),
+                object(0, Sign::Unsigned, 0x2024, 0x2030),
+            ],
+            has_frame_pointer: true,
+        };
+        let report: IdentityReport = grade_identity(&[function], &[recovery]);
+        assert_eq!(report.reused, 2);
+        assert_eq!(report.false_merges, 0);
+        assert_eq!(report.false_splits, 0);
+        assert_eq!(report.mapped, 2);
+    }
+
+    #[test]
+    fn merged_recovery_flags_false_merge() {
+        let function: GroundTruthFunction = reuse_function();
+        let recovery: RecoveredFunction = RecoveredFunction {
+            rbp_slots: BTreeMap::new(),
+            objects: vec![object(0, Sign::Unknown, 0x2004, 0x2030)],
+            has_frame_pointer: true,
+        };
+        let report: IdentityReport = grade_identity(&[function], &[recovery]);
+        assert_eq!(report.false_merges, 2, "one object spans two typed vars");
+        assert_eq!(report.false_splits, 0);
+    }
+
+    #[test]
+    fn over_split_recovery_flags_false_split() {
+        let function: GroundTruthFunction = gt_function();
+        let recovery: RecoveredFunction = RecoveredFunction {
+            rbp_slots: BTreeMap::new(),
+            objects: vec![
+                object(16, Sign::Signed, 0x1000, 0x1004),
+                object(16, Sign::Signed, 0x1006, 0x100a),
+            ],
+            has_frame_pointer: true,
+        };
+        let report: IdentityReport = grade_identity(&[function], &[recovery]);
+        assert_eq!(report.false_splits, 1);
     }
 }
