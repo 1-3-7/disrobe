@@ -217,7 +217,8 @@ pub(super) fn extend_window_over_split_handler(
                 })
                 .max();
             if let Some(cold) = cold_end {
-                let needed: usize = (handler_join(stream, cold, stream.ops.len())).max(cold + 1);
+                let needed: usize =
+                    handler_cold_cleanup_end(stream, cold, stream.ops.len()).max(cold + 1);
                 if needed > end {
                     end = needed;
                     grew = true;
