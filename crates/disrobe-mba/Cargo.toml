@@ -17,7 +17,7 @@ workspace = true
 [features]
 default = ["smt-verify"]
 smt-verify = []
-smt-solver = ["dep:oxiz", "dep:disrobe-nir"]
+smt-solver = ["smt-verify", "dep:oxiz", "dep:disrobe-nir"]
 
 [dependencies]
 serde = { workspace = true }

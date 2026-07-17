@@ -2,6 +2,11 @@ use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::opaque::{CmpOp, OpaqueVerdict, Predicate};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "smt-solver")]
+use oxiz::core::ast::TermKind;
+#[cfg(feature = "smt-solver")]
+use oxiz::{Term, TermId, TermManager};
+
 const MEM_VAR_BASE: u32 = 1u32 << 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -918,6 +923,278 @@ fn static_shift(value: &[NodeId], distance: usize, dir: ShiftDir) -> Vec<NodeId>
         }
     }
     out
+}
+
+#[cfg(feature = "smt-solver")]
+#[derive(Debug)]
+struct TermBlaster<'a> {
+    manager: &'a TermManager,
+    bdd: Bdd,
+    var_bits: BTreeMap<TermId, Vec<NodeId>>,
+    bv_cache: BTreeMap<TermId, Vec<NodeId>>,
+    bool_cache: BTreeMap<TermId, NodeId>,
+    budget: usize,
+}
+
+#[cfg(feature = "smt-solver")]
+impl TermBlaster<'_> {
+    fn width_of(&self, id: TermId) -> Option<u32> {
+        let term: &Term = self.manager.get(id)?;
+        self.manager.sorts.get(term.sort)?.bitvec_width()
+    }
+
+    fn is_bitvec(&self, id: TermId) -> bool {
+        self.width_of(id).is_some()
+    }
+
+    fn bv(&mut self, id: TermId) -> Option<Vec<NodeId>> {
+        if let Some(cached) = self.bv_cache.get(&id) {
+            return Some(cached.clone());
+        }
+        if self.budget == 0 {
+            return None;
+        }
+        self.budget -= 1;
+        let kind: TermKind = self.manager.get(id)?.kind.clone();
+        let bits: Vec<NodeId> = match kind {
+            TermKind::BitVecConst { value, width } => {
+                if width > 64 {
+                    return None;
+                }
+                let low: u64 = value.iter_u64_digits().next().unwrap_or(0);
+                const_bits(low, width as usize)
+            }
+            TermKind::Var(_) => self.var_bits.get(&id).cloned()?,
+            TermKind::BvNot(a) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                bit_not(&mut self.bdd, &x)?
+            }
+            TermKind::BvAnd(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                bit_and(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvOr(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                bit_or(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvXor(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                bit_xor(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvAdd(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                ripple_add(&mut self.bdd, &x, &y).map(|(sum, _)| sum)?
+            }
+            TermKind::BvSub(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                ripple_sub(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvMul(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                multiply(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvShl(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let bits: usize = x.len();
+                shift_left(&mut self.bdd, &x, &y, bits)?
+            }
+            TermKind::BvLshr(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let bits: usize = x.len();
+                shift_right(&mut self.bdd, &x, &y, bits)?
+            }
+            TermKind::Ite(c, t, e) => {
+                let selector: NodeId = self.bool(c)?;
+                let on_true: Vec<NodeId> = self.bv(t)?;
+                let on_false: Vec<NodeId> = self.bv(e)?;
+                select_word(&mut self.bdd, selector, &on_true, &on_false)?
+            }
+            TermKind::BvConcat(high, low) => {
+                let high_bits: Vec<NodeId> = self.bv(high)?;
+                let low_bits: Vec<NodeId> = self.bv(low)?;
+                let mut out: Vec<NodeId> = low_bits;
+                out.extend(high_bits);
+                out
+            }
+            TermKind::BvExtract { high, low, arg } => {
+                let source: Vec<NodeId> = self.bv(arg)?;
+                let hi: usize = high as usize;
+                let lo: usize = low as usize;
+                if hi >= source.len() || lo > hi {
+                    return None;
+                }
+                source[lo..=hi].to_vec()
+            }
+            _ => return None,
+        };
+        self.bv_cache.insert(id, bits.clone());
+        Some(bits)
+    }
+
+    fn bool(&mut self, id: TermId) -> Option<NodeId> {
+        if let Some(cached) = self.bool_cache.get(&id) {
+            return Some(*cached);
+        }
+        if self.budget == 0 {
+            return None;
+        }
+        self.budget -= 1;
+        let kind: TermKind = self.manager.get(id)?.kind.clone();
+        let node: NodeId = match kind {
+            TermKind::True => ONE,
+            TermKind::False => ZERO,
+            TermKind::Not(a) => {
+                let x: NodeId = self.bool(a)?;
+                self.bdd.not(x)?
+            }
+            TermKind::And(args) => {
+                let mut acc: NodeId = ONE;
+                for arg in args {
+                    let node: NodeId = self.bool(arg)?;
+                    acc = self.bdd.and(acc, node)?;
+                }
+                acc
+            }
+            TermKind::Or(args) => {
+                let mut acc: NodeId = ZERO;
+                for arg in args {
+                    let node: NodeId = self.bool(arg)?;
+                    acc = self.bdd.or(acc, node)?;
+                }
+                acc
+            }
+            TermKind::Xor(a, b) => {
+                let x: NodeId = self.bool(a)?;
+                let y: NodeId = self.bool(b)?;
+                self.bdd.xor(x, y)?
+            }
+            TermKind::Eq(a, b) => {
+                if self.is_bitvec(a) {
+                    let x: Vec<NodeId> = self.bv(a)?;
+                    let y: Vec<NodeId> = self.bv(b)?;
+                    word_eq(&mut self.bdd, &x, &y)?
+                } else {
+                    let x: NodeId = self.bool(a)?;
+                    let y: NodeId = self.bool(b)?;
+                    let diff: NodeId = self.bdd.xor(x, y)?;
+                    self.bdd.not(diff)?
+                }
+            }
+            TermKind::BvUlt(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                unsigned_lt(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvUle(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let greater: NodeId = unsigned_lt(&mut self.bdd, &y, &x)?;
+                self.bdd.not(greater)?
+            }
+            TermKind::BvSlt(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                signed_lt(&mut self.bdd, &x, &y)?
+            }
+            TermKind::BvSle(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let greater: NodeId = signed_lt(&mut self.bdd, &y, &x)?;
+                self.bdd.not(greater)?
+            }
+            TermKind::Ite(c, t, e) => {
+                let selector: NodeId = self.bool(c)?;
+                let on_true: NodeId = self.bool(t)?;
+                let on_false: NodeId = self.bool(e)?;
+                mux(&mut self.bdd, selector, on_true, on_false)?
+            }
+            _ => return None,
+        };
+        self.bool_cache.insert(id, node);
+        Some(node)
+    }
+}
+
+#[cfg(feature = "smt-solver")]
+pub(crate) fn term_conjunction_unsat(
+    manager: &TermManager,
+    assumptions: &[TermId],
+    node_budget: usize,
+) -> bool {
+    if assumptions.is_empty() {
+        return false;
+    }
+    let mut vars: BTreeMap<TermId, u32> = BTreeMap::new();
+    for &assumption in assumptions {
+        for var in manager.free_vars(assumption) {
+            let Some(term): Option<&Term> = manager.get(var) else {
+                return false;
+            };
+            let Some(width): Option<u32> = manager
+                .sorts
+                .get(term.sort)
+                .and_then(oxiz::Sort::bitvec_width)
+            else {
+                return false;
+            };
+            if width > 64 {
+                return false;
+            }
+            vars.insert(var, width);
+        }
+    }
+    let mut bdd: Bdd = Bdd::new(node_budget);
+    let mut var_bits: BTreeMap<TermId, Vec<NodeId>> = BTreeMap::new();
+    for (&var, &width) in &vars {
+        var_bits.insert(var, vec![ZERO; width as usize]);
+    }
+    let max_width: u32 = vars.values().copied().max().unwrap_or(0);
+    let mut label: u32 = 0;
+    for bit in 0..max_width {
+        for (&var, &width) in &vars {
+            if bit < width {
+                let Some(node): Option<NodeId> = bdd.make_var(label) else {
+                    return false;
+                };
+                let Some(next): Option<u32> = label.checked_add(1) else {
+                    return false;
+                };
+                label = next;
+                if let Some(slot) = var_bits.get_mut(&var)
+                    && let Some(cell) = slot.get_mut(bit as usize)
+                {
+                    *cell = node;
+                }
+            }
+        }
+    }
+    let mut blaster: TermBlaster = TermBlaster {
+        manager,
+        bdd,
+        var_bits,
+        bv_cache: BTreeMap::new(),
+        bool_cache: BTreeMap::new(),
+        budget: node_budget,
+    };
+    let mut conjunction: NodeId = ONE;
+    for &assumption in assumptions {
+        let Some(node): Option<NodeId> = blaster.bool(assumption) else {
+            return false;
+        };
+        let Some(next): Option<NodeId> = blaster.bdd.and(conjunction, node) else {
+            return false;
+        };
+        conjunction = next;
+    }
+    conjunction == ZERO
 }
 
 #[cfg(test)]
