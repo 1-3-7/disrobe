@@ -145,19 +145,25 @@ const MAX_SOURCEDEFENDER_INFLATE: usize = 256 * 1024 * 1024;
 
 #[inline]
 fn zlib_inflate(data: &[u8]) -> Result<Vec<u8>> {
+    zlib_inflate_bounded(data, MAX_SOURCEDEFENDER_INFLATE)
+}
+
+#[inline]
+fn zlib_inflate_bounded(data: &[u8], cap: usize) -> Result<Vec<u8>> {
     let decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(data);
-    let cap: usize = data.len().saturating_mul(2).min(MAX_SOURCEDEFENDER_INFLATE);
-    let mut out: Vec<u8> = Vec::with_capacity(cap);
+    let prealloc: usize = data.len().saturating_mul(2).min(cap);
+    let mut out: Vec<u8> = Vec::with_capacity(prealloc);
+    let limit: u64 = (cap as u64).saturating_add(1);
     decoder
-        .take(MAX_SOURCEDEFENDER_INFLATE as u64 + 1)
+        .take(limit)
         .read_to_end(&mut out)
         .map_err(|e| Error::Base85 {
             field: "zlib".to_owned(),
             message: format!("inflate failed: {e}"),
         })?;
-    if out.len() > MAX_SOURCEDEFENDER_INFLATE {
+    if out.len() > cap {
         dbg_kv("zlib-inflate-cap", || {
-            format!("output exceeded {MAX_SOURCEDEFENDER_INFLATE}-byte cap, refusing")
+            format!("output exceeded {cap}-byte cap, refusing")
         });
         return Err(Error::Base85 {
             field: "zlib".to_owned(),
@@ -313,5 +319,48 @@ mod tests {
             unreachable!("decode z failed")
         };
         assert_eq!(out, vec![0u8; 4]);
+    }
+
+    fn zlib_compress(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder: flate2::write::ZlibEncoder<Vec<u8>> =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        let Ok(()): std::io::Result<()> = encoder.write_all(bytes) else {
+            unreachable!("zlib write_all failed")
+        };
+        let Ok(compressed): std::io::Result<Vec<u8>> = encoder.finish() else {
+            unreachable!("zlib finish failed")
+        };
+        compressed
+    }
+
+    #[test]
+    fn zlib_inflate_accepts_stream_within_cap() {
+        let payload: Vec<u8> = vec![0u8; 4096];
+        let compressed: Vec<u8> = zlib_compress(&payload);
+        let Ok(out): Result<Vec<u8>> = zlib_inflate_bounded(&compressed, 1 << 20) else {
+            unreachable!("under-cap inflate must succeed")
+        };
+        assert_eq!(out, payload);
+    }
+
+    #[test]
+    fn zlib_inflate_rejects_decompression_bomb_over_cap() {
+        let inflated_len: usize = 8 * 1024 * 1024;
+        let compressed: Vec<u8> = zlib_compress(&vec![0u8; inflated_len]);
+        assert!(
+            compressed.len() < 128 * 1024,
+            "a run of zeros must compress far below its inflated size"
+        );
+        let cap: usize = 64 * 1024;
+        let outcome: Result<Vec<u8>> = zlib_inflate_bounded(&compressed, cap);
+        let Err(err): Result<Vec<u8>> = outcome else {
+            unreachable!("a bomb inflating past the cap must be refused")
+        };
+        assert!(
+            matches!(&err, Error::Base85 { field, message }
+                if field == "zlib" && message.contains("exceeds cap")),
+            "expected the decompressed-size cap to abort inflation, got {err:?}"
+        );
     }
 }
