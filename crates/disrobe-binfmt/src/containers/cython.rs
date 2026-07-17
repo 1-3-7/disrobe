@@ -83,6 +83,7 @@ pub struct CythonModule {
     pub source_files: Vec<String>,
     pub has_debug_line: bool,
     pub has_debug_info: bool,
+    pub truncated: bool,
 }
 
 struct LoadedSection<'d> {
@@ -90,6 +91,7 @@ struct LoadedSection<'d> {
     data: &'d [u8],
     executable: bool,
     readable: bool,
+    scan_priority: u8,
 }
 
 struct AddressSpace<'d> {
@@ -221,7 +223,7 @@ pub fn recover_cython(bytes: &[u8]) -> Result<CythonModule> {
     let mut classes: BTreeMap<String, CythonClass> = BTreeMap::new();
 
     recover_from_symbols(&file, &space, &mut merged, &mut classes);
-    recover_structural(&space, &mut merged);
+    let truncated: bool = recover_structural(&space, &mut merged);
     enrich_class_docs(&space, &mut classes);
 
     let mut functions: Vec<CythonFunction> = merged.into_values().collect();
@@ -248,6 +250,7 @@ pub fn recover_cython(bytes: &[u8]) -> Result<CythonModule> {
         source_files,
         has_debug_line,
         has_debug_info,
+        truncated,
     })
 }
 
@@ -286,11 +289,13 @@ fn build_address_space<'d>(file: &ObjFile<'d>) -> AddressSpace<'d> {
                 | SectionKind::UninitializedData
         );
         let base: u64 = section.address();
+        let scan_priority: u8 = structural_scan_priority(section.name().unwrap_or(""), kind);
         sections.push(LoadedSection {
             address: base,
             data,
             executable,
             readable,
+            scan_priority,
         });
 
         for (offset, reloc) in section.relocations() {
@@ -335,6 +340,16 @@ fn build_address_space<'d>(file: &ObjFile<'d>) -> AddressSpace<'d> {
 fn insert_reloc_target(targets: &mut BTreeMap<u64, u64>, site: u64, value: Option<u64>) {
     if let Some(resolved) = value.filter(|v: &u64| *v != 0) {
         targets.entry(site).or_insert(resolved);
+    }
+}
+
+fn structural_scan_priority(name: &str, kind: SectionKind) -> u8 {
+    if name.starts_with(".data.rel.ro") || matches!(kind, SectionKind::ReadOnlyDataWithRel) {
+        0
+    } else if name == ".data" || matches!(kind, SectionKind::Data) {
+        1
+    } else {
+        2
     }
 }
 
@@ -460,11 +475,13 @@ fn register_function(
 fn recover_structural(
     space: &AddressSpace<'_>,
     functions: &mut BTreeMap<(String, u64), CythonFunction>,
-) {
+) -> bool {
     let record_size: usize = space.record_size();
     let mut emitted: usize = 0;
     let mut attempts: usize = 0;
-    for sec_index in 0..space.sections.len() {
+    let mut order: Vec<usize> = (0..space.sections.len()).collect();
+    order.sort_by_key(|&i: &usize| (space.sections[i].scan_priority, i));
+    for sec_index in order {
         let (base, len, readable, executable): (u64, usize, bool, bool) = {
             let sec: &LoadedSection<'_> = &space.sections[sec_index];
             (sec.address, sec.data.len(), sec.readable, sec.executable)
@@ -475,7 +492,7 @@ fn recover_structural(
         let mut offset: usize = 0;
         while offset + record_size <= len {
             if attempts >= MAX_STRUCTURAL_SCAN_ATTEMPTS {
-                return;
+                return true;
             }
             attempts += 1;
             let va: u64 = base.wrapping_add(offset as u64);
@@ -485,12 +502,13 @@ fn recover_structural(
                     .or_insert(record.func);
                 emitted += 1;
                 if emitted >= MAX_STRUCTURAL_RECORDS {
-                    return;
+                    return true;
                 }
             }
             offset += space.pointer_width;
         }
     }
+    false
 }
 
 fn walk_method_table(
@@ -1435,6 +1453,214 @@ mod tests {
                 .source_files
                 .iter()
                 .any(|s: &String| s == "relocmod.pyx")
+        );
+    }
+
+    fn build_large_stripped_elf() -> Vec<u8> {
+        let text_base: u64 = 0x1000;
+        let rodata_base: u64 = 0x10000;
+
+        let text: Vec<u8> = vec![0x90u8; 16];
+
+        let mut rodata: Vec<u8> = Vec::new();
+        let fn_name: u64 = rodata_base + rodata.len() as u64;
+        rodata.extend_from_slice(b"trunc_fn\0");
+        let fn_doc: u64 = rodata_base + rodata.len() as u64;
+        rodata.extend_from_slice(b"trunc_fn(x) -> int\n\nStructural doc.\0");
+        rodata.extend_from_slice(b"__pyx_bigmod\0");
+        let target_len: usize = 16_000_128;
+        if rodata.len() < target_len {
+            rodata.resize(target_len, 0u8);
+        }
+
+        let data_base: u64 = {
+            let end: u64 = rodata_base + rodata.len() as u64;
+            (end + 0xfff) & !0xfff
+        };
+        let data: Vec<u8> = method_def_bytes(fn_name, text_base, 0x82, fn_doc);
+
+        let mut strtab: Vec<u8> = vec![0u8];
+        let pyinit_name: u32 = strtab.len() as u32;
+        strtab.extend_from_slice(b"PyInit_bigmod");
+        strtab.push(0);
+
+        let mut symtab: Vec<u8> = vec![0u8; 24];
+        push_u32(&mut symtab, pyinit_name);
+        symtab.push((1 << 4) | 2);
+        symtab.push(0);
+        push_u16(&mut symtab, 1);
+        push_u64(&mut symtab, text_base);
+        push_u64(&mut symtab, 0);
+
+        let mut shstr: Vec<u8> = vec![0u8];
+        let name_off = |s: &mut Vec<u8>, n: &str| -> u32 {
+            let off: u32 = s.len() as u32;
+            s.extend_from_slice(n.as_bytes());
+            s.push(0);
+            off
+        };
+        let n_text: u32 = name_off(&mut shstr, ".text");
+        let n_rodata: u32 = name_off(&mut shstr, ".rodata");
+        let n_data: u32 = name_off(&mut shstr, ".data");
+        let n_symtab: u32 = name_off(&mut shstr, ".symtab");
+        let n_strtab: u32 = name_off(&mut shstr, ".strtab");
+        let n_shstr: u32 = name_off(&mut shstr, ".shstrtab");
+
+        let header_len: u64 = 64;
+        let text_off: u64 = header_len;
+        let rodata_off: u64 = text_off + text.len() as u64;
+        let data_off: u64 = rodata_off + rodata.len() as u64;
+        let symtab_off: u64 = data_off + data.len() as u64;
+        let strtab_off: u64 = symtab_off + symtab.len() as u64;
+        let shstr_off: u64 = strtab_off + strtab.len() as u64;
+        let shoff: u64 = shstr_off + shstr.len() as u64;
+
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0]);
+        out.extend_from_slice(&[0u8; 8]);
+        push_u16(&mut out, 3);
+        push_u16(&mut out, 62);
+        push_u32(&mut out, 1);
+        push_u64(&mut out, 0);
+        push_u64(&mut out, 0);
+        push_u64(&mut out, shoff);
+        push_u32(&mut out, 0);
+        push_u16(&mut out, 64);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 0);
+        push_u16(&mut out, 64);
+        push_u16(&mut out, 7);
+        push_u16(&mut out, 6);
+
+        out.extend_from_slice(&text);
+        out.extend_from_slice(&rodata);
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&symtab);
+        out.extend_from_slice(&strtab);
+        out.extend_from_slice(&shstr);
+
+        let sht_progbits: u32 = 1;
+        let sht_symtab: u32 = 2;
+        let sht_strtab: u32 = 3;
+        let shf_alloc: u64 = 2;
+        let shf_exec: u64 = 4;
+        let shf_write: u64 = 1;
+
+        let mut sh = |name: u32,
+                      typ: u32,
+                      flags: u64,
+                      addr: u64,
+                      off: u64,
+                      size: u64,
+                      link: u32,
+                      info: u32,
+                      entsize: u64| {
+            push_u32(&mut out, name);
+            push_u32(&mut out, typ);
+            push_u64(&mut out, flags);
+            push_u64(&mut out, addr);
+            push_u64(&mut out, off);
+            push_u64(&mut out, size);
+            push_u32(&mut out, link);
+            push_u32(&mut out, info);
+            push_u64(&mut out, 8);
+            push_u64(&mut out, entsize);
+        };
+        sh(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        sh(
+            n_text,
+            sht_progbits,
+            shf_alloc | shf_exec,
+            text_base,
+            text_off,
+            text.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_rodata,
+            sht_progbits,
+            shf_alloc,
+            rodata_base,
+            rodata_off,
+            rodata.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_data,
+            sht_progbits,
+            shf_alloc | shf_write,
+            data_base,
+            data_off,
+            data.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_symtab,
+            sht_symtab,
+            0,
+            0,
+            symtab_off,
+            symtab.len() as u64,
+            5,
+            1,
+            24,
+        );
+        sh(
+            n_strtab,
+            sht_strtab,
+            0,
+            0,
+            strtab_off,
+            strtab.len() as u64,
+            0,
+            0,
+            0,
+        );
+        sh(
+            n_shstr,
+            sht_strtab,
+            0,
+            0,
+            shstr_off,
+            shstr.len() as u64,
+            0,
+            0,
+            0,
+        );
+
+        out
+    }
+
+    #[test]
+    fn large_module_exceeding_scan_budget_reports_truncated() {
+        let bytes: Vec<u8> = build_large_stripped_elf();
+        let module: CythonModule = recover_cython(&bytes).expect("recover large stripped module");
+        assert!(
+            module.truncated,
+            "scan budget bound but truncation was not surfaced to the caller"
+        );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|f: &CythonFunction| f.name == "trunc_fn"),
+            "trunc_fn dropped: structural scan exhausted budget on .rodata before reaching .data"
+        );
+    }
+
+    #[test]
+    fn complete_scan_reports_not_truncated() {
+        let bytes: Vec<u8> = build_min_elf(false);
+        let module: CythonModule = recover_cython(&bytes).expect("recover elf");
+        assert!(
+            !module.truncated,
+            "a fully scanned module must not report truncation"
         );
     }
 
