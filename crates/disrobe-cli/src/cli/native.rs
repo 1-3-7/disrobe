@@ -88,9 +88,10 @@ pub(crate) fn decompile(
     emit: Vec<String>,
     backend: DecompileBackend,
     format: DecompileLang,
+    devirt: bool,
 ) -> miette::Result<()> {
     match backend {
-        DecompileBackend::Native => decompile_native(input, out, format),
+        DecompileBackend::Native => decompile_native(input, out, format, devirt),
         DecompileBackend::Ghidra => decompile_ghidra(input, out, emit),
     }
 }
@@ -99,6 +100,7 @@ fn decompile_native(
     input: PathBuf,
     out: Option<PathBuf>,
     format: DecompileLang,
+    devirt: bool,
 ) -> miette::Result<()> {
     use disrobe_pass_native::{ProgramFunction, PseudoAbi, RecoveredFunction, recover_program};
     use std::fmt::Write as _;
@@ -111,7 +113,7 @@ fn decompile_native(
     match obj.architecture() {
         object::Architecture::X86_64 => {}
         object::Architecture::Aarch64 => {
-            return decompile_native_aarch64(&input, &obj, &module, out, format);
+            return decompile_native_aarch64(&input, &obj, &module, out, format, devirt);
         }
         other => {
             return Err(miette::miette!(
@@ -287,6 +289,14 @@ fn decompile_native(
         "type_slots_recovered": type_slots_recovered,
         "source": src_path.display().to_string(),
         "types": out_dir.join("types.json").display().to_string(),
+        "devirt": if devirt {
+            serde_json::json!({
+                "enabled": false,
+                "reason": "devirt runs on the aarch64 nir path; the in-tree x86-64 recovery path is unchanged"
+            })
+        } else {
+            serde_json::json!({ "enabled": false })
+        },
         "recovered": recovered,
         "unrecovered": unrecovered,
     });
@@ -310,7 +320,12 @@ fn decompile_native(
 }
 
 #[cfg(feature = "nir-lift")]
-fn aarch64_recover_source(code: &[u8], address: u64, name: &str) -> Result<(String, bool), String> {
+fn aarch64_recover_source(
+    code: &[u8],
+    address: u64,
+    name: &str,
+    devirt: bool,
+) -> Result<(String, bool, serde_json::Value), String> {
     use disrobe_nir::{
         HirFunction, NirFunction, SurfaceFunction, emit_pseudo_source, structurize_function,
         surfacify_function,
@@ -319,11 +334,62 @@ fn aarch64_recover_source(code: &[u8], address: u64, name: &str) -> Result<(Stri
 
     let nir: NirFunction =
         lower_aarch64(code, address, name).map_err(|e| format!("aarch64 lift failed: {e}"))?;
+
+    #[cfg(feature = "devirt")]
+    let (nir, devirt_report): (NirFunction, serde_json::Value) = if devirt {
+        apply_nir_devirt(&nir)
+    } else {
+        (nir, serde_json::Value::Null)
+    };
+    #[cfg(not(feature = "devirt"))]
+    let (nir, devirt_report): (NirFunction, serde_json::Value) = {
+        let _ = devirt;
+        (nir, serde_json::Value::Null)
+    };
+
     let hir: HirFunction = structurize_function(&nir);
     let surface: SurfaceFunction = surfacify_function(&hir);
     let source: String =
         emit_pseudo_source(&surface).map_err(|e| format!("pseudo-source emit failed: {e}"))?;
-    Ok((source, surface.structured))
+    Ok((source, surface.structured, devirt_report))
+}
+
+#[cfg(feature = "devirt")]
+fn apply_nir_devirt(
+    nir: &disrobe_nir::NirFunction,
+) -> (disrobe_nir::NirFunction, serde_json::Value) {
+    let outcome: disrobe_mba::NirDevirtOutcome = disrobe_mba::devirtualize_nir(nir);
+    let report: serde_json::Value = devirt_report_json(&outcome.report);
+    (outcome.function, report)
+}
+
+#[cfg(feature = "devirt")]
+fn devirt_report_json(report: &disrobe_mba::NirDevirtReport) -> serde_json::Value {
+    let folded: Vec<serde_json::Value> = report
+        .folded
+        .iter()
+        .map(|branch: &disrobe_mba::FoldedBranch| {
+            serde_json::json!({
+                "block": branch.block,
+                "kept": branch.kept,
+                "dropped": branch.dropped,
+            })
+        })
+        .collect();
+    let mut value: serde_json::Value = serde_json::json!({
+        "status": report.status.label(),
+        "edges_folded": report.folded.len(),
+        "folded": folded,
+        "cff_detected": report.cff.detected,
+        "cff_certified_full": report.cff.certified_full,
+        "cff_cases": report.cff.cases,
+        "cff_resolved": report.cff.resolved,
+        "cff_unresolved": report.cff.unresolved,
+    });
+    if let Some(abstain) = report.abstain {
+        value["abstain"] = serde_json::Value::String(abstain.label().to_owned());
+    }
+    value
 }
 
 #[cfg(feature = "nir-lift")]
@@ -333,6 +399,7 @@ fn decompile_native_aarch64(
     module: &disrobe_query::Module,
     out: Option<PathBuf>,
     format: DecompileLang,
+    devirt: bool,
 ) -> miette::Result<()> {
     use std::fmt::Write as _;
 
@@ -351,6 +418,15 @@ fn decompile_native_aarch64(
     let mut recovered: Vec<serde_json::Value> = Vec::new();
     let mut unrecovered: Vec<serde_json::Value> = Vec::new();
     let mut structured_count: usize = 0;
+    let mut devirt_full: usize = 0;
+    let mut devirt_partial: usize = 0;
+    let mut devirt_none: usize = 0;
+    let mut devirt_edges: usize = 0;
+    #[cfg(feature = "devirt")]
+    let binary_budget: Option<disrobe_mba::BinaryBudget> =
+        devirt.then(|| disrobe_mba::BinaryBudget::new(std::time::Duration::from_mins(1)));
+    #[cfg(feature = "devirt")]
+    let mut devirt_self_disabled: bool = false;
 
     for f in module.functions() {
         let Some(code): Option<Vec<u8>> = bytes_for_va_range(obj, f.address, f.end) else {
@@ -360,8 +436,26 @@ fn decompile_native_aarch64(
             continue;
         };
         let emitted_name: String = unique_c_name(&f.name, f.address, &mut seen);
-        let (source, structured): (String, bool) =
-            match aarch64_recover_source(&code, f.address, &emitted_name) {
+        let effective_devirt: bool = {
+            #[cfg(feature = "devirt")]
+            {
+                devirt
+                    && match &binary_budget {
+                        Some(budget) if budget.exhausted() => {
+                            devirt_self_disabled = true;
+                            false
+                        }
+                        _ => true,
+                    }
+            }
+            #[cfg(not(feature = "devirt"))]
+            {
+                let _ = devirt;
+                false
+            }
+        };
+        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
+            match aarch64_recover_source(&code, f.address, &emitted_name, effective_devirt) {
                 Ok(value) => value,
                 Err(reason) => {
                     unrecovered.push(serde_json::json!({
@@ -385,14 +479,56 @@ fn decompile_native_aarch64(
             f.address,
             source.trim()
         );
-        recovered.push(serde_json::json!({
+        let mut entry: serde_json::Value = serde_json::json!({
             "name": f.name, "address": f.address, "emitted_as": emitted_name, "structured": structured
-        }));
+        });
+        if !devirt_report.is_null() {
+            match devirt_report
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("full") => devirt_full += 1,
+                Some("partial") => devirt_partial += 1,
+                _ => devirt_none += 1,
+            }
+            devirt_edges += devirt_report
+                .get("edges_folded")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|count: u64| usize::try_from(count).ok())
+                .unwrap_or(0);
+            entry["devirt"] = devirt_report;
+        }
+        recovered.push(entry);
     }
 
     let src_path: PathBuf = out_dir.join(format!("{stem}.c"));
     std::fs::write(&src_path, bodies.as_bytes())
         .map_err(|e| miette::miette!("DR-NATIVE-0171: cannot write decompiled output: {e}"))?;
+
+    let self_disabled: bool = {
+        #[cfg(feature = "devirt")]
+        {
+            devirt_self_disabled
+        }
+        #[cfg(not(feature = "devirt"))]
+        {
+            false
+        }
+    };
+    let devirt_summary: serde_json::Value = if devirt {
+        serde_json::json!({
+            "enabled": true,
+            "applied": "opaque-predicate fold (proven-dead conditional arms), transactional",
+            "self_disabled": self_disabled,
+            "functions_full": devirt_full,
+            "functions_partial": devirt_partial,
+            "functions_none": devirt_none,
+            "edges_folded": devirt_edges,
+            "deferred": ["control-flow-flattening deflatten", "jump-table edge rewrite"],
+        })
+    } else {
+        serde_json::json!({ "enabled": false })
+    };
 
     let total: usize = module.functions().len();
     let manifest: serde_json::Value = serde_json::json!({
@@ -406,6 +542,7 @@ fn decompile_native_aarch64(
         "functions_structured": structured_count,
         "functions_unrecovered": unrecovered.len(),
         "source": src_path.display().to_string(),
+        "devirt": devirt_summary,
         "recovered": recovered,
         "unrecovered": unrecovered,
     });
@@ -423,6 +560,11 @@ fn decompile_native_aarch64(
         structured_count,
         src_path.display()
     );
+    if devirt {
+        println!(
+            "  devirt:       {devirt_full} full, {devirt_partial} partial, {devirt_none} none; {devirt_edges} dead arm(s) folded"
+        );
+    }
     Ok(())
 }
 
@@ -433,6 +575,7 @@ fn decompile_native_aarch64(
     _module: &disrobe_query::Module,
     _out: Option<PathBuf>,
     _format: DecompileLang,
+    _devirt: bool,
 ) -> miette::Result<()> {
     Err(miette::miette!(
         "DR-NATIVE-0169: aarch64 in-tree decompile needs the nir-lift feature, which is not built into this binary; rebuild with a default (full) build or `--features nir-lift`, or use --backend ghidra for {}",
@@ -2814,7 +2957,7 @@ mod tests {
             return;
         }
         let out_dir: PathBuf = dir.join("out");
-        decompile_native(obj, Some(out_dir.clone()), DecompileLang::C)
+        decompile_native(obj, Some(out_dir.clone()), DecompileLang::C, false)
             .expect("native decompile ok");
         let manifest_text: String =
             std::fs::read_to_string(out_dir.join("manifest.json")).expect("read manifest");
@@ -2994,13 +3137,51 @@ mod tests {
             .iter()
             .flat_map(|word: &u32| word.to_le_bytes())
             .collect();
-        let (source, structured): (String, bool) =
-            aarch64_recover_source(&bytes, 0x1000, "arith").expect("aarch64 leaf recovers");
+        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
+            aarch64_recover_source(&bytes, 0x1000, "arith", false).expect("aarch64 leaf recovers");
         assert!(structured, "leaf must structure:\n{source}");
         assert!(
             source.contains("return x0"),
             "return value missing:\n{source}"
         );
         assert!(source.contains('+'), "addition missing:\n{source}");
+        assert!(
+            devirt_report.is_null(),
+            "devirt off must leave no report: {devirt_report}"
+        );
+    }
+
+    #[cfg(feature = "devirt")]
+    #[test]
+    fn aarch64_devirt_flag_records_a_report_without_breaking_recovery() {
+        let bytes: Vec<u8> = [0x8b01_0000_u32, 0xd65f_03c0]
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
+            aarch64_recover_source(&bytes, 0x1000, "arith", true).expect("aarch64 leaf recovers");
+        assert!(
+            structured,
+            "leaf still structures with devirt on:\n{source}"
+        );
+        assert!(source.contains("return x0"), "return missing:\n{source}");
+        assert!(
+            !devirt_report.is_null(),
+            "devirt on must attach a report to the function"
+        );
+        assert_eq!(
+            devirt_report
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("none"),
+            "a straight-line leaf has no dead arm and no flattening: {devirt_report}"
+        );
+        assert_eq!(
+            devirt_report
+                .get("edges_folded")
+                .and_then(serde_json::Value::as_u64),
+            Some(0),
+            "nothing is folded on a leaf: {devirt_report}"
+        );
     }
 }

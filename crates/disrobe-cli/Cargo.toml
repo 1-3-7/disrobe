@@ -59,13 +59,14 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang"]
+full = ["chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt"]
 
 py = []
 native = []
 binfmt = []
 
 nir-lift = ["dep:disrobe-nir-lift"]
+devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
 js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain"]
 wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift"]
 jvm = ["dep:disrobe-pass-jvm", "nir-lift"]
@@ -149,6 +150,7 @@ disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-nir-lift = { workspace = true, optional = true }
+disrobe-mba = { workspace = true, optional = true }
 disrobe-typerec = { workspace = true }
 disrobe-taint = { workspace = true }
 disrobe-query = { workspace = true }

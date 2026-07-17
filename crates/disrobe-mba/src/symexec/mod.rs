@@ -8,6 +8,7 @@ pub(crate) mod explore;
 pub(crate) mod interp;
 pub(crate) mod jumptable;
 pub(crate) mod memory;
+pub(crate) mod nir_devirt;
 pub(crate) mod opaque;
 pub(crate) mod solver;
 pub(crate) mod state;
@@ -22,5 +23,9 @@ pub use jumptable::{
     Endian, EntryKind, IndexBound, IndirectSite, JumpTableAbstain, JumpTableResolution,
     PathConstraint, Perms, Provenance, RejectCause, Section, SectionMap, Successor, SuccessorKind,
     TableForm, resolve_jump_table, resolve_jump_table_with,
+};
+pub use nir_devirt::{
+    BinaryBudget, CffSummary, DevirtAbstain, DevirtStatus, FoldedBranch, NirDevirtOutcome,
+    NirDevirtReport, devirtualize_nir, devirtualize_nir_with,
 };
 pub use opaque::{CfgEdit, PruneReason, Resolution, analyze_opaque, analyze_opaque_with};

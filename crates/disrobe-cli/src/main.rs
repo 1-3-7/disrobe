@@ -1131,6 +1131,12 @@ enum NativeCmd {
             help = "ghidra backend only: comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
         emit: Vec<String>,
+        #[arg(
+            long = "no-devirt",
+            default_value_t = false,
+            help = "disable the symbolic devirtualizer (on by default in a full build): folds proven-dead conditional arms in the aarch64 nir decompile path before structuring"
+        )]
+        no_devirt: bool,
     },
     #[command(
         about = "dump symbols, sections, segments, imports, & debug info from a native binary"
@@ -1623,7 +1629,8 @@ fn main() -> miette::Result<()> {
                 backend,
                 format,
                 emit,
-            } => native::decompile(input, out, emit, backend, format),
+                no_devirt,
+            } => native::decompile(input, out, emit, backend, format, !no_devirt),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),
