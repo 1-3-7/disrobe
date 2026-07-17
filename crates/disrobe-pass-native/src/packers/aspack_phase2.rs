@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
-use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image, read_u32};
 use crate::packers::section_recovery::{
     IatReconstructionReport, SectionRecoveryReport, build_loaded_image,
     reconstruct_import_address_table, section_recovery_report,
@@ -954,21 +954,6 @@ fn rva_to_off(img: &PeImage, rva: u32) -> Option<usize> {
         }
     }
     None
-}
-
-fn read_u32(b: &[u8], off: usize) -> Result<u32> {
-    if off + 4 > b.len() {
-        return Err(Error::Truncated {
-            needed: off + 4,
-            had: b.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        b[off],
-        b[off + 1],
-        b[off + 2],
-        b[off + 3],
-    ]))
 }
 
 fn read_cstr(b: &[u8], off: usize, cap: usize) -> String {

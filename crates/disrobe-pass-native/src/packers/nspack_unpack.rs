@@ -1,6 +1,11 @@
 use crate::error::{Error, Result};
+use crate::packers::pe_sections::{
+    PeImage, find_subsequence, parse_pe_image, read_u32 as read_u32_le,
+};
 
+#[cfg(test)]
 const PE_MAGIC: &[u8; 4] = b"PE\x00\x00";
+#[cfg(test)]
 const DOS_E_LFANEW_OFFSET: usize = 0x3C;
 const COFF_HEADER_SIZE: usize = 20;
 const SECTION_ENTRY_SIZE: usize = 40;
@@ -1243,84 +1248,39 @@ fn read_i32_le(b: &[u8], off: usize) -> Result<i32> {
 }
 
 pub fn parse_nspack_layout(bytes: &[u8]) -> Result<NspackLayout<'_>> {
-    if bytes.len() < DOS_E_LFANEW_OFFSET + 4 {
-        return Err(Error::Truncated {
-            needed: DOS_E_LFANEW_OFFSET + 4,
-            had: bytes.len(),
-        });
-    }
-    let e_lfanew: usize = read_u32_le(bytes, DOS_E_LFANEW_OFFSET)? as usize;
-    if e_lfanew.saturating_add(24) > bytes.len() {
-        return Err(Error::Truncated {
-            needed: e_lfanew + 24,
-            had: bytes.len(),
-        });
-    }
-    if &bytes[e_lfanew..e_lfanew + 4] != PE_MAGIC {
-        return Err(Error::UnknownFormat);
-    }
-    let coff_off: usize = e_lfanew + 4;
-    let n_sections: usize = read_u16_le(bytes, coff_off + 2)? as usize;
-    let opt_hdr_size: u16 = read_u16_le(bytes, coff_off + 16)?;
-    let opt_hdr_off: usize = coff_off + COFF_HEADER_SIZE;
-    let opt_magic: u16 = read_u16_le(bytes, opt_hdr_off)?;
-    let is_pe32_plus: bool = match opt_magic {
-        0x010B => false,
-        0x020B => true,
-        _ => return Err(Error::UnknownFormat),
-    };
-    let entry_point_rva: u32 = read_u32_le(bytes, opt_hdr_off + 16)?;
-    let (image_base, section_alignment, file_alignment): (u64, u32, u32) = if is_pe32_plus {
-        (
-            read_u64_le(bytes, opt_hdr_off + 24)?,
-            read_u32_le(bytes, opt_hdr_off + 32)?,
-            read_u32_le(bytes, opt_hdr_off + 36)?,
-        )
-    } else {
-        (
-            u64::from(read_u32_le(bytes, opt_hdr_off + 28)?),
-            read_u32_le(bytes, opt_hdr_off + 32)?,
-            read_u32_le(bytes, opt_hdr_off + 36)?,
-        )
-    };
-    let sec_table_off: usize = opt_hdr_off + opt_hdr_size as usize;
-    let needed: usize = sec_table_off
-        .checked_add(
-            n_sections
-                .checked_mul(SECTION_ENTRY_SIZE)
-                .ok_or_else(|| Error::SignatureDb("NSPack: section count overflow".to_owned()))?,
-        )
-        .ok_or_else(|| Error::SignatureDb("NSPack: section table overflow".to_owned()))?;
-    if needed > bytes.len() {
-        return Err(Error::Truncated {
-            needed,
-            had: bytes.len(),
-        });
-    }
-    let mut sections: Vec<NspackSection<'_>> = Vec::with_capacity(n_sections);
-    for i in 0..n_sections {
-        let entry_off: usize = sec_table_off + i * SECTION_ENTRY_SIZE;
-        let raw_name: &[u8] = &bytes[entry_off..entry_off + 8];
+    let image: PeImage = parse_pe_image(bytes)?;
+    let sec_table_off: usize = (image.pe_header_offset as usize)
+        .saturating_add(4)
+        .saturating_add(COFF_HEADER_SIZE)
+        .saturating_add(image.size_of_optional_header as usize);
+    let mut sections: Vec<NspackSection<'_>> = Vec::with_capacity(image.sections.len());
+    for (i, sec) in image.sections.iter().enumerate() {
+        let entry_off: usize = sec_table_off.saturating_add(i.saturating_mul(SECTION_ENTRY_SIZE));
+        let raw_name: &[u8] = bytes
+            .get(entry_off..entry_off.saturating_add(8))
+            .ok_or_else(|| Error::Truncated {
+                needed: entry_off.saturating_add(8),
+                had: bytes.len(),
+            })?;
         let trimmed_len: usize = raw_name
             .iter()
             .position(|b: &u8| *b == 0)
             .unwrap_or(raw_name.len());
-        let name: &[u8] = &raw_name[..trimmed_len];
         sections.push(NspackSection {
-            name,
-            virtual_size: read_u32_le(bytes, entry_off + 8)?,
-            virtual_address: read_u32_le(bytes, entry_off + 12)?,
-            raw_size: read_u32_le(bytes, entry_off + 16)?,
-            raw_pointer: read_u32_le(bytes, entry_off + 20)?,
-            characteristics: read_u32_le(bytes, entry_off + 36)?,
+            name: &raw_name[..trimmed_len],
+            virtual_size: sec.virtual_size,
+            virtual_address: sec.virtual_address,
+            raw_size: sec.raw_size,
+            raw_pointer: sec.raw_pointer,
+            characteristics: sec.characteristics,
         });
     }
     Ok(NspackLayout {
-        is_pe32_plus,
-        entry_point_rva,
-        image_base,
-        section_alignment,
-        file_alignment,
+        is_pe32_plus: image.is_pe32_plus,
+        entry_point_rva: image.entry_point_rva,
+        image_base: image.image_base,
+        section_alignment: image.section_alignment,
+        file_alignment: image.file_alignment,
         sections,
     })
 }
@@ -1391,65 +1351,6 @@ fn recover_resource_table(nsp1_raw: &[u8]) -> Vec<RecoveredResource> {
         });
     }
     out
-}
-
-#[inline]
-fn read_u16_le(b: &[u8], off: usize) -> Result<u16> {
-    let end: usize = off + 2;
-    if end > b.len() {
-        return Err(Error::Truncated {
-            needed: end,
-            had: b.len(),
-        });
-    }
-    Ok(u16::from_le_bytes([b[off], b[off + 1]]))
-}
-
-#[inline]
-fn read_u32_le(b: &[u8], off: usize) -> Result<u32> {
-    let end: usize = off + 4;
-    if end > b.len() {
-        return Err(Error::Truncated {
-            needed: end,
-            had: b.len(),
-        });
-    }
-    Ok(u32::from_le_bytes([
-        b[off],
-        b[off + 1],
-        b[off + 2],
-        b[off + 3],
-    ]))
-}
-
-#[inline]
-fn read_u64_le(b: &[u8], off: usize) -> Result<u64> {
-    let end: usize = off + 8;
-    if end > b.len() {
-        return Err(Error::Truncated {
-            needed: end,
-            had: b.len(),
-        });
-    }
-    Ok(u64::from_le_bytes([
-        b[off],
-        b[off + 1],
-        b[off + 2],
-        b[off + 3],
-        b[off + 4],
-        b[off + 5],
-        b[off + 6],
-        b[off + 7],
-    ]))
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 #[cfg(test)]

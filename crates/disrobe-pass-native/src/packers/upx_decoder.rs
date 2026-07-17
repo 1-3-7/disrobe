@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::packers::pe_sections::{find_subsequence, read_u16, read_u32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -60,7 +61,7 @@ pub struct UpxPackHeader {
 impl UpxPackHeader {
     pub fn locate_and_parse(packed: &[u8]) -> Result<Self> {
         let mut search_from: usize = 0;
-        while let Some(rel) = find_subslice(&packed[search_from..], UPX_MAGIC) {
+        while let Some(rel) = find_subsequence(&packed[search_from..], UPX_MAGIC) {
             let offset: usize = search_from + rel;
             if let Some(header) = Self::parse_at(packed, offset) {
                 return Ok(header);
@@ -399,26 +400,14 @@ fn section_data_offset(packed: &[u8]) -> Option<usize> {
     }
     let pe_off: usize = disrobe_binfmt::locate_pe_header(packed)?;
     let coff: usize = pe_off + 4;
-    let num_sections: usize =
-        u16::from_le_bytes([*packed.get(coff + 2)?, *packed.get(coff + 3)?]) as usize;
-    let opt_size: usize =
-        u16::from_le_bytes([*packed.get(coff + 16)?, *packed.get(coff + 17)?]) as usize;
+    let num_sections: usize = read_u16(packed, coff + 2).ok()? as usize;
+    let opt_size: usize = read_u16(packed, coff + 16).ok()? as usize;
     let sect_table: usize = coff + 20 + opt_size;
     let mut best: Option<usize> = None;
     for i in 0..num_sections {
         let entry: usize = sect_table + i * 40;
-        let raw_size: u32 = u32::from_le_bytes([
-            *packed.get(entry + 16)?,
-            *packed.get(entry + 17)?,
-            *packed.get(entry + 18)?,
-            *packed.get(entry + 19)?,
-        ]);
-        let raw_off: u32 = u32::from_le_bytes([
-            *packed.get(entry + 20)?,
-            *packed.get(entry + 21)?,
-            *packed.get(entry + 22)?,
-            *packed.get(entry + 23)?,
-        ]);
+        let raw_size: u32 = read_u32(packed, entry + 16).ok()?;
+        let raw_off: u32 = read_u32(packed, entry + 20).ok()?;
         if raw_size != 0 && (raw_off as usize) < packed.len() {
             best = Some(best.map_or(raw_off as usize, |b: usize| b.min(raw_off as usize)));
         }
@@ -753,15 +742,6 @@ fn ucl_adler32(seed: u32, data: &[u8]) -> u32 {
         s2 = (s2 + s1) % MOD;
     }
     (s2 << 16) | s1
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|w: &[u8]| w == needle)
 }
 
 #[cfg(test)]
