@@ -120,9 +120,6 @@ struct Cli {
     #[arg(short, long, global = true, help = "suppress non-error output")]
     quiet: bool,
 
-    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true, help = "control ANSI color in terminal output")]
-    color: ColorChoice,
-
     #[arg(
         long,
         global = true,
@@ -190,13 +187,6 @@ struct Cli {
 
     #[command(flatten)]
     llm: LlmFlags,
-}
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-enum ColorChoice {
-    Auto,
-    Always,
-    Never,
 }
 
 #[derive(Subcommand, Debug)]

@@ -72,15 +72,10 @@ pub(crate) fn merge_globals(
             .verbosity
             .map_or(cli.verbose, super::config::ConfigVerbosity::as_count)
     };
-    let color_supplied: bool = was_supplied(matches, "color");
-    let (color_always, color_never): (bool, bool) = if color_supplied {
-        (false, false)
-    } else {
-        match cfg.output.color {
-            Some(ConfigColor::Always) => (true, false),
-            Some(ConfigColor::Never) => (false, true),
-            Some(ConfigColor::Auto) | None => (false, false),
-        }
+    let (color_always, color_never): (bool, bool) = match cfg.output.color {
+        Some(ConfigColor::Always) => (true, false),
+        Some(ConfigColor::Never) => (false, true),
+        Some(ConfigColor::Auto) | None => (false, false),
     };
     let progress_supplied: bool = was_supplied(matches, "progress");
     let (progress_always, progress_never): (bool, bool) = if progress_supplied {
@@ -155,7 +150,6 @@ mod tests {
                     .long("dry-run")
                     .action(ArgAction::SetTrue),
             )
-            .arg(Arg::new("color").long("color"))
             .arg(Arg::new("progress").long("progress"))
     }
 
@@ -250,25 +244,6 @@ mod tests {
         };
         let eff: EffectiveGlobals = merge_globals(&matches, snap, &cfg);
         assert_eq!(eff.color_never, true);
-        assert_eq!(eff.color_always, false);
-    }
-
-    #[test]
-    fn explicit_color_flag_suppresses_config_color() {
-        let matches: ArgMatches = parse(&["t", "--color", "always"]);
-        let snap: CliGlobalsSnapshot = snapshot_from(&matches);
-        let cfg: DisrobeConfig = DisrobeConfig {
-            output: OutputConfig {
-                color: Some(ConfigColor::Never),
-                ..OutputConfig::default()
-            },
-            ..DisrobeConfig::default()
-        };
-        let eff: EffectiveGlobals = merge_globals(&matches, snap, &cfg);
-        assert_eq!(
-            eff.color_never, false,
-            "explicit --color wins; config ignored"
-        );
         assert_eq!(eff.color_always, false);
     }
 }

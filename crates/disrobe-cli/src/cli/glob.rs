@@ -38,45 +38,96 @@ fn matches_one(pattern: &str, path: &str) -> bool {
 }
 
 fn glob_match(pat: &[u8], text: &[u8]) -> bool {
-    if pat.is_empty() {
-        return text.is_empty();
+    let width: usize = text.len() + 1;
+    let mut memo: Vec<Option<bool>> = vec![None; (pat.len() + 1) * width];
+    glob_match_at(pat, text, 0, 0, width, &mut memo)
+}
+
+fn glob_match_at(
+    pat: &[u8],
+    text: &[u8],
+    pi: usize,
+    ti: usize,
+    width: usize,
+    memo: &mut [Option<bool>],
+) -> bool {
+    let key: usize = pi * width + ti;
+    if let Some(cached) = memo[key] {
+        return cached;
     }
-    match pat[0] {
-        b'*' => {
-            let double: bool = pat.len() >= 2 && pat[1] == b'*';
-            if double {
-                let mut rest: &[u8] = &pat[2..];
-                if rest.first() == Some(&b'/') {
-                    rest = &rest[1..];
-                }
-                if glob_match(rest, text) {
-                    return true;
-                }
-                (0..text.len()).any(|i: usize| glob_match(rest, &text[i + 1..]))
-            } else {
-                let rest: &[u8] = &pat[1..];
-                if glob_match(rest, text) {
-                    return true;
-                }
-                let mut i: usize = 0;
-                while i < text.len() && text[i] != b'/' {
-                    if glob_match(rest, &text[i + 1..]) {
-                        return true;
+    let result: bool = if pi >= pat.len() {
+        ti >= text.len()
+    } else {
+        match pat[pi] {
+            b'*' => {
+                let double: bool = pi + 1 < pat.len() && pat[pi + 1] == b'*';
+                if double {
+                    let rest_pi: usize = {
+                        let base: usize = pi + 2;
+                        if base < pat.len() && pat[base] == b'/' {
+                            base + 1
+                        } else {
+                            base
+                        }
+                    };
+                    if glob_match_at(pat, text, rest_pi, ti, width, memo) {
+                        true
+                    } else {
+                        let mut hit: bool = false;
+                        let mut j: usize = ti + 1;
+                        while j <= text.len() {
+                            if glob_match_at(pat, text, rest_pi, j, width, memo) {
+                                hit = true;
+                                break;
+                            }
+                            j += 1;
+                        }
+                        hit
                     }
-                    i += 1;
+                } else if glob_match_at(pat, text, pi + 1, ti, width, memo) {
+                    true
+                } else {
+                    let mut hit: bool = false;
+                    let mut j: usize = ti;
+                    while j < text.len() && text[j] != b'/' {
+                        if glob_match_at(pat, text, pi + 1, j + 1, width, memo) {
+                            hit = true;
+                            break;
+                        }
+                        j += 1;
+                    }
+                    hit
                 }
-                false
+            }
+            b'?' => {
+                ti < text.len()
+                    && text[ti] != b'/'
+                    && glob_match_at(pat, text, pi + 1, ti + 1, width, memo)
+            }
+            b'[' => {
+                let ch: u8 = if ti < text.len() { text[ti] } else { b'/' };
+                match class_match(pat, pi, ch) {
+                    Some((matched, next_pi)) => {
+                        ti < text.len()
+                            && matched
+                            && glob_match_at(pat, text, next_pi, ti + 1, width, memo)
+                    }
+                    None => {
+                        ti < text.len()
+                            && pat[pi] == text[ti]
+                            && glob_match_at(pat, text, pi + 1, ti + 1, width, memo)
+                    }
+                }
+            }
+            c => {
+                ti < text.len()
+                    && c == text[ti]
+                    && glob_match_at(pat, text, pi + 1, ti + 1, width, memo)
             }
         }
-        b'?' => !text.is_empty() && text[0] != b'/' && glob_match(&pat[1..], &text[1..]),
-        b'[' => match class_match(pat, 0, text.first().copied().unwrap_or(b'/')) {
-            Some((matched, next_pi)) => {
-                !text.is_empty() && matched && glob_match(&pat[next_pi..], &text[1..])
-            }
-            None => !text.is_empty() && pat[0] == text[0] && glob_match(&pat[1..], &text[1..]),
-        },
-        c => !text.is_empty() && c == text[0] && glob_match(&pat[1..], &text[1..]),
-    }
+    };
+    memo[key] = Some(result);
+    result
 }
 
 fn class_match(pat: &[u8], start: usize, ch: u8) -> Option<(bool, usize)> {
@@ -170,5 +221,24 @@ mod tests {
     fn leading_dirs_with_double_star_suffix() {
         assert!(glob_match(b"build/**", b"build/a/b/c"));
         assert!(glob_match(b"build/**", b"build/x"));
+    }
+
+    #[test]
+    fn adversarial_star_pattern_stays_bounded() {
+        let stars: String = "a*".repeat(40);
+        let text: String = "a".repeat(96);
+        let mut no_match: String = stars.clone();
+        no_match.push('b');
+        let start: std::time::Instant = std::time::Instant::now();
+        let matched: bool = glob_match(no_match.as_bytes(), text.as_bytes());
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(!matched);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "adversarial glob must stay bounded; took {elapsed:?}"
+        );
+        let mut trailing: String = stars;
+        trailing.push('a');
+        assert!(glob_match(trailing.as_bytes(), text.as_bytes()));
     }
 }
