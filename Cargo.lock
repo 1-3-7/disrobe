@@ -3066,6 +3066,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-typerec"
+version = "0.10.4"
+dependencies = [
+ "gimli 0.32.3",
+ "iced-x86",
+ "object",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "disrobe-validator"
 version = "0.10.4"
 dependencies = [
