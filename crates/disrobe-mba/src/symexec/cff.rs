@@ -4,10 +4,10 @@ use disrobe_nir::{BlockKind, NirBlock, NirFunction, NirInstr, NirOp, ValueOp, ba
 
 use super::explore::SymexecBudget;
 use super::interp::{Interp, parse_immediate};
-use super::jumptable::{JumpTableResolution, SuccessorKind};
 use super::solver::{Feasible, Guard, SymSolver};
 use super::state::State;
 use super::value::{BitWidth, Sym};
+use crate::jumptable::{JumpTableResolution, SuccessorKind};
 
 const MIN_CASES: usize = 3;
 const MIN_INDEGREE: usize = 3;

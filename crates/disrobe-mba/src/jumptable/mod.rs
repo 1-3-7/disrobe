@@ -1,10 +1,19 @@
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "pub(crate) is the right visibility for these crate-internal jump-table helpers; redundant_pub_crate (nursery) and the workspace unreachable_pub lint cannot both hold for a private submodule, matching the crate-level allow already shipped across the workspace"
+)]
+
 use std::collections::BTreeSet;
 
-use oxiz::TermId;
+mod vsa;
 
-use super::explore::SymexecBudget;
-use super::solver::{Feasible, Guard, SymSolver};
-use super::value::{BitWidth, CmpOp, Sym};
+#[cfg(feature = "smt-solver")]
+mod solver;
+
+use vsa::{ValueSet, VsaResult, index_value_set};
+
+#[cfg(feature = "smt-solver")]
+pub use solver::{resolve_jump_table, resolve_jump_table_with};
 
 const MAX_TABLE_ENTRIES: u64 = 4_096;
 
@@ -209,14 +218,7 @@ pub enum IndexBound {
     UnsignedLessThan(u64),
     UnsignedAtLeast(u64),
     Mask(u64),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Interval {
-    Range { lo: u64, hi: u64 },
-    Empty,
-    Unbounded,
-    Unsupported,
+    NotEqual(u64),
 }
 
 const fn is_contiguous_low_mask(mask: u64) -> bool {
@@ -226,42 +228,22 @@ const fn is_contiguous_low_mask(mask: u64) -> bool {
     }
 }
 
-fn feasible_interval(bounds: &[IndexBound], ceiling: u64) -> Interval {
-    let mut lo: u64 = 0;
-    let mut hi: u64 = ceiling;
-    let mut bounded_above: bool = false;
-    for bound in bounds {
-        match bound {
-            IndexBound::UnsignedAtMost(value) => {
-                hi = hi.min(*value);
-                bounded_above = true;
-            }
-            IndexBound::UnsignedLessThan(value) => {
-                let Some(top): Option<u64> = value.checked_sub(1) else {
-                    return Interval::Empty;
-                };
-                hi = hi.min(top);
-                bounded_above = true;
-            }
-            IndexBound::UnsignedAtLeast(value) => {
-                lo = lo.max(*value);
-            }
-            IndexBound::Mask(mask) => {
-                if !is_contiguous_low_mask(*mask) {
-                    return Interval::Unsupported;
-                }
-                hi = hi.min(*mask);
-                bounded_above = true;
-            }
+const fn index_bit_mask(index_bytes: u32) -> Option<u64> {
+    match index_bytes {
+        1..=8 => {
+            let bits: u32 = index_bytes * 8;
+            Some(if bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            })
         }
+        _ => None,
     }
-    if !bounded_above {
-        return Interval::Unbounded;
-    }
-    if lo > hi {
-        return Interval::Empty;
-    }
-    Interval::Range { lo, hi }
+}
+
+const fn entry_bytes_valid(entry_bytes: u32) -> bool {
+    matches!(entry_bytes, 1..=8)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,6 +302,7 @@ pub enum JumpTableAbstain {
     IncompleteRecovery { rejected: Vec<(u64, RejectCause)> },
     SolverUnknown,
     SolverBudget,
+    SolverRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +311,12 @@ pub struct Provenance {
     pub bound_lo: u64,
     pub bound_hi: u64,
     pub entry_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveTier {
+    CheapVsa,
+    Solver,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,246 +352,116 @@ impl JumpTableResolution {
     }
 }
 
-#[must_use]
-pub fn resolve_jump_table(site: &IndirectSite, sections: &SectionMap) -> JumpTableResolution {
-    resolve_jump_table_with(site, sections, SymexecBudget::bounded_default())
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VsaOutcome {
+    Decided(JumpTableResolution),
+    SolverRequired,
 }
 
 #[must_use]
-pub fn resolve_jump_table_with(
-    site: &IndirectSite,
-    sections: &SectionMap,
-    budget: SymexecBudget,
-) -> JumpTableResolution {
-    let form: TableForm = site.form;
-    if form.stride == 0 || BitWidth::from_bytes(form.entry_bytes).is_none() {
-        return JumpTableResolution::Abstain(JumpTableAbstain::StructureInvalid);
+pub fn resolve_jump_table_vsa(site: &IndirectSite, sections: &SectionMap) -> JumpTableResolution {
+    match try_resolve_vsa(site, sections) {
+        VsaOutcome::Decided(resolution) => resolution,
+        VsaOutcome::SolverRequired => {
+            JumpTableResolution::Abstain(JumpTableAbstain::SolverRequired)
+        }
     }
-    let Some(width): Option<BitWidth> = BitWidth::from_bytes(site.path.index_bytes) else {
-        return JumpTableResolution::Abstain(JumpTableAbstain::StructureInvalid);
+}
+
+pub(crate) fn try_resolve_vsa(site: &IndirectSite, sections: &SectionMap) -> VsaOutcome {
+    let form: TableForm = site.form;
+    if form.stride == 0 || !entry_bytes_valid(form.entry_bytes) {
+        return VsaOutcome::Decided(JumpTableResolution::Abstain(
+            JumpTableAbstain::StructureInvalid,
+        ));
+    }
+    let Some(ceiling): Option<u64> = index_bit_mask(site.path.index_bytes) else {
+        return VsaOutcome::Decided(JumpTableResolution::Abstain(
+            JumpTableAbstain::StructureInvalid,
+        ));
     };
     if sections.table_region_writable(form.table_base) {
-        return JumpTableResolution::Abstain(JumpTableAbstain::WritableTable);
+        return VsaOutcome::Decided(JumpTableResolution::Abstain(
+            JumpTableAbstain::WritableTable,
+        ));
     }
-    let cap: u64 = MAX_TABLE_ENTRIES.saturating_sub(1).min(width.mask());
-    let (lo, hi): (u64, u64) = match feasible_interval(&site.path.bounds, width.mask()) {
-        Interval::Range { lo, hi } => (lo, hi),
-        Interval::Empty => return JumpTableResolution::Abstain(JumpTableAbstain::EmptyFeasibleSet),
-        Interval::Unbounded => {
-            return JumpTableResolution::Abstain(JumpTableAbstain::IndexUnbounded);
+    if site
+        .path
+        .bounds
+        .iter()
+        .any(|bound: &IndexBound| matches!(bound, IndexBound::NotEqual(_)))
+        && site.default_target.is_none()
+    {
+        return VsaOutcome::Decided(JumpTableResolution::Abstain(
+            JumpTableAbstain::UnsupportedConstraint,
+        ));
+    }
+    let set: ValueSet = match index_value_set(&site.path.bounds, ceiling) {
+        VsaResult::Exact(set) => set,
+        VsaResult::Empty => {
+            return VsaOutcome::Decided(JumpTableResolution::Abstain(
+                JumpTableAbstain::EmptyFeasibleSet,
+            ));
         }
-        Interval::Unsupported => {
-            return JumpTableResolution::Abstain(JumpTableAbstain::UnsupportedConstraint);
+        VsaResult::Unbounded => {
+            return VsaOutcome::Decided(JumpTableResolution::Abstain(
+                JumpTableAbstain::IndexUnbounded,
+            ));
         }
+        VsaResult::Unsupported => {
+            return VsaOutcome::Decided(JumpTableResolution::Abstain(
+                JumpTableAbstain::UnsupportedConstraint,
+            ));
+        }
+        VsaResult::SolverRequired => return VsaOutcome::SolverRequired,
     };
-    if hi > cap || hi.saturating_sub(lo) >= MAX_TABLE_ENTRIES {
-        return JumpTableResolution::Abstain(JumpTableAbstain::IndexUnbounded);
+    if set.max() > MAX_TABLE_ENTRIES - 1 || set.count() > MAX_TABLE_ENTRIES {
+        return VsaOutcome::Decided(JumpTableResolution::Abstain(
+            JumpTableAbstain::IndexUnbounded,
+        ));
     }
-    let mut resolver: Resolver = Resolver::new(width, budget);
-    if resolver.assert_bounds(&site.path.bounds).is_err() {
-        return JumpTableResolution::Abstain(JumpTableAbstain::StructureInvalid);
-    }
-    resolver.resolve(site, sections, lo, hi)
+    VsaOutcome::Decided(enumerate_value_set(&set, site, sections))
 }
 
-struct Resolver {
-    solver: SymSolver,
-    index: Sym,
-    width: BitWidth,
-    pi: Vec<TermId>,
-}
-
-impl std::fmt::Debug for Resolver {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Resolver")
-            .field("width", &self.width)
-            .field("pi_len", &self.pi.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl Resolver {
-    fn new(width: BitWidth, budget: SymexecBudget) -> Self {
-        let mut solver: SymSolver = SymSolver::new(budget.solver());
-        let index: Sym = solver.fresh_havoc(width);
-        Self {
-            solver,
-            index,
-            width,
-            pi: Vec::new(),
+fn enumerate_value_set(
+    set: &ValueSet,
+    site: &IndirectSite,
+    sections: &SectionMap,
+) -> JumpTableResolution {
+    let mut successors: Vec<Successor> = Vec::new();
+    let mut rejected: Vec<(u64, RejectCause)> = Vec::new();
+    for index in set.iter() {
+        match read_table_target(&site.form, sections, index) {
+            Ok(target) => successors.push(Successor {
+                table_index: index,
+                case_value: index.wrapping_add(site.form.case_base),
+                target,
+                kind: SuccessorKind::Case,
+            }),
+            Err(cause) => rejected.push((index, cause)),
         }
     }
-
-    fn assert_bounds(&mut self, bounds: &[IndexBound]) -> Result<(), ()> {
-        for bound in bounds {
-            let predicate: Sym = self.bound_predicate(*bound);
-            let Some(term): Option<TermId> = pred_of(predicate) else {
-                return Err(());
-            };
-            self.pi.push(term);
-        }
-        Ok(())
+    if !rejected.is_empty() {
+        return JumpTableResolution::Abstain(JumpTableAbstain::IncompleteRecovery { rejected });
     }
-
-    fn bound_predicate(&mut self, bound: IndexBound) -> Sym {
-        let width: BitWidth = self.width;
-        let index: Sym = self.index;
-        match bound {
-            IndexBound::UnsignedAtMost(value) | IndexBound::Mask(value) => self.solver.compare(
-                CmpOp::Ule,
-                index,
-                Sym::constant(width, value),
-                BitWidth::BYTE,
-            ),
-            IndexBound::UnsignedLessThan(value) => self.solver.compare(
-                CmpOp::Ult,
-                index,
-                Sym::constant(width, value),
-                BitWidth::BYTE,
-            ),
-            IndexBound::UnsignedAtLeast(value) => self.solver.compare(
-                CmpOp::Ule,
-                Sym::constant(width, value),
-                index,
-                BitWidth::BYTE,
-            ),
-        }
+    if let Some(default) = site.default_target
+        && sections.exec_check(default) == ExecOutcome::Valid
+    {
+        successors.push(Successor {
+            table_index: u64::MAX,
+            case_value: u64::MAX,
+            target: default,
+            kind: SuccessorKind::Default,
+        });
     }
-
-    fn sat(&mut self, predicate: Sym) -> Feasible {
-        let Some(term): Option<TermId> = pred_of(predicate) else {
-            return Feasible::Unknown;
-        };
-        self.solver.feasible(&self.pi, Guard::Term(term))
-    }
-
-    fn index_gt(&mut self, bound: u64) -> Feasible {
-        let width: BitWidth = self.width;
-        let index: Sym = self.index;
-        let predicate: Sym = self.solver.compare(
-            CmpOp::Ult,
-            Sym::constant(width, bound),
-            index,
-            BitWidth::BYTE,
-        );
-        self.sat(predicate)
-    }
-
-    fn index_lt(&mut self, bound: u64) -> Feasible {
-        let width: BitWidth = self.width;
-        let index: Sym = self.index;
-        let predicate: Sym = self.solver.compare(
-            CmpOp::Ult,
-            index,
-            Sym::constant(width, bound),
-            BitWidth::BYTE,
-        );
-        self.sat(predicate)
-    }
-
-    fn index_eq(&mut self, value: u64) -> Feasible {
-        let width: BitWidth = self.width;
-        let index: Sym = self.index;
-        let predicate: Sym = self.solver.compare(
-            CmpOp::Eq,
-            index,
-            Sym::constant(width, value),
-            BitWidth::BYTE,
-        );
-        self.sat(predicate)
-    }
-
-    fn confirm_bounds(&mut self, lo: u64, hi: u64) -> Option<JumpTableAbstain> {
-        match self.index_gt(hi) {
-            Feasible::Unsat => {}
-            Feasible::Sat => return Some(JumpTableAbstain::SolverBoundMismatch),
-            Feasible::Unknown => return Some(JumpTableAbstain::SolverUnknown),
-        }
-        if lo > 0 {
-            match self.index_lt(lo) {
-                Feasible::Unsat => {}
-                Feasible::Sat => return Some(JumpTableAbstain::SolverBoundMismatch),
-                Feasible::Unknown => return Some(JumpTableAbstain::SolverUnknown),
-            }
-        }
-        None
-    }
-
-    fn resolve(
-        &mut self,
-        site: &IndirectSite,
-        sections: &SectionMap,
-        lo: u64,
-        hi: u64,
-    ) -> JumpTableResolution {
-        if self.solver.cumulative_exhausted() {
-            return JumpTableResolution::Abstain(JumpTableAbstain::SolverBudget);
-        }
-        if let Some(reason) = self.confirm_bounds(lo, hi) {
-            return JumpTableResolution::Abstain(reason);
-        }
-        self.enumerate(site, sections, lo, hi)
-    }
-
-    fn enumerate(
-        &mut self,
-        site: &IndirectSite,
-        sections: &SectionMap,
-        lo: u64,
-        hi: u64,
-    ) -> JumpTableResolution {
-        let mut successors: Vec<Successor> = Vec::new();
-        let mut rejected: Vec<(u64, RejectCause)> = Vec::new();
-        let mut index: u64 = lo;
-        while index <= hi {
-            if self.solver.cumulative_exhausted() {
-                return JumpTableResolution::Abstain(JumpTableAbstain::SolverBudget);
-            }
-            match self.index_eq(index) {
-                Feasible::Sat => match read_table_target(&site.form, sections, index) {
-                    Ok(target) => successors.push(Successor {
-                        table_index: index,
-                        case_value: index.wrapping_add(site.form.case_base),
-                        target,
-                        kind: SuccessorKind::Case,
-                    }),
-                    Err(cause) => rejected.push((index, cause)),
-                },
-                Feasible::Unsat => {
-                    return JumpTableResolution::Abstain(JumpTableAbstain::SolverBoundMismatch);
-                }
-                Feasible::Unknown => {
-                    return JumpTableResolution::Abstain(JumpTableAbstain::SolverUnknown);
-                }
-            }
-            let Some(next): Option<u64> = index.checked_add(1) else {
-                break;
-            };
-            index = next;
-        }
-        if !rejected.is_empty() {
-            return JumpTableResolution::Abstain(JumpTableAbstain::IncompleteRecovery { rejected });
-        }
-        if let Some(default) = site.default_target
-            && sections.exec_check(default) == ExecOutcome::Valid
-        {
-            successors.push(Successor {
-                table_index: u64::MAX,
-                case_value: u64::MAX,
-                target: default,
-                kind: SuccessorKind::Default,
-            });
-        }
-        JumpTableResolution::Resolved {
-            successors,
-            provenance: Provenance {
-                table_base: site.form.table_base,
-                bound_lo: lo,
-                bound_hi: hi,
-                entry_count: hi - lo + 1,
-            },
-        }
+    JumpTableResolution::Resolved {
+        successors,
+        provenance: Provenance {
+            table_base: site.form.table_base,
+            bound_lo: set.min(),
+            bound_hi: set.max(),
+            entry_count: set.count(),
+        },
     }
 }
 
@@ -634,13 +493,6 @@ fn read_table_target(
         ExecOutcome::Valid => Ok(target),
         ExecOutcome::NotExecutable => Err(RejectCause::NotExecutable),
         ExecOutcome::DecodeInvalid => Err(RejectCause::DecodeInvalid),
-    }
-}
-
-const fn pred_of(value: Sym) -> Option<TermId> {
-    match value {
-        Sym::Bool { pred, .. } => Some(pred),
-        Sym::Const { .. } | Sym::Bv { .. } => None,
     }
 }
 
@@ -685,6 +537,20 @@ mod tests {
         out
     }
 
+    fn ground_truth_targets(
+        site: &IndirectSite,
+        sections: &SectionMap,
+        indices: &[u64],
+    ) -> Vec<u64> {
+        let mut out: Vec<u64> = indices
+            .iter()
+            .filter_map(|index: &u64| read_table_target(&site.form, sections, *index).ok())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     #[test]
     fn absolute_eight_byte_table_recovers_exact_target_set() {
         let bodies: [u64; 4] = [0x1100, 0x1140, 0x1180, 0x1120];
@@ -704,7 +570,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(3)]),
             default_target: Some(0x1200),
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(targets(&resolution), vec![0x1100, 0x1120, 0x1140, 0x1180]);
         assert_eq!(resolution.cases().len(), 4);
         let default: Vec<&Successor> = resolution
@@ -743,7 +609,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(3)]),
             default_target: Some(0x1300),
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(targets(&resolution), vec![0x1100, 0x1140, 0x1180, 0x1200]);
     }
 
@@ -766,7 +632,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(2)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         let mut cases: Vec<(u64, u64)> = resolution
             .cases()
             .iter()
@@ -777,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_comes_from_the_solver_not_the_physical_extent() {
+    fn bound_comes_from_the_constraint_not_the_physical_extent() {
         let bodies: [u64; 8] = [
             0x1100, 0x1108, 0x1110, 0x1118, 0x1120, 0x1128, 0x1130, 0x1138,
         ];
@@ -795,7 +661,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(3)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(targets(&resolution), vec![0x1100, 0x1108, 0x1110, 0x1118]);
         assert!(
             resolution
@@ -823,7 +689,7 @@ mod tests {
             path: PathConstraint::new(4, Vec::new()),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(
             resolution,
             JumpTableResolution::Abstain(JumpTableAbstain::IndexUnbounded)
@@ -847,7 +713,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(1)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(
             resolution,
             JumpTableResolution::Abstain(JumpTableAbstain::WritableTable)
@@ -875,7 +741,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(3)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         let JumpTableResolution::Abstain(JumpTableAbstain::IncompleteRecovery { rejected }) =
             resolution
         else {
@@ -906,7 +772,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(4)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         let JumpTableResolution::Abstain(JumpTableAbstain::IncompleteRecovery { rejected }) =
             resolution
         else {
@@ -934,7 +800,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(2)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         let JumpTableResolution::Abstain(JumpTableAbstain::IncompleteRecovery { rejected }) =
             resolution
         else {
@@ -960,7 +826,7 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(4)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert!(!resolution.is_abstain());
         if let JumpTableResolution::Resolved { provenance, .. } = resolution {
             assert_eq!(provenance.entry_count, 5);
@@ -988,9 +854,152 @@ mod tests {
             path: PathConstraint::new(4, vec![IndexBound::Mask(0x7)]),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(resolution.cases().len(), 8);
         assert_eq!(targets(&resolution), bodies.to_vec());
+    }
+
+    #[test]
+    fn strided_mask_recovers_the_even_index_progression() {
+        let bodies: [u64; 8] = [
+            0x1100, 0x1108, 0x1110, 0x1118, 0x1120, 0x1128, 0x1130, 0x1138,
+        ];
+        let sections: SectionMap =
+            SectionMap::new(vec![code_section(&bodies), rodata(le64(&bodies))]);
+        let site: IndirectSite = IndirectSite {
+            form: TableForm {
+                table_base: RODATA_BASE,
+                stride: 8,
+                entry_bytes: 8,
+                endian: Endian::Little,
+                entry: EntryKind::AbsolutePointer,
+                case_base: 0,
+            },
+            path: PathConstraint::new(4, vec![IndexBound::Mask(0x6)]),
+            default_target: None,
+        };
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
+        let indices: Vec<u64> = resolution
+            .cases()
+            .iter()
+            .map(|successor: &Successor| successor.table_index)
+            .collect();
+        assert_eq!(indices, vec![0, 2, 4, 6]);
+        let expected: Vec<u64> = ground_truth_targets(&site, &sections, &[0, 2, 4, 6]);
+        assert_eq!(targets(&resolution), expected);
+    }
+
+    #[test]
+    fn non_strided_mask_abstains_as_unsupported() {
+        let bodies: [u64; 8] = [
+            0x1100, 0x1108, 0x1110, 0x1118, 0x1120, 0x1128, 0x1130, 0x1138,
+        ];
+        let sections: SectionMap =
+            SectionMap::new(vec![code_section(&bodies), rodata(le64(&bodies))]);
+        let site: IndirectSite = IndirectSite {
+            form: TableForm {
+                table_base: RODATA_BASE,
+                stride: 8,
+                entry_bytes: 8,
+                endian: Endian::Little,
+                entry: EntryKind::AbsolutePointer,
+                case_base: 0,
+            },
+            path: PathConstraint::new(4, vec![IndexBound::Mask(0xA)]),
+            default_target: None,
+        };
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
+        assert_eq!(
+            resolution,
+            JumpTableResolution::Abstain(JumpTableAbstain::UnsupportedConstraint)
+        );
+    }
+
+    #[test]
+    fn vsa_resolved_set_is_a_superset_of_the_reachable_targets() {
+        let bodies: [u64; 6] = [0x1100, 0x1108, 0x1110, 0x1118, 0x1120, 0x1128];
+        let sections: SectionMap =
+            SectionMap::new(vec![code_section(&bodies), rodata(le64(&bodies))]);
+        let site: IndirectSite = IndirectSite {
+            form: TableForm {
+                table_base: RODATA_BASE,
+                stride: 8,
+                entry_bytes: 8,
+                endian: Endian::Little,
+                entry: EntryKind::AbsolutePointer,
+                case_base: 0,
+            },
+            path: PathConstraint::new(4, vec![IndexBound::UnsignedAtMost(5)]),
+            default_target: None,
+        };
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
+        let reachable: Vec<u64> = ground_truth_targets(&site, &sections, &[0, 1, 2, 3, 4, 5]);
+        let recovered: Vec<u64> = targets(&resolution);
+        assert!(
+            reachable
+                .iter()
+                .all(|target: &u64| recovered.contains(target)),
+            "every reachable target must appear in the recovered set"
+        );
+    }
+
+    #[test]
+    fn disequality_without_default_is_unsupported() {
+        let bodies: [u64; 4] = [0x1100, 0x1108, 0x1110, 0x1118];
+        let sections: SectionMap =
+            SectionMap::new(vec![code_section(&bodies), rodata(le64(&bodies))]);
+        let site: IndirectSite = IndirectSite {
+            form: TableForm {
+                table_base: RODATA_BASE,
+                stride: 8,
+                entry_bytes: 8,
+                endian: Endian::Little,
+                entry: EntryKind::AbsolutePointer,
+                case_base: 0,
+            },
+            path: PathConstraint::new(
+                4,
+                vec![IndexBound::UnsignedAtMost(3), IndexBound::NotEqual(2)],
+            ),
+            default_target: None,
+        };
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
+        assert_eq!(
+            resolution,
+            JumpTableResolution::Abstain(JumpTableAbstain::UnsupportedConstraint)
+        );
+    }
+
+    #[test]
+    fn disequality_hole_defers_to_the_solver_tier() {
+        let bodies: [u64; 4] = [0x1100, 0x1108, 0x1110, 0x1118];
+        let sections: SectionMap = SectionMap::new(vec![
+            code_section(&[0x1100, 0x1108, 0x1110, 0x1118, 0x1200]),
+            rodata(le64(&bodies)),
+        ]);
+        let site: IndirectSite = IndirectSite {
+            form: TableForm {
+                table_base: RODATA_BASE,
+                stride: 8,
+                entry_bytes: 8,
+                endian: Endian::Little,
+                entry: EntryKind::AbsolutePointer,
+                case_base: 0,
+            },
+            path: PathConstraint::new(
+                4,
+                vec![IndexBound::UnsignedAtMost(3), IndexBound::NotEqual(2)],
+            ),
+            default_target: Some(0x1200),
+        };
+        assert_eq!(
+            try_resolve_vsa(&site, &sections),
+            VsaOutcome::SolverRequired
+        );
+        assert_eq!(
+            resolve_jump_table_vsa(&site, &sections),
+            JumpTableResolution::Abstain(JumpTableAbstain::SolverRequired)
+        );
     }
 
     #[test]
@@ -1016,7 +1025,7 @@ mod tests {
             ),
             default_target: None,
         };
-        let resolution: JumpTableResolution = resolve_jump_table(&site, &sections);
+        let resolution: JumpTableResolution = resolve_jump_table_vsa(&site, &sections);
         assert_eq!(
             resolution,
             JumpTableResolution::Abstain(JumpTableAbstain::EmptyFeasibleSet)
