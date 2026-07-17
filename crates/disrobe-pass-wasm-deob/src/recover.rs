@@ -694,12 +694,24 @@ mod call_indirect {
 
     const MAX_TABLE_SLOTS: usize = 10_000_000;
 
-    fn build_table_index(module: &Module) -> BTreeMap<TableId, Vec<Option<FunctionId>>> {
+    pub(super) fn build_table_index(module: &Module) -> BTreeMap<TableId, Vec<Option<FunctionId>>> {
+        let table_caps: BTreeMap<TableId, usize> = module
+            .tables
+            .iter()
+            .map(|table: &walrus::Table| {
+                let declared: usize = usize::try_from(table.initial).unwrap_or(usize::MAX);
+                (table.id(), declared.min(MAX_TABLE_SLOTS))
+            })
+            .collect();
         let mut out: BTreeMap<TableId, Vec<Option<FunctionId>>> = BTreeMap::new();
+        let mut budget: usize = MAX_TABLE_SLOTS;
         let element_ids: Vec<ElementId> = module.elements.iter().map(walrus::Element::id).collect();
         for eid in element_ids {
             let element: &walrus::Element = module.elements.get(eid);
             let walrus::ElementKind::Active { table, offset } = &element.kind else {
+                continue;
+            };
+            let Some(&cap): Option<&usize> = table_caps.get(table) else {
                 continue;
             };
             let base: usize = match offset {
@@ -709,6 +721,9 @@ mod call_indirect {
                 },
                 _ => continue,
             };
+            if base >= cap {
+                continue;
+            }
             let functions: Vec<Option<FunctionId>> = match &element.items {
                 ElementItems::Functions(ids) => ids.iter().copied().map(Some).collect(),
                 ElementItems::Expressions(_, exprs) => exprs
@@ -719,16 +734,24 @@ mod call_indirect {
                     })
                     .collect(),
             };
-            let needed: usize = base.saturating_add(functions.len());
-            if needed > MAX_TABLE_SLOTS {
-                continue;
-            }
+            let needed: usize = base.saturating_add(functions.len()).min(cap);
             let slots: &mut Vec<Option<FunctionId>> = out.entry(*table).or_default();
             if slots.len() < needed {
+                let growth: usize = needed - slots.len();
+                if growth > budget {
+                    continue;
+                }
+                budget -= growth;
                 slots.resize(needed, None);
             }
             for (offset_idx, fid) in functions.into_iter().enumerate() {
-                if let Some(slot) = slots.get_mut(base + offset_idx) {
+                let Some(slot_index): Option<usize> = base.checked_add(offset_idx) else {
+                    break;
+                };
+                if slot_index >= needed {
+                    break;
+                }
+                if let Some(slot) = slots.get_mut(slot_index) {
                     *slot = fid;
                 }
             }
@@ -1038,5 +1061,49 @@ mod tests {
             recovered.report
         );
         assert!(recovered.report.mba_expressions_folded >= 1);
+    }
+
+    #[test]
+    fn out_of_bounds_element_segment_does_not_inflate_table_index() {
+        let wat: &str = r"
+            (module
+              (table 1 funcref)
+              (func $f)
+              (elem (i32.const 9999999) $f))
+        ";
+        let bytes: Vec<u8> = assemble(wat);
+        let module: walrus::Module =
+            walrus::Module::from_buffer(&bytes).expect("parse crafted module");
+        let index: std::collections::BTreeMap<walrus::TableId, Vec<Option<FunctionId>>> =
+            call_indirect::build_table_index(&module);
+        for slots in index.values() {
+            assert!(
+                slots.len() <= 1,
+                "an out-of-bounds element segment inflated the table index to {} slots",
+                slots.len()
+            );
+        }
+        let recovered: RecoveredModule = recover_module(&bytes).expect("recover crafted module");
+        assert_eq!(recovered.report.call_indirect_resolved, 0);
+    }
+
+    #[test]
+    fn in_bounds_element_segment_is_indexed() {
+        let wat: &str = r"
+            (module
+              (table 4 funcref)
+              (func $a)
+              (func $b)
+              (elem (i32.const 1) $a $b))
+        ";
+        let bytes: Vec<u8> = assemble(wat);
+        let module: walrus::Module = walrus::Module::from_buffer(&bytes).expect("parse module");
+        let index: std::collections::BTreeMap<walrus::TableId, Vec<Option<FunctionId>>> =
+            call_indirect::build_table_index(&module);
+        let slots: &Vec<Option<FunctionId>> = index.values().next().expect("one table indexed");
+        assert_eq!(slots.len(), 3);
+        assert!(slots[1].is_some());
+        assert!(slots[2].is_some());
+        assert!(slots[0].is_none());
     }
 }
