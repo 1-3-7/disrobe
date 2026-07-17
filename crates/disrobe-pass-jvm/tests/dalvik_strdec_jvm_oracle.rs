@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_jvm::dalvik_strdec_generic::recover;
 use disrobe_pass_jvm::dex::{DexFile, parse as parse_dex};
@@ -16,6 +17,8 @@ const SB_PLAIN: &str = "X-Correlation-Id: 42a";
 const SB_KEY: u8 = 0x2C;
 const B64_PLAIN: &str = "Authorization: Bearer café-token";
 const B64_KEY: u8 = 0x39;
+
+static GROUND_TRUTH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn java_tool(tool: &str) -> Option<PathBuf> {
     let home: String = std::env::var("JAVA_HOME").ok()?;
@@ -100,8 +103,11 @@ public class StrdecFixture {{
 }
 
 fn jvm_ground_truth(java: &Path, javac: &Path) -> [Vec<u8>; 3] {
-    let tmp: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_strdec_oracle_{}", std::process::id()));
+    let sequence: u64 = GROUND_TRUTH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp: PathBuf = std::env::temp_dir().join(format!(
+        "disrobe_strdec_oracle_{}_{sequence}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&tmp).expect("mk tmp");
     let src_path: PathBuf = tmp.join("StrdecFixture.java");
     std::fs::write(&src_path, fixture_source().as_bytes()).expect("write fixture source");
