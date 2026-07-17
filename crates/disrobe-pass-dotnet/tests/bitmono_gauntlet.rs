@@ -4,7 +4,6 @@
     clippy::panic,
     clippy::missing_panics_doc
 )]
-//! Real `BitMono` 0.41.1 gauntlet.
 
 use std::path::PathBuf;
 

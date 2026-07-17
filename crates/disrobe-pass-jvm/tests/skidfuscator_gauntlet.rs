@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! Real Skidfuscator 2.0.11 gauntlet.
 
 use disrobe_pass_jvm::{DecompiledClass, decompile_classfile_bytes};
 

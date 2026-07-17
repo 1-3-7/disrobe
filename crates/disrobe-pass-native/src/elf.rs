@@ -1,12 +1,3 @@
-#![doc = "Program-header-driven ELF dynamic analysis."]
-#![doc = ""]
-#![doc = "Recovers dynamic-section tags (`NEEDED`/`SONAME`/`RPATH`/`RUNPATH` and the"]
-#![doc = "`INIT`/`FINI`/`SYMTAB`/`STRTAB`/`REL` group), `.gnu.hash` / `.hash` driven"]
-#![doc = "dynamic-symbol-count recovery, dynamic symbol table reads, segment-to-vaddr"]
-#![doc = "mapping, and `RELA`/`REL` relocation reads. Parses through `PT_DYNAMIC` +"]
-#![doc = "`PT_LOAD` only, so it recovers the same facts as `readelf -d` / `nm -D` even"]
-#![doc = "on fully section-header-stripped shared objects."]
-
 use serde::{Deserialize, Serialize};
 
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];

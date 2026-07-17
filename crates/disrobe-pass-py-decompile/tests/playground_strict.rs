@@ -454,7 +454,6 @@ fn strict_corpus_file_present() {
     assert!(exists, "edge_cases.py corpus file missing at {path}");
 }
 
-/// Per-code-object recompile-equivalence floor for the edge-cases corpus, enforced in CI when a CPython 3.14 interpreter is present.
 const CORPUS_OBJECT_PCT_FLOOR: f64 = 91.0;
 
 #[test]

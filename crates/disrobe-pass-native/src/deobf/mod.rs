@@ -1,11 +1,3 @@
-#![doc = "Native x86 anti-obfuscation defeats: OLLVM control-flow flattening, bogus"]
-#![doc = "control flow (opaque predicates), and instruction substitution."]
-#![doc = ""]
-#![doc = "Control-flow recovery follows the dispatcher-recovery shape proven in the JVM"]
-#![doc = "and .NET deflatteners (state variable + case table + per-block successor)."]
-#![doc = "Predicate folding and arithmetic canonicalization delegate to `disrobe-mba`,"]
-#![doc = "whose rewrites are checked by exhaustive bitvector evaluation."]
-
 pub mod abi;
 pub mod bcf;
 #[cfg(feature = "smt-solver")]

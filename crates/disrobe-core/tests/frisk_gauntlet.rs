@@ -57,7 +57,6 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
-/// Assembles each secret at runtime from split prefix + body so no contiguous real-format secret literal is ever committed (push-protection safe).
 fn planted_secrets() -> String {
     let aws: String = format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB");
     let github: String = format!(

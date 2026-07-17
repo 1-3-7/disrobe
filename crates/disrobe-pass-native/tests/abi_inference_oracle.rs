@@ -1,5 +1,3 @@
-//! Non-circular calling-convention / arg-count / return-value oracle.
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

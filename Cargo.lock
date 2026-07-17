@@ -2010,6 +2010,7 @@ dependencies = [
  "disrobe-py-marshal",
  "disrobe-query",
  "disrobe-taint",
+ "disrobe-typerec",
  "fastwebsockets",
  "futures",
  "human-panic",

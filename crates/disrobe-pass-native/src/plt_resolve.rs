@@ -1,11 +1,3 @@
-#![doc = "Resolve PLT-stub and IAT-slot call/jump targets to their import names, and classify a"]
-#![doc = "`jmp` to a function start or import thunk as a tail call rather than an intra-function edge."]
-#![doc = ""]
-#![doc = "ELF PLT resolution decodes each `.plt`/`.plt.sec` stub's `jmp *[rip+disp]` to the GOT slot it"]
-#![doc = "dereferences, then ties that slot to the JMPREL relocation that binds it, so a stub at"]
-#![doc = "`printf@plt` is named `printf` purely from the linker's own `R_*_JUMP_SLOT` table. PE IAT"]
-#![doc = "resolution maps each import thunk's slot to the import directory's hint/name entry."]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};

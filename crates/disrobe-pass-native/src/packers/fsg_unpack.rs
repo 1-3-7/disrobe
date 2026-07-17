@@ -49,8 +49,11 @@ pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
     let pe: PeImage = parse_fsg_pe(packed_bytes)?;
     let stub_raw_off: usize = find_entry_stub_raw_offset(&pe, packed_bytes)?;
     let anchors: StubAnchors = decode_stub_anchors(&pe, packed_bytes, stub_raw_off)?;
-    let stream_raw_off: usize =
-        rva_to_file_offset(&pe, packed_bytes, anchors.packed_stream_va - anchors.image_base)?;
+    let stream_raw_off: usize = rva_to_file_offset(
+        &pe,
+        packed_bytes,
+        anchors.packed_stream_va - anchors.image_base,
+    )?;
     let stream: &[u8] = packed_bytes.get(stream_raw_off..).ok_or(Error::Truncated {
         needed: stream_raw_off + 1,
         had: packed_bytes.len(),

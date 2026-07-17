@@ -148,6 +148,7 @@ disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
 disrobe-nir-lift = { workspace = true, optional = true }
+disrobe-typerec = { workspace = true }
 disrobe-taint = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-llm-metadata = { workspace = true }

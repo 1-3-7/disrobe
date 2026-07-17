@@ -43,7 +43,6 @@ enum GateOutcome {
     Skipped(String),
 }
 
-/// Fail-fast pre-push gate shared by the git hook and pre-release runs.
 pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     let scope: Scope = compute_scope(root, full)?;
     match &scope {

@@ -8,15 +8,12 @@
     clippy::doc_markdown
 )]
 
-//! Per-code-object recompile-equivalence gate over the pinned stdlib corpus, measured under a real CPython 3.15 interpreter.
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-/// Floor enforced in CI.
 const OBJECT_PCT_FLOOR: f64 = 90.0;
 
 #[derive(Debug)]

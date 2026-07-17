@@ -1,25 +1,3 @@
-#![doc = "Polynomial MBA reduction over Z/2^n by exact multivariate normal form."]
-#![doc = ""]
-#![doc = "A polynomial mixed-boolean-arithmetic expression is a sum of products of"]
-#![doc = "bitwise terms over a ring (addition, subtraction, negation, multiplication, and"]
-#![doc = "shift-by-constant). Each maximal bitwise subterm is abstracted to a fresh"]
-#![doc = "indeterminate and the expression is expanded distributively into a multivariate"]
-#![doc = "polynomial whose coefficients live in Z/2^n. The polynomial is then reduced to a"]
-#![doc = "canonical normal form for its function on the whole word domain: the coefficients"]
-#![doc = "are moved into the falling-factorial basis and each coefficient is reduced modulo"]
-#![doc = "the smallest modulus that annihilates its basis element over Z/2^n, so a product"]
-#![doc = "of bitwise terms whose high-degree part vanishes as a function at the operand"]
-#![doc = "width collapses to its true degree. The reduced form is rebuilt and accepted only"]
-#![doc = "when it is strictly cheaper than the input and two independent solver-free"]
-#![doc = "certificates agree that it equals the input as a function over Z/2^n: a"]
-#![doc = "multivariate finite-difference certificate and equality of falling-factorial"]
-#![doc = "normal forms. The indeterminates are treated as independent, so a correlation"]
-#![doc = "among distinct bitwise terms that would license a smaller form is left for the"]
-#![doc = "solver-backed gate on the original; the polynomial layer never emits a rewrite it"]
-#![doc = "has not proven for every value of every substituted variable. Right shift and"]
-#![doc = "division are not ring operations and are left untouched; the proof is per-width"]
-#![doc = "and does not transfer across widths."]
-
 use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::linear_solver::{scaled_atom_term, sum_terms};
 use std::collections::BTreeMap;

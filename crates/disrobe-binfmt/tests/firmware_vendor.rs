@@ -1,5 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! Vendor firmware decryptor / carver oracle.
 
 use std::path::PathBuf;
 

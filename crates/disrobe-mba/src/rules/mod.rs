@@ -1,17 +1,3 @@
-#![doc = "Data-driven peephole rewrite rules over the bitvector [`Expr`] shape."]
-#![doc = ""]
-#![doc = "Deobfuscation peephole identities are expressed as DATA: a serde-validated"]
-#![doc = "schema pairs a match-pattern over the normalized expression shape with a"]
-#![doc = "rewrite template. A [`RuleSet`] is loaded from TOML by [`load_str`], which"]
-#![doc = "rejects empty sets, duplicate rule names, duplicate captures, and rewrite or"]
-#![doc = "condition references to captures the pattern never bound. The engine matches"]
-#![doc = "a rule pattern against an expression, binds captures, evaluates the"]
-#![doc = "width-relative side conditions, and instantiates the rewrite template."]
-#![doc = ""]
-#![doc = "[`canonicalize`](crate::canonicalize) drives [`apply_root`] over the shipped"]
-#![doc = "[`mba_peephole_rules`] for the six migrated identities, so the rules carried"]
-#![doc = "as data are the production rewrite path, not an orphaned mirror of code."]
-
 use crate::expr::Expr;
 
 pub mod engine;
