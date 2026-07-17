@@ -87,10 +87,20 @@ pub fn inventory(image: &[u8]) -> Result<IpaInventory> {
         .iter()
         .map(|e: &IpaEntry| e.name.clone())
         .find(|n: &String| n == &format!("{app_dir_value}/Info.plist"));
+    let declared_executable: Option<String> = info_plist_path
+        .as_deref()
+        .and_then(|p: &str| read_named(&mut archive, p).ok().flatten())
+        .and_then(|raw: Vec<u8>| crate::plist_decode::parse_info_plist(&raw).ok())
+        .and_then(|summary: crate::plist_decode::InfoPlistSummary| summary.bundle_executable)
+        .filter(|exe: &String| !exe.is_empty());
+    let main_binary_entry: String = declared_executable.as_deref().map_or_else(
+        || format!("{app_dir_value}/{bundle_name}"),
+        |exe: &str| format!("{app_dir_value}/{exe}"),
+    );
     let main_binary_path: Option<String> = entries
         .iter()
         .map(|e: &IpaEntry| e.name.clone())
-        .find(|n: &String| n == &format!("{app_dir_value}/{bundle_name}"));
+        .find(|n: &String| n == &main_binary_entry);
     let embedded_provision_path: Option<String> = entries
         .iter()
         .map(|e: &IpaEntry| e.name.clone())

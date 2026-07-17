@@ -8,7 +8,8 @@ use crate::native_bodies::{self, NativeBodyReport};
 use crate::objc::{self, ObjcClassDump};
 use crate::objc_records;
 use crate::swift::{self, SwiftClassDump};
-use crate::swift_reflect;
+use crate::swift_reflect::{self, SwiftTypeReflection};
+use crate::swiftinterface::{self, ParsedInterface};
 use crate::swiftmodule::{self, SwiftModuleDecls};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +99,7 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
                 "no main binary path in Info.plist".to_owned()
             });
         }
+        recover_interface_field_names(bytes, &inv, &mut slices);
         return Ok(SwiftObjcReport {
             container: ContainerKind::Ipa,
             ipa: Some(inv),
@@ -341,6 +343,51 @@ const fn section_present(present: bool) -> &'static str {
 
 fn zip_like(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[..4] == b"PK\x03\x04"
+}
+
+const SWIFTINTERFACE_SUFFIX: &str = ".swiftinterface";
+
+fn recover_interface_field_names(image: &[u8], inv: &IpaInventory, slices: &mut [SliceReport]) {
+    let interface_paths: Vec<&str> = inv
+        .entries
+        .iter()
+        .filter(|e: &&crate::ipa::IpaEntry| e.name.ends_with(SWIFTINTERFACE_SUFFIX))
+        .map(|e: &crate::ipa::IpaEntry| e.name.as_str())
+        .collect();
+    if interface_paths.is_empty() || slices.is_empty() {
+        return;
+    }
+    let mut interfaces: Vec<ParsedInterface> = Vec::with_capacity(interface_paths.len());
+    for path in interface_paths {
+        let Ok(Some(raw)): crate::error::Result<Option<Vec<u8>>> =
+            read_zip_entry_bytes(image, path)
+        else {
+            continue;
+        };
+        let Ok(text): core::result::Result<&str, _> = std::str::from_utf8(&raw) else {
+            continue;
+        };
+        interfaces.push(swiftinterface::parse(text));
+    }
+    if interfaces.is_empty() {
+        return;
+    }
+    let mut filled_total: usize = 0;
+    for slice in slices.iter_mut() {
+        for interface in &interfaces {
+            let taken: Vec<SwiftTypeReflection> = std::mem::take(&mut slice.swift.reflected_types);
+            let (merged, filled): (Vec<SwiftTypeReflection>, usize) =
+                swiftinterface::merge_elided_field_names(taken, interface);
+            slice.swift.reflected_types = merged;
+            filled_total += filled;
+        }
+    }
+    crate::debug::dbg_kv("ipa-interface-field-recovery", || {
+        format!(
+            "interfaces={} fields_recovered={filled_total}",
+            interfaces.len()
+        )
+    });
 }
 
 const MAX_ZIP_ENTRY: u64 = 64 * 1024 * 1024;

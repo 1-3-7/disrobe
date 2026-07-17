@@ -254,6 +254,50 @@ pub fn build_binary_info_plist() -> Vec<u8> {
 }
 
 #[must_use]
+pub fn build_info_plist_with_executable(bundle_name: &str, executable: &str) -> Vec<u8> {
+    use plist::{Dictionary, Value};
+    let mut dict: Dictionary = Dictionary::new();
+    dict.insert(
+        "CFBundleIdentifier".into(),
+        Value::String("com.example.app".into()),
+    );
+    dict.insert("CFBundleName".into(), Value::String(bundle_name.into()));
+    dict.insert(
+        "CFBundleExecutable".into(),
+        Value::String(executable.into()),
+    );
+    dict.insert(
+        "CFBundleShortVersionString".into(),
+        Value::String("1.0.0".into()),
+    );
+    let value: Value = Value::Dictionary(dict);
+    let mut out: Vec<u8> = Vec::new();
+    value
+        .to_writer_binary(&mut out)
+        .expect("write binary plist");
+    out
+}
+
+#[must_use]
+pub fn build_ipa_from_files(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor: Cursor<&mut Vec<u8>> = Cursor::new(&mut buf);
+        let mut writer: ZipWriter<Cursor<&mut Vec<u8>>> = ZipWriter::new(cursor);
+        let opts: SimpleFileOptions =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in files {
+            writer.start_file(name.clone(), opts).expect("start file");
+            writer.write_all(data).expect("write file");
+        }
+        writer.finish().expect("zip finish");
+    }
+    buf
+}
+
+#[must_use]
 pub fn wrap_in_code_signature_blob(xml: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(xml.len() + 32);
     out.extend_from_slice(b"\x00\x00\x00\x00prefix\x00\x00");

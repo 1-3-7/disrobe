@@ -11,7 +11,6 @@ pub fn looks_like_swift_mangled(s: &str) -> bool {
         || s.starts_with("$s")
         || s.starts_with("_$S")
         || s.starts_with("$S")
-        || s.starts_with("_T0")
         || s.starts_with("_T")
 }
 
