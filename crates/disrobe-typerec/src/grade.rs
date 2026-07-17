@@ -1,7 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::abi::{self, ArgLocation, Convention, FunctionCode, RecoveredProto, ReturnKind};
 use crate::dwarf_gt::{
-    DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction, GroundTruthVar,
+    AbiClass, DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction,
+    GroundTruthSignature, GroundTruthVar, GtReturn,
 };
 use crate::lattice::Width;
 use crate::recover::{RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
@@ -439,12 +441,255 @@ fn grade_field_names(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SigGradeReport {
+    pub arg_count: AxisScore,
+    pub arg_regs: AxisScore,
+    pub return_kind: AxisScore,
+    pub functions_total: usize,
+    pub functions_graded: usize,
+    pub return_graded: usize,
+    pub variadic_total: usize,
+    pub variadic_correct: usize,
+    pub sret_total: usize,
+    pub sret_correct: usize,
+    pub mismatches: Vec<AxisMismatch>,
+}
+
+#[must_use]
+pub fn recover_protos_image(
+    image: &DebugImage,
+    convention: Convention,
+) -> Vec<Option<RecoveredProto>> {
+    let codes: Vec<FunctionCode<'_>> = function_codes(image);
+    let protos: Vec<RecoveredProto> = abi::recover_protos(&codes, convention);
+    let by_pc: BTreeMap<u64, RecoveredProto> = codes
+        .iter()
+        .zip(protos)
+        .map(|(code, proto): (&FunctionCode<'_>, RecoveredProto)| (code.low_pc, proto))
+        .collect();
+    image
+        .functions
+        .iter()
+        .map(|function: &GroundTruthFunction| by_pc.get(&function.low_pc).cloned())
+        .collect()
+}
+
+fn function_codes(image: &DebugImage) -> Vec<FunctionCode<'_>> {
+    image
+        .functions
+        .iter()
+        .filter_map(|function: &GroundTruthFunction| {
+            image
+                .function_bytes(function)
+                .map(|bytes: &[u8]| FunctionCode {
+                    low_pc: function.low_pc,
+                    bytes,
+                })
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn called_functions(image: &DebugImage) -> BTreeSet<u64> {
+    abi::called_targets(&function_codes(image))
+}
+
+#[must_use]
+pub fn grade_signature_image(image: &DebugImage, convention: Convention) -> SigGradeReport {
+    let protos: Vec<Option<RecoveredProto>> = recover_protos_image(image, convention);
+    let called: BTreeSet<u64> = called_functions(image);
+    grade_signatures(&image.functions, &protos, convention, &called)
+}
+
+#[must_use]
+pub fn grade_signatures(
+    functions: &[GroundTruthFunction],
+    protos: &[Option<RecoveredProto>],
+    convention: Convention,
+    called: &BTreeSet<u64>,
+) -> SigGradeReport {
+    let mut report: SigGradeReport = SigGradeReport::default();
+    for (function, proto_opt) in functions.iter().zip(protos.iter()) {
+        let Some(sig): Option<&GroundTruthSignature> = function.signature.as_ref() else {
+            continue;
+        };
+        if !sig.prototyped {
+            continue;
+        }
+        report.functions_total += 1;
+        let Some(proto): Option<&RecoveredProto> = proto_opt.as_ref() else {
+            continue;
+        };
+        report.functions_graded += 1;
+        grade_arg_count(&mut report, function, sig, proto);
+        grade_arg_regs(&mut report, function, sig, proto, convention);
+        grade_return(&mut report, function, sig, proto, called);
+        grade_variadic(&mut report, sig, proto);
+        grade_sret(&mut report, sig, proto);
+    }
+    report
+}
+
+fn grade_arg_count(
+    report: &mut SigGradeReport,
+    function: &GroundTruthFunction,
+    sig: &GroundTruthSignature,
+    proto: &RecoveredProto,
+) {
+    report.arg_count.total += 1;
+    report.arg_count.predicted += 1;
+    if proto.args.len() == sig.params.len() {
+        report.arg_count.correct += 1;
+    } else {
+        report.mismatches.push(AxisMismatch {
+            function: function.name.clone(),
+            variable: "arg_count".to_owned(),
+            expected: sig.params.len().to_string(),
+            got: proto.args.len().to_string(),
+        });
+    }
+}
+
+fn grade_arg_regs(
+    report: &mut SigGradeReport,
+    function: &GroundTruthFunction,
+    sig: &GroundTruthSignature,
+    proto: &RecoveredProto,
+    convention: Convention,
+) {
+    let expected: BTreeSet<ArgLocation> = expected_arg_registers(sig, convention);
+    let got: BTreeSet<ArgLocation> = proto.arg_register_set();
+    report.arg_regs.total += 1;
+    report.arg_regs.predicted += 1;
+    if expected == got {
+        report.arg_regs.correct += 1;
+    } else {
+        report.mismatches.push(AxisMismatch {
+            function: function.name.clone(),
+            variable: "arg_regs".to_owned(),
+            expected: format!("{expected:?}"),
+            got: format!("{got:?}"),
+        });
+    }
+}
+
+fn grade_return(
+    report: &mut SigGradeReport,
+    function: &GroundTruthFunction,
+    sig: &GroundTruthSignature,
+    proto: &RecoveredProto,
+    called: &BTreeSet<u64>,
+) {
+    if !called.contains(&function.low_pc) {
+        return;
+    }
+    report.return_kind.total += 1;
+    report.return_graded += 1;
+    if proto.ret == ReturnKind::Unknown {
+        return;
+    }
+    report.return_kind.predicted += 1;
+    let expected: ReturnKind = expected_return(sig.ret);
+    if proto.ret == expected {
+        report.return_kind.correct += 1;
+    } else {
+        report.mismatches.push(AxisMismatch {
+            function: function.name.clone(),
+            variable: "return_kind".to_owned(),
+            expected: format!("{expected:?}"),
+            got: format!("{:?}", proto.ret),
+        });
+    }
+}
+
+const fn grade_variadic(
+    report: &mut SigGradeReport,
+    sig: &GroundTruthSignature,
+    proto: &RecoveredProto,
+) {
+    if !sig.variadic && !proto.variadic {
+        return;
+    }
+    report.variadic_total += 1;
+    if sig.variadic == proto.variadic {
+        report.variadic_correct += 1;
+    }
+}
+
+fn grade_sret(report: &mut SigGradeReport, sig: &GroundTruthSignature, proto: &RecoveredProto) {
+    if sig.ret != GtReturn::Sret {
+        return;
+    }
+    report.sret_total += 1;
+    if proto.sret {
+        report.sret_correct += 1;
+    }
+}
+
+#[must_use]
+fn expected_arg_registers(
+    sig: &GroundTruthSignature,
+    convention: Convention,
+) -> BTreeSet<ArgLocation> {
+    let mut out: BTreeSet<ArgLocation> = BTreeSet::new();
+    match convention {
+        Convention::Win64 | Convention::Unknown => {
+            let offset: usize = usize::from(sig.ret == GtReturn::Sret);
+            for (index, class) in sig.params.iter().enumerate() {
+                let position: usize = index + offset;
+                if position < 4
+                    && let Some(loc) = win64_location(*class, position)
+                {
+                    out.insert(loc);
+                }
+            }
+        }
+        Convention::SysVAmd64 => {
+            let mut int_index: usize = usize::from(sig.ret == GtReturn::Sret);
+            let mut sse_index: usize = 0;
+            for class in &sig.params {
+                match class {
+                    AbiClass::Integer => {
+                        if let Some(loc) = ArgLocation::int_register(convention, int_index) {
+                            out.insert(loc);
+                        }
+                        int_index += 1;
+                    }
+                    AbiClass::Sse => {
+                        if let Ok(index) = u8::try_from(sse_index) {
+                            out.insert(ArgLocation::SseReg(index));
+                        }
+                        sse_index += 1;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn win64_location(class: AbiClass, position: usize) -> Option<ArgLocation> {
+    match class {
+        AbiClass::Integer => ArgLocation::int_register(Convention::Win64, position),
+        AbiClass::Sse => u8::try_from(position).ok().map(ArgLocation::SseReg),
+    }
+}
+
+const fn expected_return(ret: GtReturn) -> ReturnKind {
+    match ret {
+        GtReturn::Void => ReturnKind::Void,
+        GtReturn::Integer => ReturnKind::IntRax,
+        GtReturn::Sse => ReturnKind::Sse,
+        GtReturn::Sret => ReturnKind::Sret,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::lattice::Sign;
-    use std::collections::BTreeMap;
 
     fn gt_var(name: &str, disp: i64, width: Width, sign: Sign) -> GroundTruthVar {
         GroundTruthVar {
@@ -467,6 +712,7 @@ mod tests {
                 gt_var("b", 24, Width::Byte, Sign::Unsigned),
             ],
             aggregates: Vec::new(),
+            signature: None,
         }
     }
 
@@ -479,6 +725,7 @@ mod tests {
             objects: Vec::new(),
             structs: Vec::new(),
             has_frame_pointer: true,
+            proto: None,
         }
     }
 
@@ -568,6 +815,7 @@ mod tests {
                 },
             ],
             aggregates: Vec::new(),
+            signature: None,
         }
     }
 
@@ -594,6 +842,7 @@ mod tests {
             ],
             structs: Vec::new(),
             has_frame_pointer: true,
+            proto: None,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
         assert_eq!(report.reused, 2);
@@ -610,6 +859,7 @@ mod tests {
             objects: vec![object(0, Sign::Unknown, 0x2004, 0x2030)],
             structs: Vec::new(),
             has_frame_pointer: true,
+            proto: None,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
         assert_eq!(report.false_merges, 2, "one object spans two typed vars");
@@ -627,6 +877,7 @@ mod tests {
             ],
             structs: Vec::new(),
             has_frame_pointer: true,
+            proto: None,
         };
         let report: IdentityReport = grade_identity(&[function], &[recovery]);
         assert_eq!(report.false_splits, 1);

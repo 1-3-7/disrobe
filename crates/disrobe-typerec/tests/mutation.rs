@@ -52,6 +52,7 @@ fn mutate(
             has_frame_pointer: function.has_frame_pointer,
             objects: function.objects.clone(),
             structs: function.structs.clone(),
+            proto: function.proto.clone(),
             rbp_slots: function
                 .rbp_slots
                 .iter()

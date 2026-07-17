@@ -134,6 +134,7 @@ fn mutate(
             objects: function.objects.clone(),
             structs: function.structs.iter().map(&mutator).collect(),
             has_frame_pointer: function.has_frame_pointer,
+            proto: function.proto.clone(),
         })
         .collect()
 }

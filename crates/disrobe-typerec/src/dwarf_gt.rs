@@ -15,10 +15,34 @@ const MAX_TYPE_DEPTH: u8 = 16;
 const MAX_VARS_PER_FUNCTION: usize = 1 << 12;
 
 const DW_ATE_BOOLEAN: u64 = 0x02;
+const DW_ATE_FLOAT: u64 = 0x04;
 const DW_ATE_SIGNED: u64 = 0x05;
 const DW_ATE_SIGNED_CHAR: u64 = 0x06;
 const DW_ATE_UNSIGNED: u64 = 0x07;
 const DW_ATE_UNSIGNED_CHAR: u64 = 0x08;
+const MAX_PARAMS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiClass {
+    Integer,
+    Sse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GtReturn {
+    Void,
+    Integer,
+    Sse,
+    Sret,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundTruthSignature {
+    pub prototyped: bool,
+    pub params: Vec<AbiClass>,
+    pub variadic: bool,
+    pub ret: GtReturn,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroundTruthVar {
@@ -72,6 +96,7 @@ pub struct GroundTruthFunction {
     pub high_pc: u64,
     pub vars: Vec<GroundTruthVar>,
     pub aggregates: Vec<GroundTruthAggregate>,
+    pub signature: Option<GroundTruthSignature>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -272,10 +297,25 @@ fn collect_unit(
             });
             continue;
         }
+        if tag == gimli::DW_TAG_unspecified_parameters
+            && let Some(ctx) = current.as_mut()
+            && depth == ctx.fn_depth + 1
+            && let Some(sig) = ctx.function.signature.as_mut()
+        {
+            sig.variadic = true;
+        }
         if tag == gimli::DW_TAG_formal_parameter || tag == gimli::DW_TAG_variable {
             let Some(ctx): Option<&mut FunctionCtx> = current.as_mut() else {
                 continue;
             };
+            if tag == gimli::DW_TAG_formal_parameter && depth == ctx.fn_depth + 1 {
+                let class: AbiClass = abi_class(unit, die_type_offset(entry));
+                if let Some(sig) = ctx.function.signature.as_mut()
+                    && sig.params.len() < MAX_PARAMS
+                {
+                    sig.params.push(class);
+                }
+            }
             if depth <= ctx.fn_depth || ctx.function.vars.len() >= MAX_VARS_PER_FUNCTION {
                 continue;
             }
@@ -315,6 +355,12 @@ fn start_function(
     let high_pc: u64 = attr_high_pc(entry, low_pc)?;
     let frame_offset: i64 = frame_base_rbp_offset(unit, entry, low_pc, text, text_base)?;
     let name: String = attr_string(dwarf, unit, entry, gimli::DW_AT_name).unwrap_or_default();
+    let signature: GroundTruthSignature = GroundTruthSignature {
+        prototyped: attr_flag(entry, gimli::DW_AT_prototyped),
+        params: Vec::new(),
+        variadic: false,
+        ret: return_class(unit, die_type_offset(entry)),
+    };
     Some((
         GroundTruthFunction {
             name,
@@ -322,9 +368,72 @@ fn start_function(
             high_pc,
             vars: Vec::new(),
             aggregates: Vec::new(),
+            signature: Some(signature),
         },
         frame_offset,
     ))
+}
+
+fn attr_flag(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+    attr: gimli::DwAt,
+) -> bool {
+    match entry.attr_value(attr) {
+        Ok(Some(gimli::AttributeValue::Flag(flag))) => flag,
+        Ok(Some(_)) => true,
+        _ => false,
+    }
+}
+
+fn abi_class(unit: &gimli::Unit<Slice<'_>>, type_offset: Option<gimli::UnitOffset>) -> AbiClass {
+    let Some(offset): Option<gimli::UnitOffset> = type_offset else {
+        return AbiClass::Integer;
+    };
+    let Some(stripped): Option<gimli::UnitOffset> = strip_typedefs(unit, offset, 0) else {
+        return AbiClass::Integer;
+    };
+    let Ok(entry): core::result::Result<gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>, _> =
+        unit.entry(stripped)
+    else {
+        return AbiClass::Integer;
+    };
+    if entry.tag() == gimli::DW_TAG_base_type
+        && attr_udata(&entry, gimli::DW_AT_encoding) == Some(DW_ATE_FLOAT)
+    {
+        AbiClass::Sse
+    } else {
+        AbiClass::Integer
+    }
+}
+
+fn return_class(unit: &gimli::Unit<Slice<'_>>, type_offset: Option<gimli::UnitOffset>) -> GtReturn {
+    let Some(offset): Option<gimli::UnitOffset> = type_offset else {
+        return GtReturn::Void;
+    };
+    let Some(stripped): Option<gimli::UnitOffset> = strip_typedefs(unit, offset, 0) else {
+        return GtReturn::Integer;
+    };
+    let Ok(entry): core::result::Result<gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>, _> =
+        unit.entry(stripped)
+    else {
+        return GtReturn::Integer;
+    };
+    match entry.tag() {
+        gimli::DW_TAG_base_type => {
+            if attr_udata(&entry, gimli::DW_AT_encoding) == Some(DW_ATE_FLOAT) {
+                GtReturn::Sse
+            } else {
+                GtReturn::Integer
+            }
+        }
+        gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type | gimli::DW_TAG_array_type => {
+            match attr_udata(&entry, gimli::DW_AT_byte_size) {
+                Some(1 | 2 | 4 | 8) => GtReturn::Integer,
+                _ => GtReturn::Sret,
+            }
+        }
+        _ => GtReturn::Integer,
+    }
 }
 
 fn frame_base_rbp_offset(

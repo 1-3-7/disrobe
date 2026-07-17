@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::abi::{self, RecoveredProto};
 use crate::cells::CellType;
 use crate::constraint::solve;
 use crate::facts::{FactSet, extract, extract_split};
@@ -104,6 +105,7 @@ pub struct TypedFunction {
     pub objects: Vec<RecoveredObject>,
     pub structs: Vec<RecoveredStruct>,
     pub has_frame_pointer: bool,
+    pub proto: Option<RecoveredProto>,
 }
 
 impl TypedFunction {
@@ -164,11 +166,13 @@ pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
         recover_merge(bytes, base);
     let objects: Vec<RecoveredObject> = recover_split(bytes, base);
     let structs: Vec<RecoveredStruct> = structrec::recover_structs(bytes, base);
+    let proto: RecoveredProto = abi::recover_proto(bytes, base);
     TypedFunction {
         rbp_slots,
         objects,
         structs,
         has_frame_pointer,
+        proto: Some(proto),
     }
 }
 
