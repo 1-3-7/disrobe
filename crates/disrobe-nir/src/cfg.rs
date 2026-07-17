@@ -32,20 +32,30 @@ fn effective_end(function: &NirFunction) -> u64 {
     function.end.max(last_address.saturating_add(1))
 }
 
+fn effective_base(function: &NirFunction) -> u64 {
+    let first_address: u64 = function
+        .instructions
+        .iter()
+        .map(|instruction: &NirInstr| instruction.address)
+        .min()
+        .unwrap_or(function.address);
+    function.address.min(first_address)
+}
+
 #[must_use]
 pub fn basic_blocks(function: &NirFunction) -> Vec<NirBlock> {
     if function.instructions.is_empty() {
         return Vec::new();
     }
+    let base: u64 = effective_base(function);
     let end: u64 = effective_end(function);
     let mut listing: Vec<NirInstr> = function.instructions.clone();
     listing.sort_by_key(|instruction: &NirInstr| instruction.address);
-    let leaders: Vec<u64> = block_leaders(function.address, end, &listing);
-    let mut blocks: Vec<NirBlock> = Vec::with_capacity(leaders.len());
+    let leaders: Vec<u64> = block_leaders(base, end, &listing);
+    let mut drafts: Vec<(u64, Vec<NirInstr>)> = Vec::with_capacity(leaders.len());
     let mut instruction_index: usize = 0;
     for (idx, leader) in leaders.iter().enumerate() {
         let next_leader: Option<u64> = leaders.get(idx + 1).copied();
-        let block_end: u64 = next_leader.unwrap_or(end);
         while listing
             .get(instruction_index)
             .is_some_and(|instruction: &NirInstr| instruction.address < *leader)
@@ -64,14 +74,26 @@ pub fn basic_blocks(function: &NirFunction) -> Vec<NirBlock> {
         let insns: Vec<NirInstr> = listing
             .get(block_start_index..instruction_index)
             .map_or_else(Vec::new, <[NirInstr]>::to_vec);
+        if insns.is_empty() {
+            continue;
+        }
+        drafts.push((*leader, insns));
+    }
+    let starts: Vec<u64> = drafts
+        .iter()
+        .map(|draft: &(u64, Vec<NirInstr>)| draft.0)
+        .collect();
+    let mut blocks: Vec<NirBlock> = Vec::with_capacity(drafts.len());
+    for (idx, (start, insns)) in drafts.into_iter().enumerate() {
         let Some(last): Option<&NirInstr> = insns.last() else {
             continue;
         };
-        let fallthrough: Option<u64> = next_leader;
+        let fallthrough: Option<u64> = starts.get(idx + 1).copied();
+        let block_end: u64 = fallthrough.unwrap_or(end);
         let (kind, successors): (BlockKind, Vec<u64>) =
-            terminator_edges(last, fallthrough, &leaders);
+            terminator_edges(last, fallthrough, &starts);
         blocks.push(NirBlock {
-            start: *leader,
+            start,
             end: block_end,
             instructions: insns,
             successors,
@@ -81,9 +103,8 @@ pub fn basic_blocks(function: &NirFunction) -> Vec<NirBlock> {
     blocks
 }
 
-fn block_leaders(address: u64, end: u64, instructions: &[NirInstr]) -> Vec<u64> {
-    let in_function =
-        |candidate: u64| candidate >= address && address_is_before_end(candidate, end);
+fn block_leaders(base: u64, end: u64, instructions: &[NirInstr]) -> Vec<u64> {
+    let in_function = |candidate: u64| candidate >= base && address_is_before_end(candidate, end);
     let mut starts: Vec<u64> = Vec::new();
     if let Some(first) = instructions.first() {
         starts.push(first.address);
@@ -136,9 +157,9 @@ const fn address_is_before_end(address: u64, end: u64) -> bool {
 fn terminator_edges(
     last: &NirInstr,
     fallthrough: Option<u64>,
-    leaders: &[u64],
+    block_starts: &[u64],
 ) -> (BlockKind, Vec<u64>) {
-    let in_function = |addr: u64| leaders.binary_search(&addr).is_ok();
+    let in_function = |addr: u64| block_starts.binary_search(&addr).is_ok();
     match last.class() {
         NirClass::ConditionalJump => {
             let mut succ: Vec<u64> = Vec::new();
@@ -444,5 +465,67 @@ mod tests {
             block.instructions.len() == 1
                 && (block.kind == BlockKind::Return || block.successors.len() == 1)
         }));
+    }
+
+    #[test]
+    fn dropped_empty_leader_is_never_referenced_as_a_successor() {
+        let f: NirFunction = NirFunction {
+            name: "misaligned_target".to_owned(),
+            address: 0x0,
+            end: 0x3,
+            is_export: false,
+            instructions: vec![
+                instr(0x0, NirOp::CondBranch { target: Some(0x1) }),
+                instr(0x2, NirOp::Return),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0x0),
+        };
+        let blocks: Vec<NirBlock> = basic_blocks(&f);
+        let starts: Vec<u64> = blocks.iter().map(|block: &NirBlock| block.start).collect();
+        for block in &blocks {
+            for successor in &block.successors {
+                assert!(
+                    starts.contains(successor),
+                    "successor {successor:#x} of block {:#x} references a dropped leader; starts={starts:?}",
+                    block.start
+                );
+            }
+        }
+        assert!(
+            blocks.iter().any(|block: &NirBlock| block.start == 0x2),
+            "the real return block must survive: {blocks:?}"
+        );
+        assert_eq!(
+            blocks.first().map(|block: &NirBlock| block.start),
+            Some(0x0)
+        );
+        assert_eq!(
+            blocks
+                .first()
+                .map(|block: &NirBlock| block.successors.clone()),
+            Some(vec![0x2])
+        );
+    }
+
+    #[test]
+    fn instructions_below_function_address_are_not_silently_dropped() {
+        let f: NirFunction = NirFunction {
+            name: "below_addr".to_owned(),
+            address: 0x100,
+            end: 0x108,
+            is_export: false,
+            instructions: vec![instr(0x10, NirOp::Nop), instr(0x12, NirOp::Return)],
+            source: SourceRef::new(SourceLang::NativeX86, 0x100),
+        };
+        let blocks: Vec<NirBlock> = basic_blocks(&f);
+        assert!(
+            !blocks.is_empty(),
+            "a non-empty function whose instructions sit below function.address must still yield blocks"
+        );
+        let addrs: Vec<u64> = blocks
+            .iter()
+            .flat_map(|block: &NirBlock| block.instructions.iter().map(|i: &NirInstr| i.address))
+            .collect();
+        assert_eq!(addrs, vec![0x10, 0x12]);
     }
 }
