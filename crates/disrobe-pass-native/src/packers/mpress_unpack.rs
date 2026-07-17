@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::mpress_lzma::decode_mpress_lzma;
-use super::pe_sections::{PeImage, PeSection, parse_pe_image};
+use super::pe_sections::{PeImage, PeSection, parse_pe_image, read_u32};
 use crate::error::{Error, Result};
 
 const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
@@ -393,8 +393,8 @@ fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
         ));
     }
     let opt_off: usize = (image.pe_header_offset as usize).saturating_add(24);
-    let size_of_code: u32 = read_u32_at(bytes, opt_off.saturating_add(4)).unwrap_or(0);
-    let base_of_code: u32 = read_u32_at(bytes, opt_off.saturating_add(20)).unwrap_or(0);
+    let size_of_code: u32 = read_u32(bytes, opt_off.saturating_add(4)).unwrap_or(0);
+    let base_of_code: u32 = read_u32(bytes, opt_off.saturating_add(20)).unwrap_or(0);
     Ok(MpressInfo {
         mpress1_va: m1.virtual_address,
         mpress1_vsize: m1.virtual_size,
@@ -416,19 +416,6 @@ fn locate_mpress_sections(bytes: &[u8]) -> Result<MpressInfo> {
         mpress_page_count,
         mpress_payload_len,
     })
-}
-
-fn read_u32_at(bytes: &[u8], off: usize) -> Option<u32> {
-    let end: usize = off.checked_add(4)?;
-    if end > bytes.len() {
-        return None;
-    }
-    Some(u32::from_le_bytes([
-        bytes[off],
-        bytes[off + 1],
-        bytes[off + 2],
-        bytes[off + 3],
-    ]))
 }
 
 fn read_mpress_header(bytes: &[u8], raw_off: u32, raw_size: u32) -> Result<(u16, u32)> {

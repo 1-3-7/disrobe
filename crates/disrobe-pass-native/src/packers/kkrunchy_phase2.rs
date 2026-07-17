@@ -16,7 +16,9 @@
 use disrobe_bytes::align_up_u32;
 
 use crate::error::{Error, Result};
-use crate::packers::pe_sections::{read_u16 as read_u16_le, read_u32 as read_u32_le};
+use crate::packers::pe_sections::{
+    memory_to_file_image, read_u16 as read_u16_le, read_u32 as read_u32_le,
+};
 use crate::stub_emu::mem::MAX_MAP_BYTES;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
@@ -25,7 +27,6 @@ const PE_SIGNATURE_LEN: usize = 4;
 const COFF_HEADER_LEN: usize = 20;
 const SECTION_HEADER_LEN: usize = 40;
 
-const MAX_FILE_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 const PHASE2_MAX_IMAGE_RATIO: usize = 4096;
 
 const OEP_IMAGE_BASE: u64 = 0x0040_0000;
@@ -171,10 +172,12 @@ pub fn unpack_kkrunchy_phase2_emulated(packed: &[u8]) -> Result<KkrunchyPhaseTwo
     };
 
     let recovered_file_image: Vec<u8> = reconstruct_classic_pe(&recovered_memory_image, &pe_layout)
-        .or_else(|| match memory_to_file_image(&recovered_memory_image) {
-            Some(f) if !f.is_empty() && f.starts_with(b"MZ") => Some(f),
-            _ => None,
-        })
+        .or_else(
+            || match memory_to_file_image(&recovered_memory_image, PHASE2_MAX_IMAGE_RATIO) {
+                Some(f) if !f.is_empty() && f.starts_with(b"MZ") => Some(f),
+                _ => None,
+            },
+        )
         .unwrap_or_else(|| recovered_memory_image.clone());
 
     Ok(KkrunchyPhaseTwoOutput {
@@ -533,69 +536,6 @@ fn put_u32(buf: &mut [u8], off: usize, v: u32) {
     buf[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn memory_to_file_image(mem_image: &[u8]) -> Option<Vec<u8>> {
-    if mem_image.len() < 0x100 || !mem_image.starts_with(b"MZ") {
-        return None;
-    }
-    let e_lfanew: usize = u32::from_le_bytes(mem_image[0x3c..0x40].try_into().ok()?) as usize;
-    if e_lfanew + 24 > mem_image.len() || &mem_image[e_lfanew..e_lfanew + 4] != b"PE\x00\x00" {
-        return None;
-    }
-    let coff: usize = e_lfanew + 4;
-    let n_sec: u16 = u16::from_le_bytes(mem_image[coff + 2..coff + 4].try_into().ok()?);
-    let opt_hdr_size: u16 = u16::from_le_bytes(mem_image[coff + 16..coff + 18].try_into().ok()?);
-    let opt: usize = coff + 20;
-    let file_alignment: u32 =
-        u32::from_le_bytes(mem_image[opt + 36..opt + 40].try_into().ok()?).max(0x200);
-    let sec_off: usize = opt + opt_hdr_size as usize;
-    if sec_off + SECTION_HEADER_LEN * n_sec as usize > mem_image.len() {
-        return None;
-    }
-    let headers_raw: u32 =
-        u32::from_le_bytes(mem_image[opt + 60..opt + 64].try_into().ok()?).max(file_alignment);
-    let mut sections: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(n_sec as usize);
-    for i in 0..n_sec as usize {
-        let s: usize = sec_off + i * SECTION_HEADER_LEN;
-        let vs: u32 = u32::from_le_bytes(mem_image[s + 8..s + 12].try_into().ok()?);
-        let va: u32 = u32::from_le_bytes(mem_image[s + 12..s + 16].try_into().ok()?);
-        let raw_size: u32 = u32::from_le_bytes(mem_image[s + 16..s + 20].try_into().ok()?);
-        let raw_ptr: u32 = u32::from_le_bytes(mem_image[s + 20..s + 24].try_into().ok()?);
-        let effective_raw: u32 = if raw_size > 0 {
-            raw_size
-        } else {
-            align_up_u32(vs, file_alignment)
-        };
-        sections.push((va, vs, effective_raw, raw_ptr));
-    }
-    let total_usize: usize = sections
-        .iter()
-        .map(|s: &(u32, u32, u32, u32)| (s.2 as usize).saturating_add(s.3 as usize))
-        .max()
-        .unwrap_or(headers_raw as usize)
-        .max(headers_raw as usize);
-    let image_ceiling: usize =
-        MAX_FILE_IMAGE_BYTES.min(mem_image.len().saturating_mul(PHASE2_MAX_IMAGE_RATIO));
-    if total_usize > image_ceiling {
-        return None;
-    }
-    let mut out: Vec<u8> = vec![0u8; total_usize];
-    let header_copy: usize = (headers_raw as usize).min(mem_image.len());
-    out[..header_copy].copy_from_slice(&mem_image[..header_copy]);
-    for sec_tuple in &sections {
-        let (va, vs, eff_raw, raw_ptr): (u32, u32, u32, u32) = *sec_tuple;
-        let src_lo: usize = va as usize;
-        let src_hi: usize = src_lo
-            .saturating_add(vs.max(eff_raw) as usize)
-            .min(mem_image.len());
-        let dst_lo: usize = raw_ptr as usize;
-        let copy_len: usize = (src_hi.saturating_sub(src_lo)).min(eff_raw as usize);
-        if dst_lo + copy_len <= out.len() && src_lo + copy_len <= mem_image.len() {
-            out[dst_lo..dst_lo + copy_len].copy_from_slice(&mem_image[src_lo..src_lo + copy_len]);
-        }
-    }
-    Some(out)
-}
-
 #[derive(Debug, Clone)]
 struct PeLayout {
     image_base: u32,
@@ -657,6 +597,6 @@ mod tests {
     #[test]
     fn memory_to_file_image_rejects_non_mz() {
         let buf: Vec<u8> = vec![0u8; 0x200];
-        assert!(memory_to_file_image(&buf).is_none());
+        assert!(memory_to_file_image(&buf, PHASE2_MAX_IMAGE_RATIO).is_none());
     }
 }

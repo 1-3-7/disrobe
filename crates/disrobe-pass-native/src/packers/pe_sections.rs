@@ -1,4 +1,4 @@
-use disrobe_bytes::{read_u16_le_at, read_u32_le_at, read_u64_le_at};
+use disrobe_bytes::{align_up_u32, read_u16_le_at, read_u32_le_at, read_u64_le_at};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -240,6 +240,69 @@ pub fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|w: &[u8]| w == needle)
+}
+
+const MEMORY_IMAGE_MAX_FILE_BYTES: usize = 256 * 1024 * 1024;
+
+pub(crate) fn memory_to_file_image(mem_image: &[u8], max_image_ratio: usize) -> Option<Vec<u8>> {
+    if mem_image.len() < 0x100 || !mem_image.starts_with(b"MZ") {
+        return None;
+    }
+    let e_lfanew: usize = read_u32(mem_image, DOS_E_LFANEW_OFFSET).ok()? as usize;
+    if e_lfanew + 24 > mem_image.len() || mem_image.get(e_lfanew..e_lfanew + 4)? != PE_MAGIC {
+        return None;
+    }
+    let coff: usize = e_lfanew + 4;
+    let n_sec: usize = usize::from(read_u16(mem_image, coff + 2).ok()?);
+    let opt_hdr_size: u16 = read_u16(mem_image, coff + 16).ok()?;
+    let opt: usize = coff + COFF_HEADER_SIZE;
+    let file_alignment: u32 = read_u32(mem_image, opt + 36).ok()?.max(0x200);
+    let sec_off: usize = opt + opt_hdr_size as usize;
+    if sec_off + SECTION_ENTRY_SIZE * n_sec > mem_image.len() {
+        return None;
+    }
+    let headers_raw: u32 = read_u32(mem_image, opt + 60).ok()?.max(file_alignment);
+    let mut sections: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(n_sec);
+    for i in 0..n_sec {
+        let s: usize = sec_off + i * SECTION_ENTRY_SIZE;
+        let vs: u32 = read_u32(mem_image, s + 8).ok()?;
+        let va: u32 = read_u32(mem_image, s + 12).ok()?;
+        let raw_size: u32 = read_u32(mem_image, s + 16).ok()?;
+        let raw_ptr: u32 = read_u32(mem_image, s + 20).ok()?;
+        let effective_raw: u32 = if raw_size > 0 {
+            raw_size
+        } else {
+            align_up_u32(vs, file_alignment)
+        };
+        sections.push((va, vs, effective_raw, raw_ptr));
+    }
+    let total_usize: usize = sections
+        .iter()
+        .map(|s: &(u32, u32, u32, u32)| (s.2 as usize).saturating_add(s.3 as usize))
+        .max()
+        .unwrap_or(headers_raw as usize)
+        .max(headers_raw as usize);
+    let image_ceiling: usize =
+        MEMORY_IMAGE_MAX_FILE_BYTES.min(mem_image.len().saturating_mul(max_image_ratio));
+    if total_usize > image_ceiling {
+        return None;
+    }
+    let mut out: Vec<u8> = vec![0u8; total_usize];
+    let header_copy: usize = (headers_raw as usize).min(mem_image.len());
+    out[..header_copy].copy_from_slice(&mem_image[..header_copy]);
+    for sec_tuple in &sections {
+        let (va, vs, eff_raw, raw_ptr): (u32, u32, u32, u32) = *sec_tuple;
+        let src_lo: usize = va as usize;
+        let src_hi: usize = src_lo
+            .saturating_add(vs.max(eff_raw) as usize)
+            .min(mem_image.len());
+        let dst_lo: usize = raw_ptr as usize;
+        let copy_len: usize = (src_hi.saturating_sub(src_lo)).min(eff_raw as usize);
+        if dst_lo + copy_len <= out.len() && src_lo + copy_len <= mem_image.len() {
+            out[dst_lo..dst_lo + copy_len].copy_from_slice(&mem_image[src_lo..src_lo + copy_len]);
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]

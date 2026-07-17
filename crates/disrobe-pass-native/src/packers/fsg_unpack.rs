@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::packers::pe_sections::{read_u16 as read_u16_le, read_u32 as read_u32_le};
+use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image, read_u32 as read_u32_le};
 
 const FSG_MIN_STUB_BYTES: usize = 0x26;
 const FSG_STUB_OPCODE_MOV_EBX: u8 = 0xBB;
@@ -43,22 +43,14 @@ struct StubAnchors {
     import_meta_va: u32,
 }
 
-#[derive(Debug)]
-struct PeImage<'a> {
-    bytes: &'a [u8],
-    pe_off: usize,
-    image_base: u32,
-    section_count: u16,
-    opt_header_size: u16,
-    entry_rva: u32,
-}
+const FSG_MACHINE_I386: u16 = 0x014C;
 
 pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
-    let pe: PeImage<'_> = parse_pe_minimal(packed_bytes)?;
-    let stub_raw_off: usize = find_entry_stub_raw_offset(&pe)?;
-    let anchors: StubAnchors = decode_stub_anchors(&pe, stub_raw_off)?;
+    let pe: PeImage = parse_fsg_pe(packed_bytes)?;
+    let stub_raw_off: usize = find_entry_stub_raw_offset(&pe, packed_bytes)?;
+    let anchors: StubAnchors = decode_stub_anchors(&pe, packed_bytes, stub_raw_off)?;
     let stream_raw_off: usize =
-        rva_to_file_offset(&pe, anchors.packed_stream_va - anchors.image_base)?;
+        rva_to_file_offset(&pe, packed_bytes, anchors.packed_stream_va - anchors.image_base)?;
     let stream: &[u8] = packed_bytes.get(stream_raw_off..).ok_or(Error::Truncated {
         needed: stream_raw_off + 1,
         had: packed_bytes.len(),
@@ -77,90 +69,50 @@ pub fn unpack_fsg(packed_bytes: &[u8]) -> Result<FsgUnpackOutput> {
     })
 }
 
-fn parse_pe_minimal(bytes: &[u8]) -> Result<PeImage<'_>> {
-    if bytes.len() < 0x40 || &bytes[0..2] != b"MZ" {
-        return Err(Error::UnknownFormat);
-    }
-    let pe_off: usize = read_u32_le(bytes, 0x3C)? as usize;
-    if pe_off + 0x40 > bytes.len() || &bytes[pe_off..pe_off + 4] != b"PE\0\0" {
-        return Err(Error::UnknownFormat);
-    }
-    let machine: u16 = read_u16_le(bytes, pe_off + 4)?;
-    if machine != 0x014C {
+fn parse_fsg_pe(bytes: &[u8]) -> Result<PeImage> {
+    let image: PeImage = parse_pe_image(bytes)?;
+    if image.machine != FSG_MACHINE_I386 {
         return Err(Error::UnsupportedArch(format!(
-            "FSG expects i386 (0x14C), got 0x{machine:04X}"
+            "FSG expects i386 (0x14C), got 0x{:04X}",
+            image.machine
         )));
     }
-    let section_count: u16 = read_u16_le(bytes, pe_off + 6)?;
-    let opt_header_size: u16 = read_u16_le(bytes, pe_off + 0x14)?;
-    let opt_header_off: usize = pe_off + 0x18;
-    if opt_header_off + opt_header_size as usize > bytes.len() {
+    if image.is_pe32_plus {
+        return Err(Error::UnsupportedArch(
+            "FSG expects PE32 (0x10B), got PE32+ (0x20B)".to_owned(),
+        ));
+    }
+    Ok(image)
+}
+
+fn find_entry_stub_raw_offset(pe: &PeImage, bytes: &[u8]) -> Result<usize> {
+    rva_to_file_offset(pe, bytes, pe.entry_point_rva)
+}
+
+fn rva_to_file_offset(pe: &PeImage, bytes: &[u8], rva: u32) -> Result<usize> {
+    let Some(sec): Option<&PeSection> = pe.section_containing_rva(rva) else {
+        return Err(Error::PackerUnpackerNotImplemented(
+            "FSG: RVA outside any section",
+        ));
+    };
+    let delta: u32 = rva - sec.virtual_address;
+    if delta >= sec.raw_size && sec.raw_size > 0 {
         return Err(Error::Truncated {
-            needed: opt_header_off + opt_header_size as usize,
+            needed: (sec.raw_pointer + delta) as usize,
             had: bytes.len(),
         });
     }
-    let opt_magic: u16 = read_u16_le(bytes, opt_header_off)?;
-    if opt_magic != 0x010B {
-        return Err(Error::UnsupportedArch(format!(
-            "FSG expects PE32 (0x10B), got 0x{opt_magic:04X}"
-        )));
-    }
-    let entry_rva: u32 = read_u32_le(bytes, opt_header_off + 0x10)?;
-    let image_base: u32 = read_u32_le(bytes, opt_header_off + 0x1C)?;
-    Ok(PeImage {
-        bytes,
-        pe_off,
-        image_base,
-        section_count,
-        opt_header_size,
-        entry_rva,
-    })
+    Ok((sec.raw_pointer + delta) as usize)
 }
 
-fn find_entry_stub_raw_offset(pe: &PeImage<'_>) -> Result<usize> {
-    rva_to_file_offset(pe, pe.entry_rva)
-}
-
-fn rva_to_file_offset(pe: &PeImage<'_>, rva: u32) -> Result<usize> {
-    let sect_off: usize = pe.pe_off + 0x18 + pe.opt_header_size as usize;
-    for i in 0..pe.section_count as usize {
-        let so: usize = sect_off + 0x28 * i;
-        if so + 0x28 > pe.bytes.len() {
-            return Err(Error::Truncated {
-                needed: so + 0x28,
-                had: pe.bytes.len(),
-            });
-        }
-        let v_size: u32 = read_u32_le(pe.bytes, so + 8)?;
-        let v_addr: u32 = read_u32_le(pe.bytes, so + 12)?;
-        let r_size: u32 = read_u32_le(pe.bytes, so + 16)?;
-        let r_off: u32 = read_u32_le(pe.bytes, so + 20)?;
-        let region_size: u32 = v_size.max(r_size);
-        if rva >= v_addr && rva < v_addr.saturating_add(region_size) {
-            let delta: u32 = rva - v_addr;
-            if delta >= r_size && r_size > 0 {
-                return Err(Error::Truncated {
-                    needed: (r_off + delta) as usize,
-                    had: pe.bytes.len(),
-                });
-            }
-            return Ok((r_off + delta) as usize);
-        }
-    }
-    Err(Error::PackerUnpackerNotImplemented(
-        "FSG: RVA outside any section",
-    ))
-}
-
-fn decode_stub_anchors(pe: &PeImage<'_>, raw_off: usize) -> Result<StubAnchors> {
-    let stub: &[u8] =
-        pe.bytes
-            .get(raw_off..raw_off + FSG_MIN_STUB_BYTES)
-            .ok_or(Error::Truncated {
-                needed: raw_off + FSG_MIN_STUB_BYTES,
-                had: pe.bytes.len(),
-            })?;
+fn decode_stub_anchors(pe: &PeImage, bytes: &[u8], raw_off: usize) -> Result<StubAnchors> {
+    let image_base: u32 = pe.image_base as u32;
+    let stub: &[u8] = bytes
+        .get(raw_off..raw_off + FSG_MIN_STUB_BYTES)
+        .ok_or(Error::Truncated {
+            needed: raw_off + FSG_MIN_STUB_BYTES,
+            had: bytes.len(),
+        })?;
     if stub[0] != FSG_STUB_OPCODE_MOV_EBX
         || stub[5] != FSG_STUB_OPCODE_MOV_EDI
         || stub[10] != FSG_STUB_OPCODE_MOV_ESI
@@ -182,12 +134,11 @@ fn decode_stub_anchors(pe: &PeImage<'_>, raw_off: usize) -> Result<StubAnchors> 
         ));
     }
     let tail_start: usize = 16 + FSG_STUB_GETBIT_HELPER.len();
-    let tail: &[u8] = pe
-        .bytes
+    let tail: &[u8] = bytes
         .get(raw_off + tail_start..raw_off + tail_start + FSG_STUB_INIT_TAIL.len())
         .ok_or(Error::Truncated {
             needed: raw_off + tail_start + FSG_STUB_INIT_TAIL.len(),
-            had: pe.bytes.len(),
+            had: bytes.len(),
         })?;
     if tail != FSG_STUB_INIT_TAIL.as_slice() {
         return Err(Error::PackerUnpackerNotImplemented(
@@ -198,20 +149,20 @@ fn decode_stub_anchors(pe: &PeImage<'_>, raw_off: usize) -> Result<StubAnchors> 
     let raw_dest: u32 = read_u32_le(stub, 6)?;
     let raw_stream: u32 = read_u32_le(stub, 11)?;
     let in_image = |va: u32| -> bool {
-        if va < pe.image_base {
+        if va < image_base {
             return false;
         }
-        rva_to_file_offset(pe, va - pe.image_base).is_ok()
+        rva_to_file_offset(pe, bytes, va - image_base).is_ok()
     };
     let rebased = |raw: u32| -> u32 {
         raw.wrapping_sub(FSG_STUB_AUTHORED_IMAGE_BASE)
-            .wrapping_add(pe.image_base)
+            .wrapping_add(image_base)
     };
     let pick = |raw: u32| -> u32 { if in_image(raw) { raw } else { rebased(raw) } };
     let import_meta_va: u32 = pick(raw_import);
     let unpack_dest_va: u32 = pick(raw_dest);
     let packed_stream_va: u32 = pick(raw_stream);
-    if unpack_dest_va < pe.image_base || import_meta_va < pe.image_base {
+    if unpack_dest_va < image_base || import_meta_va < image_base {
         return Err(Error::PackerUnpackerNotImplemented(
             "FSG: stub VA below ImageBase after per-anchor rebase",
         ));
@@ -222,25 +173,21 @@ fn decode_stub_anchors(pe: &PeImage<'_>, raw_off: usize) -> Result<StubAnchors> 
         ));
     }
     Ok(StubAnchors {
-        image_base: pe.image_base,
+        image_base,
         unpack_dest_va,
         packed_stream_va,
         import_meta_va,
     })
 }
 
-fn parse_import_meta(
-    bytes: &[u8],
-    pe: &PeImage<'_>,
-    anchors: &StubAnchors,
-) -> Result<Vec<FsgImport>> {
+fn parse_import_meta(bytes: &[u8], pe: &PeImage, anchors: &StubAnchors) -> Result<Vec<FsgImport>> {
     let import_meta_rva: u32 = anchors
         .import_meta_va
         .checked_sub(anchors.image_base)
         .ok_or(Error::PackerUnpackerNotImplemented(
             "FSG: import metadata VA below ImageBase",
         ))?;
-    let meta_off: usize = rva_to_file_offset(pe, import_meta_rva)?;
+    let meta_off: usize = rva_to_file_offset(pe, bytes, import_meta_rva)?;
     let mut entries: Vec<FsgImport> = Vec::new();
     let mut cursor: usize = meta_off;
     let max_walk: usize = 4096;
@@ -253,7 +200,7 @@ fn parse_import_meta(
         cursor += 4;
         let name_off: usize = match name_rva
             .checked_sub(anchors.image_base)
-            .and_then(|rva: u32| rva_to_file_offset(pe, rva).ok())
+            .and_then(|rva: u32| rva_to_file_offset(pe, bytes, rva).ok())
         {
             Some(o) => o,
             None => break,
@@ -271,7 +218,7 @@ fn parse_import_meta(
             cursor += 4;
             let api_name: String = thunk_or_marker
                 .checked_sub(anchors.image_base)
-                .and_then(|rva: u32| rva_to_file_offset(pe, rva).ok())
+                .and_then(|rva: u32| rva_to_file_offset(pe, bytes, rva).ok())
                 .map_or_else(String::new, |o: usize| read_cstr(bytes, o));
             entries.push(FsgImport {
                 dll_name: dll_name.clone(),
@@ -465,22 +412,30 @@ mod tests {
         assert!(r.is_ok() || matches!(r, Err(Error::Truncated { .. })));
     }
 
-    fn write_test_section(bytes: &mut [u8]) {
-        let section_off: usize = 0x18;
-        bytes[section_off + 8..section_off + 12].copy_from_slice(&0x100u32.to_le_bytes());
-        bytes[section_off + 12..section_off + 16].copy_from_slice(&0x1000u32.to_le_bytes());
-        bytes[section_off + 16..section_off + 20].copy_from_slice(&0x100u32.to_le_bytes());
-        bytes[section_off + 20..section_off + 24].copy_from_slice(&0x100u32.to_le_bytes());
-    }
-
-    fn test_pe(bytes: &[u8]) -> PeImage<'_> {
+    fn test_pe() -> PeImage {
         PeImage {
-            bytes,
-            pe_off: 0,
+            pe_header_offset: 0,
+            machine: FSG_MACHINE_I386,
+            size_of_optional_header: 0,
+            coff_characteristics: 0,
+            is_pe32_plus: false,
+            entry_point_rva: 0,
             image_base: 0x0040_0000,
-            section_count: 1,
-            opt_header_size: 0,
-            entry_rva: 0,
+            section_alignment: 0,
+            file_alignment: 0,
+            size_of_image: 0,
+            size_of_headers: 0,
+            data_directories: Vec::new(),
+            raw_data_directories: Vec::new(),
+            sections: vec![PeSection {
+                name: [0u8; 8],
+                virtual_size: 0x100,
+                virtual_address: 0x1000,
+                raw_size: 0x100,
+                raw_pointer: 0x100,
+                pointer_to_relocations: 0,
+                characteristics: 0,
+            }],
         }
     }
 
@@ -496,7 +451,7 @@ mod tests {
     #[test]
     fn parse_import_meta_rejects_meta_va_below_image_base_without_panicking() {
         let bytes: Vec<u8> = vec![0u8; 0x200];
-        let pe: PeImage<'_> = test_pe(&bytes);
+        let pe: PeImage = test_pe();
         let anchors: StubAnchors = test_anchors(0x0010_0000);
 
         let r: Result<Vec<FsgImport>> = parse_import_meta(&bytes, &pe, &anchors);
@@ -507,9 +462,8 @@ mod tests {
     #[test]
     fn parse_import_meta_breaks_on_dll_name_va_below_image_base_without_panicking() {
         let mut bytes: Vec<u8> = vec![0u8; 0x200];
-        write_test_section(&mut bytes);
         bytes[0x100..0x104].copy_from_slice(&1u32.to_le_bytes());
-        let pe: PeImage<'_> = test_pe(&bytes);
+        let pe: PeImage = test_pe();
         let anchors: StubAnchors = test_anchors(0x0040_1000);
 
         let entries: Vec<FsgImport> = parse_import_meta(&bytes, &pe, &anchors).expect("no panic");
@@ -520,11 +474,10 @@ mod tests {
     #[test]
     fn parse_import_meta_falls_back_to_empty_api_name_below_image_base_without_panicking() {
         let mut bytes: Vec<u8> = vec![0u8; 0x200];
-        write_test_section(&mut bytes);
         bytes[0x100..0x104].copy_from_slice(&0x0040_1020u32.to_le_bytes());
         bytes[0x104..0x108].copy_from_slice(&1u32.to_le_bytes());
         bytes[0x120..0x12d].copy_from_slice(b"kernel32.dll\0");
-        let pe: PeImage<'_> = test_pe(&bytes);
+        let pe: PeImage = test_pe();
         let anchors: StubAnchors = test_anchors(0x0040_1000);
 
         let entries: Vec<FsgImport> = parse_import_meta(&bytes, &pe, &anchors).expect("no panic");
