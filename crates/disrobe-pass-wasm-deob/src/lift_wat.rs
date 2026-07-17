@@ -141,6 +141,16 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
     for (idx, func_type_index) in &reqs.cont_types {
         push_line!(out, "  (type $t{idx} (cont $t{func_type_index}))");
     }
+    for idx in &reqs.referenced_gc_types {
+        if reqs.struct_types.contains_key(idx)
+            || reqs.array_types.contains(idx)
+            || reqs.func_types.contains_key(idx)
+            || reqs.cont_types.contains_key(idx)
+        {
+            continue;
+        }
+        push_line!(out, "  (type $t{idx} (struct (field (mut i32))))");
+    }
 }
 
 fn emit_tag_decls(mut out: &mut String, reqs: &FeatureReqs) {
@@ -230,6 +240,7 @@ pub(crate) struct FeatureReqs {
     func_types: std::collections::BTreeMap<u32, (Vec<ValType>, Vec<ValType>)>,
     cont_types: std::collections::BTreeMap<u32, u32>,
     cont_func_targets: std::collections::BTreeMap<u32, u32>,
+    referenced_gc_types: std::collections::BTreeSet<u32>,
 }
 
 impl FeatureReqs {
@@ -273,6 +284,7 @@ impl FeatureReqs {
         for (idx, type_idx) in &other.cont_func_targets {
             self.cont_func_targets.entry(*idx).or_insert(*type_idx);
         }
+        self.referenced_gc_types.extend(&other.referenced_gc_types);
     }
 
     fn record_func_type(&mut self, idx: u32) {
@@ -511,6 +523,7 @@ fn render_operators(
     prescan_catch_tags(&ops, sig, reqs);
     prescan_cont_func_targets(&ops, reqs);
     prescan_signature_ref_types(sig, reqs);
+    prescan_referenced_ref_types(&ops, &local_types, reqs);
     if matches!(mode, RenderMode::WholeModule) {
         prescan_callref_func_types(&ops, module_sigs, reqs);
     }
@@ -799,6 +812,42 @@ fn prescan_signature_ref_types(sig: &FunctionSig, reqs: &mut FeatureReqs) {
                     reqs.struct_types.entry(i).or_insert(1);
                 }
             }
+        }
+    }
+}
+
+fn concrete_heap_index(hty: wasmparser::HeapType) -> Option<u32> {
+    match hty {
+        wasmparser::HeapType::Concrete(idx) | wasmparser::HeapType::Exact(idx) => {
+            idx.as_module_index()
+        }
+        wasmparser::HeapType::Abstract { .. } => None,
+    }
+}
+
+fn prescan_referenced_ref_types(
+    ops: &[Operator<'_>],
+    local_types: &[ValType],
+    reqs: &mut FeatureReqs,
+) {
+    for ty in local_types {
+        if let ValType::Ref(r) = ty
+            && let Some(i) = concrete_heap_index(r.heap_type())
+        {
+            reqs.referenced_gc_types.insert(i);
+        }
+    }
+    for op in ops {
+        let hty: wasmparser::HeapType = match op {
+            Operator::RefNull { hty }
+            | Operator::RefTestNonNull { hty }
+            | Operator::RefTestNullable { hty }
+            | Operator::RefCastNonNull { hty }
+            | Operator::RefCastNullable { hty } => *hty,
+            _ => continue,
+        };
+        if let Some(i) = concrete_heap_index(hty) {
+            reqs.referenced_gc_types.insert(i);
         }
     }
 }
@@ -1684,10 +1733,22 @@ fn render_gc_op(op: &Operator<'_>, has_calls: &mut bool, reqs: &mut FeatureReqs)
             reqs.array_types.insert(*array_type_index);
             format!("array.new_fixed $t{array_type_index} {array_size}")
         }
-        Operator::ArrayGet { array_type_index } => format!("array.get $t{array_type_index}"),
-        Operator::ArrayGetS { array_type_index } => format!("array.get_s $t{array_type_index}"),
-        Operator::ArrayGetU { array_type_index } => format!("array.get_u $t{array_type_index}"),
-        Operator::ArraySet { array_type_index } => format!("array.set $t{array_type_index}"),
+        Operator::ArrayGet { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.get $t{array_type_index}")
+        }
+        Operator::ArrayGetS { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.get_s $t{array_type_index}")
+        }
+        Operator::ArrayGetU { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.get_u $t{array_type_index}")
+        }
+        Operator::ArraySet { array_type_index } => {
+            reqs.array_types.insert(*array_type_index);
+            format!("array.set $t{array_type_index}")
+        }
         Operator::ArrayLen => "array.len".to_owned(),
         Operator::RefI31 => "ref.i31".to_owned(),
         Operator::I31GetS => "i31.get_s".to_owned(),

@@ -227,7 +227,7 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             }
             Payload::CustomSection(reader) if reader.name() == "name" => {
                 if let KnownCustom::Name(names) = reader.as_known() {
-                    collect_name_section(names, &mut name_section_names, &mut name_section_locals)?;
+                    collect_name_section(names, &mut name_section_names, &mut name_section_locals);
                 }
             }
             _ => {}
@@ -351,25 +351,32 @@ fn collect_name_section(
     reader: NameSectionReader<'_>,
     out: &mut Vec<(u32, String)>,
     locals_out: &mut std::collections::BTreeMap<u32, Vec<Option<String>>>,
-) -> Result<()> {
+) {
     for subsection in reader {
-        let name: wasmparser::Name<'_> = subsection.map_err(|e| Error::Parse(e.to_string()))?;
+        let Ok(name): std::result::Result<wasmparser::Name<'_>, _> = subsection else {
+            break;
+        };
         match name {
             wasmparser::Name::Function(map) => {
                 for naming in map {
-                    let naming: wasmparser::Naming<'_> =
-                        naming.map_err(|e| Error::Parse(e.to_string()))?;
+                    let Ok(naming): std::result::Result<wasmparser::Naming<'_>, _> = naming else {
+                        break;
+                    };
                     out.push((naming.index, naming.name.to_owned()));
                 }
             }
             wasmparser::Name::Local(indirect) => {
                 for group in indirect {
-                    let group: wasmparser::IndirectNaming<'_> =
-                        group.map_err(|e| Error::Parse(e.to_string()))?;
+                    let Ok(group): std::result::Result<wasmparser::IndirectNaming<'_>, _> = group
+                    else {
+                        break;
+                    };
                     let mut names: Vec<Option<String>> = Vec::new();
                     for naming in group.names {
-                        let naming: wasmparser::Naming<'_> =
-                            naming.map_err(|e| Error::Parse(e.to_string()))?;
+                        let Ok(naming): std::result::Result<wasmparser::Naming<'_>, _> = naming
+                        else {
+                            break;
+                        };
                         let idx: usize = naming.index as usize;
                         if idx >= MAX_FUNCTION_LOCALS {
                             continue;
@@ -387,7 +394,6 @@ fn collect_name_section(
             _ => {}
         }
     }
-    Ok(())
 }
 
 fn sanitize_identifier(raw: &str) -> String {
