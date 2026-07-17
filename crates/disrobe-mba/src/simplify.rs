@@ -167,6 +167,17 @@ fn compact_expression(expr: &Expr) -> Option<DenseExpression> {
 }
 
 fn simplify_dense(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verification) {
+    let mut best: (Expr, Verification) = simplify_l0_l5(expr, width, var_count);
+    if best.0 == *expr
+        && expr_is_eval_faithful(expr)
+        && let Some((candidate, proof)) = crate::enum_synth::synthesize(expr, width, var_count)
+    {
+        best = (candidate, proof);
+    }
+    best
+}
+
+pub(crate) fn simplify_l0_l5(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verification) {
     let original_nodes: usize = expr.node_count();
     let original_is_mba: bool = expr.is_linear_mba();
 
@@ -244,7 +255,7 @@ fn simplify_dense(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verificat
 
     if let Some(saturated) = crate::egraph::saturate_simplify(expr, width)
         && saturated.node_count() < best.0.node_count()
-        && let Some(proof) = accept_l5(expr, &saturated, width, var_count)
+        && let Some(proof) = accept_verified(expr, &saturated, width, var_count)
     {
         best = (saturated, proof);
     }
@@ -269,7 +280,7 @@ fn expr_is_eval_faithful(expr: &Expr) -> bool {
 }
 
 #[cfg(feature = "smt-verify")]
-fn accept_l5(
+pub(crate) fn accept_verified(
     original: &Expr,
     candidate: &Expr,
     width: Width,
@@ -291,7 +302,7 @@ fn accept_l5(
 }
 
 #[cfg(not(feature = "smt-verify"))]
-fn accept_l5(
+pub(crate) fn accept_verified(
     original: &Expr,
     candidate: &Expr,
     width: Width,
