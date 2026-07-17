@@ -30,7 +30,7 @@ pub const TAG_SMALL_ATOM_UTF8: u8 = 119;
 pub const TAG_EXPORT: u8 = 113;
 pub const TAG_COMPRESSED: u8 = 80;
 
-const MAX_ETF_INFLATE: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_ETF_INFLATE: usize = 256 * 1024 * 1024;
 const MAX_ETF_DEPTH: usize = 500;
 const MAX_ETF_CONTAINER_PREALLOC: usize = 1 << 16;
 const MIN_TERM_TAG_BYTES: usize = 1;

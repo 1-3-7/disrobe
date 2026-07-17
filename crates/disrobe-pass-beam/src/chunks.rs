@@ -4,7 +4,7 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::etf::{self, Term};
+use crate::etf::{self, MAX_ETF_INFLATE, Term};
 use crate::reader::Reader;
 
 const TAG_U: u8 = 0;
@@ -350,8 +350,6 @@ pub struct DocsChunk {
     pub term: Term,
 }
 
-const MAX_LITT_INFLATE: usize = 256 * 1024 * 1024;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiteralChunk {
     pub literals: Vec<Term>,
@@ -374,14 +372,14 @@ impl LiteralChunk {
                 })?;
             let cap: usize = uncompressed_size_usize
                 .min(rest.len().saturating_mul(64))
-                .min(MAX_LITT_INFLATE);
+                .min(MAX_ETF_INFLATE);
             let mut out: Vec<u8> = Vec::with_capacity(cap);
             let decoder: flate2::read::ZlibDecoder<&[u8]> = flate2::read::ZlibDecoder::new(rest);
             decoder
-                .take(MAX_LITT_INFLATE as u64 + 1)
+                .take(MAX_ETF_INFLATE as u64 + 1)
                 .read_to_end(&mut out)
                 .map_err(|e: std::io::Error| Error::Zlib("LitT", e.to_string()))?;
-            if out.len() > MAX_LITT_INFLATE || out.len() != uncompressed_size_usize {
+            if out.len() > MAX_ETF_INFLATE || out.len() != uncompressed_size_usize {
                 return Err(Error::Zlib("LitT", "uncompressed size mismatch".to_owned()));
             }
             out
