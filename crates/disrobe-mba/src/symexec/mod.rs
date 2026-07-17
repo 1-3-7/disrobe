@@ -6,7 +6,6 @@
 pub(crate) mod cff;
 pub(crate) mod explore;
 pub(crate) mod interp;
-pub(crate) mod jumptable;
 pub(crate) mod memory;
 pub(crate) mod nir_devirt;
 pub(crate) mod opaque;
@@ -15,16 +14,16 @@ pub(crate) mod solver_cert;
 pub(crate) mod state;
 pub(crate) mod value;
 
+pub use crate::jumptable::{
+    Endian, EntryKind, IndexBound, IndirectSite, JumpTableAbstain, JumpTableResolution,
+    PathConstraint, Perms, Provenance, RejectCause, ResolveTier, Section, SectionMap, Successor,
+    SuccessorKind, TableForm, resolve_jump_table, resolve_jump_table_vsa, resolve_jump_table_with,
+};
 pub use cff::{
     BlockRole, CanaryViolation, CffAbstain, CffOutcome, DegradeReason, DevirtEdge, DevirtNote,
     EdgeGuard, RecoveredCfg, devirtualize, devirtualize_table_dispatch, devirtualize_with,
 };
 pub use explore::{AbstainReason, SymexecBudget};
-pub use jumptable::{
-    Endian, EntryKind, IndexBound, IndirectSite, JumpTableAbstain, JumpTableResolution,
-    PathConstraint, Perms, Provenance, RejectCause, Section, SectionMap, Successor, SuccessorKind,
-    TableForm, resolve_jump_table, resolve_jump_table_with,
-};
 pub use nir_devirt::{
     BinaryBudget, CffSummary, DevirtAbstain, DevirtStatus, FoldedBranch, NirDevirtOutcome,
     NirDevirtReport, devirtualize_nir, devirtualize_nir_with,
