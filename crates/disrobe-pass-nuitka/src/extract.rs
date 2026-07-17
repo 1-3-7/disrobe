@@ -154,6 +154,22 @@ mod tests {
     }
 
     #[test]
+    fn extract_wheel_routes_to_pyfreeze() {
+        let mut bytes: Vec<u8> = vec![0x50u8, 0x4Bu8, 0x03u8, 0x04u8];
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/METADATA");
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/RECORD");
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/WHEEL");
+        let extraction: VariantExtraction = extract_variant(&bytes).expect("wheel extract");
+        let VariantExtraction::NotExtractable { reason }: VariantExtraction = extraction else {
+            panic!("expected wheel to route to a not-extractable result");
+        };
+        assert!(
+            reason.contains("wheel"),
+            "wheel reason expected, got {reason:?}"
+        );
+    }
+
+    #[test]
     fn extract_module_yields_surface_note() {
         let mut bytes: Vec<u8> = vec![0u8; 4096];
         bytes[0..2].copy_from_slice(b"MZ");

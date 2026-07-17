@@ -3168,7 +3168,13 @@ impl<'a> Lifter<'a> {
             {
                 return PythonExpr::Name(name);
             }
-            return self.eval_atom(inner, env);
+            if self.eval_depth.get() >= MAX_LIFT_DEPTH {
+                return PythonExpr::Name("UNRESOLVED:eval-depth-limit".to_owned());
+            }
+            self.eval_depth.set(self.eval_depth.get() + 1);
+            let unwrapped: PythonExpr = self.eval_atom(inner, env);
+            self.eval_depth.set(self.eval_depth.get() - 1);
+            return unwrapped;
         }
         if let Some(after) = t.strip_prefix("MAKE_FUNCTION_") {
             let symbol: &str = after.split('(').next().unwrap_or(after);
@@ -3364,6 +3370,7 @@ impl<'a> Lifter<'a> {
             "CALL_FUNCTION_WITH_POS_ARGS1(",
             self.pack.call_pos_args1,
             "CALL_FUNCTION_WITH_SINGLE_ARG(",
+            "CALL_FUNCTION_WITH_ARGS1(",
         ] {
             if let Some(after) = t.strip_prefix(prefix) {
                 return self.eval_call_args(after, env);
@@ -4329,6 +4336,47 @@ static int helper(void) {
     fn top_level_argument_split_rejects_comma_flood() {
         let inner: String = "value,".repeat(MAX_TOP_LEVEL_ARGUMENTS + 1usize);
         assert!(split_top_args(&inner).is_none());
+    }
+
+    #[test]
+    fn deeply_nested_cell_get_abstains_instead_of_overflowing_stack() {
+        let handle: std::thread::JoinHandle<PythonExpr> = std::thread::Builder::new()
+            .stack_size(64usize * 1024usize * 1024usize)
+            .spawn(|| {
+                let pool: ConstantsPool = ConstantsPool::default();
+                let lifter: Lifter<'_> =
+                    Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
+                let env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+                let mut expr: String = "par_x".to_owned();
+                for _ in 0..8192usize {
+                    expr = format!("Nuitka_Cell_GET({expr})");
+                }
+                lifter.eval_value(&expr, &env)
+            })
+            .expect("spawn deep-lift thread");
+        let result: PythonExpr = handle.join().expect("deep cell-get lift must not overflow");
+        assert_eq!(
+            result,
+            PythonExpr::Name("UNRESOLVED:eval-depth-limit".to_owned()),
+            "deeply nested Nuitka_Cell_GET must abstain at the depth cap, not recurse unbounded"
+        );
+    }
+
+    #[test]
+    fn old_era_single_arg_call_recognized_regardless_of_era_guess() {
+        let pool: ConstantsPool = ConstantsPool::default();
+        let lifter: Lifter<'_> = Lifter::new("", &pool, pack_for_era(guess_era_from_csource("")));
+        let env: BTreeMap<String, PythonExpr> = BTreeMap::new();
+        let result: PythonExpr =
+            lifter.eval_value("CALL_FUNCTION_WITH_ARGS1(tstate, par_f, par_x)", &env);
+        assert_eq!(
+            result,
+            PythonExpr::Call {
+                func: Box::new(PythonExpr::Name("f".to_owned())),
+                args: vec![PythonExpr::Name("x".to_owned())],
+            },
+            "pre-2.0 CALL_FUNCTION_WITH_ARGS1 must lift even when the era guess falls back to modern"
+        );
     }
 
     #[test]

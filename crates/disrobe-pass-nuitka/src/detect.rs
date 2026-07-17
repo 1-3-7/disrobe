@@ -115,7 +115,7 @@ pub fn detect_in_bytes(bytes: &[u8]) -> Result<Detection> {
     })
 }
 
-fn locate_wheel(bytes: &[u8]) -> WheelMarker {
+pub(crate) fn locate_wheel(bytes: &[u8]) -> WheelMarker {
     WheelMarker {
         has_metadata: find_subslice(bytes, WHEEL_SIGNATURES[0]).is_some(),
         has_record: find_subslice(bytes, WHEEL_SIGNATURES[1]).is_some(),
