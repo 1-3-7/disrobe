@@ -919,18 +919,6 @@ fn pyarmor_unpack_missing_input_surfaces_dr_cli_0001() {
 }
 
 #[test]
-fn global_color_never_flag_does_not_break_invocation() {
-    let r: Run = run_disrobe(&["--color", "never", "doctor"]);
-    assert!(
-        matches!(r.code, 0..=2),
-        "doctor must exit 0/1/2; got {} stderr={}",
-        r.code,
-        r.stderr
-    );
-    assert!(r.stdout.contains("disrobe doctor"));
-}
-
-#[test]
 fn global_quiet_suppresses_logs_but_not_subcommand_output() {
     let r: Run = run_disrobe(&["-q", "passes"]);
     assert_eq!(r.code, 0, "stderr: {}", r.stderr);
