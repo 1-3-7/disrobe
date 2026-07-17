@@ -17,13 +17,14 @@ workspace = true
 [features]
 default = ["smt-verify"]
 smt-verify = []
-smt-solver = ["dep:oxiz"]
+smt-solver = ["dep:oxiz", "dep:disrobe-nir"]
 
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 oxiz = { workspace = true, optional = true }
+disrobe-nir = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

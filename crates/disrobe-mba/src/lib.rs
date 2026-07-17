@@ -49,6 +49,8 @@ pub mod simplify;
 #[cfg(feature = "smt-solver")]
 pub mod smt;
 pub mod smtlib;
+#[cfg(feature = "smt-solver")]
+pub mod symexec;
 #[cfg(feature = "smt-verify")]
 pub mod synth;
 #[cfg(feature = "smt-verify")]
@@ -75,6 +77,11 @@ pub use simplify::{
 #[cfg(feature = "smt-solver")]
 pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 pub use smtlib::{equivalence_query, tautology_refutation_query};
+#[cfg(feature = "smt-solver")]
+pub use symexec::{
+    AbstainReason, CfgEdit, PruneReason, Resolution, SymexecBudget, analyze_opaque,
+    analyze_opaque_with,
+};
 #[cfg(feature = "smt-verify")]
 pub use synth::{SynthConfig, synthesize, synthesize_with};
 #[cfg(feature = "smt-verify")]

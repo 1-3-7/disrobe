@@ -2190,6 +2190,7 @@ dependencies = [
 name = "disrobe-mba"
 version = "0.10.4"
 dependencies = [
+ "disrobe-nir",
  "oxiz",
  "proptest",
  "serde",
