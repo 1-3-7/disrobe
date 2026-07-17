@@ -122,6 +122,17 @@ impl CellStore {
         changed
     }
 
+    pub fn mark_sign_conflict(&mut self, var: TypeVar) -> bool {
+        let root: TypeVar = self.find(var);
+        let cell: &mut CellType = &mut self.ty[root.0 as usize];
+        if cell.class.sign() == Sign::Conflict && cell.sign_conflict {
+            return false;
+        }
+        cell.class = set_sign(cell.class, Sign::Conflict);
+        cell.sign_conflict = true;
+        true
+    }
+
     pub fn union(&mut self, a: TypeVar, b: TypeVar) -> bool {
         let ra: TypeVar = self.find(a);
         let rb: TypeVar = self.find(b);

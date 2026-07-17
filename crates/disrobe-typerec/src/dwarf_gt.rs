@@ -26,6 +26,15 @@ pub struct GroundTruthVar {
     pub rbp_disp: i64,
     pub width: Width,
     pub sign: Sign,
+    pub scope_lo: u64,
+    pub scope_hi: u64,
+}
+
+impl GroundTruthVar {
+    #[must_use]
+    pub const fn scope_overlaps(&self, lo: u64, hi: u64) -> bool {
+        self.scope_lo < hi && lo < self.scope_hi
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +157,22 @@ fn walk_functions(
     Ok(functions)
 }
 
+#[derive(Debug)]
+struct FunctionCtx {
+    function: GroundTruthFunction,
+    frame_offset: i64,
+    fn_depth: isize,
+    low_pc: u64,
+    high_pc: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LexScope {
+    depth: isize,
+    lo: u64,
+    hi: u64,
+}
+
 fn collect_unit(
     dwarf: &Dwarf<Slice<'_>>,
     unit: &gimli::Unit<Slice<'_>>,
@@ -157,7 +182,8 @@ fn collect_unit(
     text_base: u64,
 ) {
     let mut entries: gimli::EntriesCursor<'_, '_, Slice<'_>> = unit.entries();
-    let mut current: Option<(GroundTruthFunction, i64, isize)> = None;
+    let mut current: Option<FunctionCtx> = None;
+    let mut scopes: Vec<LexScope> = Vec::new();
     let mut depth: isize = 0;
     loop {
         if *die_budget == 0 {
@@ -170,40 +196,74 @@ fn collect_unit(
                 _ => break,
             };
         depth += delta;
+        while scopes
+            .last()
+            .is_some_and(|scope: &LexScope| scope.depth >= depth)
+        {
+            scopes.pop();
+        }
         let close_current: bool = current
             .as_ref()
-            .is_some_and(|(_, _, fn_depth): &(GroundTruthFunction, i64, isize)| depth <= *fn_depth);
-        if close_current && let Some((done, _, _)) = current.take() {
-            push_function(functions, done);
+            .is_some_and(|ctx: &FunctionCtx| depth <= ctx.fn_depth);
+        if close_current && let Some(ctx) = current.take() {
+            push_function(functions, ctx.function);
+            scopes.clear();
         }
         let tag: gimli::DwTag = entry.tag();
         if tag == gimli::DW_TAG_subprogram {
-            if let Some((done, _, _)) = current.take() {
-                push_function(functions, done);
+            if let Some(ctx) = current.take() {
+                push_function(functions, ctx.function);
             }
-            if let Some(built) = start_function(dwarf, unit, entry, text, text_base) {
-                current = Some((built.0, built.1, depth));
+            scopes.clear();
+            if let Some((function, frame_offset)) =
+                start_function(dwarf, unit, entry, text, text_base)
+            {
+                let low_pc: u64 = function.low_pc;
+                let high_pc: u64 = function.high_pc;
+                current = Some(FunctionCtx {
+                    function,
+                    frame_offset,
+                    fn_depth: depth,
+                    low_pc,
+                    high_pc,
+                });
             }
             continue;
         }
+        if tag == gimli::DW_TAG_lexical_block
+            && let Some(ctx) = current.as_ref()
+            && let Some(low) = attr_low_pc(dwarf, unit, entry)
+            && let Some(high) = attr_high_pc(entry, low)
+        {
+            let _ = ctx;
+            scopes.push(LexScope {
+                depth,
+                lo: low,
+                hi: high,
+            });
+            continue;
+        }
         if tag == gimli::DW_TAG_formal_parameter || tag == gimli::DW_TAG_variable {
-            let Some((function, frame_offset, fn_depth)): Option<&mut (
-                GroundTruthFunction,
-                i64,
-                isize,
-            )> = current.as_mut() else {
+            let Some(ctx): Option<&mut FunctionCtx> = current.as_mut() else {
                 continue;
             };
-            if depth != *fn_depth + 1 || function.vars.len() >= MAX_VARS_PER_FUNCTION {
+            if depth <= ctx.fn_depth || ctx.function.vars.len() >= MAX_VARS_PER_FUNCTION {
                 continue;
             }
-            if let Some(var) = read_variable(dwarf, unit, entry, *frame_offset) {
-                function.vars.push(var);
+            let (scope_lo, scope_hi): (u64, u64) = scopes
+                .last()
+                .map_or((ctx.low_pc, ctx.high_pc), |scope: &LexScope| {
+                    (scope.lo, scope.hi)
+                });
+            if let Some(var) =
+                read_variable(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
+            {
+                ctx.function.vars.push(var);
             }
         }
     }
-    if let Some((done, _, _)) = current.take() {
-        push_function(functions, done);
+    if let Some(ctx) = current.take() {
+        push_function(functions, ctx.function);
     }
 }
 
@@ -268,6 +328,8 @@ fn read_variable(
     unit: &gimli::Unit<Slice<'_>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
     frame_offset: i64,
+    scope_lo: u64,
+    scope_hi: u64,
 ) -> Option<GroundTruthVar> {
     let fbreg: i64 = fbreg_offset(unit, entry)?;
     let type_offset: gimli::UnitOffset = die_type_offset(entry)?;
@@ -278,6 +340,8 @@ fn read_variable(
         rbp_disp: frame_offset.checked_add(fbreg)?,
         width: Width::from_bytes(bytes),
         sign,
+        scope_lo,
+        scope_hi,
     })
 }
 

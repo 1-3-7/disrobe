@@ -3,17 +3,32 @@ use std::collections::BTreeMap;
 use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
 use crate::cells::CellStore;
+use crate::cfg::{self, Cfg};
 use crate::constraint::Constraint;
 use crate::lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
+use crate::memssa::{self, MemSsa};
 
 const MAX_DECODE_INSNS: usize = 1 << 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotMode {
+    Merge,
+    Split,
+}
 
 #[derive(Debug)]
 pub struct FactSet {
     pub store: CellStore,
     pub constraints: Vec<Constraint>,
     pub rbp_slots: BTreeMap<i64, TypeVar>,
+    pub ssa: MemSsa,
     pub has_frame_pointer: bool,
+}
+
+#[derive(Debug)]
+enum SlotResolver {
+    Merge(BTreeMap<i64, TypeVar>),
+    Split(MemSsa),
 }
 
 #[derive(Debug)]
@@ -21,18 +36,20 @@ struct Extractor {
     store: CellStore,
     constraints: Vec<Constraint>,
     current: BTreeMap<Register, TypeVar>,
-    rbp_slots: BTreeMap<i64, TypeVar>,
+    resolver: SlotResolver,
     pending_cmp: Option<(Option<TypeVar>, Option<TypeVar>)>,
+    current_ip: u64,
 }
 
 impl Extractor {
-    fn new() -> Self {
+    const fn new(store: CellStore, resolver: SlotResolver) -> Self {
         Self {
-            store: CellStore::new(),
+            store,
             constraints: Vec::new(),
             current: BTreeMap::new(),
-            rbp_slots: BTreeMap::new(),
+            resolver,
             pending_cmp: None,
+            current_ip: 0,
         }
     }
 
@@ -53,13 +70,18 @@ impl Extractor {
         fresh
     }
 
-    fn slot_cell(&mut self, disp: i64) -> TypeVar {
-        if let Some(existing) = self.rbp_slots.get(&disp) {
-            return *existing;
+    fn slot_cell(&mut self, disp: i64) -> Option<TypeVar> {
+        match &mut self.resolver {
+            SlotResolver::Merge(map) => {
+                if let Some(existing) = map.get(&disp) {
+                    return Some(*existing);
+                }
+                let fresh: TypeVar = self.store.fresh(TypeClass::Top);
+                map.insert(disp, fresh);
+                Some(fresh)
+            }
+            SlotResolver::Split(ssa) => ssa.version_cell(self.current_ip, disp),
         }
-        let fresh: TypeVar = self.store.fresh(TypeClass::Top);
-        self.rbp_slots.insert(disp, fresh);
-        fresh
     }
 
     fn operand_read_cell(&mut self, insn: &Instruction, op: u32) -> Option<TypeVar> {
@@ -68,7 +90,7 @@ impl Extractor {
                 let reg: Register = insn.op_register(op);
                 reg.is_gpr().then(|| self.reg_use(reg))
             }
-            OpKind::Memory => rbp_slot_disp(insn).map(|disp: i64| self.slot_cell(disp)),
+            OpKind::Memory => rbp_slot_disp(insn).and_then(|disp: i64| self.slot_cell(disp)),
             _ => None,
         }
     }
@@ -80,7 +102,9 @@ impl Extractor {
         let Some(width): Option<Width> = memory_width(insn) else {
             return;
         };
-        let cell: TypeVar = self.slot_cell(disp);
+        let Some(cell): Option<TypeVar> = self.slot_cell(disp) else {
+            return;
+        };
         self.constraints
             .push(Constraint::Width(cell, width, Confidence::UsageIdiom));
     }
@@ -104,7 +128,7 @@ impl Extractor {
                     return;
                 }
                 let slot: Option<TypeVar> =
-                    rbp_slot_disp(insn).map(|disp: i64| self.slot_cell(disp));
+                    rbp_slot_disp(insn).and_then(|disp: i64| self.slot_cell(disp));
                 let dst: TypeVar = self.reg_def(dst_reg);
                 if let Some(src) = slot {
                     self.constraints.push(Constraint::SignLink(dst, src));
@@ -119,7 +143,9 @@ impl Extractor {
                     return;
                 };
                 let src: TypeVar = self.reg_use(src_reg);
-                let slot: TypeVar = self.slot_cell(disp);
+                let Some(slot): Option<TypeVar> = self.slot_cell(disp) else {
+                    return;
+                };
                 self.constraints.push(Constraint::SignLink(slot, src));
             }
             _ => {
@@ -181,7 +207,18 @@ impl Extractor {
         }
     }
 
+    fn freshen_fresh_value_write(&mut self, insn: &Instruction) {
+        if !fresh_value_write(insn.mnemonic()) || insn.op_kind(0) != OpKind::Register {
+            return;
+        }
+        let dst_reg: Register = insn.op_register(0);
+        if dst_reg.is_gpr() {
+            let _fresh: TypeVar = self.reg_def(dst_reg);
+        }
+    }
+
     fn process(&mut self, insn: &Instruction) {
+        self.current_ip = insn.ip();
         self.record_slot_width(insn);
         let mnemonic: Mnemonic = insn.mnemonic();
         match mnemonic {
@@ -200,7 +237,7 @@ impl Extractor {
             Mnemonic::Cdq | Mnemonic::Cqo | Mnemonic::Cwd => {
                 self.mark_accumulator_sign(Sign::Signed);
             }
-            _ => {}
+            _ => self.freshen_fresh_value_write(insn),
         }
         match mnemonic {
             Mnemonic::Cmp | Mnemonic::Test => self.set_pending_cmp(insn),
@@ -217,22 +254,49 @@ impl Extractor {
             },
         }
     }
+
+    fn finish(self, rbp_slots: BTreeMap<i64, TypeVar>, has_frame_pointer: bool) -> FactSet {
+        let (slots, ssa): (BTreeMap<i64, TypeVar>, MemSsa) = match self.resolver {
+            SlotResolver::Merge(map) => (map, MemSsa::default()),
+            SlotResolver::Split(ssa) => (rbp_slots, ssa),
+        };
+        FactSet {
+            store: self.store,
+            constraints: self.constraints,
+            rbp_slots: slots,
+            ssa,
+            has_frame_pointer,
+        }
+    }
 }
 
 #[must_use]
 pub fn extract(bytes: &[u8], base: u64) -> FactSet {
+    run(bytes, base, SlotMode::Merge)
+}
+
+#[must_use]
+pub fn extract_split(bytes: &[u8], base: u64) -> FactSet {
+    run(bytes, base, SlotMode::Split)
+}
+
+fn run(bytes: &[u8], base: u64, mode: SlotMode) -> FactSet {
     let instrs: Vec<Instruction> = decode_all(bytes, base);
     let has_frame_pointer: bool = detects_frame_pointer(&instrs);
-    let mut extractor: Extractor = Extractor::new();
+    let (store, resolver): (CellStore, SlotResolver) = match mode {
+        SlotMode::Merge => (CellStore::new(), SlotResolver::Merge(BTreeMap::new())),
+        SlotMode::Split => {
+            let cfg: Cfg = cfg::build(&instrs);
+            let mut store: CellStore = CellStore::new();
+            let ssa: MemSsa = memssa::build(&instrs, &cfg, &mut store);
+            (store, SlotResolver::Split(ssa))
+        }
+    };
+    let mut extractor: Extractor = Extractor::new(store, resolver);
     for insn in &instrs {
         extractor.process(insn);
     }
-    FactSet {
-        store: extractor.store,
-        constraints: extractor.constraints,
-        rbp_slots: extractor.rbp_slots,
-        has_frame_pointer,
-    }
+    extractor.finish(BTreeMap::new(), has_frame_pointer)
 }
 
 fn decode_all(bytes: &[u8], base: u64) -> Vec<Instruction> {
@@ -303,6 +367,33 @@ const fn signed_condition(cc: ConditionCode) -> Option<Sign> {
     }
 }
 
+const fn fresh_value_write(mnemonic: Mnemonic) -> bool {
+    matches!(
+        mnemonic,
+        Mnemonic::Lea
+            | Mnemonic::Add
+            | Mnemonic::Sub
+            | Mnemonic::Imul
+            | Mnemonic::Mul
+            | Mnemonic::And
+            | Mnemonic::Or
+            | Mnemonic::Xor
+            | Mnemonic::Neg
+            | Mnemonic::Not
+            | Mnemonic::Inc
+            | Mnemonic::Dec
+            | Mnemonic::Shl
+            | Mnemonic::Sal
+            | Mnemonic::Rol
+            | Mnemonic::Ror
+            | Mnemonic::Lzcnt
+            | Mnemonic::Tzcnt
+            | Mnemonic::Popcnt
+            | Mnemonic::Bsr
+            | Mnemonic::Bsf
+    )
+}
+
 const fn clobbers_flags(mnemonic: Mnemonic) -> bool {
     matches!(
         mnemonic,
@@ -357,5 +448,27 @@ mod tests {
         ];
         let result: Option<(Width, Sign)> = width_sign_of(bytes, 0x10);
         assert_eq!(result, Some((Width::Qword, Sign::Unsigned)));
+    }
+
+    #[test]
+    fn split_mode_separates_conflicting_reuse() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x85, 0xc9, 0x7e, 0x0a, 0x48, 0x89, 0x4d, 0x00, 0x48, 0xc1,
+            0x7d, 0x00, 0x02, 0xeb, 0x08, 0x48, 0x89, 0x45, 0x00, 0x48, 0xd1, 0x6d, 0x00, 0x48,
+            0x8b, 0x45, 0x00, 0x5d, 0xc3,
+        ];
+        let mut facts: FactSet = extract_split(bytes, 0x1000);
+        solve(&mut facts.store, &facts.constraints);
+        let signs: Vec<Sign> = facts
+            .ssa
+            .versions()
+            .iter()
+            .filter(|v: &&crate::memssa::VersionInfo| v.offset == 0 && !v.is_phi && v.live_hi > 0)
+            .map(|v: &crate::memssa::VersionInfo| facts.store.resolved(v.cell).class.sign())
+            .collect();
+        assert!(
+            signs.contains(&Sign::Signed) && signs.contains(&Sign::Unsigned),
+            "split must recover one signed and one unsigned definition: {signs:?}",
+        );
     }
 }
