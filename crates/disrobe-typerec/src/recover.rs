@@ -5,6 +5,7 @@ use crate::constraint::solve;
 use crate::facts::{FactSet, extract, extract_split};
 use crate::lattice::{Sign, TypeVar, Width};
 use crate::memssa::VersionInfo;
+use crate::structrec::{self, RecoveredStruct};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveredScalar {
@@ -101,10 +102,18 @@ impl CIntType {
 pub struct TypedFunction {
     pub rbp_slots: BTreeMap<i64, RecoveredScalar>,
     pub objects: Vec<RecoveredObject>,
+    pub structs: Vec<RecoveredStruct>,
     pub has_frame_pointer: bool,
 }
 
 impl TypedFunction {
+    #[must_use]
+    pub fn struct_at(&self, slot: i64) -> Option<&RecoveredStruct> {
+        self.structs
+            .iter()
+            .find(|item: &&RecoveredStruct| item.slot == slot)
+    }
+
     #[must_use]
     pub fn slot(&self, rbp_disp: i64) -> Option<RecoveredScalar> {
         self.rbp_slots.get(&rbp_disp).copied()
@@ -154,9 +163,11 @@ pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
     let (rbp_slots, has_frame_pointer): (BTreeMap<i64, RecoveredScalar>, bool) =
         recover_merge(bytes, base);
     let objects: Vec<RecoveredObject> = recover_split(bytes, base);
+    let structs: Vec<RecoveredStruct> = structrec::recover_structs(bytes, base);
     TypedFunction {
         rbp_slots,
         objects,
+        structs,
         has_frame_pointer,
     }
 }

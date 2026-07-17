@@ -38,11 +38,40 @@ impl GroundTruthVar {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundTruthField {
+    pub offset: i64,
+    pub width: Width,
+    pub sign: Sign,
+    pub is_pointer: bool,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundTruthAggregate {
+    pub rbp_disp: i64,
+    pub is_union: bool,
+    pub type_name: String,
+    pub fields: Vec<GroundTruthField>,
+}
+
+impl GroundTruthAggregate {
+    #[must_use]
+    pub fn field_slots(&self) -> std::collections::BTreeSet<(i64, Width)> {
+        self.fields
+            .iter()
+            .filter(|field: &&GroundTruthField| field.width != Width::Unknown)
+            .map(|field: &GroundTruthField| (field.offset, field.width))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroundTruthFunction {
     pub name: String,
     pub low_pc: u64,
     pub high_pc: u64,
     pub vars: Vec<GroundTruthVar>,
+    pub aggregates: Vec<GroundTruthAggregate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -259,6 +288,8 @@ fn collect_unit(
                 read_variable(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
             {
                 ctx.function.vars.push(var);
+            } else if let Some(aggregate) = read_aggregate(dwarf, unit, entry, ctx.frame_offset) {
+                ctx.function.aggregates.push(aggregate);
             }
         }
     }
@@ -268,7 +299,7 @@ fn collect_unit(
 }
 
 fn push_function(functions: &mut Vec<GroundTruthFunction>, function: GroundTruthFunction) {
-    if !function.vars.is_empty() {
+    if !function.vars.is_empty() || !function.aggregates.is_empty() {
         functions.push(function);
     }
 }
@@ -290,6 +321,7 @@ fn start_function(
             low_pc,
             high_pc,
             vars: Vec::new(),
+            aggregates: Vec::new(),
         },
         frame_offset,
     ))
@@ -396,6 +428,244 @@ const fn encoding_sign(encoding: u64) -> Option<Sign> {
         DW_ATE_UNSIGNED | DW_ATE_UNSIGNED_CHAR | DW_ATE_BOOLEAN => Some(Sign::Unsigned),
         _ => None,
     }
+}
+
+const MAX_FIELDS: usize = 1 << 12;
+
+#[derive(Debug, Clone, Copy)]
+enum MemberType {
+    Scalar { bytes: u8, sign: Sign },
+    Pointer,
+    Array { bytes: u8 },
+    Aggregate { offset: gimli::UnitOffset },
+    Unknown,
+}
+
+fn read_aggregate(
+    dwarf: &Dwarf<Slice<'_>>,
+    unit: &gimli::Unit<Slice<'_>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+    frame_offset: i64,
+) -> Option<GroundTruthAggregate> {
+    let fbreg: i64 = fbreg_offset(unit, entry)?;
+    let rbp_disp: i64 = frame_offset.checked_add(fbreg)?;
+    let type_offset: gimli::UnitOffset = die_type_offset(entry)?;
+    let outer: gimli::UnitOffset = strip_typedefs(unit, type_offset, 0)?;
+    let outer_entry: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
+        unit.entry(outer).ok()?;
+    if outer_entry.tag() != gimli::DW_TAG_pointer_type {
+        return None;
+    }
+    let pointee_raw: gimli::UnitOffset = die_type_offset(&outer_entry)?;
+    let pointee: gimli::UnitOffset = strip_typedefs(unit, pointee_raw, 0)?;
+    let pointee_entry: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
+        unit.entry(pointee).ok()?;
+    let mut fields: Vec<GroundTruthField> = Vec::new();
+    let is_union: bool = pointee_entry.tag() == gimli::DW_TAG_union_type;
+    match pointee_entry.tag() {
+        gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type => {
+            flatten_members(dwarf, unit, pointee, 0, &mut fields, 0);
+        }
+        gimli::DW_TAG_base_type => {
+            let (bytes, sign): (u8, Sign) = base_width_sign(&pointee_entry)?;
+            fields.push(GroundTruthField {
+                offset: 0,
+                width: Width::from_bytes(bytes),
+                sign,
+                is_pointer: false,
+                name: String::new(),
+            });
+        }
+        gimli::DW_TAG_pointer_type => {
+            fields.push(GroundTruthField {
+                offset: 0,
+                width: Width::Qword,
+                sign: Sign::Unknown,
+                is_pointer: true,
+                name: String::new(),
+            });
+        }
+        gimli::DW_TAG_array_type => {
+            let bytes: u8 = array_element_bytes(unit, pointee, 0)?;
+            fields.push(GroundTruthField {
+                offset: 0,
+                width: Width::from_bytes(bytes),
+                sign: Sign::Unknown,
+                is_pointer: false,
+                name: String::new(),
+            });
+        }
+        _ => return None,
+    }
+    if fields.is_empty() {
+        return None;
+    }
+    let type_name: String =
+        attr_string(dwarf, unit, &pointee_entry, gimli::DW_AT_name).unwrap_or_default();
+    Some(GroundTruthAggregate {
+        rbp_disp,
+        is_union,
+        type_name,
+        fields,
+    })
+}
+
+fn strip_typedefs(
+    unit: &gimli::Unit<Slice<'_>>,
+    offset: gimli::UnitOffset,
+    depth: u8,
+) -> Option<gimli::UnitOffset> {
+    if depth > MAX_TYPE_DEPTH {
+        return None;
+    }
+    let entry: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> = unit.entry(offset).ok()?;
+    match entry.tag() {
+        gimli::DW_TAG_typedef
+        | gimli::DW_TAG_const_type
+        | gimli::DW_TAG_volatile_type
+        | gimli::DW_TAG_restrict_type
+        | gimli::DW_TAG_atomic_type => {
+            let inner: gimli::UnitOffset = die_type_offset(&entry)?;
+            strip_typedefs(unit, inner, depth + 1)
+        }
+        _ => Some(offset),
+    }
+}
+
+fn flatten_members(
+    dwarf: &Dwarf<Slice<'_>>,
+    unit: &gimli::Unit<Slice<'_>>,
+    struct_offset: gimli::UnitOffset,
+    base_offset: i64,
+    out: &mut Vec<GroundTruthField>,
+    depth: u8,
+) {
+    if depth > MAX_TYPE_DEPTH {
+        return;
+    }
+    let Ok(mut tree): core::result::Result<gimli::EntriesTree<'_, '_, Slice<'_>>, _> =
+        unit.entries_tree(Some(struct_offset))
+    else {
+        return;
+    };
+    let Ok(root): core::result::Result<gimli::EntriesTreeNode<'_, '_, '_, Slice<'_>>, _> =
+        tree.root()
+    else {
+        return;
+    };
+    let mut children: gimli::EntriesTreeIter<'_, '_, '_, Slice<'_>> = root.children();
+    while let Ok(Some(child)) = children.next() {
+        if out.len() >= MAX_FIELDS {
+            return;
+        }
+        let entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> = child.entry();
+        if entry.tag() != gimli::DW_TAG_member {
+            continue;
+        }
+        let member_offset: i64 = base_offset.saturating_add(member_location(entry));
+        let name: String = attr_string(dwarf, unit, entry, gimli::DW_AT_name).unwrap_or_default();
+        let Some(type_offset): Option<gimli::UnitOffset> = die_type_offset(entry) else {
+            continue;
+        };
+        match classify_member_type(unit, type_offset, depth) {
+            MemberType::Scalar { bytes, sign } => out.push(GroundTruthField {
+                offset: member_offset,
+                width: Width::from_bytes(bytes),
+                sign,
+                is_pointer: false,
+                name,
+            }),
+            MemberType::Pointer => out.push(GroundTruthField {
+                offset: member_offset,
+                width: Width::Qword,
+                sign: Sign::Unknown,
+                is_pointer: true,
+                name,
+            }),
+            MemberType::Array { bytes } => out.push(GroundTruthField {
+                offset: member_offset,
+                width: Width::from_bytes(bytes),
+                sign: Sign::Unknown,
+                is_pointer: false,
+                name,
+            }),
+            MemberType::Aggregate { offset } => {
+                flatten_members(dwarf, unit, offset, member_offset, out, depth + 1);
+            }
+            MemberType::Unknown => {}
+        }
+    }
+}
+
+fn classify_member_type(
+    unit: &gimli::Unit<Slice<'_>>,
+    type_offset: gimli::UnitOffset,
+    depth: u8,
+) -> MemberType {
+    let Some(stripped): Option<gimli::UnitOffset> = strip_typedefs(unit, type_offset, depth) else {
+        return MemberType::Unknown;
+    };
+    let Ok(entry): core::result::Result<gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>, _> =
+        unit.entry(stripped)
+    else {
+        return MemberType::Unknown;
+    };
+    match entry.tag() {
+        gimli::DW_TAG_base_type => base_width_sign(&entry)
+            .map_or(MemberType::Unknown, |(bytes, sign): (u8, Sign)| {
+                MemberType::Scalar { bytes, sign }
+            }),
+        gimli::DW_TAG_enumeration_type => {
+            enum_bytes(&entry).map_or(MemberType::Unknown, |bytes: u8| MemberType::Scalar {
+                bytes,
+                sign: Sign::Unknown,
+            })
+        }
+        gimli::DW_TAG_pointer_type => MemberType::Pointer,
+        gimli::DW_TAG_structure_type | gimli::DW_TAG_union_type => {
+            MemberType::Aggregate { offset: stripped }
+        }
+        gimli::DW_TAG_array_type => array_element_bytes(unit, stripped, depth)
+            .map_or(MemberType::Unknown, |bytes: u8| MemberType::Array { bytes }),
+        _ => MemberType::Unknown,
+    }
+}
+
+fn enum_bytes(entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>) -> Option<u8> {
+    let size: u64 = attr_udata(entry, gimli::DW_AT_byte_size)?;
+    u8::try_from(size).ok()
+}
+
+fn array_element_bytes(
+    unit: &gimli::Unit<Slice<'_>>,
+    array_offset: gimli::UnitOffset,
+    depth: u8,
+) -> Option<u8> {
+    let entry: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
+        unit.entry(array_offset).ok()?;
+    let element: gimli::UnitOffset = die_type_offset(&entry)?;
+    match classify_member_type(unit, element, depth + 1) {
+        MemberType::Scalar { bytes, .. } | MemberType::Array { bytes } => Some(bytes),
+        MemberType::Pointer => Some(8),
+        _ => None,
+    }
+}
+
+fn base_width_sign(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+) -> Option<(u8, Sign)> {
+    let byte_size: u64 = attr_udata(entry, gimli::DW_AT_byte_size)?;
+    let bytes: u8 = u8::try_from(byte_size).ok()?;
+    let sign: Sign = attr_udata(entry, gimli::DW_AT_encoding)
+        .and_then(encoding_sign)
+        .unwrap_or(Sign::Unknown);
+    Some((bytes, sign))
+}
+
+fn member_location(entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>) -> i64 {
+    attr_udata(entry, gimli::DW_AT_data_member_location)
+        .and_then(|value: u64| i64::try_from(value).ok())
+        .unwrap_or(0)
 }
 
 fn die_type_offset(
