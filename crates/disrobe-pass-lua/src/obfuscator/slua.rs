@@ -256,10 +256,14 @@ impl std::io::Write for CappedSink {
 }
 
 fn brotli_decompress(data: &[u8]) -> Result<Vec<u8>> {
+    brotli_decompress_capped(data, MAX_DECOMPRESSED)
+}
+
+fn brotli_decompress_capped(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     let mut input: &[u8] = data;
     let mut sink: CappedSink = CappedSink {
         buf: Vec::new(),
-        limit: MAX_DECOMPRESSED,
+        limit,
     };
     brotli_decompressor::BrotliDecompress(&mut input, &mut sink).map_err(|e| {
         Error::Io(std::io::Error::other(format!(
@@ -1452,6 +1456,49 @@ mod tests {
         let compressed: Vec<u8> = zlib_compress(b"0123456789abcdef").expect("compress");
         let err: Error = zlib_decompress_capped(&compressed, 8).expect_err("cap");
         assert!(matches!(err, Error::Io(_)));
+    }
+
+    const BROTLI_BOMB_4MIB: [u8; 14] = [
+        155, 255, 255, 63, 248, 37, 130, 226, 177, 64, 32, 247, 254, 7,
+    ];
+    const BROTLI_BOMB_OUT: usize = 4 * 1024 * 1024;
+
+    #[test]
+    fn brotli_decompress_recovers_valid_stream_under_generous_cap() {
+        let out: Vec<u8> = brotli_decompress_capped(&BROTLI_BOMB_4MIB, 8 * 1024 * 1024)
+            .expect("a valid brotli stream must decode when the cap is above its output size");
+        assert_eq!(out.len(), BROTLI_BOMB_OUT);
+        assert!(out.iter().all(|byte: &u8| *byte == 0x41));
+    }
+
+    #[test]
+    fn brotli_decompress_aborts_before_full_expansion() {
+        let err: Error = brotli_decompress_capped(&BROTLI_BOMB_4MIB, 64 * 1024)
+            .expect_err("a 14-byte stream expanding to 4 MiB must be capped, not materialized");
+        assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn capped_sink_rejects_crossing_write_without_buffering_it() {
+        let limit: usize = 1024;
+        let mut sink: CappedSink = CappedSink {
+            buf: Vec::new(),
+            limit,
+        };
+        let chunk: [u8; 256] = [0x5A; 256];
+        for _ in 0..4 {
+            std::io::Write::write(&mut sink, &chunk).expect("writes up to the cap succeed");
+        }
+        assert_eq!(sink.buf.len(), limit);
+        let crossing: std::io::Result<usize> = std::io::Write::write(&mut sink, &chunk);
+        assert!(
+            crossing.is_err(),
+            "the write that crosses the cap must fail"
+        );
+        assert!(
+            sink.buf.len() <= limit,
+            "the sink must never buffer past the cap, proving it aborts mid-stream not after"
+        );
     }
 
     #[test]
