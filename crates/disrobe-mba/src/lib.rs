@@ -79,8 +79,10 @@ pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 pub use smtlib::{equivalence_query, tautology_refutation_query};
 #[cfg(feature = "smt-solver")]
 pub use symexec::{
-    AbstainReason, CfgEdit, PruneReason, Resolution, SymexecBudget, analyze_opaque,
-    analyze_opaque_with,
+    AbstainReason, CfgEdit, Endian, EntryKind, IndexBound, IndirectSite, JumpTableAbstain,
+    JumpTableResolution, PathConstraint, Perms, Provenance, PruneReason, RejectCause, Resolution,
+    Section, SectionMap, Successor, SuccessorKind, SymexecBudget, TableForm, analyze_opaque,
+    analyze_opaque_with, resolve_jump_table, resolve_jump_table_with,
 };
 #[cfg(feature = "smt-verify")]
 pub use synth::{SynthConfig, synthesize, synthesize_with};
