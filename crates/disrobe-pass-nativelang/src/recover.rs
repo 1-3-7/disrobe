@@ -28,6 +28,7 @@ pub struct Recovery {
     pub user_symbol_count: usize,
     pub gc: GcMetadata,
     pub strings_sampled: usize,
+    pub strings_truncated: bool,
 }
 
 const NIM_STD_PREFIXES: &[&str] = &[
@@ -345,13 +346,13 @@ fn recover_crystal(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
                 .to_owned()
         });
     }
-    let mut scanned_count: Option<usize> = None;
+    let mut scanned_count: Option<(usize, bool)> = None;
     if demangled.is_empty() {
         debug::dbg_line(|| {
             "crystal fallback: scanning ascii string pool for type/method literals".to_owned()
         });
-        let strings: Vec<String> = image.ascii_strings(3);
-        scanned_count = Some(strings.len());
+        let (strings, strings_truncated): (Vec<String>, bool) = image.ascii_strings_capped(3);
+        scanned_count = Some((strings.len(), strings_truncated));
         debug::dbg_kv("crystal-strings-scanned", || strings.len().to_string());
         let confirmed_types: BTreeSet<String> = strings
             .iter()
@@ -392,11 +393,13 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         }
     }
     debug::dbg_kv("d-from-symtab", || demangled.len().to_string());
+    let mut scanned_count: Option<(usize, bool)> = None;
     if demangled.is_empty() {
         debug::dbg_line(|| {
             "d wall: symbol table absent or stripped (typical PE), scanning _D-prefixed string tokens".to_owned()
         });
-        let strings: Vec<String> = image.ascii_strings(4);
+        let (strings, strings_truncated): (Vec<String>, bool) = image.ascii_strings_capped(4);
+        scanned_count = Some((strings.len(), strings_truncated));
         debug::dbg_kv("d-strings-scanned", || strings.len().to_string());
         for s in &strings {
             for token in s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
@@ -434,7 +437,7 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
         D_RUNTIME_SYMS,
         Some("druntime-conservative"),
         &[],
-        None,
+        scanned_count,
         types,
     )
 }
@@ -448,7 +451,7 @@ fn finish(
     runtime_syms: &[&[u8]],
     gc_kind: Option<&str>,
     gc_evidence: &[String],
-    precomputed_string_count: Option<usize>,
+    precomputed_scan: Option<(usize, bool)>,
     types: &TypeReport,
 ) -> Recovery {
     let mut user_modules: BTreeSet<String> = BTreeSet::new();
@@ -475,8 +478,10 @@ fn finish(
             runtime_symbols.push(symbol.clone());
         }
     }
-    let strings_sampled: usize =
-        precomputed_string_count.unwrap_or_else(|| image.ascii_strings(3).len());
+    let (strings_sampled, strings_truncated): (usize, bool) = precomputed_scan.unwrap_or_else(|| {
+        let (strings, truncated): (Vec<String>, bool) = image.ascii_strings_capped(3);
+        (strings.len(), truncated)
+    });
     debug::dbg_kv("modules", || {
         format!(
             "user={} std={} std-syms={std_count} user-syms={user_count}",
@@ -489,6 +494,7 @@ fn finish(
     });
     debug::dbg_kv("runtime-symbols", || runtime_symbols.len().to_string());
     debug::dbg_kv("strings-sampled", || strings_sampled.to_string());
+    debug::dbg_kv("strings-truncated", || strings_truncated.to_string());
     let source_grade: SourceGrade = types.grade;
     let source_recoverable: bool = source_grade.recoverable();
     debug::dbg_kv("source-grade", || {
@@ -528,6 +534,7 @@ fn finish(
             runtime_symbols,
         },
         strings_sampled,
+        strings_truncated,
     }
 }
 
