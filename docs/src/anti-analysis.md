@@ -36,12 +36,13 @@ Runtime-keyed schemes (a key from a system property, the environment, the clock,
 
 - **BlackObfuscator DEX flattening** is deflattened: the `String.hashCode()`-keyed dispatcher is recognized, each block's `const-string` name is matched to its switch case, and the original linear block order is recovered and annotated in the output.
 - **OLLVM-style control-flow flattening, bogus control flow, and instruction substitution** are reversed on native.
+- **Proven-dead conditional arms** are folded on the AArch64 `native decompile` path by a symbolic devirtualizer that runs before structuring (on by default, disabled with `--no-devirt`). The fold is transactional: on any proof miss or budget exhaustion it reverts to the original function, so it only ever replaces a construct with a proven-equivalent one and never invents an edge.
 - **Obfuscator-planted out-of-range exception entries** that poison the JVM control-flow graph are dropped before structuring.
 - **Flattened JS dispatchers** are collapsed back to structured control flow.
 
 ## Anti-disassembly and MBA
 
-The JVM, Dalvik, and CIL decoders tolerate broken `StackMapTable`, fake exception ranges, and illegal-but-verifiable bytecode. On native, jump-into-the-middle desync, overlapping instructions, and opaque predicates are resolved in-tree. A mixed-boolean-arithmetic simplifier, wired through the JS and WebAssembly decoders as well, collapses MBA expressions back to their algebraic form.
+The JVM, Dalvik, and CIL decoders tolerate broken `StackMapTable`, fake exception ranges, and illegal-but-verifiable bytecode. On native, jump-into-the-middle desync, overlapping instructions, and opaque predicates are resolved in-tree. A mixed-boolean-arithmetic simplifier, wired through the JS and WebAssembly decoders as well, collapses MBA expressions back to their algebraic form through a layered stack: linear signature solving, nonlinear reduction modulo the null-polynomial ideal, e-graph equality saturation over proven ring identities, bounded enumerative synthesis for opaque leaves, and permutation-polynomial inversion. Each layer is sound or abstains, and a rewrite is emitted only after equivalence is proven over the full bitvector domain, so an expression the stack cannot prove is left untouched rather than approximated.
 
 ## Bytecode virtualization
 
