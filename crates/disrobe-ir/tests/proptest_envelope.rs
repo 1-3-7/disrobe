@@ -130,12 +130,7 @@ proptest! {
         let truncated: &[u8] = &bytes[..keep.min(bytes.len())];
         let result: Result<Envelope, EnvelopeError> = Envelope::decode(truncated);
         prop_assert!(
-            matches!(
-                result,
-                Err(EnvelopeError::Truncated { .. }
-                    | EnvelopeError::HotLenMismatch { .. }
-                    | EnvelopeError::ColdLenMismatch { .. })
-            ),
+            matches!(result, Err(EnvelopeError::Truncated { .. })),
             "a header-truncated envelope must fail with a truncation-class variant, not a hash or codec error and not Ok: {result:?}",
         );
         prop_assert!(

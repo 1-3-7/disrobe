@@ -203,13 +203,9 @@ fn read_array<const N: usize>(src: &[u8; HEADER_SIZE], offset: usize) -> [u8; N]
 
 #[inline]
 const fn decode_rung(b: u8) -> Result<Rung> {
-    match b {
-        0 => Ok(Rung::Raw),
-        1 => Ok(Rung::Disasm),
-        2 => Ok(Rung::Mir),
-        3 => Ok(Rung::Hir),
-        4 => Ok(Rung::Surface),
-        other => Err(EnvelopeError::BadRung(other)),
+    match Rung::from_u8(b) {
+        Some(rung) => Ok(rung),
+        None => Err(EnvelopeError::BadRung(b)),
     }
 }
 
@@ -383,5 +379,23 @@ mod tests {
         let bytes: Vec<u8> = env.encode().expect("encode");
         let header: [u8; HEADER_SIZE] = env.header_bytes().expect("header");
         assert_eq!(&bytes[..HEADER_SIZE], &header[..]);
+    }
+
+    #[test]
+    fn decode_rung_agrees_with_canonical_from_u8() {
+        for byte in 0u8..=u8::MAX {
+            match Rung::from_u8(byte) {
+                Some(rung) => {
+                    let decoded: Rung = decode_rung(byte).expect("known rung byte decodes");
+                    assert_eq!(decoded, rung);
+                    assert_eq!(rung as u8, byte);
+                }
+                None => {
+                    assert!(
+                        matches!(decode_rung(byte), Err(EnvelopeError::BadRung(b)) if b == byte)
+                    );
+                }
+            }
+        }
     }
 }

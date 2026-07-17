@@ -14,12 +14,6 @@ pub enum EnvelopeError {
     #[error("unknown rung: {0}")]
     BadRung(u8),
 
-    #[error("hot payload length mismatch: header says {expected}, slice has {got}")]
-    HotLenMismatch { expected: usize, got: usize },
-
-    #[error("cold sidecar length mismatch: header says {expected}, slice has {got}")]
-    ColdLenMismatch { expected: usize, got: usize },
-
     #[error("BLAKE3 root hash mismatch: header {header:?}, computed {computed:?}")]
     RootHashMismatch {
         header: [u8; 32],
