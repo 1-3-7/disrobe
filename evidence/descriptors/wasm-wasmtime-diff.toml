@@ -12,6 +12,6 @@ reproduce = "cargo test -p disrobe-pass-wasm-deob --test semantic_differential -
 note = "Op-coverage (124/126) means every operator lowered and the output re-parses; it is NOT execution-equivalence. The 50/50 wasmtime figure is the strong execution-equivalence number. They are distinct and labeled distinctly."
 
 [source]
-recovery_group = "WebAssembly (committed 126-fn corpus: op-coverage, 50 execution-verified under wasmtime)"
+recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
 recovery_bar = "op-coverage"
 floor = 76.0
