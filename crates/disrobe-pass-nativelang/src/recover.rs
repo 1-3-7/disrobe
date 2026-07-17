@@ -478,10 +478,11 @@ fn finish(
             runtime_symbols.push(symbol.clone());
         }
     }
-    let (strings_sampled, strings_truncated): (usize, bool) = precomputed_scan.unwrap_or_else(|| {
-        let (strings, truncated): (Vec<String>, bool) = image.ascii_strings_capped(3);
-        (strings.len(), truncated)
-    });
+    let (strings_sampled, strings_truncated): (usize, bool) =
+        precomputed_scan.unwrap_or_else(|| {
+            let (strings, truncated): (Vec<String>, bool) = image.ascii_strings_capped(3);
+            (strings.len(), truncated)
+        });
     debug::dbg_kv("modules", || {
         format!(
             "user={} std={} std-syms={std_count} user-syms={user_count}",
