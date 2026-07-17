@@ -3,6 +3,8 @@
 
 pub mod bitwise_synth;
 pub mod boolean;
+#[cfg(feature = "cfg-recovery")]
+pub mod cff;
 pub mod egraph;
 pub mod enum_synth;
 pub mod expr;
@@ -28,6 +30,15 @@ pub mod synth;
 pub mod verify;
 
 pub use bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
+#[cfg(feature = "cfg-recovery")]
+pub use cff::{
+    BlockRole, CanaryViolation, CffAbstain, CffOutcome, DegradeReason, DevirtEdge, DevirtNote,
+    EdgeGuard, RecoveredCfg, devirtualize_cheap,
+};
+#[cfg(feature = "smt-solver")]
+pub use cff::{
+    CffTrace, devirtualize, devirtualize_table_dispatch, devirtualize_traced, devirtualize_with,
+};
 pub use expr::{BinOp, Expr, UnOp, Width, equivalent_exhaustive, equivalent_exhaustive_runnable};
 pub use finite_diff::{
     MAX_CERTIFICATE_DEGREE, composition_is_identity, induces_zero_function,
@@ -61,11 +72,9 @@ pub use smt::{SmtBudget, SmtVerdict, check_unsat};
 pub use smtlib::{equivalence_query, tautology_refutation_query};
 #[cfg(feature = "smt-solver")]
 pub use symexec::{
-    AbstainReason, BinaryBudget, BlockRole, CanaryViolation, CffAbstain, CffOutcome, CffSummary,
-    CfgEdit, DegradeReason, DevirtAbstain, DevirtEdge, DevirtNote, DevirtStatus, EdgeGuard,
-    FoldedBranch, NirDevirtOutcome, NirDevirtReport, PruneReason, RecoveredCfg, Resolution,
-    SymexecBudget, analyze_opaque, analyze_opaque_with, devirtualize, devirtualize_nir,
-    devirtualize_nir_with, devirtualize_table_dispatch, devirtualize_with,
+    AbstainReason, BinaryBudget, CffSummary, CfgEdit, DevirtAbstain, DevirtStatus, FoldedBranch,
+    NirDevirtOutcome, NirDevirtReport, PruneReason, Resolution, SymexecBudget, analyze_opaque,
+    analyze_opaque_with, devirtualize_nir, devirtualize_nir_with,
 };
 #[cfg(feature = "smt-verify")]
 pub use synth::{SynthConfig, synthesize, synthesize_with};

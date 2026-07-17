@@ -16,6 +16,24 @@ impl ValueSet {
         }
     }
 
+    #[cfg(feature = "cfg-recovery")]
+    pub(crate) const fn singleton(value: u64) -> Self {
+        Self {
+            base: value,
+            stride: 1,
+            count: 1,
+        }
+    }
+
+    #[cfg(feature = "cfg-recovery")]
+    pub(crate) const fn as_constant(self) -> Option<u64> {
+        if self.count == 1 {
+            Some(self.base)
+        } else {
+            None
+        }
+    }
+
     pub(crate) const fn min(self) -> u64 {
         self.base
     }

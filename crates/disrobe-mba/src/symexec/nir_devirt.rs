@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use disrobe_nir::{NirBlock, NirFunction, NirOp, basic_blocks};
 
-use super::cff::{BlockRole, CffOutcome, RecoveredCfg, devirtualize_with};
+use crate::cff::{BlockRole, CffOutcome, RecoveredCfg, devirtualize_with};
+
 use super::explore::{AbstainReason, SymexecBudget};
 use super::opaque::{CfgEdit, Resolution, analyze_opaque_with};
 
