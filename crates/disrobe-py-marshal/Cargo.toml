@@ -17,9 +17,7 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 miette = { workspace = true }
-tracing = { workspace = true }
 indexmap = { workspace = true }
-bytes = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

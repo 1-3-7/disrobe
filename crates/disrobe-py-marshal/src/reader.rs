@@ -809,16 +809,6 @@ impl<'a> Reader<'a> {
             Object::String { value, .. } | Object::ShortAscii { value, .. } => {
                 Ok(text_to_raw_bytes(&value))
             }
-            Object::Ref(idx) => {
-                let target: Object = self.ready_ref(idx, self.pos)?.clone();
-                match target {
-                    Object::Bytes(b) => Ok(b),
-                    Object::String { value, .. } | Object::ShortAscii { value, .. } => {
-                        Ok(text_to_raw_bytes(&value))
-                    }
-                    other => Err(self.code_field_type_err(field, "bytes", &other)),
-                }
-            }
             other => Err(self.code_field_type_err(field, "bytes", &other)),
         }
     }
@@ -826,13 +816,6 @@ impl<'a> Reader<'a> {
     fn read_tuple(&mut self, field: &'static str, depth: usize) -> Result<Vec<Object>> {
         match self.read_object(depth)? {
             Object::Tuple(t) | Object::List(t) => Ok(t),
-            Object::Ref(idx) => {
-                let target: Object = self.ready_ref(idx, self.pos)?.clone();
-                match target {
-                    Object::Tuple(t) | Object::List(t) => Ok(t),
-                    other => Err(self.code_field_type_err(field, "tuple", &other)),
-                }
-            }
             other => Err(self.code_field_type_err(field, "tuple", &other)),
         }
     }
@@ -1500,5 +1483,51 @@ mod tests {
         let dict: Object = Object::Dict(plain.clone());
         let frozen: Object = Object::FrozenDict(plain);
         assert_ne!(dict, frozen);
+    }
+
+    #[test]
+    fn back_ref_code_fields_resolve_through_concrete_arms() {
+        let mut data: Vec<u8> = vec![b'c'];
+        for _ in 0..5 {
+            data.extend(0i32.to_le_bytes());
+        }
+        data.push(FLAG_REF | b's');
+        data.extend(2u32.to_le_bytes());
+        data.extend_from_slice(&[0x64, 0x00]);
+        data.push(FLAG_REF | b'(');
+        data.extend(1u32.to_le_bytes());
+        data.push(b'N');
+        data.push(b'r');
+        data.extend(1u32.to_le_bytes());
+        data.push(b'(');
+        data.extend(0u32.to_le_bytes());
+        data.push(b'r');
+        data.extend(0u32.to_le_bytes());
+        data.extend_from_slice(&[b'z', 1, b'f']);
+        data.extend_from_slice(&[b'z', 1, b'n']);
+        data.extend_from_slice(&[b'z', 1, b'q']);
+        data.extend(0i32.to_le_bytes());
+        data.push(b's');
+        data.extend(0u32.to_le_bytes());
+        data.push(b's');
+        data.extend(0u32.to_le_bytes());
+
+        let obj: Object = load(&data, PyVersion::PY312)
+            .expect("a code object whose fields are resolved back-refs must decode");
+        let Object::Code(co) = obj else {
+            panic!("expected a code object");
+        };
+        assert_eq!(co.code, vec![0x64, 0x00]);
+        assert_eq!(co.consts, vec![Object::None]);
+        assert_eq!(
+            co.names,
+            vec![Object::None],
+            "names resolved via a back-ref to consts must decode through the tuple arm"
+        );
+        assert_eq!(
+            co.localspluskinds,
+            vec![0x64, 0x00],
+            "localspluskinds resolved via a back-ref to code must decode through the bytes arm"
+        );
     }
 }
