@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_nir::{NirClass, NirFunction, NirInstr, NirOp, SourceLang, SourceRef};
-use disrobe_sleigh::lifter::DecodedBlock;
+use disrobe_sleigh::lifter::{DecodedBlock, Language, decode_block_for_language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 
 use crate::error::{LiftError, Result};
@@ -111,6 +111,29 @@ impl PcodeLiftConfig {
     }
 
     #[must_use]
+    pub fn aarch64() -> Self {
+        let mut registers: Vec<RegisterCell> = Vec::with_capacity(37);
+        registers.push(RegisterCell::new(0x0, 8, "pc", None));
+        registers.push(RegisterCell::new(0x8, 8, "sp", Some(4)));
+        for index in 0_u64..31_u64 {
+            let offset: u64 = 0x4000_u64 + index * 8_u64;
+            let name: String = format!("x{index}");
+            registers.push(RegisterCell::new(offset, 8, name, Some(4)));
+        }
+        registers.extend([
+            RegisterCell::new(0x100, 1, "ng", None),
+            RegisterCell::new(0x101, 1, "zr", None),
+            RegisterCell::new(0x102, 1, "cy", None),
+            RegisterCell::new(0x103, 1, "ov", None),
+        ]);
+        let mut config: Self = Self::new(SourceLang::NativeArm, registers).with_return_value("x0");
+        for name in ["ng", "zr", "cy", "ov"] {
+            config.discarded_registers.insert(name.to_owned());
+        }
+        config
+    }
+
+    #[must_use]
     pub const fn with_limits(mut self, max_instructions: usize, max_operations: usize) -> Self {
         self.max_instructions = if max_instructions < MAX_PCODE_INSTRUCTIONS {
             max_instructions
@@ -161,6 +184,11 @@ impl PcodeLiftConfig {
 pub fn lower_x86_64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunction> {
     let block: DecodedBlock = decode_block_x86(bytes, address, 64);
     lower_pcode_block(&block, name, &PcodeLiftConfig::x86_64())
+}
+
+pub fn lower_aarch64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunction> {
+    let block: DecodedBlock = decode_block_for_language(Language::AArch64, bytes, address);
+    lower_pcode_block(&block, name, &PcodeLiftConfig::aarch64())
 }
 
 pub fn lower_pcode_block(
