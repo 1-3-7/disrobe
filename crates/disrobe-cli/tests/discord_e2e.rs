@@ -376,12 +376,13 @@ fn synth_asar(files: &[(&str, &[u8])]) -> Vec<u8> {
     let header_size: u32 = u32::try_from(header_bytes.len()).expect("header size fits u32");
     let aligned_size: usize = (header_bytes.len() + 3) & !3;
     let aligned: u32 = u32::try_from(aligned_size).expect("aligned size fits u32");
-    let pickle_size: u32 = 8 + aligned;
+    let string_pickle_size: u32 = aligned + 4;
+    let header_pickle_size: u32 = string_pickle_size + 4;
     let payload_total: usize = usize::try_from(offset).expect("payload total fits usize");
     let mut out: Vec<u8> = Vec::with_capacity(16 + aligned_size + payload_total);
     out.extend_from_slice(&ALIGNMENT_PREFIX);
-    out.extend_from_slice(&pickle_size.to_le_bytes());
-    out.extend_from_slice(&ALIGNMENT_PREFIX);
+    out.extend_from_slice(&header_pickle_size.to_le_bytes());
+    out.extend_from_slice(&string_pickle_size.to_le_bytes());
     out.extend_from_slice(&header_size.to_le_bytes());
     out.extend_from_slice(header_bytes);
     let padding: usize = (aligned - header_size) as usize;
