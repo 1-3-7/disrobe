@@ -1,0 +1,361 @@
+use std::collections::BTreeMap;
+
+use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+
+use crate::cells::CellStore;
+use crate::constraint::Constraint;
+use crate::lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
+
+const MAX_DECODE_INSNS: usize = 1 << 16;
+
+#[derive(Debug)]
+pub struct FactSet {
+    pub store: CellStore,
+    pub constraints: Vec<Constraint>,
+    pub rbp_slots: BTreeMap<i64, TypeVar>,
+    pub has_frame_pointer: bool,
+}
+
+#[derive(Debug)]
+struct Extractor {
+    store: CellStore,
+    constraints: Vec<Constraint>,
+    current: BTreeMap<Register, TypeVar>,
+    rbp_slots: BTreeMap<i64, TypeVar>,
+    pending_cmp: Option<(Option<TypeVar>, Option<TypeVar>)>,
+}
+
+impl Extractor {
+    fn new() -> Self {
+        Self {
+            store: CellStore::new(),
+            constraints: Vec::new(),
+            current: BTreeMap::new(),
+            rbp_slots: BTreeMap::new(),
+            pending_cmp: None,
+        }
+    }
+
+    fn reg_use(&mut self, reg: Register) -> TypeVar {
+        let full: Register = reg.full_register();
+        if let Some(existing) = self.current.get(&full) {
+            return *existing;
+        }
+        let fresh: TypeVar = self.store.fresh(TypeClass::Top);
+        self.current.insert(full, fresh);
+        fresh
+    }
+
+    fn reg_def(&mut self, reg: Register) -> TypeVar {
+        let full: Register = reg.full_register();
+        let fresh: TypeVar = self.store.fresh(TypeClass::Top);
+        self.current.insert(full, fresh);
+        fresh
+    }
+
+    fn slot_cell(&mut self, disp: i64) -> TypeVar {
+        if let Some(existing) = self.rbp_slots.get(&disp) {
+            return *existing;
+        }
+        let fresh: TypeVar = self.store.fresh(TypeClass::Top);
+        self.rbp_slots.insert(disp, fresh);
+        fresh
+    }
+
+    fn operand_read_cell(&mut self, insn: &Instruction, op: u32) -> Option<TypeVar> {
+        match insn.op_kind(op) {
+            OpKind::Register => {
+                let reg: Register = insn.op_register(op);
+                reg.is_gpr().then(|| self.reg_use(reg))
+            }
+            OpKind::Memory => rbp_slot_disp(insn).map(|disp: i64| self.slot_cell(disp)),
+            _ => None,
+        }
+    }
+
+    fn record_slot_width(&mut self, insn: &Instruction) {
+        let Some(disp): Option<i64> = rbp_slot_disp(insn) else {
+            return;
+        };
+        let Some(width): Option<Width> = memory_width(insn) else {
+            return;
+        };
+        let cell: TypeVar = self.slot_cell(disp);
+        self.constraints
+            .push(Constraint::Width(cell, width, Confidence::UsageIdiom));
+    }
+
+    fn handle_mov(&mut self, insn: &Instruction) {
+        match (insn.op_kind(0), insn.op_kind(1)) {
+            (OpKind::Register, OpKind::Register) => {
+                let dst_reg: Register = insn.op_register(0);
+                let src_reg: Register = insn.op_register(1);
+                if dst_reg.is_gpr() && src_reg.is_gpr() {
+                    let src: TypeVar = self.reg_use(src_reg);
+                    let dst: TypeVar = self.reg_def(dst_reg);
+                    self.constraints.push(Constraint::Union(dst, src));
+                } else if dst_reg.is_gpr() {
+                    let _dst: TypeVar = self.reg_def(dst_reg);
+                }
+            }
+            (OpKind::Register, OpKind::Memory) => {
+                let dst_reg: Register = insn.op_register(0);
+                if !dst_reg.is_gpr() {
+                    return;
+                }
+                let slot: Option<TypeVar> =
+                    rbp_slot_disp(insn).map(|disp: i64| self.slot_cell(disp));
+                let dst: TypeVar = self.reg_def(dst_reg);
+                if let Some(src) = slot {
+                    self.constraints.push(Constraint::SignLink(dst, src));
+                }
+            }
+            (OpKind::Memory, OpKind::Register) => {
+                let src_reg: Register = insn.op_register(1);
+                if !src_reg.is_gpr() {
+                    return;
+                }
+                let Some(disp): Option<i64> = rbp_slot_disp(insn) else {
+                    return;
+                };
+                let src: TypeVar = self.reg_use(src_reg);
+                let slot: TypeVar = self.slot_cell(disp);
+                self.constraints.push(Constraint::SignLink(slot, src));
+            }
+            _ => {
+                if insn.op_kind(0) == OpKind::Register {
+                    let dst_reg: Register = insn.op_register(0);
+                    if dst_reg.is_gpr() {
+                        let _dst: TypeVar = self.reg_def(dst_reg);
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_extend(&mut self, insn: &Instruction) {
+        if insn.op_kind(0) != OpKind::Register {
+            return;
+        }
+        let dst_reg: Register = insn.op_register(0);
+        if !dst_reg.is_gpr() {
+            return;
+        }
+        let src: Option<TypeVar> = self.operand_read_cell(insn, 1);
+        let dst: TypeVar = self.reg_def(dst_reg);
+        if let Some(src) = src {
+            self.constraints.push(Constraint::SignLink(dst, src));
+        }
+    }
+
+    fn mark_operand_sign(&mut self, insn: &Instruction, op: u32, sign: Sign) {
+        if let Some(cell) = self.operand_read_cell(insn, op) {
+            self.constraints
+                .push(Constraint::Sign(cell, sign, Confidence::UsageIdiom));
+        }
+    }
+
+    fn mark_accumulator_sign(&mut self, sign: Sign) {
+        let acc: TypeVar = self.reg_use(Register::RAX);
+        self.constraints
+            .push(Constraint::Sign(acc, sign, Confidence::UsageIdiom));
+    }
+
+    fn set_pending_cmp(&mut self, insn: &Instruction) {
+        let a: Option<TypeVar> = self.operand_read_cell(insn, 0);
+        let b: Option<TypeVar> = self.operand_read_cell(insn, 1);
+        self.pending_cmp = Some((a, b));
+    }
+
+    fn apply_pending_sign(&mut self, sign: Sign) {
+        let Some((a, b)): Option<(Option<TypeVar>, Option<TypeVar>)> = self.pending_cmp else {
+            return;
+        };
+        if let Some(cell) = a {
+            self.constraints
+                .push(Constraint::Sign(cell, sign, Confidence::UsageIdiom));
+        }
+        if let Some(cell) = b {
+            self.constraints
+                .push(Constraint::Sign(cell, sign, Confidence::UsageIdiom));
+        }
+    }
+
+    fn process(&mut self, insn: &Instruction) {
+        self.record_slot_width(insn);
+        let mnemonic: Mnemonic = insn.mnemonic();
+        match mnemonic {
+            Mnemonic::Mov => self.handle_mov(insn),
+            Mnemonic::Movzx | Mnemonic::Movsx | Mnemonic::Movsxd => self.handle_extend(insn),
+            Mnemonic::Idiv => {
+                self.mark_operand_sign(insn, 0, Sign::Signed);
+                self.mark_accumulator_sign(Sign::Signed);
+            }
+            Mnemonic::Div => {
+                self.mark_operand_sign(insn, 0, Sign::Unsigned);
+                self.mark_accumulator_sign(Sign::Unsigned);
+            }
+            Mnemonic::Sar => self.mark_operand_sign(insn, 0, Sign::Signed),
+            Mnemonic::Shr => self.mark_operand_sign(insn, 0, Sign::Unsigned),
+            Mnemonic::Cdq | Mnemonic::Cqo | Mnemonic::Cwd => {
+                self.mark_accumulator_sign(Sign::Signed);
+            }
+            _ => {}
+        }
+        match mnemonic {
+            Mnemonic::Cmp | Mnemonic::Test => self.set_pending_cmp(insn),
+            _ => match signed_condition(insn.condition_code()) {
+                Some(sign) => {
+                    self.apply_pending_sign(sign);
+                    self.pending_cmp = None;
+                }
+                None => {
+                    if clobbers_flags(mnemonic) {
+                        self.pending_cmp = None;
+                    }
+                }
+            },
+        }
+    }
+}
+
+#[must_use]
+pub fn extract(bytes: &[u8], base: u64) -> FactSet {
+    let instrs: Vec<Instruction> = decode_all(bytes, base);
+    let has_frame_pointer: bool = detects_frame_pointer(&instrs);
+    let mut extractor: Extractor = Extractor::new();
+    for insn in &instrs {
+        extractor.process(insn);
+    }
+    FactSet {
+        store: extractor.store,
+        constraints: extractor.constraints,
+        rbp_slots: extractor.rbp_slots,
+        has_frame_pointer,
+    }
+}
+
+fn decode_all(bytes: &[u8], base: u64) -> Vec<Instruction> {
+    let mut decoder: Decoder<'_> = Decoder::with_ip(64, bytes, base, DecoderOptions::NONE);
+    let mut out: Vec<Instruction> = Vec::new();
+    while decoder.can_decode() && out.len() < MAX_DECODE_INSNS {
+        let mut insn: Instruction = Instruction::default();
+        decoder.decode_out(&mut insn);
+        if insn.is_invalid() {
+            break;
+        }
+        out.push(insn);
+    }
+    out
+}
+
+fn detects_frame_pointer(instrs: &[Instruction]) -> bool {
+    let mut push_rbp: bool = false;
+    for insn in instrs.iter().take(6) {
+        match insn.mnemonic() {
+            Mnemonic::Push
+                if insn.op0_kind() == OpKind::Register && insn.op_register(0) == Register::RBP =>
+            {
+                push_rbp = true;
+            }
+            Mnemonic::Mov
+                if push_rbp
+                    && insn.op0_kind() == OpKind::Register
+                    && insn.op1_kind() == OpKind::Register
+                    && insn.op_register(0) == Register::RBP
+                    && insn.op_register(1) == Register::RSP =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn rbp_slot_disp(insn: &Instruction) -> Option<i64> {
+    if insn.memory_base() != Register::RBP || insn.memory_index() != Register::None {
+        return None;
+    }
+    Some(i64::from_ne_bytes(
+        insn.memory_displacement64().to_ne_bytes(),
+    ))
+}
+
+fn memory_width(insn: &Instruction) -> Option<Width> {
+    let size: usize = insn.memory_size().size();
+    let bytes: u8 = u8::try_from(size).ok()?;
+    match Width::from_bytes(bytes) {
+        Width::Unknown => None,
+        width => Some(width),
+    }
+}
+
+const fn signed_condition(cc: ConditionCode) -> Option<Sign> {
+    match cc {
+        ConditionCode::l | ConditionCode::le | ConditionCode::g | ConditionCode::ge => {
+            Some(Sign::Signed)
+        }
+        ConditionCode::b | ConditionCode::be | ConditionCode::a | ConditionCode::ae => {
+            Some(Sign::Unsigned)
+        }
+        _ => None,
+    }
+}
+
+const fn clobbers_flags(mnemonic: Mnemonic) -> bool {
+    matches!(
+        mnemonic,
+        Mnemonic::Add
+            | Mnemonic::Sub
+            | Mnemonic::And
+            | Mnemonic::Or
+            | Mnemonic::Xor
+            | Mnemonic::Inc
+            | Mnemonic::Dec
+            | Mnemonic::Neg
+            | Mnemonic::Shl
+            | Mnemonic::Sal
+            | Mnemonic::Shr
+            | Mnemonic::Sar
+            | Mnemonic::Mul
+            | Mnemonic::Imul
+            | Mnemonic::Div
+            | Mnemonic::Idiv
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::constraint::solve;
+
+    fn width_sign_of(bytes: &[u8], disp: i64) -> Option<(Width, Sign)> {
+        let mut facts: FactSet = extract(bytes, 0x1000);
+        solve(&mut facts.store, &facts.constraints);
+        let cell: TypeVar = *facts.rbp_slots.get(&disp)?;
+        let resolved: crate::cells::CellType = facts.store.resolved(cell);
+        Some((resolved.class.width(), resolved.class.sign()))
+    }
+
+    #[test]
+    fn signed_shift_marks_qword_slot_signed() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x48, 0xc1,
+            0xf8, 0x03, 0x5d, 0xc3,
+        ];
+        let result: Option<(Width, Sign)> = width_sign_of(bytes, 0x10);
+        assert_eq!(result, Some((Width::Qword, Sign::Signed)));
+    }
+
+    #[test]
+    fn unsigned_shift_marks_qword_slot_unsigned() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x48, 0xc1,
+            0xe8, 0x03, 0x5d, 0xc3,
+        ];
+        let result: Option<(Width, Sign)> = width_sign_of(bytes, 0x10);
+        assert_eq!(result, Some((Width::Qword, Sign::Unsigned)));
+    }
+}
