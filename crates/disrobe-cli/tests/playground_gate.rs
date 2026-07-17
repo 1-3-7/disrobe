@@ -322,7 +322,7 @@ fn byte_identical_oracle_proves_a_cryptographically_verified_unpack() {
     };
     assert!(
         matches!(upx.verdict, OracleVerdict::ByteIdentical),
-        "upx:hello must recover byte-identical (UCL adler32 cryptographic witness embedded by the real upx tool, independent of disrobe); got {:?}",
+        "upx:hello must recover byte-identical over the content the packed stream carries: the code (.text) and exception (.pdata) sections match the committed original bit-for-bit, and the UCL adler32 witness embedded by the real upx tool (independent of disrobe) proves the full decompression is exact. whole-file identity is not claimed; the residual is confined to loader-rebuilt zones (.reloc/.rdata IAT/.data) that are not byte-present in the packed stream. got {:?}",
         upx.verdict,
     );
 }

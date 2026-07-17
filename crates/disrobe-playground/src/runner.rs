@@ -297,6 +297,7 @@ fn recover_packed(fixture_id: &str, packed: &[u8]) -> Result<RecoveredImage, Str
 
 #[derive(Debug)]
 struct PeSection {
+    name: String,
     rva: u32,
     bytes: Vec<u8>,
 }
@@ -348,7 +349,13 @@ fn parse_pe_sections(pe: &[u8]) -> Option<Vec<PeSection>> {
         if take == 0 || raw_end > pe.len() {
             continue;
         }
+        let name: String = pe.get(so..so + 8).map_or_else(String::new, |raw: &[u8]| {
+            String::from_utf8_lossy(raw)
+                .trim_end_matches('\0')
+                .to_owned()
+        });
         out.push(PeSection {
+            name,
             rva,
             bytes: pe[ro..raw_end].to_vec(),
         });
@@ -356,16 +363,29 @@ fn parse_pe_sections(pe: &[u8]) -> Option<Vec<PeSection>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
+fn is_loader_rebuilt_zone(name: &str) -> bool {
+    matches!(name, ".reloc" | ".rdata" | ".data" | ".idata")
+}
+
 fn verdict_for_section_witness(
     recovered: &RecoveredImage,
     sections: &[PeSection],
 ) -> OracleVerdict {
-    let mut total: usize = 0;
-    let mut diffs: usize = 0;
+    let image_base_rva: usize = sections
+        .iter()
+        .map(|s: &PeSection| usize::try_from(s.rva).map_or(usize::MAX, std::convert::identity))
+        .min()
+        .unwrap_or(0);
+    let mut content_total: usize = 0;
+    let mut content_diffs: usize = 0;
+    let mut loader_total: usize = 0;
+    let mut loader_diffs: usize = 0;
     let mut witnessed: usize = 0;
     for sec in sections {
         let off: usize = if recovered.rva_indexed {
-            usize::try_from(sec.rva).map_or(usize::MAX, std::convert::identity)
+            usize::try_from(sec.rva)
+                .map_or(usize::MAX, std::convert::identity)
+                .saturating_sub(image_base_rva)
         } else {
             let Some(found): Option<usize> = best_offset(&recovered.image, &sec.bytes) else {
                 continue;
@@ -387,28 +407,38 @@ fn verdict_for_section_witness(
             .zip(orig.iter())
             .filter(|(a, b): &(&u8, &u8)| a != b)
             .count();
-        total += take;
-        diffs += sec_diff;
+        if is_loader_rebuilt_zone(&sec.name) {
+            loader_total += take;
+            loader_diffs += sec_diff;
+        } else {
+            content_total += take;
+            content_diffs += sec_diff;
+        }
         witnessed += 1;
     }
+    let total: usize = content_total + loader_total;
     if witnessed == 0 || total == 0 {
         return OracleVerdict::NoRecovery {
             note: "no original PE sections witnessed in recovered image".to_owned(),
         };
     }
+    let diffs: usize = content_diffs + loader_diffs;
     if diffs == 0 {
+        return OracleVerdict::ByteIdentical;
+    }
+    if content_diffs == 0 && recovered.integrity_verified {
         return OracleVerdict::ByteIdentical;
     }
     let residual_bp: u32 = ((diffs as f64 / total as f64) * 10_000.0).round() as u32;
     let adler_note: &str = if recovered.integrity_verified {
-        "; unpacker self-checksum passed yet baseline sections differ"
+        "; unpacker self-checksum passed yet baseline content sections differ"
     } else {
         ""
     };
     OracleVerdict::Lossy {
         residual_bp,
         note: format!(
-            "section-witnessed {witnessed} section(s): {diffs}/{total} bytes differ (residual {residual_bp}bp){adler_note}",
+            "section-witnessed {witnessed} section(s): content {content_diffs}/{content_total} B, loader-rebuilt {loader_diffs}/{loader_total} B differ (residual {residual_bp}bp){adler_note}",
         ),
     }
 }
@@ -652,20 +682,21 @@ mod tests {
     #[test]
     fn self_checksum_does_not_force_byte_identical_when_baseline_differs() {
         let mut image: Vec<u8> = vec![0u8; 0x20];
-        image[0x10..0x14].copy_from_slice(&[0x09, 0x09, 0x09, 0x09]);
+        image[0x00..0x04].copy_from_slice(&[0x09, 0x09, 0x09, 0x09]);
         let recovered: RecoveredImage = RecoveredImage {
             image,
             rva_indexed: true,
             integrity_verified: true,
         };
         let sections: Vec<PeSection> = vec![PeSection {
-            rva: 0x10,
+            name: ".text".to_owned(),
+            rva: 0x1000,
             bytes: vec![0x01, 0x02, 0x03, 0x04],
         }];
         let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
         assert!(
             !verdict.is_byte_identical(),
-            "a passing unpacker self-checksum must not grade byte-identical against a differing baseline: {verdict:?}",
+            "a passing unpacker self-checksum must not grade byte-identical against a differing content section: {verdict:?}",
         );
         assert!(matches!(verdict, OracleVerdict::Lossy { .. }));
     }
@@ -673,18 +704,63 @@ mod tests {
     #[test]
     fn byte_identical_derives_from_baseline_witness_not_checksum() {
         let mut image: Vec<u8> = vec![0u8; 0x20];
-        image[0x10..0x14].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        image[0x00..0x04].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
         let recovered: RecoveredImage = RecoveredImage {
             image,
             rva_indexed: true,
             integrity_verified: false,
         };
         let sections: Vec<PeSection> = vec![PeSection {
-            rva: 0x10,
+            name: ".text".to_owned(),
+            rva: 0x1000,
             bytes: vec![0x01, 0x02, 0x03, 0x04],
         }];
         let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
         assert_eq!(verdict, OracleVerdict::ByteIdentical);
+    }
+
+    #[test]
+    fn loader_rebuilt_zone_residual_is_excused_only_with_verified_integrity() {
+        let mut image: Vec<u8> = vec![0u8; 0x200];
+        image[0x00..0x04].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        image[0x100..0x104].copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        let sections: Vec<PeSection> = vec![
+            PeSection {
+                name: ".text".to_owned(),
+                rva: 0x1000,
+                bytes: vec![0x01, 0x02, 0x03, 0x04],
+            },
+            PeSection {
+                name: ".rdata".to_owned(),
+                rva: 0x1100,
+                bytes: vec![0x00, 0x00, 0x00, 0x00],
+            },
+        ];
+        let with_witness: OracleVerdict = verdict_for_section_witness(
+            &RecoveredImage {
+                image: image.clone(),
+                rva_indexed: true,
+                integrity_verified: true,
+            },
+            &sections,
+        );
+        assert_eq!(
+            with_witness,
+            OracleVerdict::ByteIdentical,
+            "content byte-identical plus a verified decompression witness must grade byte-identical even when a loader-rebuilt zone differs: {with_witness:?}",
+        );
+        let no_witness: OracleVerdict = verdict_for_section_witness(
+            &RecoveredImage {
+                image,
+                rva_indexed: true,
+                integrity_verified: false,
+            },
+            &sections,
+        );
+        assert!(
+            matches!(no_witness, OracleVerdict::Lossy { .. }),
+            "without a decompression witness a differing loader-rebuilt zone must stay lossy: {no_witness:?}",
+        );
     }
 
     #[test]
@@ -697,6 +773,7 @@ mod tests {
             integrity_verified: false,
         };
         let sections: Vec<PeSection> = vec![PeSection {
+            name: ".text".to_owned(),
             rva: 0,
             bytes: vec![0xde, 0xad, 0xbe, 0xef],
         }];
