@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::{AdjGraph, Dominators};
+use disrobe_core::{AdjGraph, Dominators, immediate_post_dominators};
 use serde::Serialize;
 
 use crate::cfg::{BlockKind, NirBlock, basic_blocks};
@@ -247,6 +247,7 @@ struct BlockIndex<'a> {
     predecessors: BTreeMap<u64, Vec<u64>>,
     node_ids: BTreeMap<u64, u32>,
     dominators: Dominators,
+    post_dominators: Vec<Option<u32>>,
     natural_loops: BTreeMap<u64, BTreeSet<u64>>,
 }
 
@@ -292,6 +293,18 @@ impl<'a> BlockIndex<'a> {
                     })
             })
             .collect();
+        let node_count: usize = order.len();
+        let post_dominators: Vec<Option<u32>> =
+            immediate_post_dominators(node_count, |node: u32, visit: &mut dyn FnMut(u32)| {
+                match adjacency.get(node as usize) {
+                    Some(successors) if !successors.is_empty() => {
+                        for &successor in successors {
+                            visit(successor);
+                        }
+                    }
+                    _ => visit(node_count as u32),
+                }
+            });
         let graph: AdjGraph = AdjGraph::new(0, adjacency);
         let dominators: Dominators = Dominators::compute(&graph);
         let mut index: Self = Self {
@@ -300,6 +313,7 @@ impl<'a> BlockIndex<'a> {
             predecessors,
             node_ids,
             dominators,
+            post_dominators,
             natural_loops: BTreeMap::new(),
         };
         let headers: Vec<u64> = index
@@ -347,6 +361,15 @@ impl<'a> BlockIndex<'a> {
             return false;
         };
         self.dominators.dominates(candidate_node, node_id)
+    }
+
+    fn immediate_post_dominator(&self, start: u64) -> Option<u64> {
+        let node: u32 = self.node_ids.get(&start).copied()?;
+        let post: u32 = self.post_dominators.get(node as usize).copied().flatten()?;
+        if post as usize >= self.order.len() {
+            return None;
+        }
+        self.order.get(post as usize).copied()
     }
 
     fn compute_natural_loop(&self, header: u64) -> BTreeSet<u64> {
@@ -618,7 +641,10 @@ fn loop_follow(index: &BlockIndex<'_>, header: u64) -> LoopFollow {
             .first()
             .copied()
             .map_or(LoopFollow::None, LoopFollow::Single),
-        _ => LoopFollow::Multiple,
+        _ => match index.immediate_post_dominator(header) {
+            Some(follow) if !nodes.contains(&follow) => LoopFollow::Single(follow),
+            _ => LoopFollow::Multiple,
+        },
     }
 }
 
@@ -626,6 +652,18 @@ fn conditional_follow(index: &BlockIndex<'_>, block: &NirBlock) -> Option<u64> {
     if block.successors.len() < 2 {
         return None;
     }
+    if let Some(follow) = post_dominator_follow(index, block.start) {
+        return Some(follow);
+    }
+    heuristic_follow(index, block)
+}
+
+fn post_dominator_follow(index: &BlockIndex<'_>, header: u64) -> Option<u64> {
+    let follow: u64 = index.immediate_post_dominator(header)?;
+    (follow != header).then_some(follow)
+}
+
+fn heuristic_follow(index: &BlockIndex<'_>, block: &NirBlock) -> Option<u64> {
     let mut shared: Option<u64> = None;
     for &candidate in &index.order {
         if candidate <= block.start {
@@ -1223,7 +1261,7 @@ fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::types::{NirOp, SourceLang, SourceRef};
@@ -1494,5 +1532,57 @@ mod tests {
                 expr: HirExpr::Unknown { text }
             } if text == "legacy_nop"
         ));
+    }
+
+    #[test]
+    fn irreducible_two_entry_loop_degrades_to_goto_graph_emitting_every_block_once() {
+        let f: NirFunction = function(
+            vec![
+                instr(0, NirOp::CondBranch { target: Some(4) }, "je", &["4"]),
+                instr(2, NirOp::Branch { target: Some(4) }, "jmp", &["4"]),
+                instr(4, NirOp::CondBranch { target: Some(2) }, "je", &["2"]),
+                instr(6, NirOp::Return, "ret", &[]),
+            ],
+            7,
+        );
+        let hir: HirFunction = structurize_function(&f);
+        assert!(
+            !hir.structured,
+            "a two-entry shared-header loop is irreducible and must not report as structured: {:?}",
+            hir.body
+        );
+        let HirStmt::GotoGraph { entry, blocks }: &HirStmt = &hir.body else {
+            panic!(
+                "irreducible control must fall back to a goto graph: {:?}",
+                hir.body
+            );
+        };
+        assert_eq!(
+            *entry, 0,
+            "the goto-graph fallback must enter at the first block"
+        );
+        let starts: Vec<u64> = blocks
+            .iter()
+            .map(|case: &HirDispatchCase| case.block_start)
+            .collect();
+        assert_eq!(
+            starts,
+            vec![0, 2, 4, 6],
+            "the fallback must emit every reachable block exactly once, in address order"
+        );
+        let followed: Vec<Vec<u64>> = blocks
+            .iter()
+            .map(|case: &HirDispatchCase| case.successors.clone())
+            .collect();
+        assert_eq!(
+            followed,
+            vec![vec![2, 4], vec![4], vec![2, 6], Vec::<u64>::new()],
+            "the fallback must preserve each block's successor edges verbatim"
+        );
+        assert_eq!(
+            hir.instruction_addresses(),
+            BTreeSet::from([0, 2, 4, 6]),
+            "no instruction may be dropped by the degradation path"
+        );
     }
 }

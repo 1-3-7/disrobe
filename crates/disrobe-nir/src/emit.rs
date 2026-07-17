@@ -8,7 +8,7 @@ use crate::surface::{
 };
 use crate::types::{BinaryOp, NirClass};
 
-const MAX_EMIT_DEPTH: usize = 512;
+const MAX_EMIT_DEPTH: usize = 4096;
 
 #[derive(Debug, Error)]
 pub enum EmitError {
