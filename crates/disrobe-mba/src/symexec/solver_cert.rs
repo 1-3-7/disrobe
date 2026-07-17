@@ -379,7 +379,9 @@ fn run(manager: &mut TermManager, assumptions: &[TermId], budget: CertBudget) ->
     match raw {
         RawOutcome::Sat(Some(env)) if model_satisfies(manager, assumptions, &env) => Certified::Sat,
         RawOutcome::Unsat => {
-            if crate::verify::term_conjunction_unsat(manager, assumptions, budget.node_budget) {
+            if crate::verify::term_conjunction_unsat(manager, assumptions, budget.node_budget)
+                || crate::verify::term_conjunction_unsat_via_polynomial(manager, assumptions)
+            {
                 Certified::Unsat
             } else {
                 Certified::Abstain
@@ -627,5 +629,53 @@ mod tests {
         let equals_seven: TermId = manager.mk_eq(x, seven);
         let verdict: Certified = certified_check(&mut manager, &[equals_seven], FUZZ_BUDGET);
         assert_eq!(verdict, Certified::Sat);
+    }
+
+    #[test]
+    fn even_product_predicate_is_confirmed_unsat_when_the_bdd_cannot() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 32);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let square: TermId = manager.mk_bv_mul(x, x);
+        let plus: TermId = manager.mk_bv_add(square, x);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let masked: TermId = manager.mk_bv_and(plus, one);
+        let zero: TermId = manager.mk_bitvec(0u64, 32);
+        let equal_zero: TermId = manager.mk_eq(masked, zero);
+        let odd: TermId = manager.mk_not(equal_zero);
+        let verdict: Certified = certified_check(&mut manager, &[odd], FUZZ_BUDGET);
+        assert_eq!(verdict, Certified::Unsat);
+    }
+
+    #[test]
+    fn always_odd_product_predicate_is_confirmed_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 32);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let square: TermId = manager.mk_bv_mul(x, x);
+        let plus: TermId = manager.mk_bv_add(square, x);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let plus_one: TermId = manager.mk_bv_add(plus, one);
+        let masked: TermId = manager.mk_bv_and(plus_one, one);
+        let equal_one: TermId = manager.mk_eq(masked, one);
+        let not_one: TermId = manager.mk_not(equal_one);
+        let verdict: Certified = certified_check(&mut manager, &[not_one], FUZZ_BUDGET);
+        assert_eq!(verdict, Certified::Unsat);
+    }
+
+    #[test]
+    fn satisfiable_product_predicate_is_never_confirmed_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut manager, 32);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let y: TermId = manager.mk_var("y", bv_sort);
+        let product: TermId = manager.mk_bv_mul(x, y);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let masked: TermId = manager.mk_bv_and(product, one);
+        let zero: TermId = manager.mk_bitvec(0u64, 32);
+        let equal_zero: TermId = manager.mk_eq(masked, zero);
+        let odd: TermId = manager.mk_not(equal_zero);
+        let verdict: Certified = certified_check(&mut manager, &[odd], FUZZ_BUDGET);
+        assert_ne!(verdict, Certified::Unsat);
     }
 }

@@ -1197,6 +1197,320 @@ pub(crate) fn term_conjunction_unsat(
     conjunction == ZERO
 }
 
+#[cfg(feature = "smt-solver")]
+const POLY_NODE_BUDGET: usize = 4096;
+#[cfg(feature = "smt-solver")]
+const POLY_MAX_MONOMIALS: usize = 1024;
+#[cfg(feature = "smt-solver")]
+const POLY_MAX_VARS: usize = 6;
+
+#[cfg(feature = "smt-solver")]
+type Poly = BTreeMap<Vec<u32>, u128>;
+
+#[cfg(feature = "smt-solver")]
+const fn low_mask_u128(bits: u32) -> u128 {
+    if bits >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
+    }
+}
+
+#[cfg(feature = "smt-solver")]
+fn term_bitvec_width(manager: &TermManager, id: TermId) -> Option<u32> {
+    let term: &Term = manager.get(id)?;
+    manager.sorts.get(term.sort)?.bitvec_width()
+}
+
+#[cfg(feature = "smt-solver")]
+fn bitvec_const_u128(manager: &TermManager, id: TermId) -> Option<u128> {
+    let TermKind::BitVecConst { value, width } = manager.get(id)?.kind.clone() else {
+        return None;
+    };
+    if width > 64 {
+        return None;
+    }
+    let digits: Vec<u64> = value.iter_u64_digits().collect();
+    if digits.len() > 1 {
+        return None;
+    }
+    Some(u128::from(digits.first().copied().unwrap_or(0)))
+}
+
+#[cfg(feature = "smt-solver")]
+fn mask_width(manager: &TermManager, id: TermId) -> Option<u32> {
+    let value: u128 = bitvec_const_u128(manager, id)?;
+    if value == 0 || value & (value + 1) != 0 {
+        return None;
+    }
+    Some(value.count_ones())
+}
+
+#[cfg(feature = "smt-solver")]
+fn detect_low_mask(manager: &TermManager, id: TermId) -> Option<(TermId, u32)> {
+    let TermKind::BvAnd(a, b) = manager.get(id)?.kind.clone() else {
+        return None;
+    };
+    if let Some(bits) = mask_width(manager, a) {
+        return Some((b, bits));
+    }
+    if let Some(bits) = mask_width(manager, b) {
+        return Some((a, bits));
+    }
+    None
+}
+
+#[cfg(feature = "smt-solver")]
+#[derive(Debug)]
+struct PolyCtx<'a> {
+    manager: &'a TermManager,
+    index: BTreeMap<TermId, usize>,
+    var_count: usize,
+    mask: u128,
+    budget: usize,
+}
+
+#[cfg(feature = "smt-solver")]
+impl PolyCtx<'_> {
+    fn constant(&self, value: u128) -> Poly {
+        let reduced: u128 = value & self.mask;
+        let mut poly: Poly = Poly::new();
+        if reduced != 0 {
+            poly.insert(vec![0u32; self.var_count], reduced);
+        }
+        poly
+    }
+
+    fn add(&self, lhs: &Poly, rhs: &Poly) -> Poly {
+        let mut out: Poly = lhs.clone();
+        for (key, coeff) in rhs {
+            let updated: u128 = out.get(key).copied().unwrap_or(0).wrapping_add(*coeff) & self.mask;
+            if updated == 0 {
+                out.remove(key);
+            } else {
+                out.insert(key.clone(), updated);
+            }
+        }
+        out
+    }
+
+    fn neg(&self, poly: &Poly) -> Poly {
+        let mut out: Poly = Poly::new();
+        for (key, coeff) in poly {
+            let value: u128 = coeff.wrapping_neg() & self.mask;
+            if value != 0 {
+                out.insert(key.clone(), value);
+            }
+        }
+        out
+    }
+
+    fn sub(&self, lhs: &Poly, rhs: &Poly) -> Poly {
+        let negated: Poly = self.neg(rhs);
+        self.add(lhs, &negated)
+    }
+
+    fn mul(&self, lhs: &Poly, rhs: &Poly) -> Option<Poly> {
+        let mut out: Poly = Poly::new();
+        for (key_l, coeff_l) in lhs {
+            for (key_r, coeff_r) in rhs {
+                let mut key: Vec<u32> = vec![0u32; self.var_count];
+                for axis in 0..self.var_count {
+                    let exp_l: u32 = key_l.get(axis).copied().unwrap_or(0);
+                    let exp_r: u32 = key_r.get(axis).copied().unwrap_or(0);
+                    let sum: u32 = exp_l.checked_add(exp_r)?;
+                    *key.get_mut(axis)? = sum;
+                }
+                let coeff: u128 = coeff_l.wrapping_mul(*coeff_r) & self.mask;
+                if coeff == 0 {
+                    continue;
+                }
+                let updated: u128 =
+                    out.get(&key).copied().unwrap_or(0).wrapping_add(coeff) & self.mask;
+                if updated == 0 {
+                    out.remove(&key);
+                } else {
+                    out.insert(key, updated);
+                }
+                if out.len() > POLY_MAX_MONOMIALS {
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    fn scale_pow2(&self, poly: &Poly, shift: u128, width: u32) -> Poly {
+        if shift >= u128::from(width) {
+            return Poly::new();
+        }
+        let factor: u128 = (1u128 << shift) & self.mask;
+        let mut out: Poly = Poly::new();
+        for (key, coeff) in poly {
+            let value: u128 = coeff.wrapping_mul(factor) & self.mask;
+            if value != 0 {
+                out.insert(key.clone(), value);
+            }
+        }
+        out
+    }
+
+    fn build(&mut self, id: TermId) -> Option<Poly> {
+        if self.budget == 0 {
+            return None;
+        }
+        self.budget -= 1;
+        let kind: TermKind = self.manager.get(id)?.kind.clone();
+        match kind {
+            TermKind::Var(_) => {
+                let dense: usize = *self.index.get(&id)?;
+                let mut key: Vec<u32> = vec![0u32; self.var_count];
+                *key.get_mut(dense)? = 1;
+                let mut poly: Poly = Poly::new();
+                poly.insert(key, 1u128);
+                Some(poly)
+            }
+            TermKind::BitVecConst { .. } => {
+                let value: u128 = bitvec_const_u128(self.manager, id)?;
+                Some(self.constant(value))
+            }
+            TermKind::BvNot(a) => {
+                let inner: Poly = self.build(a)?;
+                let neg_one: Poly = self.constant(self.mask);
+                Some(self.sub(&neg_one, &inner))
+            }
+            TermKind::BvAdd(a, b) => {
+                let x: Poly = self.build(a)?;
+                let y: Poly = self.build(b)?;
+                Some(self.add(&x, &y))
+            }
+            TermKind::BvSub(a, b) => {
+                let x: Poly = self.build(a)?;
+                let y: Poly = self.build(b)?;
+                Some(self.sub(&x, &y))
+            }
+            TermKind::BvMul(a, b) => {
+                let x: Poly = self.build(a)?;
+                let y: Poly = self.build(b)?;
+                self.mul(&x, &y)
+            }
+            TermKind::BvShl(a, b) => {
+                let shift: u128 = bitvec_const_u128(self.manager, b)?;
+                let width: u32 = term_bitvec_width(self.manager, id)?;
+                let x: Poly = self.build(a)?;
+                Some(self.scale_pow2(&x, shift, width))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "smt-solver")]
+fn certify_terms_congruent(
+    manager: &TermManager,
+    lhs: TermId,
+    rhs: TermId,
+    width: u32,
+    reduction: crate::expr::Width,
+) -> bool {
+    let mut vars: BTreeSet<TermId> = BTreeSet::new();
+    for var in manager.free_vars(lhs) {
+        vars.insert(var);
+    }
+    for var in manager.free_vars(rhs) {
+        vars.insert(var);
+    }
+    if vars.len() > POLY_MAX_VARS {
+        return false;
+    }
+    let mut index: BTreeMap<TermId, usize> = BTreeMap::new();
+    for (dense, var) in vars.iter().copied().enumerate() {
+        index.insert(var, dense);
+    }
+    let var_count: usize = index.len();
+    let mut ctx: PolyCtx = PolyCtx {
+        manager,
+        index,
+        var_count,
+        mask: low_mask_u128(width),
+        budget: POLY_NODE_BUDGET,
+    };
+    let Some(poly_lhs): Option<Poly> = ctx.build(lhs) else {
+        return false;
+    };
+    let Some(poly_rhs): Option<Poly> = ctx.build(rhs) else {
+        return false;
+    };
+    let diff: Poly = ctx.sub(&poly_lhs, &poly_rhs);
+    let monomials: Vec<(Vec<u32>, u128)> = diff.into_iter().collect();
+    crate::finite_diff::multivar_induces_zero(&monomials, var_count, reduction)
+}
+
+#[cfg(feature = "smt-solver")]
+fn disequality_individually_unsat(manager: &TermManager, term: TermId) -> bool {
+    let Some(TermKind::Not(eq_id)): Option<TermKind> =
+        manager.get(term).map(|node: &Term| node.kind.clone())
+    else {
+        return false;
+    };
+    let Some(TermKind::Eq(lhs, rhs)): Option<TermKind> =
+        manager.get(eq_id).map(|node: &Term| node.kind.clone())
+    else {
+        return false;
+    };
+    let Some(width): Option<u32> = term_bitvec_width(manager, lhs) else {
+        return false;
+    };
+    if width == 0 || width > 64 || term_bitvec_width(manager, rhs) != Some(width) {
+        return false;
+    }
+    let mask_lhs: Option<(TermId, u32)> = detect_low_mask(manager, lhs);
+    let mask_rhs: Option<(TermId, u32)> = detect_low_mask(manager, rhs);
+    let (source_lhs, source_rhs, reduction_bits): (TermId, TermId, u32) = match (mask_lhs, mask_rhs)
+    {
+        (Some((inner_l, bits_l)), Some((inner_r, bits_r))) => {
+            if bits_l != bits_r {
+                return false;
+            }
+            (inner_l, inner_r, bits_l)
+        }
+        (Some((inner_l, bits)), None) => {
+            let Some(constant): Option<u128> = bitvec_const_u128(manager, rhs) else {
+                return false;
+            };
+            if constant & low_mask_u128(bits) != constant {
+                return false;
+            }
+            (inner_l, rhs, bits)
+        }
+        (None, Some((inner_r, bits))) => {
+            let Some(constant): Option<u128> = bitvec_const_u128(manager, lhs) else {
+                return false;
+            };
+            if constant & low_mask_u128(bits) != constant {
+                return false;
+            }
+            (lhs, inner_r, bits)
+        }
+        (None, None) => (lhs, rhs, width),
+    };
+    let Some(reduction): Option<crate::expr::Width> = crate::expr::Width::from_bits(reduction_bits)
+    else {
+        return false;
+    };
+    certify_terms_congruent(manager, source_lhs, source_rhs, width, reduction)
+}
+
+#[cfg(feature = "smt-solver")]
+pub(crate) fn term_conjunction_unsat_via_polynomial(
+    manager: &TermManager,
+    assumptions: &[TermId],
+) -> bool {
+    assumptions
+        .iter()
+        .any(|&assumption: &TermId| disequality_individually_unsat(manager, assumption))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
@@ -1569,5 +1883,102 @@ mod tests {
                 lifted: false
             }
         );
+    }
+}
+
+#[cfg(all(test, feature = "smt-solver"))]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+mod polynomial_unsat_tests {
+    use super::{disequality_individually_unsat, term_conjunction_unsat_via_polynomial};
+    use oxiz::{SortId, TermId, TermManager};
+
+    fn even_low_bit(manager: &mut TermManager, x: TermId, width: u32) -> TermId {
+        let square: TermId = manager.mk_bv_mul(x, x);
+        let plus: TermId = manager.mk_bv_add(square, x);
+        let one: TermId = manager.mk_bitvec(1u64, width);
+        manager.mk_bv_and(plus, one)
+    }
+
+    #[test]
+    fn even_product_disequality_certifies_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(32);
+        let x: TermId = manager.mk_var("x", sort);
+        let masked: TermId = even_low_bit(&mut manager, x, 32);
+        let zero: TermId = manager.mk_bitvec(0u64, 32);
+        let equal_zero: TermId = manager.mk_eq(masked, zero);
+        let odd: TermId = manager.mk_not(equal_zero);
+        assert!(disequality_individually_unsat(&manager, odd));
+        assert!(term_conjunction_unsat_via_polynomial(&manager, &[odd]));
+    }
+
+    #[test]
+    fn always_odd_disequality_certifies_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(32);
+        let x: TermId = manager.mk_var("x", sort);
+        let square: TermId = manager.mk_bv_mul(x, x);
+        let plus: TermId = manager.mk_bv_add(square, x);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let plus_one: TermId = manager.mk_bv_add(plus, one);
+        let masked: TermId = manager.mk_bv_and(plus_one, one);
+        let equal_one: TermId = manager.mk_eq(masked, one);
+        let not_one: TermId = manager.mk_not(equal_one);
+        assert!(term_conjunction_unsat_via_polynomial(&manager, &[not_one]));
+    }
+
+    #[test]
+    fn pure_commutative_disequality_certifies_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(32);
+        let x: TermId = manager.mk_var("x", sort);
+        let y: TermId = manager.mk_var("y", sort);
+        let left: TermId = manager.mk_bv_add(x, y);
+        let right: TermId = manager.mk_bv_add(y, x);
+        let equal: TermId = manager.mk_eq(left, right);
+        let never: TermId = manager.mk_not(equal);
+        assert!(term_conjunction_unsat_via_polynomial(&manager, &[never]));
+    }
+
+    #[test]
+    fn satisfiable_product_disequality_is_not_certified() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(32);
+        let x: TermId = manager.mk_var("x", sort);
+        let y: TermId = manager.mk_var("y", sort);
+        let product: TermId = manager.mk_bv_mul(x, y);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let masked: TermId = manager.mk_bv_and(product, one);
+        let zero: TermId = manager.mk_bitvec(0u64, 32);
+        let equal_zero: TermId = manager.mk_eq(masked, zero);
+        let odd: TermId = manager.mk_not(equal_zero);
+        assert!(!term_conjunction_unsat_via_polynomial(&manager, &[odd]));
+    }
+
+    #[test]
+    fn genuine_disequality_is_not_certified_unsat() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(32);
+        let x: TermId = manager.mk_var("x", sort);
+        let one: TermId = manager.mk_bitvec(1u64, 32);
+        let shifted: TermId = manager.mk_bv_add(x, one);
+        let equal: TermId = manager.mk_eq(x, shifted);
+        let never_equal: TermId = manager.mk_not(equal);
+        assert!(!term_conjunction_unsat_via_polynomial(
+            &manager,
+            &[never_equal]
+        ));
+    }
+
+    #[test]
+    fn interior_bitwise_and_abstains_rather_than_certifying() {
+        let mut manager: TermManager = TermManager::new();
+        let sort: SortId = manager.sorts.bitvec(8);
+        let x: TermId = manager.mk_var("x", sort);
+        let y: TermId = manager.mk_var("y", sort);
+        let anded: TermId = manager.mk_bv_and(x, y);
+        let equal: TermId = manager.mk_eq(anded, x);
+        let never: TermId = manager.mk_not(equal);
+        assert!(!term_conjunction_unsat_via_polynomial(&manager, &[never]));
     }
 }
