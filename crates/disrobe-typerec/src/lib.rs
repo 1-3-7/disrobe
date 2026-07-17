@@ -1,3 +1,4 @@
+pub mod abi;
 pub mod cells;
 pub mod cfg;
 pub mod constraint;
@@ -11,11 +12,15 @@ pub mod recover;
 pub mod region;
 pub mod structrec;
 
+pub use abi::{
+    ArgLocation, Convention, FunctionCode, RecoveredProto, ReturnKind, SigConfidence,
+    called_targets, recover_proto, recover_protos,
+};
 pub use cells::{CellStore, CellType};
 pub use constraint::{Constraint, solve};
 pub use dwarf_gt::{
-    DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction, GroundTruthVar, load,
-    load_text,
+    AbiClass, DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction,
+    GroundTruthSignature, GroundTruthVar, GtReturn, load, load_text,
 };
 pub use error::{Result, TypeRecError};
 pub use facts::{FactSet, SlotMode, extract, extract_split};

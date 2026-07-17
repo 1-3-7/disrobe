@@ -170,6 +170,7 @@ fn collapse_offset_zero(function: &TypedFunction) -> TypedFunction {
         objects,
         structs: function.structs.clone(),
         has_frame_pointer: function.has_frame_pointer,
+        proto: function.proto.clone(),
     }
 }
 
@@ -188,5 +189,6 @@ fn fragment_objects(function: &TypedFunction) -> TypedFunction {
         objects,
         structs: function.structs.clone(),
         has_frame_pointer: function.has_frame_pointer,
+        proto: function.proto.clone(),
     }
 }
