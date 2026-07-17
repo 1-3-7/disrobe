@@ -109,7 +109,15 @@ impl PermutationPolynomial {
 
         let differences: Vec<u128> = forward_differences(&values, mask);
         let monomial: Vec<u64> = reconstruct_monomial(&differences, bits, mask)?;
-        Some(Self::new(self.width, &monomial))
+        let candidate: Self = Self::new(self.width, &monomial);
+        if !crate::finite_diff::composition_is_identity(
+            &self.coeffs,
+            candidate.coefficients(),
+            self.width,
+        ) {
+            return None;
+        }
+        Some(candidate)
     }
 
     #[must_use]
