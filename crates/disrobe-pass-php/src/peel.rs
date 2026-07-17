@@ -490,7 +490,7 @@ fn resolve_arg(arg: &[u8], depth: u32) -> Option<Vec<u8>> {
             .collect();
         return B64_STD.decode(&clean).ok();
     }
-    let (kind, body): (EvalKind, Vec<u8>) = classify_inner(arg)?;
+    let (kind, body): (EvalKind, Vec<u8>) = classify_inner_at_depth(arg, depth)?;
     apply_transform(kind, body, depth)
 }
 
@@ -527,8 +527,8 @@ fn resolve_wrapped(inner_arg: &[u8], depth: u32) -> Vec<u8> {
     resolve_arg(inner_arg, depth + 1).unwrap_or_else(|| resolve_inner(inner_arg))
 }
 
-fn resolve_inner_full(inner_arg: &[u8]) -> Vec<u8> {
-    resolve_arg(inner_arg, 1).unwrap_or_else(|| resolve_inner(inner_arg))
+fn resolve_inner_full(inner_arg: &[u8], depth: u32) -> Vec<u8> {
+    resolve_arg(inner_arg, depth).unwrap_or_else(|| resolve_inner(inner_arg))
 }
 
 const RESOLVE_DEPTH_CAP: u32 = 32;
@@ -564,7 +564,7 @@ fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)
             }
         }
         if !is_bare_string_literal(inner_arg) {
-            let resolved: Vec<u8> = resolve_inner_full(inner_arg);
+            let resolved: Vec<u8> = resolve_inner_full(inner_arg, depth + 1);
             let clean: Vec<u8> = resolved
                 .iter()
                 .copied()
@@ -577,15 +577,21 @@ fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)
     }
     if let Some(caps) = gzinflate_call_re().captures(arg) {
         let inner_arg: &[u8] = caps.get(1)?.as_bytes();
-        return Some((EvalKind::GzInflate, resolve_inner_full(inner_arg)));
+        return Some((
+            EvalKind::GzInflate,
+            resolve_inner_full(inner_arg, depth + 1),
+        ));
     }
     if let Some(caps) = gzuncompress_call_re().captures(arg) {
         let inner_arg: &[u8] = caps.get(1)?.as_bytes();
-        return Some((EvalKind::GzUncompress, resolve_inner_full(inner_arg)));
+        return Some((
+            EvalKind::GzUncompress,
+            resolve_inner_full(inner_arg, depth + 1),
+        ));
     }
     if let Some(caps) = rot13_call_re().captures(arg) {
         let inner_arg: &[u8] = caps.get(1)?.as_bytes();
-        return Some((EvalKind::StrRot13, resolve_inner_full(inner_arg)));
+        return Some((EvalKind::StrRot13, resolve_inner_full(inner_arg, depth + 1)));
     }
     if let Some(caps) = str_replace_call_re().captures(arg) {
         let from: Vec<u8> = caps.get(1)?.as_bytes().to_vec();
@@ -594,7 +600,7 @@ fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)
         return Some((EvalKind::StrReplace { from, to }, body));
     }
     if let Some(caps) = strtr_call_re().captures(arg) {
-        let subject: Vec<u8> = resolve_inner_full(caps.get(1)?.as_bytes());
+        let subject: Vec<u8> = resolve_inner_full(caps.get(1)?.as_bytes(), depth + 1);
         let from: Vec<u8> = caps.get(2)?.as_bytes().to_vec();
         let to: Vec<u8> = caps.get(3)?.as_bytes().to_vec();
         return Some((EvalKind::Strtr { from, to }, subject));
@@ -602,31 +608,31 @@ fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)
     if let Some(caps) = gzdecode_call_re().captures(arg) {
         return Some((
             EvalKind::GzDecode,
-            resolve_wrapped(caps.get(1)?.as_bytes(), 0),
+            resolve_wrapped(caps.get(1)?.as_bytes(), depth),
         ));
     }
     if let Some(caps) = strrev_call_re().captures(arg) {
         return Some((
             EvalKind::StrRev,
-            resolve_wrapped(caps.get(1)?.as_bytes(), 0),
+            resolve_wrapped(caps.get(1)?.as_bytes(), depth),
         ));
     }
     if let Some(caps) = urldecode_call_re().captures(arg) {
         return Some((
             EvalKind::UrlDecode,
-            resolve_wrapped(caps.get(1)?.as_bytes(), 0),
+            resolve_wrapped(caps.get(1)?.as_bytes(), depth),
         ));
     }
     if let Some(caps) = rawurldecode_call_re().captures(arg) {
         return Some((
             EvalKind::RawUrlDecode,
-            resolve_wrapped(caps.get(1)?.as_bytes(), 0),
+            resolve_wrapped(caps.get(1)?.as_bytes(), depth),
         ));
     }
     if let Some(caps) = uudecode_call_re().captures(arg) {
         return Some((
             EvalKind::Uudecode,
-            resolve_wrapped(caps.get(1)?.as_bytes(), 0),
+            resolve_wrapped(caps.get(1)?.as_bytes(), depth),
         ));
     }
     if let Some(caps) = pack_hex_call_re().captures(arg) {
@@ -640,7 +646,7 @@ fn classify_inner_at_depth(arg: &[u8], depth: u32) -> Option<(EvalKind, Vec<u8>)
         return Some((EvalKind::PackHex, hex));
     }
     if let Some(caps) = hex2bin_call_re().captures(arg) {
-        let resolved: Vec<u8> = resolve_inner_full(caps.get(1)?.as_bytes());
+        let resolved: Vec<u8> = resolve_inner_full(caps.get(1)?.as_bytes(), depth + 1);
         let hex: Vec<u8> = resolved
             .iter()
             .copied()
@@ -1198,5 +1204,17 @@ mod tests {
                 .any(|window: &[u8]| window == b"create_function"),
             "depth cap must leave nested create_function source for a later bounded peel"
         );
+    }
+
+    #[test]
+    fn deeply_nested_decode_calls_never_stack_overflow_classify() {
+        const NESTING: usize = 10_000;
+        let mut expr: Vec<u8> = Vec::with_capacity(NESTING * 11 + 8);
+        for _ in 0..NESTING {
+            expr.extend_from_slice(b"str_rot13(");
+        }
+        expr.extend_from_slice(b"'x'");
+        expr.extend(std::iter::repeat_n(b')', NESTING));
+        let _: Option<(EvalKind, Vec<u8>)> = classify_inner(&expr);
     }
 }
