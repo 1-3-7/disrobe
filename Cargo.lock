@@ -2024,7 +2024,6 @@ dependencies = [
  "miette",
  "num_cpus",
  "object",
- "owo-colors",
  "prost",
  "prost-types",
  "protoc-bin-vendored",
@@ -2936,7 +2935,6 @@ dependencies = [
 name = "disrobe-py-marshal"
 version = "0.10.4"
 dependencies = [
- "bytes",
  "divan",
  "indexmap 2.14.0",
  "insta",
@@ -2944,7 +2942,6 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
