@@ -177,6 +177,11 @@ impl<'a> NativeImage<'a> {
     pub fn ascii_strings(&self, min_len: usize) -> Vec<String> {
         ascii_strings(self.raw, min_len)
     }
+
+    #[must_use]
+    pub fn ascii_strings_capped(&self, min_len: usize) -> (Vec<String>, bool) {
+        ascii_strings_capped(self.raw, min_len)
+    }
 }
 
 #[must_use]
@@ -192,6 +197,11 @@ pub const MAX_STRING_COUNT: usize = 1 << 20;
 
 #[must_use]
 pub fn ascii_strings(buf: &[u8], min_len: usize) -> Vec<String> {
+    ascii_strings_capped(buf, min_len).0
+}
+
+#[must_use]
+pub fn ascii_strings_capped(buf: &[u8], min_len: usize) -> (Vec<String>, bool) {
     const MAX_STRING_LEN: usize = 64 * 1024;
     const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
     fn push_capped(slice: &[u8], out: &mut Vec<String>, total: &mut usize) -> bool {
@@ -206,6 +216,7 @@ pub fn ascii_strings(buf: &[u8], min_len: usize) -> Vec<String> {
         true
     }
     let window: usize = buf.len().min(MAX_STRING_SCAN_BYTES);
+    let mut truncated: bool = buf.len() > MAX_STRING_SCAN_BYTES;
     let scanned: &[u8] = &buf[..window];
     let mut out: Vec<String> = Vec::new();
     let mut total: usize = 0;
@@ -219,13 +230,13 @@ pub fn ascii_strings(buf: &[u8], min_len: usize) -> Vec<String> {
             run += 1;
         } else {
             if run >= min_len && !push_capped(&scanned[start..i], &mut out, &mut total) {
-                return out;
+                return (out, true);
             }
             run = 0;
         }
     }
-    if run >= min_len {
-        let _: bool = push_capped(&scanned[start..], &mut out, &mut total);
+    if run >= min_len && !push_capped(&scanned[start..], &mut out, &mut total) {
+        truncated = true;
     }
-    out
+    (out, truncated)
 }
