@@ -71,3 +71,21 @@ fn drain_total_rejects_oversized_code_object() {
         test_support::max_marshaled_code_bytes() + 1
     ));
 }
+
+#[test]
+fn dedup_keeps_distinct_objects_with_colliding_hash() {
+    let colliding_hash: usize = 0xDEAD_BEEF;
+    let object_a: usize = 0x1000;
+    let object_b: usize = 0x2000;
+    let survivors: Vec<usize> =
+        test_support::survivor_indices(&[(colliding_hash, object_a), (colliding_hash, object_b)]);
+    assert_eq!(survivors, vec![0, 1]);
+}
+
+#[test]
+fn dedup_collapses_repeated_capture_of_same_object() {
+    let object: usize = 0x4000;
+    let survivors: Vec<usize> =
+        test_support::survivor_indices(&[(7, object), (7, object), (7, object)]);
+    assert_eq!(survivors, vec![0]);
+}
