@@ -426,4 +426,77 @@ mod tests {
         assert_eq!(PyPyVariant::PyPy39.cpython_compat(), PyVersion::PY39);
         assert_eq!(PyPyVariant::PyPy310.cpython_compat(), PyVersion::PY310);
     }
+
+    struct TableProbe {
+        magic: u32,
+        header_len: usize,
+        variant: PyPyVariant,
+        version: PyVersion,
+        byte: u8,
+        mnemonic: &'static str,
+        mislabel_version: PyVersion,
+    }
+
+    fn build_pypy_image(magic: u32, header_len: usize, payload: &[u8]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::with_capacity(header_len + payload.len());
+        bytes.extend_from_slice(&magic.to_le_bytes());
+        bytes.resize(header_len, 0u8);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn magic_selects_version_specific_opcode_table() {
+        let probes: [TableProbe; 4] = [
+            TableProbe {
+                magic: PYPY_MAGIC_27,
+                header_len: 8,
+                variant: PyPyVariant::PyPy27,
+                version: PyVersion::PY27,
+                byte: 71,
+                mnemonic: "PRINT_ITEM",
+                mislabel_version: PyVersion::PY37,
+            },
+            TableProbe {
+                magic: PYPY_MAGIC_37,
+                header_len: 16,
+                variant: PyPyVariant::PyPy37,
+                version: PyVersion::PY37,
+                byte: 149,
+                mnemonic: "BUILD_LIST_UNPACK",
+                mislabel_version: PyVersion::PY39,
+            },
+            TableProbe {
+                magic: PYPY_MAGIC_39,
+                header_len: 16,
+                variant: PyPyVariant::PyPy39,
+                version: PyVersion::PY39,
+                byte: 48,
+                mnemonic: "RERAISE",
+                mislabel_version: PyVersion::PY37,
+            },
+            TableProbe {
+                magic: PYPY_MAGIC_310,
+                header_len: 16,
+                variant: PyPyVariant::PyPy310,
+                version: PyVersion::PY310,
+                byte: 30,
+                mnemonic: "GET_LEN",
+                mislabel_version: PyVersion::PY39,
+            },
+        ];
+        for probe in &probes {
+            let image: Vec<u8> = build_pypy_image(probe.magic, probe.header_len, &[probe.byte, 0]);
+            let module: PyPyModule = parse(&image).expect("parse pypy image");
+            assert_eq!(module.variant, probe.variant);
+            assert_eq!(module.compat_version(), probe.version);
+            let disasm: PyPyDisasm = module.disassemble();
+            assert!(!disasm.marshaled_code);
+            assert_eq!(disasm.compat_version, probe.version);
+            let first: &PyPyLinearOp = &disasm.units[0].raw_listing[0];
+            assert_eq!(first.opcode, probe.byte);
+            assert_eq!(first.mnemonic, probe.mnemonic);
+            assert_ne!(opname(probe.byte, probe.mislabel_version), probe.mnemonic);
+        }
+    }
 }
