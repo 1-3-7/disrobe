@@ -20,9 +20,6 @@ pub enum Error {
     #[error("DR-GO-0005: gopclntab magic mismatch (got {magic:#010x})")]
     PclntabMagic { magic: u32 },
 
-    #[error("DR-GO-0006: gopclntab truncated: {0}")]
-    PclntabTruncated(&'static str),
-
     #[error(
         "DR-GO-0007: pclntab field at offset {offset:#x} read overflowed section ({len} bytes)"
     )]
@@ -30,13 +27,4 @@ pub enum Error {
 
     #[error("DR-GO-0008: pclntab references invalid quantum/ptrsize ({0})")]
     PclntabInvariant(&'static str),
-
-    #[error("DR-GO-0009: moduledata not locatable in image")]
-    ModuledataMissing,
-
-    #[error("DR-GO-0010: utf-8 reconstruction failed: {0}")]
-    Utf8(String),
-
-    #[error("DR-GO-0011: embed.FS metadata not present")]
-    EmbedFsAbsent,
 }

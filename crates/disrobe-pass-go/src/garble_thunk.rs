@@ -1631,7 +1631,7 @@ mod tests {
         MAX_EMU_MEM_BYTES, RAM_HIGH, RAM_LOW, THUNK_SCAN_BUDGET, THUNK_SCAN_CHECK_STRIDE,
         scan_deadline_hit,
     };
-    use crate::binary::{Endian, ImageKind};
+    use crate::binary::{Endian, ImageKind, Section};
     use crate::symbols::GoSymbols;
 
     fn empty_symbols() -> GoSymbols {
@@ -1746,5 +1746,35 @@ mod tests {
         );
         e.set_reg(Register::RAX, value);
         assert_eq!(e.reg(Register::RAX), 0xDEAD_BEEF_CAFE_F00D);
+    }
+
+    #[test]
+    fn read_mem_clamps_wide_image_backed_operand_without_panicking() {
+        let section_bytes: [u8; 16] = [
+            0x0d, 0xf0, 0xfe, 0xca, 0xef, 0xbe, 0xad, 0xde, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
+        ];
+        let raw: Vec<u8> = Vec::new();
+        let image: GoImage<'_> = GoImage {
+            kind: ImageKind::Elf,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![Section {
+                name: ".rodata".to_owned(),
+                address: 0x40_0000,
+                data: &section_bytes,
+            }],
+            raw: &raw,
+            symbol_addrs: Vec::new(),
+            flat: false,
+        };
+        let syms: GoSymbols = empty_symbols();
+        let e: Emu<'_, '_> = emu(&image, &syms);
+        let value: u64 = e.read_mem(0x40_0000, 16);
+        assert_eq!(
+            value, 0xDEAD_BEEF_CAFE_F00D,
+            "a >8-byte operand backed by a real section must clamp to the low 8 bytes \
+             instead of indexing past the 8-byte staging buffer"
+        );
     }
 }

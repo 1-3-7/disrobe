@@ -353,15 +353,6 @@ fn marker_hits(bytes: &[u8]) -> usize {
         .count()
 }
 
-#[allow(dead_code)]
-pub(crate) const fn pclntab_section_candidates(kind: ImageKind) -> &'static [&'static str] {
-    match kind {
-        ImageKind::Pe => &[".gopclntab", ".rdata", ".data", ".text"],
-        ImageKind::Elf => &[".gopclntab", ".gopclntab.bss", ".data.rel.ro", ".rodata"],
-        ImageKind::MachO => &["__gopclntab", "__rodata", "__DATA,__rodata"],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
