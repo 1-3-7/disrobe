@@ -1555,6 +1555,53 @@ pub(super) fn then_terminating_jump(
     None
 }
 
+fn trailing_back_join_jump(
+    stream: &DecodedStream,
+    region_lo: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let mut k: usize = region_end;
+    while k > region_lo {
+        k -= 1;
+        match &stream.ops[k] {
+            CanonicalOp::Push(_)
+            | CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::JumpBackwardNoInterrupt(_) => return Some(k),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn else_region_rejoins(
+    stream: &DecodedStream,
+    region_lo: usize,
+    region_end: usize,
+    back: usize,
+) -> bool {
+    let mut k: usize = region_end;
+    while k > region_lo {
+        k -= 1;
+        match &stream.ops[k] {
+            CanonicalOp::Push(_)
+            | CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::PopExcept => {}
+            CanonicalOp::JumpBackwardNoInterrupt(_) => {
+                return resolve_jump_target(stream, k, &stream.ops[k]) == Some(back);
+            }
+            CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_) => return false,
+            _ => return true,
+        }
+    }
+    false
+}
+
 pub(super) fn then_continues_to_loop(
     stream: &DecodedStream,
     then_lo: usize,
@@ -2008,6 +2055,22 @@ pub(super) fn structure_stmts(
         join = j.min(hi);
         orelse_start = Some(last + 1);
         then_jump_at = Some(last);
+    }
+    if orelse_start.is_none()
+        && then_jump_at.is_none()
+        && body_end > jump_idx + 1
+        && hi > body_end
+        && !stream.exception_table.is_empty()
+        && let Some(then_back) = trailing_back_join_jump(stream, jump_idx + 1, body_end)
+        && let Some(back) = resolve_jump_target(stream, then_back, &stream.ops[then_back])
+        && back < lo
+        && else_region_rejoins(stream, body_end, hi, back)
+        && !(loop_break_target().is_some_and(|exit: usize| back >= exit)
+            || loop_continue_target().is_some_and(|header: usize| back <= header))
+    {
+        join = hi;
+        orelse_start = Some(then_back + 1);
+        then_jump_at = Some(then_back);
     }
     let mut elif_body_end: usize = body_end;
     if orelse_start.is_none()

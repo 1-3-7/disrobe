@@ -320,3 +320,80 @@ def _win32_ver(version, csd, ptype):
         &[],
     );
 }
+
+#[test]
+fn handler_if_else_rejoining_via_backward_exit_keeps_else() {
+    let program: &str = "\
+def parse_params(value):
+    params = []
+    while value:
+        try:
+            token, value = get_one(value)
+            params.append(token)
+        except ParseError:
+            leader = None
+            if value[0] in LEADERS:
+                leader, value = get_cfws(value)
+            if not value:
+                params.append(leader)
+                return params
+            if value[0] == ';':
+                if leader is not None:
+                    params.append(leader)
+                params.append(defect('empty'))
+            else:
+                token, value = get_invalid(value)
+                if leader:
+                    token.insert(0, leader)
+                params.append(token)
+                params.append(defect('invalid'))
+        if value and value[0] != ';':
+            params.append(invalid(value))
+        if value:
+            value = value[1:]
+    return params
+";
+    assert_recompiles_on("handler_if_else_backward_exit", program, &["3.14"], &[]);
+}
+
+#[test]
+fn handler_if_elif_else_rejoining_via_backward_exit() {
+    let program: &str = "\
+def collect(value):
+    out = []
+    while value:
+        try:
+            token, value = one(value)
+            out.append(token)
+        except ParseError:
+            leader = None
+            if value[0] in LEADERS:
+                leader, value = cfws(value)
+                if not value or value[0] == ',':
+                    out.append(leader)
+                    out.append(defect('nocontent'))
+                else:
+                    token, value = invalid(value, ',')
+                    out.append(token)
+                    out.append(defect('bad'))
+            elif value[0] == ',':
+                out.append(defect('empty'))
+            else:
+                token, value = invalid(value, ',')
+                out.append(token)
+                out.append(defect('bad'))
+        if value and value[0] != ',':
+            token, value = invalid(value, ',')
+            out.append(token)
+        if value:
+            out.append(sep)
+            value = value[1:]
+    return out
+";
+    assert_recompiles_on(
+        "handler_if_elif_else_backward_exit",
+        program,
+        &["3.14"],
+        &[],
+    );
+}
