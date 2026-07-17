@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+use iced_x86::{
+    ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register, RflagsBits,
+};
 
 use crate::cells::CellStore;
 use crate::cfg::{self, Cfg};
@@ -247,7 +249,7 @@ impl Extractor {
                     self.pending_cmp = None;
                 }
                 None => {
-                    if clobbers_flags(mnemonic) {
+                    if writes_comparison_flags(insn) {
                         self.pending_cmp = None;
                     }
                 }
@@ -394,26 +396,15 @@ const fn fresh_value_write(mnemonic: Mnemonic) -> bool {
     )
 }
 
-const fn clobbers_flags(mnemonic: Mnemonic) -> bool {
-    matches!(
-        mnemonic,
-        Mnemonic::Add
-            | Mnemonic::Sub
-            | Mnemonic::And
-            | Mnemonic::Or
-            | Mnemonic::Xor
-            | Mnemonic::Inc
-            | Mnemonic::Dec
-            | Mnemonic::Neg
-            | Mnemonic::Shl
-            | Mnemonic::Sal
-            | Mnemonic::Shr
-            | Mnemonic::Sar
-            | Mnemonic::Mul
-            | Mnemonic::Imul
-            | Mnemonic::Div
-            | Mnemonic::Idiv
-    )
+const COMPARISON_FLAGS: u32 = RflagsBits::OF
+    | RflagsBits::SF
+    | RflagsBits::ZF
+    | RflagsBits::AF
+    | RflagsBits::CF
+    | RflagsBits::PF;
+
+fn writes_comparison_flags(insn: &Instruction) -> bool {
+    (insn.rflags_modified() | insn.rflags_undefined()) & COMPARISON_FLAGS != 0
 }
 
 #[cfg(test)]
@@ -448,6 +439,25 @@ mod tests {
         ];
         let result: Option<(Width, Sign)> = width_sign_of(bytes, 0x10);
         assert_eq!(result, Some((Width::Qword, Sign::Unsigned)));
+    }
+
+    #[test]
+    fn flag_writer_between_cmp_and_signed_jcc_drops_sign() {
+        let without_flag_writer: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x39, 0x55, 0x10, 0x7c, 0x00, 0x5d, 0xc3,
+        ];
+        assert_eq!(
+            width_sign_of(without_flag_writer, 0x10),
+            Some((Width::Dword, Sign::Signed)),
+        );
+        let with_flag_writer: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x39, 0x55, 0x10, 0x0f, 0xba, 0xe0, 0x00, 0x7c, 0x00, 0x5d,
+            0xc3,
+        ];
+        assert_eq!(
+            width_sign_of(with_flag_writer, 0x10),
+            Some((Width::Dword, Sign::Unknown)),
+        );
     }
 
     #[test]

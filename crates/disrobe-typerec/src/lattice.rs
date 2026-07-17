@@ -111,16 +111,6 @@ impl Width {
             other
         }
     }
-
-    #[must_use]
-    pub const fn meet(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Unknown, value) | (value, Self::Unknown) => value,
-            (a, b) if a.rank() == b.rank() => a,
-            (a, b) if a.rank() < b.rank() => a,
-            (_, b) => b,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

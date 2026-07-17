@@ -54,10 +54,11 @@ pub fn solve(store: &mut CellStore, constraints: &[Constraint]) {
     if constraints.is_empty() {
         return;
     }
-    let mut dependents: BTreeMap<TypeVar, Vec<usize>> = BTreeMap::new();
+    let mut root_deps: BTreeMap<TypeVar, Vec<usize>> = BTreeMap::new();
     for (index, constraint) in constraints.iter().enumerate() {
         for var in constraint.vars().into_iter().flatten() {
-            dependents.entry(var).or_default().push(index);
+            let root: TypeVar = store.find(var);
+            root_deps.entry(root).or_default().push(index);
         }
     }
     let mut queued: Vec<bool> = vec![true; constraints.len()];
@@ -72,11 +73,20 @@ pub fn solve(store: &mut CellStore, constraints: &[Constraint]) {
             break;
         }
         budget -= 1;
+        let vars: [Option<TypeVar>; 2] = constraints[index].vars();
+        let before_a: Option<TypeVar> = vars[0].map(|var: TypeVar| store.find(var));
+        let before_b: Option<TypeVar> = vars[1].map(|var: TypeVar| store.find(var));
         if !constraints[index].apply(store) {
             continue;
         }
-        for var in constraints[index].vars().into_iter().flatten() {
-            let Some(deps): Option<&Vec<usize>> = dependents.get(&var) else {
+        for prior in [before_a, before_b].into_iter().flatten() {
+            let root: TypeVar = store.find(prior);
+            if root != prior
+                && let Some(moved) = root_deps.remove(&prior)
+            {
+                root_deps.entry(root).or_default().extend(moved);
+            }
+            let Some(deps): Option<&Vec<usize>> = root_deps.get(&root) else {
                 continue;
             };
             for &dep in deps {
@@ -142,6 +152,27 @@ mod tests {
         let cell: CellType = store.resolved(a);
         assert_eq!(cell.class.width(), Width::Qword);
         assert_eq!(cell.class.sign(), Sign::Signed);
+    }
+
+    #[test]
+    fn sign_propagates_through_union_sibling() {
+        let mut store: CellStore = CellStore::new();
+        let a: TypeVar = store.fresh(TypeClass::Top);
+        let b: TypeVar = store.fresh(TypeClass::Top);
+        let c: TypeVar = store.fresh(TypeClass::Top);
+        let constraints: Vec<Constraint> = vec![
+            Constraint::Union(a, b),
+            Constraint::SignLink(b, c),
+            Constraint::Sign(a, Sign::Unsigned, Confidence::UsageIdiom),
+        ];
+        solve(&mut store, &constraints);
+        assert_eq!(store.resolved(a).class.sign(), Sign::Unsigned);
+        assert_eq!(store.resolved(b).class.sign(), Sign::Unsigned);
+        assert_eq!(
+            store.resolved(c).class.sign(),
+            Sign::Unsigned,
+            "a var linked to a union sibling must receive the propagated sign",
+        );
     }
 
     #[test]
