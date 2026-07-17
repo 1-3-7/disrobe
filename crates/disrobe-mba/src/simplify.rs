@@ -1,6 +1,8 @@
 use crate::bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
 use crate::boolean::{Implicant, MAX_BOOLEAN_ATOMS, minimize_sop};
-use crate::expr::{BinOp, Expr, UnOp, Width, equivalent_exhaustive};
+use crate::expr::{
+    BinOp, Expr, UnOp, Width, equivalent_exhaustive, equivalent_exhaustive_runnable,
+};
 use crate::linear_mba::synthesize_linear_basis;
 use crate::linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
@@ -240,7 +242,74 @@ fn simplify_dense(expr: &Expr, width: Width, var_count: u32) -> (Expr, Verificat
         consider(mixed, Verification::MixedNormalForm(width));
     }
 
+    if let Some(saturated) = crate::egraph::saturate_simplify(expr, width)
+        && saturated.node_count() < best.0.node_count()
+        && let Some(proof) = accept_l5(expr, &saturated, width, var_count)
+    {
+        best = (saturated, proof);
+    }
+
     best
+}
+
+fn expr_is_eval_faithful(expr: &Expr) -> bool {
+    match expr {
+        Expr::Mem(_, _) => false,
+        Expr::Const(_) | Expr::Var(_) => true,
+        Expr::Unary(_, inner) | Expr::Slice(inner, _, _) => expr_is_eval_faithful(inner),
+        Expr::Binary(_, left, right) | Expr::Compose(left, right, _) => {
+            expr_is_eval_faithful(left) && expr_is_eval_faithful(right)
+        }
+        Expr::Ite(cond, then, otherwise) => {
+            expr_is_eval_faithful(cond)
+                && expr_is_eval_faithful(then)
+                && expr_is_eval_faithful(otherwise)
+        }
+    }
+}
+
+#[cfg(feature = "smt-verify")]
+fn accept_l5(
+    original: &Expr,
+    candidate: &Expr,
+    width: Width,
+    var_count: u32,
+) -> Option<Verification> {
+    if candidate.node_count() >= original.node_count() {
+        return None;
+    }
+    let faithful: bool = expr_is_eval_faithful(original) && expr_is_eval_faithful(candidate);
+    let bdd_proven: bool = crate::verify::verify_equivalent(original, candidate, width).is_proven();
+    if faithful && width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count) {
+        let exhaustive: bool = equivalent_exhaustive(original, candidate, width, var_count);
+        if exhaustive != bdd_proven {
+            return None;
+        }
+        return exhaustive.then_some(Verification::ExhaustiveAtWidth(width));
+    }
+    bdd_proven.then_some(Verification::SmtProvenAtWidth(width))
+}
+
+#[cfg(not(feature = "smt-verify"))]
+fn accept_l5(
+    original: &Expr,
+    candidate: &Expr,
+    width: Width,
+    var_count: u32,
+) -> Option<Verification> {
+    if candidate.node_count() >= original.node_count() {
+        return None;
+    }
+    if expr_is_eval_faithful(original)
+        && expr_is_eval_faithful(candidate)
+        && width.is_exhaustible()
+        && equivalent_exhaustive_runnable(width, var_count)
+        && equivalent_exhaustive(original, candidate, width, var_count)
+    {
+        Some(Verification::ExhaustiveAtWidth(width))
+    } else {
+        None
+    }
 }
 
 #[must_use]
