@@ -37,6 +37,7 @@
 pub mod bitwise_synth;
 pub mod boolean;
 pub mod expr;
+pub mod finite_diff;
 pub mod linear_mba;
 pub mod linear_solver;
 pub mod mixed_mba;
@@ -58,6 +59,10 @@ pub mod verify;
 
 pub use bitwise_synth::{MAX_BITWISE_SYNTH_VARS, synthesize_bitwise_masked};
 pub use expr::{BinOp, Expr, UnOp, Width, equivalent_exhaustive, equivalent_exhaustive_runnable};
+pub use finite_diff::{
+    MAX_CERTIFICATE_DEGREE, composition_is_identity, induces_zero_function,
+    polynomial_is_zero_function,
+};
 pub use linear_mba::synthesize_linear_basis;
 pub use linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
