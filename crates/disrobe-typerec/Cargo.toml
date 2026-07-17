@@ -1,0 +1,25 @@
+[package]
+name = "disrobe-typerec"
+description = "Static type recovery for the disrobe decompiler: a union-find constraint solver over a TIE-derived numeric lattice that recovers integer width and signedness from x86-64 instruction semantics, graded against an unstripped sibling's DWARF."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["type-recovery", "decompiler", "reverse-engineering", "dwarf", "constraint-solver"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+iced-x86 = { workspace = true }
+gimli = { workspace = true }
+object = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
