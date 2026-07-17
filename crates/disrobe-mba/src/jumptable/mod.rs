@@ -10,7 +10,8 @@ mod vsa;
 #[cfg(feature = "smt-solver")]
 mod solver;
 
-use vsa::{ValueSet, VsaResult, index_value_set};
+pub(crate) use vsa::ValueSet;
+use vsa::{VsaResult, index_value_set};
 
 #[cfg(feature = "smt-solver")]
 pub use solver::{resolve_jump_table, resolve_jump_table_with};

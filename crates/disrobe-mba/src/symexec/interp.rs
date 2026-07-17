@@ -285,7 +285,7 @@ fn width_of(sizes: &[u32], index: usize) -> Option<BitWidth> {
     sizes.get(index).copied().and_then(BitWidth::from_bytes)
 }
 
-pub(crate) fn parse_immediate(operand: &str, width: BitWidth) -> Option<u64> {
+fn parse_immediate(operand: &str, width: BitWidth) -> Option<u64> {
     let trimmed: &str = operand.trim();
     if trimmed.is_empty() {
         return None;
