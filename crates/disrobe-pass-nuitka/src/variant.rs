@@ -83,6 +83,7 @@ pub fn classify(bytes: &[u8]) -> Result<VariantClassification> {
     let module_init_count: u32 = count_module_inits(bytes);
     let standalone_hits: u32 = count_standalone_markers(bytes);
     let core_marker_hits: u32 = count_core_markers(bytes);
+    let is_wheel: bool = crate::detect::locate_wheel(bytes).is_wheel();
 
     let variant: NuitkaVariant = decide_variant(
         binary_format,
@@ -92,10 +93,11 @@ pub fn classify(bytes: &[u8]) -> Result<VariantClassification> {
         module_init_count,
         standalone_hits,
         core_marker_hits,
+        is_wheel,
     );
 
     crate::util::dbg_line(&format!(
-        "classify: variant={variant:?} format={binary_format:?} offset={onefile_offset:?} compressed={onefile_compressed} core_hits={core_marker_hits} standalone_hits={standalone_hits} module_inits={module_init_count} signed={}",
+        "classify: variant={variant:?} format={binary_format:?} offset={onefile_offset:?} compressed={onefile_compressed} core_hits={core_marker_hits} standalone_hits={standalone_hits} module_inits={module_init_count} wheel={is_wheel} signed={}",
         authenticode.is_some()
     ));
     if let Some(off) = onefile_offset {
@@ -129,6 +131,7 @@ const fn decide_variant(
     module_init_count: u32,
     standalone_hits: u32,
     core_marker_hits: u32,
+    is_wheel: bool,
 ) -> NuitkaVariant {
     if onefile_offset.is_some() {
         if signed {
@@ -142,6 +145,9 @@ const fn decide_variant(
     }
     if signed && core_marker_hits >= 2 {
         return NuitkaVariant::SignedPe;
+    }
+    if is_wheel && matches!(binary_format, BinaryFormat::Other) {
+        return NuitkaVariant::Wheel;
     }
     if core_marker_hits == 0 {
         return NuitkaVariant::Unknown;
@@ -321,5 +327,28 @@ mod tests {
         let c: VariantClassification = classify(&bytes).expect("validated KAY found");
         assert_eq!(c.variant, NuitkaVariant::OnefileKay);
         assert_eq!(c.onefile_offset, Some(real_at));
+    }
+
+    #[test]
+    fn zip_with_dist_info_markers_classifies_as_wheel() {
+        let mut bytes: Vec<u8> = vec![0x50u8, 0x4Bu8, 0x03u8, 0x04u8];
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/METADATA");
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/RECORD");
+        bytes.extend_from_slice(b"pkg-1.0.dist-info/WHEEL");
+        let c: VariantClassification = classify(&bytes).expect("wheel classifies");
+        assert_eq!(c.variant, NuitkaVariant::Wheel);
+        assert_eq!(c.binary_format, BinaryFormat::Other);
+    }
+
+    #[test]
+    fn native_image_with_dist_info_strings_is_not_a_wheel() {
+        let mut bytes: Vec<u8> = vec![0u8; 4096];
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[100..118].copy_from_slice(b"__nuitka_version__");
+        bytes[200..226].copy_from_slice(b"pkg-1.0.dist-info/METADATA");
+        bytes[300..324].copy_from_slice(b"pkg-1.0.dist-info/RECORD");
+        bytes[400..423].copy_from_slice(b"pkg-1.0.dist-info/WHEEL");
+        let c: VariantClassification = classify(&bytes).expect("classifies");
+        assert_ne!(c.variant, NuitkaVariant::Wheel);
     }
 }
