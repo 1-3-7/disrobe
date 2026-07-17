@@ -37,6 +37,7 @@
 pub mod bitwise_synth;
 pub mod boolean;
 pub mod egraph;
+pub mod enum_synth;
 pub mod expr;
 pub mod finite_diff;
 pub mod linear_mba;
