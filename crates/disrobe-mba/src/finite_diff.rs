@@ -98,6 +98,110 @@ pub fn composition_is_identity(outer: &[u64], inner: &[u64], width: Width) -> bo
     induces_zero_function(&values, width)
 }
 
+const MULTIVAR_EVAL_BUDGET: u128 = 1 << 22;
+
+pub(crate) fn multivar_induces_zero(
+    monomials: &[(Vec<u32>, u128)],
+    var_count: usize,
+    width: Width,
+) -> bool {
+    let mask: u128 = modulus_mask(width);
+    let mut degree: Vec<u32> = vec![0; var_count];
+    for (key, _coeff) in monomials {
+        for (axis, exponent) in key.iter().enumerate() {
+            if let Some(slot) = degree.get_mut(axis)
+                && *exponent > *slot
+            {
+                *slot = *exponent;
+            }
+        }
+    }
+    let dims: Vec<usize> = degree.iter().map(|d: &u32| *d as usize + 1).collect();
+    let mut total: u128 = 1;
+    for dim in &dims {
+        total = total.saturating_mul(*dim as u128);
+    }
+    if total.saturating_mul(monomials.len().max(1) as u128) > MULTIVAR_EVAL_BUDGET {
+        return false;
+    }
+    let total_points: usize = total as usize;
+    let mut values: Vec<u128> = vec![0; total_points];
+    for (flat, slot) in values.iter_mut().enumerate() {
+        let coords: Vec<u32> = unflatten(flat, &dims);
+        let mut acc: u128 = 0;
+        for (key, coeff) in monomials {
+            acc = acc.wrapping_add(eval_monomial(key, &coords, *coeff & mask, mask)) & mask;
+        }
+        *slot = acc;
+    }
+    difference_tensor(&mut values, &dims, mask);
+    values.iter().all(|value: &u128| *value == 0)
+}
+
+fn eval_monomial(key: &[u32], coords: &[u32], coeff: u128, mask: u128) -> u128 {
+    let mut term: u128 = coeff & mask;
+    for (axis, exponent) in key.iter().enumerate() {
+        if *exponent == 0 {
+            continue;
+        }
+        let Some(base): Option<&u32> = coords.get(axis) else {
+            return 0;
+        };
+        let base128: u128 = u128::from(*base) & mask;
+        for _ in 0..*exponent {
+            term = term.wrapping_mul(base128) & mask;
+        }
+    }
+    term
+}
+
+fn unflatten(flat: usize, dims: &[usize]) -> Vec<u32> {
+    let mut remaining: usize = flat;
+    let mut coords: Vec<u32> = Vec::with_capacity(dims.len());
+    for dim in dims {
+        coords.push((remaining % *dim) as u32);
+        remaining /= *dim;
+    }
+    coords
+}
+
+fn difference_tensor(values: &mut [u128], dims: &[usize], mask: u128) {
+    let mut stride: usize = 1;
+    for dim in dims {
+        let len: usize = *dim;
+        if len > 1 {
+            let block: usize = stride * len;
+            let total: usize = values.len();
+            let mut base: usize = 0;
+            while base < total {
+                for offset in 0..stride {
+                    difference_fiber(values, base + offset, stride, len, mask);
+                }
+                base += block;
+            }
+        }
+        stride *= len;
+    }
+}
+
+fn difference_fiber(values: &mut [u128], start: usize, stride: usize, len: usize, mask: u128) {
+    let mut table: Vec<u128> = (0..len)
+        .map(|position: usize| values[start + position * stride])
+        .collect();
+    let mut result: Vec<u128> = vec![0; len];
+    for (order, cell) in result.iter_mut().enumerate() {
+        if order > 0 {
+            for index in 0..len - order {
+                table[index] = table[index + 1].wrapping_sub(table[index]) & mask;
+            }
+        }
+        *cell = table[0];
+    }
+    for (position, value) in result.into_iter().enumerate() {
+        values[start + position * stride] = value;
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
@@ -178,5 +282,44 @@ mod tests {
         assert!(!induces_zero_function(&values, Width::W16));
         let null: Vec<u128> = vec![0, 0, 0];
         assert!(induces_zero_function(&null, Width::W16));
+    }
+
+    #[test]
+    fn multivar_certifies_half_scaled_square_difference() {
+        let bits: u32 = Width::W8.bits();
+        let half: u128 = 1u128 << (bits - 1);
+        let difference: Vec<(Vec<u32>, u128)> =
+            vec![(vec![2], half), (vec![1], half.wrapping_neg() & 0xFF)];
+        assert!(multivar_induces_zero(&difference, 1, Width::W8));
+    }
+
+    #[test]
+    fn multivar_rejects_non_null_difference() {
+        let difference: Vec<(Vec<u32>, u128)> = vec![(vec![1, 0], 1)];
+        assert!(!multivar_induces_zero(&difference, 2, Width::W8));
+    }
+
+    #[test]
+    fn multivar_certifies_bilinear_falling_factorial_null() {
+        let bits: u32 = Width::W8.bits();
+        let half: u128 = 1u128 << (bits - 1);
+        let difference: Vec<(Vec<u32>, u128)> =
+            vec![(vec![2, 1], half), (vec![1, 1], half.wrapping_neg() & 0xFF)];
+        assert!(multivar_induces_zero(&difference, 2, Width::W8));
+    }
+
+    #[test]
+    fn multivar_empty_polynomial_is_zero() {
+        let difference: Vec<(Vec<u32>, u128)> = Vec::new();
+        assert!(multivar_induces_zero(&difference, 3, Width::W16));
+    }
+
+    #[test]
+    fn multivar_survives_at_wider_width() {
+        let bits: u32 = Width::W8.bits();
+        let half: u128 = 1u128 << (bits - 1);
+        let difference: Vec<(Vec<u32>, u128)> =
+            vec![(vec![2], half), (vec![1], half.wrapping_neg() & 0xFF)];
+        assert!(!multivar_induces_zero(&difference, 1, Width::W16));
     }
 }
