@@ -44,6 +44,10 @@ Runtime-keyed schemes (a key from a system property, the environment, the clock,
 
 The JVM, Dalvik, and CIL decoders tolerate broken `StackMapTable`, fake exception ranges, and illegal-but-verifiable bytecode. On native, jump-into-the-middle desync, overlapping instructions, and opaque predicates are resolved in-tree. A mixed-boolean-arithmetic simplifier, wired through the JS and WebAssembly decoders as well, collapses MBA expressions back to their algebraic form through a layered stack: linear signature solving, nonlinear reduction modulo the null-polynomial ideal, e-graph equality saturation over proven ring identities, bounded enumerative synthesis for opaque leaves, and permutation-polynomial inversion. Each layer is sound or abstains, and a rewrite is emitted only after equivalence is proven over the full bitvector domain, so an expression the stack cannot prove is left untouched rather than approximated.
 
+Indirect dispatch is resolved before the SMT tier is ever consulted. A strided-interval value-set analysis reads the masked, compare-guarded, or position-independent index bound off the path constraints and enumerates the jump table to a concrete target set that is a sound superset of, and usually exactly, the reachable targets. It never drops a live target, abstains when the table is writable or the index is unbounded, and defers to the solver only for a disequality residual; the value-set tier carries no solver dependency and compiles without one.
+
+Every SMT verdict the simplifier and the devirtualizer depend on is independently checked before it is trusted. A SAT verdict is re-evaluated against the model the solver returned; an UNSAT verdict is reconfirmed by BDD bit-blasting, or, for the multiply-heavy opaque predicates the bit-blaster cannot settle, by a finite-difference polynomial certificate. A verdict that fails its own check, or a solver that panics or exhausts its budget, degrades to abstain, so a solver bug can cost a recovery but never turn one into a wrong answer.
+
 ## Bytecode virtualization
 
 | Target | Status |
