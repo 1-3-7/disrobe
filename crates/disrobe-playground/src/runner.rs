@@ -102,9 +102,6 @@ impl Runner {
             Ok(image) => image,
             Err(note) => return OracleVerdict::NoRecovery { note },
         };
-        if recovered.integrity_verified {
-            return OracleVerdict::ByteIdentical;
-        }
         parse_pe_sections(&baseline).map_or_else(
             || verdict_for_byte_recovery(&recovered.image, &baseline),
             |sections: Vec<PeSection>| verdict_for_section_witness(&recovered, &sections),
@@ -370,7 +367,10 @@ fn verdict_for_section_witness(
         let off: usize = if recovered.rva_indexed {
             usize::try_from(sec.rva).map_or(usize::MAX, std::convert::identity)
         } else {
-            best_offset(&recovered.image, &sec.bytes)
+            let Some(found): Option<usize> = best_offset(&recovered.image, &sec.bytes) else {
+                continue;
+            };
+            found
         };
         if off >= recovered.image.len() {
             continue;
@@ -400,23 +400,27 @@ fn verdict_for_section_witness(
         return OracleVerdict::ByteIdentical;
     }
     let residual_bp: u32 = ((diffs as f64 / total as f64) * 10_000.0).round() as u32;
+    let adler_note: &str = if recovered.integrity_verified {
+        "; unpacker self-checksum passed yet baseline sections differ"
+    } else {
+        ""
+    };
     OracleVerdict::Lossy {
         residual_bp,
         note: format!(
-            "section-witnessed {witnessed} section(s): {diffs}/{total} bytes differ (residual {residual_bp}bp)",
+            "section-witnessed {witnessed} section(s): {diffs}/{total} bytes differ (residual {residual_bp}bp){adler_note}",
         ),
     }
 }
 
-fn best_offset(haystack: &[u8], needle: &[u8]) -> usize {
+fn best_offset(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     let probe: &[u8] = &needle[..needle.len().min(64)];
     if probe.is_empty() {
-        return 0;
+        return None;
     }
     haystack
         .windows(probe.len())
         .position(|w: &[u8]| w == probe)
-        .map_or(0x1000, |value: usize| value)
 }
 
 fn extract_root_code(pyc_bytes: &[u8]) -> Option<CodeObject> {
@@ -574,7 +578,10 @@ fn registry_full() -> PassRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{OracleVerdict, PeSection, parse_pe_sections, read_bounded_fixture};
+    use super::{
+        OracleVerdict, PeSection, RecoveredImage, best_offset, parse_pe_sections,
+        read_bounded_fixture, verdict_for_section_witness,
+    };
 
     fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
         bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -639,6 +646,77 @@ mod tests {
             Err(OracleVerdict::ToolMissing {
                 tool: "memory-budget-exceeded:4B".to_owned(),
             })
+        );
+    }
+
+    #[test]
+    fn self_checksum_does_not_force_byte_identical_when_baseline_differs() {
+        let mut image: Vec<u8> = vec![0u8; 0x20];
+        image[0x10..0x14].copy_from_slice(&[0x09, 0x09, 0x09, 0x09]);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: true,
+            integrity_verified: true,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            rva: 0x10,
+            bytes: vec![0x01, 0x02, 0x03, 0x04],
+        }];
+        let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
+        assert!(
+            !verdict.is_byte_identical(),
+            "a passing unpacker self-checksum must not grade byte-identical against a differing baseline: {verdict:?}",
+        );
+        assert!(matches!(verdict, OracleVerdict::Lossy { .. }));
+    }
+
+    #[test]
+    fn byte_identical_derives_from_baseline_witness_not_checksum() {
+        let mut image: Vec<u8> = vec![0u8; 0x20];
+        image[0x10..0x14].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: true,
+            integrity_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            rva: 0x10,
+            bytes: vec![0x01, 0x02, 0x03, 0x04],
+        }];
+        let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
+        assert_eq!(verdict, OracleVerdict::ByteIdentical);
+    }
+
+    #[test]
+    fn absent_section_is_not_witnessed_at_fabricated_offset() {
+        let mut image: Vec<u8> = vec![0u8; 0x2000];
+        image[0x1000..0x1004].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let recovered: RecoveredImage = RecoveredImage {
+            image,
+            rva_indexed: false,
+            integrity_verified: false,
+        };
+        let sections: Vec<PeSection> = vec![PeSection {
+            rva: 0,
+            bytes: vec![0xde, 0xad, 0xbe, 0xef],
+        }];
+        let verdict: OracleVerdict = verdict_for_section_witness(&recovered, &sections);
+        assert!(
+            matches!(verdict, OracleVerdict::NoRecovery { .. }),
+            "an absent section must not be counted as witnessed at a fabricated offset: {verdict:?}",
+        );
+    }
+
+    #[test]
+    fn best_offset_is_none_when_probe_absent() {
+        assert_eq!(best_offset(&[0x01, 0x02, 0x03], &[0x09, 0x09]), None);
+    }
+
+    #[test]
+    fn best_offset_locates_present_probe() {
+        assert_eq!(
+            best_offset(&[0x01, 0x02, 0x03, 0x04], &[0x03, 0x04]),
+            Some(2)
         );
     }
 }
