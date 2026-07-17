@@ -110,6 +110,11 @@ Vai = "Vai"
 fpr = "fpr"
 tpr = "tpr"
 rcall = "rcall"
+scarry = "scarry"
+SCARRY = "SCARRY"
+fle = "fle"
+ands = "ands"
+padd = "padd"
 
 [default.extend-identifiers]
 handler_vas = "handler_vas"
@@ -123,6 +128,7 @@ extend-exclude = [
     "corpus/**",
     "fuzz/corpus/**",
     "docs/book/book/**",
+    "crates/disrobe-sleigh/vendor/**",
     "target/**",
     "**/*.dr",
     "**/*.lock",

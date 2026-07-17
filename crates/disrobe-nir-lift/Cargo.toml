@@ -19,7 +19,7 @@ disrobe-nir = { workspace = true }
 disrobe-lift-x86 = { path = "../disrobe-lift-x86" }
 disrobe-sleigh = { path = "../disrobe-sleigh" }
 disrobe-pass-as3 = { workspace = true }
-disrobe-pass-wasm-deob = { workspace = true }
+disrobe-pass-wasm-deob = { workspace = true, optional = true }
 disrobe-pass-jvm = { workspace = true }
 disrobe-pass-dotnet = { workspace = true }
 disrobe-pass-ruby = { workspace = true }
@@ -29,8 +29,27 @@ disrobe-pass-py-decompile = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 blake3 = { workspace = true }
 thiserror = { workspace = true }
-wasmparser = { workspace = true }
+wasmparser = { workspace = true, optional = true }
+
+[features]
+default = []
+wasm = ["dep:disrobe-pass-wasm-deob", "dep:wasmparser"]
 
 [dev-dependencies]
 disrobe-query = { workspace = true }
 wat = "1"
+
+[[test]]
+name = "wasm_query_facts"
+path = "tests/wasm_query_facts.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "surface_lift_oracle"
+path = "tests/surface_lift_oracle.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "hir_structurize_oracle"
+path = "tests/hir_structurize_oracle.rs"
+required-features = ["wasm"]
