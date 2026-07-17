@@ -11,7 +11,7 @@ use disrobe_ir::payload::{
     decode_disasm, decode_raw, encode_disasm, encode_raw,
 };
 use disrobe_ir::sidecar::Sidecar;
-use disrobe_ir::{ENVELOPE_FORMAT_VERSION, Envelope, compute_root_hash};
+use disrobe_ir::{ENVELOPE_FORMAT_VERSION, Envelope, EnvelopeError, compute_root_hash};
 use disrobe_transcode::{
     TRANSCODED_FORMAT_VERSION, TranscodeError, transcode_bytes, transcode_envelope,
     verify_transcode, verify_transcode_envelope,
@@ -318,6 +318,39 @@ fn oracle_has_teeth_changed_hot_payload_fails_verify() {
     let err: TranscodeError =
         verify_transcode(&input, &transcoded).expect_err("changed hot must fail");
     assert!(matches!(err, TranscodeError::VerifyHotPayloadMismatch));
+}
+
+#[test]
+fn every_canonical_reader_accepts_the_transcoded_version() {
+    let (env, original_payload): (Envelope, RawPayload) = raw_envelope_from_real_bytes();
+    let input: Vec<u8> = env.encode().expect("encode input");
+    let transcoded: disrobe_transcode::Transcoded = transcode_bytes(&input).expect("transcode");
+
+    assert_eq!(TRANSCODED_FORMAT_VERSION, ENVELOPE_FORMAT_VERSION);
+    assert_eq!(transcoded.target_version, ENVELOPE_FORMAT_VERSION);
+
+    let via_decode: Envelope =
+        Envelope::decode(&transcoded.bytes).expect("in-memory reader accepts transcoded version");
+    assert_eq!(via_decode.version, ENVELOPE_FORMAT_VERSION);
+
+    let path: PathBuf = temp_path("readpath");
+    std::fs::write(&path, &transcoded.bytes).expect("write transcoded");
+    let via_path: Envelope =
+        Envelope::read_from_path(&path).expect("path reader accepts transcoded version");
+    assert_eq!(via_path.version, ENVELOPE_FORMAT_VERSION);
+    assert_eq!(via_path.rung, Rung::Raw);
+    let recovered: RawPayload = decode_raw(&via_path.hot).expect("path reader hot decodes");
+    assert_eq!(recovered, original_payload);
+    let _ = std::fs::remove_file(&path);
+
+    let mut forged: Vec<u8> = transcoded.bytes;
+    let version_lo: usize = 8;
+    let version_hi: usize = 9;
+    forged[version_lo] = 2;
+    forged[version_hi] = 0;
+    let err: EnvelopeError =
+        Envelope::decode(&forged).expect_err("a non-canonical version must be rejected");
+    assert!(matches!(err, EnvelopeError::BadVersion(2)));
 }
 
 #[test]
