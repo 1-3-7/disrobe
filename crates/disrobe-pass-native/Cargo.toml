@@ -24,7 +24,6 @@ disrobe-emit = { workspace = true }
 disrobe-typerec = { workspace = true }
 blake3 = { workspace = true }
 flate2 = { workspace = true }
-crc32fast = { workspace = true }
 object = { workspace = true }
 goblin = { workspace = true }
 gimli = { workspace = true }
@@ -40,7 +39,6 @@ cpp_demangle = { workspace = true }
 msvc-demangler = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 der = { version = "0.7", features = ["derive", "alloc", "oid"] }
@@ -67,7 +65,6 @@ smt-solver = ["disrobe-mba/smt-solver"]
 disrobe-query = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
 flate2 = { workspace = true }
-insta = { workspace = true }
 wait-timeout = { workspace = true }
 rand = { workspace = true }
 liblzma = { workspace = true }

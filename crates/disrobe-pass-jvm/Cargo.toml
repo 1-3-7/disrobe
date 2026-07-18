@@ -16,16 +16,13 @@ workspace = true
 
 [dependencies]
 disrobe-core = { workspace = true }
-disrobe-ir = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-bytes = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zip = { workspace = true }
-flate2 = { workspace = true }
 sha2 = { workspace = true }
 object = { workspace = true }
 encoding_rs = "0.8"
@@ -39,5 +36,4 @@ lifter-diag = []
 opcode-census = []
 
 [dev-dependencies]
-insta = { workspace = true }
 object = { workspace = true, features = ["write"] }

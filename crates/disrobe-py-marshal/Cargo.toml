@@ -21,8 +21,6 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-insta = { workspace = true }
-proptest = { workspace = true }
 divan = { workspace = true }
 
 [[bench]]

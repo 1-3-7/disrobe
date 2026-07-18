@@ -28,4 +28,3 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-insta = { workspace = true }

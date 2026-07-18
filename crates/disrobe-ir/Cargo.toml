@@ -19,21 +19,13 @@ disrobe-core = { workspace = true }
 rkyv = { workspace = true }
 bytecheck = { workspace = true }
 postcard = { workspace = true }
-postcard-schema = { workspace = true }
 blake3 = { workspace = true }
-ciborium = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-indexmap = { workspace = true }
-fxhash = { workspace = true }
 bytes = { workspace = true }
-miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 memmap2 = { workspace = true }
 
 [dev-dependencies]
-insta = { workspace = true }
 proptest = { workspace = true }
 divan = { workspace = true }
 

@@ -22,13 +22,10 @@ disrobe-pass-py-decompile = { workspace = true }
 disrobe-pass-native = { workspace = true }
 object = { workspace = true }
 zip = { workspace = true }
-flate2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-indexmap = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 bytes = { workspace = true }
 
 [features]
@@ -36,5 +33,3 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-insta = { workspace = true }
-proptest = { workspace = true }

@@ -8,14 +8,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
- "cpp_demangle 0.4.5",
- "fallible-iterator 0.3.0",
  "gimli 0.32.3",
- "memmap2",
- "object",
- "rustc-demangle",
- "smallvec",
- "typed-arena",
 ]
 
 [[package]]
@@ -210,12 +203,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
 
 [[package]]
-name = "arraydeque"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
-
-[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,18 +292,6 @@ dependencies = [
  "quote",
  "quote-use",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "auditable-serde"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d026218ae25ba5c72834245412dd1338f6d270d2c5109ee03a4badec288d4056"
-dependencies = [
- "semver",
- "serde",
- "serde_json",
- "topological-sort",
 ]
 
 [[package]]
@@ -415,16 +390,6 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "base64-simd"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "339abbe78e73178762e23bea9dfd08e697eb3f3301cd4be981c0f78ba5859195"
-dependencies = [
- "outref",
- "vsimd",
-]
 
 [[package]]
 name = "base64ct"
@@ -792,12 +757,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
-name = "bytesize"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd91ee7b2422bcb158d90ef4d14f75ef67f340943fc4149891dcce8f8b972a3"
-
-[[package]]
 name = "bzip2"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1145,16 +1104,6 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
-]
-
-[[package]]
-name = "comfy-table"
-version = "7.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
-dependencies = [
- "unicode-segmentation",
- "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -1812,12 +1761,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1907,7 +1850,6 @@ dependencies = [
  "disrobe-bytes",
  "disrobe-core",
  "flate2",
- "insta",
  "liblzma",
  "lz4_flex",
  "lzfse_rust",
@@ -1926,7 +1868,6 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
- "tracing",
  "zip",
  "zstd",
 ]
@@ -1942,7 +1883,6 @@ dependencies = [
 name = "disrobe-capabilities"
 version = "0.10.4"
 dependencies = [
- "blake3",
  "disrobe-binfmt",
  "disrobe-core",
  "disrobe-ir",
@@ -1961,11 +1901,9 @@ dependencies = [
 name = "disrobe-cli"
 version = "0.10.4"
 dependencies = [
- "anstyle",
  "axum",
  "base64",
  "blake3",
- "camino",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -2012,14 +1950,9 @@ dependencies = [
  "disrobe-query",
  "disrobe-taint",
  "disrobe-typerec",
- "fastwebsockets",
- "futures",
  "human-panic",
- "hyper",
  "iced-x86",
  "indicatif",
- "insta",
- "insta-cmd",
  "jsonschema",
  "lsp-server",
  "lsp-types",
@@ -2027,7 +1960,6 @@ dependencies = [
  "num_cpus",
  "object",
  "prost",
- "prost-types",
  "protoc-bin-vendored",
  "rayon",
  "reqwest",
@@ -2045,7 +1977,6 @@ dependencies = [
  "tonic-build",
  "tonic-health",
  "tonic-reflection",
- "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -2066,7 +1997,6 @@ dependencies = [
  "base64",
  "blake3",
  "bzip2-rs",
- "camino",
  "cbc",
  "chacha20poly1305",
  "cipher 0.4.4",
@@ -2080,7 +2010,6 @@ dependencies = [
  "md5",
  "memchr",
  "miette",
- "once_cell",
  "pbkdf2",
  "rand 0.10.1",
  "regex",
@@ -2127,22 +2056,14 @@ dependencies = [
  "blake3",
  "bytecheck",
  "bytes",
- "ciborium",
  "disrobe-core",
  "divan",
- "fxhash",
- "indexmap 2.14.0",
- "insta",
  "memmap2",
- "miette",
  "postcard",
- "postcard-schema",
  "proptest",
  "rkyv",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2178,7 +2099,6 @@ version = "0.10.4"
 dependencies = [
  "ciborium",
  "disrobe-core",
- "disrobe-ir",
  "jsonschema",
  "proptest",
  "rmp-serde",
@@ -2195,7 +2115,6 @@ dependencies = [
  "oxiz",
  "proptest",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
 ]
@@ -2231,10 +2150,8 @@ name = "disrobe-nir"
 version = "0.10.4"
 dependencies = [
  "disrobe-core",
- "postcard",
  "rkyv",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -2267,7 +2184,6 @@ version = "0.10.4"
 dependencies = [
  "disrobe-core",
  "flate2",
- "insta",
  "liblzma",
  "miette",
  "serde",
@@ -2281,12 +2197,10 @@ version = "0.10.4"
 dependencies = [
  "disrobe-core",
  "flate2",
- "insta",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
  "wait-timeout",
  "zip",
 ]
@@ -2303,7 +2217,6 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-pass-native",
  "flate2",
- "insta",
  "lzma-rs",
  "miette",
  "object",
@@ -2312,20 +2225,17 @@ dependencies = [
  "sha1",
  "sha2",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
 name = "disrobe-pass-go"
 version = "0.10.4"
 dependencies = [
- "disrobe-binfmt",
  "disrobe-core",
  "disrobe-llm-metadata",
  "flate2",
  "gimli 0.32.3",
  "iced-x86",
- "insta",
  "miette",
  "object",
  "serde",
@@ -2344,12 +2254,10 @@ dependencies = [
  "disrobe-mba",
  "divan",
  "indexmap 2.14.0",
- "insta",
  "miette",
  "oxc",
  "oxc_allocator",
  "oxc_ast",
- "oxc_codegen",
  "oxc_parser",
  "oxc_semantic",
  "oxc_span",
@@ -2357,7 +2265,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2367,18 +2274,14 @@ dependencies = [
  "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-llm-metadata",
  "encoding_rs",
- "flate2",
- "insta",
  "miette",
  "object",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
- "tracing",
  "zip",
 ]
 
@@ -2391,14 +2294,12 @@ dependencies = [
  "disrobe-bytes",
  "disrobe-core",
  "flate2",
- "insta",
  "miette",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2407,10 +2308,8 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "boa_engine",
- "disrobe-binfmt",
  "disrobe-core",
  "disrobe-nir",
- "insta",
  "miette",
  "object",
  "oxc_allocator",
@@ -2420,7 +2319,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
- "tracing",
  "yaxpeax-arch 0.3.2",
  "yaxpeax-arm",
  "zip",
@@ -2451,7 +2349,6 @@ dependencies = [
  "gimli 0.32.3",
  "goblin",
  "iced-x86",
- "insta",
  "liblzma",
  "miette",
  "msvc-demangler",
@@ -2473,7 +2370,6 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
- "tracing",
  "wait-timeout",
  "x509-cert",
  "yaxpeax-arch 0.2.8",
@@ -2493,7 +2389,6 @@ dependencies = [
  "disrobe-pass-native",
  "flate2",
  "gimli 0.32.3",
- "insta",
  "miette",
  "object",
  "serde",
@@ -2507,24 +2402,19 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "bytes",
- "disrobe-binfmt",
- "disrobe-capabilities",
  "disrobe-core",
- "disrobe-ir",
  "disrobe-pass-native",
  "disrobe-pass-pickle",
  "disrobe-pass-py-decompile",
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",
  "iced-x86",
- "insta",
  "md5",
  "miette",
  "object",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
  "zstd",
 ]
 
@@ -2539,7 +2429,6 @@ dependencies = [
  "cipher 0.4.4",
  "disrobe-core",
  "flate2",
- "insta",
  "memchr",
  "miette",
  "regex",
@@ -2554,7 +2443,6 @@ version = "0.10.4"
 dependencies = [
  "base64",
  "disrobe-core",
- "insta",
  "miette",
  "serde",
  "serde_json",
@@ -2571,12 +2459,10 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",
- "insta",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2594,7 +2480,6 @@ dependencies = [
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",
  "flate2",
- "insta",
  "liblzma",
  "miette",
  "regex",
@@ -2606,7 +2491,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2620,7 +2504,6 @@ dependencies = [
  "disrobe-pass-jvm",
  "disrobe-pass-native",
  "disrobe-py-marshal",
- "insta",
  "miette",
  "serde",
  "serde_json",
@@ -2638,7 +2521,6 @@ dependencies = [
  "base64",
  "blake3",
  "bytes",
- "ciborium",
  "ctr",
  "disrobe-core",
  "disrobe-llm-metadata",
@@ -2648,16 +2530,11 @@ dependencies = [
  "disrobe-py-marshal",
  "divan",
  "iced-x86",
- "indexmap 2.14.0",
- "insta",
  "md-5",
  "miette",
  "object",
- "proptest",
- "rc4",
  "serde",
  "serde_json",
- "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2672,16 +2549,11 @@ dependencies = [
  "disrobe-pass-native",
  "disrobe-pass-py-decompile",
  "disrobe-py-marshal",
- "flate2",
- "indexmap 2.14.0",
- "insta",
  "miette",
  "object",
- "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
  "zip",
 ]
 
@@ -2694,7 +2566,6 @@ dependencies = [
  "bytes",
  "bzip2-rs",
  "ctr",
- "disrobe-binfmt",
  "disrobe-capabilities",
  "disrobe-core",
  "disrobe-pass-native",
@@ -2702,14 +2573,11 @@ dependencies = [
  "divan",
  "flate2",
  "indexmap 2.14.0",
- "insta",
  "liblzma",
- "memmap2",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2718,7 +2586,6 @@ version = "0.10.4"
 dependencies = [
  "blake3",
  "disrobe-core",
- "insta",
  "lzma-rs",
  "miette",
  "serde",
@@ -2732,12 +2599,10 @@ version = "0.10.4"
 dependencies = [
  "disrobe-core",
  "flate2",
- "insta",
  "miette",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
  "zip",
 ]
 
@@ -2747,23 +2612,18 @@ version = "0.10.4"
 dependencies = [
  "aes",
  "base64",
- "byteorder",
  "cbc",
  "cfb 0.10.0",
  "cipher 0.4.4",
  "disrobe-core",
  "disrobe-ir",
- "encoding_rs",
  "flate2",
- "insta",
  "md-5",
- "miette",
  "regex",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
- "tracing",
  "zip",
 ]
 
@@ -2779,13 +2639,11 @@ dependencies = [
  "disrobe-pass-py-disasm",
  "disrobe-py-marshal",
  "flate2",
- "insta",
  "miette",
  "rmpv",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2793,18 +2651,15 @@ name = "disrobe-pass-swift-objc"
 version = "0.10.4"
 dependencies = [
  "blake3",
- "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-core",
  "disrobe-nir",
  "disrobe-pass-native",
- "insta",
  "miette",
  "plist",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
  "zip",
 ]
 
@@ -2820,16 +2675,13 @@ dependencies = [
  "divan",
  "gimli 0.32.3",
  "indexmap 2.14.0",
- "insta",
  "miette",
  "object",
  "serde",
  "serde_json",
  "smallvec",
  "thiserror 2.0.18",
- "tracing",
  "walrus",
- "wasm-tools",
  "wasmparser 0.250.0",
  "wasmtime",
  "wat",
@@ -2931,9 +2783,7 @@ version = "0.10.4"
 dependencies = [
  "divan",
  "indexmap 2.14.0",
- "insta",
  "miette",
- "proptest",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -2945,7 +2795,6 @@ dependencies = [
  "blake3",
  "libc",
  "pyo3",
- "pyo3-ffi",
  "windows-sys 0.59.0",
 ]
 
@@ -2989,7 +2838,6 @@ dependencies = [
  "disrobe-py-marshal",
  "disrobe-query",
  "pyo3",
- "pyo3-ffi",
  "serde",
  "serde_json",
 ]
@@ -3045,7 +2893,6 @@ version = "0.10.4"
 dependencies = [
  "disrobe-nir",
  "disrobe-nir-lift",
- "disrobe-query",
  "serde",
  "wat",
 ]
@@ -3067,7 +2914,6 @@ dependencies = [
  "iced-x86",
  "object",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -3078,19 +2924,13 @@ dependencies = [
  "blake3",
  "disrobe-pass-js-deob",
  "disrobe-pass-nuitka",
- "disrobe-pass-py-deob",
- "disrobe-pass-py-disasm",
  "disrobe-pass-pyarmor",
  "disrobe-pass-pyfreeze",
  "disrobe-pass-pyinstaller",
  "disrobe-pass-wasm-deob",
- "disrobe-py-marshal",
- "divan",
  "miette",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -3173,25 +3013,11 @@ dependencies = [
 
 [[package]]
 name = "egg"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05a6c0bbc92278f84e742f08c0ab9cb16a987376cd2bc39d228ef9c74d98d6f7"
-dependencies = [
- "indexmap 1.9.3",
- "instant",
- "log",
- "once_cell",
- "smallvec",
- "symbolic_expressions",
-]
-
-[[package]]
-name = "egg"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd40cfd4196d7a8f882ace95d623d4d6734588e502b4e188675a7c2f55eb4fb4"
 dependencies = [
- "env_logger 0.9.3",
+ "env_logger",
  "hashbrown 0.15.5",
  "indexmap 2.14.0",
  "log",
@@ -3300,34 +3126,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_filter"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
-dependencies = [
- "log",
- "regex",
-]
-
-[[package]]
 name = "env_logger"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
 dependencies = [
- "log",
-]
-
-[[package]]
-name = "env_logger"
-version = "0.11.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
-dependencies = [
- "anstream 1.0.0",
- "anstyle",
- "env_filter",
- "jiff",
  "log",
 ]
 
@@ -3403,20 +3206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
-name = "fastwebsockets"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "305d3ba574508e27190906d11707dad683e0494e6b85eae9b044cb2734a5e422"
-dependencies = [
- "bytes",
- "rand 0.8.6",
- "simdutf8",
- "thiserror 1.0.69",
- "tokio",
- "utf-8",
-]
-
-[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3464,9 +3253,6 @@ name = "flagset"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "flate2"
@@ -4605,15 +4391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashlink"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8094feaf31ff591f651a2664fb9cfd92bba7a60ce3197265e9482ebe753c8f7"
-dependencies = [
- "hashbrown 0.14.5",
-]
-
-[[package]]
 name = "heapless"
 version = "0.7.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5142,39 +4919,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "insta"
-version = "1.47.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
-dependencies = [
- "console",
- "once_cell",
- "serde",
- "similar",
- "tempfile",
-]
-
-[[package]]
-name = "insta-cmd"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffeeefa927925cced49ccb01bf3e57c9d4cd132df21e576eb9415baeab2d3de6"
-dependencies = [
- "insta",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "instant"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
-dependencies = [
- "cfg-if",
-]
-
-[[package]]
 name = "interpolator"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5212,15 +4956,6 @@ name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7655c9839580ee829dfacba1d1278c2b7883e50a277ff7541299489d6bdfdc45"
-
-[[package]]
-name = "is_executable"
-version = "1.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baabb8b4867b26294d818bf3f651a454b6901431711abb96e296245888d6e8c4"
-dependencies = [
- "windows-sys 0.60.2",
-]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -5334,18 +5069,6 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "json-from-wast"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53384ef8ba578c868394dc946970a4a1751cb5cf47f0865f957578c537761419"
-dependencies = [
- "anyhow",
- "serde",
- "serde_derive",
- "wast",
 ]
 
 [[package]]
@@ -6265,26 +5988,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxc_codegen"
-version = "0.40.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5c03a8169761846c0ee4fcc071ea0947bf14b9c194a5469b7edfadf78c8a0fa"
-dependencies = [
- "assert-unchecked",
- "bitflags 2.11.1",
- "cow-utils",
- "nonmax",
- "oxc_allocator",
- "oxc_ast",
- "oxc_index",
- "oxc_mangler",
- "oxc_sourcemap",
- "oxc_span",
- "oxc_syntax",
- "rustc-hash",
-]
-
-[[package]]
 name = "oxc_diagnostics"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6318,19 +6021,6 @@ name = "oxc_index"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5eca5d9726cd0a6e433debe003b7bc88b2ecad0bb6109f0cef7c55e692139a34"
-
-[[package]]
-name = "oxc_mangler"
-version = "0.40.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419214d5375ad6e5ba49b3314cd323a2daf24dee2d20c4f25acbdbde7e1941e1"
-dependencies = [
- "itertools 0.13.0",
- "oxc_ast",
- "oxc_index",
- "oxc_semantic",
- "oxc_span",
-]
 
 [[package]]
 name = "oxc_parser"
@@ -6390,20 +6080,6 @@ dependencies = [
  "oxc_syntax",
  "phf",
  "rustc-hash",
-]
-
-[[package]]
-name = "oxc_sourcemap"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcb048fad7eee078b23dc3f3be7aba94eeba596c892c9255fc2646fba232a2ec"
-dependencies = [
- "base64-simd",
- "cfg-if",
- "cow-utils",
- "rustc-hash",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -6578,7 +6254,7 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e93f9f8d38102d1db2e9289e2cd9a19d73a103b00746cb85e3f9310f2404e79a"
 dependencies = [
- "egg 0.11.0",
+ "egg",
  "hashbrown 0.17.1",
  "num-bigint",
  "num-rational",
@@ -6870,15 +6546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "postcard-schema"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9475666d89f42231a0a57da32d5f6ca7f9b5cd4c335ea1fe8f3278215b7a21ff"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6911,16 +6578,6 @@ dependencies = [
  "arrayvec 0.5.2",
  "typed-arena",
  "unicode-width 0.2.2",
-]
-
-[[package]]
-name = "pretty_assertions"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
-dependencies = [
- "diff",
- "yansi",
 ]
 
 [[package]]
@@ -7529,15 +7186,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "libc",
  "log",
-]
-
-[[package]]
-name = "rc4"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1256e23efe6097f27aa82d6ca6889361c001586ae0f6917cbad072f05eb275"
-dependencies = [
- "cipher 0.4.4",
 ]
 
 [[package]]
@@ -8399,17 +8047,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml2"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63a7808e70b0b09116f01a4730d8976bcab457ea4a5e2e638e9b12ed3e01f27c"
-dependencies = [
- "serde",
- "thiserror 1.0.69",
- "yaml-rust2",
-]
-
-[[package]]
 name = "serde_yaml_ng"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8555,12 +8192,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
-name = "similar"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
-
-[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8616,15 +8247,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spdx"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8da593e30beb790fc9424502eb898320b44e5eb30367dbda1c1edde8e2f32d7"
-dependencies = [
- "smallvec",
 ]
 
 [[package]]
@@ -9254,12 +8876,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "topological-sort"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea68304e134ecd095ac6c3574494fc62b909f416c4fca77e440530221e549d3d"
-
-[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9472,12 +9088,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unicode-segmentation"
-version = "1.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
-
-[[package]]
 name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9556,12 +9166,6 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
-
-[[package]]
-name = "utf-8"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf16_iter"
@@ -9807,26 +9411,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-compose"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41d25ff9f6419c97fbf1bb4c658ec6e4e5a3cf1050cd9c368396adc8e15b3202"
-dependencies = [
- "anyhow",
- "heck 0.5.0",
- "indexmap 2.14.0",
- "log",
- "petgraph",
- "serde",
- "serde_derive",
- "serde_yaml2",
- "smallvec",
- "wasm-encoder 0.250.0",
- "wasmparser 0.250.0",
- "wat",
-]
-
-[[package]]
 name = "wasm-encoder"
 version = "0.236.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9876,119 +9460,6 @@ dependencies = [
  "indexmap 2.14.0",
  "wasm-encoder 0.244.0",
  "wasmparser 0.244.0",
-]
-
-[[package]]
-name = "wasm-metadata"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14d2fe7edf8b5c8870da3f6796f8ebe1898af1276f18490c861fcb1a11436556"
-dependencies = [
- "anyhow",
- "auditable-serde",
- "clap",
- "flate2",
- "indexmap 2.14.0",
- "serde",
- "serde_derive",
- "serde_json",
- "spdx",
- "url",
- "wasm-encoder 0.250.0",
- "wasmparser 0.250.0",
-]
-
-[[package]]
-name = "wasm-mutate"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcfde9f257ff50a90ce3958a4d6066791de780af7580abb6d33b6d1d484618b6"
-dependencies = [
- "clap",
- "egg 0.6.0",
- "log",
- "rand 0.10.1",
- "thiserror 2.0.18",
- "wasm-encoder 0.250.0",
- "wasmparser 0.250.0",
-]
-
-[[package]]
-name = "wasm-shrink"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ea67591ced6a9b992fc1ac94ca1fadcfec45d1c78757390049cc22898cd787"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "log",
- "rand 0.10.1",
- "wasm-mutate",
- "wasmparser 0.250.0",
-]
-
-[[package]]
-name = "wasm-smith"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39719ba92c2bb3b5879179758ca2642b8702d690d036012141d54603a2a4a687"
-dependencies = [
- "anyhow",
- "arbitrary",
- "clap",
- "flagset",
- "serde",
- "serde_derive",
- "wasm-encoder 0.250.0",
- "wasmparser 0.250.0",
- "wat",
-]
-
-[[package]]
-name = "wasm-tools"
-version = "1.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c0a67e671ec016eca97de558d8d869266c3cd65ace86f25c0454351615a5c38"
-dependencies = [
- "addr2line",
- "anyhow",
- "arbitrary",
- "bitflags 2.11.1",
- "bytesize",
- "clap",
- "clap_complete",
- "comfy-table",
- "cpp_demangle 0.5.1",
- "env_logger 0.11.10",
- "gimli 0.32.3",
- "is_executable",
- "json-from-wast",
- "log",
- "pretty_assertions",
- "rayon",
- "regex",
- "rustc-demangle",
- "serde",
- "serde_derive",
- "serde_json",
- "tempfile",
- "termcolor",
- "wasm-compose",
- "wasm-encoder 0.250.0",
- "wasm-metadata 0.250.0",
- "wasm-mutate",
- "wasm-shrink",
- "wasm-smith",
- "wasmparser 0.250.0",
- "wasmprinter 0.250.0",
- "wast",
- "wat",
- "wit-component 0.250.0",
- "wit-dylib",
- "wit-encoder",
- "wit-parser 0.250.0",
- "wit-smith",
 ]
 
 [[package]]
@@ -10051,17 +9522,6 @@ dependencies = [
  "anyhow",
  "termcolor",
  "wasmparser 0.236.1",
-]
-
-[[package]]
-name = "wasmprinter"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae2ebdb361516cdfbc25d0e0e453f74c4d4a5046b54f114c03af990bf098e6f0"
-dependencies = [
- "anyhow",
- "termcolor",
- "wasmparser 0.250.0",
 ]
 
 [[package]]
@@ -10142,7 +9602,7 @@ dependencies = [
  "target-lexicon",
  "wasm-encoder 0.236.1",
  "wasmparser 0.236.1",
- "wasmprinter 0.236.1",
+ "wasmprinter",
  "wasmtime-internal-component-util",
 ]
 
@@ -10339,7 +9799,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69e9294a1f0204aeb5c47e95165517f43ef3cc895918c4f3e939380d4c290f4a"
 dependencies = [
  "bumpalo",
- "gimli 0.32.3",
  "leb128fmt",
  "memchr",
  "unicode-width 0.2.2",
@@ -10900,9 +10359,9 @@ dependencies = [
  "indexmap 2.14.0",
  "prettyplease",
  "syn 2.0.117",
- "wasm-metadata 0.244.0",
+ "wasm-metadata",
  "wit-bindgen-core",
- "wit-component 0.244.0",
+ "wit-component",
 ]
 
 [[package]]
@@ -10934,56 +10393,9 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "wasm-encoder 0.244.0",
- "wasm-metadata 0.244.0",
+ "wasm-metadata",
  "wasmparser 0.244.0",
  "wit-parser 0.244.0",
-]
-
-[[package]]
-name = "wit-component"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d35e69355f29f746a5b5ed3a81b78a69597d13e24798b89f35f3e2691e59e779"
-dependencies = [
- "anyhow",
- "bitflags 2.11.1",
- "indexmap 2.14.0",
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "wasm-encoder 0.250.0",
- "wasm-metadata 0.250.0",
- "wasmparser 0.250.0",
- "wast",
- "wat",
- "wit-parser 0.250.0",
-]
-
-[[package]]
-name = "wit-dylib"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9e6e76d695f665ded29f8d851c2c3d3f02e8eb5f9cf776be59ab140663f789"
-dependencies = [
- "anyhow",
- "clap",
- "indexmap 2.14.0",
- "wasm-encoder 0.250.0",
- "wit-parser 0.250.0",
-]
-
-[[package]]
-name = "wit-encoder"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0596bf62f4abd0033fa050c8a414c2f7f2a68e235f1a1e1520b57de3bc92c414"
-dependencies = [
- "id-arena",
- "pretty_assertions",
- "semver",
- "serde",
- "wit-parser 0.250.0",
 ]
 
 [[package]]
@@ -11039,23 +10451,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.250.0",
- "wat",
-]
-
-[[package]]
-name = "wit-smith"
-version = "0.250.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46d11d912be8796089a7191929151e83777be2fcd6106cb81d5f6e0c0a0e83dd"
-dependencies = [
- "arbitrary",
- "clap",
- "indexmap 2.14.0",
- "log",
- "semver",
- "wasmparser 0.250.0",
- "wit-component 0.250.0",
- "wit-parser 0.250.0",
 ]
 
 [[package]]
@@ -11127,23 +10522,6 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
 ]
-
-[[package]]
-name = "yaml-rust2"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8902160c4e6f2fb145dbe9d6760a75e3c9522d8bf796ed7047c85919ac7115f8"
-dependencies = [
- "arraydeque",
- "encoding_rs",
- "hashlink",
-]
-
-[[package]]
-name = "yansi"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yaxpeax-arch"

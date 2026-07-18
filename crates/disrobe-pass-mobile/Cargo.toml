@@ -23,7 +23,6 @@ yaxpeax-arm = { workspace = true }
 zip = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }
@@ -34,8 +33,6 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-disrobe-binfmt = { workspace = true }
-insta = { workspace = true }
 boa_engine = { workspace = true }
 oxc_allocator = { workspace = true }
 oxc_parser = { workspace = true }

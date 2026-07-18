@@ -20,5 +20,4 @@ serde = { workspace = true }
 
 [dev-dependencies]
 disrobe-nir-lift = { workspace = true }
-disrobe-query = { workspace = true }
 wat = "1"

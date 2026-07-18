@@ -21,7 +21,6 @@ disrobe-pass-native = { workspace = true }
 object = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -39,7 +38,6 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 
 [dev-dependencies]
-insta = { workspace = true }
 des = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }

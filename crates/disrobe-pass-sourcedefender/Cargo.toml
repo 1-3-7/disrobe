@@ -26,7 +26,6 @@ flate2 = { workspace = true }
 rmpv = "1"
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -35,4 +34,3 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-insta = { workspace = true }

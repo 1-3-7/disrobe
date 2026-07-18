@@ -21,7 +21,6 @@ disrobe-nir = { workspace = true }
 blake3 = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 plist = { workspace = true }
@@ -35,5 +34,3 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dev-dependencies]
-disrobe-binfmt = { workspace = true }
-insta = { workspace = true }
