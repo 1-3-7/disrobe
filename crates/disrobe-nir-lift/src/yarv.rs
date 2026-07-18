@@ -161,7 +161,7 @@ fn branch_targets(body: &YarvIseqBody, base: u64) -> Vec<Option<u64>> {
         let Some(target_pc_u32): Option<u32> = u32::try_from(target_pc).ok() else {
             continue;
         };
-        if let Some(target_idx) = rt.iter().position(|&p: &u32| p == target_pc_u32)
+        if let Ok(target_idx) = rt.binary_search(&target_pc_u32)
             && let Some(target_instr) = body.instructions.get(target_idx)
         {
             targets[idx] = Some(base.saturating_add(u64::from(target_instr.pc)));
