@@ -2174,7 +2174,7 @@ pub(super) fn build_linear_stmts_sim_seed(
                     skip_next = skip;
                 } else {
                     sim.push(source);
-                    for _ in 0..n_usize {
+                    for _ in 0..n_usize.min(MAX_SYNTH_OPERANDS) {
                         sim.push(Expr::Constant {
                             value: ConstValue::None,
                             line: None,
@@ -2211,7 +2211,7 @@ pub(super) fn build_linear_stmts_sim_seed(
                     });
                     skip_next = skip;
                 } else {
-                    for _ in 0..total {
+                    for _ in 0..total.min(MAX_SYNTH_OPERANDS) {
                         sim.push(Expr::Constant {
                             value: ConstValue::None,
                             line: None,
