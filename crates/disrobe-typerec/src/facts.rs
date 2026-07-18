@@ -1,16 +1,13 @@
 use std::collections::BTreeMap;
 
-use iced_x86::{
-    ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register, RflagsBits,
-};
+use iced_x86::{ConditionCode, Instruction, Mnemonic, OpKind, Register, RflagsBits};
 
 use crate::cells::CellStore;
 use crate::cfg::{self, Cfg};
 use crate::constraint::Constraint;
+use crate::decode::decode_all;
 use crate::lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
 use crate::memssa::{self, MemSsa};
-
-const MAX_DECODE_INSNS: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotMode {
@@ -72,17 +69,17 @@ impl Extractor {
         fresh
     }
 
-    fn slot_cell(&mut self, disp: i64) -> Option<TypeVar> {
+    fn slot_cell(&mut self, rbp_disp: i64) -> Option<TypeVar> {
         match &mut self.resolver {
             SlotResolver::Merge(map) => {
-                if let Some(existing) = map.get(&disp) {
+                if let Some(existing) = map.get(&rbp_disp) {
                     return Some(*existing);
                 }
                 let fresh: TypeVar = self.store.fresh(TypeClass::Top);
-                map.insert(disp, fresh);
+                map.insert(rbp_disp, fresh);
                 Some(fresh)
             }
-            SlotResolver::Split(ssa) => ssa.version_cell(self.current_ip, disp),
+            SlotResolver::Split(ssa) => ssa.version_cell(self.current_ip, rbp_disp),
         }
     }
 
@@ -92,19 +89,21 @@ impl Extractor {
                 let reg: Register = insn.op_register(op);
                 reg.is_gpr().then(|| self.reg_use(reg))
             }
-            OpKind::Memory => rbp_slot_disp(insn).and_then(|disp: i64| self.slot_cell(disp)),
+            OpKind::Memory => {
+                rbp_slot_disp(insn).and_then(|rbp_disp: i64| self.slot_cell(rbp_disp))
+            }
             _ => None,
         }
     }
 
     fn record_slot_width(&mut self, insn: &Instruction) {
-        let Some(disp): Option<i64> = rbp_slot_disp(insn) else {
+        let Some(rbp_disp): Option<i64> = rbp_slot_disp(insn) else {
             return;
         };
         let Some(width): Option<Width> = memory_width(insn) else {
             return;
         };
-        let Some(cell): Option<TypeVar> = self.slot_cell(disp) else {
+        let Some(cell): Option<TypeVar> = self.slot_cell(rbp_disp) else {
             return;
         };
         self.constraints
@@ -130,7 +129,7 @@ impl Extractor {
                     return;
                 }
                 let slot: Option<TypeVar> =
-                    rbp_slot_disp(insn).and_then(|disp: i64| self.slot_cell(disp));
+                    rbp_slot_disp(insn).and_then(|rbp_disp: i64| self.slot_cell(rbp_disp));
                 let dst: TypeVar = self.reg_def(dst_reg);
                 if let Some(src) = slot {
                     self.constraints.push(Constraint::SignLink(dst, src));
@@ -141,11 +140,11 @@ impl Extractor {
                 if !src_reg.is_gpr() {
                     return;
                 }
-                let Some(disp): Option<i64> = rbp_slot_disp(insn) else {
+                let Some(rbp_disp): Option<i64> = rbp_slot_disp(insn) else {
                     return;
                 };
                 let src: TypeVar = self.reg_use(src_reg);
-                let Some(slot): Option<TypeVar> = self.slot_cell(disp) else {
+                let Some(slot): Option<TypeVar> = self.slot_cell(rbp_disp) else {
                     return;
                 };
                 self.constraints.push(Constraint::SignLink(slot, src));
@@ -274,45 +273,38 @@ impl Extractor {
 
 #[must_use]
 pub fn extract(bytes: &[u8], base: u64) -> FactSet {
-    run(bytes, base, SlotMode::Merge)
+    extract_from(&decode_all(bytes, base))
 }
 
 #[must_use]
 pub fn extract_split(bytes: &[u8], base: u64) -> FactSet {
-    run(bytes, base, SlotMode::Split)
+    extract_split_from(&decode_all(bytes, base))
 }
 
-fn run(bytes: &[u8], base: u64, mode: SlotMode) -> FactSet {
-    let instrs: Vec<Instruction> = decode_all(bytes, base);
-    let has_frame_pointer: bool = detects_frame_pointer(&instrs);
+pub(crate) fn extract_from(instrs: &[Instruction]) -> FactSet {
+    run(instrs, SlotMode::Merge)
+}
+
+pub(crate) fn extract_split_from(instrs: &[Instruction]) -> FactSet {
+    run(instrs, SlotMode::Split)
+}
+
+fn run(instrs: &[Instruction], mode: SlotMode) -> FactSet {
+    let has_frame_pointer: bool = detects_frame_pointer(instrs);
     let (store, resolver): (CellStore, SlotResolver) = match mode {
         SlotMode::Merge => (CellStore::new(), SlotResolver::Merge(BTreeMap::new())),
         SlotMode::Split => {
-            let cfg: Cfg = cfg::build(&instrs);
+            let cfg: Cfg = cfg::build(instrs);
             let mut store: CellStore = CellStore::new();
-            let ssa: MemSsa = memssa::build(&instrs, &cfg, &mut store);
+            let ssa: MemSsa = memssa::build(instrs, &cfg, &mut store);
             (store, SlotResolver::Split(ssa))
         }
     };
     let mut extractor: Extractor = Extractor::new(store, resolver);
-    for insn in &instrs {
+    for insn in instrs {
         extractor.process(insn);
     }
     extractor.finish(BTreeMap::new(), has_frame_pointer)
-}
-
-fn decode_all(bytes: &[u8], base: u64) -> Vec<Instruction> {
-    let mut decoder: Decoder<'_> = Decoder::with_ip(64, bytes, base, DecoderOptions::NONE);
-    let mut out: Vec<Instruction> = Vec::new();
-    while decoder.can_decode() && out.len() < MAX_DECODE_INSNS {
-        let mut insn: Instruction = Instruction::default();
-        decoder.decode_out(&mut insn);
-        if insn.is_invalid() {
-            break;
-        }
-        out.push(insn);
-    }
-    out
 }
 
 fn detects_frame_pointer(instrs: &[Instruction]) -> bool {
@@ -473,7 +465,7 @@ mod tests {
             .ssa
             .versions()
             .iter()
-            .filter(|v: &&crate::memssa::VersionInfo| v.offset == 0 && !v.is_phi && v.live_hi > 0)
+            .filter(|v: &&crate::memssa::VersionInfo| v.rbp_disp == 0 && !v.is_phi && v.live_hi > 0)
             .map(|v: &crate::memssa::VersionInfo| facts.store.resolved(v.cell).class.sign())
             .collect();
         assert!(

@@ -57,6 +57,7 @@ impl CellStore {
 
     #[must_use]
     pub fn find(&mut self, var: TypeVar) -> TypeVar {
+        debug_assert!((var.0 as usize) < self.parent.len());
         let mut root: u32 = var.0;
         while self.parent[root as usize] != root {
             root = self.parent[root as usize];

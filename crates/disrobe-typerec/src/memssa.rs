@@ -17,14 +17,14 @@ pub enum AccessKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackEvent {
-    pub offset: i64,
+    pub rbp_disp: i64,
     pub width: Width,
     pub kind: AccessKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VersionInfo {
-    pub offset: i64,
+    pub rbp_disp: i64,
     pub cell: TypeVar,
     pub live_lo: u64,
     pub live_hi: u64,
@@ -41,8 +41,8 @@ pub struct MemSsa {
 
 impl MemSsa {
     #[must_use]
-    pub fn version_cell(&self, ip: u64, offset: i64) -> Option<TypeVar> {
-        let id: VersionId = *self.access.get(&(ip, offset))?;
+    pub fn version_cell(&self, ip: u64, rbp_disp: i64) -> Option<TypeVar> {
+        let id: VersionId = *self.access.get(&(ip, rbp_disp))?;
         self.versions
             .get(id as usize)
             .map(|info: &VersionInfo| info.cell)
@@ -54,21 +54,21 @@ impl MemSsa {
     }
 
     #[must_use]
-    pub fn is_escaped(&self, offset: i64) -> bool {
-        self.escaped.contains(&offset)
+    pub fn is_escaped(&self, rbp_disp: i64) -> bool {
+        self.escaped.contains(&rbp_disp)
     }
 
     fn fresh(
         &mut self,
         store: &mut CellStore,
-        offset: i64,
+        rbp_disp: i64,
         is_phi: bool,
         escaped: bool,
     ) -> VersionId {
         let id: VersionId = u32::try_from(self.versions.len()).unwrap_or(u32::MAX);
         let cell: TypeVar = store.fresh(TypeClass::Top);
         self.versions.push(VersionInfo {
-            offset,
+            rbp_disp,
             cell,
             live_lo: u64::MAX,
             live_hi: 0,
@@ -102,11 +102,11 @@ fn stack_event(insn: &Instruction, factory: &mut InstructionInfoFactory) -> Opti
             OpAccess::ReadWrite | OpAccess::ReadCondWrite => AccessKind::Rmw,
             OpAccess::None | OpAccess::NoMemAccess => continue,
         };
-        let offset: i64 = i64::from_ne_bytes(mem.displacement().to_ne_bytes());
+        let rbp_disp: i64 = i64::from_ne_bytes(mem.displacement().to_ne_bytes());
         let bytes: Option<u8> = u8::try_from(mem.memory_size().size()).ok();
         let width: Width = bytes.map_or(Width::Unknown, Width::from_bytes);
         return Some(StackEvent {
-            offset,
+            rbp_disp,
             width,
             kind,
         });
@@ -114,7 +114,7 @@ fn stack_event(insn: &Instruction, factory: &mut InstructionInfoFactory) -> Opti
     None
 }
 
-fn escaped_offset(insn: &Instruction) -> Option<i64> {
+fn escaped_slot(insn: &Instruction) -> Option<i64> {
     if insn.mnemonic() != Mnemonic::Lea {
         return None;
     }
@@ -136,56 +136,56 @@ pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa
 
     let mut ssa: MemSsa = MemSsa::default();
     for insn in instrs {
-        if let Some(offset) = escaped_offset(insn) {
-            ssa.escaped.insert(offset);
+        if let Some(rbp_disp) = escaped_slot(insn) {
+            ssa.escaped.insert(rbp_disp);
         }
     }
 
-    let mut offsets: BTreeSet<i64> = BTreeSet::new();
+    let mut rbp_disps: BTreeSet<i64> = BTreeSet::new();
     for event in events.iter().flatten() {
-        offsets.insert(event.offset);
+        rbp_disps.insert(event.rbp_disp);
     }
 
-    for offset in offsets {
-        if ssa.escaped.contains(&offset) {
-            build_escaped_offset(&mut ssa, store, instrs, &events, offset);
+    for rbp_disp in rbp_disps {
+        if ssa.escaped.contains(&rbp_disp) {
+            build_escaped_slot(&mut ssa, store, instrs, &events, rbp_disp);
         } else {
-            build_offset(&mut ssa, store, cfg, instrs, &events, offset);
+            build_slot(&mut ssa, store, cfg, instrs, &events, rbp_disp);
         }
     }
     ssa
 }
 
-fn build_escaped_offset(
+fn build_escaped_slot(
     ssa: &mut MemSsa,
     store: &mut CellStore,
     instrs: &[Instruction],
     events: &[Option<StackEvent>],
-    offset: i64,
+    rbp_disp: i64,
 ) {
-    let version: VersionId = ssa.fresh(store, offset, false, true);
+    let version: VersionId = ssa.fresh(store, rbp_disp, false, true);
     for (index, event) in events.iter().enumerate() {
         let Some(event): Option<&StackEvent> = event.as_ref() else {
             continue;
         };
-        if event.offset != offset {
+        if event.rbp_disp != rbp_disp {
             continue;
         }
         let Some(insn): Option<&Instruction> = instrs.get(index) else {
             continue;
         };
-        ssa.access.insert((insn.ip(), offset), version);
+        ssa.access.insert((insn.ip(), rbp_disp), version);
         ssa.touch(version, insn.ip());
     }
 }
 
-fn build_offset(
+fn build_slot(
     ssa: &mut MemSsa,
     store: &mut CellStore,
     cfg: &Cfg,
     instrs: &[Instruction],
     events: &[Option<StackEvent>],
-    offset: i64,
+    rbp_disp: i64,
 ) {
     let block_count: usize = cfg.blocks.len();
     if block_count == 0 {
@@ -194,17 +194,17 @@ fn build_offset(
     let mut store_version: BTreeMap<usize, VersionId> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
         if event.is_some_and(|event: StackEvent| {
-            event.offset == offset && event.kind == AccessKind::Store
+            event.rbp_disp == rbp_disp && event.kind == AccessKind::Store
         }) {
-            let version: VersionId = ssa.fresh(store, offset, false, false);
+            let version: VersionId = ssa.fresh(store, rbp_disp, false, false);
             store_version.insert(index, version);
         }
     }
-    let initial: VersionId = ssa.fresh(store, offset, false, false);
+    let initial: VersionId = ssa.fresh(store, rbp_disp, false, false);
     let mut phi: BTreeMap<usize, VersionId> = BTreeMap::new();
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         if block.preds.len() >= 2 {
-            phi.insert(block_index, ssa.fresh(store, offset, true, false));
+            phi.insert(block_index, ssa.fresh(store, rbp_disp, true, false));
         }
     }
 
@@ -251,7 +251,7 @@ fn build_offset(
         cfg,
         instrs,
         events,
-        offset,
+        rbp_disp,
         &entry,
         &store_version,
         initial,
@@ -286,7 +286,7 @@ fn assign_versions(
     cfg: &Cfg,
     instrs: &[Instruction],
     events: &[Option<StackEvent>],
-    offset: i64,
+    rbp_disp: i64,
     entry: &[Option<VersionId>],
     store_version: &BTreeMap<usize, VersionId>,
     initial: VersionId,
@@ -297,7 +297,7 @@ fn assign_versions(
             let Some(event): Option<StackEvent> = events.get(index).copied().flatten() else {
                 continue;
             };
-            if event.offset != offset {
+            if event.rbp_disp != rbp_disp {
                 continue;
             }
             let Some(insn): Option<&Instruction> = instrs.get(index) else {
@@ -307,7 +307,7 @@ fn assign_versions(
                 AccessKind::Store => store_version.get(&index).copied().unwrap_or(current),
                 AccessKind::Load | AccessKind::Rmw => current,
             };
-            ssa.access.insert((insn.ip(), offset), version);
+            ssa.access.insert((insn.ip(), rbp_disp), version);
             ssa.touch(version, insn.ip());
             if event.kind == AccessKind::Store {
                 current = version;
@@ -356,7 +356,7 @@ mod tests {
         let store_versions: BTreeSet<TypeVar> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| !v.is_phi && v.offset == 0 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| !v.is_phi && v.rbp_disp == 0 && v.live_hi > 0)
             .map(|v: &VersionInfo| v.cell)
             .collect();
         assert!(
@@ -377,7 +377,7 @@ mod tests {
         let live: Vec<&VersionInfo> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| v.offset == 0x10 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| v.rbp_disp == 0x10 && v.live_hi > 0)
             .collect();
         let cells: BTreeSet<TypeVar> = live.iter().map(|v: &&VersionInfo| v.cell).collect();
         assert_eq!(cells.len(), 1, "one store plus one load share one version");
@@ -397,7 +397,7 @@ mod tests {
         let live: Vec<&VersionInfo> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| v.offset == 0x10 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| v.rbp_disp == 0x10 && v.live_hi > 0)
             .collect();
         assert_eq!(live.len(), 1);
         assert!(live[0].escaped);

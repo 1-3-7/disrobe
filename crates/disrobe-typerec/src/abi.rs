@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfo, InstructionInfoFactory,
-    Mnemonic, OpAccess, OpKind, Register, UsedMemory, UsedRegister,
+    FlowControl, Instruction, InstructionInfo, InstructionInfoFactory, Mnemonic, OpAccess, OpKind,
+    Register, UsedMemory, UsedRegister,
 };
 
 use crate::cfg::{self, BasicBlock, Cfg};
+use crate::decode::decode_all;
 
-const MAX_DECODE_INSNS: usize = 1 << 16;
-const WIN64_SHADOW_BASE: i64 = 0x10;
+const SYSV_FIRST_STACK_ARG: i64 = 0x10;
+const WIN64_FIRST_STACK_ARG: i64 = 0x30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Convention {
@@ -320,7 +321,12 @@ fn sysv_register_args(mask: u32) -> Vec<ArgLocation> {
     args
 }
 
-fn stack_args(instrs: &[Instruction], factory: &mut InstructionInfoFactory) -> Vec<ArgLocation> {
+fn stack_args(
+    instrs: &[Instruction],
+    convention: Convention,
+    factory: &mut InstructionInfoFactory,
+) -> Vec<ArgLocation> {
+    let threshold: i64 = first_stack_arg_disp(convention);
     let mut first_access: BTreeMap<i64, bool> = BTreeMap::new();
     for insn in instrs {
         let info: &InstructionInfo = factory.info(insn);
@@ -329,8 +335,8 @@ fn stack_args(instrs: &[Instruction], factory: &mut InstructionInfoFactory) -> V
             if mem.base() != Register::RBP || mem.index() != Register::None {
                 continue;
             }
-            let disp: i64 = i64::from_ne_bytes(mem.displacement().to_ne_bytes());
-            if disp < WIN64_SHADOW_BASE {
+            let rbp_disp: i64 = i64::from_ne_bytes(mem.displacement().to_ne_bytes());
+            if rbp_disp < threshold {
                 continue;
             }
             let is_write: bool = matches!(
@@ -340,15 +346,22 @@ fn stack_args(instrs: &[Instruction], factory: &mut InstructionInfoFactory) -> V
                     | OpAccess::ReadWrite
                     | OpAccess::ReadCondWrite
             );
-            first_access.entry(disp).or_insert(!is_write);
+            first_access.entry(rbp_disp).or_insert(!is_write);
         }
     }
     first_access
         .into_iter()
-        .filter_map(|(disp, first_read): (i64, bool)| {
-            first_read.then_some(ArgLocation::Stack(disp))
+        .filter_map(|(rbp_disp, first_read): (i64, bool)| {
+            first_read.then_some(ArgLocation::Stack(rbp_disp))
         })
         .collect()
+}
+
+const fn first_stack_arg_disp(convention: Convention) -> i64 {
+    match convention {
+        Convention::Win64 => WIN64_FIRST_STACK_ARG,
+        Convention::SysVAmd64 | Convention::Unknown => SYSV_FIRST_STACK_ARG,
+    }
 }
 
 fn spill_slot_of(
@@ -383,14 +396,14 @@ fn detect_sret(
     factory: &mut InstructionInfoFactory,
 ) -> bool {
     let first_reg: Register = first_int_arg_register(convention);
-    let Some(slot): Option<i64> = spill_slot_of(instrs, first_reg, factory) else {
+    let Some(rbp_disp): Option<i64> = spill_slot_of(instrs, first_reg, factory) else {
         return false;
     };
     for (index, insn) in instrs.iter().enumerate() {
         if insn.flow_control() != FlowControl::Return {
             continue;
         }
-        if returns_load_from_slot(instrs, index, slot, factory) {
+        if returns_load_from_slot(instrs, index, rbp_disp, factory) {
             return true;
         }
     }
@@ -400,7 +413,7 @@ fn detect_sret(
 fn returns_load_from_slot(
     instrs: &[Instruction],
     ret_index: usize,
-    slot: i64,
+    rbp_disp: i64,
     factory: &mut InstructionInfoFactory,
 ) -> bool {
     for pos in (0..ret_index).rev() {
@@ -418,7 +431,7 @@ fn returns_load_from_slot(
         }
         return insn.memory_base() == Register::RBP
             && insn.memory_index() == Register::None
-            && i64::from_ne_bytes(insn.memory_displacement64().to_ne_bytes()) == slot;
+            && i64::from_ne_bytes(insn.memory_displacement64().to_ne_bytes()) == rbp_disp;
     }
     false
 }
@@ -567,7 +580,7 @@ fn analyze_callee(
     if sret && !args.is_empty() {
         args.remove(0);
     }
-    args.extend(stack_args(instrs, factory));
+    args.extend(stack_args(instrs, convention, factory));
     CalleeRaw {
         convention,
         args,
@@ -763,26 +776,15 @@ fn return_kind(callee: &CalleeRaw, callsites: &[CallSiteObs]) -> (ReturnKind, Si
     (ReturnKind::Unknown, SigConfidence::Low)
 }
 
-fn decode_all(bytes: &[u8], base: u64) -> Vec<Instruction> {
-    let mut decoder: Decoder<'_> = Decoder::with_ip(64, bytes, base, DecoderOptions::NONE);
-    let mut out: Vec<Instruction> = Vec::new();
-    while decoder.can_decode() && out.len() < MAX_DECODE_INSNS {
-        let mut insn: Instruction = Instruction::default();
-        decoder.decode_out(&mut insn);
-        if insn.is_invalid() {
-            break;
-        }
-        out.push(insn);
-    }
-    out
-}
-
 #[must_use]
 pub fn recover_proto(bytes: &[u8], base: u64) -> RecoveredProto {
-    let instrs: Vec<Instruction> = decode_all(bytes, base);
-    let cfg: Cfg = cfg::build(&instrs);
+    recover_proto_from(&decode_all(bytes, base))
+}
+
+pub(crate) fn recover_proto_from(instrs: &[Instruction]) -> RecoveredProto {
+    let cfg: Cfg = cfg::build(instrs);
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
-    let callee: CalleeRaw = analyze_callee(&instrs, &cfg, None, &mut factory);
+    let callee: CalleeRaw = analyze_callee(instrs, &cfg, None, &mut factory);
     unify(&callee, &[])
 }
 
@@ -936,6 +938,24 @@ mod tests {
         ];
         let protos: Vec<RecoveredProto> = recover_protos(&functions, Convention::Win64);
         assert_eq!(protos[0].ret, ReturnKind::Void);
+    }
+
+    #[test]
+    fn win64_shadow_space_read_is_not_a_stack_arg() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x8b, 0x01, 0x48, 0x8b, 0x45, 0x18, 0x5d, 0xc3,
+        ];
+        let proto: RecoveredProto = recover_proto(bytes, 0x1000);
+        assert_eq!(proto.convention, Convention::Win64);
+        assert_eq!(proto.args, vec![win64(3)]);
+        assert!(
+            !proto
+                .args
+                .iter()
+                .any(|arg: &ArgLocation| matches!(arg, ArgLocation::Stack(_))),
+            "a read of win64 shadow space must not be counted as a stack argument: {:?}",
+            proto.args,
+        );
     }
 
     #[test]

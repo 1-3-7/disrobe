@@ -2,6 +2,7 @@ pub mod abi;
 pub mod cells;
 pub mod cfg;
 pub mod constraint;
+pub mod decode;
 pub mod dwarf_gt;
 pub mod error;
 pub mod facts;
