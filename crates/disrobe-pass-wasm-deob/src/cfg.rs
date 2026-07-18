@@ -114,12 +114,14 @@ pub fn build_function_cfg(body: &FunctionBody<'_>) -> Result<FunctionCfg> {
             kind,
         });
     }
-    for block in &mut blocks {
-        block.successors = edges
-            .iter()
-            .filter(|e| e.from == block.id)
-            .map(|e| e.to)
-            .collect();
+    let mut successors: Vec<Vec<BlockId>> = vec![Vec::new(); blocks.len()];
+    for edge in &edges {
+        if let Some(list) = successors.get_mut(edge.from.0 as usize) {
+            list.push(edge.to);
+        }
+    }
+    for (block, list) in blocks.iter_mut().zip(successors) {
+        block.successors = list;
     }
 
     Ok(FunctionCfg {
@@ -209,5 +211,71 @@ mod tests {
             }
         }
         assert!(found_one, "synthetic module must contain a code body");
+    }
+
+    fn many_block_module(pairs: usize) -> Vec<u8> {
+        let mut body: String = String::with_capacity(pairs * 20);
+        for _ in 0..pairs {
+            body.push_str("i32.const 0 br_if 0 ");
+        }
+        let source: String = format!("(module (func {body}))");
+        wat::parse_str(&source).expect("many-block module parses")
+    }
+
+    fn only_cfg(bytes: &[u8]) -> FunctionCfg {
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = payload {
+                return build_function_cfg(&body).expect("cfg build");
+            }
+        }
+        panic!("module must contain a code body");
+    }
+
+    #[test]
+    fn successors_match_edge_filter_oracle_for_many_blocks() {
+        let cfg: FunctionCfg = only_cfg(&many_block_module(1500));
+        assert!(cfg.blocks.len() > 1000, "expected many blocks");
+        for block in &cfg.blocks {
+            let expected: Vec<BlockId> = cfg
+                .edges
+                .iter()
+                .filter(|e| e.from == block.id)
+                .map(|e| e.to)
+                .collect();
+            assert_eq!(block.successors, expected, "successors for {:?}", block.id);
+        }
+    }
+
+    #[test]
+    fn many_block_cfg_builds_with_contiguous_successors_within_bound() {
+        let pairs: usize = 8000;
+        let bytes: Vec<u8> = many_block_module(pairs);
+        let start: std::time::Instant = std::time::Instant::now();
+        let cfg: FunctionCfg = only_cfg(&bytes);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            cfg.blocks.len() >= pairs,
+            "expected at least one block per branch"
+        );
+        let last: usize = cfg.blocks.len() - 1;
+        for (idx, block) in cfg.blocks.iter().enumerate() {
+            if idx == last {
+                assert!(
+                    block.successors.is_empty(),
+                    "terminal block has no successor"
+                );
+            } else {
+                let next: u32 = u32::try_from(idx + 1).expect("index fits u32");
+                assert_eq!(
+                    block.successors,
+                    vec![BlockId(next)],
+                    "block {idx} must fall through to its neighbour"
+                );
+            }
+        }
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "cfg build must scale linearly, took {elapsed:?}"
+        );
     }
 }

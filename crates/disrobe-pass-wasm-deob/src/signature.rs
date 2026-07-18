@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::Serialize;
 use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValType};
 
@@ -237,6 +239,22 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let imported_function_count: u32 =
         u32::try_from(imported_function_type_indices.len()).unwrap_or(u32::MAX);
 
+    let name_by_index: BTreeMap<u32, &str> = {
+        let mut index: BTreeMap<u32, &str> = BTreeMap::new();
+        for (function_index, name) in &name_section_names {
+            index.entry(*function_index).or_insert(name.as_str());
+        }
+        index
+    };
+    let export_by_index: BTreeMap<u32, &str> = {
+        let mut index: BTreeMap<u32, &str> = BTreeMap::new();
+        for (function_index, name) in &export_names {
+            index.entry(*function_index).or_insert(name.as_str());
+        }
+        index
+    };
+    let exported_indices: BTreeSet<u32> = export_names.iter().map(|(i, _)| *i).collect();
+
     let mut sigs: Vec<FunctionSig> =
         Vec::with_capacity(imported_function_type_indices.len() + function_type_indices.len());
 
@@ -248,12 +266,12 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             name: resolve_name(
                 function_index,
                 imported_function_count,
-                &name_section_names,
-                &export_names,
+                &name_by_index,
+                &export_by_index,
             ),
             params,
             results,
-            exported: export_names.iter().any(|(i, _)| *i == function_index),
+            exported: exported_indices.contains(&function_index),
             imported: true,
             local_names: Vec::new(),
         });
@@ -268,12 +286,12 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
             name: resolve_name(
                 function_index,
                 imported_function_count,
-                &name_section_names,
-                &export_names,
+                &name_by_index,
+                &export_by_index,
             ),
             params,
             results,
-            exported: export_names.iter().any(|(i, _)| *i == function_index),
+            exported: exported_indices.contains(&function_index),
             imported: false,
             local_names: name_section_locals
                 .get(&function_index)
@@ -328,16 +346,13 @@ fn type_signature(func_types: &[RawFuncType], type_index: u32) -> (Vec<ValType>,
 fn resolve_name(
     function_index: u32,
     imported_function_count: u32,
-    name_section_names: &[(u32, String)],
-    export_names: &[(u32, String)],
+    name_by_index: &BTreeMap<u32, &str>,
+    export_by_index: &BTreeMap<u32, &str>,
 ) -> String {
-    if let Some((_, name)) = name_section_names
-        .iter()
-        .find(|(i, _)| *i == function_index)
-    {
+    if let Some(&name) = name_by_index.get(&function_index) {
         return sanitize_identifier(name);
     }
-    if let Some((_, name)) = export_names.iter().find(|(i, _)| *i == function_index) {
+    if let Some(&name) = export_by_index.get(&function_index) {
         return sanitize_identifier(name);
     }
     if function_index < imported_function_count {
@@ -529,5 +544,66 @@ mod tests {
         assert_eq!(names.len(), MAX_FUNCTION_LOCALS);
         assert_eq!(names.first().and_then(Option::as_deref), Some("p"));
         assert_eq!(names.last().and_then(Option::as_deref), Some("p"));
+    }
+
+    #[test]
+    fn resolve_name_prefers_name_section_then_export_then_placeholder() {
+        let mut name_by_index: BTreeMap<u32, &str> = BTreeMap::new();
+        name_by_index.insert(5, "from_name_section");
+        let mut export_by_index: BTreeMap<u32, &str> = BTreeMap::new();
+        export_by_index.insert(5, "from_export");
+        export_by_index.insert(6, "only_export");
+
+        assert_eq!(
+            resolve_name(5, 2, &name_by_index, &export_by_index),
+            "from_name_section",
+            "name section wins over export"
+        );
+        assert_eq!(
+            resolve_name(6, 2, &name_by_index, &export_by_index),
+            "only_export",
+            "export used when the name section has no entry"
+        );
+        assert_eq!(
+            resolve_name(1, 2, &name_by_index, &export_by_index),
+            "import_1",
+            "imported placeholder below the import count"
+        );
+        assert_eq!(
+            resolve_name(4, 2, &name_by_index, &export_by_index),
+            "func_2",
+            "defined placeholder offsets by the import count"
+        );
+    }
+
+    fn many_exported_module(count: usize) -> Vec<u8> {
+        let mut source: String = String::with_capacity(count * 48 + 16);
+        source.push_str("(module\n");
+        for i in 0..count {
+            source.push_str("  (func (export \"f");
+            source.push_str(&i.to_string());
+            source.push_str("\") (result i32) i32.const 0)\n");
+        }
+        source.push(')');
+        wat::parse_str(&source).expect("many-export module parses")
+    }
+
+    #[test]
+    fn resolves_many_export_names_within_bound() {
+        let count: usize = 15000;
+        let bytes: Vec<u8> = many_exported_module(count);
+        let start: std::time::Instant = std::time::Instant::now();
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        let elapsed: std::time::Duration = start.elapsed();
+        let defined: &[FunctionSig] = sigs.defined();
+        assert_eq!(defined.len(), count, "one signature per function");
+        for (i, sig) in defined.iter().enumerate() {
+            assert_eq!(sig.name, format!("f{i}"), "export name resolved by index");
+            assert!(sig.exported, "each function is exported");
+        }
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "signature extraction must scale, took {elapsed:?}"
+        );
     }
 }
