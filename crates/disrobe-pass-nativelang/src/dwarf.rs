@@ -278,14 +278,20 @@ fn apply_one_relocation<'data>(
     let unsigned: u128 = value.cast_unsigned();
     match reloc.size() {
         32 => {
-            let Some(slot): Option<&mut [u8]> = target.get_mut(start..start + 4) else {
+            let Some(end): Option<usize> = start.checked_add(4) else {
+                return;
+            };
+            let Some(slot): Option<&mut [u8]> = target.get_mut(start..end) else {
                 return;
             };
             let truncated: u32 = u32::try_from(unsigned & u128::from(u32::MAX)).unwrap_or(0);
             slot.copy_from_slice(&truncated.to_le_bytes());
         }
         64 => {
-            let Some(slot): Option<&mut [u8]> = target.get_mut(start..start + 8) else {
+            let Some(end): Option<usize> = start.checked_add(8) else {
+                return;
+            };
+            let Some(slot): Option<&mut [u8]> = target.get_mut(start..end) else {
                 return;
             };
             let truncated: u64 = u64::try_from(unsigned & u128::from(u64::MAX)).unwrap_or(0);
@@ -800,17 +806,26 @@ fn fill_line_ranges(
         return;
     }
     rows.sort_unstable();
+    assign_line_ranges(&rows, functions, MAX_LINE_ROWS);
+}
+
+fn assign_line_ranges(rows: &[(u64, u64)], functions: &mut [DwarfFunction], mut scan_budget: u64) {
     for func in functions.iter_mut() {
+        if scan_budget == 0 {
+            break;
+        }
         let Some(lo): Option<u64> = func.low_pc else {
             continue;
         };
         let hi: u64 = func.high_pc.unwrap_or(u64::MAX);
         let mut line_lo: Option<u64> = None;
         let mut line_hi: Option<u64> = None;
-        for (addr, line) in &rows {
-            if *addr < lo {
-                continue;
+        let start: usize = rows.partition_point(|(addr, _): &(u64, u64)| *addr < lo);
+        for (addr, line) in &rows[start..] {
+            if scan_budget == 0 {
+                break;
             }
+            scan_budget -= 1;
             if *addr >= hi {
                 break;
             }
@@ -1204,6 +1219,94 @@ mod tests {
             version: 4,
             address_size: 8,
         })
+    }
+
+    fn func_with_range(low: Option<u64>, high: Option<u64>) -> DwarfFunction {
+        DwarfFunction {
+            name: String::new(),
+            linkage_name: None,
+            low_pc: low,
+            high_pc: high,
+            decl_file: None,
+            decl_line: None,
+            line_lo: None,
+            line_hi: None,
+            params: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn line_range_scan_budget_caps_total_work_on_degenerate_functions() {
+        let rows: Vec<(u64, u64)> = (0..10u64).map(|i: u64| (0u64, i + 1)).collect();
+        let mut functions: Vec<DwarfFunction> =
+            (0..64).map(|_| func_with_range(Some(0), None)).collect();
+        assign_line_ranges(&rows, &mut functions, 25);
+        assert_eq!(functions[0].line_lo, Some(1));
+        assert_eq!(functions[0].line_hi, Some(10));
+        let last: &DwarfFunction = functions.last().expect("functions present");
+        assert!(last.line_lo.is_none());
+        assert!(last.line_hi.is_none());
+    }
+
+    #[test]
+    fn line_range_assignment_honors_function_bounds() {
+        let rows: Vec<(u64, u64)> = vec![(10, 7), (20, 3), (30, 9), (40, 1)];
+        let mut functions: Vec<DwarfFunction> = vec![func_with_range(Some(15), Some(35))];
+        assign_line_ranges(&rows, &mut functions, MAX_LINE_ROWS);
+        assert_eq!(functions[0].line_lo, Some(3));
+        assert_eq!(functions[0].line_hi, Some(9));
+    }
+
+    #[test]
+    fn debug_relocation_offset_near_usize_max_does_not_overflow() {
+        use object::write::{Object as WriteObject, Relocation as WriteReloc, Symbol as WriteSym};
+        use object::{
+            Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags,
+            RelocationKind, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+        };
+
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let section: object::write::SectionId =
+            obj.add_section(Vec::new(), b".debug_info".to_vec(), SectionKind::Debug);
+        obj.append_section_data(section, &[0u8; 16], 1);
+        let symbol: object::write::SymbolId = obj.add_symbol(WriteSym {
+            name: b"anchor".to_vec(),
+            value: 0,
+            size: 0,
+            kind: SymbolKind::Data,
+            scope: SymbolScope::Compilation,
+            weak: false,
+            section: object::write::SymbolSection::Section(section),
+            flags: SymbolFlags::None,
+        });
+        obj.add_relocation(
+            section,
+            WriteReloc {
+                offset: 0,
+                symbol,
+                addend: 0,
+                flags: RelocationFlags::Generic {
+                    kind: RelocationKind::Absolute,
+                    encoding: RelocationEncoding::Generic,
+                    size: 64,
+                },
+            },
+        )
+        .expect("relocation added");
+        let bytes: Vec<u8> = obj.write().expect("elf written");
+
+        let file: object::read::File<'_, &[u8]> =
+            object::read::File::parse(bytes.as_slice()).expect("elf parsed");
+        let (_, reloc): (u64, object::Relocation) = {
+            use object::read::{Object as _, ObjectSection as _};
+            file.sections()
+                .find_map(|s| s.relocations().next())
+                .expect("relocation present")
+        };
+        let mut target: Vec<u8> = vec![0u8; 16];
+        apply_one_relocation(&file, &mut target, u64::MAX - 1, &reloc);
+        assert!(target.iter().all(|b: &u8| *b == 0));
     }
 
     #[test]

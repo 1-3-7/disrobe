@@ -2367,6 +2367,12 @@ fn build_value_switch_recovery(
     })
 }
 
+fn table_span_within_section(table_off: u64, span: u64, table_len: usize) -> bool {
+    table_off
+        .checked_add(span)
+        .is_some_and(|end: u64| end <= table_len as u64)
+}
+
 fn object_value_table(
     object: &[u8],
     base: u64,
@@ -2406,6 +2412,11 @@ fn object_value_table(
     let span: u64 = width
         .checked_mul(switch.count as u64)
         .ok_or_else(|| Error::LlvmIr("value-table span overflow".to_owned()))?;
+    if !table_span_within_section(table_off, span, table_data.len()) {
+        return Err(Error::LlvmIr(
+            "value-table exceeds table section".to_owned(),
+        ));
+    }
     for (off, _reloc) in table_section.relocations() {
         let slot: u64 = off.saturating_sub(table_addr);
         if slot >= table_off && slot < table_off.saturating_add(span) {
@@ -2638,6 +2649,9 @@ fn object_switch_case_targets(
     let span: u64 = width
         .checked_mul(count as u64)
         .ok_or_else(|| Error::LlvmIr("jump-table span overflow".to_owned()))?;
+    if !table_span_within_section(table_off, span, table_data.len()) {
+        return Err(Error::LlvmIr("jump table exceeds table section".to_owned()));
+    }
 
     let mut slot_relocs: BTreeMap<u64, object::Relocation> = BTreeMap::new();
     for (off, reloc) in table_section.relocations() {
@@ -13318,6 +13332,18 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_switch_table_span_is_rejected_before_allocation() {
+        let width: u64 = 8;
+        let hostile_count: u64 = 0x4000_0000;
+        let hostile_span: u64 = width * hostile_count;
+        assert!(!table_span_within_section(0, hostile_span, 64));
+        assert!(!table_span_within_section(u64::MAX, width, 64));
+        assert!(table_span_within_section(0, width * 4, 64));
+        assert!(table_span_within_section(16, width * 4, 48));
+        assert!(!table_span_within_section(16, width * 4, 47));
+    }
 
     #[test]
     fn lea_add_recovers_two_param_add() {
