@@ -73,7 +73,6 @@ impl ApiType {
 
 const fn meet_width(a: Width, b: Width) -> Width {
     match (a, b) {
-        (Width::Unknown, other) | (other, Width::Unknown) => other,
         (Width::Byte, Width::Byte) => Width::Byte,
         (Width::Word, Width::Word) => Width::Word,
         (Width::Dword, Width::Dword) => Width::Dword,
@@ -375,15 +374,15 @@ fn map_sysv(proto: &Prototype) -> Vec<ParamLoc> {
 }
 
 fn map_win64(proto: &Prototype) -> Vec<ParamLoc> {
-    const INT_REGS: [Register; 4] = [Register::RCX, Register::RDX, Register::R8, Register::R9];
+    let int_regs: &[Register] = int_arg_registers(Convention::Win64);
     let mut out: Vec<ParamLoc> = Vec::with_capacity(proto.params.len());
     let mut stack_off: i64 = 0x20;
     for (position, param) in proto.params.iter().enumerate() {
-        if position < INT_REGS.len() {
+        if let Some(reg) = int_regs.get(position) {
             if is_float(&param.ty) {
                 out.push(ParamLoc::SseReg);
             } else {
-                out.push(ParamLoc::IntReg(INT_REGS[position]));
+                out.push(ParamLoc::IntReg(*reg));
             }
         } else {
             out.push(ParamLoc::Stack(stack_off));
@@ -808,6 +807,28 @@ mod tests {
                 width: Width::Dword,
                 sign: Sign::Unknown
             }
+        );
+    }
+
+    #[test]
+    fn api_type_meet_keeps_a_disagreeing_width_unknown_regardless_of_order() {
+        let dword: ApiType = ApiType::Integer {
+            width: Width::Dword,
+            sign: Sign::Signed,
+        };
+        let qword: ApiType = ApiType::Integer {
+            width: Width::Qword,
+            sign: Sign::Signed,
+        };
+        let unwidthed: ApiType = ApiType::Integer {
+            width: Width::Unknown,
+            sign: Sign::Signed,
+        };
+        assert_eq!(dword.meet(qword).meet(dword), unwidthed);
+        assert_eq!(dword.meet(dword).meet(qword), unwidthed);
+        assert_eq!(
+            dword.meet(qword).meet(dword),
+            dword.meet(dword).meet(qword)
         );
     }
 
