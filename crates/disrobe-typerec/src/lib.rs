@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod callsite;
 pub mod cells;
 pub mod cfg;
 pub mod constraint;
@@ -19,6 +20,7 @@ pub use abi::{
     ArgLocation, Convention, FunctionCode, RecoveredProto, ReturnKind, SigConfidence,
     called_targets, recover_proto, recover_protos,
 };
+pub use callsite::{ApiSite, ApiType, CallsiteTyping, Provenance, TypedSlot, type_function};
 pub use cells::{CellStore, CellType};
 pub use constraint::{Constraint, solve};
 pub use dwarf_gt::{
@@ -28,8 +30,8 @@ pub use dwarf_gt::{
 pub use error::{Result, TypeRecError};
 pub use facts::{FactSet, SlotMode, extract, extract_split};
 pub use grade::{
-    AxisScore, GradeReport, IdentityReport, NameGrade, StructGradeReport, grade_functions,
-    grade_identity, grade_image, grade_structs, recover_image,
+    ApiTypeGradeReport, AxisScore, GradeReport, IdentityReport, NameGrade, StructGradeReport,
+    grade_api_types, grade_functions, grade_identity, grade_image, grade_structs, recover_image,
 };
 pub use import_map::{ImportFormat, ImportMap, ImportRef, ImportSource, ImportSymbol};
 pub use lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
