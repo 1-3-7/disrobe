@@ -207,6 +207,25 @@ fn parse_string_pool(bytes: &[u8], chunk_off: usize) -> Result<ResStringPool> {
             decode_modified_utf8(raw)
         } else {
             let (unit_count, after_len): (usize, usize) = decode_utf16_len(bytes, str_off)?;
+            let byte_span: usize = unit_count.checked_mul(2).ok_or(Error::ArscTruncated {
+                offset: after_len,
+                needed: unit_count,
+                had: bytes.len(),
+            })?;
+            let end: usize = after_len
+                .checked_add(byte_span)
+                .ok_or(Error::ArscTruncated {
+                    offset: after_len,
+                    needed: byte_span,
+                    had: bytes.len(),
+                })?;
+            if end > bytes.len() {
+                return Err(Error::ArscTruncated {
+                    offset: after_len,
+                    needed: byte_span,
+                    had: bytes.len(),
+                });
+            }
             let mut s: String = String::with_capacity(unit_count);
             let mut u: usize = 0;
             let mut cursor: usize = after_len;
@@ -1131,5 +1150,45 @@ mod tests {
         assert_eq!(h.type_, RES_TABLE_TYPE);
         assert_eq!(h.header_size, 12);
         assert_eq!(h.size, 0x20);
+    }
+
+    fn string_pool_chunk(pool_size: u32, string_units: &[u8]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::with_capacity(32 + string_units.len());
+        buf.extend_from_slice(&RES_STRING_POOL_TYPE.to_le_bytes());
+        buf.extend_from_slice(&28u16.to_le_bytes());
+        buf.extend_from_slice(&pool_size.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&32u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(string_units);
+        buf
+    }
+
+    #[test]
+    fn utf16_string_pool_rejects_oversized_length_prefix() {
+        let mut units: Vec<u8> = Vec::with_capacity(4);
+        units.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        units.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        let buf: Vec<u8> = string_pool_chunk(36, &units);
+        assert_eq!(buf.len(), 36);
+        let err: Error = parse_string_pool(&buf, 0).expect_err("oversized utf-16 length prefix");
+        assert!(matches!(err, Error::ArscTruncated { .. }));
+    }
+
+    #[test]
+    fn utf16_string_pool_parses_small_string() {
+        let mut units: Vec<u8> = Vec::with_capacity(8);
+        units.extend_from_slice(&2u16.to_le_bytes());
+        units.extend_from_slice(&0x0068u16.to_le_bytes());
+        units.extend_from_slice(&0x0069u16.to_le_bytes());
+        units.extend_from_slice(&0u16.to_le_bytes());
+        let buf: Vec<u8> = string_pool_chunk(40, &units);
+        assert_eq!(buf.len(), 40);
+        let pool: ResStringPool = parse_string_pool(&buf, 0).expect("valid utf-16 pool");
+        assert!(!pool.is_utf8);
+        assert_eq!(pool.strings, vec!["hi".to_owned()]);
     }
 }
