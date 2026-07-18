@@ -2988,6 +2988,94 @@ fn try_structure_loop_continue_guard_over_try(
     }]))
 }
 
+fn try_structure_stmt_continue_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if region.is_with || region.is_finally || stream.is_pre_311() {
+        return Ok(None);
+    }
+    if loop_continue_target().is_none() {
+        return Ok(None);
+    }
+    let Some(guard): Option<usize> = (lo..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(raw_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > guard && t <= hi)
+    else {
+        return Ok(None);
+    };
+    let body_entry: usize = first_significant(stream, raw_target, hi).unwrap_or(raw_target);
+    if body_entry != region.try_start {
+        return Ok(None);
+    }
+    let Some(back): Option<usize> = then_continues_to_loop(stream, guard + 1, raw_target) else {
+        return Ok(None);
+    };
+    let Some(first_stmt): Option<usize> = first_significant(stream, guard + 1, back) else {
+        return Ok(None);
+    };
+    if first_stmt >= back {
+        return Ok(None);
+    }
+    if (guard + 1..back).any(|k: usize| is_back_edge(&stream.ops[k])) {
+        return Ok(None);
+    }
+    if (lo..guard).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > guard)
+    }) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let mut then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, back)?;
+    if then_body.is_empty() {
+        return Ok(None);
+    }
+    then_body.push(Stmt::Continue);
+    let tail: Vec<Stmt> = structure_stmts(code, stream, region.try_start, hi)?;
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.reserve(1 + tail.len());
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(tail);
+    Ok(Some(out))
+}
+
 pub(super) fn structure_for_bare_except_continue_epilogue(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3262,6 +3350,10 @@ pub(super) fn structure_try(
     region: &TryRegion,
 ) -> Result<Vec<Stmt>> {
     if let Some(stmts) = try_structure_loop_continue_guard_over_try(code, stream, lo, hi, region)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_stmt_continue_guard_before_try(code, stream, lo, hi, region)?
+    {
         return Ok(stmts);
     }
     if region.is_finally
