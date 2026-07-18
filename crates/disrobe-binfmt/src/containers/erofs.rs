@@ -329,8 +329,7 @@ fn decode_pcluster(algorithm: u8, comp: &[u8], want: usize, path: &str) -> Resul
     match algorithm {
         Z_EROFS_ALGO_LZ4 => crate::containers::lz4_block::decompress_stop_at(comp, want),
         Z_EROFS_ALGO_DEFLATE => decode_deflate(comp, want),
-        Z_EROFS_ALGO_ZSTD => zstd::bulk::decompress(comp, want)
-            .map_err(|e| Error::Erofs(format!("erofs `{path}` zstd pcluster: {e}"))),
+        Z_EROFS_ALGO_ZSTD => decode_zstd(comp, want, path),
         Z_EROFS_ALGO_LZMA => Err(Error::Erofs(format!(
             "erofs `{path}` uses microlzma physical clusters, which need a microlzma decoder not exposed by the in-tree xz binding"
         ))),
@@ -343,11 +342,24 @@ fn decode_pcluster(algorithm: u8, comp: &[u8], want: usize, path: &str) -> Resul
 fn decode_deflate(comp: &[u8], want: usize) -> Result<Vec<u8>> {
     use std::io::Read as _;
     let decoder: flate2::read::DeflateDecoder<&[u8]> = flate2::read::DeflateDecoder::new(comp);
-    let mut out: Vec<u8> = Vec::with_capacity(want);
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(want as u64));
     decoder
         .take(want as u64)
         .read_to_end(&mut out)
         .map_err(|e| Error::Erofs(format!("erofs deflate pcluster: {e}")))?;
+    Ok(out)
+}
+
+fn decode_zstd(comp: &[u8], want: usize, path: &str) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(want as u64));
+    let decoder: zstd::stream::read::Decoder<'static, std::io::BufReader<&[u8]>> =
+        zstd::stream::read::Decoder::new(comp)
+            .map_err(|e: std::io::Error| Error::Erofs(format!("erofs `{path}` zstd init: {e}")))?;
+    decoder
+        .take(want as u64)
+        .read_to_end(&mut out)
+        .map_err(|e: std::io::Error| Error::Erofs(format!("erofs `{path}` zstd pcluster: {e}")))?;
     Ok(out)
 }
 
@@ -915,5 +927,50 @@ mod tests {
         let err: Error = walk_erofs(&image, 64 * 1024 * 1024)
             .expect_err("compact compressed data must not recover as an empty file");
         assert!(matches!(err, Error::Erofs(msg) if msg.contains("compact")));
+    }
+
+    fn deflate_compress(input: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut enc: flate2::write::DeflateEncoder<Vec<u8>> =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(input).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn compressed_pcluster_reservation_is_input_proportional() {
+        const HUGE_WANT: usize = 2 * 1024 * 1024 * 1024;
+        let cap: usize = crate::quota::MAX_ENTRY_PREALLOC;
+        {
+            let payload: &[u8] = b"erofs deflate pcluster output stays small";
+            let comp: Vec<u8> = deflate_compress(payload);
+            let out: Vec<u8> = decode_deflate(&comp, HUGE_WANT).expect("deflate");
+            assert_eq!(out, payload);
+            assert!(
+                out.capacity() <= cap,
+                "deflate reservation capped at prealloc bound"
+            );
+        }
+        {
+            let payload: &[u8] = b"erofs lz4 pcluster output stays small";
+            let block: Vec<u8> = lz4_literal_block(payload);
+            let out: Vec<u8> =
+                crate::containers::lz4_block::decompress_stop_at(&block, HUGE_WANT).expect("lz4");
+            assert_eq!(out, payload);
+            assert!(
+                out.capacity() <= cap,
+                "lz4 reservation capped at prealloc bound"
+            );
+        }
+        {
+            let payload: &[u8] = b"erofs zstd pcluster output stays small";
+            let frame: Vec<u8> = zstd::bulk::compress(payload, 3).expect("zstd compress");
+            let out: Vec<u8> = decode_zstd(&frame, HUGE_WANT, "file.bin").expect("zstd");
+            assert_eq!(out, payload);
+            assert!(
+                out.capacity() <= cap,
+                "zstd reservation capped at prealloc bound"
+            );
+        }
     }
 }

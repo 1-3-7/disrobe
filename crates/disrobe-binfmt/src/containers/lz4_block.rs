@@ -18,7 +18,7 @@ pub fn decompress_bounded(src: &[u8], max_len: usize) -> Result<Vec<u8>> {
 }
 
 pub fn decompress_stop_at(src: &[u8], target_len: usize) -> Result<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(target_len);
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(target_len as u64));
     let mut ip: usize = 0;
     while ip < src.len() && out.len() < target_len {
         let token: u8 = src[ip];

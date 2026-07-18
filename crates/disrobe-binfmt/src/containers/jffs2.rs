@@ -326,7 +326,8 @@ fn assemble_inode(nodes: &[InodeNode], notes: &mut Vec<String>, path: &str) -> V
         .iter()
         .max_by_key(|n| n.version)
         .map_or(0, |n| n.isize_field as usize);
-    let mut out: Vec<u8> = vec![0u8; final_size];
+    let cap: usize = crate::quota::MAX_ENTRY_PREALLOC;
+    let mut out: Vec<u8> = vec![0u8; crate::quota::bounded_prealloc(final_size as u64)];
     for node in sorted {
         let decompressed: Vec<u8> = match decompress_fragment(node) {
             Ok(d) => d,
@@ -336,7 +337,11 @@ fn assemble_inode(nodes: &[InodeNode], notes: &mut Vec<String>, path: &str) -> V
             }
         };
         let start: usize = node.offset as usize;
-        let end: usize = start + decompressed.len();
+        let end: usize = start.saturating_add(decompressed.len());
+        if end > cap {
+            notes.push(format!("jffs2 `{path}` fragment past inode cap dropped"));
+            continue;
+        }
         if end > out.len() {
             out.resize(end, 0);
         }
@@ -349,7 +354,7 @@ fn assemble_inode(nodes: &[InodeNode], notes: &mut Vec<String>, path: &str) -> V
 }
 
 fn decompress_fragment(node: &InodeNode) -> std::result::Result<Vec<u8>, String> {
-    let dsize: usize = node.dsize as usize;
+    let dsize: usize = crate::quota::bounded_prealloc(u64::from(node.dsize));
     match node.compr {
         JFFS2_COMPR_NONE | JFFS2_COMPR_COPY => Ok(node.data[..dsize.min(node.data.len())].to_vec()),
         JFFS2_COMPR_ZERO => Ok(vec![0u8; dsize]),
@@ -942,6 +947,75 @@ mod tests {
         assert_eq!(mips_file.data, plain);
         let dyn_file: &Jffs2File = walk.files.iter().find(|f| f.path == "dyn.bin").expect("d");
         assert_eq!(dyn_file.data, dyn_body);
+    }
+
+    #[test]
+    fn walk_caps_hostile_inode_allocations() {
+        let cap: usize = crate::quota::MAX_ENTRY_PREALLOC;
+        let mut b: Jffs2Builder = Jffs2Builder::new(Jffs2Endian::Little);
+        b.dirent(ROOT_INO, 2, 1, 0, "bigsize.bin");
+        b.inode(&InodeSpec {
+            ino: 2,
+            version: 1,
+            mode: S_IFREG | 0o644,
+            isize_field: u32::MAX,
+            offset: 0,
+            dsize: 7,
+            compr: JFFS2_COMPR_NONE,
+            data: b"disrobe",
+        });
+        b.dirent(ROOT_INO, 3, 1, 0, "faroffset.bin");
+        b.inode(&InodeSpec {
+            ino: 3,
+            version: 1,
+            mode: S_IFREG | 0o644,
+            isize_field: 64,
+            offset: 0xFFFF_FFF0,
+            dsize: 4,
+            compr: JFFS2_COMPR_NONE,
+            data: b"AAAA",
+        });
+        b.dirent(ROOT_INO, 4, 1, 0, "zerobomb.bin");
+        b.inode(&InodeSpec {
+            ino: 4,
+            version: 1,
+            mode: S_IFREG | 0o644,
+            isize_field: 48,
+            offset: 0xFFFF_FFF0,
+            dsize: u32::MAX,
+            compr: JFFS2_COMPR_ZERO,
+            data: &[],
+        });
+        let image: Vec<u8> = b.finish();
+        let walk: Jffs2Walk = walk_jffs2(&image, 256 * 1024 * 1024).expect("walk stays bounded");
+
+        let big: &Jffs2File = walk
+            .files
+            .iter()
+            .find(|f| f.path == "bigsize.bin")
+            .expect("bigsize");
+        assert!(big.data.len() <= cap, "huge isize preallocation is capped");
+        assert_eq!(&big.data[..7], b"disrobe");
+
+        let far: &Jffs2File = walk
+            .files
+            .iter()
+            .find(|f| f.path == "faroffset.bin")
+            .expect("faroffset");
+        assert!(
+            far.data.len() <= 64,
+            "far-offset fragment does not force a multi-gigabyte resize"
+        );
+
+        let zero: &Jffs2File = walk
+            .files
+            .iter()
+            .find(|f| f.path == "zerobomb.bin")
+            .expect("zerobomb");
+        assert!(
+            zero.data.len() <= 48,
+            "zero-fill fragment length is clamped"
+        );
     }
 
     #[test]

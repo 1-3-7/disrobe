@@ -707,7 +707,8 @@ fn read_fragment_table(
     let index_bytes: &[u8] = bytes
         .get(index_start..index_start + index_count * 8)
         .ok_or_else(|| Error::Squashfs("fragment index table truncated".to_owned()))?;
-    let mut entries: Vec<FragmentEntry> = Vec::with_capacity(raw.fragment_entry_count as usize);
+    let mut entries: Vec<FragmentEntry> =
+        Vec::with_capacity((raw.fragment_entry_count as usize).min(bytes.len() / 16));
     for i in 0..index_count {
         let block_loc: u64 = endian.u64(index_bytes, i * 8);
         let block: Vec<u8> = read_one_metadata_block(bytes, base, block_loc, compression, endian)?;
@@ -1387,5 +1388,34 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("AppRun")).expect("AppRun"), body);
         assert!(dir.join(".disrobe-appimage-layout.json").is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fragment_table_reservation_is_input_proportional() {
+        let fragment_entry_count: u32 = 1_000_000;
+        let index_count: usize = fragment_entry_count.div_ceil(512) as usize;
+        let fragment_table_start: usize = 16;
+        let bytes: Vec<u8> = vec![0u8; fragment_table_start + index_count * 8];
+        let raw: RawSuperblock = RawSuperblock {
+            block_size: 131_072,
+            root_inode_ref: 0,
+            id_table_start: 0,
+            inode_table_start: 0,
+            directory_table_start: 0,
+            fragment_table_start: fragment_table_start as u64,
+            fragment_entry_count,
+        };
+        let entries: Vec<FragmentEntry> =
+            read_fragment_table(&bytes, 0, &raw, SquashfsCompression::Gzip, Endian::Little)
+                .expect("fragment table walk");
+        assert!(entries.is_empty(), "empty metadata blocks yield no entries");
+        assert!(
+            entries.capacity() < fragment_entry_count as usize,
+            "reservation must not follow the raw fragment count"
+        );
+        assert!(
+            entries.capacity() <= bytes.len(),
+            "reservation stays proportional to the input size"
+        );
     }
 }
