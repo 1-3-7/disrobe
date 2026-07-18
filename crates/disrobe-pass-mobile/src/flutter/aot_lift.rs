@@ -259,9 +259,18 @@ fn disassemble_symtab_functions(
     instructions: &[u8],
     symbols: &[DartFunctionSymbol],
 ) -> Arm64Disassembly {
-    let mut functions: Vec<Arm64Function> = Vec::with_capacity(symbols.len());
-    for symbol in symbols {
-        let limit: usize = symbol.offset.saturating_add(symbol.size as usize);
+    let mut ordered: Vec<&DartFunctionSymbol> =
+        symbols.iter().collect::<Vec<&DartFunctionSymbol>>();
+    ordered.sort_unstable_by_key(|symbol: &&DartFunctionSymbol| symbol.offset);
+    ordered.dedup_by_key(|symbol: &mut &DartFunctionSymbol| symbol.offset);
+
+    let mut functions: Vec<Arm64Function> = Vec::with_capacity(ordered.len());
+    for (idx, symbol) in ordered.iter().enumerate() {
+        let next_offset: usize = ordered
+            .get(idx + 1)
+            .map_or(instructions.len(), |next: &&DartFunctionSymbol| next.offset);
+        let size_limit: usize = symbol.offset.saturating_add(symbol.size as usize);
+        let limit: usize = size_limit.min(next_offset);
         functions.push(super::disasm::disassemble_range(
             instructions,
             0,
@@ -1246,6 +1255,50 @@ mod tests {
         assert!(
             lifted.conditional_branch_count >= 1,
             "raw control-flow structure is still reported"
+        );
+    }
+
+    #[test]
+    fn symtab_disassembly_lifts_non_overlapping_functions() {
+        let bytes: Vec<u8> = words(&[0xa9bf_7bfd, 0x9100_03fd, ret(), 0x9100_0000, ret()]);
+        let symbols: Vec<DartFunctionSymbol> =
+            vec![symbol(0, 12, "Alpha.build"), symbol(12, 8, "Beta.run")];
+        let disasm: Arm64Disassembly = disassemble_symtab_functions(&bytes, &symbols);
+        assert_eq!(disasm.function_count, 2);
+        assert_eq!(disasm.functions[0].name.as_deref(), Some("Alpha.build"));
+        assert_eq!(
+            disasm.functions[0].instructions.len(),
+            3,
+            "non-overlapping symbols decode exactly their own byte range"
+        );
+        assert_eq!(disasm.functions[1].name.as_deref(), Some("Beta.run"));
+        assert_eq!(disasm.functions[1].instructions.len(), 2);
+        assert_eq!(disasm.total_instructions, 5);
+    }
+
+    #[test]
+    fn symtab_disassembly_bounds_overlapping_symbol_flood() {
+        const ARM64_INSN_LEN: usize = 4;
+        let region_words: usize = 2048;
+        let bytes: Vec<u8> = words(&vec![0xd503_201fu32; region_words]);
+        let mut symbols: Vec<DartFunctionSymbol> = Vec::with_capacity(region_words);
+        for i in 0..region_words {
+            symbols.push(symbol(
+                i * ARM64_INSN_LEN,
+                bytes.len() as u64,
+                "Overlap.alias",
+            ));
+        }
+        let disasm: Arm64Disassembly = disassemble_symtab_functions(&bytes, &symbols);
+        let retained: usize = disasm
+            .functions
+            .iter()
+            .map(|f: &Arm64Function| f.instructions.len())
+            .sum::<usize>();
+        assert!(
+            retained <= bytes.len() / ARM64_INSN_LEN,
+            "an overlapping symbol flood must decode each region slot at most once; retained {retained} instructions for {} region bytes",
+            bytes.len()
         );
     }
 
