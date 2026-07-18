@@ -16,6 +16,7 @@ use crate::batch::payload::{EmbeddedPayload, extract_embedded};
 
 const MAX_EXPANSION_ROUNDS: usize = 16;
 const MAX_LINES: usize = 50_000;
+const MAX_TOTAL_OUTPUT: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchDeobReport {
@@ -93,10 +94,16 @@ pub fn deobfuscate_batch(input: &str, args: &[String]) -> BatchDeobReport {
     let lines: Vec<String> = coalesce_blocks(&norm.output);
     let mut worklist: Vec<String> = lines;
     let mut processed: usize = 0;
+    let mut output_bytes: usize = 0;
+    let mut output_counted: usize = 0;
 
     while let Some(line) = pop_front(&mut worklist) {
         processed += 1;
-        if processed > MAX_LINES {
+        while output_counted < output_lines.len() {
+            output_bytes = output_bytes.saturating_add(output_lines[output_counted].len());
+            output_counted = output_counted.saturating_add(1);
+        }
+        if processed > MAX_LINES || output_bytes > MAX_TOTAL_OUTPUT {
             break;
         }
         let trimmed: &str = line.trim();

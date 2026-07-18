@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::biff::{BiffRecord, read_u16, read_u32};
@@ -61,15 +63,18 @@ pub fn recover_biff8(
         Vec<XlmEntryPoint>,
         Vec<XlmDefinedName>,
     ) = collect_global_names(records);
+    let mut bof_index: BTreeMap<usize, usize> = BTreeMap::new();
+    for (idx, rec) in records.iter().enumerate() {
+        if rec.rt == REC_BOF {
+            bof_index.entry(rec.pos).or_insert(idx);
+        }
+    }
     let mut sheets: Vec<XlmSheet> = Vec::new();
     for meta in &sheets_meta {
         if !matches!(meta.kind, SheetKind::Macro | SheetKind::Worksheet) {
             continue;
         }
-        let Some(start): Option<usize> = records
-            .iter()
-            .position(|r: &BiffRecord| r.pos == meta.bof_pos && r.rt == REC_BOF)
-        else {
+        let Some(&start): Option<&usize> = bof_index.get(&meta.bof_pos) else {
             continue;
         };
         let cells: Vec<XlmCell> = walk_sheet_biff8(records, start + 1, &names);
@@ -103,10 +108,16 @@ fn walk_sheet_biff8(records: &[BiffRecord], start: usize, names: &[String]) -> V
             _ => {}
         }
     }
+    let mut shared_index: BTreeMap<(u32, u32), &Shared> = BTreeMap::new();
+    for entry in &shared {
+        shared_index
+            .entry((entry.row_first, entry.col_first))
+            .or_insert(entry);
+    }
     let mut cells: Vec<XlmCell> = Vec::with_capacity(pending.len());
     for (row, col, rgce) in pending {
         let decoded: DecodedFormula =
-            resolve_formula(&rgce, row, col, names, &shared, BiffVersion::Biff8);
+            resolve_formula(&rgce, row, col, names, &shared_index, BiffVersion::Biff8);
         cells.push(XlmCell {
             cell: format_cell(row, col),
             formula: format!("={}", decoded.text),
@@ -147,14 +158,11 @@ fn resolve_formula(
     row: u32,
     col: u32,
     names: &[String],
-    shared: &[Shared],
+    shared: &BTreeMap<(u32, u32), &Shared>,
     version: BiffVersion,
 ) -> DecodedFormula {
     if let Some((anchor_row, anchor_col)) = parse_ptg_exp(rgce, version) {
-        if let Some(master) = shared
-            .iter()
-            .find(|s: &&Shared| s.row_first == anchor_row && s.col_first == anchor_col)
-        {
+        if let Some(master) = shared.get(&(anchor_row, anchor_col)) {
             let ctx: PtgContext<'_> = PtgContext {
                 version,
                 base_row: row,
