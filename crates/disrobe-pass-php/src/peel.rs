@@ -15,6 +15,10 @@ pub const INFLATE_OUTPUT_CAP: usize = 256 * 1024 * 1024;
 
 const INFLATE_INITIAL_CAP: usize = 64 * 1024;
 
+const EVAL_PROBE_SCAN_FACTOR: usize = 8;
+
+const EVAL_PROBE_MIN_BUDGET: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PeelLayer {
     Base64Decode,
@@ -365,7 +369,11 @@ fn extract_eval_arg(buf: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
 
 fn extract_embedded_eval_arg(buf: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
     let mut search_from: usize = 0;
-    while let Some(arg) = next_eval_call_arg(buf, &mut search_from) {
+    let mut scan_budget: usize = buf
+        .len()
+        .saturating_mul(EVAL_PROBE_SCAN_FACTOR)
+        .max(EVAL_PROBE_MIN_BUDGET);
+    while let Some(arg) = next_eval_call_arg(buf, &mut search_from, &mut scan_budget) {
         if let Some(classified) = classify_inner(&arg) {
             return Some(classified);
         }
@@ -373,15 +381,26 @@ fn extract_embedded_eval_arg(buf: &[u8]) -> Option<(EvalKind, Vec<u8>)> {
     None
 }
 
-fn next_eval_call_arg(buf: &[u8], search_from: &mut usize) -> Option<Vec<u8>> {
+fn next_eval_call_arg(
+    buf: &[u8],
+    search_from: &mut usize,
+    scan_budget: &mut usize,
+) -> Option<Vec<u8>> {
     loop {
         let rest: &[u8] = buf.get(*search_from..)?;
+        *scan_budget = scan_budget.checked_sub(rest.len())?;
         let (rel, kw_len): (usize, usize) = find_eval_keyword(rest)?;
         let kw_end: usize = *search_from + rel + kw_len;
         let paren: usize = skip_ws_to_paren(buf, kw_end)?;
         *search_from = kw_end;
-        if let Some((arg, _close)) = balanced_paren_arg(buf, paren) {
-            return Some(arg);
+        match balanced_paren_arg(buf, paren) {
+            Some((arg, close)) => {
+                *scan_budget = scan_budget.checked_sub(close.saturating_sub(paren))?;
+                return Some(arg);
+            }
+            None => {
+                *scan_budget = scan_budget.checked_sub(buf.len().saturating_sub(paren))?;
+            }
         }
     }
 }
@@ -1216,5 +1235,16 @@ mod tests {
         expr.extend_from_slice(b"'x'");
         expr.extend(std::iter::repeat_n(b')', NESTING));
         let _: Option<(EvalKind, Vec<u8>)> = classify_inner(&expr);
+    }
+
+    #[test]
+    fn many_unterminated_eval_calls_are_bounded() {
+        const COUNT: usize = 200_000;
+        let mut buf: Vec<u8> = Vec::with_capacity(COUNT * 5);
+        for _ in 0..COUNT {
+            buf.extend_from_slice(b"eval(");
+        }
+        let result: Option<(EvalKind, Vec<u8>)> = extract_embedded_eval_arg(&buf);
+        assert!(result.is_none());
     }
 }
