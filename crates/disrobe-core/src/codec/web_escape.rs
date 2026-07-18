@@ -8,6 +8,7 @@ const PUNY_DAMP: u32 = 700;
 const PUNY_INITIAL_BIAS: u32 = 72;
 const PUNY_INITIAL_N: u32 = 128;
 const MAX_WEB_INPUT: usize = 1 << 24;
+const MAX_PUNYCODE_LABEL_OUTPUT: usize = 1024;
 
 pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
@@ -126,6 +127,9 @@ pub fn punycode_decode_label(input: &str) -> Result<String, DecodeError> {
     let mut i: u32 = 0;
     let mut bias: u32 = PUNY_INITIAL_BIAS;
     let basic_end: usize = input.rfind('-').unwrap_or(0);
+    if basic_end > MAX_PUNYCODE_LABEL_OUTPUT {
+        return Err(DecodeError::TooLarge { len: input.len() });
+    }
     if basic_end > 0 {
         for &byte in &bytes[..basic_end] {
             if byte >= 0x80 {
@@ -136,6 +140,9 @@ pub fn punycode_decode_label(input: &str) -> Result<String, DecodeError> {
     }
     let mut pos: usize = if basic_end > 0 { basic_end + 1 } else { 0 };
     while pos < bytes.len() {
+        if output.len() >= MAX_PUNYCODE_LABEL_OUTPUT {
+            return Err(DecodeError::TooLarge { len: input.len() });
+        }
         let old_i: u32 = i;
         let mut weight: u32 = 1;
         let mut k: u32 = PUNY_BASE;
@@ -284,5 +291,61 @@ mod tests {
     #[test]
     fn punycode_passthrough_without_prefix() {
         assert_eq!(punycode_decode("example").unwrap(), "example");
+    }
+
+    fn craft_front_insert_label(count: usize) -> String {
+        fn encode_digit(value: u32) -> char {
+            if value < 26 {
+                (b'a' + value as u8) as char
+            } else {
+                (b'0' + (value - 26) as u8) as char
+            }
+        }
+        let mut label: String = String::new();
+        let mut bias: u32 = PUNY_INITIAL_BIAS;
+        for step in 0..count {
+            let out_len: u32 = step as u32 + 1;
+            let delta: u32 = step as u32;
+            let mut q: u32 = delta;
+            let mut k: u32 = PUNY_BASE;
+            loop {
+                let t: u32 = puny_threshold(k, bias);
+                if q < t {
+                    label.push(encode_digit(q));
+                    break;
+                }
+                let digit: u32 = t + (q - t) % (PUNY_BASE - t);
+                label.push(encode_digit(digit));
+                q = (q - t) / (PUNY_BASE - t);
+                k += PUNY_BASE;
+            }
+            bias = puny_adapt(delta, out_len, step == 0);
+        }
+        label
+    }
+
+    #[test]
+    fn punycode_front_insert_flood_fails_closed_and_fast() {
+        let payload: String = craft_front_insert_label(40_000);
+        let label: String = format!("xn--{payload}");
+        let start: std::time::Instant = std::time::Instant::now();
+        let result: Result<String, DecodeError> = punycode_decode(&label);
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            matches!(result, Err(DecodeError::TooLarge { .. })),
+            "over-long punycode must fail closed, got {result:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "capped decode must return quickly, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn punycode_cap_preserves_valid_labels() {
+        assert_eq!(punycode_decode("xn--mnchen-3ya").unwrap(), "m\u{fc}nchen");
+        let under_cap: String = format!("xn--{}", craft_front_insert_label(1000));
+        let decoded: String = punycode_decode(&under_cap).unwrap();
+        assert_eq!(decoded.chars().count(), 1000);
     }
 }
