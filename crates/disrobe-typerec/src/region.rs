@@ -113,7 +113,7 @@ impl RegionModel {
 pub struct MemoryAccess {
     pub region: Region,
     pub base: Register,
-    pub disp: i64,
+    pub rbp_disp: i64,
     pub width: Width,
     pub escapes: bool,
 }
@@ -127,11 +127,11 @@ pub fn classify(insn: &Instruction, memop: u32, model: &RegionModel) -> Option<M
     let base: Register = insn.memory_base();
     let width: Width = memory_width(insn);
     let region: Region = classify_region(insn, segment, base, model);
-    let disp: i64 = frame_disp(base, insn);
+    let rbp_disp: i64 = frame_disp(base, insn);
     Some(MemoryAccess {
         region,
         base,
-        disp,
+        rbp_disp,
         width,
         escapes: false,
     })
@@ -197,7 +197,7 @@ pub fn may_alias(a: MemoryAccess, b: MemoryAccess) -> bool {
         return false;
     }
     if a.region == Region::Stack && a.base == b.base {
-        return ranges_overlap(a.disp, a.width, b.disp, b.width);
+        return ranges_overlap(a.rbp_disp, a.width, b.rbp_disp, b.width);
     }
     true
 }
@@ -216,11 +216,11 @@ fn ranges_overlap(off_a: i64, width_a: Width, off_b: i64, width_b: Width) -> boo
 mod tests {
     use super::*;
 
-    fn stack_access(disp: i64, width: Width) -> MemoryAccess {
+    fn stack_access(rbp_disp: i64, width: Width) -> MemoryAccess {
         MemoryAccess {
             region: Region::Stack,
             base: Register::RBP,
-            disp,
+            rbp_disp,
             width,
             escapes: false,
         }
@@ -246,7 +246,7 @@ mod tests {
         let heap: MemoryAccess = MemoryAccess {
             region: Region::Heap,
             base: Register::RAX,
-            disp: 0,
+            rbp_disp: 0,
             width: Width::Qword,
             escapes: false,
         };
@@ -259,7 +259,7 @@ mod tests {
         let unknown: MemoryAccess = MemoryAccess {
             region: Region::Unknown,
             base: Register::RAX,
-            disp: 0,
+            rbp_disp: 0,
             width: Width::Qword,
             escapes: false,
         };

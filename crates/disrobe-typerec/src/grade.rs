@@ -222,7 +222,7 @@ fn covers_differently_typed(
         if other == subject {
             continue;
         }
-        if candidate.rbp_disp != object.offset {
+        if candidate.rbp_disp != object.rbp_disp {
             continue;
         }
         if object.covers(candidate.scope_lo, candidate.scope_hi)
@@ -395,10 +395,13 @@ fn grade_structs_one(
     }
 
     for recovered_struct in &recovery.structs {
-        let matching: Option<&GroundTruthAggregate> = function
-            .aggregates
-            .iter()
-            .find(|aggregate: &&GroundTruthAggregate| aggregate.rbp_disp == recovered_struct.slot);
+        let matching: Option<&GroundTruthAggregate> =
+            function
+                .aggregates
+                .iter()
+                .find(|aggregate: &&GroundTruthAggregate| {
+                    aggregate.rbp_disp == recovered_struct.rbp_disp
+                });
         let rec_offsets: BTreeSet<i64> = recovered_struct
             .fields
             .iter()
@@ -413,7 +416,7 @@ fn grade_structs_one(
         for (offset, width) in rec_leaves.difference(&gt_leaves) {
             report.spurious_leaves.push(AxisMismatch {
                 function: function.name.clone(),
-                variable: format!("slot {:#x}", recovered_struct.slot),
+                variable: format!("slot {:#x}", recovered_struct.rbp_disp),
                 expected: "absent".to_owned(),
                 got: format!("{offset:#x}:{width:?}"),
             });
@@ -819,9 +822,9 @@ mod tests {
         }
     }
 
-    fn object(offset: i64, sign: Sign, lo: u64, hi: u64) -> RecoveredObject {
+    fn object(rbp_disp: i64, sign: Sign, lo: u64, hi: u64) -> RecoveredObject {
         RecoveredObject {
-            offset,
+            rbp_disp,
             width: Width::Qword,
             sign,
             sign_conflict: false,

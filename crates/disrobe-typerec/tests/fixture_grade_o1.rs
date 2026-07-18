@@ -143,7 +143,7 @@ fn collapse_offset_zero(function: &TypedFunction) -> TypedFunction {
     let mut lo: u64 = u64::MAX;
     let mut hi: u64 = 0;
     for object in &function.objects {
-        if object.offset == 0 {
+        if object.rbp_disp == 0 {
             lo = lo.min(object.live_lo);
             hi = hi.max(object.live_hi);
         }
@@ -151,12 +151,12 @@ fn collapse_offset_zero(function: &TypedFunction) -> TypedFunction {
     let mut objects: Vec<RecoveredObject> = function
         .objects
         .iter()
-        .filter(|object: &&RecoveredObject| object.offset != 0)
+        .filter(|object: &&RecoveredObject| object.rbp_disp != 0)
         .copied()
         .collect();
     if hi >= lo {
         objects.push(RecoveredObject {
-            offset: 0,
+            rbp_disp: 0,
             width: disrobe_typerec::lattice::Width::Qword,
             sign: disrobe_typerec::lattice::Sign::Unknown,
             sign_conflict: true,

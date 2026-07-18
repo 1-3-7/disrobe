@@ -1,15 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{
-    Decoder, DecoderOptions, Instruction, InstructionInfo, InstructionInfoFactory, Mnemonic,
-    OpAccess, OpKind, Register, UsedMemory,
+    Instruction, InstructionInfo, InstructionInfoFactory, Mnemonic, OpAccess, OpKind, Register,
+    UsedMemory,
 };
 
 use crate::cfg::{self, Cfg};
+use crate::decode::decode_all;
 use crate::lattice::Width;
 use crate::memssa::AccessKind;
-
-const MAX_DECODE_INSNS: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FieldNameTier {
@@ -43,7 +42,7 @@ pub struct RecoveredField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredStruct {
-    pub slot: i64,
+    pub rbp_disp: i64,
     pub is_union: bool,
     pub param_class: ParamClass,
     pub fields: Vec<RecoveredField>,
@@ -63,7 +62,7 @@ impl RecoveredStruct {
 #[derive(Debug, Clone, Copy)]
 enum Prov {
     Root {
-        slot: i64,
+        rbp_disp: i64,
         offset: i64,
         stride: Option<u32>,
     },
@@ -71,7 +70,7 @@ enum Prov {
         stride: u32,
     },
     Field {
-        slot: i64,
+        rbp_disp: i64,
         offset: i64,
     },
 }
@@ -139,7 +138,7 @@ impl Recoverer {
             };
             match prov {
                 Prov::Root {
-                    slot,
+                    rbp_disp,
                     offset,
                     stride,
                 } => {
@@ -151,7 +150,7 @@ impl Recoverer {
                         } else {
                             stride
                         };
-                    let entry: &mut SlotAcc = self.slots.entry(slot).or_default();
+                    let entry: &mut SlotAcc = self.slots.entry(rbp_disp).or_default();
                     entry.obs.push(Obs {
                         ip,
                         offset: field_off,
@@ -160,9 +159,9 @@ impl Recoverer {
                         stride: elem_stride,
                     });
                 }
-                Prov::Field { slot, offset } => {
+                Prov::Field { rbp_disp, offset } => {
                     self.slots
-                        .entry(slot)
+                        .entry(rbp_disp)
                         .or_default()
                         .pointer_fields
                         .insert(offset);
@@ -197,14 +196,17 @@ impl Recoverer {
             return Some((
                 dst,
                 Prov::Root {
-                    slot: displacement(mem),
+                    rbp_disp: displacement(mem),
                     offset: 0,
                     stride: None,
                 },
             ));
         }
         let prov: Prov = *self.regs.get(&base.full_register())?;
-        let Prov::Root { slot, offset, .. } = prov else {
+        let Prov::Root {
+            rbp_disp, offset, ..
+        } = prov
+        else {
             return None;
         };
         if mem.index() != Register::None || mem_width(mem) != Width::Qword {
@@ -213,7 +215,7 @@ impl Recoverer {
         Some((
             dst,
             Prov::Field {
-                slot,
+                rbp_disp,
                 offset: offset.saturating_add(displacement(mem)),
             },
         ))
@@ -242,7 +244,7 @@ impl Recoverer {
         }
         let prov: Prov = *self.regs.get(&base.full_register())?;
         let Prov::Root {
-            slot,
+            rbp_disp,
             offset,
             stride,
         } = prov
@@ -253,7 +255,7 @@ impl Recoverer {
         Some((
             dst,
             Prov::Root {
-                slot,
+                rbp_disp,
                 offset: offset.saturating_add(disp),
                 stride,
             },
@@ -272,11 +274,21 @@ impl Recoverer {
         let dst_prov: Option<Prov> = self.regs.get(&dst).copied();
         let src_prov: Option<Prov> = self.regs.get(&src).copied();
         match (dst_prov, src_prov) {
-            (Some(Prov::Root { slot, offset, .. }), Some(Prov::Scaled { stride }))
-            | (Some(Prov::Scaled { stride }), Some(Prov::Root { slot, offset, .. })) => Some((
+            (
+                Some(Prov::Root {
+                    rbp_disp, offset, ..
+                }),
+                Some(Prov::Scaled { stride }),
+            )
+            | (
+                Some(Prov::Scaled { stride }),
+                Some(Prov::Root {
+                    rbp_disp, offset, ..
+                }),
+            ) => Some((
                 dst,
                 Prov::Root {
-                    slot,
+                    rbp_disp,
                     offset,
                     stride: Some(stride),
                 },
@@ -300,18 +312,18 @@ impl Recoverer {
 
     fn finish(self) -> Vec<RecoveredStruct> {
         let mut out: Vec<RecoveredStruct> = Vec::new();
-        for (slot, acc) in self.slots {
+        for (rbp_disp, acc) in self.slots {
             if acc.obs.is_empty() {
                 continue;
             }
-            out.push(build_struct(slot, &acc));
+            out.push(build_struct(rbp_disp, &acc));
         }
-        out.sort_by_key(|item: &RecoveredStruct| item.slot);
+        out.sort_by_key(|item: &RecoveredStruct| item.rbp_disp);
         out
     }
 }
 
-fn build_struct(slot: i64, acc: &SlotAcc) -> RecoveredStruct {
+fn build_struct(rbp_disp: i64, acc: &SlotAcc) -> RecoveredStruct {
     let mut widths_at: BTreeMap<i64, BTreeSet<Width>> = BTreeMap::new();
     for ob in &acc.obs {
         if ob.width == Width::Unknown {
@@ -332,7 +344,7 @@ fn build_struct(slot: i64, acc: &SlotAcc) -> RecoveredStruct {
         (a.offset, a.width).cmp(&(b.offset, b.width))
     });
     RecoveredStruct {
-        slot,
+        rbp_disp,
         is_union,
         param_class: param_class(acc),
         fields,
@@ -384,23 +396,30 @@ fn name_field(offset: i64, is_pointer: bool, stride: Option<u32>) -> (String, Fi
 fn param_class(acc: &SlotAcc) -> ParamClass {
     let mut ordered: Vec<&Obs> = acc.obs.iter().collect();
     ordered.sort_by_key(|ob: &&Obs| ob.ip);
-    let mut read: bool = false;
     let mut written: bool = false;
-    let mut first_write_before_read: Option<bool> = None;
+    let mut reads_input: bool = false;
+    let mut stored_fields: BTreeSet<i64> = BTreeSet::new();
     for ob in ordered {
         match ob.kind {
-            AccessKind::Load => read = true,
-            AccessKind::Store => written = true,
-            AccessKind::Rmw => {
-                read = true;
+            AccessKind::Load => {
+                if !stored_fields.contains(&ob.offset) {
+                    reads_input = true;
+                }
+            }
+            AccessKind::Store => {
                 written = true;
+                stored_fields.insert(ob.offset);
+            }
+            AccessKind::Rmw => {
+                if !stored_fields.contains(&ob.offset) {
+                    reads_input = true;
+                }
+                written = true;
+                stored_fields.insert(ob.offset);
             }
         }
-        if first_write_before_read.is_none() {
-            first_write_before_read = Some(matches!(ob.kind, AccessKind::Store));
-        }
     }
-    match (read, written) {
+    match (reads_input, written) {
         (true, true) => ParamClass::InOut,
         (false, true) => ParamClass::Out,
         _ => ParamClass::In,
@@ -435,24 +454,13 @@ fn mem_width(mem: &UsedMemory) -> Width {
     u8::try_from(mem.memory_size().size()).map_or(Width::Unknown, Width::from_bytes)
 }
 
-fn decode_all(bytes: &[u8], base: u64) -> Vec<Instruction> {
-    let mut decoder: Decoder<'_> = Decoder::with_ip(64, bytes, base, DecoderOptions::NONE);
-    let mut out: Vec<Instruction> = Vec::new();
-    while decoder.can_decode() && out.len() < MAX_DECODE_INSNS {
-        let mut insn: Instruction = Instruction::default();
-        decoder.decode_out(&mut insn);
-        if insn.is_invalid() {
-            break;
-        }
-        out.push(insn);
-    }
-    out
-}
-
 #[must_use]
 pub fn recover_structs(bytes: &[u8], base: u64) -> Vec<RecoveredStruct> {
-    let instrs: Vec<Instruction> = decode_all(bytes, base);
-    let cfg: Cfg = cfg::build(&instrs);
+    recover_structs_from(&decode_all(bytes, base))
+}
+
+pub(crate) fn recover_structs_from(instrs: &[Instruction]) -> Vec<RecoveredStruct> {
+    let cfg: Cfg = cfg::build(instrs);
     let leaders: BTreeSet<usize> = cfg
         .blocks
         .iter()
@@ -482,7 +490,7 @@ mod tests {
         let structs: Vec<RecoveredStruct> = recover_structs(bytes, 0x1000);
         let point: &RecoveredStruct = structs
             .iter()
-            .find(|item: &&RecoveredStruct| item.slot == 0x10)
+            .find(|item: &&RecoveredStruct| item.rbp_disp == 0x10)
             .expect("struct at slot 0x10");
         let slots: BTreeSet<(i64, Width)> = point.field_slots();
         assert!(slots.contains(&(0, Width::Dword)));
@@ -500,7 +508,7 @@ mod tests {
         let structs: Vec<RecoveredStruct> = recover_structs(bytes, 0x1000);
         let un: &RecoveredStruct = structs
             .iter()
-            .find(|item: &&RecoveredStruct| item.slot == 0x10)
+            .find(|item: &&RecoveredStruct| item.rbp_disp == 0x10)
             .expect("struct at slot 0x10");
         assert!(un.is_union, "offset 0 with two widths is a union");
         let slots: BTreeSet<(i64, Width)> = un.field_slots();
@@ -513,5 +521,33 @@ mod tests {
         let bytes: &[u8] = &[0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x5d, 0xc3];
         let structs: Vec<RecoveredStruct> = recover_structs(bytes, 0x1000);
         assert!(structs.is_empty(), "an un-dereferenced slot is no struct");
+    }
+
+    #[test]
+    fn write_before_read_field_is_out_param() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x89, 0x10,
+            0x8b, 0x08, 0x5d, 0xc3,
+        ];
+        let structs: Vec<RecoveredStruct> = recover_structs(bytes, 0x1000);
+        let out: &RecoveredStruct = structs
+            .iter()
+            .find(|item: &&RecoveredStruct| item.rbp_disp == 0x10)
+            .expect("struct at slot 0x10");
+        assert_eq!(out.param_class, ParamClass::Out);
+    }
+
+    #[test]
+    fn read_before_write_field_is_inout_param() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x8b, 0x08,
+            0x89, 0x10, 0x5d, 0xc3,
+        ];
+        let structs: Vec<RecoveredStruct> = recover_structs(bytes, 0x1000);
+        let inout: &RecoveredStruct = structs
+            .iter()
+            .find(|item: &&RecoveredStruct| item.rbp_disp == 0x10)
+            .expect("struct at slot 0x10");
+        assert_eq!(inout.param_class, ParamClass::InOut);
     }
 }

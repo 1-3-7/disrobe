@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use iced_x86::Instruction;
+
 use crate::abi::{self, RecoveredProto};
 use crate::cells::CellType;
 use crate::constraint::solve;
-use crate::facts::{FactSet, extract, extract_split};
+use crate::decode::decode_all;
+use crate::facts::{FactSet, extract_from, extract_split_from};
 use crate::lattice::{Sign, TypeVar, Width};
 use crate::memssa::VersionInfo;
 use crate::structrec::{self, RecoveredStruct};
@@ -17,7 +20,7 @@ pub struct RecoveredScalar {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveredObject {
-    pub offset: i64,
+    pub rbp_disp: i64,
     pub width: Width,
     pub sign: Sign,
     pub sign_conflict: bool,
@@ -110,10 +113,10 @@ pub struct TypedFunction {
 
 impl TypedFunction {
     #[must_use]
-    pub fn struct_at(&self, slot: i64) -> Option<&RecoveredStruct> {
+    pub fn struct_at(&self, rbp_disp: i64) -> Option<&RecoveredStruct> {
         self.structs
             .iter()
-            .find(|item: &&RecoveredStruct| item.slot == slot)
+            .find(|item: &&RecoveredStruct| item.rbp_disp == rbp_disp)
     }
 
     #[must_use]
@@ -122,10 +125,12 @@ impl TypedFunction {
     }
 
     #[must_use]
-    pub fn objects_covering(&self, offset: i64, lo: u64, hi: u64) -> Vec<RecoveredObject> {
+    pub fn objects_covering(&self, rbp_disp: i64, lo: u64, hi: u64) -> Vec<RecoveredObject> {
         self.objects
             .iter()
-            .filter(|object: &&RecoveredObject| object.offset == offset && object.covers(lo, hi))
+            .filter(|object: &&RecoveredObject| {
+                object.rbp_disp == rbp_disp && object.covers(lo, hi)
+            })
             .copied()
             .collect()
     }
@@ -135,7 +140,7 @@ impl TypedFunction {
         let live: Vec<&RecoveredObject> = self
             .objects
             .iter()
-            .filter(|object: &&RecoveredObject| object.offset == rbp_disp)
+            .filter(|object: &&RecoveredObject| object.rbp_disp == rbp_disp)
             .collect();
         let [object]: [&RecoveredObject; 1] = live.try_into().ok()?;
         if object.escaped || object.sign_conflict {
@@ -146,14 +151,14 @@ impl TypedFunction {
 
     #[must_use]
     pub fn typed_slots(&self) -> BTreeMap<i64, CIntType> {
-        let mut offsets: BTreeSet<i64> = BTreeSet::new();
+        let mut rbp_disps: BTreeSet<i64> = BTreeSet::new();
         for object in &self.objects {
-            offsets.insert(object.offset);
+            rbp_disps.insert(object.rbp_disp);
         }
         let mut out: BTreeMap<i64, CIntType> = BTreeMap::new();
-        for offset in offsets {
-            if let Some(cint) = self.typed_slot(offset) {
-                out.insert(offset, cint);
+        for rbp_disp in rbp_disps {
+            if let Some(cint) = self.typed_slot(rbp_disp) {
+                out.insert(rbp_disp, cint);
             }
         }
         out
@@ -162,11 +167,12 @@ impl TypedFunction {
 
 #[must_use]
 pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
+    let instrs: Vec<Instruction> = decode_all(bytes, base);
     let (rbp_slots, has_frame_pointer): (BTreeMap<i64, RecoveredScalar>, bool) =
-        recover_merge(bytes, base);
-    let objects: Vec<RecoveredObject> = recover_split(bytes, base);
-    let structs: Vec<RecoveredStruct> = structrec::recover_structs(bytes, base);
-    let proto: RecoveredProto = abi::recover_proto(bytes, base);
+        recover_merge(&instrs);
+    let objects: Vec<RecoveredObject> = recover_split(&instrs);
+    let structs: Vec<RecoveredStruct> = structrec::recover_structs_from(&instrs);
+    let proto: RecoveredProto = abi::recover_proto_from(&instrs);
     TypedFunction {
         rbp_slots,
         objects,
@@ -176,24 +182,24 @@ pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
     }
 }
 
-fn recover_merge(bytes: &[u8], base: u64) -> (BTreeMap<i64, RecoveredScalar>, bool) {
-    let mut facts: FactSet = extract(bytes, base);
+fn recover_merge(instrs: &[Instruction]) -> (BTreeMap<i64, RecoveredScalar>, bool) {
+    let mut facts: FactSet = extract_from(instrs);
     let has_frame_pointer: bool = facts.has_frame_pointer;
     solve(&mut facts.store, &facts.constraints);
     let pairs: Vec<(i64, TypeVar)> = facts
         .rbp_slots
         .iter()
-        .map(|(disp, cell): (&i64, &TypeVar)| (*disp, *cell))
+        .map(|(rbp_disp, cell): (&i64, &TypeVar)| (*rbp_disp, *cell))
         .collect();
     let mut rbp_slots: BTreeMap<i64, RecoveredScalar> = BTreeMap::new();
-    for (disp, cell) in pairs {
-        rbp_slots.insert(disp, scalar_of(&mut facts.store, cell));
+    for (rbp_disp, cell) in pairs {
+        rbp_slots.insert(rbp_disp, scalar_of(&mut facts.store, cell));
     }
     (rbp_slots, has_frame_pointer)
 }
 
-fn recover_split(bytes: &[u8], base: u64) -> Vec<RecoveredObject> {
-    let mut facts: FactSet = extract_split(bytes, base);
+fn recover_split(instrs: &[Instruction]) -> Vec<RecoveredObject> {
+    let mut facts: FactSet = extract_split_from(instrs);
     solve(&mut facts.store, &facts.constraints);
     let versions: Vec<VersionInfo> = facts.ssa.versions().to_vec();
     let mut objects: Vec<RecoveredObject> = Vec::new();
@@ -203,7 +209,7 @@ fn recover_split(bytes: &[u8], base: u64) -> Vec<RecoveredObject> {
         }
         let scalar: RecoveredScalar = scalar_of(&mut facts.store, version.cell);
         objects.push(RecoveredObject {
-            offset: version.offset,
+            rbp_disp: version.rbp_disp,
             width: scalar.width,
             sign: scalar.sign,
             sign_conflict: scalar.sign_conflict,
@@ -270,7 +276,7 @@ mod tests {
         let at_zero: Vec<&RecoveredObject> = recovered
             .objects
             .iter()
-            .filter(|object: &&RecoveredObject| object.offset == 0)
+            .filter(|object: &&RecoveredObject| object.rbp_disp == 0)
             .collect();
         assert!(
             at_zero.len() >= 2,
@@ -321,6 +327,19 @@ mod tests {
         ];
         let recovered: TypedFunction = recover_function(bytes, 0x1000);
         assert_eq!(recovered.typed_slot(0x10), None);
+    }
+
+    #[test]
+    fn threaded_decode_matches_independent_recovery() {
+        let bytes: &[u8] = &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x4d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x8b, 0x10,
+            0x48, 0x8b, 0x45, 0x10, 0x8b, 0x40, 0x04, 0x01, 0xd0, 0x5d, 0xc3,
+        ];
+        let base: u64 = 0x1000;
+        let typed: TypedFunction = recover_function(bytes, base);
+        assert_eq!(typed.structs, structrec::recover_structs(bytes, base));
+        assert_eq!(typed.proto, Some(abi::recover_proto(bytes, base)));
+        assert!(!typed.structs.is_empty());
     }
 
     #[test]
