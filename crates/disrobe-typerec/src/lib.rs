@@ -7,6 +7,7 @@ pub mod dwarf_gt;
 pub mod error;
 pub mod facts;
 pub mod grade;
+pub mod import_map;
 pub mod lattice;
 pub mod memssa;
 pub mod recover;
@@ -29,6 +30,7 @@ pub use grade::{
     AxisScore, GradeReport, IdentityReport, NameGrade, StructGradeReport, grade_functions,
     grade_identity, grade_image, grade_structs, recover_image,
 };
+pub use import_map::{ImportFormat, ImportMap, ImportRef, ImportSource, ImportSymbol};
 pub use lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
 pub use memssa::{MemSsa, VersionInfo};
 pub use recover::{CIntType, RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
