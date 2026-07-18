@@ -1745,6 +1745,9 @@ fn call_window_registers(
         return Some(Vec::new());
     }
     let argc: usize = usize::try_from(argc).ok()?;
+    if argc > MAX_RENDERED_CALL_ARGS as usize {
+        return None;
+    }
     let scan_start: usize = call_index.saturating_sub(64);
     let this_reg: u32 =
         instructions[scan_start..call_index]
@@ -2566,6 +2569,33 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
 mod tests {
     use super::*;
     use crate::hermes::{HERMES_MAGIC, HermesHeader, HermesStringKind};
+
+    #[test]
+    fn call_window_rejects_argc_above_render_cap() {
+        let instructions: Vec<Instruction> = vec![
+            Instruction {
+                offset: 0,
+                size: 1,
+                opcode: 0,
+                name: Cow::Borrowed("Mov"),
+                operands: vec![OperandValue::Reg(u32::MAX)],
+            },
+            Instruction {
+                offset: 1,
+                size: 1,
+                opcode: 0,
+                name: Cow::Borrowed("CallLong"),
+                operands: Vec::new(),
+            },
+        ];
+        assert!(call_window_registers(&instructions, 1, MAX_RENDERED_CALL_ARGS + 1).is_none());
+        let at_cap: Option<Vec<u32>> =
+            call_window_registers(&instructions, 1, MAX_RENDERED_CALL_ARGS);
+        assert_eq!(
+            at_cap.map(|w: Vec<u32>| w.len()),
+            Some(MAX_RENDERED_CALL_ARGS as usize)
+        );
+    }
 
     fn opcode_byte(name: &str) -> u8 {
         OPCODES
