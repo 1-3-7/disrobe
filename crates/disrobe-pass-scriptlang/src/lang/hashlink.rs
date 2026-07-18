@@ -8,6 +8,10 @@ pub const HL_MAGIC: &[u8; 3] = b"HLB";
 const HL_MIN_VERSION: u8 = 2;
 const HL_MAX_VERSION: u8 = 5;
 
+const WIRE_MIN_I32: usize = 4;
+const WIRE_MIN_F64: usize = 8;
+const WIRE_MIN_VARINT: usize = 1;
+
 macro_rules! push_line {
     ($output:expr, $($arg:tt)*) => {
         push_format_line(&mut $output, format_args!($($arg)*))
@@ -348,6 +352,17 @@ impl<'a> Reader<'a> {
         Ok(slice)
     }
 
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    #[inline]
+    fn bounded_capacity(&self, count: usize, elem_bytes: usize) -> usize {
+        let max_by_buffer: usize = self.remaining() / elem_bytes.max(1) + 1;
+        count.min(max_by_buffer)
+    }
+
     fn read_i32(&mut self) -> HlResult<i32> {
         let slice: &[u8] = self.read_bytes(4)?;
         Ok(i32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
@@ -415,7 +430,8 @@ impl<'a> Reader<'a> {
         let size: i32 = self.read_i32()?;
         let size: usize = usize::try_from(size).map_err(|_| HlError::InvalidString)?;
         let buf: &[u8] = self.read_bytes(size)?;
-        let mut out: Vec<String> = Vec::with_capacity(count);
+        let mut out: Vec<String> =
+            Vec::with_capacity(self.bounded_capacity(count, WIRE_MIN_VARINT));
         let mut cursor: usize = 0usize;
         for _ in 0..count {
             let sz: usize = self.read_uindex()?;
@@ -460,7 +476,8 @@ impl<'a> Reader<'a> {
         let nfields: usize = self.read_uindex()?;
         let nproto: usize = self.read_uindex()?;
         let nbindings: usize = self.read_uindex()?;
-        let mut fields: Vec<HlObjField> = Vec::with_capacity(nfields);
+        let mut fields: Vec<HlObjField> =
+            Vec::with_capacity(self.bounded_capacity(nfields, WIRE_MIN_VARINT));
         for _ in 0..nfields {
             let field_name: usize = self.read_string_ref(strings.len())?;
             let field_type: usize = self.read_type_ref(ntypes)?;
@@ -469,7 +486,8 @@ impl<'a> Reader<'a> {
                 type_index: field_type,
             });
         }
-        let mut protos: Vec<HlObjProto> = Vec::with_capacity(nproto);
+        let mut protos: Vec<HlObjProto> =
+            Vec::with_capacity(self.bounded_capacity(nproto, WIRE_MIN_VARINT));
         for _ in 0..nproto {
             let proto_name: usize = self.read_string_ref(strings.len())?;
             let findex: usize = self.read_uindex()?;
@@ -480,7 +498,8 @@ impl<'a> Reader<'a> {
                 pindex,
             });
         }
-        let mut bindings: Vec<(usize, usize)> = Vec::with_capacity(nbindings);
+        let mut bindings: Vec<(usize, usize)> =
+            Vec::with_capacity(self.bounded_capacity(nbindings, WIRE_MIN_VARINT));
         for _ in 0..nbindings {
             let field_index: usize = self.read_uindex()?;
             let findex: usize = self.read_uindex()?;
@@ -516,7 +535,8 @@ impl<'a> Reader<'a> {
             14 => Ok(HlType::Ref(self.read_type_ref(ntypes)?)),
             15 => {
                 let nfields: usize = self.read_uindex()?;
-                let mut fields: Vec<HlObjField> = Vec::with_capacity(nfields);
+                let mut fields: Vec<HlObjField> =
+                    Vec::with_capacity(self.bounded_capacity(nfields, WIRE_MIN_VARINT));
                 for _ in 0..nfields {
                     let field_name: usize = self.read_string_ref(strings.len())?;
                     let field_type: usize = self.read_type_ref(ntypes)?;
@@ -536,11 +556,13 @@ impl<'a> Reader<'a> {
                 let name_idx: usize = self.read_string_ref(strings.len())?;
                 let global: usize = self.read_uindex()?;
                 let nconstructs: usize = self.read_uindex()?;
-                let mut constructs: Vec<HlEnumConstruct> = Vec::with_capacity(nconstructs);
+                let mut constructs: Vec<HlEnumConstruct> =
+                    Vec::with_capacity(self.bounded_capacity(nconstructs, WIRE_MIN_VARINT));
                 for _ in 0..nconstructs {
                     let cname_idx: usize = self.read_string_ref(strings.len())?;
                     let nparams: usize = self.read_uindex()?;
-                    let mut params: Vec<usize> = Vec::with_capacity(nparams);
+                    let mut params: Vec<usize> =
+                        Vec::with_capacity(self.bounded_capacity(nparams, WIRE_MIN_VARINT));
                     for _ in 0..nparams {
                         params.push(self.read_type_ref(ntypes)?);
                     }
@@ -637,11 +659,13 @@ impl<'a> Reader<'a> {
         let findex: usize = self.read_uindex()?;
         let nregs: usize = self.read_uindex()?;
         let nops: usize = self.read_uindex()?;
-        let mut regs: Vec<usize> = Vec::with_capacity(nregs);
+        let mut regs: Vec<usize> =
+            Vec::with_capacity(self.bounded_capacity(nregs, WIRE_MIN_VARINT));
         for _ in 0..nregs {
             regs.push(self.read_type_ref(ntypes)?);
         }
-        let mut ops: Vec<HlOpcode> = Vec::with_capacity(nops);
+        let mut ops: Vec<HlOpcode> =
+            Vec::with_capacity(self.bounded_capacity(nops, WIRE_MIN_VARINT));
         for _ in 0..nops {
             ops.push(self.read_opcode()?);
         }
@@ -722,11 +746,11 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
     };
     let entrypoint: usize = r.read_uindex()?;
 
-    let mut ints: Vec<i32> = Vec::with_capacity(nints);
+    let mut ints: Vec<i32> = Vec::with_capacity(r.bounded_capacity(nints, WIRE_MIN_I32));
     for _ in 0..nints {
         ints.push(r.read_i32()?);
     }
-    let mut floats: Vec<f64> = Vec::with_capacity(nfloats);
+    let mut floats: Vec<f64> = Vec::with_capacity(r.bounded_capacity(nfloats, WIRE_MIN_F64));
     for _ in 0..nfloats {
         floats.push(r.read_f64()?);
     }
@@ -737,7 +761,7 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
         let size: i32 = r.read_i32()?;
         let size: usize = usize::try_from(size).map_err(|_| HlError::InvalidString)?;
         let _: &[u8] = r.read_bytes(size)?;
-        bytes_pos = Vec::with_capacity(nbytes);
+        bytes_pos = Vec::with_capacity(r.bounded_capacity(nbytes, WIRE_MIN_VARINT));
         for _ in 0..nbytes {
             bytes_pos.push(r.read_uindex()?);
         }
@@ -750,17 +774,18 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
         Vec::new()
     };
 
-    let mut types: Vec<HlType> = Vec::with_capacity(ntypes);
+    let mut types: Vec<HlType> = Vec::with_capacity(r.bounded_capacity(ntypes, WIRE_MIN_VARINT));
     for _ in 0..ntypes {
         types.push(r.read_type(ntypes, &strings)?);
     }
 
-    let mut globals: Vec<usize> = Vec::with_capacity(nglobals);
+    let mut globals: Vec<usize> = Vec::with_capacity(r.bounded_capacity(nglobals, WIRE_MIN_VARINT));
     for _ in 0..nglobals {
         globals.push(r.read_type_ref(ntypes)?);
     }
 
-    let mut natives: Vec<HlNative> = Vec::with_capacity(nnatives);
+    let mut natives: Vec<HlNative> =
+        Vec::with_capacity(r.bounded_capacity(nnatives, WIRE_MIN_VARINT));
     for _ in 0..nnatives {
         let lib_idx: usize = r.read_string_ref(nstrings)?;
         let name_idx: usize = r.read_string_ref(nstrings)?;
@@ -774,7 +799,8 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
         });
     }
 
-    let mut functions: Vec<HlFunction> = Vec::with_capacity(nfunctions);
+    let mut functions: Vec<HlFunction> =
+        Vec::with_capacity(r.bounded_capacity(nfunctions, WIRE_MIN_VARINT));
     for _ in 0..nfunctions {
         let mut function: HlFunction = r.read_function(ntypes)?;
         if has_debug {
@@ -790,11 +816,13 @@ pub fn read_code(data: &[u8]) -> HlResult<HlCode> {
         functions.push(function);
     }
 
-    let mut constants: Vec<HlConstant> = Vec::with_capacity(nconstants);
+    let mut constants: Vec<HlConstant> =
+        Vec::with_capacity(r.bounded_capacity(nconstants, WIRE_MIN_VARINT));
     for _ in 0..nconstants {
         let global: usize = r.read_uindex()?;
         let nfields: usize = r.read_uindex()?;
-        let mut fields: Vec<usize> = Vec::with_capacity(nfields);
+        let mut fields: Vec<usize> =
+            Vec::with_capacity(r.bounded_capacity(nfields, WIRE_MIN_VARINT));
         for _ in 0..nfields {
             fields.push(r.read_uindex()?);
         }
@@ -1362,5 +1390,49 @@ mod tests {
             read_code(b"not hl bytecode").unwrap_err(),
             HlError::BadMagic
         );
+    }
+
+    #[test]
+    fn huge_ntypes_count_is_capped_not_aborted() {
+        let ntypes_overflow: [u8; 4] = [0xdf, 0xff, 0xff, 0xff];
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(HL_MAGIC);
+        data.push(HL_MIN_VERSION);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(&ntypes_overflow);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(&0i32.to_le_bytes());
+        assert!(read_code(&data).is_err());
+    }
+
+    #[test]
+    fn huge_nints_count_is_capped_not_aborted() {
+        let nints_overflow: [u8; 4] = [0xdf, 0xff, 0xff, 0xff];
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(HL_MAGIC);
+        data.push(HL_MIN_VERSION);
+        data.push(0x00);
+        data.extend_from_slice(&nints_overflow);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(&0i32.to_le_bytes());
+        assert!(read_code(&data).is_err());
+    }
+
+    #[test]
+    fn minimal_module_with_ints_still_parses() {
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(HL_MAGIC);
+        data.push(HL_MIN_VERSION);
+        data.push(0x00);
+        data.push(0x02);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        data.push(0x00);
+        data.extend_from_slice(&42i32.to_le_bytes());
+        data.extend_from_slice(&7i32.to_le_bytes());
+        data.extend_from_slice(&0i32.to_le_bytes());
+        let code: HlCode = read_code(&data).unwrap();
+        assert_eq!(code.ints, vec![42, 7]);
+        assert!(code.fully_parsed());
     }
 }
