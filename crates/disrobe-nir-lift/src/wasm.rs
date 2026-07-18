@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
@@ -106,13 +108,13 @@ fn lift_body(
     let is_export: bool = sig.is_some_and(|s: &FunctionSig| s.exported);
 
     let operators: Vec<(Operator<'_>, usize)> = collect_operators(body)?;
-    let depth_offsets: Vec<(u32, u64)> = control_stack_targets(&operators, base);
+    let depth_targets: BTreeMap<u32, u64> = control_depth_targets(&operators, base);
     let byte_arith: Vec<bool> = byte_arith_flags(&operators);
 
     let mut instructions: Vec<NirInstr> = Vec::with_capacity(operators.len());
     for (ordinal, (op, _byte_offset)) in operators.iter().enumerate() {
         let address: u64 = base.saturating_add(ordinal as u64);
-        let nir_op: NirOp = classify_op(op, &depth_offsets);
+        let nir_op: NirOp = classify_op(op, &depth_targets);
         let (reads_memory, writes_memory, mem_byte): (bool, bool, bool) = memory_facets(op);
         let is_byte_arith: bool = byte_arith.get(ordinal).is_some_and(|value: &bool| *value);
         let mut operand_list: Vec<String> = operands(op, signatures);
@@ -192,9 +194,9 @@ fn byte_arith_flags(operators: &[(Operator<'_>, usize)]) -> Vec<bool> {
     flags
 }
 
-fn control_stack_targets(operators: &[(Operator<'_>, usize)], base: u64) -> Vec<(u32, u64)> {
+fn control_depth_targets(operators: &[(Operator<'_>, usize)], base: u64) -> BTreeMap<u32, u64> {
     let mut stack: Vec<(bool, u64)> = Vec::new();
-    let mut targets: Vec<(u32, u64)> = Vec::new();
+    let mut targets: BTreeMap<u32, u64> = BTreeMap::new();
     for (ordinal, (op, _)) in operators.iter().enumerate() {
         let address: u64 = base.saturating_add(ordinal as u64);
         match op {
@@ -206,7 +208,7 @@ fn control_stack_targets(operators: &[(Operator<'_>, usize)], base: u64) -> Vec<
                 if let Some((is_loop, header)) = stack.pop() {
                     let target: u64 = if is_loop { header } else { address };
                     let depth: u32 = usize_to_u32_saturating(stack.len());
-                    targets.push((depth, target));
+                    targets.insert(depth, target);
                 }
             }
             _ => {}
@@ -215,15 +217,11 @@ fn control_stack_targets(operators: &[(Operator<'_>, usize)], base: u64) -> Vec<
     targets
 }
 
-fn branch_target(relative_depth: u32, depth_offsets: &[(u32, u64)]) -> Option<u64> {
-    depth_offsets
-        .iter()
-        .rev()
-        .find(|(depth, _): &&(u32, u64)| *depth == relative_depth)
-        .map(|(_, addr): &(u32, u64)| *addr)
+fn branch_target(relative_depth: u32, depth_targets: &BTreeMap<u32, u64>) -> Option<u64> {
+    depth_targets.get(&relative_depth).copied()
 }
 
-fn classify_op(op: &Operator<'_>, depth_offsets: &[(u32, u64)]) -> NirOp {
+fn classify_op(op: &Operator<'_>, depth_targets: &BTreeMap<u32, u64>) -> NirOp {
     match op {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
             NirOp::Call {
@@ -235,13 +233,13 @@ fn classify_op(op: &Operator<'_>, depth_offsets: &[(u32, u64)]) -> NirOp {
         | Operator::CallRef { .. }
         | Operator::ReturnCallRef { .. } => NirOp::IndirectCall,
         Operator::Br { relative_depth } => NirOp::Branch {
-            target: branch_target(*relative_depth, depth_offsets),
+            target: branch_target(*relative_depth, depth_targets),
         },
         Operator::BrIf { relative_depth } => NirOp::CondBranch {
-            target: branch_target(*relative_depth, depth_offsets),
+            target: branch_target(*relative_depth, depth_targets),
         },
         Operator::BrTable { targets } => NirOp::CondBranch {
-            target: branch_target(targets.default(), depth_offsets),
+            target: branch_target(targets.default(), depth_targets),
         },
         Operator::If { .. } => NirOp::CondBranch { target: None },
         Operator::Return => NirOp::Return,
@@ -431,8 +429,12 @@ const fn explicit_mnemonic(op: &Operator<'_>) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use super::{LiftError, MAX_WASM_OPERATORS_PER_FUNCTION, count_u32, lift_wasm_module};
+    use super::{
+        LiftError, MAX_WASM_OPERATORS_PER_FUNCTION, NirFunction, NirInstr, NirModule, NirOp,
+        count_u32, function_address, lift_wasm_module,
+    };
 
     fn leb_u32(mut value: u32) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
@@ -504,5 +506,87 @@ mod tests {
             result,
             Err(LiftError::Source(message)) if message.contains("count exceeds u32")
         ));
+    }
+
+    fn single_function_module(body: &[u8]) -> Vec<u8> {
+        let mut module: Vec<u8> = b"\0asm\x01\0\0\0".to_vec();
+
+        let mut types: Vec<u8> = Vec::new();
+        types.extend(leb_u32(1));
+        types.push(0x60);
+        types.push(0);
+        types.push(0);
+        push_section(&mut module, 1, &types);
+
+        let mut functions: Vec<u8> = Vec::new();
+        functions.extend(leb_u32(1));
+        functions.push(0);
+        push_section(&mut module, 3, &functions);
+
+        let mut function_body: Vec<u8> = Vec::new();
+        function_body.extend(leb_u32(0));
+        function_body.extend_from_slice(body);
+
+        let mut code: Vec<u8> = Vec::new();
+        code.extend(leb_u32(1));
+        code.extend(leb_usize(function_body.len()));
+        code.extend_from_slice(&function_body);
+        push_section(&mut module, 10, &code);
+
+        module
+    }
+
+    #[test]
+    fn sequential_block_branch_resolves_to_last_matching_frame() {
+        let body: [u8; 9] = [0x02, 0x40, 0x0b, 0x02, 0x40, 0x0c, 0x00, 0x0b, 0x0b];
+        let bytes: Vec<u8> = single_function_module(&body);
+        let module: NirModule = lift_wasm_module(&bytes).expect("small module must lift");
+        let base: u64 = function_address(0);
+        let function: &NirFunction = &module.functions[0];
+        let branch: &NirInstr = function
+            .instructions
+            .iter()
+            .find(|i: &&NirInstr| matches!(i.op, NirOp::Branch { .. }))
+            .expect("a branch instruction");
+        assert_eq!(
+            branch.op,
+            NirOp::Branch {
+                target: Some(base + 4)
+            },
+            "br must resolve to the most recent frame recorded at its relative depth"
+        );
+    }
+
+    #[test]
+    fn branch_resolution_stays_linear_on_dense_blocks_and_branches() {
+        let frames: usize = 40_000;
+        let branches: usize = 40_000;
+        let mut body: Vec<u8> = Vec::with_capacity(frames * 2 + branches * 6 + frames + 1);
+        for _ in 0..frames {
+            body.extend_from_slice(&[0x02, 0x40]);
+        }
+        for _ in 0..branches {
+            body.extend_from_slice(&[0x0c, 0xff, 0xff, 0xff, 0xff, 0x0f]);
+        }
+        body.extend(std::iter::repeat_n(0x0b, frames + 1));
+        let bytes: Vec<u8> = single_function_module(&body);
+        let start: std::time::Instant = std::time::Instant::now();
+        let module: NirModule =
+            lift_wasm_module(&bytes).expect("dense block/branch function must lift bounded");
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "branch resolution must stay linear in blocks and branches, took {elapsed:?}"
+        );
+        let function: &NirFunction = &module.functions[0];
+        let all_unresolved: bool = function
+            .instructions
+            .iter()
+            .filter(|i: &&NirInstr| matches!(i.op, NirOp::Branch { .. }))
+            .all(|i: &NirInstr| matches!(i.op, NirOp::Branch { target: None }));
+        assert!(
+            all_unresolved,
+            "an out-of-range relative depth must resolve to no target"
+        );
     }
 }
