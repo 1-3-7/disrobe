@@ -44,10 +44,6 @@ fn instruction_end(offset: u64, byte_len: usize) -> u64 {
         .unwrap_or(offset)
 }
 
-const fn instruction_in_function(offset: u64, start: u64, end: u64) -> bool {
-    (offset >= start && offset < end) || offset == start
-}
-
 #[must_use]
 pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
     let function_symbols: Vec<FunctionSymbol<'_>> = disasm_function_symbols(&payload.symbol_table);
@@ -67,9 +63,14 @@ pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
             let end: u64 = function_symbols
                 .get(idx + 1)
                 .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
-            let instructions: Vec<NirInstr> = sorted_insns
+            let lo: usize = sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < start);
+            let hi: usize = if end > start {
+                sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < end)
+            } else {
+                sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset <= start)
+            };
+            let instructions: Vec<NirInstr> = sorted_insns[lo..hi]
                 .iter()
-                .filter(|i: &&&DisasmInstruction| instruction_in_function(i.offset, start, end))
                 .map(|i: &&DisasmInstruction| lift_instruction(i))
                 .collect();
             NirFunction {
