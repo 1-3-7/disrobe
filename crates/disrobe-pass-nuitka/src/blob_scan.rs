@@ -127,10 +127,15 @@ const MAX_LEAVES: usize = 200_000;
 
 const MAX_LEAF_BYTES: usize = 1 << 20;
 
+const SCAN_WORK_FACTOR: u64 = 64;
+
 #[must_use]
 pub fn scan_constants_blob(image: &[u8]) -> Option<BlobScan> {
     let mut merged: Option<BlobScan> = None;
     let mut cursor: usize = 0usize;
+    let mut scan_work: u64 = (image.len() as u64)
+        .saturating_mul(SCAN_WORK_FACTOR)
+        .max(MAX_LEAF_BYTES as u64);
 
     while cursor < image.len() {
         let Some(rel): Option<usize> = first_string_tag(&image[cursor..]) else {
@@ -143,7 +148,18 @@ pub fn scan_constants_blob(image: &[u8]) -> Option<BlobScan> {
                 merge_segment(&mut merged, scan);
                 cursor = next.max(start + 1);
             }
-            _ => cursor = start + 1,
+            _ => {
+                let horizon: usize = start.saturating_add(MAX_LEAF_BYTES).min(image.len());
+                let leading_extent: u64 = image
+                    .get(start..horizon)
+                    .and_then(|window: &[u8]| window.iter().position(|&b: &u8| b == 0))
+                    .map_or((horizon - start) as u64, |zero: usize| zero as u64 + 1);
+                scan_work = scan_work.saturating_sub(leading_extent);
+                if scan_work == 0 {
+                    break;
+                }
+                cursor = start + 1;
+            }
         }
     }
 
@@ -448,6 +464,12 @@ fn read_zero_terminated_bytes(bytes: &[u8], start: usize) -> Option<(&[u8], usiz
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_free_string_tag_run_is_work_bounded() {
+        let image: Vec<u8> = vec![Tag::AttributeName as u8; 512 * 1024];
+        assert!(scan_constants_blob(&image).is_none());
+    }
 
     fn varint(mut value: u64) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
