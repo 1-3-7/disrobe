@@ -210,11 +210,24 @@ fn escaped_slot(insn: &Instruction) -> Option<i64> {
     ))
 }
 
-fn has_indexed_frame_escape(insn: &Instruction) -> bool {
-    insn.mnemonic() == Mnemonic::Lea
-        && matches!(insn.memory_base(), Register::RBP | Register::RSP)
-        && insn.memory_index() != Register::None
-        && decoded_index_scale(insn.memory_index_scale()).is_some()
+fn forces_whole_frame_escape(insn: &Instruction) -> bool {
+    if insn.mnemonic() != Mnemonic::Lea {
+        return false;
+    }
+    if matches!(
+        insn.op0_register().full_register(),
+        Register::RSP | Register::RBP
+    ) {
+        return false;
+    }
+    match insn.memory_base() {
+        Register::RSP => true,
+        Register::RBP => {
+            insn.memory_index() != Register::None
+                && decoded_index_scale(insn.memory_index_scale()).is_some()
+        }
+        _ => false,
+    }
 }
 
 #[must_use]
@@ -238,7 +251,7 @@ fn build_with_oracle(
     let mut ssa: MemSsa = MemSsa::default();
     if instrs
         .iter()
-        .any(|insn: &Instruction| has_indexed_frame_escape(insn))
+        .any(|insn: &Instruction| forces_whole_frame_escape(insn))
     {
         build_all_escaped(&mut ssa, store, instrs, &events);
         return ssa;
@@ -855,6 +868,37 @@ mod tests {
         assert!(refined.is_escaped(-0x40));
         assert!(refined.is_escaped(-0x38));
         assert_exact_mem_ssa_match(&refined, &conflated);
+    }
+
+    const RSP_PLAIN_ESCAPE_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x44, 0x24, 0xc0, 0x48, 0x89, 0x45, 0xc0, 0x48, 0x89,
+        0x55, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn rsp_plain_lea_escape_matches_the_ignorant_version_chain() {
+        let conflated: MemSsa = ssa_with(
+            RSP_PLAIN_ESCAPE_FIELDS,
+            0x1000,
+            &crate::region::AlwaysMayAlias,
+        );
+        let refined: MemSsa = ssa_with(RSP_PLAIN_ESCAPE_FIELDS, 0x1000, &RegionModel::default());
+
+        assert!(refined.is_escaped(-0x40));
+        assert!(refined.is_escaped(-0x38));
+        assert_exact_mem_ssa_match(&refined, &conflated);
+    }
+
+    const FRAME_SETUP_LEA_FIELDS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x45, 0xc0, 0x48, 0x89,
+        0x55, 0xc8, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn frame_pointer_setup_lea_does_not_escape_the_frame() {
+        let refined: MemSsa = ssa_with(FRAME_SETUP_LEA_FIELDS, 0x1000, &RegionModel::default());
+        assert!(!refined.is_escaped(-0x40));
+        assert!(!refined.is_escaped(-0x38));
     }
 
     const CALL_BARRIER_INDEX_FIELDS: &[u8] = &[
