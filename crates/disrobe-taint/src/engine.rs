@@ -325,6 +325,9 @@ fn walk_function(ctx: &Ctx<'_>, arena: &mut Arena, mode: WalkMode) -> Outputs {
             continue;
         }
         let exit: BlockState = walk_block(ctx, arena, mode, &blocks[block_idx], incoming, &mut out);
+        if terminator_target_outside_blocks(&blocks[block_idx], &index_of) {
+            out.truncated = true;
+        }
         for succ in &blocks[block_idx].successors {
             let Some(succ_idx): Option<&usize> = index_of.get(succ) else {
                 out.truncated = true;
@@ -339,6 +342,17 @@ fn walk_function(ctx: &Ctx<'_>, arena: &mut Arena, mode: WalkMode) -> Outputs {
         }
     }
     out
+}
+
+fn terminator_target_outside_blocks(block: &NirBlock, index_of: &BTreeMap<u64, usize>) -> bool {
+    let Some(last): Option<&NirInstr> = block.instructions.last() else {
+        return false;
+    };
+    if !matches!(last.op, NirOp::Branch { .. } | NirOp::CondBranch { .. }) {
+        return false;
+    }
+    last.direct_target()
+        .is_some_and(|target: u64| !index_of.contains_key(&target))
 }
 
 fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
