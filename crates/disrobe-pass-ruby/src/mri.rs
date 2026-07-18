@@ -52,6 +52,9 @@ pub struct MriAst {
 const KEYWORDS: &[&str] = &[
     "BEGIN",
     "END",
+    "__ENCODING__",
+    "__FILE__",
+    "__LINE__",
     "alias",
     "and",
     "begin",
@@ -88,9 +91,6 @@ const KEYWORDS: &[&str] = &[
     "when",
     "while",
     "yield",
-    "__FILE__",
-    "__LINE__",
-    "__ENCODING__",
 ];
 
 #[inline]
@@ -342,10 +342,9 @@ impl<'a> Lexer<'a> {
             self.col += 1;
         }
         let value: String = String::from_utf8_lossy(&self.bytes[start..self.i]).into_owned();
-        let first: u8 = value.as_bytes()[0];
         let kind: TokenKind = if is_keyword(&value) {
             TokenKind::Keyword
-        } else if first.is_ascii_uppercase() {
+        } else if value.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
             TokenKind::Constant
         } else {
             TokenKind::Identifier
@@ -450,6 +449,28 @@ pub(crate) fn parse_mri(bytes: &[u8], _source_path: &str) -> Result<MriAst> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyword_table_is_sorted_and_every_keyword_is_recognized() {
+        assert!(
+            KEYWORDS.windows(2).all(|w: &[&str]| w[0] < w[1]),
+            "KEYWORDS must stay sorted so the binary search is correct"
+        );
+        for kw in [
+            "yield",
+            "def",
+            "__FILE__",
+            "__LINE__",
+            "__ENCODING__",
+            "BEGIN",
+            "end",
+        ] {
+            assert!(is_keyword(kw), "{kw} must be recognized as a keyword");
+        }
+        for ident in ["yields", "foo", "Klass", "definition"] {
+            assert!(!is_keyword(ident), "{ident} must not be a keyword");
+        }
+    }
 
     #[test]
     fn parses_def_class_module() {
