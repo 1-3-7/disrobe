@@ -735,11 +735,10 @@ enum GroundKind {
 }
 
 fn ground_kind_at(function: &GroundTruthFunction, slot: &TypedSlot) -> Option<GroundKind> {
-    if function
-        .aggregates
-        .iter()
-        .any(|aggregate: &GroundTruthAggregate| aggregate.rbp_disp == slot.rbp_disp)
-    {
+    if function.aggregates.iter().any(|aggregate: &GroundTruthAggregate| {
+        aggregate.rbp_disp == slot.rbp_disp
+            && aggregate.scope_overlaps(slot.live_lo, slot.live_hi.saturating_add(1))
+    }) {
         return Some(GroundKind::Pointer);
     }
     function
@@ -842,6 +841,56 @@ mod tests {
             sign,
             scope_lo: 0x1000,
             scope_hi: 0x1010,
+        }
+    }
+
+    fn gt_pointer_aggregate(disp: i64, scope_lo: u64, scope_hi: u64) -> GroundTruthAggregate {
+        GroundTruthAggregate {
+            rbp_disp: disp,
+            is_union: false,
+            type_name: "S".to_owned(),
+            fields: vec![GroundTruthField {
+                offset: 0,
+                width: Width::Qword,
+                sign: Sign::Unknown,
+                is_pointer: true,
+                name: String::new(),
+            }],
+            scope_lo,
+            scope_hi,
+        }
+    }
+
+    #[test]
+    fn aggregate_ground_kind_respects_scope_so_a_reused_slot_grades_as_the_scoped_var() {
+        let function: GroundTruthFunction = GroundTruthFunction {
+            name: "f".to_owned(),
+            low_pc: 0x1000,
+            high_pc: 0x1010,
+            vars: vec![GroundTruthVar {
+                name: "n".to_owned(),
+                rbp_disp: 16,
+                width: Width::Dword,
+                sign: Sign::Signed,
+                scope_lo: 0x1008,
+                scope_hi: 0x1010,
+            }],
+            aggregates: vec![gt_pointer_aggregate(16, 0x1000, 0x1008)],
+            signature: None,
+        };
+        let slot: TypedSlot = TypedSlot {
+            rbp_disp: 16,
+            live_lo: 0x1009,
+            live_hi: 0x100e,
+            ty: ApiType::Integer {
+                width: Width::Dword,
+                sign: Sign::Signed,
+            },
+            provenance: crate::callsite::Provenance::Heuristic,
+        };
+        match ground_kind_at(&function, &slot) {
+            Some(GroundKind::Integer { width, .. }) => assert_eq!(width, Width::Dword),
+            other => panic!("expected the scoped integer var, got {other:?}"),
         }
     }
 
