@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{
@@ -314,6 +314,7 @@ struct Machine {
     memo: BTreeMap<u64, PickleValue>,
     memo_indices: BTreeMap<u64, u64>,
     memo_used: BTreeMap<u64, bool>,
+    dirty_memos: BTreeSet<u64>,
     next_memo_id: u64,
     max_depth: usize,
     global_refs: Vec<GlobalRef>,
@@ -330,6 +331,7 @@ impl Machine {
             memo: BTreeMap::new(),
             memo_indices: BTreeMap::new(),
             memo_used: BTreeMap::new(),
+            dirty_memos: BTreeSet::new(),
             next_memo_id: 0,
             max_depth: 0,
             global_refs: Vec::new(),
@@ -473,7 +475,62 @@ impl Machine {
         Ok(())
     }
 
-    fn refresh_open_memos(&mut self) {
+    fn mark_top_memo_dirty(&mut self) {
+        if let Some(Slot::Value {
+            value,
+            memo_id: Some(k),
+            ..
+        }) = self.stack.last()
+            && is_container(value)
+        {
+            self.dirty_memos.insert(*k);
+        }
+    }
+
+    fn refresh_memo(&mut self, memo_id: u64) {
+        if !self.dirty_memos.remove(&memo_id) {
+            return;
+        }
+        let Some(value): Option<PickleValue> =
+            self.stack.iter().rev().find_map(|s: &Slot| match s {
+                Slot::Value {
+                    value,
+                    memo_id: Some(k),
+                    ..
+                } if *k == memo_id => Some(value.clone()),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        self.memo.insert(memo_id, value);
+    }
+
+    fn flush_placed_memos(&mut self, placed: &[Placed]) {
+        for p in placed {
+            let Some(k): Option<u64> = p.memo_id else {
+                continue;
+            };
+            if is_container(&p.value) && self.dirty_memos.remove(&k) {
+                self.memo.insert(k, p.value.clone());
+            }
+        }
+    }
+
+    fn flush_discarded_slot(&mut self, slot: &Slot) {
+        if let Slot::Value {
+            value,
+            memo_id: Some(k),
+            ..
+        } = slot
+            && is_container(value)
+            && self.dirty_memos.remove(k)
+        {
+            self.memo.insert(*k, value.clone());
+        }
+    }
+
+    fn finalize_open_memos(&mut self) {
         let open: Vec<(usize, u64)> = self
             .stack
             .iter()
@@ -492,6 +549,7 @@ impl Machine {
                 self.memo.insert(k, value.clone());
             }
         }
+        self.dirty_memos.clear();
     }
 
     fn pop_placed(&mut self, n: usize, op: &'static str, offset: usize) -> Result<Vec<Placed>> {
@@ -547,7 +605,7 @@ impl Machine {
             .iter()
             .rposition(|s: &Slot| matches!(s, Slot::Mark))
             .ok_or(Error::NoMark { op, offset })?;
-        let items: Vec<PickleValue> = self
+        let placed: Vec<Placed> = self
             .stack
             .drain(mark + 1..)
             .filter_map(|s: Slot| match s {
@@ -555,18 +613,20 @@ impl Machine {
                     value,
                     memo_id,
                     depth,
-                } => Some(
-                    resolve_shared(Placed {
-                        value,
-                        memo_id,
-                        depth,
-                    })
-                    .0,
-                ),
+                } => Some(Placed {
+                    value,
+                    memo_id,
+                    depth,
+                }),
                 Slot::Mark => None,
             })
             .collect();
         self.stack.pop();
+        self.flush_placed_memos(&placed);
+        let items: Vec<PickleValue> = placed
+            .into_iter()
+            .map(|p: Placed| resolve_shared(p).0)
+            .collect();
         Ok(items)
     }
 
@@ -626,6 +686,7 @@ impl Machine {
             .memo_indices
             .get(&key)
             .ok_or(Error::MemoMiss { key, offset })?;
+        self.refresh_memo(memo_id);
         self.memo_used.insert(memo_id, true);
         let already: u64 = self.materialized_nodes;
         let entry: &PickleValue = self
@@ -817,6 +878,7 @@ impl Session {
             }
             step(&mut self.machine, insn)?;
         }
+        self.machine.finalize_open_memos();
         let (value, key): (PickleValue, Option<u64>) = self
             .machine
             .pop_final("STOP", dis.stop_offset.unwrap_or(0))
@@ -944,10 +1006,14 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
         "PROTO" | "FRAME" => {}
         "MARK" => m.stack.push(Slot::Mark),
         "POP" => {
-            m.stack.pop();
+            let popped: Option<Slot> = m.stack.pop();
+            if let Some(slot) = popped {
+                m.flush_discarded_slot(&slot);
+            }
         }
         "POP_MARK" => {
-            m.pop_to_mark("POP_MARK", off)?;
+            let discarded: Vec<Placed> = m.pop_placed_to_mark("POP_MARK", off)?;
+            m.flush_placed_memos(&discarded);
         }
         "DUP" => {
             m.push_clone_of_top("DUP", off)?;
@@ -1019,27 +1085,27 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
         "APPEND" => {
             let v: Vec<Placed> = m.pop_placed(1, "APPEND", off)?;
             append_into(m, v, off)?;
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "APPENDS" => {
             let items: Vec<Placed> = m.pop_placed_to_mark("APPENDS", off)?;
             append_into(m, items, off)?;
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "ADDITEMS" => {
             let items: Vec<Placed> = m.pop_placed_to_mark("ADDITEMS", off)?;
             add_items(m, items, off)?;
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "SETITEM" => {
             let kv: Vec<Placed> = m.pop_placed(2, "SETITEM", off)?;
             set_items(m, kv, off)?;
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "SETITEMS" => {
             let items: Vec<Placed> = m.pop_placed_to_mark("SETITEMS", off)?;
             set_items(m, items, off)?;
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "GLOBAL" => {
             let (module, name): (String, String) = arg_global_pair(&insn.arg, "GLOBAL", off)?;
@@ -1198,7 +1264,7 @@ fn step(m: &mut Machine, insn: &Insn) -> Result<()> {
             {
                 *slot_id = Some(memo_id);
             }
-            m.refresh_open_memos();
+            m.mark_top_memo_dirty();
         }
         "PUT" | "BINPUT" | "LONG_BINPUT" => {
             let key: u64 = arg_memo_key(&insn.arg, "PUT", off)?;
@@ -1270,6 +1336,7 @@ fn pairs(items: Vec<PickleValue>) -> Vec<(PickleValue, PickleValue)> {
 }
 
 fn push_tuple(m: &mut Machine, placed: Vec<Placed>) -> Result<()> {
+    m.flush_placed_memos(&placed);
     let (items, _): (Vec<PickleValue>, u32) = resolve_all(placed);
     m.push_new(PickleValue::Tuple(items))
 }
@@ -1515,6 +1582,7 @@ fn ensure_reduce_object(value: &mut PickleValue) -> bool {
 }
 
 fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
+    m.flush_placed_memos(&placed);
     let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     match m.stack.last_mut() {
         Some(Slot::Value {
@@ -1548,6 +1616,7 @@ fn append_into(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
 }
 
 fn add_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
+    m.flush_placed_memos(&placed);
     let (mut items, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     let top_is_value: bool = matches!(m.stack.last(), Some(Slot::Value { .. }));
     match m.stack.last_mut() {
@@ -1564,6 +1633,7 @@ fn add_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
 }
 
 fn set_items(m: &mut Machine, placed: Vec<Placed>, off: usize) -> Result<()> {
+    m.flush_placed_memos(&placed);
     let (values, deepest_child): (Vec<PickleValue>, u32) = resolve_all(placed);
     let mut kvs: Vec<(PickleValue, PickleValue)> = pairs(values);
     match m.stack.last_mut() {
@@ -2324,6 +2394,64 @@ mod tests {
                 PickleValue::List(vec![PickleValue::Int(1)]),
                 PickleValue::List(vec![PickleValue::Int(2)]),
             ])
+        );
+    }
+
+    fn incremental_append_list(count: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::with_capacity(5 + count * 3 + 1);
+        bytes.extend_from_slice(&[0x80, 0x02, 0x5d, 0x71, 0x00]);
+        for _ in 0..count {
+            bytes.extend_from_slice(&[0x4b, 0x01, 0x61]);
+        }
+        bytes.push(b'.');
+        bytes
+    }
+
+    #[test]
+    fn incremental_appends_into_memoized_list_stay_linear() {
+        let count: usize = 100_000;
+        let bytes: Vec<u8> = incremental_append_list(count);
+        let dis: Disassembly = disassemble(&bytes).expect("disasm");
+        let start: std::time::Instant = std::time::Instant::now();
+        let trace: VmTrace = execute(&dis).expect("incrementally grown list must decode bounded");
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "per-append memo materialization must stay linear, took {elapsed:?}"
+        );
+        let PickleValue::List(items): PickleValue = trace.result else {
+            panic!("expected a list result");
+        };
+        assert_eq!(items.len(), count, "every append must land in the list");
+        assert!(
+            items
+                .iter()
+                .all(|v: &PickleValue| *v == PickleValue::Int(1)),
+            "each appended element must survive as Int(1)"
+        );
+    }
+
+    #[test]
+    fn memoized_list_grows_then_reference_preserves_content() {
+        let bytes: &[u8] = b"\x80\x02]q\x00(]q\x01(K\x01K\x02K\x03eh\x01e.";
+        let dis: Disassembly = disassemble(bytes).expect("disasm");
+        let (trace, memo): (VmTrace, BTreeMap<u64, PickleValue>) = execute_full(&dis).expect("vm");
+        assert_eq!(
+            trace.result,
+            PickleValue::List(vec![
+                PickleValue::MemoRef { key: 1 },
+                PickleValue::MemoRef { key: 1 },
+            ]),
+            "both references must alias the grown inner list by memo key"
+        );
+        assert_eq!(
+            memo.get(&1),
+            Some(&PickleValue::List(vec![
+                PickleValue::Int(1),
+                PickleValue::Int(2),
+                PickleValue::Int(3),
+            ])),
+            "the deferred memo snapshot must hold the fully grown inner list"
         );
     }
 }
