@@ -772,7 +772,7 @@ impl Demangler<'_> {
         let ref_pos: usize = self.pos;
         self.pop()?;
         let n: usize = self.decode_backref();
-        if n == 0 || n > self.pos {
+        if n == 0 || n > ref_pos {
             return None;
         }
         let save_pos: usize = self.pos;
@@ -1581,5 +1581,21 @@ mod tests {
         let mut d: Demangler<'_> = Demangler::new(b"4294967329");
         assert!(d.parse_integer_value(b'a').is_some());
         assert_eq!(d.out, "\\x100000021");
+    }
+
+    #[test]
+    fn type_backref_distance_beyond_ref_pos_rejects_without_panic() {
+        let mut d: Demangler<'_> = Demangler::new(b"xxxQe");
+        d.pos = 3;
+        assert!(d.parse_backref_type(false).is_none());
+    }
+
+    #[test]
+    fn type_backref_at_ref_pos_boundary_still_resolves() {
+        let mut d: Demangler<'_> = Demangler::new(b"aQb");
+        d.pos = 1;
+        assert!(d.parse_backref_type(false).is_some());
+        assert_eq!(d.out, "char");
+        assert_eq!(d.pos, 3);
     }
 }
