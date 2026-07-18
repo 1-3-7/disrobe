@@ -103,7 +103,7 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
         ("isspace", []) => Ok(Value::Bool(
             !s.is_empty() && s.chars().all(char::is_whitespace),
         )),
-        ("zfill", [Value::Int(width)]) if *width >= 0 => {
+        ("zfill", [Value::Int(width)]) if (0..=8192).contains(width) => {
             let w: usize = usize::try_from(*width).map_err(|_| EvalError::Overflow)?;
             if s.len() >= w {
                 Ok(Value::Str(s.to_owned()))
@@ -128,9 +128,11 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
             .map_or(Err(EvalError::IndexOutOfRange), |byte_idx: usize| {
                 Ok(Value::Int(char_index(s, Some(byte_idx))))
             }),
-        ("ljust", [Value::Int(width)]) if *width >= 0 => pad_str(s, *width, ' ', PadSide::Left),
+        ("ljust", [Value::Int(width)]) if (0..=8192).contains(width) => {
+            pad_str(s, *width, ' ', PadSide::Left)
+        }
         ("ljust", [Value::Int(width), Value::Str(fill)])
-            if *width >= 0 && fill.chars().count() == 1 =>
+            if (0..=8192).contains(width) && fill.chars().count() == 1 =>
         {
             pad_str(
                 s,
@@ -139,9 +141,11 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
                 PadSide::Left,
             )
         }
-        ("rjust", [Value::Int(width)]) if *width >= 0 => pad_str(s, *width, ' ', PadSide::Right),
+        ("rjust", [Value::Int(width)]) if (0..=8192).contains(width) => {
+            pad_str(s, *width, ' ', PadSide::Right)
+        }
         ("rjust", [Value::Int(width), Value::Str(fill)])
-            if *width >= 0 && fill.chars().count() == 1 =>
+            if (0..=8192).contains(width) && fill.chars().count() == 1 =>
         {
             pad_str(
                 s,
@@ -150,9 +154,11 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
                 PadSide::Right,
             )
         }
-        ("center", [Value::Int(width)]) if *width >= 0 => pad_str(s, *width, ' ', PadSide::Center),
+        ("center", [Value::Int(width)]) if (0..=8192).contains(width) => {
+            pad_str(s, *width, ' ', PadSide::Center)
+        }
         ("center", [Value::Int(width), Value::Str(fill)])
-            if *width >= 0 && fill.chars().count() == 1 =>
+            if (0..=8192).contains(width) && fill.chars().count() == 1 =>
         {
             pad_str(
                 s,

@@ -2421,7 +2421,7 @@ fn parse_forward_or_alt(
     let shared_target: usize = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
         .filter(|t: &usize| *t > jump_idx && *t <= region_end)?;
     let pattern: Pattern =
-        classify_simple_pattern(code, stream, value_start, last_gate, region_end);
+        classify_simple_pattern(code, stream, value_start, last_gate, region_end, 0);
     if !matches!(
         pattern,
         Pattern::MatchValue(_)
@@ -2569,7 +2569,7 @@ fn extract_match_case(
         });
     };
 
-    let pattern: Pattern = classify_pattern(code, stream, arm_start, fail_target, region_end);
+    let pattern: Pattern = classify_pattern(code, stream, arm_start, fail_target, region_end, 0);
 
     if is_irrefutable_capture(&pattern) {
         let store_end: usize = capture_store_end(stream, arm_start, fail_target, region_end);
@@ -2777,12 +2777,15 @@ fn strip_trailing_outer_as(inner: Pattern, outer: &str) -> Pattern {
     }
 }
 
+const MAX_PATTERN_NEST_DEPTH: usize = 256;
+
 fn classify_pattern(
     code: &CodeObject,
     stream: &DecodedStream,
     head_search: usize,
     fail_target: usize,
     region_end: usize,
+    depth: usize,
 ) -> Pattern {
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let Some(head): Option<usize> = match_arm_head(stream, head_search, scan_end) else {
@@ -2826,7 +2829,7 @@ fn classify_pattern(
     }
 
     let inner: Pattern =
-        classify_simple_pattern(code, stream, inner_start, fail_target, region_end);
+        classify_simple_pattern(code, stream, inner_start, fail_target, region_end, depth);
 
     let capture_end: usize =
         pattern_capture_region_end(stream, inner_start, fail_target, region_end);
@@ -2906,6 +2909,7 @@ fn classify_simple_pattern(
     test_start: usize,
     fail_target: usize,
     region_end: usize,
+    depth: usize,
 ) -> Pattern {
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let Some(first): Option<usize> = first_significant(stream, test_start, scan_end) else {
@@ -2916,10 +2920,10 @@ fn classify_simple_pattern(
     };
     match &stream.ops[first] {
         CanonicalOp::MatchSequence => {
-            classify_sequence_pattern(code, stream, first, fail_target, region_end)
+            classify_sequence_pattern(code, stream, first, fail_target, region_end, depth)
         }
         CanonicalOp::MatchMapping => {
-            classify_mapping_pattern(code, stream, first, fail_target, region_end)
+            classify_mapping_pattern(code, stream, first, fail_target, region_end, depth)
         }
         CanonicalOp::LoadGlobal(_)
         | CanonicalOp::LoadName(_)
@@ -3007,7 +3011,7 @@ fn recover_fixed_sequence_elements(
     n: usize,
     scan_end: usize,
 ) -> Option<Vec<Pattern>> {
-    let mut elems: Vec<Pattern> = Vec::with_capacity(n);
+    let mut elems: Vec<Pattern> = Vec::with_capacity(n.min(scan_end.saturating_sub(unpack_idx)));
     let mut k: usize = first_significant(stream, unpack_idx + 1, scan_end)?;
     while elems.len() < n {
         let (pat, next): (Pattern, usize) =
@@ -3316,7 +3320,14 @@ fn classify_sequence_pattern(
     head: usize,
     fail_target: usize,
     region_end: usize,
+    depth: usize,
 ) -> Pattern {
+    if depth >= MAX_PATTERN_NEST_DEPTH {
+        return Pattern::MatchAs {
+            pattern: None,
+            name: None,
+        };
+    }
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let indexed_star: bool = (head..scan_end)
         .find(|&i: &usize| matches!(stream.ops[i], CanonicalOp::GetLen))
@@ -3408,6 +3419,7 @@ fn recover_nested_mapping_values(
     key_count: usize,
     fail_target: usize,
     region_end: usize,
+    depth: usize,
 ) -> Option<Vec<Pattern>> {
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let none_gate: usize = (keys_end..scan_end)
@@ -3428,7 +3440,7 @@ fn recover_nested_mapping_values(
     let mut cursor: usize = first_significant(stream, unpack + 1, scan_end)?;
     for _ in 0..key_count {
         let (pat, next): (Pattern, usize) =
-            recover_one_mapping_value(code, stream, cursor, scan_end, region_end)?;
+            recover_one_mapping_value(code, stream, cursor, scan_end, region_end, depth)?;
         if matches!(
             pat,
             Pattern::MatchSequence(_) | Pattern::MatchMapping { .. } | Pattern::MatchClass { .. }
@@ -3456,16 +3468,31 @@ fn recover_one_mapping_value(
     cursor: usize,
     scan_end: usize,
     region_end: usize,
+    depth: usize,
 ) -> Option<(Pattern, usize)> {
     match &stream.ops[cursor] {
         CanonicalOp::MatchSequence => {
             let gate: usize = nested_subpattern_end(stream, cursor, scan_end);
-            let pat: Pattern = classify_sequence_pattern(code, stream, cursor, gate, region_end);
+            let pat: Pattern = classify_sequence_pattern(
+                code,
+                stream,
+                cursor,
+                gate,
+                region_end,
+                depth.saturating_add(1),
+            );
             Some((pat, gate))
         }
         CanonicalOp::MatchMapping => {
             let gate: usize = nested_subpattern_end(stream, cursor, scan_end);
-            let pat: Pattern = classify_mapping_pattern(code, stream, cursor, gate, region_end);
+            let pat: Pattern = classify_mapping_pattern(
+                code,
+                stream,
+                cursor,
+                gate,
+                region_end,
+                depth.saturating_add(1),
+            );
             Some((pat, gate))
         }
         _ => recover_one_sequence_element(code, stream, cursor, scan_end),
@@ -3495,7 +3522,14 @@ fn classify_mapping_pattern(
     head: usize,
     fail_target: usize,
     region_end: usize,
+    depth: usize,
 ) -> Pattern {
+    if depth >= MAX_PATTERN_NEST_DEPTH {
+        return Pattern::MatchAs {
+            pattern: None,
+            name: None,
+        };
+    }
     let scan_end: usize = body_scan_limit(stream, fail_target, region_end);
     let mut keys: Vec<Expr> = Vec::new();
     let mut k: usize = head;
@@ -3532,6 +3566,7 @@ fn classify_mapping_pattern(
             key_count,
             fail_target,
             region_end,
+            depth,
         )
     {
         return Pattern::MatchMapping {
@@ -4532,4 +4567,106 @@ fn merge_patterns(left: Pattern, right: Pattern) -> Vec<Pattern> {
         other => alts.push(other),
     }
     alts
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod pattern_recovery_bounds {
+    use super::super::DecodedStream;
+    use super::{
+        MAX_PATTERN_NEST_DEPTH, classify_mapping_pattern, recover_fixed_sequence_elements,
+    };
+    use crate::ast::node::Pattern;
+    use crate::bytecode::opcode::CanonicalOp;
+    use crate::bytecode::version::PyVersion;
+    use disrobe_py_marshal::{CodeEra, CodeObject, Object};
+
+    fn stream_from(ops: Vec<CanonicalOp>) -> DecodedStream {
+        let n: usize = ops.len();
+        let offsets: Vec<u32> = (0..n).map(|i: usize| (i as u32) * 2).collect();
+        let next_offsets: Vec<u32> = (0..n).map(|i: usize| (i as u32 + 1) * 2).collect();
+        DecodedStream {
+            ops,
+            offsets,
+            next_offsets,
+            code_len: (n as u32) * 2,
+            lines: vec![None; n],
+            wordcode: true,
+            instr_unit_jumps: true,
+            relative_cond_jumps: true,
+            exception_table: Vec::new(),
+            pre311_end_finally_idx: std::collections::BTreeSet::new(),
+            pre311_pop_block_idx: std::collections::BTreeSet::new(),
+            pre311_break_loop_idx: std::collections::BTreeSet::new(),
+            setup_loop_end: std::collections::BTreeMap::new(),
+            none_jump_kind: std::collections::BTreeMap::new(),
+            version: PyVersion::V3_12,
+        }
+    }
+
+    fn code_with_string_tuple_const() -> CodeObject {
+        let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        code.consts = vec![Object::Tuple(vec![Object::Unicode {
+            value: "k".to_owned(),
+            interned: false,
+        }])];
+        code
+    }
+
+    #[test]
+    fn forged_unpack_sequence_count_does_not_overallocate() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::UnpackSequence(u32::MAX),
+            CanonicalOp::Nop,
+            CanonicalOp::Nop,
+        ]);
+        let code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+        let recovered: Option<Vec<Pattern>> =
+            recover_fixed_sequence_elements(&code, &stream, 0, u32::MAX as usize, stream.ops.len());
+        assert!(
+            recovered.is_none(),
+            "an unpack count far past the op window must decline, not reserve gigabytes"
+        );
+    }
+
+    #[test]
+    fn nested_mapping_pattern_recovery_is_depth_bounded() {
+        let units: usize = MAX_PATTERN_NEST_DEPTH * 8;
+        let mut ops: Vec<CanonicalOp> = Vec::with_capacity(units * 5);
+        for _ in 0..units {
+            ops.push(CanonicalOp::MatchMapping);
+            ops.push(CanonicalOp::LoadConst(0));
+            ops.push(CanonicalOp::MatchKeys);
+            ops.push(CanonicalOp::PopJumpIfFalse(0));
+            ops.push(CanonicalOp::UnpackSequence(1));
+        }
+        let stream: DecodedStream = stream_from(ops);
+        let code: CodeObject = code_with_string_tuple_const();
+        let end: usize = stream.ops.len();
+        let recovered: Pattern = classify_mapping_pattern(&code, &stream, 0, end, end, 0);
+        assert!(matches!(
+            recovered,
+            Pattern::MatchMapping { .. } | Pattern::MatchAs { .. }
+        ));
+    }
+
+    #[test]
+    fn mapping_pattern_guard_degrades_at_cap() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::MatchMapping,
+            CanonicalOp::LoadConst(0),
+            CanonicalOp::MatchKeys,
+        ]);
+        let code: CodeObject = code_with_string_tuple_const();
+        let end: usize = stream.ops.len();
+        let degraded: Pattern =
+            classify_mapping_pattern(&code, &stream, 0, end, end, MAX_PATTERN_NEST_DEPTH);
+        assert!(matches!(
+            degraded,
+            Pattern::MatchAs {
+                pattern: None,
+                name: None
+            }
+        ));
+    }
 }
