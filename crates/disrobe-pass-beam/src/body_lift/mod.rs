@@ -891,7 +891,7 @@ fn finish_call(
 }
 
 fn exec_apply(ins: &Instruction, env: &mut Env, out: &mut Vec<Stmt>, flags: &mut Flags) -> bool {
-    let arity: u32 = literal_u32(&ins.operands[0]);
+    let arity: u32 = literal_u32(&ins.operands[0]).min(crate::chunks::MAX_FUN_ARITY);
     let mut args: Vec<Expr> = vec![env.get(Reg::X(arity)), env.get(Reg::X(arity + 1))];
     args.extend((0..arity).map(|i: u32| env.get(Reg::X(i))));
     finish_call(

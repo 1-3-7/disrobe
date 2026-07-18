@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use disrobe_pass_beam::body_lift::render::render_body;
 use disrobe_pass_beam::body_lift::{LiftedBody, build_label_index, lift_body};
 use disrobe_pass_beam::{
-    BeamFile, CoreFunction, CoreModule, ErlangSurface, EzArchive, EzEntry, lift, recover_erlang,
+    BeamFile, CoreFunction, CoreModule, ErlangSurface, EzArchive, EzEntry, Instruction, Operand,
+    lift, recover_erlang,
 };
 
 use crate::common::{
@@ -474,4 +475,157 @@ fn lift_body_empty_stream_yields_ok() {
     let body: LiftedBody = lift_body(&[], 0, &beam.chunks, &index);
     assert!(!body.lift_complete);
     assert_eq!(body.stmts.len(), 1);
+}
+
+const RECOVERY_ARITY_CAP: u32 = 1024;
+
+fn synthetic_instr(name: &'static str, operands: Vec<Operand>) -> Instruction {
+    Instruction {
+        offset: 0,
+        opcode: 0,
+        name,
+        operands,
+    }
+}
+
+fn drive_synthetic_body(instrs: &[Instruction]) -> String {
+    let beam: BeamFile = megafile();
+    let index: BTreeMap<u32, (String, u32)> = build_label_index(&beam.chunks);
+    let body: LiftedBody = lift_body(instrs, 0, &beam.chunks, &index);
+    render_body(&body.stmts, 1)
+}
+
+fn hostile_arity() -> Operand {
+    Operand::Literal(u64::from(u32::MAX))
+}
+
+#[test]
+fn call_local_hostile_arity_clamps_to_recovery_cap() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr("call_only", vec![hostile_arity(), Operand::Label(0)]),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let last_arg: String = format!("X{}", RECOVERY_ARITY_CAP - 1);
+    let over_arg: String = format!("X{RECOVERY_ARITY_CAP}");
+    assert!(
+        body.contains(&last_arg),
+        "clamped local call must still carry the full X0..{last_arg} arg vector"
+    );
+    assert!(
+        !body.contains(&over_arg),
+        "local call arg vector must stop at the recovery cap, never reach {over_arg}"
+    );
+}
+
+#[test]
+fn call_ext_hostile_arity_clamps_to_recovery_cap() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr("call_ext_only", vec![hostile_arity(), hostile_arity()]),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let last_arg: String = format!("X{}", RECOVERY_ARITY_CAP - 1);
+    let over_arg: String = format!("X{RECOVERY_ARITY_CAP}");
+    assert!(
+        body.contains(&last_arg),
+        "clamped external call must still carry the full arg vector"
+    );
+    assert!(
+        !body.contains(&over_arg),
+        "external call arg vector must stop at the recovery cap"
+    );
+}
+
+#[test]
+fn call_fun_hostile_arity_completes_bounded() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr("call_fun", vec![hostile_arity()]),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let x_regs: usize = body.matches('X').count();
+    assert!(
+        x_regs <= (RECOVERY_ARITY_CAP as usize) * 4,
+        "call_fun with a hostile arity operand must lift to a bounded register set, got {x_regs}"
+    );
+}
+
+#[test]
+fn call_fun2_hostile_arity_completes_bounded() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr(
+            "call_fun2",
+            vec![Operand::Literal(0), hostile_arity(), Operand::XReg(0)],
+        ),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let x_regs: usize = body.matches('X').count();
+    assert!(
+        x_regs <= (RECOVERY_ARITY_CAP as usize) * 4,
+        "call_fun2 with a hostile arity operand must lift to a bounded register set, got {x_regs}"
+    );
+}
+
+#[test]
+fn apply_hostile_arity_clamps_to_recovery_cap() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr("apply_last", vec![hostile_arity()]),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let last_arg: String = format!("X{}", RECOVERY_ARITY_CAP - 1);
+    let past_reg: String = format!("X{}", RECOVERY_ARITY_CAP + 2);
+    assert!(
+        body.contains(&last_arg),
+        "clamped apply must still carry the full argument vector"
+    );
+    assert!(
+        !body.contains(&past_reg),
+        "apply must not index past the module and function registers of the capped arity"
+    );
+}
+
+#[test]
+fn select_tuple_arity_hostile_arity_clamps_to_recovery_cap() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr(
+            "select_tuple_arity",
+            vec![
+                Operand::XReg(0),
+                Operand::Label(0),
+                Operand::List(vec![hostile_arity(), Operand::Label(1)]),
+            ],
+        ),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    let last_elem: String = format!("E{}", RECOVERY_ARITY_CAP - 1);
+    let over_elem: String = format!("E{RECOVERY_ARITY_CAP}");
+    assert!(
+        body.contains(&last_elem),
+        "clamped tuple-arity match must still bind the full E0..{last_elem} pattern"
+    );
+    assert!(
+        !body.contains(&over_elem),
+        "tuple-arity pattern must stop at the recovery cap, never reach {over_elem}"
+    );
+}
+
+#[test]
+fn call_local_small_arity_is_not_over_clamped() {
+    let instrs: Vec<Instruction> = vec![
+        synthetic_instr("label", vec![Operand::Literal(1)]),
+        synthetic_instr("call_only", vec![Operand::Literal(3), Operand::Label(0)]),
+    ];
+    let body: String = drive_synthetic_body(&instrs);
+    assert!(
+        body.contains("X0, X1, X2"),
+        "a valid small arity must lift to exactly its declared args:\n{body}"
+    );
+    assert!(
+        !body.contains("X3"),
+        "clamp must be a no-op on valid input, never add an extra arg:\n{body}"
+    );
 }

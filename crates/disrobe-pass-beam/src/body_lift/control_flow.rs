@@ -165,7 +165,7 @@ impl Lifter<'_> {
         let mut arms: Vec<CaseArm> = Vec::new();
         let subject_reg: Option<Reg> = as_reg(&ins.operands[0]);
         for pair in pairs.chunks_exact(2) {
-            let arity: u32 = literal_u32(&pair[0]);
+            let arity: u32 = literal_u32(&pair[0]).min(crate::chunks::MAX_FUN_ARITY);
             let vars: Vec<Expr> = (0..arity)
                 .map(|i: u32| Expr::Var(format!("E{i}")))
                 .collect();
