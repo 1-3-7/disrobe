@@ -16,6 +16,9 @@ const HASH_LEN: usize = 16;
 const MAX_HASH_HAMMING: usize = 1;
 const COHERENT_PATH_PERCENT: usize = 80;
 const HASH_VERIFIED_SCORE: u64 = 1_000_000_000;
+const HASH_BUDGET_MULT: u64 = 16;
+const HASH_BUDGET_FLOOR: u64 = 1 << 20;
+const MAX_SCAN_RECORDS: usize = 2_000_000;
 
 #[derive(Debug, Clone, Copy)]
 enum FieldOrder {
@@ -26,7 +29,7 @@ enum FieldOrder {
 const ORDERS: [FieldOrder; 2] = [FieldOrder::PtrLenPtrLen, FieldOrder::PtrPtrLenLen];
 
 struct Record<'a> {
-    name: String,
+    name: &'a str,
     is_dir: bool,
     data: &'a [u8],
     hash: Option<[u8; HASH_LEN]>,
@@ -46,6 +49,7 @@ pub(crate) fn scan(bytes: &[u8], cfg: &CarveConfig) -> Result<Assembled> {
     let strides: &[usize] = strides_for(ptr);
     let mut candidates: Vec<Vec<Record<'_>>> = Vec::new();
     let mut budget: u64 = cfg.max_table_probes;
+    let mut retained: usize = 0;
     for (span_va, span_vsize) in map.scan_ranges() {
         for order in ORDERS {
             for &stride in strides {
@@ -57,14 +61,19 @@ pub(crate) fn scan(bytes: &[u8], cfg: &CarveConfig) -> Result<Assembled> {
                     order,
                     ptr,
                     &mut budget,
+                    &mut retained,
+                    MAX_SCAN_RECORDS,
                     &mut candidates,
                 );
             }
         }
     }
+    let mut hash_budget: u64 = (bytes.len() as u64)
+        .saturating_mul(HASH_BUDGET_MULT)
+        .max(HASH_BUDGET_FLOOR);
     let mut best: Option<(u64, &Vec<Record<'_>>)> = None;
     for run in &candidates {
-        let value: u64 = score_run(run);
+        let value: u64 = score_run(run, &mut hash_budget);
         if value > 0 && best.is_none_or(|(current, _): (u64, _)| value > current) {
             best = Some((value, run));
         }
@@ -91,6 +100,8 @@ fn collect_runs<'a>(
     order: FieldOrder,
     ptr: usize,
     budget: &mut u64,
+    retained: &mut usize,
+    max_records: usize,
     out: &mut Vec<Vec<Record<'a>>>,
 ) {
     let Some(span_end) = span_va.checked_add(span_vsize) else {
@@ -102,7 +113,7 @@ fn collect_runs<'a>(
         .checked_add(stride_u64)
         .is_some_and(|end: u64| end <= span_end)
     {
-        if *budget == 0 {
+        if *budget == 0 || *retained >= max_records {
             return;
         }
         *budget -= 1;
@@ -135,7 +146,11 @@ fn collect_runs<'a>(
             };
             next = step;
         }
-        if run.len() >= MIN_CONSECUTIVE {
+        if run.len() >= MIN_CONSECUTIVE
+            && let Some(total) = retained.checked_add(run.len())
+            && total <= max_records
+        {
+            *retained = total;
             out.push(run);
         }
         cursor = next.max(cursor.saturating_add(ptr as u64));
@@ -167,8 +182,8 @@ fn validate<'a>(
     if name_len_usize == 0 || name_len_usize > MAX_PATH_LEN {
         return None;
     }
-    let name_bytes: &[u8] = map.slice(name_ptr, name_len_usize)?;
-    let name: String = valid_path(name_bytes)?;
+    let name_bytes: &'a [u8] = map.slice(name_ptr, name_len_usize)?;
+    let name: &'a str = valid_path(name_bytes)?;
     let data_len_usize: usize = usize::try_from(data_len).ok()?;
     if data_len_usize > MAX_RECORD_BLOB {
         return None;
@@ -197,7 +212,7 @@ fn read_hash(map: &SectionMap<'_>, base: u64, stride: usize, ptr: usize) -> Opti
     bytes.try_into().ok()
 }
 
-fn valid_path(bytes: &[u8]) -> Option<String> {
+fn valid_path(bytes: &[u8]) -> Option<&str> {
     let text: &str = core::str::from_utf8(bytes).ok()?;
     if text.is_empty() || text.starts_with('/') || text.starts_with('\\') {
         return None;
@@ -211,14 +226,14 @@ fn valid_path(bytes: &[u8]) -> Option<String> {
     if text.chars().all(char::is_whitespace) {
         return None;
     }
-    Some(text.to_owned())
+    Some(text)
 }
 
-fn score_run(run: &[Record<'_>]) -> u64 {
+fn score_run(run: &[Record<'_>], hash_budget: &mut u64) -> u64 {
     if run.len() < MIN_CONSECUTIVE {
         return 0;
     }
-    if hash_verified(run) {
+    if hash_verified(run, hash_budget) {
         return HASH_VERIFIED_SCORE + run.len() as u64;
     }
     if path_coherent(run) {
@@ -227,7 +242,7 @@ fn score_run(run: &[Record<'_>]) -> u64 {
     0
 }
 
-fn hash_verified(run: &[Record<'_>]) -> bool {
+fn hash_verified(run: &[Record<'_>], budget: &mut u64) -> bool {
     let mut checked: usize = 0;
     for record in run {
         if record.is_dir || record.data.is_empty() {
@@ -236,6 +251,10 @@ fn hash_verified(run: &[Record<'_>]) -> bool {
         let Some(stored) = record.hash else {
             return false;
         };
+        let Some(remaining) = budget.checked_sub(record.data.len() as u64) else {
+            return false;
+        };
+        *budget = remaining;
         let digest: [u8; 32] = Sha256::digest(record.data).into();
         let differing: usize = (0..HASH_LEN)
             .filter(|&i: &usize| stored[i] != digest[i])
@@ -276,7 +295,7 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
             }
             continue;
         }
-        let Ok(safe) = sanitize_entry_path(&record.name) else {
+        let Ok(safe) = sanitize_entry_path(record.name) else {
             declared += 1;
             continue;
         };
@@ -314,4 +333,131 @@ const fn align_up(value: u64, align: u64) -> u64 {
         return value;
     }
     value.div_ceil(align).saturating_mul(align)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    const TEST_VA: u64 = 0x1000;
+    const TEST_STRIDE: usize = 32;
+
+    fn hash_prefix(data: &[u8]) -> [u8; HASH_LEN] {
+        let digest: [u8; 32] = Sha256::digest(data).into();
+        let mut prefix: [u8; HASH_LEN] = [0u8; HASH_LEN];
+        prefix.copy_from_slice(&digest[..HASH_LEN]);
+        prefix
+    }
+
+    #[test]
+    fn hash_verified_bounds_aliased_blob_rehashing() {
+        let blob: Vec<u8> = vec![0xA5u8; 4096];
+        let prefix: [u8; HASH_LEN] = hash_prefix(&blob);
+        let records: Vec<Record<'_>> = (0..256usize)
+            .map(|_index: usize| Record {
+                name: "app.js",
+                is_dir: false,
+                data: blob.as_slice(),
+                hash: Some(prefix),
+            })
+            .collect();
+
+        let mut tight: u64 = (blob.len() as u64) * 2;
+        assert!(
+            !hash_verified(&records, &mut tight),
+            "an exhausted budget must report the run unverified"
+        );
+        assert_eq!(
+            tight, 0,
+            "hashing must stop after two aliased blobs, not re-hash all 256"
+        );
+
+        let mut ample: u64 = (blob.len() as u64) * (records.len() as u64);
+        assert!(hash_verified(&records, &mut ample));
+        assert_eq!(ample, 0);
+    }
+
+    fn build_run_groups(groups: usize, per_group: usize) -> Vec<u8> {
+        let mut strings: Vec<u8> = Vec::new();
+        let mut fields: Vec<(u64, u64, u64, u64)> = Vec::new();
+        for group in 0..groups {
+            for index in 0..per_group {
+                let name: String = format!("dist/g{group}f{index}.js");
+                let name_off: usize = strings.len();
+                strings.extend_from_slice(name.as_bytes());
+                let data_off: usize = strings.len();
+                strings.push(b'x');
+                fields.push((
+                    TEST_VA + name_off as u64,
+                    name.len() as u64,
+                    TEST_VA + data_off as u64,
+                    1,
+                ));
+            }
+            if group + 1 < groups {
+                fields.push((0, 0, 0, 0));
+            }
+        }
+        while !strings.len().is_multiple_of(8) {
+            strings.push(0);
+        }
+        let mut buf: Vec<u8> = strings;
+        for (name_va, name_len, data_va, data_len) in &fields {
+            let start: usize = buf.len();
+            buf.extend_from_slice(&name_va.to_le_bytes());
+            buf.extend_from_slice(&name_len.to_le_bytes());
+            buf.extend_from_slice(&data_va.to_le_bytes());
+            buf.extend_from_slice(&data_len.to_le_bytes());
+            buf.resize(start + TEST_STRIDE, 0);
+        }
+        buf
+    }
+
+    fn run_totals(cap: usize, buf: &[u8]) -> (usize, usize, usize) {
+        let map: SectionMap<'_> = SectionMap::from_single_span(buf, TEST_VA, 8);
+        let span_vsize: u64 = buf.len() as u64;
+        let mut budget: u64 = 1_000_000;
+        let mut retained: usize = 0;
+        let mut out: Vec<Vec<Record<'_>>> = Vec::new();
+        collect_runs(
+            &map,
+            TEST_VA,
+            span_vsize,
+            TEST_STRIDE,
+            FieldOrder::PtrLenPtrLen,
+            8,
+            &mut budget,
+            &mut retained,
+            cap,
+            &mut out,
+        );
+        let total: usize = out.iter().map(|run: &Vec<Record<'_>>| run.len()).sum();
+        (out.len(), total, retained)
+    }
+
+    #[test]
+    fn collect_runs_caps_total_retained_records() {
+        let buf: Vec<u8> = build_run_groups(4, 8);
+
+        let (big_runs, big_total, big_retained): (usize, usize, usize) = run_totals(1000, &buf);
+        assert_eq!(
+            big_total, 32,
+            "an ample cap must retain every validated run"
+        );
+        assert_eq!(big_runs, 4);
+        assert_eq!(big_retained, 32);
+
+        let (_, small_total, small_retained): (usize, usize, usize) = run_totals(20, &buf);
+        assert!(
+            small_total <= 20,
+            "retained records must not exceed the cap, got {small_total}"
+        );
+        assert_eq!(small_retained, small_total);
+        assert!(
+            small_total >= 8,
+            "the cap must still admit at least one full run"
+        );
+    }
 }

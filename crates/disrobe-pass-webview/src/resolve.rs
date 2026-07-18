@@ -9,6 +9,8 @@ const SHF_EXECINSTR: u64 = 0x4;
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 const MACHO_PURE_INSTRUCTIONS: u32 = 0x8000_0000;
 const MACHO_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
+pub(crate) const MAX_SPANS: usize = 4096;
+const MAX_OVERLAP_WALK: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 struct Span {
@@ -24,6 +26,7 @@ pub(crate) struct SectionMap<'a> {
     bytes: &'a [u8],
     ptr_size: usize,
     spans: Vec<Span>,
+    span_index: Vec<(u64, u64, usize)>,
     relocs: BTreeMap<u64, u64>,
 }
 
@@ -34,6 +37,9 @@ impl<'a> SectionMap<'a> {
         let ptr_size: usize = if file.is_64() { 8 } else { 4 };
         let mut spans: Vec<Span> = Vec::new();
         for section in file.sections() {
+            if spans.len() >= MAX_SPANS {
+                break;
+            }
             let Some((foff_u64, fsize_u64)) = section.file_range() else {
                 continue;
             };
@@ -70,10 +76,12 @@ impl<'a> SectionMap<'a> {
                 }
             }
         }
+        let span_index: Vec<(u64, u64, usize)> = index_spans(&spans);
         Ok(Self {
             bytes,
             ptr_size,
             spans,
+            span_index,
             relocs,
         })
     }
@@ -91,9 +99,17 @@ impl<'a> SectionMap<'a> {
     }
 
     fn containing(&self, va: u64) -> Option<&Span> {
-        self.spans
-            .iter()
-            .find(|span: &&Span| va >= span.va && va < span.va.saturating_add(span.vsize))
+        let upper: usize = self
+            .span_index
+            .partition_point(|entry: &(u64, u64, usize)| entry.0 <= va);
+        let lower: usize = upper.saturating_sub(MAX_OVERLAP_WALK);
+        for entry in self.span_index[lower..upper].iter().rev() {
+            let (start, end, idx): (u64, u64, usize) = *entry;
+            if va >= start && va < end {
+                return self.spans.get(idx);
+            }
+        }
+        None
     }
 
     fn va_to_off(&self, va: u64) -> Option<usize> {
@@ -142,6 +158,25 @@ impl<'a> SectionMap<'a> {
             .copied()
             .or_else(|| self.read_raw(slot_va))
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_single_span(bytes: &'a [u8], va: u64, ptr_size: usize) -> Self {
+        let span: Span = Span {
+            va,
+            vsize: bytes.len() as u64,
+            foff: 0,
+            fsize: bytes.len(),
+            exec: false,
+        };
+        let span_index: Vec<(u64, u64, usize)> = index_spans(std::slice::from_ref(&span));
+        Self {
+            bytes,
+            ptr_size,
+            spans: vec![span],
+            span_index,
+            relocs: BTreeMap::new(),
+        }
+    }
 }
 
 const fn section_is_exec(flags: &SectionFlags) -> bool {
@@ -159,4 +194,125 @@ fn reloc_is_relative(reloc: &object::Relocation) -> bool {
     matches!(reloc.flags(), RelocationFlags::Elf { .. })
         && matches!(reloc.target(), RelocationTarget::Absolute)
         && !reloc.has_implicit_addend()
+}
+
+fn index_spans(spans: &[Span]) -> Vec<(u64, u64, usize)> {
+    let mut index: Vec<(u64, u64, usize)> = spans
+        .iter()
+        .enumerate()
+        .map(|(idx, span): (usize, &Span)| (span.va, span.va.saturating_add(span.vsize), idx))
+        .collect();
+    index.sort_unstable_by_key(|entry: &(u64, u64, usize)| entry.0);
+    index
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn containing_matches_linear_reference_at_scale() {
+        let spans: Vec<Span> = (0..2000u64)
+            .map(|i: u64| Span {
+                va: 0x1000 + i * 0x1000,
+                vsize: 0x800,
+                foff: 0,
+                fsize: 0x800,
+                exec: false,
+            })
+            .collect();
+        let span_index: Vec<(u64, u64, usize)> = index_spans(&spans);
+        let map: SectionMap<'_> = SectionMap {
+            bytes: &[],
+            ptr_size: 8,
+            spans,
+            span_index,
+            relocs: BTreeMap::new(),
+        };
+        for i in 0..2000u64 {
+            let base: u64 = 0x1000 + i * 0x1000;
+            for probe in [base, base + 0x400, base + 0x7ff, base + 0x800, base + 0x900] {
+                let got: Option<u64> = map.containing(probe).map(|span: &Span| span.va);
+                let want: Option<u64> = map
+                    .spans
+                    .iter()
+                    .find(|span: &&Span| {
+                        probe >= span.va && probe < span.va.saturating_add(span.vsize)
+                    })
+                    .map(|span: &Span| span.va);
+                assert_eq!(got, want, "containing mismatch at {probe:#x}");
+            }
+        }
+    }
+
+    fn push_shdr64(out: &mut Vec<u8>, spec: &[u64; 10]) {
+        out.extend_from_slice(&(spec[0] as u32).to_le_bytes());
+        out.extend_from_slice(&(spec[1] as u32).to_le_bytes());
+        out.extend_from_slice(&spec[2].to_le_bytes());
+        out.extend_from_slice(&spec[3].to_le_bytes());
+        out.extend_from_slice(&spec[4].to_le_bytes());
+        out.extend_from_slice(&spec[5].to_le_bytes());
+        out.extend_from_slice(&(spec[6] as u32).to_le_bytes());
+        out.extend_from_slice(&(spec[7] as u32).to_le_bytes());
+        out.extend_from_slice(&spec[8].to_le_bytes());
+        out.extend_from_slice(&spec[9].to_le_bytes());
+    }
+
+    fn many_section_elf(section_count: usize) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![0u8; 64];
+        let data_off: usize = out.len();
+        out.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        let shstr: &[u8] = b"\0.d\0.shstrtab\0";
+        let shstr_off: usize = out.len();
+        out.extend_from_slice(shstr);
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+        let shoff: usize = out.len();
+
+        push_shdr64(&mut out, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        for i in 0..section_count {
+            let addr: u64 = 0x1000 + (i as u64) * 0x100;
+            push_shdr64(&mut out, &[1, 1, 2, addr, data_off as u64, 8, 0, 0, 1, 0]);
+        }
+        push_shdr64(
+            &mut out,
+            &[4, 3, 0, 0, shstr_off as u64, shstr.len() as u64, 0, 0, 1, 0],
+        );
+
+        let shnum: u16 = (section_count + 2) as u16;
+        let shstrndx: u16 = (section_count + 1) as u16;
+        let header: &mut [u8] = &mut out[..64];
+        header[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        header[4] = 2;
+        header[5] = 1;
+        header[6] = 1;
+        header[16..18].copy_from_slice(&2u16.to_le_bytes());
+        header[18..20].copy_from_slice(&62u16.to_le_bytes());
+        header[20..24].copy_from_slice(&1u32.to_le_bytes());
+        header[40..48].copy_from_slice(&(shoff as u64).to_le_bytes());
+        header[52..54].copy_from_slice(&64u16.to_le_bytes());
+        header[58..60].copy_from_slice(&64u16.to_le_bytes());
+        header[60..62].copy_from_slice(&shnum.to_le_bytes());
+        header[62..64].copy_from_slice(&shstrndx.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn build_caps_span_count() {
+        let bytes: Vec<u8> = many_section_elf(MAX_SPANS + 200);
+        let map: SectionMap<'_> = SectionMap::build(&bytes).unwrap();
+        assert_eq!(
+            map.spans.len(),
+            MAX_SPANS,
+            "section count must be clamped to MAX_SPANS"
+        );
+        assert_eq!(
+            map.slice(0x1000, 8),
+            Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..]),
+            "a retained early section must still resolve after the cap"
+        );
+    }
 }

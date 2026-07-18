@@ -222,7 +222,7 @@ fn carves_clang_static_pie_elf_via_relocations() {
 #[test]
 fn hand_built_elf_table_recovers_exact_tree() {
     let records: Vec<(&str, &[u8], bool)> = table_records();
-    let bytes: Vec<u8> = build_elf64(&records, 32, false);
+    let bytes: Vec<u8> = build_elf64(&records, 32, false, 0);
     let report: CarveReport = carve_report(&bytes).expect("carve hand-built elf");
     let expected: BTreeMap<String, Vec<u8>> = records
         .iter()
@@ -242,11 +242,28 @@ fn hand_built_elf_table_recovers_exact_tree() {
 #[test]
 fn decoy_pointer_array_never_locks_a_table() {
     let records: Vec<(&str, &[u8], bool)> = table_records();
-    let bytes: Vec<u8> = build_elf64(&records, 32, true);
+    let bytes: Vec<u8> = build_elf64(&records, 32, true, 0);
     let err: Error = carve_report(&bytes).expect_err("decoy must not lock");
     assert!(
         matches!(err, Error::NoEmbeddedTable(_) | Error::NotDetected),
         "a pointer-shaped decoy array must abstain, got {err:?}"
+    );
+}
+
+#[test]
+fn many_section_binary_recovers_exact_tree() {
+    let records: Vec<(&str, &[u8], bool)> = table_records();
+    let bytes: Vec<u8> = build_elf64(&records, 32, false, 800);
+    let report: CarveReport = carve_report(&bytes).expect("carve many-section elf");
+    let expected: BTreeMap<String, Vec<u8>> = records
+        .iter()
+        .filter(|(_, data, is_dir): &&(&str, &[u8], bool)| !*is_dir && !data.is_empty())
+        .map(|(name, data, _): &(&str, &[u8], bool)| ((*name).to_owned(), (*data).to_vec()))
+        .collect();
+    assert_eq!(
+        assets_map(&report),
+        expected,
+        "many extra sections must not perturb table recovery"
     );
 }
 
@@ -272,7 +289,12 @@ fn table_records() -> Vec<(&'static str, &'static [u8], bool)> {
 const RODATA_VA: u64 = 0x1000;
 const RODATA_OFF: usize = 0x200;
 
-fn build_elf64(records: &[(&str, &[u8], bool)], stride: usize, corrupt_lengths: bool) -> Vec<u8> {
+fn build_elf64(
+    records: &[(&str, &[u8], bool)],
+    stride: usize,
+    corrupt_lengths: bool,
+    extra_sections: usize,
+) -> Vec<u8> {
     let mut blob: Vec<u8> = Vec::new();
     let mut locs: Vec<(u64, u64, u64, u64)> = Vec::new();
     for (name, data, _is_dir) in records {
@@ -342,8 +364,23 @@ fn build_elf64(records: &[(&str, &[u8], bool)], stride: usize, corrupt_lengths: 
             align: 1,
         },
     );
+    for i in 0..extra_sections {
+        push_shdr(
+            &mut out,
+            &ShdrSpec {
+                name: 1,
+                sh_type: 1,
+                flags: 2,
+                addr: 0x8000 + (i as u64) * 0x100,
+                offset: RODATA_OFF as u64,
+                size: 8,
+                align: 1,
+            },
+        );
+    }
 
-    write_elf_header(&mut out, shoff as u64, 3, 2);
+    let shnum: u16 = (3 + extra_sections) as u16;
+    write_elf_header(&mut out, shoff as u64, shnum, 2);
     out
 }
 
