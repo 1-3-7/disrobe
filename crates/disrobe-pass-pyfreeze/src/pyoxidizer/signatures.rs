@@ -59,6 +59,7 @@ const RESOURCE_FIELD_SLOTS: usize = 256;
 const MAX_BLOB_SLICE: usize = 256 * 1024 * 1024;
 const MAX_RESOURCE_ENTRIES: usize = 1_000_000;
 const MAX_BLOB_SECTIONS: usize = 4096;
+const MAX_NAME_LEN: usize = 4096;
 
 #[must_use]
 pub fn scan(bytes: &[u8]) -> Vec<String> {
@@ -928,7 +929,7 @@ fn heuristic_walk(
 
 fn scan_name_start(blob: &[u8], anchor: usize) -> usize {
     let mut i: usize = anchor;
-    while i > 0 {
+    while i > 0 && anchor - i < MAX_NAME_LEN {
         let prev: u8 = blob[i - 1];
         let printable: bool =
             prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b'-' | b'.' | b'/' | b'\\');
@@ -1367,5 +1368,56 @@ mod tests {
             !parsed.best_effort,
             "empty index is still a valid exact parse"
         );
+    }
+
+    #[test]
+    fn heuristic_walk_bounds_backward_scan_on_pathological_blob() {
+        let spacing: usize = 400;
+        let match_count: usize = 10_000;
+        let mut blob: Vec<u8> = Vec::with_capacity(spacing * match_count + 16);
+        for _ in 0..match_count {
+            blob.resize(blob.len() + spacing, b'a');
+            blob.extend_from_slice(b".pyc");
+        }
+        let started: std::time::Instant = std::time::Instant::now();
+        let parsed: PackedResourcesParse = heuristic_walk(&blob, 3, 0, Vec::new());
+        let elapsed: std::time::Duration = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "heuristic_walk took {elapsed:?}; backward scan is not bounded"
+        );
+        assert_eq!(parsed.entries.len(), match_count);
+        for entry in &parsed.entries {
+            assert!(
+                entry.name.len() <= MAX_NAME_LEN + b".pyc".len(),
+                "recovered name length {} exceeds the cap",
+                entry.name.len()
+            );
+        }
+        let last: &ParsedResourceEntry = parsed.entries.last().expect("at least one entry");
+        assert_eq!(
+            last.name.len(),
+            MAX_NAME_LEN + b".pyc".len(),
+            "a match past the cap must produce a truncated name"
+        );
+    }
+
+    #[test]
+    fn heuristic_walk_recovers_short_embedded_name_unchanged() {
+        let mut blob: Vec<u8> = vec![0u8; 8];
+        blob.extend_from_slice(b"mypackage/module.pyc");
+        blob.extend_from_slice(&[0u8; 8]);
+        let parsed: PackedResourcesParse = heuristic_walk(&blob, 3, 0, Vec::new());
+        let recovered: Option<&ParsedResourceEntry> = parsed
+            .entries
+            .iter()
+            .find(|entry: &&ParsedResourceEntry| entry.name == "mypackage/module.pyc");
+        let Some(entry): Option<&ParsedResourceEntry> = recovered else {
+            panic!(
+                "expected the short embedded name to be recovered, got {:?}",
+                parsed.entries
+            );
+        };
+        assert_eq!(entry.tier, ResourceTier::Bytecode);
     }
 }
