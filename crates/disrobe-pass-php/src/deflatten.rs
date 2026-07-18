@@ -6,6 +6,9 @@ use crate::error::{Error, Result};
 use crate::token::{Lexer, TokKind, Token};
 
 const MAX_LINEARIZE_STEPS: usize = 1 << 20;
+const MAX_LINEARIZE_DEPTH: usize = 256;
+const MAX_LABEL_ATTRIBUTIONS_PER_ITEM: usize = 64;
+const MIN_LABEL_ATTRIBUTION_BUDGET: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeflattenReport {
@@ -115,7 +118,7 @@ impl EmitState {
 
         let entry: Vec<u8> =
             leading_goto(&items).unwrap_or_else(|| first_label(&items).unwrap_or_default());
-        let chain: Chain = build_chain(&items);
+        let chain: Chain = build_chain(&items)?;
         let order: Vec<Vec<u8>> = self.reachable_order(&entry, &chain)?;
         let emitted: BTreeSet<Vec<u8>> = order.iter().cloned().collect();
 
@@ -224,6 +227,9 @@ impl EmitState {
         out: &mut Vec<u8>,
         depth: usize,
     ) -> bool {
+        if depth >= MAX_LINEARIZE_DEPTH {
+            return false;
+        }
         let Some(open_rel): Option<usize> = (lo..hi).find(|&i| is_punct(&toks[i], b"{")) else {
             return false;
         };
@@ -368,9 +374,14 @@ fn first_label(items: &[Item]) -> Option<Vec<u8>> {
     })
 }
 
-fn build_chain(items: &[Item]) -> Chain {
+fn build_chain(items: &[Item]) -> Result<Chain> {
     let mut chain: Chain = Chain::default();
     let mut active: Vec<Vec<u8>> = Vec::new();
+    let budget: usize = items
+        .len()
+        .saturating_mul(MAX_LABEL_ATTRIBUTIONS_PER_ITEM)
+        .max(MIN_LABEL_ATTRIBUTION_BUDGET);
+    let mut attributed: usize = 0;
     for item in items {
         match item {
             Item::Label(name) => {
@@ -382,6 +393,12 @@ fn build_chain(items: &[Item]) -> Chain {
                 active.push(name.clone());
             }
             Item::Stmt { lo, hi } => {
+                attributed = attributed.saturating_add(active.len());
+                if attributed > budget {
+                    return Err(Error::Deflatten {
+                        reason: "label attribution budget exceeded".to_owned(),
+                    });
+                }
                 for label in &active {
                     if let Some(block) = chain.blocks.get_mut(label) {
                         block.stmts.push((*lo, *hi));
@@ -400,7 +417,7 @@ fn build_chain(items: &[Item]) -> Chain {
             }
         }
     }
-    chain
+    Ok(chain)
 }
 
 fn nested_goto_targets(toks: &[Token<'_>], label_set: &BTreeSet<Vec<u8>>) -> BTreeSet<Vec<u8>> {
@@ -617,5 +634,64 @@ mod tests {
         let out: String = rendered(src);
         assert!(out.contains("$a = 1"), "out:\n{out}");
         assert!(out.contains("echo $a"), "out:\n{out}");
+    }
+
+    #[test]
+    fn deeply_nested_declarations_complete_without_stack_abort() {
+        const DEPTH: usize = 4000;
+        let mut src: Vec<u8> = b"<?php ".to_vec();
+        for i in 0..DEPTH {
+            src.extend_from_slice(format!("function f{i}() {{ ").as_bytes());
+        }
+        src.extend_from_slice(b"$x = 1;");
+        for _ in 0..DEPTH {
+            src.extend_from_slice(b" }");
+        }
+        let report: DeflattenReport = deflatten(&src).expect("bounded recursion completes");
+        let out: String = String::from_utf8(report.source).expect("utf8");
+        assert!(
+            out.contains("$x = 1"),
+            "innermost body lost under depth cap:\n{}",
+            &out[..out.len().min(200)]
+        );
+    }
+
+    #[test]
+    fn shallow_nested_declarations_are_still_structured() {
+        let src: &[u8] = b"<?php function outer() { function inner() { $x = 1; } }";
+        let out: String = rendered(src);
+        assert!(out.contains("function outer"), "outer decl lost:\n{out}");
+        assert!(out.contains("function inner"), "inner decl lost:\n{out}");
+        assert!(out.contains("$x = 1"), "inner body lost:\n{out}");
+    }
+
+    #[test]
+    fn stacked_label_run_trips_attribution_budget() {
+        const LABELS: usize = 400;
+        const STMTS: usize = 400;
+        let mut src: Vec<u8> = b"<?php ".to_vec();
+        for i in 0..LABELS {
+            src.extend_from_slice(format!("l{i}: ").as_bytes());
+        }
+        for i in 0..STMTS {
+            src.extend_from_slice(format!("$a = {i}; ").as_bytes());
+        }
+        let err: Error = deflatten(&src).expect_err("quadratic attribution must be rejected");
+        assert!(
+            matches!(err, Error::Deflatten { .. }),
+            "expected a deflatten budget error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn normal_label_count_stays_within_budget() {
+        let mut src: Vec<u8> = b"<?php ".to_vec();
+        for i in 0..300 {
+            src.extend_from_slice(format!("l{i}: $a = {i}; goto l{}; ", i + 1).as_bytes());
+        }
+        src.extend_from_slice(b"l300: echo $a;");
+        let report: DeflattenReport = deflatten(&src).expect("normal chain stays within budget");
+        let out: String = String::from_utf8(report.source).expect("utf8");
+        assert!(out.contains("echo $a"), "normal chain body lost:\n{out}");
     }
 }
