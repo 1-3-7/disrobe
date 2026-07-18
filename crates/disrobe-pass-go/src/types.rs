@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::binary::GoImage;
+use crate::debug::dbg_line;
 use crate::moduledata::Moduledata;
 use crate::pclntab::PclntabVersion;
 
@@ -435,34 +436,56 @@ fn short_base(base: &str) -> &str {
         .map_or(base, |(_, tail): (&str, &str)| tail)
 }
 
-fn join_concrete_for_base<'a>(
-    base: &str,
-    concretes: &'a ConcreteArgMap,
-) -> (BTreeSet<&'a Vec<String>>, bool) {
-    let exact: Option<&BTreeSet<Vec<String>>> = concretes.get(base);
-    if let Some(args) = exact {
-        return (args.iter().collect(), false);
-    }
-    let mut union: BTreeSet<&Vec<String>> = BTreeSet::new();
-    let mut contributing_paths: BTreeSet<&str> = BTreeSet::new();
+type ShortBaseIndex<'a> = BTreeMap<&'a str, (BTreeSet<&'a Vec<String>>, usize)>;
+
+const DISAMBIG_CANDIDATE_BUDGET: usize = 1 << 22;
+
+fn index_by_short_base(concretes: &ConcreteArgMap) -> ShortBaseIndex<'_> {
+    let mut index: ShortBaseIndex<'_> = BTreeMap::new();
     for (key, args) in concretes {
         let key: &String = key;
         let args: &BTreeSet<Vec<String>> = args;
-        if short_base(key.as_str()) == base {
-            contributing_paths.insert(key.as_str());
-            union.extend(args.iter());
-        }
+        let entry: &mut (BTreeSet<&Vec<String>>, usize) =
+            index.entry(short_base(key.as_str())).or_default();
+        entry.0.extend(args.iter());
+        entry.1 = entry.1.saturating_add(1);
     }
-    (union, contributing_paths.len() > 1)
+    index
+}
+
+fn join_concrete_for_base<'a>(
+    base: &str,
+    concretes: &'a ConcreteArgMap,
+    by_short: &ShortBaseIndex<'a>,
+) -> (BTreeSet<&'a Vec<String>>, bool) {
+    if let Some(args) = concretes.get(base) {
+        return (args.iter().collect(), false);
+    }
+    match by_short.get(base) {
+        Some((union, contributing_paths)) => (union.clone(), *contributing_paths > 1),
+        None => (BTreeSet::new(), false),
+    }
 }
 
 fn disambiguate_shape_args(list: &mut [GoGenericInstantiation], concretes: &ConcreteArgMap) {
+    let by_short: ShortBaseIndex<'_> = index_by_short_base(concretes);
+    let mut examined: usize = 0;
     for inst in list.iter_mut() {
         if !inst.shape_args {
             continue;
         }
+        if examined >= DISAMBIG_CANDIDATE_BUDGET {
+            dbg_line(|| {
+                format!(
+                    "generic disambiguation stopped after {examined} candidate scans; remaining \
+                     shape instantiations left as shape walls"
+                )
+            });
+            break;
+        }
         let (candidates, cross_package_collision): (BTreeSet<&Vec<String>>, bool) =
-            join_concrete_for_base(&inst.base, concretes);
+            join_concrete_for_base(&inst.base, concretes, &by_short);
+        examined = examined.saturating_add(candidates.len());
         if candidates.is_empty() {
             continue;
         }
@@ -1657,6 +1680,57 @@ mod tests {
             }),
             "no lift may stamp a wrong concrete onto a cross-package short-name collision: {out:?}"
         );
+    }
+
+    #[test]
+    fn disambiguate_lifts_short_base_from_full_path_concrete() {
+        let types: [&str; 1] = ["box.Cell0[go.shape.int]"];
+        let funcs: [&str; 1] = ["type:.eq.pkg0/box.Cell0[int]"];
+        let out: Vec<GoGenericInstantiation> = parse_generic_type_info(funcs, types);
+
+        let cell: &GoGenericInstantiation = out
+            .iter()
+            .find(|g: &&GoGenericInstantiation| g.base == "box.Cell0")
+            .expect("the short-named shape body is present");
+        assert!(!cell.shape_args);
+        assert_eq!(cell.type_args, vec!["int".to_owned()]);
+        assert!(cell.concrete_candidates.is_empty());
+    }
+
+    #[test]
+    fn disambiguate_scales_and_keeps_the_hand_checked_lift() {
+        use std::time::{Duration, Instant};
+
+        let n: usize = 32_000;
+        let mut names: Vec<String> = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            names.push(format!("box.Cell{i}[go.shape.int]"));
+            names.push(format!("type:.eq.pkg{i}/box.Cell{i}[int]"));
+        }
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let start: Instant = Instant::now();
+        let out: Vec<GoGenericInstantiation> =
+            parse_generic_type_info(refs, std::iter::empty::<&str>());
+        let elapsed: Duration = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "disambiguation over {n} instantiations took {elapsed:?}; a per-instantiation \
+             full-map rescan would be quadratic here"
+        );
+
+        let cell0: &GoGenericInstantiation = out
+            .iter()
+            .find(|g: &&GoGenericInstantiation| g.base == "box.Cell0")
+            .expect("box.Cell0 is present in the large table");
+        assert!(!cell0.shape_args);
+        assert_eq!(
+            cell0.type_args,
+            vec!["int".to_owned()],
+            "the at-scale lift must match the small hand-checked case exactly"
+        );
+        assert!(cell0.concrete_candidates.is_empty());
     }
 
     #[test]
